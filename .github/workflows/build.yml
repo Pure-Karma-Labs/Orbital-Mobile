@@ -88,6 +88,7 @@ jobs:
 
       - name: Build iOS Debug
         run: |
+          set -o pipefail
           xcodebuild \
             -workspace ios/OrbitalMobile.xcworkspace \
             -scheme OrbitalMobile \
@@ -95,4 +96,4 @@ jobs:
             -sdk iphonesimulator \
             -destination 'platform=iOS Simulator,name=iPhone 16' \
             CODE_SIGNING_ALLOWED=NO \
-            build | xcpretty && exit ${PIPESTATUS[0]}
+            build 2>&1 | tee xcodebuild.log | tail -50

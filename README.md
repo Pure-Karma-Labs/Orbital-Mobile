@@ -1,5 +1,8 @@
 # Orbital Mobile
 
+![CI](https://github.com/alexg-g/Orbital-Mobile/actions/workflows/ci.yml/badge.svg?branch=main)
+![Build](https://github.com/alexg-g/Orbital-Mobile/actions/workflows/build.yml/badge.svg?branch=main)
+
 Native mobile client for the [Orbital](https://github.com/alexg-g/Orbital-Desktop) private family social network. Built with React Native 0.82+ (New Architecture), sharing the same backend and Signal Protocol encryption as the desktop app.
 
 ## Prerequisites

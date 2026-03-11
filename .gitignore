@@ -28,6 +28,7 @@ rust/**/target/
 .env.*
 !.env.example
 *.keystore
+!android/app/debug.keystore
 *.jks
 *.p12
 *.mobileprovision

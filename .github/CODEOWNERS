@@ -1,0 +1,31 @@
+# Orbital-Mobile CODEOWNERS
+# Each path maps to the domain agent responsible for review.
+
+# Rust / Native bridge
+/rust/                          @alexg-g
+*.udl                           @alexg-g
+
+# Signal Protocol / Crypto
+/src/crypto/                    @alexg-g
+/src/stores/protocol/           @alexg-g
+
+# React Native UI & App layer
+/src/screens/                   @alexg-g
+/src/components/                @alexg-g
+/src/navigation/                @alexg-g
+/src/stores/                    @alexg-g
+/src/theme/                     @alexg-g
+
+# API & Backend integration
+/src/api/                       @alexg-g
+
+# CI/CD & DevOps
+/.github/workflows/             @alexg-g
+/fastlane/                      @alexg-g
+
+# Tests
+/__tests__/                     @alexg-g
+
+# Security-sensitive files
+*.keystore                      @alexg-g
+*.mobileprovision               @alexg-g

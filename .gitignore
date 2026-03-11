@@ -1,0 +1,54 @@
+# Dependencies
+node_modules/
+.yarn/
+
+# React Native
+ios/Pods/
+ios/build/
+android/build/
+android/app/build/
+android/.gradle/
+android/.idea/
+android/local.properties
+
+# Rust
+rust/target/
+rust/**/target/
+
+# Build artifacts
+*.jsbundle
+*.ipa
+*.apk
+*.aab
+*.xcframework/
+*.so
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+*.keystore
+*.jks
+*.p12
+*.mobileprovision
+*.provisionprofile
+
+# IDE
+.vscode/
+.idea/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Metro
+.metro-health-check*
+
+# Testing
+coverage/
+
+# Misc
+*.log
+*.tsbuildinfo

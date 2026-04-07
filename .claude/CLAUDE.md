@@ -1,18 +1,18 @@
 You are the primary orchestration agent responsible for implementing user feedback and building the Orbital-Mobile application.
 
-**YOU MUST ALWAYS USE THE CORRECT REPOSITORY:** `alexg-g/Orbital-Mobile`
+**YOU MUST ALWAYS USE THE CORRECT REPOSITORY:** `Pure-Karma-Labs/Orbital-Mobile`
 
-- **GitHub URL:** https://github.com/alexg-g/Orbital-Mobile
-- **Owner:** alexg-g (NOT signalapp)
+- **GitHub URL:** https://github.com/Pure-Karma-Labs/Orbital-Mobile
+- **Owner:** Pure-Karma-Labs
 - **Repo Name:** Orbital-Mobile (case-sensitive)
-- **For ALL GitHub CLI commands:** ALWAYS use `--repo alexg-g/Orbital-Mobile` or `-R alexg-g/Orbital-Mobile`
-- **Related Repos:** `alexg-g/Orbital-Desktop` (read access, reference implementation)
+- **For ALL GitHub CLI commands:** ALWAYS use `--repo Pure-Karma-Labs/Orbital-Mobile` or `-R Pure-Karma-Labs/Orbital-Mobile`
+- **Related Repos:** `alexg-g/Orbital-Desktop` (read access, reference implementation — being shuttered)
 
 Examples of correct usage:
 ```bash
-gh pr create --repo alexg-g/Orbital-Mobile ...
-gh issue list --repo alexg-g/Orbital-Mobile
-gh pr view 1 --repo alexg-g/Orbital-Mobile
+gh pr create --repo Pure-Karma-Labs/Orbital-Mobile ...
+gh issue list --repo Pure-Karma-Labs/Orbital-Mobile
+gh pr view 1 --repo Pure-Karma-Labs/Orbital-Mobile
 ```
 
 **Current Phase:** Phase 1 - Foundation (Weeks 1-4)
@@ -27,7 +27,7 @@ Orbital Mobile is a React Native (0.82+, New Architecture) app for iOS and Andro
 - **Multi-device:** Phone-only for beta
 - **Backend:** Existing orbital-backend (https://api.orbitl.org) with push notification additions
 - **Local Storage:** SQLite/SQLCipher
-- **PRD:** See `planning-docs/MOBILE-APP-SPEC.md` (single source of truth)
+- **PRD:** See `docs/MOBILE-APP-SPEC.md` (single source of truth)
 
 ## Quick Start
 
@@ -46,23 +46,50 @@ npx react-native run-android
 npm test
 ```
 
-## Agent Overview
+## Agent Delegation
 
-This directory contains specialized agent personas for the Orbital-Mobile project. Each agent references the [Mobile App Spec (PRD)](/planning-docs/MOBILE-APP-SPEC.md) as the single source of truth.
+This repo has a team of expert subagents with persistent memory in `.claude/agent-memory/`. **Delegate tasks to the appropriate agent whenever possible** so they accumulate domain expertise across sessions. Prefer launching agents in parallel when their work is independent.
 
-### Agents
+| Agent | Model | Owns |
+|---|---|---|
+| `agent-builder` | opus | Agent ecosystem creation, maintenance, and validation |
+| `skill-builder` | opus | Skill creation, review, and agent config auditing |
+| `react-native-engineer` | sonnet | UI screens, navigation, state management, API integration |
+| `signal-crypto-specialist` | opus | libsignal API surface, encryption stores, key management |
+| `rust-native-engineer` | opus | uniffi-bindgen toolchain, Rust crate, cross-compilation, native bridges |
+| `backend-push-engineer` | sonnet | Push notifications (APNs/FCM), device tokens, backend API extensions |
+| `mobile-devops-engineer` | sonnet | CI/CD pipeline, code signing, TestFlight/Play Store, Fastlane |
+| `qa-testing-specialist` | sonnet | Test strategy, Jest/Detox, device matrix, beta coordination |
+| `security-auditor` | opus | Crypto audit, OWASP Mobile Top 10, keychain/keystore review |
+| `project-manager` | haiku | GitHub Issues/Milestones, progress tracking, risk management |
 
-| # | Agent | Focus |
-|---|-------|-------|
-| 1 | React Native Engineer | UI screens, navigation, state management, component library |
-| 2 | Signal Protocol / Crypto Specialist | libsignal Turbo Modules, uniffi-bindgen, encryption stores, key management |
-| 3 | Rust / Native Module Engineer | uniffi-bindgen-react-native toolchain, Rust crate, Swift/Kotlin bridges |
-| 4 | Backend / Push Notification Engineer | Push notifications (APNs/FCM), device token management, API extensions |
-| 5 | Mobile DevOps Engineer | CI/CD, code signing, TestFlight, Play Store, Fastlane |
-| 6 | QA / Testing Specialist | Test strategy, E2E testing, device matrix, beta coordination |
-| 7 | Security Auditor | Crypto audit, mobile security, keychain/keystore, OWASP Mobile Top 10 |
-| 8 | Project Manager | GitHub Issues/Milestones, progress tracking, risk management |
+## Agentic Layer Architecture
 
-### User-Supplied Agents (to be added)
-- **Agent Builder** — Meta-agent for creating new specialized agents
-- **Skill Builder** — Meta-agent for creating new Claude Code skills
+This project uses a two-layer agent architecture managed via the `.claude/` directory.
+
+### Layer 1: Agent Markdown (`.claude/agents/<name>.md`)
+
+Durable behavior definitions: identity, responsibilities, principles, collaboration patterns, self-discovery instructions. These survive codebase changes because they contain NO hardcoded paths, line numbers, or version numbers.
+
+### Layer 2: Expertise YAML (`.claude/expertise/<name>.yaml`)
+
+Lightweight navigation metadata: core files with git hashes, documentation references, integration points, observed patterns. Agents self-maintain these during normal work.
+
+### Directory Structure
+
+```
+.claude/
+├── settings.json          # Agent & skill registry (model, collaboration, relationships)
+├── agents/                # Agent persona definitions (markdown with YAML frontmatter)
+├── expertise/             # Navigation metadata (YAML, self-maintained by agents)
+├── skills/                # Skill definitions (flat .md or directory/SKILL.md)
+├── hooks/                 # Lifecycle hook scripts
+└── agent-memory/          # Persistent cross-session memory per agent
+```
+
+## Code Conventions
+
+- TypeScript strict mode for all React Native code
+- Rust for native crypto modules via uniffi-bindgen-react-native
+- ESLint + Prettier for code formatting
+- Jest for unit tests

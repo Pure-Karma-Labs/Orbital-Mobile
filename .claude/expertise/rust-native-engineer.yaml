@@ -1,0 +1,59 @@
+version: "1.0"
+last_updated: "2026-04-07"
+agent: rust-native-engineer
+
+core_files:
+  - path: rust/orbital_signal/.gitkeep
+    purpose: Placeholder for the thin Rust wrapper crate — will contain Cargo.toml, src/lib.rs with UniFFI proc macros
+    last_hash: e69de29
+
+  - path: ios/Podfile
+    purpose: iOS dependency configuration — will need Podspec entry for the compiled Rust .a library
+    last_hash: 5e9920f
+
+  - path: android/app/build.gradle
+    purpose: Android build configuration — will need Gradle integration for the compiled Rust .so library
+    last_hash: 6f2da9e
+
+  - path: package.json
+    purpose: Project dependencies — uniffi-bindgen-react-native should be added here
+    last_hash: fce34c2
+
+  - path: src/types/database.ts
+    purpose: TypeScript interfaces that define the data types crossing the native bridge
+    last_hash: 6bd8bd6
+
+documentation:
+  - path: docs/MOBILE-APP-SPEC.md
+    relevance: "Part 2: Crypto defines the uniffi-bindgen approach, API surface, and fallback path (manual Turbo Modules)"
+
+integration_points:
+  - system: uniffi-bindgen-react-native
+    interface: Generated TypeScript Turbo Module bindings
+    purpose: Auto-generates Swift, Kotlin, and TypeScript bindings from UniFFI-annotated Rust code
+
+  - system: libsignal v0.83.0
+    interface: Rust crate dependency
+    purpose: Core crypto library being wrapped — pinned version, no stable public FFI API
+
+  - system: iOS Build System
+    interface: Podspec + .xcframework
+    purpose: Integration of compiled Rust .a into Xcode via CocoaPods
+
+  - system: Android Build System
+    interface: Gradle + .so libraries
+    purpose: Integration of compiled Rust .so into Android build via Gradle
+
+  - system: CI Pipeline
+    interface: .github/workflows/build.yml
+    purpose: Cross-compilation must run in CI on the self-hosted macOS ARM64 runner
+
+patterns:
+  - name: thin-wrapper-crate
+    description: Rust crate wraps only the ~15-20 libsignal functions needed, not the full API — minimizes maintenance burden
+
+  - name: five-target-compilation
+    description: "Cross-compile for 5 targets: aarch64-apple-ios, x86_64-apple-ios, aarch64-apple-ios-sim, aarch64-linux-android, x86_64-linux-android"
+
+  - name: pin-and-upgrade
+    description: Pin libsignal to v0.83.0 via exact version in Cargo.toml — upgrade only with deliberate review and testing

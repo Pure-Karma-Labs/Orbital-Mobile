@@ -1,0 +1,60 @@
+version: "1.0"
+last_updated: "2026-04-07"
+agent: mobile-devops-engineer
+
+core_files:
+  - path: .github/workflows/ci.yml
+    purpose: CI pipeline — lint, typecheck, and Jest tests on self-hosted macOS runner
+    key_symbols:
+      - lint-typecheck-test
+    last_hash: c3743d9
+
+  - path: .github/workflows/build.yml
+    purpose: Build pipeline — Android debug build (all PRs) and iOS debug build (main only)
+    key_symbols:
+      - build-android
+      - build-ios
+    last_hash: 6fab26e
+
+  - path: android/app/build.gradle
+    purpose: Android build configuration — signing configs, build types, dependencies
+    last_hash: 6f2da9e
+
+  - path: ios/Podfile
+    purpose: iOS CocoaPods dependency configuration
+    last_hash: 5e9920f
+
+  - path: package.json
+    purpose: npm dependencies and scripts — build, test, lint commands
+    last_hash: fce34c2
+
+documentation:
+  - path: docs/MOBILE-APP-SPEC.md
+    relevance: "Part 7: Implementation Phases and Part 4: Beta define distribution requirements"
+
+integration_points:
+  - system: GitHub Actions
+    interface: .github/workflows/*.yml
+    purpose: CI/CD pipeline execution — lint, test, build for both platforms
+
+  - system: Self-Hosted Runner
+    interface: alexg-mac (ARM64, labels: self-hosted, macOS, ARM64)
+    purpose: Build execution environment — avoids costly GitHub-hosted macOS runners
+
+  - system: Apple Developer Program
+    interface: Xcode signing, TestFlight
+    purpose: iOS code signing and beta distribution
+
+  - system: Google Play Console
+    interface: Play Store internal testing track
+    purpose: Android beta distribution
+
+patterns:
+  - name: concurrency-groups
+    description: "Workflows use concurrency groups (ci-$ref, build-$ref) with cancel-in-progress to avoid redundant builds"
+
+  - name: cache-layering
+    description: "Multi-layer caching: npm (setup-node cache), Gradle (~/.gradle), CocoaPods (ios/Pods + ~/Library/Caches)"
+
+  - name: platform-conditional-builds
+    description: "iOS builds run only on main (expensive), Android builds run on all PRs — controlled via github.ref condition"

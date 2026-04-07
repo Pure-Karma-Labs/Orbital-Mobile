@@ -1,0 +1,55 @@
+version: "1.0"
+last_updated: "2026-04-07"
+agent: project-manager
+
+core_files:
+  - path: .claude/CLAUDE.md
+    purpose: Project architecture context, current phase indicator, agent roster
+    key_symbols:
+      - "Current Phase"
+      - "Agent Overview"
+    last_hash: 7c52ba8
+
+  - path: docs/MOBILE-APP-SPEC.md
+    purpose: PRD single source of truth — implementation phases, risks, deliverables, API contracts
+    key_symbols:
+      - "Part 7: Implementation Phases"
+      - "Part 9: Risks & Mitigations"
+      - "Part 10: What This Spec Does NOT Cover"
+
+  - path: .claude/settings.json
+    purpose: Agent registry — collaboration graph, model assignments, relationship mappings
+    key_symbols:
+      - agents
+      - receivesUpdatesFrom
+      - reportsTo
+
+  - path: .github/workflows/ci.yml
+    purpose: CI pipeline configuration — build health indicator for progress tracking
+    last_hash: c3743d9
+
+documentation:
+  - path: docs/MOBILE-APP-SPEC.md
+    relevance: Authoritative spec for phase scope, deliverables, timeline, and known risks
+
+  - path: .claude/CLAUDE.md
+    relevance: Current phase context, architecture decisions, agent collaboration structure
+
+integration_points:
+  - system: GitHub Issues & Milestones
+    interface: gh CLI (--repo Pure-Karma-Labs/Orbital-Mobile)
+    purpose: Issue tracking, milestone management, progress measurement, blocker identification
+
+  - system: Agent Collaboration Graph
+    interface: .claude/settings.json relationships (reportsTo, receivesUpdatesFrom)
+    purpose: Coordinate status collection from 7 implementation agents
+
+patterns:
+  - name: phase-gated-delivery
+    description: Work is organized into 4 sequential phases (Foundation, Core Features, Media & Polish, Beta) with explicit scope boundaries to prevent premature scope expansion
+
+  - name: critical-path-tracking
+    description: Identify the longest dependency chain of blocking issues within each phase milestone to surface schedule risks early
+
+  - name: risk-driven-prioritization
+    description: Known risks from PRD Part 9 (especially libsignal FFI instability rated High) drive which Phase 1 items are tackled first to retire uncertainty early

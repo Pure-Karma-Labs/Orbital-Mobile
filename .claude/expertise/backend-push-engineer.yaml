@@ -1,0 +1,82 @@
+version: "1.0"
+last_updated: "2026-04-07"
+agent: backend-push-engineer
+
+core_files:
+  - path: docs/MOBILE-APP-SPEC.md
+    purpose: Primary PRD — Part 3 (Backend Changes) and Part 4 (API Reference) define push notification requirements, device_tokens schema, and all 35+ REST endpoints
+    key_symbols:
+      - device_tokens
+      - pushNotificationService
+      - sendPush
+      - POST /api/devices/register
+      - DELETE /api/devices/:tokenId
+      - GET /api/version/check
+    last_hash: # not yet committed
+
+  - path: src/database/migrations/001_initial_schema.sql
+    purpose: Mobile-side SQLite/SQLCipher schema — 17 tables including Signal Protocol stores and Orbital app tables that mirror backend data model
+    key_symbols:
+      - conversations
+      - orbital_threads
+      - orbital_replies
+      - orbital_media
+      - messages
+      - items
+    last_hash: 2445035
+
+  - path: src/types/database.ts
+    purpose: TypeScript interfaces for all 17 database tables — defines the mobile data contracts that backend API responses must map to
+    key_symbols:
+      - ConversationRow
+      - OrbitalThreadRow
+      - OrbitalReplyRow
+      - OrbitalMediaRow
+      - MessageRow
+    last_hash: 6bd8bd6
+
+  - path: src/services/websocket/.gitkeep
+    purpose: Placeholder for WebSocket client service — push notifications integrate alongside this real-time channel
+    last_hash: e69de29
+
+  - path: src/services/api/.gitkeep
+    purpose: Placeholder for API client services — device token registration and all REST endpoint integrations will live here
+    last_hash: e69de29
+
+documentation:
+  - path: docs/MOBILE-APP-SPEC.md
+    relevance: Single source of truth for push notification requirements, API surface, encryption architecture, and backend changes
+
+  - path: .claude/CLAUDE.md
+    relevance: Project architecture overview, agent roster, and repo conventions
+
+integration_points:
+  - system: orbital-backend REST API
+    interface: https://api.orbitl.org (35+ endpoints)
+    purpose: All existing REST endpoints used by mobile clients — auth, groups, threads, replies, media, invites, Signal relay
+
+  - system: orbital-backend WebSocket
+    interface: wss://api.orbitl.org/v1/websocket
+    purpose: Real-time event delivery (new_message, new_thread, new_reply) — push notifications dispatch alongside these broadcasts via signalWebSocket.js
+
+  - system: APNs (Apple Push Notification service)
+    interface: HTTP/2 API (api.push.apple.com)
+    purpose: iOS push notification delivery — requires APNs auth key or certificate, device token from mobile client
+
+  - system: FCM (Firebase Cloud Messaging)
+    interface: FCM v1 API (fcm.googleapis.com)
+    purpose: Android push notification delivery — requires Firebase service account, device registration token from mobile client
+
+  - system: Desktop backend reference
+    interface: alexg-g/Orbital-Desktop/orbital-backend/
+    purpose: Reference implementation — schema.sql, route handlers, signalWebSocket.js, auth middleware, groupService.js
+
+patterns:
+  - name: zero-knowledge-push
+    description: Push payloads contain only event type, conversation/thread IDs, and sender display name — never plaintext content. The client fetches and decrypts full content via API on app open.
+
+  - name: dual-delivery
+    description: Every real-time event is delivered via both WebSocket (for connected clients) and push notification (for backgrounded clients). The app always catches up via REST on open, making push delivery optional.
+
+  - name: additive-backend-changes
+    description: All backend modifications for mobile support are additive — new table (device_tokens), new endpoints (POST /api/devices/register, DELETE /api/devices/:tokenId), new service (pushNotificationService). No existing endpoints or behavior are modified.

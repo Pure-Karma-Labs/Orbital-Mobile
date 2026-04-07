@@ -1,0 +1,66 @@
+version: "1.0"
+last_updated: "2026-04-07"
+agent: security-auditor
+
+core_files:
+  - path: src/database/migrations/001_initial_schema.sql
+    purpose: SQLCipher schema — audit encryption-at-rest, Signal Protocol store tables, key storage as BLOB
+    key_symbols:
+      - signal_identity_keys
+      - signal_sessions
+      - signal_pre_keys
+      - signal_sender_keys
+    last_hash: 2445035
+
+  - path: src/types/database.ts
+    purpose: TypeScript interfaces — verify Uint8Array for key material, no accidental string serialization
+    key_symbols:
+      - SignalIdentityKeyRow
+      - VerifiedStatus
+    last_hash: 6bd8bd6
+
+  - path: package.json
+    purpose: npm dependency manifest — target for npm audit vulnerability scanning
+    last_hash: fce34c2
+
+  - path: ios/OrbitalMobile/Info.plist
+    purpose: iOS app configuration — App Transport Security, URL schemes, data protection entitlements
+    last_hash: 2d14892
+
+  - path: android/app/src/main/AndroidManifest.xml
+    purpose: Android configuration — permissions, exported components, backup rules, network security config
+    last_hash: fb78f39
+
+documentation:
+  - path: docs/MOBILE-APP-SPEC.md
+    relevance: "Part 2: Crypto architecture, Part 5: Encryption schemes, Part 3: Push notification payload design"
+
+integration_points:
+  - system: Signal Protocol (libsignal)
+    interface: uniffi-bindgen-react-native Turbo Modules
+    purpose: Crypto boundary — audit for correct function usage, key handling across FFI boundary
+
+  - system: orbital-backend API
+    interface: REST + WebSocket
+    purpose: Network layer — audit for certificate pinning, TLS configuration, JWT handling
+
+  - system: SQLCipher
+    interface: Encrypted SQLite database
+    purpose: Local storage — audit key derivation, cipher configuration, WAL mode security
+
+  - system: iOS Keychain / Android Keystore
+    interface: Platform secure storage APIs
+    purpose: Secure enclave for identity keys, JWT tokens, SQLCipher key
+
+patterns:
+  - name: blob-for-keys
+    description: All crypto key material stored as BLOB (Uint8Array) in SQLCipher, never as hex/base64 TEXT
+
+  - name: zero-knowledge-server
+    description: Server stores only ciphertext — encrypted_title, encrypted_body, encrypted_envelope — plaintext never leaves client
+
+  - name: per-field-iv
+    description: Each encrypted field has its own IV column, preventing IV reuse across fields encrypted with the same group key
+
+  - name: encrypt-then-mac
+    description: Media uses AES-256-CBC with HMAC-SHA256 — verify MAC is checked before decryption

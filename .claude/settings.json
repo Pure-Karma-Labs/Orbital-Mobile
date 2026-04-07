@@ -1,0 +1,120 @@
+{
+  "agents": {
+    "agent-builder": {
+      "model": "opus",
+      "description": "Meta-agent for creating and maintaining expert agents. Initializes expertise.yaml files that experts self-maintain as their mental models",
+      "collaboration": "independent"
+    },
+    "skill-builder": {
+      "model": "opus",
+      "description": "Meta-agent for creating, reviewing, and improving skills and auditing agent configurations for underused subagent features",
+      "collaboration": "independent"
+    },
+    "react-native-engineer": {
+      "model": "sonnet",
+      "description": "Build React Native UI screens, navigation, state management, and component library for Orbital Mobile",
+      "collaboration": "collaborative",
+      "receivesGuidanceFrom": [
+        "signal-crypto-specialist",
+        "security-auditor"
+      ],
+      "reviewedBy": [
+        "qa-testing-specialist"
+      ],
+      "reportsTo": [
+        "project-manager"
+      ]
+    },
+    "rust-native-engineer": {
+      "model": "opus",
+      "description": "Own uniffi-bindgen-react-native toolchain, Rust wrapper crate around libsignal, cross-compilation, and Swift/Kotlin native bridges",
+      "collaboration": "collaborative",
+      "receivesGuidanceFrom": [
+        "signal-crypto-specialist"
+      ],
+      "reviewedBy": [
+        "security-auditor"
+      ],
+      "reportsTo": [
+        "project-manager"
+      ]
+    },
+    "backend-push-engineer": {
+      "model": "sonnet",
+      "description": "Own push notification service (APNs/FCM), device token management, and backend API extensions for mobile clients",
+      "collaboration": "collaborative",
+      "receivesGuidanceFrom": [
+        "signal-crypto-specialist"
+      ],
+      "reviewedBy": [
+        "security-auditor",
+        "qa-testing-specialist"
+      ],
+      "reportsTo": [
+        "project-manager"
+      ]
+    },
+    "signal-crypto-specialist": {
+      "model": "opus",
+      "description": "Own Signal Protocol integration, libsignal API surface design, encryption stores, and key management for Orbital Mobile",
+      "collaboration": "collaborative",
+      "canInvoke": [
+        "rust-native-engineer"
+      ],
+      "reviewedBy": [
+        "security-auditor"
+      ],
+      "reportsTo": [
+        "project-manager"
+      ]
+    },
+    "mobile-devops-engineer": {
+      "model": "sonnet",
+      "description": "Own CI/CD pipeline, code signing, TestFlight/Play Store distribution, Fastlane automation, and self-hosted runner management",
+      "collaboration": "collaborative",
+      "reviewedBy": ["security-auditor"],
+      "reportsTo": ["project-manager"]
+    },
+    "qa-testing-specialist": {
+      "model": "sonnet",
+      "description": "Own test strategy, Jest/Detox configuration, device matrix testing, beta coordination, and MVP verification for Orbital Mobile",
+      "collaboration": "collaborative",
+      "reviews": ["react-native-engineer", "rust-native-engineer"],
+      "reportsTo": ["project-manager"]
+    },
+    "security-auditor": {
+      "model": "opus",
+      "description": "Conduct crypto audits, mobile security reviews, keychain/keystore verification, and OWASP Mobile Top 10 assessment",
+      "collaboration": "independent",
+      "reviews": [
+        "react-native-engineer",
+        "rust-native-engineer",
+        "backend-push-engineer",
+        "signal-crypto-specialist"
+      ]
+    },
+    "project-manager": {
+      "model": "haiku",
+      "description": "Manage GitHub Issues/Milestones, track progress, coordinate project timeline, and identify risks and blockers",
+      "collaboration": "collaborative",
+      "receivesUpdatesFrom": [
+        "react-native-engineer",
+        "signal-crypto-specialist",
+        "rust-native-engineer",
+        "backend-push-engineer",
+        "mobile-devops-engineer",
+        "qa-testing-specialist",
+        "security-auditor"
+      ]
+    },
+    "app-store-compliance": {
+      "model": "sonnet",
+      "description": "Ensure iOS app follows Apple App Store Review Guidelines, Human Interface Guidelines, and all current best practices for smooth App Store submission and approval",
+      "collaboration": "independent",
+      "reviews": [
+        "react-native-engineer",
+        "mobile-devops-engineer"
+      ]
+    }
+  }
+}

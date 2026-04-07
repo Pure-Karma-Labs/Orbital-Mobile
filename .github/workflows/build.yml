@@ -14,10 +14,22 @@ jobs:
     name: Android Debug Build
     runs-on: [self-hosted, macOS]
     timeout-minutes: 30
+    env:
+      ANDROID_HOME: ~/Library/Android/sdk
+      ANDROID_SDK_ROOT: ~/Library/Android/sdk
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Verify Android SDK
+        run: |
+          if [ ! -d "$ANDROID_HOME" ]; then
+            echo "::error::Android SDK not found at $ANDROID_HOME. Install Android Studio or set ANDROID_HOME."
+            exit 1
+          fi
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          ls "$ANDROID_HOME/platforms/" 2>/dev/null || echo "No platforms installed"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

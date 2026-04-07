@@ -2,18 +2,26 @@
   "name": "orbital-mobile",
   "version": "0.0.1",
   "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Pure-Karma-Labs/Orbital-Mobile.git"
+  },
   "scripts": {
     "android": "react-native run-android",
     "ios": "react-native run-ios",
     "lint": "eslint .",
     "start": "react-native start",
     "test": "jest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:rust:ios": "cd packages/orbital-signal && npm run build:ios && cd ../../ios && pod install",
+    "build:rust:android": "cd packages/orbital-signal && npm run build:android",
+    "build:rust": "npm run build:rust:ios && npm run build:rust:android"
   },
   "dependencies": {
+    "@react-native/new-app-screen": "0.82.1",
+    "orbital-signal": "file:./packages/orbital-signal",
     "react": "19.1.1",
     "react-native": "0.82.1",
-    "@react-native/new-app-screen": "0.82.1",
     "react-native-safe-area-context": "^5.5.2"
   },
   "devDependencies": {

@@ -61,6 +61,19 @@ jest.mock('orbital-signal/src/generated/orbital_signal', () => ({
   // Sealed sender (stubbed)
   sealedSenderEncrypt: jest.fn(async () => { throw new Error('Not yet implemented'); }),
   sealedSenderDecrypt: jest.fn(async () => { throw new Error('Not yet implemented'); }),
+  // Roundtrip PoC (Issue #11)
+  testEncryptDecryptRoundtrip: jest.fn((plaintext: ArrayBuffer) => ({
+    plaintext,
+    ciphertextLen: 256,
+    decrypted: plaintext,
+    success: true,
+    elapsedMs: BigInt(42),
+  })),
+  testEncryptDecryptRoundtripN: jest.fn((_plaintext: ArrayBuffer, iterations: number) => ({
+    successCount: iterations,
+    totalElapsedMs: BigInt(420),
+    avgElapsedMs: BigInt(42),
+  })),
   // Enums (numeric ordinals matching generated TypeScript enums)
   CiphertextMessageType: { Whisper: 0, PreKey: 1, SenderKey: 2, Plaintext: 3 },
   Direction: { Sending: 0, Receiving: 1 },
@@ -72,7 +85,7 @@ jest.mock('orbital-signal/src/generated/orbital_signal', () => ({
 
 describe('orbital_signal bindings', () => {
   // -------------------------------------------------------------------------
-  // API surface — verify all 18 functions are exported
+  // API surface — verify all 20 functions are exported
   // -------------------------------------------------------------------------
   const EXPECTED_FUNCTIONS = [
     'generateIdentityKeyPair',
@@ -93,9 +106,11 @@ describe('orbital_signal bindings', () => {
     'groupDecrypt',
     'sealedSenderEncrypt',
     'sealedSenderDecrypt',
+    'testEncryptDecryptRoundtrip',
+    'testEncryptDecryptRoundtripN',
   ] as const;
 
-  it('exports all 18 functions', () => {
+  it('exports all 20 functions', () => {
     const mod = require('orbital-signal/src/generated/orbital_signal');
     for (const fn of EXPECTED_FUNCTIONS) {
       expect(typeof mod[fn]).toBe('function');
@@ -177,5 +192,25 @@ describe('orbital_signal bindings', () => {
     for (const fn of STUBBED_FUNCTIONS) {
       await expect(mod[fn]()).rejects.toThrow('Not yet implemented');
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // Roundtrip PoC (Issue #11)
+  // -------------------------------------------------------------------------
+  it('testEncryptDecryptRoundtrip returns result with success and timing', () => {
+    const { testEncryptDecryptRoundtrip } = require('orbital-signal/src/generated/orbital_signal');
+    const result = testEncryptDecryptRoundtrip(new ArrayBuffer(21));
+    expect(result).toHaveProperty('success', true);
+    expect(result).toHaveProperty('ciphertextLen');
+    expect(result).toHaveProperty('decrypted');
+    expect(result).toHaveProperty('elapsedMs');
+  });
+
+  it('testEncryptDecryptRoundtripN returns batch results', () => {
+    const { testEncryptDecryptRoundtripN } = require('orbital-signal/src/generated/orbital_signal');
+    const result = testEncryptDecryptRoundtripN(new ArrayBuffer(11), 10);
+    expect(result.successCount).toBe(10);
+    expect(result).toHaveProperty('totalElapsedMs');
+    expect(result).toHaveProperty('avgElapsedMs');
   });
 });

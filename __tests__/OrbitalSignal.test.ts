@@ -37,7 +37,7 @@ jest.mock('orbital-signal/src/generated/orbital_signal', () => ({
     id: 1,
     publicKey: new ArrayBuffer(33),
     signature: new ArrayBuffer(64),
-    timestamp: 1700000000000,
+    timestamp: BigInt(1700000000000),
   })),
   getKyberPreKeyPublic: jest.fn(() => ({
     id: 1,
@@ -61,9 +61,11 @@ jest.mock('orbital-signal/src/generated/orbital_signal', () => ({
   // Sealed sender (stubbed)
   sealedSenderEncrypt: jest.fn(async () => { throw new Error('Not yet implemented'); }),
   sealedSenderDecrypt: jest.fn(async () => { throw new Error('Not yet implemented'); }),
-  // Enums
-  CiphertextMessageType: { Whisper: 'Whisper', PreKey: 'PreKey', SenderKey: 'SenderKey', Plaintext: 'Plaintext' },
-  Direction: { Sending: 'Sending', Receiving: 'Receiving' },
+  // Enums (numeric ordinals matching generated TypeScript enums)
+  CiphertextMessageType: { Whisper: 0, PreKey: 1, SenderKey: 2, Plaintext: 3 },
+  Direction: { Sending: 0, Receiving: 1 },
+  // Error tags
+  SignalError_Tags: { InvalidKey: 0, InvalidMessage: 1, InvalidSignature: 2, NoSession: 3, UntrustedIdentity: 4, DuplicateMessage: 5, InvalidCertificate: 6, InvalidArgument: 7, StoreError: 8, InternalError: 9 },
   // Default export with initialize (called by index.tsx on load)
   default: { initialize: jest.fn() },
 }));
@@ -133,16 +135,47 @@ describe('orbital_signal bindings', () => {
   // -------------------------------------------------------------------------
   // Enums
   // -------------------------------------------------------------------------
-  it('exports CiphertextMessageType enum', () => {
+  it('exports CiphertextMessageType enum with numeric values', () => {
     const { CiphertextMessageType } = require('orbital-signal/src/generated/orbital_signal');
-    expect(CiphertextMessageType.Whisper).toBeDefined();
-    expect(CiphertextMessageType.PreKey).toBeDefined();
-    expect(CiphertextMessageType.SenderKey).toBeDefined();
+    expect(CiphertextMessageType.Whisper).toBe(0);
+    expect(CiphertextMessageType.PreKey).toBe(1);
+    expect(CiphertextMessageType.SenderKey).toBe(2);
+    expect(CiphertextMessageType.Plaintext).toBe(3);
   });
 
   it('exports Direction enum', () => {
     const { Direction } = require('orbital-signal/src/generated/orbital_signal');
-    expect(Direction.Sending).toBeDefined();
-    expect(Direction.Receiving).toBeDefined();
+    expect(Direction.Sending).toBe(0);
+    expect(Direction.Receiving).toBe(1);
+  });
+
+  it('exports SignalError_Tags enum', () => {
+    const { SignalError_Tags } = require('orbital-signal/src/generated/orbital_signal');
+    expect(SignalError_Tags.InvalidKey).toBe(0);
+    expect(SignalError_Tags.NoSession).toBe(3);
+    expect(SignalError_Tags.InternalError).toBe(9);
+  });
+
+  // -------------------------------------------------------------------------
+  // Stubbed functions — verify they reject with expected error
+  // -------------------------------------------------------------------------
+  const STUBBED_FUNCTIONS = [
+    'processPreKeyBundle',
+    'signalEncrypt',
+    'signalDecrypt',
+    'signalDecryptPreKey',
+    'createSenderKeyDistributionMessage',
+    'processSenderKeyDistributionMessage',
+    'groupEncrypt',
+    'groupDecrypt',
+    'sealedSenderEncrypt',
+    'sealedSenderDecrypt',
+  ] as const;
+
+  it('stubbed functions reject with Not yet implemented', async () => {
+    const mod = require('orbital-signal/src/generated/orbital_signal');
+    for (const fn of STUBBED_FUNCTIONS) {
+      await expect(mod[fn]()).rejects.toThrow('Not yet implemented');
+    }
   });
 });

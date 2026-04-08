@@ -1,5 +1,5 @@
 use crate::error::SignalError;
-use crate::types::IdentityKeyPairData;
+use crate::types::{IdentityKeyPairData, KyberPreKeyResult};
 
 use libsignal_protocol::{GenericSignedPreKey, IdentityKeyPair, KeyPair};
 
@@ -46,14 +46,16 @@ pub fn generate_signed_pre_key(
     record.serialize().map_err(SignalError::from)
 }
 
-/// Generate a Kyber (post-quantum) pre-key. Returns serialized KyberPreKeyRecord bytes.
+/// Generate a Kyber (post-quantum) pre-key. Returns both the serialized KyberPreKeyRecord
+/// bytes and the `is_last_resort` flag, since the record itself does not store this flag
+/// (it is a storage-layer concern that the TypeScript caller must persist separately).
 #[uniffi::export]
 pub async fn generate_kyber_pre_key(
     id: u32,
     identity_key_pair: IdentityKeyPairData,
     timestamp: u64,
-    _is_last_resort: bool,
-) -> Result<Vec<u8>, SignalError> {
+    is_last_resort: bool,
+) -> Result<KyberPreKeyResult, SignalError> {
     let mut csprng = rand::rng();
     let ikp = deserialize_identity_key_pair(&identity_key_pair)?;
     let kyber_key_pair = libsignal_protocol::kem::KeyPair::generate(
@@ -70,7 +72,11 @@ pub async fn generate_kyber_pre_key(
         &kyber_key_pair,
         &signature,
     );
-    record.serialize().map_err(SignalError::from)
+    let serialized = record.serialize().map_err(SignalError::from)?;
+    Ok(KyberPreKeyResult {
+        record: serialized,
+        is_last_resort,
+    })
 }
 
 /// Helper to deserialize an IdentityKeyPairData back into libsignal's IdentityKeyPair.

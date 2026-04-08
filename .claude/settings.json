@@ -115,6 +115,17 @@
         "react-native-engineer",
         "mobile-devops-engineer"
       ]
+    },
+    "tech-debt-collector": {
+      "model": "opus",
+      "description": "Detect agentic code bloat, monitor API architecture fragility, track performance consequences, maintain a debt registry, and provide prioritized optimization recommendations across the full stack",
+      "collaboration": "independent",
+      "reviews": [
+        "react-native-engineer",
+        "rust-native-engineer",
+        "backend-push-engineer",
+        "signal-crypto-specialist"
+      ]
     }
   }
 }

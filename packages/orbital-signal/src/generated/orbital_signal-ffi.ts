@@ -27,11 +27,269 @@ interface NativeModuleInterface {
     buffer: Uint8Array,
     uniffi_out_err: UniffiRustCallStatus,
   ): string;
-  ubrn_uniffi_orbital_signal_fn_func_hello_orbital(
-    name: Uint8Array,
+  ubrn_uniffi_orbital_signal_fn_init_callback_vtable_orbitalidentitykeystore(
+    vtable: UniffiVTableCallbackInterfaceOrbitalIdentityKeyStore,
+  ): void;
+  ubrn_uniffi_orbital_signal_fn_init_callback_vtable_orbitalkyberprekeystore(
+    vtable: UniffiVTableCallbackInterfaceOrbitalKyberPreKeyStore,
+  ): void;
+  ubrn_uniffi_orbital_signal_fn_init_callback_vtable_orbitalprekeystore(
+    vtable: UniffiVTableCallbackInterfaceOrbitalPreKeyStore,
+  ): void;
+  ubrn_uniffi_orbital_signal_fn_init_callback_vtable_orbitalsenderkeystore(
+    vtable: UniffiVTableCallbackInterfaceOrbitalSenderKeyStore,
+  ): void;
+  ubrn_uniffi_orbital_signal_fn_init_callback_vtable_orbitalsessionstore(
+    vtable: UniffiVTableCallbackInterfaceOrbitalSessionStore,
+  ): void;
+  ubrn_uniffi_orbital_signal_fn_init_callback_vtable_orbitalsignedprekeystore(
+    vtable: UniffiVTableCallbackInterfaceOrbitalSignedPreKeyStore,
+  ): void;
+  ubrn_uniffi_orbital_signal_fn_func_create_sender_key_distribution_message(
+    sender: Uint8Array,
+    distributionId: Uint8Array,
+  ): bigint;
+  ubrn_uniffi_orbital_signal_fn_func_group_decrypt(
+    ciphertext: Uint8Array,
+    sender: Uint8Array,
+  ): bigint;
+  ubrn_uniffi_orbital_signal_fn_func_group_encrypt(
+    plaintext: Uint8Array,
+    sender: Uint8Array,
+    distributionId: Uint8Array,
+  ): bigint;
+  ubrn_uniffi_orbital_signal_fn_func_process_sender_key_distribution_message(
+    sender: Uint8Array,
+    distributionMessage: Uint8Array,
+  ): bigint;
+  ubrn_uniffi_orbital_signal_fn_func_generate_identity_key_pair(
     uniffi_out_err: UniffiRustCallStatus,
   ): Uint8Array;
-  ubrn_uniffi_orbital_signal_checksum_func_hello_orbital(): number;
+  ubrn_uniffi_orbital_signal_fn_func_generate_kyber_pre_key(
+    id: number,
+    identityKeyPair: Uint8Array,
+    timestamp: bigint,
+    isLastResort: number,
+  ): bigint;
+  ubrn_uniffi_orbital_signal_fn_func_generate_pre_key(
+    id: number,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array;
+  ubrn_uniffi_orbital_signal_fn_func_generate_signed_pre_key(
+    id: number,
+    identityKeyPair: Uint8Array,
+    timestamp: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array;
+  ubrn_uniffi_orbital_signal_fn_func_sealed_sender_decrypt(
+    ciphertext: Uint8Array,
+    localAddress: Uint8Array,
+  ): bigint;
+  ubrn_uniffi_orbital_signal_fn_func_sealed_sender_encrypt(
+    plaintext: Uint8Array,
+    remoteAddress: Uint8Array,
+    senderCertificate: Uint8Array,
+  ): bigint;
+  ubrn_uniffi_orbital_signal_fn_func_process_pre_key_bundle(
+    bundle: Uint8Array,
+    remoteAddress: Uint8Array,
+  ): bigint;
+  ubrn_uniffi_orbital_signal_fn_func_signal_decrypt(
+    ciphertext: Uint8Array,
+    senderAddress: Uint8Array,
+  ): bigint;
+  ubrn_uniffi_orbital_signal_fn_func_signal_decrypt_pre_key(
+    ciphertext: Uint8Array,
+    senderAddress: Uint8Array,
+  ): bigint;
+  ubrn_uniffi_orbital_signal_fn_func_signal_encrypt(
+    plaintext: Uint8Array,
+    remoteAddress: Uint8Array,
+  ): bigint;
+  ubrn_uniffi_orbital_signal_fn_func_create_protocol_address(
+    name: Uint8Array,
+    deviceId: number,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array;
+  ubrn_uniffi_orbital_signal_fn_func_get_kyber_pre_key_public(
+    kyberPreKeyRecord: Uint8Array,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array;
+  ubrn_uniffi_orbital_signal_fn_func_get_pre_key_public(
+    preKeyRecord: Uint8Array,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array;
+  ubrn_uniffi_orbital_signal_fn_func_get_signed_pre_key_public(
+    signedPreKeyRecord: Uint8Array,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array;
+  ubrn_ffi_orbital_signal_rust_future_poll_u8(
+    handle: bigint,
+    callback: UniffiRustFutureContinuationCallback,
+    callbackData: bigint,
+  ): void;
+  ubrn_ffi_orbital_signal_rust_future_cancel_u8(handle: bigint): void;
+  ubrn_ffi_orbital_signal_rust_future_free_u8(handle: bigint): void;
+  ubrn_ffi_orbital_signal_rust_future_complete_u8(
+    handle: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): number;
+  ubrn_ffi_orbital_signal_rust_future_poll_i8(
+    handle: bigint,
+    callback: UniffiRustFutureContinuationCallback,
+    callbackData: bigint,
+  ): void;
+  ubrn_ffi_orbital_signal_rust_future_cancel_i8(handle: bigint): void;
+  ubrn_ffi_orbital_signal_rust_future_free_i8(handle: bigint): void;
+  ubrn_ffi_orbital_signal_rust_future_complete_i8(
+    handle: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): number;
+  ubrn_ffi_orbital_signal_rust_future_poll_u16(
+    handle: bigint,
+    callback: UniffiRustFutureContinuationCallback,
+    callbackData: bigint,
+  ): void;
+  ubrn_ffi_orbital_signal_rust_future_cancel_u16(handle: bigint): void;
+  ubrn_ffi_orbital_signal_rust_future_free_u16(handle: bigint): void;
+  ubrn_ffi_orbital_signal_rust_future_complete_u16(
+    handle: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): number;
+  ubrn_ffi_orbital_signal_rust_future_poll_i16(
+    handle: bigint,
+    callback: UniffiRustFutureContinuationCallback,
+    callbackData: bigint,
+  ): void;
+  ubrn_ffi_orbital_signal_rust_future_cancel_i16(handle: bigint): void;
+  ubrn_ffi_orbital_signal_rust_future_free_i16(handle: bigint): void;
+  ubrn_ffi_orbital_signal_rust_future_complete_i16(
+    handle: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): number;
+  ubrn_ffi_orbital_signal_rust_future_poll_u32(
+    handle: bigint,
+    callback: UniffiRustFutureContinuationCallback,
+    callbackData: bigint,
+  ): void;
+  ubrn_ffi_orbital_signal_rust_future_cancel_u32(handle: bigint): void;
+  ubrn_ffi_orbital_signal_rust_future_free_u32(handle: bigint): void;
+  ubrn_ffi_orbital_signal_rust_future_complete_u32(
+    handle: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): number;
+  ubrn_ffi_orbital_signal_rust_future_poll_i32(
+    handle: bigint,
+    callback: UniffiRustFutureContinuationCallback,
+    callbackData: bigint,
+  ): void;
+  ubrn_ffi_orbital_signal_rust_future_cancel_i32(handle: bigint): void;
+  ubrn_ffi_orbital_signal_rust_future_free_i32(handle: bigint): void;
+  ubrn_ffi_orbital_signal_rust_future_complete_i32(
+    handle: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): number;
+  ubrn_ffi_orbital_signal_rust_future_poll_u64(
+    handle: bigint,
+    callback: UniffiRustFutureContinuationCallback,
+    callbackData: bigint,
+  ): void;
+  ubrn_ffi_orbital_signal_rust_future_cancel_u64(handle: bigint): void;
+  ubrn_ffi_orbital_signal_rust_future_free_u64(handle: bigint): void;
+  ubrn_ffi_orbital_signal_rust_future_complete_u64(
+    handle: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): bigint;
+  ubrn_ffi_orbital_signal_rust_future_poll_i64(
+    handle: bigint,
+    callback: UniffiRustFutureContinuationCallback,
+    callbackData: bigint,
+  ): void;
+  ubrn_ffi_orbital_signal_rust_future_cancel_i64(handle: bigint): void;
+  ubrn_ffi_orbital_signal_rust_future_free_i64(handle: bigint): void;
+  ubrn_ffi_orbital_signal_rust_future_complete_i64(
+    handle: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): bigint;
+  ubrn_ffi_orbital_signal_rust_future_poll_f32(
+    handle: bigint,
+    callback: UniffiRustFutureContinuationCallback,
+    callbackData: bigint,
+  ): void;
+  ubrn_ffi_orbital_signal_rust_future_cancel_f32(handle: bigint): void;
+  ubrn_ffi_orbital_signal_rust_future_free_f32(handle: bigint): void;
+  ubrn_ffi_orbital_signal_rust_future_complete_f32(
+    handle: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): number;
+  ubrn_ffi_orbital_signal_rust_future_poll_f64(
+    handle: bigint,
+    callback: UniffiRustFutureContinuationCallback,
+    callbackData: bigint,
+  ): void;
+  ubrn_ffi_orbital_signal_rust_future_cancel_f64(handle: bigint): void;
+  ubrn_ffi_orbital_signal_rust_future_free_f64(handle: bigint): void;
+  ubrn_ffi_orbital_signal_rust_future_complete_f64(
+    handle: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): number;
+  ubrn_ffi_orbital_signal_rust_future_poll_rust_buffer(
+    handle: bigint,
+    callback: UniffiRustFutureContinuationCallback,
+    callbackData: bigint,
+  ): void;
+  ubrn_ffi_orbital_signal_rust_future_cancel_rust_buffer(handle: bigint): void;
+  ubrn_ffi_orbital_signal_rust_future_free_rust_buffer(handle: bigint): void;
+  ubrn_ffi_orbital_signal_rust_future_complete_rust_buffer(
+    handle: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array;
+  ubrn_ffi_orbital_signal_rust_future_poll_void(
+    handle: bigint,
+    callback: UniffiRustFutureContinuationCallback,
+    callbackData: bigint,
+  ): void;
+  ubrn_ffi_orbital_signal_rust_future_cancel_void(handle: bigint): void;
+  ubrn_ffi_orbital_signal_rust_future_free_void(handle: bigint): void;
+  ubrn_ffi_orbital_signal_rust_future_complete_void(
+    handle: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): void;
+  ubrn_uniffi_orbital_signal_checksum_func_create_sender_key_distribution_message(): number;
+  ubrn_uniffi_orbital_signal_checksum_func_group_decrypt(): number;
+  ubrn_uniffi_orbital_signal_checksum_func_group_encrypt(): number;
+  ubrn_uniffi_orbital_signal_checksum_func_process_sender_key_distribution_message(): number;
+  ubrn_uniffi_orbital_signal_checksum_func_generate_identity_key_pair(): number;
+  ubrn_uniffi_orbital_signal_checksum_func_generate_kyber_pre_key(): number;
+  ubrn_uniffi_orbital_signal_checksum_func_generate_pre_key(): number;
+  ubrn_uniffi_orbital_signal_checksum_func_generate_signed_pre_key(): number;
+  ubrn_uniffi_orbital_signal_checksum_func_sealed_sender_decrypt(): number;
+  ubrn_uniffi_orbital_signal_checksum_func_sealed_sender_encrypt(): number;
+  ubrn_uniffi_orbital_signal_checksum_func_process_pre_key_bundle(): number;
+  ubrn_uniffi_orbital_signal_checksum_func_signal_decrypt(): number;
+  ubrn_uniffi_orbital_signal_checksum_func_signal_decrypt_pre_key(): number;
+  ubrn_uniffi_orbital_signal_checksum_func_signal_encrypt(): number;
+  ubrn_uniffi_orbital_signal_checksum_func_create_protocol_address(): number;
+  ubrn_uniffi_orbital_signal_checksum_func_get_kyber_pre_key_public(): number;
+  ubrn_uniffi_orbital_signal_checksum_func_get_pre_key_public(): number;
+  ubrn_uniffi_orbital_signal_checksum_func_get_signed_pre_key_public(): number;
+  ubrn_uniffi_orbital_signal_checksum_method_orbitalidentitykeystore_get_identity_key_pair(): number;
+  ubrn_uniffi_orbital_signal_checksum_method_orbitalidentitykeystore_get_local_registration_id(): number;
+  ubrn_uniffi_orbital_signal_checksum_method_orbitalidentitykeystore_save_identity(): number;
+  ubrn_uniffi_orbital_signal_checksum_method_orbitalidentitykeystore_is_trusted_identity(): number;
+  ubrn_uniffi_orbital_signal_checksum_method_orbitalidentitykeystore_get_identity(): number;
+  ubrn_uniffi_orbital_signal_checksum_method_orbitalkyberprekeystore_load_kyber_pre_key(): number;
+  ubrn_uniffi_orbital_signal_checksum_method_orbitalkyberprekeystore_store_kyber_pre_key(): number;
+  ubrn_uniffi_orbital_signal_checksum_method_orbitalkyberprekeystore_mark_kyber_pre_key_used(): number;
+  ubrn_uniffi_orbital_signal_checksum_method_orbitalprekeystore_load_pre_key(): number;
+  ubrn_uniffi_orbital_signal_checksum_method_orbitalprekeystore_store_pre_key(): number;
+  ubrn_uniffi_orbital_signal_checksum_method_orbitalprekeystore_remove_pre_key(): number;
+  ubrn_uniffi_orbital_signal_checksum_method_orbitalsenderkeystore_store_sender_key(): number;
+  ubrn_uniffi_orbital_signal_checksum_method_orbitalsenderkeystore_load_sender_key(): number;
+  ubrn_uniffi_orbital_signal_checksum_method_orbitalsessionstore_load_session(): number;
+  ubrn_uniffi_orbital_signal_checksum_method_orbitalsessionstore_store_session(): number;
+  ubrn_uniffi_orbital_signal_checksum_method_orbitalsignedprekeystore_load_signed_pre_key(): number;
+  ubrn_uniffi_orbital_signal_checksum_method_orbitalsignedprekeystore_store_signed_pre_key(): number;
   ubrn_ffi_orbital_signal_uniffi_contract_version(): number;
 }
 
@@ -147,6 +405,119 @@ export type UniffiForeignFutureCompleteVoid = (
   callbackData: bigint,
   result: UniffiForeignFutureResultVoid,
 ) => void;
+type UniffiCallbackInterfaceOrbitalIdentityKeyStoreMethod0 = (uniffiHandle: bigint) => Uint8Array;
+type UniffiCallbackInterfaceOrbitalIdentityKeyStoreMethod1 = (uniffiHandle: bigint) => number;
+type UniffiCallbackInterfaceOrbitalIdentityKeyStoreMethod2 = (
+  uniffiHandle: bigint,
+  address: Uint8Array,
+  identityKey: Uint8Array,
+) => number;
+type UniffiCallbackInterfaceOrbitalIdentityKeyStoreMethod3 = (
+  uniffiHandle: bigint,
+  address: Uint8Array,
+  identityKey: Uint8Array,
+  direction: Uint8Array,
+) => number;
+type UniffiCallbackInterfaceOrbitalIdentityKeyStoreMethod4 = (
+  uniffiHandle: bigint,
+  address: Uint8Array,
+) => Uint8Array;
+type UniffiCallbackInterfaceOrbitalKyberPreKeyStoreMethod0 = (
+  uniffiHandle: bigint,
+  id: number,
+) => Uint8Array;
+type UniffiCallbackInterfaceOrbitalKyberPreKeyStoreMethod1 = (
+  uniffiHandle: bigint,
+  id: number,
+  record: Uint8Array,
+) => UniffiResult<void>;
+type UniffiCallbackInterfaceOrbitalKyberPreKeyStoreMethod2 = (
+  uniffiHandle: bigint,
+  id: number,
+) => UniffiResult<void>;
+type UniffiCallbackInterfaceOrbitalPreKeyStoreMethod0 = (
+  uniffiHandle: bigint,
+  id: number,
+) => Uint8Array;
+type UniffiCallbackInterfaceOrbitalPreKeyStoreMethod1 = (
+  uniffiHandle: bigint,
+  id: number,
+  record: Uint8Array,
+) => UniffiResult<void>;
+type UniffiCallbackInterfaceOrbitalPreKeyStoreMethod2 = (
+  uniffiHandle: bigint,
+  id: number,
+) => UniffiResult<void>;
+type UniffiCallbackInterfaceOrbitalSenderKeyStoreMethod0 = (
+  uniffiHandle: bigint,
+  sender: Uint8Array,
+  distributionId: Uint8Array,
+  record: Uint8Array,
+) => UniffiResult<void>;
+type UniffiCallbackInterfaceOrbitalSenderKeyStoreMethod1 = (
+  uniffiHandle: bigint,
+  sender: Uint8Array,
+  distributionId: Uint8Array,
+) => Uint8Array;
+type UniffiCallbackInterfaceOrbitalSessionStoreMethod0 = (
+  uniffiHandle: bigint,
+  address: Uint8Array,
+) => Uint8Array;
+type UniffiCallbackInterfaceOrbitalSessionStoreMethod1 = (
+  uniffiHandle: bigint,
+  address: Uint8Array,
+  record: Uint8Array,
+) => UniffiResult<void>;
+type UniffiCallbackInterfaceOrbitalSignedPreKeyStoreMethod0 = (
+  uniffiHandle: bigint,
+  id: number,
+) => Uint8Array;
+type UniffiCallbackInterfaceOrbitalSignedPreKeyStoreMethod1 = (
+  uniffiHandle: bigint,
+  id: number,
+  record: Uint8Array,
+) => UniffiResult<void>;
+export type UniffiVTableCallbackInterfaceOrbitalIdentityKeyStore = {
+  uniffiFree: UniffiCallbackInterfaceFree;
+  uniffiClone: UniffiCallbackInterfaceClone;
+  getIdentityKeyPair: UniffiCallbackInterfaceOrbitalIdentityKeyStoreMethod0;
+  getLocalRegistrationId: UniffiCallbackInterfaceOrbitalIdentityKeyStoreMethod1;
+  saveIdentity: UniffiCallbackInterfaceOrbitalIdentityKeyStoreMethod2;
+  isTrustedIdentity: UniffiCallbackInterfaceOrbitalIdentityKeyStoreMethod3;
+  getIdentity: UniffiCallbackInterfaceOrbitalIdentityKeyStoreMethod4;
+};
+export type UniffiVTableCallbackInterfaceOrbitalKyberPreKeyStore = {
+  uniffiFree: UniffiCallbackInterfaceFree;
+  uniffiClone: UniffiCallbackInterfaceClone;
+  loadKyberPreKey: UniffiCallbackInterfaceOrbitalKyberPreKeyStoreMethod0;
+  storeKyberPreKey: UniffiCallbackInterfaceOrbitalKyberPreKeyStoreMethod1;
+  markKyberPreKeyUsed: UniffiCallbackInterfaceOrbitalKyberPreKeyStoreMethod2;
+};
+export type UniffiVTableCallbackInterfaceOrbitalPreKeyStore = {
+  uniffiFree: UniffiCallbackInterfaceFree;
+  uniffiClone: UniffiCallbackInterfaceClone;
+  loadPreKey: UniffiCallbackInterfaceOrbitalPreKeyStoreMethod0;
+  storePreKey: UniffiCallbackInterfaceOrbitalPreKeyStoreMethod1;
+  removePreKey: UniffiCallbackInterfaceOrbitalPreKeyStoreMethod2;
+};
+export type UniffiVTableCallbackInterfaceOrbitalSenderKeyStore = {
+  uniffiFree: UniffiCallbackInterfaceFree;
+  uniffiClone: UniffiCallbackInterfaceClone;
+  storeSenderKey: UniffiCallbackInterfaceOrbitalSenderKeyStoreMethod0;
+  loadSenderKey: UniffiCallbackInterfaceOrbitalSenderKeyStoreMethod1;
+};
+export type UniffiVTableCallbackInterfaceOrbitalSessionStore = {
+  uniffiFree: UniffiCallbackInterfaceFree;
+  uniffiClone: UniffiCallbackInterfaceClone;
+  loadSession: UniffiCallbackInterfaceOrbitalSessionStoreMethod0;
+  storeSession: UniffiCallbackInterfaceOrbitalSessionStoreMethod1;
+};
+export type UniffiVTableCallbackInterfaceOrbitalSignedPreKeyStore = {
+  uniffiFree: UniffiCallbackInterfaceFree;
+  uniffiClone: UniffiCallbackInterfaceClone;
+  loadSignedPreKey: UniffiCallbackInterfaceOrbitalSignedPreKeyStoreMethod0;
+  storeSignedPreKey: UniffiCallbackInterfaceOrbitalSignedPreKeyStoreMethod1;
+};
 
 // UniffiRustFutureContinuationCallback is generated as part of the component interface's
 // ffi_definitions. However, we need it in the runtime.

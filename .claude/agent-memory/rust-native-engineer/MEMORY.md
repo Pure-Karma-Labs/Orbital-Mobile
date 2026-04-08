@@ -1,3 +1,6 @@
 # Rust Native Engineer Memory Index
 
-- [uniffi feasibility](project_uniffi_feasibility.md) — Decision: proceed with uniffi-bindgen-react-native, fallback to manual Turbo Modules if PoC fails within 2 weeks
+- [uniffi feasibility](project_uniffi_feasibility.md) — uniffi 0.31.0 validated for stateless fns; Arc callback + async_trait(?Send) block store-backed ops
+- [libsignal dependencies](project_libsignal_dependencies.md) — Git dep required, Signal forks of boring/curve25519 must be patched in Cargo.toml
+- [libsignal API quirks](project_libsignal_api_quirks.md) — DeviceId is NonZeroU8, GenericSignedPreKey trait import, PreKeyBundle 10-arg constructor
+- [cross-compilation setup](project_cross_compilation.md) — 5 targets, Rust 1.94.1, cargo-ndk 4.1.2, CI caching strategy

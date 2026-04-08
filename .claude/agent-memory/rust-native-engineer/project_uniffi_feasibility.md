@@ -1,15 +1,19 @@
 ---
-name: uniffi-bindgen-react-native feasibility decision
-description: Decision to proceed with uniffi-bindgen-react-native for wrapping libsignal v0.83.0 in Orbital-Mobile, with fallback triggers defined
+name: uniffi-bindgen-react-native feasibility — validated with caveats
+description: uniffi 0.31.0 works for stateless functions; Arc<dyn CallbackInterface> in Object constructors and async_trait(?Send) remain blockers for store-backed operations
 type: project
 ---
 
-Decided to proceed with uniffi-bindgen-react-native as primary approach for wrapping libsignal.
+uniffi-bindgen-react-native 0.31.0-2 is validated as the binding toolchain. Issues #7-9 completed on 2026-04-07.
 
-**Why:** Nicegram has production precedent wrapping libsignal with this exact toolchain. Type safety across Swift/Kotlin/TypeScript from a single Rust source is a significant maintenance advantage over manual Turbo Modules (which would require 3 separate implementations staying in sync).
+**What works:** Stateless exported functions (key generation, serialization utilities) generate correct Swift/Kotlin/TypeScript bindings. Callback interface trait definitions compile and generate. The full ubrn build pipeline (build:ios, build:android) produces .xcframework and .so outputs.
 
-**How to apply:** 
-- PoC target: IdentityKeyPair.generate() end-to-end on both platforms
-- Store callbacks: implement on native side (Swift/Kotlin with direct SQLCipher access), not through JS
-- Fallback triggers: RN 0.82+ incompatibility, broken callback interfaces, unusable TS bindings, or >30min build times per target
-- Full feasibility doc written to docs/uniffi-udl-feasibility.md on 2026-04-07
+**What is blocked:** Store-backed protocol operations (encrypt, decrypt, session management) require passing Arc<dyn CallbackInterface> into Object constructors. uniffi 0.31.0 does not generate the FfiConverterArc impl for callback interfaces. Additionally, libsignal's store traits use #[async_trait(?Send)] which produces non-Send futures, incompatible with uniffi's Send requirement for async exports.
+
+**Why this matters:** The 10 stubbed functions (session/group/sealed sender) cannot be implemented until either (1) uniffi gains callback interface Arc support in Object constructors, or (2) we adopt the native-side client pattern where Swift/Kotlin hold stores and call libsignal directly.
+
+**How to apply:**
+- The 8 working functions are sufficient for Phase 1 key generation PoC
+- For Phase 2 session operations, plan for the native-side client pattern as the likely resolution path
+- Monitor uniffi releases for Arc<dyn Trait> support — this would simplify the architecture significantly
+- Fallback triggers from original decision still apply: RN 0.82+ incompatibility, >30min build times per target

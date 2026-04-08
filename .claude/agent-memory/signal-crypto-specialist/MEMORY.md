@@ -1,1 +1,3 @@
-- [API Surface v1](api-surface-v1.md) -- Completed libsignal API surface spec (18 functions, 6 stores, UDL types)
+- [API Surface v1](api-surface-v1.md) -- 18-function libsignal API: 8 implemented, 10 stubbed pending store adapters
+- [libsignal API Learnings](libsignal-api-learnings.md) -- Non-obvious v0.83.0 API behaviors: key sizes, DeviceId NonZeroU8, async_trait(?Send), IdentityChange
+- [Store Adapter Blocker](store-adapter-blocker.md) -- uniffi 0.31 FfiConverterArc blocker; two resolution paths (uniffi upgrade vs native-side client)

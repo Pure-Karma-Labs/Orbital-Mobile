@@ -222,8 +222,10 @@ export async function request<T>(options: RequestOptions): Promise<T> {
 
     const status = response.status;
 
-    if (status === 401 || status === 403) {
-      // Deduplicate concurrent 401 handling
+    if (status === 401) {
+      // Clear tokens on authentication failure (expired/invalid JWT).
+      // 403 is NOT included — it means "authenticated but not authorized"
+      // (e.g., removed from a group) and should not clear the session.
       if (!isHandling401) {
         isHandling401 = true;
         try {
@@ -232,6 +234,9 @@ export async function request<T>(options: RequestOptions): Promise<T> {
           isHandling401 = false;
         }
       }
+    }
+
+    if (status === 401 || status === 403) {
       throw new AuthError(status as 401 | 403, rawBody);
     }
 

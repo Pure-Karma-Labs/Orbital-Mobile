@@ -32,13 +32,37 @@ import nativeModule, {
   type UniffiForeignFutureCompleteRustBuffer,
   type UniffiForeignFutureResultVoid,
   type UniffiForeignFutureCompleteVoid,
+  type UniffiVTableCallbackInterfaceOrbitalIdentityKeyStore,
+  type UniffiVTableCallbackInterfaceOrbitalKyberPreKeyStore,
+  type UniffiVTableCallbackInterfaceOrbitalPreKeyStore,
+  type UniffiVTableCallbackInterfaceOrbitalSenderKeyStore,
+  type UniffiVTableCallbackInterfaceOrbitalSessionStore,
+  type UniffiVTableCallbackInterfaceOrbitalSignedPreKeyStore,
 } from './orbital_signal-ffi';
 import {
   type UniffiByteArray,
+  type UniffiHandle,
+  type UniffiReferenceHolder,
+  type UniffiRustCallStatus,
+  AbstractFfiConverterByteArray,
+  FfiConverterArrayBuffer,
+  FfiConverterBool,
+  FfiConverterCallback,
+  FfiConverterInt32,
+  FfiConverterOptional,
+  FfiConverterUInt32,
+  FfiConverterUInt64,
   RustBuffer,
+  UniffiError,
   UniffiInternalError,
+  UniffiResult,
   UniffiRustCaller,
   uniffiCreateFfiConverterString,
+  uniffiCreateRecord,
+  uniffiRustCallAsync,
+  uniffiTraitInterfaceCallWithError,
+  uniffiTypeNameSymbol,
+  variantOrdinalSymbol,
 } from 'uniffi-bindgen-react-native';
 
 // Get converters from the other files, if any.
@@ -52,12 +76,152 @@ const uniffiIsDebug =
   false;
 // Public interface members begin here.
 
-export function helloOrbital(name: string): string {
-  return FfiConverterString.lift(
+/**
+ * Create a Sender Key Distribution Message for group messaging.
+ */
+export async function createSenderKeyDistributionMessage(
+  sender: ProtocolAddressData,
+  distributionId: string,
+  asyncOpts_?: { signal: AbortSignal },
+): Promise<ArrayBuffer> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_create_sender_key_distribution_message(
+          FfiConverterTypeProtocolAddressData.lower(sender),
+          FfiConverterString.lower(distributionId),
+        );
+      },
+      /*pollFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_poll_rust_buffer,
+      /*cancelFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_cancel_rust_buffer,
+      /*completeFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_complete_rust_buffer,
+      /*freeFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_free_rust_buffer,
+      /*liftFunc:*/ FfiConverterArrayBuffer.lift.bind(FfiConverterArrayBuffer),
+      /*liftString:*/ FfiConverterString.lift,
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+/**
+ * Decrypt a group message using Sender Keys.
+ */
+export async function groupDecrypt(
+  ciphertext: ArrayBuffer,
+  sender: ProtocolAddressData,
+  asyncOpts_?: { signal: AbortSignal },
+): Promise<ArrayBuffer> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_group_decrypt(
+          FfiConverterArrayBuffer.lower(ciphertext),
+          FfiConverterTypeProtocolAddressData.lower(sender),
+        );
+      },
+      /*pollFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_poll_rust_buffer,
+      /*cancelFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_cancel_rust_buffer,
+      /*completeFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_complete_rust_buffer,
+      /*freeFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_free_rust_buffer,
+      /*liftFunc:*/ FfiConverterArrayBuffer.lift.bind(FfiConverterArrayBuffer),
+      /*liftString:*/ FfiConverterString.lift,
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+/**
+ * Encrypt a message for a group using Sender Keys.
+ */
+export async function groupEncrypt(
+  plaintext: ArrayBuffer,
+  sender: ProtocolAddressData,
+  distributionId: string,
+  asyncOpts_?: { signal: AbortSignal },
+): Promise<ArrayBuffer> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_group_encrypt(
+          FfiConverterArrayBuffer.lower(plaintext),
+          FfiConverterTypeProtocolAddressData.lower(sender),
+          FfiConverterString.lower(distributionId),
+        );
+      },
+      /*pollFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_poll_rust_buffer,
+      /*cancelFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_cancel_rust_buffer,
+      /*completeFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_complete_rust_buffer,
+      /*freeFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_free_rust_buffer,
+      /*liftFunc:*/ FfiConverterArrayBuffer.lift.bind(FfiConverterArrayBuffer),
+      /*liftString:*/ FfiConverterString.lift,
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+/**
+ * Process an incoming Sender Key Distribution Message.
+ */
+export async function processSenderKeyDistributionMessage(
+  sender: ProtocolAddressData,
+  distributionMessage: ArrayBuffer,
+  asyncOpts_?: { signal: AbortSignal },
+): Promise<void> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_process_sender_key_distribution_message(
+          FfiConverterTypeProtocolAddressData.lower(sender),
+          FfiConverterArrayBuffer.lower(distributionMessage),
+        );
+      },
+      /*pollFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_poll_void,
+      /*cancelFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_cancel_void,
+      /*completeFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_complete_void,
+      /*freeFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_free_void,
+      /*liftFunc:*/ (_v) => {},
+      /*liftString:*/ FfiConverterString.lift,
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+/**
+ * Generate a new identity key pair (Curve25519).
+ */
+export function generateIdentityKeyPair(): IdentityKeyPairData {
+  return FfiConverterTypeIdentityKeyPairData.lift(
     uniffiCaller.rustCall(
       /*caller:*/ (callStatus) => {
-        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_hello_orbital(
-          FfiConverterString.lower(name),
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_generate_identity_key_pair(
           callStatus,
         );
       },
@@ -65,6 +229,1428 @@ export function helloOrbital(name: string): string {
     ),
   );
 }
+/**
+ * Generate a Kyber (post-quantum) pre-key. Returns both the serialized KyberPreKeyRecord
+ * bytes and the `is_last_resort` flag, since the record itself does not store this flag
+ * (it is a storage-layer concern that the TypeScript caller must persist separately).
+ */
+export async function generateKyberPreKey(
+  id: /*u32*/ number,
+  identityKeyPair: IdentityKeyPairData,
+  timestamp: /*u64*/ bigint,
+  isLastResort: boolean,
+  asyncOpts_?: { signal: AbortSignal },
+): Promise<KyberPreKeyResult> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_generate_kyber_pre_key(
+          FfiConverterUInt32.lower(id),
+          FfiConverterTypeIdentityKeyPairData.lower(identityKeyPair),
+          FfiConverterUInt64.lower(timestamp),
+          FfiConverterBool.lower(isLastResort),
+        );
+      },
+      /*pollFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_poll_rust_buffer,
+      /*cancelFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_cancel_rust_buffer,
+      /*completeFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_complete_rust_buffer,
+      /*freeFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_free_rust_buffer,
+      /*liftFunc:*/ FfiConverterTypeKyberPreKeyResult.lift.bind(FfiConverterTypeKyberPreKeyResult),
+      /*liftString:*/ FfiConverterString.lift,
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+/**
+ * Generate a one-time pre-key. Returns serialized PreKeyRecord bytes.
+ */
+export function generatePreKey(id: /*u32*/ number): ArrayBuffer /*throws*/ {
+  return FfiConverterArrayBuffer.lift(
+    uniffiCaller.rustCallWithError(
+      /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_generate_pre_key(
+          FfiConverterUInt32.lower(id),
+          callStatus,
+        );
+      },
+      /*liftString:*/ FfiConverterString.lift,
+    ),
+  );
+}
+/**
+ * Generate a signed pre-key. Returns serialized SignedPreKeyRecord bytes.
+ */
+export function generateSignedPreKey(
+  id: /*u32*/ number,
+  identityKeyPair: IdentityKeyPairData,
+  timestamp: /*u64*/ bigint,
+): ArrayBuffer /*throws*/ {
+  return FfiConverterArrayBuffer.lift(
+    uniffiCaller.rustCallWithError(
+      /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_generate_signed_pre_key(
+          FfiConverterUInt32.lower(id),
+          FfiConverterTypeIdentityKeyPairData.lower(identityKeyPair),
+          FfiConverterUInt64.lower(timestamp),
+          callStatus,
+        );
+      },
+      /*liftString:*/ FfiConverterString.lift,
+    ),
+  );
+}
+/**
+ * Decrypt a Sealed Sender message, revealing the sender's identity.
+ */
+export async function sealedSenderDecrypt(
+  ciphertext: ArrayBuffer,
+  localAddress: ProtocolAddressData,
+  asyncOpts_?: { signal: AbortSignal },
+): Promise<SealedSenderResult> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_sealed_sender_decrypt(
+          FfiConverterArrayBuffer.lower(ciphertext),
+          FfiConverterTypeProtocolAddressData.lower(localAddress),
+        );
+      },
+      /*pollFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_poll_rust_buffer,
+      /*cancelFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_cancel_rust_buffer,
+      /*completeFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_complete_rust_buffer,
+      /*freeFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_free_rust_buffer,
+      /*liftFunc:*/ FfiConverterTypeSealedSenderResult.lift.bind(
+        FfiConverterTypeSealedSenderResult,
+      ),
+      /*liftString:*/ FfiConverterString.lift,
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+/**
+ * Encrypt a message using Sealed Sender (metadata-hiding).
+ */
+export async function sealedSenderEncrypt(
+  plaintext: ArrayBuffer,
+  remoteAddress: ProtocolAddressData,
+  senderCertificate: ArrayBuffer,
+  asyncOpts_?: { signal: AbortSignal },
+): Promise<ArrayBuffer> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_sealed_sender_encrypt(
+          FfiConverterArrayBuffer.lower(plaintext),
+          FfiConverterTypeProtocolAddressData.lower(remoteAddress),
+          FfiConverterArrayBuffer.lower(senderCertificate),
+        );
+      },
+      /*pollFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_poll_rust_buffer,
+      /*cancelFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_cancel_rust_buffer,
+      /*completeFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_complete_rust_buffer,
+      /*freeFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_free_rust_buffer,
+      /*liftFunc:*/ FfiConverterArrayBuffer.lift.bind(FfiConverterArrayBuffer),
+      /*liftString:*/ FfiConverterString.lift,
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+/**
+ * Perform X3DH key agreement to establish an outgoing session.
+ */
+export async function processPreKeyBundle(
+  bundle: PreKeyBundleData,
+  remoteAddress: ProtocolAddressData,
+  asyncOpts_?: { signal: AbortSignal },
+): Promise<void> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_process_pre_key_bundle(
+          FfiConverterTypePreKeyBundleData.lower(bundle),
+          FfiConverterTypeProtocolAddressData.lower(remoteAddress),
+        );
+      },
+      /*pollFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_poll_void,
+      /*cancelFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_cancel_void,
+      /*completeFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_complete_void,
+      /*freeFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_free_void,
+      /*liftFunc:*/ (_v) => {},
+      /*liftString:*/ FfiConverterString.lift,
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+/**
+ * Decrypt a normal Signal protocol message.
+ */
+export async function signalDecrypt(
+  ciphertext: ArrayBuffer,
+  senderAddress: ProtocolAddressData,
+  asyncOpts_?: { signal: AbortSignal },
+): Promise<ArrayBuffer> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_signal_decrypt(
+          FfiConverterArrayBuffer.lower(ciphertext),
+          FfiConverterTypeProtocolAddressData.lower(senderAddress),
+        );
+      },
+      /*pollFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_poll_rust_buffer,
+      /*cancelFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_cancel_rust_buffer,
+      /*completeFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_complete_rust_buffer,
+      /*freeFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_free_rust_buffer,
+      /*liftFunc:*/ FfiConverterArrayBuffer.lift.bind(FfiConverterArrayBuffer),
+      /*liftString:*/ FfiConverterString.lift,
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+/**
+ * Decrypt a pre-key Signal message (establishes a new session).
+ */
+export async function signalDecryptPreKey(
+  ciphertext: ArrayBuffer,
+  senderAddress: ProtocolAddressData,
+  asyncOpts_?: { signal: AbortSignal },
+): Promise<ArrayBuffer> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_signal_decrypt_pre_key(
+          FfiConverterArrayBuffer.lower(ciphertext),
+          FfiConverterTypeProtocolAddressData.lower(senderAddress),
+        );
+      },
+      /*pollFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_poll_rust_buffer,
+      /*cancelFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_cancel_rust_buffer,
+      /*completeFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_complete_rust_buffer,
+      /*freeFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_free_rust_buffer,
+      /*liftFunc:*/ FfiConverterArrayBuffer.lift.bind(FfiConverterArrayBuffer),
+      /*liftString:*/ FfiConverterString.lift,
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+/**
+ * Encrypt a message using the Double Ratchet protocol.
+ */
+export async function signalEncrypt(
+  plaintext: ArrayBuffer,
+  remoteAddress: ProtocolAddressData,
+  asyncOpts_?: { signal: AbortSignal },
+): Promise<CiphertextMessageData> /*throws*/ {
+  const __stack = uniffiIsDebug ? new Error().stack : undefined;
+  try {
+    return await uniffiRustCallAsync(
+      /*rustCaller:*/ uniffiCaller,
+      /*rustFutureFunc:*/ () => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_signal_encrypt(
+          FfiConverterArrayBuffer.lower(plaintext),
+          FfiConverterTypeProtocolAddressData.lower(remoteAddress),
+        );
+      },
+      /*pollFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_poll_rust_buffer,
+      /*cancelFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_cancel_rust_buffer,
+      /*completeFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_complete_rust_buffer,
+      /*freeFunc:*/ nativeModule().ubrn_ffi_orbital_signal_rust_future_free_rust_buffer,
+      /*liftFunc:*/ FfiConverterTypeCiphertextMessageData.lift.bind(
+        FfiConverterTypeCiphertextMessageData,
+      ),
+      /*liftString:*/ FfiConverterString.lift,
+      /*asyncOpts:*/ asyncOpts_,
+      /*errorHandler:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+    );
+  } catch (__error: any) {
+    if (uniffiIsDebug && __error instanceof Error) {
+      __error.stack = __stack;
+    }
+    throw __error;
+  }
+}
+/**
+ * Construct a ProtocolAddressData (convenience helper).
+ */
+export function createProtocolAddress(name: string, deviceId: /*u32*/ number): ProtocolAddressData {
+  return FfiConverterTypeProtocolAddressData.lift(
+    uniffiCaller.rustCall(
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_create_protocol_address(
+          FfiConverterString.lower(name),
+          FfiConverterUInt32.lower(deviceId),
+          callStatus,
+        );
+      },
+      /*liftString:*/ FfiConverterString.lift,
+    ),
+  );
+}
+/**
+ * Extract the public key, signature, and ID from a serialized KyberPreKeyRecord.
+ */
+export function getKyberPreKeyPublic(
+  kyberPreKeyRecord: ArrayBuffer,
+): KyberPreKeyPublicData /*throws*/ {
+  return FfiConverterTypeKyberPreKeyPublicData.lift(
+    uniffiCaller.rustCallWithError(
+      /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_get_kyber_pre_key_public(
+          FfiConverterArrayBuffer.lower(kyberPreKeyRecord),
+          callStatus,
+        );
+      },
+      /*liftString:*/ FfiConverterString.lift,
+    ),
+  );
+}
+/**
+ * Extract the public key and ID from a serialized PreKeyRecord for server upload.
+ */
+export function getPreKeyPublic(preKeyRecord: ArrayBuffer): PreKeyPublicData /*throws*/ {
+  return FfiConverterTypePreKeyPublicData.lift(
+    uniffiCaller.rustCallWithError(
+      /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_get_pre_key_public(
+          FfiConverterArrayBuffer.lower(preKeyRecord),
+          callStatus,
+        );
+      },
+      /*liftString:*/ FfiConverterString.lift,
+    ),
+  );
+}
+/**
+ * Extract the public key, signature, ID, and timestamp from a serialized SignedPreKeyRecord.
+ */
+export function getSignedPreKeyPublic(
+  signedPreKeyRecord: ArrayBuffer,
+): SignedPreKeyPublicData /*throws*/ {
+  return FfiConverterTypeSignedPreKeyPublicData.lift(
+    uniffiCaller.rustCallWithError(
+      /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_get_signed_pre_key_public(
+          FfiConverterArrayBuffer.lower(signedPreKeyRecord),
+          callStatus,
+        );
+      },
+      /*liftString:*/ FfiConverterString.lift,
+    ),
+  );
+}
+
+/**
+ * Identity key storage — manages our key pair and trust decisions for remote keys.
+ */
+export interface OrbitalIdentityKeyStore {
+  getIdentityKeyPair(): /*throws*/ IdentityKeyPairData;
+  getLocalRegistrationId(): /*throws*/ /*u32*/ number;
+  saveIdentity(address: ProtocolAddressData, identityKey: ArrayBuffer): /*throws*/ boolean;
+  isTrustedIdentity(
+    address: ProtocolAddressData,
+    identityKey: ArrayBuffer,
+    direction: Direction,
+  ): /*throws*/ boolean;
+  getIdentity(address: ProtocolAddressData): /*throws*/ ArrayBuffer | undefined;
+}
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+const uniffiCallbackInterfaceOrbitalIdentityKeyStore: {
+  vtable: UniffiVTableCallbackInterfaceOrbitalIdentityKeyStore;
+  register: () => void;
+} = {
+  // Create the VTable using a series of closures.
+  // ts automatically converts these into C callback functions.
+  vtable: {
+    getIdentityKeyPair: (uniffiHandle: bigint) => {
+      const uniffiMakeCall = (): IdentityKeyPairData => {
+        const jsCallback = FfiConverterTypeOrbitalIdentityKeyStore.lift(uniffiHandle);
+        return jsCallback.getIdentityKeyPair();
+      };
+      const uniffiResult = UniffiResult.ready<Uint8Array>();
+      const uniffiHandleSuccess = (obj: any) => {
+        UniffiResult.writeSuccess(uniffiResult, FfiConverterTypeIdentityKeyPairData.lower(obj));
+      };
+      const uniffiHandleError = (code: number, errBuf: UniffiByteArray) => {
+        UniffiResult.writeError(uniffiResult, code, errBuf);
+      };
+      uniffiTraitInterfaceCallWithError(
+        /*makeCall:*/ uniffiMakeCall,
+        /*handleSuccess:*/ uniffiHandleSuccess,
+        /*handleError:*/ uniffiHandleError,
+        /*isErrorType:*/ SignalError.instanceOf,
+        /*lowerError:*/ FfiConverterTypeSignalError.lower.bind(FfiConverterTypeSignalError),
+        /*lowerString:*/ FfiConverterString.lower,
+      );
+      return uniffiResult;
+    },
+    getLocalRegistrationId: (uniffiHandle: bigint) => {
+      const uniffiMakeCall = (): /*u32*/ number => {
+        const jsCallback = FfiConverterTypeOrbitalIdentityKeyStore.lift(uniffiHandle);
+        return jsCallback.getLocalRegistrationId();
+      };
+      const uniffiResult = UniffiResult.ready<number>();
+      const uniffiHandleSuccess = (obj: any) => {
+        UniffiResult.writeSuccess(uniffiResult, FfiConverterUInt32.lower(obj));
+      };
+      const uniffiHandleError = (code: number, errBuf: UniffiByteArray) => {
+        UniffiResult.writeError(uniffiResult, code, errBuf);
+      };
+      uniffiTraitInterfaceCallWithError(
+        /*makeCall:*/ uniffiMakeCall,
+        /*handleSuccess:*/ uniffiHandleSuccess,
+        /*handleError:*/ uniffiHandleError,
+        /*isErrorType:*/ SignalError.instanceOf,
+        /*lowerError:*/ FfiConverterTypeSignalError.lower.bind(FfiConverterTypeSignalError),
+        /*lowerString:*/ FfiConverterString.lower,
+      );
+      return uniffiResult;
+    },
+    saveIdentity: (uniffiHandle: bigint, address: Uint8Array, identityKey: Uint8Array) => {
+      const uniffiMakeCall = (): boolean => {
+        const jsCallback = FfiConverterTypeOrbitalIdentityKeyStore.lift(uniffiHandle);
+        return jsCallback.saveIdentity(
+          FfiConverterTypeProtocolAddressData.lift(address),
+          FfiConverterArrayBuffer.lift(identityKey),
+        );
+      };
+      const uniffiResult = UniffiResult.ready<number>();
+      const uniffiHandleSuccess = (obj: any) => {
+        UniffiResult.writeSuccess(uniffiResult, FfiConverterBool.lower(obj));
+      };
+      const uniffiHandleError = (code: number, errBuf: UniffiByteArray) => {
+        UniffiResult.writeError(uniffiResult, code, errBuf);
+      };
+      uniffiTraitInterfaceCallWithError(
+        /*makeCall:*/ uniffiMakeCall,
+        /*handleSuccess:*/ uniffiHandleSuccess,
+        /*handleError:*/ uniffiHandleError,
+        /*isErrorType:*/ SignalError.instanceOf,
+        /*lowerError:*/ FfiConverterTypeSignalError.lower.bind(FfiConverterTypeSignalError),
+        /*lowerString:*/ FfiConverterString.lower,
+      );
+      return uniffiResult;
+    },
+    isTrustedIdentity: (
+      uniffiHandle: bigint,
+      address: Uint8Array,
+      identityKey: Uint8Array,
+      direction: Uint8Array,
+    ) => {
+      const uniffiMakeCall = (): boolean => {
+        const jsCallback = FfiConverterTypeOrbitalIdentityKeyStore.lift(uniffiHandle);
+        return jsCallback.isTrustedIdentity(
+          FfiConverterTypeProtocolAddressData.lift(address),
+          FfiConverterArrayBuffer.lift(identityKey),
+          FfiConverterTypeDirection.lift(direction),
+        );
+      };
+      const uniffiResult = UniffiResult.ready<number>();
+      const uniffiHandleSuccess = (obj: any) => {
+        UniffiResult.writeSuccess(uniffiResult, FfiConverterBool.lower(obj));
+      };
+      const uniffiHandleError = (code: number, errBuf: UniffiByteArray) => {
+        UniffiResult.writeError(uniffiResult, code, errBuf);
+      };
+      uniffiTraitInterfaceCallWithError(
+        /*makeCall:*/ uniffiMakeCall,
+        /*handleSuccess:*/ uniffiHandleSuccess,
+        /*handleError:*/ uniffiHandleError,
+        /*isErrorType:*/ SignalError.instanceOf,
+        /*lowerError:*/ FfiConverterTypeSignalError.lower.bind(FfiConverterTypeSignalError),
+        /*lowerString:*/ FfiConverterString.lower,
+      );
+      return uniffiResult;
+    },
+    getIdentity: (uniffiHandle: bigint, address: Uint8Array) => {
+      const uniffiMakeCall = (): ArrayBuffer | undefined => {
+        const jsCallback = FfiConverterTypeOrbitalIdentityKeyStore.lift(uniffiHandle);
+        return jsCallback.getIdentity(FfiConverterTypeProtocolAddressData.lift(address));
+      };
+      const uniffiResult = UniffiResult.ready<Uint8Array>();
+      const uniffiHandleSuccess = (obj: any) => {
+        UniffiResult.writeSuccess(uniffiResult, FfiConverterOptionalArrayBuffer.lower(obj));
+      };
+      const uniffiHandleError = (code: number, errBuf: UniffiByteArray) => {
+        UniffiResult.writeError(uniffiResult, code, errBuf);
+      };
+      uniffiTraitInterfaceCallWithError(
+        /*makeCall:*/ uniffiMakeCall,
+        /*handleSuccess:*/ uniffiHandleSuccess,
+        /*handleError:*/ uniffiHandleError,
+        /*isErrorType:*/ SignalError.instanceOf,
+        /*lowerError:*/ FfiConverterTypeSignalError.lower.bind(FfiConverterTypeSignalError),
+        /*lowerString:*/ FfiConverterString.lower,
+      );
+      return uniffiResult;
+    },
+    uniffiFree: (uniffiHandle: UniffiHandle): void => {
+      // OrbitalIdentityKeyStore: this will throw a stale handle error if the handle isn't found.
+      FfiConverterTypeOrbitalIdentityKeyStore.drop(uniffiHandle);
+    },
+    uniffiClone: (uniffiHandle: UniffiHandle): UniffiHandle => {
+      return FfiConverterTypeOrbitalIdentityKeyStore.clone(uniffiHandle);
+    },
+  },
+  register: () => {
+    nativeModule().ubrn_uniffi_orbital_signal_fn_init_callback_vtable_orbitalidentitykeystore(
+      uniffiCallbackInterfaceOrbitalIdentityKeyStore.vtable,
+    );
+  },
+};
+
+// FfiConverter protocol for callback interfaces
+const FfiConverterTypeOrbitalIdentityKeyStore = new FfiConverterCallback<OrbitalIdentityKeyStore>();
+
+/**
+ * Kyber (post-quantum) pre-key storage.
+ */
+export interface OrbitalKyberPreKeyStore {
+  loadKyberPreKey(id: /*u32*/ number): /*throws*/ ArrayBuffer | undefined;
+  storeKyberPreKey(id: /*u32*/ number, record: ArrayBuffer): /*throws*/ void;
+  markKyberPreKeyUsed(id: /*u32*/ number): /*throws*/ void;
+}
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+const uniffiCallbackInterfaceOrbitalKyberPreKeyStore: {
+  vtable: UniffiVTableCallbackInterfaceOrbitalKyberPreKeyStore;
+  register: () => void;
+} = {
+  // Create the VTable using a series of closures.
+  // ts automatically converts these into C callback functions.
+  vtable: {
+    loadKyberPreKey: (uniffiHandle: bigint, id: number) => {
+      const uniffiMakeCall = (): ArrayBuffer | undefined => {
+        const jsCallback = FfiConverterTypeOrbitalKyberPreKeyStore.lift(uniffiHandle);
+        return jsCallback.loadKyberPreKey(FfiConverterUInt32.lift(id));
+      };
+      const uniffiResult = UniffiResult.ready<Uint8Array>();
+      const uniffiHandleSuccess = (obj: any) => {
+        UniffiResult.writeSuccess(uniffiResult, FfiConverterOptionalArrayBuffer.lower(obj));
+      };
+      const uniffiHandleError = (code: number, errBuf: UniffiByteArray) => {
+        UniffiResult.writeError(uniffiResult, code, errBuf);
+      };
+      uniffiTraitInterfaceCallWithError(
+        /*makeCall:*/ uniffiMakeCall,
+        /*handleSuccess:*/ uniffiHandleSuccess,
+        /*handleError:*/ uniffiHandleError,
+        /*isErrorType:*/ SignalError.instanceOf,
+        /*lowerError:*/ FfiConverterTypeSignalError.lower.bind(FfiConverterTypeSignalError),
+        /*lowerString:*/ FfiConverterString.lower,
+      );
+      return uniffiResult;
+    },
+    storeKyberPreKey: (uniffiHandle: bigint, id: number, record: Uint8Array) => {
+      const uniffiMakeCall = (): void => {
+        const jsCallback = FfiConverterTypeOrbitalKyberPreKeyStore.lift(uniffiHandle);
+        return jsCallback.storeKyberPreKey(
+          FfiConverterUInt32.lift(id),
+          FfiConverterArrayBuffer.lift(record),
+        );
+      };
+      const uniffiResult = UniffiResult.ready<void>();
+      const uniffiHandleSuccess = (obj: any) => {};
+      const uniffiHandleError = (code: number, errBuf: UniffiByteArray) => {
+        UniffiResult.writeError(uniffiResult, code, errBuf);
+      };
+      uniffiTraitInterfaceCallWithError(
+        /*makeCall:*/ uniffiMakeCall,
+        /*handleSuccess:*/ uniffiHandleSuccess,
+        /*handleError:*/ uniffiHandleError,
+        /*isErrorType:*/ SignalError.instanceOf,
+        /*lowerError:*/ FfiConverterTypeSignalError.lower.bind(FfiConverterTypeSignalError),
+        /*lowerString:*/ FfiConverterString.lower,
+      );
+      return uniffiResult;
+    },
+    markKyberPreKeyUsed: (uniffiHandle: bigint, id: number) => {
+      const uniffiMakeCall = (): void => {
+        const jsCallback = FfiConverterTypeOrbitalKyberPreKeyStore.lift(uniffiHandle);
+        return jsCallback.markKyberPreKeyUsed(FfiConverterUInt32.lift(id));
+      };
+      const uniffiResult = UniffiResult.ready<void>();
+      const uniffiHandleSuccess = (obj: any) => {};
+      const uniffiHandleError = (code: number, errBuf: UniffiByteArray) => {
+        UniffiResult.writeError(uniffiResult, code, errBuf);
+      };
+      uniffiTraitInterfaceCallWithError(
+        /*makeCall:*/ uniffiMakeCall,
+        /*handleSuccess:*/ uniffiHandleSuccess,
+        /*handleError:*/ uniffiHandleError,
+        /*isErrorType:*/ SignalError.instanceOf,
+        /*lowerError:*/ FfiConverterTypeSignalError.lower.bind(FfiConverterTypeSignalError),
+        /*lowerString:*/ FfiConverterString.lower,
+      );
+      return uniffiResult;
+    },
+    uniffiFree: (uniffiHandle: UniffiHandle): void => {
+      // OrbitalKyberPreKeyStore: this will throw a stale handle error if the handle isn't found.
+      FfiConverterTypeOrbitalKyberPreKeyStore.drop(uniffiHandle);
+    },
+    uniffiClone: (uniffiHandle: UniffiHandle): UniffiHandle => {
+      return FfiConverterTypeOrbitalKyberPreKeyStore.clone(uniffiHandle);
+    },
+  },
+  register: () => {
+    nativeModule().ubrn_uniffi_orbital_signal_fn_init_callback_vtable_orbitalkyberprekeystore(
+      uniffiCallbackInterfaceOrbitalKyberPreKeyStore.vtable,
+    );
+  },
+};
+
+// FfiConverter protocol for callback interfaces
+const FfiConverterTypeOrbitalKyberPreKeyStore = new FfiConverterCallback<OrbitalKyberPreKeyStore>();
+
+/**
+ * One-time pre-key storage.
+ */
+export interface OrbitalPreKeyStore {
+  loadPreKey(id: /*u32*/ number): /*throws*/ ArrayBuffer | undefined;
+  storePreKey(id: /*u32*/ number, record: ArrayBuffer): /*throws*/ void;
+  removePreKey(id: /*u32*/ number): /*throws*/ void;
+}
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+const uniffiCallbackInterfaceOrbitalPreKeyStore: {
+  vtable: UniffiVTableCallbackInterfaceOrbitalPreKeyStore;
+  register: () => void;
+} = {
+  // Create the VTable using a series of closures.
+  // ts automatically converts these into C callback functions.
+  vtable: {
+    loadPreKey: (uniffiHandle: bigint, id: number) => {
+      const uniffiMakeCall = (): ArrayBuffer | undefined => {
+        const jsCallback = FfiConverterTypeOrbitalPreKeyStore.lift(uniffiHandle);
+        return jsCallback.loadPreKey(FfiConverterUInt32.lift(id));
+      };
+      const uniffiResult = UniffiResult.ready<Uint8Array>();
+      const uniffiHandleSuccess = (obj: any) => {
+        UniffiResult.writeSuccess(uniffiResult, FfiConverterOptionalArrayBuffer.lower(obj));
+      };
+      const uniffiHandleError = (code: number, errBuf: UniffiByteArray) => {
+        UniffiResult.writeError(uniffiResult, code, errBuf);
+      };
+      uniffiTraitInterfaceCallWithError(
+        /*makeCall:*/ uniffiMakeCall,
+        /*handleSuccess:*/ uniffiHandleSuccess,
+        /*handleError:*/ uniffiHandleError,
+        /*isErrorType:*/ SignalError.instanceOf,
+        /*lowerError:*/ FfiConverterTypeSignalError.lower.bind(FfiConverterTypeSignalError),
+        /*lowerString:*/ FfiConverterString.lower,
+      );
+      return uniffiResult;
+    },
+    storePreKey: (uniffiHandle: bigint, id: number, record: Uint8Array) => {
+      const uniffiMakeCall = (): void => {
+        const jsCallback = FfiConverterTypeOrbitalPreKeyStore.lift(uniffiHandle);
+        return jsCallback.storePreKey(
+          FfiConverterUInt32.lift(id),
+          FfiConverterArrayBuffer.lift(record),
+        );
+      };
+      const uniffiResult = UniffiResult.ready<void>();
+      const uniffiHandleSuccess = (obj: any) => {};
+      const uniffiHandleError = (code: number, errBuf: UniffiByteArray) => {
+        UniffiResult.writeError(uniffiResult, code, errBuf);
+      };
+      uniffiTraitInterfaceCallWithError(
+        /*makeCall:*/ uniffiMakeCall,
+        /*handleSuccess:*/ uniffiHandleSuccess,
+        /*handleError:*/ uniffiHandleError,
+        /*isErrorType:*/ SignalError.instanceOf,
+        /*lowerError:*/ FfiConverterTypeSignalError.lower.bind(FfiConverterTypeSignalError),
+        /*lowerString:*/ FfiConverterString.lower,
+      );
+      return uniffiResult;
+    },
+    removePreKey: (uniffiHandle: bigint, id: number) => {
+      const uniffiMakeCall = (): void => {
+        const jsCallback = FfiConverterTypeOrbitalPreKeyStore.lift(uniffiHandle);
+        return jsCallback.removePreKey(FfiConverterUInt32.lift(id));
+      };
+      const uniffiResult = UniffiResult.ready<void>();
+      const uniffiHandleSuccess = (obj: any) => {};
+      const uniffiHandleError = (code: number, errBuf: UniffiByteArray) => {
+        UniffiResult.writeError(uniffiResult, code, errBuf);
+      };
+      uniffiTraitInterfaceCallWithError(
+        /*makeCall:*/ uniffiMakeCall,
+        /*handleSuccess:*/ uniffiHandleSuccess,
+        /*handleError:*/ uniffiHandleError,
+        /*isErrorType:*/ SignalError.instanceOf,
+        /*lowerError:*/ FfiConverterTypeSignalError.lower.bind(FfiConverterTypeSignalError),
+        /*lowerString:*/ FfiConverterString.lower,
+      );
+      return uniffiResult;
+    },
+    uniffiFree: (uniffiHandle: UniffiHandle): void => {
+      // OrbitalPreKeyStore: this will throw a stale handle error if the handle isn't found.
+      FfiConverterTypeOrbitalPreKeyStore.drop(uniffiHandle);
+    },
+    uniffiClone: (uniffiHandle: UniffiHandle): UniffiHandle => {
+      return FfiConverterTypeOrbitalPreKeyStore.clone(uniffiHandle);
+    },
+  },
+  register: () => {
+    nativeModule().ubrn_uniffi_orbital_signal_fn_init_callback_vtable_orbitalprekeystore(
+      uniffiCallbackInterfaceOrbitalPreKeyStore.vtable,
+    );
+  },
+};
+
+// FfiConverter protocol for callback interfaces
+const FfiConverterTypeOrbitalPreKeyStore = new FfiConverterCallback<OrbitalPreKeyStore>();
+
+/**
+ * Sender Key storage for group messaging.
+ */
+export interface OrbitalSenderKeyStore {
+  storeSenderKey(
+    sender: ProtocolAddressData,
+    distributionId: string,
+    record: ArrayBuffer,
+  ): /*throws*/ void;
+  loadSenderKey(
+    sender: ProtocolAddressData,
+    distributionId: string,
+  ): /*throws*/ ArrayBuffer | undefined;
+}
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+const uniffiCallbackInterfaceOrbitalSenderKeyStore: {
+  vtable: UniffiVTableCallbackInterfaceOrbitalSenderKeyStore;
+  register: () => void;
+} = {
+  // Create the VTable using a series of closures.
+  // ts automatically converts these into C callback functions.
+  vtable: {
+    storeSenderKey: (
+      uniffiHandle: bigint,
+      sender: Uint8Array,
+      distributionId: Uint8Array,
+      record: Uint8Array,
+    ) => {
+      const uniffiMakeCall = (): void => {
+        const jsCallback = FfiConverterTypeOrbitalSenderKeyStore.lift(uniffiHandle);
+        return jsCallback.storeSenderKey(
+          FfiConverterTypeProtocolAddressData.lift(sender),
+          FfiConverterString.lift(distributionId),
+          FfiConverterArrayBuffer.lift(record),
+        );
+      };
+      const uniffiResult = UniffiResult.ready<void>();
+      const uniffiHandleSuccess = (obj: any) => {};
+      const uniffiHandleError = (code: number, errBuf: UniffiByteArray) => {
+        UniffiResult.writeError(uniffiResult, code, errBuf);
+      };
+      uniffiTraitInterfaceCallWithError(
+        /*makeCall:*/ uniffiMakeCall,
+        /*handleSuccess:*/ uniffiHandleSuccess,
+        /*handleError:*/ uniffiHandleError,
+        /*isErrorType:*/ SignalError.instanceOf,
+        /*lowerError:*/ FfiConverterTypeSignalError.lower.bind(FfiConverterTypeSignalError),
+        /*lowerString:*/ FfiConverterString.lower,
+      );
+      return uniffiResult;
+    },
+    loadSenderKey: (uniffiHandle: bigint, sender: Uint8Array, distributionId: Uint8Array) => {
+      const uniffiMakeCall = (): ArrayBuffer | undefined => {
+        const jsCallback = FfiConverterTypeOrbitalSenderKeyStore.lift(uniffiHandle);
+        return jsCallback.loadSenderKey(
+          FfiConverterTypeProtocolAddressData.lift(sender),
+          FfiConverterString.lift(distributionId),
+        );
+      };
+      const uniffiResult = UniffiResult.ready<Uint8Array>();
+      const uniffiHandleSuccess = (obj: any) => {
+        UniffiResult.writeSuccess(uniffiResult, FfiConverterOptionalArrayBuffer.lower(obj));
+      };
+      const uniffiHandleError = (code: number, errBuf: UniffiByteArray) => {
+        UniffiResult.writeError(uniffiResult, code, errBuf);
+      };
+      uniffiTraitInterfaceCallWithError(
+        /*makeCall:*/ uniffiMakeCall,
+        /*handleSuccess:*/ uniffiHandleSuccess,
+        /*handleError:*/ uniffiHandleError,
+        /*isErrorType:*/ SignalError.instanceOf,
+        /*lowerError:*/ FfiConverterTypeSignalError.lower.bind(FfiConverterTypeSignalError),
+        /*lowerString:*/ FfiConverterString.lower,
+      );
+      return uniffiResult;
+    },
+    uniffiFree: (uniffiHandle: UniffiHandle): void => {
+      // OrbitalSenderKeyStore: this will throw a stale handle error if the handle isn't found.
+      FfiConverterTypeOrbitalSenderKeyStore.drop(uniffiHandle);
+    },
+    uniffiClone: (uniffiHandle: UniffiHandle): UniffiHandle => {
+      return FfiConverterTypeOrbitalSenderKeyStore.clone(uniffiHandle);
+    },
+  },
+  register: () => {
+    nativeModule().ubrn_uniffi_orbital_signal_fn_init_callback_vtable_orbitalsenderkeystore(
+      uniffiCallbackInterfaceOrbitalSenderKeyStore.vtable,
+    );
+  },
+};
+
+// FfiConverter protocol for callback interfaces
+const FfiConverterTypeOrbitalSenderKeyStore = new FfiConverterCallback<OrbitalSenderKeyStore>();
+
+/**
+ * Session storage — Double Ratchet session state.
+ */
+export interface OrbitalSessionStore {
+  loadSession(address: ProtocolAddressData): /*throws*/ ArrayBuffer | undefined;
+  storeSession(address: ProtocolAddressData, record: ArrayBuffer): /*throws*/ void;
+}
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+const uniffiCallbackInterfaceOrbitalSessionStore: {
+  vtable: UniffiVTableCallbackInterfaceOrbitalSessionStore;
+  register: () => void;
+} = {
+  // Create the VTable using a series of closures.
+  // ts automatically converts these into C callback functions.
+  vtable: {
+    loadSession: (uniffiHandle: bigint, address: Uint8Array) => {
+      const uniffiMakeCall = (): ArrayBuffer | undefined => {
+        const jsCallback = FfiConverterTypeOrbitalSessionStore.lift(uniffiHandle);
+        return jsCallback.loadSession(FfiConverterTypeProtocolAddressData.lift(address));
+      };
+      const uniffiResult = UniffiResult.ready<Uint8Array>();
+      const uniffiHandleSuccess = (obj: any) => {
+        UniffiResult.writeSuccess(uniffiResult, FfiConverterOptionalArrayBuffer.lower(obj));
+      };
+      const uniffiHandleError = (code: number, errBuf: UniffiByteArray) => {
+        UniffiResult.writeError(uniffiResult, code, errBuf);
+      };
+      uniffiTraitInterfaceCallWithError(
+        /*makeCall:*/ uniffiMakeCall,
+        /*handleSuccess:*/ uniffiHandleSuccess,
+        /*handleError:*/ uniffiHandleError,
+        /*isErrorType:*/ SignalError.instanceOf,
+        /*lowerError:*/ FfiConverterTypeSignalError.lower.bind(FfiConverterTypeSignalError),
+        /*lowerString:*/ FfiConverterString.lower,
+      );
+      return uniffiResult;
+    },
+    storeSession: (uniffiHandle: bigint, address: Uint8Array, record: Uint8Array) => {
+      const uniffiMakeCall = (): void => {
+        const jsCallback = FfiConverterTypeOrbitalSessionStore.lift(uniffiHandle);
+        return jsCallback.storeSession(
+          FfiConverterTypeProtocolAddressData.lift(address),
+          FfiConverterArrayBuffer.lift(record),
+        );
+      };
+      const uniffiResult = UniffiResult.ready<void>();
+      const uniffiHandleSuccess = (obj: any) => {};
+      const uniffiHandleError = (code: number, errBuf: UniffiByteArray) => {
+        UniffiResult.writeError(uniffiResult, code, errBuf);
+      };
+      uniffiTraitInterfaceCallWithError(
+        /*makeCall:*/ uniffiMakeCall,
+        /*handleSuccess:*/ uniffiHandleSuccess,
+        /*handleError:*/ uniffiHandleError,
+        /*isErrorType:*/ SignalError.instanceOf,
+        /*lowerError:*/ FfiConverterTypeSignalError.lower.bind(FfiConverterTypeSignalError),
+        /*lowerString:*/ FfiConverterString.lower,
+      );
+      return uniffiResult;
+    },
+    uniffiFree: (uniffiHandle: UniffiHandle): void => {
+      // OrbitalSessionStore: this will throw a stale handle error if the handle isn't found.
+      FfiConverterTypeOrbitalSessionStore.drop(uniffiHandle);
+    },
+    uniffiClone: (uniffiHandle: UniffiHandle): UniffiHandle => {
+      return FfiConverterTypeOrbitalSessionStore.clone(uniffiHandle);
+    },
+  },
+  register: () => {
+    nativeModule().ubrn_uniffi_orbital_signal_fn_init_callback_vtable_orbitalsessionstore(
+      uniffiCallbackInterfaceOrbitalSessionStore.vtable,
+    );
+  },
+};
+
+// FfiConverter protocol for callback interfaces
+const FfiConverterTypeOrbitalSessionStore = new FfiConverterCallback<OrbitalSessionStore>();
+
+/**
+ * Signed pre-key storage (rotated every 30 days).
+ */
+export interface OrbitalSignedPreKeyStore {
+  loadSignedPreKey(id: /*u32*/ number): /*throws*/ ArrayBuffer | undefined;
+  storeSignedPreKey(id: /*u32*/ number, record: ArrayBuffer): /*throws*/ void;
+}
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+const uniffiCallbackInterfaceOrbitalSignedPreKeyStore: {
+  vtable: UniffiVTableCallbackInterfaceOrbitalSignedPreKeyStore;
+  register: () => void;
+} = {
+  // Create the VTable using a series of closures.
+  // ts automatically converts these into C callback functions.
+  vtable: {
+    loadSignedPreKey: (uniffiHandle: bigint, id: number) => {
+      const uniffiMakeCall = (): ArrayBuffer | undefined => {
+        const jsCallback = FfiConverterTypeOrbitalSignedPreKeyStore.lift(uniffiHandle);
+        return jsCallback.loadSignedPreKey(FfiConverterUInt32.lift(id));
+      };
+      const uniffiResult = UniffiResult.ready<Uint8Array>();
+      const uniffiHandleSuccess = (obj: any) => {
+        UniffiResult.writeSuccess(uniffiResult, FfiConverterOptionalArrayBuffer.lower(obj));
+      };
+      const uniffiHandleError = (code: number, errBuf: UniffiByteArray) => {
+        UniffiResult.writeError(uniffiResult, code, errBuf);
+      };
+      uniffiTraitInterfaceCallWithError(
+        /*makeCall:*/ uniffiMakeCall,
+        /*handleSuccess:*/ uniffiHandleSuccess,
+        /*handleError:*/ uniffiHandleError,
+        /*isErrorType:*/ SignalError.instanceOf,
+        /*lowerError:*/ FfiConverterTypeSignalError.lower.bind(FfiConverterTypeSignalError),
+        /*lowerString:*/ FfiConverterString.lower,
+      );
+      return uniffiResult;
+    },
+    storeSignedPreKey: (uniffiHandle: bigint, id: number, record: Uint8Array) => {
+      const uniffiMakeCall = (): void => {
+        const jsCallback = FfiConverterTypeOrbitalSignedPreKeyStore.lift(uniffiHandle);
+        return jsCallback.storeSignedPreKey(
+          FfiConverterUInt32.lift(id),
+          FfiConverterArrayBuffer.lift(record),
+        );
+      };
+      const uniffiResult = UniffiResult.ready<void>();
+      const uniffiHandleSuccess = (obj: any) => {};
+      const uniffiHandleError = (code: number, errBuf: UniffiByteArray) => {
+        UniffiResult.writeError(uniffiResult, code, errBuf);
+      };
+      uniffiTraitInterfaceCallWithError(
+        /*makeCall:*/ uniffiMakeCall,
+        /*handleSuccess:*/ uniffiHandleSuccess,
+        /*handleError:*/ uniffiHandleError,
+        /*isErrorType:*/ SignalError.instanceOf,
+        /*lowerError:*/ FfiConverterTypeSignalError.lower.bind(FfiConverterTypeSignalError),
+        /*lowerString:*/ FfiConverterString.lower,
+      );
+      return uniffiResult;
+    },
+    uniffiFree: (uniffiHandle: UniffiHandle): void => {
+      // OrbitalSignedPreKeyStore: this will throw a stale handle error if the handle isn't found.
+      FfiConverterTypeOrbitalSignedPreKeyStore.drop(uniffiHandle);
+    },
+    uniffiClone: (uniffiHandle: UniffiHandle): UniffiHandle => {
+      return FfiConverterTypeOrbitalSignedPreKeyStore.clone(uniffiHandle);
+    },
+  },
+  register: () => {
+    nativeModule().ubrn_uniffi_orbital_signal_fn_init_callback_vtable_orbitalsignedprekeystore(
+      uniffiCallbackInterfaceOrbitalSignedPreKeyStore.vtable,
+    );
+  },
+};
+
+// FfiConverter protocol for callback interfaces
+const FfiConverterTypeOrbitalSignedPreKeyStore =
+  new FfiConverterCallback<OrbitalSignedPreKeyStore>();
+
+export type CiphertextMessageData = {
+  messageType: CiphertextMessageType;
+  serialized: ArrayBuffer;
+};
+
+/**
+ * Generated factory for {@link CiphertextMessageData} record objects.
+ */
+export const CiphertextMessageData = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<CiphertextMessageData, ReturnType<typeof defaults>>(defaults);
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<CiphertextMessageData>,
+  });
+})();
+
+const FfiConverterTypeCiphertextMessageData = (() => {
+  type TypeName = CiphertextMessageData;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      return {
+        messageType: FfiConverterTypeCiphertextMessageType.read(from),
+        serialized: FfiConverterArrayBuffer.read(from),
+      };
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      FfiConverterTypeCiphertextMessageType.write(value.messageType, into);
+      FfiConverterArrayBuffer.write(value.serialized, into);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterTypeCiphertextMessageType.allocationSize(value.messageType) +
+        FfiConverterArrayBuffer.allocationSize(value.serialized)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+export type IdentityKeyPairData = {
+  publicKey: ArrayBuffer;
+  privateKey: ArrayBuffer;
+};
+
+/**
+ * Generated factory for {@link IdentityKeyPairData} record objects.
+ */
+export const IdentityKeyPairData = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<IdentityKeyPairData, ReturnType<typeof defaults>>(defaults);
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<IdentityKeyPairData>,
+  });
+})();
+
+const FfiConverterTypeIdentityKeyPairData = (() => {
+  type TypeName = IdentityKeyPairData;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      return {
+        publicKey: FfiConverterArrayBuffer.read(from),
+        privateKey: FfiConverterArrayBuffer.read(from),
+      };
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      FfiConverterArrayBuffer.write(value.publicKey, into);
+      FfiConverterArrayBuffer.write(value.privateKey, into);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterArrayBuffer.allocationSize(value.publicKey) +
+        FfiConverterArrayBuffer.allocationSize(value.privateKey)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+export type KyberPreKeyPublicData = {
+  id: /*u32*/ number;
+  publicKey: ArrayBuffer;
+  signature: ArrayBuffer;
+};
+
+/**
+ * Generated factory for {@link KyberPreKeyPublicData} record objects.
+ */
+export const KyberPreKeyPublicData = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<KyberPreKeyPublicData, ReturnType<typeof defaults>>(defaults);
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<KyberPreKeyPublicData>,
+  });
+})();
+
+const FfiConverterTypeKyberPreKeyPublicData = (() => {
+  type TypeName = KyberPreKeyPublicData;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      return {
+        id: FfiConverterUInt32.read(from),
+        publicKey: FfiConverterArrayBuffer.read(from),
+        signature: FfiConverterArrayBuffer.read(from),
+      };
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      FfiConverterUInt32.write(value.id, into);
+      FfiConverterArrayBuffer.write(value.publicKey, into);
+      FfiConverterArrayBuffer.write(value.signature, into);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterUInt32.allocationSize(value.id) +
+        FfiConverterArrayBuffer.allocationSize(value.publicKey) +
+        FfiConverterArrayBuffer.allocationSize(value.signature)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+export type KyberPreKeyResult = {
+  record: ArrayBuffer;
+  isLastResort: boolean;
+};
+
+/**
+ * Generated factory for {@link KyberPreKeyResult} record objects.
+ */
+export const KyberPreKeyResult = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<KyberPreKeyResult, ReturnType<typeof defaults>>(defaults);
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<KyberPreKeyResult>,
+  });
+})();
+
+const FfiConverterTypeKyberPreKeyResult = (() => {
+  type TypeName = KyberPreKeyResult;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      return {
+        record: FfiConverterArrayBuffer.read(from),
+        isLastResort: FfiConverterBool.read(from),
+      };
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      FfiConverterArrayBuffer.write(value.record, into);
+      FfiConverterBool.write(value.isLastResort, into);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterArrayBuffer.allocationSize(value.record) +
+        FfiConverterBool.allocationSize(value.isLastResort)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+export type PreKeyBundleData = {
+  registrationId: /*u32*/ number;
+  deviceId: /*u32*/ number;
+  preKeyId?: /*u32*/ number;
+  preKeyPublic?: ArrayBuffer;
+  signedPreKeyId: /*u32*/ number;
+  signedPreKeyPublic: ArrayBuffer;
+  signedPreKeySignature: ArrayBuffer;
+  identityKey: ArrayBuffer;
+  kyberPreKeyId?: /*u32*/ number;
+  kyberPreKeyPublic?: ArrayBuffer;
+  kyberPreKeySignature?: ArrayBuffer;
+};
+
+/**
+ * Generated factory for {@link PreKeyBundleData} record objects.
+ */
+export const PreKeyBundleData = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<PreKeyBundleData, ReturnType<typeof defaults>>(defaults);
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<PreKeyBundleData>,
+  });
+})();
+
+const FfiConverterTypePreKeyBundleData = (() => {
+  type TypeName = PreKeyBundleData;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      return {
+        registrationId: FfiConverterUInt32.read(from),
+        deviceId: FfiConverterUInt32.read(from),
+        preKeyId: FfiConverterOptionalUInt32.read(from),
+        preKeyPublic: FfiConverterOptionalArrayBuffer.read(from),
+        signedPreKeyId: FfiConverterUInt32.read(from),
+        signedPreKeyPublic: FfiConverterArrayBuffer.read(from),
+        signedPreKeySignature: FfiConverterArrayBuffer.read(from),
+        identityKey: FfiConverterArrayBuffer.read(from),
+        kyberPreKeyId: FfiConverterOptionalUInt32.read(from),
+        kyberPreKeyPublic: FfiConverterOptionalArrayBuffer.read(from),
+        kyberPreKeySignature: FfiConverterOptionalArrayBuffer.read(from),
+      };
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      FfiConverterUInt32.write(value.registrationId, into);
+      FfiConverterUInt32.write(value.deviceId, into);
+      FfiConverterOptionalUInt32.write(value.preKeyId, into);
+      FfiConverterOptionalArrayBuffer.write(value.preKeyPublic, into);
+      FfiConverterUInt32.write(value.signedPreKeyId, into);
+      FfiConverterArrayBuffer.write(value.signedPreKeyPublic, into);
+      FfiConverterArrayBuffer.write(value.signedPreKeySignature, into);
+      FfiConverterArrayBuffer.write(value.identityKey, into);
+      FfiConverterOptionalUInt32.write(value.kyberPreKeyId, into);
+      FfiConverterOptionalArrayBuffer.write(value.kyberPreKeyPublic, into);
+      FfiConverterOptionalArrayBuffer.write(value.kyberPreKeySignature, into);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterUInt32.allocationSize(value.registrationId) +
+        FfiConverterUInt32.allocationSize(value.deviceId) +
+        FfiConverterOptionalUInt32.allocationSize(value.preKeyId) +
+        FfiConverterOptionalArrayBuffer.allocationSize(value.preKeyPublic) +
+        FfiConverterUInt32.allocationSize(value.signedPreKeyId) +
+        FfiConverterArrayBuffer.allocationSize(value.signedPreKeyPublic) +
+        FfiConverterArrayBuffer.allocationSize(value.signedPreKeySignature) +
+        FfiConverterArrayBuffer.allocationSize(value.identityKey) +
+        FfiConverterOptionalUInt32.allocationSize(value.kyberPreKeyId) +
+        FfiConverterOptionalArrayBuffer.allocationSize(value.kyberPreKeyPublic) +
+        FfiConverterOptionalArrayBuffer.allocationSize(value.kyberPreKeySignature)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+export type PreKeyPublicData = {
+  id: /*u32*/ number;
+  publicKey: ArrayBuffer;
+};
+
+/**
+ * Generated factory for {@link PreKeyPublicData} record objects.
+ */
+export const PreKeyPublicData = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<PreKeyPublicData, ReturnType<typeof defaults>>(defaults);
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<PreKeyPublicData>,
+  });
+})();
+
+const FfiConverterTypePreKeyPublicData = (() => {
+  type TypeName = PreKeyPublicData;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      return {
+        id: FfiConverterUInt32.read(from),
+        publicKey: FfiConverterArrayBuffer.read(from),
+      };
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      FfiConverterUInt32.write(value.id, into);
+      FfiConverterArrayBuffer.write(value.publicKey, into);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterUInt32.allocationSize(value.id) +
+        FfiConverterArrayBuffer.allocationSize(value.publicKey)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+export type ProtocolAddressData = {
+  name: string;
+  deviceId: /*u32*/ number;
+};
+
+/**
+ * Generated factory for {@link ProtocolAddressData} record objects.
+ */
+export const ProtocolAddressData = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<ProtocolAddressData, ReturnType<typeof defaults>>(defaults);
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<ProtocolAddressData>,
+  });
+})();
+
+const FfiConverterTypeProtocolAddressData = (() => {
+  type TypeName = ProtocolAddressData;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      return {
+        name: FfiConverterString.read(from),
+        deviceId: FfiConverterUInt32.read(from),
+      };
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      FfiConverterString.write(value.name, into);
+      FfiConverterUInt32.write(value.deviceId, into);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterString.allocationSize(value.name) +
+        FfiConverterUInt32.allocationSize(value.deviceId)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+export type SealedSenderResult = {
+  senderServiceId: string;
+  senderDeviceId: /*u32*/ number;
+  message: ArrayBuffer;
+  contentHint: /*u32*/ number;
+};
+
+/**
+ * Generated factory for {@link SealedSenderResult} record objects.
+ */
+export const SealedSenderResult = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<SealedSenderResult, ReturnType<typeof defaults>>(defaults);
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<SealedSenderResult>,
+  });
+})();
+
+const FfiConverterTypeSealedSenderResult = (() => {
+  type TypeName = SealedSenderResult;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      return {
+        senderServiceId: FfiConverterString.read(from),
+        senderDeviceId: FfiConverterUInt32.read(from),
+        message: FfiConverterArrayBuffer.read(from),
+        contentHint: FfiConverterUInt32.read(from),
+      };
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      FfiConverterString.write(value.senderServiceId, into);
+      FfiConverterUInt32.write(value.senderDeviceId, into);
+      FfiConverterArrayBuffer.write(value.message, into);
+      FfiConverterUInt32.write(value.contentHint, into);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterString.allocationSize(value.senderServiceId) +
+        FfiConverterUInt32.allocationSize(value.senderDeviceId) +
+        FfiConverterArrayBuffer.allocationSize(value.message) +
+        FfiConverterUInt32.allocationSize(value.contentHint)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+export type SignedPreKeyPublicData = {
+  id: /*u32*/ number;
+  publicKey: ArrayBuffer;
+  signature: ArrayBuffer;
+  timestamp: /*u64*/ bigint;
+};
+
+/**
+ * Generated factory for {@link SignedPreKeyPublicData} record objects.
+ */
+export const SignedPreKeyPublicData = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<SignedPreKeyPublicData, ReturnType<typeof defaults>>(defaults);
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<SignedPreKeyPublicData>,
+  });
+})();
+
+const FfiConverterTypeSignedPreKeyPublicData = (() => {
+  type TypeName = SignedPreKeyPublicData;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      return {
+        id: FfiConverterUInt32.read(from),
+        publicKey: FfiConverterArrayBuffer.read(from),
+        signature: FfiConverterArrayBuffer.read(from),
+        timestamp: FfiConverterUInt64.read(from),
+      };
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      FfiConverterUInt32.write(value.id, into);
+      FfiConverterArrayBuffer.write(value.publicKey, into);
+      FfiConverterArrayBuffer.write(value.signature, into);
+      FfiConverterUInt64.write(value.timestamp, into);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterUInt32.allocationSize(value.id) +
+        FfiConverterArrayBuffer.allocationSize(value.publicKey) +
+        FfiConverterArrayBuffer.allocationSize(value.signature) +
+        FfiConverterUInt64.allocationSize(value.timestamp)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
 
 const stringConverter = {
   stringToBytes: (s: string) =>
@@ -81,6 +1667,611 @@ const stringConverter = {
     ),
 };
 const FfiConverterString = uniffiCreateFfiConverterString(stringConverter);
+
+export enum CiphertextMessageType {
+  Whisper,
+  PreKey,
+  SenderKey,
+  Plaintext,
+}
+
+const FfiConverterTypeCiphertextMessageType = (() => {
+  const ordinalConverter = FfiConverterInt32;
+  type TypeName = CiphertextMessageType;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      switch (ordinalConverter.read(from)) {
+        case 1:
+          return CiphertextMessageType.Whisper;
+        case 2:
+          return CiphertextMessageType.PreKey;
+        case 3:
+          return CiphertextMessageType.SenderKey;
+        case 4:
+          return CiphertextMessageType.Plaintext;
+        default:
+          throw new UniffiInternalError.UnexpectedEnumCase();
+      }
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      switch (value) {
+        case CiphertextMessageType.Whisper:
+          return ordinalConverter.write(1, into);
+        case CiphertextMessageType.PreKey:
+          return ordinalConverter.write(2, into);
+        case CiphertextMessageType.SenderKey:
+          return ordinalConverter.write(3, into);
+        case CiphertextMessageType.Plaintext:
+          return ordinalConverter.write(4, into);
+      }
+    }
+    allocationSize(value: TypeName): number {
+      return ordinalConverter.allocationSize(0);
+    }
+  }
+  return new FFIConverter();
+})();
+
+export enum Direction {
+  Sending,
+  Receiving,
+}
+
+const FfiConverterTypeDirection = (() => {
+  const ordinalConverter = FfiConverterInt32;
+  type TypeName = Direction;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      switch (ordinalConverter.read(from)) {
+        case 1:
+          return Direction.Sending;
+        case 2:
+          return Direction.Receiving;
+        default:
+          throw new UniffiInternalError.UnexpectedEnumCase();
+      }
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      switch (value) {
+        case Direction.Sending:
+          return ordinalConverter.write(1, into);
+        case Direction.Receiving:
+          return ordinalConverter.write(2, into);
+      }
+    }
+    allocationSize(value: TypeName): number {
+      return ordinalConverter.allocationSize(0);
+    }
+  }
+  return new FFIConverter();
+})();
+
+// Error type: SignalError
+
+// Enum: SignalError
+export enum SignalError_Tags {
+  InvalidKey = 'InvalidKey',
+  InvalidMessage = 'InvalidMessage',
+  InvalidSignature = 'InvalidSignature',
+  NoSession = 'NoSession',
+  UntrustedIdentity = 'UntrustedIdentity',
+  DuplicateMessage = 'DuplicateMessage',
+  InvalidCertificate = 'InvalidCertificate',
+  InvalidArgument = 'InvalidArgument',
+  StoreError = 'StoreError',
+  InternalError = 'InternalError',
+}
+export const SignalError = (() => {
+  type InvalidKey__interface = {
+    tag: SignalError_Tags.InvalidKey;
+    inner: Readonly<{ reason: string }>;
+  };
+
+  class InvalidKey_ extends UniffiError implements InvalidKey__interface {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = 'SignalError';
+    readonly tag = SignalError_Tags.InvalidKey;
+    readonly inner: Readonly<{ reason: string }>;
+    constructor(inner: { reason: string }) {
+      super('SignalError', 'InvalidKey');
+      this.inner = Object.freeze(inner);
+    }
+
+    static new(inner: { reason: string }): InvalidKey_ {
+      return new InvalidKey_(inner);
+    }
+
+    static instanceOf(obj: any): obj is InvalidKey_ {
+      return obj.tag === SignalError_Tags.InvalidKey;
+    }
+
+    static hasInner(obj: any): obj is InvalidKey_ {
+      return InvalidKey_.instanceOf(obj);
+    }
+
+    static getInner(obj: InvalidKey_): Readonly<{ reason: string }> {
+      return obj.inner;
+    }
+  }
+
+  type InvalidMessage__interface = {
+    tag: SignalError_Tags.InvalidMessage;
+    inner: Readonly<{ reason: string }>;
+  };
+
+  class InvalidMessage_ extends UniffiError implements InvalidMessage__interface {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = 'SignalError';
+    readonly tag = SignalError_Tags.InvalidMessage;
+    readonly inner: Readonly<{ reason: string }>;
+    constructor(inner: { reason: string }) {
+      super('SignalError', 'InvalidMessage');
+      this.inner = Object.freeze(inner);
+    }
+
+    static new(inner: { reason: string }): InvalidMessage_ {
+      return new InvalidMessage_(inner);
+    }
+
+    static instanceOf(obj: any): obj is InvalidMessage_ {
+      return obj.tag === SignalError_Tags.InvalidMessage;
+    }
+
+    static hasInner(obj: any): obj is InvalidMessage_ {
+      return InvalidMessage_.instanceOf(obj);
+    }
+
+    static getInner(obj: InvalidMessage_): Readonly<{ reason: string }> {
+      return obj.inner;
+    }
+  }
+
+  type InvalidSignature__interface = {
+    tag: SignalError_Tags.InvalidSignature;
+  };
+
+  class InvalidSignature_ extends UniffiError implements InvalidSignature__interface {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = 'SignalError';
+    readonly tag = SignalError_Tags.InvalidSignature;
+    constructor() {
+      super('SignalError', 'InvalidSignature');
+    }
+
+    static new(): InvalidSignature_ {
+      return new InvalidSignature_();
+    }
+
+    static instanceOf(obj: any): obj is InvalidSignature_ {
+      return obj.tag === SignalError_Tags.InvalidSignature;
+    }
+
+    static hasInner(obj: any): obj is InvalidSignature_ {
+      return false;
+    }
+  }
+
+  type NoSession__interface = {
+    tag: SignalError_Tags.NoSession;
+  };
+
+  class NoSession_ extends UniffiError implements NoSession__interface {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = 'SignalError';
+    readonly tag = SignalError_Tags.NoSession;
+    constructor() {
+      super('SignalError', 'NoSession');
+    }
+
+    static new(): NoSession_ {
+      return new NoSession_();
+    }
+
+    static instanceOf(obj: any): obj is NoSession_ {
+      return obj.tag === SignalError_Tags.NoSession;
+    }
+
+    static hasInner(obj: any): obj is NoSession_ {
+      return false;
+    }
+  }
+
+  type UntrustedIdentity__interface = {
+    tag: SignalError_Tags.UntrustedIdentity;
+    inner: Readonly<{ address: string }>;
+  };
+
+  class UntrustedIdentity_ extends UniffiError implements UntrustedIdentity__interface {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = 'SignalError';
+    readonly tag = SignalError_Tags.UntrustedIdentity;
+    readonly inner: Readonly<{ address: string }>;
+    constructor(inner: { address: string }) {
+      super('SignalError', 'UntrustedIdentity');
+      this.inner = Object.freeze(inner);
+    }
+
+    static new(inner: { address: string }): UntrustedIdentity_ {
+      return new UntrustedIdentity_(inner);
+    }
+
+    static instanceOf(obj: any): obj is UntrustedIdentity_ {
+      return obj.tag === SignalError_Tags.UntrustedIdentity;
+    }
+
+    static hasInner(obj: any): obj is UntrustedIdentity_ {
+      return UntrustedIdentity_.instanceOf(obj);
+    }
+
+    static getInner(obj: UntrustedIdentity_): Readonly<{ address: string }> {
+      return obj.inner;
+    }
+  }
+
+  type DuplicateMessage__interface = {
+    tag: SignalError_Tags.DuplicateMessage;
+  };
+
+  class DuplicateMessage_ extends UniffiError implements DuplicateMessage__interface {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = 'SignalError';
+    readonly tag = SignalError_Tags.DuplicateMessage;
+    constructor() {
+      super('SignalError', 'DuplicateMessage');
+    }
+
+    static new(): DuplicateMessage_ {
+      return new DuplicateMessage_();
+    }
+
+    static instanceOf(obj: any): obj is DuplicateMessage_ {
+      return obj.tag === SignalError_Tags.DuplicateMessage;
+    }
+
+    static hasInner(obj: any): obj is DuplicateMessage_ {
+      return false;
+    }
+  }
+
+  type InvalidCertificate__interface = {
+    tag: SignalError_Tags.InvalidCertificate;
+    inner: Readonly<{ reason: string }>;
+  };
+
+  class InvalidCertificate_ extends UniffiError implements InvalidCertificate__interface {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = 'SignalError';
+    readonly tag = SignalError_Tags.InvalidCertificate;
+    readonly inner: Readonly<{ reason: string }>;
+    constructor(inner: { reason: string }) {
+      super('SignalError', 'InvalidCertificate');
+      this.inner = Object.freeze(inner);
+    }
+
+    static new(inner: { reason: string }): InvalidCertificate_ {
+      return new InvalidCertificate_(inner);
+    }
+
+    static instanceOf(obj: any): obj is InvalidCertificate_ {
+      return obj.tag === SignalError_Tags.InvalidCertificate;
+    }
+
+    static hasInner(obj: any): obj is InvalidCertificate_ {
+      return InvalidCertificate_.instanceOf(obj);
+    }
+
+    static getInner(obj: InvalidCertificate_): Readonly<{ reason: string }> {
+      return obj.inner;
+    }
+  }
+
+  type InvalidArgument__interface = {
+    tag: SignalError_Tags.InvalidArgument;
+    inner: Readonly<{ reason: string }>;
+  };
+
+  class InvalidArgument_ extends UniffiError implements InvalidArgument__interface {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = 'SignalError';
+    readonly tag = SignalError_Tags.InvalidArgument;
+    readonly inner: Readonly<{ reason: string }>;
+    constructor(inner: { reason: string }) {
+      super('SignalError', 'InvalidArgument');
+      this.inner = Object.freeze(inner);
+    }
+
+    static new(inner: { reason: string }): InvalidArgument_ {
+      return new InvalidArgument_(inner);
+    }
+
+    static instanceOf(obj: any): obj is InvalidArgument_ {
+      return obj.tag === SignalError_Tags.InvalidArgument;
+    }
+
+    static hasInner(obj: any): obj is InvalidArgument_ {
+      return InvalidArgument_.instanceOf(obj);
+    }
+
+    static getInner(obj: InvalidArgument_): Readonly<{ reason: string }> {
+      return obj.inner;
+    }
+  }
+
+  type StoreError__interface = {
+    tag: SignalError_Tags.StoreError;
+    inner: Readonly<{ reason: string }>;
+  };
+
+  class StoreError_ extends UniffiError implements StoreError__interface {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = 'SignalError';
+    readonly tag = SignalError_Tags.StoreError;
+    readonly inner: Readonly<{ reason: string }>;
+    constructor(inner: { reason: string }) {
+      super('SignalError', 'StoreError');
+      this.inner = Object.freeze(inner);
+    }
+
+    static new(inner: { reason: string }): StoreError_ {
+      return new StoreError_(inner);
+    }
+
+    static instanceOf(obj: any): obj is StoreError_ {
+      return obj.tag === SignalError_Tags.StoreError;
+    }
+
+    static hasInner(obj: any): obj is StoreError_ {
+      return StoreError_.instanceOf(obj);
+    }
+
+    static getInner(obj: StoreError_): Readonly<{ reason: string }> {
+      return obj.inner;
+    }
+  }
+
+  type InternalError__interface = {
+    tag: SignalError_Tags.InternalError;
+    inner: Readonly<{ reason: string }>;
+  };
+
+  class InternalError_ extends UniffiError implements InternalError__interface {
+    /**
+     * @private
+     * This field is private and should not be used, use `tag` instead.
+     */
+    readonly [uniffiTypeNameSymbol] = 'SignalError';
+    readonly tag = SignalError_Tags.InternalError;
+    readonly inner: Readonly<{ reason: string }>;
+    constructor(inner: { reason: string }) {
+      super('SignalError', 'InternalError');
+      this.inner = Object.freeze(inner);
+    }
+
+    static new(inner: { reason: string }): InternalError_ {
+      return new InternalError_(inner);
+    }
+
+    static instanceOf(obj: any): obj is InternalError_ {
+      return obj.tag === SignalError_Tags.InternalError;
+    }
+
+    static hasInner(obj: any): obj is InternalError_ {
+      return InternalError_.instanceOf(obj);
+    }
+
+    static getInner(obj: InternalError_): Readonly<{ reason: string }> {
+      return obj.inner;
+    }
+  }
+
+  function instanceOf(obj: any): obj is SignalError {
+    return obj[uniffiTypeNameSymbol] === 'SignalError';
+  }
+
+  return Object.freeze({
+    instanceOf,
+    InvalidKey: InvalidKey_,
+    InvalidMessage: InvalidMessage_,
+    InvalidSignature: InvalidSignature_,
+    NoSession: NoSession_,
+    UntrustedIdentity: UntrustedIdentity_,
+    DuplicateMessage: DuplicateMessage_,
+    InvalidCertificate: InvalidCertificate_,
+    InvalidArgument: InvalidArgument_,
+    StoreError: StoreError_,
+    InternalError: InternalError_,
+  });
+})();
+
+export type SignalError = InstanceType<
+  (typeof SignalError)[keyof Omit<typeof SignalError, 'instanceOf'>]
+>;
+
+// FfiConverter for enum SignalError
+const FfiConverterTypeSignalError = (() => {
+  const ordinalConverter = FfiConverterInt32;
+  type TypeName = SignalError;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      switch (ordinalConverter.read(from)) {
+        case 1:
+          return new SignalError.InvalidKey({ reason: FfiConverterString.read(from) });
+        case 2:
+          return new SignalError.InvalidMessage({ reason: FfiConverterString.read(from) });
+        case 3:
+          return new SignalError.InvalidSignature();
+        case 4:
+          return new SignalError.NoSession();
+        case 5:
+          return new SignalError.UntrustedIdentity({ address: FfiConverterString.read(from) });
+        case 6:
+          return new SignalError.DuplicateMessage();
+        case 7:
+          return new SignalError.InvalidCertificate({ reason: FfiConverterString.read(from) });
+        case 8:
+          return new SignalError.InvalidArgument({ reason: FfiConverterString.read(from) });
+        case 9:
+          return new SignalError.StoreError({ reason: FfiConverterString.read(from) });
+        case 10:
+          return new SignalError.InternalError({ reason: FfiConverterString.read(from) });
+        default:
+          throw new UniffiInternalError.UnexpectedEnumCase();
+      }
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      switch (value.tag) {
+        case SignalError_Tags.InvalidKey: {
+          ordinalConverter.write(1, into);
+          const inner = value.inner;
+          FfiConverterString.write(inner.reason, into);
+          return;
+        }
+        case SignalError_Tags.InvalidMessage: {
+          ordinalConverter.write(2, into);
+          const inner = value.inner;
+          FfiConverterString.write(inner.reason, into);
+          return;
+        }
+        case SignalError_Tags.InvalidSignature: {
+          ordinalConverter.write(3, into);
+          return;
+        }
+        case SignalError_Tags.NoSession: {
+          ordinalConverter.write(4, into);
+          return;
+        }
+        case SignalError_Tags.UntrustedIdentity: {
+          ordinalConverter.write(5, into);
+          const inner = value.inner;
+          FfiConverterString.write(inner.address, into);
+          return;
+        }
+        case SignalError_Tags.DuplicateMessage: {
+          ordinalConverter.write(6, into);
+          return;
+        }
+        case SignalError_Tags.InvalidCertificate: {
+          ordinalConverter.write(7, into);
+          const inner = value.inner;
+          FfiConverterString.write(inner.reason, into);
+          return;
+        }
+        case SignalError_Tags.InvalidArgument: {
+          ordinalConverter.write(8, into);
+          const inner = value.inner;
+          FfiConverterString.write(inner.reason, into);
+          return;
+        }
+        case SignalError_Tags.StoreError: {
+          ordinalConverter.write(9, into);
+          const inner = value.inner;
+          FfiConverterString.write(inner.reason, into);
+          return;
+        }
+        case SignalError_Tags.InternalError: {
+          ordinalConverter.write(10, into);
+          const inner = value.inner;
+          FfiConverterString.write(inner.reason, into);
+          return;
+        }
+        default:
+          // Throwing from here means that SignalError_Tags hasn't matched an ordinal.
+          throw new UniffiInternalError.UnexpectedEnumCase();
+      }
+    }
+    allocationSize(value: TypeName): number {
+      switch (value.tag) {
+        case SignalError_Tags.InvalidKey: {
+          const inner = value.inner;
+          let size = ordinalConverter.allocationSize(1);
+          size += FfiConverterString.allocationSize(inner.reason);
+          return size;
+        }
+        case SignalError_Tags.InvalidMessage: {
+          const inner = value.inner;
+          let size = ordinalConverter.allocationSize(2);
+          size += FfiConverterString.allocationSize(inner.reason);
+          return size;
+        }
+        case SignalError_Tags.InvalidSignature: {
+          return ordinalConverter.allocationSize(3);
+        }
+        case SignalError_Tags.NoSession: {
+          return ordinalConverter.allocationSize(4);
+        }
+        case SignalError_Tags.UntrustedIdentity: {
+          const inner = value.inner;
+          let size = ordinalConverter.allocationSize(5);
+          size += FfiConverterString.allocationSize(inner.address);
+          return size;
+        }
+        case SignalError_Tags.DuplicateMessage: {
+          return ordinalConverter.allocationSize(6);
+        }
+        case SignalError_Tags.InvalidCertificate: {
+          const inner = value.inner;
+          let size = ordinalConverter.allocationSize(7);
+          size += FfiConverterString.allocationSize(inner.reason);
+          return size;
+        }
+        case SignalError_Tags.InvalidArgument: {
+          const inner = value.inner;
+          let size = ordinalConverter.allocationSize(8);
+          size += FfiConverterString.allocationSize(inner.reason);
+          return size;
+        }
+        case SignalError_Tags.StoreError: {
+          const inner = value.inner;
+          let size = ordinalConverter.allocationSize(9);
+          size += FfiConverterString.allocationSize(inner.reason);
+          return size;
+        }
+        case SignalError_Tags.InternalError: {
+          const inner = value.inner;
+          let size = ordinalConverter.allocationSize(10);
+          size += FfiConverterString.allocationSize(inner.reason);
+          return size;
+        }
+        default:
+          throw new UniffiInternalError.UnexpectedEnumCase();
+      }
+    }
+  }
+  return new FFIConverter();
+})();
+
+// FfiConverter for ArrayBuffer | undefined
+const FfiConverterOptionalArrayBuffer = new FfiConverterOptional(FfiConverterArrayBuffer);
+
+// FfiConverter for /*u32*/number | undefined
+const FfiConverterOptionalUInt32 = new FfiConverterOptional(FfiConverterUInt32);
 
 /**
  * This should be called before anything else.
@@ -104,13 +2295,265 @@ function uniffiEnsureInitialized() {
       bindingsContractVersion,
     );
   }
-  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_hello_orbital() !== 42545) {
+  if (
+    nativeModule().ubrn_uniffi_orbital_signal_checksum_func_create_sender_key_distribution_message() !==
+    42033
+  ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
-      'uniffi_orbital_signal_checksum_func_hello_orbital',
+      'uniffi_orbital_signal_checksum_func_create_sender_key_distribution_message',
     );
   }
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_group_decrypt() !== 16075) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_func_group_decrypt',
+    );
+  }
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_group_encrypt() !== 63771) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_func_group_encrypt',
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_orbital_signal_checksum_func_process_sender_key_distribution_message() !==
+    57487
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_func_process_sender_key_distribution_message',
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_orbital_signal_checksum_func_generate_identity_key_pair() !== 26516
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_func_generate_identity_key_pair',
+    );
+  }
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_generate_kyber_pre_key() !== 36426) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_func_generate_kyber_pre_key',
+    );
+  }
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_generate_pre_key() !== 30985) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_func_generate_pre_key',
+    );
+  }
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_generate_signed_pre_key() !== 13608) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_func_generate_signed_pre_key',
+    );
+  }
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_sealed_sender_decrypt() !== 10022) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_func_sealed_sender_decrypt',
+    );
+  }
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_sealed_sender_encrypt() !== 18450) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_func_sealed_sender_encrypt',
+    );
+  }
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_process_pre_key_bundle() !== 43853) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_func_process_pre_key_bundle',
+    );
+  }
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_signal_decrypt() !== 46977) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_func_signal_decrypt',
+    );
+  }
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_signal_decrypt_pre_key() !== 36197) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_func_signal_decrypt_pre_key',
+    );
+  }
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_signal_encrypt() !== 55811) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_func_signal_encrypt',
+    );
+  }
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_create_protocol_address() !== 18042) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_func_create_protocol_address',
+    );
+  }
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_get_kyber_pre_key_public() !== 4557) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_func_get_kyber_pre_key_public',
+    );
+  }
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_get_pre_key_public() !== 20638) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_func_get_pre_key_public',
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_orbital_signal_checksum_func_get_signed_pre_key_public() !== 4049
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_func_get_signed_pre_key_public',
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_orbital_signal_checksum_method_orbitalidentitykeystore_get_identity_key_pair() !==
+    18595
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_method_orbitalidentitykeystore_get_identity_key_pair',
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_orbital_signal_checksum_method_orbitalidentitykeystore_get_local_registration_id() !==
+    34396
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_method_orbitalidentitykeystore_get_local_registration_id',
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_orbital_signal_checksum_method_orbitalidentitykeystore_save_identity() !==
+    24551
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_method_orbitalidentitykeystore_save_identity',
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_orbital_signal_checksum_method_orbitalidentitykeystore_is_trusted_identity() !==
+    50629
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_method_orbitalidentitykeystore_is_trusted_identity',
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_orbital_signal_checksum_method_orbitalidentitykeystore_get_identity() !==
+    61911
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_method_orbitalidentitykeystore_get_identity',
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_orbital_signal_checksum_method_orbitalkyberprekeystore_load_kyber_pre_key() !==
+    55220
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_method_orbitalkyberprekeystore_load_kyber_pre_key',
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_orbital_signal_checksum_method_orbitalkyberprekeystore_store_kyber_pre_key() !==
+    25902
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_method_orbitalkyberprekeystore_store_kyber_pre_key',
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_orbital_signal_checksum_method_orbitalkyberprekeystore_mark_kyber_pre_key_used() !==
+    61137
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_method_orbitalkyberprekeystore_mark_kyber_pre_key_used',
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_orbital_signal_checksum_method_orbitalprekeystore_load_pre_key() !==
+    14967
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_method_orbitalprekeystore_load_pre_key',
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_orbital_signal_checksum_method_orbitalprekeystore_store_pre_key() !==
+    19344
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_method_orbitalprekeystore_store_pre_key',
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_orbital_signal_checksum_method_orbitalprekeystore_remove_pre_key() !==
+    5160
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_method_orbitalprekeystore_remove_pre_key',
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_orbital_signal_checksum_method_orbitalsenderkeystore_store_sender_key() !==
+    26944
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_method_orbitalsenderkeystore_store_sender_key',
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_orbital_signal_checksum_method_orbitalsenderkeystore_load_sender_key() !==
+    48840
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_method_orbitalsenderkeystore_load_sender_key',
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_orbital_signal_checksum_method_orbitalsessionstore_load_session() !==
+    35615
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_method_orbitalsessionstore_load_session',
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_orbital_signal_checksum_method_orbitalsessionstore_store_session() !==
+    46568
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_method_orbitalsessionstore_store_session',
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_orbital_signal_checksum_method_orbitalsignedprekeystore_load_signed_pre_key() !==
+    57524
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_method_orbitalsignedprekeystore_load_signed_pre_key',
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_orbital_signal_checksum_method_orbitalsignedprekeystore_store_signed_pre_key() !==
+    53374
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_method_orbitalsignedprekeystore_store_signed_pre_key',
+    );
+  }
+
+  uniffiCallbackInterfaceOrbitalIdentityKeyStore.register();
+  uniffiCallbackInterfaceOrbitalKyberPreKeyStore.register();
+  uniffiCallbackInterfaceOrbitalPreKeyStore.register();
+  uniffiCallbackInterfaceOrbitalSenderKeyStore.register();
+  uniffiCallbackInterfaceOrbitalSessionStore.register();
+  uniffiCallbackInterfaceOrbitalSignedPreKeyStore.register();
 }
 
 export default Object.freeze({
   initialize: uniffiEnsureInitialized,
+  converters: {
+    FfiConverterTypeCiphertextMessageData,
+    FfiConverterTypeCiphertextMessageType,
+    FfiConverterTypeDirection,
+    FfiConverterTypeIdentityKeyPairData,
+    FfiConverterTypeKyberPreKeyPublicData,
+    FfiConverterTypeKyberPreKeyResult,
+    FfiConverterTypePreKeyBundleData,
+    FfiConverterTypePreKeyPublicData,
+    FfiConverterTypeProtocolAddressData,
+    FfiConverterTypeSealedSenderResult,
+    FfiConverterTypeSignalError,
+    FfiConverterTypeSignedPreKeyPublicData,
+  },
 });

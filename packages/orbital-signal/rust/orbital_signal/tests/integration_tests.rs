@@ -47,17 +47,25 @@ async fn test_generate_kyber_pre_key() {
     let identity = generate_identity_key_pair();
     let timestamp = 1700000000000u64;
 
-    let record = generate_kyber_pre_key(1, identity, timestamp, false)
+    let result = generate_kyber_pre_key(1, identity.clone(), timestamp, false)
         .await
         .expect("kyber pre-key generation should succeed");
-    assert!(!record.is_empty());
+    assert!(!result.record.is_empty());
+    assert!(!result.is_last_resort, "non-last-resort flag should be preserved");
     // Kyber1024 records are ~3200 bytes
-    assert!(record.len() > 1000, "Kyber record should be large (~3200 bytes)");
+    assert!(result.record.len() > 1000, "Kyber record should be large (~3200 bytes)");
 
-    let public = get_kyber_pre_key_public(record).expect("should extract public data");
+    let public = get_kyber_pre_key_public(result.record).expect("should extract public data");
     assert_eq!(public.id, 1);
     assert!(public.public_key.len() > 1000, "Kyber1024 public key is ~1568 bytes");
     assert!(!public.signature.is_empty());
+
+    // Verify is_last_resort=true is also preserved
+    let last_resort_result = generate_kyber_pre_key(2, identity, timestamp, true)
+        .await
+        .expect("last-resort kyber pre-key generation should succeed");
+    assert!(last_resort_result.is_last_resort, "last-resort flag should be preserved");
+    assert!(!last_resort_result.record.is_empty());
 }
 
 #[test]

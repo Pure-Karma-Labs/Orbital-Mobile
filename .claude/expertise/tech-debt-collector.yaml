@@ -1,0 +1,98 @@
+version: "1.0"
+last_updated: "2026-04-08"
+agent: tech-debt-collector
+
+core_files:
+  - path: src/types/database.ts
+    purpose: Data model and type definitions for all 17 tables — monitor for type sprawl, interface bloat, redundant type aliases
+    key_symbols:
+      - SignalIdentityKeyRow
+      - ConversationRow
+      - OrbitalThreadRow
+      - MessageRow
+      - VerifiedStatus
+      - DownloadState
+      - UploadState
+    last_hash: 6bd8bd6
+
+  - path: src/database/migrations/001_initial_schema.sql
+    purpose: SQLCipher schema — monitor for schema drift, missing indexes, denormalization creep
+    key_symbols:
+      - signal_identity_keys
+      - conversations
+      - orbital_threads
+      - messages
+      - items
+    last_hash: 2445035
+
+  - path: src/App.tsx
+    purpose: Root component — monitor for bloat, provider stacking, premature abstraction
+    key_symbols:
+      - App
+      - AppContent
+    last_hash: d041009
+
+  - path: package.json
+    purpose: Dependency manifest — monitor for dependency bloat, duplicate packages, unused deps
+    key_symbols:
+      - dependencies
+      - devDependencies
+      - scripts
+    last_hash: bd0e220
+
+  - path: tsconfig.json
+    purpose: TypeScript strict mode enforcement baseline — noUnusedLocals, noUnusedParameters, noImplicitReturns
+    key_symbols:
+      - strict
+      - noUnusedLocals
+      - noUnusedParameters
+      - noImplicitReturns
+    last_hash: dea7307
+
+documentation:
+  - path: docs/MOBILE-APP-SPEC.md
+    relevance: Architecture context — layer boundaries, crypto design, data flow, stack decisions that ground recommendations
+
+  - path: docs/database-schema.md
+    relevance: Data access conventions — normalized columns, BLOB for keys, no JSON blobs (except items table)
+
+integration_points:
+  - system: React Native Application Layer
+    interface: src/screens/, src/components/, src/navigation/
+    purpose: UI layer — monitor for data access logic leaking into components, re-render risks, state coupling
+
+  - system: State Management
+    interface: src/stores/
+    purpose: State stores — monitor for unnecessary re-renders, stale closures, subscription leaks
+
+  - system: Service Layer
+    interface: src/services/api/, src/services/crypto/, src/services/websocket/
+    purpose: Business logic services — monitor for layer boundary violations, crypto escaping its module
+
+  - system: Database Layer
+    interface: src/database/
+    purpose: Data access — monitor for N+1 patterns, query efficiency, schema-type drift
+
+  - system: Crypto Module
+    interface: src/crypto/, packages/orbital-signal/
+    purpose: uniffi bindings and Signal Protocol — monitor for crypto logic leaking into other layers, sync-on-JS-thread bottlenecks
+
+  - system: CI Pipeline
+    interface: .github/workflows/
+    purpose: Build and test — monitor for test coverage trends, build time regressions
+
+patterns:
+  - name: agentic-bloat-vectors
+    description: AI-generated code characteristic failure modes — duplication across files, no-op wrapper functions that delegate without transforming, premature abstraction creating layers before complexity warrants them
+
+  - name: normalized-data-convention
+    description: "Project convention: normalized columns, no JSON blobs (except items table KV store), BLOB for all key material. Violations indicate schema drift."
+
+  - name: strict-typescript-baseline
+    description: "tsconfig strict settings (noUnusedLocals, noUnusedParameters, noImplicitReturns) serve as code quality floor — any relaxation is a debt item"
+
+  - name: contextual-architecture-review
+    description: Evaluate layer boundaries based on actual code conventions, not prescribed patterns. Discover what the codebase has established and enforce consistency.
+
+  - name: layer-boundary-awareness
+    description: "App natural layers: screens/components (UI) -> stores (state) -> services (api/crypto/websocket) -> database -> crypto module (uniffi). Outer layers must not depend on inner layer implementation details."

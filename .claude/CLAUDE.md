@@ -61,6 +61,7 @@ This repo has a team of expert subagents with persistent memory in `.claude/agen
 | `mobile-devops-engineer` | sonnet | CI/CD pipeline, code signing, TestFlight/Play Store, Fastlane |
 | `qa-testing-specialist` | sonnet | Test strategy, Jest/Detox, device matrix, beta coordination |
 | `security-auditor` | opus | Crypto audit, OWASP Mobile Top 10, keychain/keystore review |
+| `tech-debt-collector` | opus | Agentic code bloat, API architecture fragility, performance, debt registry |
 | `project-manager` | haiku | GitHub Issues/Milestones, progress tracking, risk management |
 
 ## Agentic Layer Architecture

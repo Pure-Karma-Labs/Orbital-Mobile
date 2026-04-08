@@ -73,3 +73,9 @@ pub struct KyberPreKeyPublicData {
     pub public_key: Vec<u8>,
     pub signature: Vec<u8>,
 }
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct KyberPreKeyResult {
+    pub record: Vec<u8>,
+    pub is_last_resort: bool,
+}

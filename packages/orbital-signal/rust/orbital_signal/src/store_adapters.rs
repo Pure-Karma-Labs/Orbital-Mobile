@@ -23,18 +23,22 @@ use crate::stores::{
 };
 use crate::types::{Direction, ProtocolAddressData};
 
-fn to_address_data(addr: &ProtocolAddress) -> ProtocolAddressData {
+pub(crate) fn to_address_data(addr: &ProtocolAddress) -> ProtocolAddressData {
     ProtocolAddressData {
         name: addr.name().to_string(),
         device_id: u32::from(addr.device_id()),
     }
 }
 
-fn to_protocol_address(data: &ProtocolAddressData) -> ProtocolAddress {
-    // DeviceId is NonZeroU8; clamp to valid range (1-127), default to 1
-    let device_id = DeviceId::new(data.device_id.min(127).max(1) as u8)
-        .unwrap_or(DeviceId::new(1).unwrap());
-    ProtocolAddress::new(data.name.clone(), device_id)
+#[allow(dead_code)]
+pub(crate) fn to_protocol_address(data: &ProtocolAddressData) -> SignalResult<ProtocolAddress> {
+    let device_id = DeviceId::try_from(data.device_id).map_err(|_| {
+        signal::SignalProtocolError::InvalidArgument(format!(
+            "device_id {} is out of valid range (1-127)",
+            data.device_id
+        ))
+    })?;
+    Ok(ProtocolAddress::new(data.name.clone(), device_id))
 }
 
 // --- Identity Key Store Adapter ---
@@ -297,12 +301,3 @@ impl signal::SenderKeyStore for SenderKeyStoreAdapter {
     }
 }
 
-// --- Public helpers for creating adapters ---
-
-pub(crate) fn addr_to_data(addr: &ProtocolAddress) -> ProtocolAddressData {
-    to_address_data(addr)
-}
-
-pub(crate) fn data_to_addr(data: &ProtocolAddressData) -> ProtocolAddress {
-    to_protocol_address(data)
-}

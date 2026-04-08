@@ -1,0 +1,221 @@
+/**
+ * Tests for conversationsSlice — initial state and all actions.
+ */
+
+import { create } from 'zustand';
+import { createConversationsSlice } from '../slices/conversationsSlice';
+import type { AppState, Conversation } from '../../types/store';
+
+// ---------------------------------------------------------------------------
+// Minimal store factory
+// ---------------------------------------------------------------------------
+
+function makeStore() {
+  return create<AppState>()((...a) => ({
+    ...createConversationsSlice(...a),
+
+    isAuthenticated: false,
+    userId: null,
+    username: null,
+    displayName: null,
+    avatarPath: null,
+    setUser: jest.fn(),
+    clearAuth: jest.fn(),
+    setAuthenticated: jest.fn(),
+
+    threads: {},
+    threadIdsByConversation: {},
+    replies: {},
+    replyIdsByThread: {},
+    activeThreadId: null,
+    setThreads: jest.fn(),
+    upsertThread: jest.fn(),
+    removeThread: jest.fn(),
+    setActiveThread: jest.fn(),
+    setReplies: jest.fn(),
+    upsertReply: jest.fn(),
+    addOptimisticThread: jest.fn(),
+    addOptimisticReply: jest.fn(),
+    updateThreadSyncStatus: jest.fn(),
+    updateReplySyncStatus: jest.fn(),
+
+    messages: {},
+    messageIdsByConversation: {},
+    hasMoreMessages: {},
+    setMessages: jest.fn(),
+    addMessage: jest.fn(),
+    addOptimisticMessage: jest.fn(),
+    updateMessageSyncStatus: jest.fn(),
+    markMessageRead: jest.fn(),
+    setHasMore: jest.fn(),
+
+    contacts: {},
+    setContacts: jest.fn(),
+    upsertContact: jest.fn(),
+    removeContact: jest.fn(),
+
+    colorScheme: 'system',
+    activeTab: 'threads',
+    composerDraft: null,
+    isComposerOpen: false,
+    syncOverallStatus: 'synced',
+    setColorScheme: jest.fn(),
+    setActiveTab: jest.fn(),
+    setComposerDraft: jest.fn(),
+    toggleComposer: jest.fn(),
+    setSyncStatus: jest.fn(),
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+function makeConversation(overrides: Partial<Conversation> = {}): Conversation {
+  return {
+    id: 'conv-1',
+    type: 'group',
+    name: 'Family Chat',
+    memberCount: 4,
+    active: true,
+    muteUntil: null,
+    lastMessageAt: 1000,
+    unreadCount: 0,
+    createdAt: 900,
+    updatedAt: 1000,
+    ...overrides,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+describe('conversationsSlice — initial state', () => {
+  it('starts with empty conversations and null active', () => {
+    const store = makeStore();
+    const state = store.getState();
+    expect(state.conversations).toEqual({});
+    expect(state.conversationIds).toEqual([]);
+    expect(state.activeConversationId).toBeNull();
+  });
+});
+
+describe('conversationsSlice — setConversations', () => {
+  it('populates conversations map and ordered IDs', () => {
+    const store = makeStore();
+    const c1 = makeConversation({ id: 'conv-1', lastMessageAt: 1000 });
+    const c2 = makeConversation({ id: 'conv-2', lastMessageAt: 2000 });
+    store.getState().setConversations([c1, c2]);
+    const state = store.getState();
+    expect(Object.keys(state.conversations)).toHaveLength(2);
+    expect(state.conversations['conv-1']).toEqual(c1);
+    expect(state.conversations['conv-2']).toEqual(c2);
+  });
+
+  it('orders conversationIds by lastMessageAt descending', () => {
+    const store = makeStore();
+    const c1 = makeConversation({ id: 'conv-1', lastMessageAt: 1000 });
+    const c2 = makeConversation({ id: 'conv-2', lastMessageAt: 3000 });
+    const c3 = makeConversation({ id: 'conv-3', lastMessageAt: 2000 });
+    store.getState().setConversations([c1, c2, c3]);
+    expect(store.getState().conversationIds).toEqual(['conv-2', 'conv-3', 'conv-1']);
+  });
+
+  it('treats null lastMessageAt as 0 in sort', () => {
+    const store = makeStore();
+    const c1 = makeConversation({ id: 'conv-1', lastMessageAt: null });
+    const c2 = makeConversation({ id: 'conv-2', lastMessageAt: 500 });
+    store.getState().setConversations([c1, c2]);
+    expect(store.getState().conversationIds[0]).toBe('conv-2');
+  });
+});
+
+describe('conversationsSlice — upsertConversation', () => {
+  it('inserts a new conversation and re-sorts', () => {
+    const store = makeStore();
+    const c1 = makeConversation({ id: 'conv-1', lastMessageAt: 1000 });
+    store.getState().setConversations([c1]);
+    const c2 = makeConversation({ id: 'conv-2', lastMessageAt: 2000 });
+    store.getState().upsertConversation(c2);
+    expect(store.getState().conversationIds).toEqual(['conv-2', 'conv-1']);
+  });
+
+  it('updates an existing conversation in place', () => {
+    const store = makeStore();
+    const c1 = makeConversation({ id: 'conv-1', unreadCount: 0 });
+    store.getState().setConversations([c1]);
+    store.getState().upsertConversation({ ...c1, unreadCount: 5 });
+    expect(store.getState().conversations['conv-1'].unreadCount).toBe(5);
+  });
+});
+
+describe('conversationsSlice — removeConversation', () => {
+  it('removes the conversation from map and IDs', () => {
+    const store = makeStore();
+    const c1 = makeConversation({ id: 'conv-1' });
+    const c2 = makeConversation({ id: 'conv-2' });
+    store.getState().setConversations([c1, c2]);
+    store.getState().removeConversation('conv-1');
+    const state = store.getState();
+    expect('conv-1' in state.conversations).toBe(false);
+    expect(state.conversationIds).not.toContain('conv-1');
+  });
+
+  it('clears activeConversationId when the active conversation is removed', () => {
+    const store = makeStore();
+    const c1 = makeConversation({ id: 'conv-1' });
+    store.getState().setConversations([c1]);
+    store.getState().setActiveConversation('conv-1');
+    store.getState().removeConversation('conv-1');
+    expect(store.getState().activeConversationId).toBeNull();
+  });
+
+  it('keeps activeConversationId when a different conversation is removed', () => {
+    const store = makeStore();
+    const c1 = makeConversation({ id: 'conv-1' });
+    const c2 = makeConversation({ id: 'conv-2' });
+    store.getState().setConversations([c1, c2]);
+    store.getState().setActiveConversation('conv-1');
+    store.getState().removeConversation('conv-2');
+    expect(store.getState().activeConversationId).toBe('conv-1');
+  });
+});
+
+describe('conversationsSlice — setActiveConversation', () => {
+  it('sets and clears active conversation', () => {
+    const store = makeStore();
+    store.getState().setActiveConversation('conv-1');
+    expect(store.getState().activeConversationId).toBe('conv-1');
+    store.getState().setActiveConversation(null);
+    expect(store.getState().activeConversationId).toBeNull();
+  });
+});
+
+describe('conversationsSlice — updateUnreadCount', () => {
+  it('updates unread count for existing conversation', () => {
+    const store = makeStore();
+    const c1 = makeConversation({ id: 'conv-1', unreadCount: 0 });
+    store.getState().setConversations([c1]);
+    store.getState().updateUnreadCount('conv-1', 7);
+    expect(store.getState().conversations['conv-1'].unreadCount).toBe(7);
+  });
+
+  it('is a no-op for unknown conversation', () => {
+    const store = makeStore();
+    // Should not throw
+    expect(() =>
+      store.getState().updateUnreadCount('nonexistent', 5),
+    ).not.toThrow();
+  });
+});
+
+describe('conversationsSlice — markConversationRead', () => {
+  it('sets unread count to 0', () => {
+    const store = makeStore();
+    const c1 = makeConversation({ id: 'conv-1', unreadCount: 10 });
+    store.getState().setConversations([c1]);
+    store.getState().markConversationRead('conv-1');
+    expect(store.getState().conversations['conv-1'].unreadCount).toBe(0);
+  });
+});

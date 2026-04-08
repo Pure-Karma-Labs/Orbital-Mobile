@@ -1,0 +1,3 @@
+# Binary artifacts — rebuilt locally and in CI
+OrbitalSignalFramework.xcframework/
+android/src/main/jniLibs/

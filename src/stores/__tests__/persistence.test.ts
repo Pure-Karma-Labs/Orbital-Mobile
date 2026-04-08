@@ -1,6 +1,7 @@
 /**
  * Tests for persistence configuration:
- * - MMKV storage adapter works correctly
+ * - MMKV storage adapter works correctly with deferred encrypted init
+ * - getMMKVInstance() throws before initMMKV() is called
  * - partialize only includes expected keys
  * - Sensitive data (auth tokens, keys) is NOT in persisted state
  */
@@ -23,7 +24,11 @@ jest.mock('react-native-mmkv', () => {
   };
 });
 
-import { mmkvStateStorage, mmkvInstance } from '../middleware/persistence';
+import {
+  mmkvStateStorage,
+  getMMKVInstance,
+  resetMMKVForTesting,
+} from '../middleware/persistence';
 
 // Helper to get the underlying mock instance created by the module
 const getMockInstance = () => {
@@ -39,12 +44,46 @@ const getMockInstance = () => {
 };
 
 // ---------------------------------------------------------------------------
-// MMKV storage adapter
+// Deferred init
+// ---------------------------------------------------------------------------
+
+describe('deferred MMKV initialization', () => {
+  it('getMMKVInstance throws before initMMKV is called', () => {
+    // Use jest.isolateModules to get a fresh module with mmkvInstance === null
+    jest.isolateModules(() => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { getMMKVInstance: freshGet } = require('../middleware/persistence') as typeof import('../middleware/persistence');
+      expect(() => freshGet()).toThrow('MMKV not initialized');
+    });
+  });
+
+  it('getMMKVInstance returns instance after initMMKV is called', () => {
+    jest.isolateModules(() => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { initMMKV: freshInit, getMMKVInstance: freshGet } = require('../middleware/persistence') as typeof import('../middleware/persistence');
+      freshInit('test-encryption-key');
+      expect(freshGet()).toBeDefined();
+    });
+  });
+
+  it('initMMKV throws if called a second time', () => {
+    jest.isolateModules(() => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { initMMKV: freshInit } = require('../middleware/persistence') as typeof import('../middleware/persistence');
+      freshInit('first-key');
+      expect(() => freshInit('second-key')).toThrow('MMKV already initialized');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MMKV storage adapter (uses resetMMKVForTesting to enable without real Keychain)
 // ---------------------------------------------------------------------------
 
 describe('mmkvStateStorage', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    resetMMKVForTesting();
   });
 
   it('getItem returns string value from MMKV', () => {
@@ -76,16 +115,18 @@ describe('mmkvStateStorage', () => {
 });
 
 // ---------------------------------------------------------------------------
-// MMKV instance creation
+// getMMKVInstance — after resetMMKVForTesting
 // ---------------------------------------------------------------------------
 
-describe('mmkvInstance', () => {
-  it('is the object returned by createMMKV', () => {
-    // createMMKV is called at module load time with { id: 'orbital-app-store' }.
-    // We verify it produced a usable instance (call count may be cleared by
-    // jest.clearAllMocks in earlier suites, so we check the result instead).
-    expect(mmkvInstance).toBeDefined();
-    expect(mmkvInstance).toBe(getMockInstance());
+describe('getMMKVInstance', () => {
+  it('returns a defined instance after resetMMKVForTesting', () => {
+    resetMMKVForTesting();
+    expect(getMMKVInstance()).toBeDefined();
+  });
+
+  it('returns the same instance on repeated calls', () => {
+    resetMMKVForTesting();
+    expect(getMMKVInstance()).toBe(getMMKVInstance());
   });
 });
 

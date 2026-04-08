@@ -113,3 +113,35 @@ fn test_invalid_kyber_pre_key_deserialization() {
     let result = get_kyber_pre_key_public(vec![0xFF; 10]);
     assert!(result.is_err());
 }
+
+// ---------------------------------------------------------------------------
+// Encrypt/decrypt round-trip (Issue #11 PoC)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_encrypt_decrypt_roundtrip_basic() {
+    let plaintext = b"Hello Signal Protocol!".to_vec();
+    let result = test_encrypt_decrypt_roundtrip(plaintext.clone())
+        .expect("roundtrip should succeed");
+    assert!(result.success, "decrypted should match plaintext");
+    assert_eq!(result.decrypted, plaintext);
+    assert!(result.ciphertext_len > 0, "ciphertext should not be empty");
+    assert!(result.elapsed_ms < 30_000, "should complete in <30s");
+}
+
+#[test]
+fn test_encrypt_decrypt_roundtrip_empty() {
+    let result = test_encrypt_decrypt_roundtrip(vec![])
+        .expect("empty plaintext roundtrip should succeed");
+    assert!(result.success);
+    assert!(result.decrypted.is_empty());
+}
+
+#[test]
+fn test_encrypt_decrypt_roundtrip_repeated() {
+    let result = test_encrypt_decrypt_roundtrip_n(b"repeat test".to_vec(), 5)
+        .expect("batch roundtrip should succeed");
+    assert_eq!(result.success_count, 5);
+    assert!(result.total_elapsed_ms > 0);
+    assert!(result.avg_elapsed_ms > 0);
+}

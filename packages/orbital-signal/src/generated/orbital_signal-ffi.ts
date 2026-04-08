@@ -81,6 +81,15 @@ interface NativeModuleInterface {
     timestamp: bigint,
     uniffi_out_err: UniffiRustCallStatus,
   ): Uint8Array;
+  ubrn_uniffi_orbital_signal_fn_func_test_encrypt_decrypt_roundtrip(
+    plaintext: Uint8Array,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array;
+  ubrn_uniffi_orbital_signal_fn_func_test_encrypt_decrypt_roundtrip_n(
+    plaintext: Uint8Array,
+    iterations: number,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array;
   ubrn_uniffi_orbital_signal_fn_func_sealed_sender_decrypt(
     ciphertext: Uint8Array,
     localAddress: Uint8Array,
@@ -263,6 +272,8 @@ interface NativeModuleInterface {
   ubrn_uniffi_orbital_signal_checksum_func_generate_kyber_pre_key(): number;
   ubrn_uniffi_orbital_signal_checksum_func_generate_pre_key(): number;
   ubrn_uniffi_orbital_signal_checksum_func_generate_signed_pre_key(): number;
+  ubrn_uniffi_orbital_signal_checksum_func_test_encrypt_decrypt_roundtrip(): number;
+  ubrn_uniffi_orbital_signal_checksum_func_test_encrypt_decrypt_roundtrip_n(): number;
   ubrn_uniffi_orbital_signal_checksum_func_sealed_sender_decrypt(): number;
   ubrn_uniffi_orbital_signal_checksum_func_sealed_sender_encrypt(): number;
   ubrn_uniffi_orbital_signal_checksum_func_process_pre_key_bundle(): number;

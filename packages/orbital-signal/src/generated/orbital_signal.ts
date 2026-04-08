@@ -310,6 +310,51 @@ export function generateSignedPreKey(
   );
 }
 /**
+ * Self-contained encrypt/decrypt round-trip using in-memory stores.
+ *
+ * Proves the full Signal Protocol (PQXDH key agreement + Double Ratchet encryption)
+ * works through the native bridge without needing external store-passing FFI.
+ *
+ * Exported as sync because libsignal's store traits use `#[async_trait(?Send)]`,
+ * producing non-Send futures that are incompatible with uniffi's async exports.
+ * We use a single-threaded tokio runtime internally to drive the async operations.
+ */
+export function testEncryptDecryptRoundtrip(plaintext: ArrayBuffer): RoundtripResult /*throws*/ {
+  return FfiConverterTypeRoundtripResult.lift(
+    uniffiCaller.rustCallWithError(
+      /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_test_encrypt_decrypt_roundtrip(
+          FfiConverterArrayBuffer.lower(plaintext),
+          callStatus,
+        );
+      },
+      /*liftString:*/ FfiConverterString.lift,
+    ),
+  );
+}
+/**
+ * Run the encrypt/decrypt round-trip N times and report aggregate results.
+ */
+export function testEncryptDecryptRoundtripN(
+  plaintext: ArrayBuffer,
+  iterations: /*u32*/ number,
+): RoundtripBatchResult /*throws*/ {
+  return FfiConverterTypeRoundtripBatchResult.lift(
+    uniffiCaller.rustCallWithError(
+      /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_test_encrypt_decrypt_roundtrip_n(
+          FfiConverterArrayBuffer.lower(plaintext),
+          FfiConverterUInt32.lower(iterations),
+          callStatus,
+        );
+      },
+      /*liftString:*/ FfiConverterString.lift,
+    ),
+  );
+}
+/**
  * Decrypt a Sealed Sender message, revealing the sender's identity.
  */
 export async function sealedSenderDecrypt(
@@ -1550,6 +1595,108 @@ const FfiConverterTypeProtocolAddressData = (() => {
   return new FFIConverter();
 })();
 
+export type RoundtripBatchResult = {
+  successCount: /*u32*/ number;
+  totalElapsedMs: /*u64*/ bigint;
+  avgElapsedMs: /*u64*/ bigint;
+};
+
+/**
+ * Generated factory for {@link RoundtripBatchResult} record objects.
+ */
+export const RoundtripBatchResult = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<RoundtripBatchResult, ReturnType<typeof defaults>>(defaults);
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<RoundtripBatchResult>,
+  });
+})();
+
+const FfiConverterTypeRoundtripBatchResult = (() => {
+  type TypeName = RoundtripBatchResult;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      return {
+        successCount: FfiConverterUInt32.read(from),
+        totalElapsedMs: FfiConverterUInt64.read(from),
+        avgElapsedMs: FfiConverterUInt64.read(from),
+      };
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      FfiConverterUInt32.write(value.successCount, into);
+      FfiConverterUInt64.write(value.totalElapsedMs, into);
+      FfiConverterUInt64.write(value.avgElapsedMs, into);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterUInt32.allocationSize(value.successCount) +
+        FfiConverterUInt64.allocationSize(value.totalElapsedMs) +
+        FfiConverterUInt64.allocationSize(value.avgElapsedMs)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+export type RoundtripResult = {
+  plaintext: ArrayBuffer;
+  ciphertextLen: /*u32*/ number;
+  decrypted: ArrayBuffer;
+  success: boolean;
+  elapsedMs: /*u64*/ bigint;
+};
+
+/**
+ * Generated factory for {@link RoundtripResult} record objects.
+ */
+export const RoundtripResult = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<RoundtripResult, ReturnType<typeof defaults>>(defaults);
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<RoundtripResult>,
+  });
+})();
+
+const FfiConverterTypeRoundtripResult = (() => {
+  type TypeName = RoundtripResult;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      return {
+        plaintext: FfiConverterArrayBuffer.read(from),
+        ciphertextLen: FfiConverterUInt32.read(from),
+        decrypted: FfiConverterArrayBuffer.read(from),
+        success: FfiConverterBool.read(from),
+        elapsedMs: FfiConverterUInt64.read(from),
+      };
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      FfiConverterArrayBuffer.write(value.plaintext, into);
+      FfiConverterUInt32.write(value.ciphertextLen, into);
+      FfiConverterArrayBuffer.write(value.decrypted, into);
+      FfiConverterBool.write(value.success, into);
+      FfiConverterUInt64.write(value.elapsedMs, into);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterArrayBuffer.allocationSize(value.plaintext) +
+        FfiConverterUInt32.allocationSize(value.ciphertextLen) +
+        FfiConverterArrayBuffer.allocationSize(value.decrypted) +
+        FfiConverterBool.allocationSize(value.success) +
+        FfiConverterUInt64.allocationSize(value.elapsedMs)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
 export type SealedSenderResult = {
   senderServiceId: string;
   senderDeviceId: /*u32*/ number;
@@ -2343,6 +2490,22 @@ function uniffiEnsureInitialized() {
       'uniffi_orbital_signal_checksum_func_generate_signed_pre_key',
     );
   }
+  if (
+    nativeModule().ubrn_uniffi_orbital_signal_checksum_func_test_encrypt_decrypt_roundtrip() !==
+    11834
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_func_test_encrypt_decrypt_roundtrip',
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_orbital_signal_checksum_func_test_encrypt_decrypt_roundtrip_n() !==
+    49712
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_func_test_encrypt_decrypt_roundtrip_n',
+    );
+  }
   if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_sealed_sender_decrypt() !== 10022) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_orbital_signal_checksum_func_sealed_sender_decrypt',
@@ -2552,6 +2715,8 @@ export default Object.freeze({
     FfiConverterTypePreKeyBundleData,
     FfiConverterTypePreKeyPublicData,
     FfiConverterTypeProtocolAddressData,
+    FfiConverterTypeRoundtripBatchResult,
+    FfiConverterTypeRoundtripResult,
     FfiConverterTypeSealedSenderResult,
     FfiConverterTypeSignalError,
     FfiConverterTypeSignedPreKeyPublicData,

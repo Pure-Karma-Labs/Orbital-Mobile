@@ -79,3 +79,19 @@ pub struct KyberPreKeyResult {
     pub record: Vec<u8>,
     pub is_last_resort: bool,
 }
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct RoundtripResult {
+    pub plaintext: Vec<u8>,
+    pub ciphertext_len: u32,
+    pub decrypted: Vec<u8>,
+    pub success: bool,
+    pub elapsed_ms: u64,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct RoundtripBatchResult {
+    pub success_count: u32,
+    pub total_elapsed_ms: u64,
+    pub avg_elapsed_ms: u64,
+}

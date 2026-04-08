@@ -1,6 +1,7 @@
 mod error;
 mod group;
 mod keys;
+mod roundtrip;
 mod sealed;
 mod session;
 mod stores;
@@ -17,6 +18,7 @@ mod store_adapters;
 pub use error::*;
 pub use group::*;
 pub use keys::*;
+pub use roundtrip::*;
 pub use sealed::*;
 pub use session::*;
 pub use stores::*;

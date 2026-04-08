@@ -18,13 +18,13 @@
     "build:rust": "npm run build:rust:ios && npm run build:rust:android"
   },
   "dependencies": {
-    "@react-native/new-app-screen": "0.82.1",
     "orbital-signal": "file:./packages/orbital-signal",
     "react": "19.1.1",
     "react-native": "0.82.1",
     "react-native-safe-area-context": "^5.5.2"
   },
   "devDependencies": {
+    "@react-native/new-app-screen": "0.82.1",
     "@babel/core": "^7.25.2",
     "@babel/preset-env": "^7.25.3",
     "@babel/runtime": "^7.25.0",

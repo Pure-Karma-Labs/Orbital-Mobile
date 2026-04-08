@@ -33,6 +33,16 @@ jobs:
           echo "::error::Android SDK not found. Install Android Studio or set ANDROID_HOME on the runner."
           exit 1
 
+      - name: Setup Rust
+        run: |
+          if ! command -v cargo &>/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          fi
+          source "$HOME/.cargo/env"
+          rustup target add aarch64-linux-android x86_64-linux-android
+          cargo install cargo-ndk || true
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -41,6 +51,13 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Build Rust for Android
+        run: |
+          cd packages/orbital-signal
+          npm run build:android
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.1.12297006
 
       - name: Setup Java
         uses: actions/setup-java@v4

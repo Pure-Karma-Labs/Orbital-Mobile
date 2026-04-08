@@ -2,9 +2,29 @@
 name = "orbital_signal"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
 
 [lib]
 crate-type = ["lib", "staticlib", "cdylib"]
 
 [dependencies]
 uniffi = "0.31.0"
+thiserror = "2.0"
+rand = "0.9"
+uuid = { version = "1.5", features = ["v4"] }
+
+# libsignal-protocol from Signal's repo, pinned to v0.83.0
+libsignal-protocol = { git = "https://github.com/signalapp/libsignal", tag = "v0.83.0" }
+libsignal-core = { git = "https://github.com/signalapp/libsignal", tag = "v0.83.0" }
+
+# Needed for async runtime (uniffi async functions use tokio)
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
+
+# async-trait needed for store trait impls
+async-trait = "0.1"
+
+[patch.crates-io]
+# Use Signal's forks to avoid duplicate dependency issues
+boring = { git = "https://github.com/signalapp/boring", tag = "signal-v4.18.0" }
+boring-sys = { git = "https://github.com/signalapp/boring", tag = "signal-v4.18.0" }
+curve25519-dalek = { git = "https://github.com/signalapp/curve25519-dalek", tag = "signal-curve25519-4.1.3" }

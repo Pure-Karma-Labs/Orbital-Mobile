@@ -23,6 +23,11 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
 # async-trait needed for store trait impls
 async-trait = "0.1"
 
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
 [patch.crates-io]
 # Use Signal's forks to avoid duplicate dependency issues
 boring = { git = "https://github.com/signalapp/boring", tag = "signal-v4.18.0" }

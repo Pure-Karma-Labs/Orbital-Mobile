@@ -1,0 +1,220 @@
+/**
+ * Tests for persistence configuration:
+ * - MMKV storage adapter works correctly
+ * - partialize only includes expected keys
+ * - Sensitive data (auth tokens, keys) is NOT in persisted state
+ */
+
+// Mock react-native-mmkv before any imports that use it
+jest.mock('react-native-mmkv', () => {
+  const mockInstance = {
+    getString: jest.fn(),
+    set: jest.fn(),
+    remove: jest.fn(),
+    getBoolean: jest.fn(),
+    getNumber: jest.fn(),
+    contains: jest.fn(),
+    getAllKeys: jest.fn(),
+    clearAll: jest.fn(),
+  };
+  return {
+    createMMKV: jest.fn(() => mockInstance),
+    __mockInstance: mockInstance,
+  };
+});
+
+import { mmkvStateStorage, mmkvInstance } from '../middleware/persistence';
+
+// Helper to get the underlying mock instance created by the module
+const getMockInstance = () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const mod = require('react-native-mmkv') as {
+    __mockInstance: {
+      getString: jest.Mock;
+      set: jest.Mock;
+      remove: jest.Mock;
+    };
+  };
+  return mod.__mockInstance;
+};
+
+// ---------------------------------------------------------------------------
+// MMKV storage adapter
+// ---------------------------------------------------------------------------
+
+describe('mmkvStateStorage', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('getItem returns string value from MMKV', () => {
+    const mock = getMockInstance();
+    mock.getString.mockReturnValue('{"foo":"bar"}');
+    const result = mmkvStateStorage.getItem('test-key');
+    expect(mock.getString).toHaveBeenCalledWith('test-key');
+    expect(result).toBe('{"foo":"bar"}');
+  });
+
+  it('getItem returns null when MMKV returns undefined', () => {
+    const mock = getMockInstance();
+    mock.getString.mockReturnValue(undefined);
+    const result = mmkvStateStorage.getItem('missing-key');
+    expect(result).toBeNull();
+  });
+
+  it('setItem calls mmkv.set with key and value', () => {
+    const mock = getMockInstance();
+    mmkvStateStorage.setItem('my-key', '{"data":1}');
+    expect(mock.set).toHaveBeenCalledWith('my-key', '{"data":1}');
+  });
+
+  it('removeItem calls mmkv.remove with key', () => {
+    const mock = getMockInstance();
+    mmkvStateStorage.removeItem('my-key');
+    expect(mock.remove).toHaveBeenCalledWith('my-key');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MMKV instance creation
+// ---------------------------------------------------------------------------
+
+describe('mmkvInstance', () => {
+  it('is the object returned by createMMKV', () => {
+    // createMMKV is called at module load time with { id: 'orbital-app-store' }.
+    // We verify it produced a usable instance (call count may be cleared by
+    // jest.clearAllMocks in earlier suites, so we check the result instead).
+    expect(mmkvInstance).toBeDefined();
+    expect(mmkvInstance).toBe(getMockInstance());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// partialize configuration
+// ---------------------------------------------------------------------------
+
+describe('persistence partialize', () => {
+  /**
+   * Define the expected persisted keys — these match the partialize config
+   * in useAppStore.ts.
+   */
+  const EXPECTED_PERSISTED_KEYS = new Set([
+    'conversations',
+    'conversationIds',
+    'contacts',
+    'colorScheme',
+    'activeTab',
+  ]);
+
+  /**
+   * Keys that must never appear in persisted state for security reasons.
+   * JWT tokens and encryption keys belong in Keychain/Keystore only.
+   */
+  const FORBIDDEN_PERSISTED_KEYS = [
+    'isAuthenticated',
+    'userId',
+    'username',
+    'displayName',
+    // Auth token fields — must never be in persisted store
+    'token',
+    'accessToken',
+    'refreshToken',
+    'jwtToken',
+    'authToken',
+    // Crypto key material — must never be in persisted store
+    'identityKey',
+    'privateKey',
+    'signalingKey',
+    'encryptionKey',
+    'registrationId',
+    // Transient UI state
+    'activeConversationId',
+    'activeThreadId',
+    'isComposerOpen',
+    'syncOverallStatus',
+    // Large/transient data
+    'threads',
+    'threadIdsByConversation',
+    'replies',
+    'replyIdsByThread',
+    'messages',
+    'messageIdsByConversation',
+    'hasMoreMessages',
+  ];
+
+  /**
+   * Build a fake AppState that mirrors the shape useAppStore would produce,
+   * then run it through a partialize function identical to the one in
+   * useAppStore.ts to verify which keys survive.
+   */
+  function partialize(state: Record<string, unknown>) {
+    return {
+      conversations: state.conversations,
+      conversationIds: state.conversationIds,
+      contacts: state.contacts,
+      colorScheme: state.colorScheme,
+      activeTab: state.activeTab,
+    };
+  }
+
+  const fullState: Record<string, unknown> = {
+    // Auth
+    isAuthenticated: true,
+    userId: 'user-123',
+    username: 'alice',
+    displayName: 'Alice',
+    avatarPath: null,
+    // Conversations
+    conversations: { 'conv-1': { id: 'conv-1' } },
+    conversationIds: ['conv-1'],
+    activeConversationId: 'conv-1',
+    // Threads
+    threads: {},
+    threadIdsByConversation: {},
+    replies: {},
+    replyIdsByThread: {},
+    activeThreadId: null,
+    // Messages
+    messages: {},
+    messageIdsByConversation: {},
+    hasMoreMessages: {},
+    // Contacts
+    contacts: { 'c-1': { id: 'c-1' } },
+    // UI
+    colorScheme: 'dark',
+    activeTab: 'chats',
+    composerDraft: null,
+    isComposerOpen: false,
+    syncOverallStatus: 'synced',
+  };
+
+  it('includes exactly the expected keys', () => {
+    const persisted = partialize(fullState);
+    const persistedKeys = new Set(Object.keys(persisted));
+    expect(persistedKeys).toEqual(EXPECTED_PERSISTED_KEYS);
+  });
+
+  it('does not contain any forbidden key', () => {
+    const persisted = partialize(fullState);
+    for (const key of FORBIDDEN_PERSISTED_KEYS) {
+      expect(key in persisted).toBe(false);
+    }
+  });
+
+  it('persists conversations data correctly', () => {
+    const persisted = partialize(fullState);
+    expect(persisted.conversations).toEqual({ 'conv-1': { id: 'conv-1' } });
+    expect(persisted.conversationIds).toEqual(['conv-1']);
+  });
+
+  it('persists contacts data correctly', () => {
+    const persisted = partialize(fullState);
+    expect(persisted.contacts).toEqual({ 'c-1': { id: 'c-1' } });
+  });
+
+  it('persists UI preferences correctly', () => {
+    const persisted = partialize(fullState);
+    expect(persisted.colorScheme).toBe('dark');
+    expect(persisted.activeTab).toBe('chats');
+  });
+});

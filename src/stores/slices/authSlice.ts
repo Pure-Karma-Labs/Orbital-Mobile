@@ -1,7 +1,7 @@
 import type { StateCreator } from 'zustand';
 import type { AppState, AuthSlice } from '../../types/store';
 
-export const createAuthSlice: StateCreator<AppState, [], [], AuthSlice> = (
+export const createAuthSlice: StateCreator<AppState, [['zustand/devtools', never]], [], AuthSlice> = (
   set,
 ) => ({
   // Initial state

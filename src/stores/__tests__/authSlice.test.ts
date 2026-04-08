@@ -3,6 +3,7 @@
  */
 
 import { create } from 'zustand';
+import { devtools } from 'zustand/middleware';
 import { createAuthSlice } from '../slices/authSlice';
 import type { AppState } from '../../types/store';
 
@@ -12,7 +13,7 @@ import type { AppState } from '../../types/store';
 
 /** Creates a minimal store containing only authSlice state/actions for testing. */
 function makeStore() {
-  return create<AppState>()((...a) => ({
+  return create<AppState>()(devtools((...a) => ({
     // Auth slice under test
     ...createAuthSlice(...a),
 
@@ -68,7 +69,7 @@ function makeStore() {
     setComposerDraft: jest.fn(),
     toggleComposer: jest.fn(),
     setSyncStatus: jest.fn(),
-  }));
+  })));
 }
 
 // ---------------------------------------------------------------------------

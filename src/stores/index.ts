@@ -1,14 +1,16 @@
 export { useAppStore } from './useAppStore';
 
 // ---------------------------------------------------------------------------
-// Selector hooks — ergonomic access for components
-// Each hook subscribes only to the fields it selects, minimising re-renders.
+// Selector hooks — ergonomic access for components.
+// Each hook uses useShallow so it only triggers re-renders when the selected
+// fields actually change (shallow equality), not on every store update.
 // ---------------------------------------------------------------------------
 
+import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from './useAppStore';
 
 export const useAuth = () =>
-  useAppStore((s) => ({
+  useAppStore(useShallow((s) => ({
     isAuthenticated: s.isAuthenticated,
     userId: s.userId,
     username: s.username,
@@ -17,10 +19,10 @@ export const useAuth = () =>
     setUser: s.setUser,
     clearAuth: s.clearAuth,
     setAuthenticated: s.setAuthenticated,
-  }));
+  })));
 
 export const useConversations = () =>
-  useAppStore((s) => ({
+  useAppStore(useShallow((s) => ({
     conversations: s.conversations,
     conversationIds: s.conversationIds,
     activeConversationId: s.activeConversationId,
@@ -30,10 +32,10 @@ export const useConversations = () =>
     setActiveConversation: s.setActiveConversation,
     updateUnreadCount: s.updateUnreadCount,
     markConversationRead: s.markConversationRead,
-  }));
+  })));
 
 export const useThreads = () =>
-  useAppStore((s) => ({
+  useAppStore(useShallow((s) => ({
     threads: s.threads,
     threadIdsByConversation: s.threadIdsByConversation,
     replies: s.replies,
@@ -49,10 +51,10 @@ export const useThreads = () =>
     addOptimisticReply: s.addOptimisticReply,
     updateThreadSyncStatus: s.updateThreadSyncStatus,
     updateReplySyncStatus: s.updateReplySyncStatus,
-  }));
+  })));
 
 export const useMessages = () =>
-  useAppStore((s) => ({
+  useAppStore(useShallow((s) => ({
     messages: s.messages,
     messageIdsByConversation: s.messageIdsByConversation,
     hasMoreMessages: s.hasMoreMessages,
@@ -62,18 +64,18 @@ export const useMessages = () =>
     updateMessageSyncStatus: s.updateMessageSyncStatus,
     markMessageRead: s.markMessageRead,
     setHasMore: s.setHasMore,
-  }));
+  })));
 
 export const useContacts = () =>
-  useAppStore((s) => ({
+  useAppStore(useShallow((s) => ({
     contacts: s.contacts,
     setContacts: s.setContacts,
     upsertContact: s.upsertContact,
     removeContact: s.removeContact,
-  }));
+  })));
 
 export const useUI = () =>
-  useAppStore((s) => ({
+  useAppStore(useShallow((s) => ({
     colorScheme: s.colorScheme,
     activeTab: s.activeTab,
     composerDraft: s.composerDraft,
@@ -84,4 +86,4 @@ export const useUI = () =>
     setComposerDraft: s.setComposerDraft,
     toggleComposer: s.toggleComposer,
     setSyncStatus: s.setSyncStatus,
-  }));
+  })));

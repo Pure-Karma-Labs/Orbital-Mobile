@@ -3,6 +3,7 @@
  */
 
 import { create } from 'zustand';
+import { devtools } from 'zustand/middleware';
 import { createConversationsSlice } from '../slices/conversationsSlice';
 import type { AppState, Conversation } from '../../types/store';
 
@@ -11,7 +12,7 @@ import type { AppState, Conversation } from '../../types/store';
 // ---------------------------------------------------------------------------
 
 function makeStore() {
-  return create<AppState>()((...a) => ({
+  return create<AppState>()(devtools((...a) => ({
     ...createConversationsSlice(...a),
 
     isAuthenticated: false,
@@ -64,7 +65,7 @@ function makeStore() {
     setComposerDraft: jest.fn(),
     toggleComposer: jest.fn(),
     setSyncStatus: jest.fn(),
-  }));
+  })));
 }
 
 // ---------------------------------------------------------------------------

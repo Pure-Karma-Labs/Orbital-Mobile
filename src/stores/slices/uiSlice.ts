@@ -1,7 +1,7 @@
 import type { StateCreator } from 'zustand';
 import type { AppState, Draft, UISlice } from '../../types/store';
 
-export const createUISlice: StateCreator<AppState, [], [], UISlice> = (
+export const createUISlice: StateCreator<AppState, [['zustand/devtools', never]], [], UISlice> = (
   set,
   get,
 ) => ({

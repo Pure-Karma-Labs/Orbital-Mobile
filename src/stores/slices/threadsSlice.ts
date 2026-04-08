@@ -9,7 +9,7 @@ import type {
 
 export const createThreadsSlice: StateCreator<
   AppState,
-  [],
+  [['zustand/devtools', never]],
   [],
   ThreadsSlice
 > = (set, get) => ({

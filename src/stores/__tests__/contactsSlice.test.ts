@@ -3,6 +3,7 @@
  */
 
 import { create } from 'zustand';
+import { devtools } from 'zustand/middleware';
 import { createContactsSlice } from '../slices/contactsSlice';
 import type { AppState, Contact } from '../../types/store';
 
@@ -11,7 +12,7 @@ import type { AppState, Contact } from '../../types/store';
 // ---------------------------------------------------------------------------
 
 function makeStore() {
-  return create<AppState>()((...a) => ({
+  return create<AppState>()(devtools((...a) => ({
     ...createContactsSlice(...a),
 
     isAuthenticated: false,
@@ -69,7 +70,7 @@ function makeStore() {
     setComposerDraft: jest.fn(),
     toggleComposer: jest.fn(),
     setSyncStatus: jest.fn(),
-  }));
+  })));
 }
 
 // ---------------------------------------------------------------------------

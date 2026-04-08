@@ -23,7 +23,6 @@ jest.mock('react-native-mmkv', () => {
   };
 });
 
-import { createMMKV } from 'react-native-mmkv';
 import { mmkvStateStorage, mmkvInstance } from '../middleware/persistence';
 
 // Helper to get the underlying mock instance created by the module

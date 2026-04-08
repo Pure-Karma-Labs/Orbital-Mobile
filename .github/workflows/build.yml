@@ -20,13 +20,11 @@ jobs:
 
       - name: Configure Android SDK
         run: |
-          # Check common Android SDK locations on macOS
           for sdk_path in "$HOME/Library/Android/sdk" "/opt/homebrew/share/android-commandlinetools" "/usr/local/share/android-commandlinetools"; do
             if [ -d "$sdk_path" ]; then
               echo "ANDROID_HOME=$sdk_path" >> "$GITHUB_ENV"
               echo "ANDROID_SDK_ROOT=$sdk_path" >> "$GITHUB_ENV"
               echo "Found Android SDK at $sdk_path"
-              ls "$sdk_path/platforms/" 2>/dev/null || echo "No platforms installed"
               exit 0
             fi
           done
@@ -42,6 +40,17 @@ jobs:
           rustup target add aarch64-linux-android x86_64-linux-android
           cargo install cargo-ndk || true
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            packages/orbital-signal/rust/orbital_signal/target
+          key: rust-android-${{ hashFiles('packages/orbital-signal/rust/orbital_signal/Cargo.lock') }}
+          restore-keys: |
+            rust-android-
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -89,6 +98,26 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Rust
+        run: |
+          if ! command -v cargo &>/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          fi
+          source "$HOME/.cargo/env"
+          rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            packages/orbital-signal/rust/orbital_signal/target
+          key: rust-ios-${{ hashFiles('packages/orbital-signal/rust/orbital_signal/Cargo.lock') }}
+          restore-keys: |
+            rust-ios-
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -97,6 +126,11 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Build Rust for iOS
+        run: |
+          cd packages/orbital-signal
+          npm run build:ios
 
       - name: Cache CocoaPods
         uses: actions/cache@v4

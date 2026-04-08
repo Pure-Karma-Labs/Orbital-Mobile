@@ -3,7 +3,7 @@ import type { AppState, Contact, ContactsSlice } from '../../types/store';
 
 export const createContactsSlice: StateCreator<
   AppState,
-  [],
+  [['zustand/devtools', never]],
   [],
   ContactsSlice
 > = (set, get) => ({

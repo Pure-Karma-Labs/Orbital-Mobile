@@ -3,6 +3,7 @@
  */
 
 import { create } from 'zustand';
+import { devtools } from 'zustand/middleware';
 import { createUISlice } from '../slices/uiSlice';
 import type { AppState, Draft } from '../../types/store';
 
@@ -11,7 +12,7 @@ import type { AppState, Draft } from '../../types/store';
 // ---------------------------------------------------------------------------
 
 function makeStore() {
-  return create<AppState>()((...a) => ({
+  return create<AppState>()(devtools((...a) => ({
     ...createUISlice(...a),
 
     isAuthenticated: false,
@@ -63,7 +64,7 @@ function makeStore() {
     setContacts: jest.fn(),
     upsertContact: jest.fn(),
     removeContact: jest.fn(),
-  }));
+  })));
 }
 
 // ---------------------------------------------------------------------------

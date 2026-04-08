@@ -14,7 +14,7 @@ function sortByLastMessage(a: Conversation, b: Conversation): number {
 
 export const createConversationsSlice: StateCreator<
   AppState,
-  [],
+  [['zustand/devtools', never]],
   [],
   ConversationsSlice
 > = (set, get) => ({

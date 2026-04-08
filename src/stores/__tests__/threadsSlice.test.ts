@@ -3,6 +3,7 @@
  */
 
 import { create } from 'zustand';
+import { devtools } from 'zustand/middleware';
 import { createThreadsSlice } from '../slices/threadsSlice';
 import type { AppState, Reply, Thread } from '../../types/store';
 
@@ -11,7 +12,7 @@ import type { AppState, Reply, Thread } from '../../types/store';
 // ---------------------------------------------------------------------------
 
 function makeStore() {
-  return create<AppState>()((...a) => ({
+  return create<AppState>()(devtools((...a) => ({
     ...createThreadsSlice(...a),
 
     isAuthenticated: false,
@@ -58,7 +59,7 @@ function makeStore() {
     setComposerDraft: jest.fn(),
     toggleComposer: jest.fn(),
     setSyncStatus: jest.fn(),
-  }));
+  })));
 }
 
 // ---------------------------------------------------------------------------

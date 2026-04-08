@@ -8,7 +8,7 @@ import type {
 
 export const createMessagesSlice: StateCreator<
   AppState,
-  [],
+  [['zustand/devtools', never]],
   [],
   MessagesSlice
 > = (set, get) => ({

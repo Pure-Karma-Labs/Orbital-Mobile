@@ -49,7 +49,10 @@ function snakeToCamelKey(key: string): string {
 }
 
 function camelToSnakeKey(key: string): string {
-  return key.replace(/([A-Z])/g, (letter: string) => `_${letter.toLowerCase()}`);
+  return key
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
+    .replace(/([a-z\d])([A-Z])/g, '$1_$2')
+    .toLowerCase();
 }
 
 /**
@@ -158,10 +161,15 @@ export async function request<T>(options: RequestOptions): Promise<T> {
     }
   }
 
-  let serializedBody: string | undefined;
+  let serializedBody: string | FormData | undefined;
   if (body !== undefined) {
-    headers['Content-Type'] = 'application/json';
-    serializedBody = JSON.stringify(camelToSnake(body));
+    if (body instanceof FormData) {
+      // Let fetch set Content-Type with multipart boundary automatically
+      serializedBody = body;
+    } else {
+      headers['Content-Type'] = 'application/json';
+      serializedBody = JSON.stringify(camelToSnake(body));
+    }
   }
 
   // Timeout via AbortController, merged with caller's signal

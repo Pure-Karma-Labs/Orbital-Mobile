@@ -38,7 +38,7 @@ jobs:
           fi
           source "$HOME/.cargo/env"
           rustup target add aarch64-linux-android x86_64-linux-android
-          cargo install cargo-ndk@3.5.7
+          cargo install cargo-ndk@4.1.2
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Setup Node.js

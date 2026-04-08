@@ -1,0 +1,1 @@
+- [API Surface v1](api-surface-v1.md) -- Completed libsignal API surface spec (18 functions, 6 stores, UDL types)

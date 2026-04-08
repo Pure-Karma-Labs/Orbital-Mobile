@@ -1,0 +1,35 @@
+{
+  "name": "orbital-signal",
+  "version": "0.0.1",
+  "private": true,
+  "description": "libsignal bindings for Orbital-Mobile via uniffi-bindgen-react-native",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Pure-Karma-Labs/Orbital-Mobile.git",
+    "directory": "packages/orbital-signal"
+  },
+  "author": "Pure Karma Labs",
+  "license": "UNLICENSED",
+  "homepage": "https://github.com/Pure-Karma-Labs/Orbital-Mobile#readme",
+  "source": "./src/index.tsx",
+  "main": "./src/index.tsx",
+  "scripts": {
+    "build:ios": "ubrn build ios --config ubrn.config.yaml --and-generate",
+    "build:android": "ubrn build android --config ubrn.config.yaml --and-generate"
+  },
+  "dependencies": {
+    "uniffi-bindgen-react-native": "0.31.0-2"
+  },
+  "peerDependencies": {
+    "react": "*",
+    "react-native": "*"
+  },
+  "codegenConfig": {
+    "name": "OrbitalSignalSpec",
+    "type": "modules",
+    "jsSrcsDir": "src",
+    "android": {
+      "javaPackageName": "com.orbital.signal"
+    }
+  }
+}

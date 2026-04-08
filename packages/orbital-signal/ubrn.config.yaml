@@ -1,0 +1,17 @@
+---
+rust:
+  directory: ./rust/orbital_signal
+  manifestPath: Cargo.toml
+
+ios:
+  directory: ios
+  targets:
+    - aarch64-apple-ios
+    - aarch64-apple-ios-sim
+    - x86_64-apple-ios
+
+android:
+  directory: android
+  targets:
+    - arm64-v8a
+    - x86_64

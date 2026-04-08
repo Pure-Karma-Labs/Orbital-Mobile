@@ -14,6 +14,11 @@ android/local.properties
 # Rust
 rust/target/
 rust/**/target/
+packages/**/rust/**/target/
+
+# uniffi-bindgen-react-native compiled binaries (rebuilt locally, not committed)
+packages/**/build/
+packages/**/android/src/main/jniLibs/
 
 # Build artifacts
 *.jsbundle

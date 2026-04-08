@@ -1,14 +1,89 @@
-version: "1.0"
-last_updated: "2026-04-07"
+version: "1.1"
+last_updated: "2026-04-08"
 agent: react-native-engineer
 
 core_files:
   - path: src/App.tsx
-    purpose: Application entry point — wraps SafeAreaProvider, will host navigation container and global providers
+    purpose: Application entry point — wraps SafeAreaProvider + ThemeProvider, uses theme colors for StatusBar
     key_symbols:
       - App
       - AppContent
-    last_hash: d041009
+    last_hash: e158828
+
+  - path: src/theme/colors.ts
+    purpose: Light/dark ColorPalette objects and getReplyDepthColors() — all hex/rgba token values
+    key_symbols:
+      - ColorPalette
+      - lightColors
+      - darkColors
+      - getReplyDepthColors
+      - ReplyDepthColor
+    last_hash: f478efe
+
+  - path: src/theme/typography.ts
+    purpose: Font family (PostScript names), font size scale, line heights, font weights, letter spacing
+    key_symbols:
+      - fontFamily
+      - fontSize
+      - lineHeight
+      - fontWeight
+      - letterSpacing
+      - Typography
+    last_hash: 9b2314a
+
+  - path: src/theme/spacing.ts
+    purpose: Spacing scale, border radius values, thread indentation constants
+    key_symbols:
+      - spacing
+      - borderRadius
+      - threadIndent
+    last_hash: 33b3122
+
+  - path: src/theme/animation.ts
+    purpose: Animation duration and easing tokens
+    key_symbols:
+      - duration
+      - easing
+    last_hash: 882960c
+
+  - path: src/theme/components.ts
+    purpose: Component-level tokens (button, input, post, badge) as factory function over ColorPalette
+    key_symbols:
+      - createComponentTokens
+      - ComponentTokens
+    last_hash: 16de427
+
+  - path: src/theme/tokens.ts
+    purpose: Combined Theme type and createTheme() factory — single entry-point for building a complete theme
+    key_symbols:
+      - Theme
+      - createTheme
+    last_hash: a182d4a
+
+  - path: src/theme/ThemeProvider.tsx
+    purpose: React Context provider — resolves light/dark from system or override, memoizes theme
+    key_symbols:
+      - ThemeProvider
+      - ColorSchemeOverride
+    last_hash: a7c2347
+
+  - path: src/theme/useTheme.ts
+    purpose: useTheme() hook — throws if used outside ThemeProvider
+    key_symbols:
+      - useTheme
+    last_hash: 701a814
+
+  - path: src/theme/index.ts
+    purpose: Barrel export for all theme modules
+    last_hash: 402be8a
+
+  - path: src/theme/__tests__/theme.test.ts
+    purpose: Theme system unit tests — createTheme, color validity, reply depth, ThemeProvider render, useTheme
+    last_hash: pending
+
+  - path: react-native.config.js
+    purpose: React Native CLI config — registers src/theme/fonts/ as linked font assets
+    last_hash: 345f137
 
   - path: src/types/database.ts
     purpose: TypeScript interfaces for all 17 database tables — defines the local data model for threads, replies, media, conversations, messages, drafts, and Signal stores
@@ -31,12 +106,12 @@ core_files:
     last_hash: 2445035
 
   - path: package.json
-    purpose: Project dependencies and scripts — React Native 0.82.1, React 19.1.1, safe-area-context; no navigation, state management, or API client dependencies yet
+    purpose: Project dependencies and scripts — React Native 0.82.1, React 19.1.1, safe-area-context; @react-native/new-app-screen moved to devDependencies
     key_symbols:
       - react-native
       - react
       - react-native-safe-area-context
-    last_hash: fce34c2
+    last_hash: a474666
 
   - path: tsconfig.json
     purpose: TypeScript configuration — strict mode enabled, extends @react-native/typescript-config
@@ -97,3 +172,12 @@ patterns:
 
   - name: reply-depth-coloring
     description: "Thread replies use Blue (levels 0-1) to Purple (levels 2-3) alternating depth colors with indentation capped at 24px * min(level, 4) = 96px max"
+
+  - name: theme-system
+    description: "Plain React Context + StyleSheet theme (no third-party styling lib). createTheme('light'|'dark') builds a complete Theme object. ThemeProvider wraps the app, useTheme() is the consumer hook. Font family strings must use PostScript names from the .ttf files (e.g. BitstreamVeraSans-Roman not BitstreamVeraSans)."
+
+  - name: font-postscript-names
+    description: "Bitstream Vera fonts PostScript names: body=BitstreamVeraSans-Roman, bold=BitstreamVeraSans-Bold, italic=BitstreamVeraSans-Oblique, mono=BitstreamVeraSansMono-Roman, monoBold=BitstreamVeraSansMono-Bold. These are NOT the file names."
+
+  - name: react19-test-renderer
+    description: "React 19 + react-test-renderer requires act() wrappers around create() calls when components use hooks like useColorScheme that trigger state. Pass colorSchemeOverride='light' to ThemeProvider in tests to avoid system color scheme side effects."

@@ -187,11 +187,19 @@ pub fn test_encrypt_decrypt_roundtrip(
 }
 
 /// Run the encrypt/decrypt round-trip N times and report aggregate results.
+/// Capped at 1000 iterations to prevent blocking the JS thread for extended periods.
 #[uniffi::export]
 pub fn test_encrypt_decrypt_roundtrip_n(
     plaintext: Vec<u8>,
     iterations: u32,
 ) -> Result<RoundtripBatchResult, SignalError> {
+    const MAX_ITERATIONS: u32 = 1_000;
+    if iterations > MAX_ITERATIONS {
+        return Err(SignalError::InvalidArgument {
+            reason: format!("iterations must be <= {MAX_ITERATIONS}, got {iterations}"),
+        });
+    }
+
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

@@ -119,6 +119,40 @@ The uniffi npm and Rust crate versions **must stay in sync**. Both are on the 0.
 
 **"missing field `repository`"** — The library's `package.json` must have a `repository` field (ubrn CLI requires it).
 
+## Cross-Compilation Targets
+
+| Target | Platform | ABI | Build Script |
+|--------|----------|-----|-------------|
+| `aarch64-apple-ios` | iOS device | ARM64 | `scripts/build-ios.sh` |
+| `aarch64-apple-ios-sim` | iOS simulator (Apple Silicon) | ARM64 | `scripts/build-ios.sh` |
+| `x86_64-apple-ios` | iOS simulator (Intel) | x86_64 | `scripts/build-ios.sh` |
+| `aarch64-linux-android` | Android device/emulator | arm64-v8a | `scripts/build-android.sh` |
+| `x86_64-linux-android` | Android emulator | x86_64 | `scripts/build-android.sh` |
+
+ARM32 (`armv7-linux-androideabi`) is intentionally excluded — <5% of modern Android devices, and it doubles build time.
+
+### Binary Sizes (debug, per target)
+
+| Target | Static lib (.a) | Notes |
+|--------|----------------|-------|
+| aarch64-apple-ios | ~19 MB | Debug build with libsignal |
+| aarch64-apple-ios-sim | ~19 MB | |
+| x86_64-apple-ios | ~19 MB | |
+| iOS simulator lipo (combined) | ~37 MB | arm64 + x86_64 |
+| Android arm64-v8a | ~19 MB (est.) | .so via cargo-ndk |
+| Android x86_64 | ~19 MB (est.) | |
+
+Release builds with LTO will be significantly smaller. Exact sizes TBD after release build optimization.
+
+### Build Times (CI, self-hosted macOS ARM64)
+
+| Step | Time | Notes |
+|------|------|-------|
+| Rust for Android (2 targets) | ~8 min | First build; cached rebuilds ~2 min |
+| Rust for iOS (3 targets) | ~10 min (est.) | Includes xcframework bundling |
+| Gradle assembleDebug | ~3 min | After Rust build |
+| Xcode build | ~5 min (est.) | After pod install |
+
 ## Architecture
 
 ```
@@ -138,7 +172,7 @@ orbital_signal (Rust static lib)
     |
     | uniffi proc macros
     v
-libsignal-protocol v0.83.0 (future)
+libsignal-protocol v0.83.0
 ```
 
 ## References

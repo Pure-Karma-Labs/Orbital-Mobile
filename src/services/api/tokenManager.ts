@@ -56,6 +56,13 @@ const createTokenManager = () => {
 
   return {
     /**
+     * Optional callback fired after tokens are cleared (e.g. on 401).
+     * Set this in bootstrap to automatically clear auth state:
+     *   tokenManager.onTokensCleared = () => useAppStore.getState().clearAuth();
+     */
+    onTokensCleared: undefined as (() => void) | undefined,
+
+    /**
      * Swap the storage backend. Should be called once at app startup,
      * before any API requests that require authentication.
      */
@@ -82,6 +89,7 @@ const createTokenManager = () => {
 
     async clearTokens(): Promise<void> {
       await storage.clearTokens();
+      this.onTokensCleared?.();
     },
   };
 };

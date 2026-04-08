@@ -1,0 +1,3 @@
+- [Theme system — Issue #5](project_theme_system.md) — Design system live at src/theme/; createTheme, ThemeProvider, useTheme; new-app-screen moved to devDeps
+- [Font PostScript names](feedback_font_postscript_names.md) — React Native uses PostScript names not filenames; BitstreamVeraSans-Oblique not Italic
+- [React 19 test-renderer act()](feedback_react19_test_renderer.md) — Wrap create() in act(); pin colorSchemeOverride='light' in tests to avoid system color scheme side effects

@@ -54,7 +54,7 @@ jest.mock('../../api/keys', () => ({
 const mockGetState = jest.fn(() => ({ userId: 'local-user-id' }));
 jest.mock('../../../stores/useAppStore', () => ({
   useAppStore: {
-    getState: (...args: unknown[]) => mockGetState(...args),
+    getState: () => mockGetState(),
   },
 }));
 

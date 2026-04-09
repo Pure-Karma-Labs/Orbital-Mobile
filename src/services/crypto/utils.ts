@@ -39,3 +39,13 @@ export function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const g = globalThis as unknown as { btoa: (s: string) => string };
   return g.btoa(binary);
 }
+
+export function base64ToArrayBuffer(base64: string): ArrayBuffer {
+  const g = globalThis as unknown as { atob: (s: string) => string };
+  const binary = g.atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}

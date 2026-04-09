@@ -5,6 +5,11 @@ import {
 } from '../../database/repositories/signalSignedPreKeyRepository';
 import { toArrayBuffer } from './utils';
 
+/**
+ * @deprecated These store implementations were designed for the uniffi callback interface path
+ * that is not supported in uniffi 0.31. Protocol operations now use the preloaded store pattern
+ * via cryptoService. See Issue #58 for details.
+ */
 export class SignedPreKeyStoreImpl implements OrbitalSignedPreKeyStore {
   loadSignedPreKey(id: number): ArrayBuffer | undefined {
     const row = getSignedPreKey(id);

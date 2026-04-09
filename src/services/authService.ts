@@ -34,7 +34,7 @@ export async function loginUser(
     avatarPath: response.avatarUrl ?? null,
   });
   ensureKeysInitialized().catch((e: unknown) =>
-    console.warn('[KeyMaintenance]', e),
+    console.warn('[KeyMaintenance]', e instanceof Error ? e.message : 'unknown error'),
   );
 }
 
@@ -61,7 +61,8 @@ export async function signupUser(
     await generateInitialKeys();
     await uploadInitialPreKeyBundle();
   } catch (e: unknown) {
-    console.warn('[KeyGeneration] Initial key generation failed — will retry on next launch', e);
+    console.warn('[KeyGeneration] Initial key generation failed — will retry on next launch',
+      e instanceof Error ? e.message : 'unknown error');
   }
 }
 
@@ -86,7 +87,7 @@ export async function restoreSession(): Promise<boolean> {
       avatarPath: profile.avatarUrl ?? null,
     });
     ensureKeysInitialized().catch((e: unknown) =>
-      console.warn('[KeyMaintenance]', e),
+      console.warn('[KeyMaintenance]', e instanceof Error ? e.message : 'unknown error'),
     );
     return true;
   } catch (e) {

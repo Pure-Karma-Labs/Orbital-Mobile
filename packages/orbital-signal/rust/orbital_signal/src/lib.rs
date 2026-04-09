@@ -8,10 +8,12 @@ mod stores;
 mod types;
 mod util;
 
-// Store adapters and client are implemented but blocked on uniffi FfiConverterArc.
+// Client is blocked on uniffi FfiConverterArc for Object constructors.
 // See client.rs for details. Retained as reference for when the blocker is resolved.
 #[allow(dead_code)]
 mod client;
+// Store adapter structs are blocked on FfiConverterArc (same as client.rs).
+// to_protocol_address helper is used by session.rs preloaded store pattern.
 #[allow(dead_code)]
 mod store_adapters;
 

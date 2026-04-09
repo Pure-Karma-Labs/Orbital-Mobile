@@ -30,7 +30,6 @@ pub(crate) fn to_address_data(addr: &ProtocolAddress) -> ProtocolAddressData {
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn to_protocol_address(data: &ProtocolAddressData) -> SignalResult<ProtocolAddress> {
     let device_id = DeviceId::try_from(data.device_id).map_err(|_| {
         signal::SignalProtocolError::InvalidArgument(format!(

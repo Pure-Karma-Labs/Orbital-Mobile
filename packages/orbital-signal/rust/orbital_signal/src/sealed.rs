@@ -3,7 +3,7 @@ use crate::types::{ProtocolAddressData, SealedSenderResult};
 
 // Sealed sender functions require both store adapters AND backend certificate infrastructure.
 
-/// Encrypt a message using Sealed Sender (metadata-hiding).
+/// Deferred: requires server-side SenderCertificate infrastructure. See follow-up issue.
 #[uniffi::export]
 pub async fn sealed_sender_encrypt(
     _plaintext: Vec<u8>,
@@ -16,7 +16,7 @@ pub async fn sealed_sender_encrypt(
     })
 }
 
-/// Decrypt a Sealed Sender message, revealing the sender's identity.
+/// Deferred: requires server-side SenderCertificate infrastructure. See follow-up issue.
 #[uniffi::export]
 pub async fn sealed_sender_decrypt(
     _ciphertext: Vec<u8>,

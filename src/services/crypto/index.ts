@@ -11,3 +11,16 @@ export {
   checkAndRotateSignedPreKey,
   ensureKeysInitialized,
 } from './keyGenerationService';
+export {
+  encrypt,
+  decrypt,
+  decryptSignalMessage,
+  decryptPreKeyMessage,
+  establishSession,
+  encryptGroup,
+  decryptGroup,
+  createSenderKeyDistribution,
+  processSenderKeyDistribution,
+  EnvelopeType,
+} from './cryptoService';
+export type { EnvelopeTypeValue } from './cryptoService';

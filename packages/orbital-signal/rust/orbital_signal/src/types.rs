@@ -108,6 +108,144 @@ pub struct EncryptResult {
     pub updated_session_record: Vec<u8>,
 }
 
+// ---------------------------------------------------------------------------
+// Preloaded store Input/Result types for session operations (Issue #17)
+// ---------------------------------------------------------------------------
+
+/// Input for processing a pre-key bundle (X3DH key agreement to establish outgoing session).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ProcessPreKeyBundleInput {
+    pub identity_key_pair: IdentityKeyPairData,
+    pub registration_id: u32,
+    pub remote_address: ProtocolAddressData,
+    pub bundle: PreKeyBundleData,
+    pub existing_session_record: Option<Vec<u8>>,
+    pub remote_identity: Option<Vec<u8>>,
+}
+
+/// Result of processing a pre-key bundle.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ProcessPreKeyBundleResult {
+    pub updated_session_record: Vec<u8>,
+    pub identity_key: Vec<u8>,
+    pub identity_changed: bool,
+}
+
+/// Input for decrypting a standard Signal message (not pre-key).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct DecryptInput {
+    pub identity_key_pair: IdentityKeyPairData,
+    pub registration_id: u32,
+    pub sender_address: ProtocolAddressData,
+    pub session_record: Vec<u8>,
+    pub remote_identity: Option<Vec<u8>>,
+    pub ciphertext: Vec<u8>,
+}
+
+/// Result of decrypting a standard Signal message.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct DecryptResult {
+    pub plaintext: Vec<u8>,
+    pub updated_session_record: Vec<u8>,
+}
+
+/// Input for decrypting a pre-key Signal message (establishes new session).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct DecryptPreKeyInput {
+    pub identity_key_pair: IdentityKeyPairData,
+    pub registration_id: u32,
+    pub sender_address: ProtocolAddressData,
+    pub existing_session_record: Option<Vec<u8>>,
+    pub remote_identity: Option<Vec<u8>>,
+    pub pre_key_record: Option<Vec<u8>>,
+    pub signed_pre_key_record: Vec<u8>,
+    pub kyber_pre_key_record: Option<Vec<u8>>,
+    pub ciphertext: Vec<u8>,
+}
+
+/// Result of decrypting a pre-key Signal message.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct DecryptPreKeyResult {
+    pub plaintext: Vec<u8>,
+    pub updated_session_record: Vec<u8>,
+    pub sender_identity_key: Vec<u8>,
+    pub identity_changed: bool,
+    pub consumed_pre_key_id: Option<u32>,
+    pub consumed_kyber_pre_key_id: Option<u32>,
+}
+
+/// Parsed pre-key IDs from a PreKeySignalMessage (pure parsing, no crypto).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PreKeyMessageIds {
+    pub pre_key_id: Option<u32>,
+    pub signed_pre_key_id: u32,
+    pub kyber_pre_key_id: Option<u32>,
+}
+
+// ---------------------------------------------------------------------------
+// Preloaded store Input/Result types for group operations (Issue #17)
+// ---------------------------------------------------------------------------
+
+/// Input for group encryption using sender keys.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct GroupEncryptInput {
+    pub sender_address: ProtocolAddressData,
+    pub distribution_id: String,
+    pub sender_key_record: Option<Vec<u8>>,
+    pub plaintext: Vec<u8>,
+}
+
+/// Result of group encryption.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct GroupEncryptResult {
+    pub ciphertext: Vec<u8>,
+    pub updated_sender_key_record: Vec<u8>,
+}
+
+/// Input for group decryption using sender keys.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct GroupDecryptInput {
+    pub sender_address: ProtocolAddressData,
+    pub sender_key_record: Option<Vec<u8>>,
+    pub ciphertext: Vec<u8>,
+}
+
+/// Result of group decryption.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct GroupDecryptResult {
+    pub plaintext: Vec<u8>,
+    pub updated_sender_key_record: Vec<u8>,
+}
+
+/// Input for creating a sender key distribution message.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct CreateSenderKeyDistributionInput {
+    pub sender_address: ProtocolAddressData,
+    pub distribution_id: String,
+    pub sender_key_record: Option<Vec<u8>>,
+}
+
+/// Result of creating a sender key distribution message.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct CreateSenderKeyDistributionResult {
+    pub distribution_message: Vec<u8>,
+    pub updated_sender_key_record: Vec<u8>,
+}
+
+/// Input for processing an incoming sender key distribution message.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ProcessSenderKeyDistributionInput {
+    pub sender_address: ProtocolAddressData,
+    pub distribution_message: Vec<u8>,
+    pub sender_key_record: Option<Vec<u8>>,
+}
+
+/// Result of processing a sender key distribution message.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ProcessSenderKeyDistributionResult {
+    pub updated_sender_key_record: Vec<u8>,
+}
+
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct RoundtripResult {
     pub plaintext: Vec<u8>,

@@ -1,6 +1,7 @@
 use crate::error::SignalError;
 use crate::types::{
-    KyberPreKeyPublicData, PreKeyPublicData, ProtocolAddressData, SignedPreKeyPublicData,
+    KyberPreKeyPublicData, PreKeyMessageIds, PreKeyPublicData, ProtocolAddressData,
+    SignedPreKeyPublicData,
 };
 
 use libsignal_protocol::{GenericSignedPreKey, KyberPreKeyRecord, PreKeyRecord, SignedPreKeyRecord};
@@ -60,4 +61,19 @@ pub fn get_kyber_pre_key_public(
 #[uniffi::export]
 pub fn create_protocol_address(name: String, device_id: u32) -> ProtocolAddressData {
     ProtocolAddressData { name, device_id }
+}
+
+/// Parse a PreKeySignalMessage to extract pre-key IDs without performing decryption.
+///
+/// This is a pure parsing operation — no crypto or store access. TypeScript calls this
+/// to determine which pre-keys to load from SQLCipher before calling `signal_decrypt_pre_key`.
+#[uniffi::export]
+pub fn parse_prekey_message_ids(ciphertext: Vec<u8>) -> Result<PreKeyMessageIds, SignalError> {
+    let msg = libsignal_protocol::PreKeySignalMessage::try_from(ciphertext.as_slice())
+        .map_err(SignalError::from)?;
+    Ok(PreKeyMessageIds {
+        pre_key_id: msg.pre_key_id().map(u32::from),
+        signed_pre_key_id: u32::from(msg.signed_pre_key_id()),
+        kyber_pre_key_id: msg.kyber_pre_key_id().map(u32::from),
+    })
 }

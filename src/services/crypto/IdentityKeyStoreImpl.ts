@@ -10,6 +10,11 @@ import { getItem } from '../../database/repositories/itemRepository';
 import { VerifiedStatus } from '../../types/database';
 import { toArrayBuffer, bytesEqual, hexToUint8Array } from './utils';
 
+/**
+ * @deprecated These store implementations were designed for the uniffi callback interface path
+ * that is not supported in uniffi 0.31. Protocol operations now use the preloaded store pattern
+ * via cryptoService. See Issue #58 for details.
+ */
 export class IdentityKeyStoreImpl implements OrbitalIdentityKeyStore {
   private readonly cachedPublic: Uint8Array;
   private readonly cachedPrivate: Uint8Array;

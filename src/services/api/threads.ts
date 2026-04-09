@@ -2,7 +2,7 @@
  * Threads API service.
  */
 
-import { request } from './client';
+import { request, buildQueryString } from './client';
 import type {
   CreateReplyRequest,
   CreateThreadRequest,
@@ -24,17 +24,11 @@ export function getGroupThreads(
   groupId: string,
   params?: GetGroupThreadsRequest,
 ): Promise<PaginatedResponse<ThreadResponse>> {
-  const parts: string[] = [];
-  if (params?.cursor !== undefined) {
-    parts.push(`cursor=${encodeURIComponent(params.cursor)}`);
-  }
-  if (params?.limit !== undefined) {
-    parts.push(`limit=${encodeURIComponent(String(params.limit))}`);
-  }
-  if (params?.sort !== undefined) {
-    parts.push(`sort=${encodeURIComponent(params.sort)}`);
-  }
-  const qs = parts.length > 0 ? `?${parts.join('&')}` : '';
+  const qs = buildQueryString({
+    cursor: params?.cursor,
+    limit: params?.limit,
+    sort: params?.sort,
+  });
   const path = `/api/groups/${encodeURIComponent(groupId)}/threads${qs}`;
 
   return request<PaginatedResponse<ThreadResponse>>({
@@ -54,10 +48,10 @@ export function getThreadReplies(
   threadId: string,
   cursor?: string,
 ): Promise<PaginatedResponse<ReplyResponse>> {
-  const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : '';
+  const qs = buildQueryString({ cursor });
   return request<PaginatedResponse<ReplyResponse>>({
     method: 'GET',
-    path: `/api/threads/${encodeURIComponent(threadId)}/replies${query}`,
+    path: `/api/threads/${encodeURIComponent(threadId)}/replies${qs}`,
   });
 }
 

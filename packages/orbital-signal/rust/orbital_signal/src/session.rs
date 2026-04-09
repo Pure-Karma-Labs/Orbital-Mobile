@@ -18,14 +18,14 @@ use crate::types::{
 // Helper: reconstruct IdentityKeyPair from raw bytes (reuses keys.rs logic)
 // ---------------------------------------------------------------------------
 
-fn reconstruct_identity_key_pair(
+pub(crate) fn reconstruct_identity_key_pair(
     data: &crate::types::IdentityKeyPairData,
 ) -> Result<IdentityKeyPair, SignalError> {
     crate::keys::deserialize_identity_key_pair(data)
 }
 
 /// Build a single-threaded tokio runtime for block_on() calls.
-fn build_runtime() -> Result<tokio::runtime::Runtime, SignalError> {
+pub(crate) fn build_runtime() -> Result<tokio::runtime::Runtime, SignalError> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -35,7 +35,7 @@ fn build_runtime() -> Result<tokio::runtime::Runtime, SignalError> {
 }
 
 /// Create an InMemSignalProtocolStore pre-loaded with our identity.
-fn create_store(
+pub(crate) fn create_store(
     identity_key_pair: IdentityKeyPair,
     registration_id: u32,
 ) -> Result<InMemSignalProtocolStore, SignalError> {
@@ -232,49 +232,18 @@ pub fn process_pre_key_bundle(
 }
 
 // ---------------------------------------------------------------------------
-// signal_encrypt (Issue #58 spike — DO NOT MODIFY)
+// ---------------------------------------------------------------------------
+// signal_encrypt
 // ---------------------------------------------------------------------------
 
 /// Encrypt a message using the Double Ratchet protocol (preloaded store pattern).
-///
-/// Instead of accepting callback interface store params (which uniffi 0.31 does not support
-/// for exported functions), this function accepts all needed store data as a flat record.
-/// The caller (TypeScript) reads the stores before calling, and writes back the
-/// updated session record after the call returns.
-///
-/// ## Issue #58 spike result
-/// uniffi 0.31.0 does NOT generate `FfiConverterArc` impls for callback interface traits,
-/// so `Arc<dyn OrbitalIdentityKeyStore>` cannot be used as a parameter in `#[uniffi::export]`
-/// functions (same error as Object constructors). The preloaded store pattern is the
-/// confirmed workaround.
 #[uniffi::export]
 pub fn signal_encrypt(input: EncryptInput) -> Result<EncryptResult, SignalError> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| SignalError::InternalError {
-            reason: format!("tokio runtime: {e}"),
-        })?;
+    let rt = build_runtime()?;
 
     rt.block_on(async {
-        // Reconstruct identity key pair from raw bytes
-        let public_key = PublicKey::deserialize(&input.identity_key_pair.public_key)
-            .map_err(|e| SignalError::InvalidKey {
-                reason: format!("identity public key: {e}"),
-            })?;
-        let private_key =
-            libsignal_protocol::PrivateKey::deserialize(&input.identity_key_pair.private_key)
-                .map_err(|e| SignalError::InvalidKey {
-                    reason: format!("identity private key: {e}"),
-                })?;
-        let identity_key_pair =
-            IdentityKeyPair::new(IdentityKey::new(public_key), private_key);
-
-        // Create in-memory store pre-loaded with our identity
-        let mut store = InMemSignalProtocolStore::new(identity_key_pair, input.registration_id)
-            .map_err(|e| SignalError::InternalError {
-                reason: format!("failed to create in-memory store: {e}"),
-            })?;
+        let identity_key_pair = reconstruct_identity_key_pair(&input.identity_key_pair)?;
+        let mut store = create_store(identity_key_pair, input.registration_id)?;
 
         let protocol_address = to_protocol_address(&input.remote_address)?;
 

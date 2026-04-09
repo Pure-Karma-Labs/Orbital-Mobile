@@ -410,3 +410,23 @@ export interface UploadPreKeyBundleResponse {
 export interface PreKeyCountResponse {
   count: number;
 }
+
+export interface PreKeyBundleResponse {
+  registrationId: number;
+  deviceId: number;
+  identityKey: string;
+  signedPreKey: {
+    keyId: number;
+    publicKey: string;
+    signature: string;
+  };
+  preKey: {
+    keyId: number;
+    publicKey: string;
+  } | null;
+  kyberPreKey: {
+    keyId: number;
+    publicKey: string;
+    signature: string;
+  } | null;
+}

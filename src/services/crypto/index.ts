@@ -1,9 +1,3 @@
-export { IdentityKeyStoreImpl } from './IdentityKeyStoreImpl';
-export { SessionStoreImpl } from './SessionStoreImpl';
-export { PreKeyStoreImpl } from './PreKeyStoreImpl';
-export { SignedPreKeyStoreImpl } from './SignedPreKeyStoreImpl';
-export { KyberPreKeyStoreImpl } from './KyberPreKeyStoreImpl';
-export { SenderKeyStoreImpl } from './SenderKeyStoreImpl';
 export {
   generateInitialKeys,
   uploadInitialPreKeyBundle,
@@ -11,3 +5,13 @@ export {
   checkAndRotateSignedPreKey,
   ensureKeysInitialized,
 } from './keyGenerationService';
+export {
+  encrypt,
+  decrypt,
+  encryptGroup,
+  decryptGroup,
+  createSenderKeyDistribution,
+  processSenderKeyDistribution,
+  EnvelopeType,
+} from './cryptoService';
+export type { EnvelopeTypeValue } from './cryptoService';

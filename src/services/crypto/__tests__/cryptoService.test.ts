@@ -51,6 +51,11 @@ jest.mock('../../api/keys', () => ({
   getPreKeyBundle: jest.fn(),
 }));
 
+const mockGetCachedPrivateKey = jest.fn();
+jest.mock('../keyGenerationService', () => ({
+  getCachedIdentityPrivateKeyHex: (...args: unknown[]) => mockGetCachedPrivateKey(...args),
+}));
+
 const mockGetState = jest.fn(() => ({ userId: 'local-user-id' }));
 jest.mock('../../../stores/useAppStore', () => ({
   useAppStore: {
@@ -132,9 +137,10 @@ function setupDefaultMocks(): void {
   (getDatabase as jest.Mock).mockReturnValue(mockDb);
   mockDb.executeSync.mockReturnValue(undefined);
 
+  mockGetCachedPrivateKey.mockReturnValue(IDENTITY_PRIVATE_HEX);
+
   (getItem as jest.Mock).mockImplementation((key: string) => {
     if (key === 'identityKeyPublic') return IDENTITY_PUBLIC_HEX;
-    if (key === 'identityKeyPrivate') return IDENTITY_PRIVATE_HEX;
     if (key === 'registrationId') return '12345';
     return null;
   });
@@ -244,6 +250,7 @@ describe('encrypt', () => {
 
   it('throws if identity keys are not initialized', async () => {
     (getItem as jest.Mock).mockReturnValue(null);
+    mockGetCachedPrivateKey.mockReturnValue(null);
 
     await expect(encrypt(mockAddress, makeUint8Array(16))).rejects.toThrow(
       'Identity key pair not initialized',

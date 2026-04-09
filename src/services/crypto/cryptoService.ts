@@ -75,6 +75,7 @@ import {
 import type { PreKeyBundleResponse } from '../../types/api';
 import { VerifiedStatus } from '../../types/database';
 import { useAppStore } from '../../stores/useAppStore';
+import { getCachedIdentityPrivateKeyHex } from './keyGenerationService';
 
 // ---------------------------------------------------------------------------
 // Per-address operation lock
@@ -122,7 +123,7 @@ function withTransaction<T>(fn: () => T): T {
 
 function loadIdentityKeyPair(): IdentityKeyPairData {
   const publicHex = getItem('identityKeyPublic');
-  const privateHex = getItem('identityKeyPrivate');
+  const privateHex = getCachedIdentityPrivateKeyHex();
   if (publicHex === null || privateHex === null) {
     throw new Error('Identity key pair not initialized');
   }

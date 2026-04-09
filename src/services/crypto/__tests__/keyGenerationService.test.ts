@@ -13,6 +13,7 @@ jest.mock('orbital-signal', () => ({
 jest.mock('../../../database/repositories/itemRepository', () => ({
   getItem: jest.fn(),
   setItem: jest.fn(),
+  removeItem: jest.fn(),
 }));
 
 jest.mock('../../../database/repositories/signalPreKeyRepository', () => ({
@@ -40,6 +41,11 @@ jest.mock('../../api/keys', () => ({
   getPreKeyCount: jest.fn(),
 }));
 
+jest.mock('../../secure-storage', () => ({
+  getSecureItem: jest.fn(),
+  setSecureItem: jest.fn().mockResolvedValue(undefined),
+}));
+
 import {
   generateIdentityKeyPair,
   generatePreKey,
@@ -49,13 +55,14 @@ import {
   getSignedPreKeyPublic,
   getKyberPreKeyPublic,
 } from 'orbital-signal';
-import { getItem, setItem } from '../../../database/repositories/itemRepository';
+import { getItem, setItem, removeItem } from '../../../database/repositories/itemRepository';
 import { savePreKey } from '../../../database/repositories/signalPreKeyRepository';
 import { saveSignedPreKey } from '../../../database/repositories/signalSignedPreKeyRepository';
 import { saveKyberPreKey } from '../../../database/repositories/signalKyberPreKeyRepository';
 import { getDatabase } from '../../../database/connection';
 import { queryOne } from '../../../database/queryHelpers';
 import { uploadPreKeyBundle, getPreKeyCount } from '../../api/keys';
+import { getSecureItem, setSecureItem } from '../../secure-storage';
 
 import {
   generateInitialKeys,
@@ -63,6 +70,7 @@ import {
   checkAndReplenishPreKeys,
   checkAndRotateSignedPreKey,
   ensureKeysInitialized,
+  initIdentityKeyCache,
 } from '../keyGenerationService';
 
 // ---------------------------------------------------------------------------
@@ -128,6 +136,8 @@ function setupKyberPreKeyMock(): void {
   });
 }
 
+const PRIVATE_KEY_HEX = '0202020202020202020202020202020202020202020202020202020202020202';
+
 beforeEach(() => {
   jest.resetAllMocks();
 
@@ -137,8 +147,9 @@ beforeEach(() => {
   setupSignedPreKeyMock();
   setupKyberPreKeyMock();
 
-  // Default: no existing keys
+  // Default: no existing keys in DB or Keychain
   (getItem as jest.Mock).mockReturnValue(null);
+  (getSecureItem as jest.Mock).mockResolvedValue(null);
 
   // Default: upload succeeds
   (uploadPreKeyBundle as jest.Mock).mockResolvedValue({ success: true });
@@ -158,12 +169,26 @@ describe('generateInitialKeys', () => {
     expect(mockDb.executeSync).not.toHaveBeenCalled();
   });
 
-  it('generates identity key pair and stores it', async () => {
+  it('generates identity key pair and stores public key in SQLCipher', async () => {
     await generateInitialKeys();
 
     expect(generateIdentityKeyPair).toHaveBeenCalledTimes(1);
     expect(setItem).toHaveBeenCalledWith('identityKeyPublic', expect.any(String));
-    expect(setItem).toHaveBeenCalledWith('identityKeyPrivate', expect.any(String));
+  });
+
+  it('writes private key to Keychain (not SQLCipher items table)', async () => {
+    await generateInitialKeys();
+
+    expect(setSecureItem).toHaveBeenCalledWith(
+      'com.orbital.mobile.identity-key-private',
+      expect.any(String),
+    );
+    // Must NOT write identityKeyPrivate to the items table
+    const setItemCalls = (setItem as jest.Mock).mock.calls;
+    const wrotePrivateToDb = setItemCalls.some(
+      ([key]: [string]) => key === 'identityKeyPrivate',
+    );
+    expect(wrotePrivateToDb).toBe(false);
   });
 
   it('generates registration ID using crypto.getRandomValues (not Math.random)', async () => {
@@ -232,6 +257,44 @@ describe('generateInitialKeys', () => {
     expect(setItem).toHaveBeenCalledWith('nextKyberPreKeyId', '102');
     expect(setItem).toHaveBeenCalledWith('activeSignedPreKeyId', '1');
     expect(setItem).toHaveBeenCalledWith('lastResortKyberPreKeyId', '101');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// initIdentityKeyCache
+// ---------------------------------------------------------------------------
+
+describe('initIdentityKeyCache', () => {
+  it('loads private key from Keychain when present', async () => {
+    (getSecureItem as jest.Mock).mockResolvedValue(PRIVATE_KEY_HEX);
+
+    await initIdentityKeyCache();
+
+    expect(getSecureItem).toHaveBeenCalledWith('com.orbital.mobile.identity-key-private');
+    // Should not touch SQLCipher
+    expect(getItem).not.toHaveBeenCalledWith('identityKeyPrivate');
+  });
+
+  it('migrates private key from SQLCipher to Keychain when only in DB', async () => {
+    (getSecureItem as jest.Mock).mockResolvedValue(null);
+    (getItem as jest.Mock).mockImplementation((key: string) =>
+      key === 'identityKeyPrivate' ? PRIVATE_KEY_HEX : null,
+    );
+
+    await initIdentityKeyCache();
+
+    expect(setSecureItem).toHaveBeenCalledWith(
+      'com.orbital.mobile.identity-key-private',
+      PRIVATE_KEY_HEX,
+    );
+    expect(removeItem).toHaveBeenCalledWith('identityKeyPrivate');
+  });
+
+  it('returns without error when no key exists anywhere (new user pre-registration)', async () => {
+    (getSecureItem as jest.Mock).mockResolvedValue(null);
+    (getItem as jest.Mock).mockReturnValue(null);
+
+    await expect(initIdentityKeyCache()).resolves.toBeUndefined();
   });
 });
 
@@ -320,13 +383,16 @@ describe('uploadInitialPreKeyBundle', () => {
 // ---------------------------------------------------------------------------
 
 describe('checkAndReplenishPreKeys', () => {
-  function setupItemsForReplenishment(): void {
+  async function setupItemsForReplenishment(): Promise<void> {
+    // Seed the module-scoped cache via initIdentityKeyCache
+    (getSecureItem as jest.Mock).mockResolvedValue(PRIVATE_KEY_HEX);
+    await initIdentityKeyCache();
+
     (getItem as jest.Mock).mockImplementation((key: string) => {
       const values: Record<string, string> = {
         nextPreKeyId: '101',
         nextKyberPreKeyId: '102',
         identityKeyPublic: '0101010101010101010101010101010101010101010101010101010101010101',
-        identityKeyPrivate: '0202020202020202020202020202020202020202020202020202020202020202',
         registrationId: '12345',
         activeSignedPreKeyId: '1',
         lastResortKyberPreKeyId: '101',
@@ -347,7 +413,7 @@ describe('checkAndReplenishPreKeys', () => {
 
   it('generates and uploads new keys when count is below threshold', async () => {
     (getPreKeyCount as jest.Mock).mockResolvedValue({ count: 5 });
-    setupItemsForReplenishment();
+    await setupItemsForReplenishment();
 
     await checkAndReplenishPreKeys();
 
@@ -358,7 +424,7 @@ describe('checkAndReplenishPreKeys', () => {
 
   it('updates nextPreKeyId and nextKyberPreKeyId counters after generating', async () => {
     (getPreKeyCount as jest.Mock).mockResolvedValue({ count: 0 });
-    setupItemsForReplenishment();
+    await setupItemsForReplenishment();
 
     await checkAndReplenishPreKeys();
 
@@ -368,7 +434,7 @@ describe('checkAndReplenishPreKeys', () => {
 
   it('wraps DB writes in a transaction', async () => {
     (getPreKeyCount as jest.Mock).mockResolvedValue({ count: 0 });
-    setupItemsForReplenishment();
+    await setupItemsForReplenishment();
 
     await checkAndReplenishPreKeys();
 
@@ -378,6 +444,9 @@ describe('checkAndReplenishPreKeys', () => {
 
   it('does nothing if identity keys are missing', async () => {
     (getPreKeyCount as jest.Mock).mockResolvedValue({ count: 0 });
+    // Cache is null (reset by jest.resetAllMocks in beforeEach) and getSecureItem returns null
+    (getSecureItem as jest.Mock).mockResolvedValue(null);
+    await initIdentityKeyCache();
     (getItem as jest.Mock).mockReturnValue(null);
 
     await checkAndReplenishPreKeys();
@@ -393,14 +462,17 @@ describe('checkAndReplenishPreKeys', () => {
 const SEVEN_DAYS_SECONDS = 7 * 24 * 60 * 60;
 
 describe('checkAndRotateSignedPreKey', () => {
-  function setupItemsForRotation(lastRotationSecondsAgo: number): void {
+  async function setupItemsForRotation(lastRotationSecondsAgo: number): Promise<void> {
+    // Seed the module-scoped cache via initIdentityKeyCache
+    (getSecureItem as jest.Mock).mockResolvedValue(PRIVATE_KEY_HEX);
+    await initIdentityKeyCache();
+
     const lastRotation = Math.floor(Date.now() / 1000) - lastRotationSecondsAgo;
     (getItem as jest.Mock).mockImplementation((key: string) => {
       const values: Record<string, string> = {
         lastSignedPreKeyRotation: String(lastRotation),
         nextSignedPreKeyId: '2',
         identityKeyPublic: '0101010101010101010101010101010101010101010101010101010101010101',
-        identityKeyPrivate: '0202020202020202020202020202020202020202020202020202020202020202',
         registrationId: '12345',
         lastResortKyberPreKeyId: '101',
       };
@@ -411,7 +483,7 @@ describe('checkAndRotateSignedPreKey', () => {
   }
 
   it('does nothing when rotation is not due', async () => {
-    setupItemsForRotation(SEVEN_DAYS_SECONDS - 60);
+    await setupItemsForRotation(SEVEN_DAYS_SECONDS - 60);
 
     await checkAndRotateSignedPreKey();
 
@@ -419,7 +491,7 @@ describe('checkAndRotateSignedPreKey', () => {
   });
 
   it('rotates when last rotation was more than 7 days ago', async () => {
-    setupItemsForRotation(SEVEN_DAYS_SECONDS + 1);
+    await setupItemsForRotation(SEVEN_DAYS_SECONDS + 1);
 
     await checkAndRotateSignedPreKey();
 
@@ -429,7 +501,7 @@ describe('checkAndRotateSignedPreKey', () => {
   });
 
   it('updates activeSignedPreKeyId and rotation timestamp after rotate', async () => {
-    setupItemsForRotation(SEVEN_DAYS_SECONDS + 1);
+    await setupItemsForRotation(SEVEN_DAYS_SECONDS + 1);
 
     await checkAndRotateSignedPreKey();
 
@@ -439,7 +511,7 @@ describe('checkAndRotateSignedPreKey', () => {
   });
 
   it('wraps DB writes in a transaction', async () => {
-    setupItemsForRotation(SEVEN_DAYS_SECONDS + 1);
+    await setupItemsForRotation(SEVEN_DAYS_SECONDS + 1);
 
     await checkAndRotateSignedPreKey();
 
@@ -448,11 +520,14 @@ describe('checkAndRotateSignedPreKey', () => {
   });
 
   it('rotates when lastSignedPreKeyRotation is not set (first run)', async () => {
+    // Seed the module-scoped cache via initIdentityKeyCache
+    (getSecureItem as jest.Mock).mockResolvedValue(PRIVATE_KEY_HEX);
+    await initIdentityKeyCache();
+
     (getItem as jest.Mock).mockImplementation((key: string) => {
       const values: Record<string, string> = {
         nextSignedPreKeyId: '2',
         identityKeyPublic: '0101010101010101010101010101010101010101010101010101010101010101',
-        identityKeyPrivate: '0202020202020202020202020202020202020202020202020202020202020202',
         registrationId: '12345',
         lastResortKyberPreKeyId: '101',
       };

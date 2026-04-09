@@ -370,3 +370,43 @@ export interface VersionCheckResponse {
   /** Optional deep link to the app store */
   updateUrl?: string;
 }
+
+// ============================================================
+// Signal Keys
+// ============================================================
+
+export interface PreKeyPublicUpload {
+  keyId: number;
+  publicKey: string;
+}
+
+export interface SignedPreKeyPublicUpload {
+  keyId: number;
+  publicKey: string;
+  signature: string;
+}
+
+export interface KyberPreKeyPublicUpload {
+  keyId: number;
+  publicKey: string;
+  signature: string;
+  lastResort?: boolean;
+}
+
+export interface UploadPreKeyBundleRequest {
+  registrationId: number;
+  deviceId: number;
+  identityKey: string;
+  signedPreKey: SignedPreKeyPublicUpload;
+  preKeys: PreKeyPublicUpload[];
+  kyberPreKeys: KyberPreKeyPublicUpload[];
+  lastResortKyberPreKey: KyberPreKeyPublicUpload;
+}
+
+export interface UploadPreKeyBundleResponse {
+  success: boolean;
+}
+
+export interface PreKeyCountResponse {
+  count: number;
+}

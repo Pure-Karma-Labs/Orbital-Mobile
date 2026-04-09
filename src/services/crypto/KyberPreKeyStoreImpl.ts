@@ -4,10 +4,7 @@ import {
   saveKyberPreKey,
   markKyberPreKeyUsed,
 } from '../../database/repositories/signalKyberPreKeyRepository';
-
-function toArrayBuffer(u8: Uint8Array): ArrayBuffer {
-  return u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer;
-}
+import { toArrayBuffer } from './utils';
 
 export class KyberPreKeyStoreImpl implements OrbitalKyberPreKeyStore {
   loadKyberPreKey(id: number): ArrayBuffer | undefined {

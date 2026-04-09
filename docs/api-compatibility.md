@@ -178,8 +178,8 @@ All 12 API service modules have corresponding test suites under `src/services/ap
 | `keys.ts` | `keys.test.ts` | 4 |
 | `tokenManager.ts` | `tokenManager.test.ts` | 25 |
 | `users.ts` | `users.test.ts` | 6 |
-| `groups.ts` | `groups.test.ts` | 10 |
-| `messages.ts` | `messages.test.ts` | 8 |
+| `groups.ts` | `groups.test.ts` | 11 |
+| `messages.ts` | `messages.test.ts` | 7 |
 | `media.ts` | `media.test.ts` | 7 |
 | `invites.ts` | `invites.test.ts` | 6 |
 | `devices.ts` | `devices.test.ts` | 2 |

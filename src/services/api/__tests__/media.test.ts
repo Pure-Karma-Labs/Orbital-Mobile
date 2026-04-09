@@ -31,6 +31,14 @@ describe('uploadChunk', () => {
     expect(callArg.path).toBe('/api/media/upload/chunk');
     expect(callArg.body).toBeInstanceOf(FormData);
     expect(callArg.timeout).toBe(60_000);
+
+    // Verify FormData fields are set correctly
+    const fd = callArg.body as FormData;
+    const get = (fd as unknown as { get: (k: string) => string | null }).get.bind(fd);
+    expect(get('chunk_index')).toBe('0');
+    expect(get('total_chunks')).toBe('3');
+    expect(get('encrypted_chunk')).toBe('base64chunk==');
+    expect(get('hmac')).toBe('hmactag==');
   });
 
   it('includes uploadId in FormData when provided', async () => {
@@ -82,13 +90,12 @@ describe('downloadMedia', () => {
   it('calls GET /api/media/:mediaId/download with rawResponse and 60s timeout', async () => {
     await downloadMedia('media-abc');
 
-    expect(mockRequest).toHaveBeenCalledWith({
-      method: 'GET',
-      path: '/api/media/media-abc/download',
-      rawResponse: true,
-      timeout: 60_000,
-      signal: undefined,
-    });
+    const callArg = mockRequest.mock.calls[0][0];
+    expect(callArg.method).toBe('GET');
+    expect(callArg.path).toBe('/api/media/media-abc/download');
+    expect(callArg.rawResponse).toBe(true);
+    expect(callArg.timeout).toBe(60_000);
+    expect(callArg.signal).toBeUndefined();
   });
 
   it('encodes special characters in mediaId', async () => {

@@ -3,6 +3,7 @@
  */
 
 jest.mock('../client', () => ({
+  ...jest.requireActual('../client'),
   request: jest.fn(),
 }));
 

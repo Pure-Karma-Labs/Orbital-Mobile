@@ -94,6 +94,26 @@ export function camelToSnake(value: unknown): unknown {
 }
 
 // ============================================================
+// Query string builder
+// ============================================================
+
+/**
+ * Build a query string from a params object. Skips undefined values.
+ * Returns the leading '?' or empty string if no params.
+ */
+export function buildQueryString(
+  params: Record<string, string | number | undefined>,
+): string {
+  const parts: string[] = [];
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined) {
+      parts.push(`${key}=${encodeURIComponent(String(value))}`);
+    }
+  }
+  return parts.length > 0 ? `?${parts.join('&')}` : '';
+}
+
+// ============================================================
 // 401 deduplication guard
 // ============================================================
 
@@ -156,9 +176,10 @@ export async function request<T>(options: RequestOptions): Promise<T> {
 
   if (!skipAuth) {
     const token = await tokenManager.getAccessToken();
-    if (token !== null) {
-      headers['Authorization'] = `Bearer ${token}`;
+    if (token === null) {
+      throw new AuthError(401, 'No access token available — user is not authenticated');
     }
+    headers['Authorization'] = `Bearer ${token}`;
   }
 
   let serializedBody: string | FormData | undefined;

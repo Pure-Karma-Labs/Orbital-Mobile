@@ -5,22 +5,13 @@ use libsignal_protocol::{
 };
 
 use crate::error::SignalError;
+use crate::session::build_runtime;
 use crate::store_adapters::to_protocol_address;
 use crate::types::{
     CreateSenderKeyDistributionInput, CreateSenderKeyDistributionResult, GroupDecryptInput,
     GroupDecryptResult, GroupEncryptInput, GroupEncryptResult,
     ProcessSenderKeyDistributionInput, ProcessSenderKeyDistributionResult,
 };
-
-/// Build a single-threaded tokio runtime for block_on() calls.
-fn build_runtime() -> Result<tokio::runtime::Runtime, SignalError> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| SignalError::InternalError {
-            reason: format!("tokio runtime: {e}"),
-        })
-}
 
 /// Parse a distribution ID string as UUID.
 fn parse_distribution_id(s: &str) -> Result<Uuid, SignalError> {

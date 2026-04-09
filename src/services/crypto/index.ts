@@ -1,9 +1,3 @@
-export { IdentityKeyStoreImpl } from './IdentityKeyStoreImpl';
-export { SessionStoreImpl } from './SessionStoreImpl';
-export { PreKeyStoreImpl } from './PreKeyStoreImpl';
-export { SignedPreKeyStoreImpl } from './SignedPreKeyStoreImpl';
-export { KyberPreKeyStoreImpl } from './KyberPreKeyStoreImpl';
-export { SenderKeyStoreImpl } from './SenderKeyStoreImpl';
 export {
   generateInitialKeys,
   uploadInitialPreKeyBundle,
@@ -14,9 +8,6 @@ export {
 export {
   encrypt,
   decrypt,
-  decryptSignalMessage,
-  decryptPreKeyMessage,
-  establishSession,
   encryptGroup,
   decryptGroup,
   createSenderKeyDistribution,

@@ -97,8 +97,6 @@ import { getPreKeyBundle } from '../../api/keys';
 import {
   encrypt,
   decrypt,
-  decryptPreKeyMessage,
-  establishSession,
   encryptGroup,
   decryptGroup,
   createSenderKeyDistribution,
@@ -379,19 +377,19 @@ describe('decrypt type 3 (PreKeySignalMessage)', () => {
 // establishSession
 // ---------------------------------------------------------------------------
 
-describe('establishSession', () => {
-  it('fetches bundle, processes it, and saves session + identity', async () => {
-    (getSession as jest.Mock).mockReturnValue(null);
+describe('establishSession (via encrypt auto-establish)', () => {
+  it('fetches bundle, processes it, saves session + identity, then encrypts', async () => {
+    (getSession as jest.Mock)
+      .mockReturnValueOnce(null)
+      .mockReturnValue({ record: makeUint8Array(128, 0x40) });
     (getIdentityKey as jest.Mock).mockReturnValue(null);
 
-    await establishSession(mockAddress);
+    await encrypt(mockAddress, makeUint8Array(16));
 
     expect(getPreKeyBundle).toHaveBeenCalledWith('recipient-uuid');
     expect(processPreKeyBundle).toHaveBeenCalledTimes(1);
-    expect(mockDb.executeSync).toHaveBeenCalledWith('BEGIN IMMEDIATE');
-    expect(saveSession).toHaveBeenCalledTimes(1);
     expect(saveIdentityKey).toHaveBeenCalledTimes(1);
-    expect(mockDb.executeSync).toHaveBeenCalledWith('COMMIT');
+    expect(signalEncrypt).toHaveBeenCalledTimes(1);
   });
 });
 

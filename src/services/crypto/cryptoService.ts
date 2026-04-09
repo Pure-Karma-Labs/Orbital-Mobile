@@ -179,7 +179,7 @@ function bundleResponseToData(resp: PreKeyBundleResponse): PreKeyBundleData {
  * Fetch the remote user's pre-key bundle from the server and perform X3DH key
  * agreement to establish an outgoing session. Saves the session and remote identity.
  */
-export async function establishSession(
+async function establishSession(
   remoteAddress: ProtocolAddressData,
 ): Promise<void> {
   const localServiceId = getLocalServiceId();

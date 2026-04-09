@@ -3,7 +3,23 @@ name: Build
 on:
   push:
     branches: [main]
+    paths:
+      - 'packages/orbital-signal/**'
+      - 'android/**'
+      - 'ios/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'rust-toolchain.toml'
+      - '.github/workflows/build.yml'
   pull_request:
+    paths:
+      - 'packages/orbital-signal/**'
+      - 'android/**'
+      - 'ios/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'rust-toolchain.toml'
+      - '.github/workflows/build.yml'
 
 concurrency:
   group: build-${{ github.ref }}
@@ -146,6 +162,23 @@ jobs:
         working-directory: ios
         run: pod install
 
+      - name: Detect iOS Simulator
+        id: simulator
+        run: |
+          # Pick the first available iPhone simulator
+          DEVICE=$(xcrun simctl list devices available -j | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          for runtime, devices in data['devices'].items():
+            if 'iOS' in runtime:
+              for d in devices:
+                if 'iPhone' in d['name'] and d['isAvailable']:
+                  print(d['name']); sys.exit()
+          print('iPhone 17 Pro')  # fallback
+          ")
+          echo "device=$DEVICE" >> "$GITHUB_OUTPUT"
+          echo "Using simulator: $DEVICE"
+
       - name: Build iOS Debug
         run: |
           set -o pipefail
@@ -154,6 +187,6 @@ jobs:
             -scheme OrbitalMobile \
             -configuration Debug \
             -sdk iphonesimulator \
-            -destination 'platform=iOS Simulator,name=iPhone 16' \
+            -destination "platform=iOS Simulator,name=${{ steps.simulator.outputs.device }}" \
             CODE_SIGNING_ALLOWED=NO \
             build 2>&1 | tee xcodebuild.log | tail -50

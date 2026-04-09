@@ -8,30 +8,7 @@ import { getDatabase } from '../../database/connection';
 import { getIdentityKey, saveIdentityKey } from '../../database/repositories/signalIdentityKeyRepository';
 import { getItem } from '../../database/repositories/itemRepository';
 import { VerifiedStatus } from '../../types/database';
-
-function toArrayBuffer(u8: Uint8Array): ArrayBuffer {
-  return u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer;
-}
-
-function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
-}
-
-function hexToUint8Array(hex: string): Uint8Array {
-  if (hex.length % 2 !== 0) {
-    throw new Error('Invalid hex string: odd length');
-  }
-  const bytes = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < bytes.length; i++) {
-    const byte = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-    bytes[i] = byte;
-  }
-  return bytes;
-}
+import { toArrayBuffer, bytesEqual, hexToUint8Array } from './utils';
 
 export class IdentityKeyStoreImpl implements OrbitalIdentityKeyStore {
   private readonly cachedPublic: Uint8Array;

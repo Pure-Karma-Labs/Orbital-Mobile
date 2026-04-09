@@ -6,10 +6,7 @@ import {
   getSenderKey,
   saveSenderKey,
 } from '../../database/repositories/signalSenderKeyRepository';
-
-function toArrayBuffer(u8: Uint8Array): ArrayBuffer {
-  return u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer;
-}
+import { toArrayBuffer } from './utils';
 
 export class SenderKeyStoreImpl implements OrbitalSenderKeyStore {
   private readonly localServiceId: string;

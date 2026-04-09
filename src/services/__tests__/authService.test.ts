@@ -27,6 +27,17 @@ jest.mock('../api/tokenManager', () => ({
   },
 }));
 
+// Mock key generation service — requires native TurboModule not available in Jest
+const mockGenerateInitialKeys = jest.fn().mockResolvedValue(undefined);
+const mockUploadInitialPreKeyBundle = jest.fn().mockResolvedValue(undefined);
+const mockEnsureKeysInitialized = jest.fn().mockResolvedValue(undefined);
+
+jest.mock('../crypto/keyGenerationService', () => ({
+  generateInitialKeys: (...args: unknown[]) => mockGenerateInitialKeys(...args),
+  uploadInitialPreKeyBundle: (...args: unknown[]) => mockUploadInitialPreKeyBundle(...args),
+  ensureKeysInitialized: (...args: unknown[]) => mockEnsureKeysInitialized(...args),
+}));
+
 // Mock the MMKV module used via require() inside logout()
 jest.mock('../../stores/middleware/persistence', () => ({
   getMMKVInstance: jest.fn(() => ({ clearAll: jest.fn() })),
@@ -140,6 +151,21 @@ describe('loginUser', () => {
     expect(mockSetTokens).not.toHaveBeenCalled();
     expect(mockSetUser).not.toHaveBeenCalled();
   });
+
+  it('fires ensureKeysInitialized after login', async () => {
+    mockLogin.mockResolvedValue({
+      token: 'tok',
+      refreshToken: 'ref',
+      userId: 'u1',
+      username: 'alice',
+      displayName: null,
+      avatarUrl: null,
+    });
+
+    await loginUser('alice', 'secret');
+
+    expect(mockEnsureKeysInitialized).toHaveBeenCalledTimes(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -180,6 +206,35 @@ describe('signupUser', () => {
     ).rejects.toThrow('invite invalid');
     expect(mockSetUser).not.toHaveBeenCalled();
   });
+
+  it('calls generateInitialKeys and uploadInitialPreKeyBundle after signup', async () => {
+    mockSignup.mockResolvedValue({
+      token: 'tok',
+      refreshToken: 'ref',
+      userId: 'u1',
+      username: 'frank',
+    });
+
+    await signupUser('frank', 'pass', 'f@x.com', 'CODE');
+
+    expect(mockGenerateInitialKeys).toHaveBeenCalledTimes(1);
+    expect(mockUploadInitialPreKeyBundle).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not throw if key generation fails after signup', async () => {
+    mockSignup.mockResolvedValue({
+      token: 'tok',
+      refreshToken: 'ref',
+      userId: 'u1',
+      username: 'grace',
+    });
+    mockGenerateInitialKeys.mockRejectedValue(new Error('FFI crash'));
+
+    await expect(
+      signupUser('grace', 'pass', 'g@x.com', 'CODE'),
+    ).resolves.not.toThrow();
+    expect(mockSetUser).toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -218,6 +273,22 @@ describe('restoreSession', () => {
       avatarPath: null,
     });
     expect(mockClearTokens).not.toHaveBeenCalled();
+  });
+
+  it('fires ensureKeysInitialized after successful session restore', async () => {
+    mockGetAccessToken.mockResolvedValue('stored-token');
+    mockVerifyToken.mockResolvedValue({ valid: true, userId: 'u1', username: 'eve' });
+    mockGetMe.mockResolvedValue({
+      id: 'u1',
+      username: 'eve',
+      displayName: 'Eve',
+      avatarUrl: null,
+      createdAt: '2024-01-01',
+    });
+
+    await restoreSession();
+
+    expect(mockEnsureKeysInitialized).toHaveBeenCalledTimes(1);
   });
 
   it('clears tokens and returns false on AuthError', async () => {

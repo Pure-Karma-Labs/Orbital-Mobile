@@ -4,10 +4,7 @@ import {
   savePreKey,
   removePreKey,
 } from '../../database/repositories/signalPreKeyRepository';
-
-function toArrayBuffer(u8: Uint8Array): ArrayBuffer {
-  return u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer;
-}
+import { toArrayBuffer } from './utils';
 
 export class PreKeyStoreImpl implements OrbitalPreKeyStore {
   loadPreKey(id: number): ArrayBuffer | undefined {

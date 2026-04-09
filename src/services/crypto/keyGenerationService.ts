@@ -82,6 +82,10 @@ export function getCachedIdentityPrivateKeyHex(): string | null {
   return cachedPrivateKeyHex;
 }
 
+export function clearIdentityKeyCache(): void {
+  cachedPrivateKeyHex = null;
+}
+
 type KeyDataRow = { key_data: Uint8Array };
 
 export async function generateInitialKeys(): Promise<void> {

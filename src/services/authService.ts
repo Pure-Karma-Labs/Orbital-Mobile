@@ -14,6 +14,7 @@ import {
   generateInitialKeys,
   uploadInitialPreKeyBundle,
   ensureKeysInitialized,
+  clearIdentityKeyCache,
 } from './crypto/keyGenerationService';
 
 /**
@@ -114,6 +115,8 @@ export async function logout(): Promise<void> {
   const state = useAppStore.getState();
   state.setConversations([]);
   state.setContacts([]);
+  // Clear cached identity key — prevents previous user's key from persisting in memory
+  clearIdentityKeyCache();
   // Clear MMKV persistence — prevents previous user's data from surviving
   const { getMMKVInstance } = require('../stores/middleware/persistence');
   try {

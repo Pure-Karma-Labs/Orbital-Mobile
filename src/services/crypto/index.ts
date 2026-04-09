@@ -6,6 +6,7 @@ export {
   ensureKeysInitialized,
   initIdentityKeyCache,
   getCachedIdentityPrivateKeyHex,
+  clearIdentityKeyCache,
 } from './keyGenerationService';
 export {
   encrypt,

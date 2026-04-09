@@ -7,6 +7,7 @@ export * as invites from './invites';
 export * as media from './media';
 export * as devices from './devices';
 export * as version from './version';
+export * as keys from './keys';
 export { tokenManager } from './tokenManager';
 export {
   ApiError,

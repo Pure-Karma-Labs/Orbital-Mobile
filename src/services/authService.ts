@@ -10,6 +10,11 @@ import * as users from './api/users';
 import { tokenManager } from './api/tokenManager';
 import { NetworkError } from './api/errors';
 import { useAppStore } from '../stores/useAppStore';
+import {
+  generateInitialKeys,
+  uploadInitialPreKeyBundle,
+  ensureKeysInitialized,
+} from './crypto/keyGenerationService';
 
 /**
  * Log in with username + password. On success, stores tokens and populates
@@ -28,6 +33,9 @@ export async function loginUser(
     // API returns avatarUrl, store uses avatarPath
     avatarPath: response.avatarUrl ?? null,
   });
+  ensureKeysInitialized().catch((e: unknown) =>
+    console.warn('[KeyMaintenance]', e),
+  );
 }
 
 /**
@@ -49,6 +57,12 @@ export async function signupUser(
     displayName: null,
     avatarPath: null,
   });
+  try {
+    await generateInitialKeys();
+    await uploadInitialPreKeyBundle();
+  } catch (e: unknown) {
+    console.warn('[KeyGeneration] Initial key generation failed — will retry on next launch', e);
+  }
 }
 
 /**
@@ -71,6 +85,9 @@ export async function restoreSession(): Promise<boolean> {
       displayName: profile.displayName,
       avatarPath: profile.avatarUrl ?? null,
     });
+    ensureKeysInitialized().catch((e: unknown) =>
+      console.warn('[KeyMaintenance]', e),
+    );
     return true;
   } catch (e) {
     if (e instanceof NetworkError) throw e;

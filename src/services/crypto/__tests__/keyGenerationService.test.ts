@@ -234,7 +234,7 @@ describe('generateInitialKeys', () => {
   it('wraps all database writes in a transaction', async () => {
     await generateInitialKeys();
 
-    expect(mockDb.executeSync).toHaveBeenCalledWith('BEGIN TRANSACTION');
+    expect(mockDb.executeSync).toHaveBeenCalledWith('BEGIN IMMEDIATE');
     expect(mockDb.executeSync).toHaveBeenCalledWith('COMMIT');
     expect(mockDb.executeSync).not.toHaveBeenCalledWith('ROLLBACK');
   });
@@ -248,7 +248,7 @@ describe('generateInitialKeys', () => {
 
     await expect(generateInitialKeys()).rejects.toThrow('Simulated DB write failure');
 
-    expect(mockDb.executeSync).toHaveBeenCalledWith('BEGIN TRANSACTION');
+    expect(mockDb.executeSync).toHaveBeenCalledWith('BEGIN IMMEDIATE');
     expect(mockDb.executeSync).toHaveBeenCalledWith('ROLLBACK');
     expect(mockDb.executeSync).not.toHaveBeenCalledWith('COMMIT');
   });
@@ -401,7 +401,7 @@ describe('checkAndReplenishPreKeys', () => {
 
     await checkAndReplenishPreKeys();
 
-    expect(mockDb.executeSync).toHaveBeenCalledWith('BEGIN TRANSACTION');
+    expect(mockDb.executeSync).toHaveBeenCalledWith('BEGIN IMMEDIATE');
     expect(mockDb.executeSync).toHaveBeenCalledWith('COMMIT');
   });
 
@@ -472,7 +472,7 @@ describe('checkAndRotateSignedPreKey', () => {
 
     await checkAndRotateSignedPreKey();
 
-    expect(mockDb.executeSync).toHaveBeenCalledWith('BEGIN TRANSACTION');
+    expect(mockDb.executeSync).toHaveBeenCalledWith('BEGIN IMMEDIATE');
     expect(mockDb.executeSync).toHaveBeenCalledWith('COMMIT');
   });
 

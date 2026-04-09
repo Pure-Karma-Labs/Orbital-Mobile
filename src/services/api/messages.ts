@@ -6,7 +6,7 @@
  * binary payload that the Signal Protocol layer handles.
  */
 
-import { request } from './client';
+import { request, buildQueryString } from './client';
 import type {
   FetchMessagesRequest,
   FetchMessagesResponse,
@@ -25,14 +25,10 @@ export function sendMessage(data: SendMessageRequest): Promise<SendMessageRespon
 export function fetchMessages(
   params?: FetchMessagesRequest,
 ): Promise<FetchMessagesResponse> {
-  const parts: string[] = [];
-  if (params?.since !== undefined) {
-    parts.push(`since=${encodeURIComponent(String(params.since))}`);
-  }
-  if (params?.limit !== undefined) {
-    parts.push(`limit=${encodeURIComponent(String(params.limit))}`);
-  }
-  const qs = parts.length > 0 ? `?${parts.join('&')}` : '';
+  const qs = buildQueryString({
+    since: params?.since,
+    limit: params?.limit,
+  });
 
   return request<FetchMessagesResponse>({
     method: 'GET',

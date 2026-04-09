@@ -86,17 +86,13 @@ describe('auth header injection', () => {
     expect((init.headers as Record<string, string>)['Authorization']).toBeUndefined();
   });
 
-  it('omits Authorization header when no token available', async () => {
+  it('throws AuthError when no token available and skipAuth is false', async () => {
+    const { AuthError } = require('../errors');
     (tokenManager.getAccessToken as jest.Mock).mockResolvedValue(null);
-    mockFetchOk({ ok: true });
 
-    await request({ method: 'GET', path: '/api/test' });
-
-    const [, init] = ((globalThis as Record<string, unknown>).fetch as jest.Mock).mock.calls[0] as [
-      string,
-      RequestInit,
-    ];
-    expect((init.headers as Record<string, string>)['Authorization']).toBeUndefined();
+    await expect(
+      request({ method: 'GET', path: '/api/test' }),
+    ).rejects.toBeInstanceOf(AuthError);
   });
 });
 

@@ -95,7 +95,7 @@ export async function generateInitialKeys(): Promise<void> {
   kyberPreKeyRecords.push({ id: lastResortKyberId, record: lastResortResult.record, isLastResort: true });
 
   const db = getDatabase();
-  db.executeSync('BEGIN TRANSACTION');
+  db.executeSync('BEGIN IMMEDIATE');
   try {
     setItem(ITEM_KEYS.IDENTITY_KEY_PUBLIC, uint8ArrayToHex(new Uint8Array(identityKeyPair.publicKey)));
     setItem(ITEM_KEYS.IDENTITY_KEY_PRIVATE, uint8ArrayToHex(new Uint8Array(identityKeyPair.privateKey)));
@@ -270,7 +270,7 @@ export async function checkAndReplenishPreKeys(): Promise<void> {
   }
 
   const db = getDatabase();
-  db.executeSync('BEGIN TRANSACTION');
+  db.executeSync('BEGIN IMMEDIATE');
   try {
     for (const { id, record } of newPreKeyRecords) {
       savePreKey({ id, key_data: new Uint8Array(record), created_at: nowSeconds });
@@ -383,7 +383,7 @@ export async function checkAndRotateSignedPreKey(): Promise<void> {
   );
 
   const db = getDatabase();
-  db.executeSync('BEGIN TRANSACTION');
+  db.executeSync('BEGIN IMMEDIATE');
   try {
     saveSignedPreKey({
       id: newSignedPreKeyId,

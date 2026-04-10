@@ -9,6 +9,7 @@ import { initDatabase } from './database';
 import { runMigrations } from './database/migrations';
 import { tokenManager } from './services/api/tokenManager';
 import { useAppStore } from './stores/useAppStore';
+import { initIdentityKeyCache } from './services/crypto/keyGenerationService';
 
 /**
  * App bootstrap sequence — runs once before any screens mount.
@@ -29,6 +30,7 @@ export async function bootstrap(): Promise<void> {
   const dbKey = await getOrCreateDatabaseKey();
   initDatabase(dbKey);
   runMigrations();
+  await initIdentityKeyCache();
   tokenManager.configure(new KeychainTokenStorage());
   // Global 401 handler: when tokens are cleared (e.g. on HTTP 401),
   // automatically clear auth state so the app gate shows the login screen.

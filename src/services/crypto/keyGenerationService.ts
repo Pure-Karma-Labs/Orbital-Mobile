@@ -7,7 +7,7 @@ import {
   getSignedPreKeyPublic,
   getKyberPreKeyPublic,
 } from 'orbital-signal';
-import { getItem, setItem } from '../../database/repositories/itemRepository';
+import { getItem, setItem, removeItem } from '../../database/repositories/itemRepository';
 import { savePreKey } from '../../database/repositories/signalPreKeyRepository';
 import { saveSignedPreKey } from '../../database/repositories/signalSignedPreKeyRepository';
 import { saveKyberPreKey } from '../../database/repositories/signalKyberPreKeyRepository';
@@ -28,10 +28,11 @@ import type {
   PreKeyPublicUpload,
   KyberPreKeyPublicUpload,
 } from '../../types/api';
+import { getSecureItem, setSecureItem } from '../secure-storage';
+import { SecureKeys } from '../secure-storage/constants';
 
 const ITEM_KEYS = {
   IDENTITY_KEY_PUBLIC: 'identityKeyPublic',
-  IDENTITY_KEY_PRIVATE: 'identityKeyPrivate',
   REGISTRATION_ID: 'registrationId',
   NEXT_PRE_KEY_ID: 'nextPreKeyId',
   NEXT_SIGNED_PRE_KEY_ID: 'nextSignedPreKeyId',
@@ -47,7 +48,43 @@ const REPLENISHMENT_THRESHOLD = 20;
 const SIGNED_PRE_KEY_ROTATION_SECONDS = 7 * 24 * 60 * 60;
 const DEVICE_ID = 1;
 
+let cachedPrivateKeyHex: string | null = null;
 let initializationPromise: Promise<void> | null = null;
+
+/**
+ * Load the identity private key into the module-scoped cache.
+ *
+ * On first boot after migration: key will be in Keychain already.
+ * On pre-migration installs: key is in SQLCipher — migrate it to Keychain
+ * then remove the plaintext copy from the database.
+ */
+export async function initIdentityKeyCache(): Promise<void> {
+  // 1. Try Keychain first (new installs and migrated users)
+  const fromKeychain = await getSecureItem(SecureKeys.IDENTITY_KEY_PRIVATE);
+  if (fromKeychain !== null) {
+    cachedPrivateKeyHex = fromKeychain;
+    return;
+  }
+
+  // 2. Fallback: read from SQLCipher items table (pre-migration users)
+  const fromDb = getItem('identityKeyPrivate');
+  if (fromDb === null) {
+    return; // No identity key anywhere — user hasn't registered yet
+  }
+
+  // 3. Migrate: write to Keychain, then remove from SQLCipher
+  await setSecureItem(SecureKeys.IDENTITY_KEY_PRIVATE, fromDb);
+  removeItem('identityKeyPrivate');
+  cachedPrivateKeyHex = fromDb;
+}
+
+export function getCachedIdentityPrivateKeyHex(): string | null {
+  return cachedPrivateKeyHex;
+}
+
+export function clearIdentityKeyCache(): void {
+  cachedPrivateKeyHex = null;
+}
 
 type KeyDataRow = { key_data: Uint8Array };
 
@@ -94,11 +131,14 @@ export async function generateInitialKeys(): Promise<void> {
   );
   kyberPreKeyRecords.push({ id: lastResortKyberId, record: lastResortResult.record, isLastResort: true });
 
+  const privateHex = uint8ArrayToHex(new Uint8Array(identityKeyPair.privateKey));
+  await setSecureItem(SecureKeys.IDENTITY_KEY_PRIVATE, privateHex);
+  cachedPrivateKeyHex = privateHex;
+
   const db = getDatabase();
   db.executeSync('BEGIN IMMEDIATE');
   try {
     setItem(ITEM_KEYS.IDENTITY_KEY_PUBLIC, uint8ArrayToHex(new Uint8Array(identityKeyPair.publicKey)));
-    setItem(ITEM_KEYS.IDENTITY_KEY_PRIVATE, uint8ArrayToHex(new Uint8Array(identityKeyPair.privateKey)));
     setItem(ITEM_KEYS.REGISTRATION_ID, String(registrationId));
     setItem(ITEM_KEYS.NEXT_PRE_KEY_ID, String(firstPreKeyId + PRE_KEY_BATCH_SIZE));
     setItem(ITEM_KEYS.NEXT_SIGNED_PRE_KEY_ID, String(signedPreKeyId + 1));
@@ -236,7 +276,7 @@ export async function checkAndReplenishPreKeys(): Promise<void> {
   const nextPreKeyIdStr = getItem(ITEM_KEYS.NEXT_PRE_KEY_ID);
   const nextKyberPreKeyIdStr = getItem(ITEM_KEYS.NEXT_KYBER_PRE_KEY_ID);
   const identityKeyPublicHex = getItem(ITEM_KEYS.IDENTITY_KEY_PUBLIC);
-  const identityKeyPrivateHex = getItem(ITEM_KEYS.IDENTITY_KEY_PRIVATE);
+  const identityKeyPrivateHex = getCachedIdentityPrivateKeyHex();
 
   if (
     nextPreKeyIdStr === null ||
@@ -356,7 +396,7 @@ export async function checkAndRotateSignedPreKey(): Promise<void> {
 
   const nextSignedPreKeyIdStr = getItem(ITEM_KEYS.NEXT_SIGNED_PRE_KEY_ID);
   const identityKeyPublicHex = getItem(ITEM_KEYS.IDENTITY_KEY_PUBLIC);
-  const identityKeyPrivateHex = getItem(ITEM_KEYS.IDENTITY_KEY_PRIVATE);
+  const identityKeyPrivateHex = getCachedIdentityPrivateKeyHex();
   const registrationIdStr = getItem(ITEM_KEYS.REGISTRATION_ID);
   const lastResortKyberPreKeyIdStr = getItem(ITEM_KEYS.LAST_RESORT_KYBER_PRE_KEY_ID);
 

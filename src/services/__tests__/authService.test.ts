@@ -31,11 +31,13 @@ jest.mock('../api/tokenManager', () => ({
 const mockGenerateInitialKeys = jest.fn().mockResolvedValue(undefined);
 const mockUploadInitialPreKeyBundle = jest.fn().mockResolvedValue(undefined);
 const mockEnsureKeysInitialized = jest.fn().mockResolvedValue(undefined);
+const mockClearIdentityKeyCache = jest.fn();
 
 jest.mock('../crypto/keyGenerationService', () => ({
   generateInitialKeys: (...args: unknown[]) => mockGenerateInitialKeys(...args),
   uploadInitialPreKeyBundle: (...args: unknown[]) => mockUploadInitialPreKeyBundle(...args),
   ensureKeysInitialized: (...args: unknown[]) => mockEnsureKeysInitialized(...args),
+  clearIdentityKeyCache: () => mockClearIdentityKeyCache(),
 }));
 
 // Mock the MMKV module used via require() inside logout()

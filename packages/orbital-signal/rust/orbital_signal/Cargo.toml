@@ -7,6 +7,10 @@ rust-version = "1.85"
 [lib]
 crate-type = ["lib", "staticlib", "cdylib"]
 
+[features]
+default = []
+dev-roundtrip = []
+
 [dependencies]
 uniffi = "0.31.0"
 thiserror = "2.0"

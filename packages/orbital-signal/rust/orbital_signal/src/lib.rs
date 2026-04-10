@@ -1,6 +1,7 @@
 mod error;
 mod group;
 mod keys;
+#[cfg(feature = "dev-roundtrip")]
 mod roundtrip;
 mod sealed;
 mod session;
@@ -20,6 +21,7 @@ mod store_adapters;
 pub use error::*;
 pub use group::*;
 pub use keys::*;
+#[cfg(feature = "dev-roundtrip")]
 pub use roundtrip::*;
 pub use sealed::*;
 pub use session::*;

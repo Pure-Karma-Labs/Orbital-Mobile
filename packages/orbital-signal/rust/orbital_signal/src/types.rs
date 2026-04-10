@@ -246,6 +246,7 @@ pub struct ProcessSenderKeyDistributionResult {
     pub updated_sender_key_record: Vec<u8>,
 }
 
+#[cfg(feature = "dev-roundtrip")]
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct RoundtripResult {
     pub plaintext: Vec<u8>,
@@ -255,6 +256,7 @@ pub struct RoundtripResult {
     pub elapsed_ms: u64,
 }
 
+#[cfg(feature = "dev-roundtrip")]
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct RoundtripBatchResult {
     pub success_count: u32,

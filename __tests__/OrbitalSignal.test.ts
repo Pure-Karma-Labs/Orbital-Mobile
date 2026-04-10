@@ -48,32 +48,21 @@ jest.mock('orbital-signal/src/generated/orbital_signal', () => ({
     name,
     deviceId,
   })),
-  // Session operations (stubbed — blocked on uniffi store adapter)
-  processPreKeyBundle: jest.fn(async () => { throw new Error('Not yet implemented'); }),
-  signalEncrypt: jest.fn(async () => { throw new Error('Not yet implemented'); }),
-  signalDecrypt: jest.fn(async () => { throw new Error('Not yet implemented'); }),
-  signalDecryptPreKey: jest.fn(async () => { throw new Error('Not yet implemented'); }),
-  // Group operations (stubbed)
-  createSenderKeyDistributionMessage: jest.fn(async () => { throw new Error('Not yet implemented'); }),
-  processSenderKeyDistributionMessage: jest.fn(async () => { throw new Error('Not yet implemented'); }),
-  groupEncrypt: jest.fn(async () => { throw new Error('Not yet implemented'); }),
-  groupDecrypt: jest.fn(async () => { throw new Error('Not yet implemented'); }),
-  // Sealed sender (stubbed)
+  // Session operations (preloaded store pattern)
+  processPreKeyBundle: jest.fn(() => ({ updatedSessionRecord: new ArrayBuffer(128), identityKey: new ArrayBuffer(33), identityChanged: false })),
+  signalEncrypt: jest.fn(() => ({ ciphertext: { messageType: 0, serialized: new ArrayBuffer(64) }, updatedSessionRecord: new ArrayBuffer(128) })),
+  signalDecrypt: jest.fn(() => ({ plaintext: new ArrayBuffer(16), updatedSessionRecord: new ArrayBuffer(128) })),
+  signalDecryptPreKey: jest.fn(() => ({ plaintext: new ArrayBuffer(16), updatedSessionRecord: new ArrayBuffer(128), senderIdentityKey: new ArrayBuffer(33), identityChanged: false })),
+  // Group operations (preloaded store pattern)
+  createSenderKeyDistributionMessage: jest.fn(() => ({ distributionMessage: new ArrayBuffer(64), updatedSenderKeyRecord: new ArrayBuffer(128) })),
+  processSenderKeyDistributionMessage: jest.fn(() => ({ updatedSenderKeyRecord: new ArrayBuffer(128) })),
+  groupEncrypt: jest.fn(() => ({ ciphertext: new ArrayBuffer(64), updatedSenderKeyRecord: new ArrayBuffer(128) })),
+  groupDecrypt: jest.fn(() => ({ plaintext: new ArrayBuffer(16), updatedSenderKeyRecord: new ArrayBuffer(128) })),
+  // Sealed sender (stubbed — deferred pending server certificate infrastructure)
   sealedSenderEncrypt: jest.fn(async () => { throw new Error('Not yet implemented'); }),
   sealedSenderDecrypt: jest.fn(async () => { throw new Error('Not yet implemented'); }),
-  // Roundtrip PoC (Issue #11)
-  testEncryptDecryptRoundtrip: jest.fn((plaintext: ArrayBuffer) => ({
-    plaintext,
-    ciphertextLen: 256,
-    decrypted: plaintext,
-    success: true,
-    elapsedMs: BigInt(42),
-  })),
-  testEncryptDecryptRoundtripN: jest.fn((_plaintext: ArrayBuffer, iterations: number) => ({
-    successCount: iterations,
-    totalElapsedMs: BigInt(420),
-    avgElapsedMs: BigInt(42),
-  })),
+  // Utility
+  parsePreKeyMessageIds: jest.fn(() => ({ preKeyId: 1, signedPreKeyId: 1, kyberPreKeyId: 1 })),
   // Enums (numeric ordinals matching generated TypeScript enums)
   CiphertextMessageType: { Whisper: 0, PreKey: 1, SenderKey: 2, Plaintext: 3 },
   Direction: { Sending: 0, Receiving: 1 },
@@ -85,7 +74,8 @@ jest.mock('orbital-signal/src/generated/orbital_signal', () => ({
 
 describe('orbital_signal bindings', () => {
   // -------------------------------------------------------------------------
-  // API surface — verify all 20 functions are exported
+  // API surface — verify all 19 production functions are exported
+  // (roundtrip PoC functions gated behind dev-roundtrip feature flag)
   // -------------------------------------------------------------------------
   const EXPECTED_FUNCTIONS = [
     'generateIdentityKeyPair',
@@ -96,6 +86,7 @@ describe('orbital_signal bindings', () => {
     'getSignedPreKeyPublic',
     'getKyberPreKeyPublic',
     'createProtocolAddress',
+    'parsePreKeyMessageIds',
     'processPreKeyBundle',
     'signalEncrypt',
     'signalDecrypt',
@@ -106,11 +97,9 @@ describe('orbital_signal bindings', () => {
     'groupDecrypt',
     'sealedSenderEncrypt',
     'sealedSenderDecrypt',
-    'testEncryptDecryptRoundtrip',
-    'testEncryptDecryptRoundtripN',
   ] as const;
 
-  it('exports all 20 functions', () => {
+  it('exports all 19 production functions', () => {
     const mod = require('orbital-signal/src/generated/orbital_signal');
     for (const fn of EXPECTED_FUNCTIONS) {
       expect(typeof mod[fn]).toBe('function');
@@ -174,43 +163,16 @@ describe('orbital_signal bindings', () => {
   // -------------------------------------------------------------------------
   // Stubbed functions — verify they reject with expected error
   // -------------------------------------------------------------------------
+  // Sealed sender stubs — only these remain stubbed (deferred to Phase 3+)
   const STUBBED_FUNCTIONS = [
-    'processPreKeyBundle',
-    'signalEncrypt',
-    'signalDecrypt',
-    'signalDecryptPreKey',
-    'createSenderKeyDistributionMessage',
-    'processSenderKeyDistributionMessage',
-    'groupEncrypt',
-    'groupDecrypt',
     'sealedSenderEncrypt',
     'sealedSenderDecrypt',
   ] as const;
 
-  it('stubbed functions reject with Not yet implemented', async () => {
+  it('sealed sender stubs reject with Not yet implemented', async () => {
     const mod = require('orbital-signal/src/generated/orbital_signal');
     for (const fn of STUBBED_FUNCTIONS) {
       await expect(mod[fn]()).rejects.toThrow('Not yet implemented');
     }
-  });
-
-  // -------------------------------------------------------------------------
-  // Roundtrip PoC (Issue #11)
-  // -------------------------------------------------------------------------
-  it('testEncryptDecryptRoundtrip returns result with success and timing', () => {
-    const { testEncryptDecryptRoundtrip } = require('orbital-signal/src/generated/orbital_signal');
-    const result = testEncryptDecryptRoundtrip(new ArrayBuffer(21));
-    expect(result).toHaveProperty('success', true);
-    expect(result).toHaveProperty('ciphertextLen');
-    expect(result).toHaveProperty('decrypted');
-    expect(result).toHaveProperty('elapsedMs');
-  });
-
-  it('testEncryptDecryptRoundtripN returns batch results', () => {
-    const { testEncryptDecryptRoundtripN } = require('orbital-signal/src/generated/orbital_signal');
-    const result = testEncryptDecryptRoundtripN(new ArrayBuffer(11), 10);
-    expect(result.successCount).toBe(10);
-    expect(result).toHaveProperty('totalElapsedMs');
-    expect(result).toHaveProperty('avgElapsedMs');
   });
 });

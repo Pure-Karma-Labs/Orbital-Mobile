@@ -4,6 +4,9 @@ export {
   checkAndReplenishPreKeys,
   checkAndRotateSignedPreKey,
   ensureKeysInitialized,
+  initIdentityKeyCache,
+  getCachedIdentityPrivateKeyHex,
+  clearIdentityKeyCache,
 } from './keyGenerationService';
 export {
   encrypt,

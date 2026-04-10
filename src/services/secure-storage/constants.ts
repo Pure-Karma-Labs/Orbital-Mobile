@@ -6,6 +6,7 @@ export const SecureKeys = {
   MMKV_ENCRYPTION_KEY: `${SERVICE_PREFIX}.mmkv-encryption-key`,
   DATABASE_ENCRYPTION_KEY: `${SERVICE_PREFIX}.database-encryption-key`,
   INSTALLED_SENTINEL: `${SERVICE_PREFIX}.installed`,
+  IDENTITY_KEY_PRIVATE: `${SERVICE_PREFIX}.identity-key-private`,
 } as const;
 
 export type SecureKey = (typeof SecureKeys)[keyof typeof SecureKeys];

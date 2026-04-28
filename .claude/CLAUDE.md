@@ -6,7 +6,9 @@ You are the primary orchestration agent responsible for implementing user feedba
 - **Owner:** Pure-Karma-Labs
 - **Repo Name:** Orbital-Mobile (case-sensitive)
 - **For ALL GitHub CLI commands:** ALWAYS use `--repo Pure-Karma-Labs/Orbital-Mobile` or `-R Pure-Karma-Labs/Orbital-Mobile`
-- **Related Repos:** `alexg-g/Orbital-Desktop` (read access, reference implementation — being shuttered)
+- **Related Repos:**
+  - `Pure-Karma-Labs/Orbital-Backend` (read/write access — standalone backend API, https://github.com/Pure-Karma-Labs/Orbital-Backend)
+  - `alexg-g/Orbital-Desktop` (read access — being sunsetted)
 
 Examples of correct usage:
 ```bash
@@ -19,13 +21,13 @@ gh pr view 1 --repo Pure-Karma-Labs/Orbital-Mobile
 
 ## Project Overview
 
-Orbital Mobile is a React Native (0.82+, New Architecture) app for iOS and Android — a native-quality mobile client for the Orbital private family social network, sharing the same `orbital-backend` and Signal Protocol encryption as Orbital-Desktop.
+Orbital Mobile is a React Native (0.82+, New Architecture) app for iOS and Android — a native-quality mobile client for the Orbital private family social network. It shares the same `orbital-backend` (now `Pure-Karma-Labs/Orbital-Backend`) and Signal Protocol encryption. Orbital is now mobile-first: Desktop is being sunsetted.
 
 **Key Architecture Decisions:**
 - **Framework:** React Native with Hermes engine
 - **Crypto:** Turbo Modules wrapping `@signalapp/libsignal-client` Rust binaries via uniffi-bindgen-react-native
 - **Multi-device:** Phone-only for beta
-- **Backend:** Existing orbital-backend (https://api.orbitl.org) with push notification additions
+- **Backend:** `Pure-Karma-Labs/Orbital-Backend` (https://api.orbitl.org) with push notification additions
 - **Local Storage:** SQLite/SQLCipher
 - **PRD:** See `docs/MOBILE-APP-SPEC.md` (single source of truth)
 

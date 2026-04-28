@@ -1,7 +1,8 @@
 ---
 name: rust-native-engineer
 description: Own uniffi-bindgen-react-native toolchain, Rust wrapper crate around libsignal, cross-compilation, and Swift/Kotlin native bridges
-model: opus
+model: claude-opus-4-6
+effort: high
 tools: Read, Glob, Grep, Edit, Write, Bash
 memory: project
 maxTurns: 30

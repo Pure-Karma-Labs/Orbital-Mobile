@@ -1,7 +1,8 @@
 ---
 name: skill-builder
 description: Meta-agent for creating, reviewing, and improving skills and auditing agent configurations for underused subagent features
-model: opus
+model: claude-opus-4-6
+effort: high
 tools: Read, Glob, Grep, Edit, Write, Bash
 ---
 

@@ -1,7 +1,8 @@
 ---
 name: tech-debt-collector
 description: Detect agentic code bloat, monitor API architecture fragility, track performance consequences, maintain a debt registry, and provide prioritized optimization recommendations across the full stack
-model: opus
+model: claude-opus-4-6
+effort: high
 tools: Read, Glob, Grep, Bash
 disallowedTools: Edit, Write
 permissionMode: plan

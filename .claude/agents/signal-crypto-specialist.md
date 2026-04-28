@@ -1,7 +1,8 @@
 ---
 name: signal-crypto-specialist
 description: Own Signal Protocol integration, libsignal API surface design, encryption stores, and key management for Orbital Mobile
-model: opus
+model: claude-opus-4-6
+effort: high
 tools: Read, Glob, Grep, Edit, Write, Bash
 memory: project
 maxTurns: 30

@@ -1,7 +1,8 @@
 ---
 name: agent-builder
 description: Meta-agent for creating and maintaining expert agents. Initializes expertise.yaml files that experts self-maintain as their mental models
-model: opus
+model: claude-opus-4-6
+effort: high
 tools: Read, Glob, Grep, Edit, Write, Bash
 memory: project
 maxTurns: 30

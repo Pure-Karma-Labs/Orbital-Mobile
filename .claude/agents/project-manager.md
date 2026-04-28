@@ -1,10 +1,8 @@
 ---
 name: project-manager
 description: Manage GitHub Issues/Milestones, track progress, coordinate project timeline, and identify risks and blockers
-model: haiku
-tools: Read, Glob, Grep, Bash
-disallowedTools: Edit, Write
-permissionMode: plan
+model: sonnet
+tools: Read, Glob, Grep, Edit, Write, Bash
 memory: project
 maxTurns: 20
 ---

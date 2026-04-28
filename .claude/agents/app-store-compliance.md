@@ -1,7 +1,8 @@
 ---
 name: app-store-compliance
 description: Ensure iOS app follows Apple App Store Review Guidelines, Human Interface Guidelines, and all current best practices for smooth App Store submission and approval
-model: sonnet
+model: claude-opus-4-6
+effort: high
 tools: Read, Glob, Grep, Bash, WebSearch, WebFetch
 disallowedTools: Edit, Write
 permissionMode: plan

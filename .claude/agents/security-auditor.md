@@ -1,7 +1,8 @@
 ---
 name: security-auditor
 description: Conduct crypto audits, mobile security reviews, keychain/keystore verification, and OWASP Mobile Top 10 assessment
-model: opus
+model: claude-opus-4-6
+effort: high
 tools: Read, Glob, Grep, Bash
 disallowedTools: Edit, Write
 permissionMode: plan

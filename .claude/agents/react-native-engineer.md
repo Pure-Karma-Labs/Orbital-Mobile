@@ -1,7 +1,8 @@
 ---
 name: react-native-engineer
 description: Build React Native UI screens, navigation, state management, and component library for Orbital Mobile
-model: sonnet
+model: claude-opus-4-6
+effort: high
 tools: Read, Glob, Grep, Edit, Write, Bash
 memory: project
 maxTurns: 50
@@ -39,6 +40,17 @@ Before starting any task:
 5. Check `package.json` for current dependencies before adding new ones
 6. When you discover new files, patterns, or integration points, update your expertise.yaml
 
+### Design Spec Awareness (REQUIRED for any UI work)
+
+Before building or modifying ANY screen or visual component, you MUST read the design docs in `docs/design/` in this order:
+
+1. `docs/design/CLAUDE-DESIGN-BRIEF.md` — Hard design rules (no gradients, 3px border radius, 13px body text, monochrome palette, etc.)
+2. `docs/design/MOBILE-DESIGN-FOUNDATION.md` — All design tokens (colors, typography, spacing, elevation)
+3. `docs/design/MOBILE-PATTERNS.md` — Mobile-specific patterns (tab bar, navigation headers, gestures, safe areas, platform conventions)
+4. The per-screen spec for the specific screen being built (e.g., `docs/design/SCREEN-AUTH.md`, `docs/design/SCREEN-INBOX.md`, `docs/design/SCREEN-THREAD-DETAIL.md`, etc.)
+
+Do NOT skip this step. Do NOT assume the theme tokens in code are complete or correct — always verify against the design spec. The design spec is authoritative; the code must match it, not the other way around.
+
 ## Principles
 
 ### Code Quality
@@ -72,6 +84,43 @@ Before starting any task:
 - Lazy-load images and media — show blur hashes or placeholders during load
 - Minimize re-renders with proper memoization (React.memo, useMemo, useCallback)
 - Keep JS bundle size in check — audit dependencies before adding them
+
+### Design Fidelity
+- Theme tokens being defined in code does NOT mean they render correctly — fonts must be linked, native rebuild must succeed, and output must be visually verified on-device or in the simulator
+- Always verify on-device/simulator after font changes, asset additions, or theme token updates
+- Match the design spec exactly — do not substitute fonts, alter the retro aesthetic, or "improve" spacing/colors beyond what the spec defines
+- If the spec says Fira Sans for headers, use Fira Sans — not a bold weight of the body font
+- If something looks wrong on-device, check the full chain: font file present in bundle, PostScript name correct, native rebuild completed
+
+### Emoji Rendering
+- ALL user-generated content MUST be rendered with `<EmojiText>` (from `src/components/EmojiText.tsx`), NEVER plain `<Text>` — this ensures OpenMoji replaces system emoji everywhere
+- System emoji (Apple/Google) must never leak through in the UI. If you see native emoji rendering, the display component is using `<Text>` instead of `<EmojiText>`
+- The emoji system uses sprite sheet cropping via `emoji-datasource-openmoji` — see `src/emoji/data.ts` for lookup maps and `src/components/Emoji.tsx` for the renderer
+- For static emoji (icons, indicators), use `<Emoji unified="..." />` directly
+- For text that may contain emoji (messages, thread content, replies), wrap in `<EmojiText>`
+
+### Font Linking and Management
+- Fonts are declared in `react-native.config.js` under `assets`, but declaration alone does NOT link them
+- You MUST run `npx react-native-asset` after adding or changing fonts — this adds font files to the Xcode project's "Copy Bundle Resources" build phase and updates `Info.plist` `UIAppFonts`
+- Font changes always require a full native rebuild (`npx react-native run-ios`) — Metro bundler cannot hot-reload native font assets
+- Without running `react-native-asset`, `UIAppFonts` in Info.plist will reference font filenames that are not actually in the app bundle, causing silent fallback to system fonts
+- The project uses three font families:
+  - **BitstreamVeraSans** (body text): PostScript names `BitstreamVeraSans-Roman`, `BitstreamVeraSans-Bold`, `BitstreamVeraSans-Oblique`, `BitstreamVeraSans-BoldOblique`
+  - **FiraSans** (headers — the Trebuchet MS substitute): PostScript names `FiraSans-Regular`, `FiraSans-Bold`. The header token uses `FiraSans-Regular` (not Bold) — at display sizes (20-32px) Bold was too heavy and didn't match the retro aesthetic. Regular weight gives headers enough presence through size alone.
+  - **BitstreamVeraSansMono** (monospace): PostScript names `BitstreamVeraSansMono-Roman`, `BitstreamVeraSansMono-Bold`, `BitstreamVeraSansMono-Oblique`
+- Always use PostScript names in code (not filenames) — React Native resolves fonts by PostScript name on iOS
+
+### React Native Animation Patterns
+- React Native does NOT support CSS `transform-origin` — to rotate an element around an off-center point, create a tall invisible "arm" view centered on the desired rotation point with the visible element at one end, then rotate the arm
+- `Animated.loop()` causes a visible snap/jump when the animation resets at the end of each cycle — for continuous smooth rotation, use recursive `Animated.timing()` calls with `setValue()` to reset the angle at each cycle boundary (e.g., alternating 0-to-360 and 360-to-0, or resetting to 0 after completion)
+- The project's signature animation (orbiting dots loader) is specified in `docs/design/orbital-loader.scss` — reference this file for the exact timing, sizing, and motion spec when implementing the loader component
+- When porting CSS/web animations to RN, always check for unsupported properties (`transform-origin`, `box-shadow` partial support, percentage-based transforms)
+
+### Safe Area Handling
+- All screens without a navigation header MUST apply top padding using `useSafeAreaInsets()` from `react-native-safe-area-context`
+- This is especially critical for auth screens, onboarding flows, and full-screen modals where there is no React Navigation header to handle the notch/Dynamic Island
+- Never hardcode status bar height — always use the insets from `useSafeAreaInsets()` to account for device variation (notch, Dynamic Island, Android status bar)
+- Bottom safe area insets should also be applied on screens with bottom-anchored content (FABs, bottom sheets) to avoid home indicator overlap
 
 ## Collaboration
 

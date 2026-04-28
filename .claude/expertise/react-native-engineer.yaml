@@ -1,5 +1,5 @@
-version: "1.1"
-last_updated: "2026-04-08"
+version: "1.2"
+last_updated: "2026-04-28"
 agent: react-native-engineer
 
 core_files:
@@ -21,7 +21,7 @@ core_files:
     last_hash: f478efe
 
   - path: src/theme/typography.ts
-    purpose: Font family (PostScript names), font size scale, line heights, font weights, letter spacing
+    purpose: "Font family (PostScript names), font size scale, line heights, font weights, letter spacing. header uses FiraSans-Regular (not Bold — too heavy at display sizes)"
     key_symbols:
       - fontFamily
       - fontSize
@@ -29,7 +29,7 @@ core_files:
       - fontWeight
       - letterSpacing
       - Typography
-    last_hash: 9b2314a
+    last_hash: modified
 
   - path: src/theme/spacing.ts
     purpose: Spacing scale, border radius values, thread indentation constants
@@ -121,6 +121,42 @@ core_files:
     purpose: CI pipeline — lint, typecheck, and Jest tests on self-hosted macOS runner
     last_hash: c3743d9
 
+  - path: src/components/OrbitalLoader.tsx
+    purpose: "Animated orbiting dots logo — blue (4s CW), purple (2s CCW), yellow (7s CCW). Uses recursive Animated.timing with setValue reset for smooth continuous rotation. Arm-view pattern for off-center rotation (no transform-origin in RN)."
+    key_symbols:
+      - OrbitalLoader
+      - OrbitalLoaderProps
+    last_hash: new
+
+  - path: src/components/AsciiBanner.tsx
+    purpose: "Retro double-box ASCII banner (╔═══╗ style). Mono font, blue color, configurable text prop. Used on auth screens as subtitle replacement."
+    key_symbols:
+      - AsciiBanner
+      - AsciiBannerProps
+    last_hash: new
+
+  - path: src/components/index.ts
+    purpose: "Barrel export — TextInput, Button, ErrorBanner, Header, AsciiDay, AsciiSection, Avatar, Badge, OrbitalLoader, AsciiBanner"
+    last_hash: modified
+
+  - path: src/screens/LoginScreen.tsx
+    purpose: "Login screen — OrbitalLoader + Fira Sans title + AsciiBanner subtitle + username/password form + underlined switch link (fontSize.base)"
+    key_symbols:
+      - LoginScreen
+      - LoginScreenProps
+    last_hash: modified
+
+  - path: src/screens/SignupScreen.tsx
+    purpose: "Signup screen — same layout as login with username/email/password/invite fields. Uses useSafeAreaInsets() for notch-safe top padding."
+    key_symbols:
+      - SignupScreen
+      - SignupScreenProps
+    last_hash: modified
+
+  - path: ios/OrbitalMobile/Info.plist
+    purpose: "iOS config — UIAppFonts has 7 entries (5 BitstreamVera + 2 FiraSans). Fonts linked via npx react-native-asset."
+    last_hash: modified
+
 documentation:
   - path: docs/MOBILE-APP-SPEC.md
     relevance: Single source of truth — complete PRD with architecture overview, API reference (Part 4), data model (Part 5), screen specs (Part 6), and implementation phases (Part 7)
@@ -132,14 +168,50 @@ documentation:
   - path: CLAUDE.md
     relevance: Project overview, current phase (Phase 1 Foundation), quick start commands, agent roster
 
+  - path: docs/design/CLAUDE-DESIGN-BRIEF.md
+    relevance: "MUST READ before any UI work — hard design rules: no gradients, 3px border radius, 13px body text, monochrome palette, retro aesthetic constraints"
+
+  - path: docs/design/MOBILE-DESIGN-FOUNDATION.md
+    relevance: "MUST READ before any UI work — all design tokens: colors, typography (three font families), spacing, elevation"
+
+  - path: docs/design/MOBILE-PATTERNS.md
+    relevance: "MUST READ before any UI work — mobile-specific patterns: tab bar, navigation headers, gestures, safe areas, platform conventions"
+
+  - path: docs/design/SCREEN-AUTH.md
+    relevance: Auth screen design spec — login/signup layout, orbital loader animation, safe area requirements
+
+  - path: docs/design/SCREEN-INBOX.md
+    relevance: Inbox/thread list screen design spec — orbit selector, thread cards, unread indicators
+
+  - path: docs/design/SCREEN-THREAD-DETAIL.md
+    relevance: Thread detail screen design spec — nested replies, depth coloring, composer integration
+
+  - path: docs/design/SCREEN-COMPOSER.md
+    relevance: Composer screen design spec — new thread/reply creation, rich text, media attachment
+
+  - path: docs/design/SCREEN-SETTINGS.md
+    relevance: Settings screen design spec — profile, preferences, account management
+
+  - path: docs/design/SCREEN-GROUP-MANAGEMENT.md
+    relevance: Group management screen design spec — create/join orbits, member management
+
+  - path: docs/design/SCREEN-MEDIA-GALLERY.md
+    relevance: Media gallery screen design spec — photo grids, lightbox, video playback
+
+  - path: docs/design/orbital-loader.scss
+    relevance: Signature orbiting dots animation spec — exact timing, sizing, and motion parameters for the loader component
+
 integration_points:
   - system: orbital-backend REST API
     interface: https://api.orbitl.org
-    purpose: All data operations — auth (POST /api/login, /api/signup), groups (CRUD at /api/groups), threads (/api/threads), media (/api/media), users (/api/users), invites (/api/invites), Signal relay (/v1/messages)
+    source_repo: Pure-Karma-Labs/Orbital-Backend
+    local_clone: /Users/alexg/Documents/GitHub/Orbital-Backend
+    purpose: "All data operations — auth (/api/login, /api/signup, /api/verify-token), groups (CRUD at /api/groups, /api/groups/dm, /api/groups/:id/quota, /api/groups/:id/key), threads (/api/threads), media (/api/media, /api/media-sync), users (/api/users), invites (/api/invites), Signal relay (/v1/messages)"
 
   - system: orbital-backend WebSocket
     interface: wss://api.orbitl.org/v1/websocket
-    purpose: Real-time events — new_message, new_thread, new_reply, display_name_changed; 30-second heartbeat with JWT auth via query param
+    source_repo: Pure-Karma-Labs/Orbital-Backend
+    purpose: "Real-time events — new_message, new_thread, new_reply, display_name_changed, media_uploaded, media_sync_request, media_sync_item_ready, media_sync_all_ready; 30-second heartbeat with JWT auth via query param"
 
   - system: Crypto Turbo Module
     interface: src/crypto/ (placeholder)
@@ -181,3 +253,21 @@ patterns:
 
   - name: react19-test-renderer
     description: "React 19 + react-test-renderer requires act() wrappers around create() calls when components use hooks like useColorScheme that trigger state. Pass colorSchemeOverride='light' to ThemeProvider in tests to avoid system color scheme side effects."
+
+  - name: font-linking-native
+    description: "Font files declared in react-native.config.js assets are NOT automatically linked. Must run `npx react-native-asset` to copy fonts into Xcode 'Copy Bundle Resources' and update Info.plist UIAppFonts. Font changes require native rebuild — Metro cannot hot-reload fonts."
+
+  - name: three-font-families
+    description: "Project uses three font families: BitstreamVeraSans (body, PostScript: BitstreamVeraSans-Roman), FiraSans (headers — Trebuchet MS substitute, PostScript: FiraSans-Regular for header token, FiraSans-Bold available but not used — Bold was too heavy at display sizes), BitstreamVeraSansMono (monospace, PostScript: BitstreamVeraSansMono-Roman). 7 fonts total in iOS UIAppFonts. All must be linked via npx react-native-asset and rebuilt natively."
+
+  - name: auth-screen-layout
+    description: "Auth screens compose: OrbitalLoader (animated, 64px, with spacing.lg bottom margin) → Fira Sans title ('Orbital') → AsciiBanner (replaces subtitle text) → form fields → underlined switch link at fontSize.base (not fontSize.sm). SignupScreen uses useSafeAreaInsets() for notch safety."
+
+  - name: rn-animation-no-transform-origin
+    description: "React Native has no transform-origin support. For off-center rotation (like orbiting dots), use tall invisible 'arm' views centered on the pivot point with visible elements at the ends. Animated.loop() snaps on reset — use recursive Animated.timing() with setValue() for smooth continuous rotation."
+
+  - name: safe-area-insets-required
+    description: "All screens without a React Navigation header MUST use useSafeAreaInsets() from react-native-safe-area-context for top padding. Critical for auth screens, modals, and onboarding. Never hardcode status bar height."
+
+  - name: design-spec-first
+    description: "Always read docs/design/ specs before UI work. Read order: CLAUDE-DESIGN-BRIEF.md (rules) → MOBILE-DESIGN-FOUNDATION.md (tokens) → MOBILE-PATTERNS.md (mobile patterns) → per-screen spec. Code tokens must match spec exactly — verify on-device after changes."

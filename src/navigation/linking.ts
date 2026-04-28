@@ -7,7 +7,12 @@ export const linking: LinkingOptions<RootStackParamList> = {
     screens: {
       MainTabs: {
         screens: {
-          Threads: 'threads',
+          Threads: {
+            screens: {
+              ThreadsList: 'threads',
+              ThreadDetail: 'threads/:threadId',
+            },
+          },
           Chats: 'chats',
           Settings: 'settings',
         },

@@ -9,7 +9,7 @@ export type MainTabParamList = {
 // Skeleton for future nested stacks inside tabs
 export type ThreadsStackParamList = {
   ThreadsList: undefined;
-  ThreadDetail: { threadId: string };
+  ThreadDetail: { threadId: string; threadTitle?: string };
 };
 
 export type ChatsStackParamList = {

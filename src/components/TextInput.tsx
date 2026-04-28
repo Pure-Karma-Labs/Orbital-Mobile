@@ -7,6 +7,7 @@ import {
   View,
   Text,
   TextInput as RNTextInput,
+  TouchableOpacity,
   type KeyboardTypeOptions,
   type TextStyle,
   type ViewStyle,
@@ -38,6 +39,7 @@ export function TextInput({
 }: TextInputProps): React.JSX.Element {
   const theme = useTheme();
   const [focused, setFocused] = useState(false);
+  const [hidden, setHidden] = useState(secureTextEntry);
 
   const containerStyle: ViewStyle = {
     marginBottom: theme.spacing.md,
@@ -57,6 +59,15 @@ export function TextInput({
     borderRadius: theme.borderRadius.base,
     paddingHorizontal: theme.spacing.base,
     paddingVertical: theme.spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+  };
+
+  const toggleStyle: TextStyle = {
+    fontFamily: theme.typography.fontFamily.body,
+    fontSize: theme.typography.fontSize.sm,
+    color: theme.colors.blue,
+    paddingLeft: theme.spacing.sm,
   };
 
   const inputStyle: TextStyle = {
@@ -72,10 +83,10 @@ export function TextInput({
       <Text style={labelStyle}>{label}</Text>
       <View style={inputContainerStyle}>
         <RNTextInput
-          style={inputStyle}
+          style={[inputStyle, { flex: 1 }]}
           value={value}
           onChangeText={onChangeText}
-          secureTextEntry={secureTextEntry}
+          secureTextEntry={hidden}
           autoCapitalize={autoCapitalize}
           autoCorrect={autoCorrect}
           keyboardType={keyboardType}
@@ -85,6 +96,16 @@ export function TextInput({
           placeholderTextColor={theme.colors.textTertiary}
           testID={testID}
         />
+        {secureTextEntry && (
+          <TouchableOpacity
+            onPress={() => setHidden(h => !h)}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            accessibilityLabel={hidden ? 'Show password' : 'Hide password'}
+            accessibilityRole="button"
+          >
+            <Text style={toggleStyle}>{hidden ? 'Show' : 'Hide'}</Text>
+          </TouchableOpacity>
+        )}
       </View>
     </View>
   );

@@ -12,7 +12,7 @@ import {
   type ViewStyle,
 } from 'react-native';
 import { useTheme } from '../theme';
-import { TextInput, Button, ErrorBanner } from '../components';
+import { TextInput, Button, ErrorBanner, OrbitalLoader, AsciiBanner } from '../components';
 import { loginUser } from '../services/authService';
 import { AuthError, NetworkError, ValidationError } from '../services/api/errors';
 
@@ -73,19 +73,14 @@ export function LoginScreen({ onSwitchToSignup }: LoginScreenProps): React.JSX.E
     marginBottom: theme.spacing.xs,
   };
 
-  const subtitleStyle: TextStyle = {
-    fontFamily: theme.typography.fontFamily.body,
-    fontSize: theme.typography.fontSize.base,
-    color: theme.colors.textSecondary,
-    textAlign: 'center',
-    marginBottom: theme.spacing.lg,
-  };
+
 
   const switchLinkStyle: TextStyle = {
     fontFamily: theme.typography.fontFamily.body,
-    fontSize: theme.typography.fontSize.sm,
+    fontSize: theme.typography.fontSize.base,
     color: theme.colors.blue,
     textAlign: 'center',
+    textDecorationLine: 'underline',
     marginTop: theme.spacing.base,
   };
 
@@ -97,8 +92,11 @@ export function LoginScreen({ onSwitchToSignup }: LoginScreenProps): React.JSX.E
         keyboardDismissMode="interactive"
         automaticallyAdjustKeyboardInsets
       >
+        <View style={{marginBottom: theme.spacing.lg}}>
+          <OrbitalLoader size={64} />
+        </View>
         <Text style={titleStyle}>Orbital</Text>
-        <Text style={subtitleStyle}>Sign in to your account</Text>
+        <AsciiBanner text="Sign in to your account" />
 
         <View>
           <TextInput

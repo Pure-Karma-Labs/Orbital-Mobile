@@ -15,6 +15,7 @@ import {
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider, useTheme } from './theme';
 import { useAuth } from './stores';
+import { bootstrap } from './bootstrap';
 import { restoreSession } from './services/authService';
 import { LoginScreen } from './screens/LoginScreen';
 import { SignupScreen } from './screens/SignupScreen';
@@ -39,9 +40,10 @@ function AppContent(): React.JSX.Element {
   const theme = useTheme();
   const isDark = theme.colorScheme === 'dark';
 
-  // Cold start: attempt session restoration from stored token
+  // Cold start: bootstrap storage/db, then attempt session restoration
   useEffect(() => {
-    restoreSession()
+    bootstrap()
+      .then(() => restoreSession())
       .then((restored) => {
         if (!restored) setAuthStatus('unauthenticated');
       })

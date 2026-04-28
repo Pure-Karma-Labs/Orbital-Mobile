@@ -4,6 +4,7 @@
 
 import React from 'react';
 import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'react-test-renderer';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../../theme';
 import { SignupScreen } from '../SignupScreen';
 import { AuthError, NetworkError, ValidationError } from '../../services/api/errors';
@@ -16,6 +17,10 @@ jest.mock('../../services/authService', () => ({
   signupUser: jest.fn(),
 }));
 
+jest.mock('../../components/OrbitalLoader', () => ({
+  OrbitalLoader: () => null,
+}));
+
 import { signupUser } from '../../services/authService';
 const mockSignupUser = signupUser as jest.Mock;
 
@@ -26,11 +31,16 @@ const mockSignupUser = signupUser as jest.Mock;
 function renderSignupScreen(onSwitchToLogin = jest.fn()): ReactTestRenderer {
   let renderer!: ReactTestRenderer;
   act(() => {
+    const safeAreaMetrics = { frame: { x: 0, y: 0, width: 390, height: 844 }, insets: { top: 47, right: 0, bottom: 34, left: 0 } };
     renderer = create(
       React.createElement(
-        ThemeProvider,
-        { colorSchemeOverride: 'light' },
-        React.createElement(SignupScreen, { onSwitchToLogin }),
+        SafeAreaProvider,
+        { initialMetrics: safeAreaMetrics },
+        React.createElement(
+          ThemeProvider,
+          { colorSchemeOverride: 'light' },
+          React.createElement(SignupScreen, { onSwitchToLogin }),
+        ),
       ),
     );
   });

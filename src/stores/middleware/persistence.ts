@@ -42,12 +42,22 @@ export function resetMMKVForTesting(): void {
 
 /**
  * Raw StateStorage adapter — maps Zustand's string-based storage interface
- * to the react-native-mmkv v4 API.
+ * to the react-native-mmkv v4 API. Access is lazy so the store module can
+ * be imported before bootstrap initializes MMKV.
  */
 export const mmkvStateStorage: StateStorage = {
-  getItem: (name: string) => getMMKVInstance().getString(name) ?? null,
-  setItem: (name: string, value: string) => getMMKVInstance().set(name, value),
-  removeItem: (name: string) => getMMKVInstance().remove(name),
+  getItem: (name: string) => {
+    if (mmkvInstance === null) { return null; }
+    return mmkvInstance.getString(name) ?? null;
+  },
+  setItem: (name: string, value: string) => {
+    if (mmkvInstance === null) { return; }
+    mmkvInstance.set(name, value);
+  },
+  removeItem: (name: string) => {
+    if (mmkvInstance === null) { return; }
+    mmkvInstance.remove(name);
+  },
 };
 
 /**

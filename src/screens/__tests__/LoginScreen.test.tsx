@@ -16,6 +16,10 @@ jest.mock('../../services/authService', () => ({
   loginUser: jest.fn(),
 }));
 
+jest.mock('../../components/OrbitalLoader', () => ({
+  OrbitalLoader: () => null,
+}));
+
 import { loginUser } from '../../services/authService';
 const mockLoginUser = loginUser as jest.Mock;
 

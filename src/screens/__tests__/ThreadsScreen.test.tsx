@@ -123,7 +123,7 @@ describe('ThreadsScreen', () => {
     const orbitNode = allText.find(
       (node) =>
         typeof node.props.children === 'string' &&
-        node.props.children === 'Family ▾',
+        node.props.children === 'Family Orbit ▾',
     );
     expect(orbitNode).toBeDefined();
   });

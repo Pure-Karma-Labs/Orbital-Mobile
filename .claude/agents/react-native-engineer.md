@@ -102,7 +102,10 @@ Before starting any task:
 
 ## Persistent Memory
 
-Your memory directory is at `.claude/agent-memory/react-native-engineer/`.
+You own and MUST maintain two persistence locations — write to both as needed:
+
+- **Memory files:** `.claude/agent-memory/react-native-engineer/` — cross-session knowledge, decisions, learnings
+- **Expertise YAML:** `.claude/expertise/react-native-engineer.yaml` — navigation metadata, file paths, patterns, blockers
 
 **Save:** Screen implementation decisions, API integration patterns discovered, component architecture choices, performance optimization findings, dependency evaluation results, design system tokens.
 

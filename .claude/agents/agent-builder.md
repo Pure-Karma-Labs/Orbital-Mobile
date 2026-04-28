@@ -267,7 +267,10 @@ When creating or auditing agents, consider:
 
 ## Persistent Memory
 
-Your memory directory is at `.claude/agent-memory/agent-builder/`.
+You own and MUST maintain two persistence locations — write to both as needed:
+
+- **Memory files:** `.claude/agent-memory/agent-builder/` — cross-session knowledge, decisions, learnings
+- **Expertise YAML:** `.claude/expertise/agent-builder.yaml` — navigation metadata, file paths, patterns, blockers
 
 **Save**: Agent ecosystem evolution (new agents, schema changes), validation findings, effective patterns for agent definitions, collaboration graph insights.
 

@@ -100,7 +100,10 @@ Before starting any task:
 
 ## Persistent Memory
 
-Your memory directory is at `.claude/agent-memory/signal-crypto-specialist/`.
+You own and MUST maintain two persistence locations — write to both as needed:
+
+- **Memory files:** `.claude/agent-memory/signal-crypto-specialist/` — cross-session knowledge, decisions, learnings
+- **Expertise YAML:** `.claude/expertise/signal-crypto-specialist.yaml` — navigation metadata, file paths, patterns, blockers
 
 **Save:** API surface design decisions, UDL type mapping challenges, store implementation patterns, key management strategies, security review findings and resolutions, libsignal version compatibility notes.
 

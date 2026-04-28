@@ -146,7 +146,10 @@ Before beginning any compliance review:
 
 ## Persistent Memory
 
-Your memory directory is at `.claude/agent-memory/app-store-compliance/`.
+You own and MUST maintain two persistence locations — write to both as needed:
+
+- **Memory files:** `.claude/agent-memory/app-store-compliance/` — cross-session knowledge, decisions, learnings
+- **Expertise YAML:** `.claude/expertise/app-store-compliance.yaml` — navigation metadata, file paths, patterns, blockers
 
 **Save:** Compliance audit findings and resolution status, encryption export compliance determination, Privacy Nutrition Label declarations, guideline changes discovered via WebSearch, rejection risks identified, App Store Connect metadata checklist status.
 

@@ -1,5 +1,5 @@
 version: "2.0"
-last_updated: "2026-04-08"
+last_updated: "2026-04-09"
 agent: rust-native-engineer
 
 core_files:
@@ -10,25 +10,27 @@ core_files:
   - path: packages/orbital-signal/rust/orbital_signal/src/error.rs
     purpose: SignalError enum (10 variants) + From<SignalProtocolError> + From<CurveError>
   - path: packages/orbital-signal/rust/orbital_signal/src/types.rs
-    purpose: 11 FFI types (records + enums) with uniffi derives
+    purpose: 30 FFI types (28 records + 2 enums) — includes 15 preloaded Input/Result types
   - path: packages/orbital-signal/rust/orbital_signal/src/stores.rs
-    purpose: 6 store callback interface traits
+    purpose: 6 store callback interface traits (dead code — superseded by preloaded store pattern)
   - path: packages/orbital-signal/rust/orbital_signal/src/store_adapters.rs
-    purpose: Adapter structs bridging uniffi callbacks to libsignal async traits (blocked on FfiConverterArc)
+    purpose: Dead code except to_protocol_address() helper used by session.rs
   - path: packages/orbital-signal/rust/orbital_signal/src/keys.rs
     purpose: 4 key generation functions (fully implemented with real libsignal)
   - path: packages/orbital-signal/rust/orbital_signal/src/util.rs
-    purpose: 4 utility functions (pre-key extraction, address construction)
+    purpose: 5 utility functions (pre-key extraction, address construction, parsePreKeyMessageIds)
   - path: packages/orbital-signal/rust/orbital_signal/src/session.rs
-    purpose: 4 session management functions (stubbed, pending store adapter)
+    purpose: "4 session functions: process_pre_key_bundle, signal_encrypt, signal_decrypt, signal_decrypt_pre_key (all preloaded store pattern)"
   - path: packages/orbital-signal/rust/orbital_signal/src/group.rs
-    purpose: 4 group messaging functions (stubbed, pending store adapter)
+    purpose: "4 group functions: create_sender_key_distribution_message, process_sender_key_distribution_message, group_encrypt, group_decrypt (all preloaded store pattern)"
   - path: packages/orbital-signal/rust/orbital_signal/src/sealed.rs
-    purpose: 2 sealed sender functions (stubbed, pending store + certificate)
+    purpose: 2 sealed sender stubs — deferred pending SenderCertificate backend infrastructure
   - path: packages/orbital-signal/rust/orbital_signal/src/client.rs
-    purpose: Documents FfiConverterArc blocker and resolution paths
+    purpose: Documents FfiConverterArc blocker and resolution paths (dead code)
+  - path: packages/orbital-signal/rust/orbital_signal/src/roundtrip.rs
+    purpose: PoC encrypt/decrypt — exported in release binary (Issue #40, must gate behind cfg(debug_assertions))
   - path: packages/orbital-signal/rust/orbital_signal/tests/integration_tests.rs
-    purpose: 11 tests — key gen, utilities, round-trips, error cases
+    purpose: 14 tests — key gen, utilities, round-trips, error cases
   - path: packages/orbital-signal/ubrn.config.yaml
     purpose: uniffi-bindgen-react-native config — Rust crate path, iOS/Android targets
   - path: rust-toolchain.toml
@@ -49,16 +51,18 @@ documentation:
     relevance: Complete 18-function API spec with signatures, types, errors
   - path: docs/uniffi-toolchain.md
     relevance: Cross-compilation targets, binary sizes, build times
+  - path: docs/security-audit-phase1.md
+    relevance: Phase 1 security audit — findings F-04 (roundtrip in release) and F-07 (dead code exports)
 
 integration_points:
   - system: uniffi-bindgen-react-native
     version: "0.31.0-2"
     interface: ubrn CLI + generated TypeScript/C++/Swift/Kotlin bindings
-    status: working for stateless functions, FfiConverterArc blocker for store-passing
+    status: fully working — preloaded store pattern bypasses FfiConverterArc limitation
 
   - system: libsignal v0.83.0
     interface: "git dep from signalapp/libsignal (NOT on crates.io)"
-    status: integrated, 8 functions calling real libsignal
+    status: integrated, 17 functions calling real libsignal (4 keys + 5 util + 4 session + 4 group)
 
   - system: cargo-ndk
     version: "4.1.2"
@@ -74,12 +78,24 @@ integration_points:
     status: working in CI (9 min build)
 
 patterns:
+  - name: preloaded-store-pattern
+    description: "TypeScript reads store data, passes as Input records to sync Rust functions. Rust creates InMemSignalProtocolStore, runs libsignal via block_on(), returns Result records. TypeScript persists mutations in BEGIN IMMEDIATE transaction."
+  - name: build-runtime-helper
+    description: "build_runtime() creates tokio::runtime::Builder::new_current_thread().enable_all().build() — used by all protocol functions"
+  - name: reconstruct-identity-helper
+    description: "reconstruct_identity_key_pair() and create_store() pub(crate) helpers in session.rs — all session functions use them (Issue #61 resolved)"
+  - name: cargo-feature-gating
+    description: "dev-roundtrip Cargo feature gates PoC roundtrip module + types — excluded from production builds (Issue #40 resolved)"
+  - name: sender-key-helpers
+    description: "preload_sender_key() and extract_sender_key() helpers in group.rs for consistent sender key I/O"
+  - name: parse-before-decrypt
+    description: "parse_prekey_message_ids() extracts pre-key IDs from PreKeySignalMessage so TypeScript knows which keys to load before calling decrypt"
   - name: library-package-structure
     description: Rust crate lives in packages/orbital-signal/ as a local RN library — avoids app naming conflicts
   - name: thin-wrapper-crate
     description: Only wraps ~18 libsignal functions, not the full API — minimizes maintenance
   - name: proc-macros-not-udl
-    description: Uses uniffi proc macros (#[uniffi::export], #[derive(uniffi::Record)]) not legacy UDL files
+    description: "Uses uniffi proc macros (#[uniffi::export], #[derive(uniffi::Record)]) not legacy UDL files"
   - name: bytes-across-bridge
     description: All key material crosses FFI as Vec<u8>/bytes/Uint8Array — no base64 at the bridge
   - name: pin-and-upgrade
@@ -89,8 +105,13 @@ patterns:
 
 blockers:
   - name: uniffi-ffi-converter-arc
-    description: "uniffi 0.31.0 cannot pass Arc<dyn CallbackInterface> through Object constructors or async function params"
-    resolution: "Upgrade uniffi when fixed, or implement native-side client (Swift/Kotlin) holding stores"
-  - name: libsignal-async-trait-not-send
-    description: "libsignal store traits use #[async_trait(?Send)] producing non-Send futures, incompatible with uniffi async"
-    resolution: "Wrap in Send-safe adapters or use synchronous bridging on native side"
+    description: "RESOLVED — uniffi 0.31.0 cannot pass Arc<dyn CallbackInterface> through any exported function. Preloaded store pattern is the permanent workaround."
+    resolution: "Issue #58 spike confirmed. All protocol functions use Input/Result records instead of callback interfaces."
+  - name: sealed-sender-deferred
+    description: "sealed.rs stubs remain — requires server-side SenderCertificate issuance endpoint"
+    resolution: "Tracked as Issue #64. Implement when backend adds certificate API."
+
+tech_debt:
+  - name: dead-code-modules
+    description: "store_adapters.rs adapter structs and client.rs OrbitalSignalClient are Rust-side dead code (TS store impls cleaned up in Issue #63)"
+    issue: 63

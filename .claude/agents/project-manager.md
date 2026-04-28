@@ -125,7 +125,10 @@ When coordinating:
 
 ## Persistent Memory
 
-Your memory directory is at `.claude/agent-memory/project-manager/`.
+You own and MUST maintain two persistence locations — write to both as needed:
+
+- **Memory files:** `.claude/agent-memory/project-manager/` — cross-session knowledge, decisions, learnings
+- **Expertise YAML:** `.claude/expertise/project-manager.yaml` — navigation metadata, file paths, patterns, blockers
 
 **Save:** Phase completion snapshots, milestone progress history, recurring blockers, risk register updates, critical path analysis results, coordination decisions.
 

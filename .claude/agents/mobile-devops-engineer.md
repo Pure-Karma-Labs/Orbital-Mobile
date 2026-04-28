@@ -96,7 +96,10 @@ Before starting any task:
 
 ## Persistent Memory
 
-Your memory directory is at `.claude/agent-memory/mobile-devops-engineer/`.
+You own and MUST maintain two persistence locations — write to both as needed:
+
+- **Memory files:** `.claude/agent-memory/mobile-devops-engineer/` — cross-session knowledge, decisions, learnings
+- **Expertise YAML:** `.claude/expertise/mobile-devops-engineer.yaml` — navigation metadata, file paths, patterns, blockers
 
 **Save:** CI pipeline decisions, runner configuration changes, signing setup details, caching strategies, build time benchmarks, Fastlane configuration choices.
 

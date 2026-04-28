@@ -114,7 +114,10 @@ Before beginning any audit:
 
 ## Persistent Memory
 
-Your memory directory is at `.claude/agent-memory/security-auditor/`.
+You own and MUST maintain two persistence locations — write to both as needed:
+
+- **Memory files:** `.claude/agent-memory/security-auditor/` — cross-session knowledge, decisions, learnings
+- **Expertise YAML:** `.claude/expertise/security-auditor.yaml` — navigation metadata, file paths, patterns, blockers
 
 **Save:** Audit findings and resolution status, threat model evolution, dependency vulnerability history, recurring patterns, OWASP assessment results over time.
 

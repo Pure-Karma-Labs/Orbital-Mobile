@@ -1,66 +1,131 @@
-version: "1.0"
-last_updated: "2026-04-07"
+version: "1.2"
+last_updated: "2026-04-09"
 agent: security-auditor
 
 core_files:
-  - path: src/database/migrations/001_initial_schema.sql
-    purpose: SQLCipher schema — audit encryption-at-rest, Signal Protocol store tables, key storage as BLOB
-    key_symbols:
-      - signal_identity_keys
-      - signal_sessions
-      - signal_pre_keys
-      - signal_sender_keys
-    last_hash: 2445035
-
+  - path: docs/security-audit-phase1.md
+    purpose: Phase 1 crypto security audit report — 14 findings, 23 positive verifications, canonical reference
+    key_symbols: [F-01, F-02, F-03, F-04, F-05, F-06, F-07, F-08, F-09, F-10, F-11, F-12, F-13, F-14]
+  - path: src/services/crypto/keyGenerationService.ts
+    purpose: Identity key generation, pre-key batch creation, signed pre-key rotation — all use BEGIN IMMEDIATE
+    key_symbols: [generateInitialKeys, checkAndReplenishPreKeys, checkAndRotateSignedPreKey, ensureKeysInitialized]
+  - path: src/services/crypto/cryptoService.ts
+    purpose: High-level crypto operations — identity key now loaded from Keychain via cache-on-load pattern (F-01 resolved)
+    key_symbols: [getIdentityKeyPair]
+  - path: src/services/crypto/utils.ts
+    purpose: Crypto utility functions — hexToUint8Array (F-02 fixed), bytesEqual (F-06 open), encoding helpers
+    key_symbols: [hexToUint8Array, bytesEqual, uint8ArrayToHex, toArrayBuffer, arrayBufferToBase64, base64ToArrayBuffer]
+  - path: src/services/crypto/IdentityKeyStoreImpl.ts
+    purpose: Signal identity key store — TOFU logic, bytesEqual, transaction wrapping; identity key from Keychain (F-01 resolved)
+    key_symbols: [getIdentityKeyPair, saveIdentity, bytesEqual]
+  - path: src/services/crypto/SessionStoreImpl.ts
+    purpose: Signal session store — Double Ratchet session persistence
+  - path: src/services/crypto/PreKeyStoreImpl.ts
+    purpose: Signal pre-key store — one-time pre-key consumption
+  - path: src/services/crypto/SignedPreKeyStoreImpl.ts
+    purpose: Signal signed pre-key store — rotation tracking
+  - path: src/services/crypto/KyberPreKeyStoreImpl.ts
+    purpose: Signal Kyber (PQC) pre-key store — last-resort key handling
+  - path: src/services/crypto/SenderKeyStoreImpl.ts
+    purpose: Signal sender key store — group messaging distribution
+  - path: src/database/connection.ts
+    purpose: SQLCipher connection — raw-key hex format, PRAGMA ordering, cipher_memory_security
+    key_symbols: [openDatabase, closeDatabase, getDatabase]
+  - path: src/database/migrations/001_initial_schema.ts
+    purpose: SQLCipher schema — Signal Protocol store tables, key storage as BLOB
+    key_symbols: [signal_identity_keys, signal_sessions, signal_pre_keys, signal_signed_pre_keys, signal_kyber_pre_keys, signal_sender_keys]
+  - path: src/database/queryHelpers.ts
+    purpose: Type-safe query wrappers — parameterized queries, no SQL injection
+    key_symbols: [queryOne, queryAll, executeStatement]
+  - path: src/database/repositories/itemRepository.ts
+    purpose: Key-value items table — identity key migrated out to Keychain (F-01 resolved)
+    key_symbols: [getItem, setItem, deleteItem]
+  - path: src/database/repositories/signalIdentityKeyRepository.ts
+    purpose: Per-address identity key storage — BLOB columns for key material
+  - path: src/services/secure-storage/encryptionKeys.ts
+    purpose: MMKV/SQLCipher key generation — CSPRNG 256-bit, Keychain with AFTER_FIRST_UNLOCK
+    key_symbols: [getOrCreateEncryptionKey, getSqlCipherKey]
+  - path: src/services/secure-storage/secureStorage.ts
+    purpose: Secure storage bootstrap — fresh install detection, MMKV initialization
+    key_symbols: [clearKeychainIfFreshInstall, initializeSecureStorage]
+  - path: src/services/secure-storage/keychainTokenStorage.ts
+    purpose: JWT token storage in iOS Keychain / Android Keystore
+  - path: src/services/api/client.ts
+    purpose: REST API client — HTTPS enforcement, 401/403 handling, error sanitization
+    key_symbols: [createApiClient, handleAuthError]
+  - path: src/services/api/errors.ts
+    purpose: API error handling — __DEV__ gating for server messages
+  - path: src/services/api/tokenManager.ts
+    purpose: JWT token lifecycle — refresh, expiration, storage delegation
+  - path: src/services/api/keys.ts
+    purpose: Pre-key bundle upload API — server-facing key material (public keys only)
+    key_symbols: [uploadPreKeyBundle, getPreKeyCount]
+  - path: src/services/authService.ts
+    purpose: Auth orchestration — F-08 (console.warn in prod) applies
+  - path: src/types/api.ts
+    purpose: API DTOs — E2EE field naming (encryptedTitle, encryptedBody, titleIv, bodyIv)
   - path: src/types/database.ts
-    purpose: TypeScript interfaces — verify Uint8Array for key material, no accidental string serialization
-    key_symbols:
-      - SignalIdentityKeyRow
-      - VerifiedStatus
-    last_hash: 6bd8bd6
-
-  - path: package.json
-    purpose: npm dependency manifest — target for npm audit vulnerability scanning
-    last_hash: fce34c2
-
+    purpose: TypeScript interfaces — Uint8Array for key material, no string serialization
+    key_symbols: [SignalIdentityKeyRow, VerifiedStatus]
+  - path: src/bootstrap.ts
+    purpose: App bootstrap — secure storage + DB init before any component renders
+  - path: index.js
+    purpose: App entry point — bootstrap() before registerComponent prevents race condition
+  - path: ios/OrbitalMobile/OrbitalMobile.entitlements
+    purpose: iOS entitlements — file protection, Keychain access groups
   - path: ios/OrbitalMobile/Info.plist
-    purpose: iOS app configuration — App Transport Security, URL schemes, data protection entitlements
-    last_hash: 2d14892
-
+    purpose: iOS config — ATS, URL schemes (F-09 hijack risk), data protection
   - path: android/app/src/main/AndroidManifest.xml
-    purpose: Android configuration — permissions, exported components, backup rules, network security config
-    last_hash: fb78f39
+    purpose: Android config — permissions, exported components, backup rules, usesCleartextTraffic (F-13)
+  - path: android/app/src/main/res/xml/data_extraction_rules.xml
+    purpose: Android backup exclusion rules — all domains excluded
+  - path: package.json
+    purpose: npm dependency manifest — npm audit target (F-14)
 
 documentation:
   - path: docs/MOBILE-APP-SPEC.md
     relevance: "Part 2: Crypto architecture, Part 5: Encryption schemes, Part 3: Push notification payload design"
+  - path: docs/security-audit-phase1.md
+    relevance: "Canonical Phase 1 audit report — 14 findings, 23 positive verifications"
 
 integration_points:
   - system: Signal Protocol (libsignal)
-    interface: uniffi-bindgen-react-native Turbo Modules
-    purpose: Crypto boundary — audit for correct function usage, key handling across FFI boundary
-
+    interface: uniffi-bindgen-react-native Turbo Modules (preloaded store pattern)
+    purpose: Crypto boundary — key handling across FFI boundary; preloaded store means keys transit JS heap; PoC functions gated behind dev-roundtrip feature flag (PR #84)
   - system: orbital-backend API
-    interface: REST + WebSocket
-    purpose: Network layer — audit for certificate pinning, TLS configuration, JWT handling
-
+    interface: REST + WebSocket via src/services/api/
+    purpose: Network layer — HTTPS enforced, cert pinning deferred to Phase 2
   - system: SQLCipher
-    interface: Encrypted SQLite database
-    purpose: Local storage — audit key derivation, cipher configuration, WAL mode security
-
+    interface: Encrypted SQLite via src/database/connection.ts
+    purpose: Local storage — raw-key hex, WAL mode, cipher_memory_security ON
   - system: iOS Keychain / Android Keystore
-    interface: Platform secure storage APIs
-    purpose: Secure enclave for identity keys, JWT tokens, SQLCipher key
+    interface: Platform secure storage via src/services/secure-storage/
+    purpose: Secure enclave for MMKV key, JWT tokens, identity key pair (PR #83 — F-01 resolved)
 
 patterns:
+  - name: begin-immediate-transactions
+    description: All crypto/Signal Protocol transactions use BEGIN IMMEDIATE, never BEGIN TRANSACTION — prevents TOCTOU races in preloaded store pattern
+  - name: per-address-serialization
+    description: Protocol operations serialized per recipient address — prevents concurrent Double Ratchet corruption
+  - name: no-privkey-in-ffi-results
+    description: Private key material never appears in FFI function return types — only public keys cross Rust/TS boundary in results
+  - name: no-console-in-crypto
+    description: Zero console.log/warn/error in src/services/crypto/ — prevents key material leaking to system logs
+  - name: prekey-consumption-atomicity
+    description: Session save + identity check + pre-key deletion in single BEGIN IMMEDIATE transaction — preserves forward secrecy
   - name: blob-for-keys
-    description: All crypto key material stored as BLOB (Uint8Array) in SQLCipher, never as hex/base64 TEXT
-
+    description: All crypto key material stored as BLOB (Uint8Array) in SQLCipher, never hex/base64 TEXT
   - name: zero-knowledge-server
-    description: Server stores only ciphertext — encrypted_title, encrypted_body, encrypted_envelope — plaintext never leaves client
-
+    description: Server stores only ciphertext — plaintext never leaves client
   - name: per-field-iv
-    description: Each encrypted field has its own IV column, preventing IV reuse across fields encrypted with the same group key
-
+    description: Each encrypted field has its own IV column, preventing IV reuse
   - name: encrypt-then-mac
-    description: Media uses AES-256-CBC with HMAC-SHA256 — verify MAC is checked before decryption
+    description: Media uses AES-256-CBC with HMAC-SHA256 — verify MAC before decryption
+  - name: dev-only-debug-info
+    description: serverMessage and verbose errors only when __DEV__ is true
+  - name: bootstrap-before-render
+    description: index.js bootstrap() runs before AppRegistry.registerComponent — DB/MMKV ready before any component
+  - name: identity-key-in-keychain
+    description: Identity key pair stored in iOS Keychain / Android Keystore with AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY; cache-on-load pattern; cache cleared on logout
+  - name: feature-gated-poc
+    description: PoC/demo functions in Rust crate gated behind dev-roundtrip Cargo feature flag; default features empty so release builds exclude them

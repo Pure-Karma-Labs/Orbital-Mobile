@@ -121,7 +121,10 @@ Each entry in `debt-registry.md` tracks:
 
 ## Persistent Memory
 
-Your memory directory is at `.claude/agent-memory/tech-debt-collector/`.
+You own and MUST maintain two persistence locations — write to both as needed:
+
+- **Memory files:** `.claude/agent-memory/tech-debt-collector/` — cross-session knowledge, decisions, learnings
+- **Expertise YAML:** `.claude/expertise/tech-debt-collector.yaml` — navigation metadata, file paths, patterns, blockers
 
 **Save:** Debt registry entries and resolution status, architecture evolution observations, recurring bloat patterns, performance baseline measurements, cross-layer coupling trends.
 

@@ -93,7 +93,10 @@ When making decisions about push payload content or token storage, always consul
 
 ## Persistent Memory
 
-Your memory directory is at `.claude/agent-memory/backend-push-engineer/`.
+You own and MUST maintain two persistence locations — write to both as needed:
+
+- **Memory files:** `.claude/agent-memory/backend-push-engineer/` — cross-session knowledge, decisions, learnings
+- **Expertise YAML:** `.claude/expertise/backend-push-engineer.yaml` — navigation metadata, file paths, patterns, blockers
 
 **Save**: Push notification implementation decisions, APNs/FCM configuration patterns, device token schema evolution, API compatibility findings, payload format decisions, and integration test results.
 

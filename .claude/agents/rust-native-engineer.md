@@ -105,7 +105,10 @@ Before starting any task:
 
 ## Persistent Memory
 
-Your memory directory is at `.claude/agent-memory/rust-native-engineer/`.
+You own and MUST maintain two persistence locations — write to both as needed:
+
+- **Memory files:** `.claude/agent-memory/rust-native-engineer/` — cross-session knowledge, decisions, learnings
+- **Expertise YAML:** `.claude/expertise/rust-native-engineer.yaml` — navigation metadata, file paths, patterns, blockers
 
 **Save:** uniffi-bindgen configuration decisions, cross-compilation issues and solutions, target-specific build flags, libsignal version compatibility findings, performance benchmarks for bridge calls.
 

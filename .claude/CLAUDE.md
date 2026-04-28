@@ -46,6 +46,35 @@ npx react-native run-android
 npm test
 ```
 
+## Issue Implementation Workflow
+
+Every issue follows this 5-phase process. Do not skip phases.
+
+### Phase 1: Plan
+- Explore the issue, relevant code, and references (launch Explore agents)
+- Design the approach (launch Plan agent)
+- Write the plan to the plan file
+
+### Phase 2: Agent Team Plan Review
+- Launch `security-auditor` and `tech-debt-collector` to review the plan in parallel
+- High/Critical findings must be addressed before proceeding
+- Update the plan with feedback, then get user approval via ExitPlanMode
+
+### Phase 3: Agent Team Implementation
+- Launch the appropriate implementation agent on an isolated worktree
+- Verify: typecheck (`npx tsc --noEmit`), tests (`npm test`), security requirements
+- Fix any issues the agent missed
+
+### Phase 4: PR Creation
+- Commit, push, create PR with summary + test plan
+- Reference the issue number for auto-close
+
+### Phase 5: Agent Team PR Review
+- Launch 3 reviewers in parallel: `security-auditor`, `tech-debt-collector`, `qa-testing-specialist`
+- Add `rust-native-engineer` for Rust-touching PRs
+- Fix blocking findings (Critical/High), then present consolidated summary to user
+- Merge on user approval, create follow-up issues for Medium/Low items
+
 ## Agent Delegation
 
 This repo has a team of expert subagents with persistent memory in `.claude/agent-memory/`. **Delegate tasks to the appropriate agent whenever possible** so they accumulate domain expertise across sessions. Prefer launching agents in parallel when their work is independent.

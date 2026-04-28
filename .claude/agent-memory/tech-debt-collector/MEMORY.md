@@ -1,0 +1,1 @@
+- [Debt Registry](debt-registry.md) — 7 open items (1 high, 3 medium, 3 low), 13 resolved; last updated 2026-04-09. Phase 1 complete, all Critical/High security findings resolved.

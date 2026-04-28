@@ -1,3 +1,10 @@
 - [Theme system — Issue #5](project_theme_system.md) — Design system live at src/theme/; createTheme, ThemeProvider, useTheme; new-app-screen moved to devDeps
 - [Font PostScript names](feedback_font_postscript_names.md) — React Native uses PostScript names not filenames; BitstreamVeraSans-Oblique not Italic
 - [React 19 test-renderer act()](feedback_react19_test_renderer.md) — Wrap create() in act(); pin colorSchemeOverride='light' in tests to avoid system color scheme side effects
+- [Bootstrap and deferred init pattern](project_bootstrap_and_init.md) — Keychain→MMKV→DB→initIdentityKeyCache→TokenManager; initX/getX/closeX/resetXForTesting pattern; BootstrapErrorScreen
+- [Navigation and auth gate](project_navigation_and_auth_gate.md) — Bottom tabs; auth gate as conditional render (not navigator); NavigationContainer unmounts on logout; screenListeners sync to store
+- [REST API layer — Issue #13](project_rest_api_layer.md) — Native fetch; snake_case↔camelCase; buildQueryString(); fail-closed AuthError on null token; 401 clears tokens, 403 does NOT; 12/12 modules tested (106 tests)
+- [Zustand store architecture — Issue #7](project_zustand_stores.md) — Single useAppStore, 6 slices, MMKV persistence, deferred init, useShallow selector hooks
+- [Secure storage — Issue #18](project_secure_storage.md) — react-native-keychain; MMKV + DB encryption keys; KeychainTokenStorage; bootstrap sequence
+- [SignalProtocolStore implementations (deleted)](project_signal_store_impls.md) — 6 store classes deleted (not deprecated); uniffi 0.31 cannot pass callback interfaces to Rust; do not recreate
+- [cryptoService — Signal encryption](project_crypto_service.md) — Preloaded store pattern; identity key in module-scoped cache (keyGenerationService.ts); initIdentityKeyCache() at bootstrap; clearIdentityKeyCache() on logout

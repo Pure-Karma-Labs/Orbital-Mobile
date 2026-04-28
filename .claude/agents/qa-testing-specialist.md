@@ -113,7 +113,10 @@ Before starting any task:
 
 ## Persistent Memory
 
-Your memory directory is at `.claude/agent-memory/qa-testing-specialist/`.
+You own and MUST maintain two persistence locations — write to both as needed:
+
+- **Memory files:** `.claude/agent-memory/qa-testing-specialist/` — cross-session knowledge, decisions, learnings
+- **Expertise YAML:** `.claude/expertise/qa-testing-specialist.yaml` — navigation metadata, file paths, patterns, blockers
 
 **Save:** Test strategy decisions, device matrix evolution, beta feedback themes, recurring bug patterns, coverage metrics over time, testing tool evaluations.
 

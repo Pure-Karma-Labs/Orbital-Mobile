@@ -1,3 +1,6 @@
-- [API Surface v1](api-surface-v1.md) -- 18-function libsignal API: 8 implemented, 10 stubbed pending store adapters
-- [libsignal API Learnings](libsignal-api-learnings.md) -- Non-obvious v0.83.0 API behaviors: key sizes, DeviceId NonZeroU8, async_trait(?Send), IdentityChange
-- [Store Adapter Blocker](store-adapter-blocker.md) -- uniffi 0.31 FfiConverterArc blocker; two resolution paths (uniffi upgrade vs native-side client)
+- [Phase 1 Completion](phase1-completion.md) — Phase 1 crypto foundation complete and audited; Phase 2 issues #76-#82 created; next: content + media encryption services
+- [API Surface v1](api-surface-v1.md) — 21-function libsignal API: 19 implemented, 2 sealed sender deferred; PoC feature-gated (Issue #40 resolved)
+- [Preloaded Store Architecture](preloaded-store-architecture.md) — IMPLEMENTED: Input/Result records + InMemSignalProtocolStore; security audit validated; identity key in Keychain
+- [Store Implementations](store-implementations.md) — 6 TS store classes + cryptoService.ts orchestration; identity key migrated to Keychain/Keystore (Issue #54 resolved)
+- [libsignal API Learnings](libsignal-api-learnings.md) — Non-obvious v0.83.0 behaviors: group message distribution_id parsing, message_decrypt_signal vs _prekey, async_trait block_on
+- [Store Adapter Blocker](store-adapter-blocker.md) — FULLY RESOLVED: all 10 protocol functions implemented; dead code cleanup pending (client.rs, stores.rs)

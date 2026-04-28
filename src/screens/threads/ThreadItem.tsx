@@ -18,6 +18,7 @@ import {
 } from 'react-native';
 import { useTheme } from '../../theme';
 import { Badge } from '../../components/Badge';
+import { Emoji } from '../../components/Emoji';
 
 export type ThreadItemState = 'read' | 'active' | 'unread';
 
@@ -98,7 +99,7 @@ export const ThreadItem = React.memo(function ThreadItem({
     marginTop: 2,
   };
 
-  const metaText = `${author} · ${time} · ${replyCount} 💬${hasMedia ? ' 📷' : ''}`;
+  const emojiSize = Math.round(theme.typography.fontSize.sm * 1.15);
 
   return (
     <TouchableOpacity
@@ -113,7 +114,18 @@ export const ThreadItem = React.memo(function ThreadItem({
           {title}
         </Text>
         <Text style={metaStyle} numberOfLines={1}>
-          {metaText}
+          {author} {'·'} {time} {'·'} {replyCount}{' '}
+          <View style={{ width: emojiSize, height: emojiSize }}>
+            <Emoji unified="1F4AC" size={emojiSize} />
+          </View>
+          {hasMedia ? (
+            <>
+              {' '}
+              <View style={{ width: emojiSize, height: emojiSize }}>
+                <Emoji unified="1F4F7" size={emojiSize} />
+              </View>
+            </>
+          ) : null}
         </Text>
       </View>
       {unreadCount > 0 && <Badge count={unreadCount} />}

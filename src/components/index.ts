@@ -18,3 +18,9 @@ export type { AvatarProps } from './Avatar';
 
 export { Badge } from './Badge';
 export type { BadgeProps } from './Badge';
+
+export { Emoji } from './Emoji';
+export type { EmojiProps } from './Emoji';
+
+export { EmojiText } from './EmojiText';
+export type { EmojiTextProps } from './EmojiText';

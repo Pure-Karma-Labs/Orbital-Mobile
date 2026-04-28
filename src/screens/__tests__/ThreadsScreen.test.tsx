@@ -19,7 +19,7 @@ jest.mock('../../stores', () => ({
     displayName: null,
     avatarPath: null,
   }),
-  useThreads: () => ({
+  useThreads: jest.fn(() => ({
     threads: {},
     threadIdsByConversation: {},
     replies: {},
@@ -35,7 +35,7 @@ jest.mock('../../stores', () => ({
     addOptimisticReply: jest.fn(),
     updateThreadSyncStatus: jest.fn(),
     updateReplySyncStatus: jest.fn(),
-  }),
+  })),
   useConversations: () => ({
     conversations: {},
     conversationIds: [],

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Orbital · Color · Yellow</title>
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  html, body { margin: 0; padding: 0; background: var(--color-background); }
+  .wrap { padding: 20px; display: flex; gap: 16px; align-items: stretch; }
+  .swatches { display: flex; gap: 12px; flex: 1; }
+  .swatch { flex: 1; min-width: 0; border: 1px solid var(--color-border-subtle); border-radius: 3px; overflow: hidden; background: var(--color-surface-elevated); }
+  .fill { height: 64px; }
+  .meta { padding: 8px 10px; font-family: var(--font-body); font-size: 11px; line-height: 1.35; }
+  .name { font-weight: 700; color: var(--color-text-primary); font-size: 12px; }
+  .hex  { font-family: var(--font-mono); color: var(--color-text-secondary); font-size: 11px; letter-spacing: 0.1px; }
+  .role { color: var(--color-text-secondary); margin-top: 2px; }
+  .demo { width: 200px; padding: 14px; border: 1px solid var(--color-border-subtle); border-radius: 3px; background: var(--color-surface-elevated); display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+  .demo-row { font-family: var(--font-body); font-size: 12px; color: var(--color-text-primary); display: flex; align-items: center; gap: 8px; }
+  .badge-pill { display: inline-flex; min-width: 18px; padding: 2px 6px; background: #FFC700; color: #2A2D35; border: 1px solid #EAAD00; border-radius: 9999px; font-size: 10px; font-weight: 700; line-height: 1; align-items: center; justify-content: center; }
+  .pres { width: 10px; height: 10px; background: #FFC700; border-radius: 9999px; border: 1px solid #EAAD00; }
+  .mention { background: rgba(255,199,0,0.15); padding: 1px 4px; border-radius: 2px; color: #2A2D35; font-weight: 700; }
+</style></head><body>
+<div class="wrap">
+  <div class="swatches">
+    <div class="swatch"><div class="fill" style="background:#FFC700"></div><div class="meta"><div class="name">colors.yellow</div><div class="hex">#FFC700</div><div class="role">Badges · @mentions · presence</div></div></div>
+    <div class="swatch"><div class="fill" style="background:#FFD633"></div><div class="meta"><div class="name">yellowHover</div><div class="hex">#FFD633</div><div class="role">Pressed</div></div></div>
+    <div class="swatch"><div class="fill" style="background:#EAAD00"></div><div class="meta"><div class="name">yellowDark</div><div class="hex">#EAAD00</div><div class="role">Border</div></div></div>
+    <div class="swatch"><div class="fill" style="background:rgba(255,199,0,0.15)"></div><div class="meta"><div class="name">yellowTint</div><div class="hex">rgba(255,199,0, .15)</div><div class="role">@mention bg</div></div></div>
+  </div>
+  <div class="demo">
+    <div class="demo-row"><span class="badge-pill">3</span><span>unread</span></div>
+    <div class="demo-row"><span class="pres"></span><span>online</span></div>
+    <div class="demo-row"><span class="mention">@alex</span></div>
+  </div>
+</div></body></html>

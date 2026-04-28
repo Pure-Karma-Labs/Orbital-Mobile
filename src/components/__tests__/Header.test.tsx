@@ -77,12 +77,21 @@ describe('Header', () => {
   it('calls onBack when back button is pressed', () => {
     const onBack = jest.fn();
     const renderer = renderHeader({ onBack, backLabel: 'Back' });
-    const touchables = renderer.root.findAllByType(
-      'TouchableOpacity' as unknown as React.ComponentType,
+    const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
+    const backNode = allText.find(
+      (node) =>
+        typeof node.props.children === 'string' &&
+        node.props.children.includes('Back'),
     );
-    expect(touchables.length).toBeGreaterThan(0);
+    expect(backNode).toBeDefined();
+    // Walk up to the touchable parent and press it
+    let parent = backNode?.parent;
+    while (parent && !parent.props.onPress) {
+      parent = parent.parent;
+    }
+    expect(parent?.props.onPress).toBeDefined();
     act(() => {
-      touchables[0]?.props.onPress?.();
+      parent?.props.onPress?.();
     });
     expect(onBack).toHaveBeenCalledTimes(1);
   });

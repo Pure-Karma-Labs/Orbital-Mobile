@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Orbital · Type · Mono & ASCII</title>
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  html,body{margin:0;padding:0;background:var(--color-background)}
+  .wrap{padding:18px 22px;display:flex;flex-direction:column;gap:10px}
+  .lbl{font-family:var(--font-mono);font-size:10px;color:var(--color-text-tertiary)}
+  .ascii{font-family:var(--font-mono);color:var(--color-text-tertiary);white-space:pre;text-align:center}
+  .ascii.box{color:var(--color-text-secondary);font-size:11px}
+  .ascii.heavy{color:var(--color-blue);font-size:11px}
+  .row{border-bottom:1px solid var(--color-border-subtle);padding-bottom:8px}
+</style></head><body>
+<div class="wrap">
+  <div class="row"><div class="lbl">Day separator · mono 11 · textTertiary</div><div class="ascii" style="font-size:11px">─── Today ───</div></div>
+  <div class="row"><div class="lbl">Section separator · letter-spacing 2px</div><div class="ascii" style="font-size:11px;letter-spacing:2px">·  ·  ·  ✦  ·  ·  ·</div></div>
+  <div class="row"><div class="lbl">Soft box · empty state</div><div class="ascii box">╭───────────────────────╮
+│  No threads yet       │
+│  Create your first! ✦ │
+╰───────────────────────╯</div></div>
+  <div class="row"><div class="lbl">Heavy box · welcome banner only · color = blue</div><div class="ascii heavy">╔═══════════════════════════╗
+║   Welcome to Orbital!     ║
+║   Your orbit awaits...    ║
+╚═══════════════════════════╝</div></div>
+  <div class="row"><div class="lbl">Status indicators</div><div class="ascii" style="font-size:11px">[●] Online    [○] Offline    [◐] Away    [⊙] DnD</div></div>
+</div></body></html>

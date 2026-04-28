@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Orbital · Badges & Presence</title>
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  html,body{margin:0;padding:0;background:var(--color-background)}
+  .wrap{padding:22px;display:grid;grid-template-columns:repeat(3,1fr);gap:16px;align-items:center}
+  .lbl{font-family:var(--font-mono);font-size:10px;color:var(--color-text-tertiary);text-align:center;margin-top:6px}
+  .col{display:flex;flex-direction:column;align-items:center;gap:4px}
+  .badge{display:inline-flex;min-width:18px;padding:2px 6px;background:#FFC700;color:#2A2D35;border:1px solid #EAAD00;border-radius:9999px;font-family:var(--font-body);font-size:10px;font-weight:700;line-height:1;align-items:center;justify-content:center}
+  .creator{display:inline-block;font-family:var(--font-body);font-size:10px;font-weight:700;color:#9B87F5;letter-spacing:.5px;text-transform:uppercase}
+  .av{position:relative;width:36px;height:36px;border-radius:9999px;background:#9B87F5;color:#fff;font-family:var(--font-header);font-weight:700;font-size:14px;display:flex;align-items:center;justify-content:center}
+  .pres{position:absolute;right:-1px;bottom:-1px;width:10px;height:10px;background:#FFC700;border:1px solid #FAF9F7;border-radius:9999px}
+  .pres.off{background:#9CA3AF;border-color:#FAF9F7}
+  .row{display:flex;gap:10px;align-items:center}
+</style></head><body>
+<div class="wrap">
+  <div class="col"><span class="badge">3</span><div class="lbl">Unread · pill</div></div>
+  <div class="col"><span class="badge">99+</span><div class="lbl">Cap badge</div></div>
+  <div class="col"><span class="creator">Creator</span><div class="lbl">Role label</div></div>
+  <div class="col"><div class="av">A<div class="pres"></div></div><div class="lbl">Online · yellow dot</div></div>
+  <div class="col"><div class="av" style="background:#5B9FED">S<div class="pres off"></div></div><div class="lbl">Offline · grey dot</div></div>
+  <div class="col"><div class="row"><span style="font-family:var(--font-mono);font-size:11px;color:#2A2D35">[●]</span><span style="font-family:var(--font-mono);font-size:11px;color:#2A2D35">[○]</span><span style="font-family:var(--font-mono);font-size:11px;color:#2A2D35">[◐]</span></div><div class="lbl">ASCII presence</div></div>
+</div></body></html>

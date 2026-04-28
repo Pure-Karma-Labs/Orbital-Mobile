@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Orbital · Buttons</title>
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  html,body{margin:0;padding:0;background:var(--color-background)}
+  .wrap{padding:20px;display:grid;grid-template-columns:repeat(2,1fr);gap:12px;align-items:center}
+  .lbl{font-family:var(--font-mono);font-size:10px;color:var(--color-text-tertiary)}
+  .group{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .pill{display:inline-flex;align-items:center;justify-content:center;min-height:36px;padding:8px 16px;border-radius:3px;border:1px solid;font-family:var(--font-body);font-size:13px;font-weight:700;cursor:pointer}
+  .primary{background:#5B9FED;color:#fff;border-color:#3D7BC4}
+  .primary.hover{background:#4A8CD9}
+  .secondary{background:#9B87F5;color:#fff;border-color:#7B65D1}
+  .destructive{background:#F56565;color:#fff;border-color:#C53030}
+  .outline{background:transparent;color:#5B9FED;border-color:#5B9FED}
+  .disabled{opacity:.5}
+</style></head><body>
+<div class="wrap">
+  <div class="lbl">Primary · default + pressed</div><div class="group"><span class="pill primary">Log In</span><span class="pill primary hover">Log In</span></div>
+  <div class="lbl">Secondary (purple)</div><div class="group"><span class="pill secondary">Create Orbit</span></div>
+  <div class="lbl">Outline</div><div class="group"><span class="pill outline">Join with Code</span></div>
+  <div class="lbl">Destructive</div><div class="group"><span class="pill destructive">Log Out</span></div>
+  <div class="lbl">Disabled · 50% opacity</div><div class="group"><span class="pill primary disabled">Send</span></div>
+</div></body></html>

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Orbital · Reply Depth Color System</title>
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  html,body{margin:0;padding:0;background:var(--color-background)}
+  .wrap{padding:16px}
+  .msg{border-radius:3px;padding:10px 12px;margin-bottom:6px;font-family:var(--font-body);font-size:13px;color:var(--color-text-primary);line-height:1.45}
+  .author{font-weight:700;font-size:13px}
+  .ts{font-family:var(--font-mono);font-size:10px;color:var(--color-text-tertiary);margin-left:6px;letter-spacing:.1px}
+  .body{margin-top:2px;color:var(--color-text-primary)}
+  .ctx{font-family:var(--font-mono);font-size:11px;color:var(--color-text-tertiary);margin-bottom:2px}
+  .l0{background:#FFF;border:1px solid #D1D5DB}
+  .l1{background:rgba(91,159,237,0.08);border-left:3px solid #5B9FED;margin-left:24px}
+  .l2{background:rgba(155,135,245,0.08);border-left:3px solid #9B87F5;margin-left:48px}
+  .l3{background:rgba(91,159,237,0.12);border-left:3px solid #5B9FED;margin-left:72px}
+  .l4{background:rgba(155,135,245,0.12);border-left:3px solid #9B87F5;margin-left:96px}
+  .lbl{position:absolute;right:14px;font-family:var(--font-mono);font-size:10px;color:var(--color-text-tertiary);letter-spacing:.5px}
+  .row{position:relative}
+</style></head><body>
+<div class="wrap">
+  <div class="row"><div class="msg l0"><div><span class="author">Mom</span><span class="ts">10:30 AM</span></div><div class="body">Has anyone tried the new farmer's market on Oak St?</div></div><span class="lbl" style="top:6px">L0 · 0px · #FFF</span></div>
+  <div class="row"><div class="msg l1"><div class="ctx">↳ Replying to Mom</div><div><span class="author">Sarah</span><span class="ts">10:45 AM</span></div><div class="body">Yes! Get the wildflower honey.</div></div><span class="lbl" style="top:6px">L1 · 24 · blue 8%</span></div>
+  <div class="row"><div class="msg l2"><div class="ctx">↳ Replying to Sarah</div><div><span class="author">Mom</span><span class="ts">11:02 AM</span></div><div class="body">Good call. Parking?</div></div><span class="lbl" style="top:6px">L2 · 48 · purple 8%</span></div>
+  <div class="row"><div class="msg l3"><div><span class="author">Alex</span><span class="ts">11:15 AM</span></div><div class="body">Elm St is free on weekends.</div></div><span class="lbl" style="top:6px">L3 · 72 · blue 12%</span></div>
+  <div class="row"><div class="msg l4"><div><span class="author">Dad</span><span class="ts">11:30 AM</span></div><div class="body">They have fresh bread Sat.</div></div><span class="lbl" style="top:6px">L4+ · 96 · purple 12%</span></div>
+</div></body></html>

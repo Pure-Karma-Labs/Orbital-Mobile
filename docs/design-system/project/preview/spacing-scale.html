@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Orbital · Spacing</title>
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  html,body{margin:0;padding:0;background:var(--color-background)}
+  .wrap{padding:20px;display:flex;flex-direction:column;gap:6px}
+  .row{display:flex;align-items:center;gap:14px}
+  .tok{font-family:var(--font-mono);font-size:11px;color:var(--color-text-tertiary);min-width:96px}
+  .bar{height:18px;background:var(--color-blue);border-radius:2px}
+  .v{font-family:var(--font-mono);font-size:10px;color:var(--color-text-secondary);min-width:36px}
+  .role{font-family:var(--font-body);font-size:11px;color:var(--color-text-secondary)}
+</style></head><body>
+<div class="wrap">
+  <div class="row"><span class="tok">space.xs</span>   <span class="bar" style="width:4px"></span>  <span class="v">4px</span><span class="role">Tight (gap between thumbnail tiles)</span></div>
+  <div class="row"><span class="tok">space.sm</span>   <span class="bar" style="width:8px"></span>  <span class="v">8px</span><span class="role">Cozy (composer padding)</span></div>
+  <div class="row"><span class="tok">space.md</span>   <span class="bar" style="width:12px"></span> <span class="v">12px</span><span class="role">Comfortable (post padding, gap)</span></div>
+  <div class="row"><span class="tok">space.base</span> <span class="bar" style="width:16px"></span> <span class="v">16px</span><span class="role">Standard horizontal screen padding</span></div>
+  <div class="row"><span class="tok">space.lg</span>   <span class="bar" style="width:24px"></span> <span class="v">24px</span><span class="role">Spacious — reply indent unit</span></div>
+  <div class="row"><span class="tok">space.xl</span>   <span class="bar" style="width:32px"></span> <span class="v">32px</span><span class="role">Generous</span></div>
+  <div class="row"><span class="tok">space.2xl</span>  <span class="bar" style="width:48px"></span> <span class="v">48px</span><span class="role">Wide (rare)</span></div>
+</div></body></html>

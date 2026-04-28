@@ -256,7 +256,7 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
   return (
     <SafeAreaView style={containerStyle} edges={['top']} testID="threads-screen">
       <OrbitBar
-        orbitName="Family"
+        orbitName="Family Orbit"
         onOpenOrbits={handleOpenOrbits}
         onCompose={handleCompose}
       />

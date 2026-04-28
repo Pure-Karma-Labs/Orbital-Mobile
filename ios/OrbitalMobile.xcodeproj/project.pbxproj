@@ -9,21 +9,37 @@
 /* Begin PBXBuildFile section */
 		0C80B921A6F3F58F76C31292 /* libPods-OrbitalMobile.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 5DCACB8F33CDC322A6C60F78 /* libPods-OrbitalMobile.a */; };
 		13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
+		148C606E6D6B4CB8BCA6C7DF /* BitstreamVeraSans-Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 808E83EE353D4B898CC7753D /* BitstreamVeraSans-Bold.ttf */; };
 		24ED7860364903DBE9231389 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */; };
+		4DBA2465222A4C9985554FA4 /* BitstreamVeraSans-Italic.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 23F2E610713843D4841AD610 /* BitstreamVeraSans-Italic.ttf */; };
+		61167967F21C4C21A6A0E86F /* FiraSans-Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 7F0CE053C13845009B102534 /* FiraSans-Bold.ttf */; };
 		761780ED2CA45674006654EE /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761780EC2CA45674006654EE /* AppDelegate.swift */; };
+		7B2DF575D42E4D55AFB4E61E /* FiraSans-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 0EE11796ED8249D0AFC047D5 /* FiraSans-Regular.ttf */; };
 		81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */; };
+		956A24A353464418B1994AFB /* LICENSE-BitstreamVeraSans.txt in Resources */ = {isa = PBXBuildFile; fileRef = B14AD1BD60314C7A8C025C1F /* LICENSE-BitstreamVeraSans.txt */; };
+		B6E54E658211405BB9A5534C /* BitstreamVeraSansMono.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 42F54BA0645041FB84ECC24F /* BitstreamVeraSansMono.ttf */; };
+		C667C2A80BE849BDA75D2395 /* BitstreamVeraSansMono-Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 835C50727BBA481A91347CE4 /* BitstreamVeraSansMono-Bold.ttf */; };
+		D00701763A00418091F994DD /* BitstreamVeraSans.ttf in Resources */ = {isa = PBXBuildFile; fileRef = C43A55DE9DBB46C0B70E1FB6 /* BitstreamVeraSans.ttf */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		0EE11796ED8249D0AFC047D5 /* FiraSans-Regular.ttf */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = undefined; includeInIndex = 0; lastKnownFileType = unknown; name = "FiraSans-Regular.ttf"; path = "../src/theme/fonts/FiraSans-Regular.ttf"; sourceTree = "<group>"; };
 		13B07F961A680F5B00A75B9A /* OrbitalMobile.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OrbitalMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = OrbitalMobile/Images.xcassets; sourceTree = "<group>"; };
 		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = OrbitalMobile/Info.plist; sourceTree = "<group>"; };
 		13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = PrivacyInfo.xcprivacy; path = OrbitalMobile/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		23F2E610713843D4841AD610 /* BitstreamVeraSans-Italic.ttf */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = undefined; includeInIndex = 0; lastKnownFileType = unknown; name = "BitstreamVeraSans-Italic.ttf"; path = "../src/theme/fonts/BitstreamVeraSans-Italic.ttf"; sourceTree = "<group>"; };
 		3B4392A12AC88292D35C810B /* Pods-OrbitalMobile.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-OrbitalMobile.debug.xcconfig"; path = "Target Support Files/Pods-OrbitalMobile/Pods-OrbitalMobile.debug.xcconfig"; sourceTree = "<group>"; };
+		42F54BA0645041FB84ECC24F /* BitstreamVeraSansMono.ttf */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = undefined; includeInIndex = 0; lastKnownFileType = unknown; name = BitstreamVeraSansMono.ttf; path = ../src/theme/fonts/BitstreamVeraSansMono.ttf; sourceTree = "<group>"; };
 		5709B34CF0A7D63546082F79 /* Pods-OrbitalMobile.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-OrbitalMobile.release.xcconfig"; path = "Target Support Files/Pods-OrbitalMobile/Pods-OrbitalMobile.release.xcconfig"; sourceTree = "<group>"; };
 		5DCACB8F33CDC322A6C60F78 /* libPods-OrbitalMobile.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-OrbitalMobile.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		761780EC2CA45674006654EE /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = OrbitalMobile/AppDelegate.swift; sourceTree = "<group>"; };
+		7F0CE053C13845009B102534 /* FiraSans-Bold.ttf */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = undefined; includeInIndex = 0; lastKnownFileType = unknown; name = "FiraSans-Bold.ttf"; path = "../src/theme/fonts/FiraSans-Bold.ttf"; sourceTree = "<group>"; };
+		808E83EE353D4B898CC7753D /* BitstreamVeraSans-Bold.ttf */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = undefined; includeInIndex = 0; lastKnownFileType = unknown; name = "BitstreamVeraSans-Bold.ttf"; path = "../src/theme/fonts/BitstreamVeraSans-Bold.ttf"; sourceTree = "<group>"; };
 		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = OrbitalMobile/LaunchScreen.storyboard; sourceTree = "<group>"; };
+		835C50727BBA481A91347CE4 /* BitstreamVeraSansMono-Bold.ttf */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = undefined; includeInIndex = 0; lastKnownFileType = unknown; name = "BitstreamVeraSansMono-Bold.ttf"; path = "../src/theme/fonts/BitstreamVeraSansMono-Bold.ttf"; sourceTree = "<group>"; };
+		B14AD1BD60314C7A8C025C1F /* LICENSE-BitstreamVeraSans.txt */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = undefined; includeInIndex = 0; lastKnownFileType = unknown; name = "LICENSE-BitstreamVeraSans.txt"; path = "../src/theme/fonts/LICENSE-BitstreamVeraSans.txt"; sourceTree = "<group>"; };
+		C43A55DE9DBB46C0B70E1FB6 /* BitstreamVeraSans.ttf */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = undefined; includeInIndex = 0; lastKnownFileType = unknown; name = BitstreamVeraSans.ttf; path = ../src/theme/fonts/BitstreamVeraSans.ttf; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
@@ -75,6 +91,7 @@
 				83CBBA001A601CBA00E9B192 /* Products */,
 				2D16E6871FA4F8E400B85C8A /* Frameworks */,
 				BBD78D7AC51CEA395F1C20DB /* Pods */,
+				E58DC015CF6D4C02B6452076 /* Resources */,
 			);
 			indentWidth = 2;
 			sourceTree = "<group>";
@@ -96,6 +113,22 @@
 				5709B34CF0A7D63546082F79 /* Pods-OrbitalMobile.release.xcconfig */,
 			);
 			path = Pods;
+			sourceTree = "<group>";
+		};
+		E58DC015CF6D4C02B6452076 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				808E83EE353D4B898CC7753D /* BitstreamVeraSans-Bold.ttf */,
+				835C50727BBA481A91347CE4 /* BitstreamVeraSansMono-Bold.ttf */,
+				42F54BA0645041FB84ECC24F /* BitstreamVeraSansMono.ttf */,
+				7F0CE053C13845009B102534 /* FiraSans-Bold.ttf */,
+				C43A55DE9DBB46C0B70E1FB6 /* BitstreamVeraSans.ttf */,
+				23F2E610713843D4841AD610 /* BitstreamVeraSans-Italic.ttf */,
+				0EE11796ED8249D0AFC047D5 /* FiraSans-Regular.ttf */,
+				B14AD1BD60314C7A8C025C1F /* LICENSE-BitstreamVeraSans.txt */,
+			);
+			name = Resources;
+			path = "";
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -161,6 +194,14 @@
 				81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */,
 				13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */,
 				24ED7860364903DBE9231389 /* PrivacyInfo.xcprivacy in Resources */,
+				148C606E6D6B4CB8BCA6C7DF /* BitstreamVeraSans-Bold.ttf in Resources */,
+				C667C2A80BE849BDA75D2395 /* BitstreamVeraSansMono-Bold.ttf in Resources */,
+				B6E54E658211405BB9A5534C /* BitstreamVeraSansMono.ttf in Resources */,
+				61167967F21C4C21A6A0E86F /* FiraSans-Bold.ttf in Resources */,
+				D00701763A00418091F994DD /* BitstreamVeraSans.ttf in Resources */,
+				4DBA2465222A4C9985554FA4 /* BitstreamVeraSans-Italic.ttf in Resources */,
+				7B2DF575D42E4D55AFB4E61E /* FiraSans-Regular.ttf in Resources */,
+				956A24A353464418B1994AFB /* LICENSE-BitstreamVeraSans.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

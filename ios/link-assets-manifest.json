@@ -1,0 +1,37 @@
+{
+  "migIndex": 1,
+  "data": [
+    {
+      "path": "src/theme/fonts/BitstreamVeraSans-Bold.ttf",
+      "sha1": "55b5086473d9187fb18f17d44de9e828fed4de8b"
+    },
+    {
+      "path": "src/theme/fonts/BitstreamVeraSans-Italic.ttf",
+      "sha1": "484664febb916f6132b5c64bf499635a3295a5bd"
+    },
+    {
+      "path": "src/theme/fonts/BitstreamVeraSans.ttf",
+      "sha1": "1d7f6fa0c34e3d50be52c16a0816bebac309fe41"
+    },
+    {
+      "path": "src/theme/fonts/BitstreamVeraSansMono-Bold.ttf",
+      "sha1": "6c6e67f6d2550a07c73937fdbad2ec6925288e2f"
+    },
+    {
+      "path": "src/theme/fonts/BitstreamVeraSansMono.ttf",
+      "sha1": "2c2e2ded3c903b5186f955871109f084edef4dbe"
+    },
+    {
+      "path": "src/theme/fonts/FiraSans-Bold.ttf",
+      "sha1": "c209872b0a7c096787fbe1d8e6d92befe9058427"
+    },
+    {
+      "path": "src/theme/fonts/FiraSans-Regular.ttf",
+      "sha1": "e8fc7ac2f97d5118d58f88c98e23a832a3f8fff8"
+    },
+    {
+      "path": "src/theme/fonts/LICENSE-BitstreamVeraSans.txt",
+      "sha1": "b3245f6ac784e19a10843831b45b5944c62e3ccc"
+    }
+  ]
+}

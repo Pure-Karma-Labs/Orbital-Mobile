@@ -16,7 +16,7 @@ export const fontFamily = {
   body: 'BitstreamVeraSans-Roman',
   bodyBold: 'BitstreamVeraSans-Bold',
   bodyItalic: 'BitstreamVeraSans-Oblique',
-  header: 'BitstreamVeraSans-Bold',
+  header: 'FiraSans-Regular',
   mono: 'BitstreamVeraSansMono-Roman',
   monoBold: 'BitstreamVeraSansMono-Bold',
 } as const;

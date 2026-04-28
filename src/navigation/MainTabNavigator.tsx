@@ -1,4 +1,5 @@
 import React from 'react';
+import { Text } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import type { MainTabParamList } from './types';
 import { useTheme } from '../theme';
@@ -7,6 +8,12 @@ import { ThreadsStackNavigator } from './ThreadsStackNavigator';
 import ChatsScreen from '../screens/ChatsScreen';
 import SettingsScreen from '../screens/SettingsScreen';
 import { Emoji } from '../components/Emoji';
+
+const TAB_ICONS: Record<string, string> = {
+  Threads: '💬',
+  Chats: '📨',
+  Settings: '⚙️',
+};
 
 const Tab = createBottomTabNavigator<MainTabParamList>();
 
@@ -34,7 +41,7 @@ export function MainTabNavigator(): React.JSX.Element {
           }
         },
       }}
-      screenOptions={{
+      screenOptions={({ route }) => ({
         tabBarStyle: {
           backgroundColor: theme.colors.surface,
           borderTopColor: theme.colors.borderSubtle,
@@ -46,7 +53,10 @@ export function MainTabNavigator(): React.JSX.Element {
           fontSize: theme.typography.fontSize.xs,
         },
         headerShown: false,
-      }}
+        tabBarIcon: () => (
+          <Text style={{ fontSize: 20 }}>{TAB_ICONS[route.name] ?? ''}</Text>
+        ),
+      })}
     >
       <Tab.Screen
         name="Threads"

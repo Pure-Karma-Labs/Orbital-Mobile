@@ -34,7 +34,7 @@
 		<true/>
 	</dict>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string></string>
+	<string/>
 	<key>RCTNewArchEnabled</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>
@@ -48,6 +48,16 @@
 		<string>UIInterfaceOrientationPortrait</string>
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UIAppFonts</key>
+	<array>
+		<string>BitstreamVeraSans.ttf</string>
+		<string>BitstreamVeraSans-Bold.ttf</string>
+		<string>BitstreamVeraSans-Italic.ttf</string>
+		<string>BitstreamVeraSansMono.ttf</string>
+		<string>BitstreamVeraSansMono-Bold.ttf</string>
+		<string>FiraSans-Regular.ttf</string>
+		<string>FiraSans-Bold.ttf</string>
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<false/>

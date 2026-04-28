@@ -24,3 +24,9 @@ export type { EmojiProps } from './Emoji';
 
 export { EmojiText } from './EmojiText';
 export type { EmojiTextProps } from './EmojiText';
+
+export { OrbitalLoader } from './OrbitalLoader';
+export type { OrbitalLoaderProps } from './OrbitalLoader';
+
+export { AsciiBanner } from './AsciiBanner';
+export type { AsciiBannerProps } from './AsciiBanner';

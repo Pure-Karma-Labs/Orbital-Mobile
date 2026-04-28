@@ -11,8 +11,9 @@ import {
   type TextStyle,
   type ViewStyle,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../theme';
-import { TextInput, Button, ErrorBanner } from '../components';
+import { TextInput, Button, ErrorBanner, OrbitalLoader, AsciiBanner } from '../components';
 import { signupUser } from '../services/authService';
 import { AuthError, NetworkError, ValidationError } from '../services/api/errors';
 
@@ -22,6 +23,7 @@ export interface SignupScreenProps {
 
 export function SignupScreen({ onSwitchToLogin }: SignupScreenProps): React.JSX.Element {
   const theme = useTheme();
+  const insets = useSafeAreaInsets();
 
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
@@ -75,7 +77,7 @@ export function SignupScreen({ onSwitchToLogin }: SignupScreenProps): React.JSX.
     flexGrow: 1,
     justifyContent: 'center',
     paddingHorizontal: theme.spacing.lg,
-    paddingTop: theme.spacing.xl,
+    paddingTop: Math.max(insets.top, theme.spacing.xl),
     paddingBottom: 300,
   };
 
@@ -87,19 +89,14 @@ export function SignupScreen({ onSwitchToLogin }: SignupScreenProps): React.JSX.
     marginBottom: theme.spacing.xs,
   };
 
-  const subtitleStyle: TextStyle = {
-    fontFamily: theme.typography.fontFamily.body,
-    fontSize: theme.typography.fontSize.base,
-    color: theme.colors.textSecondary,
-    textAlign: 'center',
-    marginBottom: theme.spacing.lg,
-  };
+
 
   const switchLinkStyle: TextStyle = {
     fontFamily: theme.typography.fontFamily.body,
-    fontSize: theme.typography.fontSize.sm,
+    fontSize: theme.typography.fontSize.base,
     color: theme.colors.blue,
     textAlign: 'center',
+    textDecorationLine: 'underline',
     marginTop: theme.spacing.base,
   };
 
@@ -111,8 +108,11 @@ export function SignupScreen({ onSwitchToLogin }: SignupScreenProps): React.JSX.
         keyboardDismissMode="interactive"
         automaticallyAdjustKeyboardInsets
       >
+        <View style={{marginBottom: theme.spacing.lg}}>
+          <OrbitalLoader size={64} />
+        </View>
         <Text style={titleStyle}>Orbital</Text>
-        <Text style={subtitleStyle}>Create your account</Text>
+        <AsciiBanner text="Create your account" />
 
         <View>
           <TextInput

@@ -4,11 +4,10 @@
 
 import React, { useState } from 'react';
 import {
-  KeyboardAvoidingView,
-  Platform,
   ScrollView,
   Text,
   TouchableOpacity,
+  View,
   type TextStyle,
   type ViewStyle,
 } from 'react-native';
@@ -76,7 +75,8 @@ export function SignupScreen({ onSwitchToLogin }: SignupScreenProps): React.JSX.
     flexGrow: 1,
     justifyContent: 'center',
     paddingHorizontal: theme.spacing.lg,
-    paddingVertical: theme.spacing.xl,
+    paddingTop: theme.spacing.xl,
+    paddingBottom: 300,
   };
 
   const titleStyle: TextStyle = {
@@ -104,64 +104,65 @@ export function SignupScreen({ onSwitchToLogin }: SignupScreenProps): React.JSX.
   };
 
   return (
-    <KeyboardAvoidingView
-      style={outerStyle}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-    >
+    <View style={outerStyle}>
       <ScrollView
         contentContainerStyle={scrollContentStyle}
         keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="interactive"
+        automaticallyAdjustKeyboardInsets
       >
         <Text style={titleStyle}>Orbital</Text>
         <Text style={subtitleStyle}>Create your account</Text>
 
-        <TextInput
-          label="Username"
-          value={username}
-          onChangeText={setUsername}
-          autoCapitalize="none"
-          autoCorrect={false}
-          maxLength={64}
-          testID="signup-username-input"
-        />
-        <TextInput
-          label="Email"
-          value={email}
-          onChangeText={setEmail}
-          autoCapitalize="none"
-          autoCorrect={false}
-          keyboardType="email-address"
-          maxLength={256}
-          testID="signup-email-input"
-        />
-        <TextInput
-          label="Password"
-          value={password}
-          onChangeText={setPassword}
-          secureTextEntry
-          autoCapitalize="none"
-          autoCorrect={false}
-          maxLength={128}
-          testID="signup-password-input"
-        />
-        <TextInput
-          label="Invite Code"
-          value={inviteCode}
-          onChangeText={setInviteCode}
-          autoCapitalize="characters"
-          autoCorrect={false}
-          maxLength={64}
-          testID="signup-invite-code-input"
-        />
+        <View>
+          <TextInput
+            label="Username"
+            value={username}
+            onChangeText={setUsername}
+            autoCapitalize="none"
+            autoCorrect={false}
+            maxLength={64}
+            testID="signup-username-input"
+          />
+          <TextInput
+            label="Email"
+            value={email}
+            onChangeText={setEmail}
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="email-address"
+            maxLength={256}
+            testID="signup-email-input"
+          />
+          <TextInput
+            label="Password"
+            value={password}
+            onChangeText={setPassword}
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+            maxLength={128}
+            testID="signup-password-input"
+          />
+          <TextInput
+            label="Invite Code"
+            value={inviteCode}
+            onChangeText={setInviteCode}
+            autoCapitalize="characters"
+            autoCorrect={false}
+            maxLength={64}
+            testID="signup-invite-code-input"
+          />
 
-        <ErrorBanner message={error} />
+          <ErrorBanner message={error} />
 
-        <Button
-          title="Sign Up"
-          onPress={handleSignup}
-          loading={loading}
-          testID="signup-submit-button"
-        />
+          <Button
+            title="Sign Up"
+            onPress={handleSignup}
+            loading={loading}
+            testID="signup-submit-button"
+          />
+        </View>
 
         <TouchableOpacity
           onPress={onSwitchToLogin}
@@ -172,6 +173,6 @@ export function SignupScreen({ onSwitchToLogin }: SignupScreenProps): React.JSX.
           <Text style={switchLinkStyle}>Already have an account? Log in</Text>
         </TouchableOpacity>
       </ScrollView>
-    </KeyboardAvoidingView>
+    </View>
   );
 }

@@ -4,11 +4,10 @@
 
 import React, { useState } from 'react';
 import {
-  KeyboardAvoidingView,
-  Platform,
   ScrollView,
   Text,
   TouchableOpacity,
+  View,
   type TextStyle,
   type ViewStyle,
 } from 'react-native';
@@ -62,7 +61,8 @@ export function LoginScreen({ onSwitchToSignup }: LoginScreenProps): React.JSX.E
     flexGrow: 1,
     justifyContent: 'center',
     paddingHorizontal: theme.spacing.lg,
-    paddingVertical: theme.spacing.xl,
+    paddingTop: theme.spacing.xl,
+    paddingBottom: 300,
   };
 
   const titleStyle: TextStyle = {
@@ -90,45 +90,46 @@ export function LoginScreen({ onSwitchToSignup }: LoginScreenProps): React.JSX.E
   };
 
   return (
-    <KeyboardAvoidingView
-      style={outerStyle}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-    >
+    <View style={outerStyle}>
       <ScrollView
         contentContainerStyle={scrollContentStyle}
         keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="interactive"
+        automaticallyAdjustKeyboardInsets
       >
         <Text style={titleStyle}>Orbital</Text>
         <Text style={subtitleStyle}>Sign in to your account</Text>
 
-        <TextInput
-          label="Username"
-          value={username}
-          onChangeText={setUsername}
-          autoCapitalize="none"
-          autoCorrect={false}
-          maxLength={64}
-          testID="login-username-input"
-        />
-        <TextInput
-          label="Password"
-          value={password}
-          onChangeText={setPassword}
-          secureTextEntry
-          autoCapitalize="none"
-          autoCorrect={false}
-          maxLength={128}
-          testID="login-password-input"
-        />
+        <View>
+          <TextInput
+            label="Username"
+            value={username}
+            onChangeText={setUsername}
+            autoCapitalize="none"
+            autoCorrect={false}
+            maxLength={64}
+            testID="login-username-input"
+          />
+          <TextInput
+            label="Password"
+            value={password}
+            onChangeText={setPassword}
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+            maxLength={128}
+            testID="login-password-input"
+          />
 
-        <ErrorBanner message={error} />
+          <ErrorBanner message={error} />
 
-        <Button
-          title="Log In"
-          onPress={handleLogin}
-          loading={loading}
-          testID="login-submit-button"
-        />
+          <Button
+            title="Log In"
+            onPress={handleLogin}
+            loading={loading}
+            testID="login-submit-button"
+          />
+        </View>
 
         <TouchableOpacity
           onPress={onSwitchToSignup}
@@ -139,6 +140,6 @@ export function LoginScreen({ onSwitchToSignup }: LoginScreenProps): React.JSX.E
           <Text style={switchLinkStyle}>Don&apos;t have an account? Sign up</Text>
         </TouchableOpacity>
       </ScrollView>
-    </KeyboardAvoidingView>
+    </View>
   );
 }

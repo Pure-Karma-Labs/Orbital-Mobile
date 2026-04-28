@@ -6,6 +6,7 @@ import { useAppStore } from '../stores/useAppStore';
 import { ThreadsStackNavigator } from './ThreadsStackNavigator';
 import ChatsScreen from '../screens/ChatsScreen';
 import SettingsScreen from '../screens/SettingsScreen';
+import { Emoji } from '../components/Emoji';
 
 const Tab = createBottomTabNavigator<MainTabParamList>();
 
@@ -47,9 +48,27 @@ export function MainTabNavigator(): React.JSX.Element {
         headerShown: false,
       }}
     >
-      <Tab.Screen name="Threads" component={ThreadsStackNavigator} />
-      <Tab.Screen name="Chats" component={ChatsScreen} />
-      <Tab.Screen name="Settings" component={SettingsScreen} />
+      <Tab.Screen
+        name="Threads"
+        component={ThreadsStackNavigator}
+        options={{
+          tabBarIcon: () => <Emoji unified="1F4AC" size={20} />,
+        }}
+      />
+      <Tab.Screen
+        name="Chats"
+        component={ChatsScreen}
+        options={{
+          tabBarIcon: () => <Emoji unified="1F4E8" size={20} />,
+        }}
+      />
+      <Tab.Screen
+        name="Settings"
+        component={SettingsScreen}
+        options={{
+          tabBarIcon: () => <Emoji unified="2699-FE0F" size={20} />,
+        }}
+      />
     </Tab.Navigator>
   );
 }

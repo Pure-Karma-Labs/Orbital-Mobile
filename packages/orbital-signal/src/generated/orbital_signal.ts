@@ -76,6 +76,11 @@ const uniffiIsDebug =
   false;
 // Public interface members begin here.
 
+export type ContentCryptoResult = {
+  ciphertext: ArrayBuffer;
+  iv: ArrayBuffer;
+};
+
 /**
  * AES-256-GCM decrypt with Additional Authenticated Data.
  *

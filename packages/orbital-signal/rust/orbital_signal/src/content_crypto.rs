@@ -14,7 +14,7 @@ pub struct ContentCryptoResult {
 
 /// AES-256-GCM encrypt with Additional Authenticated Data.
 ///
-/// - Generates a fresh 12-byte IV using the OS CSPRNG (`OsRng` via `rand::rng()`).
+/// - Generates a fresh 12-byte IV via `rand::fill` (ChaCha12 reseeded from OsRng).
 /// - Returns `ContentCryptoResult` with ciphertext (encrypted_data || 16-byte auth tag)
 ///   and the generated IV.
 /// - The `aad` parameter binds the ciphertext to a context (e.g., groupId as UTF-8 bytes),

@@ -23,8 +23,36 @@ import { arrayBufferToBase64, base64ToArrayBuffer, toArrayBuffer } from './utils
 // Text encoder/decoder
 // ---------------------------------------------------------------------------
 
-const textEncoder = new TextEncoder();
-const textDecoder = new TextDecoder();
+function encodeUTF8(str: string): Uint8Array {
+  const arr: number[] = [];
+  for (let i = 0; i < str.length; i++) {
+    let c = str.charCodeAt(i);
+    if (c < 0x80) {
+      arr.push(c);
+    } else if (c < 0x800) {
+      arr.push(0xc0 | (c >> 6), 0x80 | (c & 0x3f));
+    } else if (c >= 0xd800 && c <= 0xdbff && i + 1 < str.length) {
+      const next = str.charCodeAt(++i);
+      c = 0x10000 + ((c - 0xd800) << 10) + (next - 0xdc00);
+      arr.push(0xf0 | (c >> 18), 0x80 | ((c >> 12) & 0x3f), 0x80 | ((c >> 6) & 0x3f), 0x80 | (c & 0x3f));
+    } else {
+      arr.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 0x3f), 0x80 | (c & 0x3f));
+    }
+  }
+  return new Uint8Array(arr);
+}
+
+function decodeUTF8(bytes: Uint8Array): string {
+  let result = '';
+  for (let i = 0; i < bytes.length; ) {
+    const b = bytes[i];
+    if (b < 0x80) { result += String.fromCharCode(b); i++; }
+    else if (b < 0xe0) { result += String.fromCharCode(((b & 0x1f) << 6) | (bytes[i + 1] & 0x3f)); i += 2; }
+    else if (b < 0xf0) { result += String.fromCharCode(((b & 0x0f) << 12) | ((bytes[i + 1] & 0x3f) << 6) | (bytes[i + 2] & 0x3f)); i += 3; }
+    else { const cp = ((b & 0x07) << 18) | ((bytes[i + 1] & 0x3f) << 12) | ((bytes[i + 2] & 0x3f) << 6) | (bytes[i + 3] & 0x3f); result += String.fromCodePoint(cp); i += 4; }
+  }
+  return result;
+}
 
 // ---------------------------------------------------------------------------
 // Group key cache
@@ -47,14 +75,9 @@ const groupKeyCache = new Map<string, CachedGroupKey>();
  */
 export async function getOrFetchGroupKey(groupId: string): Promise<Uint8Array> {
   const cached = groupKeyCache.get(groupId);
+  if (cached) return cached.key;
 
-  // Fetch from API
   const response = await getGroupKey(groupId);
-
-  // Check if cached key is still current (keyId matches)
-  if (cached && cached.keyId === response.keyId) {
-    return cached.key;
-  }
 
   // TODO: Decrypt encryptedGroupKey with user's identity private key.
   // The server sends a per-member copy encrypted with the member's public key.
@@ -62,10 +85,24 @@ export async function getOrFetchGroupKey(groupId: string): Promise<Uint8Array> {
   // actual asymmetric decryption when the key distribution pipeline is ready.
   const keyBytes = new Uint8Array(base64ToArrayBuffer(response.encryptedGroupKey));
 
-  // Cache the key
-  groupKeyCache.set(groupId, { key: keyBytes, keyId: response.keyId });
+  if (keyBytes.length !== 32) {
+    throw new Error('Invalid group key length');
+  }
 
+  groupKeyCache.set(groupId, { key: keyBytes, keyId: response.keyId });
   return keyBytes;
+}
+
+/**
+ * Invalidate a single cached group key (e.g. on decryption failure due to key rotation).
+ * The next call to getOrFetchGroupKey will fetch a fresh key from the API.
+ */
+export function invalidateGroupKey(groupId: string): void {
+  const cached = groupKeyCache.get(groupId);
+  if (cached) {
+    cached.key.fill(0);
+    groupKeyCache.delete(groupId);
+  }
 }
 
 /**
@@ -96,8 +133,8 @@ export async function encryptContent(
   groupKey: Uint8Array,
   groupId: string,
 ): Promise<{ ciphertext: string; iv: string }> {
-  const plaintextBytes = textEncoder.encode(plaintext);
-  const aadBytes = textEncoder.encode(groupId);
+  const plaintextBytes = encodeUTF8(plaintext);
+  const aadBytes = encodeUTF8(groupId);
 
   const result: ContentCryptoResult = await aesGcmEncrypt(
     toArrayBuffer(plaintextBytes),
@@ -128,7 +165,7 @@ export async function decryptContent(
 ): Promise<string> {
   const ciphertextBytes = base64ToArrayBuffer(ciphertextBase64);
   const ivBytes = base64ToArrayBuffer(ivBase64);
-  const aadBytes = textEncoder.encode(groupId);
+  const aadBytes = encodeUTF8(groupId);
 
   const plaintext: ArrayBuffer = await aesGcmDecrypt(
     ciphertextBytes,
@@ -137,5 +174,5 @@ export async function decryptContent(
     toArrayBuffer(aadBytes),
   );
 
-  return textDecoder.decode(plaintext);
+  return decodeUTF8(new Uint8Array(plaintext));
 }

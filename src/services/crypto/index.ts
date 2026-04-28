@@ -23,4 +23,5 @@ export {
   decryptContent,
   getOrFetchGroupKey,
   clearGroupKeyCache,
+  invalidateGroupKey,
 } from './contentCrypto';

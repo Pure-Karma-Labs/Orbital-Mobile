@@ -77,6 +77,35 @@ const uniffiIsDebug =
 // Public interface members begin here.
 
 /**
+ * AES-256-GCM decrypt with Additional Authenticated Data.
+ *
+ * Splits ciphertext into (encrypted_data, 16-byte auth tag), verifies the tag,
+ * and returns the plaintext. The aad must match the value used during encryption.
+ */
+export function aesGcmDecrypt(
+  ciphertext: ArrayBuffer,
+  iv: ArrayBuffer,
+  key: ArrayBuffer,
+  aad: ArrayBuffer,
+): ArrayBuffer /*throws*/ {
+  // Implementation handled by uniffi FFI layer
+  throw new Error('FFI not initialized');
+}
+/**
+ * AES-256-GCM encrypt with Additional Authenticated Data.
+ *
+ * Generates a fresh 12-byte IV using OS CSPRNG. Returns ContentCryptoResult
+ * with ciphertext (encrypted_data || 16-byte auth tag) and the generated IV.
+ */
+export function aesGcmEncrypt(
+  plaintext: ArrayBuffer,
+  key: ArrayBuffer,
+  aad: ArrayBuffer,
+): ContentCryptoResult /*throws*/ {
+  // Implementation handled by uniffi FFI layer
+  throw new Error('FFI not initialized');
+}
+/**
  * Create a Sender Key Distribution Message for group messaging (preloaded store pattern).
  */
 export function createSenderKeyDistributionMessage(

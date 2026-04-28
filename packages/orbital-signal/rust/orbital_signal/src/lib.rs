@@ -1,3 +1,4 @@
+mod content_crypto;
 mod error;
 mod group;
 mod keys;
@@ -18,6 +19,7 @@ mod client;
 #[allow(dead_code)]
 mod store_adapters;
 
+pub use content_crypto::*;
 pub use error::*;
 pub use group::*;
 pub use keys::*;

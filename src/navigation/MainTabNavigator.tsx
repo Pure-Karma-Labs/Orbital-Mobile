@@ -3,7 +3,7 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import type { MainTabParamList } from './types';
 import { useTheme } from '../theme';
 import { useAppStore } from '../stores/useAppStore';
-import ThreadsScreen from '../screens/ThreadsScreen';
+import { ThreadsStackNavigator } from './ThreadsStackNavigator';
 import ChatsScreen from '../screens/ChatsScreen';
 import SettingsScreen from '../screens/SettingsScreen';
 
@@ -47,7 +47,7 @@ export function MainTabNavigator(): React.JSX.Element {
         headerShown: false,
       }}
     >
-      <Tab.Screen name="Threads" component={ThreadsScreen} />
+      <Tab.Screen name="Threads" component={ThreadsStackNavigator} />
       <Tab.Screen name="Chats" component={ChatsScreen} />
       <Tab.Screen name="Settings" component={SettingsScreen} />
     </Tab.Navigator>

@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Orbital · Animation</title>
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  html,body{margin:0;padding:0;background:var(--color-background)}
+  .wrap{padding:22px;display:flex;flex-direction:column;gap:8px}
+  .row{display:flex;align-items:center;gap:14px;border-bottom:1px solid var(--color-border-subtle);padding-bottom:8px}
+  .tok{font-family:var(--font-mono);font-size:11px;color:#2A2D35;font-weight:700;min-width:140px}
+  .v{font-family:var(--font-mono);font-size:11px;color:#6B7280;min-width:60px}
+  .role{font-family:var(--font-body);font-size:11px;color:#6B7280}
+  .note{font-family:var(--font-body);font-size:11px;color:#6B7280;padding-top:6px;line-height:1.5}
+</style></head><body>
+<div class="wrap">
+  <div class="row"><span class="tok">duration.instant</span><span class="v">100ms</span><span class="role">Tap feedback</span></div>
+  <div class="row"><span class="tok">duration.fast</span><span class="v">150ms</span><span class="role">Most transitions · login↔signup crossfade · swipe reveals</span></div>
+  <div class="row"><span class="tok">duration.base</span><span class="v">250ms</span><span class="role">Modal slide-up · lightbox fade-in</span></div>
+  <div class="row"><span class="tok">easing.default</span><span class="v">ease</span><span class="role">All transitions — no springs, no overshoot, no bounce</span></div>
+  <div class="note">Quick + snappy. The brand is content, not motion. Resist the urge to add custom cubic-béziers.</div>
+</div></body></html>

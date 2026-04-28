@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Orbital · Inputs</title>
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  html,body{margin:0;padding:0;background:var(--color-background)}
+  .wrap{padding:20px;display:grid;grid-template-columns:repeat(2,1fr);gap:14px;align-items:center}
+  .lbl{font-family:var(--font-mono);font-size:10px;color:var(--color-text-tertiary)}
+  .inp{display:block;width:100%;padding:8px 12px;background:#FFF;border:1px solid #E5E7EB;border-radius:3px;font-family:var(--font-body);font-size:13px;color:#2A2D35;box-sizing:border-box}
+  .inp::placeholder{color:#9CA3AF}
+  .inp.focus{border:2px solid #5B9FED;padding:7px 11px}
+  .inp.error{border:2px solid #F56565;padding:7px 11px}
+  .err{font-family:var(--font-body);font-size:11px;color:#F56565;margin-top:4px}
+  .search{display:flex;align-items:center;gap:8px;padding:8px 12px;background:#FFF;border:1px solid #E5E7EB;border-radius:3px;font-family:var(--font-body);font-size:13px;color:#9CA3AF}
+</style></head><body>
+<div class="wrap">
+  <div class="lbl">Default · 1px border</div><div><input class="inp" placeholder="Email"></div>
+  <div class="lbl">Focus · 2px blue</div><div><input class="inp focus" value="alex@orbit.example"></div>
+  <div class="lbl">Error · 2px red + helper</div><div><input class="inp error" value="not-an-email"><div class="err">Enter a valid email address.</div></div>
+  <div class="lbl">Search · with icon</div><div><div class="search"><span style="font-size:13px">🔍</span><span>Search threads...</span></div></div>
+</div></body></html>

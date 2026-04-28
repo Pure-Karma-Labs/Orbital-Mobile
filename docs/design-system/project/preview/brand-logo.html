@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Orbital · Logo</title>
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  html,body{margin:0;padding:0;background:var(--color-background);color:var(--color-text-primary)}
+  .wrap{padding:20px 24px;display:grid;grid-template-columns:auto auto 1fr;gap:24px;align-items:center}
+  .tile{display:flex;flex-direction:column;align-items:center;gap:8px}
+  .tile .lbl{font-family:var(--font-mono);font-size:10px;color:var(--color-text-tertiary);letter-spacing:.4px;text-transform:uppercase}
+  .light{background:#FFFFFF;border:1px solid var(--color-border);width:108px;height:108px;display:flex;align-items:center;justify-content:center}
+  .dark{background:#0A0B0E;border:1px solid #2A2D35;width:108px;height:108px;display:flex;align-items:center;justify-content:center}
+  .light img,.dark img{width:88px;height:88px;display:block}
+  .word{font-family:var(--font-header);font-weight:700;font-size:30px;color:var(--color-blue);letter-spacing:-0.5px;line-height:1}
+  .meta{font-family:var(--font-body);font-size:11px;color:var(--color-text-secondary);line-height:1.5}
+  .meta b{color:var(--color-text-primary)}
+  .swatches{display:flex;gap:6px;margin-top:6px}
+  .sw{width:14px;height:14px;border:1.5px solid #000;border-radius:50%}
+</style></head><body>
+<div class="wrap">
+  <div class="tile">
+    <div class="light"><img src="../assets/orbital-logo-light-lg.svg" alt="Orbital logo (light)"></div>
+    <div class="lbl">Light · primary</div>
+  </div>
+  <div class="tile">
+    <div class="dark"><img src="../assets/orbital-logo-darkmode-lg.svg" alt="Orbital logo (dark)"></div>
+    <div class="lbl">Dark · inverted</div>
+  </div>
+  <div class="meta">
+    <div class="word">Orbital</div>
+    <div style="margin-top:6px"><b>Mark.</b> Three planets — <span style="color:#FFC700">yellow</span>, <span style="color:#5B9FED">blue</span>, <span style="color:#9B87F5">purple</span> — orbiting an elliptical ring. 12.5px stroke at 1080×1080. Dots use solid fills with a 1.5–3px black outline.</div>
+    <div style="margin-top:6px"><b>Wordmark.</b> Trebuchet MS Bold · <span style="color:var(--color-blue)">colors.blue</span>.</div>
+    <div class="swatches">
+      <div class="sw" style="background:#FFC700"></div>
+      <div class="sw" style="background:#5B9FED"></div>
+      <div class="sw" style="background:#9B87F5"></div>
+    </div>
+  </div>
+</div></body></html>

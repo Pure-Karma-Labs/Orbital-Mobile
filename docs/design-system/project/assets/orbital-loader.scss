@@ -1,0 +1,124 @@
+// =============================================================================
+// ORBITAL LOADER ANIMATION
+// Extracted from Orbital-Desktop/stylesheets/components/OrbitalGroups.scss
+//
+// Three colored dots (blue, purple, yellow) orbit a 32px ring at different
+// speeds and directions, creating the signature "orbiting" loading effect.
+// =============================================================================
+
+.orbital-loader {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: $orbital-space-md;
+}
+
+.orbital-loader__ring {
+  position: relative;
+  height: 32px;
+  width: 32px;
+  transform: rotate(-45deg);
+
+  // Ellipse ring using pseudo-element so dots aren't scaled
+  &::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    border: 1.5px solid $orbital-text-primary;
+    border-radius: 50%;
+    transform: scaleY(0.95);
+
+    @include mixins.dark-theme {
+      border-color: $orbital-dark-text-primary;
+    }
+  }
+}
+
+.orbital-loader__dot {
+  position: absolute;
+  height: 40px;
+  width: 8px;
+  top: -3px;
+  left: 50%;
+  margin-left: -4px;
+  transform-origin: center 18px;
+}
+
+.orbital-loader__dot span {
+  display: block;
+  height: 8px;
+  width: 8px;
+  border-radius: 50%;
+  border: 1.5px solid black;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.1);
+
+  @include mixins.dark-theme {
+    border-color: white;
+  }
+}
+
+// Dot One — Blue, 4s clockwise
+.orbital-loader__dot--one {
+  animation: orbitOne 4s linear infinite;
+
+  span {
+    background: $orbital-blue; // #5B9FED
+  }
+}
+
+// Dot Two — Purple, 2s counter-clockwise
+.orbital-loader__dot--two {
+  animation: orbitTwo 2s linear infinite;
+
+  span {
+    background: $orbital-purple; // #9B87F5
+  }
+}
+
+// Dot Three — Yellow, 7s counter-clockwise
+.orbital-loader__dot--three {
+  animation: orbitThree 7s linear infinite;
+
+  span {
+    background: $orbital-yellow; // #FFC700
+  }
+}
+
+@keyframes orbitOne {
+  0% {
+    transform: rotate(0deg);
+  }
+  50% {
+    transform: rotate(180deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes orbitTwo {
+  0% {
+    transform: rotate(0deg);
+  }
+  50% {
+    transform: rotate(-180deg);
+  }
+  100% {
+    transform: rotate(-360deg);
+  }
+}
+
+@keyframes orbitThree {
+  0% {
+    transform: rotate(0deg);
+  }
+  50% {
+    transform: rotate(-180deg);
+  }
+  100% {
+    transform: rotate(-360deg);
+  }
+}

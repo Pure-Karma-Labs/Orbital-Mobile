@@ -1,0 +1,328 @@
+/* =========================================================================
+   Orbital Mobile — Design Tokens
+   Source of truth: uploads/MOBILE-DESIGN-FOUNDATION.md
+   Match these values exactly. Do not modernize.
+   ========================================================================= */
+
+/* ---------- Bundled brand fonts (Bold weight only — only weight supplied) ---------- */
+@font-face {
+  font-family: "Verdana";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("fonts/Verdana_Bold.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Trebuchet MS";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("fonts/Trebuchet_MS_Bold.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Courier New";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("fonts/Courier_New_Bold.ttf") format("truetype");
+}
+
+:root {
+  color-scheme: light;
+
+  /* ---------- Color · Primary (Blue) ---------- */
+  --color-blue:              #5B9FED;
+  --color-blue-hover:        #4A8CD9;
+  --color-blue-dark:         #3D7BC4;
+  --color-blue-tint-light:   rgba(91, 159, 237, 0.08);
+  --color-blue-tint:         rgba(91, 159, 237, 0.12);
+
+  /* ---------- Color · Co-primary (Purple) ---------- */
+  --color-purple:            #9B87F5;
+  --color-purple-hover:      #8B75E1;
+  --color-purple-dark:       #7B65D1;
+  --color-purple-tint-light: rgba(155, 135, 245, 0.08);
+  --color-purple-tint:       rgba(155, 135, 245, 0.12);
+
+  /* ---------- Color · Accent (Yellow) ---------- */
+  --color-yellow:            #FFC700;
+  --color-yellow-hover:      #FFD633;
+  --color-yellow-dark:       #EAAD00;
+  --color-yellow-tint:       rgba(255, 199, 0, 0.15);
+
+  /* ---------- Color · Neutrals (Light) ---------- */
+  --color-background:        #FAF9F7;  /* Warm Canvas */
+  --color-surface:           #F2F0ED;  /* Soft Pearl  */
+  --color-surface-elevated:  #FFFFFF;  /* Cloud White */
+  --color-text-primary:      #2A2D35;  /* Ink Navy    */
+  --color-text-secondary:    #6B7280;  /* Slate Gray  */
+  --color-text-tertiary:     #9CA3AF;  /* Mist Gray   */
+  --color-border-subtle:     #E5E7EB;  /* Whisper     */
+  --color-border-strong:     #D1D5DB;  /* Soft Shadow */
+
+  /* ---------- Color · Semantic ---------- */
+  --color-success:           #48BB78;
+  --color-warning:           #F59E0B;
+  --color-error:             #F56565;
+
+  /* ---------- Reply Depth (computed) ---------- */
+  --depth-0-bg: var(--color-surface-elevated);
+  --depth-0-border: transparent;
+  --depth-1-bg: var(--color-blue-tint-light);
+  --depth-1-border: var(--color-blue);
+  --depth-2-bg: var(--color-purple-tint-light);
+  --depth-2-border: var(--color-purple);
+  --depth-3-bg: var(--color-blue-tint);
+  --depth-3-border: var(--color-blue);
+  --depth-4-bg: var(--color-purple-tint);
+  --depth-4-border: var(--color-purple);
+
+  /* =========================================================================
+     Typography
+     ========================================================================= */
+
+  /* The mobile binary bundles Bitstream Vera Sans (CC). For web previews we
+     use the documented Verdana / Trebuchet / Courier substitutes, which are
+     metrically near-identical and listed first as a fallback wins-from-left
+     stack. If you drop the Vera TTFs into /fonts and load them, the stack
+     picks them up automatically. */
+
+  --font-body:        "Bitstream Vera Sans", Verdana, "DejaVu Sans", Geneva, sans-serif;
+  --font-header:      "Trebuchet MS", "Lucida Sans Unicode", "Lucida Grande", sans-serif;
+  --font-mono:        "Bitstream Vera Sans Mono", "Courier New", "DejaVu Sans Mono", monospace;
+
+  /* Type scale */
+  --font-size-2xl:    32px;   /* H1 display */
+  --font-size-xl:     20px;   /* H2 section */
+  --font-size-lg:     16px;   /* H3 subsection */
+  --font-size-md:     14px;   /* Body large */
+  --font-size-base:   13px;   /* THE body default */
+  --font-size-sm:     11px;   /* Caption, ASCII */
+  --font-size-xs:     10px;   /* Timestamp, tiny labels */
+
+  /* Weights — only 400 and 700 ship */
+  --font-weight-regular: 400;
+  --font-weight-bold:    700;
+
+  /* Line heights */
+  --line-height-tight:    1.2;
+  --line-height-snug:     1.3;
+  --line-height-normal:   1.4;
+  --line-height-relaxed:  1.5;
+
+  /* Letter spacing */
+  --letter-spacing-normal: 0;
+  --letter-spacing-tight:  0.1px;   /* timestamps */
+  --letter-spacing-wide:   0.5px;   /* ASCII */
+  --letter-spacing-wider:  2px;     /* wide ASCII separators */
+
+  /* =========================================================================
+     Spacing (8px base) + radius
+     ========================================================================= */
+
+  --space-xs:   4px;
+  --space-sm:   8px;
+  --space-md:   12px;
+  --space-base: 16px;
+  --space-lg:   24px;   /* reply indent unit */
+  --space-xl:   32px;
+  --space-2xl:  48px;
+
+  --radius-sm:    2px;
+  --radius-base:  3px;   /* default — DO NOT bump to 8 or 12 */
+  --radius-md:    3px;
+  --radius-lg:    4px;   /* modals only */
+  --radius-full:  9999px;
+
+  --thread-indent-per-level: 24px;
+  --thread-indent-max:       96px;
+
+  /* =========================================================================
+     Animation — quick + snappy. No spring. No bounce.
+     ========================================================================= */
+
+  --duration-instant: 100ms;   /* tap feedback */
+  --duration-fast:    150ms;   /* most transitions */
+  --duration-base:    250ms;   /* modal open/close */
+  --easing-default:   ease;
+
+  /* =========================================================================
+     Component tokens — used directly by element selectors below
+     ========================================================================= */
+
+  --button-min-height: 44px;
+  --input-border-default: 1px solid var(--color-border-subtle);
+  --input-border-focus:   2px solid var(--color-blue);
+  --tab-bar-height: 49px;
+  --header-height:  44px;
+  --safe-top:       47px;   /* iPhone 14 Dynamic Island */
+  --safe-bottom:    34px;   /* home indicator */
+}
+
+/* ---------- Dark mode override ---------- */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --color-background:       #1A1D24;
+  --color-surface:          #24272F;
+  --color-surface-elevated: #2D3139;
+  --color-text-primary:     #F3F4F6;
+  --color-text-secondary:   #C7CCD4;
+  --color-text-tertiary:    #9CA3AF;
+  --color-border-subtle:    #374151;
+  --color-border-strong:    #4B5563;
+
+  --color-blue:             #6BA8F0;
+  --color-purple:           #A895F8;
+  /* yellow + semantic stay the same */
+
+  --depth-0-bg: var(--color-surface-elevated);
+}
+
+/* =========================================================================
+   Semantic / element styles
+   These are convenience selectors mirroring the foundation doc. Use them
+   directly, or read the variables above into your own components.
+   ========================================================================= */
+
+body {
+  background: var(--color-background);
+  color: var(--color-text-primary);
+  font-family: var(--font-body);
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-relaxed);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, .t-h1 {
+  font-family: var(--font-header);
+  font-size: var(--font-size-2xl);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-tight);
+  margin: 0;
+}
+h2, .t-h2 {
+  font-family: var(--font-header);
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-snug);
+  margin: 0;
+}
+h3, .t-h3 {
+  font-family: var(--font-header);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-normal);
+  margin: 0;
+}
+p, .t-body {
+  font-family: var(--font-body);
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-relaxed);
+  margin: 0;
+}
+.t-body-lg {
+  font-family: var(--font-body);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-relaxed);
+}
+.t-caption, small {
+  font-family: var(--font-body);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  line-height: var(--line-height-normal);
+}
+.t-timestamp {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+  letter-spacing: var(--letter-spacing-tight);
+}
+.t-mono, code, pre {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+}
+.t-ascii {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-tertiary);
+  white-space: pre;
+  letter-spacing: var(--letter-spacing-wide);
+}
+.t-label-caps {
+  font-family: var(--font-body);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+  text-transform: uppercase;
+  letter-spacing: var(--letter-spacing-wide);
+  color: var(--color-text-secondary);
+}
+
+a, .t-link {
+  color: var(--color-blue);
+  text-decoration: underline;   /* required — retro web pattern */
+  text-underline-offset: 2px;
+}
+a:hover { color: var(--color-blue-hover); }
+
+/* Button base. Variants: .btn-primary / .btn-secondary / .btn-destructive / .btn-outline */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--button-min-height);
+  padding: 8px 16px;
+  border-radius: var(--radius-base);
+  border: 1px solid transparent;
+  font-family: var(--font-body);
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-bold);
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--easing-default),
+              border-color var(--duration-fast) var(--easing-default);
+}
+.btn:disabled, .btn[aria-disabled="true"] { opacity: 0.5; cursor: default; }
+
+.btn-primary       { background: var(--color-blue);    color: #fff; border-color: var(--color-blue-dark); }
+.btn-primary:hover { background: var(--color-blue-hover); }
+
+.btn-secondary       { background: var(--color-purple);  color: #fff; border-color: var(--color-purple-dark); }
+.btn-secondary:hover { background: var(--color-purple-hover); }
+
+.btn-destructive       { background: var(--color-error); color: #fff; border-color: #C53030; }
+
+.btn-outline       { background: transparent; color: var(--color-blue); border-color: var(--color-blue); }
+.btn-outline:hover { background: var(--color-blue-tint-light); }
+
+/* Input */
+.input {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--color-surface-elevated);
+  border: var(--input-border-default);
+  border-radius: var(--radius-base);
+  font-family: var(--font-body);
+  font-size: var(--font-size-base);
+  color: var(--color-text-primary);
+  transition: border-color var(--duration-fast) var(--easing-default);
+}
+.input::placeholder { color: var(--color-text-tertiary); }
+.input:focus { outline: none; border: var(--input-border-focus); padding: 7px 11px; /* compensate the +1px border */ }
+
+/* Badge — yellow pill */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  padding: 2px 6px;
+  background: var(--color-yellow);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-yellow-dark);
+  border-radius: var(--radius-full);
+  font-family: var(--font-body);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+  line-height: 1;
+}

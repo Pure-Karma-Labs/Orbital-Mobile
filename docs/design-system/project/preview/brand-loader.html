@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Orbital · Loader</title>
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  html,body{margin:0;padding:0;background:var(--color-background);color:var(--color-text-primary)}
+  .wrap{padding:22px 26px;display:grid;grid-template-columns:auto auto 1fr;gap:28px;align-items:center}
+  .stage{width:108px;height:108px;display:flex;align-items:center;justify-content:center;background:#FFFFFF;border:1px solid var(--color-border)}
+  .stage.dark{background:#0A0B0E;border-color:#2A2D35}
+
+  /* ---- Orbital loader (faithful port of orbital-loader.scss) ---- */
+  .orbital-loader{display:flex;align-items:center;justify-content:center}
+  .orbital-loader__ring{position:relative;height:32px;width:32px;transform:rotate(-45deg)}
+  .orbital-loader__ring::before{
+    content:'';position:absolute;inset:0;
+    border:1.5px solid #2A2D35;border-radius:50%;
+    transform:scaleY(0.95);
+  }
+  .stage.dark .orbital-loader__ring::before{border-color:#FFFFFF}
+  .orbital-loader__dot{position:absolute;height:40px;width:8px;top:-3px;left:50%;margin-left:-4px;transform-origin:center 18px}
+  .orbital-loader__dot span{display:block;height:8px;width:8px;border-radius:50%;border:1.5px solid #000;box-shadow:0 1px 1px rgba(0,0,0,.1)}
+  .stage.dark .orbital-loader__dot span{border-color:#FFFFFF}
+  .orbital-loader__dot--one  {animation:orbitOne   4s linear infinite}
+  .orbital-loader__dot--two  {animation:orbitTwo   2s linear infinite}
+  .orbital-loader__dot--three{animation:orbitThree 7s linear infinite}
+  .orbital-loader__dot--one   span{background:#5B9FED}
+  .orbital-loader__dot--two   span{background:#9B87F5}
+  .orbital-loader__dot--three span{background:#FFC700}
+  @keyframes orbitOne  {0%{transform:rotate(0)}50%{transform:rotate(180deg)} 100%{transform:rotate(360deg)}}
+  @keyframes orbitTwo  {0%{transform:rotate(0)}50%{transform:rotate(-180deg)}100%{transform:rotate(-360deg)}}
+  @keyframes orbitThree{0%{transform:rotate(0)}50%{transform:rotate(-180deg)}100%{transform:rotate(-360deg)}}
+
+  /* sized-up variant */
+  .stage--big .orbital-loader__ring{height:64px;width:64px}
+  .stage--big .orbital-loader__dot{height:80px;width:16px;top:-6px;margin-left:-8px;transform-origin:center 36px}
+  .stage--big .orbital-loader__dot span{height:16px;width:16px;border-width:2px}
+
+  .meta{font-family:var(--font-body);font-size:11px;color:var(--color-text-secondary);line-height:1.55}
+  .meta b{color:var(--color-text-primary)}
+  .row{font-family:var(--font-mono);font-size:10.5px;color:var(--color-text-tertiary);margin-top:6px}
+  .row b{color:#5B9FED;font-weight:700}
+  .row .p{color:#9B87F5;font-weight:700}
+  .row .y{color:#C29400;font-weight:700}
+</style></head><body>
+<div class="wrap">
+  <div class="stage stage--big">
+    <div class="orbital-loader"><div class="orbital-loader__ring">
+      <div class="orbital-loader__dot orbital-loader__dot--one"><span></span></div>
+      <div class="orbital-loader__dot orbital-loader__dot--two"><span></span></div>
+      <div class="orbital-loader__dot orbital-loader__dot--three"><span></span></div>
+    </div></div>
+  </div>
+  <div class="stage dark">
+    <div class="orbital-loader"><div class="orbital-loader__ring">
+      <div class="orbital-loader__dot orbital-loader__dot--one"><span></span></div>
+      <div class="orbital-loader__dot orbital-loader__dot--two"><span></span></div>
+      <div class="orbital-loader__dot orbital-loader__dot--three"><span></span></div>
+    </div></div>
+  </div>
+  <div class="meta">
+    <div><b>Orbital loader.</b> The brand mark, animated. Three dots orbit a 32px elliptical ring (scaleY 0.95) at different speeds and directions.</div>
+    <div class="row"><b>blue</b> · 4s · clockwise &nbsp;·&nbsp; <span class="p">purple</span> · 2s · counter &nbsp;·&nbsp; <span class="y">yellow</span> · 7s · counter</div>
+    <div style="margin-top:8px;font-family:var(--font-mono);font-size:10px;color:var(--color-text-tertiary)">Source: <code>assets/orbital-loader.scss</code> · linear easing, infinite</div>
+  </div>
+</div></body></html>

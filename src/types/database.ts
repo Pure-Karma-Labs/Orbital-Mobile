@@ -138,10 +138,10 @@ export interface OrbitalThreadRow {
   conversation_id: string;
   author_id: string;
   title_encrypted: Uint8Array | null;
-  /** 16-byte IV */
+  /** 12-byte IV (AES-256-GCM nonce) */
   title_iv: Uint8Array | null;
   body_encrypted: Uint8Array | null;
-  /** 16-byte IV */
+  /** 12-byte IV (AES-256-GCM nonce) */
   body_iv: Uint8Array | null;
   content_type: ThreadContentType;
   pinned: number;
@@ -159,7 +159,7 @@ export interface OrbitalReplyRow {
   thread_id: string;
   author_id: string;
   body_encrypted: Uint8Array | null;
-  /** 16-byte IV */
+  /** 12-byte IV (AES-256-GCM nonce) */
   body_iv: Uint8Array | null;
   /** Null for top-level replies */
   parent_reply_id: string | null;

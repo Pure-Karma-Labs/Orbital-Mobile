@@ -11,7 +11,7 @@ import { getItem, setItem, removeItem } from '../../database/repositories/itemRe
 import { savePreKey } from '../../database/repositories/signalPreKeyRepository';
 import { saveSignedPreKey } from '../../database/repositories/signalSignedPreKeyRepository';
 import { saveKyberPreKey } from '../../database/repositories/signalKyberPreKeyRepository';
-import { getDatabase } from '../../database/connection';
+import { getDatabase, isDatabaseInitialized } from '../../database/connection';
 import { queryOne } from '../../database/queryHelpers';
 import {
   uploadPreKeyBundle as uploadBundle,
@@ -473,6 +473,7 @@ export async function checkAndRotateSignedPreKey(): Promise<void> {
 }
 
 export async function ensureKeysInitialized(): Promise<void> {
+  if (!isDatabaseInitialized()) return;
   if (initializationPromise !== null) {
     return initializationPromise;
   }

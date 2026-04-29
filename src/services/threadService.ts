@@ -10,7 +10,7 @@
  * Plaintext never appears in logs or error messages.
  */
 
-import { getThread, getThreadReplies, createReply } from './api/threads';
+import { getThread, getThreadReplies, createReply, createThread } from './api/threads';
 import {
   decryptContent,
   encryptContent,
@@ -240,5 +240,73 @@ export async function postReply(
   } catch {
     store.updateReplySyncStatus(clientId, 'failed');
     throw new Error('Failed to post reply');
+  }
+}
+
+/**
+ * Encrypt and create a new thread with optimistic UI.
+ *
+ * 1. Encrypts title and body with the group key.
+ * 2. Adds an optimistic thread to the store immediately.
+ * 3. Sends the encrypted thread to the API.
+ * 4. Updates sync status on success or failure.
+ */
+export async function createNewThread(
+  groupId: string,
+  title: string,
+  body: string,
+  authorId: string,
+  authorUsername: string,
+): Promise<Thread> {
+  const groupKey = await getOrFetchGroupKey(groupId);
+  const [encTitle, encBody] = await Promise.all([
+    encryptContent(title, groupKey, groupId),
+    encryptContent(body, groupKey, groupId),
+  ]);
+
+  const clientId = generateUUID();
+  const now = Date.now();
+
+  const optimisticThread: Thread = {
+    id: clientId,
+    conversationId: groupId,
+    authorId,
+    authorUsername,
+    title,
+    body,
+    contentType: 'text',
+    pinned: false,
+    replyCount: 0,
+    lastReplyAt: null,
+    createdAt: now,
+    updatedAt: now,
+    syncStatus: 'pending',
+  };
+
+  const store = getStoreActions();
+  store.addOptimisticThread(optimisticThread);
+
+  try {
+    const response = await createThread({
+      id: clientId,
+      groupId,
+      contentType: 'text',
+      encryptedTitle: encTitle.ciphertext,
+      titleIv: encTitle.iv,
+      encryptedBody: encBody.ciphertext,
+      bodyIv: encBody.iv,
+    });
+
+    store.updateThreadSyncStatus(clientId, 'synced');
+    return {
+      ...optimisticThread,
+      id: response.id,
+      createdAt: new Date(response.createdAt).getTime(),
+      updatedAt: new Date(response.updatedAt).getTime(),
+      syncStatus: 'synced',
+    };
+  } catch {
+    store.updateThreadSyncStatus(clientId, 'failed');
+    throw new Error('Failed to create thread');
   }
 }

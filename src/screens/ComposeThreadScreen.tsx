@@ -1,0 +1,182 @@
+/**
+ * Compose thread screen — title + body inputs with encrypted posting.
+ */
+
+import React, { useCallback, useState } from 'react';
+import {
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+  type TextStyle,
+  type ViewStyle,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import type { NativeStackScreenProps } from '@react-navigation/native-stack';
+import { useTheme } from '../theme';
+import { useAuth } from '../stores';
+import { createNewThread } from '../services/threadService';
+import { Header } from '../components/Header';
+import { ErrorBanner } from '../components/ErrorBanner';
+import type { ThreadsStackParamList } from '../navigation/types';
+
+export type ComposeThreadScreenProps = NativeStackScreenProps<
+  ThreadsStackParamList,
+  'ComposeThread'
+>;
+
+export function ComposeThreadScreen({
+  navigation,
+  route,
+}: ComposeThreadScreenProps): React.JSX.Element {
+  const theme = useTheme();
+  const { userId, username } = useAuth();
+  const { groupId } = route.params;
+
+  const [title, setTitle] = useState('');
+  const [body, setBody] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const canSubmit = title.trim().length > 0 && body.trim().length > 0 && !loading;
+
+  const handlePost = useCallback(async () => {
+    if (!canSubmit || !userId || !username) return;
+
+    setError(null);
+    setLoading(true);
+    try {
+      const thread = await createNewThread(
+        groupId,
+        title.trim(),
+        body.trim(),
+        userId,
+        username,
+      );
+      navigation.replace('ThreadDetail', {
+        threadId: thread.id,
+        threadTitle: thread.title ?? undefined,
+      });
+    } catch {
+      setError('Failed to create thread. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  }, [canSubmit, userId, username, groupId, title, body, navigation]);
+
+  const containerStyle: ViewStyle = {
+    flex: 1,
+    backgroundColor: theme.colors.background,
+  };
+
+  const scrollContentStyle: ViewStyle = {
+    padding: theme.spacing.base,
+    gap: theme.spacing.base,
+  };
+
+  const labelStyle: TextStyle = {
+    fontFamily: theme.typography.fontFamily.bodyBold,
+    fontSize: theme.typography.fontSize.sm,
+    color: theme.colors.textSecondary,
+    marginBottom: theme.spacing.xs,
+  };
+
+  const inputStyle: TextStyle = {
+    fontFamily: theme.typography.fontFamily.body,
+    fontSize: theme.typography.fontSize.base,
+    color: theme.colors.textPrimary,
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.borderSubtle,
+    borderRadius: theme.borderRadius.base,
+    padding: theme.spacing.sm,
+  };
+
+  const bodyInputStyle: TextStyle = {
+    ...inputStyle,
+    minHeight: 160,
+    textAlignVertical: 'top',
+  };
+
+  const postButtonStyle: ViewStyle = {
+    backgroundColor: canSubmit ? theme.colors.blue : theme.colors.borderSubtle,
+    paddingHorizontal: theme.spacing.base,
+    paddingVertical: theme.spacing.xs,
+    borderRadius: theme.borderRadius.base,
+  };
+
+  const postButtonTextStyle: TextStyle = {
+    fontFamily: theme.typography.fontFamily.bodyBold,
+    fontSize: theme.typography.fontSize.sm,
+    color: canSubmit ? '#FFFFFF' : theme.colors.textTertiary,
+  };
+
+  return (
+    <SafeAreaView style={containerStyle} edges={['top']}>
+      <Header
+        title="New Thread"
+        onBack={() => navigation.goBack()}
+        right={
+          <TouchableOpacity
+            onPress={handlePost}
+            disabled={!canSubmit}
+            accessibilityRole="button"
+            accessibilityLabel="Post thread"
+            style={postButtonStyle}
+          >
+            <Text style={postButtonTextStyle}>
+              {loading ? 'Posting...' : 'Post'}
+            </Text>
+          </TouchableOpacity>
+        }
+      />
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={0}
+      >
+        <ScrollView
+          contentContainerStyle={scrollContentStyle}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="interactive"
+        >
+          <View>
+            <Text style={labelStyle}>Title</Text>
+            <TextInput
+              style={inputStyle}
+              value={title}
+              onChangeText={setTitle}
+              placeholder="Thread title"
+              placeholderTextColor={theme.colors.textTertiary}
+              autoFocus
+              maxLength={200}
+              returnKeyType="next"
+              editable={!loading}
+              testID="compose-title-input"
+            />
+          </View>
+
+          <View>
+            <Text style={labelStyle}>Body</Text>
+            <TextInput
+              style={bodyInputStyle}
+              value={body}
+              onChangeText={setBody}
+              placeholder="What's on your mind?"
+              placeholderTextColor={theme.colors.textTertiary}
+              multiline
+              maxLength={10000}
+              editable={!loading}
+              testID="compose-body-input"
+            />
+          </View>
+
+          <ErrorBanner message={error} />
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
+}

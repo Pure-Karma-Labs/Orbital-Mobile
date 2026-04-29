@@ -204,8 +204,9 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
   }, []);
 
   const handleCompose = useCallback(() => {
-    // Composer will be implemented in a later phase
-  }, []);
+    if (!activeConversationId) return;
+    navigation.navigate('ComposeThread', { groupId: activeConversationId });
+  }, [navigation, activeConversationId]);
 
   const handleOpenOrbits = useCallback(() => {
     // Orbit selector will be implemented in a later phase

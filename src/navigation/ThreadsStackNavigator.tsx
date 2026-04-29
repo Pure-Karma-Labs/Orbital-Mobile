@@ -9,6 +9,7 @@ import type { ThreadsStackParamList } from './types';
 import { useTheme } from '../theme';
 import ThreadsScreen from '../screens/ThreadsScreen';
 import ThreadDetailScreen from '../screens/ThreadDetailScreen';
+import { ComposeThreadScreen } from '../screens/ComposeThreadScreen';
 
 const Stack = createNativeStackNavigator<ThreadsStackParamList>();
 
@@ -25,6 +26,7 @@ export function ThreadsStackNavigator(): React.JSX.Element {
     >
       <Stack.Screen name="ThreadsList" component={ThreadsScreen} />
       <Stack.Screen name="ThreadDetail" component={ThreadDetailScreen} />
+      <Stack.Screen name="ComposeThread" component={ComposeThreadScreen} />
     </Stack.Navigator>
   );
 }

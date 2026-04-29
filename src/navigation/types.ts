@@ -10,6 +10,7 @@ export type MainTabParamList = {
 export type ThreadsStackParamList = {
   ThreadsList: undefined;
   ThreadDetail: { threadId: string; threadTitle?: string };
+  ComposeThread: { groupId: string };
 };
 
 export type ChatsStackParamList = {

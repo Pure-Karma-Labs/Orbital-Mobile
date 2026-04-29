@@ -32,8 +32,8 @@ function mapGroupResponse(response: GroupResponse): Conversation {
  * Auto-selects the first group if no conversation is currently active.
  */
 export async function loadConversations(): Promise<void> {
-  const response = await listGroups();
-  const conversations = response.groups.map(mapGroupResponse);
+  const groups = await listGroups();
+  const conversations = groups.map(mapGroupResponse);
 
   const store = useAppStore.getState();
   store.setConversations(conversations);

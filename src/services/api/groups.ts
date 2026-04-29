@@ -4,20 +4,25 @@
 
 import { request } from './client';
 import type {
-  CreateGroupRequest,
   CreateDmRequest,
+  CreateDmResponse,
+  CreateGroupRequest,
+  CreateGroupResponse,
   DmResponse,
   GroupKeyResponse,
   GroupMembersResponse,
   GroupQuotaResponse,
   GroupResponse,
-  ListGroupsResponse,
   JoinGroupRequest,
   JoinGroupResponse,
 } from '../../types/api';
 
-export function createGroup(data: CreateGroupRequest): Promise<GroupResponse> {
-  return request<GroupResponse>({
+interface ListGroupsApiResponse {
+  groups: GroupResponse[];
+}
+
+export function createGroup(data: CreateGroupRequest): Promise<CreateGroupResponse> {
+  return request<CreateGroupResponse>({
     method: 'POST',
     path: '/api/groups',
     body: data,
@@ -32,11 +37,12 @@ export function joinGroup(data: JoinGroupRequest): Promise<JoinGroupResponse> {
   });
 }
 
-export function listGroups(): Promise<ListGroupsResponse> {
-  return request<ListGroupsResponse>({
+export async function listGroups(): Promise<GroupResponse[]> {
+  const response = await request<ListGroupsApiResponse>({
     method: 'GET',
     path: '/api/groups',
   });
+  return response.groups;
 }
 
 export function getGroupMembers(groupId: string): Promise<GroupMembersResponse> {
@@ -70,17 +76,22 @@ export function removeMember(
   });
 }
 
-export function createDm(data: CreateDmRequest): Promise<DmResponse> {
-  return request<DmResponse>({
+interface ListDmsApiResponse {
+  dms: DmResponse[];
+}
+
+export function createDm(data: CreateDmRequest): Promise<CreateDmResponse> {
+  return request<CreateDmResponse>({
     method: 'POST',
     path: '/api/groups/dm',
     body: data,
   });
 }
 
-export function listDms(): Promise<DmResponse[]> {
-  return request<DmResponse[]>({
+export async function listDms(): Promise<DmResponse[]> {
+  const response = await request<ListDmsApiResponse>({
     method: 'GET',
     path: '/api/groups/dms',
   });
+  return response.dms;
 }

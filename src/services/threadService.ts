@@ -86,23 +86,25 @@ async function mapReplyResponse(
   groupKey: Uint8Array,
   groupId: string,
 ): Promise<Reply> {
-  const body = await decryptContent(
-    response.encryptedBody,
-    response.bodyIv,
-    groupKey,
-    groupId,
-  );
+  const body = response.bodyIv
+    ? await decryptContent(
+        response.encryptedBody,
+        response.bodyIv,
+        groupKey,
+        groupId,
+      )
+    : response.encryptedBody;
 
   return {
-    id: response.id,
+    id: response.replyId,
     threadId: response.threadId,
     authorId: response.authorId,
     authorUsername: response.authorUsername,
     body,
     parentReplyId: response.parentReplyId,
-    depth: response.depth,
+    depth: response.level,
     createdAt: new Date(response.createdAt).getTime(),
-    updatedAt: new Date(response.updatedAt).getTime(),
+    updatedAt: new Date(response.createdAt).getTime(),
     syncStatus: 'synced',
   };
 }
@@ -140,28 +142,24 @@ export async function loadThread(threadId: string): Promise<Thread> {
 export async function loadReplies(
   threadId: string,
   groupId: string,
-  cursor?: string,
-): Promise<{ replies: Reply[]; nextCursor: string | null; hasMore: boolean }> {
-  const response = await getThreadReplies(threadId, cursor);
+  offset?: number,
+): Promise<{ replies: Reply[]; hasMore: boolean }> {
+  const response = await getThreadReplies(threadId, offset);
   const groupKey = await getOrFetchGroupKey(groupId);
 
-  // Batch decrypt all replies in parallel
   const replies = await Promise.all(
-    response.items.map((r) => mapReplyResponse(r, groupKey, groupId)),
+    response.replies.map((r) => mapReplyResponse(r, groupKey, groupId)),
   );
 
   const store = getStoreActions();
-  if (!cursor) {
-    // First page — replace all replies for this thread
+  if (!offset) {
     store.setReplies(threadId, replies);
   } else {
-    // Subsequent page — append without replacing
     store.appendReplies(threadId, replies);
   }
 
   return {
     replies,
-    nextCursor: response.cursor,
     hasMore: response.hasMore,
   };
 }
@@ -218,21 +216,18 @@ export async function postReply(
 
   try {
     const response = await createReply(threadId, {
-      id: clientId,
       encryptedBody: encrypted.ciphertext,
       bodyIv: encrypted.iv,
       parentReplyId,
     });
 
-    // Update with server-confirmed data
     store.updateReplySyncStatus(clientId, 'synced');
 
     return {
       ...optimisticReply,
-      // Server may return a different ID if it doesn't honour client IDs
-      id: response.id !== clientId ? response.id : clientId,
+      id: response.replyId,
       createdAt: new Date(response.createdAt).getTime(),
-      updatedAt: new Date(response.updatedAt).getTime(),
+      updatedAt: new Date(response.createdAt).getTime(),
       syncStatus: 'synced',
     };
   } catch {

@@ -27,13 +27,12 @@ export async function loginUser(
   password: string,
 ): Promise<void> {
   const response = await auth.login({ username, password });
-  await tokenManager.setTokens(response.token, response.refreshToken);
+  await tokenManager.setTokens(response.token, undefined);
   useAppStore.getState().setUser({
     userId: response.userId,
     username: response.username,
-    displayName: response.displayName,
-    // API returns avatarUrl, store uses avatarPath
-    avatarPath: response.avatarUrl ?? null,
+    displayName: null,
+    avatarPath: null,
   });
   ensureKeysInitialized().catch((e: unknown) =>
     console.warn('[KeyMaintenance]', e instanceof Error ? e.message : 'unknown error'),
@@ -55,7 +54,7 @@ export async function signupUser(
   inviteCode: string,
 ): Promise<void> {
   const response = await auth.signup({ username, password, email, inviteCode });
-  await tokenManager.setTokens(response.token, response.refreshToken);
+  await tokenManager.setTokens(response.token, undefined);
   useAppStore.getState().setUser({
     userId: response.userId,
     username: response.username,

@@ -79,17 +79,17 @@ export async function getOrFetchGroupKey(groupId: string): Promise<Uint8Array> {
 
   const response = await getGroupKey(groupId);
 
-  // TODO: Decrypt encryptedGroupKey with user's identity private key.
-  // The server sends a per-member copy encrypted with the member's public key.
+  // TODO: Decrypt groupKey with user's identity private key.
+  // The server sends the group key from the creator's member record.
   // For now, decode the base64 value directly — this will be replaced with
   // actual asymmetric decryption when the key distribution pipeline is ready.
-  const keyBytes = new Uint8Array(base64ToArrayBuffer(response.encryptedGroupKey));
+  const keyBytes = new Uint8Array(base64ToArrayBuffer(response.groupKey));
 
   if (keyBytes.length !== 32) {
     throw new Error('Invalid group key length');
   }
 
-  groupKeyCache.set(groupId, { key: keyBytes, keyId: response.keyId });
+  groupKeyCache.set(groupId, { key: keyBytes, keyId: groupId });
   return keyBytes;
 }
 

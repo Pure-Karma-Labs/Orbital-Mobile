@@ -40,25 +40,127 @@ verified_types:
   GroupResponse:
     verified_at: "2026-04-29"
     fields: [groupId, encryptedName, encryptedGroupKey, memberCount, maxMembers, isCreator, activeInviteCode, joinedAt]
+  CreateGroupRequest:
+    verified_at: "2026-04-29"
+    fields: [encryptedName, encryptedGroupKey]
+  CreateGroupResponse:
+    verified_at: "2026-04-29"
+    fields: [groupId, createdAt]
+  JoinGroupRequest:
+    verified_at: "2026-04-29"
+    fields: [inviteCode, encryptedGroupKey]
+  JoinGroupResponse:
+    verified_at: "2026-04-29"
+    fields: [groupId, encryptedName, memberCount, joinedAt, groupKey]
+  GroupMember:
+    verified_at: "2026-04-29"
+    fields: [userId, username, displayName, publicKey, avatarUrl, joinedAt]
+    note: No 'role' field — creator determined via group.created_by
+  GroupKeyResponse:
+    verified_at: "2026-04-29"
+    fields: [groupKey]
+    note: No keyId field — cache uses groupId as key identifier
+  GroupQuotaResponse:
+    verified_at: "2026-04-29"
+    fields: [groupId, storage{used,limit,percentage,warning}, files{count,limit,percentage,warning}]
+  CreateDmRequest:
+    verified_at: "2026-04-29"
+    fields: [recipientId, encryptedGroupKey]
+  CreateDmResponse:
+    verified_at: "2026-04-29"
+    fields: [groupId, isNew, groupKey, recipient{id,username}]
+  DmResponse:
+    verified_at: "2026-04-29"
+    fields: [groupId, recipient{id,username,avatarUrl}, encryptedGroupKey, lastMessageAt, createdAt]
   CreateThreadResponse:
     verified_at: "2026-04-29"
     fields: [threadId, groupId, createdAt, media]
   ThreadResponse:
     verified_at: "2026-04-29"
     fields: [threadId, groupId, authorId, authorUsername, authorDisplayName, encryptedTitle, encryptedBody, titleIv, bodyIv, replyCount, createdAt, media]
+  ThreadListItem:
+    verified_at: "2026-04-29"
+    fields: [threadId, groupId, authorId, authorUsername, authorDisplayName, encryptedTitle, encryptedBody, titleIv, bodyIv, replyCount, mediaCount, createdAt]
+  ListThreadsResponse:
+    verified_at: "2026-04-29"
+    fields: [threads, totalCount, hasMore]
+    note: Uses offset pagination (limit + offset query params)
+  CreateThreadRequest:
+    verified_at: "2026-04-29"
+    fields: [threadId?, groupId, encryptedTitle, titleIv?, encryptedBody, bodyIv?, rootMessageId?, mediaIds?]
   LoginResponse:
     verified_at: "2026-04-29"
     fields: [userId, username, publicKey, token]
-    note: No refreshToken or displayName in actual response
+    note: No refreshToken, displayName, or avatarUrl in actual response
+  SignupResponse:
+    verified_at: "2026-04-29"
+    fields: [userId, username, email, token, groupId]
+    note: No refreshToken — groupId is camelCase in response (not snake_case)
+  ReplyResponse:
+    verified_at: "2026-04-29"
+    fields: [replyId, threadId, authorId, authorUsername, authorDisplayName, encryptedBody, bodyIv, parentReplyId, level, createdAt, media]
+    note: Uses 'replyId' not 'id', uses 'level' not 'depth', no 'updatedAt'
+  CreateReplyRequest:
+    verified_at: "2026-04-29"
+    fields: [encryptedBody, bodyIv?, messageId?, mediaIds?, parentReplyId?]
+    note: Backend does NOT accept client-provided id — reply UUIDs are server-generated
+  CreateReplyResponse:
+    verified_at: "2026-04-29"
+    fields: [replyId, threadId, createdAt, media]
+  ListRepliesResponse:
+    verified_at: "2026-04-29"
+    fields: [replies, media, totalCount, hasMore]
+    note: Uses offset pagination; 'media' is thread-level media
+  SendMessageRequest:
+    verified_at: "2026-04-29"
+    fields: [conversationId, encryptedEnvelope, timestamp?]
+  SendMessageResponse:
+    verified_at: "2026-04-29"
+    fields: [messageId, serverTimestamp]
+  MessageEnvelope:
+    verified_at: "2026-04-29"
+    fields: [messageId, conversationId, encryptedEnvelope, serverTimestamp]
+  FetchMessagesResponse:
+    verified_at: "2026-04-29"
+    fields: [messages, hasMore]
+  GenerateInviteRequest:
+    verified_at: "2026-04-29"
+    fields: [groupId, targetEmail]
+  InviteResponse:
+    verified_at: "2026-04-29"
+    fields: [code, expiresAt, createdAt, targetEmail]
+    note: Timestamps are Unix epoch milliseconds
+  GenerateInviteLinkRequest:
+    verified_at: "2026-04-29"
+    fields: [groupId, targetEmail, linkType?]
+  InviteLinkResponse:
+    verified_at: "2026-04-29"
+    fields: [link, code, expiresAt, createdAt, targetEmail]
+  InviteStatusResponse:
+    verified_at: "2026-04-29"
+    fields: [status, createdAt, expiresAt, usedAt, usedBy]
+  MediaMetadata:
+    verified_at: "2026-04-29"
+    fields: [mediaId, encryptedMetadata, sizeBytes, uploadedAt, expiresAt, contentType, fileName, blurHash, width, height, duration]
+  UserProfile:
+    verified_at: "2026-04-29"
+    fields: [id, username, displayName, avatarUrl, createdAt?]
+    note: displayName falls back to username server-side; createdAt only on /me
+  PublicKeyResponse:
+    verified_at: "2026-04-29"
+    fields: [userId, username, publicKey]
 
-unverified_types:
-  - ReplyResponse
-  - CreateReplyRequest
-  - PaginatedResponse
-  - SendMessageRequest
-  - FetchMessagesResponse
+unverified_types: []
 
 known_issues:
-  - LoginResponse type has refreshToken/displayName/avatarUrl fields that backend doesn't return
-  - Reply endpoints return 500 (backend issue, not client)
+  - Reply endpoints may return 500 (backend issue — CreateReplyRequest type is now verified correct)
   - uniffi stub bindings throw "FFI not initialized" — need uniffi-bindgen regen for AES-GCM
+
+pagination_pattern:
+  type: offset
+  note: Backend uses offset pagination (limit + offset query params), NOT cursor-based. Each list endpoint has its own response shape (ListThreadsResponse, ListRepliesResponse) rather than a generic PaginatedResponse wrapper.
+
+api_client_transforms:
+  request: camelCase → snake_case (automatic via camelToSnake in client.ts)
+  response: snake_case → camelCase (automatic via snakeToCamel in client.ts)
+  note: Some backend endpoints return camelCase directly (UserProfile, invite fields)

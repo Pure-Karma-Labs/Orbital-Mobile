@@ -52,7 +52,7 @@ import {
   encryptContent,
   getOrFetchGroupKey,
 } from '../crypto/contentCrypto';
-import type { ThreadResponse, ReplyResponse, PaginatedResponse } from '../../types/api';
+import type { ThreadResponse, ReplyResponse, ListRepliesResponse, CreateReplyResponse } from '../../types/api';
 
 const mockGetThread = getThread as jest.MockedFunction<typeof getThread>;
 const mockGetThreadReplies = getThreadReplies as jest.MockedFunction<typeof getThreadReplies>;
@@ -87,16 +87,17 @@ function makeThreadResponse(overrides: Partial<ThreadResponse> = {}): ThreadResp
 
 function makeReplyResponse(overrides: Partial<ReplyResponse> = {}): ReplyResponse {
   return {
-    id: 'reply-1',
+    replyId: 'reply-1',
     threadId: 'thread-1',
     authorId: 'user-2',
     authorUsername: 'bob',
+    authorDisplayName: 'Bob',
     encryptedBody: 'enc-reply-base64',
     bodyIv: 'reply-iv-base64',
     parentReplyId: null,
-    depth: 0,
+    level: 0,
     createdAt: '2026-04-01T11:00:00Z',
-    updatedAt: '2026-04-01T11:00:00Z',
+    media: [],
     ...overrides,
   };
 }
@@ -130,13 +131,9 @@ describe('loadThread', () => {
 
     const result = await loadThread('thread-1');
 
-    // Verifies API call
     expect(mockGetThread).toHaveBeenCalledWith('thread-1');
-
-    // Verifies group key fetch
     expect(mockGetOrFetchGroupKey).toHaveBeenCalledWith('group-1');
 
-    // Verifies decryption was called for title and body
     expect(mockDecryptContent).toHaveBeenCalledTimes(2);
     expect(mockDecryptContent).toHaveBeenCalledWith(
       'enc-title-base64',
@@ -151,7 +148,6 @@ describe('loadThread', () => {
       'group-1',
     );
 
-    // Verifies store upsert
     expect(mockUpsertThread).toHaveBeenCalledTimes(1);
     const upsertedThread = mockUpsertThread.mock.calls[0][0];
     expect(upsertedThread.id).toBe('thread-1');
@@ -161,7 +157,6 @@ describe('loadThread', () => {
     expect(upsertedThread.conversationId).toBe('group-1');
     expect(upsertedThread.syncStatus).toBe('synced');
 
-    // Verifies return value
     expect(result.id).toBe('thread-1');
     expect(result.title).toBe('Decrypted Title');
   });
@@ -177,7 +172,6 @@ describe('loadThread', () => {
 
     const result = await loadThread('thread-1');
 
-    // Should not attempt to decrypt null fields
     expect(mockDecryptContent).not.toHaveBeenCalled();
     expect(result.title).toBeNull();
     expect(result.body).toBeNull();
@@ -202,12 +196,13 @@ describe('loadThread', () => {
 
 describe('loadReplies', () => {
   it('fetches replies, decrypts, and sets replies for first page', async () => {
-    const paginatedResponse: PaginatedResponse<ReplyResponse> = {
-      items: [makeReplyResponse({ id: 'reply-1' }), makeReplyResponse({ id: 'reply-2' })],
-      cursor: 'next-cursor',
+    const response: ListRepliesResponse = {
+      replies: [makeReplyResponse({ replyId: 'reply-1' }), makeReplyResponse({ replyId: 'reply-2' })],
+      media: [],
+      totalCount: 5,
       hasMore: true,
     };
-    mockGetThreadReplies.mockResolvedValue(paginatedResponse);
+    mockGetThreadReplies.mockResolvedValue(response);
 
     const result = await loadReplies('thread-1', 'group-1');
 
@@ -215,49 +210,47 @@ describe('loadReplies', () => {
     expect(mockGetOrFetchGroupKey).toHaveBeenCalledWith('group-1');
     expect(mockDecryptContent).toHaveBeenCalledTimes(2);
 
-    // First page uses setReplies
     expect(mockSetReplies).toHaveBeenCalledTimes(1);
     expect(mockAppendReplies).not.toHaveBeenCalled();
 
     expect(result.replies).toHaveLength(2);
-    expect(result.nextCursor).toBe('next-cursor');
     expect(result.hasMore).toBe(true);
   });
 
-  it('uses appendReplies for paginated (cursor) requests', async () => {
-    const paginatedResponse: PaginatedResponse<ReplyResponse> = {
-      items: [makeReplyResponse({ id: 'reply-3' })],
-      cursor: null,
+  it('uses appendReplies for paginated (offset) requests', async () => {
+    const response: ListRepliesResponse = {
+      replies: [makeReplyResponse({ replyId: 'reply-3' })],
+      media: [],
+      totalCount: 3,
       hasMore: false,
     };
-    mockGetThreadReplies.mockResolvedValue(paginatedResponse);
+    mockGetThreadReplies.mockResolvedValue(response);
 
-    const result = await loadReplies('thread-1', 'group-1', 'some-cursor');
+    const result = await loadReplies('thread-1', 'group-1', 20);
 
-    expect(mockGetThreadReplies).toHaveBeenCalledWith('thread-1', 'some-cursor');
+    expect(mockGetThreadReplies).toHaveBeenCalledWith('thread-1', 20);
 
-    // Subsequent page uses appendReplies
     expect(mockAppendReplies).toHaveBeenCalledTimes(1);
     expect(mockSetReplies).not.toHaveBeenCalled();
 
     expect(result.hasMore).toBe(false);
-    expect(result.nextCursor).toBeNull();
   });
 
-  it('maps reply fields correctly including authorUsername and depth', async () => {
-    const paginatedResponse: PaginatedResponse<ReplyResponse> = {
-      items: [
+  it('maps reply fields correctly including authorUsername and level', async () => {
+    const response: ListRepliesResponse = {
+      replies: [
         makeReplyResponse({
-          id: 'reply-1',
+          replyId: 'reply-1',
           authorUsername: 'charlie',
-          depth: 2,
+          level: 2,
           parentReplyId: 'reply-parent',
         }),
       ],
-      cursor: null,
+      media: [],
+      totalCount: 1,
       hasMore: false,
     };
-    mockGetThreadReplies.mockResolvedValue(paginatedResponse);
+    mockGetThreadReplies.mockResolvedValue(response);
 
     const result = await loadReplies('thread-1', 'group-1');
 
@@ -275,9 +268,13 @@ describe('loadReplies', () => {
 
 describe('postReply', () => {
   it('encrypts body, adds optimistic reply, and calls API', async () => {
-    mockCreateReply.mockResolvedValue(
-      makeReplyResponse({ id: 'client-uuid-000', createdAt: '2026-04-01T12:00:00Z' }),
-    );
+    const createResponse: CreateReplyResponse = {
+      replyId: 'server-reply-id',
+      threadId: 'thread-1',
+      createdAt: '2026-04-01T12:00:00Z',
+      media: [],
+    };
+    mockCreateReply.mockResolvedValue(createResponse);
 
     const result = await postReply(
       'thread-1',
@@ -289,10 +286,8 @@ describe('postReply', () => {
       'alice',
     );
 
-    // Verifies encryption
     expect(mockEncryptContent).toHaveBeenCalledWith('Hello world', fakeGroupKey, 'group-1');
 
-    // Verifies optimistic reply was added
     expect(mockAddOptimisticReply).toHaveBeenCalledTimes(1);
     const optimistic = mockAddOptimisticReply.mock.calls[0][0];
     expect(optimistic.id).toBe('client-uuid-000');
@@ -302,18 +297,16 @@ describe('postReply', () => {
     expect(optimistic.parentReplyId).toBeNull();
     expect(optimistic.depth).toBe(0);
 
-    // Verifies API call with encrypted data
     expect(mockCreateReply).toHaveBeenCalledWith('thread-1', {
-      id: 'client-uuid-000',
       encryptedBody: 'encrypted-ciphertext',
       bodyIv: 'encrypted-iv',
       parentReplyId: null,
     });
 
-    // Verifies sync status updated to synced
     expect(mockUpdateReplySyncStatus).toHaveBeenCalledWith('client-uuid-000', 'synced');
 
     expect(result.syncStatus).toBe('synced');
+    expect(result.id).toBe('server-reply-id');
   });
 
   it('sets sync status to failed when API call throws', async () => {
@@ -323,21 +316,19 @@ describe('postReply', () => {
       postReply('thread-1', 'group-1', 'Hello', null, 0, 'user-1', 'alice'),
     ).rejects.toThrow('Failed to post reply');
 
-    // Optimistic reply was still added
     expect(mockAddOptimisticReply).toHaveBeenCalledTimes(1);
 
-    // Sync status marked as failed
     expect(mockUpdateReplySyncStatus).toHaveBeenCalledWith('client-uuid-000', 'failed');
   });
 
   it('passes parentReplyId and depth for nested replies', async () => {
-    mockCreateReply.mockResolvedValue(
-      makeReplyResponse({
-        id: 'client-uuid-000',
-        parentReplyId: 'parent-reply-1',
-        depth: 2,
-      }),
-    );
+    const createResponse: CreateReplyResponse = {
+      replyId: 'server-nested-reply',
+      threadId: 'thread-1',
+      createdAt: '2026-04-01T12:00:00Z',
+      media: [],
+    };
+    mockCreateReply.mockResolvedValue(createResponse);
 
     await postReply(
       'thread-1',
@@ -354,7 +345,6 @@ describe('postReply', () => {
     expect(optimistic.depth).toBe(2);
 
     expect(mockCreateReply).toHaveBeenCalledWith('thread-1', {
-      id: 'client-uuid-000',
       encryptedBody: 'encrypted-ciphertext',
       bodyIv: 'encrypted-iv',
       parentReplyId: 'parent-reply-1',

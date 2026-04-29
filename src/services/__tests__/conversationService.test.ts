@@ -38,7 +38,7 @@ const GROUP_RESPONSE = {
 
 describe('loadConversations', () => {
   it('fetches groups and populates store', async () => {
-    mockListGroups.mockResolvedValue({ groups: [GROUP_RESPONSE] });
+    mockListGroups.mockResolvedValue([GROUP_RESPONSE]);
 
     await loadConversations();
 
@@ -53,7 +53,7 @@ describe('loadConversations', () => {
   });
 
   it('auto-selects first group when no active conversation', async () => {
-    mockListGroups.mockResolvedValue({ groups: [GROUP_RESPONSE] });
+    mockListGroups.mockResolvedValue([GROUP_RESPONSE]);
 
     await loadConversations();
 
@@ -66,7 +66,7 @@ describe('loadConversations', () => {
       setConversations: mockSetConversations,
       setActiveConversation: mockSetActiveConversation,
     });
-    mockListGroups.mockResolvedValue({ groups: [GROUP_RESPONSE] });
+    mockListGroups.mockResolvedValue([GROUP_RESPONSE]);
 
     await loadConversations();
 
@@ -74,7 +74,7 @@ describe('loadConversations', () => {
   });
 
   it('handles empty group list', async () => {
-    mockListGroups.mockResolvedValue({ groups: [] });
+    mockListGroups.mockResolvedValue([]);
 
     await loadConversations();
 
@@ -83,7 +83,7 @@ describe('loadConversations', () => {
   });
 
   it('maps createdAt from ISO string to epoch ms', async () => {
-    mockListGroups.mockResolvedValue({ groups: [GROUP_RESPONSE] });
+    mockListGroups.mockResolvedValue([GROUP_RESPONSE]);
 
     await loadConversations();
 
@@ -92,7 +92,7 @@ describe('loadConversations', () => {
   });
 
   it('defaults muteUntil, lastMessageAt, unreadCount', async () => {
-    mockListGroups.mockResolvedValue({ groups: [GROUP_RESPONSE] });
+    mockListGroups.mockResolvedValue([GROUP_RESPONSE]);
 
     await loadConversations();
 

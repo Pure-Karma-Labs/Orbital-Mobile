@@ -167,8 +167,8 @@ export function ThreadDetailScreen({
   const [replyTarget, setReplyTarget] = useState<ReplyTarget | null>(null);
   const [sending, setSending] = useState(false);
 
-  // Pagination cursor (local — not stored in Zustand)
-  const nextCursorRef = useRef<string | null>(null);
+  // Pagination offset (local — not stored in Zustand)
+  const offsetRef = useRef(0);
   const hasMoreRef = useRef(true);
 
   // The current thread from the store
@@ -196,7 +196,7 @@ export function ThreadDetailScreen({
         threadId,
         loadedThread.conversationId,
       );
-      nextCursorRef.current = result.nextCursor;
+      offsetRef.current = result.replies.length;
       hasMoreRef.current = result.hasMore;
     } catch {
       setError('Could not load thread');
@@ -220,7 +220,7 @@ export function ThreadDetailScreen({
     try {
       const loadedThread = await loadThread(threadId);
       const result = await loadReplies(threadId, loadedThread.conversationId);
-      nextCursorRef.current = result.nextCursor;
+      offsetRef.current = result.replies.length;
       hasMoreRef.current = result.hasMore;
     } catch {
       // Silently fail on refresh — stale data is still visible
@@ -231,7 +231,7 @@ export function ThreadDetailScreen({
 
   // Pagination — load more replies
   const handleEndReached = useCallback(async () => {
-    if (loadingMore || !hasMoreRef.current || !nextCursorRef.current || !thread) {
+    if (loadingMore || !hasMoreRef.current || !thread) {
       return;
     }
     setLoadingMore(true);
@@ -239,9 +239,9 @@ export function ThreadDetailScreen({
       const result = await loadReplies(
         threadId,
         thread.conversationId,
-        nextCursorRef.current,
+        offsetRef.current,
       );
-      nextCursorRef.current = result.nextCursor;
+      offsetRef.current += result.replies.length;
       hasMoreRef.current = result.hasMore;
     } catch {
       // Silently fail — user can scroll again to retry

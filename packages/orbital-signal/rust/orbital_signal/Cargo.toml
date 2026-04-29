@@ -21,6 +21,9 @@ uuid = { version = "1.5", features = ["v4"] }
 libsignal-protocol = { git = "https://github.com/signalapp/libsignal", tag = "v0.83.0" }
 libsignal-core = { git = "https://github.com/signalapp/libsignal", tag = "v0.83.0" }
 
+# AES-256-GCM for content encryption (threads, replies — per-field with AAD)
+aes-gcm = "0.10"
+
 # Needed for async runtime (uniffi async functions use tokio)
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
 

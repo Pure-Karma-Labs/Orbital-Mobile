@@ -47,6 +47,13 @@ export function getDatabase(): DB {
 }
 
 /**
+ * Returns true if the database has been initialized via initDatabase().
+ */
+export function isDatabaseInitialized(): boolean {
+  return db !== null;
+}
+
+/**
  * Close the database connection and release the handle.
  * The database stays open for the process lifetime in production.
  * This is provided for graceful shutdown and test teardown only.

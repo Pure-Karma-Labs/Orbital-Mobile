@@ -30,6 +30,7 @@ jest.mock('../../../database/repositories/signalKyberPreKeyRepository', () => ({
 
 jest.mock('../../../database/connection', () => ({
   getDatabase: jest.fn(),
+  isDatabaseInitialized: jest.fn(() => true),
 }));
 
 jest.mock('../../../database/queryHelpers', () => ({
@@ -59,7 +60,7 @@ import { getItem, setItem, removeItem } from '../../../database/repositories/ite
 import { savePreKey } from '../../../database/repositories/signalPreKeyRepository';
 import { saveSignedPreKey } from '../../../database/repositories/signalSignedPreKeyRepository';
 import { saveKyberPreKey } from '../../../database/repositories/signalKyberPreKeyRepository';
-import { getDatabase } from '../../../database/connection';
+import { getDatabase, isDatabaseInitialized } from '../../../database/connection';
 import { queryOne } from '../../../database/queryHelpers';
 import { uploadPreKeyBundle, getPreKeyCount } from '../../api/keys';
 import { getSecureItem, setSecureItem } from '../../secure-storage';
@@ -141,6 +142,7 @@ const PRIVATE_KEY_HEX = '0202020202020202020202020202020202020202020202020202020
 beforeEach(() => {
   jest.resetAllMocks();
 
+  (isDatabaseInitialized as jest.Mock).mockReturnValue(true);
   setupDbMock();
   setupIdentityKeyPair();
   setupPreKeyMock();

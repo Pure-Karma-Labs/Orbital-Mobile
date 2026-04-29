@@ -1,20 +1,43 @@
 {
+  "permissions": {
+    "allow": [
+      "Write",
+      "Edit",
+      "Bash"
+    ]
+  },
   "agents": {
     "agent-builder": {
-      "model": "opus",
+      "model": "claude-opus-4-6",
       "description": "Meta-agent for creating and maintaining expert agents. Initializes expertise.yaml files that experts self-maintain as their mental models",
       "collaboration": "independent"
     },
     "skill-builder": {
-      "model": "opus",
+      "model": "claude-opus-4-6",
       "description": "Meta-agent for creating, reviewing, and improving skills and auditing agent configurations for underused subagent features",
       "collaboration": "independent"
     },
+    "api-integration-engineer": {
+      "model": "claude-opus-4-6",
+      "description": "Own API client, service orchestration layer, wire-format types, and backend contract verification for Orbital Mobile",
+      "collaboration": "collaborative",
+      "receivesGuidanceFrom": [
+        "signal-crypto-specialist"
+      ],
+      "reviewedBy": [
+        "security-auditor",
+        "tech-debt-collector"
+      ],
+      "reportsTo": [
+        "project-manager"
+      ]
+    },
     "react-native-engineer": {
-      "model": "sonnet",
+      "model": "claude-opus-4-6",
       "description": "Build React Native UI screens, navigation, state management, and component library for Orbital Mobile",
       "collaboration": "collaborative",
       "receivesGuidanceFrom": [
+        "api-integration-engineer",
         "signal-crypto-specialist",
         "security-auditor"
       ],
@@ -26,7 +49,7 @@
       ]
     },
     "rust-native-engineer": {
-      "model": "opus",
+      "model": "claude-opus-4-6",
       "description": "Own uniffi-bindgen-react-native toolchain, Rust wrapper crate around libsignal, cross-compilation, and Swift/Kotlin native bridges",
       "collaboration": "collaborative",
       "receivesGuidanceFrom": [
@@ -40,7 +63,7 @@
       ]
     },
     "backend-push-engineer": {
-      "model": "sonnet",
+      "model": "claude-sonnet-4-6",
       "description": "Own push notification service (APNs/FCM), device token management, and backend API extensions for mobile clients",
       "collaboration": "collaborative",
       "receivesGuidanceFrom": [
@@ -55,7 +78,7 @@
       ]
     },
     "signal-crypto-specialist": {
-      "model": "opus",
+      "model": "claude-opus-4-6",
       "description": "Own Signal Protocol integration, libsignal API surface design, encryption stores, and key management for Orbital Mobile",
       "collaboration": "collaborative",
       "canInvoke": [
@@ -69,21 +92,21 @@
       ]
     },
     "mobile-devops-engineer": {
-      "model": "sonnet",
+      "model": "claude-sonnet-4-6",
       "description": "Own CI/CD pipeline, code signing, TestFlight/Play Store distribution, Fastlane automation, and self-hosted runner management",
       "collaboration": "collaborative",
       "reviewedBy": ["security-auditor"],
       "reportsTo": ["project-manager"]
     },
     "qa-testing-specialist": {
-      "model": "sonnet",
+      "model": "claude-sonnet-4-6",
       "description": "Own test strategy, Jest/Detox configuration, device matrix testing, beta coordination, and MVP verification for Orbital Mobile",
       "collaboration": "collaborative",
       "reviews": ["react-native-engineer", "rust-native-engineer"],
       "reportsTo": ["project-manager"]
     },
     "security-auditor": {
-      "model": "opus",
+      "model": "claude-opus-4-6",
       "description": "Conduct crypto audits, mobile security reviews, keychain/keystore verification, and OWASP Mobile Top 10 assessment",
       "collaboration": "independent",
       "reviews": [
@@ -94,7 +117,7 @@
       ]
     },
     "project-manager": {
-      "model": "haiku",
+      "model": "claude-sonnet-4-6",
       "description": "Manage GitHub Issues/Milestones, track progress, coordinate project timeline, and identify risks and blockers",
       "collaboration": "collaborative",
       "receivesUpdatesFrom": [
@@ -108,7 +131,7 @@
       ]
     },
     "app-store-compliance": {
-      "model": "sonnet",
+      "model": "claude-opus-4-6",
       "description": "Ensure iOS app follows Apple App Store Review Guidelines, Human Interface Guidelines, and all current best practices for smooth App Store submission and approval",
       "collaboration": "independent",
       "reviews": [
@@ -117,7 +140,7 @@
       ]
     },
     "tech-debt-collector": {
-      "model": "opus",
+      "model": "claude-opus-4-6",
       "description": "Detect agentic code bloat, monitor API architecture fragility, track performance consequences, maintain a debt registry, and provide prioritized optimization recommendations across the full stack",
       "collaboration": "independent",
       "reviews": [

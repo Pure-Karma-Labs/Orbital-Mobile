@@ -1,0 +1,64 @@
+core_files:
+  - path: src/types/api.ts
+    role: Wire-format DTO types for all API request/response shapes
+  - path: src/services/api/client.ts
+    role: Core HTTP request function with auth, transforms, error mapping
+  - path: src/services/api/errors.ts
+    role: Typed error hierarchy (ApiError, AuthError, NetworkError, etc.)
+  - path: src/services/api/tokenManager.ts
+    role: Token lifecycle and storage backend management
+  - path: src/services/api/auth.ts
+    role: Auth endpoints (login, signup, verifyToken, getPublicKey)
+  - path: src/services/api/groups.ts
+    role: Group endpoints (listGroups, getGroupKey, createGroup, etc.)
+  - path: src/services/api/threads.ts
+    role: Thread/reply endpoints (createThread, getThread, getThreadReplies, createReply)
+  - path: src/services/api/messages.ts
+    role: Signal Protocol relay (sendMessage, fetchMessages, deleteMessage)
+  - path: src/services/api/users.ts
+    role: User profile endpoints (getMe, getUser, uploadAvatar, etc.)
+  - path: src/services/api/invites.ts
+    role: Invite management endpoints
+  - path: src/services/api/media.ts
+    role: Media upload/download endpoints
+  - path: src/services/api/devices.ts
+    role: Device registration for push notifications
+  - path: src/services/api/keys.ts
+    role: Signal Protocol key endpoints (uploadPreKeyBundle, getPreKeyCount, getPreKeyBundle)
+  - path: src/services/api/version.ts
+    role: App version check endpoint
+  - path: src/services/threadService.ts
+    role: Thread data orchestration (fetch → decrypt → store)
+  - path: src/services/conversationService.ts
+    role: Conversation/group loading orchestration
+  - path: src/services/authService.ts
+    role: Auth flow orchestration (login, signup, restoreSession, logout)
+
+backend_repo: Pure-Karma-Labs/Orbital-Backend
+
+verified_types:
+  GroupResponse:
+    verified_at: "2026-04-29"
+    fields: [groupId, encryptedName, encryptedGroupKey, memberCount, maxMembers, isCreator, activeInviteCode, joinedAt]
+  CreateThreadResponse:
+    verified_at: "2026-04-29"
+    fields: [threadId, groupId, createdAt, media]
+  ThreadResponse:
+    verified_at: "2026-04-29"
+    fields: [threadId, groupId, authorId, authorUsername, authorDisplayName, encryptedTitle, encryptedBody, titleIv, bodyIv, replyCount, createdAt, media]
+  LoginResponse:
+    verified_at: "2026-04-29"
+    fields: [userId, username, publicKey, token]
+    note: No refreshToken or displayName in actual response
+
+unverified_types:
+  - ReplyResponse
+  - CreateReplyRequest
+  - PaginatedResponse
+  - SendMessageRequest
+  - FetchMessagesResponse
+
+known_issues:
+  - LoginResponse type has refreshToken/displayName/avatarUrl fields that backend doesn't return
+  - Reply endpoints return 500 (backend issue, not client)
+  - uniffi stub bindings throw "FFI not initialized" — need uniffi-bindgen regen for AES-GCM

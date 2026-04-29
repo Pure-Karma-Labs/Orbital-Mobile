@@ -1,0 +1,44 @@
+/**
+ * Conversation data service — orchestrates group fetch, transform, and store operations.
+ *
+ * Mirrors the threadService pattern: API fetch → transform → store upsert.
+ * Components never call the groups API or store directly.
+ */
+
+import { listGroups } from './api/groups';
+import { useAppStore } from '../stores/useAppStore';
+import type { Conversation } from '../types/store';
+import type { GroupResponse } from '../types/api';
+
+function mapGroupResponse(response: GroupResponse): Conversation {
+  return {
+    id: response.id,
+    type: response.type,
+    // TODO: Decrypt encryptedName with group key when key distribution pipeline is ready.
+    // Backend currently sends plaintext in this field.
+    name: response.encryptedName ?? null,
+    memberCount: response.memberCount,
+    active: response.active,
+    muteUntil: null,
+    lastMessageAt: null,
+    unreadCount: 0,
+    createdAt: new Date(response.createdAt).getTime(),
+    updatedAt: new Date(response.updatedAt).getTime(),
+  };
+}
+
+/**
+ * Fetch the user's groups from the API and populate the conversation store.
+ * Auto-selects the first group if no conversation is currently active.
+ */
+export async function loadConversations(): Promise<void> {
+  const response = await listGroups();
+  const conversations = response.groups.map(mapGroupResponse);
+
+  const store = useAppStore.getState();
+  store.setConversations(conversations);
+
+  if (store.activeConversationId === null && conversations.length > 0) {
+    store.setActiveConversation(conversations[0].id);
+  }
+}

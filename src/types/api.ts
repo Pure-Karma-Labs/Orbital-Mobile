@@ -114,6 +114,10 @@ export interface GroupMembersResponse {
   members: GroupMember[];
 }
 
+export interface ListGroupsResponse {
+  groups: GroupResponse[];
+}
+
 export interface GroupKeyResponse {
   /** Per-member copy of the group key, encrypted with the member's public key */
   encryptedGroupKey: string;

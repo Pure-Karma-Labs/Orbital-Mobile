@@ -40,6 +40,11 @@ jest.mock('../crypto/keyGenerationService', () => ({
   clearIdentityKeyCache: () => mockClearIdentityKeyCache(),
 }));
 
+const mockLoadConversations = jest.fn().mockResolvedValue(undefined);
+jest.mock('../conversationService', () => ({
+  loadConversations: (...args: unknown[]) => mockLoadConversations(...args),
+}));
+
 // Mock the MMKV module used via require() inside logout()
 jest.mock('../../stores/middleware/persistence', () => ({
   getMMKVInstance: jest.fn(() => ({ clearAll: jest.fn() })),

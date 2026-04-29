@@ -11,6 +11,7 @@ import type {
   GroupMembersResponse,
   GroupQuotaResponse,
   GroupResponse,
+  ListGroupsResponse,
   JoinGroupRequest,
   JoinGroupResponse,
 } from '../../types/api';
@@ -31,8 +32,8 @@ export function joinGroup(data: JoinGroupRequest): Promise<JoinGroupResponse> {
   });
 }
 
-export function listGroups(): Promise<GroupResponse[]> {
-  return request<GroupResponse[]>({
+export function listGroups(): Promise<ListGroupsResponse> {
+  return request<ListGroupsResponse>({
     method: 'GET',
     path: '/api/groups',
   });

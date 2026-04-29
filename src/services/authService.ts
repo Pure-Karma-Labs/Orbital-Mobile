@@ -16,6 +16,7 @@ import {
   ensureKeysInitialized,
   clearIdentityKeyCache,
 } from './crypto/keyGenerationService';
+import { loadConversations } from './conversationService';
 
 /**
  * Log in with username + password. On success, stores tokens and populates
@@ -36,6 +37,9 @@ export async function loginUser(
   });
   ensureKeysInitialized().catch((e: unknown) =>
     console.warn('[KeyMaintenance]', e instanceof Error ? e.message : 'unknown error'),
+  );
+  loadConversations().catch((e: unknown) =>
+    console.warn('[ConversationSync]', e instanceof Error ? e.message : 'unknown error'),
   );
 }
 
@@ -65,6 +69,9 @@ export async function signupUser(
     console.warn('[KeyGeneration] Initial key generation failed — will retry on next launch',
       e instanceof Error ? e.message : 'unknown error');
   }
+  loadConversations().catch((e: unknown) =>
+    console.warn('[ConversationSync]', e instanceof Error ? e.message : 'unknown error'),
+  );
 }
 
 /**
@@ -89,6 +96,9 @@ export async function restoreSession(): Promise<boolean> {
     });
     ensureKeysInitialized().catch((e: unknown) =>
       console.warn('[KeyMaintenance]', e instanceof Error ? e.message : 'unknown error'),
+    );
+    loadConversations().catch((e: unknown) =>
+      console.warn('[ConversationSync]', e instanceof Error ? e.message : 'unknown error'),
     );
     return true;
   } catch (e) {

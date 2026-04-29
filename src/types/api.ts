@@ -11,7 +11,7 @@
  * snake_case on request bodies.
  */
 
-import type { ConversationType, ThreadContentType } from './database';
+import type { ThreadContentType } from './database';
 
 // ============================================================
 // Generic wrappers
@@ -81,16 +81,14 @@ export interface CreateGroupRequest {
 }
 
 export interface GroupResponse {
-  id: string;
-  type: ConversationType;
-  /** Encrypted group name — must be decrypted client-side */
-  encryptedName: string | null;
-  encryptedNameIv: string | null;
+  groupId: string;
+  encryptedName: string;
+  encryptedGroupKey: string;
   memberCount: number;
-  creatorId: string;
-  active: boolean;
-  createdAt: string;
-  updatedAt: string;
+  maxMembers: number;
+  isCreator: boolean;
+  activeInviteCode: string | null;
+  joinedAt: string;
 }
 
 export interface JoinGroupRequest {

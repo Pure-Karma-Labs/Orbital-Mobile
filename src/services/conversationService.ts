@@ -12,18 +12,18 @@ import type { GroupResponse } from '../types/api';
 
 function mapGroupResponse(response: GroupResponse): Conversation {
   return {
-    id: response.id,
-    type: response.type,
+    id: response.groupId,
+    type: 'group',
     // TODO: Decrypt encryptedName with group key when key distribution pipeline is ready.
     // Backend currently sends plaintext in this field.
     name: response.encryptedName ?? null,
     memberCount: response.memberCount,
-    active: response.active,
+    active: true,
     muteUntil: null,
     lastMessageAt: null,
     unreadCount: 0,
-    createdAt: new Date(response.createdAt).getTime(),
-    updatedAt: new Date(response.updatedAt).getTime(),
+    createdAt: new Date(response.joinedAt).getTime(),
+    updatedAt: new Date(response.joinedAt).getTime(),
   };
 }
 

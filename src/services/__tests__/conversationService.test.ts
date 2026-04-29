@@ -26,15 +26,14 @@ beforeEach(() => {
 });
 
 const GROUP_RESPONSE = {
-  id: 'g1',
-  type: 'group',
+  groupId: 'g1',
   encryptedName: 'Family Orbit',
-  encryptedNameIv: null,
+  encryptedGroupKey: 'placeholder-key',
   memberCount: 3,
-  creatorId: 'u1',
-  active: true,
-  createdAt: '2026-01-01T00:00:00.000Z',
-  updatedAt: '2026-01-01T00:00:00.000Z',
+  maxMembers: 10,
+  isCreator: false,
+  activeInviteCode: 'TEST1234',
+  joinedAt: '2026-01-01T00:00:00.000Z',
 };
 
 describe('loadConversations', () => {

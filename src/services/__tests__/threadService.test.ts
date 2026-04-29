@@ -69,20 +69,18 @@ const fakeGroupKey = new Uint8Array(32).fill(0xab);
 
 function makeThreadResponse(overrides: Partial<ThreadResponse> = {}): ThreadResponse {
   return {
-    id: 'thread-1',
+    threadId: 'thread-1',
     groupId: 'group-1',
     authorId: 'user-1',
     authorUsername: 'alice',
-    contentType: 'text',
+    authorDisplayName: 'Alice',
     encryptedTitle: 'enc-title-base64',
     titleIv: 'title-iv-base64',
     encryptedBody: 'enc-body-base64',
     bodyIv: 'body-iv-base64',
-    pinned: false,
     replyCount: 2,
-    lastReplyAt: '2026-04-01T12:00:00Z',
     createdAt: '2026-04-01T10:00:00Z',
-    updatedAt: '2026-04-01T10:00:00Z',
+    media: [],
     ...overrides,
   };
 }

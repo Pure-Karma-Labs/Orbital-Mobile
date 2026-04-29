@@ -62,20 +62,18 @@ async function mapThreadResponse(
   ]);
 
   return {
-    id: response.id,
+    id: response.threadId,
     conversationId: response.groupId,
     authorId: response.authorId,
     authorUsername: response.authorUsername,
     title,
     body,
-    contentType: response.contentType,
-    pinned: response.pinned,
+    contentType: 'text',
+    pinned: false,
     replyCount: response.replyCount,
-    lastReplyAt: response.lastReplyAt
-      ? new Date(response.lastReplyAt).getTime()
-      : null,
+    lastReplyAt: null,
     createdAt: new Date(response.createdAt).getTime(),
-    updatedAt: new Date(response.updatedAt).getTime(),
+    updatedAt: new Date(response.createdAt).getTime(),
     syncStatus: 'synced',
   };
 }
@@ -288,9 +286,7 @@ export async function createNewThread(
 
   try {
     const response = await createThread({
-      id: clientId,
       groupId,
-      contentType: 'text',
       encryptedTitle: encTitle.ciphertext,
       titleIv: encTitle.iv,
       encryptedBody: encBody.ciphertext,
@@ -300,9 +296,9 @@ export async function createNewThread(
     store.updateThreadSyncStatus(clientId, 'synced');
     return {
       ...optimisticThread,
-      id: response.id,
+      id: response.threadId,
       createdAt: new Date(response.createdAt).getTime(),
-      updatedAt: new Date(response.updatedAt).getTime(),
+      updatedAt: new Date(response.createdAt).getTime(),
       syncStatus: 'synced',
     };
   } catch {

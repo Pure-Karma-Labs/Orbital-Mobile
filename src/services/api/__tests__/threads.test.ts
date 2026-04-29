@@ -27,7 +27,6 @@ describe('createThread', () => {
   it('sends encrypted fields to POST /api/threads', async () => {
     const data = {
       groupId: 'group-1',
-      contentType: 'text' as const,
       encryptedTitle: 'aabbccdd',
       titleIv: '00112233',
       encryptedBody: 'eeff0011',
@@ -41,24 +40,6 @@ describe('createThread', () => {
       path: '/api/threads',
       body: data,
     });
-  });
-
-  it('includes client-generated id when provided', async () => {
-    const data = {
-      id: 'client-uuid-123',
-      groupId: 'group-1',
-      contentType: 'text' as const,
-      encryptedTitle: null,
-      titleIv: null,
-      encryptedBody: 'cipher',
-      bodyIv: 'iv',
-    };
-
-    await createThread(data);
-
-    expect(mockRequest).toHaveBeenCalledWith(
-      expect.objectContaining({ body: expect.objectContaining({ id: 'client-uuid-123' }) }),
-    );
   });
 });
 

@@ -6,14 +6,15 @@ import { request, buildQueryString } from './client';
 import type {
   CreateReplyRequest,
   CreateThreadRequest,
+  CreateThreadResponse,
   GetGroupThreadsRequest,
   PaginatedResponse,
   ReplyResponse,
   ThreadResponse,
 } from '../../types/api';
 
-export function createThread(data: CreateThreadRequest): Promise<ThreadResponse> {
-  return request<ThreadResponse>({
+export function createThread(data: CreateThreadRequest): Promise<CreateThreadResponse> {
+  return request<CreateThreadResponse>({
     method: 'POST',
     path: '/api/threads',
     body: data,

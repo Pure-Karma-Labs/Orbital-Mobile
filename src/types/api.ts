@@ -11,7 +11,6 @@
  * snake_case on request bodies.
  */
 
-import type { ThreadContentType } from './database';
 
 // ============================================================
 // Generic wrappers
@@ -147,39 +146,33 @@ export interface DmResponse {
 // ============================================================
 
 export interface CreateThreadRequest {
-  /** Client-generated UUID — allows offline creation before sync */
-  id?: string;
   groupId: string;
-  contentType: ThreadContentType;
-  /** AES-GCM ciphertext of the thread title, hex or base64 */
-  encryptedTitle: string | null;
-  /** IV used to encrypt the title */
-  titleIv: string | null;
-  /** AES-GCM ciphertext of the thread body */
-  encryptedBody: string | null;
-  /** IV used to encrypt the body */
-  bodyIv: string | null;
-  /** Optional media attachment IDs */
-  mediaIds?: string[];
+  encryptedTitle: string;
+  titleIv: string;
+  encryptedBody: string;
+  bodyIv: string;
+}
+
+export interface CreateThreadResponse {
+  threadId: string;
+  groupId: string;
+  createdAt: string;
+  media: string[];
 }
 
 export interface ThreadResponse {
-  id: string;
+  threadId: string;
   groupId: string;
   authorId: string;
   authorUsername: string;
-  contentType: ThreadContentType;
-  /** Encrypted thread title ciphertext */
+  authorDisplayName: string | null;
   encryptedTitle: string | null;
   titleIv: string | null;
-  /** Encrypted thread body ciphertext */
   encryptedBody: string | null;
   bodyIv: string | null;
-  pinned: boolean;
   replyCount: number;
-  lastReplyAt: string | null;
   createdAt: string;
-  updatedAt: string;
+  media: string[];
 }
 
 export interface GetGroupThreadsRequest {

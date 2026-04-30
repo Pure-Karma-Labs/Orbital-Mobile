@@ -20,10 +20,8 @@ beforeEach(() => {
 describe('sendMessage', () => {
   it('calls POST /v1/messages with correct body', async () => {
     const data = {
-      destinationServiceId: 'service-uuid-1',
-      destinationDeviceId: 1,
+      conversationId: 'conv-uuid-1',
       encryptedEnvelope: 'base64payload==',
-      envelopeType: 1,
       timestamp: 1700000000000,
     };
     await sendMessage(data);

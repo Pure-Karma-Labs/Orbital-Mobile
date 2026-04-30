@@ -22,8 +22,8 @@ beforeEach(() => {
 });
 
 describe('generateInvite', () => {
-  it('calls POST /api/invites/generate with email body', async () => {
-    const data = { email: 'alice@example.com' };
+  it('calls POST /api/invites/generate with groupId and targetEmail', async () => {
+    const data = { groupId: 'group-1', targetEmail: 'alice@example.com' };
     await generateInvite(data);
 
     expect(mockRequest).toHaveBeenCalledWith({
@@ -32,22 +32,11 @@ describe('generateInvite', () => {
       body: data,
     });
   });
-
-  it('includes optional groupId when provided', async () => {
-    const data = { email: 'bob@example.com', groupId: 'group-1' };
-    await generateInvite(data);
-
-    expect(mockRequest).toHaveBeenCalledWith(
-      expect.objectContaining({
-        body: expect.objectContaining({ groupId: 'group-1' }),
-      }),
-    );
-  });
 });
 
 describe('generateInviteLink', () => {
-  it('calls POST /api/invites/generate-link with inviteCode body', async () => {
-    const data = { inviteCode: 'INV-XYZ' };
+  it('calls POST /api/invites/generate-link with groupId and targetEmail', async () => {
+    const data = { groupId: 'group-1', targetEmail: 'bob@example.com' };
     await generateInviteLink(data);
 
     expect(mockRequest).toHaveBeenCalledWith({

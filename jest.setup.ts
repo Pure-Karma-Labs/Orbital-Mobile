@@ -45,6 +45,15 @@ if (typeof g['atob'] === 'undefined') {
   };
 }
 
+// Suppress React's act() warnings from VirtualizedList timers firing after test completion.
+// These are React internals, not application errors.
+const originalConsoleError = console.error;
+console.error = (...args: unknown[]) => {
+  const msg = typeof args[0] === 'string' ? args[0] : '';
+  if (msg.includes('not wrapped in act')) return;
+  originalConsoleError(...args);
+};
+
 // crypto.getRandomValues polyfill (deterministic for tests)
 if (
   typeof g['crypto'] === 'undefined' ||

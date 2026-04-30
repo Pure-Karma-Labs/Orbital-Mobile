@@ -16,6 +16,13 @@ import {
   ensureKeysInitialized,
   clearIdentityKeyCache,
 } from './crypto/keyGenerationService';
+import { clearGroupKeyCache } from './crypto/contentCrypto';
+import { clearAllGroupMasterKeys } from '../database/repositories/conversationRepository';
+import { removeSecureItem } from './secure-storage/secureStorage';
+import { SecureKeys } from './secure-storage/constants';
+import { execute } from '../database/queryHelpers';
+import { isDatabaseInitialized } from '../database/connection';
+import { loadConversations } from './conversationService';
 
 /**
  * Log in with username + password. On success, stores tokens and populates
@@ -26,17 +33,19 @@ export async function loginUser(
   password: string,
 ): Promise<void> {
   const response = await auth.login({ username, password });
-  await tokenManager.setTokens(response.token, response.refreshToken);
+  await tokenManager.setTokens(response.token, undefined);
   useAppStore.getState().setUser({
     userId: response.userId,
     username: response.username,
-    displayName: response.displayName,
-    // API returns avatarUrl, store uses avatarPath
-    avatarPath: response.avatarUrl ?? null,
+    displayName: null,
+    avatarPath: null,
   });
-  ensureKeysInitialized().catch((e: unknown) =>
-    console.warn('[KeyMaintenance]', e instanceof Error ? e.message : 'unknown error'),
-  );
+  await loadConversations().catch((e: unknown) => {
+    if (__DEV__) console.warn('[ConversationSync]', e instanceof Error ? e.message : e);
+  });
+  ensureKeysInitialized().catch((e: unknown) => {
+    if (__DEV__) console.warn('[KeyMaintenance]', e instanceof Error ? e.message : e);
+  });
 }
 
 /**
@@ -51,7 +60,7 @@ export async function signupUser(
   inviteCode: string,
 ): Promise<void> {
   const response = await auth.signup({ username, password, email, inviteCode });
-  await tokenManager.setTokens(response.token, response.refreshToken);
+  await tokenManager.setTokens(response.token, undefined);
   useAppStore.getState().setUser({
     userId: response.userId,
     username: response.username,
@@ -62,9 +71,11 @@ export async function signupUser(
     await generateInitialKeys();
     await uploadInitialPreKeyBundle();
   } catch (e: unknown) {
-    console.warn('[KeyGeneration] Initial key generation failed — will retry on next launch',
-      e instanceof Error ? e.message : 'unknown error');
+    if (__DEV__) console.warn('[KeyGeneration]', e instanceof Error ? e.message : e);
   }
+  await loadConversations().catch((e: unknown) => {
+    if (__DEV__) console.warn('[ConversationSync]', e instanceof Error ? e.message : e);
+  });
 }
 
 /**
@@ -87,9 +98,12 @@ export async function restoreSession(): Promise<boolean> {
       displayName: profile.displayName,
       avatarPath: profile.avatarUrl ?? null,
     });
-    ensureKeysInitialized().catch((e: unknown) =>
-      console.warn('[KeyMaintenance]', e instanceof Error ? e.message : 'unknown error'),
-    );
+    await loadConversations().catch((e: unknown) => {
+      if (__DEV__) console.warn('[ConversationSync]', e instanceof Error ? e.message : e);
+    });
+    ensureKeysInitialized().catch((e: unknown) => {
+      if (__DEV__) console.warn('[KeyMaintenance]', e instanceof Error ? e.message : e);
+    });
     return true;
   } catch (e) {
     if (e instanceof NetworkError) throw e;
@@ -107,17 +121,33 @@ export async function restoreSession(): Promise<boolean> {
  */
 export async function logout(): Promise<void> {
   await tokenManager.clearTokens();
-  // Clear auth state — clearAuth() triggers onTokensCleared via tokenManager,
-  // but calling it explicitly here ensures it runs even if that callback isn't
-  // registered yet (e.g. in tests).
   useAppStore.getState().clearAuth();
-  // Reset domain slices to initial state
   const state = useAppStore.getState();
   state.setConversations([]);
   state.setContacts([]);
-  // Clear cached identity key — prevents previous user's key from persisting in memory
   clearIdentityKeyCache();
-  // Clear MMKV persistence — prevents previous user's data from surviving
+  clearGroupKeyCache();
+
+  // Clear identity private key from Keychain
+  await removeSecureItem(SecureKeys.IDENTITY_KEY_PRIVATE).catch(() => {});
+
+  // Clear SQLCipher: group keys, items table, and all Signal Protocol stores
+  if (isDatabaseInitialized()) {
+    try {
+      clearAllGroupMasterKeys();
+      execute('DELETE FROM items');
+      execute('DELETE FROM signal_identity_keys');
+      execute('DELETE FROM signal_sessions');
+      execute('DELETE FROM signal_pre_keys');
+      execute('DELETE FROM signal_signed_pre_keys');
+      execute('DELETE FROM signal_kyber_pre_keys');
+      execute('DELETE FROM signal_sender_keys');
+    } catch {
+      if (__DEV__) console.warn('[Logout] Failed to clear database tables');
+    }
+  }
+
+  // Clear MMKV persistence
   const { getMMKVInstance } = require('../stores/middleware/persistence');
   try {
     getMMKVInstance().clearAll();

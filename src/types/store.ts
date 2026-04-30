@@ -42,6 +42,8 @@ export interface Thread {
   id: string;
   conversationId: string;
   authorId: string;
+  /** Author's username — sourced from the API response */
+  authorUsername: string;
   /** Decrypted from title_encrypted + title_iv in database */
   title: string | null;
   /** Decrypted from body_encrypted + body_iv in database */
@@ -60,6 +62,8 @@ export interface Reply {
   id: string;
   threadId: string;
   authorId: string;
+  /** Author's username — sourced from the API response */
+  authorUsername: string;
   /** Decrypted from body_encrypted + body_iv in database */
   body: string | null;
   parentReplyId: string | null;
@@ -169,6 +173,8 @@ export interface ThreadsActions {
   removeThread: (id: string) => void;
   setActiveThread: (id: string | null) => void;
   setReplies: (threadId: string, replies: Reply[]) => void;
+  /** Append replies without replacing existing ones — used for pagination */
+  appendReplies: (threadId: string, replies: Reply[]) => void;
   upsertReply: (reply: Reply) => void;
   addOptimisticThread: (thread: Thread) => void;
   addOptimisticReply: (reply: Reply) => void;

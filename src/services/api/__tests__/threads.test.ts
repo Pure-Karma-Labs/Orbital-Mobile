@@ -27,7 +27,6 @@ describe('createThread', () => {
   it('sends encrypted fields to POST /api/threads', async () => {
     const data = {
       groupId: 'group-1',
-      contentType: 'text' as const,
       encryptedTitle: 'aabbccdd',
       titleIv: '00112233',
       encryptedBody: 'eeff0011',
@@ -42,24 +41,6 @@ describe('createThread', () => {
       body: data,
     });
   });
-
-  it('includes client-generated id when provided', async () => {
-    const data = {
-      id: 'client-uuid-123',
-      groupId: 'group-1',
-      contentType: 'text' as const,
-      encryptedTitle: null,
-      titleIv: null,
-      encryptedBody: 'cipher',
-      bodyIv: 'iv',
-    };
-
-    await createThread(data);
-
-    expect(mockRequest).toHaveBeenCalledWith(
-      expect.objectContaining({ body: expect.objectContaining({ id: 'client-uuid-123' }) }),
-    );
-  });
 });
 
 describe('getGroupThreads', () => {
@@ -68,26 +49,26 @@ describe('getGroupThreads', () => {
 
     expect(mockRequest).toHaveBeenCalledWith({
       method: 'GET',
-      path: '/api/groups/group-abc/threads',
+      path: '/api/threads/groups/group-abc/threads',
     });
   });
 
-  it('passes pagination cursor as query param', async () => {
-    await getGroupThreads('group-abc', { cursor: 'cursor-xyz' });
+  it('passes offset as query param', async () => {
+    await getGroupThreads('group-abc', { offset: 20 });
 
     expect(mockRequest).toHaveBeenCalledWith({
       method: 'GET',
-      path: '/api/groups/group-abc/threads?cursor=cursor-xyz',
+      path: '/api/threads/groups/group-abc/threads?offset=20',
     });
   });
 
   it('passes multiple query params when provided', async () => {
-    await getGroupThreads('group-abc', { cursor: 'c1', limit: 20, sort: 'top' });
+    await getGroupThreads('group-abc', { offset: 10, limit: 20, sort: 'created_desc' });
 
     const callArg = mockRequest.mock.calls[0][0];
-    expect(callArg.path).toContain('cursor=c1');
+    expect(callArg.path).toContain('offset=10');
     expect(callArg.path).toContain('limit=20');
-    expect(callArg.path).toContain('sort=top');
+    expect(callArg.path).toContain('sort=created_desc');
   });
 });
 
@@ -112,12 +93,12 @@ describe('getThreadReplies', () => {
     });
   });
 
-  it('passes cursor when provided', async () => {
-    await getThreadReplies('thread-1', 'cursor-r1');
+  it('passes offset when provided', async () => {
+    await getThreadReplies('thread-1', 20);
 
     expect(mockRequest).toHaveBeenCalledWith({
       method: 'GET',
-      path: '/api/threads/thread-1/replies?cursor=cursor-r1',
+      path: '/api/threads/thread-1/replies?offset=20',
     });
   });
 });

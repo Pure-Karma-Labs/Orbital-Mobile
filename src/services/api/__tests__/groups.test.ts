@@ -28,7 +28,7 @@ beforeEach(() => {
 
 describe('createGroup', () => {
   it('calls POST /api/groups with correct body', async () => {
-    const data = { encryptedName: 'abc123', encryptedNameIv: 'iv456' };
+    const data = { encryptedName: 'abc123', encryptedGroupKey: 'key456' };
     await createGroup(data);
 
     expect(mockRequest).toHaveBeenCalledWith({
@@ -41,7 +41,7 @@ describe('createGroup', () => {
 
 describe('joinGroup', () => {
   it('calls POST /api/groups/join with invite code', async () => {
-    const data = { inviteCode: 'INV-ABC' };
+    const data = { inviteCode: 'INV-ABC', encryptedGroupKey: 'enc-key' };
     await joinGroup(data);
 
     expect(mockRequest).toHaveBeenCalledWith({
@@ -53,13 +53,15 @@ describe('joinGroup', () => {
 });
 
 describe('listGroups', () => {
-  it('calls GET /api/groups', async () => {
-    await listGroups();
+  it('calls GET /api/groups and unwraps the groups array', async () => {
+    mockRequest.mockResolvedValue({ groups: [{ groupId: 'g1' }] });
+    const result = await listGroups();
 
     expect(mockRequest).toHaveBeenCalledWith({
       method: 'GET',
       path: '/api/groups',
     });
+    expect(result).toEqual([{ groupId: 'g1' }]);
   });
 });
 
@@ -128,8 +130,8 @@ describe('removeMember', () => {
 });
 
 describe('createDm', () => {
-  it('calls POST /api/groups/dm with targetUserId', async () => {
-    const data = { targetUserId: 'user-99' };
+  it('calls POST /api/groups/dm with recipientId', async () => {
+    const data = { recipientId: 'user-99', encryptedGroupKey: 'enc-key' };
     await createDm(data);
 
     expect(mockRequest).toHaveBeenCalledWith({
@@ -141,12 +143,14 @@ describe('createDm', () => {
 });
 
 describe('listDms', () => {
-  it('calls GET /api/groups/dms', async () => {
-    await listDms();
+  it('calls GET /api/groups/dms and unwraps the dms array', async () => {
+    mockRequest.mockResolvedValue({ dms: [{ groupId: 'dm1' }] });
+    const result = await listDms();
 
     expect(mockRequest).toHaveBeenCalledWith({
       method: 'GET',
       path: '/api/groups/dms',
     });
+    expect(result).toEqual([{ groupId: 'dm1' }]);
   });
 });

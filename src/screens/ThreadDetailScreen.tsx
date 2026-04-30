@@ -428,8 +428,8 @@ export function ThreadDetailScreen({
               initialNumToRender={20}
               maxToRenderPerBatch={10}
               windowSize={5}
-              keyboardShouldPersistTaps="always"
-              keyboardDismissMode="none"
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="interactive"
             />
           </View>
         )}

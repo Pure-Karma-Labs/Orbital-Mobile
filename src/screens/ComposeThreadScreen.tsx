@@ -46,7 +46,7 @@ export function ComposeThreadScreen({
   const handlePost = useCallback(async () => {
     if (!canSubmit || !userId || !username) {
       if (__DEV__) {
-        console.error('[Compose] blocked:', { canSubmit, userId, username, groupId });
+        console.warn('[Compose] blocked:', { canSubmit, userId, username, groupId });
       }
       return;
     }
@@ -67,7 +67,7 @@ export function ComposeThreadScreen({
       });
     } catch (e) {
       if (__DEV__) {
-        console.error('[Compose] error:', e instanceof Error ? e.message : e);
+        console.warn('[Compose] error:', e instanceof Error ? e.message : e);
       }
       setError('Failed to create thread. Please try again.');
     } finally {

@@ -190,7 +190,7 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
   useEffect(() => {
     if (!activeConversationId) return;
     loadThreadsForGroup(activeConversationId).catch((e) => {
-      if (__DEV__) console.error('[ThreadsScreen] load failed:', e instanceof Error ? e.message : e);
+      if (__DEV__) console.warn('[ThreadsScreen] load failed:', e instanceof Error ? e.message : e);
     });
   }, [activeConversationId]);
 

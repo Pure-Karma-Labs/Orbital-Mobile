@@ -41,10 +41,10 @@ export async function loginUser(
     avatarPath: null,
   });
   await loadConversations().catch((e: unknown) => {
-    if (__DEV__) console.error('[ConversationSync]', e instanceof Error ? e.message : e);
+    if (__DEV__) console.warn('[ConversationSync]', e instanceof Error ? e.message : e);
   });
   ensureKeysInitialized().catch((e: unknown) => {
-    if (__DEV__) console.error('[KeyMaintenance]', e instanceof Error ? e.message : e);
+    if (__DEV__) console.warn('[KeyMaintenance]', e instanceof Error ? e.message : e);
   });
 }
 
@@ -71,10 +71,10 @@ export async function signupUser(
     await generateInitialKeys();
     await uploadInitialPreKeyBundle();
   } catch (e: unknown) {
-    if (__DEV__) console.error('[KeyGeneration]', e instanceof Error ? e.message : e);
+    if (__DEV__) console.warn('[KeyGeneration]', e instanceof Error ? e.message : e);
   }
   await loadConversations().catch((e: unknown) => {
-    if (__DEV__) console.error('[ConversationSync]', e instanceof Error ? e.message : e);
+    if (__DEV__) console.warn('[ConversationSync]', e instanceof Error ? e.message : e);
   });
 }
 
@@ -99,10 +99,10 @@ export async function restoreSession(): Promise<boolean> {
       avatarPath: profile.avatarUrl ?? null,
     });
     await loadConversations().catch((e: unknown) => {
-      if (__DEV__) console.error('[ConversationSync]', e instanceof Error ? e.message : e);
+      if (__DEV__) console.warn('[ConversationSync]', e instanceof Error ? e.message : e);
     });
     ensureKeysInitialized().catch((e: unknown) => {
-      if (__DEV__) console.error('[KeyMaintenance]', e instanceof Error ? e.message : e);
+      if (__DEV__) console.warn('[KeyMaintenance]', e instanceof Error ? e.message : e);
     });
     return true;
   } catch (e) {
@@ -143,7 +143,7 @@ export async function logout(): Promise<void> {
       execute('DELETE FROM signal_kyber_pre_keys');
       execute('DELETE FROM signal_sender_keys');
     } catch {
-      if (__DEV__) console.error('[Logout] Failed to clear database tables');
+      if (__DEV__) console.warn('[Logout] Failed to clear database tables');
     }
   }
 

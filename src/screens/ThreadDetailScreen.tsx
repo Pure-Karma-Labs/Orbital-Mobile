@@ -200,10 +200,10 @@ export function ThreadDetailScreen({
         offsetRef.current = result.replies.length;
         hasMoreRef.current = result.hasMore;
       } catch (e) {
-        if (__DEV__) console.error('[ThreadDetail] replies failed:', e instanceof Error ? e.message : e);
+        if (__DEV__) console.warn('[ThreadDetail] replies failed:', e instanceof Error ? e.message : e);
       }
     } catch (e) {
-      if (__DEV__) console.error('[ThreadDetail]', e instanceof Error ? e.message : e);
+      if (__DEV__) console.warn('[ThreadDetail]', e instanceof Error ? e.message : e);
       setError('Could not load thread');
     } finally {
       setLoading(false);

@@ -273,7 +273,7 @@ export async function postReply(
     };
   } catch (e) {
     if (__DEV__) {
-      console.error('[postReply]', e instanceof Error ? e.message : e);
+      console.warn('[postReply]', e instanceof Error ? e.message : e);
     }
     store.updateReplySyncStatus(clientId, 'failed');
     throw new Error('Failed to post reply');
@@ -342,7 +342,7 @@ export async function createNewThread(
     };
   } catch (e) {
     if (__DEV__) {
-      console.error('[createNewThread]', e instanceof Error ? e.message : e);
+      console.warn('[createNewThread]', e instanceof Error ? e.message : e);
     }
     store.updateThreadSyncStatus(clientId, 'failed');
     throw new Error('Failed to create thread');

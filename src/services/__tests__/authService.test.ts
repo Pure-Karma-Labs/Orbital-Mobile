@@ -40,6 +40,16 @@ jest.mock('../crypto/keyGenerationService', () => ({
   clearIdentityKeyCache: () => mockClearIdentityKeyCache(),
 }));
 
+const mockClearGroupKeyCache = jest.fn();
+jest.mock('../crypto/contentCrypto', () => ({
+  clearGroupKeyCache: () => mockClearGroupKeyCache(),
+}));
+
+const mockClearAllGroupMasterKeys = jest.fn();
+jest.mock('../../database/repositories/conversationRepository', () => ({
+  clearAllGroupMasterKeys: () => mockClearAllGroupMasterKeys(),
+}));
+
 const mockLoadConversations = jest.fn().mockResolvedValue(undefined);
 jest.mock('../conversationService', () => ({
   loadConversations: (...args: unknown[]) => mockLoadConversations(...args),
@@ -322,6 +332,13 @@ describe('logout', () => {
     expect(mockClearAuth).toHaveBeenCalledTimes(1);
     expect(mockSetConversations).toHaveBeenCalledWith([]);
     expect(mockSetContacts).toHaveBeenCalledWith([]);
+  });
+
+  it('clears group key material on logout', async () => {
+    await logout();
+
+    expect(mockClearGroupKeyCache).toHaveBeenCalledTimes(1);
+    expect(mockClearAllGroupMasterKeys).toHaveBeenCalledTimes(1);
   });
 
   it('does not throw if MMKV clearAll fails', async () => {

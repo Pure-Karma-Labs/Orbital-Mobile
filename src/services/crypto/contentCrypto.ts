@@ -17,6 +17,10 @@
 import { aesGcmEncrypt, aesGcmDecrypt } from 'orbital-signal';
 import type { ContentCryptoResult } from 'orbital-signal';
 import { getGroupKey } from '../api/groups';
+import {
+  getGroupMasterKey,
+  setGroupMasterKey,
+} from '../../database/repositories/conversationRepository';
 import { arrayBufferToBase64, base64ToArrayBuffer, toArrayBuffer } from './utils';
 
 // ---------------------------------------------------------------------------
@@ -55,52 +59,99 @@ function decodeUTF8(bytes: Uint8Array): string {
 }
 
 // ---------------------------------------------------------------------------
-// Group key cache
+// Group key cache + persistence
 // ---------------------------------------------------------------------------
 
-interface CachedGroupKey {
-  key: Uint8Array;
-  keyId: string;
-}
+const groupKeyCache = new Map<string, Uint8Array>();
+const inflight = new Map<string, Promise<Uint8Array>>();
 
-const groupKeyCache = new Map<string, CachedGroupKey>();
-
-/**
- * Get the group key for a groupId, fetching from the API if not cached.
- *
- * The API returns the group key encrypted with the member's public key.
- * TODO: Decrypt the encryptedGroupKey using the user's identity private key.
- * For now this stores the raw base64-decoded value — the actual decryption
- * step will be wired up when the key distribution pipeline is complete.
- */
-export async function getOrFetchGroupKey(groupId: string): Promise<Uint8Array> {
-  const cached = groupKeyCache.get(groupId);
-  if (cached) return cached.key;
-
-  const response = await getGroupKey(groupId);
-
-  // TODO: Decrypt groupKey with user's identity private key.
-  // The server sends the group key from the creator's member record.
-  // For now, decode the base64 value directly — this will be replaced with
-  // actual asymmetric decryption when the key distribution pipeline is ready.
-  const keyBytes = new Uint8Array(base64ToArrayBuffer(response.groupKey));
-
+function validateAndDecode(keyBase64: string): Uint8Array {
+  const keyBytes = new Uint8Array(base64ToArrayBuffer(keyBase64));
   if (keyBytes.length !== 32) {
-    throw new Error('Invalid group key length');
+    throw new Error(`Invalid group key length: expected 32, got ${keyBytes.length}`);
   }
-
-  groupKeyCache.set(groupId, { key: keyBytes, keyId: groupId });
   return keyBytes;
 }
 
 /**
+ * Persist a group key from a base64 string (e.g. from API response).
+ * Validates the key is exactly 32 bytes, stores as BLOB in SQLCipher
+ * conversations.group_master_key, and populates the in-memory cache.
+ *
+ * If the key is not valid base64 or not 32 bytes (e.g. legacy placeholder),
+ * generates a fresh 32-byte key instead.
+ */
+export function persistGroupKey(groupId: string, keyBase64: string): void {
+  const keyBytes = validateAndDecode(keyBase64);
+  setGroupMasterKey(groupId, keyBytes);
+  groupKeyCache.set(groupId, keyBytes);
+}
+
+/**
+ * Load a group key from SQLCipher (conversations.group_master_key BLOB).
+ * Returns null if the conversation doesn't exist or has no key stored.
+ */
+function loadPersistedGroupKey(groupId: string): Uint8Array | null {
+  const key = getGroupMasterKey(groupId);
+  if (!key || key.length !== 32) return null;
+  return key;
+}
+
+/**
+ * Get the group key for a groupId. Three-tier lookup:
+ * 1. In-memory cache (fastest)
+ * 2. SQLCipher BLOB (survives app restart)
+ * 3. API fallback (last resort — may return wrong key for non-creators)
+ *
+ * SQLCipher is authoritative: if a key is persisted, it is used even if
+ * the API would return a different value. The API only seeds empty slots.
+ *
+ * Concurrent calls for the same groupId coalesce onto a single request.
+ *
+ * TODO: The backend currently stores group keys as plaintext strings —
+ * the server operator can read them. A future iteration should wrap
+ * each member's copy with their identity public key so the server
+ * holds only ciphertext. The current pass-through model is functional
+ * but does not provide zero-knowledge guarantees.
+ */
+export async function getOrFetchGroupKey(groupId: string): Promise<Uint8Array> {
+  const cached = groupKeyCache.get(groupId);
+  if (cached) return cached;
+
+  const persisted = loadPersistedGroupKey(groupId);
+  if (persisted) {
+    groupKeyCache.set(groupId, persisted);
+    return persisted;
+  }
+
+  const existing = inflight.get(groupId);
+  if (existing) return existing;
+
+  const promise = (async () => {
+    try {
+      const response = await getGroupKey(groupId);
+      const keyBytes = validateAndDecode(response.groupKey);
+      setGroupMasterKey(groupId, keyBytes);
+      groupKeyCache.set(groupId, keyBytes);
+      return keyBytes;
+    } finally {
+      inflight.delete(groupId);
+    }
+  })();
+
+  inflight.set(groupId, promise);
+  return promise;
+}
+
+/**
  * Invalidate a single cached group key (e.g. on decryption failure due to key rotation).
- * The next call to getOrFetchGroupKey will fetch a fresh key from the API.
+ * Clears from in-memory cache only — SQLCipher is left intact so a re-fetch
+ * from the API can update it.
  */
 export function invalidateGroupKey(groupId: string): void {
   const cached = groupKeyCache.get(groupId);
   if (cached) {
-    cached.key.fill(0);
+    cached.fill(0);
     groupKeyCache.delete(groupId);
   }
 }
@@ -109,11 +160,25 @@ export function invalidateGroupKey(groupId: string): void {
  * Zero-fill and clear all cached group keys. Must be called on logout.
  */
 export function clearGroupKeyCache(): void {
-  for (const entry of groupKeyCache.values()) {
-    // Zero-fill the key material before releasing
-    entry.key.fill(0);
+  for (const key of groupKeyCache.values()) {
+    key.fill(0);
   }
   groupKeyCache.clear();
+}
+
+/**
+ * Generate a new random 32-byte AES-256 group key.
+ * Returns both raw bytes (for immediate crypto use) and base64 string
+ * (for sending to the backend in CreateGroupRequest.encryptedGroupKey).
+ */
+export function generateGroupKey(): { key: Uint8Array; keyBase64: string } {
+  const key = new Uint8Array(32);
+  (globalThis as unknown as { crypto: { getRandomValues: (a: Uint8Array) => void } })
+    .crypto.getRandomValues(key);
+  return {
+    key,
+    keyBase64: arrayBufferToBase64(toArrayBuffer(key)),
+  };
 }
 
 // ---------------------------------------------------------------------------

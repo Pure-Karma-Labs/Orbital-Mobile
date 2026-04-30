@@ -24,4 +24,6 @@ export {
   getOrFetchGroupKey,
   clearGroupKeyCache,
   invalidateGroupKey,
+  persistGroupKey,
+  generateGroupKey,
 } from './contentCrypto';

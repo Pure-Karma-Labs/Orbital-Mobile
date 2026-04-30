@@ -61,3 +61,22 @@ export function updateUnreadCount(id: string, count: number): void {
     id,
   ]);
 }
+
+export function getGroupMasterKey(conversationId: string): Uint8Array | null {
+  const row = queryOne<{ group_master_key: Uint8Array | null }>(
+    'SELECT group_master_key FROM conversations WHERE id = ?',
+    [conversationId],
+  );
+  return row?.group_master_key ?? null;
+}
+
+export function setGroupMasterKey(conversationId: string, key: Uint8Array): void {
+  execute('UPDATE conversations SET group_master_key = ? WHERE id = ?', [
+    key,
+    conversationId,
+  ]);
+}
+
+export function clearAllGroupMasterKeys(): void {
+  execute('UPDATE conversations SET group_master_key = NULL');
+}

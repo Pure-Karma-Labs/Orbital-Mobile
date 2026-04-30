@@ -16,6 +16,8 @@ import {
   ensureKeysInitialized,
   clearIdentityKeyCache,
 } from './crypto/keyGenerationService';
+import { clearGroupKeyCache } from './crypto/contentCrypto';
+import { clearAllGroupMasterKeys } from '../database/repositories/conversationRepository';
 import { loadConversations } from './conversationService';
 
 /**
@@ -126,6 +128,9 @@ export async function logout(): Promise<void> {
   state.setContacts([]);
   // Clear cached identity key — prevents previous user's key from persisting in memory
   clearIdentityKeyCache();
+  // Clear group key material — in-memory cache (zero-filled) + SQLCipher BLOB column
+  clearGroupKeyCache();
+  clearAllGroupMasterKeys();
   // Clear MMKV persistence — prevents previous user's data from surviving
   const { getMMKVInstance } = require('../stores/middleware/persistence');
   try {

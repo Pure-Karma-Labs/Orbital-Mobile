@@ -2,6 +2,11 @@ jest.mock('../api/groups', () => ({
   listGroups: jest.fn(),
 }));
 
+const mockPersistGroupKey = jest.fn();
+jest.mock('../crypto/contentCrypto', () => ({
+  persistGroupKey: (...args: unknown[]) => mockPersistGroupKey(...args),
+}));
+
 const mockSetConversations = jest.fn();
 const mockSetActiveConversation = jest.fn();
 
@@ -100,6 +105,22 @@ describe('loadConversations', () => {
     expect(conversation.muteUntil).toBeNull();
     expect(conversation.lastMessageAt).toBeNull();
     expect(conversation.unreadCount).toBe(0);
+  });
+
+  it('persists group keys from response', async () => {
+    mockListGroups.mockResolvedValue([GROUP_RESPONSE]);
+
+    await loadConversations();
+
+    expect(mockPersistGroupKey).toHaveBeenCalledWith('g1', 'placeholder-key');
+  });
+
+  it('skips groups with null encryptedGroupKey', async () => {
+    mockListGroups.mockResolvedValue([{ ...GROUP_RESPONSE, encryptedGroupKey: null }]);
+
+    await loadConversations();
+
+    expect(mockPersistGroupKey).not.toHaveBeenCalled();
   });
 
   it('propagates API errors', async () => {

@@ -3,7 +3,7 @@ jest.mock('orbital-signal', () => ({
   signalDecrypt: jest.fn(),
   signalDecryptPreKey: jest.fn(),
   processPreKeyBundle: jest.fn(),
-  parsePreKeyMessageIds: jest.fn(),
+  parsePrekeyMessageIds: jest.fn(),
   groupEncrypt: jest.fn(),
   groupDecrypt: jest.fn(),
   createSenderKeyDistributionMessage: jest.fn(),
@@ -68,7 +68,7 @@ import {
   signalDecrypt,
   signalDecryptPreKey,
   processPreKeyBundle,
-  parsePreKeyMessageIds,
+  parsePrekeyMessageIds,
   groupEncrypt,
   groupDecrypt,
   createSenderKeyDistributionMessage,
@@ -173,7 +173,7 @@ function setupDefaultMocks(): void {
     identityChanged: false,
   });
 
-  (parsePreKeyMessageIds as jest.Mock).mockResolvedValue({
+  (parsePrekeyMessageIds as jest.Mock).mockResolvedValue({
     preKeyId: 42,
     signedPreKeyId: 1,
     kyberPreKeyId: 101,
@@ -317,7 +317,7 @@ describe('decrypt type 3 (PreKeySignalMessage)', () => {
       EnvelopeType.PRE_KEY_BUNDLE,
     );
 
-    expect(parsePreKeyMessageIds).toHaveBeenCalledTimes(1);
+    expect(parsePrekeyMessageIds).toHaveBeenCalledTimes(1);
     expect(getPreKey).toHaveBeenCalledWith(42);
     expect(getSignedPreKey).toHaveBeenCalledWith(1);
     expect(getKyberPreKey).toHaveBeenCalledWith(101);

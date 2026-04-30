@@ -27,6 +27,8 @@ class NativeOrbitalSignal : public jsi::HostObject {
     jsi::Value cpp_uniffi_orbital_signal_fn_init_callback_vtable_orbitalsenderkeystore(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_fn_init_callback_vtable_orbitalsessionstore(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_fn_init_callback_vtable_orbitalsignedprekeystore(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_orbital_signal_fn_func_aes_gcm_decrypt(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_orbital_signal_fn_func_aes_gcm_encrypt(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_fn_func_create_sender_key_distribution_message(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_fn_func_group_decrypt(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_fn_func_group_encrypt(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
@@ -35,8 +37,6 @@ class NativeOrbitalSignal : public jsi::HostObject {
     jsi::Value cpp_uniffi_orbital_signal_fn_func_generate_kyber_pre_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_fn_func_generate_pre_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_fn_func_generate_signed_pre_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
-    jsi::Value cpp_uniffi_orbital_signal_fn_func_test_encrypt_decrypt_roundtrip(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
-    jsi::Value cpp_uniffi_orbital_signal_fn_func_test_encrypt_decrypt_roundtrip_n(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_fn_func_sealed_sender_decrypt(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_fn_func_sealed_sender_encrypt(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_fn_func_process_pre_key_bundle(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
@@ -47,6 +47,7 @@ class NativeOrbitalSignal : public jsi::HostObject {
     jsi::Value cpp_uniffi_orbital_signal_fn_func_get_kyber_pre_key_public(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_fn_func_get_pre_key_public(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_fn_func_get_signed_pre_key_public(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_orbital_signal_fn_func_parse_prekey_message_ids(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_ffi_orbital_signal_rust_future_poll_u8(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_ffi_orbital_signal_rust_future_cancel_u8(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_ffi_orbital_signal_rust_future_free_u8(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
@@ -95,6 +96,8 @@ class NativeOrbitalSignal : public jsi::HostObject {
     jsi::Value cpp_ffi_orbital_signal_rust_future_cancel_void(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_ffi_orbital_signal_rust_future_free_void(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_ffi_orbital_signal_rust_future_complete_void(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_orbital_signal_checksum_func_aes_gcm_decrypt(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_orbital_signal_checksum_func_aes_gcm_encrypt(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_checksum_func_create_sender_key_distribution_message(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_checksum_func_group_decrypt(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_checksum_func_group_encrypt(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
@@ -103,8 +106,6 @@ class NativeOrbitalSignal : public jsi::HostObject {
     jsi::Value cpp_uniffi_orbital_signal_checksum_func_generate_kyber_pre_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_checksum_func_generate_pre_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_checksum_func_generate_signed_pre_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
-    jsi::Value cpp_uniffi_orbital_signal_checksum_func_test_encrypt_decrypt_roundtrip(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
-    jsi::Value cpp_uniffi_orbital_signal_checksum_func_test_encrypt_decrypt_roundtrip_n(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_checksum_func_sealed_sender_decrypt(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_checksum_func_sealed_sender_encrypt(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_checksum_func_process_pre_key_bundle(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
@@ -115,6 +116,7 @@ class NativeOrbitalSignal : public jsi::HostObject {
     jsi::Value cpp_uniffi_orbital_signal_checksum_func_get_kyber_pre_key_public(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_checksum_func_get_pre_key_public(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_checksum_func_get_signed_pre_key_public(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_orbital_signal_checksum_func_parse_prekey_message_ids(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_checksum_method_orbitalidentitykeystore_get_identity_key_pair(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_checksum_method_orbitalidentitykeystore_get_local_registration_id(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_checksum_method_orbitalidentitykeystore_save_identity(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);

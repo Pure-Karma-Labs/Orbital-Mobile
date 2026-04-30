@@ -6,6 +6,7 @@
  */
 
 import { listGroups } from './api/groups';
+import { persistGroupKey } from './crypto/contentCrypto';
 import { useAppStore } from '../stores/useAppStore';
 import type { Conversation } from '../types/store';
 import type { GroupResponse } from '../types/api';
@@ -33,6 +34,17 @@ function mapGroupResponse(response: GroupResponse): Conversation {
  */
 export async function loadConversations(): Promise<void> {
   const groups = await listGroups();
+
+  for (const group of groups) {
+    if (group.encryptedGroupKey) {
+      try {
+        persistGroupKey(group.groupId, group.encryptedGroupKey);
+      } catch {
+        // Validation failed — skip, will retry on next load
+      }
+    }
+  }
+
   const conversations = groups.map(mapGroupResponse);
 
   const store = useAppStore.getState();

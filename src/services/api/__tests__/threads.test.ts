@@ -49,7 +49,7 @@ describe('getGroupThreads', () => {
 
     expect(mockRequest).toHaveBeenCalledWith({
       method: 'GET',
-      path: '/api/groups/group-abc/threads',
+      path: '/api/threads/groups/group-abc/threads',
     });
   });
 
@@ -58,7 +58,7 @@ describe('getGroupThreads', () => {
 
     expect(mockRequest).toHaveBeenCalledWith({
       method: 'GET',
-      path: '/api/groups/group-abc/threads?offset=20',
+      path: '/api/threads/groups/group-abc/threads?offset=20',
     });
   });
 

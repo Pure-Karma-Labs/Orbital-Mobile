@@ -109,12 +109,12 @@ function makeReplyResponse(overrides: Partial<ReplyResponse> = {}): ReplyRespons
 beforeEach(() => {
   jest.clearAllMocks();
   mockGetOrFetchGroupKey.mockResolvedValue(fakeGroupKey);
-  mockDecryptContent.mockImplementation(async (ciphertext: string) => {
+  mockDecryptContent.mockImplementation((ciphertext: string) => {
     if (ciphertext.includes('title')) return 'Decrypted Title';
     if (ciphertext.includes('reply')) return 'Decrypted Reply Body';
     return 'Decrypted Body';
   });
-  mockEncryptContent.mockResolvedValue({
+  mockEncryptContent.mockReturnValue({
     ciphertext: 'encrypted-ciphertext',
     iv: 'encrypted-iv',
   });

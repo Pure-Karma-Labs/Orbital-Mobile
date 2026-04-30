@@ -346,11 +346,11 @@ export function ThreadDetailScreen({
         </View>
       );
     }
-    if (replyList.length === 0 && !loading) {
+    if (replyList.length === 0 && !loading && !refreshing) {
       return <EmptyReplies />;
     }
     return null;
-  }, [loadingMore, replyList.length, loading, theme]);
+  }, [loadingMore, replyList.length, loading, refreshing, theme]);
 
   // ---------------------------------------------------------------------------
   // Styles

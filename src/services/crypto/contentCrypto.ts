@@ -201,15 +201,15 @@ export function generateGroupKey(): { key: Uint8Array; keyBase64: string } {
  * @param groupId   - Group identifier used as AAD (binds ciphertext to group).
  * @returns Base64-encoded ciphertext and IV for wire transmission.
  */
-export async function encryptContent(
+export function encryptContent(
   plaintext: string,
   groupKey: Uint8Array,
   groupId: string,
-): Promise<{ ciphertext: string; iv: string }> {
+): { ciphertext: string; iv: string } {
   const plaintextBytes = encodeUTF8(plaintext);
   const aadBytes = encodeUTF8(groupId);
 
-  const result: ContentCryptoResult = await aesGcmEncrypt(
+  const result: ContentCryptoResult = aesGcmEncrypt(
     toArrayBuffer(plaintextBytes),
     toArrayBuffer(groupKey),
     toArrayBuffer(aadBytes),
@@ -230,17 +230,17 @@ export async function encryptContent(
  * @param groupId          - Group identifier used as AAD (must match encryption).
  * @returns The decrypted plaintext string.
  */
-export async function decryptContent(
+export function decryptContent(
   ciphertextBase64: string,
   ivBase64: string,
   groupKey: Uint8Array,
   groupId: string,
-): Promise<string> {
+): string {
   const ciphertextBytes = base64ToArrayBuffer(ciphertextBase64);
   const ivBytes = base64ToArrayBuffer(ivBase64);
   const aadBytes = encodeUTF8(groupId);
 
-  const plaintext: ArrayBuffer = await aesGcmDecrypt(
+  const plaintext: ArrayBuffer = aesGcmDecrypt(
     ciphertextBytes,
     ivBytes,
     toArrayBuffer(groupKey),

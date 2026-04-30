@@ -29,6 +29,12 @@ jest.mock('react-native-keychain', () => ({
   AUTHENTICATION_TYPE: {},
 }));
 
+// Mock orbital-signal TurboModule — not available in JS-only Jest
+jest.mock('orbital-signal', () => ({
+  aesGcmEncrypt: jest.fn(),
+  aesGcmDecrypt: jest.fn(),
+}));
+
 // Mock bootstrap so it doesn't run the real secure-storage init
 jest.mock('../src/bootstrap', () => ({
   bootstrap: jest.fn(() => Promise.resolve()),

@@ -18,7 +18,7 @@ import {
   signalDecrypt,
   signalDecryptPreKey,
   processPreKeyBundle,
-  parsePreKeyMessageIds,
+  parsePrekeyMessageIds,
   groupEncrypt,
   groupDecrypt,
   createSenderKeyDistributionMessage,
@@ -378,7 +378,7 @@ export async function decryptPreKeyMessage(
 
   return withAddressLock(key, async () => {
     // Parse message to determine which pre-keys are needed (no crypto)
-    const ids = await parsePreKeyMessageIds(toArrayBuffer(ciphertextBytes));
+    const ids = await parsePrekeyMessageIds(toArrayBuffer(ciphertextBytes));
 
     const identityKeyPair = loadIdentityKeyPair();
     const registrationId = loadRegistrationId();

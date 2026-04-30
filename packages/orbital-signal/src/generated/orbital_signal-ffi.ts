@@ -45,23 +45,35 @@ interface NativeModuleInterface {
   ubrn_uniffi_orbital_signal_fn_init_callback_vtable_orbitalsignedprekeystore(
     vtable: UniffiVTableCallbackInterfaceOrbitalSignedPreKeyStore,
   ): void;
-  ubrn_uniffi_orbital_signal_fn_func_create_sender_key_distribution_message(
-    sender: Uint8Array,
-    distributionId: Uint8Array,
-  ): bigint;
-  ubrn_uniffi_orbital_signal_fn_func_group_decrypt(
+  ubrn_uniffi_orbital_signal_fn_func_aes_gcm_decrypt(
     ciphertext: Uint8Array,
-    sender: Uint8Array,
-  ): bigint;
-  ubrn_uniffi_orbital_signal_fn_func_group_encrypt(
+    iv: Uint8Array,
+    key: Uint8Array,
+    aad: Uint8Array,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array;
+  ubrn_uniffi_orbital_signal_fn_func_aes_gcm_encrypt(
     plaintext: Uint8Array,
-    sender: Uint8Array,
-    distributionId: Uint8Array,
-  ): bigint;
+    key: Uint8Array,
+    aad: Uint8Array,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array;
+  ubrn_uniffi_orbital_signal_fn_func_create_sender_key_distribution_message(
+    input: Uint8Array,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array;
+  ubrn_uniffi_orbital_signal_fn_func_group_decrypt(
+    input: Uint8Array,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array;
+  ubrn_uniffi_orbital_signal_fn_func_group_encrypt(
+    input: Uint8Array,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array;
   ubrn_uniffi_orbital_signal_fn_func_process_sender_key_distribution_message(
-    sender: Uint8Array,
-    distributionMessage: Uint8Array,
-  ): bigint;
+    input: Uint8Array,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array;
   ubrn_uniffi_orbital_signal_fn_func_generate_identity_key_pair(
     uniffi_out_err: UniffiRustCallStatus,
   ): Uint8Array;
@@ -81,15 +93,6 @@ interface NativeModuleInterface {
     timestamp: bigint,
     uniffi_out_err: UniffiRustCallStatus,
   ): Uint8Array;
-  ubrn_uniffi_orbital_signal_fn_func_test_encrypt_decrypt_roundtrip(
-    plaintext: Uint8Array,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): Uint8Array;
-  ubrn_uniffi_orbital_signal_fn_func_test_encrypt_decrypt_roundtrip_n(
-    plaintext: Uint8Array,
-    iterations: number,
-    uniffi_out_err: UniffiRustCallStatus,
-  ): Uint8Array;
   ubrn_uniffi_orbital_signal_fn_func_sealed_sender_decrypt(
     ciphertext: Uint8Array,
     localAddress: Uint8Array,
@@ -100,21 +103,21 @@ interface NativeModuleInterface {
     senderCertificate: Uint8Array,
   ): bigint;
   ubrn_uniffi_orbital_signal_fn_func_process_pre_key_bundle(
-    bundle: Uint8Array,
-    remoteAddress: Uint8Array,
-  ): bigint;
+    input: Uint8Array,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array;
   ubrn_uniffi_orbital_signal_fn_func_signal_decrypt(
-    ciphertext: Uint8Array,
-    senderAddress: Uint8Array,
-  ): bigint;
+    input: Uint8Array,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array;
   ubrn_uniffi_orbital_signal_fn_func_signal_decrypt_pre_key(
-    ciphertext: Uint8Array,
-    senderAddress: Uint8Array,
-  ): bigint;
+    input: Uint8Array,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array;
   ubrn_uniffi_orbital_signal_fn_func_signal_encrypt(
-    plaintext: Uint8Array,
-    remoteAddress: Uint8Array,
-  ): bigint;
+    input: Uint8Array,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array;
   ubrn_uniffi_orbital_signal_fn_func_create_protocol_address(
     name: Uint8Array,
     deviceId: number,
@@ -130,6 +133,10 @@ interface NativeModuleInterface {
   ): Uint8Array;
   ubrn_uniffi_orbital_signal_fn_func_get_signed_pre_key_public(
     signedPreKeyRecord: Uint8Array,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array;
+  ubrn_uniffi_orbital_signal_fn_func_parse_prekey_message_ids(
+    ciphertext: Uint8Array,
     uniffi_out_err: UniffiRustCallStatus,
   ): Uint8Array;
   ubrn_ffi_orbital_signal_rust_future_poll_u8(
@@ -264,6 +271,8 @@ interface NativeModuleInterface {
     handle: bigint,
     uniffi_out_err: UniffiRustCallStatus,
   ): void;
+  ubrn_uniffi_orbital_signal_checksum_func_aes_gcm_decrypt(): number;
+  ubrn_uniffi_orbital_signal_checksum_func_aes_gcm_encrypt(): number;
   ubrn_uniffi_orbital_signal_checksum_func_create_sender_key_distribution_message(): number;
   ubrn_uniffi_orbital_signal_checksum_func_group_decrypt(): number;
   ubrn_uniffi_orbital_signal_checksum_func_group_encrypt(): number;
@@ -272,8 +281,6 @@ interface NativeModuleInterface {
   ubrn_uniffi_orbital_signal_checksum_func_generate_kyber_pre_key(): number;
   ubrn_uniffi_orbital_signal_checksum_func_generate_pre_key(): number;
   ubrn_uniffi_orbital_signal_checksum_func_generate_signed_pre_key(): number;
-  ubrn_uniffi_orbital_signal_checksum_func_test_encrypt_decrypt_roundtrip(): number;
-  ubrn_uniffi_orbital_signal_checksum_func_test_encrypt_decrypt_roundtrip_n(): number;
   ubrn_uniffi_orbital_signal_checksum_func_sealed_sender_decrypt(): number;
   ubrn_uniffi_orbital_signal_checksum_func_sealed_sender_encrypt(): number;
   ubrn_uniffi_orbital_signal_checksum_func_process_pre_key_bundle(): number;
@@ -284,6 +291,7 @@ interface NativeModuleInterface {
   ubrn_uniffi_orbital_signal_checksum_func_get_kyber_pre_key_public(): number;
   ubrn_uniffi_orbital_signal_checksum_func_get_pre_key_public(): number;
   ubrn_uniffi_orbital_signal_checksum_func_get_signed_pre_key_public(): number;
+  ubrn_uniffi_orbital_signal_checksum_func_parse_prekey_message_ids(): number;
   ubrn_uniffi_orbital_signal_checksum_method_orbitalidentitykeystore_get_identity_key_pair(): number;
   ubrn_uniffi_orbital_signal_checksum_method_orbitalidentitykeystore_get_local_registration_id(): number;
   ubrn_uniffi_orbital_signal_checksum_method_orbitalidentitykeystore_save_identity(): number;

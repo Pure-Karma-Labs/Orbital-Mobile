@@ -76,16 +76,18 @@ const uniffiIsDebug =
   false;
 // Public interface members begin here.
 
-export type ContentCryptoResult = {
-  ciphertext: ArrayBuffer;
-  iv: ArrayBuffer;
-};
-
 /**
  * AES-256-GCM decrypt with Additional Authenticated Data.
  *
- * Splits ciphertext into (encrypted_data, 16-byte auth tag), verifies the tag,
- * and returns the plaintext. The aad must match the value used during encryption.
+ * - Splits `ciphertext` into (encrypted_data, 16-byte auth tag) — the last 16 bytes are the tag.
+ * - Verifies the auth tag before returning plaintext (GCM is authenticated).
+ * - The `aad` must match the value used during encryption.
+ *
+ * # Errors
+ *
+ * - `InvalidKey` if `key` is not exactly 32 bytes.
+ * - `InvalidArgument` if `iv` is not exactly 12 bytes.
+ * - `InvalidMessage` if `ciphertext` is too short (< 16 bytes) or auth tag verification fails.
  */
 export function aesGcmDecrypt(
   ciphertext: ArrayBuffer,
@@ -93,58 +95,139 @@ export function aesGcmDecrypt(
   key: ArrayBuffer,
   aad: ArrayBuffer,
 ): ArrayBuffer /*throws*/ {
-  // Implementation handled by uniffi FFI layer
-  throw new Error('FFI not initialized');
+  return FfiConverterArrayBuffer.lift(
+    uniffiCaller.rustCallWithError(
+      /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_aes_gcm_decrypt(
+          FfiConverterArrayBuffer.lower(ciphertext),
+          FfiConverterArrayBuffer.lower(iv),
+          FfiConverterArrayBuffer.lower(key),
+          FfiConverterArrayBuffer.lower(aad),
+          callStatus,
+        );
+      },
+      /*liftString:*/ FfiConverterString.lift,
+    ),
+  );
 }
 /**
  * AES-256-GCM encrypt with Additional Authenticated Data.
  *
- * Generates a fresh 12-byte IV using OS CSPRNG. Returns ContentCryptoResult
- * with ciphertext (encrypted_data || 16-byte auth tag) and the generated IV.
+ * - Generates a fresh 12-byte IV via `rand::fill` (ChaCha12 reseeded from OsRng).
+ * - Returns `ContentCryptoResult` with ciphertext (encrypted_data || 16-byte auth tag)
+ * and the generated IV.
+ * - The `aad` parameter binds the ciphertext to a context (e.g., groupId as UTF-8 bytes),
+ * preventing cross-context replay.
+ *
+ * # Errors
+ *
+ * - `InvalidKey` if `key` is not exactly 32 bytes.
+ * - `InternalError` if encryption fails (should not happen with valid inputs).
  */
 export function aesGcmEncrypt(
   plaintext: ArrayBuffer,
   key: ArrayBuffer,
   aad: ArrayBuffer,
 ): ContentCryptoResult /*throws*/ {
-  // Implementation handled by uniffi FFI layer
-  throw new Error('FFI not initialized');
+  return FfiConverterTypeContentCryptoResult.lift(
+    uniffiCaller.rustCallWithError(
+      /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_aes_gcm_encrypt(
+          FfiConverterArrayBuffer.lower(plaintext),
+          FfiConverterArrayBuffer.lower(key),
+          FfiConverterArrayBuffer.lower(aad),
+          callStatus,
+        );
+      },
+      /*liftString:*/ FfiConverterString.lift,
+    ),
+  );
 }
 /**
  * Create a Sender Key Distribution Message for group messaging (preloaded store pattern).
+ *
+ * The caller provides an optional existing sender key record. The function creates
+ * a new distribution message and returns both the message and the updated sender key.
  */
 export function createSenderKeyDistributionMessage(
   input: CreateSenderKeyDistributionInput,
 ): CreateSenderKeyDistributionResult /*throws*/ {
-  // Implementation handled by uniffi FFI layer
-  throw new Error('FFI not initialized');
+  return FfiConverterTypeCreateSenderKeyDistributionResult.lift(
+    uniffiCaller.rustCallWithError(
+      /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_create_sender_key_distribution_message(
+          FfiConverterTypeCreateSenderKeyDistributionInput.lower(input),
+          callStatus,
+        );
+      },
+      /*liftString:*/ FfiConverterString.lift,
+    ),
+  );
 }
 /**
  * Decrypt a group message using Sender Keys (preloaded store pattern).
+ *
+ * The caller provides the existing sender key record for the sender (required —
+ * must have been established via `process_sender_key_distribution_message` first).
  */
-export function groupDecrypt(
-  input: GroupDecryptInput,
-): GroupDecryptResult /*throws*/ {
-  // Implementation handled by uniffi FFI layer
-  throw new Error('FFI not initialized');
+export function groupDecrypt(input: GroupDecryptInput): GroupDecryptResult /*throws*/ {
+  return FfiConverterTypeGroupDecryptResult.lift(
+    uniffiCaller.rustCallWithError(
+      /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_group_decrypt(
+          FfiConverterTypeGroupDecryptInput.lower(input),
+          callStatus,
+        );
+      },
+      /*liftString:*/ FfiConverterString.lift,
+    ),
+  );
 }
 /**
  * Encrypt a message for a group using Sender Keys (preloaded store pattern).
+ *
+ * The caller provides the existing sender key record (required — must have been
+ * established via `create_sender_key_distribution_message` first).
  */
-export function groupEncrypt(
-  input: GroupEncryptInput,
-): GroupEncryptResult /*throws*/ {
-  // Implementation handled by uniffi FFI layer
-  throw new Error('FFI not initialized');
+export function groupEncrypt(input: GroupEncryptInput): GroupEncryptResult /*throws*/ {
+  return FfiConverterTypeGroupEncryptResult.lift(
+    uniffiCaller.rustCallWithError(
+      /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_group_encrypt(
+          FfiConverterTypeGroupEncryptInput.lower(input),
+          callStatus,
+        );
+      },
+      /*liftString:*/ FfiConverterString.lift,
+    ),
+  );
 }
 /**
  * Process an incoming Sender Key Distribution Message (preloaded store pattern).
+ *
+ * The caller provides an optional existing sender key record. The function processes
+ * the distribution message and returns the updated sender key record.
  */
 export function processSenderKeyDistributionMessage(
   input: ProcessSenderKeyDistributionInput,
 ): ProcessSenderKeyDistributionResult /*throws*/ {
-  // Implementation handled by uniffi FFI layer
-  throw new Error('FFI not initialized');
+  return FfiConverterTypeProcessSenderKeyDistributionResult.lift(
+    uniffiCaller.rustCallWithError(
+      /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_process_sender_key_distribution_message(
+          FfiConverterTypeProcessSenderKeyDistributionInput.lower(input),
+          callStatus,
+        );
+      },
+      /*liftString:*/ FfiConverterString.lift,
+    ),
+  );
 }
 /**
  * Generate a new identity key pair (Curve25519).
@@ -242,52 +325,7 @@ export function generateSignedPreKey(
   );
 }
 /**
- * Self-contained encrypt/decrypt round-trip using in-memory stores.
- *
- * Proves the full Signal Protocol (PQXDH key agreement + Double Ratchet encryption)
- * works through the native bridge without needing external store-passing FFI.
- *
- * Exported as sync because libsignal's store traits use `#[async_trait(?Send)]`,
- * producing non-Send futures that are incompatible with uniffi's async exports.
- * We use a single-threaded tokio runtime internally to drive the async operations.
- */
-export function testEncryptDecryptRoundtrip(plaintext: ArrayBuffer): RoundtripResult /*throws*/ {
-  return FfiConverterTypeRoundtripResult.lift(
-    uniffiCaller.rustCallWithError(
-      /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
-      /*caller:*/ (callStatus) => {
-        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_test_encrypt_decrypt_roundtrip(
-          FfiConverterArrayBuffer.lower(plaintext),
-          callStatus,
-        );
-      },
-      /*liftString:*/ FfiConverterString.lift,
-    ),
-  );
-}
-/**
- * Run the encrypt/decrypt round-trip N times and report aggregate results.
- */
-export function testEncryptDecryptRoundtripN(
-  plaintext: ArrayBuffer,
-  iterations: /*u32*/ number,
-): RoundtripBatchResult /*throws*/ {
-  return FfiConverterTypeRoundtripBatchResult.lift(
-    uniffiCaller.rustCallWithError(
-      /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
-      /*caller:*/ (callStatus) => {
-        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_test_encrypt_decrypt_roundtrip_n(
-          FfiConverterArrayBuffer.lower(plaintext),
-          FfiConverterUInt32.lower(iterations),
-          callStatus,
-        );
-      },
-      /*liftString:*/ FfiConverterString.lift,
-    ),
-  );
-}
-/**
- * Decrypt a Sealed Sender message, revealing the sender's identity.
+ * Deferred: requires server-side SenderCertificate infrastructure. See follow-up issue.
  */
 export async function sealedSenderDecrypt(
   ciphertext: ArrayBuffer,
@@ -323,7 +361,7 @@ export async function sealedSenderDecrypt(
   }
 }
 /**
- * Encrypt a message using Sealed Sender (metadata-hiding).
+ * Deferred: requires server-side SenderCertificate infrastructure. See follow-up issue.
  */
 export async function sealedSenderEncrypt(
   plaintext: ArrayBuffer,
@@ -360,51 +398,83 @@ export async function sealedSenderEncrypt(
 }
 /**
  * Perform X3DH key agreement to establish an outgoing session (preloaded store pattern).
+ *
+ * Accepts all needed store data as a flat record. The caller (TypeScript) reads the
+ * stores before calling, and writes back the updated session record + identity after.
  */
 export function processPreKeyBundle(
   input: ProcessPreKeyBundleInput,
 ): ProcessPreKeyBundleResult /*throws*/ {
-  // Implementation handled by uniffi FFI layer
-  throw new Error('FFI not initialized');
+  return FfiConverterTypeProcessPreKeyBundleResult.lift(
+    uniffiCaller.rustCallWithError(
+      /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_process_pre_key_bundle(
+          FfiConverterTypeProcessPreKeyBundleInput.lower(input),
+          callStatus,
+        );
+      },
+      /*liftString:*/ FfiConverterString.lift,
+    ),
+  );
 }
 /**
  * Decrypt a normal Signal protocol message (preloaded store pattern).
+ *
+ * Requires a session to already exist. The caller passes the serialized session record
+ * and gets back the plaintext + updated session record.
  */
-export function signalDecrypt(
-  input: DecryptInput,
-): DecryptResult /*throws*/ {
-  // Implementation handled by uniffi FFI layer
-  throw new Error('FFI not initialized');
+export function signalDecrypt(input: DecryptInput): DecryptResult /*throws*/ {
+  return FfiConverterTypeDecryptResult.lift(
+    uniffiCaller.rustCallWithError(
+      /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_signal_decrypt(
+          FfiConverterTypeDecryptInput.lower(input),
+          callStatus,
+        );
+      },
+      /*liftString:*/ FfiConverterString.lift,
+    ),
+  );
 }
 /**
- * Decrypt a pre-key Signal message (preloaded store pattern, establishes a new session).
+ * Decrypt a pre-key Signal message (preloaded store pattern).
+ *
+ * This handles the first message in a new session. The caller must pre-load the
+ * required pre-keys by first calling `parse_prekey_message_ids` to determine which
+ * keys are needed, then passing the serialized key records in the input.
  */
-export function signalDecryptPreKey(
-  input: DecryptPreKeyInput,
-): DecryptPreKeyResult /*throws*/ {
-  // Implementation handled by uniffi FFI layer
-  throw new Error('FFI not initialized');
+export function signalDecryptPreKey(input: DecryptPreKeyInput): DecryptPreKeyResult /*throws*/ {
+  return FfiConverterTypeDecryptPreKeyResult.lift(
+    uniffiCaller.rustCallWithError(
+      /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_signal_decrypt_pre_key(
+          FfiConverterTypeDecryptPreKeyInput.lower(input),
+          callStatus,
+        );
+      },
+      /*liftString:*/ FfiConverterString.lift,
+    ),
+  );
 }
 /**
  * Encrypt a message using the Double Ratchet protocol (preloaded store pattern).
  */
-export function signalEncrypt(
-  input: EncryptInput,
-): EncryptResult /*throws*/ {
-  // Implementation handled by uniffi FFI layer
-  throw new Error('FFI not initialized');
-}
-/**
- * Parse a PreKeySignalMessage to extract pre-key IDs without performing decryption.
- *
- * This is a pure parsing operation — no crypto or store access. TypeScript calls this
- * to determine which pre-keys to load from SQLCipher before calling `signalDecryptPreKey`.
- */
-export function parsePreKeyMessageIds(
-  ciphertext: ArrayBuffer,
-): PreKeyMessageIds /*throws*/ {
-  // Implementation handled by uniffi FFI layer
-  throw new Error('FFI not initialized');
+export function signalEncrypt(input: EncryptInput): EncryptResult /*throws*/ {
+  return FfiConverterTypeEncryptResult.lift(
+    uniffiCaller.rustCallWithError(
+      /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_signal_encrypt(
+          FfiConverterTypeEncryptInput.lower(input),
+          callStatus,
+        );
+      },
+      /*liftString:*/ FfiConverterString.lift,
+    ),
+  );
 }
 /**
  * Construct a ProtocolAddressData (convenience helper).
@@ -471,6 +541,26 @@ export function getSignedPreKeyPublic(
       /*caller:*/ (callStatus) => {
         return nativeModule().ubrn_uniffi_orbital_signal_fn_func_get_signed_pre_key_public(
           FfiConverterArrayBuffer.lower(signedPreKeyRecord),
+          callStatus,
+        );
+      },
+      /*liftString:*/ FfiConverterString.lift,
+    ),
+  );
+}
+/**
+ * Parse a PreKeySignalMessage to extract pre-key IDs without performing decryption.
+ *
+ * This is a pure parsing operation — no crypto or store access. TypeScript calls this
+ * to determine which pre-keys to load from SQLCipher before calling `signal_decrypt_pre_key`.
+ */
+export function parsePrekeyMessageIds(ciphertext: ArrayBuffer): PreKeyMessageIds /*throws*/ {
+  return FfiConverterTypePreKeyMessageIds.lift(
+    uniffiCaller.rustCallWithError(
+      /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_parse_prekey_message_ids(
+          FfiConverterArrayBuffer.lower(ciphertext),
           callStatus,
         );
       },
@@ -1096,124 +1186,6 @@ const uniffiCallbackInterfaceOrbitalSignedPreKeyStore: {
 const FfiConverterTypeOrbitalSignedPreKeyStore =
   new FfiConverterCallback<OrbitalSignedPreKeyStore>();
 
-// ---------------------------------------------------------------------------
-// Preloaded store Input/Result types (Issue #17)
-// ---------------------------------------------------------------------------
-
-export type EncryptInput = {
-  identityKeyPair: IdentityKeyPairData;
-  registrationId: /*u32*/ number;
-  sessionRecord?: ArrayBuffer;
-  remoteIdentity?: ArrayBuffer;
-  remoteAddress: ProtocolAddressData;
-  plaintext: ArrayBuffer;
-};
-
-export type EncryptResult = {
-  ciphertext: CiphertextMessageData;
-  updatedSessionRecord: ArrayBuffer;
-};
-
-export type ProcessPreKeyBundleInput = {
-  identityKeyPair: IdentityKeyPairData;
-  registrationId: /*u32*/ number;
-  remoteAddress: ProtocolAddressData;
-  bundle: PreKeyBundleData;
-  existingSessionRecord?: ArrayBuffer;
-  remoteIdentity?: ArrayBuffer;
-};
-
-export type ProcessPreKeyBundleResult = {
-  updatedSessionRecord: ArrayBuffer;
-  identityKey: ArrayBuffer;
-  identityChanged: boolean;
-};
-
-export type DecryptInput = {
-  identityKeyPair: IdentityKeyPairData;
-  registrationId: /*u32*/ number;
-  senderAddress: ProtocolAddressData;
-  sessionRecord: ArrayBuffer;
-  remoteIdentity?: ArrayBuffer;
-  ciphertext: ArrayBuffer;
-};
-
-export type DecryptResult = {
-  plaintext: ArrayBuffer;
-  updatedSessionRecord: ArrayBuffer;
-};
-
-export type DecryptPreKeyInput = {
-  identityKeyPair: IdentityKeyPairData;
-  registrationId: /*u32*/ number;
-  senderAddress: ProtocolAddressData;
-  existingSessionRecord?: ArrayBuffer;
-  remoteIdentity?: ArrayBuffer;
-  preKeyRecord?: ArrayBuffer;
-  signedPreKeyRecord: ArrayBuffer;
-  kyberPreKeyRecord?: ArrayBuffer;
-  ciphertext: ArrayBuffer;
-};
-
-export type DecryptPreKeyResult = {
-  plaintext: ArrayBuffer;
-  updatedSessionRecord: ArrayBuffer;
-  senderIdentityKey: ArrayBuffer;
-  identityChanged: boolean;
-  consumedPreKeyId?: /*u32*/ number;
-  consumedKyberPreKeyId?: /*u32*/ number;
-};
-
-export type PreKeyMessageIds = {
-  preKeyId?: /*u32*/ number;
-  signedPreKeyId: /*u32*/ number;
-  kyberPreKeyId?: /*u32*/ number;
-};
-
-export type GroupEncryptInput = {
-  senderAddress: ProtocolAddressData;
-  distributionId: string;
-  senderKeyRecord?: ArrayBuffer;
-  plaintext: ArrayBuffer;
-};
-
-export type GroupEncryptResult = {
-  ciphertext: ArrayBuffer;
-  updatedSenderKeyRecord: ArrayBuffer;
-};
-
-export type GroupDecryptInput = {
-  senderAddress: ProtocolAddressData;
-  senderKeyRecord?: ArrayBuffer;
-  ciphertext: ArrayBuffer;
-};
-
-export type GroupDecryptResult = {
-  plaintext: ArrayBuffer;
-  updatedSenderKeyRecord: ArrayBuffer;
-};
-
-export type CreateSenderKeyDistributionInput = {
-  senderAddress: ProtocolAddressData;
-  distributionId: string;
-  senderKeyRecord?: ArrayBuffer;
-};
-
-export type CreateSenderKeyDistributionResult = {
-  distributionMessage: ArrayBuffer;
-  updatedSenderKeyRecord: ArrayBuffer;
-};
-
-export type ProcessSenderKeyDistributionInput = {
-  senderAddress: ProtocolAddressData;
-  distributionMessage: ArrayBuffer;
-  senderKeyRecord?: ArrayBuffer;
-};
-
-export type ProcessSenderKeyDistributionResult = {
-  updatedSenderKeyRecord: ArrayBuffer;
-};
-
 export type CiphertextMessageData = {
   messageType: CiphertextMessageType;
   serialized: ArrayBuffer;
@@ -1251,6 +1223,732 @@ const FfiConverterTypeCiphertextMessageData = (() => {
       return (
         FfiConverterTypeCiphertextMessageType.allocationSize(value.messageType) +
         FfiConverterArrayBuffer.allocationSize(value.serialized)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+/**
+ * Result of AES-256-GCM encryption — ciphertext (encrypted_data || 16-byte auth tag) + IV.
+ */
+export type ContentCryptoResult = {
+  /**
+   * Ciphertext bytes: encrypted_data || 16-byte GCM auth tag.
+   */
+  ciphertext: ArrayBuffer;
+  /**
+   * 12-byte IV (nonce) generated by CSPRNG.
+   */
+  iv: ArrayBuffer;
+};
+
+/**
+ * Generated factory for {@link ContentCryptoResult} record objects.
+ */
+export const ContentCryptoResult = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<ContentCryptoResult, ReturnType<typeof defaults>>(defaults);
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<ContentCryptoResult>,
+  });
+})();
+
+const FfiConverterTypeContentCryptoResult = (() => {
+  type TypeName = ContentCryptoResult;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      return {
+        ciphertext: FfiConverterArrayBuffer.read(from),
+        iv: FfiConverterArrayBuffer.read(from),
+      };
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      FfiConverterArrayBuffer.write(value.ciphertext, into);
+      FfiConverterArrayBuffer.write(value.iv, into);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterArrayBuffer.allocationSize(value.ciphertext) +
+        FfiConverterArrayBuffer.allocationSize(value.iv)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+/**
+ * Input for creating a sender key distribution message.
+ */
+export type CreateSenderKeyDistributionInput = {
+  senderAddress: ProtocolAddressData;
+  distributionId: string;
+  senderKeyRecord?: ArrayBuffer;
+};
+
+/**
+ * Generated factory for {@link CreateSenderKeyDistributionInput} record objects.
+ */
+export const CreateSenderKeyDistributionInput = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<CreateSenderKeyDistributionInput, ReturnType<typeof defaults>>(
+      defaults,
+    );
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<CreateSenderKeyDistributionInput>,
+  });
+})();
+
+const FfiConverterTypeCreateSenderKeyDistributionInput = (() => {
+  type TypeName = CreateSenderKeyDistributionInput;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      return {
+        senderAddress: FfiConverterTypeProtocolAddressData.read(from),
+        distributionId: FfiConverterString.read(from),
+        senderKeyRecord: FfiConverterOptionalArrayBuffer.read(from),
+      };
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      FfiConverterTypeProtocolAddressData.write(value.senderAddress, into);
+      FfiConverterString.write(value.distributionId, into);
+      FfiConverterOptionalArrayBuffer.write(value.senderKeyRecord, into);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterTypeProtocolAddressData.allocationSize(value.senderAddress) +
+        FfiConverterString.allocationSize(value.distributionId) +
+        FfiConverterOptionalArrayBuffer.allocationSize(value.senderKeyRecord)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+/**
+ * Result of creating a sender key distribution message.
+ */
+export type CreateSenderKeyDistributionResult = {
+  distributionMessage: ArrayBuffer;
+  updatedSenderKeyRecord: ArrayBuffer;
+};
+
+/**
+ * Generated factory for {@link CreateSenderKeyDistributionResult} record objects.
+ */
+export const CreateSenderKeyDistributionResult = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<CreateSenderKeyDistributionResult, ReturnType<typeof defaults>>(
+      defaults,
+    );
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<CreateSenderKeyDistributionResult>,
+  });
+})();
+
+const FfiConverterTypeCreateSenderKeyDistributionResult = (() => {
+  type TypeName = CreateSenderKeyDistributionResult;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      return {
+        distributionMessage: FfiConverterArrayBuffer.read(from),
+        updatedSenderKeyRecord: FfiConverterArrayBuffer.read(from),
+      };
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      FfiConverterArrayBuffer.write(value.distributionMessage, into);
+      FfiConverterArrayBuffer.write(value.updatedSenderKeyRecord, into);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterArrayBuffer.allocationSize(value.distributionMessage) +
+        FfiConverterArrayBuffer.allocationSize(value.updatedSenderKeyRecord)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+/**
+ * Input for decrypting a standard Signal message (not pre-key).
+ */
+export type DecryptInput = {
+  identityKeyPair: IdentityKeyPairData;
+  registrationId: /*u32*/ number;
+  senderAddress: ProtocolAddressData;
+  sessionRecord: ArrayBuffer;
+  remoteIdentity?: ArrayBuffer;
+  ciphertext: ArrayBuffer;
+};
+
+/**
+ * Generated factory for {@link DecryptInput} record objects.
+ */
+export const DecryptInput = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<DecryptInput, ReturnType<typeof defaults>>(defaults);
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<DecryptInput>,
+  });
+})();
+
+const FfiConverterTypeDecryptInput = (() => {
+  type TypeName = DecryptInput;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      return {
+        identityKeyPair: FfiConverterTypeIdentityKeyPairData.read(from),
+        registrationId: FfiConverterUInt32.read(from),
+        senderAddress: FfiConverterTypeProtocolAddressData.read(from),
+        sessionRecord: FfiConverterArrayBuffer.read(from),
+        remoteIdentity: FfiConverterOptionalArrayBuffer.read(from),
+        ciphertext: FfiConverterArrayBuffer.read(from),
+      };
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      FfiConverterTypeIdentityKeyPairData.write(value.identityKeyPair, into);
+      FfiConverterUInt32.write(value.registrationId, into);
+      FfiConverterTypeProtocolAddressData.write(value.senderAddress, into);
+      FfiConverterArrayBuffer.write(value.sessionRecord, into);
+      FfiConverterOptionalArrayBuffer.write(value.remoteIdentity, into);
+      FfiConverterArrayBuffer.write(value.ciphertext, into);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterTypeIdentityKeyPairData.allocationSize(value.identityKeyPair) +
+        FfiConverterUInt32.allocationSize(value.registrationId) +
+        FfiConverterTypeProtocolAddressData.allocationSize(value.senderAddress) +
+        FfiConverterArrayBuffer.allocationSize(value.sessionRecord) +
+        FfiConverterOptionalArrayBuffer.allocationSize(value.remoteIdentity) +
+        FfiConverterArrayBuffer.allocationSize(value.ciphertext)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+/**
+ * Input for decrypting a pre-key Signal message (establishes new session).
+ */
+export type DecryptPreKeyInput = {
+  identityKeyPair: IdentityKeyPairData;
+  registrationId: /*u32*/ number;
+  senderAddress: ProtocolAddressData;
+  existingSessionRecord?: ArrayBuffer;
+  remoteIdentity?: ArrayBuffer;
+  preKeyRecord?: ArrayBuffer;
+  signedPreKeyRecord: ArrayBuffer;
+  kyberPreKeyRecord?: ArrayBuffer;
+  ciphertext: ArrayBuffer;
+};
+
+/**
+ * Generated factory for {@link DecryptPreKeyInput} record objects.
+ */
+export const DecryptPreKeyInput = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<DecryptPreKeyInput, ReturnType<typeof defaults>>(defaults);
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<DecryptPreKeyInput>,
+  });
+})();
+
+const FfiConverterTypeDecryptPreKeyInput = (() => {
+  type TypeName = DecryptPreKeyInput;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      return {
+        identityKeyPair: FfiConverterTypeIdentityKeyPairData.read(from),
+        registrationId: FfiConverterUInt32.read(from),
+        senderAddress: FfiConverterTypeProtocolAddressData.read(from),
+        existingSessionRecord: FfiConverterOptionalArrayBuffer.read(from),
+        remoteIdentity: FfiConverterOptionalArrayBuffer.read(from),
+        preKeyRecord: FfiConverterOptionalArrayBuffer.read(from),
+        signedPreKeyRecord: FfiConverterArrayBuffer.read(from),
+        kyberPreKeyRecord: FfiConverterOptionalArrayBuffer.read(from),
+        ciphertext: FfiConverterArrayBuffer.read(from),
+      };
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      FfiConverterTypeIdentityKeyPairData.write(value.identityKeyPair, into);
+      FfiConverterUInt32.write(value.registrationId, into);
+      FfiConverterTypeProtocolAddressData.write(value.senderAddress, into);
+      FfiConverterOptionalArrayBuffer.write(value.existingSessionRecord, into);
+      FfiConverterOptionalArrayBuffer.write(value.remoteIdentity, into);
+      FfiConverterOptionalArrayBuffer.write(value.preKeyRecord, into);
+      FfiConverterArrayBuffer.write(value.signedPreKeyRecord, into);
+      FfiConverterOptionalArrayBuffer.write(value.kyberPreKeyRecord, into);
+      FfiConverterArrayBuffer.write(value.ciphertext, into);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterTypeIdentityKeyPairData.allocationSize(value.identityKeyPair) +
+        FfiConverterUInt32.allocationSize(value.registrationId) +
+        FfiConverterTypeProtocolAddressData.allocationSize(value.senderAddress) +
+        FfiConverterOptionalArrayBuffer.allocationSize(value.existingSessionRecord) +
+        FfiConverterOptionalArrayBuffer.allocationSize(value.remoteIdentity) +
+        FfiConverterOptionalArrayBuffer.allocationSize(value.preKeyRecord) +
+        FfiConverterArrayBuffer.allocationSize(value.signedPreKeyRecord) +
+        FfiConverterOptionalArrayBuffer.allocationSize(value.kyberPreKeyRecord) +
+        FfiConverterArrayBuffer.allocationSize(value.ciphertext)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+/**
+ * Result of decrypting a pre-key Signal message.
+ */
+export type DecryptPreKeyResult = {
+  plaintext: ArrayBuffer;
+  updatedSessionRecord: ArrayBuffer;
+  senderIdentityKey: ArrayBuffer;
+  identityChanged: boolean;
+  consumedPreKeyId?: /*u32*/ number;
+  consumedKyberPreKeyId?: /*u32*/ number;
+};
+
+/**
+ * Generated factory for {@link DecryptPreKeyResult} record objects.
+ */
+export const DecryptPreKeyResult = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<DecryptPreKeyResult, ReturnType<typeof defaults>>(defaults);
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<DecryptPreKeyResult>,
+  });
+})();
+
+const FfiConverterTypeDecryptPreKeyResult = (() => {
+  type TypeName = DecryptPreKeyResult;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      return {
+        plaintext: FfiConverterArrayBuffer.read(from),
+        updatedSessionRecord: FfiConverterArrayBuffer.read(from),
+        senderIdentityKey: FfiConverterArrayBuffer.read(from),
+        identityChanged: FfiConverterBool.read(from),
+        consumedPreKeyId: FfiConverterOptionalUInt32.read(from),
+        consumedKyberPreKeyId: FfiConverterOptionalUInt32.read(from),
+      };
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      FfiConverterArrayBuffer.write(value.plaintext, into);
+      FfiConverterArrayBuffer.write(value.updatedSessionRecord, into);
+      FfiConverterArrayBuffer.write(value.senderIdentityKey, into);
+      FfiConverterBool.write(value.identityChanged, into);
+      FfiConverterOptionalUInt32.write(value.consumedPreKeyId, into);
+      FfiConverterOptionalUInt32.write(value.consumedKyberPreKeyId, into);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterArrayBuffer.allocationSize(value.plaintext) +
+        FfiConverterArrayBuffer.allocationSize(value.updatedSessionRecord) +
+        FfiConverterArrayBuffer.allocationSize(value.senderIdentityKey) +
+        FfiConverterBool.allocationSize(value.identityChanged) +
+        FfiConverterOptionalUInt32.allocationSize(value.consumedPreKeyId) +
+        FfiConverterOptionalUInt32.allocationSize(value.consumedKyberPreKeyId)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+/**
+ * Result of decrypting a standard Signal message.
+ */
+export type DecryptResult = {
+  plaintext: ArrayBuffer;
+  updatedSessionRecord: ArrayBuffer;
+};
+
+/**
+ * Generated factory for {@link DecryptResult} record objects.
+ */
+export const DecryptResult = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<DecryptResult, ReturnType<typeof defaults>>(defaults);
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<DecryptResult>,
+  });
+})();
+
+const FfiConverterTypeDecryptResult = (() => {
+  type TypeName = DecryptResult;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      return {
+        plaintext: FfiConverterArrayBuffer.read(from),
+        updatedSessionRecord: FfiConverterArrayBuffer.read(from),
+      };
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      FfiConverterArrayBuffer.write(value.plaintext, into);
+      FfiConverterArrayBuffer.write(value.updatedSessionRecord, into);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterArrayBuffer.allocationSize(value.plaintext) +
+        FfiConverterArrayBuffer.allocationSize(value.updatedSessionRecord)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+/**
+ * Preloaded input for encryption — all store data passed as records (no callback interfaces).
+ * This is the "preloaded store" pattern: JS reads stores, passes data in, Rust does crypto,
+ * returns results + any updated state for JS to write back.
+ */
+export type EncryptInput = {
+  /**
+   * Our identity key pair (public + private DER bytes).
+   */
+  identityKeyPair: IdentityKeyPairData;
+  /**
+   * Our local registration ID.
+   */
+  registrationId: /*u32*/ number;
+  /**
+   * Serialized SessionRecord for the remote address (from session store), or empty if none.
+   */
+  sessionRecord?: ArrayBuffer;
+  /**
+   * Remote party's identity key (serialized IdentityKey).
+   */
+  remoteIdentity?: ArrayBuffer;
+  /**
+   * Remote address to encrypt to.
+   */
+  remoteAddress: ProtocolAddressData;
+  /**
+   * Plaintext message bytes.
+   */
+  plaintext: ArrayBuffer;
+};
+
+/**
+ * Generated factory for {@link EncryptInput} record objects.
+ */
+export const EncryptInput = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<EncryptInput, ReturnType<typeof defaults>>(defaults);
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<EncryptInput>,
+  });
+})();
+
+const FfiConverterTypeEncryptInput = (() => {
+  type TypeName = EncryptInput;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      return {
+        identityKeyPair: FfiConverterTypeIdentityKeyPairData.read(from),
+        registrationId: FfiConverterUInt32.read(from),
+        sessionRecord: FfiConverterOptionalArrayBuffer.read(from),
+        remoteIdentity: FfiConverterOptionalArrayBuffer.read(from),
+        remoteAddress: FfiConverterTypeProtocolAddressData.read(from),
+        plaintext: FfiConverterArrayBuffer.read(from),
+      };
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      FfiConverterTypeIdentityKeyPairData.write(value.identityKeyPair, into);
+      FfiConverterUInt32.write(value.registrationId, into);
+      FfiConverterOptionalArrayBuffer.write(value.sessionRecord, into);
+      FfiConverterOptionalArrayBuffer.write(value.remoteIdentity, into);
+      FfiConverterTypeProtocolAddressData.write(value.remoteAddress, into);
+      FfiConverterArrayBuffer.write(value.plaintext, into);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterTypeIdentityKeyPairData.allocationSize(value.identityKeyPair) +
+        FfiConverterUInt32.allocationSize(value.registrationId) +
+        FfiConverterOptionalArrayBuffer.allocationSize(value.sessionRecord) +
+        FfiConverterOptionalArrayBuffer.allocationSize(value.remoteIdentity) +
+        FfiConverterTypeProtocolAddressData.allocationSize(value.remoteAddress) +
+        FfiConverterArrayBuffer.allocationSize(value.plaintext)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+/**
+ * Result of the preloaded encryption operation.
+ */
+export type EncryptResult = {
+  /**
+   * The ciphertext message (type + serialized bytes).
+   */
+  ciphertext: CiphertextMessageData;
+  /**
+   * Updated session record bytes — JS must write this back to the session store.
+   */
+  updatedSessionRecord: ArrayBuffer;
+};
+
+/**
+ * Generated factory for {@link EncryptResult} record objects.
+ */
+export const EncryptResult = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<EncryptResult, ReturnType<typeof defaults>>(defaults);
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<EncryptResult>,
+  });
+})();
+
+const FfiConverterTypeEncryptResult = (() => {
+  type TypeName = EncryptResult;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      return {
+        ciphertext: FfiConverterTypeCiphertextMessageData.read(from),
+        updatedSessionRecord: FfiConverterArrayBuffer.read(from),
+      };
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      FfiConverterTypeCiphertextMessageData.write(value.ciphertext, into);
+      FfiConverterArrayBuffer.write(value.updatedSessionRecord, into);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterTypeCiphertextMessageData.allocationSize(value.ciphertext) +
+        FfiConverterArrayBuffer.allocationSize(value.updatedSessionRecord)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+/**
+ * Input for group decryption using sender keys.
+ */
+export type GroupDecryptInput = {
+  senderAddress: ProtocolAddressData;
+  senderKeyRecord?: ArrayBuffer;
+  ciphertext: ArrayBuffer;
+};
+
+/**
+ * Generated factory for {@link GroupDecryptInput} record objects.
+ */
+export const GroupDecryptInput = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<GroupDecryptInput, ReturnType<typeof defaults>>(defaults);
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<GroupDecryptInput>,
+  });
+})();
+
+const FfiConverterTypeGroupDecryptInput = (() => {
+  type TypeName = GroupDecryptInput;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      return {
+        senderAddress: FfiConverterTypeProtocolAddressData.read(from),
+        senderKeyRecord: FfiConverterOptionalArrayBuffer.read(from),
+        ciphertext: FfiConverterArrayBuffer.read(from),
+      };
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      FfiConverterTypeProtocolAddressData.write(value.senderAddress, into);
+      FfiConverterOptionalArrayBuffer.write(value.senderKeyRecord, into);
+      FfiConverterArrayBuffer.write(value.ciphertext, into);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterTypeProtocolAddressData.allocationSize(value.senderAddress) +
+        FfiConverterOptionalArrayBuffer.allocationSize(value.senderKeyRecord) +
+        FfiConverterArrayBuffer.allocationSize(value.ciphertext)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+/**
+ * Result of group decryption.
+ */
+export type GroupDecryptResult = {
+  plaintext: ArrayBuffer;
+  updatedSenderKeyRecord: ArrayBuffer;
+};
+
+/**
+ * Generated factory for {@link GroupDecryptResult} record objects.
+ */
+export const GroupDecryptResult = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<GroupDecryptResult, ReturnType<typeof defaults>>(defaults);
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<GroupDecryptResult>,
+  });
+})();
+
+const FfiConverterTypeGroupDecryptResult = (() => {
+  type TypeName = GroupDecryptResult;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      return {
+        plaintext: FfiConverterArrayBuffer.read(from),
+        updatedSenderKeyRecord: FfiConverterArrayBuffer.read(from),
+      };
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      FfiConverterArrayBuffer.write(value.plaintext, into);
+      FfiConverterArrayBuffer.write(value.updatedSenderKeyRecord, into);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterArrayBuffer.allocationSize(value.plaintext) +
+        FfiConverterArrayBuffer.allocationSize(value.updatedSenderKeyRecord)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+/**
+ * Input for group encryption using sender keys.
+ */
+export type GroupEncryptInput = {
+  senderAddress: ProtocolAddressData;
+  distributionId: string;
+  senderKeyRecord?: ArrayBuffer;
+  plaintext: ArrayBuffer;
+};
+
+/**
+ * Generated factory for {@link GroupEncryptInput} record objects.
+ */
+export const GroupEncryptInput = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<GroupEncryptInput, ReturnType<typeof defaults>>(defaults);
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<GroupEncryptInput>,
+  });
+})();
+
+const FfiConverterTypeGroupEncryptInput = (() => {
+  type TypeName = GroupEncryptInput;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      return {
+        senderAddress: FfiConverterTypeProtocolAddressData.read(from),
+        distributionId: FfiConverterString.read(from),
+        senderKeyRecord: FfiConverterOptionalArrayBuffer.read(from),
+        plaintext: FfiConverterArrayBuffer.read(from),
+      };
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      FfiConverterTypeProtocolAddressData.write(value.senderAddress, into);
+      FfiConverterString.write(value.distributionId, into);
+      FfiConverterOptionalArrayBuffer.write(value.senderKeyRecord, into);
+      FfiConverterArrayBuffer.write(value.plaintext, into);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterTypeProtocolAddressData.allocationSize(value.senderAddress) +
+        FfiConverterString.allocationSize(value.distributionId) +
+        FfiConverterOptionalArrayBuffer.allocationSize(value.senderKeyRecord) +
+        FfiConverterArrayBuffer.allocationSize(value.plaintext)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+/**
+ * Result of group encryption.
+ */
+export type GroupEncryptResult = {
+  ciphertext: ArrayBuffer;
+  updatedSenderKeyRecord: ArrayBuffer;
+};
+
+/**
+ * Generated factory for {@link GroupEncryptResult} record objects.
+ */
+export const GroupEncryptResult = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<GroupEncryptResult, ReturnType<typeof defaults>>(defaults);
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<GroupEncryptResult>,
+  });
+})();
+
+const FfiConverterTypeGroupEncryptResult = (() => {
+  type TypeName = GroupEncryptResult;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      return {
+        ciphertext: FfiConverterArrayBuffer.read(from),
+        updatedSenderKeyRecord: FfiConverterArrayBuffer.read(from),
+      };
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      FfiConverterArrayBuffer.write(value.ciphertext, into);
+      FfiConverterArrayBuffer.write(value.updatedSenderKeyRecord, into);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterArrayBuffer.allocationSize(value.ciphertext) +
+        FfiConverterArrayBuffer.allocationSize(value.updatedSenderKeyRecord)
       );
     }
   }
@@ -1469,6 +2167,56 @@ const FfiConverterTypePreKeyBundleData = (() => {
   return new FFIConverter();
 })();
 
+/**
+ * Parsed pre-key IDs from a PreKeySignalMessage (pure parsing, no crypto).
+ */
+export type PreKeyMessageIds = {
+  preKeyId?: /*u32*/ number;
+  signedPreKeyId: /*u32*/ number;
+  kyberPreKeyId?: /*u32*/ number;
+};
+
+/**
+ * Generated factory for {@link PreKeyMessageIds} record objects.
+ */
+export const PreKeyMessageIds = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<PreKeyMessageIds, ReturnType<typeof defaults>>(defaults);
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<PreKeyMessageIds>,
+  });
+})();
+
+const FfiConverterTypePreKeyMessageIds = (() => {
+  type TypeName = PreKeyMessageIds;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      return {
+        preKeyId: FfiConverterOptionalUInt32.read(from),
+        signedPreKeyId: FfiConverterUInt32.read(from),
+        kyberPreKeyId: FfiConverterOptionalUInt32.read(from),
+      };
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      FfiConverterOptionalUInt32.write(value.preKeyId, into);
+      FfiConverterUInt32.write(value.signedPreKeyId, into);
+      FfiConverterOptionalUInt32.write(value.kyberPreKeyId, into);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterOptionalUInt32.allocationSize(value.preKeyId) +
+        FfiConverterUInt32.allocationSize(value.signedPreKeyId) +
+        FfiConverterOptionalUInt32.allocationSize(value.kyberPreKeyId)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
 export type PreKeyPublicData = {
   id: /*u32*/ number;
   publicKey: ArrayBuffer;
@@ -1512,6 +2260,212 @@ const FfiConverterTypePreKeyPublicData = (() => {
   return new FFIConverter();
 })();
 
+/**
+ * Input for processing a pre-key bundle (X3DH key agreement to establish outgoing session).
+ */
+export type ProcessPreKeyBundleInput = {
+  identityKeyPair: IdentityKeyPairData;
+  registrationId: /*u32*/ number;
+  remoteAddress: ProtocolAddressData;
+  bundle: PreKeyBundleData;
+  existingSessionRecord?: ArrayBuffer;
+  remoteIdentity?: ArrayBuffer;
+};
+
+/**
+ * Generated factory for {@link ProcessPreKeyBundleInput} record objects.
+ */
+export const ProcessPreKeyBundleInput = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<ProcessPreKeyBundleInput, ReturnType<typeof defaults>>(defaults);
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<ProcessPreKeyBundleInput>,
+  });
+})();
+
+const FfiConverterTypeProcessPreKeyBundleInput = (() => {
+  type TypeName = ProcessPreKeyBundleInput;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      return {
+        identityKeyPair: FfiConverterTypeIdentityKeyPairData.read(from),
+        registrationId: FfiConverterUInt32.read(from),
+        remoteAddress: FfiConverterTypeProtocolAddressData.read(from),
+        bundle: FfiConverterTypePreKeyBundleData.read(from),
+        existingSessionRecord: FfiConverterOptionalArrayBuffer.read(from),
+        remoteIdentity: FfiConverterOptionalArrayBuffer.read(from),
+      };
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      FfiConverterTypeIdentityKeyPairData.write(value.identityKeyPair, into);
+      FfiConverterUInt32.write(value.registrationId, into);
+      FfiConverterTypeProtocolAddressData.write(value.remoteAddress, into);
+      FfiConverterTypePreKeyBundleData.write(value.bundle, into);
+      FfiConverterOptionalArrayBuffer.write(value.existingSessionRecord, into);
+      FfiConverterOptionalArrayBuffer.write(value.remoteIdentity, into);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterTypeIdentityKeyPairData.allocationSize(value.identityKeyPair) +
+        FfiConverterUInt32.allocationSize(value.registrationId) +
+        FfiConverterTypeProtocolAddressData.allocationSize(value.remoteAddress) +
+        FfiConverterTypePreKeyBundleData.allocationSize(value.bundle) +
+        FfiConverterOptionalArrayBuffer.allocationSize(value.existingSessionRecord) +
+        FfiConverterOptionalArrayBuffer.allocationSize(value.remoteIdentity)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+/**
+ * Result of processing a pre-key bundle.
+ */
+export type ProcessPreKeyBundleResult = {
+  updatedSessionRecord: ArrayBuffer;
+  identityKey: ArrayBuffer;
+  identityChanged: boolean;
+};
+
+/**
+ * Generated factory for {@link ProcessPreKeyBundleResult} record objects.
+ */
+export const ProcessPreKeyBundleResult = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<ProcessPreKeyBundleResult, ReturnType<typeof defaults>>(defaults);
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<ProcessPreKeyBundleResult>,
+  });
+})();
+
+const FfiConverterTypeProcessPreKeyBundleResult = (() => {
+  type TypeName = ProcessPreKeyBundleResult;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      return {
+        updatedSessionRecord: FfiConverterArrayBuffer.read(from),
+        identityKey: FfiConverterArrayBuffer.read(from),
+        identityChanged: FfiConverterBool.read(from),
+      };
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      FfiConverterArrayBuffer.write(value.updatedSessionRecord, into);
+      FfiConverterArrayBuffer.write(value.identityKey, into);
+      FfiConverterBool.write(value.identityChanged, into);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterArrayBuffer.allocationSize(value.updatedSessionRecord) +
+        FfiConverterArrayBuffer.allocationSize(value.identityKey) +
+        FfiConverterBool.allocationSize(value.identityChanged)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+/**
+ * Input for processing an incoming sender key distribution message.
+ */
+export type ProcessSenderKeyDistributionInput = {
+  senderAddress: ProtocolAddressData;
+  distributionMessage: ArrayBuffer;
+  senderKeyRecord?: ArrayBuffer;
+};
+
+/**
+ * Generated factory for {@link ProcessSenderKeyDistributionInput} record objects.
+ */
+export const ProcessSenderKeyDistributionInput = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<ProcessSenderKeyDistributionInput, ReturnType<typeof defaults>>(
+      defaults,
+    );
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<ProcessSenderKeyDistributionInput>,
+  });
+})();
+
+const FfiConverterTypeProcessSenderKeyDistributionInput = (() => {
+  type TypeName = ProcessSenderKeyDistributionInput;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      return {
+        senderAddress: FfiConverterTypeProtocolAddressData.read(from),
+        distributionMessage: FfiConverterArrayBuffer.read(from),
+        senderKeyRecord: FfiConverterOptionalArrayBuffer.read(from),
+      };
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      FfiConverterTypeProtocolAddressData.write(value.senderAddress, into);
+      FfiConverterArrayBuffer.write(value.distributionMessage, into);
+      FfiConverterOptionalArrayBuffer.write(value.senderKeyRecord, into);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterTypeProtocolAddressData.allocationSize(value.senderAddress) +
+        FfiConverterArrayBuffer.allocationSize(value.distributionMessage) +
+        FfiConverterOptionalArrayBuffer.allocationSize(value.senderKeyRecord)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+/**
+ * Result of processing a sender key distribution message.
+ */
+export type ProcessSenderKeyDistributionResult = {
+  updatedSenderKeyRecord: ArrayBuffer;
+};
+
+/**
+ * Generated factory for {@link ProcessSenderKeyDistributionResult} record objects.
+ */
+export const ProcessSenderKeyDistributionResult = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<ProcessSenderKeyDistributionResult, ReturnType<typeof defaults>>(
+      defaults,
+    );
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<ProcessSenderKeyDistributionResult>,
+  });
+})();
+
+const FfiConverterTypeProcessSenderKeyDistributionResult = (() => {
+  type TypeName = ProcessSenderKeyDistributionResult;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      return {
+        updatedSenderKeyRecord: FfiConverterArrayBuffer.read(from),
+      };
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      FfiConverterArrayBuffer.write(value.updatedSenderKeyRecord, into);
+    }
+    allocationSize(value: TypeName): number {
+      return FfiConverterArrayBuffer.allocationSize(value.updatedSenderKeyRecord);
+    }
+  }
+  return new FFIConverter();
+})();
+
 export type ProtocolAddressData = {
   name: string;
   deviceId: /*u32*/ number;
@@ -1549,108 +2503,6 @@ const FfiConverterTypeProtocolAddressData = (() => {
       return (
         FfiConverterString.allocationSize(value.name) +
         FfiConverterUInt32.allocationSize(value.deviceId)
-      );
-    }
-  }
-  return new FFIConverter();
-})();
-
-export type RoundtripBatchResult = {
-  successCount: /*u32*/ number;
-  totalElapsedMs: /*u64*/ bigint;
-  avgElapsedMs: /*u64*/ bigint;
-};
-
-/**
- * Generated factory for {@link RoundtripBatchResult} record objects.
- */
-export const RoundtripBatchResult = (() => {
-  const defaults = () => ({});
-  const create = (() => {
-    return uniffiCreateRecord<RoundtripBatchResult, ReturnType<typeof defaults>>(defaults);
-  })();
-  return Object.freeze({
-    create,
-    new: create,
-    defaults: () => Object.freeze(defaults()) as Partial<RoundtripBatchResult>,
-  });
-})();
-
-const FfiConverterTypeRoundtripBatchResult = (() => {
-  type TypeName = RoundtripBatchResult;
-  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    read(from: RustBuffer): TypeName {
-      return {
-        successCount: FfiConverterUInt32.read(from),
-        totalElapsedMs: FfiConverterUInt64.read(from),
-        avgElapsedMs: FfiConverterUInt64.read(from),
-      };
-    }
-    write(value: TypeName, into: RustBuffer): void {
-      FfiConverterUInt32.write(value.successCount, into);
-      FfiConverterUInt64.write(value.totalElapsedMs, into);
-      FfiConverterUInt64.write(value.avgElapsedMs, into);
-    }
-    allocationSize(value: TypeName): number {
-      return (
-        FfiConverterUInt32.allocationSize(value.successCount) +
-        FfiConverterUInt64.allocationSize(value.totalElapsedMs) +
-        FfiConverterUInt64.allocationSize(value.avgElapsedMs)
-      );
-    }
-  }
-  return new FFIConverter();
-})();
-
-export type RoundtripResult = {
-  plaintext: ArrayBuffer;
-  ciphertextLen: /*u32*/ number;
-  decrypted: ArrayBuffer;
-  success: boolean;
-  elapsedMs: /*u64*/ bigint;
-};
-
-/**
- * Generated factory for {@link RoundtripResult} record objects.
- */
-export const RoundtripResult = (() => {
-  const defaults = () => ({});
-  const create = (() => {
-    return uniffiCreateRecord<RoundtripResult, ReturnType<typeof defaults>>(defaults);
-  })();
-  return Object.freeze({
-    create,
-    new: create,
-    defaults: () => Object.freeze(defaults()) as Partial<RoundtripResult>,
-  });
-})();
-
-const FfiConverterTypeRoundtripResult = (() => {
-  type TypeName = RoundtripResult;
-  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-    read(from: RustBuffer): TypeName {
-      return {
-        plaintext: FfiConverterArrayBuffer.read(from),
-        ciphertextLen: FfiConverterUInt32.read(from),
-        decrypted: FfiConverterArrayBuffer.read(from),
-        success: FfiConverterBool.read(from),
-        elapsedMs: FfiConverterUInt64.read(from),
-      };
-    }
-    write(value: TypeName, into: RustBuffer): void {
-      FfiConverterArrayBuffer.write(value.plaintext, into);
-      FfiConverterUInt32.write(value.ciphertextLen, into);
-      FfiConverterArrayBuffer.write(value.decrypted, into);
-      FfiConverterBool.write(value.success, into);
-      FfiConverterUInt64.write(value.elapsedMs, into);
-    }
-    allocationSize(value: TypeName): number {
-      return (
-        FfiConverterArrayBuffer.allocationSize(value.plaintext) +
-        FfiConverterUInt32.allocationSize(value.ciphertextLen) +
-        FfiConverterArrayBuffer.allocationSize(value.decrypted) +
-        FfiConverterBool.allocationSize(value.success) +
-        FfiConverterUInt64.allocationSize(value.elapsedMs)
       );
     }
   }
@@ -2402,27 +3254,37 @@ function uniffiEnsureInitialized() {
       bindingsContractVersion,
     );
   }
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_aes_gcm_decrypt() !== 31686) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_func_aes_gcm_decrypt',
+    );
+  }
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_aes_gcm_encrypt() !== 2665) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_func_aes_gcm_encrypt',
+    );
+  }
   if (
     nativeModule().ubrn_uniffi_orbital_signal_checksum_func_create_sender_key_distribution_message() !==
-    42033
+    39624
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_orbital_signal_checksum_func_create_sender_key_distribution_message',
     );
   }
-  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_group_decrypt() !== 16075) {
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_group_decrypt() !== 35517) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_orbital_signal_checksum_func_group_decrypt',
     );
   }
-  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_group_encrypt() !== 63771) {
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_group_encrypt() !== 31149) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_orbital_signal_checksum_func_group_encrypt',
     );
   }
   if (
     nativeModule().ubrn_uniffi_orbital_signal_checksum_func_process_sender_key_distribution_message() !==
-    57487
+    21229
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_orbital_signal_checksum_func_process_sender_key_distribution_message',
@@ -2450,48 +3312,32 @@ function uniffiEnsureInitialized() {
       'uniffi_orbital_signal_checksum_func_generate_signed_pre_key',
     );
   }
-  if (
-    nativeModule().ubrn_uniffi_orbital_signal_checksum_func_test_encrypt_decrypt_roundtrip() !==
-    11834
-  ) {
-    throw new UniffiInternalError.ApiChecksumMismatch(
-      'uniffi_orbital_signal_checksum_func_test_encrypt_decrypt_roundtrip',
-    );
-  }
-  if (
-    nativeModule().ubrn_uniffi_orbital_signal_checksum_func_test_encrypt_decrypt_roundtrip_n() !==
-    49712
-  ) {
-    throw new UniffiInternalError.ApiChecksumMismatch(
-      'uniffi_orbital_signal_checksum_func_test_encrypt_decrypt_roundtrip_n',
-    );
-  }
-  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_sealed_sender_decrypt() !== 10022) {
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_sealed_sender_decrypt() !== 31990) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_orbital_signal_checksum_func_sealed_sender_decrypt',
     );
   }
-  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_sealed_sender_encrypt() !== 18450) {
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_sealed_sender_encrypt() !== 37618) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_orbital_signal_checksum_func_sealed_sender_encrypt',
     );
   }
-  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_process_pre_key_bundle() !== 43853) {
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_process_pre_key_bundle() !== 15449) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_orbital_signal_checksum_func_process_pre_key_bundle',
     );
   }
-  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_signal_decrypt() !== 46977) {
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_signal_decrypt() !== 36883) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_orbital_signal_checksum_func_signal_decrypt',
     );
   }
-  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_signal_decrypt_pre_key() !== 36197) {
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_signal_decrypt_pre_key() !== 1670) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_orbital_signal_checksum_func_signal_decrypt_pre_key',
     );
   }
-  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_signal_encrypt() !== 55811) {
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_signal_encrypt() !== 60018) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_orbital_signal_checksum_func_signal_encrypt',
     );
@@ -2516,6 +3362,13 @@ function uniffiEnsureInitialized() {
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_orbital_signal_checksum_func_get_signed_pre_key_public',
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_orbital_signal_checksum_func_parse_prekey_message_ids() !== 49016
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_func_parse_prekey_message_ids',
     );
   }
   if (
@@ -2668,15 +3521,31 @@ export default Object.freeze({
   converters: {
     FfiConverterTypeCiphertextMessageData,
     FfiConverterTypeCiphertextMessageType,
+    FfiConverterTypeContentCryptoResult,
+    FfiConverterTypeCreateSenderKeyDistributionInput,
+    FfiConverterTypeCreateSenderKeyDistributionResult,
+    FfiConverterTypeDecryptInput,
+    FfiConverterTypeDecryptPreKeyInput,
+    FfiConverterTypeDecryptPreKeyResult,
+    FfiConverterTypeDecryptResult,
     FfiConverterTypeDirection,
+    FfiConverterTypeEncryptInput,
+    FfiConverterTypeEncryptResult,
+    FfiConverterTypeGroupDecryptInput,
+    FfiConverterTypeGroupDecryptResult,
+    FfiConverterTypeGroupEncryptInput,
+    FfiConverterTypeGroupEncryptResult,
     FfiConverterTypeIdentityKeyPairData,
     FfiConverterTypeKyberPreKeyPublicData,
     FfiConverterTypeKyberPreKeyResult,
     FfiConverterTypePreKeyBundleData,
+    FfiConverterTypePreKeyMessageIds,
     FfiConverterTypePreKeyPublicData,
+    FfiConverterTypeProcessPreKeyBundleInput,
+    FfiConverterTypeProcessPreKeyBundleResult,
+    FfiConverterTypeProcessSenderKeyDistributionInput,
+    FfiConverterTypeProcessSenderKeyDistributionResult,
     FfiConverterTypeProtocolAddressData,
-    FfiConverterTypeRoundtripBatchResult,
-    FfiConverterTypeRoundtripResult,
     FfiConverterTypeSealedSenderResult,
     FfiConverterTypeSignalError,
     FfiConverterTypeSignedPreKeyPublicData,

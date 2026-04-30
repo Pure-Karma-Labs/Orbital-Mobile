@@ -5,15 +5,17 @@
 import { request, buildQueryString } from './client';
 import type {
   CreateReplyRequest,
+  CreateReplyResponse,
   CreateThreadRequest,
+  CreateThreadResponse,
   GetGroupThreadsRequest,
-  PaginatedResponse,
-  ReplyResponse,
+  ListRepliesResponse,
+  ListThreadsResponse,
   ThreadResponse,
 } from '../../types/api';
 
-export function createThread(data: CreateThreadRequest): Promise<ThreadResponse> {
-  return request<ThreadResponse>({
+export function createThread(data: CreateThreadRequest): Promise<CreateThreadResponse> {
+  return request<CreateThreadResponse>({
     method: 'POST',
     path: '/api/threads',
     body: data,
@@ -23,15 +25,15 @@ export function createThread(data: CreateThreadRequest): Promise<ThreadResponse>
 export function getGroupThreads(
   groupId: string,
   params?: GetGroupThreadsRequest,
-): Promise<PaginatedResponse<ThreadResponse>> {
+): Promise<ListThreadsResponse> {
   const qs = buildQueryString({
-    cursor: params?.cursor,
     limit: params?.limit,
+    offset: params?.offset,
     sort: params?.sort,
   });
-  const path = `/api/groups/${encodeURIComponent(groupId)}/threads${qs}`;
+  const path = `/api/threads/groups/${encodeURIComponent(groupId)}/threads${qs}`;
 
-  return request<PaginatedResponse<ThreadResponse>>({
+  return request<ListThreadsResponse>({
     method: 'GET',
     path,
   });
@@ -46,10 +48,10 @@ export function getThread(threadId: string): Promise<ThreadResponse> {
 
 export function getThreadReplies(
   threadId: string,
-  cursor?: string,
-): Promise<PaginatedResponse<ReplyResponse>> {
-  const qs = buildQueryString({ cursor });
-  return request<PaginatedResponse<ReplyResponse>>({
+  offset?: number,
+): Promise<ListRepliesResponse> {
+  const qs = buildQueryString({ offset });
+  return request<ListRepliesResponse>({
     method: 'GET',
     path: `/api/threads/${encodeURIComponent(threadId)}/replies${qs}`,
   });
@@ -58,8 +60,8 @@ export function getThreadReplies(
 export function createReply(
   threadId: string,
   data: CreateReplyRequest,
-): Promise<ReplyResponse> {
-  return request<ReplyResponse>({
+): Promise<CreateReplyResponse> {
+  return request<CreateReplyResponse>({
     method: 'POST',
     path: `/api/threads/${encodeURIComponent(threadId)}/replies`,
     body: data,

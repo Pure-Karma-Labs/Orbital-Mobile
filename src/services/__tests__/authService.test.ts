@@ -40,7 +40,38 @@ jest.mock('../crypto/keyGenerationService', () => ({
   clearIdentityKeyCache: () => mockClearIdentityKeyCache(),
 }));
 
-// Mock the MMKV module used via require() inside logout()
+const mockClearGroupKeyCache = jest.fn();
+jest.mock('../crypto/contentCrypto', () => ({
+  clearGroupKeyCache: () => mockClearGroupKeyCache(),
+}));
+
+const mockClearAllGroupMasterKeys = jest.fn();
+jest.mock('../../database/repositories/conversationRepository', () => ({
+  clearAllGroupMasterKeys: () => mockClearAllGroupMasterKeys(),
+}));
+
+jest.mock('../secure-storage/secureStorage', () => ({
+  removeSecureItem: jest.fn().mockResolvedValue(undefined),
+}));
+
+jest.mock('../secure-storage/constants', () => ({
+  SecureKeys: { IDENTITY_KEY_PRIVATE: 'mock-identity-key' },
+}));
+
+const mockExecute = jest.fn();
+jest.mock('../../database/queryHelpers', () => ({
+  execute: (...args: unknown[]) => mockExecute(...args),
+}));
+
+jest.mock('../../database/connection', () => ({
+  isDatabaseInitialized: jest.fn(() => true),
+}));
+
+const mockLoadConversations = jest.fn().mockResolvedValue(undefined);
+jest.mock('../conversationService', () => ({
+  loadConversations: (...args: unknown[]) => mockLoadConversations(...args),
+}));
+
 jest.mock('../../stores/middleware/persistence', () => ({
   getMMKVInstance: jest.fn(() => ({ clearAll: jest.fn() })),
 }));
@@ -95,54 +126,35 @@ describe('loginUser', () => {
   it('calls login API, stores tokens, and populates store', async () => {
     mockLogin.mockResolvedValue({
       token: 'access-123',
-      refreshToken: 'refresh-456',
       userId: 'user-1',
       username: 'alice',
-      displayName: 'Alice',
-      avatarUrl: 'https://example.com/alice.jpg',
+      publicKey: { kty: 'EC', crv: 'P-256' },
     });
 
     await loginUser('alice', 'secret');
 
     expect(mockLogin).toHaveBeenCalledWith({ username: 'alice', password: 'secret' });
-    expect(mockSetTokens).toHaveBeenCalledWith('access-123', 'refresh-456');
+    expect(mockSetTokens).toHaveBeenCalledWith('access-123', undefined);
     expect(mockSetUser).toHaveBeenCalledWith({
       userId: 'user-1',
       username: 'alice',
-      displayName: 'Alice',
-      avatarPath: 'https://example.com/alice.jpg',
+      displayName: null,
+      avatarPath: null,
     });
   });
 
-  it('maps API avatarUrl to store avatarPath field', async () => {
+  it('sets null displayName and avatarPath since login does not return them', async () => {
     mockLogin.mockResolvedValue({
       token: 'tok',
       userId: 'u1',
       username: 'bob',
-      displayName: null,
-      avatarUrl: '/uploads/bob.jpg',
+      publicKey: null,
     });
 
     await loginUser('bob', 'pass');
 
     expect(mockSetUser).toHaveBeenCalledWith(
-      expect.objectContaining({ avatarPath: '/uploads/bob.jpg' }),
-    );
-  });
-
-  it('maps null avatarUrl to null avatarPath', async () => {
-    mockLogin.mockResolvedValue({
-      token: 'tok',
-      userId: 'u1',
-      username: 'carol',
-      displayName: null,
-      avatarUrl: null,
-    });
-
-    await loginUser('carol', 'pass');
-
-    expect(mockSetUser).toHaveBeenCalledWith(
-      expect.objectContaining({ avatarPath: null }),
+      expect.objectContaining({ displayName: null, avatarPath: null }),
     );
   });
 
@@ -157,11 +169,9 @@ describe('loginUser', () => {
   it('fires ensureKeysInitialized after login', async () => {
     mockLogin.mockResolvedValue({
       token: 'tok',
-      refreshToken: 'ref',
       userId: 'u1',
       username: 'alice',
-      displayName: null,
-      avatarUrl: null,
+      publicKey: null,
     });
 
     await loginUser('alice', 'secret');
@@ -178,9 +188,10 @@ describe('signupUser', () => {
   it('calls signup API, stores tokens, and populates store with null displayName/avatarPath', async () => {
     mockSignup.mockResolvedValue({
       token: 'access-abc',
-      refreshToken: 'refresh-def',
       userId: 'user-2',
       username: 'dave',
+      email: 'dave@example.com',
+      groupId: 'group-1',
     });
 
     await signupUser('dave', 'password', 'dave@example.com', 'INV-CODE');
@@ -191,7 +202,7 @@ describe('signupUser', () => {
       email: 'dave@example.com',
       inviteCode: 'INV-CODE',
     });
-    expect(mockSetTokens).toHaveBeenCalledWith('access-abc', 'refresh-def');
+    expect(mockSetTokens).toHaveBeenCalledWith('access-abc', undefined);
     expect(mockSetUser).toHaveBeenCalledWith({
       userId: 'user-2',
       username: 'dave',
@@ -212,9 +223,10 @@ describe('signupUser', () => {
   it('calls generateInitialKeys and uploadInitialPreKeyBundle after signup', async () => {
     mockSignup.mockResolvedValue({
       token: 'tok',
-      refreshToken: 'ref',
       userId: 'u1',
       username: 'frank',
+      email: 'f@x.com',
+      groupId: null,
     });
 
     await signupUser('frank', 'pass', 'f@x.com', 'CODE');
@@ -226,9 +238,10 @@ describe('signupUser', () => {
   it('does not throw if key generation fails after signup', async () => {
     mockSignup.mockResolvedValue({
       token: 'tok',
-      refreshToken: 'ref',
       userId: 'u1',
       username: 'grace',
+      email: 'g@x.com',
+      groupId: null,
     });
     mockGenerateInitialKeys.mockRejectedValue(new Error('FFI crash'));
 
@@ -335,6 +348,17 @@ describe('logout', () => {
     expect(mockClearAuth).toHaveBeenCalledTimes(1);
     expect(mockSetConversations).toHaveBeenCalledWith([]);
     expect(mockSetContacts).toHaveBeenCalledWith([]);
+  });
+
+  it('clears all crypto state on logout', async () => {
+    await logout();
+
+    expect(mockClearGroupKeyCache).toHaveBeenCalledTimes(1);
+    expect(mockClearAllGroupMasterKeys).toHaveBeenCalledTimes(1);
+    expect(mockExecute).toHaveBeenCalledWith('DELETE FROM items');
+    expect(mockExecute).toHaveBeenCalledWith('DELETE FROM signal_sessions');
+    expect(mockExecute).toHaveBeenCalledWith('DELETE FROM signal_pre_keys');
+    expect(mockExecute).toHaveBeenCalledWith('DELETE FROM signal_identity_keys');
   });
 
   it('does not throw if MMKV clearAll fails', async () => {

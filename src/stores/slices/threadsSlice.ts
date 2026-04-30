@@ -113,6 +113,32 @@ export const createThreadsSlice: StateCreator<
     );
   },
 
+  appendReplies: (threadId, replies) => {
+    const { replies: existingReplies, replyIdsByThread } = get();
+    const updatedReplies = { ...existingReplies };
+    for (const r of replies) {
+      updatedReplies[r.id] = r;
+    }
+    const existingIds = replyIdsByThread[threadId] ?? [];
+    // Append new IDs, preserving existing order and avoiding duplicates
+    const existingIdSet = new Set(existingIds);
+    const newIds = replies
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .map((r) => r.id)
+      .filter((id) => !existingIdSet.has(id));
+    set(
+      {
+        replies: updatedReplies,
+        replyIdsByThread: {
+          ...replyIdsByThread,
+          [threadId]: [...existingIds, ...newIds],
+        },
+      },
+      false,
+      'threads/appendReplies',
+    );
+  },
+
   upsertReply: (reply) => {
     const { replies, replyIdsByThread } = get();
     const updatedReplies = { ...replies, [reply.id]: reply };

@@ -2,7 +2,7 @@
  * Threads inbox screen — orbit selector, search bar, day-grouped thread list.
  */
 
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   FlatList,
   RefreshControl,
@@ -23,6 +23,8 @@ import { AsciiDay, AsciiSection } from '../components/AsciiSeparator';
 import { OrbitBar } from './threads/OrbitBar';
 import { SearchBar } from './threads/SearchBar';
 import { ThreadItem } from './threads/ThreadItem';
+import { OnboardingEmptyState } from './threads/OnboardingEmptyState';
+import { loadThreadsForGroup } from '../services/threadService';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -169,7 +171,7 @@ function EmptyState({ onCompose }: { onCompose: () => void }): React.JSX.Element
 
 export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Element {
   const theme = useTheme();
-  const { threads, threadIdsByConversation, activeConversationId } =
+  const { threads, threadIdsByConversation, activeConversationId, conversations } =
     useThreadsAndConversation();
   const [refreshing, setRefreshing] = useState(false);
 
@@ -185,6 +187,13 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
 
   const listRows = useMemo(() => buildListRows(threadList), [threadList]);
 
+  useEffect(() => {
+    if (!activeConversationId) return;
+    loadThreadsForGroup(activeConversationId).catch((e) => {
+      if (__DEV__) console.warn('[ThreadsScreen] load failed:', e instanceof Error ? e.message : e);
+    });
+  }, [activeConversationId]);
+
   const handleThreadPress = useCallback(
     (threadId: string) => {
       const thread = threads[threadId];
@@ -197,15 +206,21 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
   );
 
   const handleRefresh = useCallback(async () => {
+    if (!activeConversationId) return;
     setRefreshing(true);
-    // Refresh logic will be wired to API in a later phase
-    await new Promise<void>((resolve) => setTimeout(resolve, 500));
-    setRefreshing(false);
-  }, []);
+    try {
+      await loadThreadsForGroup(activeConversationId);
+    } catch {
+      // Silently fail — stale data is still visible
+    } finally {
+      setRefreshing(false);
+    }
+  }, [activeConversationId]);
 
   const handleCompose = useCallback(() => {
-    // Composer will be implemented in a later phase
-  }, []);
+    if (!activeConversationId) return;
+    navigation.navigate('ComposeThread', { groupId: activeConversationId });
+  }, [navigation, activeConversationId]);
 
   const handleOpenOrbits = useCallback(() => {
     // Orbit selector will be implemented in a later phase
@@ -253,36 +268,58 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
     flexGrow: 1,
   };
 
+  const handleCreateOrbit = useCallback(() => {
+    navigation.push('CreateOrbit');
+  }, [navigation]);
+
+  const handleJoinOrbit = useCallback(() => {
+    navigation.push('JoinOrbit');
+  }, [navigation]);
+
+  const isOnboarding = activeConversationId == null;
+  const activeConversation = activeConversationId
+    ? conversations[activeConversationId]
+    : undefined;
+
   return (
     <SafeAreaView style={containerStyle} edges={['top']} testID="threads-screen">
-      <OrbitBar
-        orbitName="Family Orbit"
-        onOpenOrbits={handleOpenOrbits}
-        onCompose={handleCompose}
-      />
-      <SearchBar />
-
-      {listRows.length === 0 ? (
-        <EmptyState onCompose={handleCompose} />
-      ) : (
-        <FlatList<ListRow>
-          data={listRows}
-          keyExtractor={keyExtractor}
-          renderItem={renderRow}
-          contentContainerStyle={listContentStyle}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={handleRefresh}
-              tintColor={theme.colors.blue}
-              colors={[theme.colors.blue]}
-            />
-          }
-          removeClippedSubviews
-          initialNumToRender={20}
-          maxToRenderPerBatch={10}
-          windowSize={5}
+      {isOnboarding ? (
+        <OnboardingEmptyState
+          onCreateOrbit={handleCreateOrbit}
+          onJoinOrbit={handleJoinOrbit}
         />
+      ) : (
+        <>
+          <OrbitBar
+            orbitName={activeConversation?.name ?? 'Orbit'}
+            onOpenOrbits={handleOpenOrbits}
+            onCompose={handleCompose}
+          />
+          <SearchBar />
+
+          {listRows.length === 0 ? (
+            <EmptyState onCompose={handleCompose} />
+          ) : (
+            <FlatList<ListRow>
+              data={listRows}
+              keyExtractor={keyExtractor}
+              renderItem={renderRow}
+              contentContainerStyle={listContentStyle}
+              refreshControl={
+                <RefreshControl
+                  refreshing={refreshing}
+                  onRefresh={handleRefresh}
+                  tintColor={theme.colors.blue}
+                  colors={[theme.colors.blue]}
+                />
+              }
+              removeClippedSubviews
+              initialNumToRender={20}
+              maxToRenderPerBatch={10}
+              windowSize={5}
+            />
+          )}
+        </>
       )}
     </SafeAreaView>
   );
@@ -294,8 +331,8 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
 
 function useThreadsAndConversation() {
   const { threads, threadIdsByConversation } = useThreads();
-  const { activeConversationId } = useConversations();
-  return { threads, threadIdsByConversation, activeConversationId };
+  const { activeConversationId, conversations } = useConversations();
+  return { threads, threadIdsByConversation, activeConversationId, conversations };
 }
 
 export default ThreadsScreen;

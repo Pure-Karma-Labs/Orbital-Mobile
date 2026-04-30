@@ -83,17 +83,18 @@ This repo has a team of expert subagents with persistent memory in `.claude/agen
 
 | Agent | Model | Owns |
 |---|---|---|
-| `agent-builder` | opus | Agent ecosystem creation, maintenance, and validation |
-| `skill-builder` | opus | Skill creation, review, and agent config auditing |
-| `react-native-engineer` | sonnet | UI screens, navigation, state management, API integration |
-| `signal-crypto-specialist` | opus | libsignal API surface, encryption stores, key management |
-| `rust-native-engineer` | opus | uniffi-bindgen toolchain, Rust crate, cross-compilation, native bridges |
-| `backend-push-engineer` | sonnet | Push notifications (APNs/FCM), device tokens, backend API extensions |
-| `mobile-devops-engineer` | sonnet | CI/CD pipeline, code signing, TestFlight/Play Store, Fastlane |
-| `qa-testing-specialist` | sonnet | Test strategy, Jest/Detox, device matrix, beta coordination |
-| `security-auditor` | opus | Crypto audit, OWASP Mobile Top 10, keychain/keystore review |
-| `tech-debt-collector` | opus | Agentic code bloat, API architecture fragility, performance, debt registry |
-| `project-manager` | haiku | GitHub Issues/Milestones, progress tracking, risk management |
+| `agent-builder` | claude-opus-4-6 | Agent ecosystem creation, maintenance, and validation |
+| `skill-builder` | claude-opus-4-6 | Skill creation, review, and agent config auditing |
+| `api-integration-engineer` | claude-opus-4-6 | API client, service orchestration, wire-format types, backend contract verification |
+| `react-native-engineer` | claude-opus-4-6 | UI screens, navigation, state management, component library (frontend only) |
+| `signal-crypto-specialist` | claude-opus-4-6 | libsignal API surface, encryption stores, key management |
+| `rust-native-engineer` | claude-opus-4-6 | uniffi-bindgen toolchain, Rust crate, cross-compilation, native bridges |
+| `backend-push-engineer` | claude-sonnet-4-6 | Push notifications (APNs/FCM), device tokens, backend API extensions |
+| `mobile-devops-engineer` | claude-sonnet-4-6 | CI/CD pipeline, code signing, TestFlight/Play Store, Fastlane |
+| `qa-testing-specialist` | claude-sonnet-4-6 | Test strategy, Jest/Detox, device matrix, beta coordination |
+| `security-auditor` | claude-opus-4-6 | Crypto audit, OWASP Mobile Top 10, keychain/keystore review |
+| `tech-debt-collector` | claude-opus-4-6 | Agentic code bloat, API architecture fragility, performance, debt registry |
+| `project-manager` | claude-sonnet-4-6 | GitHub Issues/Milestones, progress tracking, risk management |
 
 ## Agentic Layer Architecture
 

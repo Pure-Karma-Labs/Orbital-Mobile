@@ -61,3 +61,25 @@ export function updateUnreadCount(id: string, count: number): void {
     id,
   ]);
 }
+
+export function getGroupMasterKey(conversationId: string): Uint8Array | null {
+  const row = queryOne<{ group_master_key: Uint8Array | null }>(
+    'SELECT group_master_key FROM conversations WHERE id = ?',
+    [conversationId],
+  );
+  return row?.group_master_key ?? null;
+}
+
+export function setGroupMasterKey(conversationId: string, key: Uint8Array): void {
+  const now = Date.now();
+  execute(
+    `INSERT INTO conversations (id, type, group_master_key, member_count, active, unread_count, group_version, created_at, updated_at)
+     VALUES (?, 'group', ?, 0, 1, 0, 2, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET group_master_key = excluded.group_master_key`,
+    [conversationId, key, now, now],
+  );
+}
+
+export function clearAllGroupMasterKeys(): void {
+  execute('UPDATE conversations SET group_master_key = NULL');
+}

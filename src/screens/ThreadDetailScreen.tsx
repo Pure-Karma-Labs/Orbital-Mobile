@@ -201,6 +201,7 @@ export function ThreadDetailScreen({
         hasMoreRef.current = result.hasMore;
       } catch (e) {
         if (__DEV__) console.warn('[ThreadDetail] replies failed:', e instanceof Error ? e.message : e);
+        hasMoreRef.current = false;
       }
     } catch (e) {
       if (__DEV__) console.warn('[ThreadDetail]', e instanceof Error ? e.message : e);
@@ -249,7 +250,7 @@ export function ThreadDetailScreen({
       offsetRef.current += result.replies.length;
       hasMoreRef.current = result.hasMore;
     } catch {
-      // Silently fail — user can scroll again to retry
+      hasMoreRef.current = false;
     } finally {
       setLoadingMore(false);
     }
@@ -272,7 +273,10 @@ export function ThreadDetailScreen({
 
   const handleSend = useCallback(
     async (body: string) => {
-      if (!thread || !userId || !username) return;
+      if (!thread || !userId || !username) {
+        if (__DEV__) console.warn('[Reply] blocked:', { thread: !!thread, userId, username });
+        return;
+      }
       setSending(true);
       try {
         const parentReplyId = replyTarget?.replyId ?? null;
@@ -287,8 +291,8 @@ export function ThreadDetailScreen({
           username,
         );
         setReplyTarget(null);
-      } catch {
-        // Error is reflected in the reply's sync status (shown in UI)
+      } catch (e) {
+        if (__DEV__) console.warn('[Reply] failed:', e instanceof Error ? e.message : e);
       } finally {
         setSending(false);
       }
@@ -404,27 +408,30 @@ export function ThreadDetailScreen({
             <Text style={errorTextStyle}>{error}</Text>
           </View>
         ) : (
-          <FlatList<ListRow>
-            data={listRows}
-            keyExtractor={keyExtractor}
-            renderItem={renderRow}
-            ListHeaderComponent={listHeader}
-            ListFooterComponent={listFooter}
-            refreshControl={
-              <RefreshControl
-                refreshing={refreshing}
-                onRefresh={handleRefresh}
-                tintColor={theme.colors.blue}
-                colors={[theme.colors.blue]}
-              />
-            }
-            onEndReached={handleEndReached}
-            onEndReachedThreshold={0.3}
-            removeClippedSubviews
-            initialNumToRender={20}
-            maxToRenderPerBatch={10}
-            windowSize={5}
-          />
+          <View style={{ flex: 1 }}>
+            <FlatList<ListRow>
+              data={listRows}
+              keyExtractor={keyExtractor}
+              renderItem={renderRow}
+              ListHeaderComponent={listHeader}
+              ListFooterComponent={listFooter}
+              refreshControl={
+                <RefreshControl
+                  refreshing={refreshing}
+                  onRefresh={handleRefresh}
+                  tintColor={theme.colors.blue}
+                  colors={[theme.colors.blue]}
+                />
+              }
+              onEndReached={handleEndReached}
+              onEndReachedThreshold={0.3}
+              initialNumToRender={20}
+              maxToRenderPerBatch={10}
+              windowSize={5}
+              keyboardShouldPersistTaps="always"
+              keyboardDismissMode="none"
+            />
+          </View>
         )}
 
         <ReplyComposer

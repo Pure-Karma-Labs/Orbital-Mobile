@@ -190,9 +190,12 @@ export async function loadReplies(
   const response = await getThreadReplies(threadId, offset);
   const groupKey = await getOrFetchGroupKey(groupId);
 
-  const replies = await Promise.all(
+  const results = await Promise.allSettled(
     response.replies.map((r) => mapReplyResponse(r, groupKey, groupId)),
   );
+  const replies = results
+    .filter((r): r is PromiseFulfilledResult<Reply> => r.status === 'fulfilled')
+    .map((r) => r.value);
 
   const store = getStoreActions();
   if (!offset) {

@@ -153,14 +153,34 @@ verified_types:
 unverified_types: []
 
 known_issues:
-  - Reply endpoints may return 500 (backend issue — CreateReplyRequest type is now verified correct)
-  - uniffi stub bindings throw "FFI not initialized" — need uniffi-bindgen regen for AES-GCM
+  - camelToSnake transform will break invite endpoints that expect camelCase (issue #96)
+
+resolved_issues:
+  - Reply endpoints 500 — fixed: missing parent_reply_id column (migration 20)
+  - uniffi stub bindings — fixed: real bindings regenerated via ubrn build ios
+  - crypto.getRandomValues undefined — fixed: react-native-get-random-values polyfill
+
+endpoint_paths:
+  note: Threads router is mounted at /api/threads in the backend
+  getGroupThreads: /api/threads/groups/:groupId/threads (NOT /api/groups/:groupId/threads)
+  getThread: /api/threads/:threadId
+  getThreadReplies: /api/threads/:threadId/replies
+  createThread: /api/threads (POST)
+  createReply: /api/threads/:threadId/replies (POST, returns 201 not 200)
 
 pagination_pattern:
   type: offset
-  note: Backend uses offset pagination (limit + offset query params), NOT cursor-based. Each list endpoint has its own response shape (ListThreadsResponse, ListRepliesResponse) rather than a generic PaginatedResponse wrapper.
+  note: Backend uses offset pagination (limit + offset query params), NOT cursor-based.
+
+resilience_patterns:
+  reply_decryption: Promise.allSettled — one undecryptable reply doesn't fail the batch
+  onEndReached: Set hasMoreRef=false on error to prevent infinite 429 loop
+  encrypt_decrypt: Synchronous FFI calls — async wrappers removed
 
 api_client_transforms:
   request: camelCase → snake_case (automatic via camelToSnake in client.ts)
   response: snake_case → camelCase (automatic via snakeToCamel in client.ts)
   note: Some backend endpoints return camelCase directly (UserProfile, invite fields)
+
+polyfills:
+  crypto_get_random_values: react-native-get-random-values (imported first in index.js)

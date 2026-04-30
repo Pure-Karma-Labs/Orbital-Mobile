@@ -1,5 +1,5 @@
-version: "1.2"
-last_updated: "2026-04-28"
+version: "1.3"
+last_updated: "2026-04-30"
 agent: react-native-engineer
 
 core_files:
@@ -271,3 +271,15 @@ patterns:
 
   - name: design-spec-first
     description: "Always read docs/design/ specs before UI work. Read order: CLAUDE-DESIGN-BRIEF.md (rules) → MOBILE-DESIGN-FOUNDATION.md (tokens) → MOBILE-PATTERNS.md (mobile patterns) → per-screen spec. Code tokens must match spec exactly — verify on-device after changes."
+
+  - name: thread-detail-layout
+    description: "Correct layout for list + bottom composer + keyboard: outer View (not SafeAreaView) flex:1 → SafeAreaView edges=['top'] wraps Header only → KeyboardAvoidingView behavior='padding' keyboardVerticalOffset=0 flex:1 → FlatList style={flex:1} + ReplyComposer as siblings. Do NOT wrap FlatList in extra View. Do NOT use SafeAreaView edges=['bottom'] with KAV — they fight."
+
+  - name: flatlist-infinite-loop-guard
+    description: "In onEndReached handlers, set hasMoreRef.current=false in catch blocks. Otherwise a failed API call leaves hasMore=true and onEndReached fires again immediately, creating an infinite 429 loop."
+
+  - name: console-warn-not-error
+    description: "Use console.warn (not console.error) for __DEV__ diagnostic logging. Jest --ci mode treats console.error as test failure. Also suppress React act() warnings from VirtualizedList in jest.setup.ts."
+
+  - name: flatlist-no-remove-clipped-subviews
+    description: "Avoid removeClippedSubviews on FlatLists with touch-sensitive siblings (composers, inputs). It can clip touch areas of adjacent components."

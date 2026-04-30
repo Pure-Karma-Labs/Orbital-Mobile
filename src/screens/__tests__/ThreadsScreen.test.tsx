@@ -11,6 +11,10 @@ import { ThreadsScreen } from '../ThreadsScreen';
 // Module mocks
 // ---------------------------------------------------------------------------
 
+jest.mock('../../services/threadService', () => ({
+  loadThreadsForGroup: jest.fn().mockResolvedValue([]),
+}));
+
 jest.mock('../../stores', () => ({
   useAuth: () => ({
     isAuthenticated: false,

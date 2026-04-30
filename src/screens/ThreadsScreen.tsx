@@ -2,7 +2,7 @@
  * Threads inbox screen — orbit selector, search bar, day-grouped thread list.
  */
 
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   FlatList,
   RefreshControl,
@@ -24,6 +24,7 @@ import { OrbitBar } from './threads/OrbitBar';
 import { SearchBar } from './threads/SearchBar';
 import { ThreadItem } from './threads/ThreadItem';
 import { OnboardingEmptyState } from './threads/OnboardingEmptyState';
+import { loadThreadsForGroup } from '../services/threadService';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -186,6 +187,13 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
 
   const listRows = useMemo(() => buildListRows(threadList), [threadList]);
 
+  useEffect(() => {
+    if (!activeConversationId) return;
+    loadThreadsForGroup(activeConversationId).catch((e) => {
+      if (__DEV__) console.error('[ThreadsScreen] load failed:', e instanceof Error ? e.message : e);
+    });
+  }, [activeConversationId]);
+
   const handleThreadPress = useCallback(
     (threadId: string) => {
       const thread = threads[threadId];
@@ -198,11 +206,16 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
   );
 
   const handleRefresh = useCallback(async () => {
+    if (!activeConversationId) return;
     setRefreshing(true);
-    // Refresh logic will be wired to API in a later phase
-    await new Promise<void>((resolve) => setTimeout(resolve, 500));
-    setRefreshing(false);
-  }, []);
+    try {
+      await loadThreadsForGroup(activeConversationId);
+    } catch {
+      // Silently fail — stale data is still visible
+    } finally {
+      setRefreshing(false);
+    }
+  }, [activeConversationId]);
 
   const handleCompose = useCallback(() => {
     if (!activeConversationId) return;

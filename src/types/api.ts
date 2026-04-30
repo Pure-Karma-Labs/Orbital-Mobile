@@ -25,6 +25,8 @@ export interface SignupRequest {
    * Backend requires this as a JWK object (JSON), NOT a string.
    * Validated server-side: `typeof public_key !== 'object'` → 400.
    */
+  // TODO: Make required once signup flow sends the JWK public key.
+  // Backend requires it (400 if missing) but mobile generates keys post-signup.
   publicKey?: Record<string, unknown>;
 }
 
@@ -61,8 +63,8 @@ export interface LoginResponse {
 
 export interface VerifyTokenResponse {
   valid: boolean;
-  userId: string;
-  username: string;
+  userId?: string;
+  username?: string;
 }
 
 /**

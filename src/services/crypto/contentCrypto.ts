@@ -83,8 +83,12 @@ function validateAndDecode(keyBase64: string): Uint8Array {
  */
 export function persistGroupKey(groupId: string, keyBase64: string): void {
   const keyBytes = validateAndDecode(keyBase64);
-  setGroupMasterKey(groupId, keyBytes);
   groupKeyCache.set(groupId, keyBytes);
+  try {
+    setGroupMasterKey(groupId, keyBytes);
+  } catch {
+    // Database may not be initialized yet — key is still in memory cache
+  }
 }
 
 /**
@@ -118,10 +122,14 @@ export async function getOrFetchGroupKey(groupId: string): Promise<Uint8Array> {
   const cached = groupKeyCache.get(groupId);
   if (cached) return cached;
 
-  const persisted = loadPersistedGroupKey(groupId);
-  if (persisted) {
-    groupKeyCache.set(groupId, persisted);
-    return persisted;
+  try {
+    const persisted = loadPersistedGroupKey(groupId);
+    if (persisted) {
+      groupKeyCache.set(groupId, persisted);
+      return persisted;
+    }
+  } catch {
+    // Database may not be initialized — fall through to API
   }
 
   const existing = inflight.get(groupId);

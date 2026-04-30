@@ -50,12 +50,28 @@ jest.mock('../../database/repositories/conversationRepository', () => ({
   clearAllGroupMasterKeys: () => mockClearAllGroupMasterKeys(),
 }));
 
+jest.mock('../secure-storage/secureStorage', () => ({
+  removeSecureItem: jest.fn().mockResolvedValue(undefined),
+}));
+
+jest.mock('../secure-storage/constants', () => ({
+  SecureKeys: { IDENTITY_KEY_PRIVATE: 'mock-identity-key' },
+}));
+
+const mockExecute = jest.fn();
+jest.mock('../../database/queryHelpers', () => ({
+  execute: (...args: unknown[]) => mockExecute(...args),
+}));
+
+jest.mock('../../database/connection', () => ({
+  isDatabaseInitialized: jest.fn(() => true),
+}));
+
 const mockLoadConversations = jest.fn().mockResolvedValue(undefined);
 jest.mock('../conversationService', () => ({
   loadConversations: (...args: unknown[]) => mockLoadConversations(...args),
 }));
 
-// Mock the MMKV module used via require() inside logout()
 jest.mock('../../stores/middleware/persistence', () => ({
   getMMKVInstance: jest.fn(() => ({ clearAll: jest.fn() })),
 }));
@@ -334,11 +350,15 @@ describe('logout', () => {
     expect(mockSetContacts).toHaveBeenCalledWith([]);
   });
 
-  it('clears group key material on logout', async () => {
+  it('clears all crypto state on logout', async () => {
     await logout();
 
     expect(mockClearGroupKeyCache).toHaveBeenCalledTimes(1);
     expect(mockClearAllGroupMasterKeys).toHaveBeenCalledTimes(1);
+    expect(mockExecute).toHaveBeenCalledWith('DELETE FROM items');
+    expect(mockExecute).toHaveBeenCalledWith('DELETE FROM signal_sessions');
+    expect(mockExecute).toHaveBeenCalledWith('DELETE FROM signal_pre_keys');
+    expect(mockExecute).toHaveBeenCalledWith('DELETE FROM signal_identity_keys');
   });
 
   it('does not throw if MMKV clearAll fails', async () => {

@@ -10,7 +10,7 @@
  * Plaintext never appears in logs or error messages.
  */
 
-import { getThread, getThreadReplies, createReply, createThread } from './api/threads';
+import { getThread, getGroupThreads, getThreadReplies, createReply, createThread } from './api/threads';
 import {
   decryptContent,
   encryptContent,
@@ -19,7 +19,7 @@ import {
 import { useAppStore } from '../stores/useAppStore';
 import { generateUUID } from '../utils/uuid';
 import type { Thread, Reply } from '../types/store';
-import type { ThreadResponse, ReplyResponse } from '../types/api';
+import type { ThreadResponse, ThreadListItem, ReplyResponse } from '../types/api';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -109,15 +109,58 @@ async function mapReplyResponse(
   };
 }
 
+async function mapThreadListItem(
+  item: ThreadListItem,
+  groupKey: Uint8Array,
+): Promise<Thread> {
+  const [title, body] = await Promise.all([
+    item.encryptedTitle && item.titleIv
+      ? decryptContent(item.encryptedTitle, item.titleIv, groupKey, item.groupId)
+      : Promise.resolve(null),
+    item.encryptedBody && item.bodyIv
+      ? decryptContent(item.encryptedBody, item.bodyIv, groupKey, item.groupId)
+      : Promise.resolve(null),
+  ]);
+
+  return {
+    id: item.threadId,
+    conversationId: item.groupId,
+    authorId: item.authorId,
+    authorUsername: item.authorUsername,
+    title,
+    body,
+    contentType: 'text',
+    pinned: false,
+    replyCount: item.replyCount,
+    lastReplyAt: null,
+    createdAt: new Date(item.createdAt).getTime(),
+    updatedAt: new Date(item.createdAt).getTime(),
+    syncStatus: 'synced',
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /**
+ * Fetch all threads for a group from the API, decrypt, and populate the store.
+ */
+export async function loadThreadsForGroup(groupId: string): Promise<Thread[]> {
+  const response = await getGroupThreads(groupId);
+  const groupKey = await getOrFetchGroupKey(groupId);
+
+  const threads = await Promise.all(
+    response.threads.map((item) => mapThreadListItem(item, groupKey)),
+  );
+
+  const store = getStoreActions();
+  store.setThreads(groupId, threads);
+  return threads;
+}
+
+/**
  * Fetch a thread from the API, decrypt its content, and upsert into the store.
- *
- * @param threadId - The thread to load.
- * @returns The decrypted Thread object.
  */
 export async function loadThread(threadId: string): Promise<Thread> {
   const response = await getThread(threadId);
@@ -190,14 +233,9 @@ export async function postReply(
   authorId: string,
   authorUsername: string,
 ): Promise<Reply> {
-  const groupKey = await getOrFetchGroupKey(groupId);
-  const encrypted = await encryptContent(body, groupKey, groupId);
-
-  // Generate client-side UUID for offline-first
   const clientId = generateUUID();
   const now = Date.now();
 
-  // Optimistic reply — added to store immediately
   const optimisticReply: Reply = {
     id: clientId,
     threadId,
@@ -215,6 +253,9 @@ export async function postReply(
   store.addOptimisticReply(optimisticReply);
 
   try {
+    const groupKey = await getOrFetchGroupKey(groupId);
+    const encrypted = await encryptContent(body, groupKey, groupId);
+
     const response = await createReply(threadId, {
       encryptedBody: encrypted.ciphertext,
       bodyIv: encrypted.iv,
@@ -230,7 +271,10 @@ export async function postReply(
       updatedAt: new Date(response.createdAt).getTime(),
       syncStatus: 'synced',
     };
-  } catch {
+  } catch (e) {
+    if (__DEV__) {
+      console.error('[postReply]', e instanceof Error ? e.message : e);
+    }
     store.updateReplySyncStatus(clientId, 'failed');
     throw new Error('Failed to post reply');
   }
@@ -251,12 +295,6 @@ export async function createNewThread(
   authorId: string,
   authorUsername: string,
 ): Promise<Thread> {
-  const groupKey = await getOrFetchGroupKey(groupId);
-  const [encTitle, encBody] = await Promise.all([
-    encryptContent(title, groupKey, groupId),
-    encryptContent(body, groupKey, groupId),
-  ]);
-
   const clientId = generateUUID();
   const now = Date.now();
 
@@ -280,6 +318,12 @@ export async function createNewThread(
   store.addOptimisticThread(optimisticThread);
 
   try {
+    const groupKey = await getOrFetchGroupKey(groupId);
+    const [encTitle, encBody] = await Promise.all([
+      encryptContent(title, groupKey, groupId),
+      encryptContent(body, groupKey, groupId),
+    ]);
+
     const response = await createThread({
       groupId,
       encryptedTitle: encTitle.ciphertext,
@@ -296,7 +340,10 @@ export async function createNewThread(
       updatedAt: new Date(response.createdAt).getTime(),
       syncStatus: 'synced',
     };
-  } catch {
+  } catch (e) {
+    if (__DEV__) {
+      console.error('[createNewThread]', e instanceof Error ? e.message : e);
+    }
     store.updateThreadSyncStatus(clientId, 'failed');
     throw new Error('Failed to create thread');
   }

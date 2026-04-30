@@ -198,7 +198,8 @@ export function ThreadDetailScreen({
       );
       offsetRef.current = result.replies.length;
       hasMoreRef.current = result.hasMore;
-    } catch {
+    } catch (e) {
+      if (__DEV__) console.error('[ThreadDetail]', e instanceof Error ? e.message : e);
       setError('Could not load thread');
     } finally {
       setLoading(false);

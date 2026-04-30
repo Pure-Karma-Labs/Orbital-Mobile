@@ -71,10 +71,13 @@ export function getGroupMasterKey(conversationId: string): Uint8Array | null {
 }
 
 export function setGroupMasterKey(conversationId: string, key: Uint8Array): void {
-  execute('UPDATE conversations SET group_master_key = ? WHERE id = ?', [
-    key,
-    conversationId,
-  ]);
+  const now = Date.now();
+  execute(
+    `INSERT INTO conversations (id, type, group_master_key, member_count, active, unread_count, group_version, created_at, updated_at)
+     VALUES (?, 'group', ?, 0, 1, 0, 2, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET group_master_key = excluded.group_master_key`,
+    [conversationId, key, now, now],
+  );
 }
 
 export function clearAllGroupMasterKeys(): void {

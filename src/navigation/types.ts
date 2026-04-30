@@ -11,6 +11,8 @@ export type ThreadsStackParamList = {
   ThreadsList: undefined;
   ThreadDetail: { threadId: string; threadTitle?: string };
   ComposeThread: { groupId: string };
+  CreateOrbit: undefined;
+  JoinOrbit: undefined;
 };
 
 export type ChatsStackParamList = {

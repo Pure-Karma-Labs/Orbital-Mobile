@@ -37,9 +37,22 @@ jest.mock('../../stores', () => ({
     updateReplySyncStatus: jest.fn(),
   })),
   useConversations: () => ({
-    conversations: {},
-    conversationIds: [],
-    activeConversationId: null,
+    conversations: {
+      'group-1': {
+        id: 'group-1',
+        type: 'group',
+        name: 'Family Orbit',
+        memberCount: 3,
+        active: true,
+        muteUntil: null,
+        lastMessageAt: null,
+        unreadCount: 0,
+        createdAt: 1700000000000,
+        updatedAt: 1700000000000,
+      },
+    },
+    conversationIds: ['group-1'],
+    activeConversationId: 'group-1',
     setConversations: jest.fn(),
     upsertConversation: jest.fn(),
     removeConversation: jest.fn(),
@@ -119,11 +132,10 @@ describe('ThreadsScreen', () => {
   it('renders the orbit bar with orbit name', () => {
     const renderer = renderThreadsScreen();
     const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
-    // OrbitBar renders "Family ▾"
     const orbitNode = allText.find(
       (node) =>
         typeof node.props.children === 'string' &&
-        node.props.children === 'Family Orbit ▾',
+        node.props.children.includes('Family Orbit'),
     );
     expect(orbitNode).toBeDefined();
   });
@@ -164,7 +176,7 @@ describe('ThreadsScreen — with thread data', () => {
       threads: {
         'thread-1': {
           id: 'thread-1',
-          conversationId: 'conv-1',
+          conversationId: 'group-1',
           authorId: 'user-1',
           title: "Farmer's market on Saturday?",
           body: null,
@@ -177,7 +189,7 @@ describe('ThreadsScreen — with thread data', () => {
           syncStatus: 'synced',
         },
       },
-      threadIdsByConversation: {},
+      threadIdsByConversation: { 'group-1': ['thread-1'] },
       replies: {},
       replyIdsByThread: {},
       activeThreadId: null,

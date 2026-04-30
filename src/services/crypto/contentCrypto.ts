@@ -241,3 +241,47 @@ export async function decryptContent(
 
   return decodeUTF8(new Uint8Array(plaintext));
 }
+
+// ---------------------------------------------------------------------------
+// Group name encryption (single-blob wire format, no AAD)
+// ---------------------------------------------------------------------------
+
+export function encryptGroupName(name: string, groupKey: Uint8Array): string {
+  const plaintextBytes = encodeUTF8(name);
+  const emptyAad = new Uint8Array(0);
+
+  const result: ContentCryptoResult = aesGcmEncrypt(
+    toArrayBuffer(plaintextBytes),
+    toArrayBuffer(groupKey),
+    toArrayBuffer(emptyAad),
+  );
+
+  const ivBytes = new Uint8Array(result.iv);
+  const ctBytes = new Uint8Array(result.ciphertext);
+  const combined = new Uint8Array(ivBytes.length + ctBytes.length);
+  combined.set(ivBytes, 0);
+  combined.set(ctBytes, ivBytes.length);
+
+  return arrayBufferToBase64(toArrayBuffer(combined));
+}
+
+export function decryptGroupName(encrypted: string, groupKey: Uint8Array): string {
+  const combined = new Uint8Array(base64ToArrayBuffer(encrypted));
+
+  if (combined.length < 12) {
+    throw new Error('Encrypted group name too short');
+  }
+
+  const ivBytes = combined.slice(0, 12);
+  const ctBytes = combined.slice(12);
+  const emptyAad = new Uint8Array(0);
+
+  const plaintext: ArrayBuffer = aesGcmDecrypt(
+    toArrayBuffer(ctBytes),
+    toArrayBuffer(ivBytes),
+    toArrayBuffer(groupKey),
+    toArrayBuffer(emptyAad),
+  );
+
+  return decodeUTF8(new Uint8Array(plaintext));
+}

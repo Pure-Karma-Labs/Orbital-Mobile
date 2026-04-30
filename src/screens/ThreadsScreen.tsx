@@ -23,6 +23,7 @@ import { AsciiDay, AsciiSection } from '../components/AsciiSeparator';
 import { OrbitBar } from './threads/OrbitBar';
 import { SearchBar } from './threads/SearchBar';
 import { ThreadItem } from './threads/ThreadItem';
+import { OnboardingEmptyState } from './threads/OnboardingEmptyState';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -169,7 +170,7 @@ function EmptyState({ onCompose }: { onCompose: () => void }): React.JSX.Element
 
 export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Element {
   const theme = useTheme();
-  const { threads, threadIdsByConversation, activeConversationId } =
+  const { threads, threadIdsByConversation, activeConversationId, conversations } =
     useThreadsAndConversation();
   const [refreshing, setRefreshing] = useState(false);
 
@@ -254,36 +255,58 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
     flexGrow: 1,
   };
 
+  const handleCreateOrbit = useCallback(() => {
+    navigation.push('CreateOrbit');
+  }, [navigation]);
+
+  const handleJoinOrbit = useCallback(() => {
+    navigation.push('JoinOrbit');
+  }, [navigation]);
+
+  const isOnboarding = activeConversationId == null;
+  const activeConversation = activeConversationId
+    ? conversations[activeConversationId]
+    : undefined;
+
   return (
     <SafeAreaView style={containerStyle} edges={['top']} testID="threads-screen">
-      <OrbitBar
-        orbitName="Family Orbit"
-        onOpenOrbits={handleOpenOrbits}
-        onCompose={handleCompose}
-      />
-      <SearchBar />
-
-      {listRows.length === 0 ? (
-        <EmptyState onCompose={handleCompose} />
-      ) : (
-        <FlatList<ListRow>
-          data={listRows}
-          keyExtractor={keyExtractor}
-          renderItem={renderRow}
-          contentContainerStyle={listContentStyle}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={handleRefresh}
-              tintColor={theme.colors.blue}
-              colors={[theme.colors.blue]}
-            />
-          }
-          removeClippedSubviews
-          initialNumToRender={20}
-          maxToRenderPerBatch={10}
-          windowSize={5}
+      {isOnboarding ? (
+        <OnboardingEmptyState
+          onCreateOrbit={handleCreateOrbit}
+          onJoinOrbit={handleJoinOrbit}
         />
+      ) : (
+        <>
+          <OrbitBar
+            orbitName={activeConversation?.name ?? 'Orbit'}
+            onOpenOrbits={handleOpenOrbits}
+            onCompose={handleCompose}
+          />
+          <SearchBar />
+
+          {listRows.length === 0 ? (
+            <EmptyState onCompose={handleCompose} />
+          ) : (
+            <FlatList<ListRow>
+              data={listRows}
+              keyExtractor={keyExtractor}
+              renderItem={renderRow}
+              contentContainerStyle={listContentStyle}
+              refreshControl={
+                <RefreshControl
+                  refreshing={refreshing}
+                  onRefresh={handleRefresh}
+                  tintColor={theme.colors.blue}
+                  colors={[theme.colors.blue]}
+                />
+              }
+              removeClippedSubviews
+              initialNumToRender={20}
+              maxToRenderPerBatch={10}
+              windowSize={5}
+            />
+          )}
+        </>
       )}
     </SafeAreaView>
   );
@@ -295,8 +318,8 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
 
 function useThreadsAndConversation() {
   const { threads, threadIdsByConversation } = useThreads();
-  const { activeConversationId } = useConversations();
-  return { threads, threadIdsByConversation, activeConversationId };
+  const { activeConversationId, conversations } = useConversations();
+  return { threads, threadIdsByConversation, activeConversationId, conversations };
 }
 
 export default ThreadsScreen;

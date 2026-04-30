@@ -21,6 +21,8 @@ export type { EnvelopeTypeValue } from './cryptoService';
 export {
   encryptContent,
   decryptContent,
+  encryptGroupName,
+  decryptGroupName,
   getOrFetchGroupKey,
   clearGroupKeyCache,
   invalidateGroupKey,

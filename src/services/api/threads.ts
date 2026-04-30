@@ -31,7 +31,7 @@ export function getGroupThreads(
     offset: params?.offset,
     sort: params?.sort,
   });
-  const path = `/api/groups/${encodeURIComponent(groupId)}/threads${qs}`;
+  const path = `/api/threads/groups/${encodeURIComponent(groupId)}/threads${qs}`;
 
   return request<ListThreadsResponse>({
     method: 'GET',

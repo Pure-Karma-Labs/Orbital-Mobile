@@ -192,12 +192,16 @@ export function ThreadDetailScreen({
     try {
       setError(null);
       const loadedThread = await loadThread(threadId);
-      const result = await loadReplies(
-        threadId,
-        loadedThread.conversationId,
-      );
-      offsetRef.current = result.replies.length;
-      hasMoreRef.current = result.hasMore;
+      try {
+        const result = await loadReplies(
+          threadId,
+          loadedThread.conversationId,
+        );
+        offsetRef.current = result.replies.length;
+        hasMoreRef.current = result.hasMore;
+      } catch (e) {
+        if (__DEV__) console.error('[ThreadDetail] replies failed:', e instanceof Error ? e.message : e);
+      }
     } catch (e) {
       if (__DEV__) console.error('[ThreadDetail]', e instanceof Error ? e.message : e);
       setError('Could not load thread');

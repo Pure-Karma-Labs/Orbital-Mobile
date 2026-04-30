@@ -31,7 +31,7 @@ import {
   type TextStyle,
   type ViewStyle,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useTheme } from '../theme';
 import { useAuth, useThreads } from '../stores';
@@ -383,20 +383,20 @@ export function ThreadDetailScreen({
   // Render
   // ---------------------------------------------------------------------------
 
+  const insets = useSafeAreaInsets();
+
   return (
-    <SafeAreaView
-      style={containerStyle}
-      edges={['top', 'bottom']}
-      testID="thread-detail-screen"
-    >
-      <Header
-        title={thread?.title ?? threadTitle ?? 'Thread'}
-        onBack={() => navigation.goBack()}
-      />
+    <View style={containerStyle} testID="thread-detail-screen">
+      <SafeAreaView edges={['top']} style={{ backgroundColor: theme.colors.background }}>
+        <Header
+          title={thread?.title ?? threadTitle ?? 'Thread'}
+          onBack={() => navigation.goBack()}
+        />
+      </SafeAreaView>
 
       <KeyboardAvoidingView
         style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={0}
       >
         {loading && !thread ? (
@@ -408,30 +408,30 @@ export function ThreadDetailScreen({
             <Text style={errorTextStyle}>{error}</Text>
           </View>
         ) : (
-          <View style={{ flex: 1 }}>
-            <FlatList<ListRow>
-              data={listRows}
-              keyExtractor={keyExtractor}
-              renderItem={renderRow}
-              ListHeaderComponent={listHeader}
-              ListFooterComponent={listFooter}
-              refreshControl={
-                <RefreshControl
-                  refreshing={refreshing}
-                  onRefresh={handleRefresh}
-                  tintColor={theme.colors.blue}
-                  colors={[theme.colors.blue]}
-                />
-              }
-              onEndReached={handleEndReached}
-              onEndReachedThreshold={0.3}
-              initialNumToRender={20}
-              maxToRenderPerBatch={10}
-              windowSize={5}
-              keyboardShouldPersistTaps="handled"
-              keyboardDismissMode="interactive"
-            />
-          </View>
+          <FlatList<ListRow>
+            style={{ flex: 1 }}
+            data={listRows}
+            keyExtractor={keyExtractor}
+            renderItem={renderRow}
+            ListHeaderComponent={listHeader}
+            ListFooterComponent={listFooter}
+            contentContainerStyle={{ flexGrow: 1 }}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={handleRefresh}
+                tintColor={theme.colors.blue}
+                colors={[theme.colors.blue]}
+              />
+            }
+            onEndReached={handleEndReached}
+            onEndReachedThreshold={0.3}
+            initialNumToRender={20}
+            maxToRenderPerBatch={10}
+            windowSize={5}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="interactive"
+          />
         )}
 
         <ReplyComposer
@@ -441,7 +441,7 @@ export function ThreadDetailScreen({
           sending={sending}
         />
       </KeyboardAvoidingView>
-    </SafeAreaView>
+    </View>
   );
 }
 

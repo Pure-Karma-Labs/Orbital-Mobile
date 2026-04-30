@@ -56,8 +56,7 @@ export function JoinOrbitScreen({
     try {
       await joinOrbit(trimmedCode);
       navigation.goBack();
-    } catch (_err) {
-      // Generic error message — do not leak whether the code existed vs expired
+    } catch {
       setError('Invalid or expired invite code');
     } finally {
       setLoading(false);

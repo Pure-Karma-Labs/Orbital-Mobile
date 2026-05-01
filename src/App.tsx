@@ -15,6 +15,7 @@ import {
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider, useTheme } from './theme';
 import { useAuth } from './stores';
+import { useAppStore } from './stores/useAppStore';
 import { bootstrap } from './bootstrap';
 import { restoreSession } from './services/authService';
 import { LoginScreen } from './screens/LoginScreen';
@@ -24,9 +25,10 @@ import { AppNavigator } from './navigation';
 type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated';
 
 function App(): React.JSX.Element {
+  const colorScheme = useAppStore((s) => s.colorScheme);
   return (
     <SafeAreaProvider>
-      <ThemeProvider>
+      <ThemeProvider colorSchemeOverride={colorScheme}>
         <AppContent />
       </ThemeProvider>
     </SafeAreaProvider>

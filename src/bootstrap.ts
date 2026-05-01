@@ -27,6 +27,7 @@ export async function bootstrap(): Promise<void> {
   await clearKeychainIfFreshInstall();
   const mmkvKey = await getOrCreateMMKVKey();
   initMMKV(mmkvKey);
+  useAppStore.persist.rehydrate();
   const dbKey = await getOrCreateDatabaseKey();
   initDatabase(dbKey);
   runMigrations();

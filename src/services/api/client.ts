@@ -273,6 +273,16 @@ export async function request<T>(options: RequestOptions): Promise<T> {
       throw new ServerError(status, rawBody);
     }
 
+    if (status === 429) {
+      throw new ApiError(
+        'Rate limited — try again shortly',
+        429,
+        'RATE_LIMITED',
+        true,
+        rawBody,
+      );
+    }
+
     // Unexpected status
     throw new ApiError(
       'Unexpected server response',

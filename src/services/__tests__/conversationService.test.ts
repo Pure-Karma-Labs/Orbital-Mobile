@@ -3,8 +3,12 @@ jest.mock('../api/groups', () => ({
 }));
 
 const mockPersistGroupKey = jest.fn();
+const mockGetOrFetchGroupKey = jest.fn().mockResolvedValue(new Uint8Array(32));
+const mockDecryptGroupName = jest.fn((name: string, _key: Uint8Array) => name);
 jest.mock('../crypto/contentCrypto', () => ({
   persistGroupKey: (...args: unknown[]) => mockPersistGroupKey(...args),
+  getOrFetchGroupKey: (groupId: string) => mockGetOrFetchGroupKey(groupId),
+  decryptGroupName: (name: string, key: Uint8Array) => mockDecryptGroupName(name, key),
 }));
 
 const mockSetConversations = jest.fn();

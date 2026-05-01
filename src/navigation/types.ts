@@ -13,6 +13,7 @@ export type ThreadsStackParamList = {
   ComposeThread: { groupId: string };
   CreateOrbit: undefined;
   JoinOrbit: undefined;
+  OrbitSelector: undefined;
 };
 
 export type ChatsStackParamList = {

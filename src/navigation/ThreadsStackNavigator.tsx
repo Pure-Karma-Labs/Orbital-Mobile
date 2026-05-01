@@ -12,6 +12,7 @@ import ThreadDetailScreen from '../screens/ThreadDetailScreen';
 import { ComposeThreadScreen } from '../screens/ComposeThreadScreen';
 import CreateOrbitScreen from '../screens/CreateOrbitScreen';
 import JoinOrbitScreen from '../screens/JoinOrbitScreen';
+import { OrbitSelectorScreen } from '../screens/threads/OrbitSelectorScreen';
 
 const Stack = createNativeStackNavigator<ThreadsStackParamList>();
 
@@ -37,6 +38,11 @@ export function ThreadsStackNavigator(): React.JSX.Element {
       <Stack.Screen
         name="JoinOrbit"
         component={JoinOrbitScreen}
+        options={{ presentation: 'modal' }}
+      />
+      <Stack.Screen
+        name="OrbitSelector"
+        component={OrbitSelectorScreen}
         options={{ presentation: 'modal' }}
       />
     </Stack.Navigator>

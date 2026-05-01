@@ -23,6 +23,7 @@ export type ChatsStackParamList = {
 
 export type SettingsStackParamList = {
   SettingsMain: undefined;
+  EditProfile: undefined;
 };
 
 export type RootStackParamList = {

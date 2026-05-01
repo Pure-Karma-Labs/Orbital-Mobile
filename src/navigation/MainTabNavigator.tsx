@@ -6,7 +6,7 @@ import { useTheme } from '../theme';
 import { useAppStore } from '../stores/useAppStore';
 import { ThreadsStackNavigator } from './ThreadsStackNavigator';
 import ChatsScreen from '../screens/ChatsScreen';
-import SettingsScreen from '../screens/SettingsScreen';
+import { SettingsStackNavigator } from './SettingsStackNavigator';
 import { Emoji } from '../components/Emoji';
 
 const TAB_ICONS: Record<string, string> = {
@@ -74,7 +74,7 @@ export function MainTabNavigator(): React.JSX.Element {
       />
       <Tab.Screen
         name="Settings"
-        component={SettingsScreen}
+        component={SettingsStackNavigator}
         options={{
           tabBarIcon: () => <Emoji unified="2699-FE0F" size={20} />,
         }}

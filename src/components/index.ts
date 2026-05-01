@@ -28,5 +28,8 @@ export type { EmojiTextProps } from './EmojiText';
 export { OrbitalLoader } from './OrbitalLoader';
 export type { OrbitalLoaderProps } from './OrbitalLoader';
 
+export { OrbitalSpinner } from './OrbitalSpinner';
+export type { OrbitalSpinnerProps } from './OrbitalSpinner';
+
 export { AsciiBanner } from './AsciiBanner';
 export type { AsciiBannerProps } from './AsciiBanner';

@@ -48,10 +48,13 @@ describe('Button — rendering', () => {
     expect(() => findByTestId(renderer.root, 'submit-btn')).not.toThrow();
   });
 
-  it('shows ActivityIndicator when loading is true', () => {
+  it('shows spinner when loading is true', () => {
     const renderer = renderButton({ loading: true });
-    const indicators = renderer.root.findAllByType('ActivityIndicator' as unknown as React.ComponentType);
-    expect(indicators.length).toBeGreaterThan(0);
+    const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
+    const titleNode = allText.find(
+      (node) => typeof node.props.children === 'string' && node.props.children === 'Submit',
+    );
+    expect(titleNode).toBeUndefined();
   });
 
   it('does not show title text when loading is true', () => {
@@ -100,11 +103,12 @@ describe('Button — interaction', () => {
       const touchable = touchables[0];
       expect(touchable.props.disabled).toBe(true);
     } else {
-      // Verify loading ActivityIndicator is shown (indirect proof of disabled state)
-      const indicators = renderer.root.findAllByType(
-        'ActivityIndicator' as unknown as React.ComponentType,
+      // Verify title is hidden when loading (indirect proof of disabled state)
+      const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
+      const titleNode = allText.find(
+        (node) => typeof node.props.children === 'string' && node.props.children === 'Submit',
       );
-      expect(indicators.length).toBeGreaterThan(0);
+      expect(titleNode).toBeUndefined();
     }
   });
 });

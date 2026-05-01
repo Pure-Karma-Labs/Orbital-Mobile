@@ -7,7 +7,6 @@
 
 import React, { useEffect, useState } from 'react';
 import {
-  ActivityIndicator,
   StatusBar,
   View,
   type ViewStyle,
@@ -21,6 +20,7 @@ import { restoreSession } from './services/authService';
 import { LoginScreen } from './screens/LoginScreen';
 import { SignupScreen } from './screens/SignupScreen';
 import { AppNavigator } from './navigation';
+import { OrbitalSpinner } from './components/OrbitalSpinner';
 
 type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated';
 
@@ -94,7 +94,7 @@ function LoadingView(): React.JSX.Element {
 
   return (
     <View style={containerStyle}>
-      <ActivityIndicator size="large" color={theme.colors.blue} />
+      <OrbitalSpinner size={32} />
     </View>
   );
 }

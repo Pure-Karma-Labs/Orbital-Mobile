@@ -20,8 +20,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
-  FlatList,
+  Animated,
   KeyboardAvoidingView,
   Platform,
   RefreshControl,
@@ -43,6 +42,9 @@ import { ReplyItem } from './threadDetail/ReplyItem';
 import { ReplyComposer, type ReplyTarget } from './threadDetail/ReplyComposer';
 import type { Reply, Thread } from '../types/store';
 import type { ThreadsStackParamList } from '../navigation/types';
+import { OrbitalSpinner } from '../components/OrbitalSpinner';
+import { PullToRefreshOverlay } from '../components/PullToRefreshOverlay';
+import { usePullToRefresh } from '../hooks/usePullToRefresh';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -162,6 +164,7 @@ export function ThreadDetailScreen({
   // Local state
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const { scrollY, scrollProps } = usePullToRefresh();
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [replyTarget, setReplyTarget] = useState<ReplyTarget | null>(null);
@@ -346,7 +349,7 @@ export function ThreadDetailScreen({
     if (loadingMore) {
       return (
         <View style={{ paddingVertical: theme.spacing.base }}>
-          <ActivityIndicator color={theme.colors.blue} />
+          <OrbitalSpinner size={20} />
         </View>
       );
     }
@@ -399,37 +402,40 @@ export function ThreadDetailScreen({
       >
         {loading && !thread ? (
           <View style={centerStyle}>
-            <ActivityIndicator size="large" color={theme.colors.blue} />
+            <OrbitalSpinner size={32} />
           </View>
         ) : error && !thread ? (
           <View style={centerStyle}>
             <Text style={errorTextStyle}>{error}</Text>
           </View>
         ) : (
-          <FlatList<ListRow>
-            style={{ flex: 1 }}
-            data={listRows}
-            keyExtractor={keyExtractor}
-            renderItem={renderRow}
-            ListHeaderComponent={listHeader}
-            ListFooterComponent={listFooter}
-            contentContainerStyle={{ flexGrow: 1 }}
-            refreshControl={
-              <RefreshControl
-                refreshing={refreshing}
-                onRefresh={handleRefresh}
-                tintColor={theme.colors.blue}
-                colors={[theme.colors.blue]}
-              />
-            }
-            onEndReached={handleEndReached}
-            onEndReachedThreshold={0.3}
-            initialNumToRender={20}
-            maxToRenderPerBatch={10}
-            windowSize={5}
-            keyboardShouldPersistTaps="handled"
-            keyboardDismissMode="interactive"
-          />
+          <View style={{ flex: 1 }}>
+            <PullToRefreshOverlay scrollY={scrollY} refreshing={refreshing} />
+            <Animated.FlatList
+              style={{ flex: 1 }}
+              data={listRows}
+              keyExtractor={keyExtractor}
+              renderItem={renderRow}
+              ListHeaderComponent={listHeader}
+              ListFooterComponent={listFooter}
+              contentContainerStyle={{ flexGrow: 1 }}
+              refreshControl={
+                <RefreshControl
+                  refreshing={refreshing}
+                  onRefresh={handleRefresh}
+                  tintColor="transparent"
+                />
+              }
+              {...scrollProps}
+              onEndReached={handleEndReached}
+              onEndReachedThreshold={0.3}
+              initialNumToRender={20}
+              maxToRenderPerBatch={10}
+              windowSize={5}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="interactive"
+            />
+          </View>
         )}
 
         <ReplyComposer

@@ -15,6 +15,13 @@ jest.mock('../../services/threadService', () => ({
   loadThreadsForGroup: jest.fn().mockResolvedValue([]),
 }));
 
+jest.mock('../../hooks/usePullToRefresh', () => ({
+  usePullToRefresh: () => ({
+    scrollY: { interpolate: () => 0 },
+    scrollProps: {},
+  }),
+}));
+
 jest.mock('../../stores', () => ({
   useAuth: () => ({
     isAuthenticated: false,

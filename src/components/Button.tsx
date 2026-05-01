@@ -4,13 +4,13 @@
 
 import React from 'react';
 import {
-  ActivityIndicator,
   Text,
   TouchableOpacity,
   type TextStyle,
   type ViewStyle,
 } from 'react-native';
 import { useTheme } from '../theme';
+import { OrbitalSpinner } from './OrbitalSpinner';
 
 export interface ButtonProps {
   title: string;
@@ -65,10 +65,7 @@ export function Button({
       accessibilityState={{ disabled: isDisabled, busy: loading }}
     >
       {loading ? (
-        <ActivityIndicator
-          color={isPrimary ? '#FFFFFF' : theme.colors.textPrimary}
-          size="small"
-        />
+        <OrbitalSpinner size={20} />
       ) : (
         <Text style={textStyle}>{title}</Text>
       )}

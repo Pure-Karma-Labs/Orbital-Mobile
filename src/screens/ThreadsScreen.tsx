@@ -4,7 +4,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  FlatList,
+  Animated,
   RefreshControl,
   Text,
   View,
@@ -25,6 +25,8 @@ import { SearchBar } from './threads/SearchBar';
 import { ThreadItem } from './threads/ThreadItem';
 import { OnboardingEmptyState } from './threads/OnboardingEmptyState';
 import { loadThreadsForGroup } from '../services/threadService';
+import { PullToRefreshOverlay } from '../components/PullToRefreshOverlay';
+import { usePullToRefresh } from '../hooks/usePullToRefresh';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -174,6 +176,7 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
   const { threads, threadIdsByConversation, activeConversationId, conversations } =
     useThreadsAndConversation();
   const [refreshing, setRefreshing] = useState(false);
+  const { scrollY, scrollProps } = usePullToRefresh();
 
   // Get threads for the active conversation (or all threads if no active conversation)
   const threadList = useMemo((): Thread[] => {
@@ -300,24 +303,27 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
           {listRows.length === 0 ? (
             <EmptyState onCompose={handleCompose} />
           ) : (
-            <FlatList<ListRow>
-              data={listRows}
-              keyExtractor={keyExtractor}
-              renderItem={renderRow}
-              contentContainerStyle={listContentStyle}
-              refreshControl={
-                <RefreshControl
-                  refreshing={refreshing}
-                  onRefresh={handleRefresh}
-                  tintColor={theme.colors.blue}
-                  colors={[theme.colors.blue]}
-                />
-              }
-              removeClippedSubviews
-              initialNumToRender={20}
-              maxToRenderPerBatch={10}
-              windowSize={5}
-            />
+            <View style={{ flex: 1 }}>
+              <PullToRefreshOverlay scrollY={scrollY} refreshing={refreshing} />
+              <Animated.FlatList
+                data={listRows}
+                keyExtractor={keyExtractor}
+                renderItem={renderRow}
+                contentContainerStyle={listContentStyle}
+                refreshControl={
+                  <RefreshControl
+                    refreshing={refreshing}
+                    onRefresh={handleRefresh}
+                    tintColor="transparent"
+                  />
+                }
+                {...scrollProps}
+                removeClippedSubviews
+                initialNumToRender={20}
+                maxToRenderPerBatch={10}
+                windowSize={5}
+              />
+            </View>
           )}
         </>
       )}

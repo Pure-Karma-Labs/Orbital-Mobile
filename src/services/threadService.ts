@@ -41,7 +41,6 @@ async function mapThreadResponse(
   response: ThreadResponse,
   groupKey: Uint8Array,
 ): Promise<Thread> {
-  // Decrypt title and body — only if present (can be null)
   const [title, body] = await Promise.all([
     response.encryptedTitle && response.titleIv
       ? decryptContent(
@@ -148,6 +147,7 @@ async function mapThreadListItem(
  */
 export async function loadThreadsForGroup(groupId: string): Promise<Thread[]> {
   const response = await getGroupThreads(groupId);
+
   const groupKey = await getOrFetchGroupKey(groupId);
 
   const threads = await Promise.all(
@@ -335,14 +335,17 @@ export async function createNewThread(
       bodyIv: encBody.iv,
     });
 
-    store.updateThreadSyncStatus(clientId, 'synced');
-    return {
+    const finalThread: Thread = {
       ...optimisticThread,
       id: response.threadId,
       createdAt: new Date(response.createdAt).getTime(),
       updatedAt: new Date(response.createdAt).getTime(),
       syncStatus: 'synced',
     };
+
+    store.removeThread(clientId);
+    store.upsertThread(finalThread);
+    return finalThread;
   } catch (e) {
     if (__DEV__) {
       console.warn('[createNewThread]', e instanceof Error ? e.message : e);

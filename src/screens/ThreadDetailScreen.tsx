@@ -31,7 +31,7 @@ import {
   type TextStyle,
   type ViewStyle,
 } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useTheme } from '../theme';
 import { useAuth, useThreads } from '../stores';
@@ -382,8 +382,6 @@ export function ThreadDetailScreen({
   // ---------------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------------
-
-  const insets = useSafeAreaInsets();
 
   return (
     <View style={containerStyle} testID="thread-detail-screen">

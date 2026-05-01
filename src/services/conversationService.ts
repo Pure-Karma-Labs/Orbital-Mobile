@@ -26,7 +26,7 @@ async function mapGroupResponse(response: GroupResponse): Promise<Conversation> 
       const groupKey = await getOrFetchGroupKey(response.groupId);
       name = decryptGroupName(response.encryptedName, groupKey);
     } catch {
-      // Decryption failed — legacy plaintext or missing key. Use raw value.
+      name = '(unable to decrypt)';
     }
   }
 
@@ -52,7 +52,7 @@ export async function loadConversations(): Promise<void> {
       try {
         persistGroupKey(group.groupId, group.encryptedGroupKey);
       } catch {
-        // Validation failed — skip, will retry on next load
+        if (__DEV__) console.warn('[loadConversations] invalid group key for', group.groupId);
       }
     }
   }
@@ -115,7 +115,7 @@ export async function joinOrbit(
       const groupKeyBytes = new Uint8Array(base64ToArrayBuffer(response.groupKey));
       decryptedName = decryptGroupName(response.encryptedName, groupKeyBytes);
     } catch {
-      // Decryption failed — use raw encrypted name as fallback
+      decryptedName = '(unable to decrypt)';
     }
   }
 

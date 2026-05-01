@@ -223,8 +223,8 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
   }, [navigation, activeConversationId]);
 
   const handleOpenOrbits = useCallback(() => {
-    // Orbit selector will be implemented in a later phase
-  }, []);
+    navigation.navigate('OrbitSelector');
+  }, [navigation]);
 
   const renderRow = useCallback(
     ({ item }: ListRenderItemInfo<ListRow>) => {

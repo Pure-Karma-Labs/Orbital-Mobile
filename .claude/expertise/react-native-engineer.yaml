@@ -1,14 +1,14 @@
-version: "1.3"
-last_updated: "2026-04-30"
+version: "1.4"
+last_updated: "2026-05-01"
 agent: react-native-engineer
 
 core_files:
   - path: src/App.tsx
-    purpose: Application entry point — wraps SafeAreaProvider + ThemeProvider, uses theme colors for StatusBar
+    purpose: "Application entry point — wraps SafeAreaProvider + ThemeProvider. Reads colorScheme from store via colorSchemeOverride prop. Uses OrbitalSpinner in LoadingView."
     key_symbols:
       - App
       - AppContent
-    last_hash: e158828
+    last_hash: 1faa458
 
   - path: src/theme/colors.ts
     purpose: Light/dark ColorPalette objects and getReplyDepthColors() — all hex/rgba token values
@@ -129,15 +129,36 @@ core_files:
     last_hash: new
 
   - path: src/components/AsciiBanner.tsx
-    purpose: "Retro double-box ASCII banner (╔═══╗ style). Mono font, blue color, configurable text prop. Used on auth screens as subtitle replacement."
+    purpose: "Retro double-box ASCII banner (double-line style). Mono font, blue color, configurable text prop. Used on auth screens as subtitle replacement."
     key_symbols:
       - AsciiBanner
       - AsciiBannerProps
     last_hash: new
 
   - path: src/components/index.ts
-    purpose: "Barrel export — TextInput, Button, ErrorBanner, Header, AsciiDay, AsciiSection, Avatar, Badge, OrbitalLoader, AsciiBanner"
-    last_hash: modified
+    purpose: "Barrel export — TextInput, Button, ErrorBanner, Header, AsciiDay, AsciiSection, Avatar, Badge, OrbitalLoader, AsciiBanner, OrbitalSpinner"
+    last_hash: 1faa458
+
+  - path: src/components/OrbitalSpinner.tsx
+    purpose: "Compact three-dot spinner — blue/purple/yellow dots rotating clockwise. Uses recursive Animated.timing (not Animated.loop) for smooth continuous rotation. Configurable size prop (default 24px)."
+    key_symbols:
+      - OrbitalSpinner
+      - OrbitalSpinnerProps
+    last_hash: 1faa458
+
+  - path: src/components/PullToRefreshOverlay.tsx
+    purpose: "Custom pull-to-refresh overlay using OrbitalSpinner. Driven by Animated.Value scrollY for translate/opacity/scale interpolation. iOS only (Android uses native RefreshControl)."
+    key_symbols:
+      - PullToRefreshOverlay
+      - PullToRefreshOverlayProps
+    last_hash: 1faa458
+
+  - path: src/hooks/usePullToRefresh.ts
+    purpose: "Hook for custom pull-to-refresh — provides scrollY Animated.Value, onScroll handler (Animated.event with native driver), and refreshing state. Requires Animated.FlatList for native onScroll driver."
+    key_symbols:
+      - usePullToRefresh
+      - UsePullToRefreshResult
+    last_hash: 1faa458
 
   - path: src/screens/LoginScreen.tsx
     purpose: "Login screen — OrbitalLoader + Fira Sans title + AsciiBanner subtitle + username/password form + underlined switch link (fontSize.base)"
@@ -152,6 +173,57 @@ core_files:
       - SignupScreen
       - SignupScreenProps
     last_hash: modified
+
+  - path: src/screens/SettingsScreen.tsx
+    purpose: "Settings screen — ScrollView with ProfileCard, theme toggle (system/light/dark), storage quota, orbit name, and logout. Composes ProfileCard, SettingsRow, QuotaBar sub-components."
+    key_symbols:
+      - SettingsScreen
+    last_hash: ce2229d
+
+  - path: src/screens/settings/ProfileCard.tsx
+    purpose: "Profile card sub-component — avatar, display name, @username handle, edit profile link. Memoized."
+    key_symbols:
+      - ProfileCard
+      - ProfileCardProps
+    last_hash: ce2229d
+
+  - path: src/screens/settings/SettingsRow.tsx
+    purpose: "Generic settings row — emoji icon, label, optional value text, chevron. Pressable with onPress callback. Memoized."
+    key_symbols:
+      - SettingsRow
+      - SettingsRowProps
+    last_hash: ce2229d
+
+  - path: src/screens/settings/QuotaBar.tsx
+    purpose: "Storage quota progress bar — shows used/total label with filled track. Clamps percentage 0-100. Memoized."
+    key_symbols:
+      - QuotaBar
+      - QuotaBarProps
+    last_hash: ce2229d
+
+  - path: src/screens/threads/OrbitSelectorScreen.tsx
+    purpose: "Modal screen for switching active orbit — FlatList of group conversations with planet emoji, checkmark on active, create/join orbit footer actions."
+    key_symbols:
+      - OrbitSelectorScreen
+      - OrbitSelectorScreenProps
+    last_hash: 10bc709
+
+  - path: src/screens/threads/OrbitListItem.tsx
+    purpose: "Orbit list item sub-component — planet emoji, orbit name, member count, checkmark active indicator. Pressable, memoized."
+    key_symbols:
+      - OrbitListItem
+      - OrbitListItemProps
+    last_hash: 10bc709
+
+  - path: src/navigation/SettingsStackNavigator.tsx
+    purpose: "Native stack navigator for Settings tab — wraps SettingsScreen with potential sub-screen push navigation."
+    key_symbols:
+      - SettingsStackNavigator
+    last_hash: ce2229d
+
+  - path: src/navigation/MainTabNavigator.tsx
+    purpose: "Bottom tab navigator — Threads, Chats, Settings tabs. Settings tab points to SettingsStackNavigator for nested push navigation."
+    last_hash: ce2229d
 
   - path: ios/OrbitalMobile/Info.plist
     purpose: "iOS config — UIAppFonts has 7 entries (5 BitstreamVera + 2 FiraSans). Fonts linked via npx react-native-asset."
@@ -222,16 +294,16 @@ integration_points:
     purpose: Local persistent storage for offline-first support — all 17 tables defined in migration 001
 
   - system: React Navigation
-    interface: src/navigation/ (to be created)
-    purpose: App navigation architecture — tab navigator (Threads, Chats, Settings) with nested stack navigators per tab
+    interface: src/navigation/
+    purpose: "App navigation architecture — tab navigator (Threads, Chats, Settings) with nested stack navigators per tab. Each tab owns its own NativeStackNavigator."
 
   - system: Zustand Stores
-    interface: src/stores/ (to be created)
+    interface: src/stores/
     purpose: Global state management — typed slices for auth, conversations, threads, replies, media, and UI state
 
 patterns:
   - name: directory-structure
-    description: "Source organized by domain: src/{screens,components,navigation,stores,services,types,theme,crypto,database,utils}. Each domain directory has a .gitkeep placeholder."
+    description: "Source organized by domain: src/{screens,components,navigation,stores,services,types,theme,crypto,database,utils,hooks}. Each domain directory has a .gitkeep placeholder."
 
   - name: strict-typescript
     description: "tsconfig uses strict mode with noImplicitAny, noUnusedLocals, noUnusedParameters, noImplicitReturns, forceConsistentCasingInFileNames"
@@ -261,7 +333,7 @@ patterns:
     description: "Project uses three font families: BitstreamVeraSans (body, PostScript: BitstreamVeraSans-Roman), FiraSans (headers — Trebuchet MS substitute, PostScript: FiraSans-Regular for header token, FiraSans-Bold available but not used — Bold was too heavy at display sizes), BitstreamVeraSansMono (monospace, PostScript: BitstreamVeraSansMono-Roman). 7 fonts total in iOS UIAppFonts. All must be linked via npx react-native-asset and rebuilt natively."
 
   - name: auth-screen-layout
-    description: "Auth screens compose: OrbitalLoader (animated, 64px, with spacing.lg bottom margin) → Fira Sans title ('Orbital') → AsciiBanner (replaces subtitle text) → form fields → underlined switch link at fontSize.base (not fontSize.sm). SignupScreen uses useSafeAreaInsets() for notch safety."
+    description: "Auth screens compose: OrbitalLoader (animated, 64px, with spacing.lg bottom margin) -> Fira Sans title ('Orbital') -> AsciiBanner (replaces subtitle text) -> form fields -> underlined switch link at fontSize.base (not fontSize.sm). SignupScreen uses useSafeAreaInsets() for notch safety."
 
   - name: rn-animation-no-transform-origin
     description: "React Native has no transform-origin support. For off-center rotation (like orbiting dots), use tall invisible 'arm' views centered on the pivot point with visible elements at the ends. Animated.loop() snaps on reset — use recursive Animated.timing() with setValue() for smooth continuous rotation."
@@ -270,10 +342,10 @@ patterns:
     description: "All screens without a React Navigation header MUST use useSafeAreaInsets() from react-native-safe-area-context for top padding. Critical for auth screens, modals, and onboarding. Never hardcode status bar height."
 
   - name: design-spec-first
-    description: "Always read docs/design/ specs before UI work. Read order: CLAUDE-DESIGN-BRIEF.md (rules) → MOBILE-DESIGN-FOUNDATION.md (tokens) → MOBILE-PATTERNS.md (mobile patterns) → per-screen spec. Code tokens must match spec exactly — verify on-device after changes."
+    description: "Always read docs/design/ specs before UI work. Read order: CLAUDE-DESIGN-BRIEF.md (rules) -> MOBILE-DESIGN-FOUNDATION.md (tokens) -> MOBILE-PATTERNS.md (mobile patterns) -> per-screen spec. Code tokens must match spec exactly — verify on-device after changes."
 
   - name: thread-detail-layout
-    description: "Correct layout for list + bottom composer + keyboard: outer View (not SafeAreaView) flex:1 → SafeAreaView edges=['top'] wraps Header only → KeyboardAvoidingView behavior='padding' keyboardVerticalOffset=0 flex:1 → FlatList style={flex:1} + ReplyComposer as siblings. Do NOT wrap FlatList in extra View. Do NOT use SafeAreaView edges=['bottom'] with KAV — they fight."
+    description: "Correct layout for list + bottom composer + keyboard: outer View (not SafeAreaView) flex:1 -> SafeAreaView edges=['top'] wraps Header only -> KeyboardAvoidingView behavior='padding' keyboardVerticalOffset=0 flex:1 -> FlatList style={flex:1} + ReplyComposer as siblings. Do NOT wrap FlatList in extra View. Do NOT use SafeAreaView edges=['bottom'] with KAV — they fight."
 
   - name: flatlist-infinite-loop-guard
     description: "In onEndReached handlers, set hasMoreRef.current=false in catch blocks. Otherwise a failed API call leaves hasMore=true and onEndReached fires again immediately, creating an infinite 429 loop."
@@ -283,3 +355,21 @@ patterns:
 
   - name: flatlist-no-remove-clipped-subviews
     description: "Avoid removeClippedSubviews on FlatLists with touch-sensitive siblings (composers, inputs). It can clip touch areas of adjacent components."
+
+  - name: orbital-spinner-pattern
+    description: "OrbitalSpinner is a compact (default 24px) version of the OrbitalLoader. Three brand-colored dots (blue, purple, yellow) positioned 120 degrees apart, rotating clockwise. Uses recursive Animated.timing (not Animated.loop) for smooth continuous rotation without snap/jump on cycle reset. Used in PullToRefreshOverlay and LoadingView."
+
+  - name: custom-pull-to-refresh
+    description: "usePullToRefresh hook + PullToRefreshOverlay component. Hook provides scrollY Animated.Value and onScroll handler using Animated.event with useNativeDriver:true. Requires Animated.FlatList (not plain FlatList) for native scroll event driver. iOS only — Android uses native RefreshControl. PullToRefreshOverlay interpolates scrollY for translate, opacity, and scale of the OrbitalSpinner."
+
+  - name: settings-screen-architecture
+    description: "Settings screen is a ScrollView composing ProfileCard (avatar + name + handle), SectionHeader helper, SettingsRow (emoji icon + label + value + chevron), and QuotaBar (progress bar with used/total label). Sub-components live in src/screens/settings/ and are memoized. Screen fetches quota from API on mount."
+
+  - name: stack-navigator-per-tab
+    description: "Each bottom tab has its own NativeStackNavigator for sub-screen push navigation. SettingsStackNavigator wraps SettingsScreen. ThreadsStackNavigator wraps InboxScreen + ThreadDetailScreen + OrbitSelectorScreen. This allows each tab to maintain independent navigation state."
+
+  - name: orbit-selector-pattern
+    description: "OrbitSelectorScreen is a modal screen in ThreadsStackNavigator. FlatList of group conversations filtered from store. Each OrbitListItem shows planet emoji, orbit name, member count, and checkmark for active orbit. Footer has Create Orbit and Join Orbit pressable actions. Selecting an orbit calls setActiveConversation and goBack."
+
+  - name: theme-toggle-wiring
+    description: "App.tsx reads colorScheme from useUI() store selector. Passes it as colorSchemeOverride prop to ThemeProvider. MMKV rehydration in bootstrap.ts ensures the persisted preference is loaded before first render. Settings screen cycles through system -> light -> dark via setColorScheme store action."

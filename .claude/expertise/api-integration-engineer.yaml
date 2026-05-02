@@ -159,6 +159,8 @@ resolved_issues:
   - Reply endpoints 500 — fixed: missing parent_reply_id column (migration 20)
   - uniffi stub bindings — fixed: real bindings regenerated via ubrn build ios
   - crypto.getRandomValues undefined — fixed: react-native-get-random-values polyfill
+  - Backend rate limiter scoping — authLimiter (10 req/15min) was applied to all /api/* routes; fixed to only /api/login and /api/signup
+  - Optimistic thread duplication — createNewThread now calls removeThread(clientId) + upsertThread(finalThread) instead of just updating sync status
 
 endpoint_paths:
   note: Threads router is mounted at /api/threads in the backend
@@ -167,6 +169,7 @@ endpoint_paths:
   getThreadReplies: /api/threads/:threadId/replies
   createThread: /api/threads (POST)
   createReply: /api/threads/:threadId/replies (POST, returns 201 not 200)
+  getGroupQuota: /api/groups/:groupId/quota (GET, groups router not threads router)
 
 pagination_pattern:
   type: offset
@@ -176,6 +179,20 @@ resilience_patterns:
   reply_decryption: Promise.allSettled — one undecryptable reply doesn't fail the batch
   onEndReached: Set hasMoreRef=false on error to prevent infinite 429 loop
   encrypt_decrypt: Synchronous FFI calls — async wrappers removed
+  name_decryption_fallback: Show '(unable to decrypt)' not raw ciphertext on decryption failure
+  optimistic_thread_finalize: removeThread(clientId) + upsertThread(finalThread) — never leave both optimistic and server threads in store
+
+client_error_mapping:
+  429: RATE_LIMITED (retryable)
+  401: AUTH_ERROR (clears tokens)
+  403: FORBIDDEN (does NOT clear tokens)
+
+bootstrap_dependency:
+  mmkv_rehydration: Must call useAppStore.persist.rehydrate() after initMMKV() in bootstrap.ts — store is created at module-import time before MMKV is initialized
+
+quota_caller_contract:
+  guard_null: activeConversationId can be null on cold start (not persisted)
+  guard_dm: activeConversationId could be a DM — check conversations[id]?.type === 'group' before calling getGroupQuota
 
 api_client_transforms:
   request: camelCase → snake_case (automatic via camelToSnake in client.ts)

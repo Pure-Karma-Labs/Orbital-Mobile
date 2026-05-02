@@ -1,5 +1,5 @@
 version: "3.0"
-last_updated: "2026-04-09"
+last_updated: "2026-05-01"
 agent: signal-crypto-specialist
 
 core_files:
@@ -33,6 +33,10 @@ core_files:
     purpose: TypeScript interfaces for all Signal store rows
   - path: docs/security-audit-phase1.md
     purpose: Phase 1 security audit — 14 findings, 23 positive verifications
+  - path: src/services/crypto/contentCrypto.ts
+    purpose: AES-256-GCM content encryption, group key cache, persistGroupKey, encryptGroupName/decryptGroupName
+  - path: src/services/conversationService.ts
+    purpose: Orbit CRUD orchestration with defensive catches for legacy plaintext names and placeholder keys
 
 documentation:
   - path: docs/libsignal-api-surface.md
@@ -63,6 +67,10 @@ integration_points:
     interface: "POST /api/keys/bundle, GET /api/keys/count, GET /api/keys/bundle/:serviceId, POST /v1/messages"
     purpose: Pre-key bundle management, encrypted envelope relay
 
+  - system: orbital-backend PostgreSQL
+    interface: "ssh root@134.199.230.235, sudo -u postgres psql -d orbital"
+    notes: "groups table uses 'id' not 'group_id', columns: id, encrypted_name, created_by"
+
 patterns:
   - name: preloaded-store
     description: "TypeScript reads store data → passes Input records to Rust → Rust uses InMemSignalProtocolStore + block_on() → returns Result records → TypeScript persists mutations"
@@ -80,6 +88,10 @@ patterns:
     description: "libsignal types serialize to Vec<u8>/ArrayBuffer at the FFI boundary — stores handle raw bytes"
   - name: device-id-clamping
     description: "DeviceId is NonZeroU8 (1-127) — u32 from TypeScript must be clamped before conversion"
+  - name: legacy-data-tolerance
+    description: "Backend returns plaintext orbit names and 'placeholder-key' group keys from Desktop-era orbits; catch blocks in conversationService.ts are load-bearing, not dead code"
+  - name: stale-docstring-persistGroupKey
+    description: "JSDoc on persistGroupKey() claims it generates a fresh key for invalid input, but it actually throws; the caller's catch handles the failure"
 
 blockers:
   - name: identity-key-keychain-migration
@@ -91,3 +103,6 @@ blockers:
   - name: dead-code-cleanup
     description: "stores.rs, store_adapters.rs adapter structs, client.rs are dead code from callback path"
     resolution: "Tracked as Issue #63. Remove after confirming no references."
+  - name: legacy-orbit-migration
+    description: "Desktop-era orbits have plaintext encrypted_name and 'placeholder-key' encrypted_group_key; no server-side migration exists"
+    resolution: "Handled defensively on mobile. Test accounts re-provisioned with fresh encrypted orbits."

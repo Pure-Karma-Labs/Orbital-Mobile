@@ -1,21 +1,26 @@
 /**
  * Reply composer — fixed at the bottom of the thread detail screen.
  *
- * Shows a text input with a send button. When replying to a specific reply,
- * a context bar appears above the input showing "Replying to @username".
- * Tapping the X on the context bar clears the reply-to target.
+ * Shows a text input with a send button and an emoji toggle. When replying
+ * to a specific reply, a context bar appears above the input showing
+ * "Replying to @username". Tapping the X on the context bar clears the
+ * reply-to target.
+ *
+ * Text state is controlled by the parent (ThreadDetailScreen) so the parent
+ * can insert emoji characters from the EmojiPicker.
  */
 
-import React, { useCallback, useState } from 'react';
+import React, { useCallback } from 'react';
 import {
   Text,
-  TextInput,
+  TextInput as RNTextInput,
   TouchableOpacity,
   View,
   type TextStyle,
   type ViewStyle,
 } from 'react-native';
 import { useTheme } from '../../theme';
+import { Emoji } from '../../components/Emoji';
 
 export interface ReplyTarget {
   replyId: string;
@@ -32,6 +37,16 @@ export interface ReplyComposerProps {
   onSend: (body: string) => void;
   /** Whether a send is currently in progress */
   sending: boolean;
+  /** Controlled text value */
+  text: string;
+  /** Called when text changes */
+  onChangeText: (text: string) => void;
+  /** Whether the emoji picker is currently visible */
+  showEmojiPicker?: boolean;
+  /** Called to toggle the emoji picker */
+  onToggleEmojiPicker?: () => void;
+  /** Called when the text input receives focus */
+  onInputFocus?: () => void;
 }
 
 export const ReplyComposer = React.memo(function ReplyComposer({
@@ -39,18 +54,26 @@ export const ReplyComposer = React.memo(function ReplyComposer({
   onClearReplyTarget,
   onSend,
   sending,
+  text,
+  onChangeText,
+  showEmojiPicker,
+  onToggleEmojiPicker,
+  onInputFocus,
 }: ReplyComposerProps): React.JSX.Element {
   const theme = useTheme();
-  const [text, setText] = useState('');
 
   const canSend = text.trim().length > 0 && !sending;
 
   const handleSend = useCallback(() => {
     if (!canSend) return;
     const body = text.trim();
-    setText('');
+    onChangeText('');
     onSend(body);
-  }, [canSend, text, onSend]);
+  }, [canSend, text, onSend, onChangeText]);
+
+  const handleFocus = useCallback(() => {
+    onInputFocus?.();
+  }, [onInputFocus]);
 
   const containerStyle: ViewStyle = {
     backgroundColor: theme.colors.surface,
@@ -112,6 +135,14 @@ export const ReplyComposer = React.memo(function ReplyComposer({
     marginLeft: theme.spacing.xs,
   };
 
+  const emojiButtonStyle: ViewStyle = {
+    minWidth: 36,
+    minHeight: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: theme.spacing.xs,
+  };
+
   const sendTextStyle: TextStyle = {
     fontFamily: theme.typography.fontFamily.bodyBold,
     fontSize: theme.typography.fontSize.base,
@@ -136,10 +167,22 @@ export const ReplyComposer = React.memo(function ReplyComposer({
         </View>
       )}
       <View style={inputRowStyle}>
-        <TextInput
+        {onToggleEmojiPicker != null && (
+          <TouchableOpacity
+            style={emojiButtonStyle}
+            onPress={onToggleEmojiPicker}
+            accessibilityRole="button"
+            accessibilityLabel={showEmojiPicker ? 'Hide emoji picker' : 'Show emoji picker'}
+            testID="emoji-toggle-button"
+          >
+            <Emoji unified={showEmojiPicker ? '2328-FE0F' : '1F60A'} size={22} />
+          </TouchableOpacity>
+        )}
+        <RNTextInput
           style={inputStyle}
           value={text}
-          onChangeText={setText}
+          onChangeText={onChangeText}
+          onFocus={handleFocus}
           placeholder="Type a reply..."
           placeholderTextColor={theme.colors.textTertiary}
           multiline

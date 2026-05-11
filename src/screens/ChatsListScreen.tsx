@@ -71,8 +71,8 @@ function EmptyState({ onNewChat }: { onNewChat: () => void }): React.JSX.Element
       <View style={boxStyle}>
         <Text style={borderStyle}>{'┌─────────────────────┐'}</Text>
         <Text style={messageStyle}>{'No chats yet\nStart a conversation!'}</Text>
-        <Button title="New Chat" onPress={onNewChat} variant="primary" />
         <Text style={borderStyle}>{'└─────────────────────┘'}</Text>
+        <Button title="New Chat" onPress={onNewChat} variant="primary" />
       </View>
     </View>
   );

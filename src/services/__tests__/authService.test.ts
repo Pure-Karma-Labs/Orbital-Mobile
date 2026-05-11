@@ -68,8 +68,10 @@ jest.mock('../../database/connection', () => ({
 }));
 
 const mockLoadConversations = jest.fn().mockResolvedValue(undefined);
+const mockLoadDmConversations = jest.fn().mockResolvedValue(undefined);
 jest.mock('../conversationService', () => ({
   loadConversations: (...args: unknown[]) => mockLoadConversations(...args),
+  loadDmConversations: (...args: unknown[]) => mockLoadDmConversations(...args),
 }));
 
 jest.mock('../../stores/middleware/persistence', () => ({

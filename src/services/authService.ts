@@ -22,7 +22,7 @@ import { removeSecureItem } from './secure-storage/secureStorage';
 import { SecureKeys } from './secure-storage/constants';
 import { execute } from '../database/queryHelpers';
 import { isDatabaseInitialized } from '../database/connection';
-import { loadConversations } from './conversationService';
+import { loadConversations, loadDmConversations } from './conversationService';
 
 /**
  * Log in with username + password. On success, stores tokens and populates
@@ -42,6 +42,9 @@ export async function loginUser(
   });
   await loadConversations().catch((e: unknown) => {
     if (__DEV__) console.warn('[ConversationSync]', e instanceof Error ? e.message : e);
+  });
+  await loadDmConversations().catch((e: unknown) => {
+    if (__DEV__) console.warn('[DmSync]', e instanceof Error ? e.message : e);
   });
   ensureKeysInitialized().catch((e: unknown) => {
     if (__DEV__) console.warn('[KeyMaintenance]', e instanceof Error ? e.message : e);
@@ -76,6 +79,9 @@ export async function signupUser(
   await loadConversations().catch((e: unknown) => {
     if (__DEV__) console.warn('[ConversationSync]', e instanceof Error ? e.message : e);
   });
+  await loadDmConversations().catch((e: unknown) => {
+    if (__DEV__) console.warn('[DmSync]', e instanceof Error ? e.message : e);
+  });
 }
 
 /**
@@ -100,6 +106,9 @@ export async function restoreSession(): Promise<boolean> {
     });
     await loadConversations().catch((e: unknown) => {
       if (__DEV__) console.warn('[ConversationSync]', e instanceof Error ? e.message : e);
+    });
+    await loadDmConversations().catch((e: unknown) => {
+      if (__DEV__) console.warn('[DmSync]', e instanceof Error ? e.message : e);
     });
     ensureKeysInitialized().catch((e: unknown) => {
       if (__DEV__) console.warn('[KeyMaintenance]', e instanceof Error ? e.message : e);

@@ -5,7 +5,7 @@
  * Components never call the groups API or store directly.
  */
 
-import { listGroups, createGroup, joinGroup } from './api/groups';
+import { listGroups, createGroup, joinGroup, listDms, createDm } from './api/groups';
 import {
   persistGroupKey,
   generateGroupKey,
@@ -16,7 +16,7 @@ import {
 import { base64ToArrayBuffer } from './crypto/utils';
 import { useAppStore } from '../stores/useAppStore';
 import type { Conversation } from '../types/store';
-import type { GroupResponse } from '../types/api';
+import type { DmResponse, GroupResponse } from '../types/api';
 
 async function mapGroupResponse(response: GroupResponse): Promise<Conversation> {
   let name: string | null = response.encryptedName ?? null;
@@ -95,6 +95,77 @@ export async function createOrbit(name: string): Promise<{ groupId: string }> {
   store.setActiveConversation(response.groupId);
 
   return { groupId: response.groupId };
+}
+
+function mapDmResponse(response: DmResponse): Conversation {
+  return {
+    id: response.groupId,
+    type: 'direct',
+    name: response.recipient.username,
+    memberCount: 2,
+    active: true,
+    muteUntil: null,
+    lastMessageAt: response.lastMessageAt
+      ? new Date(response.lastMessageAt).getTime()
+      : null,
+    unreadCount: 0,
+    createdAt: new Date(response.createdAt).getTime(),
+    updatedAt: new Date(response.createdAt).getTime(),
+  };
+}
+
+export async function loadDmConversations(): Promise<void> {
+  const dms = await listDms();
+
+  for (const dm of dms) {
+    if (dm.encryptedGroupKey) {
+      try {
+        persistGroupKey(dm.groupId, dm.encryptedGroupKey);
+      } catch {
+        if (__DEV__) console.warn('[loadDmConversations] invalid group key for', dm.groupId);
+      }
+    }
+  }
+
+  const conversations = dms.map(mapDmResponse);
+
+  const store = useAppStore.getState();
+  for (const conversation of conversations) {
+    store.upsertConversation(conversation);
+  }
+}
+
+export async function startDm(
+  recipientId: string,
+): Promise<{ conversationId: string; recipientName: string }> {
+  const { keyBase64 } = generateGroupKey();
+
+  const response = await createDm({
+    recipientId,
+    encryptedGroupKey: keyBase64,
+  });
+
+  persistGroupKey(response.groupId, response.groupKey);
+
+  const now = Date.now();
+  const store = useAppStore.getState();
+  store.upsertConversation({
+    id: response.groupId,
+    type: 'direct',
+    name: response.recipient.username,
+    memberCount: 2,
+    active: true,
+    muteUntil: null,
+    lastMessageAt: null,
+    unreadCount: 0,
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  return {
+    conversationId: response.groupId,
+    recipientName: response.recipient.username,
+  };
 }
 
 export async function joinOrbit(

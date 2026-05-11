@@ -18,7 +18,10 @@ export type ThreadsStackParamList = {
 
 export type ChatsStackParamList = {
   ChatsList: undefined;
-  ChatDetail: { conversationId: string };
+  ChatDetail: { conversationId: string; recipientName?: string };
+  ComposeChatThread: { groupId: string };
+  ThreadDetail: { threadId: string; threadTitle?: string };
+  NewChat: undefined;
 };
 
 export type SettingsStackParamList = {

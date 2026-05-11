@@ -126,8 +126,8 @@ function EmptyState({ onCompose }: { onCompose: () => void }): React.JSX.Element
       <View style={boxStyle}>
         <Text style={borderStyle}>{'┌─────────────────────┐'}</Text>
         <Text style={messageStyle}>{'No threads yet\nStart the conversation!'}</Text>
-        <Button title="New Thread" onPress={onCompose} variant="primary" />
         <Text style={borderStyle}>{'└─────────────────────┘'}</Text>
+        <Button title="New Thread" onPress={onCompose} variant="primary" />
       </View>
     </View>
   );

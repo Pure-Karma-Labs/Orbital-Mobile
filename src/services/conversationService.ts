@@ -67,7 +67,7 @@ export async function loadConversations(): Promise<void> {
   }
 }
 
-export async function createOrbit(name: string): Promise<{ groupId: string }> {
+export async function createOrbit(name: string): Promise<{ groupId: string; inviteCode: string | null }> {
   const { key, keyBase64 } = generateGroupKey();
   const encryptedName = encryptGroupName(name, key);
 
@@ -94,7 +94,7 @@ export async function createOrbit(name: string): Promise<{ groupId: string }> {
   });
   store.setActiveConversation(response.groupId);
 
-  return { groupId: response.groupId };
+  return { groupId: response.groupId, inviteCode: response.inviteCode ?? null };
 }
 
 function mapDmResponse(response: DmResponse): Conversation {

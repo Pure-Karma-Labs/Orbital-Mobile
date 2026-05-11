@@ -7,6 +7,7 @@ import React, { useCallback, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
+  Share,
   Text,
   View,
   type TextStyle,
@@ -43,6 +44,8 @@ export function CreateOrbitScreen({
   const [name, setName] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [inviteCode, setInviteCode] = useState<string | null>(null);
+  const [createdName, setCreatedName] = useState('');
 
   const trimmedName = name.trim();
   const isValid = trimmedName.length >= 1 && trimmedName.length <= 50;
@@ -54,8 +57,9 @@ export function CreateOrbitScreen({
     setError(null);
     setLoading(true);
     try {
-      await createOrbit(trimmedName);
-      navigation.goBack();
+      const result = await createOrbit(trimmedName);
+      setCreatedName(trimmedName);
+      setInviteCode(result.inviteCode);
     } catch (err) {
       const message =
         err instanceof Error ? err.message : 'Failed to create orbit';
@@ -63,7 +67,18 @@ export function CreateOrbitScreen({
     } finally {
       setLoading(false);
     }
-  }, [isValid, loading, trimmedName, navigation]);
+  }, [isValid, loading, trimmedName]);
+
+  const handleShare = useCallback(async () => {
+    if (!inviteCode) return;
+    try {
+      await Share.share({
+        message: `Join my orbit "${createdName}" on Orbital! Use invite code: ${inviteCode}`,
+      });
+    } catch {
+      // User cancelled share
+    }
+  }, [inviteCode, createdName]);
 
   const handleBack = useCallback(() => {
     navigation.goBack();
@@ -91,6 +106,71 @@ export function CreateOrbitScreen({
     color: theme.colors.error,
     marginBottom: theme.spacing.md,
   };
+
+  const successTitleStyle: TextStyle = {
+    fontFamily: theme.typography.fontFamily.header,
+    fontSize: theme.typography.fontSize.xl,
+    color: theme.colors.textPrimary,
+    textAlign: 'center',
+    marginBottom: theme.spacing.md,
+  };
+
+  const successSubtitleStyle: TextStyle = {
+    fontFamily: theme.typography.fontFamily.body,
+    fontSize: theme.typography.fontSize.base,
+    color: theme.colors.textSecondary,
+    textAlign: 'center',
+    marginBottom: theme.spacing.lg,
+  };
+
+  const codeBoxStyle: ViewStyle = {
+    borderWidth: 1,
+    borderColor: theme.colors.borderSubtle,
+    borderRadius: theme.borderRadius.base,
+    padding: theme.spacing.lg,
+    alignItems: 'center',
+    marginBottom: theme.spacing.lg,
+    backgroundColor: theme.colors.surfaceElevated,
+  };
+
+  const codeTextStyle: TextStyle = {
+    fontFamily: theme.typography.fontFamily.mono,
+    fontSize: theme.typography.fontSize['2xl'],
+    color: theme.colors.textPrimary,
+    letterSpacing: 4,
+  };
+
+  if (inviteCode != null) {
+    return (
+      <View style={containerStyle} testID="create-orbit-success">
+        <Header title="Orbit Created" />
+        <View style={contentStyle}>
+          <Text style={successTitleStyle}>{createdName}</Text>
+          <Text style={successSubtitleStyle}>
+            Share this invite code so others can join your orbit.
+          </Text>
+          <View style={codeBoxStyle}>
+            <Text style={codeTextStyle} selectable testID="invite-code-text">
+              {inviteCode}
+            </Text>
+          </View>
+          <Button
+            title="Share Invite Code"
+            onPress={handleShare}
+            variant="primary"
+            testID="share-invite-button"
+          />
+          <View style={{ height: theme.spacing.sm }} />
+          <Button
+            title="Done"
+            onPress={handleBack}
+            variant="secondary"
+            testID="done-button"
+          />
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={containerStyle} testID="create-orbit-screen">

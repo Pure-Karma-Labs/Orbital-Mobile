@@ -13,6 +13,8 @@ import {
   listGroups,
   getGroupKey,
   getGroupQuota,
+  createDm,
+  listDms,
 } from '../groups';
 
 const mockRequest = request as jest.MockedFunction<typeof request>;
@@ -80,6 +82,36 @@ describe('getGroupQuota', () => {
       method: 'GET',
       path: '/api/groups/group-1/quota',
     });
+  });
+});
+
+describe('createDm', () => {
+  it('calls POST /api/groups/dm with correct body', async () => {
+    const data = { recipientId: 'user-1', encryptedGroupKey: 'key123' };
+    await createDm(data);
+
+    expect(mockRequest).toHaveBeenCalledWith({
+      method: 'POST',
+      path: '/api/groups/dm',
+      body: data,
+    });
+  });
+});
+
+describe('listDms', () => {
+  it('calls GET /api/groups/dms and unwraps the dms array', async () => {
+    mockRequest.mockResolvedValue({
+      dms: [{ groupId: 'dm-1', recipient: { id: 'u1', username: 'alice', avatarUrl: null } }],
+    });
+    const result = await listDms();
+
+    expect(mockRequest).toHaveBeenCalledWith({
+      method: 'GET',
+      path: '/api/groups/dms',
+    });
+    expect(result).toEqual([
+      { groupId: 'dm-1', recipient: { id: 'u1', username: 'alice', avatarUrl: null } },
+    ]);
   });
 });
 

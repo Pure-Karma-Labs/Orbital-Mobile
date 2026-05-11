@@ -5,7 +5,7 @@ import type { MainTabParamList } from './types';
 import { useTheme } from '../theme';
 import { useAppStore } from '../stores/useAppStore';
 import { ThreadsStackNavigator } from './ThreadsStackNavigator';
-import ChatsScreen from '../screens/ChatsScreen';
+import { ChatsStackNavigator } from './ChatsStackNavigator';
 import { SettingsStackNavigator } from './SettingsStackNavigator';
 import { Emoji } from '../components/Emoji';
 
@@ -67,7 +67,7 @@ export function MainTabNavigator(): React.JSX.Element {
       />
       <Tab.Screen
         name="Chats"
-        component={ChatsScreen}
+        component={ChatsStackNavigator}
         options={{
           tabBarIcon: () => <Emoji unified="1F4E8" size={20} />,
         }}

@@ -196,7 +196,7 @@ export function ChatDetailScreen({
             <ThreadItem
               threadId={t.id}
               title={t.title ?? '(no title)'}
-              author={t.authorId}
+              author={t.authorUsername}
               time={new Date(t.createdAt).toLocaleTimeString('en-US', {
                 hour: 'numeric',
                 minute: '2-digit',

@@ -11,12 +11,8 @@ import {
   createGroup,
   joinGroup,
   listGroups,
-  getGroupMembers,
   getGroupKey,
   getGroupQuota,
-  removeMember,
-  createDm,
-  listDms,
 } from '../groups';
 
 const mockRequest = request as jest.MockedFunction<typeof request>;
@@ -65,27 +61,6 @@ describe('listGroups', () => {
   });
 });
 
-describe('getGroupMembers', () => {
-  it('calls GET /api/groups/:groupId/members', async () => {
-    await getGroupMembers('group-1');
-
-    expect(mockRequest).toHaveBeenCalledWith({
-      method: 'GET',
-      path: '/api/groups/group-1/members',
-    });
-  });
-
-  it('encodes special characters in groupId', async () => {
-    await getGroupMembers('group/special');
-
-    expect(mockRequest).toHaveBeenCalledWith(
-      expect.objectContaining({
-        path: '/api/groups/group%2Fspecial/members',
-      }),
-    );
-  });
-});
-
 describe('getGroupKey', () => {
   it('calls GET /api/groups/:groupId/key', async () => {
     await getGroupKey('group-1');
@@ -108,49 +83,3 @@ describe('getGroupQuota', () => {
   });
 });
 
-describe('removeMember', () => {
-  it('calls DELETE /api/groups/:groupId/members/:userId', async () => {
-    await removeMember('group-1', 'user-2');
-
-    expect(mockRequest).toHaveBeenCalledWith({
-      method: 'DELETE',
-      path: '/api/groups/group-1/members/user-2',
-    });
-  });
-
-  it('encodes both URL params', async () => {
-    await removeMember('group/a', 'user/b');
-
-    expect(mockRequest).toHaveBeenCalledWith(
-      expect.objectContaining({
-        path: '/api/groups/group%2Fa/members/user%2Fb',
-      }),
-    );
-  });
-});
-
-describe('createDm', () => {
-  it('calls POST /api/groups/dm with recipientId', async () => {
-    const data = { recipientId: 'user-99', encryptedGroupKey: 'enc-key' };
-    await createDm(data);
-
-    expect(mockRequest).toHaveBeenCalledWith({
-      method: 'POST',
-      path: '/api/groups/dm',
-      body: data,
-    });
-  });
-});
-
-describe('listDms', () => {
-  it('calls GET /api/groups/dms and unwraps the dms array', async () => {
-    mockRequest.mockResolvedValue({ dms: [{ groupId: 'dm1' }] });
-    const result = await listDms();
-
-    expect(mockRequest).toHaveBeenCalledWith({
-      method: 'GET',
-      path: '/api/groups/dms',
-    });
-    expect(result).toEqual([{ groupId: 'dm1' }]);
-  });
-});

@@ -68,8 +68,10 @@ jest.mock('../../database/connection', () => ({
 }));
 
 const mockLoadConversations = jest.fn().mockResolvedValue(undefined);
+const mockLoadDmConversations = jest.fn().mockResolvedValue(undefined);
 jest.mock('../conversationService', () => ({
   loadConversations: (...args: unknown[]) => mockLoadConversations(...args),
+  loadDmConversations: (...args: unknown[]) => mockLoadDmConversations(...args),
 }));
 
 jest.mock('../../stores/middleware/persistence', () => ({
@@ -178,6 +180,19 @@ describe('loginUser', () => {
 
     expect(mockEnsureKeysInitialized).toHaveBeenCalledTimes(1);
   });
+
+  it('loads DM conversations after login', async () => {
+    mockLogin.mockResolvedValue({
+      token: 'tok',
+      userId: 'u1',
+      username: 'alice',
+      publicKey: null,
+    });
+
+    await loginUser('alice', 'secret');
+
+    expect(mockLoadDmConversations).toHaveBeenCalledTimes(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -233,6 +248,20 @@ describe('signupUser', () => {
 
     expect(mockGenerateInitialKeys).toHaveBeenCalledTimes(1);
     expect(mockUploadInitialPreKeyBundle).toHaveBeenCalledTimes(1);
+  });
+
+  it('loads DM conversations after signup', async () => {
+    mockSignup.mockResolvedValue({
+      token: 'tok',
+      userId: 'u1',
+      username: 'frank',
+      email: 'f@x.com',
+      groupId: null,
+    });
+
+    await signupUser('frank', 'pass', 'f@x.com', 'CODE');
+
+    expect(mockLoadDmConversations).toHaveBeenCalledTimes(1);
   });
 
   it('does not throw if key generation fails after signup', async () => {
@@ -304,6 +333,22 @@ describe('restoreSession', () => {
     await restoreSession();
 
     expect(mockEnsureKeysInitialized).toHaveBeenCalledTimes(1);
+  });
+
+  it('loads DM conversations after successful session restore', async () => {
+    mockGetAccessToken.mockResolvedValue('stored-token');
+    mockVerifyToken.mockResolvedValue({ valid: true, userId: 'u1', username: 'eve' });
+    mockGetMe.mockResolvedValue({
+      id: 'u1',
+      username: 'eve',
+      displayName: 'Eve',
+      avatarUrl: null,
+      createdAt: '2024-01-01',
+    });
+
+    await restoreSession();
+
+    expect(mockLoadDmConversations).toHaveBeenCalledTimes(1);
   });
 
   it('clears tokens and returns false on AuthError', async () => {

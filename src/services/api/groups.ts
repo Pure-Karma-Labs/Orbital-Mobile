@@ -4,8 +4,11 @@
 
 import { request } from './client';
 import type {
+  CreateDmRequest,
+  CreateDmResponse,
   CreateGroupRequest,
   CreateGroupResponse,
+  DmResponse,
   GroupKeyResponse,
   GroupQuotaResponse,
   GroupResponse,
@@ -15,6 +18,10 @@ import type {
 
 interface ListGroupsApiResponse {
   groups: GroupResponse[];
+}
+
+interface ListDmsApiResponse {
+  dms: DmResponse[];
 }
 
 export function createGroup(data: CreateGroupRequest): Promise<CreateGroupResponse> {
@@ -53,5 +60,21 @@ export function getGroupQuota(groupId: string): Promise<GroupQuotaResponse> {
     method: 'GET',
     path: `/api/groups/${encodeURIComponent(groupId)}/quota`,
   });
+}
+
+export function createDm(data: CreateDmRequest): Promise<CreateDmResponse> {
+  return request<CreateDmResponse>({
+    method: 'POST',
+    path: '/api/groups/dm',
+    body: data,
+  });
+}
+
+export async function listDms(): Promise<DmResponse[]> {
+  const response = await request<ListDmsApiResponse>({
+    method: 'GET',
+    path: '/api/groups/dms',
+  });
+  return response.dms;
 }
 

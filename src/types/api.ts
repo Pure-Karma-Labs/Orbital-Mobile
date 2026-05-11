@@ -95,10 +95,12 @@ export interface CreateGroupRequest {
 /**
  * POST /api/groups response.
  *
- * Backend returns: { group_id, created_at }
+ * Backend returns: { group_id, invite_code, expires_at, created_at }
  */
 export interface CreateGroupResponse {
   groupId: string;
+  inviteCode: string | null;
+  expiresAt: string | null;
   createdAt: string;
 }
 

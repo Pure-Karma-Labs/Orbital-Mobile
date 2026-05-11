@@ -29,6 +29,8 @@ export interface ReplyItemProps {
   depth: number;
   createdAt: number;
   syncStatus: 'synced' | 'pending' | 'syncing' | 'failed';
+  /** Username of the parent reply author, or null for top-level replies */
+  parentAuthorUsername: string | null;
   /** Called when the reply is tapped (to set it as reply-to target) */
   onPress: (replyId: string, authorUsername: string, depth: number) => void;
 }
@@ -59,6 +61,7 @@ export const ReplyItem = React.memo(function ReplyItem({
   depth,
   createdAt,
   syncStatus,
+  parentAuthorUsername,
   onPress,
 }: ReplyItemProps): React.JSX.Element {
   const theme = useTheme();
@@ -121,6 +124,13 @@ export const ReplyItem = React.memo(function ReplyItem({
     marginTop: theme.spacing.xs,
   };
 
+  const replyContextStyle: TextStyle = {
+    fontFamily: theme.typography.fontFamily.mono,
+    fontSize: theme.typography.fontSize.xs,
+    color: theme.colors.textTertiary,
+    marginBottom: theme.spacing.xs,
+  };
+
   return (
     <TouchableOpacity
       style={containerStyle}
@@ -130,6 +140,9 @@ export const ReplyItem = React.memo(function ReplyItem({
       accessibilityLabel={`Reply by ${authorUsername}`}
       testID={`reply-item-${replyId}`}
     >
+      {parentAuthorUsername != null && (
+        <Text style={replyContextStyle}>{`↳ Replying to @${parentAuthorUsername}`}</Text>
+      )}
       <View style={authorRowStyle}>
         <Text style={authorTextStyle}>{authorUsername}</Text>
         <Text style={timestampStyle}>{formatTimestamp(createdAt)}</Text>

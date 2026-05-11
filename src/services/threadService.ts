@@ -101,7 +101,7 @@ async function mapReplyResponse(
     authorUsername: response.authorUsername,
     body,
     parentReplyId: response.parentReplyId,
-    depth: response.level,
+    depth: Math.max(0, Math.trunc(response.level) || 0),
     createdAt: new Date(response.createdAt).getTime(),
     updatedAt: new Date(response.createdAt).getTime(),
     syncStatus: 'synced',

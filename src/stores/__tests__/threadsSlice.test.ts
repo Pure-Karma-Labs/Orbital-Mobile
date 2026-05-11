@@ -174,12 +174,25 @@ describe('threadsSlice — removeThread', () => {
 });
 
 describe('threadsSlice — setReplies', () => {
-  it('populates replies ordered by createdAt ascending', () => {
+  it('preserves caller-supplied order', () => {
     const store = makeStore();
     const r1 = makeReply({ id: 'reply-1', createdAt: 1200 });
     const r2 = makeReply({ id: 'reply-2', createdAt: 1100 });
     store.getState().setReplies('thread-1', [r1, r2]);
-    expect(store.getState().replyIdsByThread['thread-1']).toEqual(['reply-2', 'reply-1']);
+    expect(store.getState().replyIdsByThread['thread-1']).toEqual(['reply-1', 'reply-2']);
+  });
+});
+
+describe('threadsSlice — appendReplies', () => {
+  it('preserves caller-supplied order and deduplicates', () => {
+    const store = makeStore();
+    const r1 = makeReply({ id: 'reply-1', createdAt: 1200 });
+    const r2 = makeReply({ id: 'reply-2', createdAt: 1100 });
+    store.getState().setReplies('thread-1', [r1]);
+    // Append r2 and a duplicate of r1
+    store.getState().appendReplies('thread-1', [r2, r1]);
+    const ids = store.getState().replyIdsByThread['thread-1'];
+    expect(ids).toEqual(['reply-1', 'reply-2']);
   });
 });
 
@@ -232,5 +245,32 @@ describe('threadsSlice — optimistic updates', () => {
     store.getState().addOptimisticReply(reply);
     store.getState().updateReplySyncStatus('reply-opt', 'failed');
     expect(store.getState().replies['reply-opt'].syncStatus).toBe('failed');
+  });
+
+  it('addOptimisticReply inserts nested reply after parent descendants', () => {
+    const store = makeStore();
+    // Seed the store with tree-ordered replies: A (depth 0), A1 (depth 1), B (depth 0)
+    const replyA = makeReply({ id: 'A', depth: 0, parentReplyId: null });
+    const replyA1 = makeReply({ id: 'A1', depth: 1, parentReplyId: 'A' });
+    const replyB = makeReply({ id: 'B', depth: 0, parentReplyId: null });
+    store.getState().setReplies('thread-1', [replyA, replyA1, replyB]);
+
+    // Add a new nested reply targeting A
+    const newReply = makeReply({
+      id: 'A2',
+      depth: 1,
+      parentReplyId: 'A',
+      syncStatus: 'synced',
+    });
+    store.getState().addOptimisticReply(newReply);
+
+    // Should be inserted after A1 (the last descendant of A) but before B
+    expect(store.getState().replyIdsByThread['thread-1']).toEqual([
+      'A',
+      'A1',
+      'A2',
+      'B',
+    ]);
+    expect(store.getState().replies['A2'].syncStatus).toBe('pending');
   });
 });

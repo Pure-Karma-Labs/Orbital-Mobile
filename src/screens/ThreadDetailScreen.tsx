@@ -36,7 +36,7 @@ import { useTheme } from '../theme';
 import { useAuth, useThreads } from '../stores';
 import { loadThread, loadReplies, postReply } from '../services/threadService';
 import { Header } from '../components/Header';
-import { AsciiDay, AsciiSection } from '../components/AsciiSeparator';
+import { AsciiSection } from '../components/AsciiSeparator';
 import { ThreadHeader } from './threadDetail/ThreadHeader';
 import { ReplyItem } from './threadDetail/ReplyItem';
 import { ReplyComposer, type ReplyTarget } from './threadDetail/ReplyComposer';
@@ -55,69 +55,12 @@ export type ThreadDetailScreenProps = NativeStackScreenProps<
   'ThreadDetail'
 >;
 
-/** A row in the FlatList can be a reply, a day separator, or a section separator */
-type DaySeparatorRow = { type: 'day'; label: string; key: string };
-type SectionSeparatorRow = { type: 'section'; key: string };
-type ReplyRow = { type: 'reply'; reply: Reply; key: string };
-type ListRow = DaySeparatorRow | SectionSeparatorRow | ReplyRow;
-
-// ---------------------------------------------------------------------------
-// Date helpers
-// ---------------------------------------------------------------------------
-
-function getDayLabel(timestamp: number): string {
-  const date = new Date(timestamp);
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const yesterday = new Date(today);
-  yesterday.setDate(today.getDate() - 1);
-  const replyDay = new Date(
-    date.getFullYear(),
-    date.getMonth(),
-    date.getDate(),
-  );
-
-  if (replyDay.getTime() === today.getTime()) return 'Today';
-  if (replyDay.getTime() === yesterday.getTime()) return 'Yesterday';
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-}
-
-function getDayKey(timestamp: number): string {
-  const d = new Date(timestamp);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
-// ---------------------------------------------------------------------------
-// Build flat list rows from replies, grouping by day
-// ---------------------------------------------------------------------------
-
-function buildListRows(replies: Reply[]): ListRow[] {
-  if (replies.length === 0) return [];
-
-  // Replies are already ordered chronologically from the store
-  const rows: ListRow[] = [];
-  let lastDayKey: string | null = null;
-  let groupIndex = 0;
-
-  for (const reply of replies) {
-    const dayKey = getDayKey(reply.createdAt);
-    if (dayKey !== lastDayKey) {
-      if (lastDayKey !== null) {
-        rows.push({ type: 'section', key: `section-${groupIndex}` });
-        groupIndex++;
-      }
-      rows.push({
-        type: 'day',
-        label: getDayLabel(reply.createdAt),
-        key: `day-${dayKey}`,
-      });
-      lastDayKey = dayKey;
-    }
-    rows.push({ type: 'reply', reply, key: `reply-${reply.id}` });
-  }
-
-  return rows;
-}
+/** A row in the reply FlatList — a reply with pre-computed parent context */
+type ReplyRow = {
+  reply: Reply;
+  parentAuthorUsername: string | null;
+  key: string;
+};
 
 // ---------------------------------------------------------------------------
 // Empty replies state
@@ -185,7 +128,16 @@ export function ThreadDetailScreen({
       .filter((r): r is Reply => r != null);
   }, [allReplies, replyIdsByThread, threadId]);
 
-  const listRows = useMemo(() => buildListRows(replyList), [replyList]);
+  const replyRows = useMemo((): ReplyRow[] => {
+    return replyList.map((r) => {
+      const parent = r.parentReplyId ? allReplies[r.parentReplyId] : undefined;
+      const parentAuthor =
+        parent && typeof parent.authorUsername === 'string'
+          ? parent.authorUsername
+          : null;
+      return { reply: r, parentAuthorUsername: parentAuthor, key: `reply-${r.id}` };
+    });
+  }, [replyList, allReplies]);
 
   // ---------------------------------------------------------------------------
   // Data loading
@@ -308,30 +260,24 @@ export function ThreadDetailScreen({
   // ---------------------------------------------------------------------------
 
   const renderRow = useCallback(
-    ({ item }: ListRenderItemInfo<ListRow>) => {
-      switch (item.type) {
-        case 'day':
-          return <AsciiDay label={item.label} />;
-        case 'section':
-          return <AsciiSection />;
-        case 'reply':
-          return (
-            <ReplyItem
-              replyId={item.reply.id}
-              body={item.reply.body}
-              authorUsername={item.reply.authorUsername}
-              depth={item.reply.depth}
-              createdAt={item.reply.createdAt}
-              syncStatus={item.reply.syncStatus}
-              onPress={handleReplyPress}
-            />
-          );
-      }
+    ({ item }: ListRenderItemInfo<ReplyRow>) => {
+      return (
+        <ReplyItem
+          replyId={item.reply.id}
+          body={item.reply.body}
+          authorUsername={item.reply.authorUsername}
+          depth={item.reply.depth}
+          createdAt={item.reply.createdAt}
+          syncStatus={item.reply.syncStatus}
+          parentAuthorUsername={item.parentAuthorUsername}
+          onPress={handleReplyPress}
+        />
+      );
     },
     [handleReplyPress],
   );
 
-  const keyExtractor = useCallback((item: ListRow) => item.key, []);
+  const keyExtractor = useCallback((item: ReplyRow) => item.key, []);
 
   const listHeader = useMemo(() => {
     if (!thread) return null;
@@ -413,7 +359,7 @@ export function ThreadDetailScreen({
             <PullToRefreshOverlay scrollY={scrollY} refreshing={refreshing} />
             <Animated.FlatList
               style={{ flex: 1 }}
-              data={listRows}
+              data={replyRows}
               keyExtractor={keyExtractor}
               renderItem={renderRow}
               ListHeaderComponent={listHeader}

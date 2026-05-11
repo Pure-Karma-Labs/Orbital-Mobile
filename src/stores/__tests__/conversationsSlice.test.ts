@@ -35,6 +35,7 @@ function makeStore() {
     setActiveThread: jest.fn(),
     setReplies: jest.fn(),
     upsertReply: jest.fn(),
+    removeReply: jest.fn(),
     addOptimisticThread: jest.fn(),
     addOptimisticReply: jest.fn(),
     updateThreadSyncStatus: jest.fn(),

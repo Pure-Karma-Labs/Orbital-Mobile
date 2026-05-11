@@ -357,4 +357,31 @@ describe('ThreadDetailScreen — with thread data', () => {
     );
     expect(sendBtn.length).toBeGreaterThan(0);
   });
+
+  it('shows "Replying to @bob" for nested reply-2 (parentReplyId: reply-1)', async () => {
+    const renderer = await renderScreen();
+    const allText = renderer.root.findAllByType(
+      'Text' as unknown as React.ComponentType,
+    );
+    const contextNode = allText.find(
+      (node) =>
+        typeof node.props.children === 'string' &&
+        node.props.children === '↳ Replying to @bob',
+    );
+    expect(contextNode).toBeDefined();
+  });
+
+  it('does not show "Replying to" for top-level reply-1', async () => {
+    const renderer = await renderScreen();
+    const allText = renderer.root.findAllByType(
+      'Text' as unknown as React.ComponentType,
+    );
+    // Only reply-2 has a parent — exactly one "Replying to" line should exist
+    const contextNodes = allText.filter(
+      (node) =>
+        typeof node.props.children === 'string' &&
+        node.props.children.startsWith('↳ Replying to'),
+    );
+    expect(contextNodes.length).toBe(1);
+  });
 });

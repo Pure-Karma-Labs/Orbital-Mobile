@@ -99,10 +99,8 @@ export const createThreadsSlice: StateCreator<
     for (const r of replies) {
       updatedReplies[r.id] = r;
     }
-    // Order by createdAt ascending (chronological)
-    const ids = [...replies]
-      .sort((a, b) => a.createdAt - b.createdAt)
-      .map((r) => r.id);
+    // Preserve caller-supplied order (backend returns tree-order via recursive CTE)
+    const ids = replies.map((r) => r.id);
     set(
       {
         replies: updatedReplies,
@@ -120,10 +118,9 @@ export const createThreadsSlice: StateCreator<
       updatedReplies[r.id] = r;
     }
     const existingIds = replyIdsByThread[threadId] ?? [];
-    // Append new IDs, preserving existing order and avoiding duplicates
+    // Append new IDs, preserving caller-supplied order and avoiding duplicates
     const existingIdSet = new Set(existingIds);
     const newIds = replies
-      .sort((a, b) => a.createdAt - b.createdAt)
       .map((r) => r.id)
       .filter((id) => !existingIdSet.has(id));
     set(
@@ -181,12 +178,37 @@ export const createThreadsSlice: StateCreator<
     const { replies, replyIdsByThread } = get();
     const optimistic: Reply = { ...reply, syncStatus: 'pending' };
     const existingIds = replyIdsByThread[reply.threadId] ?? [];
+
+    let insertIndex: number;
+    if (reply.parentReplyId == null) {
+      // Top-level reply: append to end
+      insertIndex = existingIds.length;
+    } else {
+      // Nested reply: find parent, walk forward past descendants, insert after
+      const parentIdx = existingIds.indexOf(reply.parentReplyId);
+      if (parentIdx === -1) {
+        insertIndex = existingIds.length;
+      } else {
+        const parentDepth = replies[reply.parentReplyId]?.depth ?? 0;
+        let i = parentIdx + 1;
+        while (i < existingIds.length) {
+          const sibling = replies[existingIds[i]];
+          if (!sibling || sibling.depth <= parentDepth) break;
+          i++;
+        }
+        insertIndex = i;
+      }
+    }
+
+    const updatedIds = [...existingIds];
+    updatedIds.splice(insertIndex, 0, reply.id);
+
     set(
       {
         replies: { ...replies, [reply.id]: optimistic },
         replyIdsByThread: {
           ...replyIdsByThread,
-          [reply.threadId]: [...existingIds, reply.id],
+          [reply.threadId]: updatedIds,
         },
       },
       false,

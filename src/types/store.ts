@@ -74,21 +74,6 @@ export interface Reply {
   syncStatus: SyncStatus;
 }
 
-export interface Message {
-  id: string;
-  conversationId: string;
-  senderId: string;
-  type: 'message' | 'thread_update' | 'reaction' | 'system';
-  /** Decrypted from body_encrypted + body_iv in database */
-  body: string | null;
-  serverTimestamp: number;
-  receivedAt: number;
-  /** Converted from 0|1 integer in database */
-  read: boolean;
-  expiresAt: number | null;
-  syncStatus: SyncStatus;
-}
-
 export interface Contact {
   /** Service ID — matches service_id in signal tables */
   id: string;
@@ -185,28 +170,6 @@ export interface ThreadsActions {
 export type ThreadsSlice = ThreadsState & ThreadsActions;
 
 // ============================================================
-// Messages slice state
-// ============================================================
-
-export interface MessagesState {
-  messages: Record<string, Message>;
-  /** Maps conversationId -> ordered message IDs */
-  messageIdsByConversation: Record<string, string[]>;
-  hasMoreMessages: Record<string, boolean>;
-}
-
-export interface MessagesActions {
-  setMessages: (conversationId: string, messages: Message[]) => void;
-  addMessage: (message: Message) => void;
-  addOptimisticMessage: (message: Message) => void;
-  updateMessageSyncStatus: (id: string, status: SyncStatus) => void;
-  markMessageRead: (id: string) => void;
-  setHasMore: (conversationId: string, hasMore: boolean) => void;
-}
-
-export type MessagesSlice = MessagesState & MessagesActions;
-
-// ============================================================
 // Contacts slice state
 // ============================================================
 
@@ -251,6 +214,5 @@ export type UISlice = UIState & UIActions;
 export type AppState = AuthSlice &
   ConversationsSlice &
   ThreadsSlice &
-  MessagesSlice &
   ContactsSlice &
   UISlice;

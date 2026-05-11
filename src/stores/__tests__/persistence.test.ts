@@ -178,9 +178,6 @@ describe('persistence partialize', () => {
     'threadIdsByConversation',
     'replies',
     'replyIdsByThread',
-    'messages',
-    'messageIdsByConversation',
-    'hasMoreMessages',
   ];
 
   /**
@@ -215,10 +212,6 @@ describe('persistence partialize', () => {
     replies: {},
     replyIdsByThread: {},
     activeThreadId: null,
-    // Messages
-    messages: {},
-    messageIdsByConversation: {},
-    hasMoreMessages: {},
     // Contacts
     contacts: { 'c-1': { id: 'c-1' } },
     // UI

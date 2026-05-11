@@ -54,19 +54,6 @@ export const useThreads = () =>
     updateReplySyncStatus: s.updateReplySyncStatus,
   })));
 
-export const useMessages = () =>
-  useAppStore(useShallow((s) => ({
-    messages: s.messages,
-    messageIdsByConversation: s.messageIdsByConversation,
-    hasMoreMessages: s.hasMoreMessages,
-    setMessages: s.setMessages,
-    addMessage: s.addMessage,
-    addOptimisticMessage: s.addOptimisticMessage,
-    updateMessageSyncStatus: s.updateMessageSyncStatus,
-    markMessageRead: s.markMessageRead,
-    setHasMore: s.setHasMore,
-  })));
-
 export const useContacts = () =>
   useAppStore(useShallow((s) => ({
     contacts: s.contacts,

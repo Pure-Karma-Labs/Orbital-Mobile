@@ -4,7 +4,6 @@ import { createMMKVStorage } from './middleware/persistence';
 import { createAuthSlice } from './slices/authSlice';
 import { createConversationsSlice } from './slices/conversationsSlice';
 import { createContactsSlice } from './slices/contactsSlice';
-import { createMessagesSlice } from './slices/messagesSlice';
 import { createThreadsSlice } from './slices/threadsSlice';
 import { createUISlice } from './slices/uiSlice';
 import type { AppState } from '../types/store';
@@ -25,7 +24,6 @@ export const useAppStore = create<AppState>()(
         ...createAuthSlice(...a),
         ...createConversationsSlice(...a),
         ...createThreadsSlice(...a),
-        ...createMessagesSlice(...a),
         ...createContactsSlice(...a),
         ...createUISlice(...a),
       }),

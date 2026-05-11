@@ -145,6 +145,10 @@ export async function startDm(
     encryptedGroupKey: keyBase64,
   });
 
+  if (response.isNew && response.groupKey !== keyBase64) {
+    throw new Error('Server returned a different key for a newly created DM');
+  }
+
   persistGroupKey(response.groupId, response.groupKey);
 
   const now = Date.now();

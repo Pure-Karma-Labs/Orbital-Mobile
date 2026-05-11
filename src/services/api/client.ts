@@ -133,11 +133,6 @@ export interface RequestOptions {
   timeout?: number;
   /** AbortSignal for caller-driven cancellation (e.g., on navigation away). */
   signal?: AbortSignal;
-  /**
-   * When true, skip JSON parsing and case transform — returns raw ArrayBuffer.
-   * Use for binary media downloads.
-   */
-  rawResponse?: boolean;
 }
 
 // ============================================================
@@ -164,7 +159,6 @@ export async function request<T>(options: RequestOptions): Promise<T> {
     skipAuth = false,
     timeout = DEFAULT_TIMEOUT_MS,
     signal: callerSignal,
-    rawResponse = false,
   } = options;
 
   const url = `${API_BASE_URL}${path}`;
@@ -291,12 +285,6 @@ export async function request<T>(options: RequestOptions): Promise<T> {
       false,
       rawBody,
     );
-  }
-
-  // Handle raw binary responses (media download)
-  if (rawResponse) {
-    const buffer = await response.arrayBuffer();
-    return buffer as unknown as T;
   }
 
   // Parse JSON and transform keys to camelCase

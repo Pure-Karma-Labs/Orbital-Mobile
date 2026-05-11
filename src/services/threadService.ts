@@ -265,15 +265,20 @@ export async function postReply(
       parentReplyId,
     });
 
-    store.updateReplySyncStatus(clientId, 'synced');
-
-    return {
+    const confirmedReply: Reply = {
       ...optimisticReply,
       id: response.replyId,
       createdAt: new Date(response.createdAt).getTime(),
       updatedAt: new Date(response.createdAt).getTime(),
       syncStatus: 'synced',
     };
+
+    // Replace the optimistic reply (client ID) with the server-confirmed reply
+    // so subsequent replies-to-this-reply use the real server ID.
+    store.removeReply(clientId);
+    store.upsertReply(confirmedReply);
+
+    return confirmedReply;
   } catch (e) {
     if (__DEV__) {
       console.warn('[postReply]', e instanceof Error ? e.message : e);

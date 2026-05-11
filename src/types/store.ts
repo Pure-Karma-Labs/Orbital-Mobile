@@ -161,6 +161,7 @@ export interface ThreadsActions {
   /** Append replies without replacing existing ones — used for pagination */
   appendReplies: (threadId: string, replies: Reply[]) => void;
   upsertReply: (reply: Reply) => void;
+  removeReply: (id: string) => void;
   addOptimisticThread: (thread: Thread) => void;
   addOptimisticReply: (reply: Reply) => void;
   updateThreadSyncStatus: (id: string, status: SyncStatus) => void;

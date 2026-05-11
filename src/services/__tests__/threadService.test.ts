@@ -28,6 +28,8 @@ const mockSetReplies = jest.fn();
 const mockAppendReplies = jest.fn();
 const mockAddOptimisticReply = jest.fn();
 const mockUpdateReplySyncStatus = jest.fn();
+const mockRemoveReply = jest.fn();
+const mockUpsertReply = jest.fn();
 
 jest.mock('../../stores/useAppStore', () => ({
   useAppStore: {
@@ -37,6 +39,8 @@ jest.mock('../../stores/useAppStore', () => ({
       appendReplies: mockAppendReplies,
       addOptimisticReply: mockAddOptimisticReply,
       updateReplySyncStatus: mockUpdateReplySyncStatus,
+      removeReply: mockRemoveReply,
+      upsertReply: mockUpsertReply,
     })),
   },
 }));
@@ -303,7 +307,10 @@ describe('postReply', () => {
       parentReplyId: null,
     });
 
-    expect(mockUpdateReplySyncStatus).toHaveBeenCalledWith('client-uuid-000', 'synced');
+    expect(mockRemoveReply).toHaveBeenCalledWith('client-uuid-000');
+    expect(mockUpsertReply).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'server-reply-id', syncStatus: 'synced' }),
+    );
 
     expect(result.syncStatus).toBe('synced');
     expect(result.id).toBe('server-reply-id');

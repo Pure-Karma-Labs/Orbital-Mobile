@@ -156,6 +156,25 @@ export const createThreadsSlice: StateCreator<
     );
   },
 
+  removeReply: (id: string) => {
+    const { replies, replyIdsByThread } = get();
+    const reply = replies[id];
+    if (!reply) return;
+    const { [id]: _, ...remaining } = replies;
+    const existingIds = replyIdsByThread[reply.threadId] ?? [];
+    set(
+      {
+        replies: remaining,
+        replyIdsByThread: {
+          ...replyIdsByThread,
+          [reply.threadId]: existingIds.filter((rid) => rid !== id),
+        },
+      },
+      false,
+      'threads/removeReply',
+    );
+  },
+
   addOptimisticThread: (thread: Thread) => {
     const { threads, threadIdsByConversation } = get();
     const optimistic: Thread = { ...thread, syncStatus: 'pending' };

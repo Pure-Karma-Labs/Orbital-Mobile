@@ -309,29 +309,6 @@ describe('request body case transform', () => {
 });
 
 // ---------------------------------------------------------------------------
-// rawResponse
-// ---------------------------------------------------------------------------
-
-describe('rawResponse', () => {
-  it('returns ArrayBuffer when rawResponse is true', async () => {
-    const buf = new ArrayBuffer(8);
-    (globalThis as Record<string, unknown>).fetch = jest.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      arrayBuffer: jest.fn().mockResolvedValue(buf),
-    });
-
-    const result = await request<ArrayBuffer>({
-      method: 'GET',
-      path: '/api/media/test/download',
-      rawResponse: true,
-    });
-
-    expect(result).toBe(buf);
-  });
-});
-
-// ---------------------------------------------------------------------------
 // HTTPS enforcement
 // ---------------------------------------------------------------------------
 

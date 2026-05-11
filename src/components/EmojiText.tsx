@@ -29,6 +29,8 @@ export interface EmojiTextProps {
   numberOfLines?: number;
   /** Optional testID */
   testID?: string;
+  /** Override emoji size multiplier (default: 1.15). Use ~1.6 for composer inputs. */
+  emojiScale?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -56,9 +58,10 @@ export const EmojiText = React.memo(function EmojiText({
   style,
   numberOfLines,
   testID,
+  emojiScale,
 }: EmojiTextProps): React.JSX.Element {
   const fontSize = StyleSheet.flatten(style)?.fontSize ?? DEFAULT_FONT_SIZE;
-  const emojiSize = Math.round(fontSize * EMOJI_SIZE_MULTIPLIER);
+  const emojiSize = Math.round(fontSize * (emojiScale ?? EMOJI_SIZE_MULTIPLIER));
   const emojiMarginH = Math.round(fontSize * EMOJI_MARGIN_MULTIPLIER);
   const emojiVerticalOffset = Math.round(
     fontSize * EMOJI_VERTICAL_OFFSET_MULTIPLIER,

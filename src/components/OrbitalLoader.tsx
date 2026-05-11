@@ -19,17 +19,21 @@ export function OrbitalLoader({ size = 64 }: OrbitalLoaderProps): React.JSX.Elem
 
     function spin(anim: Animated.Value, from: number, delta: number, duration: number) {
       if (!alive.current) { return; }
-      Animated.timing(anim, {
-        toValue: from + delta,
-        duration,
-        easing: Easing.linear,
-        useNativeDriver: true,
-      }).start(({ finished }) => {
-        if (finished && alive.current) {
-          anim.setValue(from);
-          spin(anim, from, delta, duration);
-        }
-      });
+      try {
+        Animated.timing(anim, {
+          toValue: from + delta,
+          duration,
+          easing: Easing.linear,
+          useNativeDriver: true,
+        }).start(({ finished }) => {
+          if (finished && alive.current) {
+            anim.setValue(from);
+            spin(anim, from, delta, duration);
+          }
+        });
+      } catch {
+        // Environment torn down (e.g. Jest cleanup)
+      }
     }
 
     spin(blueRot, 0, 360, 4000);

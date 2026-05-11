@@ -16,17 +16,21 @@ export function OrbitalSpinner({ size = 24 }: OrbitalSpinnerProps): React.JSX.El
 
     function spin(from: number) {
       if (!alive.current) return;
-      Animated.timing(rotation, {
-        toValue: from + 360,
-        duration: 1200,
-        easing: Easing.linear,
-        useNativeDriver: true,
-      }).start(({ finished }) => {
-        if (finished && alive.current) {
-          rotation.setValue(from);
-          spin(from);
-        }
-      });
+      try {
+        Animated.timing(rotation, {
+          toValue: from + 360,
+          duration: 1200,
+          easing: Easing.linear,
+          useNativeDriver: true,
+        }).start(({ finished }) => {
+          if (finished && alive.current) {
+            rotation.setValue(from);
+            spin(from);
+          }
+        });
+      } catch {
+        // Environment torn down (e.g. Jest cleanup)
+      }
     }
 
     spin(0);

@@ -2,6 +2,10 @@
  * Tests for ThreadDetailScreen — thread detail view with nested replies and composer.
  */
 
+jest.mock('../../components/EmojiPicker', () => ({
+  EmojiPicker: () => null,
+}));
+
 import React from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { ThemeProvider } from '../../theme';

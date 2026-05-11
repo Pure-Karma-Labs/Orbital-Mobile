@@ -21,6 +21,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   RefreshControl,
@@ -40,6 +41,7 @@ import { AsciiSection } from '../components/AsciiSeparator';
 import { ThreadHeader } from './threadDetail/ThreadHeader';
 import { ReplyItem } from './threadDetail/ReplyItem';
 import { ReplyComposer, type ReplyTarget } from './threadDetail/ReplyComposer';
+import { EmojiPicker } from '../components/EmojiPicker';
 import type { Reply, Thread } from '../types/store';
 import type { ThreadsStackParamList } from '../navigation/types';
 import { OrbitalSpinner } from '../components/OrbitalSpinner';
@@ -113,9 +115,73 @@ export function ThreadDetailScreen({
   const [replyTarget, setReplyTarget] = useState<ReplyTarget | null>(null);
   const [sending, setSending] = useState(false);
 
+  // Composer text — lifted here so EmojiPicker can insert into it
+  const [composerText, setComposerText] = useState('');
+
+  // Emoji picker state
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  /** Whether we are waiting for keyboard to hide before showing the picker */
+  const pendingPickerShow = useRef(false);
+
   // Pagination offset (local — not stored in Zustand)
   const offsetRef = useRef(0);
   const hasMoreRef = useRef(true);
+
+  // ---------------------------------------------------------------------------
+  // Keyboard coordination
+  // ---------------------------------------------------------------------------
+
+  useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+
+    const showSub = Keyboard.addListener(showEvent, (e) => {
+      setKeyboardHeight(e.endCoordinates.height);
+      // Don't hide picker here — the search TextInput inside the picker
+      // also triggers keyboardWillShow. The composer's onFocus callback
+      // (handleInputFocus) is the correct path to dismiss the picker.
+      pendingPickerShow.current = false;
+    });
+
+    const hideSub = Keyboard.addListener(hideEvent, () => {
+      // If we dismissed the keyboard to show the picker, now show it
+      if (pendingPickerShow.current) {
+        pendingPickerShow.current = false;
+        setShowEmojiPicker(true);
+      }
+    });
+
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
+
+  const handleToggleEmojiPicker = useCallback(() => {
+    if (showEmojiPicker) {
+      // Hide picker
+      setShowEmojiPicker(false);
+    } else {
+      // Show picker — dismiss keyboard first if it's up
+      if (keyboardHeight > 0) {
+        pendingPickerShow.current = true;
+        Keyboard.dismiss();
+      } else {
+        setShowEmojiPicker(true);
+      }
+    }
+  }, [showEmojiPicker, keyboardHeight]);
+
+  const handleInputFocus = useCallback(() => {
+    // When user taps into TextInput, hide picker (keyboard will show via showEvent)
+    setShowEmojiPicker(false);
+    pendingPickerShow.current = false;
+  }, []);
+
+  const handleEmojiSelect = useCallback((native: string) => {
+    setComposerText((prev) => prev + native);
+  }, []);
 
   // The current thread from the store
   const thread: Thread | undefined = threads[threadId];
@@ -233,6 +299,8 @@ export function ThreadDetailScreen({
         return;
       }
       setSending(true);
+      // Hide emoji picker on send
+      setShowEmojiPicker(false);
       try {
         const parentReplyId = replyTarget?.replyId ?? null;
         const depth = replyTarget ? replyTarget.depth + 1 : 0;
@@ -389,6 +457,16 @@ export function ThreadDetailScreen({
           onClearReplyTarget={handleClearReplyTarget}
           onSend={handleSend}
           sending={sending}
+          text={composerText}
+          onChangeText={setComposerText}
+          showEmojiPicker={showEmojiPicker}
+          onToggleEmojiPicker={handleToggleEmojiPicker}
+          onInputFocus={handleInputFocus}
+        />
+        <EmojiPicker
+          visible={showEmojiPicker}
+          onSelectEmoji={handleEmojiSelect}
+          height={keyboardHeight > 0 ? keyboardHeight : 300}
         />
       </KeyboardAvoidingView>
     </View>

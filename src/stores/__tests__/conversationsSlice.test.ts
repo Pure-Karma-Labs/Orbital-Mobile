@@ -40,16 +40,6 @@ function makeStore() {
     updateThreadSyncStatus: jest.fn(),
     updateReplySyncStatus: jest.fn(),
 
-    messages: {},
-    messageIdsByConversation: {},
-    hasMoreMessages: {},
-    setMessages: jest.fn(),
-    addMessage: jest.fn(),
-    addOptimisticMessage: jest.fn(),
-    updateMessageSyncStatus: jest.fn(),
-    markMessageRead: jest.fn(),
-    setHasMore: jest.fn(),
-
     contacts: {},
     setContacts: jest.fn(),
     upsertContact: jest.fn(),

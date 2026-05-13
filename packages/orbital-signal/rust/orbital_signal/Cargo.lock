@@ -1048,11 +1048,15 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 name = "orbital_signal"
 version = "0.1.0"
 dependencies = [
+ "aes",
  "aes-gcm",
  "async-trait",
+ "cbc",
+ "hmac",
  "libsignal-core",
  "libsignal-protocol",
  "rand",
+ "sha2",
  "thiserror",
  "tokio",
  "uniffi",

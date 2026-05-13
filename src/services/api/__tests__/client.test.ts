@@ -13,7 +13,7 @@ jest.mock('../tokenManager', () => ({
   },
 }));
 
-import { request, snakeToCamel, camelToSnake } from '../client';
+import { request, requestBinary, snakeToCamel, camelToSnake } from '../client';
 import {
   AuthError,
   NetworkError,
@@ -340,6 +340,75 @@ describe('snakeToCamel edge cases', () => {
       null,
       { userId: 'u1' },
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// requestBinary
+// ---------------------------------------------------------------------------
+
+describe('requestBinary', () => {
+  function mockFetchBinaryOk(
+    buffer: ArrayBuffer,
+    headers: Record<string, string> = {},
+  ): void {
+    const mockHeaders = {
+      get: jest.fn((name: string) => headers[name.toLowerCase()] ?? null),
+      has: jest.fn((name: string) => name.toLowerCase() in headers),
+    };
+    (globalThis as Record<string, unknown>).fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      arrayBuffer: jest.fn().mockResolvedValue(buffer),
+      text: jest.fn().mockResolvedValue(''),
+      headers: mockHeaders,
+    });
+  }
+
+  it('returns ArrayBuffer and headers on success', async () => {
+    const buffer = new ArrayBuffer(16);
+    mockFetchBinaryOk(buffer, {
+      'x-encryption-iv': 'test-iv',
+      'x-expires-at': '2026-12-31',
+    });
+
+    const result = await requestBinary({ method: 'GET', path: '/api/test' });
+
+    expect(result.data).toBe(buffer);
+    expect(result.headers.get('x-encryption-iv')).toBe('test-iv');
+    expect(result.headers.get('x-expires-at')).toBe('2026-12-31');
+  });
+
+  it('injects Authorization header', async () => {
+    mockFetchBinaryOk(new ArrayBuffer(4));
+
+    await requestBinary({ method: 'GET', path: '/api/test' });
+
+    const [, init] = ((globalThis as Record<string, unknown>).fetch as jest.Mock).mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
+    expect((init.headers as Record<string, string>)['Authorization']).toBe(
+      'Bearer test-token',
+    );
+  });
+
+  it('maps error responses through the same error handling as request()', async () => {
+    mockFetchError(500, 'server error');
+
+    await expect(
+      requestBinary({ method: 'GET', path: '/api/test' }),
+    ).rejects.toBeInstanceOf(ServerError);
+  });
+
+  it('does not apply snake_case to camelCase transforms', async () => {
+    // requestBinary returns raw ArrayBuffer, no JSON parsing
+    const buffer = new ArrayBuffer(8);
+    mockFetchBinaryOk(buffer);
+
+    const result = await requestBinary({ method: 'GET', path: '/api/test' });
+    expect(result.data).toBeInstanceOf(ArrayBuffer);
+    expect(result.data.byteLength).toBe(8);
   });
 });
 

@@ -24,6 +24,12 @@ libsignal-core = { git = "https://github.com/signalapp/libsignal", tag = "v0.83.
 # AES-256-GCM for content encryption (threads, replies — per-field with AAD)
 aes-gcm = "0.10"
 
+# AES-256-CBC + HMAC-SHA256 for attachment encryption (Signal Protocol format)
+aes = "0.8"
+cbc = "0.1"
+hmac = "0.12"
+sha2 = "0.10"
+
 # Needed for async runtime (uniffi async functions use tokio)
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
 

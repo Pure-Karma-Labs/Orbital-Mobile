@@ -65,13 +65,15 @@ function mockFetchError(status: number, bodyText = ''): void {
   });
 }
 
+/** Mock Blob for test — RN's Blob type has different constructor signature */
+const sampleChunkBlob = { size: 4, type: 'application/octet-stream' } as Blob;
+
 const sampleUploadParams: UploadChunkParams = {
   mediaId: 'media-123',
   groupId: 'group-456',
   chunkIndex: 0,
   totalChunks: 3,
-  encryptedChunk: 'base64encrypteddata==',
-  hmac: 'base64hmac==',
+  chunkData: sampleChunkBlob,
 };
 
 beforeEach(() => {
@@ -111,7 +113,7 @@ describe('uploadChunk', () => {
 
     const params: UploadChunkParams = {
       ...sampleUploadParams,
-      encryptedMetadata: 'meta==',
+      encryptedMetadata: '{"contentType":"image/jpeg"}',
       encryptionIv: 'iv==',
     };
 
@@ -122,7 +124,7 @@ describe('uploadChunk', () => {
     const formData = init.body as FormData;
 
     // FormData.get() should return the appended values
-    expect((formData as unknown as { get(k: string): string | null }).get('encrypted_metadata')).toBe('meta==');
+    expect((formData as unknown as { get(k: string): string | null }).get('encrypted_metadata')).toBe('{"contentType":"image/jpeg"}');
     expect((formData as unknown as { get(k: string): string | null }).get('encryption_iv')).toBe('iv==');
   });
 

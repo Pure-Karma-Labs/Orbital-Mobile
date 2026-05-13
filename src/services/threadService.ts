@@ -264,8 +264,8 @@ export async function loadReplies(
  * @param body          - Plaintext reply body.
  * @param parentReplyId - Parent reply ID for nested replies, or null for top-level.
  * @param depth         - The depth of the new reply (0 for top-level, parent.depth + 1 for nested).
- * @param authorId      - The current user's ID.
- * @param authorUsername - The current user's username.
+ * @param author        - The current user's ID and username.
+ * @param options       - Optional parameters (mediaIds for attached media).
  * @returns The finalized Reply object.
  */
 export async function postReply(
@@ -274,8 +274,8 @@ export async function postReply(
   body: string,
   parentReplyId: string | null,
   depth: number,
-  authorId: string,
-  authorUsername: string,
+  author: { authorId: string; authorUsername: string },
+  options?: { mediaIds?: string[] },
 ): Promise<Reply> {
   const clientId = generateUUID();
   const now = Date.now();
@@ -283,8 +283,8 @@ export async function postReply(
   const optimisticReply: Reply = {
     id: clientId,
     threadId,
-    authorId,
-    authorUsername,
+    authorId: author.authorId,
+    authorUsername: author.authorUsername,
     body,
     parentReplyId,
     depth,
@@ -304,6 +304,7 @@ export async function postReply(
       encryptedBody: encrypted.ciphertext,
       bodyIv: encrypted.iv,
       parentReplyId,
+      mediaIds: options?.mediaIds,
     });
 
     const confirmedReply: Reply = {
@@ -336,13 +337,19 @@ export async function postReply(
  * 2. Adds an optimistic thread to the store immediately.
  * 3. Sends the encrypted thread to the API.
  * 4. Updates sync status on success or failure.
+ *
+ * @param groupId - The group to create the thread in.
+ * @param title   - Plaintext thread title.
+ * @param body    - Plaintext thread body.
+ * @param author  - The current user's ID and username.
+ * @param options - Optional parameters (mediaIds for attached media).
  */
 export async function createNewThread(
   groupId: string,
   title: string,
   body: string,
-  authorId: string,
-  authorUsername: string,
+  author: { authorId: string; authorUsername: string },
+  options?: { mediaIds?: string[] },
 ): Promise<Thread> {
   const clientId = generateUUID();
   const now = Date.now();
@@ -350,8 +357,8 @@ export async function createNewThread(
   const optimisticThread: Thread = {
     id: clientId,
     conversationId: groupId,
-    authorId,
-    authorUsername,
+    authorId: author.authorId,
+    authorUsername: author.authorUsername,
     title,
     body,
     contentType: 'text',
@@ -379,6 +386,7 @@ export async function createNewThread(
       titleIv: encTitle.iv,
       encryptedBody: encBody.ciphertext,
       bodyIv: encBody.iv,
+      mediaIds: options?.mediaIds,
     });
 
     const finalThread: Thread = {

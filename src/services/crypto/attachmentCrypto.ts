@@ -15,10 +15,7 @@
  * SECURITY: plaintext_hash must never be sent to the server — content fingerprint breaks zero-knowledge.
  */
 
-// @ts-expect-error — exports exist in the generated orbital_signal.ts but TS resolution
-// follows the symlinked node_modules to the main repo's copy which lacks them until merge.
 import { attachmentEncrypt, attachmentDecrypt } from 'orbital-signal';
-// @ts-expect-error — same resolution issue as above
 import type { AttachmentCryptoResult } from 'orbital-signal';
 import { arrayBufferToBase64, toArrayBuffer } from './utils';
 

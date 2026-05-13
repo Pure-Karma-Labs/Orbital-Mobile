@@ -17,9 +17,11 @@ export interface UploadChunkParams {
   groupId: string;
   chunkIndex: number;
   totalChunks: number;
-  encryptedChunk: string;
-  hmac: string;
+  /** Binary chunk data — backend expects a file field named 'chunk' via multer */
+  chunkData: Blob;
+  /** Plain JSON string of metadata (NOT base64) — first chunk only */
   encryptedMetadata?: string;
+  /** Base64-encoded IV extracted from ciphertext — first chunk only */
   encryptionIv?: string;
 }
 
@@ -39,8 +41,7 @@ export function uploadChunk(
   formData.append('group_id', params.groupId);
   formData.append('chunk_index', String(params.chunkIndex));
   formData.append('total_chunks', String(params.totalChunks));
-  formData.append('encrypted_chunk', params.encryptedChunk);
-  formData.append('hmac', params.hmac);
+  formData.append('chunk', params.chunkData);
   if (params.encryptedMetadata) {
     formData.append('encrypted_metadata', params.encryptedMetadata);
   }

@@ -286,8 +286,7 @@ describe('postReply', () => {
       'Hello world',
       null,
       0,
-      'user-1',
-      'alice',
+      { authorId: 'user-1', authorUsername: 'alice' },
     );
 
     expect(mockEncryptContent).toHaveBeenCalledWith('Hello world', fakeGroupKey, 'group-1');
@@ -320,7 +319,7 @@ describe('postReply', () => {
     mockCreateReply.mockRejectedValue(new Error('Network error'));
 
     await expect(
-      postReply('thread-1', 'group-1', 'Hello', null, 0, 'user-1', 'alice'),
+      postReply('thread-1', 'group-1', 'Hello', null, 0, { authorId: 'user-1', authorUsername: 'alice' }),
     ).rejects.toThrow('Failed to post reply');
 
     expect(mockAddOptimisticReply).toHaveBeenCalledTimes(1);
@@ -343,8 +342,7 @@ describe('postReply', () => {
       'Nested reply',
       'parent-reply-1',
       2,
-      'user-1',
-      'alice',
+      { authorId: 'user-1', authorUsername: 'alice' },
     );
 
     const optimistic = mockAddOptimisticReply.mock.calls[0][0];

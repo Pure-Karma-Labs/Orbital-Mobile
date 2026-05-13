@@ -12,11 +12,12 @@
  * 8. Complete upload
  * 9. Persist to local DB and store
  *
- * SECURITY: plaintextHash is stored locally only — never sent to the server.
+ * SECURITY: plaintextHash is never sent to the server (discarded for now; see TODO).
  * SECURITY: Crypto operations delegated to attachmentCrypto (Rust FFI).
  */
 
 import { generateAttachmentKeys, encryptAttachment } from './crypto/attachmentCrypto';
+import { encryptContent, getOrFetchGroupKey } from './crypto/contentCrypto';
 import { arrayBufferToBase64, toArrayBuffer } from './crypto/utils';
 import { uploadChunk, completeUpload } from './api/media';
 import { saveMedia } from '../database/repositories/mediaRepository';
@@ -148,15 +149,23 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<string> 
   // 4. Generate media ID
   const mediaId = generateUUID();
 
-  // 5. Build metadata as plain JSON string (NOT base64 — backend does JSON.parse())
-  // SECURITY: plaintextHash is NEVER included — it breaks zero-knowledge
+  // 5. Build metadata and encrypt with group key (AES-256-GCM)
+  // SECURITY: Metadata (fileName, contentType, dimensions) is encrypted so the
+  // server never sees user filenames or content types (zero-knowledge).
+  // SECURITY: plaintextHash is NEVER included — content fingerprint breaks zero-knowledge.
   const digestBase64 = arrayBufferToBase64(toArrayBuffer(digest));
-  const metadata = JSON.stringify({
+  const metadataPlain = JSON.stringify({
     contentType: mimeType,
     fileName,
     ...(width != null ? { width } : {}),
     ...(height != null ? { height } : {}),
     digest: digestBase64,
+  });
+  const groupKey = await getOrFetchGroupKey(groupId);
+  const encryptedMeta = encryptContent(metadataPlain, groupKey, groupId);
+  const metadata = JSON.stringify({
+    ciphertext: encryptedMeta.ciphertext,
+    iv: encryptedMeta.iv,
   });
 
   // 6. Extract IV from ciphertext (first 16 bytes) and base64-encode
@@ -269,9 +278,9 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<string> 
   };
   useAppStore.getState().upsertMedia(storeItem);
 
-  // Store plaintextHash locally for integrity verification on re-download
-  // This is persisted in the DB row but NEVER sent to the server
-  void plaintextHash; // Explicitly mark as used-but-not-sent
+  // TODO: persist plaintextHash locally (needs plaintext_hash column in orbital_media)
+  // for integrity verification on re-download. Currently discarded.
+  void plaintextHash;
 
   return mediaId;
 }

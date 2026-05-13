@@ -1,0 +1,233 @@
+/**
+ * Tests for mediaUploadService — encryption, chunking, upload, and persistence.
+ */
+
+const mockGenerateAttachmentKeys = jest.fn();
+const mockEncryptAttachment = jest.fn();
+
+jest.mock('../crypto/attachmentCrypto', () => ({
+  generateAttachmentKeys: (...args: unknown[]) => mockGenerateAttachmentKeys(...args),
+  encryptAttachment: (...args: unknown[]) => mockEncryptAttachment(...args),
+}));
+
+const mockEncryptContent = jest.fn();
+const mockGetOrFetchGroupKey = jest.fn();
+
+jest.mock('../crypto/contentCrypto', () => ({
+  encryptContent: (...args: unknown[]) => mockEncryptContent(...args),
+  getOrFetchGroupKey: (...args: unknown[]) => mockGetOrFetchGroupKey(...args),
+}));
+
+jest.mock('../crypto/utils', () => ({
+  arrayBufferToBase64: jest.fn(() => 'mock-base64'),
+  toArrayBuffer: jest.fn((u8: Uint8Array) => u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength)),
+}));
+
+const mockUploadChunk = jest.fn();
+const mockCompleteUpload = jest.fn();
+
+jest.mock('../api/media', () => ({
+  uploadChunk: (...args: unknown[]) => mockUploadChunk(...args),
+  completeUpload: (...args: unknown[]) => mockCompleteUpload(...args),
+}));
+
+const mockSaveMedia = jest.fn();
+
+jest.mock('../../database/repositories/mediaRepository', () => ({
+  saveMedia: (...args: unknown[]) => mockSaveMedia(...args),
+}));
+
+const mockUpsertMedia = jest.fn();
+
+jest.mock('../../stores/useAppStore', () => ({
+  useAppStore: {
+    getState: jest.fn(() => ({
+      upsertMedia: mockUpsertMedia,
+    })),
+  },
+}));
+
+jest.mock('../../utils/uuid', () => ({
+  generateUUID: jest.fn(() => 'test-media-id'),
+}));
+
+import { uploadMedia } from '../mediaUploadService';
+
+const fakeGroupKey = new Uint8Array(32).fill(0xAB);
+const fakeCiphertext = new Uint8Array(100).fill(0xCC);
+const fakeDigest = new Uint8Array(32).fill(0xDD);
+const fakeKeys = new Uint8Array(64).fill(0xEE);
+
+beforeEach(() => {
+  jest.clearAllMocks();
+  mockGenerateAttachmentKeys.mockReturnValue({
+    keys: fakeKeys,
+    keysBase64: 'fake-keys-base64',
+  });
+  mockEncryptAttachment.mockReturnValue({
+    ciphertext: fakeCiphertext,
+    digest: fakeDigest,
+    plaintextHash: 'fake-plaintext-hash',
+  });
+  mockGetOrFetchGroupKey.mockResolvedValue(fakeGroupKey);
+  mockEncryptContent.mockReturnValue({
+    ciphertext: 'encrypted-meta-ct',
+    iv: 'encrypted-meta-iv',
+  });
+  mockUploadChunk.mockResolvedValue({
+    uploadId: 'upload-1',
+    received: 1,
+    complete: false,
+  });
+  mockCompleteUpload.mockResolvedValue({
+    mediaId: 'test-media-id',
+    sizeBytes: 100,
+    uploadedAt: '2026-01-01T00:00:00Z',
+    expiresAt: '2026-01-08T00:00:00Z',
+    chunksUploaded: 1,
+  });
+});
+
+const baseOptions = {
+  fileBase64: 'QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo=',
+  mimeType: 'image/jpeg',
+  fileName: 'photo.jpg',
+  fileSize: 50,
+  groupId: 'group-1',
+};
+
+describe('uploadMedia', () => {
+  it('rejects files over 25MB', async () => {
+    await expect(
+      uploadMedia({ ...baseOptions, fileSize: 26 * 1024 * 1024 }),
+    ).rejects.toThrow('File too large');
+  });
+
+  it('encrypts plaintext with attachment keys', async () => {
+    await uploadMedia(baseOptions);
+
+    expect(mockGenerateAttachmentKeys).toHaveBeenCalledTimes(1);
+    expect(mockEncryptAttachment).toHaveBeenCalledTimes(1);
+    const [plaintext, keys] = mockEncryptAttachment.mock.calls[0];
+    expect(plaintext).toBeInstanceOf(Uint8Array);
+    expect(keys).toBe(fakeKeys);
+  });
+
+  it('encrypts metadata with group key (not plaintext)', async () => {
+    await uploadMedia(baseOptions);
+
+    expect(mockGetOrFetchGroupKey).toHaveBeenCalledWith('group-1');
+    expect(mockEncryptContent).toHaveBeenCalledTimes(1);
+    const [metadataJson, groupKey, groupId] = mockEncryptContent.mock.calls[0];
+    expect(groupKey).toBe(fakeGroupKey);
+    expect(groupId).toBe('group-1');
+
+    const parsed = JSON.parse(metadataJson as string);
+    expect(parsed.contentType).toBe('image/jpeg');
+    expect(parsed.fileName).toBe('photo.jpg');
+    expect(parsed).not.toHaveProperty('plaintextHash');
+  });
+
+  it('never sends plaintextHash in any upload call', async () => {
+    await uploadMedia(baseOptions);
+
+    for (const call of mockUploadChunk.mock.calls) {
+      const params = call[0] as Record<string, unknown>;
+      expect(JSON.stringify(params)).not.toContain('plaintextHash');
+      expect(JSON.stringify(params)).not.toContain('plaintext_hash');
+    }
+  });
+
+  it('uploads correct number of chunks for small file', async () => {
+    await uploadMedia(baseOptions);
+
+    expect(mockUploadChunk).toHaveBeenCalledTimes(1);
+    expect(mockCompleteUpload).toHaveBeenCalledWith('test-media-id', 'group-1');
+  });
+
+  it('uploads multiple chunks for large ciphertext', async () => {
+    const largeCiphertext = new Uint8Array(6 * 1024 * 1024).fill(0xAA);
+    mockEncryptAttachment.mockReturnValue({
+      ciphertext: largeCiphertext,
+      digest: fakeDigest,
+      plaintextHash: 'hash',
+    });
+
+    await uploadMedia(baseOptions);
+
+    expect(mockUploadChunk).toHaveBeenCalledTimes(2);
+  });
+
+  it('sends encryptedMetadata only with first chunk', async () => {
+    const largeCiphertext = new Uint8Array(6 * 1024 * 1024).fill(0xAA);
+    mockEncryptAttachment.mockReturnValue({
+      ciphertext: largeCiphertext,
+      digest: fakeDigest,
+      plaintextHash: 'hash',
+    });
+
+    await uploadMedia(baseOptions);
+
+    const firstCall = mockUploadChunk.mock.calls[0][0] as Record<string, unknown>;
+    const secondCall = mockUploadChunk.mock.calls[1][0] as Record<string, unknown>;
+    expect(firstCall.encryptedMetadata).toBeDefined();
+    expect(firstCall.encryptionIv).toBeDefined();
+    expect(secondCall.encryptedMetadata).toBeUndefined();
+    expect(secondCall.encryptionIv).toBeUndefined();
+  });
+
+  it('saves to database and store on success', async () => {
+    await uploadMedia(baseOptions);
+
+    expect(mockSaveMedia).toHaveBeenCalledTimes(1);
+    expect(mockUpsertMedia).toHaveBeenCalledTimes(1);
+
+    const storeItem = mockUpsertMedia.mock.calls[0][0];
+    expect(storeItem.id).toBe('test-media-id');
+    expect(storeItem.uploadState).toBe('done');
+    expect(storeItem.hasKeys).toBe(true);
+  });
+
+  it('returns the media ID', async () => {
+    const id = await uploadMedia(baseOptions);
+    expect(id).toBe('test-media-id');
+  });
+
+  it('retries on transient upload failure', async () => {
+    mockUploadChunk
+      .mockRejectedValueOnce(new Error('Network error'))
+      .mockResolvedValueOnce({ uploadId: 'u1', received: 1, complete: false });
+
+    await uploadMedia(baseOptions);
+
+    expect(mockUploadChunk).toHaveBeenCalledTimes(2);
+  });
+
+  it('throws after max retries exhausted', async () => {
+    mockUploadChunk.mockRejectedValue(new Error('Network error'));
+
+    await expect(uploadMedia(baseOptions)).rejects.toThrow();
+    expect(mockUploadChunk).toHaveBeenCalledTimes(3);
+  });
+
+  it('respects abort signal', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      uploadMedia({ ...baseOptions, signal: controller.signal }),
+    ).rejects.toThrow('cancelled');
+  });
+
+  it('encrypted metadata contains ciphertext and iv, not plaintext fields', async () => {
+    await uploadMedia(baseOptions);
+
+    const firstCall = mockUploadChunk.mock.calls[0][0] as Record<string, unknown>;
+    const metadataStr = firstCall.encryptedMetadata as string;
+    const metadataParsed = JSON.parse(metadataStr);
+    expect(metadataParsed).toHaveProperty('ciphertext');
+    expect(metadataParsed).toHaveProperty('iv');
+    expect(metadataParsed).not.toHaveProperty('fileName');
+    expect(metadataParsed).not.toHaveProperty('contentType');
+  });
+});

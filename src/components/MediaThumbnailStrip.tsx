@@ -127,7 +127,7 @@ export function MediaThumbnailStrip({
           const isUploading = progress != null && progress < 1;
 
           return (
-            <View key={`thumb-${index}`} style={thumbnailWrapperStyle}>
+            <View key={item.uri} style={thumbnailWrapperStyle}>
               <Image
                 source={{ uri: item.uri }}
                 style={imageStyle}

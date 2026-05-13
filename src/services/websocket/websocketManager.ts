@@ -67,12 +67,16 @@ export function createWebSocketManager(createSocket?: SocketFactory) {
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let backgroundGraceTimer: ReturnType<typeof setTimeout> | null = null;
   let reconnectAttempt = 0;
+  let disconnectRequested = false;
 
   const subscriptions = new Set<string>();
   const typingThrottles = new Map<string, number>();
 
   // AppState listener subscription
   let appStateSubscription: { remove: () => void } | null = null;
+
+  // Token refresh unsubscribe handle (#108)
+  let unsubTokenRefresh: (() => void) | null = null;
 
   // ------------------------------------------------------------------
   // Timer helpers
@@ -256,7 +260,8 @@ export function createWebSocketManager(createSocket?: SocketFactory) {
   // ------------------------------------------------------------------
 
   function registerTokenRefreshListener(): void {
-    tokenManager.onTokenRefresh = () => {
+    if (unsubTokenRefresh) return; // Already registered
+    unsubTokenRefresh = tokenManager.onTokenRefresh(() => {
       if (socket && socket.readyState === WebSocket.OPEN) {
         if (__DEV__) {
           console.log('[WS] Token refreshed — reconnecting with new JWT');
@@ -272,11 +277,12 @@ export function createWebSocketManager(createSocket?: SocketFactory) {
         reconnectAttempt = 0;
         manager.connect();
       }
-    };
+    });
   }
 
   function removeTokenRefreshListener(): void {
-    tokenManager.onTokenRefresh = undefined;
+    unsubTokenRefresh?.();
+    unsubTokenRefresh = null;
   }
 
   // ------------------------------------------------------------------
@@ -289,6 +295,8 @@ export function createWebSocketManager(createSocket?: SocketFactory) {
      * No-op if already connected or connecting.
      */
     async connect(): Promise<void> {
+      disconnectRequested = false;
+
       const currentStatus = useAppStore.getState().connectionStatus;
       if (
         currentStatus === 'connected' ||
@@ -298,6 +306,12 @@ export function createWebSocketManager(createSocket?: SocketFactory) {
       }
 
       const token = await tokenManager.getAccessToken();
+
+      // #110: Bail if disconnect() was called while awaiting the token.
+      if (disconnectRequested) {
+        return;
+      }
+
       if (token === null) {
         if (__DEV__) {
           console.warn('[WS] No access token — cannot connect');
@@ -331,6 +345,7 @@ export function createWebSocketManager(createSocket?: SocketFactory) {
      * Clears all timers and subscriptions.
      */
     disconnect(): void {
+      disconnectRequested = true;
       clearAllTimers();
       removeAppStateListener();
       removeTokenRefreshListener();

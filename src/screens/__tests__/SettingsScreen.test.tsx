@@ -4,6 +4,14 @@ import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'rea
 import { ThemeProvider } from '../../theme';
 import { SettingsScreen } from '../SettingsScreen';
 
+const mockNavigate = jest.fn();
+jest.mock('@react-navigation/native', () => ({
+  useNavigation: () => ({
+    navigate: mockNavigate,
+    goBack: jest.fn(),
+  }),
+}));
+
 jest.mock('../../services/authService', () => ({
   logout: jest.fn(),
 }));
@@ -52,6 +60,7 @@ function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstanc
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockNavigate.mockClear();
   mockUseAuth.mockReturnValue({
     isAuthenticated: true,
     userId: 'user-1',
@@ -62,6 +71,8 @@ beforeEach(() => {
   mockUseUI.mockReturnValue({
     colorScheme: 'system',
     setColorScheme: jest.fn(),
+    soundEnabled: true,
+    setSoundEnabled: jest.fn(),
   });
   mockUseConversations.mockReturnValue({
     activeConversationId: 'g1',

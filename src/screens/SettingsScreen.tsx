@@ -8,6 +8,8 @@ import {
   type ViewStyle,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useTheme } from '../theme';
 import { useAuth, useUI, useConversations } from '../stores';
 import { logout } from '../services/authService';
@@ -17,6 +19,7 @@ import { ProfileCard } from './settings/ProfileCard';
 import { SettingsRow } from './settings/SettingsRow';
 import { QuotaBar } from './settings/QuotaBar';
 import type { GroupQuotaResponse } from '../types/api';
+import type { SettingsStackParamList } from '../navigation/types';
 
 type ColorSchemeLabel = 'Light' | 'Dark' | 'System';
 
@@ -57,8 +60,9 @@ function SectionHeader({ label }: { label: string }): React.JSX.Element {
 
 export function SettingsScreen(): React.JSX.Element {
   const theme = useTheme();
+  const navigation = useNavigation<NativeStackNavigationProp<SettingsStackParamList>>();
   const { displayName, username, avatarPath } = useAuth();
-  const { colorScheme, setColorScheme } = useUI();
+  const { colorScheme, setColorScheme, soundEnabled, setSoundEnabled } = useUI();
   const { activeConversationId, conversations } = useConversations();
 
   const [quota, setQuota] = useState<GroupQuotaResponse | null>(null);
@@ -90,8 +94,16 @@ export function SettingsScreen(): React.JSX.Element {
   }, []);
 
   const handleEditProfile = useCallback(() => {
-    // Phase 3: navigation.navigate('EditProfile')
-  }, []);
+    navigation.navigate('EditProfile');
+  }, [navigation]);
+
+  const handleToggleSound = useCallback(() => {
+    setSoundEnabled(!soundEnabled);
+  }, [soundEnabled, setSoundEnabled]);
+
+  const handleInviteFriends = useCallback(() => {
+    navigation.navigate('InviteFriends');
+  }, [navigation]);
 
   const containerStyle: ViewStyle = {
     flex: 1,
@@ -120,7 +132,13 @@ export function SettingsScreen(): React.JSX.Element {
 
         <SectionHeader label="Notifications" />
         <SettingsRow emojiUnified="1F514" label="Push" value="On" chevron disabled />
-        <SettingsRow emojiUnified="1F4F3" label="Sounds" value="On" chevron disabled />
+        <SettingsRow
+          emojiUnified="1F4F3"
+          label="Sounds"
+          value={soundEnabled ? 'On' : 'Off'}
+          onPress={handleToggleSound}
+          testID="sounds-row"
+        />
 
         <SectionHeader label="Privacy" />
         <SettingsRow emojiUnified="1F512" label="Safety Numbers" chevron disabled />
@@ -137,7 +155,13 @@ export function SettingsScreen(): React.JSX.Element {
         )}
 
         <SectionHeader label="Account" />
-        <SettingsRow emojiUnified="1F4E4" label="Invite Friends" chevron disabled />
+        <SettingsRow
+          emojiUnified="1F4E4"
+          label="Invite Friends"
+          chevron
+          onPress={handleInviteFriends}
+          testID="invite-friends-row"
+        />
         <SettingsRow
           emojiUnified="1F6AA"
           label="Log Out"

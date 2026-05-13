@@ -42,4 +42,14 @@ export const createAuthSlice: StateCreator<AppState, [['zustand/devtools', never
 
   setAuthenticated: (authenticated) =>
     set({ isAuthenticated: authenticated }, false, 'auth/setAuthenticated'),
+
+  updateProfile: (patch) =>
+    set(
+      (state) => ({
+        displayName: patch.displayName !== undefined ? patch.displayName : state.displayName,
+        avatarPath: patch.avatarPath !== undefined ? patch.avatarPath : state.avatarPath,
+      }),
+      false,
+      'auth/updateProfile',
+    ),
 });

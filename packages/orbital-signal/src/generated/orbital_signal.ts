@@ -76,6 +76,66 @@ const uniffiIsDebug =
   false;
 // Public interface members begin here.
 
+// ---------------------------------------------------------------------------
+// Attachment crypto stubs — TEMPORARY until `ubrn build` regenerates this file.
+// These match the Rust signatures in attachment_crypto.rs. Once ubrn regenerates
+// bindings after a native build, these will be replaced by the real implementations.
+// ---------------------------------------------------------------------------
+
+/**
+ * Result of Signal Protocol attachment encryption (AES-256-CBC + HMAC-SHA256).
+ */
+export type AttachmentCryptoResult = {
+  /** IV (16 bytes) || encrypted_data || HMAC-SHA256 (32 bytes). */
+  ciphertext: ArrayBuffer;
+  /** SHA-256 digest of the entire ciphertext blob (IV + encrypted_data + HMAC). */
+  digest: ArrayBuffer;
+  /** SHA-256 hash of the original plaintext (local integrity only — never sent to server). */
+  plaintextHash: ArrayBuffer;
+};
+
+/**
+ * Encrypt an attachment using Signal Protocol format (AES-256-CBC + HMAC-SHA256).
+ *
+ * - `keys` must be exactly 64 bytes: first 32 = AES-256 key, last 32 = HMAC-SHA256 key.
+ * - Generates a fresh 16-byte IV via CSPRNG.
+ * - Returns `AttachmentCryptoResult` with ciphertext (IV || encrypted_data || HMAC),
+ *   SHA-256 digest of the ciphertext, and SHA-256 hash of the original plaintext.
+ *
+ * @throws SignalError on invalid key length.
+ */
+export function attachmentEncrypt(
+  _plaintext: ArrayBuffer,
+  _keys: ArrayBuffer,
+): AttachmentCryptoResult /*throws*/ {
+  // Stub — will be replaced by ubrn-generated FFI call after native build.
+  throw new Error('attachmentEncrypt: native bindings not yet generated — run ubrn build');
+}
+
+/**
+ * Decrypt a Signal Protocol attachment (AES-256-CBC + HMAC-SHA256).
+ *
+ * - `keys` must be exactly 64 bytes: first 32 = AES-256 key, last 32 = HMAC-SHA256 key.
+ * - `ciphertext` format: IV (16 bytes) || encrypted_data || HMAC-SHA256 (32 bytes).
+ * - `expectedDigest` is the SHA-256 digest of the entire ciphertext blob.
+ *
+ * CRITICAL: HMAC is verified BEFORE decryption to prevent padding oracle attacks.
+ *
+ * @throws SignalError on invalid key, MAC failure, digest mismatch, or decrypt failure.
+ */
+export function attachmentDecrypt(
+  _ciphertext: ArrayBuffer,
+  _keys: ArrayBuffer,
+  _expectedDigest: ArrayBuffer,
+): ArrayBuffer /*throws*/ {
+  // Stub — will be replaced by ubrn-generated FFI call after native build.
+  throw new Error('attachmentDecrypt: native bindings not yet generated — run ubrn build');
+}
+
+// ---------------------------------------------------------------------------
+// End attachment crypto stubs
+// ---------------------------------------------------------------------------
+
 /**
  * AES-256-GCM decrypt with Additional Authenticated Data.
  *

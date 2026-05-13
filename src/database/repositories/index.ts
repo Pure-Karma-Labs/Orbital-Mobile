@@ -1,5 +1,6 @@
 export * from './conversationRepository';
 export * from './itemRepository';
+export * from './mediaRepository';
 export * from './signalIdentityKeyRepository';
 export * from './signalSessionRepository';
 export * from './signalPreKeyRepository';

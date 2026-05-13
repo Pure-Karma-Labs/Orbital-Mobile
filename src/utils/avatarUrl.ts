@@ -5,7 +5,8 @@
  * Rejects anything that could be used for open redirect or SSRF.
  */
 
-const API_BASE_URL = 'https://api.orbitl.org';
+import { API_BASE_URL } from '../services/api/client';
+
 const AVATAR_PATH_REGEX = /^\/avatars\/[A-Za-z0-9._-]+$/;
 
 /**

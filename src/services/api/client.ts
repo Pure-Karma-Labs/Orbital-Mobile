@@ -16,7 +16,7 @@ import {
 } from './errors';
 import { tokenManager } from './tokenManager';
 
-const API_BASE_URL = 'https://api.orbitl.org';
+export const API_BASE_URL = 'https://api.orbitl.org';
 
 // Guard: enforce HTTPS at module load time
 if (!API_BASE_URL.startsWith('https://')) {

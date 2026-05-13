@@ -76,6 +76,8 @@ export function EditProfileScreen({ navigation }: Props): React.JSX.Element {
 
   const handleChoosePhoto = useCallback(async () => {
     try {
+      // maxWidth/maxHeight/quality force re-encoding which strips EXIF/GPS metadata (SEC-01).
+      // This is an implicit side effect of the re-encode path — not an explicit EXIF strip.
       const result = await launchImageLibrary({
         mediaType: 'photo',
         maxWidth: 800,

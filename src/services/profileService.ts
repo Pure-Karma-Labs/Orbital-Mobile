@@ -40,7 +40,13 @@ export async function updateUserAvatar(
     throw new Error('Unsupported image type. Please use JPEG, PNG, GIF, or WebP.');
   }
 
-  const fileName = mimeType === 'image/png' ? 'avatar.png' : 'avatar.jpg';
+  const MIME_TO_EXT: Record<string, string> = {
+    'image/jpeg': 'avatar.jpg',
+    'image/png': 'avatar.png',
+    'image/gif': 'avatar.gif',
+    'image/webp': 'avatar.webp',
+  };
+  const fileName = MIME_TO_EXT[mimeType] ?? 'avatar.jpg';
 
   const formData = new FormData();
   formData.append('avatar', {

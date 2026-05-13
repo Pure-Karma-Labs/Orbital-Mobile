@@ -9,6 +9,7 @@ import {
 import { useTheme } from '../../theme';
 import { Avatar } from '../../components/Avatar';
 import { EmojiText } from '../../components/EmojiText';
+import { getAvatarUrl } from '../../utils/avatarUrl';
 
 export interface ProfileCardProps {
   displayName: string;
@@ -20,6 +21,7 @@ export interface ProfileCardProps {
 export const ProfileCard = React.memo(function ProfileCard({
   displayName,
   username,
+  avatarUrl,
   onEdit,
 }: ProfileCardProps): React.JSX.Element {
   const theme = useTheme();
@@ -69,7 +71,7 @@ export const ProfileCard = React.memo(function ProfileCard({
       accessibilityLabel={`${displayName}, @${username}, edit profile`}
       testID="profile-card"
     >
-      <Avatar name={displayName} size={48} />
+      <Avatar name={displayName} size={48} imageUrl={getAvatarUrl(avatarUrl)} />
       <View style={infoStyle}>
         <EmojiText style={nameStyle} numberOfLines={1}>
           {displayName}

@@ -15,7 +15,7 @@ import type { AppState } from '../types/store';
  */
 type PersistedState = Pick<
   AppState,
-  'conversations' | 'conversationIds' | 'contacts' | 'colorScheme' | 'activeTab'
+  'conversations' | 'conversationIds' | 'contacts' | 'colorScheme' | 'activeTab' | 'soundEnabled'
 >;
 
 export const useAppStore = create<AppState>()(
@@ -50,6 +50,7 @@ export const useAppStore = create<AppState>()(
           contacts: state.contacts,
           colorScheme: state.colorScheme,
           activeTab: state.activeTab,
+          soundEnabled: state.soundEnabled,
         }),
       },
     ),

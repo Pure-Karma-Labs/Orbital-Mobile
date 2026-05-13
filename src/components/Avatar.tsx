@@ -1,9 +1,9 @@
 /**
- * Colored circle with initial letter and optional online presence dot.
+ * Colored circle with initial letter, optional image, and optional online presence dot.
  */
 
-import React from 'react';
-import { StyleSheet, Text, View, type TextStyle, type ViewStyle } from 'react-native';
+import React, { useState } from 'react';
+import { Image, StyleSheet, Text, View, type TextStyle, type ViewStyle } from 'react-native';
 import { useTheme } from '../theme';
 
 export interface AvatarProps {
@@ -11,6 +11,8 @@ export interface AvatarProps {
   size?: number;
   color?: string;
   online?: boolean;
+  /** Full HTTPS image URL. When provided and loadable, renders the image instead of initials. */
+  imageUrl?: string | null;
 }
 
 export function Avatar({
@@ -18,10 +20,14 @@ export function Avatar({
   size = 36,
   color,
   online,
+  imageUrl,
 }: AvatarProps): React.JSX.Element {
   const theme = useTheme();
   const bgColor = color ?? theme.colors.blue;
   const initial = (name || '?').slice(0, 1).toUpperCase();
+  const [imageError, setImageError] = useState(false);
+
+  const showImage = !!imageUrl && !imageError;
 
   const containerStyle: ViewStyle = {
     width: size,
@@ -30,6 +36,7 @@ export function Avatar({
     backgroundColor: bgColor,
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'hidden',
   };
 
   const initialStyle: TextStyle = {
@@ -55,9 +62,18 @@ export function Avatar({
 
   return (
     <View style={containerStyle}>
-      <Text style={initialStyle} allowFontScaling={false}>
-        {initial}
-      </Text>
+      {showImage ? (
+        <Image
+          source={{ uri: imageUrl }}
+          style={{ width: size, height: size }}
+          onError={() => setImageError(true)}
+          accessibilityLabel={`${name} avatar`}
+        />
+      ) : (
+        <Text style={initialStyle} allowFontScaling={false}>
+          {initial}
+        </Text>
+      )}
       {online != null && <View style={presenceDotStyle} />}
     </View>
   );

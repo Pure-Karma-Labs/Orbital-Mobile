@@ -78,11 +78,20 @@ jest.mock('../../stores/middleware/persistence', () => ({
   getMMKVInstance: jest.fn(() => ({ clearAll: jest.fn() })),
 }));
 
+jest.mock('../websocket', () => ({
+  websocketManager: {
+    connect: jest.fn(),
+    disconnect: jest.fn(),
+  },
+}));
+
 // Mock the whole store module — we just want to verify action calls
 const mockSetUser = jest.fn();
 const mockClearAuth = jest.fn();
 const mockSetConversations = jest.fn();
 const mockSetContacts = jest.fn();
+const mockSetConnectionStatus = jest.fn();
+const mockClearTypingUsers = jest.fn();
 
 jest.mock('../../stores/useAppStore', () => ({
   useAppStore: {
@@ -91,6 +100,8 @@ jest.mock('../../stores/useAppStore', () => ({
       clearAuth: mockClearAuth,
       setConversations: mockSetConversations,
       setContacts: mockSetContacts,
+      setConnectionStatus: mockSetConnectionStatus,
+      clearTypingUsers: mockClearTypingUsers,
     })),
   },
 }));

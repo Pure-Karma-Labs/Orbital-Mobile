@@ -63,6 +63,13 @@ const createTokenManager = () => {
     onTokensCleared: undefined as (() => void) | undefined,
 
     /**
+     * Optional callback fired after a new access token is set (WS-02).
+     * Used by the WebSocket manager to reconnect with a fresh JWT
+     * when tokens are refreshed while the socket is open.
+     */
+    onTokenRefresh: undefined as (() => void) | undefined,
+
+    /**
      * Swap the storage backend. Should be called once at app startup,
      * before any API requests that require authentication.
      */
@@ -81,9 +88,15 @@ const createTokenManager = () => {
     },
 
     async setTokens(accessToken: string, refreshToken?: string): Promise<void> {
+      const previousToken = await storage.getAccessToken();
       await storage.setAccessToken(accessToken);
       if (refreshToken !== undefined) {
         await storage.setRefreshToken(refreshToken);
+      }
+      // Fire onTokenRefresh only when replacing an existing token (WS-02).
+      // Initial login sets previousToken from null → token, which is not a "refresh".
+      if (previousToken !== null && accessToken !== previousToken) {
+        this.onTokenRefresh?.();
       }
     },
 

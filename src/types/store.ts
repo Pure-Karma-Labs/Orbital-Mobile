@@ -209,6 +209,33 @@ export interface UIActions {
 export type UISlice = UIState & UIActions;
 
 // ============================================================
+// Connection slice state (WebSocket)
+// ============================================================
+
+export interface TypingEntry {
+  userId: string;
+  expiresAt: number;
+}
+
+export interface ConnectionState {
+  connectionStatus: 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
+  lastConnectedAt: number | null;
+  reconnectAttempt: number;
+  typingUsers: Record<string, TypingEntry[]>;
+}
+
+export interface ConnectionActions {
+  setConnectionStatus: (status: ConnectionState['connectionStatus']) => void;
+  setLastConnectedAt: (timestamp: number | null) => void;
+  setReconnectAttempt: (attempt: number) => void;
+  addTypingUser: (conversationId: string, entry: TypingEntry) => void;
+  removeTypingUser: (conversationId: string, userId: string) => void;
+  clearTypingUsers: () => void;
+}
+
+export type ConnectionSlice = ConnectionState & ConnectionActions;
+
+// ============================================================
 // Combined app state
 // ============================================================
 
@@ -216,4 +243,5 @@ export type AppState = AuthSlice &
   ConversationsSlice &
   ThreadsSlice &
   ContactsSlice &
-  UISlice;
+  UISlice &
+  ConnectionSlice;

@@ -34,6 +34,59 @@ function getStoreActions() {
 }
 
 /**
+ * Decrypt title and body fields using the group key.
+ * Shared by REST mappers and WebSocket message handler.
+ *
+ * @param encTitle  - Base64-encoded encrypted title (null if no title).
+ * @param titleIv   - Base64-encoded IV for the title (null if no title).
+ * @param encBody   - Base64-encoded encrypted body (null if no body).
+ * @param bodyIv    - Base64-encoded IV for the body (null if no body).
+ * @param groupKey  - 32-byte AES-256 group key.
+ * @param groupId   - Group identifier (AAD for AES-GCM).
+ * @returns Decrypted { title, body } — either or both may be null.
+ */
+export async function decryptThreadFields(
+  encTitle: string | null,
+  titleIv: string | null,
+  encBody: string | null,
+  bodyIv: string | null,
+  groupKey: Uint8Array,
+  groupId: string,
+): Promise<{ title: string | null; body: string | null }> {
+  const [title, body] = await Promise.all([
+    encTitle && titleIv
+      ? decryptContent(encTitle, titleIv, groupKey, groupId)
+      : Promise.resolve(null),
+    encBody && bodyIv
+      ? decryptContent(encBody, bodyIv, groupKey, groupId)
+      : Promise.resolve(null),
+  ]);
+  return { title, body };
+}
+
+/**
+ * Decrypt a reply body using the group key.
+ * Shared by REST mappers and WebSocket message handler.
+ *
+ * @param encBody  - Base64-encoded encrypted body.
+ * @param bodyIv   - Base64-encoded IV for the body (null if unencrypted).
+ * @param groupKey - 32-byte AES-256 group key.
+ * @param groupId  - Group identifier (AAD for AES-GCM).
+ * @returns Decrypted body string, or the raw encBody if no IV present.
+ */
+export async function decryptReplyBody(
+  encBody: string,
+  bodyIv: string | null,
+  groupKey: Uint8Array,
+  groupId: string,
+): Promise<string | null> {
+  if (bodyIv) {
+    return decryptContent(encBody, bodyIv, groupKey, groupId);
+  }
+  return encBody;
+}
+
+/**
  * Map a ThreadResponse (API) to a Thread (store), decrypting content fields.
  * groupId on the API maps to conversationId in the store.
  */
@@ -41,24 +94,14 @@ async function mapThreadResponse(
   response: ThreadResponse,
   groupKey: Uint8Array,
 ): Promise<Thread> {
-  const [title, body] = await Promise.all([
-    response.encryptedTitle && response.titleIv
-      ? decryptContent(
-          response.encryptedTitle,
-          response.titleIv,
-          groupKey,
-          response.groupId,
-        )
-      : Promise.resolve(null),
-    response.encryptedBody && response.bodyIv
-      ? decryptContent(
-          response.encryptedBody,
-          response.bodyIv,
-          groupKey,
-          response.groupId,
-        )
-      : Promise.resolve(null),
-  ]);
+  const { title, body } = await decryptThreadFields(
+    response.encryptedTitle,
+    response.titleIv,
+    response.encryptedBody,
+    response.bodyIv,
+    groupKey,
+    response.groupId,
+  );
 
   return {
     id: response.threadId,
@@ -85,14 +128,12 @@ async function mapReplyResponse(
   groupKey: Uint8Array,
   groupId: string,
 ): Promise<Reply> {
-  const body = response.bodyIv
-    ? await decryptContent(
-        response.encryptedBody,
-        response.bodyIv,
-        groupKey,
-        groupId,
-      )
-    : response.encryptedBody;
+  const body = await decryptReplyBody(
+    response.encryptedBody,
+    response.bodyIv,
+    groupKey,
+    groupId,
+  );
 
   return {
     id: response.replyId,
@@ -112,14 +153,14 @@ async function mapThreadListItem(
   item: ThreadListItem,
   groupKey: Uint8Array,
 ): Promise<Thread> {
-  const [title, body] = await Promise.all([
-    item.encryptedTitle && item.titleIv
-      ? decryptContent(item.encryptedTitle, item.titleIv, groupKey, item.groupId)
-      : Promise.resolve(null),
-    item.encryptedBody && item.bodyIv
-      ? decryptContent(item.encryptedBody, item.bodyIv, groupKey, item.groupId)
-      : Promise.resolve(null),
-  ]);
+  const { title, body } = await decryptThreadFields(
+    item.encryptedTitle,
+    item.titleIv,
+    item.encryptedBody,
+    item.bodyIv,
+    groupKey,
+    item.groupId,
+  );
 
   return {
     id: item.threadId,

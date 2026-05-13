@@ -20,6 +20,7 @@ import { getGroupKey } from '../api/groups';
 import {
   getGroupMasterKey,
   setGroupMasterKey,
+  clearGroupMasterKey,
 } from '../../database/repositories/conversationRepository';
 import { arrayBufferToBase64, base64ToArrayBuffer, toArrayBuffer } from './utils';
 
@@ -153,14 +154,19 @@ export async function getOrFetchGroupKey(groupId: string): Promise<Uint8Array> {
 
 /**
  * Invalidate a single cached group key (e.g. on decryption failure due to key rotation).
- * Clears from in-memory cache only — SQLCipher is left intact so a re-fetch
- * from the API can update it.
+ * Clears from both in-memory cache AND SQLCipher so the next getOrFetchGroupKey call
+ * falls through to the API and fetches the current key from the server.
  */
 export function invalidateGroupKey(groupId: string): void {
   const cached = groupKeyCache.get(groupId);
   if (cached) {
     cached.fill(0);
     groupKeyCache.delete(groupId);
+  }
+  try {
+    clearGroupMasterKey(groupId);
+  } catch {
+    // Database may not be initialized — cache-only invalidation is still useful
   }
 }
 

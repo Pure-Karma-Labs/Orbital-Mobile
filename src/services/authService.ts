@@ -23,6 +23,7 @@ import { SecureKeys } from './secure-storage/constants';
 import { execute } from '../database/queryHelpers';
 import { isDatabaseInitialized } from '../database/connection';
 import { loadConversations, loadDmConversations } from './conversationService';
+import { websocketManager } from './websocket';
 
 /**
  * Log in with username + password. On success, stores tokens and populates
@@ -129,6 +130,9 @@ export async function restoreSession(): Promise<boolean> {
  * user, and wipes MMKV persistence.
  */
 export async function logout(): Promise<void> {
+  // Disconnect WebSocket BEFORE clearing tokens to prevent reconnect attempts
+  // with stale JWT during the cleanup window.
+  websocketManager.disconnect();
   await tokenManager.clearTokens();
   useAppStore.getState().clearAuth();
   const state = useAppStore.getState();

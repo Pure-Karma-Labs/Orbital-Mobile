@@ -19,6 +19,20 @@ jest.mock('../../services/threadService', () => ({
   createNewThread: jest.fn(),
 }));
 
+jest.mock('../../services/mediaUploadService', () => ({
+  uploadMedia: jest.fn(),
+}));
+
+jest.mock('../../hooks/useMediaPicker', () => ({
+  useMediaPicker: () => ({
+    selectedMedia: [],
+    pickPhotos: jest.fn(),
+    takePhoto: jest.fn(),
+    removeMedia: jest.fn(),
+    clearMedia: jest.fn(),
+  }),
+}));
+
 jest.mock('../../stores', () => ({
   useAuth: () => ({
     isAuthenticated: true,
@@ -195,8 +209,8 @@ describe('ComposeThreadScreen — submission', () => {
       'group-1',
       'My Title',
       'Some body text',
-      'user-1',
-      'alice',
+      { authorId: 'user-1', authorUsername: 'alice' },
+      undefined,
     );
   });
 

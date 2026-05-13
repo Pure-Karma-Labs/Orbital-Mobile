@@ -314,8 +314,7 @@ export function ThreadDetailScreen({
           body,
           parentReplyId,
           depth,
-          userId,
-          username,
+          { authorId: userId, authorUsername: username },
         );
         setReplyTarget(null);
       } catch (e) {

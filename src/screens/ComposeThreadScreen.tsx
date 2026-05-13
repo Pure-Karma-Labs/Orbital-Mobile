@@ -19,8 +19,11 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useTheme } from '../theme';
 import { useAuth } from '../stores';
 import { createNewThread } from '../services/threadService';
+import { uploadMedia } from '../services/mediaUploadService';
+import { useMediaPicker } from '../hooks/useMediaPicker';
 import { Header } from '../components/Header';
 import { ErrorBanner } from '../components/ErrorBanner';
+import { MediaThumbnailStrip } from '../components/MediaThumbnailStrip';
 import type { ThreadsStackParamList } from '../navigation/types';
 
 export type ComposeThreadScreenProps = NativeStackScreenProps<
@@ -39,9 +42,12 @@ export function ComposeThreadScreen({
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [loading, setLoading] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { selectedMedia, pickPhotos, removeMedia, clearMedia } = useMediaPicker();
 
-  const canSubmit = title.trim().length > 0 && body.trim().length > 0 && !loading;
+  const busy = loading || uploading;
+  const canSubmit = title.trim().length > 0 && body.trim().length > 0 && !busy;
 
   const handlePost = useCallback(async () => {
     if (!canSubmit || !userId || !username) {
@@ -54,12 +60,35 @@ export function ComposeThreadScreen({
     setError(null);
     setLoading(true);
     try {
+      let mediaIds: string[] | undefined;
+      if (selectedMedia.length > 0) {
+        setUploading(true);
+        try {
+          const ids: string[] = [];
+          for (const media of selectedMedia) {
+            const id = await uploadMedia({
+              fileBase64: media.base64,
+              mimeType: media.type,
+              fileName: media.fileName,
+              fileSize: media.fileSize,
+              width: media.width,
+              height: media.height,
+              groupId,
+            });
+            ids.push(id);
+          }
+          mediaIds = ids;
+        } finally {
+          setUploading(false);
+        }
+      }
+
       const thread = await createNewThread(
         groupId,
         title.trim(),
         body.trim(),
-        userId,
-        username,
+        { authorId: userId, authorUsername: username },
+        mediaIds ? { mediaIds } : undefined,
       );
       navigation.replace('ThreadDetail', {
         threadId: thread.id,
@@ -73,7 +102,7 @@ export function ComposeThreadScreen({
     } finally {
       setLoading(false);
     }
-  }, [canSubmit, userId, username, groupId, title, body, navigation]);
+  }, [canSubmit, userId, username, groupId, title, body, navigation, selectedMedia, clearMedia]);
 
   const containerStyle: ViewStyle = {
     flex: 1,
@@ -136,7 +165,7 @@ export function ComposeThreadScreen({
             style={postButtonStyle}
           >
             <Text style={postButtonTextStyle}>
-              {loading ? 'Posting...' : 'Post'}
+              {uploading ? 'Uploading...' : loading ? 'Posting...' : 'Post'}
             </Text>
           </TouchableOpacity>
         }
@@ -162,7 +191,7 @@ export function ComposeThreadScreen({
               autoFocus
               maxLength={200}
               returnKeyType="next"
-              editable={!loading}
+              editable={!busy}
               testID="compose-title-input"
             />
           </View>
@@ -177,10 +206,34 @@ export function ComposeThreadScreen({
               placeholderTextColor={theme.colors.textTertiary}
               multiline
               maxLength={10000}
-              editable={!loading}
+              editable={!busy}
               testID="compose-body-input"
             />
           </View>
+
+          <MediaThumbnailStrip media={selectedMedia} onRemove={removeMedia} />
+
+          <TouchableOpacity
+            onPress={pickPhotos}
+            disabled={busy}
+            accessibilityRole="button"
+            accessibilityLabel="Attach photos"
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: theme.spacing.xs,
+              paddingVertical: theme.spacing.xs,
+            }}
+            testID="attach-media-button"
+          >
+            <Text style={{
+              fontFamily: theme.typography.fontFamily.body,
+              fontSize: theme.typography.fontSize.sm,
+              color: busy ? theme.colors.textTertiary : theme.colors.blue,
+            }}>
+              + Add Photos
+            </Text>
+          </TouchableOpacity>
 
           <ErrorBanner message={error} />
         </ScrollView>

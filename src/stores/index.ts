@@ -8,7 +8,7 @@ export { useAppStore } from './useAppStore';
 
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from './useAppStore';
-import type { TypingEntry } from '../types/store';
+import type { MediaItem, TypingEntry } from '../types/store';
 
 export const useAuth = () =>
   useAppStore(useShallow((s) => ({
@@ -102,4 +102,30 @@ export const useTypingUsers = (conversationId: string | null): TypingEntry[] =>
     useShallow((s) =>
       conversationId ? (s.typingUsers[conversationId] ?? []) : [],
     ),
+  );
+
+/**
+ * Scoped selector for media items attached to a specific thread.
+ * Only re-renders when the media IDs for *this* thread change.
+ */
+export const useMediaForThread = (threadId: string | null): MediaItem[] =>
+  useAppStore(
+    useShallow((s) => {
+      if (!threadId) return [];
+      const ids = s.mediaIdsByThread[threadId] ?? [];
+      return ids.map((id) => s.media[id]).filter(Boolean);
+    }),
+  );
+
+/**
+ * Scoped selector for media items attached to a specific reply.
+ * Only re-renders when the media IDs for *this* reply change.
+ */
+export const useMediaForReply = (replyId: string | null): MediaItem[] =>
+  useAppStore(
+    useShallow((s) => {
+      if (!replyId) return [];
+      const ids = s.mediaIdsByReply[replyId] ?? [];
+      return ids.map((id) => s.media[id]).filter(Boolean);
+    }),
   );

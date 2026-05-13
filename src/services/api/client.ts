@@ -136,22 +136,24 @@ export interface RequestOptions {
 }
 
 // ============================================================
-// Core request function
+// Shared request executor (private)
 // ============================================================
 
 /**
- * Execute a typed HTTP request against the Orbital backend.
+ * Execute an HTTP request against the Orbital backend and return the raw
+ * Response object after error handling.
  *
- * Pipeline:
- * 1. Build URL from base + path
- * 2. Inject Authorization header (unless skipAuth)
- * 3. Serialize body as snake_case JSON
- * 4. Apply timeout via AbortController (merged with caller signal)
- * 5. Execute fetch
- * 6. Map error responses to typed ApiError subclasses
- * 7. Parse JSON response and transform keys to camelCase
+ * This is the shared implementation used by both `request<T>()` (JSON) and
+ * `requestBinary()` (ArrayBuffer). It handles:
+ * - URL construction
+ * - Auth header injection (unless skipAuth)
+ * - Body serialisation (JSON with camelToSnake, or passthrough for FormData)
+ * - Timeout via AbortController (merged with caller signal)
+ * - Error response mapping to typed ApiError subclasses
+ *
+ * On success (2xx), returns the raw Response — callers decide how to read the body.
  */
-export async function request<T>(options: RequestOptions): Promise<T> {
+async function _executeRequest(options: RequestOptions): Promise<Response> {
   const {
     method,
     path,
@@ -226,7 +228,7 @@ export async function request<T>(options: RequestOptions): Promise<T> {
     clearTimeout(timeoutId);
   }
 
-  // Handle error responses
+  // Handle error responses — always read text for error parsing
   if (!response.ok) {
     let rawBody: string | undefined;
     try {
@@ -287,6 +289,28 @@ export async function request<T>(options: RequestOptions): Promise<T> {
     );
   }
 
+  return response;
+}
+
+// ============================================================
+// Core request function (JSON)
+// ============================================================
+
+/**
+ * Execute a typed HTTP request against the Orbital backend.
+ *
+ * Pipeline:
+ * 1. Build URL from base + path
+ * 2. Inject Authorization header (unless skipAuth)
+ * 3. Serialize body as snake_case JSON
+ * 4. Apply timeout via AbortController (merged with caller signal)
+ * 5. Execute fetch
+ * 6. Map error responses to typed ApiError subclasses
+ * 7. Parse JSON response and transform keys to camelCase
+ */
+export async function request<T>(options: RequestOptions): Promise<T> {
+  const response = await _executeRequest(options);
+
   // Parse JSON and transform keys to camelCase
   let json: unknown;
   try {
@@ -303,4 +327,41 @@ export async function request<T>(options: RequestOptions): Promise<T> {
   }
 
   return snakeToCamel(json) as T;
+}
+
+// ============================================================
+// Binary request function (ArrayBuffer)
+// ============================================================
+
+/**
+ * Execute an HTTP request and return the response as an ArrayBuffer with headers.
+ *
+ * Uses the same auth injection, timeout, and error handling as `request<T>()`,
+ * but reads the successful response body as an ArrayBuffer (no JSON parsing,
+ * no case transforms). Returns both the binary data and response headers
+ * so callers can extract custom headers (e.g., X-Encryption-IV, X-Expires-At).
+ *
+ * Error responses (4xx/5xx) are still parsed as text for error mapping —
+ * binary reading only applies to success responses.
+ */
+export async function requestBinary(
+  options: RequestOptions,
+): Promise<{ data: ArrayBuffer; headers: Headers }> {
+  const response = await _executeRequest(options);
+
+  let data: ArrayBuffer;
+  try {
+    data = await response.arrayBuffer();
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Invalid binary response';
+    throw new ApiError(
+      'Server returned invalid response',
+      response.status,
+      'PARSE_ERROR',
+      false,
+      message,
+    );
+  }
+
+  return { data, headers: response.headers };
 }

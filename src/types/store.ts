@@ -239,6 +239,47 @@ export interface ConnectionActions {
 export type ConnectionSlice = ConnectionState & ConnectionActions;
 
 // ============================================================
+// Media slice state
+// ============================================================
+
+export interface MediaItem {
+  id: string;
+  threadId: string | null;
+  replyId: string | null;
+  contentType: string;
+  fileName: string | null;
+  fileSize: number;
+  width: number | null;
+  height: number | null;
+  duration: number | null;
+  blurHash: string | null;
+  localPath: string | null;
+  thumbnailPath: string | null;
+  downloadState: 'pending' | 'downloading' | 'downloaded' | 'failed';
+  uploadState: 'pending' | 'uploading' | 'done' | 'failed';
+  expiresAt: number | null;
+  /** Whether current user has attachment keys (own-media-only for v1) */
+  hasKeys: boolean;
+}
+
+export interface MediaState {
+  media: Record<string, MediaItem>;
+  mediaIdsByThread: Record<string, string[]>;
+  mediaIdsByReply: Record<string, string[]>;
+}
+
+export interface MediaActions {
+  setMediaForThread: (threadId: string, items: MediaItem[]) => void;
+  setMediaForReply: (replyId: string, items: MediaItem[]) => void;
+  upsertMedia: (item: MediaItem) => void;
+  updateMediaDownloadState: (id: string, state: MediaItem['downloadState'], localPath?: string) => void;
+  updateMediaUploadState: (id: string, state: MediaItem['uploadState']) => void;
+  removeMedia: (id: string) => void;
+}
+
+export type MediaSlice = MediaState & MediaActions;
+
+// ============================================================
 // Combined app state
 // ============================================================
 
@@ -247,4 +288,5 @@ export type AppState = AuthSlice &
   ThreadsSlice &
   ContactsSlice &
   UISlice &
-  ConnectionSlice;
+  ConnectionSlice &
+  MediaSlice;

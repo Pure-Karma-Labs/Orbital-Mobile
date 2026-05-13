@@ -47,6 +47,7 @@ import type { ThreadsStackParamList } from '../navigation/types';
 import { OrbitalSpinner } from '../components/OrbitalSpinner';
 import { PullToRefreshOverlay } from '../components/PullToRefreshOverlay';
 import { usePullToRefresh } from '../hooks/usePullToRefresh';
+import { useWebSocketSubscription } from '../hooks/useWebSocketSubscription';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -185,6 +186,9 @@ export function ThreadDetailScreen({
 
   // The current thread from the store
   const thread: Thread | undefined = threads[threadId];
+
+  // Subscribe to real-time updates for this thread's conversation
+  useWebSocketSubscription(thread?.conversationId ?? null);
 
   // Derive reply list from store — ordered by replyIdsByThread
   const replyList = useMemo((): Reply[] => {

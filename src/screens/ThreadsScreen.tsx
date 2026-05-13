@@ -27,6 +27,8 @@ import { OnboardingEmptyState } from './threads/OnboardingEmptyState';
 import { loadThreadsForGroup } from '../services/threadService';
 import { PullToRefreshOverlay } from '../components/PullToRefreshOverlay';
 import { usePullToRefresh } from '../hooks/usePullToRefresh';
+import { useWebSocketSubscription } from '../hooks/useWebSocketSubscription';
+import { useConnection } from '../stores';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -168,6 +170,35 @@ function EmptyState({ onCompose }: { onCompose: () => void }): React.JSX.Element
 }
 
 // ---------------------------------------------------------------------------
+// Connection status indicator
+// ---------------------------------------------------------------------------
+
+function ConnectionStatusBanner({
+  theme,
+}: {
+  theme: ReturnType<typeof useTheme>;
+}): React.JSX.Element {
+  const bannerStyle: ViewStyle = {
+    backgroundColor: theme.colors.warning ?? theme.colors.borderSubtle,
+    paddingVertical: theme.spacing.xs,
+    paddingHorizontal: theme.spacing.base,
+    alignItems: 'center',
+  };
+
+  const textStyle: TextStyle = {
+    fontFamily: theme.typography.fontFamily.mono,
+    fontSize: theme.typography.fontSize.xs,
+    color: theme.colors.textPrimary,
+  };
+
+  return (
+    <View style={bannerStyle}>
+      <Text style={textStyle}>Reconnecting...</Text>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main screen
 // ---------------------------------------------------------------------------
 
@@ -175,8 +206,12 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
   const theme = useTheme();
   const { threads, threadIdsByConversation, activeConversationId, conversations } =
     useThreadsAndConversation();
+  const { connectionStatus } = useConnection();
   const [refreshing, setRefreshing] = useState(false);
   const { scrollY, scrollProps } = usePullToRefresh();
+
+  // Subscribe to real-time updates for the active conversation
+  useWebSocketSubscription(activeConversationId);
 
   // Get threads for the active conversation (or all threads if no active conversation)
   const threadList = useMemo((): Thread[] => {
@@ -298,6 +333,9 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
             onOpenOrbits={handleOpenOrbits}
             onCompose={handleCompose}
           />
+          {connectionStatus === 'reconnecting' && (
+            <ConnectionStatusBanner theme={theme} />
+          )}
           <SearchBar />
 
           {listRows.length === 0 ? (

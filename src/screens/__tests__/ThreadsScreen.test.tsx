@@ -15,6 +15,10 @@ jest.mock('../../services/threadService', () => ({
   loadThreadsForGroup: jest.fn().mockResolvedValue([]),
 }));
 
+jest.mock('../../hooks/useWebSocketSubscription', () => ({
+  useWebSocketSubscription: jest.fn(),
+}));
+
 jest.mock('../../hooks/usePullToRefresh', () => ({
   usePullToRefresh: () => ({
     scrollY: { interpolate: () => 0 },
@@ -70,6 +74,15 @@ jest.mock('../../stores', () => ({
     setActiveConversation: jest.fn(),
     updateUnreadCount: jest.fn(),
     markConversationRead: jest.fn(),
+  }),
+  useConnection: () => ({
+    connectionStatus: 'connected',
+    lastConnectedAt: null,
+    reconnectAttempt: 0,
+    setConnectionStatus: jest.fn(),
+    setLastConnectedAt: jest.fn(),
+    setReconnectAttempt: jest.fn(),
+    clearTypingUsers: jest.fn(),
   }),
 }));
 

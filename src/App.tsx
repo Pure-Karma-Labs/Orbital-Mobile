@@ -17,6 +17,7 @@ import { useAuth } from './stores';
 import { useAppStore } from './stores/useAppStore';
 import { bootstrap } from './bootstrap';
 import { restoreSession } from './services/authService';
+import { websocketManager } from './services/websocket';
 import { LoginScreen } from './screens/LoginScreen';
 import { SignupScreen } from './screens/SignupScreen';
 import { AppNavigator } from './navigation';
@@ -61,6 +62,18 @@ function AppContent(): React.JSX.Element {
       setAuthStatus('unauthenticated');
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated]);
+
+  // WebSocket lifecycle — connect on auth, disconnect on logout/unmount
+  useEffect(() => {
+    if (isAuthenticated) {
+      websocketManager.connect();
+    } else {
+      websocketManager.disconnect();
+    }
+    return () => {
+      websocketManager.disconnect();
+    };
   }, [isAuthenticated]);
 
   return (

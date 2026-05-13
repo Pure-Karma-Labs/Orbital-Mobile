@@ -8,6 +8,7 @@ export { useAppStore } from './useAppStore';
 
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from './useAppStore';
+import type { TypingEntry } from '../types/store';
 
 export const useAuth = () =>
   useAppStore(useShallow((s) => ({
@@ -76,3 +77,26 @@ export const useUI = () =>
     toggleComposer: s.toggleComposer,
     setSyncStatus: s.setSyncStatus,
   })));
+
+export const useConnection = () =>
+  useAppStore(useShallow((s) => ({
+    connectionStatus: s.connectionStatus,
+    lastConnectedAt: s.lastConnectedAt,
+    reconnectAttempt: s.reconnectAttempt,
+    setConnectionStatus: s.setConnectionStatus,
+    setLastConnectedAt: s.setLastConnectedAt,
+    setReconnectAttempt: s.setReconnectAttempt,
+    clearTypingUsers: s.clearTypingUsers,
+  })));
+
+/**
+ * Scoped selector for typing users in a single conversation.
+ * Only re-renders when typing entries for *this* conversation change,
+ * not when other conversations' typing state updates.
+ */
+export const useTypingUsers = (conversationId: string | null): TypingEntry[] =>
+  useAppStore(
+    useShallow((s) =>
+      conversationId ? (s.typingUsers[conversationId] ?? []) : [],
+    ),
+  );

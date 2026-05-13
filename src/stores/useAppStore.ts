@@ -6,6 +6,7 @@ import { createConversationsSlice } from './slices/conversationsSlice';
 import { createContactsSlice } from './slices/contactsSlice';
 import { createThreadsSlice } from './slices/threadsSlice';
 import { createUISlice } from './slices/uiSlice';
+import { createConnectionSlice } from './slices/connectionSlice';
 import type { AppState } from '../types/store';
 
 /**
@@ -26,6 +27,7 @@ export const useAppStore = create<AppState>()(
         ...createThreadsSlice(...a),
         ...createContactsSlice(...a),
         ...createUISlice(...a),
+        ...createConnectionSlice(...a),
       }),
       {
         name: 'orbital-app-store',

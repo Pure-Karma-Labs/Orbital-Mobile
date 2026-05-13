@@ -25,6 +25,10 @@ jest.mock('../../services/threadService', () => ({
   postReply: (...args: unknown[]) => mockPostReply(...args),
 }));
 
+jest.mock('../../hooks/useWebSocketSubscription', () => ({
+  useWebSocketSubscription: jest.fn(),
+}));
+
 const mockSetActiveThread = jest.fn();
 
 jest.mock('../../stores', () => ({

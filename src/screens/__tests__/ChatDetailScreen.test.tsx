@@ -16,6 +16,10 @@ jest.mock('../../services/threadService', () => ({
   loadThreadsForGroup: jest.fn().mockResolvedValue([]),
 }));
 
+jest.mock('../../hooks/useWebSocketSubscription', () => ({
+  useWebSocketSubscription: jest.fn(),
+}));
+
 jest.mock('../../hooks/usePullToRefresh', () => ({
   usePullToRefresh: () => ({
     scrollY: { interpolate: () => 0 },

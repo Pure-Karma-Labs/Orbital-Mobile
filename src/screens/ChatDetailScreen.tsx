@@ -29,6 +29,7 @@ import { ThreadItem } from './threads/ThreadItem';
 import { loadThreadsForGroup } from '../services/threadService';
 import { PullToRefreshOverlay } from '../components/PullToRefreshOverlay';
 import { usePullToRefresh } from '../hooks/usePullToRefresh';
+import { useWebSocketSubscription } from '../hooks/useWebSocketSubscription';
 
 export type ChatDetailScreenProps = NativeStackScreenProps<
   ChatsStackParamList,
@@ -143,6 +144,9 @@ export function ChatDetailScreen({
   const { threads, threadIdsByConversation } = useThreads();
   const [refreshing, setRefreshing] = useState(false);
   const { scrollY, scrollProps } = usePullToRefresh();
+
+  // Subscribe to real-time updates for this DM conversation
+  useWebSocketSubscription(conversationId);
 
   const threadList = useMemo((): Thread[] => {
     const ids = threadIdsByConversation[conversationId] ?? [];

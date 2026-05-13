@@ -2,7 +2,7 @@
  * Colored circle with initial letter, optional image, and optional online presence dot.
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Image, StyleSheet, Text, View, type TextStyle, type ViewStyle } from 'react-native';
 import { useTheme } from '../theme';
 
@@ -26,6 +26,10 @@ export function Avatar({
   const bgColor = color ?? theme.colors.blue;
   const initial = (name || '?').slice(0, 1).toUpperCase();
   const [imageError, setImageError] = useState(false);
+
+  useEffect(() => {
+    setImageError(false);
+  }, [imageUrl]);
 
   const showImage = !!imageUrl && !imageError;
 

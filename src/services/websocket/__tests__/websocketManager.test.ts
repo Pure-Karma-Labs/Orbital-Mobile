@@ -7,17 +7,30 @@
 // Module mocks
 // ---------------------------------------------------------------------------
 
+// Capture AppState listener callback for lifecycle tests
+let appStateCallback: ((state: string) => void) | null = null;
+const mockAppStateRemove = jest.fn();
+
 jest.mock('react-native', () => ({
   AppState: {
-    addEventListener: jest.fn(() => ({ remove: jest.fn() })),
+    addEventListener: jest.fn((_event: string, callback: (state: string) => void) => {
+      appStateCallback = callback;
+      return { remove: mockAppStateRemove };
+    }),
   },
 }));
+
+// Capture token refresh listener callback for WS-02 tests
+let tokenRefreshCallback: (() => void) | null = null;
 
 jest.mock('../../api/tokenManager', () => ({
   tokenManager: {
     getAccessToken: jest.fn(),
-    onTokenRefresh: undefined,
-    onTokensCleared: undefined,
+    onTokenRefresh: jest.fn((cb: () => void) => {
+      tokenRefreshCallback = cb;
+      return jest.fn(() => { tokenRefreshCallback = null; });
+    }),
+    onTokensCleared: jest.fn((_cb: () => void) => jest.fn()),
   },
 }));
 
@@ -109,7 +122,14 @@ beforeEach(() => {
   jest.clearAllMocks();
   jest.useFakeTimers();
   lastSocket = null;
+  appStateCallback = null;
+  tokenRefreshCallback = null;
   mockGetAccessToken.mockResolvedValue('test-jwt-token');
+  // Re-wire the tokenManager mock after clearAllMocks wiped it
+  (tokenManager as unknown as { onTokenRefresh: jest.Mock }).onTokenRefresh = jest.fn((cb: () => void) => {
+    tokenRefreshCallback = cb;
+    return jest.fn(() => { tokenRefreshCallback = null; });
+  });
   // Reset the store mock to disconnected state
   const { useAppStore } = require('../../../stores/useAppStore');
   useAppStore.getState.mockReturnValue({
@@ -369,5 +389,209 @@ describe('isConnected', () => {
   it('returns false when disconnected', () => {
     const manager = createWebSocketManager(mockSocketFactory);
     expect(manager.isConnected()).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Watchdog timeout (#109)
+// ---------------------------------------------------------------------------
+
+describe('watchdog timeout', () => {
+  it('closes socket after WATCHDOG_TIMEOUT_MS (45s) of no messages', async () => {
+    const manager = createWebSocketManager(mockSocketFactory);
+    await manager.connect();
+
+    // Simulate onopen — this starts the watchdog timer
+    lastSocket!.onopen!();
+
+    // Advance past the 45s watchdog timeout
+    jest.advanceTimersByTime(45_001);
+
+    expect(lastSocket!.close).toHaveBeenCalled();
+  });
+
+  it('does not close socket if a message resets the watchdog', async () => {
+    const manager = createWebSocketManager(mockSocketFactory);
+    await manager.connect();
+    lastSocket!.onopen!();
+
+    // Advance 40s (under the 45s threshold)
+    jest.advanceTimersByTime(40_000);
+
+    // A message resets the watchdog
+    lastSocket!.onmessage!({ data: JSON.stringify({ type: 'pong', timestamp: 1 }) });
+
+    // Advance another 40s (total 80s from start, but only 40s since last message)
+    jest.advanceTimersByTime(40_000);
+
+    // Socket should still be open because the watchdog was reset
+    expect(lastSocket!.close).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AppState transitions (#109)
+// ---------------------------------------------------------------------------
+
+describe('AppState transitions', () => {
+  it('disconnects after background grace timer expires (30s)', async () => {
+    const manager = createWebSocketManager(mockSocketFactory);
+    await manager.connect();
+    lastSocket!.onopen!();
+
+    expect(appStateCallback).not.toBeNull();
+
+    // Go to background
+    appStateCallback!('background');
+
+    // Advance past the 30s grace period
+    jest.advanceTimersByTime(30_001);
+
+    // disconnect() should have been called, closing the socket
+    expect(lastSocket!.close).toHaveBeenCalledWith(1000);
+    expect(mockSetConnectionStatus).toHaveBeenCalledWith('disconnected');
+  });
+
+  it('cancels grace timer when returning to active before 30s', async () => {
+    const manager = createWebSocketManager(mockSocketFactory);
+    await manager.connect();
+    lastSocket!.onopen!();
+
+    // Go to background
+    appStateCallback!('background');
+
+    // Advance 15s (less than 30s grace period)
+    jest.advanceTimersByTime(15_000);
+
+    // Return to foreground — this should cancel the grace timer
+    appStateCallback!('active');
+
+    // Advance just enough to pass where the 30s grace timer WOULD have fired
+    // (15s already elapsed + 16s = 31s total, but not enough to hit 45s watchdog)
+    jest.advanceTimersByTime(16_000);
+
+    // Socket should NOT have been closed — grace timer was cancelled,
+    // and we haven't reached the 45s watchdog threshold yet
+    expect(lastSocket!.close).not.toHaveBeenCalled();
+  });
+
+  it('reconnects on active when status is disconnected and authenticated', async () => {
+    const manager = createWebSocketManager(mockSocketFactory);
+    await manager.connect();
+    lastSocket!.onopen!();
+
+    // Normal close — does NOT auto-reconnect (code 1000), and the AppState
+    // listener stays registered because onClose doesn't call disconnect().
+    lastSocket!.onclose!({ code: 1000 });
+
+    // Store now reflects disconnected
+    const { useAppStore } = require('../../../stores/useAppStore');
+    useAppStore.getState.mockReturnValue({
+      connectionStatus: 'disconnected',
+      isAuthenticated: true,
+      setConnectionStatus: mockSetConnectionStatus,
+      setLastConnectedAt: jest.fn(),
+      setReconnectAttempt: mockSetReconnectAttempt,
+      clearTypingUsers: mockClearTypingUsers,
+    });
+
+    mockSocketFactory.mockClear();
+
+    // AppState 'active' should trigger reconnect via the captured listener
+    appStateCallback!('active');
+    await Promise.resolve(); // let getAccessToken resolve
+
+    expect(mockSocketFactory).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Token refresh reconnect (#109)
+// ---------------------------------------------------------------------------
+
+describe('token refresh reconnect', () => {
+  it('closes socket and reconnects when token is refreshed', async () => {
+    const manager = createWebSocketManager(mockSocketFactory);
+    await manager.connect();
+    lastSocket!.onopen!();
+
+    expect(tokenRefreshCallback).not.toBeNull();
+
+    const firstSocket = lastSocket!;
+
+    // Simulate token refresh
+    tokenRefreshCallback!();
+
+    // The existing socket should be closed cleanly
+    expect(firstSocket.close).toHaveBeenCalledWith(1000);
+
+    // A new connect() should have been triggered — await it
+    await Promise.resolve();
+
+    // A new socket should have been created
+    expect(mockSocketFactory).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Subscribe before connect (#109)
+// ---------------------------------------------------------------------------
+
+describe('subscribe before connect', () => {
+  it('replays pending subscriptions on first onopen', async () => {
+    const manager = createWebSocketManager(mockSocketFactory);
+
+    // Subscribe before connecting
+    manager.subscribe('conv-1');
+    manager.subscribe('conv-2');
+
+    // Now connect
+    await manager.connect();
+
+    // Clear any sends from connect itself
+    lastSocket!.send.mockClear();
+
+    // Trigger onopen
+    lastSocket!.onopen!();
+
+    // Both subscriptions should be replayed
+    expect(lastSocket!.send).toHaveBeenCalledTimes(2);
+    const sentMessages = lastSocket!.send.mock.calls.map(
+      (call: [string]) => JSON.parse(call[0]),
+    );
+    expect(sentMessages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'subscribe' }),
+      ]),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Disconnect race guard (#110)
+// ---------------------------------------------------------------------------
+
+describe('connect/disconnect race guard', () => {
+  it('does not create socket if disconnect() called during token fetch', async () => {
+    // Make getAccessToken resolve asynchronously
+    let resolveToken: ((value: string) => void) | null = null;
+    mockGetAccessToken.mockReturnValue(
+      new Promise<string>((resolve) => {
+        resolveToken = resolve;
+      }),
+    );
+
+    const manager = createWebSocketManager(mockSocketFactory);
+    const connectPromise = manager.connect();
+
+    // Call disconnect while connect is awaiting the token
+    manager.disconnect();
+
+    // Now resolve the token
+    resolveToken!('late-token');
+    await connectPromise;
+
+    // Socket factory should NOT have been called — the guard prevented it
+    expect(mockSocketFactory).not.toHaveBeenCalled();
   });
 });

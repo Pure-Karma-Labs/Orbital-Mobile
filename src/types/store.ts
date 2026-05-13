@@ -112,6 +112,7 @@ export interface AuthActions {
   }) => void;
   clearAuth: () => void;
   setAuthenticated: (authenticated: boolean) => void;
+  updateProfile: (patch: Partial<Pick<AuthState, 'displayName' | 'avatarPath'>>) => void;
 }
 
 export type AuthSlice = AuthState & AuthActions;
@@ -196,6 +197,7 @@ export interface UIState {
   composerDraft: Draft | null;
   isComposerOpen: boolean;
   syncOverallStatus: SyncStatus;
+  soundEnabled: boolean;
 }
 
 export interface UIActions {
@@ -204,6 +206,7 @@ export interface UIActions {
   setComposerDraft: (draft: Draft | null) => void;
   toggleComposer: () => void;
   setSyncStatus: (status: SyncStatus) => void;
+  setSoundEnabled: (enabled: boolean) => void;
 }
 
 export type UISlice = UIState & UIActions;

@@ -20,6 +20,7 @@ export const useAuth = () =>
     setUser: s.setUser,
     clearAuth: s.clearAuth,
     setAuthenticated: s.setAuthenticated,
+    updateProfile: s.updateProfile,
   })));
 
 export const useConversations = () =>
@@ -71,11 +72,13 @@ export const useUI = () =>
     composerDraft: s.composerDraft,
     isComposerOpen: s.isComposerOpen,
     syncOverallStatus: s.syncOverallStatus,
+    soundEnabled: s.soundEnabled,
     setColorScheme: s.setColorScheme,
     setActiveTab: s.setActiveTab,
     setComposerDraft: s.setComposerDraft,
     toggleComposer: s.toggleComposer,
     setSyncStatus: s.setSyncStatus,
+    setSoundEnabled: s.setSoundEnabled,
   })));
 
 export const useConnection = () =>

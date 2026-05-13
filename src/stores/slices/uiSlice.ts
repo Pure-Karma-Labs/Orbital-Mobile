@@ -11,6 +11,7 @@ export const createUISlice: StateCreator<AppState, [['zustand/devtools', never]]
   composerDraft: null,
   isComposerOpen: false,
   syncOverallStatus: 'synced',
+  soundEnabled: true,
 
   // Actions
   setColorScheme: (scheme) =>
@@ -28,4 +29,7 @@ export const createUISlice: StateCreator<AppState, [['zustand/devtools', never]]
 
   setSyncStatus: (status) =>
     set({ syncOverallStatus: status }, false, 'ui/setSyncStatus'),
+
+  setSoundEnabled: (enabled) =>
+    set({ soundEnabled: enabled }, false, 'ui/setSoundEnabled'),
 });

@@ -35,7 +35,7 @@ export async function bootstrap(): Promise<void> {
   tokenManager.configure(new KeychainTokenStorage());
   // Global 401 handler: when tokens are cleared (e.g. on HTTP 401),
   // automatically clear auth state so the app gate shows the login screen.
-  tokenManager.onTokensCleared = () => {
+  tokenManager.onTokensCleared(() => {
     useAppStore.getState().clearAuth();
-  };
+  });
 }

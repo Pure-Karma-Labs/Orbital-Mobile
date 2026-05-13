@@ -54,20 +54,47 @@ const createTokenManager = () => {
   let storage: TokenStorage = new InMemoryTokenStorage();
   let configured = false;
 
+  // Subscriber lists — multiple consumers can register without clobbering.
+  const tokenRefreshListeners = new Set<() => void>();
+  const tokensClearedListeners = new Set<() => void>();
+
+  function notifyListeners(listeners: Set<() => void>): void {
+    listeners.forEach((fn) => {
+      try {
+        fn();
+      } catch {
+        // One bad listener must not block the others.
+      }
+    });
+  }
+
   return {
     /**
-     * Optional callback fired after tokens are cleared (e.g. on 401).
-     * Set this in bootstrap to automatically clear auth state:
-     *   tokenManager.onTokensCleared = () => useAppStore.getState().clearAuth();
+     * Register a listener that fires after tokens are cleared (e.g. on 401).
+     * Returns an unsubscribe function.
+     *
+     * Example:
+     *   const unsub = tokenManager.onTokensCleared(() => clearAuth());
+     *   // later: unsub();
      */
-    onTokensCleared: undefined as (() => void) | undefined,
+    onTokensCleared(listener: () => void): () => void {
+      tokensClearedListeners.add(listener);
+      return () => {
+        tokensClearedListeners.delete(listener);
+      };
+    },
 
     /**
-     * Optional callback fired after a new access token is set (WS-02).
-     * Used by the WebSocket manager to reconnect with a fresh JWT
-     * when tokens are refreshed while the socket is open.
+     * Register a listener that fires after a new access token is set (WS-02).
+     * Used by the WebSocket manager to reconnect with a fresh JWT.
+     * Returns an unsubscribe function.
      */
-    onTokenRefresh: undefined as (() => void) | undefined,
+    onTokenRefresh(listener: () => void): () => void {
+      tokenRefreshListeners.add(listener);
+      return () => {
+        tokenRefreshListeners.delete(listener);
+      };
+    },
 
     /**
      * Swap the storage backend. Should be called once at app startup,
@@ -96,13 +123,13 @@ const createTokenManager = () => {
       // Fire onTokenRefresh only when replacing an existing token (WS-02).
       // Initial login sets previousToken from null → token, which is not a "refresh".
       if (previousToken !== null && accessToken !== previousToken) {
-        this.onTokenRefresh?.();
+        notifyListeners(tokenRefreshListeners);
       }
     },
 
     async clearTokens(): Promise<void> {
       await storage.clearTokens();
-      this.onTokensCleared?.();
+      notifyListeners(tokensClearedListeners);
     },
   };
 };

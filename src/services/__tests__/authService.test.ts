@@ -23,7 +23,8 @@ jest.mock('../api/tokenManager', () => ({
     getAccessToken: jest.fn(),
     setTokens: jest.fn(),
     clearTokens: jest.fn(),
-    onTokensCleared: undefined,
+    onTokensCleared: jest.fn(() => jest.fn()),
+    onTokenRefresh: jest.fn(() => jest.fn()),
   },
 }));
 

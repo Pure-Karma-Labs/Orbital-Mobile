@@ -276,7 +276,13 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<string> 
     fileName, fileSize, width, height, keysBase64, digestBase64,
     'pending', 'done',
   );
-  saveMedia(mediaRow);
+  try {
+    saveMedia(mediaRow);
+  } catch (e) {
+    if (__DEV__) {
+      console.warn('[uploadMedia] saveMedia failed (upload succeeded):', e instanceof Error ? e.message : e);
+    }
+  }
 
   // 11. Update Zustand store
   const storeItem: MediaItem = {

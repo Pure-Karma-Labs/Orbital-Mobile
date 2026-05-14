@@ -16,6 +16,7 @@
  * SECURITY: Crypto operations delegated to attachmentCrypto (Rust FFI).
  */
 
+import type { PickedMedia } from '../hooks/useMediaPicker';
 import { generateAttachmentKeys, encryptAttachment } from './crypto/attachmentCrypto';
 import { encryptContent, getOrFetchGroupKey } from './crypto/contentCrypto';
 import { arrayBufferToBase64, toArrayBuffer } from './crypto/utils';
@@ -283,6 +284,41 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<string> 
   void plaintextHash;
 
   return mediaId;
+}
+
+// ---------------------------------------------------------------------------
+// Batch upload helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Upload a batch of picked media files sequentially.
+ *
+ * This is a convenience wrapper used by ComposeThreadScreen and
+ * ThreadDetailScreen (ReplyComposer) to avoid duplicating the
+ * upload-loop pattern.
+ *
+ * @param items - Array of PickedMedia from useMediaPicker.
+ * @param groupId - The group to upload into.
+ * @returns Array of mediaIds in the same order as the input items.
+ */
+export async function uploadMediaBatch(
+  items: PickedMedia[],
+  groupId: string,
+): Promise<string[]> {
+  const ids: string[] = [];
+  for (const media of items) {
+    const id = await uploadMedia({
+      fileBase64: media.base64,
+      mimeType: media.type,
+      fileName: media.fileName,
+      fileSize: media.fileSize,
+      width: media.width,
+      height: media.height,
+      groupId,
+    });
+    ids.push(id);
+  }
+  return ids;
 }
 
 // ---------------------------------------------------------------------------

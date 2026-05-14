@@ -21,6 +21,8 @@ import {
 } from 'react-native';
 import { useTheme } from '../../theme';
 import { Emoji } from '../../components/Emoji';
+import { MediaThumbnailStrip } from '../../components/MediaThumbnailStrip';
+import type { PickedMedia } from '../../hooks/useMediaPicker';
 
 export interface ReplyTarget {
   replyId: string;
@@ -41,6 +43,12 @@ export interface ReplyComposerProps {
   text: string;
   /** Called when text changes */
   onChangeText: (text: string) => void;
+  /** Selected media attachments */
+  media?: PickedMedia[];
+  /** Called to open the media picker */
+  onPickMedia?: () => void;
+  /** Called to remove a media item by index */
+  onRemoveMedia?: (index: number) => void;
   /** Whether the emoji picker is currently visible */
   showEmojiPicker?: boolean;
   /** Called to toggle the emoji picker */
@@ -56,6 +64,9 @@ export const ReplyComposer = React.memo(function ReplyComposer({
   sending,
   text,
   onChangeText,
+  media,
+  onPickMedia,
+  onRemoveMedia,
   showEmojiPicker,
   onToggleEmojiPicker,
   onInputFocus,
@@ -67,9 +78,8 @@ export const ReplyComposer = React.memo(function ReplyComposer({
   const handleSend = useCallback(() => {
     if (!canSend) return;
     const body = text.trim();
-    onChangeText('');
     onSend(body);
-  }, [canSend, text, onSend, onChangeText]);
+  }, [canSend, text, onSend]);
 
   const handleFocus = useCallback(() => {
     onInputFocus?.();
@@ -141,6 +151,16 @@ export const ReplyComposer = React.memo(function ReplyComposer({
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: theme.spacing.xs,
+    opacity: sending ? 0.5 : 1,
+  };
+
+  const mediaButtonStyle: ViewStyle = {
+    minWidth: 36,
+    minHeight: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: theme.spacing.xs,
+    opacity: sending ? 0.5 : 1,
   };
 
   const sendTextStyle: TextStyle = {
@@ -166,16 +186,32 @@ export const ReplyComposer = React.memo(function ReplyComposer({
           </TouchableOpacity>
         </View>
       )}
+      {(media?.length ?? 0) > 0 && (
+        <MediaThumbnailStrip media={media!} onRemove={onRemoveMedia ?? (() => {})} />
+      )}
       <View style={inputRowStyle}>
         {onToggleEmojiPicker != null && (
           <TouchableOpacity
             style={emojiButtonStyle}
             onPress={onToggleEmojiPicker}
+            disabled={sending}
             accessibilityRole="button"
             accessibilityLabel={showEmojiPicker ? 'Hide emoji picker' : 'Show emoji picker'}
             testID="emoji-toggle-button"
           >
             <Emoji unified={showEmojiPicker ? '2328-FE0F' : '1F60A'} size={22} />
+          </TouchableOpacity>
+        )}
+        {onPickMedia != null && (
+          <TouchableOpacity
+            style={mediaButtonStyle}
+            onPress={onPickMedia}
+            disabled={sending}
+            accessibilityRole="button"
+            accessibilityLabel="Attach photos"
+            testID="media-picker-button"
+          >
+            <Emoji unified="1F4F7" size={22} />
           </TouchableOpacity>
         )}
         <RNTextInput

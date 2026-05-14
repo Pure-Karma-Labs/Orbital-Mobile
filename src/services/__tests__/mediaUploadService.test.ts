@@ -2,6 +2,8 @@
  * Tests for mediaUploadService — encryption, chunking, upload, and persistence.
  */
 
+jest.mock('@dr.pogodin/react-native-fs');
+
 const mockGenerateAttachmentKeys = jest.fn();
 const mockEncryptAttachment = jest.fn();
 
@@ -53,7 +55,7 @@ jest.mock('../../utils/uuid', () => ({
   generateUUID: () => mockGenerateUUID(),
 }));
 
-import { uploadMedia, uploadMediaBatch } from '../mediaUploadService';
+import { uploadMedia, uploadMediaBatch, cleanupOrphanedChunks } from '../mediaUploadService';
 import type { PickedMedia } from '../../hooks/useMediaPicker';
 
 const fakeGroupKey = new Uint8Array(32).fill(0xAB);
@@ -278,5 +280,26 @@ describe('uploadMediaBatch', () => {
     const ids = await uploadMediaBatch([], 'group-1');
     expect(ids).toEqual([]);
     expect(mockUploadChunk).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cleanupOrphanedChunks
+// ---------------------------------------------------------------------------
+
+describe('cleanupOrphanedChunks', () => {
+  it('removes stale chunk files older than 1 hour', async () => {
+    const { readDir, unlink: mockUnlink } = require('@dr.pogodin/react-native-fs');
+    readDir.mockResolvedValueOnce([
+      { name: 'abc-chunk-0.bin', path: '/tmp/test-cache/abc-chunk-0.bin', mtime: new Date(Date.now() - 7200_000) },
+      { name: 'recent-chunk-0.bin', path: '/tmp/test-cache/recent-chunk-0.bin', mtime: new Date() },
+      { name: 'unrelated.txt', path: '/tmp/test-cache/unrelated.txt', mtime: new Date(Date.now() - 7200_000) },
+    ]);
+
+    await cleanupOrphanedChunks();
+
+    expect(mockUnlink).toHaveBeenCalledWith('/tmp/test-cache/abc-chunk-0.bin');
+    expect(mockUnlink).not.toHaveBeenCalledWith('/tmp/test-cache/recent-chunk-0.bin');
+    expect(mockUnlink).not.toHaveBeenCalledWith('/tmp/test-cache/unrelated.txt');
   });
 });

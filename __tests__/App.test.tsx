@@ -34,6 +34,8 @@ jest.mock('react-native-image-picker', () => ({
   launchCamera: jest.fn(),
 }));
 
+jest.mock('@dr.pogodin/react-native-fs');
+
 // Mock orbital-signal TurboModule — not available in JS-only Jest
 jest.mock('orbital-signal', () => ({
   aesGcmEncrypt: jest.fn(),

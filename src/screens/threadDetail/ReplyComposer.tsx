@@ -73,7 +73,8 @@ export const ReplyComposer = React.memo(function ReplyComposer({
 }: ReplyComposerProps): React.JSX.Element {
   const theme = useTheme();
 
-  const canSend = text.trim().length > 0 && !sending;
+  const hasContent = text.trim().length > 0 || (media?.length ?? 0) > 0;
+  const canSend = hasContent && !sending;
 
   const handleSend = useCallback(() => {
     if (!canSend) return;

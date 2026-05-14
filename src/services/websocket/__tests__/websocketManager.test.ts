@@ -115,6 +115,19 @@ const mockSocketFactory = jest.fn((_url: string, _protocols: undefined, _options
 });
 
 // ---------------------------------------------------------------------------
+// WebSocket global (Node 20 doesn't have it; Node 22+ does)
+// ---------------------------------------------------------------------------
+
+if (typeof globalThis.WebSocket === 'undefined') {
+  (globalThis as Record<string, unknown>).WebSocket = {
+    CONNECTING: 0,
+    OPEN: 1,
+    CLOSING: 2,
+    CLOSED: 3,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Setup
 // ---------------------------------------------------------------------------
 

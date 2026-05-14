@@ -45,6 +45,17 @@ interface NativeModuleInterface {
   ubrn_uniffi_orbital_signal_fn_init_callback_vtable_orbitalsignedprekeystore(
     vtable: UniffiVTableCallbackInterfaceOrbitalSignedPreKeyStore,
   ): void;
+  ubrn_uniffi_orbital_signal_fn_func_attachment_decrypt(
+    ciphertext: Uint8Array,
+    keys: Uint8Array,
+    expectedDigest: Uint8Array,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array;
+  ubrn_uniffi_orbital_signal_fn_func_attachment_encrypt(
+    plaintext: Uint8Array,
+    keys: Uint8Array,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array;
   ubrn_uniffi_orbital_signal_fn_func_aes_gcm_decrypt(
     ciphertext: Uint8Array,
     iv: Uint8Array,
@@ -271,6 +282,8 @@ interface NativeModuleInterface {
     handle: bigint,
     uniffi_out_err: UniffiRustCallStatus,
   ): void;
+  ubrn_uniffi_orbital_signal_checksum_func_attachment_decrypt(): number;
+  ubrn_uniffi_orbital_signal_checksum_func_attachment_encrypt(): number;
   ubrn_uniffi_orbital_signal_checksum_func_aes_gcm_decrypt(): number;
   ubrn_uniffi_orbital_signal_checksum_func_aes_gcm_encrypt(): number;
   ubrn_uniffi_orbital_signal_checksum_func_create_sender_key_distribution_message(): number;

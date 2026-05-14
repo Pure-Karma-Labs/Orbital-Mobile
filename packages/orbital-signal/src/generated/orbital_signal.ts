@@ -76,66 +76,73 @@ const uniffiIsDebug =
   false;
 // Public interface members begin here.
 
-// ---------------------------------------------------------------------------
-// Attachment crypto stubs — TEMPORARY until `ubrn build` regenerates this file.
-// These match the Rust signatures in attachment_crypto.rs. Once ubrn regenerates
-// bindings after a native build, these will be replaced by the real implementations.
-// ---------------------------------------------------------------------------
-
 /**
- * Result of Signal Protocol attachment encryption (AES-256-CBC + HMAC-SHA256).
+ * Decrypt a Signal Protocol attachment (AES-256-CBC + HMAC-SHA256).
+ *
+ * - `keys` must be exactly 64 bytes: first 32 = AES-256 key, last 32 = HMAC-SHA256 key.
+ * - `ciphertext` format: IV (16 bytes) || encrypted_data || HMAC-SHA256 (32 bytes).
+ * - `expected_digest` is the SHA-256 digest of the entire ciphertext blob.
+ *
+ * **CRITICAL:** HMAC is verified BEFORE decryption to prevent padding oracle attacks.
+ * All failure modes (MAC mismatch, digest mismatch, decrypt failure) return the same
+ * opaque error to prevent information leakage.
+ *
+ * # Errors
+ *
+ * - `InvalidKey` if `keys` is not exactly 64 bytes.
+ * - `InvalidArgument` if `ciphertext` is too short (< 48 bytes).
+ * - `InvalidMessage` (opaque) if HMAC verification, digest verification, or decryption fails.
  */
-export type AttachmentCryptoResult = {
-  /** IV (16 bytes) || encrypted_data || HMAC-SHA256 (32 bytes). */
-  ciphertext: ArrayBuffer;
-  /** SHA-256 digest of the entire ciphertext blob (IV + encrypted_data + HMAC). */
-  digest: ArrayBuffer;
-  /** SHA-256 hash of the original plaintext (local integrity only — never sent to server). */
-  plaintextHash: ArrayBuffer;
-};
-
+export function attachmentDecrypt(
+  ciphertext: ArrayBuffer,
+  keys: ArrayBuffer,
+  expectedDigest: ArrayBuffer,
+): ArrayBuffer /*throws*/ {
+  return FfiConverterArrayBuffer.lift(
+    uniffiCaller.rustCallWithError(
+      /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_attachment_decrypt(
+          FfiConverterArrayBuffer.lower(ciphertext),
+          FfiConverterArrayBuffer.lower(keys),
+          FfiConverterArrayBuffer.lower(expectedDigest),
+          callStatus,
+        );
+      },
+      /*liftString:*/ FfiConverterString.lift,
+    ),
+  );
+}
 /**
  * Encrypt an attachment using Signal Protocol format (AES-256-CBC + HMAC-SHA256).
  *
  * - `keys` must be exactly 64 bytes: first 32 = AES-256 key, last 32 = HMAC-SHA256 key.
  * - Generates a fresh 16-byte IV via CSPRNG.
  * - Returns `AttachmentCryptoResult` with ciphertext (IV || encrypted_data || HMAC),
- *   SHA-256 digest of the ciphertext, and SHA-256 hash of the original plaintext.
+ * SHA-256 digest of the ciphertext, and SHA-256 hash of the original plaintext.
  *
- * @throws SignalError on invalid key length.
+ * # Errors
+ *
+ * - `InvalidKey` if `keys` is not exactly 64 bytes.
  */
 export function attachmentEncrypt(
-  _plaintext: ArrayBuffer,
-  _keys: ArrayBuffer,
+  plaintext: ArrayBuffer,
+  keys: ArrayBuffer,
 ): AttachmentCryptoResult /*throws*/ {
-  // Stub — will be replaced by ubrn-generated FFI call after native build.
-  throw new Error('attachmentEncrypt: native bindings not yet generated — run ubrn build');
+  return FfiConverterTypeAttachmentCryptoResult.lift(
+    uniffiCaller.rustCallWithError(
+      /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_attachment_encrypt(
+          FfiConverterArrayBuffer.lower(plaintext),
+          FfiConverterArrayBuffer.lower(keys),
+          callStatus,
+        );
+      },
+      /*liftString:*/ FfiConverterString.lift,
+    ),
+  );
 }
-
-/**
- * Decrypt a Signal Protocol attachment (AES-256-CBC + HMAC-SHA256).
- *
- * - `keys` must be exactly 64 bytes: first 32 = AES-256 key, last 32 = HMAC-SHA256 key.
- * - `ciphertext` format: IV (16 bytes) || encrypted_data || HMAC-SHA256 (32 bytes).
- * - `expectedDigest` is the SHA-256 digest of the entire ciphertext blob.
- *
- * CRITICAL: HMAC is verified BEFORE decryption to prevent padding oracle attacks.
- *
- * @throws SignalError on invalid key, MAC failure, digest mismatch, or decrypt failure.
- */
-export function attachmentDecrypt(
-  _ciphertext: ArrayBuffer,
-  _keys: ArrayBuffer,
-  _expectedDigest: ArrayBuffer,
-): ArrayBuffer /*throws*/ {
-  // Stub — will be replaced by ubrn-generated FFI call after native build.
-  throw new Error('attachmentDecrypt: native bindings not yet generated — run ubrn build');
-}
-
-// ---------------------------------------------------------------------------
-// End attachment crypto stubs
-// ---------------------------------------------------------------------------
-
 /**
  * AES-256-GCM decrypt with Additional Authenticated Data.
  *
@@ -1245,6 +1252,65 @@ const uniffiCallbackInterfaceOrbitalSignedPreKeyStore: {
 // FfiConverter protocol for callback interfaces
 const FfiConverterTypeOrbitalSignedPreKeyStore =
   new FfiConverterCallback<OrbitalSignedPreKeyStore>();
+
+/**
+ * Result of Signal Protocol attachment encryption (AES-256-CBC + HMAC-SHA256).
+ */
+export type AttachmentCryptoResult = {
+  /**
+   * IV (16 bytes) || encrypted_data || HMAC-SHA256 (32 bytes).
+   */
+  ciphertext: ArrayBuffer;
+  /**
+   * SHA-256 digest of the entire ciphertext blob (IV + encrypted_data + HMAC).
+   */
+  digest: ArrayBuffer;
+  /**
+   * SHA-256 hash of the original plaintext (local integrity only — never sent to server).
+   */
+  plaintextHash: ArrayBuffer;
+};
+
+/**
+ * Generated factory for {@link AttachmentCryptoResult} record objects.
+ */
+export const AttachmentCryptoResult = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<AttachmentCryptoResult, ReturnType<typeof defaults>>(defaults);
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<AttachmentCryptoResult>,
+  });
+})();
+
+const FfiConverterTypeAttachmentCryptoResult = (() => {
+  type TypeName = AttachmentCryptoResult;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      return {
+        ciphertext: FfiConverterArrayBuffer.read(from),
+        digest: FfiConverterArrayBuffer.read(from),
+        plaintextHash: FfiConverterArrayBuffer.read(from),
+      };
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      FfiConverterArrayBuffer.write(value.ciphertext, into);
+      FfiConverterArrayBuffer.write(value.digest, into);
+      FfiConverterArrayBuffer.write(value.plaintextHash, into);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterArrayBuffer.allocationSize(value.ciphertext) +
+        FfiConverterArrayBuffer.allocationSize(value.digest) +
+        FfiConverterArrayBuffer.allocationSize(value.plaintextHash)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
 
 export type CiphertextMessageData = {
   messageType: CiphertextMessageType;
@@ -3314,6 +3380,16 @@ function uniffiEnsureInitialized() {
       bindingsContractVersion,
     );
   }
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_attachment_decrypt() !== 48137) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_func_attachment_decrypt',
+    );
+  }
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_attachment_encrypt() !== 15804) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_func_attachment_encrypt',
+    );
+  }
   if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_aes_gcm_decrypt() !== 31686) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_orbital_signal_checksum_func_aes_gcm_decrypt',
@@ -3579,6 +3655,7 @@ function uniffiEnsureInitialized() {
 export default Object.freeze({
   initialize: uniffiEnsureInitialized,
   converters: {
+    FfiConverterTypeAttachmentCryptoResult,
     FfiConverterTypeCiphertextMessageData,
     FfiConverterTypeCiphertextMessageType,
     FfiConverterTypeContentCryptoResult,

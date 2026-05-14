@@ -47,11 +47,14 @@ jest.mock('../../stores/useAppStore', () => ({
   },
 }));
 
+const mockGenerateUUID = jest.fn(() => 'test-media-id');
+
 jest.mock('../../utils/uuid', () => ({
-  generateUUID: jest.fn(() => 'test-media-id'),
+  generateUUID: () => mockGenerateUUID(),
 }));
 
-import { uploadMedia } from '../mediaUploadService';
+import { uploadMedia, uploadMediaBatch } from '../mediaUploadService';
+import type { PickedMedia } from '../../hooks/useMediaPicker';
 
 const fakeGroupKey = new Uint8Array(32).fill(0xAB);
 const fakeCiphertext = new Uint8Array(100).fill(0xCC);
@@ -229,5 +232,51 @@ describe('uploadMedia', () => {
     expect(metadataParsed).toHaveProperty('iv');
     expect(metadataParsed).not.toHaveProperty('fileName');
     expect(metadataParsed).not.toHaveProperty('contentType');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// uploadMediaBatch
+// ---------------------------------------------------------------------------
+
+describe('uploadMediaBatch', () => {
+  const fakeItems: PickedMedia[] = [
+    {
+      uri: 'file:///photo1.jpg',
+      base64: 'QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo=',
+      type: 'image/jpeg',
+      fileName: 'photo1.jpg',
+      fileSize: 50,
+      width: 100,
+      height: 100,
+    },
+    {
+      uri: 'file:///photo2.png',
+      base64: 'QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo=',
+      type: 'image/png',
+      fileName: 'photo2.png',
+      fileSize: 80,
+      width: 200,
+      height: 200,
+    },
+  ];
+
+  it('calls uploadMedia for each item and returns collected IDs', async () => {
+    mockGenerateUUID
+      .mockReturnValueOnce('batch-id-1')
+      .mockReturnValueOnce('batch-id-2');
+
+    const ids = await uploadMediaBatch(fakeItems, 'group-1');
+
+    expect(ids).toEqual(['batch-id-1', 'batch-id-2']);
+    // uploadMedia calls uploadChunk once per item (small files = 1 chunk each)
+    expect(mockUploadChunk).toHaveBeenCalledTimes(2);
+    expect(mockCompleteUpload).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns empty array for empty input', async () => {
+    const ids = await uploadMediaBatch([], 'group-1');
+    expect(ids).toEqual([]);
+    expect(mockUploadChunk).not.toHaveBeenCalled();
   });
 });

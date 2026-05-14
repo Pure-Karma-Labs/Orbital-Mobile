@@ -6,6 +6,23 @@ jest.mock('../../components/EmojiPicker', () => ({
   EmojiPicker: () => null,
 }));
 
+jest.mock('../../components/MediaThumbnailStrip', () => {
+  const React = require('react');
+  const { View } = require('react-native');
+  return {
+    MediaThumbnailStrip: () => React.createElement(View, { testID: 'mock-media-strip' }),
+  };
+});
+
+jest.mock('../../components/Emoji', () => {
+  const React = require('react');
+  const { View } = require('react-native');
+  return {
+    Emoji: (props: { unified: string }) =>
+      React.createElement(View, { testID: `mock-emoji-${props.unified}` }),
+  };
+});
+
 import React from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { ThemeProvider } from '../../theme';
@@ -23,6 +40,26 @@ jest.mock('../../services/threadService', () => ({
   loadThread: (...args: unknown[]) => mockLoadThread(...args),
   loadReplies: (...args: unknown[]) => mockLoadReplies(...args),
   postReply: (...args: unknown[]) => mockPostReply(...args),
+}));
+
+const mockUploadMediaBatch = jest.fn();
+
+jest.mock('../../services/mediaUploadService', () => ({
+  uploadMediaBatch: (...args: unknown[]) => mockUploadMediaBatch(...args),
+}));
+
+const mockPickPhotos = jest.fn();
+const mockRemoveMedia = jest.fn();
+const mockClearMedia = jest.fn();
+let mockSelectedMedia: unknown[] = [];
+
+jest.mock('../../hooks/useMediaPicker', () => ({
+  useMediaPicker: () => ({
+    selectedMedia: mockSelectedMedia,
+    pickPhotos: mockPickPhotos,
+    removeMedia: mockRemoveMedia,
+    clearMedia: mockClearMedia,
+  }),
 }));
 
 jest.mock('../../hooks/useWebSocketSubscription', () => ({
@@ -178,6 +215,7 @@ async function renderScreen(): Promise<ReactTestRenderer> {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockSelectedMedia = [];
   // Default: loadThread and loadReplies resolve but store stays empty
   // (store is mocked separately)
   mockLoadThread.mockResolvedValue(fakeThread);
@@ -186,6 +224,19 @@ beforeEach(() => {
     nextCursor: null,
     hasMore: false,
   });
+  mockPostReply.mockResolvedValue({
+    id: 'reply-new',
+    threadId: 'thread-1',
+    authorId: 'user-1',
+    authorUsername: 'alice',
+    body: 'test',
+    parentReplyId: null,
+    depth: 0,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    syncStatus: 'synced',
+  });
+  mockUploadMediaBatch.mockResolvedValue(['media-id-1']);
 });
 
 // ---------------------------------------------------------------------------
@@ -391,5 +442,176 @@ describe('ThreadDetailScreen — with thread data', () => {
         node.props.children.startsWith('↳ Replying to'),
     );
     expect(contextNodes.length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Media send integration
+// ---------------------------------------------------------------------------
+
+describe('ThreadDetailScreen — media send', () => {
+  beforeEach(() => {
+    const storesMock = jest.requireMock('../../stores') as {
+      useThreads: jest.Mock;
+    };
+    storesMock.useThreads.mockReturnValue({
+      threads: { 'thread-1': fakeThread },
+      threadIdsByConversation: { 'group-1': ['thread-1'] },
+      replies: {},
+      replyIdsByThread: {},
+      activeThreadId: 'thread-1',
+      setThreads: jest.fn(),
+      upsertThread: jest.fn(),
+      removeThread: jest.fn(),
+      setActiveThread: mockSetActiveThread,
+      setReplies: jest.fn(),
+      appendReplies: jest.fn(),
+      upsertReply: jest.fn(),
+      addOptimisticThread: jest.fn(),
+      addOptimisticReply: jest.fn(),
+      updateThreadSyncStatus: jest.fn(),
+      updateReplySyncStatus: jest.fn(),
+    });
+  });
+
+  afterEach(() => {
+    const storesMock = jest.requireMock('../../stores') as {
+      useThreads: jest.Mock;
+    };
+    storesMock.useThreads.mockReturnValue({
+      threads: {},
+      threadIdsByConversation: {},
+      replies: {},
+      replyIdsByThread: {},
+      activeThreadId: null,
+      setThreads: jest.fn(),
+      upsertThread: jest.fn(),
+      removeThread: jest.fn(),
+      setActiveThread: mockSetActiveThread,
+      setReplies: jest.fn(),
+      appendReplies: jest.fn(),
+      upsertReply: jest.fn(),
+      addOptimisticThread: jest.fn(),
+      addOptimisticReply: jest.fn(),
+      updateThreadSyncStatus: jest.fn(),
+      updateReplySyncStatus: jest.fn(),
+    });
+    mockSelectedMedia = [];
+  });
+
+  it('calls uploadMediaBatch and passes mediaIds to postReply on send with media', async () => {
+    mockSelectedMedia = [
+      {
+        uri: 'file:///photo1.jpg',
+        base64: 'abc',
+        type: 'image/jpeg',
+        fileName: 'photo1.jpg',
+        fileSize: 100,
+        width: 50,
+        height: 50,
+      },
+    ];
+
+    const renderer = await renderScreen();
+
+    // Type text into the composer
+    const input = renderer.root.findAll(
+      (node) => node.props.testID === 'reply-input',
+    );
+    expect(input.length).toBeGreaterThan(0);
+    await act(async () => {
+      input[0].props.onChangeText('hello with media');
+    });
+
+    // Press send
+    const sendBtn = renderer.root.findAll(
+      (node) => node.props.testID === 'send-button',
+    );
+    await act(async () => {
+      sendBtn[0].props.onPress();
+    });
+
+    // Wait for async send
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(mockUploadMediaBatch).toHaveBeenCalledWith(
+      mockSelectedMedia,
+      'group-1',
+    );
+    expect(mockPostReply).toHaveBeenCalled();
+    const postReplyArgs = mockPostReply.mock.calls[0];
+    // 7th arg is options with mediaIds
+    expect(postReplyArgs[6]).toEqual({ mediaIds: ['media-id-1'] });
+  });
+
+  it('clears text and media on successful send', async () => {
+    mockSelectedMedia = [
+      {
+        uri: 'file:///photo1.jpg',
+        base64: 'abc',
+        type: 'image/jpeg',
+        fileName: 'photo1.jpg',
+        fileSize: 100,
+      },
+    ];
+
+    const renderer = await renderScreen();
+
+    const input = renderer.root.findAll(
+      (node) => node.props.testID === 'reply-input',
+    );
+    await act(async () => {
+      input[0].props.onChangeText('test msg');
+    });
+
+    const sendBtn = renderer.root.findAll(
+      (node) => node.props.testID === 'send-button',
+    );
+    await act(async () => {
+      sendBtn[0].props.onPress();
+    });
+
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(mockClearMedia).toHaveBeenCalled();
+  });
+
+  it('does not clear media on failed send', async () => {
+    mockPostReply.mockRejectedValue(new Error('Server error'));
+    mockSelectedMedia = [
+      {
+        uri: 'file:///photo1.jpg',
+        base64: 'abc',
+        type: 'image/jpeg',
+        fileName: 'photo1.jpg',
+        fileSize: 100,
+      },
+    ];
+
+    const renderer = await renderScreen();
+
+    const input = renderer.root.findAll(
+      (node) => node.props.testID === 'reply-input',
+    );
+    await act(async () => {
+      input[0].props.onChangeText('will fail');
+    });
+
+    const sendBtn = renderer.root.findAll(
+      (node) => node.props.testID === 'send-button',
+    );
+    await act(async () => {
+      sendBtn[0].props.onPress();
+    });
+
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(mockClearMedia).not.toHaveBeenCalled();
   });
 });

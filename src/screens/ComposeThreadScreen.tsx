@@ -19,7 +19,7 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useTheme } from '../theme';
 import { useAuth } from '../stores';
 import { createNewThread } from '../services/threadService';
-import { uploadMedia } from '../services/mediaUploadService';
+import { uploadMediaBatch } from '../services/mediaUploadService';
 import { useMediaPicker } from '../hooks/useMediaPicker';
 import { Header } from '../components/Header';
 import { ErrorBanner } from '../components/ErrorBanner';
@@ -64,20 +64,7 @@ export function ComposeThreadScreen({
       if (selectedMedia.length > 0) {
         setUploading(true);
         try {
-          const ids: string[] = [];
-          for (const media of selectedMedia) {
-            const id = await uploadMedia({
-              fileBase64: media.base64,
-              mimeType: media.type,
-              fileName: media.fileName,
-              fileSize: media.fileSize,
-              width: media.width,
-              height: media.height,
-              groupId,
-            });
-            ids.push(id);
-          }
-          mediaIds = ids;
+          mediaIds = await uploadMediaBatch(selectedMedia, groupId);
         } finally {
           setUploading(false);
         }

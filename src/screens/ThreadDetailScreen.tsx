@@ -36,6 +36,8 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useTheme } from '../theme';
 import { useAuth, useThreads } from '../stores';
 import { loadThread, loadReplies, postReply } from '../services/threadService';
+import { uploadMediaBatch } from '../services/mediaUploadService';
+import { useMediaPicker } from '../hooks/useMediaPicker';
 import { Header } from '../components/Header';
 import { AsciiSection } from '../components/AsciiSeparator';
 import { ThreadHeader } from './threadDetail/ThreadHeader';
@@ -115,6 +117,8 @@ export function ThreadDetailScreen({
   const [error, setError] = useState<string | null>(null);
   const [replyTarget, setReplyTarget] = useState<ReplyTarget | null>(null);
   const [sending, setSending] = useState(false);
+  const { selectedMedia, pickPhotos, removeMedia, clearMedia } = useMediaPicker();
+  const [uploading, setUploading] = useState(false);
 
   // Composer text — lifted here so EmojiPicker can insert into it
   const [composerText, setComposerText] = useState('');
@@ -298,14 +302,19 @@ export function ThreadDetailScreen({
 
   const handleSend = useCallback(
     async (body: string) => {
-      if (!thread || !userId || !username) {
-        if (__DEV__) console.warn('[Reply] blocked:', { thread: !!thread, userId, username });
-        return;
-      }
+      if (!thread || !userId || !username) return;
       setSending(true);
-      // Hide emoji picker on send
       setShowEmojiPicker(false);
       try {
+        let mediaIds: string[] | undefined;
+        if (selectedMedia.length > 0) {
+          setUploading(true);
+          try {
+            mediaIds = await uploadMediaBatch(selectedMedia, thread.conversationId);
+          } finally {
+            setUploading(false);
+          }
+        }
         const parentReplyId = replyTarget?.replyId ?? null;
         const depth = replyTarget ? replyTarget.depth + 1 : 0;
         await postReply(
@@ -315,7 +324,10 @@ export function ThreadDetailScreen({
           parentReplyId,
           depth,
           { authorId: userId, authorUsername: username },
+          mediaIds ? { mediaIds } : undefined,
         );
+        setComposerText('');
+        clearMedia();
         setReplyTarget(null);
       } catch (e) {
         if (__DEV__) console.warn('[Reply] failed:', e instanceof Error ? e.message : e);
@@ -323,7 +335,7 @@ export function ThreadDetailScreen({
         setSending(false);
       }
     },
-    [thread, threadId, userId, username, replyTarget],
+    [thread, threadId, userId, username, replyTarget, selectedMedia, clearMedia],
   );
 
   // ---------------------------------------------------------------------------
@@ -459,9 +471,12 @@ export function ThreadDetailScreen({
           replyTarget={replyTarget}
           onClearReplyTarget={handleClearReplyTarget}
           onSend={handleSend}
-          sending={sending}
+          sending={sending || uploading}
           text={composerText}
           onChangeText={setComposerText}
+          media={selectedMedia}
+          onPickMedia={pickPhotos}
+          onRemoveMedia={removeMedia}
           showEmojiPicker={showEmojiPicker}
           onToggleEmojiPicker={handleToggleEmojiPicker}
           onInputFocus={handleInputFocus}

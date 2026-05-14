@@ -120,7 +120,7 @@ describe('mediaRepository', () => {
 
   describe('getMediaForThread', () => {
     it('queries by thread_id ordered by created_at ASC', () => {
-      const executeSync = jest.fn(() => ({ rows: [], rowsAffected: 0 }));
+      const executeSync = jest.fn((_sql: string, _params?: unknown[]) => ({ rows: [], rowsAffected: 0 }));
       makeDb(executeSync);
       getMediaForThread('thread-1');
       const selectCall = executeSync.mock.calls.find(
@@ -147,7 +147,7 @@ describe('mediaRepository', () => {
 
   describe('getMediaForReply', () => {
     it('queries by reply_id ordered by created_at ASC', () => {
-      const executeSync = jest.fn(() => ({ rows: [], rowsAffected: 0 }));
+      const executeSync = jest.fn((_sql: string, _params?: unknown[]) => ({ rows: [], rowsAffected: 0 }));
       makeDb(executeSync);
       getMediaForReply('reply-1');
       const selectCall = executeSync.mock.calls.find(
@@ -196,7 +196,7 @@ describe('mediaRepository', () => {
 
   describe('getPendingDownloads', () => {
     it('queries for pending download_state', () => {
-      const executeSync = jest.fn(() => ({ rows: [], rowsAffected: 0 }));
+      const executeSync = jest.fn((_sql: string, _params?: unknown[]) => ({ rows: [], rowsAffected: 0 }));
       makeDb(executeSync);
       getPendingDownloads();
       const selectCall = executeSync.mock.calls.find(

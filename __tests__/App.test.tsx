@@ -29,6 +29,11 @@ jest.mock('react-native-keychain', () => ({
   AUTHENTICATION_TYPE: {},
 }));
 
+jest.mock('react-native-image-picker', () => ({
+  launchImageLibrary: jest.fn(),
+  launchCamera: jest.fn(),
+}));
+
 // Mock orbital-signal TurboModule — not available in JS-only Jest
 jest.mock('orbital-signal', () => ({
   aesGcmEncrypt: jest.fn(),

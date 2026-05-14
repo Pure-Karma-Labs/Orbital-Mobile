@@ -44,7 +44,7 @@ export function ComposeThreadScreen({
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { selectedMedia, pickPhotos, removeMedia, clearMedia } = useMediaPicker();
+  const { selectedMedia, pickPhotos, removeMedia } = useMediaPicker();
 
   const busy = loading || uploading;
   const canSubmit = title.trim().length > 0 && body.trim().length > 0 && !busy;
@@ -102,7 +102,7 @@ export function ComposeThreadScreen({
     } finally {
       setLoading(false);
     }
-  }, [canSubmit, userId, username, groupId, title, body, navigation, selectedMedia, clearMedia]);
+  }, [canSubmit, userId, username, groupId, title, body, navigation, selectedMedia]);
 
   const containerStyle: ViewStyle = {
     flex: 1,

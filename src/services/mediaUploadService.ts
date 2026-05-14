@@ -24,7 +24,7 @@ import { uploadChunk, completeUpload } from './api/media';
 import { saveMedia } from '../database/repositories/mediaRepository';
 import { useAppStore } from '../stores/useAppStore';
 import { generateUUID } from '../utils/uuid';
-import { writeFile, unlink, CachesDirectoryPath } from '@dr.pogodin/react-native-fs';
+import { writeFile, unlink, readDir, CachesDirectoryPath } from '@dr.pogodin/react-native-fs';
 import type { MediaItem } from '../types/store';
 import type { MediaRow } from '../database/repositories/mediaRepository';
 
@@ -392,7 +392,6 @@ function buildMediaRow(
  */
 export async function cleanupOrphanedChunks(): Promise<void> {
   try {
-    const { readDir } = await import('@dr.pogodin/react-native-fs');
     const files = await readDir(CachesDirectoryPath);
     const now = Date.now();
     for (const file of files) {

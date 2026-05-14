@@ -140,7 +140,11 @@ export async function getOrFetchGroupKey(groupId: string): Promise<Uint8Array> {
     try {
       const response = await getGroupKey(groupId);
       const keyBytes = validateAndDecode(response.groupKey);
-      setGroupMasterKey(groupId, keyBytes);
+      try {
+        setGroupMasterKey(groupId, keyBytes);
+      } catch {
+        // DB may not be initialized (e.g., Metro Fast Refresh)
+      }
       groupKeyCache.set(groupId, keyBytes);
       return keyBytes;
     } finally {

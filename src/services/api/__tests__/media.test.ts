@@ -65,15 +65,12 @@ function mockFetchError(status: number, bodyText = ''): void {
   });
 }
 
-/** Mock Blob for test — RN's Blob type has different constructor signature */
-const sampleChunkBlob = { size: 4, type: 'application/octet-stream' } as Blob;
-
 const sampleUploadParams: UploadChunkParams = {
   mediaId: 'media-123',
   groupId: 'group-456',
   chunkIndex: 0,
   totalChunks: 3,
-  chunkData: sampleChunkBlob,
+  chunkFilePath: '/tmp/test-chunk.bin',
 };
 
 beforeEach(() => {

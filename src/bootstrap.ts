@@ -10,6 +10,7 @@ import { runMigrations } from './database/migrations';
 import { tokenManager } from './services/api/tokenManager';
 import { useAppStore } from './stores/useAppStore';
 import { initIdentityKeyCache } from './services/crypto/keyGenerationService';
+import { cleanupOrphanedChunks } from './services/mediaUploadService';
 
 /**
  * App bootstrap sequence — runs once before any screens mount.
@@ -38,4 +39,7 @@ export async function bootstrap(): Promise<void> {
   tokenManager.onTokensCleared(() => {
     useAppStore.getState().clearAuth();
   });
+  // Best-effort cleanup of orphaned chunk temp files from interrupted uploads.
+  // Fire-and-forget — don't block bootstrap on this.
+  cleanupOrphanedChunks();
 }

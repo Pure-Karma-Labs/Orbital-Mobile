@@ -24,6 +24,7 @@ import { uploadChunk, completeUpload } from './api/media';
 import { saveMedia } from '../database/repositories/mediaRepository';
 import { useAppStore } from '../stores/useAppStore';
 import { generateUUID } from '../utils/uuid';
+import { writeFile, unlink, CachesDirectoryPath } from '@dr.pogodin/react-native-fs';
 import type { MediaItem } from '../types/store';
 import type { MediaRow } from '../database/repositories/mediaRepository';
 
@@ -91,13 +92,28 @@ function base64ToUint8Array(base64: string): Uint8Array {
 }
 
 /**
- * Create a Blob from a Uint8Array slice.
- * RN's Blob constructor accepts ArrayBuffer parts.
+ * Write a Uint8Array chunk to a temporary file for upload.
+ * Hermes cannot create Blobs from ArrayBuffer, so we write to a temp
+ * file and use the file-URI FormData pattern (same as avatar uploads).
  */
-function createChunkBlob(bytes: Uint8Array): Blob {
-  // Use ArrayBuffer slice for RN Blob compatibility
-  const buffer = toArrayBuffer(bytes);
-  return new Blob([buffer] as unknown as [Blob]);
+async function writeChunkToTempFile(
+  bytes: Uint8Array,
+  mediaId: string,
+  chunkIndex: number,
+): Promise<string> {
+  const base64 = arrayBufferToBase64(toArrayBuffer(bytes));
+  const filePath = `${CachesDirectoryPath}/${mediaId}-chunk-${chunkIndex}.bin`;
+  try {
+    await writeFile(filePath, base64, 'base64');
+  } catch (err) {
+    await unlink(filePath).catch(() => {});
+    throw err;
+  }
+  return filePath;
+}
+
+function unlinkChunkFile(filePath: string): void {
+  unlink(filePath).catch(() => {});
 }
 
 /**
@@ -186,61 +202,65 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<string> 
     const start = i * CHUNK_SIZE_BYTES;
     const end = Math.min(start + CHUNK_SIZE_BYTES, ciphertext.length);
     const chunkBytes = ciphertext.slice(start, end);
-    const chunkBlob = createChunkBlob(chunkBytes);
+    const chunkFilePath = await writeChunkToTempFile(chunkBytes, mediaId, i);
 
     // Retry logic with exponential backoff
     let lastError: Error | null = null;
-    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-      try {
-        await uploadChunk(
-          {
-            mediaId,
-            groupId,
-            chunkIndex: i,
-            totalChunks,
-            chunkData: chunkBlob,
-            // First chunk includes metadata and IV
-            ...(i === 0
-              ? { encryptedMetadata: metadata, encryptionIv: ivBase64 }
-              : {}),
-          },
-          signal,
-        );
-        lastError = null;
-        break;
-      } catch (e) {
-        lastError = e instanceof Error ? e : new Error(String(e));
+    try {
+      for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        try {
+          await uploadChunk(
+            {
+              mediaId,
+              groupId,
+              chunkIndex: i,
+              totalChunks,
+              chunkFilePath,
+              // First chunk includes metadata and IV
+              ...(i === 0
+                ? { encryptedMetadata: metadata, encryptionIv: ivBase64 }
+                : {}),
+            },
+            signal,
+          );
+          lastError = null;
+          break;
+        } catch (e) {
+          lastError = e instanceof Error ? e : new Error(String(e));
 
-        // Don't retry auth or validation errors
-        if (lastError.message.includes('401') || lastError.message.includes('403')) {
-          throw lastError;
-        }
+          // Don't retry auth or validation errors
+          if (lastError.message.includes('401') || lastError.message.includes('403')) {
+            throw lastError;
+          }
 
-        // Don't retry on cancellation
-        if (signal?.aborted) {
-          throw new Error('Upload cancelled');
-        }
+          // Don't retry on cancellation
+          if (signal?.aborted) {
+            throw new Error('Upload cancelled');
+          }
 
-        // Exponential backoff before retry
-        if (attempt < MAX_RETRIES - 1) {
-          await sleep(BASE_RETRY_DELAY_MS * Math.pow(2, attempt));
+          // Exponential backoff before retry
+          if (attempt < MAX_RETRIES - 1) {
+            await sleep(BASE_RETRY_DELAY_MS * Math.pow(2, attempt));
+          }
         }
       }
-    }
 
-    if (lastError) {
-      // Mark as failed in DB
-      try {
-        const failedRow = buildMediaRow(
-          mediaId, threadId ?? null, replyId ?? null, mimeType,
-          fileName, fileSize, width, height, keysBase64, digestBase64,
-          'pending', 'failed',
-        );
-        saveMedia(failedRow);
-      } catch {
-        // Best-effort persistence — don't mask the upload error
+      if (lastError) {
+        // Mark as failed in DB
+        try {
+          const failedRow = buildMediaRow(
+            mediaId, threadId ?? null, replyId ?? null, mimeType,
+            fileName, fileSize, width, height, keysBase64, digestBase64,
+            'pending', 'failed',
+          );
+          saveMedia(failedRow);
+        } catch {
+          // Best-effort persistence — don't mask the upload error
+        }
+        throw new Error('Failed to upload media. Please try again.');
       }
-      throw new Error('Failed to upload media. Please try again.');
+    } finally {
+      unlinkChunkFile(chunkFilePath);
     }
 
     // Report progress
@@ -360,4 +380,31 @@ function buildMediaRow(
     upload_state: uploadState,
     created_at: Date.now(),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Orphaned chunk cleanup
+// ---------------------------------------------------------------------------
+
+/**
+ * Clean up orphaned chunk temp files from interrupted uploads.
+ * Call during app bootstrap (best-effort, fire-and-forget).
+ */
+export async function cleanupOrphanedChunks(): Promise<void> {
+  try {
+    const { readDir } = await import('@dr.pogodin/react-native-fs');
+    const files = await readDir(CachesDirectoryPath);
+    const now = Date.now();
+    for (const file of files) {
+      if (file.name.includes('-chunk-') && file.name.endsWith('.bin')) {
+        const mtime = file.mtime ? new Date(file.mtime).getTime() : 0;
+        const age = now - mtime;
+        if (age > 3600_000) {
+          await unlink(file.path).catch(() => {});
+        }
+      }
+    }
+  } catch {
+    // Best-effort — failures are silently ignored
+  }
 }

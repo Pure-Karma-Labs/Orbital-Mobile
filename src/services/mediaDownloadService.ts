@@ -20,7 +20,7 @@
 
 import { downloadMedia } from './api/media';
 import { decryptAttachment } from './crypto/attachmentCrypto';
-import { base64ToArrayBuffer, arrayBufferToBase64, toArrayBuffer } from './crypto/utils';
+import { arrayBufferToBase64, toArrayBuffer } from './crypto/utils';
 import {
   getMedia,
   updateDownloadState,
@@ -185,12 +185,12 @@ export async function downloadAndDecryptMedia(
       // 6. Download ciphertext from server
       const { data: ciphertextBuffer } = await downloadMedia(mediaId, signal);
 
-      // 7. Decrypt — decode attachment_key from base64 → Uint8Array (64 bytes)
-      const keys = new Uint8Array(base64ToArrayBuffer(row!.attachment_key!));
+      // 7. Decrypt — attachment_key and digest are stored as raw BLOB (Uint8Array)
+      const keys = row!.attachment_key!;
       if (!row!.attachment_digest) {
         throw new Error('No attachment digest available — cannot verify ciphertext integrity');
       }
-      const digest = new Uint8Array(base64ToArrayBuffer(row!.attachment_digest));
+      const digest = row!.attachment_digest;
 
       // Scope ciphertext so it can be GC'd before base64 encoding
       let plaintext: Uint8Array;

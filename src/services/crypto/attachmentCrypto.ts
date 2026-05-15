@@ -54,8 +54,6 @@ export interface EncryptAttachmentResult {
   ciphertext: Uint8Array;
   /** SHA-256 of the ciphertext blob — for integrity verification on download */
   digest: Uint8Array;
-  /** SHA-256 of the original plaintext — local integrity only, never sent to server */
-  plaintextHash: string;
 }
 
 /**
@@ -63,7 +61,7 @@ export interface EncryptAttachmentResult {
  *
  * @param plaintext - Raw file bytes to encrypt.
  * @param keys      - 64-byte key (32 AES + 32 HMAC), typically from generateAttachmentKeys().
- * @returns Encrypted ciphertext, digest, and plaintext hash (hex string).
+ * @returns Encrypted ciphertext and digest.
  */
 export function encryptAttachment(
   plaintext: Uint8Array,
@@ -77,7 +75,6 @@ export function encryptAttachment(
   return {
     ciphertext: new Uint8Array(result.ciphertext),
     digest: new Uint8Array(result.digest),
-    plaintextHash: arrayBufferToBase64(result.plaintextHash),
   };
 }
 

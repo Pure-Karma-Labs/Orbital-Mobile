@@ -33,6 +33,10 @@ jest.mock('../crypto/contentCrypto', () => ({
   invalidateGroupKey: (...args: unknown[]) => mockInvalidateGroupKey(...args),
 }));
 
+jest.mock('../crypto/utils', () => ({
+  base64ToArrayBuffer: jest.fn(() => new ArrayBuffer(32)),
+}));
+
 const mockSetMediaForThread = jest.fn();
 const mockSetMediaForReply = jest.fn();
 
@@ -105,6 +109,8 @@ function makeMediaRow(overrides: Partial<MediaRow> = {}): MediaRow {
     cdn_key: null,
     local_path: null,
     thumbnail_path: null,
+    blur_hash: null,
+    expires_at: null,
     download_state: 'pending',
     upload_state: 'done',
     created_at: 1743494400000,
@@ -188,7 +194,7 @@ describe('processMediaMetadata — existing item in store', () => {
 
 describe('processMediaMetadata — existing row in DB', () => {
   it('uses mediaRowToItem and skips saveMedia when row already exists', async () => {
-    const row = makeMediaRow({ id: 'media-uuid-1b', attachment_key: 'some-key' });
+    const row = makeMediaRow({ id: 'media-uuid-1b', attachment_key: new Uint8Array(64).fill(0xAA) });
     mockGetMedia.mockReturnValue(row);
 
     await processMediaMetadata(
@@ -352,7 +358,7 @@ describe('processMediaMetadata — new item with encryptedMetadata (happy path)'
     expect(item.height).toBe(600);
 
     const savedRow = mockSaveMedia.mock.calls[0][0];
-    expect(savedRow.attachment_digest).toBe('abc123digest');
+    expect(savedRow.attachment_digest).toBeInstanceOf(Uint8Array);
   });
 });
 

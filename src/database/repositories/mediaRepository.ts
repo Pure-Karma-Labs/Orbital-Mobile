@@ -15,12 +15,14 @@ export interface MediaRow {
   width: number | null;
   height: number | null;
   duration: number | null;
-  attachment_key: string | null;
-  attachment_digest: string | null;
+  attachment_key: Uint8Array | null;
+  attachment_digest: Uint8Array | null;
   cdn_number: number | null;
   cdn_key: string | null;
   local_path: string | null;
   thumbnail_path: string | null;
+  blur_hash: string | null;
+  expires_at: number | null;
   download_state: string;
   upload_state: string;
   created_at: number;
@@ -35,8 +37,9 @@ export function saveMedia(row: MediaRow): void {
     `INSERT OR REPLACE INTO orbital_media
        (id, thread_id, reply_id, message_id, content_type, file_name, file_size,
         width, height, duration, attachment_key, attachment_digest, cdn_number,
-        cdn_key, local_path, thumbnail_path, download_state, upload_state, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        cdn_key, local_path, thumbnail_path, blur_hash, expires_at,
+        download_state, upload_state, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       row.id,
       row.thread_id,
@@ -54,6 +57,8 @@ export function saveMedia(row: MediaRow): void {
       row.cdn_key ?? null,
       row.local_path ?? null,
       row.thumbnail_path ?? null,
+      row.blur_hash ?? null,
+      row.expires_at ?? null,
       row.download_state,
       row.upload_state,
       row.created_at,

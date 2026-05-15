@@ -19,6 +19,7 @@ import {
 } from './crypto/contentCrypto';
 import { useAppStore } from '../stores/useAppStore';
 import { generateUUID } from '../utils/uuid';
+import { base64ToArrayBuffer } from './crypto/utils';
 import { getMedia, saveMedia } from '../database/repositories/mediaRepository';
 import { isDatabaseInitialized } from '../database/connection';
 import type { Thread, Reply, MediaItem } from '../types/store';
@@ -106,12 +107,12 @@ function mediaRowToItem(row: MediaRow): MediaItem {
     width: row.width,
     height: row.height,
     duration: row.duration,
-    blurHash: null,
+    blurHash: row.blur_hash,
     localPath: row.local_path,
     thumbnailPath: row.thumbnail_path,
     downloadState: (row.download_state as MediaItem['downloadState']) ?? 'pending',
     uploadState: (row.upload_state as MediaItem['uploadState']) ?? 'pending',
-    expiresAt: null,
+    expiresAt: row.expires_at,
     hasKeys: row.attachment_key != null,
   };
 }
@@ -257,11 +258,13 @@ export async function processMediaMetadata(
         height,
         duration: meta.duration ?? null,
         attachment_key: null, // Receiver doesn't have keys in v1
-        attachment_digest: digest,
+        attachment_digest: digest ? new Uint8Array(base64ToArrayBuffer(digest)) : null,
         cdn_number: null,
         cdn_key: null,
         local_path: null,
         thumbnail_path: null,
+        blur_hash: meta.blurHash ?? null,
+        expires_at: meta.expiresAt ? new Date(meta.expiresAt).getTime() : null,
         download_state: 'pending',
         upload_state: 'done',
         created_at: meta.uploadedAt

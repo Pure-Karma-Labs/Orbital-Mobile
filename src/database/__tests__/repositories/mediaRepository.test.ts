@@ -40,12 +40,14 @@ const sampleMedia: MediaRow = {
   width: 1920,
   height: 1080,
   duration: null,
-  attachment_key: 'base64key==',
-  attachment_digest: 'base64digest==',
+  attachment_key: new Uint8Array(64).fill(0xEE),
+  attachment_digest: new Uint8Array(32).fill(0xDD),
   cdn_number: null,
   cdn_key: null,
   local_path: null,
   thumbnail_path: null,
+  blur_hash: null,
+  expires_at: null,
   download_state: 'pending',
   upload_state: 'done',
   created_at: 1700000000000,
@@ -58,7 +60,7 @@ describe('mediaRepository', () => {
   });
 
   describe('saveMedia', () => {
-    it('executes INSERT OR REPLACE with all 19 columns', () => {
+    it('executes INSERT OR REPLACE with all 21 columns', () => {
       const executeSync = jest.fn(() => ({ rows: [], rowsAffected: 1 }));
       makeDb(executeSync);
       saveMedia(sampleMedia);
@@ -75,8 +77,10 @@ describe('mediaRepository', () => {
           1920,
           1080,
           null,
-          'base64key==',
-          'base64digest==',
+          new Uint8Array(64).fill(0xEE),
+          new Uint8Array(32).fill(0xDD),
+          null,
+          null,
           null,
           null,
           null,

@@ -28,11 +28,15 @@ core_files:
   - path: src/services/api/version.ts
     role: App version check endpoint
   - path: src/services/threadService.ts
-    role: Thread data orchestration (fetch → decrypt → store)
+    role: Thread data orchestration (fetch -> decrypt -> store)
   - path: src/services/conversationService.ts
     role: Conversation/group loading orchestration
   - path: src/services/authService.ts
     role: Auth flow orchestration (login, signup, restoreSession, logout)
+  - path: src/services/mediaUploadService.ts
+    role: Media upload orchestration (encrypt -> chunk -> upload -> persist)
+  - path: __mocks__/@dr.pogodin/react-native-fs.ts
+    role: Jest mock for react-native-fs (writeFile, unlink, readDir, CachesDirectoryPath)
 
 backend_repo: Pure-Karma-Labs/Orbital-Backend
 
@@ -149,6 +153,14 @@ verified_types:
   PublicKeyResponse:
     verified_at: "2026-04-29"
     fields: [userId, username, publicKey]
+  UploadChunkResponse:
+    verified_at: "2026-05-14"
+    fields: [uploadId, received, complete, mediaId?]
+    note: Defined in src/types/api.ts; mediaId present only when complete=true (final chunk)
+  CompleteUploadResponse:
+    verified_at: "2026-05-14"
+    fields: [mediaId, sizeBytes, uploadedAt, expiresAt, chunksUploaded]
+    note: Defined in src/services/api/media.ts (not api.ts); confirms upload assembly
 
 unverified_types: []
 
@@ -161,6 +173,11 @@ resolved_issues:
   - crypto.getRandomValues undefined — fixed: react-native-get-random-values polyfill
   - Backend rate limiter scoping — authLimiter (10 req/15min) was applied to all /api/* routes; fixed to only /api/login and /api/signup
   - Optimistic thread duplication — createNewThread now calls removeThread(clientId) + upsertThread(finalThread) instead of just updating sync status
+  - Hermes Blob limitation — Hermes cannot create Blob from ArrayBuffer; media chunks must be written to temp files via react-native-fs and uploaded using file-URI FormData pattern
+  - Backend completeUpload UUID validation — completeUpload endpoint requires mediaId as valid UUID; client-generated IDs must use generateUUID() not random strings
+  - Rate limit 429 on chunk upload — uploadChunk retries with exponential backoff (3 attempts, 1s base); auth/validation errors (401/403) are not retried
+  - Deploy source confusion — Orbital-Backend is deployed from Pure-Karma-Labs/Orbital-Backend (https://api.orbitl.org), not the desktop repo fork; always verify API contracts against this repo
+  - rawResponse removal and requestBinary replacement — rawResponse option was removed from client.ts during #92 cleanup; downloadMedia now uses dedicated requestBinary() helper that returns ArrayBuffer + headers
 
 endpoint_paths:
   note: Threads router is mounted at /api/threads in the backend
@@ -170,6 +187,9 @@ endpoint_paths:
   createThread: /api/threads (POST)
   createReply: /api/threads/:threadId/replies (POST, returns 201 not 200)
   getGroupQuota: /api/groups/:groupId/quota (GET, groups router not threads router)
+  uploadChunk: /api/media/upload/chunk (POST, multipart FormData with snake_case keys)
+  completeUpload: /api/media/upload/complete (POST, JSON body)
+  downloadMedia: /api/media/:id/download (GET, returns binary with X-Encryption-IV and X-Expires-At headers)
 
 pagination_pattern:
   type: offset
@@ -181,6 +201,9 @@ resilience_patterns:
   encrypt_decrypt: Synchronous FFI calls — async wrappers removed
   name_decryption_fallback: Show '(unable to decrypt)' not raw ciphertext on decryption failure
   optimistic_thread_finalize: removeThread(clientId) + upsertThread(finalThread) — never leave both optimistic and server threads in store
+  metro_fast_refresh_db: SQLite getDb() is idempotent (returns existing handle); Metro fast-refresh re-executes module bodies but does not crash because open() on same path returns the same connection
+  chunk_temp_file_cleanup: Each chunk temp file is unlinked in a finally block; cleanupOrphanedChunks() runs at bootstrap to sweep files older than 1 hour
+  upload_retry: uploadChunk retries up to 3 times with exponential backoff (1s, 2s, 4s); 401/403 and cancellation short-circuit retries immediately
 
 client_error_mapping:
   429: RATE_LIMITED (retryable)
@@ -195,9 +218,16 @@ quota_caller_contract:
   guard_dm: activeConversationId could be a DM — check conversations[id]?.type === 'group' before calling getGroupQuota
 
 api_client_transforms:
-  request: camelCase → snake_case (automatic via camelToSnake in client.ts)
-  response: snake_case → camelCase (automatic via snakeToCamel in client.ts)
+  request: camelCase -> snake_case (automatic via camelToSnake in client.ts)
+  response: snake_case -> camelCase (automatic via snakeToCamel in client.ts)
   note: Some backend endpoints return camelCase directly (UserProfile, invite fields)
 
 polyfills:
   crypto_get_random_values: react-native-get-random-values (imported first in index.js)
+
+dependencies:
+  react_native_fs:
+    package: "@dr.pogodin/react-native-fs"
+    used_by: [src/services/mediaUploadService.ts]
+    imports: [writeFile, unlink, readDir, CachesDirectoryPath]
+    note: Required because Hermes cannot create Blob from ArrayBuffer — chunks written to temp files for FormData upload

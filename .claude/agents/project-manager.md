@@ -3,6 +3,7 @@ name: project-manager
 description: Manage GitHub Issues/Milestones, track progress, coordinate project timeline, and identify risks and blockers
 model: sonnet
 tools: Read, Glob, Grep, Edit, Write, Bash
+permissionMode: acceptEdits
 memory: project
 maxTurns: 20
 ---

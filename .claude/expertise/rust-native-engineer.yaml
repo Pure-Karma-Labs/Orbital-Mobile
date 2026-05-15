@@ -1,5 +1,5 @@
-version: "2.0"
-last_updated: "2026-04-09"
+version: "2.1"
+last_updated: "2026-05-14"
 agent: rust-native-engineer
 
 core_files:

@@ -3,6 +3,7 @@ name: backend-push-engineer
 description: Own push notification service (APNs/FCM), device token management, and backend API extensions for mobile clients
 model: sonnet
 tools: Read, Glob, Grep, Edit, Write, Bash
+permissionMode: acceptEdits
 memory: project
 maxTurns: 30
 ---

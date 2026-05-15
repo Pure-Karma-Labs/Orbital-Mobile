@@ -4,8 +4,7 @@ description: Detect agentic code bloat, monitor API architecture fragility, trac
 model: claude-opus-4-6
 effort: high
 tools: Read, Glob, Grep, Bash
-disallowedTools: Edit, Write
-permissionMode: plan
+permissionMode: acceptEdits
 memory: project
 maxTurns: 30
 ---

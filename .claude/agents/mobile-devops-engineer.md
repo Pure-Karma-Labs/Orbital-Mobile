@@ -3,6 +3,7 @@ name: mobile-devops-engineer
 description: Own CI/CD pipeline, code signing, TestFlight/Play Store distribution, Fastlane automation, and self-hosted runner management
 model: sonnet
 tools: Read, Glob, Grep, Edit, Write, Bash
+permissionMode: acceptEdits
 memory: project
 maxTurns: 30
 ---

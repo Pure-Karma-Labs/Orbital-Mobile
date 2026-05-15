@@ -4,6 +4,7 @@ description: Own Signal Protocol integration, libsignal API surface design, encr
 model: claude-opus-4-6
 effort: high
 tools: Read, Glob, Grep, Edit, Write, Bash
+permissionMode: acceptEdits
 memory: project
 maxTurns: 30
 ---

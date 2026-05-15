@@ -4,6 +4,7 @@ description: Build React Native UI screens, navigation, state management, and co
 model: claude-opus-4-6
 effort: high
 tools: Read, Glob, Grep, Edit, Write, Bash
+permissionMode: acceptEdits
 memory: project
 maxTurns: 50
 ---

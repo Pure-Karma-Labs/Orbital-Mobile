@@ -1,7 +1,8 @@
 ---
-name: Audit coverage — Phase 1 complete
-description: Phase 1 security audit complete (2026-04-09) — 8 PRs reviewed, 14 findings (all Critical/High resolved), 23 positive verifications, OWASP M1-M10 assessed, crypto pipeline fully audited
-type: project
+name: Audit coverage — Phase 1 complete, Phase 2 started
+description: Phase 1 complete (2026-04-09), Phase 2 attachment crypto reviewed (2026-05-14) — 12 PRs reviewed, 14+5 findings, 33 positive verifications
+metadata:
+  type: project
 ---
 
 ## Audit Coverage — Phase 1 Complete (2026-04-09)
@@ -77,5 +78,33 @@ These patterns were validated during Phase 1 and must be preserved:
 5. **Pre-key consumption atomicity** — session save + identity check + key deletion in single `BEGIN IMMEDIATE` transaction
 6. **Identity key in Keychain/Keystore** — cache-on-load pattern, cache cleared on logout, migration from SQLCipher
 
+---
+
+## Phase 2 — Attachment Crypto & Media Pipeline (2026-05-14)
+
+### New PRs/Commits Reviewed
+| Commit/PR | Scope | Findings | Status |
+|-----------|-------|----------|--------|
+| #113 | Media system foundation: attachment crypto, API client, repository, store | Schema/pattern verified | Merged |
+| #117 | Media upload pipeline + picker integration (Chunk 2) | Temp file cleanup, DB guard verified | Merged |
+| #121 | Media picker for ReplyComposer | Permission strings verified | Merged |
+| #124 | Regenerate native bindings for attachment crypto | FFI boundary verified | Merged |
+
+### Positive Verifications (Attachment Crypto)
+1. **HMAC-before-decrypt** — `attachment_crypto.rs:145-157` verifies HMAC before CBC decryption
+2. **Opaque error messages** — All failure paths return `SignalError::InvalidMessage { reason: "decryption failed" }`
+3. **CSPRNG IV** — `rand::fill()` for 16-byte IV generation (OS CSPRNG)
+4. **64-byte key enforcement** — Both encrypt and decrypt reject keys != 64 bytes
+5. **Digest verification** — SHA-256 of ciphertext verified before decrypt
+6. **plaintextHash not sent** — `mediaUploadService.ts:310` discards hash with `void plaintextHash`
+7. **Temp file cleanup** — `finally` blocks delete chunk files; `cleanupOrphanedChunks()` runs at bootstrap via lazy import
+8. **iOS file protection** — `CachesDirectoryPath` inherits `NSFileProtectionCompleteUntilFirstUserAuthentication` from entitlements
+9. **DB guard for Metro** — `saveMedia` and `setGroupMasterKey` wrapped in try/catch; non-fatal in dev only
+10. **Info.plist permissions** — `NSPhotoLibraryUsageDescription` and `NSCameraUsageDescription` present with appropriate descriptions
+
+### Backend Security Notes (not findings)
+- `completeUpload` fixed: now uses client's `media_id` (was generating new UUID causing 404)
+- Rate limit raised 100→500 req/15min; per-endpoint limits deferred (follow-up issue filed)
+
 **Why:** Tracking audit coverage prevents re-work and provides a Phase 1 baseline for measuring Phase 2+ security posture changes.
-**How to apply:** Use this as a checklist when scoping Phase 2 audit. Prioritize "Not assessed" OWASP categories. Verify established patterns are not regressed by new code.
+**How to apply:** Use this as a checklist when scoping future audits. Prioritize "Not assessed" OWASP categories. Verify established patterns are not regressed by new code.

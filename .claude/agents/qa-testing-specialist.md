@@ -3,6 +3,7 @@ name: qa-testing-specialist
 description: Own test strategy, Jest/Detox configuration, device matrix testing, beta coordination, and MVP verification for Orbital Mobile
 model: sonnet
 tools: Read, Glob, Grep, Edit, Write, Bash
+permissionMode: acceptEdits
 memory: project
 maxTurns: 30
 ---

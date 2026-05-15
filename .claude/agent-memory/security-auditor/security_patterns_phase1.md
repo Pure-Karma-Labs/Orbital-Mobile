@@ -1,12 +1,13 @@
 ---
-name: Established security patterns — Phase 1
-description: Five mandatory security patterns validated during Phase 1 audit that must be preserved in all future crypto code
-type: feedback
+name: Established security patterns
+description: Seven mandatory security patterns validated during Phase 1-2 audits that must be preserved in all future crypto code
+metadata:
+  type: feedback
 ---
 
-## Established Security Patterns (Phase 1)
+## Established Security Patterns
 
-These patterns were validated and confirmed correct during the Phase 1 security audit. Any regression is a security finding.
+These patterns were validated and confirmed correct during security audits. Any regression is a security finding.
 
 1. **`BEGIN IMMEDIATE` for all crypto transactions** — Never use `BEGIN TRANSACTION` or bare `BEGIN` for operations touching Signal Protocol state. `BEGIN IMMEDIATE` acquires a reserved lock immediately, preventing TOCTOU races in the preloaded store architecture.
    **Why:** F-03 found `BEGIN TRANSACTION` in three places in `keyGenerationService.ts`. With SQLCipher WAL mode and the preloaded store pattern (read from SQLCipher -> process in Rust -> write back), a deferred lock allows another operation to interleave between read and write-back.
@@ -27,3 +28,11 @@ These patterns were validated and confirmed correct during the Phase 1 security 
 5. **Pre-key consumption atomicity** — Session creation + identity key trust check + pre-key deletion must happen in a single `BEGIN IMMEDIATE` transaction.
    **Why:** Partial completion (e.g., session saved but pre-key not deleted) would allow pre-key reuse, breaking forward secrecy guarantees.
    **How to apply:** When reviewing session establishment code, verify all three operations are within the same transaction boundary.
+
+6. **HMAC-before-decrypt for attachments** — Rust `attachment_decrypt` verifies HMAC-SHA256 before CBC decryption. Opaque errors prevent padding oracle. Verified in `attachment_crypto.rs:145-157`.
+   **Why:** CBC mode is vulnerable to padding oracle attacks if decryption is attempted before MAC verification. The HMAC-then-decrypt order ensures tampered ciphertext is rejected before any decryption occurs.
+   **How to apply:** If any new decryption path is added for attachments or media, verify it follows HMAC-before-decrypt. Any decrypt-before-verify is Critical severity.
+
+7. **plaintext hash is local-only** — `plaintextHash` must never be included in API payloads. Currently discarded in `mediaUploadService.ts:310`. Branded type guard pending (#115).
+   **Why:** Sending the SHA-256 hash of the original plaintext file to the server would break zero-knowledge guarantees — the server could use the hash to identify content without decrypting.
+   **How to apply:** If any API payload construction references `plaintextHash`, flag as High. Watch for it in upload metadata, media creation requests, and sync payloads.

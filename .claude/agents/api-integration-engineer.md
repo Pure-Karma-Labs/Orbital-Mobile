@@ -4,6 +4,7 @@ description: Own API client, service orchestration layer, wire-format types, and
 model: claude-opus-4-6
 effort: high
 tools: Read, Glob, Grep, Edit, Write, Bash
+permissionMode: acceptEdits
 memory: project
 maxTurns: 50
 ---

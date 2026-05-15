@@ -1,5 +1,5 @@
 version: "1.2"
-last_updated: "2026-04-09"
+last_updated: "2026-05-14"
 agent: security-auditor
 
 core_files:
@@ -28,6 +28,15 @@ core_files:
     purpose: Signal Kyber (PQC) pre-key store — last-resort key handling
   - path: src/services/crypto/SenderKeyStoreImpl.ts
     purpose: Signal sender key store — group messaging distribution
+  - path: src/services/crypto/attachmentCrypto.ts
+    purpose: AES-256-CBC + HMAC-SHA256 attachment encrypt/decrypt — wraps Rust FFI; key generation via CSPRNG (crypto.getRandomValues)
+    key_symbols: [generateAttachmentKeys, encryptAttachment, decryptAttachment, EncryptAttachmentResult]
+  - path: src/services/crypto/contentCrypto.ts
+    purpose: AES-256-GCM content encryption for threads/replies — group key cache with zero-fill on logout, three-tier key lookup (cache → SQLCipher → API)
+    key_symbols: [encryptContent, decryptContent, getOrFetchGroupKey, persistGroupKey, invalidateGroupKey, clearGroupKeyCache, generateGroupKey, encryptGroupName, decryptGroupName]
+  - path: src/services/mediaUploadService.ts
+    purpose: Media upload orchestration — encrypt → chunk → temp file → upload; orphan cleanup on bootstrap; AbortSignal plumbing (not yet wired by callers)
+    key_symbols: [uploadMedia, uploadMediaBatch, cleanupOrphanedChunks, writeChunkToTempFile]
   - path: src/database/connection.ts
     purpose: SQLCipher connection — raw-key hex format, PRAGMA ordering, cipher_memory_security
     key_symbols: [openDatabase, closeDatabase, getDatabase]
@@ -42,6 +51,9 @@ core_files:
     key_symbols: [getItem, setItem, deleteItem]
   - path: src/database/repositories/signalIdentityKeyRepository.ts
     purpose: Per-address identity key storage — BLOB columns for key material
+  - path: src/database/repositories/mediaRepository.ts
+    purpose: orbital_media table CRUD — attachment_key stored as base64 TEXT despite BLOB column type (#122)
+    key_symbols: [saveMedia, getMedia, getMediaForThread, updateDownloadState, updateUploadState]
   - path: src/services/secure-storage/encryptionKeys.ts
     purpose: MMKV/SQLCipher key generation — CSPRNG 256-bit, Keychain with AFTER_FIRST_UNLOCK
     key_symbols: [getOrCreateEncryptionKey, getSqlCipherKey]
@@ -74,13 +86,16 @@ core_files:
   - path: ios/OrbitalMobile/OrbitalMobile.entitlements
     purpose: iOS entitlements — file protection, Keychain access groups
   - path: ios/OrbitalMobile/Info.plist
-    purpose: iOS config — ATS, URL schemes (F-09 hijack risk), data protection
+    purpose: "iOS config — ATS, URL schemes (F-09 hijack risk), data protection, NSPhotoLibraryUsageDescription, NSCameraUsageDescription"
   - path: android/app/src/main/AndroidManifest.xml
     purpose: Android config — permissions, exported components, backup rules, usesCleartextTraffic (F-13)
   - path: android/app/src/main/res/xml/data_extraction_rules.xml
     purpose: Android backup exclusion rules — all domains excluded
   - path: package.json
     purpose: npm dependency manifest — npm audit target (F-14)
+  - path: packages/orbital-signal/rust/orbital_signal/src/attachment_crypto.rs
+    purpose: Rust attachment crypto — AES-256-CBC + HMAC-SHA256; HMAC-before-decrypt; CSPRNG IV; opaque error messages; 64-byte key enforcement
+    key_symbols: [attachment_encrypt, attachment_decrypt, AttachmentCryptoResult]
 
 documentation:
   - path: docs/MOBILE-APP-SPEC.md
@@ -101,6 +116,9 @@ integration_points:
   - system: iOS Keychain / Android Keystore
     interface: Platform secure storage via src/services/secure-storage/
     purpose: Secure enclave for MMKV key, JWT tokens, identity key pair (PR #83 — F-01 resolved)
+  - system: Media attachment crypto (Rust FFI)
+    interface: uniffi attachment_encrypt/attachment_decrypt via attachmentCrypto.ts
+    purpose: Attachment encryption boundary — 64-byte keys, HMAC-before-decrypt, opaque errors; keys stay in memory/SQLCipher, never sent to server
 
 patterns:
   - name: begin-immediate-transactions
@@ -129,3 +147,13 @@ patterns:
     description: Identity key pair stored in iOS Keychain / Android Keystore with AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY; cache-on-load pattern; cache cleared on logout
   - name: feature-gated-poc
     description: PoC/demo functions in Rust crate gated behind dev-roundtrip Cargo feature flag; default features empty so release builds exclude them
+  - name: hmac-before-decrypt
+    description: Attachment decryption verifies HMAC-SHA256 before CBC decryption — prevents padding oracle attacks; implemented in attachment_crypto.rs
+  - name: opaque-decryption-errors
+    description: MAC failure, digest mismatch, and unpad failure all return the same SignalError::InvalidMessage variant — prevents error-based information leakage
+  - name: plaintext-hash-never-sent
+    description: plaintextHash (SHA-256 of original file) is local-only integrity check — sending it to the server would break zero-knowledge guarantees
+  - name: ciphertext-temp-files-cleanup
+    description: Encrypted chunk temp files in CachesDirectoryPath cleaned up in finally blocks and via startup orphan sweep (cleanupOrphanedChunks); inherits NSFileProtectionCompleteUntilFirstUserAuthentication from app entitlements
+  - name: db-guard-for-hot-reload
+    description: saveMedia/setGroupMasterKey wrapped in try/catch for Metro Fast Refresh resetting the db singleton; non-fatal in dev, does not affect production

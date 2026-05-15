@@ -2,6 +2,14 @@
  * Tests for ThreadDetailScreen — thread detail view with nested replies and composer.
  */
 
+jest.mock('../../components/MediaGallery', () => ({
+  MediaGallery: () => null,
+}));
+
+jest.mock('../../components/MediaLightbox', () => ({
+  MediaLightbox: () => null,
+}));
+
 jest.mock('../../components/EmojiPicker', () => ({
   EmojiPicker: () => null,
 }));
@@ -99,6 +107,8 @@ jest.mock('../../stores', () => ({
     conversationIds: [],
     activeConversationId: null,
   }),
+  useMediaForThread: () => [],
+  useMediaForReply: () => [],
 }));
 
 jest.mock('@react-navigation/native-stack', () => ({

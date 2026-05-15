@@ -366,13 +366,14 @@ export function ThreadDetailScreen({
     if (!thread) return null;
     return (
       <ThreadHeader
+        threadId={threadId}
         title={thread.title}
         body={thread.body}
         authorUsername={thread.authorUsername}
         createdAt={thread.createdAt}
       />
     );
-  }, [thread]);
+  }, [thread, threadId]);
 
   const listFooter = useMemo(() => {
     if (loadingMore) {

@@ -66,9 +66,11 @@ const fakeDigestBase64 = 'fake-digest-base64-32bytes';
 const fakeCiphertextBuffer = new Uint8Array(100).fill(0xCC).buffer;
 const fakePlaintext = new Uint8Array(80).fill(0xAA);
 
+const FAKE_MEDIA_ID = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
+
 function makeMediaRow(overrides: Partial<MediaRow> = {}): MediaRow {
   return {
-    id: 'media-1',
+    id: FAKE_MEDIA_ID,
     thread_id: 'thread-1',
     reply_id: null,
     message_id: null,
@@ -122,20 +124,20 @@ describe('downloadAndDecryptMedia', () => {
   it('returns cached path when file exists on disk', async () => {
     const rnfs = require('@dr.pogodin/react-native-fs');
     mockGetMedia.mockReturnValue(
-      makeMediaRow({ local_path: '/tmp/test-docs/media/media-1.jpg' }),
+      makeMediaRow({ local_path: '/tmp/test-docs/media/a1b2c3d4-e5f6-7890-abcd-ef1234567890.jpg' }),
     );
     rnfs.exists.mockResolvedValue(true);
 
-    const result = await downloadAndDecryptMedia('media-1');
+    const result = await downloadAndDecryptMedia(FAKE_MEDIA_ID);
 
-    expect(result).toBe('/tmp/test-docs/media/media-1.jpg');
+    expect(result).toBe('/tmp/test-docs/media/a1b2c3d4-e5f6-7890-abcd-ef1234567890.jpg');
     expect(mockDownloadMedia).not.toHaveBeenCalled();
   });
 
   it('throws when no attachment keys available', async () => {
     mockGetMedia.mockReturnValue(makeMediaRow({ attachment_key: null }));
 
-    await expect(downloadAndDecryptMedia('media-1')).rejects.toThrow(
+    await expect(downloadAndDecryptMedia(FAKE_MEDIA_ID)).rejects.toThrow(
       'No attachment keys available',
     );
     expect(mockDownloadMedia).not.toHaveBeenCalled();
@@ -144,57 +146,57 @@ describe('downloadAndDecryptMedia', () => {
   it('downloads, decrypts, and writes to disk on success', async () => {
     const rnfs = require('@dr.pogodin/react-native-fs');
 
-    const result = await downloadAndDecryptMedia('media-1');
+    const result = await downloadAndDecryptMedia(FAKE_MEDIA_ID);
 
     // Verify download was called
-    expect(mockDownloadMedia).toHaveBeenCalledWith('media-1', undefined);
+    expect(mockDownloadMedia).toHaveBeenCalledWith(FAKE_MEDIA_ID, undefined);
 
     // Verify decryption was called
     expect(mockDecryptAttachment).toHaveBeenCalledTimes(1);
 
     // Verify atomic write: writeFile to .tmp, then moveFile
     expect(rnfs.writeFile).toHaveBeenCalledWith(
-      '/tmp/test-docs/media/media-1.jpg.tmp',
+      '/tmp/test-docs/media/a1b2c3d4-e5f6-7890-abcd-ef1234567890.jpg.tmp',
       'mock-plaintext-base64',
       'base64',
     );
     expect(rnfs.moveFile).toHaveBeenCalledWith(
-      '/tmp/test-docs/media/media-1.jpg.tmp',
-      '/tmp/test-docs/media/media-1.jpg',
+      '/tmp/test-docs/media/a1b2c3d4-e5f6-7890-abcd-ef1234567890.jpg.tmp',
+      '/tmp/test-docs/media/a1b2c3d4-e5f6-7890-abcd-ef1234567890.jpg',
     );
 
     // Verify state updates
-    expect(mockUpdateDownloadState).toHaveBeenCalledWith('media-1', 'downloading');
+    expect(mockUpdateDownloadState).toHaveBeenCalledWith(FAKE_MEDIA_ID, 'downloading');
     expect(mockUpdateDownloadState).toHaveBeenCalledWith(
-      'media-1',
+      FAKE_MEDIA_ID,
       'downloaded',
-      '/tmp/test-docs/media/media-1.jpg',
+      '/tmp/test-docs/media/a1b2c3d4-e5f6-7890-abcd-ef1234567890.jpg',
     );
-    expect(mockUpdateMediaDownloadState).toHaveBeenCalledWith('media-1', 'downloading');
+    expect(mockUpdateMediaDownloadState).toHaveBeenCalledWith(FAKE_MEDIA_ID, 'downloading');
     expect(mockUpdateMediaDownloadState).toHaveBeenCalledWith(
-      'media-1',
+      FAKE_MEDIA_ID,
       'downloaded',
-      '/tmp/test-docs/media/media-1.jpg',
+      '/tmp/test-docs/media/a1b2c3d4-e5f6-7890-abcd-ef1234567890.jpg',
     );
 
-    expect(result).toBe('/tmp/test-docs/media/media-1.jpg');
+    expect(result).toBe('/tmp/test-docs/media/a1b2c3d4-e5f6-7890-abcd-ef1234567890.jpg');
   });
 
   it('sets failed state and cleans up temp file on download error', async () => {
     const rnfs = require('@dr.pogodin/react-native-fs');
     mockDownloadMedia.mockRejectedValue(new Error('Network error'));
 
-    await expect(downloadAndDecryptMedia('media-1')).rejects.toThrow(
+    await expect(downloadAndDecryptMedia(FAKE_MEDIA_ID)).rejects.toThrow(
       'Network error',
     );
 
     // State should be set to 'failed'
-    expect(mockUpdateDownloadState).toHaveBeenCalledWith('media-1', 'failed');
-    expect(mockUpdateMediaDownloadState).toHaveBeenCalledWith('media-1', 'failed');
+    expect(mockUpdateDownloadState).toHaveBeenCalledWith(FAKE_MEDIA_ID, 'failed');
+    expect(mockUpdateMediaDownloadState).toHaveBeenCalledWith(FAKE_MEDIA_ID, 'failed');
 
     // Temp file should be cleaned up
     expect(rnfs.unlink).toHaveBeenCalledWith(
-      '/tmp/test-docs/media/media-1.jpg.tmp',
+      '/tmp/test-docs/media/a1b2c3d4-e5f6-7890-abcd-ef1234567890.jpg.tmp',
     );
   });
 
@@ -203,19 +205,19 @@ describe('downloadAndDecryptMedia', () => {
       throw new Error('HMAC verification failed');
     });
 
-    await expect(downloadAndDecryptMedia('media-1')).rejects.toThrow(
+    await expect(downloadAndDecryptMedia(FAKE_MEDIA_ID)).rejects.toThrow(
       'HMAC verification failed',
     );
 
-    expect(mockUpdateDownloadState).toHaveBeenCalledWith('media-1', 'failed');
-    expect(mockUpdateMediaDownloadState).toHaveBeenCalledWith('media-1', 'failed');
+    expect(mockUpdateDownloadState).toHaveBeenCalledWith(FAKE_MEDIA_ID, 'failed');
+    expect(mockUpdateMediaDownloadState).toHaveBeenCalledWith(FAKE_MEDIA_ID, 'failed');
   });
 
   it('creates media directory if it does not exist', async () => {
     const rnfs = require('@dr.pogodin/react-native-fs');
     rnfs.exists.mockResolvedValue(false);
 
-    await downloadAndDecryptMedia('media-1');
+    await downloadAndDecryptMedia(FAKE_MEDIA_ID);
 
     expect(rnfs.mkdir).toHaveBeenCalledWith('/tmp/test-docs/media', {
       NSURLIsExcludedFromBackupKey: true,
@@ -227,15 +229,15 @@ describe('downloadAndDecryptMedia', () => {
       makeMediaRow({ file_name: null, content_type: 'image/png' }),
     );
 
-    const result = await downloadAndDecryptMedia('media-1');
+    const result = await downloadAndDecryptMedia(FAKE_MEDIA_ID);
 
-    expect(result).toBe('/tmp/test-docs/media/media-1.png');
+    expect(result).toBe('/tmp/test-docs/media/a1b2c3d4-e5f6-7890-abcd-ef1234567890.png');
   });
 
   it('deduplicates concurrent downloads for the same media ID', async () => {
     // Start two downloads concurrently
-    const p1 = downloadAndDecryptMedia('media-1');
-    const p2 = downloadAndDecryptMedia('media-1');
+    const p1 = downloadAndDecryptMedia(FAKE_MEDIA_ID);
+    const p2 = downloadAndDecryptMedia(FAKE_MEDIA_ID);
 
     const [r1, r2] = await Promise.all([p1, p2]);
 
@@ -253,15 +255,15 @@ describe('downloadAndDecryptMedia', () => {
 
 describe('retryDownload', () => {
   it('resets state to pending before re-triggering download', async () => {
-    const result = await retryDownload('media-1');
+    const result = await retryDownload(FAKE_MEDIA_ID);
 
     // First call resets to 'pending'
-    expect(mockUpdateDownloadState).toHaveBeenCalledWith('media-1', 'pending');
-    expect(mockUpdateMediaDownloadState).toHaveBeenCalledWith('media-1', 'pending');
+    expect(mockUpdateDownloadState).toHaveBeenCalledWith(FAKE_MEDIA_ID, 'pending');
+    expect(mockUpdateMediaDownloadState).toHaveBeenCalledWith(FAKE_MEDIA_ID, 'pending');
 
     // Then proceeds with download
     expect(mockDownloadMedia).toHaveBeenCalledTimes(1);
-    expect(result).toBe('/tmp/test-docs/media/media-1.jpg');
+    expect(result).toBe('/tmp/test-docs/media/a1b2c3d4-e5f6-7890-abcd-ef1234567890.jpg');
   });
 });
 
@@ -273,27 +275,27 @@ describe('isMediaCached', () => {
   it('returns true when file exists on disk', async () => {
     const rnfs = require('@dr.pogodin/react-native-fs');
     mockGetMedia.mockReturnValue(
-      makeMediaRow({ local_path: '/tmp/test-docs/media/media-1.jpg' }),
+      makeMediaRow({ local_path: '/tmp/test-docs/media/a1b2c3d4-e5f6-7890-abcd-ef1234567890.jpg' }),
     );
     rnfs.exists.mockResolvedValue(true);
 
-    expect(await isMediaCached('media-1')).toBe(true);
+    expect(await isMediaCached(FAKE_MEDIA_ID)).toBe(true);
   });
 
   it('returns false when no local path', async () => {
     mockGetMedia.mockReturnValue(makeMediaRow({ local_path: null }));
 
-    expect(await isMediaCached('media-1')).toBe(false);
+    expect(await isMediaCached(FAKE_MEDIA_ID)).toBe(false);
   });
 
   it('returns false when file does not exist', async () => {
     const rnfs = require('@dr.pogodin/react-native-fs');
     mockGetMedia.mockReturnValue(
-      makeMediaRow({ local_path: '/tmp/test-docs/media/media-1.jpg' }),
+      makeMediaRow({ local_path: '/tmp/test-docs/media/a1b2c3d4-e5f6-7890-abcd-ef1234567890.jpg' }),
     );
     rnfs.exists.mockResolvedValue(false);
 
-    expect(await isMediaCached('media-1')).toBe(false);
+    expect(await isMediaCached(FAKE_MEDIA_ID)).toBe(false);
   });
 
   it('returns false when DB throws', async () => {
@@ -301,7 +303,7 @@ describe('isMediaCached', () => {
       throw new Error('DB not initialized');
     });
 
-    expect(await isMediaCached('media-1')).toBe(false);
+    expect(await isMediaCached(FAKE_MEDIA_ID)).toBe(false);
   });
 });
 
@@ -316,7 +318,7 @@ describe('cleanupOrphanedMedia', () => {
     rnfs.readDir.mockResolvedValue([
       {
         name: 'media-1.jpg.tmp',
-        path: '/tmp/test-docs/media/media-1.jpg.tmp',
+        path: '/tmp/test-docs/media/a1b2c3d4-e5f6-7890-abcd-ef1234567890.jpg.tmp',
         mtime: new Date(Date.now() - 7200_000),
         isDirectory: () => false,
       },
@@ -331,7 +333,7 @@ describe('cleanupOrphanedMedia', () => {
     await cleanupOrphanedMedia();
 
     expect(rnfs.unlink).toHaveBeenCalledWith(
-      '/tmp/test-docs/media/media-1.jpg.tmp',
+      '/tmp/test-docs/media/a1b2c3d4-e5f6-7890-abcd-ef1234567890.jpg.tmp',
     );
     expect(rnfs.unlink).not.toHaveBeenCalledWith(
       '/tmp/test-docs/media/media-2.png.tmp',

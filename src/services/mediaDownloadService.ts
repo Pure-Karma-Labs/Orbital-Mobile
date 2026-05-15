@@ -83,6 +83,19 @@ const inflight = new Map<string, Promise<string>>();
 // Helpers
 // ---------------------------------------------------------------------------
 
+const SAFE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SAFE_EXT_RE = /^[a-zA-Z0-9]{1,10}$/;
+
+/** Validate mediaId is a UUID and extension is alphanumeric to prevent path injection. */
+function validatePathComponents(mediaId: string, ext: string): void {
+  if (!SAFE_ID_RE.test(mediaId)) {
+    throw new Error(`Invalid mediaId format: ${mediaId.substring(0, 20)}`);
+  }
+  if (!SAFE_EXT_RE.test(ext)) {
+    throw new Error(`Invalid extension format: ${ext.substring(0, 10)}`);
+  }
+}
+
 /** Ensure the media directory exists. */
 async function ensureMediaDir(): Promise<void> {
   const dirExists = await exists(MEDIA_DIR);
@@ -153,6 +166,7 @@ export async function downloadAndDecryptMedia(
   const promise = (async (): Promise<string> => {
     await acquireSemaphore();
     const ext = getExtension(row!);
+    validatePathComponents(mediaId, ext);
     const tmpPath = `${MEDIA_DIR}/${mediaId}.${ext}.tmp`;
     const finalPath = `${MEDIA_DIR}/${mediaId}.${ext}`;
 
@@ -173,15 +187,17 @@ export async function downloadAndDecryptMedia(
 
       // 7. Decrypt — decode attachment_key from base64 → Uint8Array (64 bytes)
       const keys = new Uint8Array(base64ToArrayBuffer(row!.attachment_key!));
-      const digest = row!.attachment_digest
-        ? new Uint8Array(base64ToArrayBuffer(row!.attachment_digest))
-        : new Uint8Array(0);
+      if (!row!.attachment_digest) {
+        throw new Error('No attachment digest available — cannot verify ciphertext integrity');
+      }
+      const digest = new Uint8Array(base64ToArrayBuffer(row!.attachment_digest));
 
-      // Release ciphertext reference before base64 encoding (F5/T2)
-      // Reduces peak memory from ~83MB to ~58MB for 25MB files
-      const ciphertextBytes = new Uint8Array(ciphertextBuffer);
-      const plaintext = decryptAttachment(ciphertextBytes, keys, digest);
-      // ciphertextBytes is now eligible for GC
+      // Scope ciphertext so it can be GC'd before base64 encoding
+      let plaintext: Uint8Array;
+      {
+        const ciphertextBytes = new Uint8Array(ciphertextBuffer);
+        plaintext = decryptAttachment(ciphertextBytes, keys, digest);
+      }
 
       // 8. Atomic write — .tmp + moveFile (F1)
       const plaintextBase64 = arrayBufferToBase64(toArrayBuffer(plaintext));

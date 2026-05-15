@@ -232,12 +232,10 @@ async function _executeRequest(options: RequestOptions): Promise<Response> {
 
     // 429 retry with exponential backoff
     if (response.status === 429 && attempt < MAX_429_RETRIES) {
-      const retryAfterHeader = response.headers.get('Retry-After');
-      const retryAfterMs = retryAfterHeader
-        ? parseInt(retryAfterHeader, 10) * 1000
-        : 0;
+      // Cap retry delay at 10s — a mobile user won't wait minutes
+      const MAX_RETRY_DELAY_MS = 10_000;
       const backoffMs = 1000 * Math.pow(2, attempt) + Math.random() * 500;
-      const delayMs = Math.max(retryAfterMs, backoffMs);
+      const delayMs = Math.min(backoffMs, MAX_RETRY_DELAY_MS);
 
       if (__DEV__) {
         console.warn(`[API] 429 on ${method} ${path} — retry ${attempt + 1}/${MAX_429_RETRIES} in ${Math.round(delayMs)}ms`);

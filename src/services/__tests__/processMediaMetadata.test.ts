@@ -32,9 +32,12 @@ jest.mock('../crypto/contentCrypto', () => ({
 const mockSetMediaForThread = jest.fn();
 const mockSetMediaForReply = jest.fn();
 
+let mockStoreMedia: Record<string, unknown> = {};
+
 jest.mock('../../stores/useAppStore', () => ({
   useAppStore: {
     getState: jest.fn(() => ({
+      media: mockStoreMedia,
       setMediaForThread: mockSetMediaForThread,
       setMediaForReply: mockSetMediaForReply,
       upsertThread: jest.fn(),
@@ -111,7 +114,8 @@ function makeMediaRow(overrides: Partial<MediaRow> = {}): MediaRow {
 
 beforeEach(() => {
   jest.clearAllMocks();
-  mockGetMedia.mockReturnValue(null); // Default: no existing row
+  mockStoreMedia = {}; // Default: no existing items in store
+  mockGetMedia.mockReturnValue(null); // Default: no existing row in DB
   mockGetOrFetchGroupKey.mockResolvedValue(fakeGroupKey);
 });
 
@@ -126,6 +130,51 @@ describe('processMediaMetadata — empty input', () => {
     expect(mockGetMedia).not.toHaveBeenCalled();
     expect(mockSetMediaForThread).not.toHaveBeenCalled();
     expect(mockSetMediaForReply).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// In-memory store check (store-first path)
+// ---------------------------------------------------------------------------
+
+describe('processMediaMetadata — existing item in store', () => {
+  it('preserves existing store item and skips DB lookup entirely', async () => {
+    const existing = {
+      id: 'media-uuid-1',
+      threadId: 'thread-1',
+      replyId: null,
+      contentType: 'image/jpeg',
+      fileName: 'photo.jpg',
+      fileSize: 1000,
+      width: 640,
+      height: 480,
+      duration: null,
+      blurHash: null,
+      localPath: '/docs/media/media-uuid-1.jpg',
+      thumbnailPath: null,
+      downloadState: 'downloaded' as const,
+      uploadState: 'done' as const,
+      expiresAt: null,
+      hasKeys: true,
+    };
+    mockStoreMedia = { 'media-uuid-1': existing };
+
+    await processMediaMetadata(
+      [makeMediaMetadata({ mediaId: 'media-uuid-1' })],
+      fakeGroupKey,
+      fakeGroupId,
+      { replyId: 'reply-1' },
+    );
+
+    expect(mockGetMedia).not.toHaveBeenCalled();
+    expect(mockSaveMedia).not.toHaveBeenCalled();
+    expect(mockSetMediaForReply).toHaveBeenCalledTimes(1);
+
+    const items = mockSetMediaForReply.mock.calls[0][1];
+    expect(items).toHaveLength(1);
+    expect(items[0]).toBe(existing); // Same object reference
+    expect(items[0].hasKeys).toBe(true);
+    expect(items[0].localPath).toBe('/docs/media/media-uuid-1.jpg');
   });
 });
 

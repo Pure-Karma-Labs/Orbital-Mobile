@@ -24,7 +24,15 @@ import { uploadChunk, completeUpload } from './api/media';
 import { saveMedia } from '../database/repositories/mediaRepository';
 import { useAppStore } from '../stores/useAppStore';
 import { generateUUID } from '../utils/uuid';
-import { writeFile, unlink, readDir, CachesDirectoryPath } from '@dr.pogodin/react-native-fs';
+import {
+  writeFile,
+  unlink,
+  readDir,
+  mkdir,
+  exists,
+  CachesDirectoryPath,
+  DocumentDirectoryPath,
+} from '@dr.pogodin/react-native-fs';
 import type { MediaItem } from '../types/store';
 import type { MediaRow } from '../database/repositories/mediaRepository';
 
@@ -270,12 +278,37 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<string> 
   // 9. Complete the upload
   await completeUpload(mediaId, groupId);
 
-  // 10. Persist to local DB
+  // 10. Copy plaintext to canonical path so file survives app restarts
+  //     (picker URIs in /tmp/ are evicted by iOS)
+  const ext = fileName.split('.').pop() ?? 'dat';
+  const mediaDirPath = `${DocumentDirectoryPath}/media`;
+  const canonicalPath = `${mediaDirPath}/${mediaId}.${ext}`;
+  let savedLocalPath: string | null = null;
+
+  try {
+    const dirExists = await exists(mediaDirPath);
+    if (!dirExists) {
+      // TODO(F2): Per-file NSURLIsExcludedFromBackupKey is not available via RNFS
+      // writeFile/moveFile — only mkdir exposes it. Using directory-level exclusion
+      // as the best available option. Filed as a follow-up for a native bridge.
+      await mkdir(mediaDirPath, { NSURLIsExcludedFromBackupKey: true });
+    }
+    await writeFile(canonicalPath, fileBase64, 'base64');
+    savedLocalPath = canonicalPath;
+  } catch (e) {
+    if (__DEV__) {
+      console.warn('[uploadMedia] Failed to copy plaintext to canonical path:', e instanceof Error ? e.message : e);
+    }
+    // Non-fatal — upload succeeded, file will be re-downloadable
+  }
+
+  // 11. Persist to local DB
   const mediaRow = buildMediaRow(
     mediaId, threadId ?? null, replyId ?? null, mimeType,
     fileName, fileSize, width, height, keysBase64, digestBase64,
-    'pending', 'done',
+    savedLocalPath ? 'downloaded' : 'pending', 'done',
   );
+  mediaRow.local_path = savedLocalPath;
   try {
     saveMedia(mediaRow);
   } catch (e) {
@@ -284,7 +317,7 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<string> 
     }
   }
 
-  // 11. Update Zustand store
+  // 12. Update Zustand store
   const storeItem: MediaItem = {
     id: mediaId,
     threadId: threadId ?? null,
@@ -296,9 +329,9 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<string> 
     height: height ?? null,
     duration: null,
     blurHash: null,
-    localPath: null,
+    localPath: savedLocalPath,
     thumbnailPath: null,
-    downloadState: 'pending',
+    downloadState: savedLocalPath ? 'downloaded' : 'pending',
     uploadState: 'done',
     expiresAt: null,
     hasKeys: true,

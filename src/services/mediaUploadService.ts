@@ -22,6 +22,7 @@ import { encryptContent, getOrFetchGroupKey } from './crypto/contentCrypto';
 import { arrayBufferToBase64, toArrayBuffer } from './crypto/utils';
 import { uploadChunk, completeUpload } from './api/media';
 import { saveMedia } from '../database/repositories/mediaRepository';
+import { isDatabaseInitialized } from '../database/connection';
 import { useAppStore } from '../stores/useAppStore';
 import { generateUUID } from '../utils/uuid';
 import {
@@ -254,16 +255,17 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<string> 
       }
 
       if (lastError) {
-        // Mark as failed in DB
-        try {
-          const failedRow = buildMediaRow(
-            mediaId, threadId ?? null, replyId ?? null, mimeType,
-            fileName, fileSize, width, height, keysBase64, digestBase64,
-            'pending', 'failed',
-          );
-          saveMedia(failedRow);
-        } catch {
-          // Best-effort persistence — don't mask the upload error
+        if (isDatabaseInitialized()) {
+          try {
+            const failedRow = buildMediaRow(
+              mediaId, threadId ?? null, replyId ?? null, mimeType,
+              fileName, fileSize, width, height, keysBase64, digestBase64,
+              'pending', 'failed',
+            );
+            saveMedia(failedRow);
+          } catch {
+            // Best-effort persistence — don't mask the upload error
+          }
         }
         throw new Error('Failed to upload media. Please try again.');
       }
@@ -309,11 +311,13 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<string> 
     savedLocalPath ? 'downloaded' : 'pending', 'done',
   );
   mediaRow.local_path = savedLocalPath;
-  try {
-    saveMedia(mediaRow);
-  } catch (e) {
-    if (__DEV__) {
-      console.warn('[uploadMedia] saveMedia failed (upload succeeded):', e instanceof Error ? e.message : e);
+  if (isDatabaseInitialized()) {
+    try {
+      saveMedia(mediaRow);
+    } catch (e) {
+      if (__DEV__) {
+        console.warn('[uploadMedia] saveMedia failed (upload succeeded):', e instanceof Error ? e.message : e);
+      }
     }
   }
 

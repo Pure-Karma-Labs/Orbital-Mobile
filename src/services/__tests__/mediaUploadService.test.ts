@@ -4,6 +4,10 @@
 
 jest.mock('@dr.pogodin/react-native-fs');
 
+jest.mock('../../database/connection', () => ({
+  isDatabaseInitialized: () => true,
+}));
+
 const mockGenerateAttachmentKeys = jest.fn();
 const mockEncryptAttachment = jest.fn();
 

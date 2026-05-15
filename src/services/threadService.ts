@@ -15,11 +15,14 @@ import {
   decryptContent,
   encryptContent,
   getOrFetchGroupKey,
+  invalidateGroupKey,
 } from './crypto/contentCrypto';
 import { useAppStore } from '../stores/useAppStore';
 import { generateUUID } from '../utils/uuid';
-import type { Thread, Reply } from '../types/store';
-import type { ThreadResponse, ThreadListItem, ReplyResponse } from '../types/api';
+import { getMedia, saveMedia } from '../database/repositories/mediaRepository';
+import type { Thread, Reply, MediaItem } from '../types/store';
+import type { MediaRow } from '../database/repositories/mediaRepository';
+import type { ThreadResponse, ThreadListItem, ReplyResponse, MediaMetadata } from '../types/api';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -86,6 +89,212 @@ export async function decryptReplyBody(
   return encBody;
 }
 
+// ---------------------------------------------------------------------------
+// Media metadata helpers
+// ---------------------------------------------------------------------------
+
+/** Convert a MediaRow (DB) to a MediaItem (store). */
+function mediaRowToItem(row: MediaRow): MediaItem {
+  return {
+    id: row.id,
+    threadId: row.thread_id,
+    replyId: row.reply_id,
+    contentType: row.content_type,
+    fileName: row.file_name,
+    fileSize: row.file_size,
+    width: row.width,
+    height: row.height,
+    duration: row.duration,
+    blurHash: null,
+    localPath: row.local_path,
+    thumbnailPath: row.thumbnail_path,
+    downloadState: (row.download_state as MediaItem['downloadState']) ?? 'pending',
+    uploadState: (row.upload_state as MediaItem['uploadState']) ?? 'pending',
+    expiresAt: null,
+    hasKeys: row.attachment_key != null,
+  };
+}
+
+/**
+ * Decrypt encrypted metadata envelope and extract inner fields.
+ * Returns parsed fields or null if decryption/parsing fails.
+ */
+async function decryptMediaMetadataEnvelope(
+  encryptedMetadata: string,
+  groupKey: Uint8Array,
+  groupId: string,
+): Promise<{
+  contentType?: string;
+  fileName?: string;
+  width?: number;
+  height?: number;
+  digest?: string;
+} | null> {
+  // The metadata envelope is a JSON string with { ciphertext, iv }
+  let envelope: { ciphertext: string; iv: string };
+  try {
+    envelope = JSON.parse(encryptedMetadata);
+  } catch {
+    return null;
+  }
+  if (!envelope.ciphertext || !envelope.iv) return null;
+
+  const plainJson = decryptContent(envelope.ciphertext, envelope.iv, groupKey, groupId);
+  return JSON.parse(plainJson);
+}
+
+/**
+ * Process a batch of MediaMetadata items received from the API or WebSocket.
+ *
+ * Per-item try/catch — one corrupt item must not drop siblings.
+ * For existing DB rows (e.g. own uploads), we skip the DB write to avoid
+ * clobbering attachment_key / local_path / download_state.
+ *
+ * @param mediaList   - Raw MediaMetadata from API/WS.
+ * @param groupKey    - 32-byte AES-256 group key.
+ * @param groupId     - Group identifier (AAD for AES-GCM).
+ * @param parentRef   - { threadId } or { replyId } to index the media.
+ */
+export async function processMediaMetadata(
+  mediaList: MediaMetadata[],
+  groupKey: Uint8Array,
+  groupId: string,
+  parentRef: { threadId: string } | { replyId: string },
+): Promise<void> {
+  if (!mediaList || mediaList.length === 0) return;
+
+  const store = getStoreActions();
+  const items: MediaItem[] = [];
+
+  for (const meta of mediaList) {
+    try {
+      // Check if we already have this media in the DB (e.g. own upload)
+      let existingRow: MediaRow | null = null;
+      try {
+        existingRow = getMedia(meta.mediaId);
+      } catch {
+        // DB may not be initialized — treat as new
+      }
+
+      if (existingRow) {
+        // Row exists — don't clobber attachment_key, local_path, download_state
+        items.push(mediaRowToItem(existingRow));
+        continue;
+      }
+
+      // Determine thread/reply association from parentRef
+      const threadId = 'threadId' in parentRef ? parentRef.threadId : null;
+      const replyId = 'replyId' in parentRef ? parentRef.replyId : null;
+
+      // Decrypt metadata to extract contentType, fileName, dimensions, digest
+      let contentType = meta.contentType ?? 'application/octet-stream';
+      let fileName = meta.fileName ?? null;
+      let width = meta.width ?? null;
+      let height = meta.height ?? null;
+      let digest: string | null = null;
+
+      if (meta.encryptedMetadata) {
+        // Try to decrypt metadata with retry on failure (key rotation)
+        let parsed = await decryptMediaMetadataEnvelope(
+          meta.encryptedMetadata,
+          groupKey,
+          groupId,
+        );
+
+        if (!parsed) {
+          // Retry with fresh key
+          invalidateGroupKey(groupId);
+          const freshKey = await getOrFetchGroupKey(groupId);
+          parsed = await decryptMediaMetadataEnvelope(
+            meta.encryptedMetadata,
+            freshKey,
+            groupId,
+          );
+        }
+
+        if (parsed) {
+          contentType = parsed.contentType ?? contentType;
+          fileName = parsed.fileName ?? fileName;
+          width = parsed.width ?? width;
+          height = parsed.height ?? height;
+          digest = parsed.digest ?? null;
+        }
+      }
+
+      // Build and persist DB row
+      const row: MediaRow = {
+        id: meta.mediaId,
+        thread_id: threadId,
+        reply_id: replyId,
+        message_id: null,
+        content_type: contentType,
+        file_name: fileName,
+        file_size: meta.sizeBytes,
+        width,
+        height,
+        duration: meta.duration ?? null,
+        attachment_key: null, // Receiver doesn't have keys in v1
+        attachment_digest: digest,
+        cdn_number: null,
+        cdn_key: null,
+        local_path: null,
+        thumbnail_path: null,
+        download_state: 'pending',
+        upload_state: 'done',
+        created_at: meta.uploadedAt
+          ? new Date(meta.uploadedAt).getTime()
+          : Date.now(),
+      };
+
+      try {
+        saveMedia(row);
+      } catch (e) {
+        if (__DEV__) {
+          console.warn('[processMediaMetadata] saveMedia failed:', e instanceof Error ? e.message : e);
+        }
+      }
+
+      const item: MediaItem = {
+        id: meta.mediaId,
+        threadId,
+        replyId,
+        contentType,
+        fileName,
+        fileSize: meta.sizeBytes,
+        width,
+        height,
+        duration: meta.duration ?? null,
+        blurHash: meta.blurHash ?? null,
+        localPath: null,
+        thumbnailPath: null,
+        downloadState: 'pending',
+        uploadState: 'done',
+        expiresAt: meta.expiresAt ? new Date(meta.expiresAt).getTime() : null,
+        hasKeys: false,
+      };
+
+      items.push(item);
+    } catch (e) {
+      // Per-item resilience — skip this item, continue with siblings
+      if (__DEV__) {
+        console.warn(
+          '[processMediaMetadata] Failed to process media item:',
+          e instanceof Error ? e.message : e,
+        );
+      }
+    }
+  }
+
+  if (items.length === 0) return;
+
+  // Populate the store index maps
+  if ('threadId' in parentRef) {
+    store.setMediaForThread(parentRef.threadId, items);
+  } else {
+    store.setMediaForReply(parentRef.replyId, items);
+  }
+}
+
 /**
  * Map a ThreadResponse (API) to a Thread (store), decrypting content fields.
  * groupId on the API maps to conversationId in the store.
@@ -102,6 +311,20 @@ async function mapThreadResponse(
     groupKey,
     response.groupId,
   );
+
+  // Process thread-level media (non-blocking — reply rendering must not be blocked)
+  if (response.media && response.media.length > 0) {
+    processMediaMetadata(
+      response.media,
+      groupKey,
+      response.groupId,
+      { threadId: response.threadId },
+    ).catch((e) => {
+      if (__DEV__) {
+        console.warn('[mapThreadResponse] media processing failed:', e instanceof Error ? e.message : e);
+      }
+    });
+  }
 
   return {
     id: response.threadId,
@@ -134,6 +357,24 @@ async function mapReplyResponse(
     groupKey,
     groupId,
   );
+
+  // Process per-reply media (non-blocking — reply rendering must not be blocked)
+  if (response.media && response.media.length > 0) {
+    try {
+      processMediaMetadata(
+        response.media,
+        groupKey,
+        groupId,
+        { replyId: response.replyId },
+      ).catch((e) => {
+        if (__DEV__) {
+          console.warn('[mapReplyResponse] media processing failed:', e instanceof Error ? e.message : e);
+        }
+      });
+    } catch {
+      // Protect reply rendering from any media-pipeline bug
+    }
+  }
 
   return {
     id: response.replyId,
@@ -245,6 +486,17 @@ export async function loadReplies(
     store.appendReplies(threadId, replies);
   }
 
+  // Process thread-level media from the replies response (TD-T7: both levels exist)
+  if (response.media && response.media.length > 0) {
+    processMediaMetadata(response.media, groupKey, groupId, { threadId }).catch(
+      (e) => {
+        if (__DEV__) {
+          console.warn('[loadReplies] thread-level media processing failed:', e instanceof Error ? e.message : e);
+        }
+      },
+    );
+  }
+
   return {
     replies,
     hasMore: response.hasMore,
@@ -319,6 +571,21 @@ export async function postReply(
     // so subsequent replies-to-this-reply use the real server ID.
     store.removeReply(clientId);
     store.upsertReply(confirmedReply);
+
+    // Process server-confirmed media (updates expiresAt, server-set fields)
+    // Uses existing-row check to avoid overwriting local attachment_key/localPath
+    if (response.media && response.media.length > 0) {
+      processMediaMetadata(
+        response.media,
+        groupKey,
+        groupId,
+        { replyId: response.replyId },
+      ).catch((e) => {
+        if (__DEV__) {
+          console.warn('[postReply] media processing failed:', e instanceof Error ? e.message : e);
+        }
+      });
+    }
 
     return confirmedReply;
   } catch (e) {
@@ -399,6 +666,22 @@ export async function createNewThread(
 
     store.removeThread(clientId);
     store.upsertThread(finalThread);
+
+    // Process server-confirmed media (updates expiresAt, server-set fields)
+    // Uses existing-row check to avoid overwriting local attachment_key/localPath
+    if (response.media && response.media.length > 0) {
+      processMediaMetadata(
+        response.media,
+        groupKey,
+        groupId,
+        { threadId: response.threadId },
+      ).catch((e) => {
+        if (__DEV__) {
+          console.warn('[createNewThread] media processing failed:', e instanceof Error ? e.message : e);
+        }
+      });
+    }
+
     return finalThread;
   } catch (e) {
     if (__DEV__) {

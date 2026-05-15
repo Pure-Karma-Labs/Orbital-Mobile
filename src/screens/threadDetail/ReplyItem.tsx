@@ -16,11 +16,14 @@
  * use displayDepth = depth + 1 for color lookup (clamped to 4).
  */
 
-import React, { useCallback } from 'react';
-import { Text, TouchableOpacity, View, type TextStyle, type ViewStyle } from 'react-native';
+import React, { useCallback, useState } from 'react';
+import { Dimensions, Text, TouchableOpacity, View, type TextStyle, type ViewStyle } from 'react-native';
 import { useTheme } from '../../theme';
 import { getReplyDepthColors } from '../../theme/colors';
 import { EmojiText } from '../../components/EmojiText';
+import { MediaGallery } from '../../components/MediaGallery';
+import { MediaLightbox } from '../../components/MediaLightbox';
+import { useMediaForReply } from '../../stores';
 
 export interface ReplyItemProps {
   replyId: string;
@@ -65,10 +68,22 @@ export const ReplyItem = React.memo(function ReplyItem({
   onPress,
 }: ReplyItemProps): React.JSX.Element {
   const theme = useTheme();
+  const mediaItems = useMediaForReply(replyId);
+  const [lightboxVisible, setLightboxVisible] = useState(false);
+  const [lightboxIndex, setLightboxIndex] = useState(0);
 
   const handlePress = useCallback(() => {
     onPress(replyId, authorUsername, depth);
   }, [onPress, replyId, authorUsername, depth]);
+
+  const handleMediaPress = useCallback((index: number) => {
+    setLightboxIndex(index);
+    setLightboxVisible(true);
+  }, []);
+
+  const handleLightboxClose = useCallback(() => {
+    setLightboxVisible(false);
+  }, []);
 
   // displayDepth: offset by 1 because depth 0 in replies = level 1 visually
   // (level 0 is the original post rendered by ThreadHeader)
@@ -150,8 +165,30 @@ export const ReplyItem = React.memo(function ReplyItem({
       {body != null && body.length > 0 && (
         <EmojiText style={bodyStyle}>{body}</EmojiText>
       )}
+      {mediaItems.length > 0 && (
+        <MediaGallery
+          mediaItems={mediaItems}
+          maxWidth={
+            Dimensions.get('window').width
+            - theme.spacing.base          // left outer margin
+            - leftMargin                   // depth indentation
+            - 3                            // left border width
+            - theme.spacing.md * 2         // left + right padding
+            - theme.spacing.base           // right outer margin
+          }
+          onItemPress={handleMediaPress}
+        />
+      )}
       {syncStatus === 'failed' && (
         <Text style={failedStyle}>Failed to send</Text>
+      )}
+      {mediaItems.length > 0 && (
+        <MediaLightbox
+          visible={lightboxVisible}
+          mediaItems={mediaItems}
+          initialIndex={lightboxIndex}
+          onClose={handleLightboxClose}
+        />
       )}
     </TouchableOpacity>
   );

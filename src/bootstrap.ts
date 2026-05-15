@@ -43,4 +43,9 @@ export async function bootstrap(): Promise<void> {
   import('./services/mediaUploadService').then(({ cleanupOrphanedChunks }) =>
     cleanupOrphanedChunks(),
   );
+  // Best-effort cleanup of orphaned media files (files with no DB row, stale .tmp files).
+  // Lazy import avoids pulling mediaDownloadService into the bootstrap import chain.
+  import('./services/mediaDownloadService').then(({ cleanupOrphanedMedia }) =>
+    cleanupOrphanedMedia(),
+  );
 }

@@ -1,4 +1,8 @@
 export const writeFile = jest.fn().mockResolvedValue(undefined);
 export const unlink = jest.fn().mockResolvedValue(undefined);
 export const readDir = jest.fn().mockResolvedValue([]);
+export const exists = jest.fn().mockResolvedValue(false);
+export const mkdir = jest.fn().mockResolvedValue(undefined);
+export const moveFile = jest.fn().mockResolvedValue(undefined);
 export const CachesDirectoryPath = '/tmp/test-cache';
+export const DocumentDirectoryPath = '/tmp/test-docs';

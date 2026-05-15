@@ -10,6 +10,8 @@
  * - Broadcasts are always wrapped in a BroadcastEnvelope (outer type = 'new_message')
  */
 
+import type { MediaMetadata } from '../../types/api';
+
 // ============================================================
 // Connection status
 // ============================================================
@@ -79,7 +81,7 @@ export interface NewThreadPayload {
   titleIv: string | null;
   bodyIv: string | null;
   createdAt: string;
-  media: unknown[];
+  media: MediaMetadata[];
 }
 
 export interface NewReplyPayload {
@@ -94,7 +96,7 @@ export interface NewReplyPayload {
   bodyIv: string | null;
   parentReplyId: string | null;
   createdAt: string;
-  media: unknown[];
+  media: MediaMetadata[];
 }
 
 export interface NewSignalMessagePayload {

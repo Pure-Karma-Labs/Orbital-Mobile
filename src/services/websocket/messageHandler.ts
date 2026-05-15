@@ -13,7 +13,7 @@ import {
   getOrFetchGroupKey,
   invalidateGroupKey,
 } from '../crypto/contentCrypto';
-import { decryptThreadFields, decryptReplyBody } from '../threadService';
+import { decryptThreadFields, decryptReplyBody, processMediaMetadata } from '../threadService';
 import { useAppStore } from '../../stores/useAppStore';
 import { LRUSet } from './lruSet';
 import type {
@@ -208,6 +208,21 @@ async function handleNewThread(data: NewThreadPayload): Promise<void> {
   };
 
   useAppStore.getState().upsertThread(thread);
+
+  // Process thread media (non-blocking)
+  if (data.media && data.media.length > 0) {
+    const groupKey = await getOrFetchGroupKey(data.groupId);
+    processMediaMetadata(
+      data.media,
+      groupKey,
+      data.groupId,
+      { threadId: data.threadId },
+    ).catch((e) => {
+      if (__DEV__) {
+        console.warn('[WS handleNewThread] media processing failed:', e instanceof Error ? e.message : e);
+      }
+    });
+  }
 }
 
 // ============================================================
@@ -245,6 +260,21 @@ async function handleNewReply(data: NewReplyPayload): Promise<void> {
   };
 
   useAppStore.getState().upsertReply(reply);
+
+  // Process reply media (non-blocking)
+  if (data.media && data.media.length > 0) {
+    const groupKey = await getOrFetchGroupKey(data.groupId);
+    processMediaMetadata(
+      data.media,
+      groupKey,
+      data.groupId,
+      { replyId: data.replyId },
+    ).catch((e) => {
+      if (__DEV__) {
+        console.warn('[WS handleNewReply] media processing failed:', e instanceof Error ? e.message : e);
+      }
+    });
+  }
 }
 
 // ============================================================

@@ -5,13 +5,17 @@
  * 3px border radius, md padding, base horizontal margin.
  */
 
-import React from 'react';
-import { View, Text, type TextStyle, type ViewStyle } from 'react-native';
+import React, { useCallback, useState } from 'react';
+import { Dimensions, View, Text, type TextStyle, type ViewStyle } from 'react-native';
 import { useTheme } from '../../theme';
 import { Avatar } from '../../components/Avatar';
 import { EmojiText } from '../../components/EmojiText';
+import { MediaGallery } from '../../components/MediaGallery';
+import { MediaLightbox } from '../../components/MediaLightbox';
+import { useMediaForThread } from '../../stores';
 
 export interface ThreadHeaderProps {
+  threadId: string;
   title: string | null;
   body: string | null;
   authorUsername: string;
@@ -40,12 +44,25 @@ function formatTimestamp(timestamp: number): string {
 }
 
 export const ThreadHeader = React.memo(function ThreadHeader({
+  threadId,
   title,
   body,
   authorUsername,
   createdAt,
 }: ThreadHeaderProps): React.JSX.Element {
   const theme = useTheme();
+  const mediaItems = useMediaForThread(threadId);
+  const [lightboxVisible, setLightboxVisible] = useState(false);
+  const [lightboxIndex, setLightboxIndex] = useState(0);
+
+  const handleMediaPress = useCallback((index: number) => {
+    setLightboxIndex(index);
+    setLightboxVisible(true);
+  }, []);
+
+  const handleLightboxClose = useCallback(() => {
+    setLightboxVisible(false);
+  }, []);
 
   const containerStyle: ViewStyle = {
     backgroundColor: theme.colors.surfaceElevated,
@@ -105,6 +122,26 @@ export const ThreadHeader = React.memo(function ThreadHeader({
       )}
       {body != null && body.length > 0 && (
         <EmojiText style={bodyStyle}>{body}</EmojiText>
+      )}
+      {mediaItems.length > 0 && (
+        <MediaGallery
+          mediaItems={mediaItems}
+          maxWidth={
+            Dimensions.get('window').width
+            - theme.spacing.base * 2   // horizontal margin
+            - 2                         // border width (1px each side)
+            - theme.spacing.md * 2     // padding
+          }
+          onItemPress={handleMediaPress}
+        />
+      )}
+      {mediaItems.length > 0 && (
+        <MediaLightbox
+          visible={lightboxVisible}
+          mediaItems={mediaItems}
+          initialIndex={lightboxIndex}
+          onClose={handleLightboxClose}
+        />
       )}
     </View>
   );

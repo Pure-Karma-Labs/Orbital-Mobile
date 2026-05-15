@@ -166,8 +166,7 @@ export async function processMediaMetadata(
 ): Promise<void> {
   if (!mediaList || mediaList.length === 0) return;
 
-  // Don't process media if DB isn't ready — will be picked up on next load
-  if (!isDatabaseInitialized()) return;
+  const dbReady = isDatabaseInitialized();
 
   // Filter out media already processed this session (7 call sites fire for same media)
   const unprocessed = mediaList.filter(m => !processedMediaIds.has(m.mediaId));
@@ -202,10 +201,12 @@ export async function processMediaMetadata(
 
       // Check DB for persisted media (e.g. own upload from a prior session)
       let existingRow: MediaRow | null = null;
-      try {
-        existingRow = getMedia(meta.mediaId);
-      } catch {
-        // DB may not be initialized — treat as new
+      if (dbReady) {
+        try {
+          existingRow = getMedia(meta.mediaId);
+        } catch {
+          // DB query failed — treat as new
+        }
       }
 
       if (existingRow) {
@@ -268,11 +269,13 @@ export async function processMediaMetadata(
           : Date.now(),
       };
 
-      try {
-        saveMedia(row);
-      } catch (e) {
-        if (__DEV__) {
-          console.warn('[processMediaMetadata] saveMedia failed:', e instanceof Error ? e.message : e);
+      if (dbReady) {
+        try {
+          saveMedia(row);
+        } catch (e) {
+          if (__DEV__) {
+            console.warn('[processMediaMetadata] saveMedia failed:', e instanceof Error ? e.message : e);
+          }
         }
       }
 

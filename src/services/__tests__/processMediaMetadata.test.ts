@@ -18,6 +18,10 @@ jest.mock('../../database/repositories/mediaRepository', () => ({
   saveMedia: (...args: unknown[]) => mockSaveMedia(...args),
 }));
 
+jest.mock('../../database/connection', () => ({
+  isDatabaseInitialized: () => true,
+}));
+
 const mockDecryptContent = jest.fn();
 const mockGetOrFetchGroupKey = jest.fn();
 const mockInvalidateGroupKey = jest.fn();
@@ -184,11 +188,11 @@ describe('processMediaMetadata — existing item in store', () => {
 
 describe('processMediaMetadata — existing row in DB', () => {
   it('uses mediaRowToItem and skips saveMedia when row already exists', async () => {
-    const row = makeMediaRow({ id: 'media-uuid-1', attachment_key: 'some-key' });
+    const row = makeMediaRow({ id: 'media-uuid-1b', attachment_key: 'some-key' });
     mockGetMedia.mockReturnValue(row);
 
     await processMediaMetadata(
-      [makeMediaMetadata({ mediaId: 'media-uuid-1' })],
+      [makeMediaMetadata({ mediaId: 'media-uuid-1b' })],
       fakeGroupKey,
       fakeGroupId,
       { threadId: 'thread-1' },
@@ -201,12 +205,12 @@ describe('processMediaMetadata — existing row in DB', () => {
     expect(items).toHaveLength(1);
     // hasKeys derived from attachment_key presence
     expect(items[0].hasKeys).toBe(true);
-    expect(items[0].id).toBe('media-uuid-1');
+    expect(items[0].id).toBe('media-uuid-1b');
   });
 
   it('maps all MediaRow fields to MediaItem correctly', async () => {
     const row = makeMediaRow({
-      id: 'media-uuid-1',
+      id: 'media-uuid-1c',
       content_type: 'video/mp4',
       file_name: 'clip.mp4',
       file_size: 5000,
@@ -222,7 +226,7 @@ describe('processMediaMetadata — existing row in DB', () => {
     mockGetMedia.mockReturnValue(row);
 
     await processMediaMetadata(
-      [makeMediaMetadata({ mediaId: 'media-uuid-1', contentType: 'video/mp4' })],
+      [makeMediaMetadata({ mediaId: 'media-uuid-1c', contentType: 'video/mp4' })],
       fakeGroupKey,
       fakeGroupId,
       { threadId: 'thread-1' },

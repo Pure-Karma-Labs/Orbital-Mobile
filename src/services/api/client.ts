@@ -163,6 +163,7 @@ async function _executeRequest(options: RequestOptions): Promise<Response> {
     signal: callerSignal,
   } = options;
 
+  const MAX_429_RETRIES = 3;
   const url = `${API_BASE_URL}${path}`;
 
   // Build headers
@@ -189,47 +190,74 @@ async function _executeRequest(options: RequestOptions): Promise<Response> {
     }
   }
 
-  // Timeout via AbortController, merged with caller's signal
-  const timeoutController = new AbortController();
-  const timeoutId = setTimeout(
-    () => timeoutController.abort(),
-    timeout,
-  );
+  for (let attempt = 0; attempt <= MAX_429_RETRIES; attempt++) {
+    // Timeout via AbortController, merged with caller's signal
+    const timeoutController = new AbortController();
+    const timeoutId = setTimeout(
+      () => timeoutController.abort(),
+      timeout,
+    );
 
-  // Combine caller signal + timeout signal.
-  // AbortSignal.any() combines multiple signals into one (Node 20+, modern browsers).
-  // Cast through unknown to avoid lib mismatch — AbortSignal.any is available at runtime
-  // in the Hermes / Node environments this app targets.
-  type AbortSignalWithAny = typeof AbortSignal & {
-    any?: (signals: AbortSignal[]) => AbortSignal;
-  };
-  const AbortSignalAny = (AbortSignal as AbortSignalWithAny).any;
-  const combinedSignal: AbortSignal =
-    callerSignal !== undefined && AbortSignalAny !== undefined
-      ? AbortSignalAny([callerSignal, timeoutController.signal])
-      : timeoutController.signal;
+    // Combine caller signal + timeout signal.
+    // AbortSignal.any() combines multiple signals into one (Node 20+, modern browsers).
+    // Cast through unknown to avoid lib mismatch — AbortSignal.any is available at runtime
+    // in the Hermes / Node environments this app targets.
+    type AbortSignalWithAny = typeof AbortSignal & {
+      any?: (signals: AbortSignal[]) => AbortSignal;
+    };
+    const AbortSignalAny = (AbortSignal as AbortSignalWithAny).any;
+    const combinedSignal: AbortSignal =
+      callerSignal !== undefined && AbortSignalAny !== undefined
+        ? AbortSignalAny([callerSignal, timeoutController.signal])
+        : timeoutController.signal;
 
-  let response: Response;
+    let response: Response;
 
-  try {
-    response = await fetch(url, {
-      method,
-      headers,
-      body: serializedBody,
-      signal: combinedSignal,
-    });
-  } catch (err: unknown) {
-    clearTimeout(timeoutId);
-    // fetch throws on network failure or abort
-    const message =
-      err instanceof Error ? err.message : 'Unknown network error';
-    throw new NetworkError(message);
-  } finally {
-    clearTimeout(timeoutId);
-  }
+    try {
+      response = await fetch(url, {
+        method,
+        headers,
+        body: serializedBody,
+        signal: combinedSignal,
+      });
+    } catch (err: unknown) {
+      clearTimeout(timeoutId);
+      // fetch throws on network failure or abort
+      const message =
+        err instanceof Error ? err.message : 'Unknown network error';
+      throw new NetworkError(message);
+    } finally {
+      clearTimeout(timeoutId);
+    }
 
-  // Handle error responses — always read text for error parsing
-  if (!response.ok) {
+    // 429 retry with exponential backoff
+    if (response.status === 429 && attempt < MAX_429_RETRIES) {
+      const retryAfterHeader = response.headers.get('Retry-After');
+      const retryAfterMs = retryAfterHeader
+        ? parseInt(retryAfterHeader, 10) * 1000
+        : 0;
+      const backoffMs = 1000 * Math.pow(2, attempt) + Math.random() * 500;
+      const delayMs = Math.max(retryAfterMs, backoffMs);
+
+      if (__DEV__) {
+        console.warn(`[API] 429 on ${method} ${path} — retry ${attempt + 1}/${MAX_429_RETRIES} in ${Math.round(delayMs)}ms`);
+      }
+
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, delayMs);
+        callerSignal?.addEventListener('abort', () => {
+          clearTimeout(timer);
+          reject(new NetworkError('Request aborted during rate-limit backoff'));
+        }, { once: true });
+      });
+
+      continue;
+    }
+
+    // Handle success
+    if (response.ok) return response;
+
+    // Handle error responses — always read text for error parsing
     let rawBody: string | undefined;
     try {
       rawBody = await response.text();
@@ -289,7 +317,8 @@ async function _executeRequest(options: RequestOptions): Promise<Response> {
     );
   }
 
-  return response;
+  // Should not be reachable, but TypeScript requires a return
+  throw new ApiError('Rate limited — retries exhausted', 429, 'RATE_LIMITED', true);
 }
 
 // ============================================================

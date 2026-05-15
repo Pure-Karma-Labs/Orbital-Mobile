@@ -20,6 +20,7 @@ import {
 import { useAppStore } from '../stores/useAppStore';
 import { generateUUID } from '../utils/uuid';
 import { getMedia, saveMedia } from '../database/repositories/mediaRepository';
+import { isDatabaseInitialized } from '../database/connection';
 import type { Thread, Reply, MediaItem } from '../types/store';
 import type { MediaRow } from '../database/repositories/mediaRepository';
 import type { ThreadResponse, ThreadListItem, ReplyResponse, MediaMetadata } from '../types/api';
@@ -155,6 +156,8 @@ async function decryptMediaMetadataEnvelope(
  * @param groupId     - Group identifier (AAD for AES-GCM).
  * @param parentRef   - { threadId } or { replyId } to index the media.
  */
+const processedMediaIds = new Set<string>();
+
 export async function processMediaMetadata(
   mediaList: MediaMetadata[],
   groupKey: Uint8Array,
@@ -163,10 +166,31 @@ export async function processMediaMetadata(
 ): Promise<void> {
   if (!mediaList || mediaList.length === 0) return;
 
+  // Don't process media if DB isn't ready — will be picked up on next load
+  if (!isDatabaseInitialized()) return;
+
+  // Filter out media already processed this session (7 call sites fire for same media)
+  const unprocessed = mediaList.filter(m => !processedMediaIds.has(m.mediaId));
+  if (unprocessed.length === 0) {
+    // Still need to populate the store index for this parent
+    const store = getStoreActions();
+    const existingItems = mediaList
+      .map(m => (store.media ?? {})[m.mediaId])
+      .filter(Boolean) as MediaItem[];
+    if (existingItems.length > 0) {
+      if ('threadId' in parentRef) {
+        store.setMediaForThread(parentRef.threadId, existingItems);
+      } else {
+        store.setMediaForReply(parentRef.replyId, existingItems);
+      }
+    }
+    return;
+  }
+
   const store = getStoreActions();
   const items: MediaItem[] = [];
 
-  for (const meta of mediaList) {
+  for (const meta of unprocessed) {
     try {
       // Check in-memory store first — it's authoritative during runtime
       // and avoids overwriting hasKeys/localPath from a successful upload
@@ -284,6 +308,11 @@ export async function processMediaMetadata(
   }
 
   if (items.length === 0) return;
+
+  // Mark as processed to prevent redundant work from other call sites
+  for (const item of items) {
+    processedMediaIds.add(item.id);
+  }
 
   // Populate the store index maps
   if ('threadId' in parentRef) {

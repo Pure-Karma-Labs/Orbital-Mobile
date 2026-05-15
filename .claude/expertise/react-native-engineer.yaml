@@ -1,5 +1,5 @@
-version: "1.4"
-last_updated: "2026-05-01"
+version: "1.5"
+last_updated: "2026-05-15"
 agent: react-native-engineer
 
 core_files:
@@ -135,9 +135,38 @@ core_files:
       - AsciiBannerProps
     last_hash: new
 
+  - path: src/components/MediaItemView.tsx
+    purpose: "Single media renderer — handles 5 download states (locked/pending/downloading/failed/downloaded). Uses useMediaDownload hook. React.memo."
+    key_symbols:
+      - MediaItemView
+      - MediaItemViewProps
+    last_hash: ebd267c
+
+  - path: src/components/MediaGallery.tsx
+    purpose: "Adaptive grid layout — 1 photo full-width, 2 side-by-side, 3 L-shape, 4+ grid with +N overlay. Composes MediaItemView cells."
+    key_symbols:
+      - MediaGallery
+      - MediaGalleryProps
+      - getGalleryLayout
+    last_hash: ebd267c
+
+  - path: src/components/MediaLightbox.tsx
+    purpose: "Full-screen modal viewer — paging ScrollView, close button, counter, prev/next arrows. NOTE: eagerly renders all pages (lazy rendering tracked as #127)."
+    key_symbols:
+      - MediaLightbox
+      - MediaLightboxProps
+    last_hash: ebd267c
+
+  - path: src/hooks/useMediaDownload.ts
+    purpose: "Auto-download hook — triggers downloadAndDecryptMedia on mount when pending+hasKeys. Uses ref guard (NOT downloadState in deps) to prevent self-abort."
+    key_symbols:
+      - useMediaDownload
+      - UseMediaDownloadResult
+    last_hash: ebd267c
+
   - path: src/components/index.ts
-    purpose: "Barrel export — TextInput, Button, ErrorBanner, Header, AsciiDay, AsciiSection, Avatar, Badge, OrbitalLoader, AsciiBanner, OrbitalSpinner"
-    last_hash: 1faa458
+    purpose: "Barrel export — TextInput, Button, ErrorBanner, Header, AsciiDay, AsciiSection, Avatar, Badge, OrbitalLoader, AsciiBanner, OrbitalSpinner. NOTE: MediaItemView/MediaGallery/MediaLightbox excluded to avoid pulling download service chain into unrelated screens."
+    last_hash: ebd267c
 
   - path: src/components/OrbitalSpinner.tsx
     purpose: "Compact three-dot spinner — blue/purple/yellow dots rotating clockwise. Uses recursive Animated.timing (not Animated.loop) for smooth continuous rotation. Configurable size prop (default 24px)."
@@ -299,7 +328,7 @@ integration_points:
 
   - system: Zustand Stores
     interface: src/stores/
-    purpose: Global state management — typed slices for auth, conversations, threads, replies, media, and UI state
+    purpose: "Global state management — typed slices for auth, conversations, threads, replies, media, and UI state. Media selectors useMediaForReply/useMediaForThread exported from src/stores/index.ts (must be mocked in screen tests)."
 
 patterns:
   - name: directory-structure
@@ -373,3 +402,18 @@ patterns:
 
   - name: theme-toggle-wiring
     description: "App.tsx reads colorScheme from useUI() store selector. Passes it as colorSchemeOverride prop to ThemeProvider. MMKV rehydration in bootstrap.ts ensures the persisted preference is loaded before first render. Settings screen cycles through system -> light -> dark via setColorScheme store action."
+
+  - name: barrel-export-caution
+    description: "Do NOT add components to src/components/index.ts if they import hooks pulling heavy service chains (download service → store → MMKV → NitroModules). Causes cascading test failures in unrelated screens. Import directly instead."
+
+  - name: media-gallery-adaptive-layout
+    description: "MediaGallery uses getGalleryLayout(count, maxWidth, gap, firstItem) for 4 layout variants: 1=full-width aspect-preserved (150-300px cap, 4:3 fallback), 2=side-by-side squares, 3=L-shape (60% left + 40% right stacked), 4+=2x2 grid with dark '+N' overlay on 4th cell."
+
+  - name: use-media-download-ref-guard
+    description: "useMediaDownload effect deps must NOT include downloadState. The download service synchronously updates store to 'downloading', which triggers React cleanup (aborting the in-flight request). Use a downloadingRef to prevent self-abort. Only mediaId and shouldDownload (derived boolean) in deps."
+
+  - name: media-lightbox-as-modal
+    description: "MediaLightbox uses Modal (not navigation screen) with presentationStyle='overFullScreen'. Paging ScrollView for swipe. Close button top-right, counter top-center, prev/next arrows. StatusBar hidden when visible. Known issue: eagerly renders all pages (#127)."
+
+  - name: media-store-selectors
+    description: "useMediaForReply(replyId) and useMediaForThread(threadId) in src/stores/index.ts use useShallow for efficient re-renders. Must be added to store mocks in screen tests (e.g. ThreadDetailScreen.test.tsx)."

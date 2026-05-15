@@ -1,6 +1,6 @@
 ---
 name: Open security items
-description: Tracked security items not yet resolved — 0 Critical/High remaining; 10 Medium/Low items across Phase 1 and Phase 2
+description: Tracked security items not yet resolved — 0 Critical/High remaining; 11 Medium/Low items across Phase 1, Phase 2, and Media Chunk 3
 metadata:
   type: project
 ---
@@ -80,6 +80,13 @@ All Critical and High findings resolved. Security audit status is clean.
    - `uploadMedia` accepts `AbortSignal` but callers don't create an `AbortController`
    - If user navigates away during upload, the upload continues in the background (wasted bandwidth, orphaned server-side upload state)
    - Remediation: Create `AbortController` in the upload handler, wire to `useEffect` cleanup
+
+6. **Per-file NSURLIsExcludedFromBackupKey needs native bridge (Low)**
+   - Location: `src/services/mediaUploadService.ts:293` (TODO(F2)), `src/services/mediaDownloadService.ts:103` (TODO(F2))
+   - Directory-level `mkdir({ NSURLIsExcludedFromBackupKey: true })` does not reliably propagate to children on all iOS versions
+   - Currently used as best-effort in both upload and download services
+   - Remediation: Build a thin native bridge to call `NSURL.setResourceValue(_:forKey:.isExcludedFromBackupKey)` per-file after write; or use a community RN module that exposes this API
+   - Risk: Without per-file exclusion, iOS may include decrypted media files in iCloud/iTunes backups on some OS versions. Mitigated by app-level `NSFileProtectionCompleteUntilFirstUserAuthentication` and the data extraction rules for Android.
 
 **Why:** Tracking open items ensures nothing is forgotten between sessions and provides priority ordering for implementation agents.
 **How to apply:** Reference this list when reviewing PRs that touch these areas. No items currently block beta release. Medium/Low items are scheduled for their noted phases.

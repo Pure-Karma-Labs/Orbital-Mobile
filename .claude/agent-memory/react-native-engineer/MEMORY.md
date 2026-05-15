@@ -9,3 +9,6 @@
 - [SignalProtocolStore implementations (deleted)](project_signal_store_impls.md) — 6 store classes deleted (not deprecated); uniffi 0.31 cannot pass callback interfaces to Rust; do not recreate
 - [cryptoService — Signal encryption](project_crypto_service.md) — Preloaded store pattern; identity key in module-scoped cache (keyGenerationService.ts); initIdentityKeyCache() at bootstrap; clearIdentityKeyCache() on logout
 - [Media upload pipeline](project_media_upload_pipeline.md) — useMediaPicker, uploadMediaBatch, temp file Hermes workaround, ReplyComposer media props, Info.plist permissions
+- [Media display layer](project_media_display_layer.md) — MediaItemView, MediaGallery, MediaLightbox, adaptive layouts, store selectors, screen integration
+- [Barrel export caution](feedback_barrel_export_caution.md) — Do NOT barrel-export components with heavy service chain imports; causes cascading test failures
+- [useMediaDownload deps](feedback_use_media_download_deps.md) — Effect deps must NOT include downloadState; use ref guard to prevent abort-restart loop

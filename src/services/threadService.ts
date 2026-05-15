@@ -168,7 +168,15 @@ export async function processMediaMetadata(
 
   for (const meta of mediaList) {
     try {
-      // Check if we already have this media in the DB (e.g. own upload)
+      // Check in-memory store first — it's authoritative during runtime
+      // and avoids overwriting hasKeys/localPath from a successful upload
+      const storeItem = store.media[meta.mediaId];
+      if (storeItem) {
+        items.push(storeItem);
+        continue;
+      }
+
+      // Check DB for persisted media (e.g. own upload from a prior session)
       let existingRow: MediaRow | null = null;
       try {
         existingRow = getMedia(meta.mediaId);

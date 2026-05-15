@@ -353,46 +353,13 @@ describe('processMediaMetadata — new item with encryptedMetadata (happy path)'
 });
 
 // ---------------------------------------------------------------------------
-// New item — with encryptedMetadata (retry path)
+// New item — with encryptedMetadata (decryption failure fallback)
 // ---------------------------------------------------------------------------
 
-describe('processMediaMetadata — encryptedMetadata decryption retry', () => {
-  it('retries with fresh key when first decryptMediaMetadataEnvelope returns null', async () => {
-    // decryptMediaMetadataEnvelope returns null when JSON.parse(plainJson) is null.
-    // That happens when decryptContent returns the JSON string 'null'.
-    // On the retry, decryptContent returns a valid payload.
-    const innerPayload = JSON.stringify({ contentType: 'image/gif', fileName: 'retry.gif' });
-    mockDecryptContent
-      .mockReturnValueOnce('null')        // first attempt: JSON.parse('null') === null
-      .mockReturnValueOnce(innerPayload); // retry: valid payload
-
-    const envelope = JSON.stringify({ ciphertext: 'enc-ct', iv: 'enc-iv' });
-    const meta = makeMediaMetadata({
-      mediaId: 'media-uuid-7',
-      encryptedMetadata: envelope,
-    });
-    const freshKey = new Uint8Array(32).fill(0xcc);
-    mockGetOrFetchGroupKey.mockResolvedValue(freshKey);
-
-    await processMediaMetadata([meta], fakeGroupKey, fakeGroupId, { threadId: 'thread-1' });
-
-    // invalidateGroupKey should be called with the groupId
-    expect(mockInvalidateGroupKey).toHaveBeenCalledWith(fakeGroupId);
-    // getOrFetchGroupKey called to get the fresh key
-    expect(mockGetOrFetchGroupKey).toHaveBeenCalledWith(fakeGroupId);
-    // Second decryptContent call uses the fresh key
-    expect(mockDecryptContent).toHaveBeenCalledTimes(2);
-    expect(mockDecryptContent).toHaveBeenNthCalledWith(2, 'enc-ct', 'enc-iv', freshKey, fakeGroupId);
-
-    const items = mockSetMediaForThread.mock.calls[0][1];
-    expect(items[0].contentType).toBe('image/gif');
-  });
-
-  it('falls back to API fields when both decrypt attempts return null', async () => {
-    // Both attempts return 'null' so decryptMediaMetadataEnvelope returns null twice
+describe('processMediaMetadata — encryptedMetadata decryption failure', () => {
+  it('falls back to API fields when decryption returns null (no retry)', async () => {
+    // decryptContent returns 'null' so decryptMediaMetadataEnvelope returns null
     mockDecryptContent.mockReturnValue('null');
-    const freshKey = new Uint8Array(32).fill(0xcc);
-    mockGetOrFetchGroupKey.mockResolvedValue(freshKey);
 
     const envelope = JSON.stringify({ ciphertext: 'enc-ct', iv: 'enc-iv' });
     const meta = makeMediaMetadata({
@@ -404,7 +371,11 @@ describe('processMediaMetadata — encryptedMetadata decryption retry', () => {
 
     await processMediaMetadata([meta], fakeGroupKey, fakeGroupId, { threadId: 'thread-1' });
 
-    // Should still produce an item using the API-level fields as fallback
+    // No key retry — only one decryptContent call
+    expect(mockDecryptContent).toHaveBeenCalledTimes(1);
+    expect(mockInvalidateGroupKey).not.toHaveBeenCalled();
+
+    // Item produced with fallback API fields
     const items = mockSetMediaForThread.mock.calls[0][1];
     expect(items).toHaveLength(1);
     expect(items[0].contentType).toBe('image/bmp');

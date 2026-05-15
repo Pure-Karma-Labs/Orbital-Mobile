@@ -15,7 +15,7 @@ import {
   decryptContent,
   encryptContent,
   getOrFetchGroupKey,
-  invalidateGroupKey,
+
 } from './crypto/contentCrypto';
 import { useAppStore } from '../stores/useAppStore';
 import { generateUUID } from '../utils/uuid';
@@ -170,7 +170,7 @@ export async function processMediaMetadata(
     try {
       // Check in-memory store first — it's authoritative during runtime
       // and avoids overwriting hasKeys/localPath from a successful upload
-      const storeItem = store.media[meta.mediaId];
+      const storeItem = (store.media ?? {})[meta.mediaId];
       if (storeItem) {
         items.push(storeItem);
         continue;
@@ -202,23 +202,13 @@ export async function processMediaMetadata(
       let digest: string | null = null;
 
       if (meta.encryptedMetadata) {
-        // Try to decrypt metadata with retry on failure (key rotation)
-        let parsed = await decryptMediaMetadataEnvelope(
+        // Try to decrypt metadata — no key retry to avoid API call cascade
+        // (multiple call sites fire processMediaMetadata for the same media)
+        const parsed = await decryptMediaMetadataEnvelope(
           meta.encryptedMetadata,
           groupKey,
           groupId,
         );
-
-        if (!parsed) {
-          // Retry with fresh key
-          invalidateGroupKey(groupId);
-          const freshKey = await getOrFetchGroupKey(groupId);
-          parsed = await decryptMediaMetadataEnvelope(
-            meta.encryptedMetadata,
-            freshKey,
-            groupId,
-          );
-        }
 
         if (parsed) {
           contentType = parsed.contentType ?? contentType;

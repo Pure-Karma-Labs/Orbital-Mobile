@@ -1,12 +1,16 @@
 import { getDatabase } from '../connection';
 import { VERSION as V1, SQL as SQL_V1 } from './001_initial_schema';
+import { VERSION as V2, SQL as SQL_V2 } from './002_media_blur_hash_expires';
 
 interface Migration {
   version: number;
   sql: string;
 }
 
-const migrations: Migration[] = [{ version: V1, sql: SQL_V1 }];
+const migrations: Migration[] = [
+  { version: V1, sql: SQL_V1 },
+  { version: V2, sql: SQL_V2 },
+];
 
 /**
  * Run all pending migrations in version order.

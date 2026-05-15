@@ -76,7 +76,6 @@ beforeEach(() => {
   mockEncryptAttachment.mockReturnValue({
     ciphertext: fakeCiphertext,
     digest: fakeDigest,
-    plaintextHash: 'fake-plaintext-hash',
   });
   mockGetOrFetchGroupKey.mockResolvedValue(fakeGroupKey);
   mockEncryptContent.mockReturnValue({
@@ -134,17 +133,6 @@ describe('uploadMedia', () => {
     const parsed = JSON.parse(metadataJson as string);
     expect(parsed.contentType).toBe('image/jpeg');
     expect(parsed.fileName).toBe('photo.jpg');
-    expect(parsed).not.toHaveProperty('plaintextHash');
-  });
-
-  it('never sends plaintextHash in any upload call', async () => {
-    await uploadMedia(baseOptions);
-
-    for (const call of mockUploadChunk.mock.calls) {
-      const params = call[0] as Record<string, unknown>;
-      expect(JSON.stringify(params)).not.toContain('plaintextHash');
-      expect(JSON.stringify(params)).not.toContain('plaintext_hash');
-    }
   });
 
   it('uploads correct number of chunks for small file', async () => {
@@ -159,7 +147,6 @@ describe('uploadMedia', () => {
     mockEncryptAttachment.mockReturnValue({
       ciphertext: largeCiphertext,
       digest: fakeDigest,
-      plaintextHash: 'hash',
     });
 
     await uploadMedia(baseOptions);
@@ -172,7 +159,6 @@ describe('uploadMedia', () => {
     mockEncryptAttachment.mockReturnValue({
       ciphertext: largeCiphertext,
       digest: fakeDigest,
-      plaintextHash: 'hash',
     });
 
     await uploadMedia(baseOptions);

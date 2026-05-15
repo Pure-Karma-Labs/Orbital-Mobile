@@ -60,7 +60,6 @@ describe('encryptAttachment', () => {
     const mockResult = {
       ciphertext: new ArrayBuffer(64),
       digest: new ArrayBuffer(32),
-      plaintextHash: new ArrayBuffer(32),
     };
     mockAttachmentEncrypt.mockReturnValue(mockResult);
 
@@ -75,11 +74,9 @@ describe('encryptAttachment', () => {
     expect(keysArg).toBeInstanceOf(ArrayBuffer);
   });
 
-  it('returns ciphertext and digest as Uint8Array, plaintextHash as base64 string', () => {
-    // Create mock ArrayBuffers with known content
+  it('returns ciphertext and digest as Uint8Array', () => {
     const ctBytes = new Uint8Array([10, 20, 30]);
     const digestBytes = new Uint8Array([40, 50]);
-    const hashBytes = new Uint8Array([60, 70]);
 
     mockAttachmentEncrypt.mockReturnValue({
       ciphertext: ctBytes.buffer.slice(
@@ -90,10 +87,6 @@ describe('encryptAttachment', () => {
         digestBytes.byteOffset,
         digestBytes.byteOffset + digestBytes.byteLength,
       ),
-      plaintextHash: hashBytes.buffer.slice(
-        hashBytes.byteOffset,
-        hashBytes.byteOffset + hashBytes.byteLength,
-      ),
     });
 
     const result = encryptAttachment(new Uint8Array([1]), new Uint8Array(64));
@@ -102,7 +95,7 @@ describe('encryptAttachment', () => {
     expect(result.ciphertext).toEqual(ctBytes);
     expect(result.digest).toBeInstanceOf(Uint8Array);
     expect(result.digest).toEqual(digestBytes);
-    expect(typeof result.plaintextHash).toBe('string');
+    expect(result).not.toHaveProperty('plaintextHash');
   });
 });
 

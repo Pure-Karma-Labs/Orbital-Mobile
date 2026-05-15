@@ -12,7 +12,6 @@
  * 8. Complete upload
  * 9. Persist to local DB and store
  *
- * SECURITY: plaintextHash is never sent to the server (discarded for now; see TODO).
  * SECURITY: Crypto operations delegated to attachmentCrypto (Rust FFI).
  */
 
@@ -169,8 +168,8 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<string> 
   const plaintext = base64ToUint8Array(fileBase64);
 
   // 3. Generate attachment keys and encrypt
-  const { keys, keysBase64 } = generateAttachmentKeys();
-  const { ciphertext, digest, plaintextHash } = encryptAttachment(plaintext, keys);
+  const { keys } = generateAttachmentKeys();
+  const { ciphertext, digest } = encryptAttachment(plaintext, keys);
 
   // 4. Generate media ID
   const mediaId = generateUUID();
@@ -178,7 +177,6 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<string> 
   // 5. Build metadata and encrypt with group key (AES-256-GCM)
   // SECURITY: Metadata (fileName, contentType, dimensions) is encrypted so the
   // server never sees user filenames or content types (zero-knowledge).
-  // SECURITY: plaintextHash is NEVER included — content fingerprint breaks zero-knowledge.
   const digestBase64 = arrayBufferToBase64(toArrayBuffer(digest));
   const metadataPlain = JSON.stringify({
     contentType: mimeType,
@@ -259,7 +257,7 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<string> 
           try {
             const failedRow = buildMediaRow(
               mediaId, threadId ?? null, replyId ?? null, mimeType,
-              fileName, fileSize, width, height, keysBase64, digestBase64,
+              fileName, fileSize, width, height, keys, digest,
               'pending', 'failed',
             );
             saveMedia(failedRow);
@@ -307,7 +305,7 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<string> 
   // 11. Persist to local DB
   const mediaRow = buildMediaRow(
     mediaId, threadId ?? null, replyId ?? null, mimeType,
-    fileName, fileSize, width, height, keysBase64, digestBase64,
+    fileName, fileSize, width, height, keys, digest,
     savedLocalPath ? 'downloaded' : 'pending', 'done',
   );
   mediaRow.local_path = savedLocalPath;
@@ -341,10 +339,6 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<string> 
     hasKeys: true,
   };
   useAppStore.getState().upsertMedia(storeItem);
-
-  // TODO: persist plaintextHash locally (needs plaintext_hash column in orbital_media)
-  // for integrity verification on re-download. Currently discarded.
-  void plaintextHash;
 
   return mediaId;
 }
@@ -397,8 +391,8 @@ function buildMediaRow(
   fileSize: number,
   width: number | undefined,
   height: number | undefined,
-  attachmentKey: string,
-  attachmentDigest: string,
+  attachmentKey: Uint8Array,
+  attachmentDigest: Uint8Array,
   downloadState: string,
   uploadState: string,
 ): MediaRow {
@@ -419,6 +413,8 @@ function buildMediaRow(
     cdn_key: null,
     local_path: null,
     thumbnail_path: null,
+    blur_hash: null,
+    expires_at: null,
     download_state: downloadState,
     upload_state: uploadState,
     created_at: Date.now(),

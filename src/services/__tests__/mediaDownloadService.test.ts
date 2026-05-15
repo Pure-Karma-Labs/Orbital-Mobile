@@ -61,8 +61,8 @@ import type { MediaRow } from '../../database/repositories/mediaRepository';
 // Fixtures
 // ---------------------------------------------------------------------------
 
-const fakeKeysBase64 = 'fake-keys-base64-64bytes';
-const fakeDigestBase64 = 'fake-digest-base64-32bytes';
+const fakeKeys = new Uint8Array(64).fill(0xEE);
+const fakeDigest = new Uint8Array(32).fill(0xDD);
 const fakeCiphertextBuffer = new Uint8Array(100).fill(0xCC).buffer;
 const fakePlaintext = new Uint8Array(80).fill(0xAA);
 
@@ -80,12 +80,14 @@ function makeMediaRow(overrides: Partial<MediaRow> = {}): MediaRow {
     width: 640,
     height: 480,
     duration: null,
-    attachment_key: fakeKeysBase64,
-    attachment_digest: fakeDigestBase64,
+    attachment_key: fakeKeys,
+    attachment_digest: fakeDigest,
     cdn_number: null,
     cdn_key: null,
     local_path: null,
     thumbnail_path: null,
+    blur_hash: null,
+    expires_at: null,
     download_state: 'pending',
     upload_state: 'done',
     created_at: Date.now(),

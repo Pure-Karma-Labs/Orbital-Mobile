@@ -34,24 +34,37 @@ export function useMediaDownload(
   );
 
   const abortRef = useRef<AbortController | null>(null);
+  const downloadingRef = useRef(false);
 
-  // Auto-trigger download when pending and has keys
+  // Auto-trigger download when pending and has keys.
+  // Only mediaId and hasKeys in deps — NOT downloadState, because the
+  // download service synchronously updates state to 'downloading' which
+  // would cause React to re-run cleanup (aborting the in-flight request).
+  const shouldDownload = item?.downloadState === 'pending' && item?.hasKeys;
+
   useEffect(() => {
-    if (!mediaId || !item) return;
-    if (item.downloadState !== 'pending' || !item.hasKeys) return;
+    if (!mediaId || !shouldDownload) return;
+    if (downloadingRef.current) return;
 
+    downloadingRef.current = true;
     const controller = new AbortController();
     abortRef.current = controller;
 
-    downloadAndDecryptMedia(mediaId, controller.signal).catch(() => {
-      // Errors are handled by the download service (state set to 'failed')
-    });
+    downloadAndDecryptMedia(mediaId, controller.signal)
+      .catch(() => {
+        // Errors are handled by the download service (state set to 'failed')
+      })
+      .finally(() => {
+        downloadingRef.current = false;
+      });
 
     return () => {
-      controller.abort();
+      if (!downloadingRef.current) {
+        controller.abort();
+      }
       abortRef.current = null;
     };
-  }, [mediaId, item?.downloadState, item?.hasKeys]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [mediaId, shouldDownload]);
 
   const retry = useCallback(() => {
     if (!mediaId) return;

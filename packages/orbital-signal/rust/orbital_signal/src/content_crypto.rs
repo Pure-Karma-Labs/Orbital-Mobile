@@ -1,5 +1,6 @@
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
+use zeroize::Zeroizing;
 
 use crate::error::SignalError;
 
@@ -30,6 +31,7 @@ pub fn aes_gcm_encrypt(
     key: Vec<u8>,
     aad: Vec<u8>,
 ) -> Result<ContentCryptoResult, SignalError> {
+    let key = Zeroizing::new(key);
     if key.len() != 32 {
         return Err(SignalError::InvalidKey {
             reason: format!("AES-256-GCM requires a 32-byte key, got {}", key.len()),
@@ -80,6 +82,7 @@ pub fn aes_gcm_decrypt(
     key: Vec<u8>,
     aad: Vec<u8>,
 ) -> Result<Vec<u8>, SignalError> {
+    let key = Zeroizing::new(key);
     if key.len() != 32 {
         return Err(SignalError::InvalidKey {
             reason: format!("AES-256-GCM requires a 32-byte key, got {}", key.len()),

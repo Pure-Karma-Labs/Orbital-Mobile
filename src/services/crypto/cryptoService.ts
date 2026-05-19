@@ -224,7 +224,9 @@ async function establishSession(
     saveIdentityKey({
       address: remoteAddress.name,
       identity_key: new Uint8Array(result.identityKey),
-      verified: VerifiedStatus.Default,
+      verified: result.identityChanged
+        ? VerifiedStatus.Unverified
+        : existingIdentity?.verified ?? VerifiedStatus.Default,
       first_use: existingIdentity?.first_use ?? Math.floor(Date.now() / 1000),
       nonblocking_approval: existingIdentity?.nonblocking_approval ?? 0,
     });
@@ -438,7 +440,9 @@ export async function decryptPreKeyMessage(
       saveIdentityKey({
         address: senderAddress.name,
         identity_key: new Uint8Array(result.senderIdentityKey),
-        verified: VerifiedStatus.Default,
+        verified: result.identityChanged
+          ? VerifiedStatus.Unverified
+          : existingIdentity?.verified ?? VerifiedStatus.Default,
         first_use:
           existingIdentity?.first_use ?? Math.floor(Date.now() / 1000),
         nonblocking_approval: existingIdentity?.nonblocking_approval ?? 0,

@@ -33,12 +33,12 @@ describe('connection', () => {
   });
 
   describe('initDatabase', () => {
-    it('opens the database with raw-key hex syntax', () => {
+    it('opens the database with hex key passphrase', () => {
       makeMockDb();
       initDatabase('deadbeef');
       expect(mockOpen).toHaveBeenCalledWith({
         name: 'orbital.db',
-        encryptionKey: "x'deadbeef'",
+        encryptionKey: 'deadbeef',
       });
     });
 

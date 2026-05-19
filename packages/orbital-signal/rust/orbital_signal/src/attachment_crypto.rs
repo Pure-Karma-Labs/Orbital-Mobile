@@ -124,6 +124,9 @@ pub fn attachment_decrypt(
     keys: Vec<u8>,
     expected_digest: Vec<u8>,
 ) -> Result<Vec<u8>, SignalError> {
+    // Wrap keys in Zeroizing immediately so key material is zeroed on all exit paths
+    let keys = Zeroizing::new(keys);
+
     // 1. Validate key length
     if keys.len() != 64 {
         return Err(SignalError::InvalidKey {
@@ -143,9 +146,6 @@ pub fn attachment_decrypt(
             ),
         });
     }
-
-    // Wrap keys in Zeroizing so key material is zeroed on drop
-    let keys = Zeroizing::new(keys);
 
     let aes_key: &[u8; 32] =
         keys[..32]

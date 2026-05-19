@@ -29,6 +29,13 @@ metadata:
 
 **Known gaps:**
 - Android bindings not yet rebuilt
-- Key material not zeroized (#114)
 - Integration tests reference non-existent functions (broken compilation)
 - `contentEncrypt`/`contentDecrypt` bindings may be missing from generated output
+
+**Zeroization & KAT (completed 2026-05-19, #114):**
+- Key material wrapped in `Zeroizing<Vec<u8>>` in both encrypt/decrypt paths
+- `aes` and `cbc` features include `zeroize`; `hmac` has `reset`; `sha2`/`aes-gcm` have no zeroize feature (keyless/transitive)
+- Digest comparison uses `subtle::ConstantTimeEq` (defense-in-depth)
+- `attachment_encrypt_inner` (private, deterministic IV) extracted for KAT testing
+- 6 KAT tests (3 encrypt + 3 decrypt) with vectors from pycryptodome (tools/generate_kat_vectors.py)
+- Total: 40 unit tests passing (34 existing + 6 KAT)

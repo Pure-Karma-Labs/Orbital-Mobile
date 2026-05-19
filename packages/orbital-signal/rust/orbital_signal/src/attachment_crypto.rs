@@ -4,6 +4,8 @@ use cbc::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit};
 use cbc::{Decryptor, Encryptor};
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
+use zeroize::Zeroizing;
 
 use crate::error::SignalError;
 
@@ -37,6 +39,22 @@ pub fn attachment_encrypt(
     plaintext: Vec<u8>,
     keys: Vec<u8>,
 ) -> Result<AttachmentCryptoResult, SignalError> {
+    // Zeroize the FFI-boundary key material on drop
+    let keys = Zeroizing::new(keys);
+    let mut iv = [0u8; 16];
+    rand::fill(&mut iv);
+    attachment_encrypt_inner(&plaintext, &keys, &iv)
+}
+
+/// Inner encryption implementation that accepts an explicit IV.
+///
+/// **MUST NOT be `pub` or `#[uniffi::export]`** — a deterministic-IV function
+/// exposed via FFI would allow IV reuse, breaking CBC confidentiality.
+fn attachment_encrypt_inner(
+    plaintext: &[u8],
+    keys: &[u8],
+    iv: &[u8; 16],
+) -> Result<AttachmentCryptoResult, SignalError> {
     if keys.len() != 64 {
         return Err(SignalError::InvalidKey {
             reason: format!(
@@ -51,20 +69,16 @@ pub fn attachment_encrypt(
     })?;
     let hmac_key = &keys[32..64];
 
-    // Generate 16-byte IV using OS CSPRNG
-    let mut iv_bytes = [0u8; 16];
-    rand::fill(&mut iv_bytes);
-
     // Compute SHA-256 hash of the original plaintext
-    let plaintext_hash = Sha256::digest(&plaintext).to_vec();
+    let plaintext_hash = Sha256::digest(plaintext).to_vec();
 
     // Encrypt plaintext with AES-256-CBC, PKCS7 padding
-    let encrypted_data = Aes256CbcEnc::new(aes_key.into(), &iv_bytes.into())
-        .encrypt_padded_vec_mut::<Pkcs7>(&plaintext);
+    let encrypted_data = Aes256CbcEnc::new(aes_key.into(), &(*iv).into())
+        .encrypt_padded_vec_mut::<Pkcs7>(plaintext);
 
     // Build output: IV (16) || encrypted_data
     let mut output = Vec::with_capacity(16 + encrypted_data.len() + 32);
-    output.extend_from_slice(&iv_bytes);
+    output.extend_from_slice(iv);
     output.extend_from_slice(&encrypted_data);
 
     // Compute HMAC-SHA256 over IV || encrypted_data
@@ -110,6 +124,9 @@ pub fn attachment_decrypt(
     keys: Vec<u8>,
     expected_digest: Vec<u8>,
 ) -> Result<Vec<u8>, SignalError> {
+    // Wrap keys in Zeroizing immediately so key material is zeroed on all exit paths
+    let keys = Zeroizing::new(keys);
+
     // 1. Validate key length
     if keys.len() != 64 {
         return Err(SignalError::InvalidKey {
@@ -156,9 +173,11 @@ pub fn attachment_decrypt(
         }
     })?;
 
-    // 4. Verify SHA-256 digest of entire ciphertext matches expected
+    // 4. Verify SHA-256 digest of entire ciphertext matches expected (constant-time)
     let actual_digest = Sha256::digest(&ciphertext);
-    if actual_digest.as_slice() != expected_digest.as_slice() {
+    if expected_digest.len() != actual_digest.len()
+        || !bool::from(actual_digest.as_slice().ct_eq(expected_digest.as_slice()))
+    {
         return Err(SignalError::InvalidMessage {
             reason: "decryption failed".to_string(),
         });
@@ -487,5 +506,84 @@ mod tests {
             matches!(err, SignalError::InvalidKey { .. }),
             "should be InvalidKey, got: {err:?}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Known-Answer Tests (KAT)
+    //
+    // Vectors generated independently with pycryptodome — see
+    // tools/generate_kat_vectors.py for the reference implementation.
+    // -----------------------------------------------------------------------
+
+    use hex_literal::hex;
+
+    // --- Vector 1: "Hello Signal", key = 0x01*32 || 0x02*32, iv = 0x03*16 ---
+    const V1_PLAINTEXT: &[u8] = b"Hello Signal";
+    const V1_KEY: [u8; 64] = hex!("01010101010101010101010101010101010101010101010101010101010101010202020202020202020202020202020202020202020202020202020202020202");
+    const V1_IV: [u8; 16] = hex!("03030303030303030303030303030303");
+    const V1_CIPHERTEXT: [u8; 64] = hex!("03030303030303030303030303030303caa6cf4a34d417a41e4aa590244bbe819e823b44b04eda7cf7b807d7c6e7524d4e2a8d92070897738ebd602d3e1a0ca5");
+    const V1_DIGEST: [u8; 32] = hex!("09b4660f47167c61edca74fffc2f3b50819e90da04ee943e86ab42412b7139df");
+
+    // --- Vector 2: empty plaintext, key = 0x10*32 || 0x20*32, iv = 0x30*16 ---
+    const V2_PLAINTEXT: &[u8] = b"";
+    const V2_KEY: [u8; 64] = hex!("10101010101010101010101010101010101010101010101010101010101010102020202020202020202020202020202020202020202020202020202020202020");
+    const V2_IV: [u8; 16] = hex!("30303030303030303030303030303030");
+    const V2_CIPHERTEXT: [u8; 64] = hex!("30303030303030303030303030303030aa166c8ee814654c52e9f15751425b8355164a9be9353bd8b1fb4cbdcc00451760d8c36a15b324bd2b2a8bf8cf50c6e3");
+    const V2_DIGEST: [u8; 32] = hex!("c509149bce526b877defe0c32b6ef868c340c3fa54456649488b95d37218cf77");
+
+    // --- Vector 3: block-aligned "0123456789abcdef", key = 0xAA*32 || 0xBB*32, iv = 0xCC*16 ---
+    const V3_PLAINTEXT: &[u8] = b"0123456789abcdef";
+    const V3_KEY: [u8; 64] = hex!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    const V3_IV: [u8; 16] = hex!("cccccccccccccccccccccccccccccccc");
+    const V3_CIPHERTEXT: [u8; 80] = hex!("cccccccccccccccccccccccccccccccc1e70e325b729fe73fc970d168943419f7dc581835e2b2952050edb1db845738307967f56865063815cad02c17d70093c816e347d75bdfe7b35a4a1d41df4af0d");
+    const V3_DIGEST: [u8; 32] = hex!("b640c2f875acb50f9288e5c282c4c697d2f57b4fe860b0551a679ba21270492a");
+
+    // -- Encrypt KATs: verify attachment_encrypt_inner produces expected ciphertext + digest --
+
+    #[test]
+    fn test_kat_encrypt_vector_1() {
+        let result = attachment_encrypt_inner(V1_PLAINTEXT, &V1_KEY, &V1_IV)
+            .expect("encrypt should succeed");
+        assert_eq!(result.ciphertext, V1_CIPHERTEXT.to_vec(), "ciphertext mismatch");
+        assert_eq!(result.digest, V1_DIGEST.to_vec(), "digest mismatch");
+    }
+
+    #[test]
+    fn test_kat_encrypt_vector_2() {
+        let result = attachment_encrypt_inner(V2_PLAINTEXT, &V2_KEY, &V2_IV)
+            .expect("encrypt should succeed");
+        assert_eq!(result.ciphertext, V2_CIPHERTEXT.to_vec(), "ciphertext mismatch");
+        assert_eq!(result.digest, V2_DIGEST.to_vec(), "digest mismatch");
+    }
+
+    #[test]
+    fn test_kat_encrypt_vector_3() {
+        let result = attachment_encrypt_inner(V3_PLAINTEXT, &V3_KEY, &V3_IV)
+            .expect("encrypt should succeed");
+        assert_eq!(result.ciphertext, V3_CIPHERTEXT.to_vec(), "ciphertext mismatch");
+        assert_eq!(result.digest, V3_DIGEST.to_vec(), "digest mismatch");
+    }
+
+    // -- Decrypt KATs: verify attachment_decrypt recovers expected plaintext --
+
+    #[test]
+    fn test_kat_decrypt_vector_1() {
+        let plaintext = attachment_decrypt(V1_CIPHERTEXT.to_vec(), V1_KEY.to_vec(), V1_DIGEST.to_vec())
+            .expect("decrypt should succeed");
+        assert_eq!(plaintext, V1_PLAINTEXT, "plaintext mismatch");
+    }
+
+    #[test]
+    fn test_kat_decrypt_vector_2() {
+        let plaintext = attachment_decrypt(V2_CIPHERTEXT.to_vec(), V2_KEY.to_vec(), V2_DIGEST.to_vec())
+            .expect("decrypt should succeed");
+        assert_eq!(plaintext, V2_PLAINTEXT, "plaintext mismatch");
+    }
+
+    #[test]
+    fn test_kat_decrypt_vector_3() {
+        let plaintext = attachment_decrypt(V3_CIPHERTEXT.to_vec(), V3_KEY.to_vec(), V3_DIGEST.to_vec())
+            .expect("decrypt should succeed");
+        assert_eq!(plaintext, V3_PLAINTEXT, "plaintext mismatch");
     }
 }

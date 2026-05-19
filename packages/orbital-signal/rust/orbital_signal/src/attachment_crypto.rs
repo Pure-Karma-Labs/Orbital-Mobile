@@ -64,9 +64,6 @@ fn attachment_encrypt_inner(
         });
     }
 
-    // Wrap keys in Zeroizing so key material is zeroed on drop
-    let keys = Zeroizing::new(keys.to_vec());
-
     let aes_key: &[u8; 32] = keys[..32].try_into().map_err(|_| SignalError::InternalError {
         reason: "key slice conversion failed".to_string(),
     })?;

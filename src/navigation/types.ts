@@ -28,6 +28,7 @@ export type SettingsStackParamList = {
   SettingsMain: undefined;
   EditProfile: undefined;
   InviteFriends: undefined;
+  FileLibrary: undefined;
 };
 
 export type RootStackParamList = {

@@ -21,6 +21,7 @@ import { useAppStore } from '../stores/useAppStore';
 import { generateUUID } from '../utils/uuid';
 import { base64ToArrayBuffer } from './crypto/utils';
 import { getMedia, saveMedia } from '../database/repositories/mediaRepository';
+import { mediaRowToItem } from '../database/repositories/mediaMapper';
 import { isDatabaseInitialized } from '../database/connection';
 import type { Thread, Reply, MediaItem } from '../types/store';
 import type { MediaRow } from '../database/repositories/mediaRepository';
@@ -95,41 +96,9 @@ export async function decryptReplyBody(
 // Media metadata helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Normalize attachment_key from DB to a boolean indicating presence.
- * Handles Uint8Array (normal), ArrayBuffer (edge), and string (base64 legacy).
- */
-function normalizeAttachmentKey(
-  key: Uint8Array | ArrayBuffer | string | null | undefined,
-): boolean {
-  if (key == null) return false;
-  if (key instanceof Uint8Array) return key.byteLength > 0;
-  if (key instanceof ArrayBuffer) return key.byteLength > 0;
-  if (typeof key === 'string') return key.length > 0;
-  return false;
-}
-
-/** Convert a MediaRow (DB) to a MediaItem (store). */
-function mediaRowToItem(row: MediaRow): MediaItem {
-  return {
-    id: row.id,
-    threadId: row.thread_id,
-    replyId: row.reply_id,
-    contentType: row.content_type,
-    fileName: row.file_name,
-    fileSize: row.file_size,
-    width: row.width,
-    height: row.height,
-    duration: row.duration,
-    blurHash: row.blur_hash,
-    localPath: row.local_path,
-    thumbnailPath: row.thumbnail_path,
-    downloadState: (row.download_state as MediaItem['downloadState']) ?? 'pending',
-    uploadState: (row.upload_state as MediaItem['uploadState']) ?? 'pending',
-    expiresAt: row.expires_at,
-    hasKeys: normalizeAttachmentKey(row.attachment_key),
-  };
-}
+// normalizeAttachmentKey and mediaRowToItem are now imported from
+// ../database/repositories/mediaMapper to allow reuse without pulling
+// in the full crypto/API dependency chain.
 
 /**
  * Decrypt encrypted metadata envelope and extract inner fields.

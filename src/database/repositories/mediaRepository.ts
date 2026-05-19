@@ -1,4 +1,5 @@
 import { queryOne, queryMany, execute } from '../queryHelpers';
+import { isDatabaseInitialized } from '../connection';
 
 // ============================================================
 // MediaRow — maps 1:1 to the orbital_media table columns.
@@ -120,4 +121,158 @@ export function getPendingDownloads(): MediaRow[] {
 
 export function deleteMedia(id: string): void {
   execute('DELETE FROM orbital_media WHERE id = ?', [id]);
+}
+
+// ============================================================
+// File Library queries — paginated, filtered, with JOIN resolution
+// ============================================================
+
+/**
+ * Options for the paginated file library queries.
+ */
+export interface GetAllMediaOptions {
+  limit: number;
+  offset: number;
+  sortBy: 'date' | 'size';
+  sortOrder: 'asc' | 'desc';
+  contentTypeFilter?: 'image' | 'video' | 'document' | null;
+  conversationId?: string | null;
+}
+
+/** Allowlisted sort columns — only these values are interpolated into SQL. */
+const SORT_COLUMNS: Record<string, string> = {
+  date: 'm.created_at',
+  size: 'm.file_size',
+} as const;
+
+/** Allowlisted sort directions — only these values are interpolated into SQL. */
+const SORT_DIRS: Record<string, string> = {
+  asc: 'ASC',
+  desc: 'DESC',
+} as const;
+
+/** Type for rows returned from getAllMedia (with resolved conversation_id). */
+export type MediaRowWithConversation = MediaRow & { conversation_id: string | null };
+
+/**
+ * Build shared WHERE clause fragments and params for getAllMedia/getMediaCount.
+ */
+function buildMediaFilterClause(options: GetAllMediaOptions): {
+  where: string;
+  params: (string | number)[];
+} {
+  const conditions: string[] = [
+    "m.attachment_key IS NOT NULL",
+    "m.upload_state = 'done'",
+  ];
+  const params: (string | number)[] = [];
+
+  // Conversation filter
+  if (options.conversationId) {
+    conditions.push('COALESCE(t.conversation_id, rt.conversation_id) = ?');
+    params.push(options.conversationId);
+  }
+
+  // Content type filter
+  if (options.contentTypeFilter === 'image') {
+    conditions.push("m.content_type LIKE ?");
+    params.push('image/%');
+  } else if (options.contentTypeFilter === 'video') {
+    conditions.push("m.content_type LIKE ?");
+    params.push('video/%');
+  } else if (options.contentTypeFilter === 'document') {
+    conditions.push("m.content_type NOT LIKE 'image/%' AND m.content_type NOT LIKE 'video/%'");
+  }
+
+  return {
+    where: conditions.join(' AND '),
+    params,
+  };
+}
+
+/**
+ * Paginated query for all media with optional filters and sorting.
+ * Uses LEFT JOINs to resolve conversation_id from thread or reply parents.
+ *
+ * Returns empty array if database is not initialized.
+ */
+export function getAllMedia(options: GetAllMediaOptions): MediaRowWithConversation[] {
+  if (!isDatabaseInitialized()) return [];
+
+  const col = SORT_COLUMNS[options.sortBy] ?? 'm.created_at';
+  const dir = SORT_DIRS[options.sortOrder] ?? 'DESC';
+
+  const { where, params } = buildMediaFilterClause(options);
+
+  const sql = `
+    SELECT m.*, COALESCE(t.conversation_id, rt.conversation_id) as conversation_id
+    FROM orbital_media m
+    LEFT JOIN orbital_threads t ON m.thread_id = t.id
+    LEFT JOIN orbital_replies r ON m.reply_id = r.id
+    LEFT JOIN orbital_threads rt ON r.thread_id = rt.id
+    WHERE ${where}
+    ORDER BY ${col} ${dir}
+    LIMIT ? OFFSET ?
+  `;
+
+  return queryMany<MediaRowWithConversation>(sql, [...params, options.limit, options.offset]);
+}
+
+/**
+ * Count of media matching the given filters (same as getAllMedia but without
+ * limit/offset/sort).
+ *
+ * Returns 0 if database is not initialized.
+ */
+export function getMediaCount(options: GetAllMediaOptions): number {
+  if (!isDatabaseInitialized()) return 0;
+
+  const { where, params } = buildMediaFilterClause(options);
+
+  const sql = `
+    SELECT COUNT(*) as cnt
+    FROM orbital_media m
+    LEFT JOIN orbital_threads t ON m.thread_id = t.id
+    LEFT JOIN orbital_replies r ON m.reply_id = r.id
+    LEFT JOIN orbital_threads rt ON r.thread_id = rt.id
+    WHERE ${where}
+  `;
+
+  const row = queryOne<{ cnt: number }>(sql, params);
+  return row?.cnt ?? 0;
+}
+
+/**
+ * Total file size in bytes of all locally-downloaded media.
+ *
+ * Returns 0 if database is not initialized.
+ */
+export function getLocalStorageUsage(): number {
+  if (!isDatabaseInitialized()) return 0;
+
+  const row = queryOne<{ total: number }>(
+    "SELECT COALESCE(SUM(file_size), 0) as total FROM orbital_media WHERE download_state = 'downloaded' AND local_path IS NOT NULL",
+  );
+  return row?.total ?? 0;
+}
+
+/**
+ * Distinct conversation IDs that have at least one media item.
+ *
+ * Returns empty array if database is not initialized.
+ */
+export function getMediaConversationIds(): string[] {
+  if (!isDatabaseInitialized()) return [];
+
+  const rows = queryMany<{ conversation_id: string }>(
+    `SELECT DISTINCT COALESCE(t.conversation_id, rt.conversation_id) as conversation_id
+     FROM orbital_media m
+     LEFT JOIN orbital_threads t ON m.thread_id = t.id
+     LEFT JOIN orbital_replies r ON m.reply_id = r.id
+     LEFT JOIN orbital_threads rt ON r.thread_id = rt.id
+     WHERE m.attachment_key IS NOT NULL AND m.upload_state = 'done'
+       AND COALESCE(t.conversation_id, rt.conversation_id) IS NOT NULL`,
+  );
+
+  return rows.map((r) => r.conversation_id);
 }

@@ -272,6 +272,8 @@ export interface MediaActions {
   setMediaForThread: (threadId: string, items: MediaItem[]) => void;
   setMediaForReply: (replyId: string, items: MediaItem[]) => void;
   upsertMedia: (item: MediaItem) => void;
+  /** Batch-hydrate media into the store. Skips items currently in 'downloading' state. */
+  setMediaBatch: (items: MediaItem[]) => void;
   updateMediaDownloadState: (id: string, state: MediaItem['downloadState'], localPath?: string) => void;
   updateMediaUploadState: (id: string, state: MediaItem['uploadState']) => void;
   removeMedia: (id: string) => void;

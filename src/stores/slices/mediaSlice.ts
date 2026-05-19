@@ -56,6 +56,20 @@ export const createMediaSlice: StateCreator<
     );
   },
 
+  setMediaBatch: (items) => {
+    set((state) => {
+      const updated = { ...state.media };
+      for (const item of items) {
+        const existing = updated[item.id];
+        // Don't clobber items that are actively downloading —
+        // that would reset the download state and trigger abort/restart loops.
+        if (existing?.downloadState === 'downloading') continue;
+        updated[item.id] = item;
+      }
+      return { media: updated };
+    }, false, 'media/setMediaBatch');
+  },
+
   upsertMedia: (item) => {
     const { media, mediaIdsByThread, mediaIdsByReply } = get();
     const updatedMedia = { ...media, [item.id]: item };

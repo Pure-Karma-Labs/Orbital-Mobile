@@ -21,8 +21,10 @@ export function initDatabase(encryptionKey: string): void {
     throw new Error('Database already initialized');
   }
 
-  // Use raw-key hex syntax to skip PBKDF2 — key is already 256-bit CSPRNG output.
-  db = open({ name: 'orbital.db', encryptionKey: `x'${encryptionKey}'` });
+  // op-sqlite's C++ bridge wraps the key in PRAGMA key = '<key>', so passing
+  // x'...' here would produce PRAGMA key = 'x'...'' (broken quoting). Pass the
+  // hex string directly — SQLCipher will derive the key via PBKDF2.
+  db = open({ name: 'orbital.db', encryptionKey });
 
   // CRITICAL: cipher_memory_security must be set first, before other PRAGMAs.
   // It causes SQLCipher to zero-fill freed memory pages.

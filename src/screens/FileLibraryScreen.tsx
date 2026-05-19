@@ -12,13 +12,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Dimensions,
   FlatList,
   Image,
   Pressable,
   ScrollView,
   Text,
   View,
+  useWindowDimensions,
   type ImageStyle,
   type ListRenderItemInfo,
   type TextStyle,
@@ -54,8 +54,6 @@ import type { MediaItem } from '../types/store';
 const PAGE_SIZE = 30;
 const NUM_COLUMNS = 3;
 const GRID_GAP = 2;
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const CELL_SIZE = Math.floor((SCREEN_WIDTH - GRID_GAP * (NUM_COLUMNS - 1) - GRID_GAP * 2) / NUM_COLUMNS);
 
 type Props = NativeStackScreenProps<SettingsStackParamList, 'FileLibrary'>;
 
@@ -80,20 +78,22 @@ const SORT_CYCLE: SortState[] = [
 
 interface FileLibraryCellProps {
   row: MediaRowWithConversation;
+  cellSize: number;
   onPress: (row: MediaRowWithConversation) => void;
 }
 
 const FileLibraryCell = React.memo(function FileLibraryCell({
   row,
+  cellSize,
   onPress,
 }: FileLibraryCellProps): React.JSX.Element {
   const theme = useTheme();
-  // Read the current download state from the Zustand store so the cell
-  // re-renders when a download completes (without using the auto-download hook).
   const storeItem = useAppStore((s) => s.media[row.id]);
   const downloadState = storeItem?.downloadState ?? row.download_state;
   const localPath = storeItem?.localPath ?? row.local_path;
 
+  const isImage = row.content_type.startsWith('image/');
+  const isVideo = row.content_type.startsWith('video/');
   const isDownloaded = downloadState === 'downloaded' && localPath;
   const isDownloading = downloadState === 'downloading';
 
@@ -102,16 +102,16 @@ const FileLibraryCell = React.memo(function FileLibraryCell({
   }, [onPress, row]);
 
   const cellStyle: ViewStyle = {
-    width: CELL_SIZE,
-    height: CELL_SIZE,
+    width: cellSize,
+    height: cellSize,
     backgroundColor: theme.colors.borderSubtle,
     borderRadius: theme.borderRadius.base,
     overflow: 'hidden',
   };
 
   const imageStyle: ImageStyle = {
-    width: CELL_SIZE,
-    height: CELL_SIZE,
+    width: cellSize,
+    height: cellSize,
     borderRadius: theme.borderRadius.base,
   };
 
@@ -129,14 +129,39 @@ const FileLibraryCell = React.memo(function FileLibraryCell({
   };
 
   if (isDownloaded) {
+    if (isImage) {
+      return (
+        <Pressable onPress={handlePress} testID={`file-cell-${row.id}`}>
+          <View style={cellStyle}>
+            <Image
+              source={{ uri: `file://${localPath}` }}
+              style={imageStyle}
+              resizeMode="cover"
+            />
+          </View>
+        </Pressable>
+      );
+    }
+
+    // Video: show thumbnail with play icon overlay
+    if (isVideo) {
+      return (
+        <Pressable onPress={handlePress} testID={`file-cell-${row.id}`}>
+          <View style={overlayStyle}>
+            <Text style={{ fontSize: 28 }}>{'▶'}</Text>
+            <Text style={iconTextStyle}>{row.file_name ?? 'Video'}</Text>
+          </View>
+        </Pressable>
+      );
+    }
+
+    // Document: show file icon with extension
+    const ext = row.file_name?.split('.').pop()?.toUpperCase() ?? 'FILE';
     return (
       <Pressable onPress={handlePress} testID={`file-cell-${row.id}`}>
-        <View style={cellStyle}>
-          <Image
-            source={{ uri: `file://${localPath}` }}
-            style={imageStyle}
-            resizeMode="cover"
-          />
+        <View style={overlayStyle}>
+          <Text style={{ fontSize: 28 }}>{'📄'}</Text>
+          <Text style={iconTextStyle}>{ext}</Text>
         </View>
       </Pressable>
     );
@@ -151,8 +176,7 @@ const FileLibraryCell = React.memo(function FileLibraryCell({
           <>
             <Text style={{ fontSize: 24 }}>{'↓'}</Text>
             <Text style={iconTextStyle}>
-              {row.content_type.startsWith('image/') ? 'IMG' :
-               row.content_type.startsWith('video/') ? 'VID' : 'DOC'}
+              {isImage ? 'IMG' : isVideo ? 'VID' : 'DOC'}
             </Text>
           </>
         )}
@@ -167,6 +191,8 @@ const FileLibraryCell = React.memo(function FileLibraryCell({
 
 export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
   const theme = useTheme();
+  const { width: screenWidth } = useWindowDimensions();
+  const cellSize = Math.floor((screenWidth - GRID_GAP * (NUM_COLUMNS - 1) - GRID_GAP * 2) / NUM_COLUMNS);
   const { activeConversationId, conversations } = useConversations();
 
   // ---------------------------------------------------------------------------
@@ -339,13 +365,17 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
   // Lightbox media items (converted from rows)
   // ---------------------------------------------------------------------------
 
+  const mediaIds = useMemo(() => mediaRows.map((r) => r.id), [mediaRows]);
+  const storeMedia = useAppStore((s) => {
+    const result: Record<string, MediaItem> = {};
+    for (const id of mediaIds) {
+      if (s.media[id]) result[id] = s.media[id];
+    }
+    return result;
+  });
   const lightboxItems: MediaItem[] = useMemo(() => {
-    return mediaRows.map((row) => {
-      // Prefer store state (has up-to-date downloadState/localPath)
-      const storeItem = useAppStore.getState().media[row.id];
-      return storeItem ?? mediaRowToItem(row);
-    });
-  }, [mediaRows]);
+    return mediaRows.map((row) => storeMedia[row.id] ?? mediaRowToItem(row));
+  }, [mediaRows, storeMedia]);
 
   const handleCloseLightbox = useCallback(() => {
     setLightboxVisible(false);
@@ -357,9 +387,9 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
 
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<MediaRowWithConversation>) => {
-      return <FileLibraryCell row={item} onPress={handleCellPress} />;
+      return <FileLibraryCell row={item} cellSize={cellSize} onPress={handleCellPress} />;
     },
-    [handleCellPress],
+    [cellSize, handleCellPress],
   );
 
   const keyExtractor = useCallback(

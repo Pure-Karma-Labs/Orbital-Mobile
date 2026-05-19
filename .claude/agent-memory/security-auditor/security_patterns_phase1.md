@@ -1,6 +1,6 @@
 ---
 name: Established security patterns
-description: Nine mandatory security patterns validated during Phase 1-2 audits that must be preserved in all future crypto and media code
+description: Eleven mandatory security patterns validated during Phase 1-2 audits that must be preserved in all future crypto and media code
 metadata:
   type: feedback
 ---
@@ -43,4 +43,12 @@ These patterns were validated and confirmed correct during security audits. Any 
 
 9. **Upload-side attachment keys must never be overwritten by server responses** — `processMediaMetadata` in `src/services/threadService.ts:161` checks the in-memory Zustand store before the database. If a `MediaItem` already exists in the store (e.g., from a successful upload with `hasKeys: true` and `localPath` set), it is preserved as-is. The server response may arrive with no attachment key (because keys are never sent to the server), and blindly creating a new DB/store entry would overwrite `hasKeys: true` with `hasKeys: false`, losing the decryption keys.
    **Why:** Attachment keys are generated client-side and never leave the device. If `processMediaMetadata` clobbers the store entry from an upload with a server-response entry that lacks keys, the media becomes permanently undecryptable. This is a data-loss / confidentiality invariant.
-   **How to apply:** Any code path that merges server-returned media metadata into local state must check for existing entries with attachment keys first. The lookup order is: (1) in-memory store, (2) database row, (3) create new. Skipping step 1 or 2 is High severity. Reference: `threadService.ts:194-216`.
+   **How to apply:** Any code path that merges server-returned media metadata into local state must check for existing entries with attachment keys first. The lookup order is: (1) in-memory store, (2) database row, (3) create new. Skipping step 1 or 2 is High severity. Note: existing rows with null attachment_key now attempt envelope-based recovery — see pattern 10.
+
+10. **Attachment key distribution via versioned metadata envelope** — Attachment keys (64 bytes: 32 AES + 32 HMAC) are embedded as base64 inside the AES-256-GCM encrypted metadata envelope (`v: 1`). The key is encrypted with the group key before upload and extracted by recipients via `decryptMediaMetadataEnvelope()` in `threadService.ts`. Input validation: `typeof` check + 64-byte decoded length check. Legacy rows with null keys attempt retroactive recovery from the envelope.
+   **Why:** Attachment keys were previously stored only in local SQLCipher and never distributed. Fresh installs or new group members lost all keys, making media permanently undecryptable. Embedding the key in the group-key-encrypted envelope preserves zero-knowledge (server never sees plaintext) while ensuring all group members with the group key can decrypt media.
+   **How to apply:** Any new metadata field added to the envelope must be inside the group-key-encrypted payload. Never send attachment keys in cleartext API fields. The `v` field enables forward-compatible envelope evolution — bump to `v: 2` if the schema changes. Always validate extracted keys (64-byte length) before use.
+
+11. **op-sqlite encryptionKey quoting is bridge-handled** — op-sqlite's C++ bridge wraps the `encryptionKey` parameter in single quotes when issuing `PRAGMA key = '<key>'`. Application code must NOT add its own quoting (e.g., `x'...'` wrapper). Double-quoting produces a broken PRAGMA and a 0-byte database file with no WAL/SHM — the DB silently appears to work in-memory but never persists. Reference: `src/database/connection.ts:25`.
+   **Why:** This bug caused complete data loss on every app restart — the 0-byte file was overwritten on each launch. The in-memory illusion (SQLite operations succeed against a non-persisted DB) makes this extremely hard to detect via functional testing.
+   **How to apply:** When reviewing any changes to database connection setup or encryption key handling, verify that the key is passed as a raw string (hex or passphrase) without SQL-level quoting. If op-sqlite is ever replaced with another SQLite wrapper, verify how that wrapper handles `PRAGMA key` formatting at the native bridge layer.

@@ -28,7 +28,7 @@ core_files:
   - path: src/services/api/version.ts
     role: App version check endpoint
   - path: src/services/threadService.ts
-    role: "Thread data orchestration (fetch -> decrypt -> store) + processMediaMetadata (7 call sites, session dedup, store-first check)"
+    role: "Thread data orchestration (fetch -> decrypt -> store) + processMediaMetadata (7 call sites, session dedup, store-first check, envelope v1 key extraction, retroactive null-key recovery)"
   - path: src/services/mediaDownloadService.ts
     role: "Media download orchestration (download -> decrypt -> atomic write -> cache). Concurrency semaphore (max 3), inflight dedup."
   - path: src/hooks/useMediaDownload.ts
@@ -150,6 +150,7 @@ verified_types:
   MediaMetadata:
     verified_at: "2026-04-29"
     fields: [mediaId, encryptedMetadata, sizeBytes, uploadedAt, expiresAt, contentType, fileName, blurHash, width, height, duration]
+    note: "encryptedMetadata inner envelope (after group-key decrypt) is v1: { v: 1, fileName, contentType, width, height, duration, blurHash, attachmentKey (base64, 64 bytes decoded) }"
   UserProfile:
     verified_at: "2026-04-29"
     fields: [id, username, displayName, avatarUrl, createdAt?]
@@ -181,6 +182,8 @@ resolved_issues:
   - Backend completeUpload UUID validation — completeUpload endpoint requires mediaId as valid UUID; client-generated IDs must use generateUUID() not random strings
   - Rate limit 429 on chunk upload — uploadChunk retries with exponential backoff (3 attempts, 1s base); auth/validation errors (401/403) are not retried
   - Deploy source confusion — Orbital-Backend is deployed from Pure-Karma-Labs/Orbital-Backend (https://api.orbitl.org), not the desktop repo fork; always verify API contracts against this repo
+  - SQLCipher 0-byte DB — op-sqlite's C++ bridge wraps encryptionKey in single quotes (PRAGMA key = '<key>'); passing x'<hex>' caused double-quoting and broken encryption. Fix: pass raw hex string, let op-sqlite wrap it (commit 5102ac6). PBKDF2 derivation in passphrase mode.
+  - Attachment key distribution — keys were stored only in local SQLCipher, lost on fresh install. Fix: embed attachment_key (base64) inside AES-256-GCM encrypted metadata envelope with v:1 versioning (commit 8430083). Retroactive recovery for null-key rows.
   - rawResponse removal and requestBinary replacement — rawResponse option was removed from client.ts during #92 cleanup; downloadMedia now uses dedicated requestBinary() helper that returns ArrayBuffer + headers
 
 endpoint_paths:
@@ -210,7 +213,7 @@ resilience_patterns:
   upload_retry: uploadChunk retries up to 3 times with exponential backoff (1s, 2s, 4s); 401/403 and cancellation short-circuit retries immediately
   client_429_retry: "_executeRequest retries 429 responses 3x with exponential backoff (1s/2s/4s) capped at 10s. Ignores server Retry-After header (was returning 880s). Both request() and requestBinary() benefit."
   db_init_guard: "isDatabaseInitialized() from src/database/connection.ts checked before all service-layer DB ops. Falls through to store-only operation when unavailable. Required because Metro Fast Refresh resets module-level db variable."
-  process_media_dedup: "Session-level Set<string> (processedMediaIds) prevents redundant processing across 7 call sites. Already-processed items still get store index populated."
+  process_media_dedup: "Session-level Set<string> (processedMediaIds) prevents redundant processing across 7 call sites. Already-processed items still get store index populated. clearProcessedMediaIds() exported and called from authService.ts logout alongside clearGroupKeyCache()."
   media_state_ownership: "Upload service owns initial MediaItem with hasKeys=true. processMediaMetadata checks in-memory Zustand store BEFORE DB to avoid overwriting. Store is authoritative during runtime."
   download_semaphore: "Max 3 concurrent downloads in mediaDownloadService. Inflight dedup via Map<string, Promise<string>> with finally-block cleanup."
   download_atomic_write: "Decrypted media written to .tmp path then moveFile to final path. Prevents partial plaintext on crash."

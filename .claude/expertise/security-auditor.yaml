@@ -1,5 +1,5 @@
-version: "1.3"
-last_updated: "2026-05-15"
+version: "1.4"
+last_updated: "2026-05-18"
 agent: security-auditor
 
 core_files:
@@ -35,17 +35,20 @@ core_files:
     purpose: AES-256-GCM content encryption for threads/replies — group key cache with zero-fill on logout, three-tier key lookup (cache → SQLCipher → API)
     key_symbols: [encryptContent, decryptContent, getOrFetchGroupKey, persistGroupKey, invalidateGroupKey, clearGroupKeyCache, generateGroupKey, encryptGroupName, decryptGroupName]
   - path: src/services/mediaUploadService.ts
-    purpose: Media upload orchestration — encrypt → chunk → temp file → upload; orphan cleanup on bootstrap; AbortSignal plumbing (not yet wired by callers)
+    purpose: "Media upload orchestration — encrypt → chunk → temp file → upload; v1 metadata envelope embeds attachmentKey (base64); orphan cleanup on bootstrap; AbortSignal plumbing (not yet wired by callers)"
     key_symbols: [uploadMedia, uploadMediaBatch, cleanupOrphanedChunks, writeChunkToTempFile]
+    last_hash: f71a26c
   - path: src/services/mediaDownloadService.ts
     purpose: Media download orchestration — download → decrypt → atomic write; path injection validation via SAFE_ID_RE/SAFE_EXT_RE; inflight dedup; semaphore concurrency; .tmp sweep
     key_symbols: [downloadAndDecryptMedia, validatePathComponents, SAFE_ID_RE, SAFE_EXT_RE, ensureMediaDir, cleanupStaleDownloads]
   - path: src/services/threadService.ts
-    purpose: Thread/reply orchestration — processMediaMetadata preserves upload-side keys (store-before-DB lookup order); dedup via processedMediaIds Set
-    key_symbols: [processMediaMetadata, mediaRowToItem, processedMediaIds]
+    purpose: "Thread/reply orchestration — processMediaMetadata preserves upload-side keys (store-before-DB lookup); envelope v1 key extraction via decryptMediaMetadataEnvelope(); normalizeAttachmentKey() for legacy type compat; clearProcessedMediaIds() on logout"
+    key_symbols: [processMediaMetadata, decryptMediaMetadataEnvelope, normalizeAttachmentKey, clearProcessedMediaIds, mediaRowToItem, processedMediaIds]
+    last_hash: 042223a
   - path: src/database/connection.ts
-    purpose: SQLCipher connection — raw-key hex format, PRAGMA ordering, cipher_memory_security
+    purpose: "SQLCipher connection — passphrase mode (op-sqlite wraps key in single quotes at C++ bridge); PRAGMA ordering; cipher_memory_security ON. Never pre-quote encryptionKey with x'...' — causes 0-byte DB."
     key_symbols: [openDatabase, closeDatabase, getDatabase, isDatabaseInitialized]
+    last_hash: 3283e2c
   - path: src/database/migrations/001_initial_schema.ts
     purpose: SQLCipher schema — Signal Protocol store tables, key storage as BLOB
     key_symbols: [signal_identity_keys, signal_sessions, signal_pre_keys, signal_signed_pre_keys, signal_kyber_pre_keys, signal_sender_keys]

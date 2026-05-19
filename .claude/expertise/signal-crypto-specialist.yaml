@@ -35,6 +35,8 @@ core_files:
     purpose: Phase 1 security audit — 14 findings, 23 positive verifications
   - path: src/services/crypto/contentCrypto.ts
     purpose: AES-256-GCM content encryption, group key cache, persistGroupKey, encryptGroupName/decryptGroupName
+  - path: src/services/threadService.ts
+    purpose: "Thread orchestration — decryptMediaMetadataEnvelope(), processMediaMetadata() with attachment key extraction from v1 envelope, normalizeAttachmentKey() for legacy type compat, clearProcessedMediaIds() on logout"
   - path: src/services/conversationService.ts
     purpose: Orbit CRUD orchestration with defensive catches for legacy plaintext names and placeholder keys
 
@@ -92,6 +94,10 @@ patterns:
     description: "Backend returns plaintext orbit names and 'placeholder-key' group keys from Desktop-era orbits; catch blocks in conversationService.ts are load-bearing, not dead code"
   - name: stale-docstring-persistGroupKey
     description: "JSDoc on persistGroupKey() claims it generates a fresh key for invalid input, but it actually throws; the caller's catch handles the failure"
+  - name: attachment-key-in-envelope
+    description: "Attachment key (64 bytes: 32 AES + 32 HMAC) embedded as base64 inside AES-256-GCM encrypted metadata envelope (v:1). Recipients extract key from envelope after group-key decryption. Zero-knowledge preserved — server never sees plaintext envelope."
+  - name: normalize-attachment-key
+    description: "normalizeAttachmentKey() in threadService.ts handles Uint8Array, ArrayBuffer, and string (base64) types. Needed because pre-c30110f data stored attachment_key as base64 TEXT in BLOB column. 64-byte length validation after normalization."
 
 blockers:
   - name: identity-key-keychain-migration

@@ -37,11 +37,27 @@ A module-scope `Set<string>` (`processedMediaIds`) prevents redundant processing
 The lookup order inside `processMediaMetadata` is:
 1. Check Zustand store (`store.media[mediaId]`) — if found, use it as-is
 2. Check SQLite DB (`getMedia(mediaId)`) — if found, convert and use
-3. Otherwise, decrypt metadata and create a new row
+3. Otherwise, decrypt metadata envelope and create a new row
 
 **Why:** The upload service (`mediaUploadService.ts`) creates the initial `MediaItem` with `hasKeys: true`, `localPath` set, and `downloadState: 'downloaded'`. If processMediaMetadata checked DB first or re-derived from the server response, it would overwrite this with `hasKeys: false`, `localPath: null`, `downloadState: 'pending'` — destroying the sender's ability to view their own upload.
 
 **How to apply:** Never reorder the store-then-DB lookup. The Zustand store is authoritative at runtime; DB is for cross-session persistence only. See also [[project-media-state-ownership]].
+
+### Retroactive Key Recovery (added 2026-05-18)
+
+When an existing DB row has `attachment_key == null` and the incoming media has `encryptedMetadata`, the function now attempts to decrypt the metadata envelope, validate the embedded key (64-byte length check), and update the row. This covers the case where rows were created before attachment keys were embedded in the envelope.
+
+### Metadata Envelope v1 Format
+
+After group-key decryption, the `encryptedMetadata` payload is now a versioned envelope:
+```
+{ v: 1, fileName, contentType, width, height, duration, blurHash, attachmentKey }
+```
+- `attachmentKey` is base64-encoded (64 bytes decoded = 32 AES + 32 HMAC)
+- `v: 1` distinguishes from pre-envelope data that lacked `attachmentKey`
+- Extraction and validation happens in `decryptMediaMetadataEnvelope()` and `normalizeAttachmentKey()` in threadService.ts
+
+See also [[project-media-upload-pipeline]].
 
 ### Related
 

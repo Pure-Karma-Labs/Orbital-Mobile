@@ -4,7 +4,7 @@ description: All security findings confirmed fixed during Phase 1 — 19 verifie
 type: project
 ---
 
-## Resolved Security Findings (as of 2026-04-09)
+## Resolved Security Findings (as of 2026-05-18)
 
 ### API Layer (PR #41 — REST API integration)
 1. **HTTPS enforcement** — `src/services/api/client.ts` asserts `https://` at module load. Hard-fail prevents accidental HTTP.
@@ -42,6 +42,15 @@ type: project
 
 ### PoC Feature Gating (PR #84 — Issue #40)
 19. **F-04: PoC/demo functions gated behind Cargo feature flag** — Roundtrip PoC functions now gated behind `dev-roundtrip` Cargo feature flag. Default features = [], so production/release builds exclude PoC code entirely. Issue #40 closed.
+
+### SQLCipher Quoting Bug (commit 5102ac6 — 2026-05-18)
+20. **0-byte DB from double-quoted encryption key** — op-sqlite's C++ bridge wraps `encryptionKey` in single quotes (`PRAGMA key = '<key>'`). Our code passed `x'<hex>'`, producing `PRAGMA key = 'x'<hex>''` — broken quoting. DB appeared to work in-memory but never persisted (0 bytes, no WAL/SHM). Fix: pass raw hex string, let op-sqlite wrap it. SQLCipher uses PBKDF2 derivation in passphrase mode. File: `src/database/connection.ts:25`.
+
+### Attachment Key Distribution (commit 8430083 — 2026-05-18)
+21. **#122: attachment_key BLOB alignment + envelope distribution** — attachment_key was stored as base64 TEXT in BLOB column and was only in local SQLCipher (lost on fresh install). Fix: embed attachment_key (base64, 64 bytes decoded) inside AES-256-GCM encrypted metadata envelope with `v: 1` versioning. `normalizeAttachmentKey()` handles legacy Uint8Array, ArrayBuffer, and string types. Zero-knowledge preserved — keys inside group-key-encrypted envelope.
+
+### processedMediaIds Logout Clearing (commit associated with 2026-05-18)
+22. **Stale dedup set on logout** — Module-level `Set<string>` in `threadService.ts` was never cleared on logout. `clearProcessedMediaIds()` now exported and called from `authService.ts` logout alongside `clearGroupKeyCache()`.
 
 ### Full Phase 1 Audit (docs/security-audit-phase1.md)
 - 14 findings documented (F-01 through F-14)

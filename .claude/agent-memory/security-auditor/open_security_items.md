@@ -1,11 +1,11 @@
 ---
 name: Open security items
-description: Tracked security items not yet resolved — 0 Critical/High remaining; 11 Medium/Low items across Phase 1, Phase 2, and Media Chunk 3
+description: Tracked security items not yet resolved — 0 Critical/High remaining; 10 Medium/Low items across Phase 1, Phase 2, and Media Chunk 3
 metadata:
   type: project
 ---
 
-## Open Security Items (as of 2026-05-14)
+## Open Security Items (as of 2026-05-18)
 
 ### Critical / High — NONE REMAINING
 All Critical and High findings resolved. Security audit status is clean.
@@ -64,11 +64,8 @@ All Critical and High findings resolved. Security audit status is clean.
    - `plaintextHash` is currently a plain `string` — no compile-time guard preventing accidental inclusion in API payloads
    - Remediation: Create a branded type (`type PlaintextHash = string & { __brand: 'PlaintextHash' }`) to catch accidental serialization at compile time
 
-3. **#122: attachment_key stored as base64 TEXT in BLOB column (Low)**
-   - Location: `src/services/mediaUploadService.ts:379` (`buildMediaRow` passes `keysBase64` string)
-   - Schema at `src/database/migrations/001_initial_schema.ts:154` declares `attachment_key BLOB`
-   - SQLite silently accepts TEXT into BLOB columns, so it works at runtime, but defeats the column intent and breaks the `blob-for-keys` pattern
-   - Remediation: Store raw `Uint8Array` keys instead of base64, or change schema to TEXT if BLOB is not needed
+3. **~~#122: attachment_key stored as base64 TEXT in BLOB column~~ — RESOLVED** (commit `c30110f`, 2026-05-18)
+   - Fix: Schema aligned, BLOB keys used consistently. `normalizeAttachmentKey()` in threadService.ts handles legacy TEXT rows.
 
 4. **No FFI boundary integration test (Low)**
    - The Rust `attachment_crypto.rs` has unit tests, and Jest tests mock the FFI boundary
@@ -87,6 +84,12 @@ All Critical and High findings resolved. Security audit status is clean.
    - Currently used as best-effort in both upload and download services
    - Remediation: Build a thin native bridge to call `NSURL.setResourceValue(_:forKey:.isExcludedFromBackupKey)` per-file after write; or use a community RN module that exposes this API
    - Risk: Without per-file exclusion, iOS may include decrypted media files in iCloud/iTunes backups on some OS versions. Mitigated by app-level `NSFileProtectionCompleteUntilFirstUserAuthentication` and the data extraction rules for Android.
+
+### Recently Resolved (2026-05-18)
+
+- **#122: attachment_key TEXT-in-BLOB** — Resolved in commit `c30110f`. Schema aligned, BLOB keys consistent. `normalizeAttachmentKey()` bridges legacy TEXT rows.
+- **SQLCipher 0-byte DB** — Resolved in commit `5102ac6`. op-sqlite's C++ bridge wraps `encryptionKey` in single quotes; passing `x'<hex>'` caused double-quoting. Fix: pass raw hex string. See [[project-sqlcipher-quoting-bug]].
+- **Attachment key distribution** — Resolved in commit `8430083`. Keys now embedded in v1 metadata envelope. Retroactive recovery for null-key rows.
 
 **Why:** Tracking open items ensures nothing is forgotten between sessions and provides priority ordering for implementation agents.
 **How to apply:** Reference this list when reviewing PRs that touch these areas. No items currently block beta release. Medium/Low items are scheduled for their noted phases.

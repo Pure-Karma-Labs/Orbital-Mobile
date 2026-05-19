@@ -22,6 +22,17 @@ The JSDoc on `persistGroupKey()` (contentCrypto.ts:81-82) claims: "If the key is
 
 Legacy orbits on the deployed backend were cleaned up by direct PostgreSQL DELETE and new orbits created through the mobile encryption pipeline (proper AES-256-GCM keys + encrypted names). This resolves the immediate test environment but the defensive catch paths must remain -- any legacy user or future Desktop-to-Mobile migration will encounter the same mixed data.
 
-**Why:** Desktop is being sunsetted but not all orbits have been migrated. The backend has no migration to re-encrypt legacy plaintext names or replace placeholder keys. New users joining old orbits will hit these code paths.
+## Legacy attachment_key type mismatch (added 2026-05-18)
 
-**How to apply:** Do NOT remove the try/catch fallbacks in conversationService.ts thinking they are dead code. If future cleanup proposals target these paths, flag them as load-bearing for legacy data tolerance. A proper fix would be a backend migration that encrypts legacy names and replaces placeholder keys, or a mobile-side migration that detects and handles the format difference explicitly.
+Pre-commit-c30110f data stored `attachment_key` as base64 TEXT in the BLOB column. SQLite dynamic typing accepts TEXT into BLOB columns silently, but downstream Rust FFI (`attachmentDecrypt`) expects `Uint8Array`. The `normalizeAttachmentKey()` helper in `threadService.ts` handles three input types:
+- `Uint8Array` — pass through
+- `ArrayBuffer` — wrap in `new Uint8Array()`
+- `string` — base64-decode via `base64ToArrayBuffer()` then wrap
+
+After normalization, a 64-byte length check validates the key (32 AES + 32 HMAC).
+
+This is the same pattern as legacy orbit names: the data format in the DB doesn't match what the code expects, and a normalization layer bridges the gap. See also [[phase1-completion]] for the broader BLOB-for-keys pattern decision.
+
+**Why:** Desktop is being sunsetted but not all orbits have been migrated. The backend has no migration to re-encrypt legacy plaintext names or replace placeholder keys. New users joining old orbits will hit these code paths. Similarly, existing media rows may have TEXT-typed attachment keys that need normalization.
+
+**How to apply:** Do NOT remove the try/catch fallbacks in conversationService.ts thinking they are dead code. Do NOT remove normalizeAttachmentKey() assuming all keys are Uint8Array — legacy rows persist. If future cleanup proposals target these paths, flag them as load-bearing for legacy data tolerance. A proper fix would be a backend migration that encrypts legacy names and replaces placeholder keys, or a mobile-side migration that detects and handles the format difference explicitly.

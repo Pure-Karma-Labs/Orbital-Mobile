@@ -12,7 +12,7 @@ metadata:
 2. Decode base64 → Uint8Array
 3. Generate 64-byte attachment keys (CSPRNG)
 4. Encrypt via Rust FFI (`attachmentEncrypt`) → ciphertext + digest + plaintextHash
-5. Encrypt metadata (fileName, contentType, dimensions) with group key (AES-256-GCM)
+5. Encrypt metadata envelope (v:1 — fileName, contentType, dimensions, attachmentKey as base64) with group key (AES-256-GCM). The attachmentKey is embedded inside the encrypted envelope so recipients can decrypt media without a separate key distribution channel.
 6. Extract IV from ciphertext (first 16 bytes)
 7. Chunk ciphertext into 5MB pieces
 8. Write each chunk to temp file (`@dr.pogodin/react-native-fs`)

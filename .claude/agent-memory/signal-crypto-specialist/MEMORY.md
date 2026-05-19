@@ -4,5 +4,5 @@
 - [Store Implementations](store-implementations.md) — 6 TS store classes + cryptoService.ts orchestration; identity key migrated to Keychain/Keystore (Issue #54 resolved)
 - [libsignal API Learnings](libsignal-api-learnings.md) — Non-obvious v0.83.0 behaviors: group message distribution_id parsing, message_decrypt_signal vs _prekey, async_trait block_on
 - [Store Adapter Blocker](store-adapter-blocker.md) — FULLY RESOLVED: all 10 protocol functions implemented; dead code cleanup pending (client.rs, stores.rs)
-- [Legacy Data Tolerance](legacy-data-tolerance.md) — Backend returns plaintext names + placeholder keys from Desktop-era orbits; catch paths in conversationService.ts are load-bearing
+- [Legacy Data Tolerance](legacy-data-tolerance.md) — Backend returns plaintext names + placeholder keys from Desktop-era orbits; normalizeAttachmentKey for TEXT-in-BLOB legacy rows; catch paths are load-bearing
 - [Backend DB Access](backend-db-access.md) — SSH/psql to orbital-backend; groups table uses `id` not `group_id`; useful for test re-provisioning

@@ -1,9 +1,11 @@
 # Orbital Mobile
 
-![CI](https://github.com/alexg-g/Orbital-Mobile/actions/workflows/ci.yml/badge.svg?branch=main)
-![Build](https://github.com/alexg-g/Orbital-Mobile/actions/workflows/build.yml/badge.svg?branch=main)
+![CI](https://github.com/Pure-Karma-Labs/Orbital-Mobile/actions/workflows/ci.yml/badge.svg?branch=main)
+![Build](https://github.com/Pure-Karma-Labs/Orbital-Mobile/actions/workflows/build.yml/badge.svg?branch=main)
 
-Native mobile client for the [Orbital](https://github.com/alexg-g/Orbital-Desktop) private family social network. Built with React Native 0.82+ (New Architecture), sharing the same backend and Signal Protocol encryption as the desktop app.
+Orbital is a private, encrypted discussion board for families — not a chat app. Instead of one endless group chat where photos and conversations disappear into the scroll, Orbital organizes your family's life into searchable, threaded topics backed by Signal Protocol encryption, with full-quality 4K video sharing up to 500MB and distributed backup across every member of your Orbit. Unlike Signal or Telegram, Orbital is purpose-built for focused group discussions with time-tested bulletin board style forum archival and search features built in.
+
+This is the native mobile client, built with React Native 0.82+ (New Architecture), sharing the same [backend](https://github.com/Pure-Karma-Labs/Orbital-Backend) and Signal Protocol encryption as the desktop app.
 
 ## Prerequisites
 

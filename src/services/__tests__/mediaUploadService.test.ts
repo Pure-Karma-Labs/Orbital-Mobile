@@ -225,6 +225,30 @@ describe('uploadMedia', () => {
     expect(metadataParsed).not.toHaveProperty('fileName');
     expect(metadataParsed).not.toHaveProperty('contentType');
   });
+
+  it('inner metadata envelope includes v:1 and attachmentKey', async () => {
+    await uploadMedia(baseOptions);
+
+    // encryptContent receives the plaintext metadata JSON before encryption
+    const [metadataJson] = mockEncryptContent.mock.calls[0];
+    const parsed = JSON.parse(metadataJson as string);
+    expect(parsed.v).toBe(1);
+    expect(parsed.attachmentKey).toBe('mock-base64'); // arrayBufferToBase64 mock returns 'mock-base64'
+    expect(parsed.contentType).toBe('image/jpeg');
+    expect(parsed.fileName).toBe('photo.jpg');
+    expect(parsed.digest).toBe('mock-base64');
+  });
+
+  it('inner metadata includes width and height when provided', async () => {
+    await uploadMedia({ ...baseOptions, width: 1920, height: 1080 });
+
+    const [metadataJson] = mockEncryptContent.mock.calls[0];
+    const parsed = JSON.parse(metadataJson as string);
+    expect(parsed.v).toBe(1);
+    expect(parsed.width).toBe(1920);
+    expect(parsed.height).toBe(1080);
+    expect(parsed.attachmentKey).toBeDefined();
+  });
 });
 
 // ---------------------------------------------------------------------------

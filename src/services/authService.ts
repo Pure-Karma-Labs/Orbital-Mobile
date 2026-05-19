@@ -17,6 +17,7 @@ import {
   clearIdentityKeyCache,
 } from './crypto/keyGenerationService';
 import { clearGroupKeyCache } from './crypto/contentCrypto';
+import { clearProcessedMediaIds } from './threadService';
 import { clearAllGroupMasterKeys } from '../database/repositories/conversationRepository';
 import { removeSecureItem } from './secure-storage/secureStorage';
 import { SecureKeys } from './secure-storage/constants';
@@ -140,6 +141,7 @@ export async function logout(): Promise<void> {
   state.setContacts([]);
   clearIdentityKeyCache();
   clearGroupKeyCache();
+  clearProcessedMediaIds();
 
   // Clear identity private key from Keychain
   await removeSecureItem(SecureKeys.IDENTITY_KEY_PRIVATE).catch(() => {});

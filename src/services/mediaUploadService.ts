@@ -5,7 +5,7 @@
  * 1. Validate file size (max 25MB)
  * 2. Decode base64 from picker → Uint8Array plaintext
  * 3. Generate attachment keys and encrypt via attachmentCrypto
- * 4. Build metadata JSON (contentType, fileName, width, height, digest)
+ * 4. Build metadata JSON (v, contentType, fileName, width, height, digest, attachmentKey)
  * 5. Extract IV from ciphertext (first 16 bytes)
  * 6. Split ciphertext into 5MB chunks → Blob per chunk
  * 7. Upload chunks sequentially (first chunk includes metadata + IV)
@@ -179,11 +179,13 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<string> 
   // server never sees user filenames or content types (zero-knowledge).
   const digestBase64 = arrayBufferToBase64(toArrayBuffer(digest));
   const metadataPlain = JSON.stringify({
+    v: 1,
     contentType: mimeType,
     fileName,
     ...(width != null ? { width } : {}),
     ...(height != null ? { height } : {}),
     digest: digestBase64,
+    attachmentKey: arrayBufferToBase64(toArrayBuffer(keys)),
   });
   const groupKey = await getOrFetchGroupKey(groupId);
   const encryptedMeta = encryptContent(metadataPlain, groupKey, groupId);

@@ -95,6 +95,20 @@ export async function decryptReplyBody(
 // Media metadata helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Normalize attachment_key from DB to a boolean indicating presence.
+ * Handles Uint8Array (normal), ArrayBuffer (edge), and string (base64 legacy).
+ */
+function normalizeAttachmentKey(
+  key: Uint8Array | ArrayBuffer | string | null | undefined,
+): boolean {
+  if (key == null) return false;
+  if (key instanceof Uint8Array) return key.byteLength > 0;
+  if (key instanceof ArrayBuffer) return key.byteLength > 0;
+  if (typeof key === 'string') return key.length > 0;
+  return false;
+}
+
 /** Convert a MediaRow (DB) to a MediaItem (store). */
 function mediaRowToItem(row: MediaRow): MediaItem {
   return {
@@ -113,7 +127,7 @@ function mediaRowToItem(row: MediaRow): MediaItem {
     downloadState: (row.download_state as MediaItem['downloadState']) ?? 'pending',
     uploadState: (row.upload_state as MediaItem['uploadState']) ?? 'pending',
     expiresAt: row.expires_at,
-    hasKeys: row.attachment_key != null,
+    hasKeys: normalizeAttachmentKey(row.attachment_key),
   };
 }
 
@@ -131,6 +145,7 @@ async function decryptMediaMetadataEnvelope(
   width?: number;
   height?: number;
   digest?: string;
+  attachmentKey?: string;
 } | null> {
   // The metadata envelope is a JSON string with { ciphertext, iv }
   let envelope: { ciphertext: string; iv: string };
@@ -158,6 +173,11 @@ async function decryptMediaMetadataEnvelope(
  * @param parentRef   - { threadId } or { replyId } to index the media.
  */
 const processedMediaIds = new Set<string>();
+
+/** Clear the session-level dedup set. Call on logout to prevent stale entries. */
+export function clearProcessedMediaIds(): void {
+  processedMediaIds.clear();
+}
 
 export async function processMediaMetadata(
   mediaList: MediaMetadata[],
@@ -211,7 +231,38 @@ export async function processMediaMetadata(
       }
 
       if (existingRow) {
-        // Row exists — don't clobber attachment_key, local_path, download_state
+        // Row exists — try to recover attachment key from envelope if missing
+        if (existingRow.attachment_key == null && meta.encryptedMetadata) {
+          try {
+            const parsed = await decryptMediaMetadataEnvelope(
+              meta.encryptedMetadata,
+              groupKey,
+              groupId,
+            );
+            if (typeof parsed?.attachmentKey === 'string') {
+              const decoded = new Uint8Array(base64ToArrayBuffer(parsed.attachmentKey));
+              if (decoded.byteLength === 64) {
+                const updatedRow: MediaRow = { ...existingRow, attachment_key: decoded };
+                if (dbReady) {
+                  try {
+                    saveMedia(updatedRow);
+                  } catch (e) {
+                    if (__DEV__) {
+                      console.warn('[processMediaMetadata] saveMedia (key recovery) failed:', e instanceof Error ? e.message : e);
+                    }
+                  }
+                }
+                items.push(mediaRowToItem(updatedRow));
+                continue;
+              }
+            }
+          } catch (e) {
+            if (__DEV__) {
+              console.warn('[processMediaMetadata] key recovery failed:', e instanceof Error ? e.message : e);
+            }
+          }
+        }
+        // Row exists with key, or key recovery failed — don't clobber
         items.push(mediaRowToItem(existingRow));
         continue;
       }
@@ -220,12 +271,13 @@ export async function processMediaMetadata(
       const threadId = 'threadId' in parentRef ? parentRef.threadId : null;
       const replyId = 'replyId' in parentRef ? parentRef.replyId : null;
 
-      // Decrypt metadata to extract contentType, fileName, dimensions, digest
+      // Decrypt metadata to extract contentType, fileName, dimensions, digest, attachmentKey
       let contentType = meta.contentType ?? 'application/octet-stream';
       let fileName = meta.fileName ?? null;
       let width = meta.width ?? null;
       let height = meta.height ?? null;
       let digest: string | null = null;
+      let attachmentKey: Uint8Array | null = null;
 
       if (meta.encryptedMetadata) {
         // Try to decrypt metadata — no key retry to avoid API call cascade
@@ -242,6 +294,16 @@ export async function processMediaMetadata(
           width = parsed.width ?? width;
           height = parsed.height ?? height;
           digest = parsed.digest ?? null;
+
+          // Extract attachment key from v1+ metadata envelope
+          if (typeof parsed.attachmentKey === 'string') {
+            try {
+              const decoded = new Uint8Array(base64ToArrayBuffer(parsed.attachmentKey));
+              attachmentKey = decoded.byteLength === 64 ? decoded : null;
+            } catch {
+              attachmentKey = null;
+            }
+          }
         }
       }
 
@@ -257,7 +319,7 @@ export async function processMediaMetadata(
         width,
         height,
         duration: meta.duration ?? null,
-        attachment_key: null, // Receiver doesn't have keys in v1
+        attachment_key: attachmentKey,
         attachment_digest: digest ? new Uint8Array(base64ToArrayBuffer(digest)) : null,
         cdn_number: null,
         cdn_key: null,
@@ -298,7 +360,7 @@ export async function processMediaMetadata(
         downloadState: 'pending',
         uploadState: 'done',
         expiresAt: meta.expiresAt ? new Date(meta.expiresAt).getTime() : null,
-        hasKeys: false,
+        hasKeys: attachmentKey != null,
       };
 
       items.push(item);

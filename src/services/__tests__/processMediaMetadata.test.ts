@@ -33,8 +33,9 @@ jest.mock('../crypto/contentCrypto', () => ({
   invalidateGroupKey: (...args: unknown[]) => mockInvalidateGroupKey(...args),
 }));
 
+const mockBase64ToArrayBuffer = jest.fn<ArrayBuffer, [string]>(() => new ArrayBuffer(32));
 jest.mock('../crypto/utils', () => ({
-  base64ToArrayBuffer: jest.fn(() => new ArrayBuffer(32)),
+  base64ToArrayBuffer: (input: string) => mockBase64ToArrayBuffer(input),
 }));
 
 const mockSetMediaForThread = jest.fn();
@@ -63,7 +64,7 @@ jest.mock('../../stores/useAppStore', () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
-import { processMediaMetadata } from '../threadService';
+import { processMediaMetadata, clearProcessedMediaIds } from '../threadService';
 import type { MediaMetadata } from '../../types/api';
 import type { MediaRow } from '../../database/repositories/mediaRepository';
 
@@ -127,6 +128,8 @@ beforeEach(() => {
   mockStoreMedia = {}; // Default: no existing items in store
   mockGetMedia.mockReturnValue(null); // Default: no existing row in DB
   mockGetOrFetchGroupKey.mockResolvedValue(fakeGroupKey);
+  mockBase64ToArrayBuffer.mockReturnValue(new ArrayBuffer(32)); // Default: 32-byte buffer
+  clearProcessedMediaIds(); // Reset session dedup set between tests
 });
 
 // ---------------------------------------------------------------------------
@@ -501,5 +504,245 @@ describe('processMediaMetadata — blurHash', () => {
 
     const items = mockSetMediaForThread.mock.calls[0][1];
     expect(items[0].blurHash).toBe(hash);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// New item — with attachmentKey in metadata envelope (v1+)
+// ---------------------------------------------------------------------------
+
+describe('processMediaMetadata — attachmentKey in envelope (new item)', () => {
+  it('extracts valid 64-byte attachmentKey and sets hasKeys=true', async () => {
+    const innerPayload = JSON.stringify({
+      v: 1,
+      contentType: 'image/jpeg',
+      fileName: 'photo.jpg',
+      width: 800,
+      height: 600,
+      digest: 'digest-base64',
+      attachmentKey: 'valid-key-base64',
+    });
+    mockDecryptContent.mockReturnValue(innerPayload);
+    // Return 64-byte buffer for attachmentKey, 32-byte for digest
+    mockBase64ToArrayBuffer.mockImplementation((input: string) => {
+      if (input === 'valid-key-base64') return new ArrayBuffer(64);
+      return new ArrayBuffer(32);
+    });
+
+    const envelope = JSON.stringify({ ciphertext: 'enc-ct', iv: 'enc-iv' });
+    const meta = makeMediaMetadata({
+      mediaId: 'media-key-1',
+      encryptedMetadata: envelope,
+    });
+
+    await processMediaMetadata([meta], fakeGroupKey, fakeGroupId, { threadId: 'thread-1' });
+
+    // DB row should have attachment_key
+    const savedRow = mockSaveMedia.mock.calls[0][0];
+    expect(savedRow.attachment_key).toBeInstanceOf(Uint8Array);
+    expect(savedRow.attachment_key.byteLength).toBe(64);
+
+    // Store item should have hasKeys=true
+    const items = mockSetMediaForThread.mock.calls[0][1];
+    expect(items[0].hasKeys).toBe(true);
+  });
+
+  it('rejects attachmentKey with wrong length (not 64 bytes)', async () => {
+    const innerPayload = JSON.stringify({
+      v: 1,
+      contentType: 'image/jpeg',
+      fileName: 'photo.jpg',
+      attachmentKey: 'bad-key-base64',
+    });
+    mockDecryptContent.mockReturnValue(innerPayload);
+    // Return 48-byte buffer — wrong length
+    mockBase64ToArrayBuffer.mockImplementation((input: string) => {
+      if (input === 'bad-key-base64') return new ArrayBuffer(48);
+      return new ArrayBuffer(32);
+    });
+
+    const envelope = JSON.stringify({ ciphertext: 'enc-ct', iv: 'enc-iv' });
+    const meta = makeMediaMetadata({
+      mediaId: 'media-key-2',
+      encryptedMetadata: envelope,
+    });
+
+    await processMediaMetadata([meta], fakeGroupKey, fakeGroupId, { threadId: 'thread-1' });
+
+    const savedRow = mockSaveMedia.mock.calls[0][0];
+    expect(savedRow.attachment_key).toBeNull();
+
+    const items = mockSetMediaForThread.mock.calls[0][1];
+    expect(items[0].hasKeys).toBe(false);
+  });
+
+  it('handles missing attachmentKey in envelope (legacy v0 metadata)', async () => {
+    const innerPayload = JSON.stringify({
+      contentType: 'image/jpeg',
+      fileName: 'photo.jpg',
+      digest: 'digest-base64',
+    });
+    mockDecryptContent.mockReturnValue(innerPayload);
+
+    const envelope = JSON.stringify({ ciphertext: 'enc-ct', iv: 'enc-iv' });
+    const meta = makeMediaMetadata({
+      mediaId: 'media-key-3',
+      encryptedMetadata: envelope,
+    });
+
+    await processMediaMetadata([meta], fakeGroupKey, fakeGroupId, { threadId: 'thread-1' });
+
+    const savedRow = mockSaveMedia.mock.calls[0][0];
+    expect(savedRow.attachment_key).toBeNull();
+
+    const items = mockSetMediaForThread.mock.calls[0][1];
+    expect(items[0].hasKeys).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Existing DB row — key recovery from envelope
+// ---------------------------------------------------------------------------
+
+describe('processMediaMetadata — existing row key recovery', () => {
+  it('recovers key from envelope when existing row has no attachment_key', async () => {
+    const existingRow = makeMediaRow({
+      id: 'media-recover-1',
+      attachment_key: null,
+    });
+    mockGetMedia.mockReturnValue(existingRow);
+
+    const innerPayload = JSON.stringify({
+      v: 1,
+      contentType: 'image/jpeg',
+      fileName: 'photo.jpg',
+      attachmentKey: 'recovered-key-base64',
+    });
+    mockDecryptContent.mockReturnValue(innerPayload);
+    mockBase64ToArrayBuffer.mockImplementation((input: string) => {
+      if (input === 'recovered-key-base64') return new ArrayBuffer(64);
+      return new ArrayBuffer(32);
+    });
+
+    const envelope = JSON.stringify({ ciphertext: 'enc-ct', iv: 'enc-iv' });
+    const meta = makeMediaMetadata({
+      mediaId: 'media-recover-1',
+      encryptedMetadata: envelope,
+    });
+
+    await processMediaMetadata([meta], fakeGroupKey, fakeGroupId, { threadId: 'thread-1' });
+
+    // saveMedia should be called to persist the recovered key
+    expect(mockSaveMedia).toHaveBeenCalledTimes(1);
+    const savedRow = mockSaveMedia.mock.calls[0][0];
+    expect(savedRow.attachment_key).toBeInstanceOf(Uint8Array);
+    expect(savedRow.attachment_key.byteLength).toBe(64);
+    // Should preserve existing row fields
+    expect(savedRow.id).toBe('media-recover-1');
+
+    const items = mockSetMediaForThread.mock.calls[0][1];
+    expect(items[0].hasKeys).toBe(true);
+  });
+
+  it('does not attempt recovery when existing row already has key', async () => {
+    const existingRow = makeMediaRow({
+      id: 'media-has-key-1',
+      attachment_key: new Uint8Array(64).fill(0xBB),
+    });
+    mockGetMedia.mockReturnValue(existingRow);
+
+    const envelope = JSON.stringify({ ciphertext: 'enc-ct', iv: 'enc-iv' });
+    const meta = makeMediaMetadata({
+      mediaId: 'media-has-key-1',
+      encryptedMetadata: envelope,
+    });
+
+    await processMediaMetadata([meta], fakeGroupKey, fakeGroupId, { threadId: 'thread-1' });
+
+    // No saveMedia, no decryptContent — row used as-is
+    expect(mockSaveMedia).not.toHaveBeenCalled();
+    expect(mockDecryptContent).not.toHaveBeenCalled();
+
+    const items = mockSetMediaForThread.mock.calls[0][1];
+    expect(items[0].hasKeys).toBe(true);
+  });
+
+  it('falls back to existing row when key recovery fails (decryption error)', async () => {
+    const existingRow = makeMediaRow({
+      id: 'media-recover-fail-1',
+      attachment_key: null,
+    });
+    mockGetMedia.mockReturnValue(existingRow);
+    mockDecryptContent.mockImplementation(() => { throw new Error('Decrypt failed'); });
+
+    const envelope = JSON.stringify({ ciphertext: 'enc-ct', iv: 'enc-iv' });
+    const meta = makeMediaMetadata({
+      mediaId: 'media-recover-fail-1',
+      encryptedMetadata: envelope,
+    });
+
+    await processMediaMetadata([meta], fakeGroupKey, fakeGroupId, { threadId: 'thread-1' });
+
+    // Falls back to existing row — no saveMedia called
+    expect(mockSaveMedia).not.toHaveBeenCalled();
+
+    const items = mockSetMediaForThread.mock.calls[0][1];
+    expect(items[0].hasKeys).toBe(false);
+    expect(items[0].id).toBe('media-recover-fail-1');
+  });
+
+  it('skips recovery when existing row has no encryptedMetadata', async () => {
+    const existingRow = makeMediaRow({
+      id: 'media-no-meta-1',
+      attachment_key: null,
+    });
+    mockGetMedia.mockReturnValue(existingRow);
+
+    const meta = makeMediaMetadata({
+      mediaId: 'media-no-meta-1',
+      encryptedMetadata: null,
+    });
+
+    await processMediaMetadata([meta], fakeGroupKey, fakeGroupId, { threadId: 'thread-1' });
+
+    // No decryption attempted, no saveMedia called
+    expect(mockDecryptContent).not.toHaveBeenCalled();
+    expect(mockSaveMedia).not.toHaveBeenCalled();
+
+    const items = mockSetMediaForThread.mock.calls[0][1];
+    expect(items[0].hasKeys).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// clearProcessedMediaIds
+// ---------------------------------------------------------------------------
+
+describe('clearProcessedMediaIds', () => {
+  it('allows re-processing of previously processed media IDs', async () => {
+    const meta = makeMediaMetadata({ mediaId: 'media-clear-1' });
+
+    // First call processes the item
+    await processMediaMetadata([meta], fakeGroupKey, fakeGroupId, { threadId: 'thread-1' });
+    expect(mockSaveMedia).toHaveBeenCalledTimes(1);
+
+    jest.clearAllMocks();
+    mockGetMedia.mockReturnValue(null);
+    mockStoreMedia = {};
+
+    // Second call without clearing — item should be skipped (dedup)
+    await processMediaMetadata([meta], fakeGroupKey, fakeGroupId, { threadId: 'thread-1' });
+    expect(mockSaveMedia).not.toHaveBeenCalled();
+
+    jest.clearAllMocks();
+    mockGetMedia.mockReturnValue(null);
+    mockStoreMedia = {};
+
+    // Clear dedup set
+    clearProcessedMediaIds();
+
+    // Third call after clearing — item should be re-processed
+    await processMediaMetadata([meta], fakeGroupKey, fakeGroupId, { threadId: 'thread-1' });
+    expect(mockSaveMedia).toHaveBeenCalledTimes(1);
   });
 });

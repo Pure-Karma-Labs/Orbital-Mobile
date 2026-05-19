@@ -365,14 +365,7 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
   // Lightbox media items (converted from rows)
   // ---------------------------------------------------------------------------
 
-  const mediaIds = useMemo(() => mediaRows.map((r) => r.id), [mediaRows]);
-  const storeMedia = useAppStore((s) => {
-    const result: Record<string, MediaItem> = {};
-    for (const id of mediaIds) {
-      if (s.media[id]) result[id] = s.media[id];
-    }
-    return result;
-  });
+  const storeMedia = useAppStore((s) => s.media);
   const lightboxItems: MediaItem[] = useMemo(() => {
     return mediaRows.map((row) => storeMedia[row.id] ?? mediaRowToItem(row));
   }, [mediaRows, storeMedia]);

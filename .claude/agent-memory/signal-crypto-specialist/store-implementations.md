@@ -1,7 +1,8 @@
 ---
-name: SignalProtocolStore TypeScript Implementations
+name: store-implementations
 description: 6 TS store classes (PR #51) now serve as orchestration layer for preloaded store pattern; cryptoService.ts is the primary consumer; identity key migrated to Keychain/Keystore (Issue #54 resolved)
-type: project
+metadata:
+  type: project
 ---
 
 PR #51 merged 2026-04-08. Six store classes in `src/services/crypto/` backed by SQLCipher repositories in `src/database/repositories/`.
@@ -12,7 +13,7 @@ PR #51 merged 2026-04-08. Six store classes in `src/services/crypto/` backed by 
 
 **Identity key storage (Issue #54 -- RESOLVED):** Private identity key is now stored in OS Keychain (iOS) / Keystore (Android) via `react-native-keychain`, with a module-scoped cache variable in `keyGenerationService.ts`. Migration from SQLCipher is automatic and one-way: on first access, if the key exists in SQLCipher but not Keychain, it is written to Keychain and removed from SQLCipher. Public key remains in the items table for convenience (it is not secret).
 
-**TOFU trust logic:** `isTrustedIdentity` returns true if no existing identity (trust on first use) or if the stored identity matches byte-for-byte. Used in `decryptPreKeyMessage` to detect identity changes.
+**TOFU trust logic and identity change handling:** `isTrustedIdentity` returns true if no existing identity (trust on first use) or if the stored identity matches byte-for-byte. When Rust returns `identityChanged: true`, cryptoService.ts sets `VerifiedStatus.Unverified` (not `Default`). `Default` = never seen; `Unverified` = identity changed and not yet re-verified by the user. This mapping is applied in both `decryptPreKeyMessage` and `establishSession` code paths. See [[libsignal-api-learnings]] for the asymmetric pre-load constraint that governs when `identityChanged` can actually fire.
 
 **KyberPreKey markUsed semantics:** One-time keys (is_last_resort = 0) are deleted after use. Last-resort keys (is_last_resort = 1) are retained (no-op).
 

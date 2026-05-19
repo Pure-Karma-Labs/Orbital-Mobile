@@ -1,7 +1,8 @@
 ---
-name: libsignal v0.83.0 API Learnings
-description: Non-obvious libsignal API behaviors discovered during implementation — key sizes, DeviceId, async patterns, group messaging, pre-key bundle construction
-type: project
+name: libsignal-api-learnings
+description: Non-obvious libsignal v0.83.0 API behaviors discovered during implementation — key sizes, DeviceId, async patterns, group messaging, pre-key bundle construction, identity change detection
+metadata:
+  type: project
 ---
 
 Key findings from implementing the Rust wrapper crate (issues #7-9, #17, #58) and the PoC roundtrip (issue #11, PR #39):
@@ -30,6 +31,8 @@ Key findings from implementing the Rust wrapper crate (issues #7-9, #17, #58) an
 2. All protocol functions use `tokio::runtime::Builder::new_current_thread().enable_all().build().block_on()` to drive these futures from sync-exported functions
 3. The `build_runtime()` helper is shared across session.rs and group.rs (signal_encrypt still has inline version from Issue #58 spike)
 
+**Tokio runtime nesting:** Integration tests must use `#[test]`, not `#[tokio::test]`, for crate functions that internally create their own tokio runtime via `block_on()`. Nesting runtimes panics. Only use a dedicated runtime for truly async functions like `generate_kyber_pre_key`. See `tests/protocol_roundtrip_tests.rs` for the canonical pattern.
+
 ## Session Operations (Discovered During Implementation)
 
 **message_decrypt_signal vs message_decrypt_prekey:** Standard decryption uses `message_decrypt_signal` which takes `&SignalMessage`. Pre-key decryption uses `message_decrypt_prekey` which takes `&PreKeySignalMessage`. The message must be parsed with the correct `try_from` before calling.
@@ -39,6 +42,16 @@ Key findings from implementing the Rust wrapper crate (issues #7-9, #17, #58) an
 **IdentityKey from PreKeySignalMessage:** `prekey_signal_message.identity_key().clone()` returns the sender's identity key. Must be extracted BEFORE calling `message_decrypt_prekey` since the message is consumed.
 
 **message_decrypt_prekey signature:** Takes `&mut store.pre_key_store` but `&store.signed_pre_key_store` (immutable borrow for signed pre-key store). This is because signed pre-keys are not consumed.
+
+**Preloaded store thread-through:** `updated_session_record` and `updated_sender_key_record` returned from one protocol call must be passed as input to the next call for the same address. The InMemSignalProtocolStore is ephemeral per call; the TypeScript layer is responsible for threading state between calls.
+
+## Identity Change Detection
+
+**The identityChanged flag has an asymmetric pre-load constraint:** When `remote_identity` is pre-loaded into the InMemSignalProtocolStore AND the message's sender identity differs, libsignal raises `UntrustedIdentity` BEFORE decryption can proceed. This means `identity_changed` can never be `true` when the old identity is pre-loaded — the error fires first.
+
+The correct pattern for the TypeScript layer: pass `remote_identity` in the Input record for the comparison check, but the Rust code must compare it against the message's sender_identity_key WITHOUT pre-loading it into the store. Currently the API works around this by having the TS layer omit `remote_identity` from the store pre-load when it suspects a change, while still providing it for the byte comparison. See `test_identity_change_detection_different_identity` in `protocol_roundtrip_tests.rs` for both the error case (pre-loaded) and the success case (omitted).
+
+**TypeScript VerifiedStatus mapping:** When `identityChanged: true`, set `VerifiedStatus.Unverified` (not `Default`). `Default` means never seen; `Unverified` means the identity changed and has not been re-verified by the user. This is applied in both `decryptPreKeyMessage` and `establishSession` paths in `cryptoService.ts`.
 
 ## Group Operations (Discovered During Implementation)
 
@@ -60,4 +73,4 @@ Key findings from implementing the Rust wrapper crate (issues #7-9, #17, #58) an
 
 **Why:** These learnings prevent rediscovering the same API quirks when adding sealed sender or future protocol functions.
 
-**How to apply:** Reference when implementing sealed_sender_encrypt/decrypt (which will need a superset of the session + pre-key patterns), or when debugging protocol issues.
+**How to apply:** Reference when implementing sealed_sender_encrypt/decrypt (which will need a superset of the session + pre-key patterns), or when debugging protocol issues. The identity change detection asymmetry is particularly important — never pre-load remote_identity into the InMemStore if you need to detect a change rather than reject it.

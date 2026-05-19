@@ -1,8 +1,9 @@
 - [Phase 1 Completion](phase1-completion.md) — Phase 1 crypto foundation complete and audited; Phase 2 issues #76-#82 created; next: content + media encryption services
 - [API Surface v1](api-surface-v1.md) — 21-function libsignal API: 19 implemented, 2 sealed sender deferred; PoC feature-gated (Issue #40 resolved)
 - [Preloaded Store Architecture](preloaded-store-architecture.md) — IMPLEMENTED: Input/Result records + InMemSignalProtocolStore; security audit validated; identity key in Keychain
-- [Store Implementations](store-implementations.md) — 6 TS store classes + cryptoService.ts orchestration; identity key migrated to Keychain/Keystore (Issue #54 resolved)
-- [libsignal API Learnings](libsignal-api-learnings.md) — Non-obvious v0.83.0 behaviors: group message distribution_id parsing, message_decrypt_signal vs _prekey, async_trait block_on
+- [Store Implementations](store-implementations.md) — 6 TS store classes + cryptoService.ts orchestration; identity key migrated to Keychain/Keystore; identityChanged -> VerifiedStatus.Unverified mapping
+- [libsignal API Learnings](libsignal-api-learnings.md) — Non-obvious v0.83.0 behaviors: identity change detection asymmetry, runtime nesting, group distribution_id parsing, preloaded store threading
 - [Store Adapter Blocker](store-adapter-blocker.md) — FULLY RESOLVED: all 10 protocol functions implemented; dead code cleanup pending (client.rs, stores.rs)
 - [Legacy Data Tolerance](legacy-data-tolerance.md) — Backend returns plaintext names + placeholder keys from Desktop-era orbits; normalizeAttachmentKey for TEXT-in-BLOB legacy rows; catch paths are load-bearing
 - [Backend DB Access](backend-db-access.md) — SSH/psql to orbital-backend; groups table uses `id` not `group_id`; useful for test re-provisioning
+- [Crypto Hardening](crypto-hardening.md) — Zeroizing keys at FFI boundary, sha2/hmac zeroize gotchas, constant-time comparison, KAT vectors, deterministic-IV inner fn must stay private

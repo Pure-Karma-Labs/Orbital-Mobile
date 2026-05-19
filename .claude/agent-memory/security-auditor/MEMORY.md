@@ -8,3 +8,4 @@
 - [Phase 2 audit coverage (2026-05-15)](audit_coverage_phase2.md) — Media upload + download pipelines, attachment crypto FFI, backend fixes; 20 positive verifications, 6 open items
 - [Backend rate-limit config](reference_backend_ratelimit.md) — express-rate-limit v7 needs validate.xForwardedForHeader:false behind nginx
 - [SQLCipher quoting bug (2026-05-18)](project_sqlcipher_quoting_bug.md) — op-sqlite C++ bridge wraps key in single quotes; never pre-quote with x'...' or passphrase mode breaks silently
+- [Phase 2 PRs #129 #132 #138 #137 audit (2026-05-19)](audit_2026_05_19.md) — key zeroization verified, identityChanged gap fixed, SQL allowlist, File Library reviewed

@@ -12,3 +12,5 @@
 - [Media display layer](project_media_display_layer.md) — MediaItemView, MediaGallery, MediaLightbox, adaptive layouts, store selectors, screen integration
 - [Barrel export caution](feedback_barrel_export_caution.md) — Do NOT barrel-export components with heavy service chain imports; causes cascading test failures
 - [useMediaDownload deps](feedback_use_media_download_deps.md) — Effect deps must NOT include downloadState; use ref guard to prevent abort-restart loop
+- [FileLibraryScreen](project_file_library_screen.md) — Browse all media; download-on-tap (not auto-download); paginated DB queries; mediaMapper extraction; recoverStalePaths
+- [Zustand stable selectors](feedback_zustand_stable_selectors.md) — Selectors must return stable refs (s.media not {a,b}); new objects cause infinite re-render loops

@@ -1,5 +1,5 @@
-version: "1.5"
-last_updated: "2026-05-15"
+version: "1.6"
+last_updated: "2026-05-19"
 agent: react-native-engineer
 
 core_files:
@@ -105,6 +105,30 @@ core_files:
     purpose: SQLite schema for all 17 tables — conversations, threads, replies, media, messages, drafts, Signal stores, and infrastructure tables
     last_hash: 2445035
 
+  - path: src/database/repositories/mediaRepository.ts
+    purpose: "Media CRUD + File Library queries — saveMedia, getMedia, getMediaForThread/Reply, updateDownloadState/UploadState, getPendingDownloads, deleteMedia, plus paginated getAllMedia, getMediaCount, getLocalStorageUsage, getMediaConversationIds. Uses SQL allowlist pattern for sort column/direction interpolation. All File Library queries guarded by isDatabaseInitialized()."
+    key_symbols:
+      - MediaRow
+      - MediaRowWithConversation
+      - GetAllMediaOptions
+      - saveMedia
+      - getMedia
+      - getMediaForThread
+      - getMediaForReply
+      - updateDownloadState
+      - getAllMedia
+      - getMediaCount
+      - getLocalStorageUsage
+      - getMediaConversationIds
+    last_hash: modified
+
+  - path: src/database/repositories/mediaMapper.ts
+    purpose: "Pure data mappers — converts MediaRow (DB) to MediaItem (store). Extracted from threadService.ts to avoid pulling crypto/API deps into lightweight consumers like FileLibraryScreen."
+    key_symbols:
+      - mediaRowToItem
+      - normalizeAttachmentKey
+    last_hash: modified
+
   - path: package.json
     purpose: Project dependencies and scripts — React Native 0.82.1, React 19.1.1, safe-area-context; @react-native/new-app-screen moved to devDependencies
     key_symbols:
@@ -136,7 +160,7 @@ core_files:
     last_hash: new
 
   - path: src/components/MediaItemView.tsx
-    purpose: "Single media renderer — handles 5 download states (locked/pending/downloading/failed/downloaded). Uses useMediaDownload hook. React.memo."
+    purpose: "Single media renderer — handles 5 download states (locked/pending/downloading/failed/downloaded). Uses useMediaDownload hook for AUTO-DOWNLOAD on mount. React.memo. Only suitable for bounded lists (thread/reply media). For unbounded lists use FileLibraryCell pattern instead."
     key_symbols:
       - MediaItemView
       - MediaItemViewProps
@@ -224,11 +248,20 @@ core_files:
     last_hash: ce2229d
 
   - path: src/screens/settings/QuotaBar.tsx
-    purpose: "Storage quota progress bar — shows used/total label with filled track. Clamps percentage 0-100. Memoized."
+    purpose: "Storage quota progress bar — shows used/total label with filled track. Clamps percentage 0-100. Memoized. Reused in FileLibraryScreen for server-side quota display."
     key_symbols:
       - QuotaBar
       - QuotaBarProps
     last_hash: ce2229d
+
+  - path: src/screens/FileLibraryScreen.tsx
+    purpose: "Browse all media across orbits — 3-column grid with filter/sort pills, download-on-tap (FileLibraryCell), paginated loading (PAGE_SIZE=30), QuotaBar from getGroupQuota API, orbit/content-type filter chips, sort cycle (date/size asc/desc), MediaLightbox integration. Uses useWindowDimensions for responsive cell sizing."
+    key_symbols:
+      - FileLibraryScreen
+      - FileLibraryCell
+      - ContentFilter
+      - SortState
+    last_hash: modified
 
   - path: src/screens/threads/OrbitSelectorScreen.tsx
     purpose: "Modal screen for switching active orbit — FlatList of group conversations with planet emoji, checkmark on active, create/join orbit footer actions."
@@ -245,10 +278,10 @@ core_files:
     last_hash: 10bc709
 
   - path: src/navigation/SettingsStackNavigator.tsx
-    purpose: "Native stack navigator for Settings tab — wraps SettingsScreen with potential sub-screen push navigation."
+    purpose: "Native stack navigator for Settings tab — wraps SettingsScreen + FileLibraryScreen. FileLibrary is a push target from Settings > File Library."
     key_symbols:
       - SettingsStackNavigator
-    last_hash: ce2229d
+    last_hash: modified
 
   - path: src/navigation/MainTabNavigator.tsx
     purpose: "Bottom tab navigator — Threads, Chats, Settings tabs. Settings tab points to SettingsStackNavigator for nested push navigation."
@@ -267,7 +300,7 @@ documentation:
     last_hash: fb940a7
 
   - path: CLAUDE.md
-    relevance: Project overview, current phase (Phase 1 Foundation), quick start commands, agent roster
+    relevance: Project overview, current phase (Phase 2 Core Features), quick start commands, agent roster
 
   - path: docs/design/CLAUDE-DESIGN-BRIEF.md
     relevance: "MUST READ before any UI work — hard design rules: no gradients, 3px border radius, 13px body text, monochrome palette, retro aesthetic constraints"
@@ -395,7 +428,7 @@ patterns:
     description: "Settings screen is a ScrollView composing ProfileCard (avatar + name + handle), SectionHeader helper, SettingsRow (emoji icon + label + value + chevron), and QuotaBar (progress bar with used/total label). Sub-components live in src/screens/settings/ and are memoized. Screen fetches quota from API on mount."
 
   - name: stack-navigator-per-tab
-    description: "Each bottom tab has its own NativeStackNavigator for sub-screen push navigation. SettingsStackNavigator wraps SettingsScreen. ThreadsStackNavigator wraps InboxScreen + ThreadDetailScreen + OrbitSelectorScreen. This allows each tab to maintain independent navigation state."
+    description: "Each bottom tab has its own NativeStackNavigator for sub-screen push navigation. SettingsStackNavigator wraps SettingsScreen + FileLibraryScreen. ThreadsStackNavigator wraps InboxScreen + ThreadDetailScreen + OrbitSelectorScreen. This allows each tab to maintain independent navigation state."
 
   - name: orbit-selector-pattern
     description: "OrbitSelectorScreen is a modal screen in ThreadsStackNavigator. FlatList of group conversations filtered from store. Each OrbitListItem shows planet emoji, orbit name, member count, and checkmark for active orbit. Footer has Create Orbit and Join Orbit pressable actions. Selecting an orbit calls setActiveConversation and goBack."
@@ -404,7 +437,7 @@ patterns:
     description: "App.tsx reads colorScheme from useUI() store selector. Passes it as colorSchemeOverride prop to ThemeProvider. MMKV rehydration in bootstrap.ts ensures the persisted preference is loaded before first render. Settings screen cycles through system -> light -> dark via setColorScheme store action."
 
   - name: barrel-export-caution
-    description: "Do NOT add components to src/components/index.ts if they import hooks pulling heavy service chains (download service → store → MMKV → NitroModules). Causes cascading test failures in unrelated screens. Import directly instead."
+    description: "Do NOT add components to src/components/index.ts if they import hooks pulling heavy service chains (download service -> store -> MMKV -> NitroModules). Causes cascading test failures in unrelated screens. Import directly instead."
 
   - name: media-gallery-adaptive-layout
     description: "MediaGallery uses getGalleryLayout(count, maxWidth, gap, firstItem) for 4 layout variants: 1=full-width aspect-preserved (150-300px cap, 4:3 fallback), 2=side-by-side squares, 3=L-shape (60% left + 40% right stacked), 4+=2x2 grid with dark '+N' overlay on 4th cell."
@@ -417,3 +450,24 @@ patterns:
 
   - name: media-store-selectors
     description: "useMediaForReply(replyId) and useMediaForThread(threadId) in src/stores/index.ts use useShallow for efficient re-renders. Must be added to store mocks in screen tests (e.g. ThreadDetailScreen.test.tsx)."
+
+  - name: sql-allowlist-interpolation
+    description: "mediaRepository.ts uses SORT_COLUMNS and SORT_DIRS as Record<string,string> allowlists with fallback defaults. Only allowlisted values are interpolated into SQL ORDER BY clauses; all user-supplied filter values go through parameterized ? placeholders. Apply this pattern whenever dynamic SQL ordering or column selection is needed."
+
+  - name: download-on-tap-unbounded-list
+    description: "FileLibraryCell shows blurHash/placeholder for non-downloaded items and triggers downloadAndDecryptMedia only on tap. Contrasts with MediaItemView which auto-downloads via useMediaDownload on mount. Use download-on-tap for unbounded/paginated lists (file library, search results) to avoid mass concurrent downloads. Use auto-download only for bounded lists (thread/reply inline media, typically 1-4 items)."
+
+  - name: usewindowdimensions-responsive
+    description: "Use useWindowDimensions() hook (not module-scope Dimensions.get('window')) for cell sizing and layout calculations. Module-scope Dimensions.get captures the value at import time and will not update on device rotation, multitasking split, or window resize. The hook re-renders on dimension changes."
+
+  - name: zustand-selector-stable-ref
+    description: "Zustand selectors must return stable references to avoid infinite re-render loops. Return the existing object from state (e.g., s.media) not a new object literal (e.g., {a: s.a, b: s.b}). Creating a new object on every selector call defeats shallow equality and causes useEffect deps to fire continuously. When multiple fields are needed, use useShallow with a tuple or object factory."
+
+  - name: setmediabatch-store-first-guard
+    description: "setMediaBatch, setMediaForThread, and setMediaForReply all check existing downloadState === 'downloading' and skip clobbering those entries. Required because list reloads (FileLibraryScreen loadPage, thread detail data refresh) would otherwise reset in-flight download state, causing abort/restart loops in useMediaDownload."
+
+  - name: recover-stale-paths
+    description: "recoverStalePaths(rows) async checks disk for media files that exist on disk but have stale DB state (not marked as downloaded). Updates DB + Zustand store, then returns recovered IDs so the caller can patch local component state. Used in FileLibraryScreen after loadPage to reconcile disk reality with DB."
+
+  - name: media-mapper-extraction
+    description: "mediaRowToItem and normalizeAttachmentKey extracted from threadService.ts into src/database/repositories/mediaMapper.ts. This avoids pulling the full crypto/API dependency chain when only DB-to-store data conversion is needed (e.g., in FileLibraryScreen which queries the DB directly)."

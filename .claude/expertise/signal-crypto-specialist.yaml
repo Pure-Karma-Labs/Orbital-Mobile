@@ -1,5 +1,5 @@
-version: "3.0"
-last_updated: "2026-05-01"
+version: "3.1"
+last_updated: "2026-05-19"
 agent: signal-crypto-specialist
 
 core_files:
@@ -21,6 +21,12 @@ core_files:
     purpose: 2 sealed sender stubs — deferred pending SenderCertificate backend infrastructure
   - path: packages/orbital-signal/rust/orbital_signal/src/util.rs
     purpose: 5 utility functions — pre-key extraction, address construction, parsePreKeyMessageIds
+  - path: packages/orbital-signal/rust/orbital_signal/src/attachment_crypto.rs
+    purpose: "AES-256-CBC + HMAC-SHA256 attachment encrypt/decrypt with Zeroizing key material, constant-time digest comparison (subtle::ConstantTimeEq), KAT vectors from pycryptodome reference"
+  - path: packages/orbital-signal/rust/orbital_signal/src/content_crypto.rs
+    purpose: "AES-256-GCM content encrypt/decrypt with Zeroizing key material, AAD support for cross-context replay prevention"
+  - path: packages/orbital-signal/rust/orbital_signal/tests/protocol_roundtrip_tests.rs
+    purpose: "Integration tests: session roundtrip, group roundtrip, identity change detection. Canonical example of preloaded store threading and tokio runtime nesting avoidance."
   - path: src/services/crypto/cryptoService.ts
     purpose: TypeScript orchestration — encrypt, decrypt, establishSession, group ops with per-address locking and transaction wrapping
   - path: src/services/crypto/keyGenerationService.ts
@@ -39,6 +45,8 @@ core_files:
     purpose: "Thread orchestration — decryptMediaMetadataEnvelope(), processMediaMetadata() with attachment key extraction from v1 envelope, normalizeAttachmentKey() for legacy type compat, clearProcessedMediaIds() on logout"
   - path: src/services/conversationService.ts
     purpose: Orbit CRUD orchestration with defensive catches for legacy plaintext names and placeholder keys
+  - path: src/services/crypto/__tests__/cryptoService.test.ts
+    purpose: "9 edge-case tests for cryptoService: identity change VerifiedStatus.Unverified mapping, session establishment, group ops"
 
 documentation:
   - path: docs/libsignal-api-surface.md
@@ -75,7 +83,7 @@ integration_points:
 
 patterns:
   - name: preloaded-store
-    description: "TypeScript reads store data → passes Input records to Rust → Rust uses InMemSignalProtocolStore + block_on() → returns Result records → TypeScript persists mutations"
+    description: "TypeScript reads store data -> passes Input records to Rust -> Rust uses InMemSignalProtocolStore + block_on() -> returns Result records -> TypeScript persists mutations"
   - name: per-address-locking
     description: "Module-scoped promise-queue per {name}:{deviceId} serializes all protocol operations to same address"
   - name: begin-immediate-transactions
@@ -98,6 +106,14 @@ patterns:
     description: "Attachment key (64 bytes: 32 AES + 32 HMAC) embedded as base64 inside AES-256-GCM encrypted metadata envelope (v:1). Recipients extract key from envelope after group-key decryption. Zero-knowledge preserved — server never sees plaintext envelope."
   - name: normalize-attachment-key
     description: "normalizeAttachmentKey() in threadService.ts handles Uint8Array, ArrayBuffer, and string (base64) types. Needed because pre-c30110f data stored attachment_key as base64 TEXT in BLOB column. 64-byte length validation after normalization."
+  - name: zeroize-key-material-at-ffi-boundary
+    description: "Zeroizing::new(keys) immediately on FFI entry, before any validation or branching, so key material is zeroed on all exit paths (early returns, errors). Applied to attachment_crypto.rs and content_crypto.rs."
+  - name: opaque-decryption-errors
+    description: "MAC mismatch, digest mismatch, and padding/unpad failures all return the same SignalError::InvalidMessage { reason: 'decryption failed' } to prevent padding oracle and other information-leaking attacks."
+  - name: identity-changed-maps-to-unverified
+    description: "When Rust returns identityChanged: true, TypeScript sets VerifiedStatus.Unverified (not Default). Default = never seen; Unverified = changed and not yet re-verified. Applied in both decryptPreKeyMessage and establishSession paths in cryptoService.ts."
+  - name: deterministic-iv-inner-fn-private
+    description: "Functions that accept an explicit IV (attachment_encrypt_inner) must NEVER be pub or #[uniffi::export]. Exposing deterministic-IV functions via FFI lets callers reuse IVs, breaking CBC/GCM confidentiality. The public API always generates fresh IVs via CSPRNG."
 
 blockers:
   - name: identity-key-keychain-migration

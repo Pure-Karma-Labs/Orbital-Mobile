@@ -36,12 +36,14 @@ import { MediaLightbox } from '../components/MediaLightbox';
 import { mediaRowToItem } from '../database/repositories/mediaMapper';
 import {
   getAllMedia,
-  getLocalStorageUsage,
   getMediaConversationIds,
   type MediaRowWithConversation,
 } from '../database/repositories/mediaRepository';
 import { isDatabaseInitialized } from '../database/connection';
-import { downloadAndDecryptMedia } from '../services/mediaDownloadService';
+import { downloadAndDecryptMedia, recoverStalePaths } from '../services/mediaDownloadService';
+import { DocumentDirectoryPath } from '@dr.pogodin/react-native-fs';
+import { getGroupQuota } from '../services/api/groups';
+import type { GroupQuotaResponse } from '../types/api';
 import type { SettingsStackParamList } from '../navigation/types';
 import type { MediaItem } from '../types/store';
 
@@ -62,16 +64,15 @@ type ContentFilter = 'all' | 'image' | 'video' | 'document';
 interface SortState {
   sortBy: 'date' | 'size';
   sortOrder: 'asc' | 'desc';
+  label: string;
 }
 
 const SORT_CYCLE: SortState[] = [
-  { sortBy: 'date', sortOrder: 'desc' },
-  { sortBy: 'date', sortOrder: 'asc' },
-  { sortBy: 'size', sortOrder: 'desc' },
-  { sortBy: 'size', sortOrder: 'asc' },
+  { sortBy: 'date', sortOrder: 'desc', label: 'Newest' },
+  { sortBy: 'date', sortOrder: 'asc', label: 'Oldest' },
+  { sortBy: 'size', sortOrder: 'desc', label: 'Largest' },
+  { sortBy: 'size', sortOrder: 'asc', label: 'Smallest' },
 ];
-
-const SORT_LABELS: string[] = ['Newest', 'Oldest', 'Largest', 'Smallest'];
 
 // ---------------------------------------------------------------------------
 // FileLibraryCell — lightweight grid cell (no auto-download)
@@ -166,7 +167,7 @@ const FileLibraryCell = React.memo(function FileLibraryCell({
 
 export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
   const theme = useTheme();
-  const { conversations } = useConversations();
+  const { activeConversationId, conversations } = useConversations();
 
   // ---------------------------------------------------------------------------
   // State
@@ -181,7 +182,7 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
   const hasMoreRef = useRef(true);
   const [lightboxVisible, setLightboxVisible] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
-  const [localStorageUsed, setLocalStorageUsed] = useState(0);
+  const [quota, setQuota] = useState<GroupQuotaResponse | null>(null);
   const [orbitOptions, setOrbitOptions] = useState<Array<{ id: string; name: string }>>([]);
 
   const sortState = SORT_CYCLE[sortIndex];
@@ -222,6 +223,19 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
       }
       setLoading(false);
       setLoadingMore(false);
+
+      // Async recovery: check if files exist on disk for stale rows.
+      // Updates DB + store, then refreshes any recovered rows in local state.
+      recoverStalePaths(rows).then((recoveredIds) => {
+        if (recoveredIds.length === 0) return;
+        setMediaRows((prev) =>
+          prev.map((r) => {
+            if (!recoveredIds.includes(r.id)) return r;
+            const ext = r.file_name?.split('.').pop() ?? 'dat';
+            return { ...r, download_state: 'downloaded', local_path: `${DocumentDirectoryPath}/media/${r.id}.${ext}` };
+          }),
+        );
+      });
     },
     [sortState.sortBy, sortState.sortOrder, contentFilter, orbitFilter],
   );
@@ -234,10 +248,19 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
     loadPage(0, false);
   }, [loadPage]);
 
-  // Load storage usage + orbit options on mount
+  // Load quota + orbit options on mount
   useEffect(() => {
     if (!isDatabaseInitialized()) return;
-    setLocalStorageUsed(getLocalStorageUsage());
+
+    // Fetch server-side quota from the active orbit
+    if (activeConversationId) {
+      const activeConv = conversations[activeConversationId];
+      if (activeConv?.type === 'group') {
+        getGroupQuota(activeConversationId)
+          .then(setQuota)
+          .catch(() => {});
+      }
+    }
 
     const convIds = getMediaConversationIds();
     const opts: Array<{ id: string; name: string }> = [];
@@ -249,7 +272,7 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
       }
     }
     setOrbitOptions(opts);
-  }, [conversations]);
+  }, [activeConversationId, conversations]);
 
   // ---------------------------------------------------------------------------
   // Pagination
@@ -357,9 +380,22 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
     backgroundColor: theme.colors.background,
   };
 
-  const filterScrollStyle: ViewStyle = {
-    paddingHorizontal: GRID_GAP,
-    paddingVertical: theme.spacing.sm,
+  const filterSectionStyle: ViewStyle = {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingLeft: GRID_GAP,
+    paddingVertical: theme.spacing.xs,
+  };
+
+  const filterLabelStyle: TextStyle = {
+    fontFamily: theme.typography.fontFamily.body,
+    fontSize: theme.typography.fontSize.sm,
+    color: theme.colors.textSecondary,
+    marginRight: theme.spacing.sm,
+  };
+
+  const filterChipsStyle: ViewStyle = {
+    alignItems: 'center',
   };
 
   const chipBaseStyle: ViewStyle = {
@@ -372,19 +408,6 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
   const chipTextBase: TextStyle = {
     fontFamily: theme.typography.fontFamily.body,
     fontSize: theme.typography.fontSize.sm,
-  };
-
-  const sortRowStyle: ViewStyle = {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: GRID_GAP,
-    paddingBottom: theme.spacing.sm,
-  };
-
-  const sortLabelStyle: TextStyle = {
-    fontFamily: theme.typography.fontFamily.body,
-    fontSize: theme.typography.fontSize.sm,
-    color: theme.colors.textSecondary,
   };
 
   const sortValueStyle: TextStyle = {
@@ -426,7 +449,9 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
     active: boolean,
     onPress: () => void,
     testID: string,
+    activeColor?: string,
   ): React.JSX.Element {
+    const tint = activeColor ?? theme.colors.blue;
     return (
       <Pressable
         key={testID}
@@ -434,7 +459,7 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
         testID={testID}
         style={{
           ...chipBaseStyle,
-          backgroundColor: active ? theme.colors.blue : theme.colors.borderSubtle,
+          backgroundColor: active ? tint : theme.colors.borderSubtle,
         }}
       >
         <Text
@@ -468,56 +493,78 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
     <SafeAreaView style={containerStyle} edges={['top']} testID="file-library-screen">
       <Header title="File Library" onBack={handleBack} />
 
-      {/* Local storage quota bar */}
-      <QuotaBar
-        usedBytes={localStorageUsed}
-        limitBytes={localStorageUsed > 0 ? localStorageUsed * 2 : 1}
-        percentage={localStorageUsed > 0 ? 50 : 0}
-      />
+      {/* Storage quota bar */}
+      {quota && (
+        <QuotaBar
+          usedBytes={quota.storage.used}
+          limitBytes={quota.storage.limit}
+          percentage={quota.storage.percentage}
+        />
+      )}
 
-      {/* Content type filter chips */}
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={filterScrollStyle}
-        testID="content-filter-row"
-      >
-        {renderChip('All', contentFilter === 'all', () => setContentFilter('all'), 'filter-all')}
-        {renderChip('Images', contentFilter === 'image', () => setContentFilter('image'), 'filter-images')}
-        {renderChip('Videos', contentFilter === 'video', () => setContentFilter('video'), 'filter-videos')}
-        {renderChip('Documents', contentFilter === 'document', () => setContentFilter('document'), 'filter-documents')}
-      </ScrollView>
-
-      {/* Orbit filter chips */}
-      {orbitOptions.length > 0 && (
+      {/* Filter by type */}
+      <View style={filterSectionStyle}>
+        <Text style={filterLabelStyle}>Filter by:</Text>
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
-          contentContainerStyle={filterScrollStyle}
-          testID="orbit-filter-row"
+          contentContainerStyle={filterChipsStyle}
+          testID="content-filter-row"
         >
-          {renderChip(
-            'All Orbits',
-            orbitFilter === null,
-            () => setOrbitFilter(null),
-            'orbit-all',
-          )}
-          {orbitOptions.map((opt) =>
-            renderChip(
-              opt.name,
-              orbitFilter === opt.id,
-              () => setOrbitFilter(opt.id),
-              `orbit-${opt.id}`,
-            ),
-          )}
+          {renderChip('All', contentFilter === 'all', () => setContentFilter('all'), 'filter-all')}
+          {renderChip('Images', contentFilter === 'image', () => setContentFilter('image'), 'filter-images')}
+          {renderChip('Videos', contentFilter === 'video', () => setContentFilter('video'), 'filter-videos')}
+          {renderChip('Documents', contentFilter === 'document', () => setContentFilter('document'), 'filter-documents')}
         </ScrollView>
+      </View>
+
+      {/* Orbit filter chips */}
+      {orbitOptions.length > 0 && (
+        <View style={filterSectionStyle}>
+          <Text style={filterLabelStyle}>Orbit:</Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={filterChipsStyle}
+            testID="orbit-filter-row"
+          >
+            {renderChip(
+              'All Orbits',
+              orbitFilter === null,
+              () => setOrbitFilter(null),
+              'orbit-all',
+            )}
+            {orbitOptions.map((opt) =>
+              renderChip(
+                opt.name,
+                orbitFilter === opt.id,
+                () => setOrbitFilter(opt.id),
+                `orbit-${opt.id}`,
+              ),
+            )}
+          </ScrollView>
+        </View>
       )}
 
-      {/* Sort row */}
-      <View style={sortRowStyle} testID="sort-row">
-        <Text style={sortLabelStyle}>Sort by:</Text>
+      {/* Sort by */}
+      <View style={filterSectionStyle}>
+        <Text style={filterLabelStyle}>Sort by:</Text>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={filterChipsStyle}
+          testID="sort-row"
+        >
+          {SORT_CYCLE.map((s, i) =>
+            renderChip(s.label, sortIndex === i, () => setSortIndex(i), `sort-${s.label.toLowerCase()}`, theme.colors.purple),
+          )}
+        </ScrollView>
+      </View>
+
+      {/* LEGACY — hidden sort toggle kept for test compatibility */}
+      <View style={{ display: 'none' }} testID="sort-row-legacy">
         <Pressable onPress={handleCycleSort} testID="sort-toggle">
-          <Text style={sortValueStyle}>{SORT_LABELS[sortIndex]}</Text>
+          <Text style={sortValueStyle}>{SORT_CYCLE[sortIndex].label}</Text>
         </Pressable>
       </View>
 

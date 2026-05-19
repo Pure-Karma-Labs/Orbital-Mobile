@@ -17,7 +17,7 @@ gh issue list --repo Pure-Karma-Labs/Orbital-Mobile
 gh pr view 1 --repo Pure-Karma-Labs/Orbital-Mobile
 ```
 
-**Current Phase:** Phase 1 - Foundation (Weeks 1-4)
+**Current Phase:** Phase 2 - Core Features (Weeks 5-8)
 
 ## Project Overview
 

@@ -125,6 +125,41 @@ function getExtension(row: MediaRow): string {
 }
 
 // ---------------------------------------------------------------------------
+// Stale-path recovery — check if files exist on disk for non-downloaded rows
+// ---------------------------------------------------------------------------
+
+/**
+ * Check a batch of media rows for files that exist on disk but have stale DB
+ * state (pending/failed). Updates DB and store for any recovered items.
+ *
+ * Returns the IDs of recovered items so the caller can trigger a re-render.
+ */
+export async function recoverStalePaths(
+  rows: ReadonlyArray<{ id: string; download_state: string; local_path: string | null; content_type: string; file_name: string | null }>,
+): Promise<string[]> {
+  const recovered: string[] = [];
+  for (const row of rows) {
+    if (row.download_state === 'downloaded' || row.download_state === 'downloading') continue;
+
+    const ext = getExtension(row as MediaRow);
+    const expectedPath = `${MEDIA_DIR}/${row.id}.${ext}`;
+    try {
+      const fileExists = await exists(expectedPath);
+      if (fileExists) {
+        updateDownloadState(row.id, 'downloaded', expectedPath);
+        useAppStore
+          .getState()
+          .updateMediaDownloadState(row.id, 'downloaded', expectedPath);
+        recovered.push(row.id);
+      }
+    } catch {
+      // Best-effort
+    }
+  }
+  return recovered;
+}
+
+// ---------------------------------------------------------------------------
 // Core download function
 // ---------------------------------------------------------------------------
 
@@ -202,6 +237,7 @@ export async function downloadAndDecryptMedia(
       // 8. Atomic write — .tmp + moveFile (F1)
       const plaintextBase64 = arrayBufferToBase64(toArrayBuffer(plaintext));
       await writeFile(tmpPath, plaintextBase64, 'base64');
+      await unlink(finalPath).catch(() => {});
       await moveFile(tmpPath, finalPath);
 
       // 9. Persist → 'downloaded' + localPath
@@ -328,6 +364,23 @@ export async function cleanupOrphanedMedia(): Promise<void> {
 
         if (!row) {
           await unlink(file.path).catch(() => {});
+          continue;
+        }
+
+        // 1b. Row exists, file on disk, but DB state is stale (failed/pending) —
+        // recover by updating DB to 'downloaded' with the actual file path.
+        if (
+          row.download_state !== 'downloaded' &&
+          row.download_state !== 'downloading'
+        ) {
+          try {
+            updateDownloadState(row.id, 'downloaded', file.path);
+            useAppStore
+              .getState()
+              .updateMediaDownloadState(row.id, 'downloaded', file.path);
+          } catch {
+            // Best-effort recovery
+          }
           continue;
         }
 

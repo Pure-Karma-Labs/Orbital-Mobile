@@ -145,7 +145,13 @@ export function SettingsScreen(): React.JSX.Element {
         <SettingsRow emojiUnified="1F441-FE0F" label="Read Receipts" value="On" chevron disabled />
 
         <SectionHeader label="Storage" />
-        <SettingsRow emojiUnified="1F4C1" label="File Library" chevron disabled />
+        <SettingsRow
+          emojiUnified="1F4C1"
+          label="File Library"
+          chevron
+          onPress={() => navigation.navigate('FileLibrary')}
+          testID="file-library-row"
+        />
         {quota && (
           <QuotaBar
             usedBytes={quota.storage.used}

@@ -19,6 +19,11 @@ export const createMediaSlice: StateCreator<
     const updated = { ...media };
     const ids: string[] = [];
     for (const item of items) {
+      const existing = updated[item.id];
+      if (existing?.downloadState === 'downloading') {
+        ids.push(item.id);
+        continue;
+      }
       updated[item.id] = item;
       ids.push(item.id);
     }
@@ -40,6 +45,11 @@ export const createMediaSlice: StateCreator<
     const updated = { ...media };
     const ids: string[] = [];
     for (const item of items) {
+      const existing = updated[item.id];
+      if (existing?.downloadState === 'downloading') {
+        ids.push(item.id);
+        continue;
+      }
       updated[item.id] = item;
       ids.push(item.id);
     }
@@ -54,6 +64,20 @@ export const createMediaSlice: StateCreator<
       false,
       'media/setMediaForReply',
     );
+  },
+
+  setMediaBatch: (items) => {
+    set((state) => {
+      const updated = { ...state.media };
+      for (const item of items) {
+        const existing = updated[item.id];
+        // Don't clobber items that are actively downloading —
+        // that would reset the download state and trigger abort/restart loops.
+        if (existing?.downloadState === 'downloading') continue;
+        updated[item.id] = item;
+      }
+      return { media: updated };
+    }, false, 'media/setMediaBatch');
   },
 
   upsertMedia: (item) => {

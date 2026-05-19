@@ -294,58 +294,6 @@ describe('decrypt type 1 (SignalMessage)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// decrypt — type 3 (PreKeySignalMessage)
-// ---------------------------------------------------------------------------
-
-describe('decrypt type 3 (PreKeySignalMessage)', () => {
-  beforeEach(() => {
-    (getSession as jest.Mock).mockReturnValue(null);
-    (getIdentityKey as jest.Mock).mockReturnValue(null);
-    (getPreKey as jest.Mock).mockReturnValue({ key_data: makeUint8Array(64, 0x03) });
-    (getSignedPreKey as jest.Mock).mockReturnValue({
-      key_data: makeUint8Array(128, 0x05),
-    });
-    (getKyberPreKey as jest.Mock).mockReturnValue({
-      key_data: makeUint8Array(256, 0x08),
-    });
-  });
-
-  it('parses message IDs, loads correct keys, decrypts, and applies all mutations', async () => {
-    const plaintext = await decrypt(
-      mockAddress,
-      makeUint8Array(128, 0x10),
-      EnvelopeType.PRE_KEY_BUNDLE,
-    );
-
-    expect(parsePrekeyMessageIds).toHaveBeenCalledTimes(1);
-    expect(getPreKey).toHaveBeenCalledWith(42);
-    expect(getSignedPreKey).toHaveBeenCalledWith(1);
-    expect(getKyberPreKey).toHaveBeenCalledWith(101);
-    expect(signalDecryptPreKey).toHaveBeenCalledTimes(1);
-    expect(plaintext).toBeInstanceOf(Uint8Array);
-  });
-
-  it('deletes consumed pre-key and marks kyber used in same transaction', async () => {
-    await decrypt(mockAddress, makeUint8Array(128), EnvelopeType.PRE_KEY_BUNDLE);
-
-    expect(mockDb.executeSync).toHaveBeenCalledWith('BEGIN IMMEDIATE');
-    expect(saveSession).toHaveBeenCalledTimes(1);
-    expect(saveIdentityKey).toHaveBeenCalledTimes(1);
-    expect(removePreKey).toHaveBeenCalledWith(42);
-    expect(markKyberPreKeyUsed).toHaveBeenCalledWith(101);
-    expect(mockDb.executeSync).toHaveBeenCalledWith('COMMIT');
-  });
-
-  it('throws when signed pre-key is missing', async () => {
-    (getSignedPreKey as jest.Mock).mockReturnValue(null);
-
-    await expect(
-      decrypt(mockAddress, makeUint8Array(128), EnvelopeType.PRE_KEY_BUNDLE),
-    ).rejects.toThrow('Signed pre-key 1 not found');
-  });
-});
-
-// ---------------------------------------------------------------------------
 // establishSession
 // ---------------------------------------------------------------------------
 
@@ -435,6 +383,34 @@ describe('processSenderKeyDistribution', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Group operations — null sender key
+// ---------------------------------------------------------------------------
+
+describe('group operations — null sender key', () => {
+  it('encryptGroup passes undefined senderKeyRecord when getSenderKey returns null', async () => {
+    (getSenderKey as jest.Mock).mockReturnValue(null);
+
+    await encryptGroup('dist-uuid', mockAddress, makeUint8Array(16));
+
+    expect(groupEncrypt).toHaveBeenCalledTimes(1);
+    const input = (groupEncrypt as jest.Mock).mock.calls[0][0];
+    expect(input.senderKeyRecord).toBeUndefined();
+    expect(saveSenderKey).toHaveBeenCalledTimes(1);
+  });
+
+  it('decryptGroup passes undefined senderKeyRecord when getSenderKey returns null', async () => {
+    (getSenderKey as jest.Mock).mockReturnValue(null);
+
+    await decryptGroup(mockAddress, 'dist-uuid', makeUint8Array(64));
+
+    expect(groupDecrypt).toHaveBeenCalledTimes(1);
+    const input = (groupDecrypt as jest.Mock).mock.calls[0][0];
+    expect(input.senderKeyRecord).toBeUndefined();
+    expect(saveSenderKey).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Transaction safety
 // ---------------------------------------------------------------------------
 
@@ -454,6 +430,348 @@ describe('transaction safety', () => {
     expect(mockDb.executeSync).toHaveBeenCalledWith('BEGIN IMMEDIATE');
     expect(mockDb.executeSync).toHaveBeenCalledWith('ROLLBACK');
     expect(mockDb.executeSync).not.toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('rolls back when saveSenderKey throws during encryptGroup', async () => {
+    (getSenderKey as jest.Mock).mockReturnValue({
+      record: makeUint8Array(128, 0x50),
+    });
+    (saveSenderKey as jest.Mock).mockImplementation(() => {
+      throw new Error('sender key write failure');
+    });
+
+    await expect(
+      encryptGroup('dist-uuid', mockAddress, makeUint8Array(16)),
+    ).rejects.toThrow('sender key write failure');
+
+    expect(mockDb.executeSync).toHaveBeenCalledWith('BEGIN IMMEDIATE');
+    expect(mockDb.executeSync).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockDb.executeSync).not.toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('rolls back when removePreKey throws during decryptPreKeyMessage', async () => {
+    // Set up pre-key message mocks
+    (getSession as jest.Mock).mockReturnValue(null);
+    (getIdentityKey as jest.Mock).mockReturnValue(null);
+    (getPreKey as jest.Mock).mockReturnValue({ key_data: makeUint8Array(64, 0x03) });
+    (getSignedPreKey as jest.Mock).mockReturnValue({
+      key_data: makeUint8Array(128, 0x05),
+    });
+    (getKyberPreKey as jest.Mock).mockReturnValue({
+      key_data: makeUint8Array(256, 0x08),
+    });
+
+    (parsePrekeyMessageIds as jest.Mock).mockResolvedValue({
+      preKeyId: 42,
+      signedPreKeyId: 1,
+      kyberPreKeyId: 101,
+    });
+    (signalDecryptPreKey as jest.Mock).mockResolvedValue({
+      plaintext: makeArrayBuffer(16, 0x30),
+      updatedSessionRecord: makeArrayBuffer(128, 0x31),
+      senderIdentityKey: makeArrayBuffer(33, 0x32),
+      identityChanged: false,
+      consumedPreKeyId: 42,
+      consumedKyberPreKeyId: 101,
+    });
+    (removePreKey as jest.Mock).mockImplementation(() => {
+      throw new Error('removePreKey DB failure');
+    });
+
+    await expect(
+      decrypt(mockAddress, makeUint8Array(128), EnvelopeType.PRE_KEY_BUNDLE),
+    ).rejects.toThrow('removePreKey DB failure');
+
+    expect(mockDb.executeSync).toHaveBeenCalledWith('BEGIN IMMEDIATE');
+    expect(mockDb.executeSync).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockDb.executeSync).not.toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('rolls back when saveSenderKey throws during createSenderKeyDistribution', async () => {
+    (getSenderKey as jest.Mock).mockReturnValue(null);
+    (saveSenderKey as jest.Mock).mockImplementation(() => {
+      throw new Error('sender key write failure');
+    });
+
+    await expect(
+      createSenderKeyDistribution('dist-uuid', mockAddress),
+    ).rejects.toThrow('sender key write failure');
+
+    expect(mockDb.executeSync).toHaveBeenCalledWith('BEGIN IMMEDIATE');
+    expect(mockDb.executeSync).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockDb.executeSync).not.toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('rolls back when saveSenderKey throws during processSenderKeyDistribution', async () => {
+    (getSenderKey as jest.Mock).mockReturnValue(null);
+    (saveSenderKey as jest.Mock).mockImplementation(() => {
+      throw new Error('sender key write failure');
+    });
+
+    await expect(
+      processSenderKeyDistribution(mockAddress, 'dist-uuid', makeUint8Array(64)),
+    ).rejects.toThrow('sender key write failure');
+
+    expect(mockDb.executeSync).toHaveBeenCalledWith('BEGIN IMMEDIATE');
+    expect(mockDb.executeSync).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockDb.executeSync).not.toHaveBeenCalledWith('COMMIT');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// decrypt — type 3 (PreKeySignalMessage)
+// ---------------------------------------------------------------------------
+
+describe('decrypt type 3 (PreKeySignalMessage)', () => {
+  beforeEach(() => {
+    (getSession as jest.Mock).mockReturnValue(null);
+    (getIdentityKey as jest.Mock).mockReturnValue(null);
+    (getPreKey as jest.Mock).mockReturnValue({ key_data: makeUint8Array(64, 0x03) });
+    (getSignedPreKey as jest.Mock).mockReturnValue({
+      key_data: makeUint8Array(128, 0x05),
+    });
+    (getKyberPreKey as jest.Mock).mockReturnValue({
+      key_data: makeUint8Array(256, 0x08),
+    });
+  });
+
+  it('parses message IDs, loads correct keys, decrypts, and applies all mutations', async () => {
+    const plaintext = await decrypt(
+      mockAddress,
+      makeUint8Array(128, 0x10),
+      EnvelopeType.PRE_KEY_BUNDLE,
+    );
+
+    expect(parsePrekeyMessageIds).toHaveBeenCalledTimes(1);
+    expect(getPreKey).toHaveBeenCalledWith(42);
+    expect(getSignedPreKey).toHaveBeenCalledWith(1);
+    expect(getKyberPreKey).toHaveBeenCalledWith(101);
+    expect(signalDecryptPreKey).toHaveBeenCalledTimes(1);
+    expect(plaintext).toBeInstanceOf(Uint8Array);
+  });
+
+  it('deletes consumed pre-key and marks kyber used in same transaction', async () => {
+    await decrypt(mockAddress, makeUint8Array(128), EnvelopeType.PRE_KEY_BUNDLE);
+
+    expect(mockDb.executeSync).toHaveBeenCalledWith('BEGIN IMMEDIATE');
+    expect(saveSession).toHaveBeenCalledTimes(1);
+    expect(saveIdentityKey).toHaveBeenCalledTimes(1);
+    expect(removePreKey).toHaveBeenCalledWith(42);
+    expect(markKyberPreKeyUsed).toHaveBeenCalledWith(101);
+    expect(mockDb.executeSync).toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('throws when signed pre-key is missing', async () => {
+    (getSignedPreKey as jest.Mock).mockReturnValue(null);
+
+    await expect(
+      decrypt(mockAddress, makeUint8Array(128), EnvelopeType.PRE_KEY_BUNDLE),
+    ).rejects.toThrow('Signed pre-key 1 not found');
+  });
+
+  it('identityChanged: true — saves with Default status unconditionally (KNOWN GAP — see #137)', async () => {
+    // Mock signalDecryptPreKey to return identityChanged: true with a different sender key
+    const newSenderIdentityKey = makeArrayBuffer(33, 0xcc);
+    (signalDecryptPreKey as jest.Mock).mockResolvedValue({
+      plaintext: makeArrayBuffer(16, 0x30),
+      updatedSessionRecord: makeArrayBuffer(128, 0x31),
+      senderIdentityKey: newSenderIdentityKey,
+      identityChanged: true,
+      consumedPreKeyId: 42,
+      consumedKyberPreKeyId: 101,
+    });
+
+    // Existing identity with Verified status
+    (getIdentityKey as jest.Mock).mockReturnValue({
+      identity_key: makeUint8Array(33, 0x88),
+      verified: 1, // VerifiedStatus.Verified
+      first_use: 1000000,
+      nonblocking_approval: 1,
+    });
+
+    const plaintext = await decrypt(
+      mockAddress,
+      makeUint8Array(128),
+      EnvelopeType.PRE_KEY_BUNDLE,
+    );
+
+    // Decryption should succeed
+    expect(plaintext).toBeInstanceOf(Uint8Array);
+
+    // saveIdentityKey should be called with the NEW sender identity key
+    expect(saveIdentityKey).toHaveBeenCalledTimes(1);
+    const savedIdentity = (saveIdentityKey as jest.Mock).mock.calls[0][0];
+
+    // KNOWN GAP: verified is set to 0 (Default) unconditionally, even though
+    // identity changed from a Verified contact. Should be Unverified (2).
+    // TODO(#137): When identityChanged is true, should set Unverified and emit
+    // safety number change event
+    expect(savedIdentity.verified).toBe(0); // VerifiedStatus.Default
+
+    // first_use should be preserved from existing identity
+    expect(savedIdentity.first_use).toBe(1000000);
+  });
+
+  it('skips pre-key load and removal when preKeyId is undefined', async () => {
+    (parsePrekeyMessageIds as jest.Mock).mockResolvedValue({
+      preKeyId: undefined,
+      signedPreKeyId: 1,
+      kyberPreKeyId: 101,
+    });
+
+    (signalDecryptPreKey as jest.Mock).mockResolvedValue({
+      plaintext: makeArrayBuffer(16, 0x30),
+      updatedSessionRecord: makeArrayBuffer(128, 0x31),
+      senderIdentityKey: makeArrayBuffer(33, 0x32),
+      identityChanged: false,
+      consumedPreKeyId: undefined,
+      consumedKyberPreKeyId: 101,
+    });
+
+    await decrypt(mockAddress, makeUint8Array(128), EnvelopeType.PRE_KEY_BUNDLE);
+
+    // getPreKey should NOT be called since preKeyId is undefined
+    expect(getPreKey).not.toHaveBeenCalled();
+
+    // signalDecryptPreKey should receive preKeyRecord: undefined
+    const input = (signalDecryptPreKey as jest.Mock).mock.calls[0][0];
+    expect(input.preKeyRecord).toBeUndefined();
+
+    // removePreKey should NOT be called since consumedPreKeyId is undefined
+    expect(removePreKey).not.toHaveBeenCalled();
+
+    // markKyberPreKeyUsed should still be called
+    expect(markKyberPreKeyUsed).toHaveBeenCalledWith(101);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getLocalServiceId
+// ---------------------------------------------------------------------------
+
+describe('getLocalServiceId', () => {
+  it('throws when userId is null', async () => {
+    mockGetState.mockReturnValue({ userId: null as unknown as string });
+
+    await expect(encrypt(mockAddress, makeUint8Array(16))).rejects.toThrow(
+      'Not authenticated — userId not available',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// withAddressLock concurrency
+// ---------------------------------------------------------------------------
+
+describe('withAddressLock concurrency', () => {
+  it('serializes concurrent encrypt calls to the same address', async () => {
+    // Use unique address to avoid state conflicts from other tests
+    const uniqueAddress = { name: 'concurrency-test-uuid', deviceId: 1 };
+
+    let resolveFirst!: (value: unknown) => void;
+    let resolveSecond!: (value: unknown) => void;
+    const firstPromise = new Promise(resolve => {
+      resolveFirst = resolve;
+    });
+    const secondPromise = new Promise(resolve => {
+      resolveSecond = resolve;
+    });
+
+    // Set up mocks: valid session, no identity
+    (getSession as jest.Mock).mockReturnValue({
+      record: makeUint8Array(128, 0x99),
+    });
+    (getIdentityKey as jest.Mock).mockReturnValue(null);
+
+    // signalEncrypt returns controlled promises
+    (signalEncrypt as jest.Mock)
+      .mockReturnValueOnce(firstPromise)
+      .mockReturnValueOnce(secondPromise);
+
+    // Fire both encrypt calls without awaiting
+    const call1 = encrypt(uniqueAddress, makeUint8Array(16, 0x01));
+    const call2 = encrypt(uniqueAddress, makeUint8Array(16, 0x02));
+
+    // Drain microtasks so the first call's signalEncrypt is invoked
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Only the first call should have reached signalEncrypt (second is blocked by lock)
+    expect(signalEncrypt).toHaveBeenCalledTimes(1);
+
+    // Resolve the first encryption
+    resolveFirst({
+      ciphertext: {
+        messageType: 'Whisper',
+        serialized: makeArrayBuffer(64, 0x10),
+      },
+      updatedSessionRecord: makeArrayBuffer(128, 0x11),
+    });
+
+    // Await the first call to complete fully
+    await call1;
+
+    // Drain microtasks so the second call's signalEncrypt is invoked
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Now the second call should have reached signalEncrypt
+    expect(signalEncrypt).toHaveBeenCalledTimes(2);
+
+    // Resolve the second encryption
+    resolveSecond({
+      ciphertext: {
+        messageType: 'Whisper',
+        serialized: makeArrayBuffer(64, 0x10),
+      },
+      updatedSessionRecord: makeArrayBuffer(128, 0x11),
+    });
+
+    await call2;
+
+    // Both should have saved sessions
+    expect(saveSession).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// bundleResponseToData with null preKey and kyberPreKey
+// ---------------------------------------------------------------------------
+
+describe('bundleResponseToData with null optional keys', () => {
+  it('passes undefined preKey and kyberPreKey fields when bundle has nulls', async () => {
+    // First call returns null (triggers auto-establish), then returns valid session
+    (getSession as jest.Mock)
+      .mockReturnValueOnce(null) // encrypt's first check
+      .mockReturnValue({ record: makeUint8Array(128, 0x40) }); // establishSession + encrypt recheck
+    (getIdentityKey as jest.Mock).mockReturnValue(null);
+
+    // Bundle response with null preKey and kyberPreKey
+    (getPreKeyBundle as jest.Mock).mockResolvedValue({
+      registrationId: 99,
+      deviceId: 1,
+      identityKey: 'AQID',
+      signedPreKey: { keyId: 1, publicKey: 'BQYH', signature: 'CAQK' },
+      preKey: null,
+      kyberPreKey: null,
+    });
+
+    // processPreKeyBundle should fail because Orbital requires Kyber,
+    // but we can still verify how bundleResponseToData mapped the fields
+    // by checking the call arguments to processPreKeyBundle
+    await encrypt(mockAddress, makeUint8Array(16)).catch(() => {
+      // Expected: may throw because kyber is required, but we verify the call args
+    });
+
+    expect(processPreKeyBundle).toHaveBeenCalledTimes(1);
+    const input = (processPreKeyBundle as jest.Mock).mock.calls[0][0];
+    expect(input.bundle.preKeyId).toBeUndefined();
+    expect(input.bundle.preKeyPublic).toBeUndefined();
+    expect(input.bundle.kyberPreKeyId).toBeUndefined();
+    expect(input.bundle.kyberPreKeyPublic).toBeUndefined();
+    expect(input.bundle.kyberPreKeySignature).toBeUndefined();
   });
 });
 

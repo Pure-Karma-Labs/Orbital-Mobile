@@ -145,6 +145,7 @@ jest.mock('../../database/connection', () => ({
 
 jest.mock('../../services/mediaDownloadService', () => ({
   downloadAndDecryptMedia: jest.fn().mockResolvedValue('/path/to/file.jpg'),
+  recoverStalePaths: jest.fn().mockResolvedValue([]),
 }));
 
 // Mock MediaLightbox to avoid pulling in useMediaDownload
@@ -238,9 +239,10 @@ describe('FileLibraryScreen — rendering', () => {
     expect(() => findByTestId(renderer.root, 'file-library-screen')).not.toThrow();
   });
 
-  it('renders the quota bar', () => {
+  it('does not render quota bar when quota is not loaded', () => {
     const renderer = renderScreen();
-    expect(() => findByTestId(renderer.root, 'quota-bar')).not.toThrow();
+    const bars = findAllByTestId(renderer.root, 'quota-bar');
+    expect(bars.length).toBe(0);
   });
 
   it('renders the content filter row', () => {

@@ -569,8 +569,7 @@ describe('decrypt type 3 (PreKeySignalMessage)', () => {
     ).rejects.toThrow('Signed pre-key 1 not found');
   });
 
-  it('identityChanged: true — saves with Default status unconditionally (KNOWN GAP — see #137)', async () => {
-    // Mock signalDecryptPreKey to return identityChanged: true with a different sender key
+  it('identityChanged: true — sets Unverified status on identity change', async () => {
     const newSenderIdentityKey = makeArrayBuffer(33, 0xcc);
     (signalDecryptPreKey as jest.Mock).mockResolvedValue({
       plaintext: makeArrayBuffer(16, 0x30),
@@ -595,21 +594,42 @@ describe('decrypt type 3 (PreKeySignalMessage)', () => {
       EnvelopeType.PRE_KEY_BUNDLE,
     );
 
-    // Decryption should succeed
     expect(plaintext).toBeInstanceOf(Uint8Array);
 
-    // saveIdentityKey should be called with the NEW sender identity key
     expect(saveIdentityKey).toHaveBeenCalledTimes(1);
     const savedIdentity = (saveIdentityKey as jest.Mock).mock.calls[0][0];
 
-    // KNOWN GAP: verified is set to 0 (Default) unconditionally, even though
-    // identity changed from a Verified contact. Should be Unverified (2).
-    // TODO(#137): When identityChanged is true, should set Unverified and emit
-    // safety number change event
-    expect(savedIdentity.verified).toBe(0); // VerifiedStatus.Default
+    // Identity changed: must set Unverified, NOT preserve prior Verified status
+    expect(savedIdentity.verified).toBe(2); // VerifiedStatus.Unverified
 
     // first_use should be preserved from existing identity
     expect(savedIdentity.first_use).toBe(1000000);
+  });
+
+  it('identityChanged: false — preserves existing Verified status', async () => {
+    (signalDecryptPreKey as jest.Mock).mockResolvedValue({
+      plaintext: makeArrayBuffer(16, 0x30),
+      updatedSessionRecord: makeArrayBuffer(128, 0x31),
+      senderIdentityKey: makeArrayBuffer(33, 0x88),
+      identityChanged: false,
+      consumedPreKeyId: 42,
+      consumedKyberPreKeyId: 101,
+    });
+
+    // Existing identity with Verified status
+    (getIdentityKey as jest.Mock).mockReturnValue({
+      identity_key: makeUint8Array(33, 0x88),
+      verified: 1, // VerifiedStatus.Verified
+      first_use: 1000000,
+      nonblocking_approval: 1,
+    });
+
+    await decrypt(mockAddress, makeUint8Array(128), EnvelopeType.PRE_KEY_BUNDLE);
+
+    const savedIdentity = (saveIdentityKey as jest.Mock).mock.calls[0][0];
+
+    // Identity unchanged: preserve existing Verified status
+    expect(savedIdentity.verified).toBe(1); // VerifiedStatus.Verified
   });
 
   it('skips pre-key load and removal when preKeyId is undefined', async () => {

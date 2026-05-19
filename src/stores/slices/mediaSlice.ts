@@ -19,6 +19,11 @@ export const createMediaSlice: StateCreator<
     const updated = { ...media };
     const ids: string[] = [];
     for (const item of items) {
+      const existing = updated[item.id];
+      if (existing?.downloadState === 'downloading') {
+        ids.push(item.id);
+        continue;
+      }
       updated[item.id] = item;
       ids.push(item.id);
     }
@@ -40,6 +45,11 @@ export const createMediaSlice: StateCreator<
     const updated = { ...media };
     const ids: string[] = [];
     for (const item of items) {
+      const existing = updated[item.id];
+      if (existing?.downloadState === 'downloading') {
+        ids.push(item.id);
+        continue;
+      }
       updated[item.id] = item;
       ids.push(item.id);
     }

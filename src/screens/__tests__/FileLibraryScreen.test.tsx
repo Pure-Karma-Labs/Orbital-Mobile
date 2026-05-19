@@ -291,8 +291,10 @@ describe('FileLibraryScreen — filter interaction', () => {
       findByTestId(renderer.root, 'filter-images').props.onPress();
     });
 
-    // getAllMedia should have been called again with image filter
-    expect(getAllMedia).toHaveBeenCalled();
+    // getAllMedia should have been called with image content filter
+    expect(getAllMedia).toHaveBeenCalledWith(
+      expect.objectContaining({ contentTypeFilter: 'image' }),
+    );
   });
 
   it('changes orbit filter when an orbit chip is pressed', () => {
@@ -305,7 +307,9 @@ describe('FileLibraryScreen — filter interaction', () => {
       findByTestId(renderer.root, 'orbit-conv-1').props.onPress();
     });
 
-    expect(getAllMedia).toHaveBeenCalled();
+    expect(getAllMedia).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'conv-1' }),
+    );
   });
 });
 
@@ -344,6 +348,54 @@ describe('FileLibraryScreen — navigation', () => {
       backButtons[0].props.onPress();
     });
     expect(mockGoBack).toHaveBeenCalled();
+  });
+});
+
+describe('FileLibraryScreen — cell press interactions', () => {
+  it('opens lightbox when a downloaded cell is tapped', () => {
+    // media-2 is downloaded with local_path set
+    mockMedia['media-2'] = { downloadState: 'downloaded', localPath: '/downloaded/photo2.png' };
+
+    const renderer = renderScreen();
+    const cell = findByTestId(renderer.root, 'file-cell-media-2');
+
+    act(() => {
+      cell.props.onPress();
+    });
+
+    // Lightbox should now be visible
+    expect(() => findByTestId(renderer.root, 'media-lightbox')).not.toThrow();
+    delete mockMedia['media-2'];
+  });
+
+  it('triggers download when a non-downloaded cell is tapped', () => {
+    const { downloadAndDecryptMedia } = require('../../services/mediaDownloadService');
+
+    const renderer = renderScreen();
+    const cell = findByTestId(renderer.root, 'file-cell-media-1');
+
+    act(() => {
+      cell.props.onPress();
+    });
+
+    expect(downloadAndDecryptMedia).toHaveBeenCalledWith('media-1');
+  });
+
+  it('does not trigger download for an item already downloading', () => {
+    const { downloadAndDecryptMedia } = require('../../services/mediaDownloadService');
+    downloadAndDecryptMedia.mockClear();
+
+    mockMedia['media-1'] = { downloadState: 'downloading', localPath: null };
+
+    const renderer = renderScreen();
+    const cell = findByTestId(renderer.root, 'file-cell-media-1');
+
+    act(() => {
+      cell.props.onPress();
+    });
+
+    expect(downloadAndDecryptMedia).not.toHaveBeenCalled();
+    delete mockMedia['media-1'];
   });
 });
 

@@ -79,8 +79,9 @@ export async function initNotifications(): Promise<void> {
   // unconditionally. But we still verify availability for foreground display.
   if (Platform.OS === 'ios') {
     try {
-      // A lightweight call to verify the native module loads
-      await notifee.getInitialNotification();
+      // Idempotent call to verify the native module loads without consuming
+      // a cold-start notification (getInitialNotification is one-shot).
+      await notifee.getChannels();
       notifeeAvailable = true;
     } catch {
       notifeeAvailable = false;
@@ -98,8 +99,10 @@ export async function initNotifications(): Promise<void> {
  * 4. Listen for token refresh to re-register automatically
  *
  * Stores permission state and token in the notification store slice.
+ *
+ * @returns Unsubscribe function for the token refresh listener.
  */
-export async function requestPermissionAndRegister(): Promise<void> {
+export async function requestPermissionAndRegister(): Promise<() => void> {
   const authStatus = await messaging().requestPermission();
 
   const granted =
@@ -110,7 +113,7 @@ export async function requestPermissionAndRegister(): Promise<void> {
 
   if (!granted) {
     if (__DEV__) console.warn('[Push] Permission not granted');
-    return;
+    return () => {};
   }
 
   const token = await messaging().getToken();
@@ -126,8 +129,9 @@ export async function requestPermissionAndRegister(): Promise<void> {
     if (__DEV__) console.warn('[Push] Device registration failed');
   }
 
-  // Listen for token refresh and re-register
-  messaging().onTokenRefresh(async (newToken: string) => {
+  // Listen for token refresh and re-register.
+  // Returns unsubscribe so the caller can tear down on logout.
+  const unsubTokenRefresh = messaging().onTokenRefresh(async (newToken: string) => {
     useAppStore.getState().setPushToken(newToken);
     try {
       await registerDevice({ platform, pushToken: newToken, deviceId });
@@ -135,6 +139,8 @@ export async function requestPermissionAndRegister(): Promise<void> {
       if (__DEV__) console.warn('[Push] Token refresh re-registration failed');
     }
   });
+
+  return unsubTokenRefresh;
 }
 
 /**

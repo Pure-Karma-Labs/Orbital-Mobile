@@ -11,7 +11,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useTheme } from '../theme';
-import { useAuth, useUI, useConversations } from '../stores';
+import { useAuth, useUI, useConversations, useNotifications } from '../stores';
 import { logout } from '../services/authService';
 import { getGroupQuota } from '../services/api/groups';
 import { Header } from '../components/Header';
@@ -64,6 +64,7 @@ export function SettingsScreen(): React.JSX.Element {
   const { displayName, username, avatarPath } = useAuth();
   const { colorScheme, setColorScheme, soundEnabled, setSoundEnabled } = useUI();
   const { activeConversationId, conversations } = useConversations();
+  const { pushPermissionGranted } = useNotifications();
 
   const [quota, setQuota] = useState<GroupQuotaResponse | null>(null);
 
@@ -131,7 +132,14 @@ export function SettingsScreen(): React.JSX.Element {
         />
 
         <SectionHeader label="Notifications" />
-        <SettingsRow emojiUnified="1F514" label="Push" value="On" chevron disabled />
+        <SettingsRow
+          emojiUnified="1F514"
+          label="Push"
+          value={pushPermissionGranted ? 'On' : 'Off'}
+          chevron
+          disabled
+          testID="push-row"
+        />
         <SettingsRow
           emojiUnified="1F4F3"
           label="Sounds"

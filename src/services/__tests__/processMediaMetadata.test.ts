@@ -70,6 +70,7 @@ jest.mock('../../stores/useAppStore', () => ({
 // ---------------------------------------------------------------------------
 
 import { processMediaMetadata, clearProcessedMediaIds } from '../threadService';
+import { exists } from '@dr.pogodin/react-native-fs';
 import type { MediaMetadata } from '../../types/api';
 import type { MediaRow } from '../../database/repositories/mediaRepository';
 
@@ -749,5 +750,60 @@ describe('clearProcessedMediaIds', () => {
     // Third call after clearing — item should be re-processed
     await processMediaMetadata([meta], fakeGroupKey, fakeGroupId, { threadId: 'thread-1' });
     expect(mockSaveMedia).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// exists() returns false — stale downloaded row recovery
+// ---------------------------------------------------------------------------
+
+describe('processMediaMetadata — stale local_path recovery', () => {
+  it('resets download_state to pending and local_path to null when file does not exist', async () => {
+    const row = makeMediaRow({
+      id: 'media-stale-1',
+      download_state: 'downloaded',
+      local_path: '/cache/deleted-file.jpg',
+      attachment_key: new Uint8Array(64).fill(0xCC),
+    });
+    mockGetMedia.mockReturnValue(row);
+
+    // Override the FS mock to say the file does NOT exist
+    (exists as jest.Mock).mockResolvedValueOnce(false);
+
+    const meta = makeMediaMetadata({ mediaId: 'media-stale-1' });
+
+    await processMediaMetadata([meta], fakeGroupKey, fakeGroupId, { threadId: 'thread-1' });
+
+    // exists() should have been called with the stale local_path
+    expect(exists).toHaveBeenCalledWith('/cache/deleted-file.jpg');
+
+    // The resulting MediaItem should have download_state reset to pending
+    const items = mockSetMediaForThread.mock.calls[0][1];
+    expect(items).toHaveLength(1);
+    expect(items[0].downloadState).toBe('pending');
+    expect(items[0].localPath).toBeNull();
+    // hasKeys should still be true since the row had an attachment_key
+    expect(items[0].hasKeys).toBe(true);
+  });
+
+  it('preserves downloaded state when file exists on disk', async () => {
+    const row = makeMediaRow({
+      id: 'media-present-1',
+      download_state: 'downloaded',
+      local_path: '/cache/existing-file.jpg',
+      attachment_key: new Uint8Array(64).fill(0xDD),
+    });
+    mockGetMedia.mockReturnValue(row);
+
+    // File exists — default mock returns true, but be explicit
+    (exists as jest.Mock).mockResolvedValueOnce(true);
+
+    const meta = makeMediaMetadata({ mediaId: 'media-present-1' });
+
+    await processMediaMetadata([meta], fakeGroupKey, fakeGroupId, { threadId: 'thread-1' });
+
+    const items = mockSetMediaForThread.mock.calls[0][1];
+    expect(items[0].downloadState).toBe('downloaded');
+    expect(items[0].localPath).toBe('/cache/existing-file.jpg');
   });
 });

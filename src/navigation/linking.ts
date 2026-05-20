@@ -11,9 +11,15 @@ export const linking: LinkingOptions<RootStackParamList> = {
             screens: {
               ThreadsList: 'threads',
               ThreadDetail: 'threads/:threadId',
+              JoinOrbit: 'join/:code',
             },
           },
-          Chats: 'chats',
+          Chats: {
+            screens: {
+              ChatsList: 'chats',
+              ChatDetail: 'chats/:conversationId',
+            },
+          },
           Settings: 'settings',
         },
       },

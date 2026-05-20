@@ -32,6 +32,8 @@ packages/**/android/src/main/jniLibs/
 .env
 .env.*
 !.env.example
+GoogleService-Info.plist
+google-services.json
 *.keystore
 !android/app/debug.keystore
 *.jks

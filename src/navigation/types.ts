@@ -1,9 +1,9 @@
 import type { NavigatorScreenParams } from '@react-navigation/native';
 
 export type MainTabParamList = {
-  Threads: undefined;
-  Chats: undefined;
-  Settings: undefined;
+  Threads: NavigatorScreenParams<ThreadsStackParamList> | undefined;
+  Chats: NavigatorScreenParams<ChatsStackParamList> | undefined;
+  Settings: NavigatorScreenParams<SettingsStackParamList> | undefined;
 };
 
 // Skeleton for future nested stacks inside tabs
@@ -12,7 +12,7 @@ export type ThreadsStackParamList = {
   ThreadDetail: { threadId: string; threadTitle?: string };
   ComposeThread: { groupId: string };
   CreateOrbit: undefined;
-  JoinOrbit: undefined;
+  JoinOrbit: { code?: string } | undefined;
   OrbitSelector: undefined;
 };
 

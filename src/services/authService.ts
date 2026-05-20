@@ -25,6 +25,7 @@ import { execute } from '../database/queryHelpers';
 import { isDatabaseInitialized } from '../database/connection';
 import { loadConversations, loadDmConversations } from './conversationService';
 import { websocketManager } from './websocket';
+import { deregisterCurrentDevice } from './notificationService';
 
 /**
  * Log in with username + password. On success, stores tokens and populates
@@ -134,6 +135,9 @@ export async function logout(): Promise<void> {
   // Disconnect WebSocket BEFORE clearing tokens to prevent reconnect attempts
   // with stale JWT during the cleanup window.
   websocketManager.disconnect();
+  // Deregister device from push notifications while we still have a valid JWT.
+  // Best-effort — errors are swallowed so they never block logout.
+  await deregisterCurrentDevice();
   await tokenManager.clearTokens();
   useAppStore.getState().clearAuth();
   const state = useAppStore.getState();

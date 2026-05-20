@@ -589,6 +589,7 @@ export interface InviteStatusResponse {
 export interface RegisterDeviceRequest {
   platform: 'ios' | 'android';
   pushToken: string;
+  deviceId: string;
 }
 
 export interface RegisterDeviceResponse {

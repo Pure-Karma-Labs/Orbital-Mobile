@@ -28,14 +28,16 @@ jest.mock('../../stores', () => ({
   useAuth: jest.fn(),
   useUI: jest.fn(),
   useConversations: jest.fn(),
+  useNotifications: jest.fn(),
 }));
 
-import { useAuth, useUI, useConversations } from '../../stores';
+import { useAuth, useUI, useConversations, useNotifications } from '../../stores';
 import { logout } from '../../services/authService';
 
 const mockUseAuth = useAuth as jest.Mock;
 const mockUseUI = useUI as jest.Mock;
 const mockUseConversations = useConversations as jest.Mock;
+const mockUseNotifications = useNotifications as jest.Mock;
 const mockLogout = logout as jest.Mock;
 
 function renderSettingsScreen(): ReactTestRenderer {
@@ -77,6 +79,10 @@ beforeEach(() => {
   mockUseConversations.mockReturnValue({
     activeConversationId: 'g1',
     conversations: { g1: { id: 'g1', type: 'group', name: 'Test Orbit' } },
+  });
+  mockUseNotifications.mockReturnValue({
+    pushPermissionGranted: false,
+    pushToken: null,
   });
   mockLogout.mockResolvedValue(undefined);
 });

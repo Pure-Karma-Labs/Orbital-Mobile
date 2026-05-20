@@ -1,6 +1,6 @@
 ---
 name: Open security items
-description: Tracked security items not yet resolved — 0 Critical/High remaining; 10 Medium/Low items across Phase 1, Phase 2, and Media Chunk 3
+description: Tracked security items not yet resolved — 0 Critical/High remaining; 11 Medium/Low items across Phase 1, Phase 2, Media Chunk 3, and Push Notifications
 metadata:
   type: project
 ---
@@ -84,6 +84,13 @@ All Critical and High findings resolved. Security audit status is clean.
    - Currently used as best-effort in both upload and download services
    - Remediation: Build a thin native bridge to call `NSURL.setResourceValue(_:forKey:.isExcludedFromBackupKey)` per-file after write; or use a community RN module that exposes this API
    - Risk: Without per-file exclusion, iOS may include decrypted media files in iCloud/iTunes backups on some OS versions. Mitigated by app-level `NSFileProtectionCompleteUntilFirstUserAuthentication` and the data extraction rules for Android.
+
+7. **#149: Drop FK constraints on orbital_media (Low)**
+   - Location: `src/database/migrations/001_initial_schema.ts` — `orbital_media.thread_id REFERENCES orbital_threads(id)`, `reply_id REFERENCES orbital_replies(id)`
+   - Parent rows (`orbital_threads`, `orbital_replies`) are not always persisted locally before media rows arrive
+   - Current mitigation: `saveMedia()` catches FK errors and retries with null FKs; Zustand store handles parent mapping
+   - Remediation: Schema migration to drop FK constraints on `orbital_media.thread_id`, `reply_id`, and `message_id`
+   - See [[project-fk-constraint-followup]]
 
 ### Recently Resolved (2026-05-18)
 

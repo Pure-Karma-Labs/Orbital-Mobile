@@ -7,10 +7,11 @@ type: project
 Navigation lives at `src/navigation/`.
 
 Key files:
-- `AppNavigator.tsx` — `NavigationContainer` with theme bridge + `linking` config; renders `MainTabNavigator`
+- `AppNavigator.tsx` — `NavigationContainer` with theme bridge + `linking` config; renders `MainTabNavigator`; passes `navigationRef` and calls `flushPendingNotificationPayload()` in `onReady`
 - `MainTabNavigator.tsx` — `createBottomTabNavigator<MainTabParamList>` with Threads/Chats/Settings tabs
 - `linking.ts` — deep link config skeleton (scheme + screen mappings)
-- `types.ts` — `MainTabParamList` and other param list types
+- `types.ts` — `MainTabParamList`, `RootStackParamList`, and other param list types
+- `navigationRef.ts` — global nav ref for programmatic navigation outside React tree (push notification taps); cold-start payload queue (setPendingNotificationPayload / flushPendingNotificationPayload / setPayloadConsumer)
 
 Auth gate pattern (in `App.tsx` / `AppContent`):
 - Conditional rendering: `isAuthenticated ? <AppNavigator /> : <AuthNavigator />`

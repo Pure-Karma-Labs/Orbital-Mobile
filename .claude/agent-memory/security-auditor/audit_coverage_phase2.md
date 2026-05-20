@@ -1,6 +1,6 @@
 ---
 name: audit-coverage-phase2
-description: Phase 2 security audit coverage — media upload pipeline, download pipeline, attachment crypto FFI, backend fixes
+description: Phase 2 security audit coverage — media upload/download pipelines, attachment crypto FFI, push notifications, backend fixes; 28 positive verifications
 metadata:
   type: project
 ---
@@ -49,6 +49,26 @@ metadata:
 
 #### Open Items (new)
 - Per-file `NSURLIsExcludedFromBackupKey` needs native bridge (Low) — tracked in open_security_items.md
+
+### Push Notifications — 2026-05-20
+
+#### Detailed findings: [[phase2-push-notification-audit]]
+
+#### Positive Verifications
+21. Zero-knowledge push payloads — field allowlist `[t, gid, tid, rid, code, v]` enforced by backend `filterPayload()`
+22. IDOR on `DELETE /api/devices/:deviceId` fixed — scoped to authenticated `user_id`, returns 404 not 403
+23. Per-user rate limiting on device registration (20/15min, keyed by `userId`)
+24. Raw FCM/APNs tokens never logged — only error messages and device IDs
+25. Firebase service account restricted to `cloudmessaging.admin` role only
+26. Deep link navigation uses hardcoded switch allowlist — unknown types are no-ops, missing IDs return early
+27. Cold-start payload queuing is race-free — consumer registered synchronously before async `getInitialNotification()`
+28. Content-free local notifications — static titles from `NOTIFICATION_TITLES`, hardcoded `body: 'Tap to view'`
+
+#### Architecture Decision
+- APNs routed through FCM gateway — acceptable for beta since payloads are content-free event signals
+
+#### Spec Update
+- `docs/MOBILE-APP-SPEC.md` updated: removed `sender_display_name` and `notification_body` from push payload spec
 
 ### All Open Items (Phase 2 cumulative)
 - #114: Key zeroization (`Vec<u8>` not wrapped in `Zeroizing`) — Medium

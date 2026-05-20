@@ -22,7 +22,9 @@ core_files:
   - path: src/services/api/media.ts
     role: Media upload/download endpoints
   - path: src/services/api/devices.ts
-    role: Device registration for push notifications
+    role: "Device registration for push notifications — registerDevice() (POST upsert) and deregisterDevice() (DELETE soft-delete)"
+  - path: src/services/api/index.ts
+    role: "Barrel re-export for all API modules (namespace exports: auth, groups, threads, messages, users, invites, media, devices, keys, version)"
   - path: src/services/api/keys.ts
     role: Signal Protocol key endpoints (uploadPreKeyBundle, getPreKeyCount, getPreKeyBundle)
   - path: src/services/api/version.ts
@@ -167,6 +169,15 @@ verified_types:
     fields: [mediaId, sizeBytes, uploadedAt, expiresAt, chunksUploaded]
     note: Defined in src/services/api/media.ts (not api.ts); confirms upload assembly
 
+  RegisterDeviceRequest:
+    verified_at: "2026-05-20"
+    fields: [platform, pushToken, deviceId]
+    note: "platform is 'ios' | 'android'; deviceId added to existing type for push notification device tracking"
+  RegisterDeviceResponse:
+    verified_at: "2026-05-20"
+    fields: [deviceId, platform, registeredAt]
+    note: "Backend upserts — re-registering same deviceId updates the pushToken"
+
 unverified_types: []
 
 known_issues:
@@ -198,6 +209,9 @@ endpoint_paths:
   completeUpload: /api/media/upload/complete (POST, JSON body)
   downloadMedia: /api/media/:id/download (GET, returns binary with X-Encryption-IV and X-Expires-At headers)
 
+  registerDevice: /api/devices/register (POST, upsert — re-registering same deviceId updates pushToken)
+  deregisterDevice: /api/devices/:deviceId (DELETE, soft-delete sets is_active=false, scoped to authenticated user)
+
 pagination_pattern:
   type: offset
   note: Backend uses offset pagination (limit + offset query params), NOT cursor-based.
@@ -217,6 +231,16 @@ resilience_patterns:
   media_state_ownership: "Upload service owns initial MediaItem with hasKeys=true. processMediaMetadata checks in-memory Zustand store BEFORE DB to avoid overwriting. Store is authoritative during runtime."
   download_semaphore: "Max 3 concurrent downloads in mediaDownloadService. Inflight dedup via Map<string, Promise<string>> with finally-block cleanup."
   download_atomic_write: "Decrypted media written to .tmp path then moveFile to final path. Prevents partial plaintext on crash."
+
+  push_dispatch_fire_and_forget: "Backend sendPushToRecipients() in threads.js and signal-relay.js uses .catch(err => logger.error(...)) — failures never block the API response."
+
+push_notification_contract:
+  payload_shape: "{ t, gid, tid, rid, code, v } — content-free, routing metadata only"
+  dispatch_hooks:
+    new_thread: threads.js
+    new_reply: threads.js
+    new_dm: signal-relay.js
+  note: "Push payloads never contain message content. Client must fetch via thread/message API after receiving push."
 
 client_error_mapping:
   429: RATE_LIMITED (retryable)

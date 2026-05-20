@@ -7,3 +7,4 @@
 - [Media download service](project_media_download_service.md) — Download/decrypt/cache pipeline with semaphore, inflight dedup, atomic writes
 - [Media state ownership](project_media_state_ownership.md) — Upload service owns initial state; Zustand authoritative at runtime; DB for persistence
 - [Client 429 retry](project_429_retry_client.md) — Global 429 retry in _executeRequest: 3 retries, exp backoff capped 10s, distinct from uploadChunk retry
+- [Push device endpoints](project_push_device_endpoints.md) — Device register/deregister API, content-free push payloads, backend dispatch hooks

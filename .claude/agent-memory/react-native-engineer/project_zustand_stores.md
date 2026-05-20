@@ -8,10 +8,10 @@ Zustand store is at `src/stores/`. Single store (`useAppStore`) composed of 6 sl
 
 Key facts:
 - `src/stores/useAppStore.ts` — the store instance (combines all slices via Zustand `create`)
-- `src/stores/slices/` — one file per domain slice: authSlice, conversationsSlice, threadsSlice, messagesSlice, contactsSlice, uiSlice
+- `src/stores/slices/` — one file per domain slice: authSlice, conversationsSlice, threadsSlice, messagesSlice, contactsSlice, uiSlice, notificationSlice
 - `src/stores/index.ts` — barrel that re-exports `useAppStore` plus 6 named selector hooks
 - `src/stores/middleware/persistence.ts` — MMKV adapter; uses deferred init (`initMMKV`/`getMMKVInstance`/`resetMMKVForTesting`)
-- Selector hooks (`useAuth`, `useConversations`, `useThreads`, `useMessages`, `useContacts`, `useUI`) all wrap `useShallow` so components only re-render on shallow-equal changes
+- Selector hooks (`useAuth`, `useConversations`, `useThreads`, `useMessages`, `useContacts`, `useUI`, `useNotifications`) all wrap `useShallow` so components only re-render on shallow-equal changes
 - `src/types/store.ts` — TypeScript interfaces for all store slice state shapes
 
 Deferred init pattern for MMKV:

@@ -1,6 +1,6 @@
 ---
 name: Established security patterns
-description: Eleven mandatory security patterns validated during Phase 1-2 audits that must be preserved in all future crypto and media code
+description: Fourteen mandatory security patterns validated during Phase 1-2 audits that must be preserved in all future crypto, media, and notification code
 metadata:
   type: feedback
 ---
@@ -52,3 +52,15 @@ These patterns were validated and confirmed correct during security audits. Any 
 11. **op-sqlite encryptionKey quoting is bridge-handled** — op-sqlite's C++ bridge wraps the `encryptionKey` parameter in single quotes when issuing `PRAGMA key = '<key>'`. Application code must NOT add its own quoting (e.g., `x'...'` wrapper). Double-quoting produces a broken PRAGMA and a 0-byte database file with no WAL/SHM — the DB silently appears to work in-memory but never persists. Reference: `src/database/connection.ts:25`.
    **Why:** This bug caused complete data loss on every app restart — the 0-byte file was overwritten on each launch. The in-memory illusion (SQLite operations succeed against a non-persisted DB) makes this extremely hard to detect via functional testing.
    **How to apply:** When reviewing any changes to database connection setup or encryption key handling, verify that the key is passed as a raw string (hex or passphrase) without SQL-level quoting. If op-sqlite is ever replaced with another SQLite wrapper, verify how that wrapper handles `PRAGMA key` formatting at the native bridge layer.
+
+12. **Deep link navigation uses hardcoded type allowlist** — `navigateFromNotification()` in `src/services/notificationService.ts:237` uses a hardcoded `switch` on the `t` field with explicit cases (`new_thread`, `new_reply`, `new_dm`, `orbit_invite`). Unknown types fall through to `default: break` (no-op). Each case validates required IDs (`tid`, `gid`, `code`) with early `return` on missing values. The cold-start payload consumer (`setPayloadConsumer`) is registered synchronously before the async `getInitialNotification()` resolves, preventing race conditions.
+   **Why:** Push notification payloads are attacker-controlled input (a compromised server or MitM on the push gateway could craft arbitrary payloads). Without a strict type allowlist, a crafted payload could navigate to arbitrary screens, potentially triggering unintended state changes or exposing UI that requires authentication.
+   **How to apply:** If new notification types are added, they must be added as explicit `case` entries in the `switch` statement — never use dynamic routing from payload data. If the navigation target requires an ID, validate presence before navigating. Any PR that adds dynamic screen resolution from push data is High severity.
+
+13. **Zero-knowledge push payloads** — Push notification payloads contain only routing metadata, never message content. The backend `pushService.js:filterPayload()` enforces a strict field allowlist: `[t, gid, tid, rid, code, v]`. The mobile client displays static content-free titles from `NOTIFICATION_TITLES` lookup with hardcoded `body: 'Tap to view'`. No server-supplied text reaches the notification shade.
+   **Why:** Push payloads transit through Google (FCM) and Apple (APNs) infrastructure. Any message content, sender names, or thread titles in push payloads would be visible to those intermediaries, breaking the E2EE trust model. Content-free payloads ensure push infrastructure sees only opaque routing signals.
+   **How to apply:** Any proposal to add user-generated content to push payloads (message previews, sender names, thread titles) is a Critical severity finding. The client must always fetch encrypted content via the authenticated API after the user taps a notification. The `NOTIFICATION_TITLES` record must use only static strings, never interpolated server data.
+
+14. **Image onError retry counter prevents infinite loops** — Any `<Image>` component with an `onError` handler that triggers re-download or state reset must include a `useRef` retry counter (max 1 auto-retry). After the limit, set state to `'failed'`, not `'pending'`.
+   **Why:** Corrupt-but-existing local files cause a tight infinite render loop: Image error -> reset to pending -> download returns same corrupt path -> Image error. This freezes the UI (denial-of-service from corrupt media).
+   **How to apply:** Review any `<Image>` with `onError` that resets download state. Missing retry counter is Medium severity.

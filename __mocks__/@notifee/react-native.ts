@@ -10,7 +10,9 @@ const notifee = {
   displayNotification: jest.fn().mockResolvedValue('mock-notification-id'),
   getInitialNotification: jest.fn().mockResolvedValue(null),
   cancelNotification: jest.fn().mockResolvedValue(undefined),
+  getBadgeCount: jest.fn().mockResolvedValue(0),
   setBadgeCount: jest.fn().mockResolvedValue(undefined),
+  getChannels: jest.fn().mockResolvedValue([]),
   onForegroundEvent: jest.fn().mockReturnValue(jest.fn()),
   onBackgroundEvent: jest.fn(),
 };

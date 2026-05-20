@@ -1,8 +1,9 @@
-import React from 'react';
+import React, { useCallback } from 'react';
 import { NavigationContainer, DefaultTheme } from '@react-navigation/native';
 import { useTheme } from '../theme';
 import { MainTabNavigator } from './MainTabNavigator';
 import { linking } from './linking';
+import { navigationRef, flushPendingNotificationPayload } from './navigationRef';
 
 export function AppNavigator(): React.JSX.Element {
   const theme = useTheme();
@@ -21,8 +22,17 @@ export function AppNavigator(): React.JSX.Element {
     },
   };
 
+  const handleReady = useCallback(() => {
+    flushPendingNotificationPayload();
+  }, []);
+
   return (
-    <NavigationContainer linking={linking} theme={navTheme}>
+    <NavigationContainer
+      ref={navigationRef}
+      linking={linking}
+      theme={navTheme}
+      onReady={handleReady}
+    >
       <MainTabNavigator />
     </NavigationContainer>
   );

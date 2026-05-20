@@ -18,6 +18,11 @@ jest.mock('../../database/repositories/mediaRepository', () => ({
   saveMedia: (...args: unknown[]) => mockSaveMedia(...args),
 }));
 
+jest.mock('@dr.pogodin/react-native-fs', () => ({
+  exists: jest.fn(() => Promise.resolve(true)),
+  DocumentDirectoryPath: '/mock/documents',
+}));
+
 jest.mock('../../database/connection', () => ({
   isDatabaseInitialized: () => true,
 }));

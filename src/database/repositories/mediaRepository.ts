@@ -34,37 +34,52 @@ export interface MediaRow {
 // ============================================================
 
 export function saveMedia(row: MediaRow): void {
-  execute(
-    `INSERT OR REPLACE INTO orbital_media
+  const sql = `INSERT OR REPLACE INTO orbital_media
        (id, thread_id, reply_id, message_id, content_type, file_name, file_size,
         width, height, duration, attachment_key, attachment_digest, cdn_number,
         cdn_key, local_path, thumbnail_path, blur_hash, expires_at,
         download_state, upload_state, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      row.id,
-      row.thread_id,
-      row.reply_id,
-      row.message_id,
-      row.content_type,
-      row.file_name,
-      row.file_size,
-      row.width ?? null,
-      row.height ?? null,
-      row.duration ?? null,
-      row.attachment_key ?? null,
-      row.attachment_digest ?? null,
-      row.cdn_number ?? null,
-      row.cdn_key ?? null,
-      row.local_path ?? null,
-      row.thumbnail_path ?? null,
-      row.blur_hash ?? null,
-      row.expires_at ?? null,
-      row.download_state,
-      row.upload_state,
-      row.created_at,
-    ],
-  );
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+  const params = [
+    row.id,
+    row.thread_id,
+    row.reply_id,
+    row.message_id,
+    row.content_type,
+    row.file_name,
+    row.file_size,
+    row.width ?? null,
+    row.height ?? null,
+    row.duration ?? null,
+    row.attachment_key ?? null,
+    row.attachment_digest ?? null,
+    row.cdn_number ?? null,
+    row.cdn_key ?? null,
+    row.local_path ?? null,
+    row.thumbnail_path ?? null,
+    row.blur_hash ?? null,
+    row.expires_at ?? null,
+    row.download_state,
+    row.upload_state,
+    row.created_at,
+  ];
+
+  try {
+    execute(sql, params);
+  } catch (e) {
+    // FK constraint fails when parent thread/reply rows don't exist locally
+    // (e.g. fresh install, data fetched from API but not persisted to SQLite).
+    // Retry with null FKs — the Zustand store index handles parent mapping.
+    if (e instanceof Error && e.message.includes('FOREIGN KEY')) {
+      params[1] = null; // thread_id
+      params[2] = null; // reply_id
+      params[3] = null; // message_id
+      execute(sql, params);
+    } else {
+      throw e;
+    }
+  }
 }
 
 export function getMedia(id: string): MediaRow | null {

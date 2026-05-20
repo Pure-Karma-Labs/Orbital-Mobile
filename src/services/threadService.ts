@@ -10,6 +10,7 @@
  * Plaintext never appears in logs or error messages.
  */
 
+import { exists } from '@dr.pogodin/react-native-fs';
 import { getThread, getGroupThreads, getThreadReplies, createReply, createThread } from './api/threads';
 import {
   decryptContent,
@@ -200,6 +201,22 @@ export async function processMediaMetadata(
       }
 
       if (existingRow) {
+        // If DB says downloaded but the file is gone (simulator switch, cache clear),
+        // reset to pending so the download re-triggers.
+        if (existingRow.download_state === 'downloaded' && existingRow.local_path) {
+          const fileExists = await exists(existingRow.local_path).catch(() => false);
+          if (!fileExists) {
+            existingRow = { ...existingRow, download_state: 'pending', local_path: null };
+            if (dbReady) {
+              try {
+                saveMedia(existingRow);
+              } catch {
+                // Best-effort DB update
+              }
+            }
+          }
+        }
+
         // Row exists — try to recover attachment key from envelope if missing
         if (existingRow.attachment_key == null && meta.encryptedMetadata) {
           try {

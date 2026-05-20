@@ -235,4 +235,55 @@ describe('mediaRepository', () => {
       );
     });
   });
+
+  describe('saveMedia — FOREIGN KEY retry', () => {
+    it('retries with null FKs when first INSERT throws FOREIGN KEY error', () => {
+      let insertCallCount = 0;
+      const executeSync = jest.fn((sql: string, _params?: unknown[]) => {
+        if (typeof sql === 'string' && sql.includes('INSERT')) {
+          insertCallCount++;
+          if (insertCallCount === 1) {
+            throw new Error('FOREIGN KEY constraint failed: orbital_media.thread_id');
+          }
+        }
+        return { rows: [], rowsAffected: 1 };
+      });
+      makeDb(executeSync);
+
+      saveMedia(sampleMedia);
+
+      // Find the INSERT calls (skip the PRAGMA call from resetDatabaseForTesting)
+      const insertCalls = executeSync.mock.calls.filter(
+        (c) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT'),
+      );
+      expect(insertCalls).toHaveLength(2);
+
+      // Second INSERT call should have null for thread_id, reply_id, message_id
+      const retryParams = insertCalls[1][1] as unknown[];
+      expect(retryParams[0]).toBe('media-1'); // id preserved
+      expect(retryParams[1]).toBeNull(); // thread_id nulled
+      expect(retryParams[2]).toBeNull(); // reply_id nulled
+      expect(retryParams[3]).toBeNull(); // message_id nulled
+      // Other params remain intact
+      expect(retryParams[4]).toBe('image/jpeg'); // content_type
+    });
+
+    it('rethrows non-FOREIGN KEY errors without retry', () => {
+      const executeSync = jest.fn((sql: string, _params?: unknown[]) => {
+        if (typeof sql === 'string' && sql.includes('INSERT')) {
+          throw new Error('disk I/O error');
+        }
+        return { rows: [], rowsAffected: 0 };
+      });
+      makeDb(executeSync);
+
+      expect(() => saveMedia(sampleMedia)).toThrow('disk I/O error');
+
+      // Only one INSERT call (no retry)
+      const insertCalls = executeSync.mock.calls.filter(
+        (c) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT'),
+      );
+      expect(insertCalls).toHaveLength(1);
+    });
+  });
 });

@@ -324,17 +324,9 @@ export function setupNotificationTapHandler(): () => void {
     },
   );
 
-  // 2. Background tap — Notifee background event handler.
-  // Per Notifee docs, onBackgroundEvent does NOT return an unsubscribe.
-  // It should be called once at the module level. Re-registering on each
-  // auth cycle is safe — Notifee replaces the previous handler.
-  notifee.onBackgroundEvent(
-    async ({ type, detail }: NotifeeEvent) => {
-      if (type === EventType.PRESS && detail.notification?.data) {
-        navigateFromNotification(detail.notification.data as Record<string, string>);
-      }
-    },
-  );
+  // 2. Background tap — handled by onBackgroundEvent in index.js (must be
+  // registered at module top-level per Notifee docs). Background taps queue
+  // the payload via setPendingNotificationPayload, flushed on nav onReady.
 
   // 3. Killed-state tap — Firebase getInitialNotification() is one-shot.
   // If the nav tree isn't ready yet, the payload is queued automatically

@@ -22,6 +22,7 @@ import {
   initNotifications,
   requestPermissionAndRegister,
   setupForegroundHandler,
+  setupNotificationTapHandler,
 } from './services/notificationService';
 import { LoginScreen } from './screens/LoginScreen';
 import { SignupScreen } from './screens/SignupScreen';
@@ -85,10 +86,12 @@ function AppContent(): React.JSX.Element {
           if (__DEV__) console.warn('[Push]', e instanceof Error ? e.message : e);
         });
       const unsubForeground = setupForegroundHandler();
+      const unsubTapHandler = setupNotificationTapHandler();
 
       return () => {
         websocketManager.disconnect();
         unsubForeground();
+        unsubTapHandler();
         unsubTokenRefresh?.();
       };
     } else {

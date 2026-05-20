@@ -12,14 +12,19 @@
  * appear in catch blocks (review finding #7).
  */
 
-import { Platform } from 'react-native';
+import { AppState as RNAppState, Platform } from 'react-native';
 import messaging, {
   type FirebaseMessagingTypes,
 } from '@react-native-firebase/messaging';
-import notifee, { AndroidImportance } from '@notifee/react-native';
+import notifee, { AndroidImportance, EventType, type Event as NotifeeEvent } from '@notifee/react-native';
 import { registerDevice, deregisterDevice } from './api/devices';
 import { getDeviceId } from './deviceId';
 import { useAppStore } from '../stores/useAppStore';
+import {
+  navigationRef,
+  setPendingNotificationPayload,
+  setPayloadConsumer,
+} from '../navigation/navigationRef';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -189,6 +194,7 @@ export function setupForegroundHandler(): () => void {
         await notifee.displayNotification({
           title,
           body: 'Tap to view',
+          data: data as Record<string, string>,
           android: {
             channelId: ANDROID_CHANNEL_ID,
             smallIcon: 'ic_notification',
@@ -196,6 +202,13 @@ export function setupForegroundHandler(): () => void {
             pressAction: { id: 'default' },
           },
         });
+
+        // Increment badge count so the app icon reflects unread notifications.
+        // Primarily meaningful on iOS; Android badge behavior is launcher-dependent.
+        if (Platform.OS === 'ios') {
+          const currentBadge = await notifee.getBadgeCount();
+          await notifee.setBadgeCount(currentBadge + 1);
+        }
       } catch {
         // Notifee display failed — swallow silently.
         // User is in the foreground and will see content via WebSocket.
@@ -204,4 +217,152 @@ export function setupForegroundHandler(): () => void {
   );
 
   return unsubscribe;
+}
+
+// ---------------------------------------------------------------------------
+// Navigation from notification data
+// ---------------------------------------------------------------------------
+
+/**
+ * Navigate to the appropriate screen based on push notification payload data.
+ *
+ * Payload fields:
+ * - `t`: notification type — 'new_thread' | 'new_reply' | 'new_dm' | 'orbit_invite'
+ * - `gid`: group/conversation ID
+ * - `tid`: thread ID (for new_thread and new_reply)
+ * - `code`: invite code (for orbit_invite)
+ *
+ * Missing or empty IDs are silently ignored (no navigation).
+ */
+function navigateFromNotification(data: Record<string, string>): void {
+  const { t, gid, tid, code } = data;
+
+  if (!t) return;
+
+  if (!navigationRef.isReady()) {
+    // Navigation tree not mounted yet (killed-state cold start).
+    // Queue the payload — it will be flushed from NavigationContainer's onReady.
+    setPendingNotificationPayload(data);
+    return;
+  }
+
+  switch (t) {
+    case 'new_thread':
+    case 'new_reply':
+      if (!tid) return;
+      // Navigate into the Threads tab → ThreadDetail
+      navigationRef.navigate('MainTabs', {
+        screen: 'Threads',
+        params: {
+          screen: 'ThreadDetail',
+          params: { threadId: tid },
+        },
+      });
+      break;
+
+    case 'new_dm':
+      if (!gid) return;
+      // Navigate into the Chats tab → ChatDetail
+      navigationRef.navigate('MainTabs', {
+        screen: 'Chats',
+        params: {
+          screen: 'ChatDetail',
+          params: { conversationId: gid },
+        },
+      });
+      break;
+
+    case 'orbit_invite':
+      if (!code) return;
+      // Navigate into the Threads tab → JoinOrbit with prefilled code
+      navigationRef.navigate('MainTabs', {
+        screen: 'Threads',
+        params: {
+          screen: 'JoinOrbit',
+          params: { code },
+        },
+      });
+      break;
+
+    default:
+      // Unknown notification type — no-op
+      break;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tap handler + badge management
+// ---------------------------------------------------------------------------
+
+/**
+ * Set up notification tap handling from all three launch states, plus an
+ * AppState listener that clears the badge when the app comes to the foreground.
+ *
+ * Three notification tap sources:
+ * 1. **Foreground tap** — user taps a local notification displayed by Notifee
+ * 2. **Background tap** — app was backgrounded; user taps the system notification
+ * 3. **Killed-state tap** — app was terminated; Firebase getInitialNotification()
+ *
+ * Returns an unsubscribe function that removes the Notifee foreground event
+ * listener and the AppState listener. The Notifee background event handler is
+ * registered globally (does not return an unsubscribe) per Notifee API design.
+ *
+ * Call once after authentication — typically in the useEffect([isAuthenticated])
+ * block in App.tsx.
+ */
+export function setupNotificationTapHandler(): () => void {
+  // Register the navigation consumer so queued payloads can be flushed
+  // from NavigationContainer's onReady callback.
+  setPayloadConsumer(navigateFromNotification);
+
+  // 1. Foreground tap — Notifee local notification press events
+  const unsubForegroundEvent = notifee.onForegroundEvent(
+    ({ type, detail }: NotifeeEvent) => {
+      if (type === EventType.PRESS && detail.notification?.data) {
+        navigateFromNotification(detail.notification.data as Record<string, string>);
+      }
+    },
+  );
+
+  // 2. Background tap — Notifee background event handler.
+  // Per Notifee docs, onBackgroundEvent does NOT return an unsubscribe.
+  // It should be called once at the module level. Re-registering on each
+  // auth cycle is safe — Notifee replaces the previous handler.
+  notifee.onBackgroundEvent(
+    async ({ type, detail }: NotifeeEvent) => {
+      if (type === EventType.PRESS && detail.notification?.data) {
+        navigateFromNotification(detail.notification.data as Record<string, string>);
+      }
+    },
+  );
+
+  // 3. Killed-state tap — Firebase getInitialNotification() is one-shot.
+  // If the nav tree isn't ready yet, the payload is queued automatically
+  // by navigateFromNotification → setPendingNotificationPayload.
+  messaging()
+    .getInitialNotification()
+    .then((remoteMessage: FirebaseMessagingTypes.RemoteMessage | null) => {
+      if (remoteMessage?.data) {
+        navigateFromNotification(remoteMessage.data as Record<string, string>);
+      }
+    })
+    .catch(() => {
+      // Swallow — not critical. Killed-state tap is best-effort.
+    });
+
+  // 4. Badge clear on app foreground.
+  // When the user brings the app to the foreground, clear the badge count.
+  // Primarily meaningful on iOS; Android badge behavior is launcher-dependent.
+  const appStateSubscription = RNAppState.addEventListener('change', (nextState) => {
+    if (nextState === 'active') {
+      notifee.setBadgeCount(0).catch(() => {
+        // Badge clear is best-effort — swallow errors.
+      });
+    }
+  });
+
+  return () => {
+    unsubForegroundEvent();
+    appStateSubscription.remove();
+  };
 }

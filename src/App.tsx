@@ -74,9 +74,13 @@ function AppContent(): React.JSX.Element {
     if (isAuthenticated) {
       websocketManager.connect();
 
-      // Initialize push notifications and request permission
+      // Initialize push notifications and request permission.
+      // Capture unsubscribe for the token-refresh listener to prevent leak
+      // on login/logout cycles.
+      let unsubTokenRefresh: (() => void) | undefined;
       initNotifications()
         .then(() => requestPermissionAndRegister())
+        .then((unsub) => { unsubTokenRefresh = unsub; })
         .catch((e: unknown) => {
           if (__DEV__) console.warn('[Push]', e instanceof Error ? e.message : e);
         });
@@ -85,6 +89,7 @@ function AppContent(): React.JSX.Element {
       return () => {
         websocketManager.disconnect();
         unsubForeground();
+        unsubTokenRefresh?.();
       };
     } else {
       websocketManager.disconnect();

@@ -1,5 +1,5 @@
-version: "1.4"
-last_updated: "2026-05-18"
+version: "1.5"
+last_updated: "2026-05-20"
 agent: security-auditor
 
 core_files:
@@ -91,7 +91,14 @@ core_files:
   - path: src/bootstrap.ts
     purpose: App bootstrap — secure storage + DB init before any component renders
   - path: index.js
-    purpose: App entry point — bootstrap() before registerComponent prevents race condition
+    purpose: "App entry point — bootstrap() before registerComponent; setBackgroundMessageHandler + onBackgroundEvent for push notifications registered at module top-level"
+  - path: src/services/notificationService.ts
+    purpose: Push notification orchestration — content-free display titles, token never logged, deregister best-effort on logout
+    key_symbols: [requestPermissionAndRegister, setupForegroundHandler, setupNotificationTapHandler, deregisterCurrentDevice]
+  - path: src/navigation/navigationRef.ts
+    purpose: "Global nav ref for notification tap routing — cold-start payload queue safe (consumer registered synchronously before async getInitialNotification)"
+  - path: src/services/api/devices.ts
+    purpose: Device registration API — registerDevice/deregisterDevice, Bearer JWT auto-injected
   - path: ios/OrbitalMobile/OrbitalMobile.entitlements
     purpose: iOS entitlements — file protection, Keychain access groups
   - path: ios/OrbitalMobile/Info.plist
@@ -175,3 +182,16 @@ patterns:
     description: Decrypted media written to .tmp path then moveFile() to final path — prevents partial plaintext files on crash/kill; applied in mediaDownloadService.ts; same temp-file pattern used in upload service for ciphertext chunks
   - name: preserve-upload-keys-on-merge
     description: processMediaMetadata checks in-memory store before DB before creating new entries — prevents server responses from overwriting upload-side hasKeys/localPath/attachment_key; loss of attachment keys = permanent data loss
+  - name: zero-knowledge-push-payloads
+    description: "Push payloads enforce strict field allowlist [t, gid, tid, rid, code, v] via filterPayload() in pushService.js — no message content, sender names, or thread titles. MOBILE-APP-SPEC.md updated to remove sender_display_name/notification_body."
+  - name: deep-link-type-allowlist
+    description: "navigateFromNotification uses hardcoded switch on t field — unknown types are no-ops, missing IDs trigger early returns. Cannot navigate to arbitrary screens via crafted payloads."
+  - name: image-onerror-retry-counter
+    description: "MediaItemView onError uses useRef counter — max 1 auto-retry then set to 'failed'. Without counter, corrupt-but-existing files cause infinite render loop: Image error → pending → download returns same path → Image error."
+
+  - system: Push notification pipeline
+    interface: "firebase-admin → FCM v1 API (both platforms)"
+    purpose: "Push dispatch — IDOR-protected device registration, per-user rate limiting, content-free payloads, stale token deactivation on FCM error codes"
+  - system: Deep link navigation
+    interface: "src/navigation/navigationRef.ts → React Navigation"
+    purpose: "Notification tap → screen routing; cold-start queuing for killed-state taps; type-allowlisted switch prevents arbitrary navigation"

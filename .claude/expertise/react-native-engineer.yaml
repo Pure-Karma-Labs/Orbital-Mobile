@@ -1,14 +1,49 @@
-version: "1.6"
-last_updated: "2026-05-19"
+version: "1.7"
+last_updated: "2026-05-20"
 agent: react-native-engineer
 
 core_files:
   - path: src/App.tsx
-    purpose: "Application entry point — wraps SafeAreaProvider + ThemeProvider. Reads colorScheme from store via colorSchemeOverride prop. Uses OrbitalSpinner in LoadingView."
+    purpose: "Application entry point — wraps SafeAreaProvider + ThemeProvider. Push notification init + foreground handler + tap handler in useEffect([isAuthenticated]). Token refresh unsubscribe captured to prevent leak on login/logout cycles."
     key_symbols:
       - App
       - AppContent
-    last_hash: 1faa458
+    last_hash: modified
+
+  - path: index.js
+    purpose: "App entry point — setBackgroundMessageHandler and onBackgroundEvent MUST be registered here before AppRegistry.registerComponent. Without this, Android data-only pushes are silently consumed when killed/backgrounded."
+    last_hash: modified
+
+  - path: src/services/notificationService.ts
+    purpose: "Push notification service — permission request, FCM token registration, foreground display via Notifee, tap handler routing to navigationRef. Returns unsubscribe from requestPermissionAndRegister for token refresh cleanup."
+    key_symbols:
+      - initNotifications
+      - requestPermissionAndRegister
+      - deregisterCurrentDevice
+      - setupForegroundHandler
+      - setupNotificationTapHandler
+    last_hash: new
+
+  - path: src/services/deviceId.ts
+    purpose: "Stable device UUID — MMKV-persisted, generated on first call via generateUUID(). Must be called lazily (not module scope) because MMKV not initialized until bootstrap."
+    key_symbols:
+      - getDeviceId
+    last_hash: new
+
+  - path: src/stores/slices/notificationSlice.ts
+    purpose: "Notification state slice — pushPermissionGranted, pushToken. Wired into useAppStore."
+    key_symbols:
+      - createNotificationSlice
+    last_hash: new
+
+  - path: src/navigation/navigationRef.ts
+    purpose: "Global nav ref for programmatic navigation outside React components. Cold-start payload queuing for killed-state notification taps — setPendingNotificationPayload queues, flushPendingNotificationPayload fires from NavigationContainer onReady."
+    key_symbols:
+      - navigationRef
+      - setPendingNotificationPayload
+      - flushPendingNotificationPayload
+      - setPayloadConsumer
+    last_hash: new
 
   - path: src/theme/colors.ts
     purpose: Light/dark ColorPalette objects and getReplyDepthColors() — all hex/rgba token values
@@ -130,12 +165,13 @@ core_files:
     last_hash: modified
 
   - path: package.json
-    purpose: Project dependencies and scripts — React Native 0.82.1, React 19.1.1, safe-area-context; @react-native/new-app-screen moved to devDependencies
+    purpose: "Project dependencies — React Native 0.82.1, React 19.1.1, @react-native-firebase/app+messaging, @notifee/react-native for push notifications"
     key_symbols:
       - react-native
       - react
-      - react-native-safe-area-context
-    last_hash: a474666
+      - "@react-native-firebase/messaging"
+      - "@notifee/react-native"
+    last_hash: modified
 
   - path: tsconfig.json
     purpose: TypeScript configuration — strict mode enabled, extends @react-native/typescript-config
@@ -471,3 +507,24 @@ patterns:
 
   - name: media-mapper-extraction
     description: "mediaRowToItem and normalizeAttachmentKey extracted from threadService.ts into src/database/repositories/mediaMapper.ts. This avoids pulling the full crypto/API dependency chain when only DB-to-store data conversion is needed (e.g., in FileLibraryScreen which queries the DB directly)."
+
+  - name: push-background-handlers-top-level
+    description: "setBackgroundMessageHandler and onBackgroundEvent MUST be in index.js before AppRegistry.registerComponent — NOT in a useEffect. Without this, Android data-only pushes are silently consumed when killed/backgrounded, and background notification taps have no handler."
+
+  - name: push-cold-start-payload-queue
+    description: "Killed-state notification taps arrive via getInitialNotification before the React navigation tree mounts. navigationRef.ts queues the payload via setPendingNotificationPayload, then flushPendingNotificationPayload fires from NavigationContainer's onReady callback. setPayloadConsumer registers the routing function."
+
+  - name: push-token-refresh-cleanup
+    description: "requestPermissionAndRegister returns the onTokenRefresh unsubscribe function. App.tsx captures it in the useEffect cleanup to prevent listener accumulation on login/logout cycles. Without this, each cycle stacks another listener holding a closure over registerDevice."
+
+  - name: media-fk-constraint-retry
+    description: "saveMedia() catches FOREIGN KEY constraint errors and retries with null thread_id/reply_id/message_id. Threads are fetched from API but not persisted to local orbital_threads table, so FK references fail. Zustand store handles parent→media index mapping. Follow-up #149 will drop FKs entirely."
+
+  - name: media-image-error-retry-counter
+    description: "MediaItemView onError on <Image> uses a useRef counter — first error resets to downloadState 'pending' for auto-re-download, second error sets 'failed' to prevent infinite loops on corrupt-but-existing files. The fallback 'Unavailable' state changed to 'Tap to retry' with the retry function."
+
+  - name: firebase-mock-static-properties
+    description: "Firebase messaging mock needs Object.assign(jest.fn(...), { AuthorizationStatus: ... }) for static enum properties. Plain jest.fn().AuthorizationStatus = ... causes TS errors. Notifee mock needs EventType, onForegroundEvent, onBackgroundEvent, getBadgeCount, setBadgeCount."
+
+  - name: jest-worktree-override
+    description: "jest.config.js excludes .claude/worktrees/ paths. To run tests from a worktree, override with --testPathIgnorePatterns='/node_modules/' --modulePathIgnorePatterns=''. SettingsScreen tests must mock useNotifications after notification slice is added."

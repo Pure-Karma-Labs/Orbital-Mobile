@@ -81,6 +81,14 @@ export const useUI = () =>
     setSoundEnabled: s.setSoundEnabled,
   })));
 
+export const useNotifications = () =>
+  useAppStore(useShallow((s) => ({
+    pushPermissionGranted: s.pushPermissionGranted,
+    pushToken: s.pushToken,
+    setPushPermission: s.setPushPermission,
+    setPushToken: s.setPushToken,
+  })));
+
 export const useConnection = () =>
   useAppStore(useShallow((s) => ({
     connectionStatus: s.connectionStatus,

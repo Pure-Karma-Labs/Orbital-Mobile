@@ -160,18 +160,19 @@ The existing orbital-backend API is **fully compatible** with mobile clients as-
 └─────────────────────────────────────────┘
 ```
 
-**Push payload (encrypted):**
+**Push payload (content-free):**
 ```json
 {
-  "type": "new_thread | new_reply | new_message",
-  "conversation_id": "uuid",
-  "thread_id": "uuid (if applicable)",
-  "sender_display_name": "string",
-  "notification_body": "encrypted (client decrypts)"
+  "t": "new_thread | new_reply | new_dm | orbit_invite",
+  "gid": "uuid (group/conversation context)",
+  "tid": "uuid (thread, if applicable)",
+  "rid": "uuid (reply, if applicable)",
+  "code": "string (invite code, orbit_invite only)",
+  "v": "1"
 }
 ```
 
-**Note:** Push payloads should contain minimal metadata. The app fetches full encrypted content via API on open.
+**Note:** Push payloads are content-free event signals. No message content, thread titles, or sender names are included. The client displays generic titles ("New thread in an Orbit", "New reply in a thread", etc.) and fetches encrypted content via API on tap.
 
 ### New: App Version Check (Optional)
 

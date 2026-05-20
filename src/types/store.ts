@@ -282,6 +282,22 @@ export interface MediaActions {
 export type MediaSlice = MediaState & MediaActions;
 
 // ============================================================
+// Notification slice state (push notifications)
+// ============================================================
+
+export interface NotificationState {
+  pushPermissionGranted: boolean;
+  pushToken: string | null;
+}
+
+export interface NotificationActions {
+  setPushPermission: (granted: boolean) => void;
+  setPushToken: (token: string | null) => void;
+}
+
+export type NotificationSlice = NotificationState & NotificationActions;
+
+// ============================================================
 // Combined app state
 // ============================================================
 
@@ -291,4 +307,5 @@ export type AppState = AuthSlice &
   ContactsSlice &
   UISlice &
   ConnectionSlice &
-  MediaSlice;
+  MediaSlice &
+  NotificationSlice;

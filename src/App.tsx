@@ -18,6 +18,11 @@ import { useAppStore } from './stores/useAppStore';
 import { bootstrap } from './bootstrap';
 import { restoreSession } from './services/authService';
 import { websocketManager } from './services/websocket';
+import {
+  initNotifications,
+  requestPermissionAndRegister,
+  setupForegroundHandler,
+} from './services/notificationService';
 import { LoginScreen } from './screens/LoginScreen';
 import { SignupScreen } from './screens/SignupScreen';
 import { AppNavigator } from './navigation';
@@ -64,16 +69,32 @@ function AppContent(): React.JSX.Element {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated]);
 
-  // WebSocket lifecycle — connect on auth, disconnect on logout/unmount
+  // WebSocket + push notification lifecycle
   useEffect(() => {
     if (isAuthenticated) {
       websocketManager.connect();
+
+      // Initialize push notifications and request permission.
+      // Capture unsubscribe for the token-refresh listener to prevent leak
+      // on login/logout cycles.
+      let unsubTokenRefresh: (() => void) | undefined;
+      initNotifications()
+        .then(() => requestPermissionAndRegister())
+        .then((unsub) => { unsubTokenRefresh = unsub; })
+        .catch((e: unknown) => {
+          if (__DEV__) console.warn('[Push]', e instanceof Error ? e.message : e);
+        });
+      const unsubForeground = setupForegroundHandler();
+
+      return () => {
+        websocketManager.disconnect();
+        unsubForeground();
+        unsubTokenRefresh?.();
+      };
     } else {
       websocketManager.disconnect();
+      return undefined;
     }
-    return () => {
-      websocketManager.disconnect();
-    };
   }, [isAuthenticated]);
 
   return (

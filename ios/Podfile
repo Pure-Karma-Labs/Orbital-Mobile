@@ -15,6 +15,16 @@ if linkage != nil
 end
 
 target 'OrbitalMobile' do
+  # Firebase requires modular headers for its Swift→ObjC interop
+  pod 'FirebaseCore', :modular_headers => true
+  pod 'FirebaseCoreInternal', :modular_headers => true
+  pod 'FirebaseInstallations', :modular_headers => true
+  pod 'FirebaseMessaging', :modular_headers => true
+  pod 'GoogleUtilities', :modular_headers => true
+  pod 'GoogleDataTransport', :modular_headers => true
+  pod 'nanopb', :modular_headers => true
+  pod 'FirebaseCoreExtension', :modular_headers => true
+
   config = use_native_modules!
 
   use_react_native!(

@@ -9,7 +9,7 @@
  * and provide retry functionality.
  */
 
-import React from 'react';
+import React, { useCallback, useRef } from 'react';
 import {
   Image,
   Text,
@@ -20,6 +20,7 @@ import {
 } from 'react-native';
 import { useTheme } from '../theme';
 import { useMediaDownload } from '../hooks/useMediaDownload';
+import { useAppStore } from '../stores/useAppStore';
 import { OrbitalSpinner } from './OrbitalSpinner';
 
 // ---------------------------------------------------------------------------
@@ -45,6 +46,24 @@ export const MediaItemView = React.memo(function MediaItemView({
 }: MediaItemViewProps): React.JSX.Element {
   const theme = useTheme();
   const { downloadState, localPath, hasKeys, retry } = useMediaDownload(mediaId);
+
+  const imageErrorCount = useRef(0);
+  const handleImageError = useCallback(() => {
+    imageErrorCount.current += 1;
+    if (imageErrorCount.current > 1) {
+      // Repeated error — file is corrupt, not just missing. Set failed to stop the loop.
+      useAppStore.getState().updateMediaDownloadState(mediaId, 'failed');
+      return;
+    }
+    const existing = useAppStore.getState().media[mediaId];
+    if (existing) {
+      useAppStore.getState().upsertMedia({
+        ...existing,
+        downloadState: 'pending',
+        localPath: null,
+      });
+    }
+  }, [mediaId]);
 
   const placeholderStyle: ViewStyle = {
     width,
@@ -124,15 +143,23 @@ export const MediaItemView = React.memo(function MediaItemView({
           source={{ uri: `file://${localPath}` }}
           style={{ width, height }}
           resizeMode="cover"
+          onError={handleImageError}
         />
       </TouchableOpacity>
     );
   }
 
-  // Fallback — downloaded but no local path (shouldn't happen)
+  // Fallback — downloaded but no local path (file was cleaned up or cache cleared)
   return (
-    <View style={placeholderStyle} testID={`media-item-${mediaId}-missing`}>
-      <Text style={placeholderTextStyle}>Unavailable</Text>
-    </View>
+    <TouchableOpacity
+      style={placeholderStyle}
+      onPress={retry}
+      activeOpacity={0.7}
+      accessibilityRole="button"
+      accessibilityLabel="Tap to retry download"
+      testID={`media-item-${mediaId}-recovery`}
+    >
+      <Text style={placeholderTextStyle}>Tap to retry</Text>
+    </TouchableOpacity>
   );
 });

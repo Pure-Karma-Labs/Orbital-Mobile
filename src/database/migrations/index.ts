@@ -22,7 +22,7 @@ const migrations: Migration[] = [
 export function runMigrations(): void {
   const db = getDatabase();
   const result = db.executeSync('PRAGMA user_version');
-  const currentVersion = (result.rows[0]?.['user_version'] as number | undefined) ?? 0;
+  const currentVersion = (result.rows[0]?.user_version as number | undefined) ?? 0;
 
   for (const migration of migrations) {
     if (migration.version <= currentVersion) continue;

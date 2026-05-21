@@ -69,7 +69,7 @@ describe('auth header injection', () => {
       string,
       RequestInit,
     ];
-    expect((init.headers as Record<string, string>)['Authorization']).toBe(
+    expect((init.headers as Record<string, string>).Authorization).toBe(
       'Bearer test-token',
     );
   });
@@ -83,16 +83,16 @@ describe('auth header injection', () => {
       string,
       RequestInit,
     ];
-    expect((init.headers as Record<string, string>)['Authorization']).toBeUndefined();
+    expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
   });
 
   it('throws AuthError when no token available and skipAuth is false', async () => {
-    const { AuthError } = require('../errors');
+    const { AuthError: AuthErrorClass } = require('../errors');
     (tokenManager.getAccessToken as jest.Mock).mockResolvedValue(null);
 
     await expect(
       request({ method: 'GET', path: '/api/test' }),
-    ).rejects.toBeInstanceOf(AuthError);
+    ).rejects.toBeInstanceOf(AuthErrorClass);
   });
 });
 
@@ -388,7 +388,7 @@ describe('requestBinary', () => {
       string,
       RequestInit,
     ];
-    expect((init.headers as Record<string, string>)['Authorization']).toBe(
+    expect((init.headers as Record<string, string>).Authorization).toBe(
       'Bearer test-token',
     );
   });

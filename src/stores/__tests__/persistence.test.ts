@@ -32,7 +32,6 @@ import {
 
 // Helper to get the underlying mock instance created by the module
 const getMockInstance = () => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const mod = require('react-native-mmkv') as {
     __mockInstance: {
       getString: jest.Mock;
@@ -51,7 +50,6 @@ describe('deferred MMKV initialization', () => {
   it('getMMKVInstance throws before initMMKV is called', () => {
     // Use jest.isolateModules to get a fresh module with mmkvInstance === null
     jest.isolateModules(() => {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { getMMKVInstance: freshGet } = require('../middleware/persistence') as typeof import('../middleware/persistence');
       expect(() => freshGet()).toThrow('MMKV not initialized');
     });
@@ -59,7 +57,6 @@ describe('deferred MMKV initialization', () => {
 
   it('getMMKVInstance returns instance after initMMKV is called', () => {
     jest.isolateModules(() => {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { initMMKV: freshInit, getMMKVInstance: freshGet } = require('../middleware/persistence') as typeof import('../middleware/persistence');
       freshInit('test-encryption-key');
       expect(freshGet()).toBeDefined();
@@ -68,7 +65,6 @@ describe('deferred MMKV initialization', () => {
 
   it('initMMKV throws if called a second time', () => {
     jest.isolateModules(() => {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { initMMKV: freshInit } = require('../middleware/persistence') as typeof import('../middleware/persistence');
       freshInit('first-key');
       expect(() => freshInit('second-key')).toThrow('MMKV already initialized');

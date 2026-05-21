@@ -176,7 +176,7 @@ async function _executeRequest(options: RequestOptions): Promise<Response> {
     if (token === null) {
       throw new AuthError(401, 'No access token available — user is not authenticated');
     }
-    headers['Authorization'] = `Bearer ${token}`;
+    headers.Authorization = `Bearer ${token}`;
   }
 
   let serializedBody: string | FormData | undefined;

@@ -65,21 +65,7 @@ export function saveMedia(row: MediaRow): void {
     row.created_at,
   ];
 
-  try {
-    execute(sql, params);
-  } catch (e) {
-    // FK constraint fails when parent thread/reply rows don't exist locally
-    // (e.g. fresh install, data fetched from API but not persisted to SQLite).
-    // Retry with null FKs — the Zustand store index handles parent mapping.
-    if (e instanceof Error && e.message.includes('FOREIGN KEY')) {
-      params[1] = null; // thread_id
-      params[2] = null; // reply_id
-      params[3] = null; // message_id
-      execute(sql, params);
-    } else {
-      throw e;
-    }
-  }
+  execute(sql, params);
 }
 
 export function getMedia(id: string): MediaRow | null {

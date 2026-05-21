@@ -6,12 +6,13 @@ import { VERSION as V3, SQL as SQL_V3 } from './003_drop_media_fks';
 interface Migration {
   version: number;
   sql: string;
+  disableForeignKeys?: boolean;
 }
 
 const migrations: Migration[] = [
   { version: V1, sql: SQL_V1 },
   { version: V2, sql: SQL_V2 },
-  { version: V3, sql: SQL_V3 },
+  { version: V3, sql: SQL_V3, disableForeignKeys: true },
 ];
 
 /**
@@ -29,6 +30,9 @@ export function runMigrations(): void {
   for (const migration of migrations) {
     if (migration.version <= currentVersion) continue;
 
+    if (migration.disableForeignKeys) {
+      db.executeSync('PRAGMA foreign_keys = OFF');
+    }
     db.executeSync('BEGIN TRANSACTION');
     try {
       db.executeSync(migration.sql);
@@ -37,6 +41,11 @@ export function runMigrations(): void {
     } catch (error) {
       db.executeSync('ROLLBACK');
       throw error;
+    } finally {
+      if (migration.disableForeignKeys) {
+        db.executeSync('PRAGMA foreign_keys = ON');
+        db.executeSync('PRAGMA foreign_key_check');
+      }
     }
   }
 }

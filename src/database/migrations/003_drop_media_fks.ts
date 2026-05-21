@@ -6,9 +6,11 @@ export const VERSION = 3;
 //
 // Note: ON DELETE SET NULL behavior is also removed. If local parent deletion
 // is added in the future, the deletion flow must handle orphaned media refs.
+// Runner sets disableForeignKeys: true for this migration, which issues
+// PRAGMA foreign_keys = OFF before the transaction and re-enables + checks
+// after COMMIT. Required because DROP TABLE with foreign_keys = ON triggers
+// CASCADE/SET NULL actions on child tables.
 export const SQL = `
-PRAGMA defer_foreign_keys = ON;
-
 CREATE TABLE orbital_media_new (
   id                TEXT    NOT NULL,
   thread_id         TEXT,
@@ -53,6 +55,4 @@ ALTER TABLE orbital_media_new RENAME TO orbital_media;
 
 CREATE INDEX idx_media_thread ON orbital_media (thread_id);
 CREATE INDEX idx_media_download_state ON orbital_media (download_state) WHERE download_state != 'downloaded';
-
-PRAGMA foreign_key_check;
 `;

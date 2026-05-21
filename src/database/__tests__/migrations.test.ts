@@ -75,6 +75,31 @@ describe('runMigrations', () => {
     expect(sqls).not.toContain('COMMIT');
   });
 
+  it('disables foreign keys around V3 migration (table rebuild)', () => {
+    const executeSync = jest.fn((sql: string) => {
+      if (sql === 'PRAGMA user_version') {
+        return { rows: [{ user_version: 2 }], rowsAffected: 0 };
+      }
+      return { rows: [], rowsAffected: 0 };
+    });
+    makeDb(executeSync);
+    runMigrations();
+
+    const sqls = (executeSync.mock.calls as unknown as [string][]).map(
+      ([sql]) => sql,
+    );
+
+    const fkOff = sqls.indexOf('PRAGMA foreign_keys = OFF');
+    const fkOn = sqls.lastIndexOf('PRAGMA foreign_keys = ON');
+    const fkCheck = sqls.lastIndexOf('PRAGMA foreign_key_check');
+    const v3Version = sqls.indexOf('PRAGMA user_version = 3');
+
+    expect(fkOff).toBeGreaterThanOrEqual(0);
+    expect(fkOn).toBeGreaterThan(v3Version);
+    expect(fkCheck).toBeGreaterThan(fkOn);
+    expect(v3Version).toBeGreaterThan(fkOff);
+  });
+
   it('rolls back and rethrows on migration error', () => {
     const executeSync = jest.fn((sql: string) => {
       if (sql === 'PRAGMA user_version') {

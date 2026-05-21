@@ -129,7 +129,7 @@ export async function requestPermissionAndRegister(): Promise<() => void> {
 
   try {
     await registerDevice({ platform, pushToken: token, deviceId });
-  } catch (e: unknown) {
+  } catch {
     // Don't block the app if registration fails — will retry on next launch
     if (__DEV__) console.warn('[Push] Device registration failed');
   }

@@ -271,6 +271,6 @@ describe('threadsSlice — optimistic updates', () => {
       'A2',
       'B',
     ]);
-    expect(store.getState().replies['A2'].syncStatus).toBe('pending');
+    expect(store.getState().replies.A2.syncStatus).toBe('pending');
   });
 });

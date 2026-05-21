@@ -194,7 +194,7 @@ describe('generateInitialKeys', () => {
   });
 
   it('generates registration ID using crypto.getRandomValues (not Math.random)', async () => {
-    const cryptoObj = (globalThis as Record<string, unknown>)['crypto'] as { getRandomValues: (a: Uint8Array) => Uint8Array };
+    const cryptoObj = (globalThis as Record<string, unknown>).crypto as { getRandomValues: (a: Uint8Array) => Uint8Array };
     const getRandomValuesSpy = jest.spyOn(cryptoObj, 'getRandomValues');
 
     await generateInitialKeys();

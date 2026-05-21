@@ -170,9 +170,9 @@ Media metadata, attachment keys, download state.
 | Column | Type | Notes |
 |--------|------|-------|
 | `id` | TEXT PK | UUID |
-| `thread_id` | TEXT | FK → orbital_threads |
-| `reply_id` | TEXT | FK → orbital_replies |
-| `message_id` | TEXT | FK → messages |
+| `thread_id` | TEXT | Logical ref → orbital_threads (no FK constraint) |
+| `reply_id` | TEXT | Logical ref → orbital_replies (no FK constraint) |
+| `message_id` | TEXT | Logical ref → messages (no FK constraint) |
 | `content_type` | TEXT NOT NULL | MIME type |
 | `file_name` | TEXT | |
 | `file_size` | INTEGER | Bytes |
@@ -335,10 +335,18 @@ Draft persistence.
 
 ---
 
+## Migration History
+
+| Version | File | Description |
+|---------|------|-------------|
+| 001 | `001_initial_schema.ts` | All 17 tables, indexes, initial schema |
+| 002 | `002_media_blur_hash_expires.ts` | Add blur_hash and expires_at to orbital_media |
+| 003 | `003_drop_media_fks.ts` | Drop FK constraints on orbital_media (thread_id, reply_id, message_id) |
+
 ## Planned Future Migrations
 
 | Version | File | Description |
 |---------|------|-------------|
-| 002 | `002_fts5_search.sql` | FTS5 virtual tables for message and thread search |
-| 003 | TBD | Read receipts, typing indicators |
-| 004 | TBD | Reactions table, emoji indexes |
+| 004 | TBD | FTS5 virtual tables for message and thread search |
+| 005 | TBD | Read receipts, typing indicators |
+| 006 | TBD | Reactions table, emoji indexes |

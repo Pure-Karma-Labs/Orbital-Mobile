@@ -1,5 +1,6 @@
 mod attachment_crypto;
 mod content_crypto;
+mod ecies;
 mod error;
 mod group;
 mod keys;
@@ -22,6 +23,7 @@ mod store_adapters;
 
 pub use attachment_crypto::*;
 pub use content_crypto::*;
+pub use ecies::*;
 pub use error::*;
 pub use group::*;
 pub use keys::*;

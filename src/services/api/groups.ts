@@ -14,6 +14,7 @@ import type {
   GroupResponse,
   JoinGroupRequest,
   JoinGroupResponse,
+  PendingWrapsResponse,
 } from '../../types/api';
 
 interface ListGroupsApiResponse {
@@ -76,5 +77,27 @@ export async function listDms(): Promise<DmResponse[]> {
     path: '/api/groups/dms',
   });
   return response.dms;
+}
+
+export function submitWrappedKey(
+  groupId: string,
+  userId: string,
+  wrappedGroupKey: string,
+): Promise<{ success: boolean }> {
+  return request<{ success: boolean }>({
+    method: 'POST',
+    path: `/api/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}/wrapped-key`,
+    body: { wrappedGroupKey },
+  });
+}
+
+export async function getPendingWraps(
+  groupId: string,
+): Promise<PendingWrapsResponse['pending']> {
+  const response = await request<PendingWrapsResponse>({
+    method: 'GET',
+    path: `/api/groups/${encodeURIComponent(groupId)}/pending-wraps`,
+  });
+  return response.pending;
 }
 

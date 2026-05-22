@@ -113,11 +113,10 @@ function loadPersistedGroupKey(groupId: string): Uint8Array | null {
  *
  * Concurrent calls for the same groupId coalesce onto a single request.
  *
- * TODO: The backend currently stores group keys as plaintext strings —
- * the server operator can read them. A future iteration should wrap
- * each member's copy with their identity public key so the server
- * holds only ciphertext. The current pass-through model is functional
- * but does not provide zero-knowledge guarantees.
+ * NOTE: Field renamed to wrappedGroupKey but ECIES seal/open calls are not
+ * yet wired into the persist/fetch paths. The Rust primitive (ecies_seal/
+ * ecies_open) and backend endpoints (submitWrappedKey, getPendingWraps) are
+ * ready — the wrap orchestration is a follow-up task.
  */
 export async function getOrFetchGroupKey(groupId: string): Promise<Uint8Array> {
   const cached = groupKeyCache.get(groupId);
@@ -139,7 +138,10 @@ export async function getOrFetchGroupKey(groupId: string): Promise<Uint8Array> {
   const promise = (async () => {
     try {
       const response = await getGroupKey(groupId);
-      const keyBytes = validateAndDecode(response.groupKey);
+      if (!response.wrappedGroupKey) {
+        throw new Error('Group key not yet available (pending wrap)');
+      }
+      const keyBytes = validateAndDecode(response.wrappedGroupKey);
       try {
         setGroupMasterKey(groupId, keyBytes);
       } catch {
@@ -187,7 +189,7 @@ export function clearGroupKeyCache(): void {
 /**
  * Generate a new random 32-byte AES-256 group key.
  * Returns both raw bytes (for immediate crypto use) and base64 string
- * (for sending to the backend in CreateGroupRequest.encryptedGroupKey).
+ * (for sending to the backend in CreateGroupRequest.wrappedGroupKey).
  */
 export function generateGroupKey(): { key: Uint8Array; keyBase64: string } {
   const key = new Uint8Array(32);

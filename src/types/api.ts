@@ -85,11 +85,11 @@ export interface PublicKeyResponse {
 /**
  * POST /api/groups request.
  *
- * Backend expects: { encrypted_name, encrypted_group_key }
+ * Backend expects: { encrypted_name, wrapped_group_key }
  */
 export interface CreateGroupRequest {
   encryptedName: string;
-  encryptedGroupKey: string;
+  wrappedGroupKey: string;
 }
 
 /**
@@ -108,13 +108,13 @@ export interface CreateGroupResponse {
  * GET /api/groups response item (from getUserGroups).
  *
  * Backend returns per group:
- * { group_id, encrypted_name, encrypted_group_key, member_count,
+ * { group_id, encrypted_name, wrapped_group_key, member_count,
  *   max_members, is_creator, active_invite_code, joined_at }
  */
 export interface GroupResponse {
   groupId: string;
   encryptedName: string | null;
-  encryptedGroupKey: string | null;
+  wrappedGroupKey: string | null;
   memberCount: number;
   maxMembers: number;
   isCreator: boolean;
@@ -125,24 +125,23 @@ export interface GroupResponse {
 /**
  * POST /api/groups/join request.
  *
- * Backend expects: { invite_code, encrypted_group_key }
+ * Backend expects: { invite_code }
  */
 export interface JoinGroupRequest {
   inviteCode: string;
-  encryptedGroupKey: string;
 }
 
 /**
  * POST /api/groups/join response.
  *
- * Backend returns: { group_id, encrypted_name, member_count, joined_at, group_key }
+ * Backend returns: { group_id, encrypted_name, member_count, joined_at, wrapped_group_key }
  */
 export interface JoinGroupResponse {
   groupId: string;
   encryptedName: string | null;
   memberCount: number;
   joinedAt: string;
-  groupKey: string | null;
+  wrappedGroupKey: string | null;
 }
 
 /**
@@ -155,7 +154,7 @@ export interface GroupMember {
   userId: string;
   username: string;
   displayName: string;
-  publicKey: unknown;
+  publicKey: string;
   avatarUrl: string | null;
   joinedAt: string;
 }
@@ -167,10 +166,24 @@ export interface GroupMembersResponse {
 /**
  * GET /api/groups/:groupId/key response.
  *
- * Backend returns: { group_key }
+ * Backend returns: { wrapped_group_key }
  */
 export interface GroupKeyResponse {
-  groupKey: string;
+  wrappedGroupKey: string | null;
+}
+
+/**
+ * POST /api/groups/:groupId/members/:userId/wrapped-key request.
+ */
+export interface SubmitWrappedKeyRequest {
+  wrappedGroupKey: string;
+}
+
+/**
+ * GET /api/groups/:groupId/pending-wraps response.
+ */
+export interface PendingWrapsResponse {
+  pending: Array<{ userId: string; identityPublicKey: string }>;
 }
 
 /**
@@ -198,22 +211,23 @@ export interface GroupQuotaResponse {
 /**
  * POST /api/groups/dm request.
  *
- * Backend expects: { recipient_id, encrypted_group_key }
+ * Backend expects: { recipient_id, wrapped_group_key, recipient_wrapped_group_key? }
  */
 export interface CreateDmRequest {
   recipientId: string;
-  encryptedGroupKey: string;
+  wrappedGroupKey: string;
+  recipientWrappedGroupKey?: string | null;
 }
 
 /**
  * POST /api/groups/dm response.
  *
- * Backend returns: { group_id, is_new, group_key, recipient: { id, username } }
+ * Backend returns: { group_id, is_new, wrapped_group_key, recipient: { id, username } }
  */
 export interface CreateDmResponse {
   groupId: string;
   isNew: boolean;
-  groupKey: string;
+  wrappedGroupKey: string | null;
   recipient: {
     id: string;
     username: string;
@@ -224,7 +238,7 @@ export interface CreateDmResponse {
  * GET /api/groups/dms response item (from getDMGroups).
  *
  * Backend returns per DM:
- * { group_id, recipient: { id, username, avatar_url }, encrypted_group_key,
+ * { group_id, recipient: { id, username, avatar_url }, wrapped_group_key,
  *   last_message_at, created_at }
  */
 export interface DmResponse {
@@ -234,7 +248,7 @@ export interface DmResponse {
     username: string;
     avatarUrl: string | null;
   };
-  encryptedGroupKey: string | null;
+  wrappedGroupKey: string | null;
   lastMessageAt: string | null;
   createdAt: string;
 }

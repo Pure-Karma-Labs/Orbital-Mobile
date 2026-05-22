@@ -115,6 +115,7 @@ export interface GroupResponse {
   groupId: string;
   encryptedName: string | null;
   wrappedGroupKey: string | null;
+  wrappedBy: string | null;
   memberCount: number;
   maxMembers: number;
   isCreator: boolean;
@@ -170,6 +171,7 @@ export interface GroupMembersResponse {
  */
 export interface GroupKeyResponse {
   wrappedGroupKey: string | null;
+  wrappedBy: string | null;
 }
 
 /**
@@ -228,6 +230,7 @@ export interface CreateDmResponse {
   groupId: string;
   isNew: boolean;
   wrappedGroupKey: string | null;
+  wrappedBy: string | null;
   recipient: {
     id: string;
     username: string;
@@ -249,6 +252,7 @@ export interface DmResponse {
     avatarUrl: string | null;
   };
   wrappedGroupKey: string | null;
+  wrappedBy: string | null;
   lastMessageAt: string | null;
   createdAt: string;
 }

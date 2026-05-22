@@ -316,6 +316,19 @@ extern "C" {
         RustBuffer aad, 
         RustCallStatus *uniffi_out_err
     );
+    RustBuffer uniffi_orbital_signal_fn_func_ecies_open(
+        RustBuffer sealed, 
+        RustBuffer recipient_secret_key, 
+        RustBuffer expected_sender_public_key, 
+        RustCallStatus *uniffi_out_err
+    );
+    RustBuffer uniffi_orbital_signal_fn_func_ecies_seal(
+        RustBuffer plaintext, 
+        RustBuffer recipient_public_key, 
+        RustBuffer sender_private_key, 
+        RustBuffer sender_public_key, 
+        RustCallStatus *uniffi_out_err
+    );
     RustBuffer uniffi_orbital_signal_fn_func_create_sender_key_distribution_message(
         RustBuffer input, 
         RustCallStatus *uniffi_out_err
@@ -600,6 +613,10 @@ extern "C" {
     uint16_t uniffi_orbital_signal_checksum_func_aes_gcm_decrypt(
     );
     uint16_t uniffi_orbital_signal_checksum_func_aes_gcm_encrypt(
+    );
+    uint16_t uniffi_orbital_signal_checksum_func_ecies_open(
+    );
+    uint16_t uniffi_orbital_signal_checksum_func_ecies_seal(
     );
     uint16_t uniffi_orbital_signal_checksum_func_create_sender_key_distribution_message(
     );
@@ -6227,6 +6244,22 @@ NativeOrbitalSignal::NativeOrbitalSignal(
             return this->cpp_uniffi_orbital_signal_fn_func_aes_gcm_encrypt(rt, thisVal, args, count);
         }
     );
+    props["ubrn_uniffi_orbital_signal_fn_func_ecies_open"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_orbital_signal_fn_func_ecies_open"),
+        3,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_orbital_signal_fn_func_ecies_open(rt, thisVal, args, count);
+        }
+    );
+    props["ubrn_uniffi_orbital_signal_fn_func_ecies_seal"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_orbital_signal_fn_func_ecies_seal"),
+        4,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_orbital_signal_fn_func_ecies_seal(rt, thisVal, args, count);
+        }
+    );
     props["ubrn_uniffi_orbital_signal_fn_func_create_sender_key_distribution_message"] = jsi::Function::createFromHostFunction(
         rt,
         jsi::PropNameID::forAscii(rt, "ubrn_uniffi_orbital_signal_fn_func_create_sender_key_distribution_message"),
@@ -6795,6 +6828,22 @@ NativeOrbitalSignal::NativeOrbitalSignal(
             return this->cpp_uniffi_orbital_signal_checksum_func_aes_gcm_encrypt(rt, thisVal, args, count);
         }
     );
+    props["ubrn_uniffi_orbital_signal_checksum_func_ecies_open"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_orbital_signal_checksum_func_ecies_open"),
+        0,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_orbital_signal_checksum_func_ecies_open(rt, thisVal, args, count);
+        }
+    );
+    props["ubrn_uniffi_orbital_signal_checksum_func_ecies_seal"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_orbital_signal_checksum_func_ecies_seal"),
+        0,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_orbital_signal_checksum_func_ecies_seal(rt, thisVal, args, count);
+        }
+    );
     props["ubrn_uniffi_orbital_signal_checksum_func_create_sender_key_distribution_message"] = jsi::Function::createFromHostFunction(
         rt,
         jsi::PropNameID::forAscii(rt, "ubrn_uniffi_orbital_signal_checksum_func_create_sender_key_distribution_message"),
@@ -7306,6 +7355,26 @@ jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_fn_func_aes_gcm_decryp
 jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_fn_func_aes_gcm_encrypt(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
         RustCallStatus status = uniffi::orbital_signal::Bridging<RustCallStatus>::rustSuccess(rt);
         auto value = uniffi_orbital_signal_fn_func_aes_gcm_encrypt(uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[0]), uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[1]), uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[2]), 
+            &status
+        );
+        uniffi::orbital_signal::Bridging<RustCallStatus>::copyIntoJs(rt, callInvoker, status, args[count - 1]);
+
+        
+        return uniffi::orbital_signal::Bridging<RustBuffer>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_fn_func_ecies_open(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        RustCallStatus status = uniffi::orbital_signal::Bridging<RustCallStatus>::rustSuccess(rt);
+        auto value = uniffi_orbital_signal_fn_func_ecies_open(uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[0]), uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[1]), uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[2]), 
+            &status
+        );
+        uniffi::orbital_signal::Bridging<RustCallStatus>::copyIntoJs(rt, callInvoker, status, args[count - 1]);
+
+        
+        return uniffi::orbital_signal::Bridging<RustBuffer>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_fn_func_ecies_seal(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        RustCallStatus status = uniffi::orbital_signal::Bridging<RustCallStatus>::rustSuccess(rt);
+        auto value = uniffi_orbital_signal_fn_func_ecies_seal(uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[0]), uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[1]), uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[2]), uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[3]), 
             &status
         );
         uniffi::orbital_signal::Bridging<RustCallStatus>::copyIntoJs(rt, callInvoker, status, args[count - 1]);
@@ -7888,6 +7957,20 @@ jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_checksum_func_aes_gcm_
 }
 jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_checksum_func_aes_gcm_encrypt(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
         auto value = uniffi_orbital_signal_checksum_func_aes_gcm_encrypt(
+        );
+
+        
+        return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_checksum_func_ecies_open(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        auto value = uniffi_orbital_signal_checksum_func_ecies_open(
+        );
+
+        
+        return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_checksum_func_ecies_seal(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        auto value = uniffi_orbital_signal_checksum_func_ecies_seal(
         );
 
         

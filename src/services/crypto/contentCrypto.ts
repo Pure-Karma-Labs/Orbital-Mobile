@@ -14,7 +14,7 @@
  * on logout via `clearGroupKeyCache()`. Key material is never logged.
  */
 
-import { aesGcmEncrypt, aesGcmDecrypt } from 'orbital-signal';
+import { aesGcmEncrypt, aesGcmDecrypt, eciesSeal, eciesOpen } from 'orbital-signal';
 import type { ContentCryptoResult } from 'orbital-signal';
 import { getGroupKey } from '../api/groups';
 import {
@@ -23,6 +23,7 @@ import {
   clearGroupMasterKey,
 } from '../../database/repositories/conversationRepository';
 import { arrayBufferToBase64, base64ToArrayBuffer, toArrayBuffer } from './utils';
+import { getIdentityKeyPair } from './identityKeyAccess';
 
 // ---------------------------------------------------------------------------
 // Text encoder/decoder
@@ -92,6 +93,44 @@ export function persistGroupKey(groupId: string, keyBase64: string): void {
   }
 }
 
+// ---------------------------------------------------------------------------
+// ECIES key wrapping
+// ---------------------------------------------------------------------------
+
+const ECIES_ENVELOPE_LEN = 190;
+const ECIES_VERSION_BYTE = 0x01;
+
+export function detectKeyFormat(keyBase64: string): 'raw' | 'ecies-v1' {
+  const bytes = new Uint8Array(base64ToArrayBuffer(keyBase64));
+  if (bytes.length === 32) return 'raw';
+  if (bytes.length === ECIES_ENVELOPE_LEN && bytes[0] === ECIES_VERSION_BYTE) return 'ecies-v1';
+  throw new Error(`Unknown key format: ${bytes.length} bytes`);
+}
+
+export function wrapGroupKey(
+  groupKey: Uint8Array,
+  recipientPubKey: ArrayBuffer,
+): string {
+  const { privateKey, publicKey } = getIdentityKeyPair();
+  const sealed = eciesSeal(
+    toArrayBuffer(groupKey),
+    recipientPubKey,
+    privateKey,
+    publicKey,
+  );
+  return arrayBufferToBase64(sealed);
+}
+
+export function unwrapGroupKey(
+  wrappedBase64: string,
+  senderPubKey: ArrayBuffer,
+): Uint8Array {
+  const { privateKey } = getIdentityKeyPair();
+  const sealed = base64ToArrayBuffer(wrappedBase64);
+  const plaintext = eciesOpen(sealed, privateKey, senderPubKey);
+  return new Uint8Array(plaintext);
+}
+
 /**
  * Load a group key from SQLCipher (conversations.group_master_key BLOB).
  * Returns null if the conversation doesn't exist or has no key stored.
@@ -113,14 +152,22 @@ function loadPersistedGroupKey(groupId: string): Uint8Array | null {
  *
  * Concurrent calls for the same groupId coalesce onto a single request.
  *
- * NOTE: Field renamed to wrappedGroupKey but ECIES seal/open calls are not
- * yet wired into the persist/fetch paths. The Rust primitive (ecies_seal/
- * ecies_open) and backend endpoints (submitWrappedKey, getPendingWraps) are
- * ready — the wrap orchestration is a follow-up task.
  */
+const pendingGroups = new Map<string, number>();
+const PENDING_CACHE_TTL_MS = 30_000;
+
+export function evictPendingCache(groupId: string): void {
+  pendingGroups.delete(groupId);
+}
+
 export async function getOrFetchGroupKey(groupId: string): Promise<Uint8Array> {
   const cached = groupKeyCache.get(groupId);
   if (cached) return cached;
+
+  const pendingUntil = pendingGroups.get(groupId);
+  if (pendingUntil && Date.now() < pendingUntil) {
+    throw new Error('Group key not yet available (pending wrap)');
+  }
 
   try {
     const persisted = loadPersistedGroupKey(groupId);
@@ -139,9 +186,19 @@ export async function getOrFetchGroupKey(groupId: string): Promise<Uint8Array> {
     try {
       const response = await getGroupKey(groupId);
       if (!response.wrappedGroupKey) {
+        pendingGroups.set(groupId, Date.now() + PENDING_CACHE_TTL_MS);
         throw new Error('Group key not yet available (pending wrap)');
       }
-      const keyBytes = validateAndDecode(response.wrappedGroupKey);
+      const format = detectKeyFormat(response.wrappedGroupKey);
+      let keyBytes: Uint8Array;
+      if (format === 'ecies-v1') {
+        keyBytes = unwrapGroupKey(
+          response.wrappedGroupKey,
+          getIdentityKeyPair().publicKey,
+        );
+      } else {
+        keyBytes = validateAndDecode(response.wrappedGroupKey);
+      }
       try {
         setGroupMasterKey(groupId, keyBytes);
       } catch {

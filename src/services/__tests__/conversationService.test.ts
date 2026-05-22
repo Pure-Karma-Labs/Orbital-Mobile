@@ -48,7 +48,7 @@ beforeEach(() => {
 const GROUP_RESPONSE = {
   groupId: 'g1',
   encryptedName: 'Family Orbit',
-  encryptedGroupKey: 'placeholder-key',
+  wrappedGroupKey: 'placeholder-key',
   memberCount: 3,
   maxMembers: 10,
   isCreator: false,
@@ -131,8 +131,8 @@ describe('loadConversations', () => {
     expect(mockPersistGroupKey).toHaveBeenCalledWith('g1', 'placeholder-key');
   });
 
-  it('skips groups with null encryptedGroupKey', async () => {
-    mockListGroups.mockResolvedValue([{ ...GROUP_RESPONSE, encryptedGroupKey: null }]);
+  it('skips groups with null wrappedGroupKey', async () => {
+    mockListGroups.mockResolvedValue([{ ...GROUP_RESPONSE, wrappedGroupKey: null }]);
 
     await loadConversations();
 
@@ -153,7 +153,7 @@ describe('loadConversations', () => {
 const DM_RESPONSE = {
   groupId: 'dm-1',
   recipient: { id: 'user-2', username: 'bob', avatarUrl: null },
-  encryptedGroupKey: 'dm-key-base64',
+  wrappedGroupKey: 'dm-key-base64',
   lastMessageAt: '2026-03-15T12:00:00.000Z',
   createdAt: '2026-03-01T00:00:00.000Z',
 };
@@ -200,8 +200,8 @@ describe('loadDmConversations', () => {
     expect(mockPersistGroupKey).toHaveBeenCalledWith('dm-1', 'dm-key-base64');
   });
 
-  it('skips DMs with null encryptedGroupKey', async () => {
-    mockListDms.mockResolvedValue([{ ...DM_RESPONSE, encryptedGroupKey: null }]);
+  it('skips DMs with null wrappedGroupKey', async () => {
+    mockListDms.mockResolvedValue([{ ...DM_RESPONSE, wrappedGroupKey: null }]);
 
     await loadDmConversations();
 
@@ -226,7 +226,7 @@ describe('startDm', () => {
     mockCreateDm.mockResolvedValue({
       groupId: 'dm-new',
       isNew: true,
-      groupKey: 'generated-key-base64',
+      wrappedGroupKey: 'generated-key-base64',
       recipient: { id: 'user-3', username: 'carol' },
     });
 
@@ -234,7 +234,7 @@ describe('startDm', () => {
 
     expect(mockCreateDm).toHaveBeenCalledWith({
       recipientId: 'user-3',
-      encryptedGroupKey: 'generated-key-base64',
+      wrappedGroupKey: 'generated-key-base64',
     });
     expect(result).toEqual({
       conversationId: 'dm-new',
@@ -246,7 +246,7 @@ describe('startDm', () => {
     mockCreateDm.mockResolvedValue({
       groupId: 'dm-new',
       isNew: true,
-      groupKey: 'generated-key-base64',
+      wrappedGroupKey: 'generated-key-base64',
       recipient: { id: 'user-3', username: 'carol' },
     });
 
@@ -267,25 +267,24 @@ describe('startDm', () => {
     mockCreateDm.mockResolvedValue({
       groupId: 'dm-existing',
       isNew: false,
-      groupKey: 'server-existing-key',
+      wrappedGroupKey: 'server-existing-key',
       recipient: { id: 'user-3', username: 'carol' },
     });
 
     await expect(startDm('user-3')).resolves.not.toThrow();
     expect(mockPersistGroupKey).toHaveBeenCalledWith('dm-existing', 'server-existing-key');
+    expect(mockPersistGroupKey).toHaveBeenCalledTimes(1);
   });
 
-  it('throws when server returns mismatched key for new DM', async () => {
+  it('for isNew DMs trusts local key, ignoring server-returned key', async () => {
     mockCreateDm.mockResolvedValue({
       groupId: 'dm-new',
       isNew: true,
-      groupKey: 'different-server-key',
+      wrappedGroupKey: 'different-server-key',
       recipient: { id: 'user-3', username: 'carol' },
     });
 
-    await expect(startDm('user-3')).rejects.toThrow(
-      'Server returned a different key for a newly created DM',
-    );
-    expect(mockPersistGroupKey).not.toHaveBeenCalled();
+    await expect(startDm('user-3')).resolves.not.toThrow();
+    expect(mockPersistGroupKey).toHaveBeenCalledWith('dm-new', 'generated-key-base64');
   });
 });

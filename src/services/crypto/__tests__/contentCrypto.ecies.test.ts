@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
 jest.mock('orbital-signal', () => ({
   aesGcmEncrypt: jest.fn(),
   aesGcmDecrypt: jest.fn(),
@@ -19,27 +20,6 @@ jest.mock('../keyGenerationService', () => ({
   getCachedIdentityPrivateKeyHex: jest.fn(() => 'bb'.repeat(32)),
 }));
 
-jest.mock('../utils', () => ({
-  arrayBufferToBase64: jest.fn((ab: ArrayBuffer) => {
-    const bytes = new Uint8Array(ab);
-    let binary = '';
-    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-    return btoa(binary);
-  }),
-  base64ToArrayBuffer: jest.fn((b64: string) => {
-    const binary = atob(b64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    return bytes.buffer;
-  }),
-  toArrayBuffer: jest.fn((u8: Uint8Array) => u8.buffer),
-  hexToUint8Array: jest.fn((hex: string) => {
-    const bytes = new Uint8Array(hex.length / 2);
-    for (let i = 0; i < hex.length; i += 2) bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
-    return bytes;
-  }),
-}));
-
 import { eciesSeal, eciesOpen } from 'orbital-signal';
 import {
   wrapGroupKey,
@@ -47,6 +27,7 @@ import {
   detectKeyFormat,
   evictPendingCache,
 } from '../contentCrypto';
+import { arrayBufferToBase64 } from '../utils';
 
 describe('ECIES wrapping', () => {
   it('wrapGroupKey calls eciesSeal and returns base64', () => {
@@ -58,10 +39,8 @@ describe('ECIES wrapping', () => {
   });
 
   it('unwrapGroupKey calls eciesOpen and returns Uint8Array', () => {
-    const raw32 = new Uint8Array(32);
-    let binary = '';
-    for (let i = 0; i < raw32.length; i++) binary += String.fromCharCode(raw32[i]);
-    const b64 = btoa(binary);
+    const fakeKey = new Uint8Array(32);
+    const b64 = arrayBufferToBase64(fakeKey.buffer);
     const senderPub = new ArrayBuffer(33);
     const result = unwrapGroupKey(b64, senderPub);
     expect(eciesOpen).toHaveBeenCalled();
@@ -72,24 +51,21 @@ describe('ECIES wrapping', () => {
 describe('detectKeyFormat', () => {
   it('detects raw 32-byte keys', () => {
     const raw = new Uint8Array(32);
-    let binary = '';
-    for (let i = 0; i < raw.length; i++) binary += String.fromCharCode(raw[i]);
-    expect(detectKeyFormat(btoa(binary))).toBe('raw');
+    const b64 = arrayBufferToBase64(raw.buffer);
+    expect(detectKeyFormat(b64)).toBe('raw');
   });
 
   it('detects ECIES-v1 190-byte envelopes', () => {
     const envelope = new Uint8Array(190);
     envelope[0] = 0x01;
-    let binary = '';
-    for (let i = 0; i < envelope.length; i++) binary += String.fromCharCode(envelope[i]);
-    expect(detectKeyFormat(btoa(binary))).toBe('ecies-v1');
+    const b64 = arrayBufferToBase64(envelope.buffer);
+    expect(detectKeyFormat(b64)).toBe('ecies-v1');
   });
 
   it('throws on unknown format', () => {
     const weird = new Uint8Array(50);
-    let binary = '';
-    for (let i = 0; i < weird.length; i++) binary += String.fromCharCode(weird[i]);
-    expect(() => detectKeyFormat(btoa(binary))).toThrow('Unknown key format');
+    const b64 = arrayBufferToBase64(weird.buffer);
+    expect(() => detectKeyFormat(b64)).toThrow('Unknown key format');
   });
 });
 

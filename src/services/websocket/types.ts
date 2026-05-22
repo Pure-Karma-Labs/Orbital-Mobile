@@ -121,12 +121,27 @@ export interface TypingPayload {
   conversationId: string;
 }
 
+export interface WrapKeyRequestPayload {
+  type: 'wrap_key_request';
+  groupId: string;
+  targetUserId: string;
+  targetIdentityPublicKey: string;
+}
+
+export interface WrappedKeyDeliveredPayload {
+  type: 'wrapped_key_delivered';
+  groupId: string;
+  senderUserId: string;
+}
+
 export type BroadcastPayload =
   | NewThreadPayload
   | NewReplyPayload
   | NewSignalMessagePayload
   | DisplayNameChangedPayload
-  | TypingPayload;
+  | TypingPayload
+  | WrapKeyRequestPayload
+  | WrappedKeyDeliveredPayload;
 
 // ============================================================
 // Broadcast envelope (wraps all broadcast payloads)

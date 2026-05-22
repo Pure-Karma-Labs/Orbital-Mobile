@@ -12,7 +12,9 @@ import {
   encryptGroupName,
   decryptGroupName,
   getOrFetchGroupKey,
+  wrapGroupKey,
 } from './crypto/contentCrypto';
+import { getIdentityKeyPair } from './crypto/identityKeyAccess';
 import { base64ToArrayBuffer } from './crypto/utils';
 import { useAppStore } from '../stores/useAppStore';
 import type { Conversation } from '../types/store';
@@ -70,10 +72,12 @@ export async function loadConversations(): Promise<void> {
 export async function createOrbit(name: string): Promise<{ groupId: string; inviteCode: string | null }> {
   const { key, keyBase64 } = generateGroupKey();
   const encryptedName = encryptGroupName(name, key);
+  const { publicKey: ownPubKey } = getIdentityKeyPair();
+  const wrappedBase64 = wrapGroupKey(key, ownPubKey);
 
   const response = await createGroup({
     encryptedName,
-    wrappedGroupKey: keyBase64,
+    wrappedGroupKey: wrappedBase64,
   });
 
   persistGroupKey(response.groupId, keyBase64);
@@ -138,11 +142,13 @@ export async function loadDmConversations(): Promise<void> {
 export async function startDm(
   recipientId: string,
 ): Promise<{ conversationId: string; recipientName: string }> {
-  const { keyBase64 } = generateGroupKey();
+  const { key, keyBase64 } = generateGroupKey();
+  const { publicKey: ownPubKey } = getIdentityKeyPair();
+  const wrappedBase64 = wrapGroupKey(key, ownPubKey);
 
   const response = await createDm({
     recipientId,
-    wrappedGroupKey: keyBase64,
+    wrappedGroupKey: wrappedBase64,
   });
 
   if (response.isNew) {

@@ -26,7 +26,7 @@ beforeEach(() => {
 
 describe('createGroup', () => {
   it('calls POST /api/groups with correct body', async () => {
-    const data = { encryptedName: 'abc123', encryptedGroupKey: 'key456' };
+    const data = { encryptedName: 'abc123', wrappedGroupKey: 'key456' };
     await createGroup(data);
 
     expect(mockRequest).toHaveBeenCalledWith({
@@ -39,7 +39,7 @@ describe('createGroup', () => {
 
 describe('joinGroup', () => {
   it('calls POST /api/groups/join with invite code', async () => {
-    const data = { inviteCode: 'INV-ABC', encryptedGroupKey: 'enc-key' };
+    const data = { inviteCode: 'INV-ABC' };
     await joinGroup(data);
 
     expect(mockRequest).toHaveBeenCalledWith({
@@ -87,7 +87,7 @@ describe('getGroupQuota', () => {
 
 describe('createDm', () => {
   it('calls POST /api/groups/dm with correct body', async () => {
-    const data = { recipientId: 'user-1', encryptedGroupKey: 'key123' };
+    const data = { recipientId: 'user-1', wrappedGroupKey: 'key123' };
     await createDm(data);
 
     expect(mockRequest).toHaveBeenCalledWith({

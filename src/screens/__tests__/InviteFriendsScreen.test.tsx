@@ -143,7 +143,7 @@ describe('InviteFriendsScreen — rendering', () => {
       {
         groupId: 'g-1',
         encryptedName: 'enc-name',
-        encryptedGroupKey: 'enc-key',
+        wrappedGroupKey: 'enc-key',
         memberCount: 3,
         maxMembers: 10,
         isCreator: true,
@@ -187,7 +187,7 @@ describe('InviteFriendsScreen — share', () => {
       {
         groupId: 'g-1',
         encryptedName: 'enc-name',
-        encryptedGroupKey: 'enc-key',
+        wrappedGroupKey: 'enc-key',
         memberCount: 3,
         maxMembers: 10,
         isCreator: true,

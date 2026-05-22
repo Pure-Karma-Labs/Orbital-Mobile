@@ -48,9 +48,9 @@ export async function loadConversations(): Promise<void> {
   const groups = await listGroups();
 
   for (const group of groups) {
-    if (group.encryptedGroupKey) {
+    if (group.wrappedGroupKey) {
       try {
-        persistGroupKey(group.groupId, group.encryptedGroupKey);
+        persistGroupKey(group.groupId, group.wrappedGroupKey);
       } catch {
         if (__DEV__) console.warn('[loadConversations] invalid group key for', group.groupId);
       }
@@ -73,7 +73,7 @@ export async function createOrbit(name: string): Promise<{ groupId: string; invi
 
   const response = await createGroup({
     encryptedName,
-    encryptedGroupKey: keyBase64,
+    wrappedGroupKey: keyBase64,
   });
 
   persistGroupKey(response.groupId, keyBase64);
@@ -118,9 +118,9 @@ export async function loadDmConversations(): Promise<void> {
   const dms = await listDms();
 
   for (const dm of dms) {
-    if (dm.encryptedGroupKey) {
+    if (dm.wrappedGroupKey) {
       try {
-        persistGroupKey(dm.groupId, dm.encryptedGroupKey);
+        persistGroupKey(dm.groupId, dm.wrappedGroupKey);
       } catch {
         if (__DEV__) console.warn('[loadDmConversations] invalid group key for', dm.groupId);
       }
@@ -142,14 +142,14 @@ export async function startDm(
 
   const response = await createDm({
     recipientId,
-    encryptedGroupKey: keyBase64,
+    wrappedGroupKey: keyBase64,
   });
 
-  if (response.isNew && response.groupKey !== keyBase64) {
-    throw new Error('Server returned a different key for a newly created DM');
+  if (response.isNew) {
+    persistGroupKey(response.groupId, keyBase64);
+  } else if (response.wrappedGroupKey) {
+    persistGroupKey(response.groupId, response.wrappedGroupKey);
   }
-
-  persistGroupKey(response.groupId, response.groupKey);
 
   const now = Date.now();
   const store = useAppStore.getState();
@@ -187,17 +187,16 @@ export async function joinOrbit(
 ): Promise<{ groupId: string; name: string | null }> {
   const response = await joinGroup({
     inviteCode,
-    encryptedGroupKey: '',
   });
 
-  if (response.groupKey) {
-    persistGroupKey(response.groupId, response.groupKey);
+  if (response.wrappedGroupKey) {
+    persistGroupKey(response.groupId, response.wrappedGroupKey);
   }
 
   let decryptedName: string | null = response.encryptedName ?? null;
-  if (response.encryptedName && response.groupKey) {
+  if (response.encryptedName && response.wrappedGroupKey) {
     try {
-      const groupKeyBytes = new Uint8Array(base64ToArrayBuffer(response.groupKey));
+      const groupKeyBytes = new Uint8Array(base64ToArrayBuffer(response.wrappedGroupKey));
       decryptedName = decryptGroupName(response.encryptedName, groupKeyBytes);
     } catch {
       decryptedName = '(unable to decrypt)';

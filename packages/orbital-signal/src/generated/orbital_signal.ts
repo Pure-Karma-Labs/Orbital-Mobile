@@ -213,6 +213,82 @@ export function aesGcmEncrypt(
   );
 }
 /**
+ * Open (verify + decrypt) a 190-byte sealed envelope.
+ *
+ * Verifies the sender's XEdDSA signature, checks that the sender matches the
+ * expected public key, and decrypts the group key.
+ *
+ * # Arguments
+ *
+ * - `sealed` — Must be exactly 190 bytes.
+ * - `recipient_secret_key` — 32-byte raw X25519 private key.
+ * - `expected_sender_public_key` — 33-byte Signal public key (0x05 || 32 raw bytes).
+ *
+ * # Returns
+ *
+ * 32-byte plaintext (group key) on success.
+ */
+export function eciesOpen(
+  sealed: ArrayBuffer,
+  recipientSecretKey: ArrayBuffer,
+  expectedSenderPublicKey: ArrayBuffer,
+): ArrayBuffer /*throws*/ {
+  return FfiConverterArrayBuffer.lift(
+    uniffiCaller.rustCallWithError(
+      /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_ecies_open(
+          FfiConverterArrayBuffer.lower(sealed),
+          FfiConverterArrayBuffer.lower(recipientSecretKey),
+          FfiConverterArrayBuffer.lower(expectedSenderPublicKey),
+          callStatus,
+        );
+      },
+      /*liftString:*/ FfiConverterString.lift,
+    ),
+  );
+}
+/**
+ * Seal (encrypt + sign) a 32-byte group key for a specific recipient.
+ *
+ * The sealed envelope authenticates the sender via XEdDSA signature and encrypts
+ * the plaintext so that only the holder of `recipient_public_key`'s corresponding
+ * private key can decrypt it.
+ *
+ * # Arguments
+ *
+ * - `plaintext` — Must be exactly 32 bytes (a group key).
+ * - `recipient_public_key` — 33-byte Signal public key (0x05 || 32 raw bytes).
+ * - `sender_private_key` — 32-byte raw Curve25519 private key (for signing).
+ * - `sender_public_key` — 33-byte Signal public key (0x05 || 32 raw bytes).
+ *
+ * # Returns
+ *
+ * 190-byte sealed envelope on success.
+ */
+export function eciesSeal(
+  plaintext: ArrayBuffer,
+  recipientPublicKey: ArrayBuffer,
+  senderPrivateKey: ArrayBuffer,
+  senderPublicKey: ArrayBuffer,
+): ArrayBuffer /*throws*/ {
+  return FfiConverterArrayBuffer.lift(
+    uniffiCaller.rustCallWithError(
+      /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_ecies_seal(
+          FfiConverterArrayBuffer.lower(plaintext),
+          FfiConverterArrayBuffer.lower(recipientPublicKey),
+          FfiConverterArrayBuffer.lower(senderPrivateKey),
+          FfiConverterArrayBuffer.lower(senderPublicKey),
+          callStatus,
+        );
+      },
+      /*liftString:*/ FfiConverterString.lift,
+    ),
+  );
+}
+/**
  * Create a Sender Key Distribution Message for group messaging (preloaded store pattern).
  *
  * The caller provides an optional existing sender key record. The function creates
@@ -3398,6 +3474,16 @@ function uniffiEnsureInitialized() {
   if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_aes_gcm_encrypt() !== 2665) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_orbital_signal_checksum_func_aes_gcm_encrypt',
+    );
+  }
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_ecies_open() !== 6277) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_func_ecies_open',
+    );
+  }
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_ecies_seal() !== 45411) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_func_ecies_seal',
     );
   }
   if (

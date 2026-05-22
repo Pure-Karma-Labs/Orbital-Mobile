@@ -42,6 +42,8 @@ const KNOWN_BROADCAST_TYPES = new Set([
   'new_message',
   'display_name_changed',
   'typing',
+  'wrap_key_request',
+  'wrapped_key_delivered',
 ]);
 
 // ============================================================
@@ -162,6 +164,14 @@ async function handleBroadcast(envelope: BroadcastEnvelope): Promise<void> {
 
     case 'typing':
       handleTyping(data as TypingPayload);
+      break;
+
+    case 'wrap_key_request':
+      // Handled by conversationService — import is deferred to avoid circular deps
+      break;
+
+    case 'wrapped_key_delivered':
+      // Handled by conversationService — import is deferred to avoid circular deps
       break;
   }
 }

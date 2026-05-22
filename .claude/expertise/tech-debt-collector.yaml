@@ -1,5 +1,5 @@
-version: "1.0"
-last_updated: "2026-04-08"
+version: "1.1"
+last_updated: "2026-05-22"
 agent: tech-debt-collector
 
 core_files:
@@ -15,7 +15,15 @@ core_files:
       - UploadState
     last_hash: 6bd8bd6
 
-  - path: src/database/migrations/001_initial_schema.sql
+  - path: src/services/crypto/contentCrypto.ts
+    purpose: "Content crypto + ECIES wrapping — wrapGroupKey/unwrapGroupKey/detectKeyFormat added; negative cache for pending groups; DEBT-015 scaffold functions (evictPendingCache unused)"
+    key_symbols: [wrapGroupKey, unwrapGroupKey, detectKeyFormat, evictPendingCache, persistGroupKey, getOrFetchGroupKey]
+
+  - path: src/database/migrations/index.ts
+    purpose: "Migration runner — disableForeignKeys flag for table rebuild migrations (DROP TABLE triggers CASCADE with foreign_keys ON)"
+    key_symbols: [runMigrations, disableForeignKeys]
+
+  - path: src/database/migrations/001_initial_schema.ts
     purpose: SQLCipher schema — monitor for schema drift, missing indexes, denormalization creep
     key_symbols:
       - signal_identity_keys

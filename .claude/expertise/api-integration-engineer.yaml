@@ -10,7 +10,7 @@ core_files:
   - path: src/services/api/auth.ts
     role: Auth endpoints (login, signup, verifyToken, getPublicKey)
   - path: src/services/api/groups.ts
-    role: Group endpoints (listGroups, getGroupKey, createGroup, etc.)
+    role: "Group endpoints (listGroups, getGroupKey, createGroup, joinGroup, createDm, listDms, submitWrappedKey, getPendingWraps)"
   - path: src/services/api/threads.ts
     role: Thread/reply endpoints (createThread, getThread, getThreadReplies, createReply)
   - path: src/services/api/messages.ts

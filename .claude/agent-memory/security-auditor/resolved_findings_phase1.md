@@ -1,7 +1,8 @@
 ---
 name: Resolved findings — Phase 1
-description: All security findings confirmed fixed during Phase 1 — 19 verified fixes across PRs #41, #45, #47, #50, #51, #69, #83, #84, plus 23 positive verifications in full crypto audit
-type: project
+description: All security findings confirmed fixed — 26 verified fixes across Phase 1 (PRs #41-#84) and Phase 2 (PR #157 ECIES wrapping); includes XEdDSA auth, HKDF binding, sender key verification
+metadata:
+  type: project
 ---
 
 ## Resolved Security Findings (as of 2026-05-18)
@@ -58,5 +59,15 @@ type: project
 - Phase 1 assessed as **architecturally sound** for an E2EE messaging foundation
 - **All Critical and High findings now resolved** — clean for Phase 2
 
-**Why:** Tracking resolved findings prevents re-auditing and documents security posture improvement. The Phase 1 audit report at `docs/security-audit-phase1.md` is the canonical reference.
+### ECIES Group Key Wrapping (PR #157 — 2026-05-22)
+
+23. **Unauthenticated ECIES (Critical)** — Original ECIES construction had no sender authentication. Server could substitute group keys silently. Fix: XEdDSA signature added over sealed envelope. Sender signs with identity key; recipient verifies before decryption.
+
+24. **No HKDF context binding (High)** — HKDF `info` was empty. Envelopes could be replayed cross-recipient. Fix: HKDF info now includes `ephemeralPub || recipientPub` (64 bytes).
+
+25. **Wrong sender key in unwrap (Critical)** — `unwrapGroupKey` passed own public key as sender. `ecies_open` XEdDSA verification would fail for cross-user wraps. Fix: `wrapped_by` column added to backend; client fetches sender's public key for verification.
+
+26. **190-byte envelope passed to 32-byte validator (Critical)** — Load/join paths passed raw ECIES envelope to `persistGroupKey` which rejected anything != 32 bytes. Fix: receive paths now call `ecies_open` to unwrap before persisting.
+
+**Why:** Tracking resolved findings prevents re-auditing and documents security posture improvement. The Phase 1 audit report at `docs/security-audit-phase1.md` is the canonical reference. ECIES findings tracked in [[audit-pr157-ecies-wrap]].
 **How to apply:** When reviewing future PRs touching these files, verify these properties are preserved. Any regression is Critical severity.

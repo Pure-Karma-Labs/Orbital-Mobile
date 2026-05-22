@@ -6,7 +6,7 @@ type: project
 
 # Tech Debt Registry
 
-Last updated: 2026-04-09
+Last updated: 2026-05-22
 
 ## Open Items
 
@@ -19,6 +19,7 @@ Last updated: 2026-04-09
 | DEBT-007 | Low | Signup error message wrong for ValidationError | API / UI | Small | Open | — |
 | DEBT-008 | Low | Persistence test verifies copy of partialize, not actual fn | Testing | Small | Open | — |
 | DEBT-009 | Low | Hardcoded API base URL (no env-based config) | API | Small | Open | — |
+| DEBT-015 | Low | ECIES wrapped-key scaffold: dead code awaiting receive-path wiring | Crypto / API / WebSocket | Small | Open | #95 |
 
 ## Resolved Items
 
@@ -31,6 +32,7 @@ Last updated: 2026-04-09
 | DEBT-014 | 6 deprecated store impl files still in codebase | All 6 files deleted | PR #75, 2026-04-09 |
 | DEBT-004 | toArrayBuffer duplicated 6x across crypto store files | All 6 stores now import from src/services/crypto/utils.ts | PR #55, 2026-04-09 |
 | DEBT-006 | No code path for last-resort Kyber pre-key | keyGenerationService.ts generates last-resort Kyber pre-key | PR #55, 2026-04-09 |
+| — | FK constraints on orbital_media caused INSERT failures (out-of-order API data) | Migration 003: SQLite 12-step table rebuild to drop FKs; disableForeignKeys flag in runner | PR #148, 2026-05-22 |
 | — | Op-sqlite Jest mock missing (tests fail on native module import) | Manual mock at __mocks__/@op-engineering/op-sqlite.js + modulePathIgnorePatterns for worktrees | PR #57, 2026-04-09 |
 | — | MMKV encryption not enabled | Fixed | PR #45 |
 | — | Selector hooks missing useShallow | Fixed | PR #37 |
@@ -43,6 +45,16 @@ Last updated: 2026-04-09
 ### DEBT-010: Bundle payload assembly duplicated 3x in keyGenerationService
 
 In `src/services/crypto/keyGenerationService.ts`, the `UploadPreKeyBundleRequest` object construction is duplicated across three functions: `uploadInitialPreKeyBundle` (line ~209), `checkAndReplenishPreKeys` (line ~326), and `checkAndRotateSignedPreKey` (line ~413). Each constructs an identical shape with `registrationId`, `identityKey`, `preKeys`, `signedPreKey`, `lastResortKyberPreKey`, and `kyberPreKeys`. Should extract into a `buildUploadPayload()` helper.
+
+### DEBT-015: ECIES wrapped-key scaffold (intentional dead code)
+
+Shipped as part of #95 (zero-knowledge group keys). Send paths are wired (createOrbit, startDm) but the receive/re-wrap paths are scaffolded only. The following items have no production callers yet:
+- `submitWrappedKey()` and `getPendingWraps()` in `src/services/api/groups.ts`
+- `SubmitWrappedKeyRequest`, `PendingWrapsResponse` types in `src/services/websocket/types.ts`
+- WS handler stubs for `wrap_key_request` / `wrapped_key_delivered` in `src/services/websocket/messageHandler.ts` (break; no-op)
+- `evictPendingCache()` in `src/services/crypto/contentCrypto.ts` (exported, tested, but never called outside tests)
+
+This is intentional scaffold, not accidental dead code. Do NOT remove; it will be wired when receive-path group key wrapping is implemented. Track to ensure it doesn't stay dormant indefinitely.
 
 ### DEBT-011: No shared withTransaction helper
 

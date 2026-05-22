@@ -1,1 +1,4 @@
-- [Debt Registry](debt-registry.md) — 7 open items (1 high, 3 medium, 3 low), 13 resolved; last updated 2026-04-09. Phase 1 complete, all Critical/High security findings resolved.
+- [Debt Registry](debt-registry.md) — 8 open items (1 high, 3 medium, 4 low), 14 resolved; last updated 2026-05-22.
+- [FK migration lesson](project_fk_migration_lesson.md) — SQLite table rebuild needs foreign_keys=OFF, not defer_foreign_keys; DROP TABLE triggers CASCADE
+- [ECIES group keys status](project_ecies_group_keys.md) — #95 send paths wired, receive paths scaffolded (DEBT-015); identityKeyAccess.ts is canonical key accessor
+- [CI build constraints](project_ci_build_constraints.md) — Android Rust cross-compilation needs 60min timeout; Firebase config from GitHub secrets

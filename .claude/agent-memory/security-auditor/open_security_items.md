@@ -1,14 +1,14 @@
 ---
 name: Open security items
-description: Tracked security items not yet resolved — 0 Critical/High remaining; 11 Medium/Low items across Phase 1, Phase 2, Media Chunk 3, and Push Notifications
+description: Tracked security items not yet resolved — 0 Critical/High remaining; 13 Medium/Low items across Phase 1-2, Media Chunk 3, Push Notifications, and ECIES wrapping
 metadata:
   type: project
 ---
 
-## Open Security Items (as of 2026-05-18)
+## Open Security Items (as of 2026-05-22)
 
 ### Critical / High — NONE REMAINING
-All Critical and High findings resolved. Security audit status is clean.
+All Critical and High findings resolved. ECIES wrapping findings (PR #157) resolved: XEdDSA auth, HKDF binding, sender key verification, envelope-vs-key validation. See [[audit-pr157-ecies-wrap]].
 
 - F-01 (Critical): Resolved in PR #83 — identity key moved to Keychain/Keystore
 - F-04 (High): Resolved in PR #84 — PoC gated behind `dev-roundtrip` Cargo feature flag
@@ -91,6 +91,34 @@ All Critical and High findings resolved. Security audit status is clean.
    - Current mitigation: `saveMedia()` catches FK errors and retries with null FKs; Zustand store handles parent mapping
    - Remediation: Schema migration to drop FK constraints on `orbital_media.thread_id`, `reply_id`, and `message_id`
    - See [[project-fk-constraint-followup]]
+
+### Medium (ECIES Wrapping — PR #157)
+
+8. **detectKeyFormat allows raw-to-ecies downgrade (Medium)**
+   - No sticky per-group enforcement. A compromised server can substitute a raw 32-byte key for a previously ECIES-wrapped key, bypassing authentication.
+   - Remediation: Enforce sticky format per group — once ECIES is seen, reject raw keys for that group.
+   - Deferred to v2 (group key rotation).
+
+9. **WS key distribution stubs not connected (Medium)**
+   - `evictPendingCache`, `submitWrappedKey`, `getPendingWraps` never called. WS handlers for `wrap_key_request`/`wrapped_key_delivered` are empty stubs.
+   - Remediation: Connect WS handlers to complete the real-time key distribution flow.
+
+### Long-Term Security Goals
+
+10. **Safety number comparison UI for TOFU model**
+    - Identity keys use trust-on-first-use. Acceptable for family app, but users have no way to verify identity keys out-of-band.
+    - Remediation: Implement safety number display + QR code comparison (Signal-style).
+
+11. **No group key rotation on member removal**
+    - When a member is removed, the 32-byte group key is not rotated. Removed member retains decryption capability for future messages if they intercept ciphertext.
+    - Remediation: v2 — rotate group key on member removal, re-wrap for remaining members.
+
+### Recently Resolved (2026-05-22)
+
+- **PR #157 Critical #1:** `unwrapGroupKey` passing wrong sender key — fixed with `wrapped_by` column + sender pub key lookup
+- **PR #157 Critical #2:** 190-byte envelope passed to 32-byte validator — fixed by unwrapping before persist
+- **PR #157 High #3:** Unauthenticated ECIES — fixed with XEdDSA signature
+- **PR #157 High #4:** No HKDF context binding — fixed with ephemeralPub + recipientPub in info
 
 ### Recently Resolved (2026-05-18)
 

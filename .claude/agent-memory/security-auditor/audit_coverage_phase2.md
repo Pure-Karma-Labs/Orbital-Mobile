@@ -70,6 +70,26 @@ metadata:
 #### Spec Update
 - `docs/MOBILE-APP-SPEC.md` updated: removed `sender_display_name` and `notification_body` from push payload spec
 
+### ECIES Group Key Wrapping (PR #157) — 2026-05-22
+
+#### Detailed findings: [[audit-pr157-ecies-wrap]]
+#### Construction details: [[project-ecies-construction]]
+#### Distribution model: [[project-zk-group-key-model]]
+
+#### Positive Verifications
+29. XEdDSA signature covers entire sealed envelope (prevents server key substitution)
+30. HKDF channel binding includes ephemeralPub + recipientPub (prevents cross-recipient attacks)
+31. Small-order X25519 point rejection via `was_contributory()`
+32. `zeroize` crate used for key material in Rust ECIES implementation
+33. Constant-time comparison for cryptographic values
+34. `submitWrappedKey` enforces server-side membership check + transaction
+35. No private key material in logs (no console statements in crypto paths)
+36. Version byte (0x01) checked in `detectKeyFormat`
+
+#### Findings
+- 2 Critical, 2 High — all resolved (XEdDSA auth, HKDF binding, sender key, envelope validation)
+- 2 Medium — deferred (format downgrade, WS stubs)
+
 ### All Open Items (Phase 2 cumulative)
 - #114: Key zeroization (`Vec<u8>` not wrapped in `Zeroizing`) — Medium
 - #115: `plaintextHash` branded type guard — Low
@@ -77,6 +97,10 @@ metadata:
 - No FFI boundary integration test (Jest mocks the FFI) — Low
 - No `AbortController` wired for upload cancellation on unmount — Low
 - Per-file `NSURLIsExcludedFromBackupKey` needs native bridge — Low
+- `detectKeyFormat` allows raw-to-ecies downgrade (no sticky enforcement) — Medium
+- WS key distribution stubs (`wrap_key_request`/`wrapped_key_delivered`) not connected — Medium
+- Safety number comparison UI for TOFU identity key model — Long-term
+- No group key rotation on member removal — v2 scope
 
 ### Backend Notes
 - `completeUpload` fixed to use client `media_id` (was generating new UUID)

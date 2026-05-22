@@ -1,5 +1,5 @@
-version: "1.5"
-last_updated: "2026-05-20"
+version: "1.6"
+last_updated: "2026-05-22"
 agent: security-auditor
 
 core_files:
@@ -32,8 +32,14 @@ core_files:
     purpose: AES-256-CBC + HMAC-SHA256 attachment encrypt/decrypt — wraps Rust FFI; key generation via CSPRNG (crypto.getRandomValues)
     key_symbols: [generateAttachmentKeys, encryptAttachment, decryptAttachment, EncryptAttachmentResult]
   - path: src/services/crypto/contentCrypto.ts
-    purpose: AES-256-GCM content encryption for threads/replies — group key cache with zero-fill on logout, three-tier key lookup (cache → SQLCipher → API)
-    key_symbols: [encryptContent, decryptContent, getOrFetchGroupKey, persistGroupKey, invalidateGroupKey, clearGroupKeyCache, generateGroupKey, encryptGroupName, decryptGroupName]
+    purpose: "AES-256-GCM content encryption + ECIES group key wrapping — wrapGroupKey/unwrapGroupKey use eciesSeal/eciesOpen from Rust; detectKeyFormat discriminates raw (32B) vs ECIES-v1 (190B); negative cache for pending groups"
+    key_symbols: [encryptContent, decryptContent, getOrFetchGroupKey, persistGroupKey, invalidateGroupKey, clearGroupKeyCache, generateGroupKey, wrapGroupKey, unwrapGroupKey, detectKeyFormat, evictPendingCache]
+  - path: src/services/crypto/identityKeyAccess.ts
+    purpose: "Shared identity key pair accessor — loads private from Keychain cache, public from items table, returns ArrayBuffer pair for ECIES operations"
+    key_symbols: [getIdentityKeyPair]
+  - path: packages/orbital-signal/rust/orbital_signal/src/ecies.rs
+    purpose: "Signed ECIES primitive — X25519 + AES-256-GCM + HKDF-SHA256 + XEdDSA; 190-byte wire format; was_contributory() small-order rejection; Zeroizing<> for all intermediates; 15 unit tests"
+    key_symbols: [ecies_seal, ecies_open, validate_recipient_public_key, derive_symmetric_key]
   - path: src/services/mediaUploadService.ts
     purpose: "Media upload orchestration — encrypt → chunk → temp file → upload; v1 metadata envelope embeds attachmentKey (base64); orphan cleanup on bootstrap; AbortSignal plumbing (not yet wired by callers)"
     key_symbols: [uploadMedia, uploadMediaBatch, cleanupOrphanedChunks, writeChunkToTempFile]

@@ -1,5 +1,5 @@
-version: "2.1"
-last_updated: "2026-05-14"
+version: "2.2"
+last_updated: "2026-05-22"
 agent: rust-native-engineer
 
 core_files:
@@ -23,6 +23,9 @@ core_files:
     purpose: "4 session functions: process_pre_key_bundle, signal_encrypt, signal_decrypt, signal_decrypt_pre_key (all preloaded store pattern)"
   - path: packages/orbital-signal/rust/orbital_signal/src/group.rs
     purpose: "4 group functions: create_sender_key_distribution_message, process_sender_key_distribution_message, group_encrypt, group_decrypt (all preloaded store pattern)"
+  - path: packages/orbital-signal/rust/orbital_signal/src/ecies.rs
+    purpose: "Signed ECIES: ecies_seal/ecies_open — X25519 DH + AES-256-GCM + HKDF-SHA256 + XEdDSA signature; 190-byte wire format; 15 unit tests; uses x25519-dalek 2.x (transitive via libsignal), reuses aes-gcm (no new AEAD dep)"
+    key_symbols: [ecies_seal, ecies_open, validate_recipient_public_key, derive_symmetric_key, SEALED_LEN, VERSION]
   - path: packages/orbital-signal/rust/orbital_signal/src/sealed.rs
     purpose: 2 sealed sender stubs — deferred pending SenderCertificate backend infrastructure
   - path: packages/orbital-signal/rust/orbital_signal/src/client.rs

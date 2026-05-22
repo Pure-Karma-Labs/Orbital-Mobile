@@ -20,3 +20,6 @@ Both `attachment_crypto.rs` and `content_crypto.rs` now wrap key parameters in `
 - uniffi checksums unchanged when internal Zeroizing wrapping added (signatures stay `Vec<u8>`)
 - `attachment_encrypt_inner` must NEVER be `pub` or `#[uniffi::export]` — deterministic IV = broken CBC
 - `Zeroizing::new(keys.to_vec())` inside inner function creates unnecessary copy — pass `&[u8]` and let outer handle ownership
+
+### Also applied in
+- `ecies.rs` (2026-05-21): shared secret, derived key, ephemeral private key all in `Zeroizing<>`. See [[project-ecies-module]].

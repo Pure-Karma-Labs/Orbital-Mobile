@@ -32,6 +32,8 @@ metadata:
 - Integration tests reference non-existent functions (broken compilation)
 - `contentEncrypt`/`contentDecrypt` bindings may be missing from generated output
 
+**Related:** ECIES module ([[project-ecies-module]]) uses same build/regen workflow and shares aes-gcm dep.
+
 **Zeroization & KAT (completed 2026-05-19, #114):**
 - Key material wrapped in `Zeroizing<Vec<u8>>` in both encrypt/decrypt paths
 - `aes` and `cbc` features include `zeroize`; `hmac` has `reset`; `sha2`/`aes-gcm` have no zeroize feature (keyless/transitive)

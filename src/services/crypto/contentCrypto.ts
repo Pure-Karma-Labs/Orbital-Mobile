@@ -112,6 +112,11 @@ function loadPersistedGroupKey(groupId: string): Uint8Array | null {
  * the API would return a different value. The API only seeds empty slots.
  *
  * Concurrent calls for the same groupId coalesce onto a single request.
+ *
+ * NOTE: Field renamed to wrappedGroupKey but ECIES seal/open calls are not
+ * yet wired into the persist/fetch paths. The Rust primitive (ecies_seal/
+ * ecies_open) and backend endpoints (submitWrappedKey, getPendingWraps) are
+ * ready — the wrap orchestration is a follow-up task.
  */
 export async function getOrFetchGroupKey(groupId: string): Promise<Uint8Array> {
   const cached = groupKeyCache.get(groupId);

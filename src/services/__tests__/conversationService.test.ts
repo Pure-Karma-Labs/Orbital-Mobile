@@ -2,6 +2,7 @@ jest.mock('../api/groups', () => ({
   listGroups: jest.fn(),
   listDms: jest.fn(),
   createDm: jest.fn(),
+  joinGroup: jest.fn(),
 }));
 
 const mockPersistGroupKey = jest.fn();
@@ -11,11 +12,17 @@ const mockGenerateGroupKey = jest.fn(() => ({
   key: new Uint8Array(32),
   keyBase64: 'generated-key-base64',
 }));
+const mockEncryptGroupName = jest.fn((_name: string, _key: Uint8Array) => 'encrypted-name');
 jest.mock('../crypto/contentCrypto', () => ({
   persistGroupKey: (...args: unknown[]) => mockPersistGroupKey(...args),
   getOrFetchGroupKey: (groupId: string) => mockGetOrFetchGroupKey(groupId),
   decryptGroupName: (name: string, key: Uint8Array) => mockDecryptGroupName(name, key),
+  encryptGroupName: (name: string, key: Uint8Array) => mockEncryptGroupName(name, key),
   generateGroupKey: () => mockGenerateGroupKey(),
+}));
+
+jest.mock('../crypto/utils', () => ({
+  base64ToArrayBuffer: jest.fn(() => new ArrayBuffer(32)),
 }));
 
 const mockSetConversations = jest.fn();
@@ -33,13 +40,14 @@ jest.mock('../../stores/useAppStore', () => ({
   },
 }));
 
-import { loadConversations, loadDmConversations, startDm } from '../conversationService';
-import { listGroups, listDms, createDm } from '../api/groups';
+import { loadConversations, loadDmConversations, startDm, joinOrbit } from '../conversationService';
+import { listGroups, listDms, createDm, joinGroup } from '../api/groups';
 import { useAppStore } from '../../stores/useAppStore';
 
 const mockListGroups = listGroups as jest.Mock;
 const mockListDms = listDms as jest.Mock;
 const mockCreateDm = createDm as jest.Mock;
+const mockJoinGroup = joinGroup as jest.Mock;
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -286,5 +294,58 @@ describe('startDm', () => {
 
     await expect(startDm('user-3')).resolves.not.toThrow();
     expect(mockPersistGroupKey).toHaveBeenCalledWith('dm-new', 'generated-key-base64');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// joinOrbit
+// ---------------------------------------------------------------------------
+
+describe('joinOrbit', () => {
+  it('joins with invite code and persists wrapped key', async () => {
+    mockJoinGroup.mockResolvedValue({
+      groupId: 'orbit-1',
+      encryptedName: 'Encrypted Name',
+      memberCount: 3,
+      joinedAt: '2026-05-01T00:00:00Z',
+      wrappedGroupKey: 'wrapped-key-base64',
+    });
+
+    const result = await joinOrbit('ABC12345');
+
+    expect(mockJoinGroup).toHaveBeenCalledWith({ inviteCode: 'ABC12345' });
+    expect(mockPersistGroupKey).toHaveBeenCalledWith('orbit-1', 'wrapped-key-base64');
+    expect(result.groupId).toBe('orbit-1');
+  });
+
+  it('handles null wrappedGroupKey (pending key state)', async () => {
+    mockJoinGroup.mockResolvedValue({
+      groupId: 'orbit-2',
+      encryptedName: 'Encrypted Name',
+      memberCount: 2,
+      joinedAt: '2026-05-01T00:00:00Z',
+      wrappedGroupKey: null,
+    });
+
+    const result = await joinOrbit('XYZ98765');
+
+    expect(mockPersistGroupKey).not.toHaveBeenCalled();
+    expect(result.groupId).toBe('orbit-2');
+    expect(result.name).toBe('Encrypted Name');
+  });
+
+  it('falls back to (unable to decrypt) on name decryption failure', async () => {
+    mockDecryptGroupName.mockImplementationOnce(() => { throw new Error('decrypt error'); });
+    mockJoinGroup.mockResolvedValue({
+      groupId: 'orbit-3',
+      encryptedName: 'Bad Ciphertext',
+      memberCount: 2,
+      joinedAt: '2026-05-01T00:00:00Z',
+      wrappedGroupKey: 'some-key',
+    });
+
+    const result = await joinOrbit('CODE1234');
+
+    expect(result.name).toBe('(unable to decrypt)');
   });
 });

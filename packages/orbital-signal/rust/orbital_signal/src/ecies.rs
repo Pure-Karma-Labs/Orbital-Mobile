@@ -2,9 +2,9 @@
 //! group key wrapping.
 //!
 //! Provides `ecies_seal` and `ecies_open` — an authenticated, encrypted envelope
-//! that binds a sender's identity (via XEdDSA signature) to the ciphertext without
-//! requiring the recipient to know the sender beforehand (the sender's public key
-//! is included in the envelope).
+//! that binds a sender's identity (via XEdDSA signature) to the ciphertext.
+//! The recipient must supply the expected sender public key (TOFU model) —
+//! envelopes from unknown senders are rejected before decryption.
 //!
 //! Wire format (190 bytes total, assuming 32-byte plaintext):
 //!
@@ -90,9 +90,27 @@ pub fn ecies_seal(
         });
     }
 
+    let plaintext = Zeroizing::new(plaintext);
+
     if sender_public_key.len() != 33 || sender_public_key[0] != DJB_TYPE {
         return Err(SignalError::InvalidKey {
             reason: "ecies_seal: sender_public_key must be 33 bytes starting with 0x05".into(),
+        });
+    }
+
+    let sender_priv_for_check = Zeroizing::new(sender_private_key.clone());
+    let signal_priv_check =
+        libsignal_core::curve::PrivateKey::deserialize(&sender_priv_for_check).map_err(|e| {
+            SignalError::InvalidKey {
+                reason: format!("ecies_seal: invalid sender private key: {e}"),
+            }
+        })?;
+    let derived_pub = signal_priv_check.public_key().map_err(|e| SignalError::InvalidKey {
+        reason: format!("ecies_seal: cannot derive public key: {e}"),
+    })?;
+    if derived_pub.serialize().as_ref() != sender_public_key.as_slice() {
+        return Err(SignalError::InvalidArgument {
+            reason: "ecies_seal: sender_public_key does not match sender_private_key".into(),
         });
     }
 
@@ -281,10 +299,10 @@ pub fn ecies_open(
         });
     }
 
-    let secret_bytes: [u8; 32] = recipient_secret[..32]
-        .try_into()
-        .expect("length checked above");
-    let static_secret = StaticSecret::from(secret_bytes);
+    let secret_bytes = Zeroizing::new(
+        <[u8; 32]>::try_from(&recipient_secret[..32]).expect("length checked above"),
+    );
+    let static_secret = StaticSecret::from(*secret_bytes);
 
     // -- ECDH --
 
@@ -492,10 +510,10 @@ mod tests {
         let err = ecies_open(sealed, recipient_priv, sender_pub)
             .expect_err("tampered ciphertext must fail");
 
-        // Tampering with the unsigned portion invalidates the signature first.
+        // Byte 50 is in the unsigned portion — signature must fail before decryption.
         assert!(
-            matches!(err, SignalError::InvalidSignature | SignalError::InvalidMessage { .. }),
-            "expected InvalidSignature or InvalidMessage, got: {err:?}"
+            matches!(err, SignalError::InvalidSignature),
+            "expected InvalidSignature for tampered unsigned portion, got: {err:?}"
         );
     }
 
@@ -643,5 +661,77 @@ mod tests {
             .expect("seal 2 should succeed");
 
         assert_ne!(sealed1, sealed2, "envelopes must differ due to ephemeral key and nonce");
+    }
+
+    #[test]
+    fn test_wrong_expected_sender_pub_length() {
+        let plaintext = vec![0x99; 32];
+        let (sender_priv, sender_pub) = generate_signal_keypair();
+        let (recipient_priv, recipient_pub) = generate_signal_keypair();
+
+        let sealed = ecies_seal(plaintext, recipient_pub, sender_priv, sender_pub)
+            .expect("seal should succeed");
+
+        let err = ecies_open(sealed, recipient_priv, vec![0u8; 10])
+            .expect_err("short expected_sender_public_key must fail");
+        assert!(matches!(err, SignalError::InvalidKey { .. }));
+    }
+
+    #[test]
+    fn test_wrong_recipient_secret_key_length() {
+        let (sender_priv, sender_pub) = generate_signal_keypair();
+        let (_, recipient_pub) = generate_signal_keypair();
+        let sealed = ecies_seal(vec![0x77; 32], recipient_pub, sender_priv, sender_pub.clone())
+            .expect("seal should succeed");
+
+        let err = ecies_open(sealed, vec![0u8; 16], sender_pub)
+            .expect_err("short recipient_secret_key must fail");
+        assert!(matches!(err, SignalError::InvalidKey { .. }));
+    }
+
+    #[test]
+    fn test_server_substitution_forged_signature() {
+        // Attacker copies the legitimate sender_pub into the envelope but signs
+        // with a different private key. This must fail at signature verification.
+        let plaintext = vec![0x66; 32];
+        let (legit_sender_priv, legit_sender_pub) = generate_signal_keypair();
+        let (attacker_priv, _attacker_pub) = generate_signal_keypair();
+        let (recipient_priv, recipient_pub) = generate_signal_keypair();
+
+        // Legitimate seal
+        let mut sealed = ecies_seal(
+            plaintext.clone(),
+            recipient_pub.clone(),
+            legit_sender_priv,
+            legit_sender_pub.clone(),
+        )
+        .expect("seal should succeed");
+
+        // Attacker re-signs the unsigned portion with their own key
+        let attacker_signal_priv =
+            libsignal_core::curve::PrivateKey::deserialize(&attacker_priv).unwrap();
+        let forged_sig = attacker_signal_priv
+            .calculate_signature(&sealed[0..UNSIGNED_LEN], &mut rand::rng())
+            .unwrap();
+        sealed[126..190].copy_from_slice(&forged_sig);
+
+        let err = ecies_open(sealed, recipient_priv, legit_sender_pub)
+            .expect_err("forged signature must fail");
+        assert!(
+            matches!(err, SignalError::InvalidSignature),
+            "expected InvalidSignature for forged sig, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_mismatched_sender_keypair_rejected() {
+        let plaintext = vec![0x88; 32];
+        let (sender_priv, _sender_pub) = generate_signal_keypair();
+        let (_, wrong_pub) = generate_signal_keypair();
+        let (_, recipient_pub) = generate_signal_keypair();
+
+        let err = ecies_seal(plaintext, recipient_pub, sender_priv, wrong_pub)
+            .expect_err("mismatched sender keypair must fail");
+        assert!(matches!(err, SignalError::InvalidArgument { .. }));
     }
 }

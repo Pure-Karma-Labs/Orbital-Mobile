@@ -350,7 +350,7 @@ async function handleWrapKeyRequest(data: WrapKeyRequestPayload): Promise<void> 
     const currentUserId = useAppStore.getState().userId;
     if (!currentUserId) return;
     const targetPubKey = await resolveRemoteIdentityKey(data.targetUserId, currentUserId);
-    const wrapped = wrapGroupKey(groupKey, targetPubKey);
+    const wrapped = wrapGroupKey(groupKey, targetPubKey, data.groupId);
     await submitWrappedKey(data.groupId, data.targetUserId, wrapped);
   } catch (e) {
     wrapDedup.delete(dedupKey);

@@ -16,6 +16,7 @@ import {
   processReceivedGroupKey,
 } from './crypto/contentCrypto';
 import { getIdentityKeyPair, resolveRemoteIdentityKey } from './crypto/identityKeyAccess';
+import { generateUUID } from '../utils/uuid';
 import { useAppStore } from '../stores/useAppStore';
 import type { Conversation } from '../types/store';
 import type { DmResponse, GroupResponse } from '../types/api';
@@ -85,12 +86,14 @@ export async function loadConversations(): Promise<void> {
 }
 
 export async function createOrbit(name: string): Promise<{ groupId: string; inviteCode: string | null }> {
+  const groupId = generateUUID();
   const { key, keyBase64 } = generateGroupKey();
   const encryptedName = encryptGroupName(name, key);
   const { publicKey: ownPubKey } = getIdentityKeyPair();
-  const wrappedBase64 = wrapGroupKey(key, ownPubKey);
+  const wrappedBase64 = wrapGroupKey(key, ownPubKey, groupId);
 
   const response = await createGroup({
+    groupId,
     encryptedName,
     wrappedGroupKey: wrappedBase64,
   });
@@ -172,22 +175,24 @@ export async function loadDmConversations(): Promise<void> {
 export async function startDm(
   recipientId: string,
 ): Promise<{ conversationId: string; recipientName: string }> {
+  const groupId = generateUUID();
   const { key, keyBase64 } = generateGroupKey();
   const { publicKey: ownPubKey } = getIdentityKeyPair();
-  const wrappedBase64 = wrapGroupKey(key, ownPubKey);
+  const wrappedBase64 = wrapGroupKey(key, ownPubKey, groupId);
 
   const currentUserId = useAppStore.getState().userId;
   let recipientWrappedGroupKey: string | undefined;
   if (currentUserId) {
     try {
       const recipientPubKey = await resolveRemoteIdentityKey(recipientId, currentUserId);
-      recipientWrappedGroupKey = wrapGroupKey(key, recipientPubKey);
+      recipientWrappedGroupKey = wrapGroupKey(key, recipientPubKey, groupId);
     } catch {
       // Recipient key resolution failed — send without recipient wrap
     }
   }
 
   const response = await createDm({
+    groupId,
     recipientId,
     wrappedGroupKey: wrappedBase64,
     recipientWrappedGroupKey: recipientWrappedGroupKey ?? null,

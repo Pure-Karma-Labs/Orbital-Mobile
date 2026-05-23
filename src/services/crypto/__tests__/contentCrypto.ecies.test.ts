@@ -57,7 +57,7 @@ describe('ECIES wrapping', () => {
   it('wrapGroupKey calls eciesSeal and returns base64', () => {
     const key = new Uint8Array(32);
     const recipientPub = new ArrayBuffer(33);
-    const result = wrapGroupKey(key, recipientPub);
+    const result = wrapGroupKey(key, recipientPub, 'test-group-id');
     expect(eciesSeal).toHaveBeenCalled();
     expect(typeof result).toBe('string');
   });
@@ -66,7 +66,7 @@ describe('ECIES wrapping', () => {
     const fakeKey = new Uint8Array(32);
     const b64 = arrayBufferToBase64(fakeKey.buffer);
     const senderPub = new ArrayBuffer(33);
-    const result = unwrapGroupKey(b64, senderPub);
+    const result = unwrapGroupKey(b64, senderPub, 'test-group-id');
     expect(eciesOpen).toHaveBeenCalled();
     expect(result).toBeInstanceOf(Uint8Array);
   });
@@ -79,11 +79,11 @@ describe('detectKeyFormat', () => {
     expect(detectKeyFormat(b64)).toBe('raw');
   });
 
-  it('detects ECIES-v1 190-byte envelopes', () => {
+  it('detects ECIES 190-byte envelopes', () => {
     const envelope = new Uint8Array(190);
-    envelope[0] = 0x01;
+    envelope[0] = 0x02;
     const b64 = arrayBufferToBase64(envelope.buffer);
-    expect(detectKeyFormat(b64)).toBe('ecies-v1');
+    expect(detectKeyFormat(b64)).toBe('ecies');
   });
 
   it('throws on unknown format', () => {
@@ -107,7 +107,7 @@ describe('processReceivedGroupKey', () => {
 
   it('unwraps ECIES-v1 envelope and persists raw key', async () => {
     const envelope = new Uint8Array(190);
-    envelope[0] = 0x01;
+    envelope[0] = 0x02;
     const b64 = arrayBufferToBase64(envelope.buffer);
 
     await processReceivedGroupKey('group-1', b64, 'sender-user');
@@ -130,7 +130,7 @@ describe('processReceivedGroupKey', () => {
 
   it('throws when ECIES envelope has no wrappedBy', async () => {
     const envelope = new Uint8Array(190);
-    envelope[0] = 0x01;
+    envelope[0] = 0x02;
     const b64 = arrayBufferToBase64(envelope.buffer);
 
     await expect(processReceivedGroupKey('group-3', b64, null)).rejects.toThrow(
@@ -141,7 +141,7 @@ describe('processReceivedGroupKey', () => {
 
   it('rejects raw key for ECIES-locked group', async () => {
     const envelope = new Uint8Array(190);
-    envelope[0] = 0x01;
+    envelope[0] = 0x02;
     const envelopeB64 = arrayBufferToBase64(envelope.buffer);
     await processReceivedGroupKey('locked-group', envelopeB64, 'sender-user');
 

@@ -14,7 +14,7 @@ const mockGenerateGroupKey = jest.fn(() => ({
   keyBase64: 'generated-key-base64',
 }));
 const mockEncryptGroupName = jest.fn((_name: string, _key: Uint8Array) => 'encrypted-name');
-const mockWrapGroupKey = jest.fn((_key: Uint8Array, _pub: ArrayBuffer) => 'ecies-wrapped-base64');
+const mockWrapGroupKey = jest.fn((_key: Uint8Array, _pub: ArrayBuffer, _gid: string) => 'ecies-wrapped-base64');
 jest.mock('../crypto/contentCrypto', () => ({
   persistGroupKey: (...args: unknown[]) => mockPersistGroupKey(...args),
   processReceivedGroupKey: (...args: unknown[]) => mockProcessReceivedGroupKey(...args),
@@ -22,7 +22,11 @@ jest.mock('../crypto/contentCrypto', () => ({
   decryptGroupName: (name: string, key: Uint8Array) => mockDecryptGroupName(name, key),
   encryptGroupName: (name: string, key: Uint8Array) => mockEncryptGroupName(name, key),
   generateGroupKey: () => mockGenerateGroupKey(),
-  wrapGroupKey: (key: Uint8Array, pub: ArrayBuffer) => mockWrapGroupKey(key, pub),
+  wrapGroupKey: (key: Uint8Array, pub: ArrayBuffer, gid: string) => mockWrapGroupKey(key, pub, gid),
+}));
+
+jest.mock('../../utils/uuid', () => ({
+  generateUUID: jest.fn(() => 'mock-uuid-1234'),
 }));
 
 const mockResolveRemoteIdentityKey = jest.fn().mockResolvedValue(new ArrayBuffer(33));
@@ -273,6 +277,7 @@ describe('startDm', () => {
     const result = await startDm('user-3');
 
     expect(mockCreateDm).toHaveBeenCalledWith({
+      groupId: 'mock-uuid-1234',
       recipientId: 'user-3',
       wrappedGroupKey: 'ecies-wrapped-base64',
       recipientWrappedGroupKey: 'ecies-wrapped-base64',

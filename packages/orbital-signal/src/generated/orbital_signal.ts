@@ -230,6 +230,7 @@ export function aesGcmEncrypt(
  */
 export function eciesOpen(
   sealed: ArrayBuffer,
+  groupId: ArrayBuffer,
   recipientSecretKey: ArrayBuffer,
   expectedSenderPublicKey: ArrayBuffer,
 ): ArrayBuffer /*throws*/ {
@@ -239,6 +240,7 @@ export function eciesOpen(
       /*caller:*/ (callStatus) => {
         return nativeModule().ubrn_uniffi_orbital_signal_fn_func_ecies_open(
           FfiConverterArrayBuffer.lower(sealed),
+          FfiConverterArrayBuffer.lower(groupId),
           FfiConverterArrayBuffer.lower(recipientSecretKey),
           FfiConverterArrayBuffer.lower(expectedSenderPublicKey),
           callStatus,
@@ -268,6 +270,7 @@ export function eciesOpen(
  */
 export function eciesSeal(
   plaintext: ArrayBuffer,
+  groupId: ArrayBuffer,
   recipientPublicKey: ArrayBuffer,
   senderPrivateKey: ArrayBuffer,
   senderPublicKey: ArrayBuffer,
@@ -278,6 +281,7 @@ export function eciesSeal(
       /*caller:*/ (callStatus) => {
         return nativeModule().ubrn_uniffi_orbital_signal_fn_func_ecies_seal(
           FfiConverterArrayBuffer.lower(plaintext),
+          FfiConverterArrayBuffer.lower(groupId),
           FfiConverterArrayBuffer.lower(recipientPublicKey),
           FfiConverterArrayBuffer.lower(senderPrivateKey),
           FfiConverterArrayBuffer.lower(senderPublicKey),
@@ -3476,12 +3480,12 @@ function uniffiEnsureInitialized() {
       'uniffi_orbital_signal_checksum_func_aes_gcm_encrypt',
     );
   }
-  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_ecies_open() !== 6277) {
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_ecies_open() !== 31560) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_orbital_signal_checksum_func_ecies_open',
     );
   }
-  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_ecies_seal() !== 45411) {
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_ecies_seal() !== 57277) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_orbital_signal_checksum_func_ecies_seal',
     );

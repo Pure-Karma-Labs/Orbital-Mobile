@@ -420,7 +420,7 @@ describe('wrap_key_request', () => {
 
     expect(mockGetOrFetchGroupKey).toHaveBeenCalledWith('group-1');
     expect(mockResolveRemoteIdentityKey).toHaveBeenCalledWith('target-user', 'test-user-id');
-    expect(mockWrapGroupKey).toHaveBeenCalledWith(fakeGroupKey, expect.any(ArrayBuffer));
+    expect(mockWrapGroupKey).toHaveBeenCalledWith(fakeGroupKey, expect.any(ArrayBuffer), 'group-1');
     expect(mockSubmitWrappedKey).toHaveBeenCalledWith('group-1', 'target-user', 'wrapped-key-base64');
   });
 

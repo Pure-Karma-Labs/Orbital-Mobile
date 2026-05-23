@@ -88,6 +88,7 @@ export interface PublicKeyResponse {
  * Backend expects: { encrypted_name, wrapped_group_key }
  */
 export interface CreateGroupRequest {
+  groupId?: string;
   encryptedName: string;
   wrappedGroupKey: string;
 }
@@ -217,6 +218,7 @@ export interface GroupQuotaResponse {
  * Backend expects: { recipient_id, wrapped_group_key, recipient_wrapped_group_key? }
  */
 export interface CreateDmRequest {
+  groupId?: string;
   recipientId: string;
   wrappedGroupKey: string;
   recipientWrappedGroupKey?: string | null;

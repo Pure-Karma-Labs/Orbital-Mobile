@@ -41,6 +41,15 @@ const dedupSet = new LRUSet(500);
 const wrapDedup = new Map<string, number>();
 const deliveryDedup = new Map<string, number>();
 const WRAP_DEDUP_TTL_MS = 30_000;
+const MAX_DEDUP_SIZE = 200;
+
+function sweepExpired(map: Map<string, number>): void {
+  if (map.size <= MAX_DEDUP_SIZE) return;
+  const now = Date.now();
+  for (const [key, expiry] of map) {
+    if (now >= expiry) map.delete(key);
+  }
+}
 
 // ============================================================
 // Allowed broadcast data.type values (WS-05)
@@ -334,6 +343,7 @@ async function handleWrapKeyRequest(data: WrapKeyRequestPayload): Promise<void> 
   const dedupUntil = wrapDedup.get(dedupKey);
   if (dedupUntil && Date.now() < dedupUntil) return;
   wrapDedup.set(dedupKey, Date.now() + WRAP_DEDUP_TTL_MS);
+  sweepExpired(wrapDedup);
 
   try {
     const groupKey = await getOrFetchGroupKey(data.groupId);
@@ -358,6 +368,7 @@ async function handleWrappedKeyDelivered(data: WrappedKeyDeliveredPayload): Prom
   const dedupUntil = deliveryDedup.get(data.groupId);
   if (dedupUntil && Date.now() < dedupUntil) return;
   deliveryDedup.set(data.groupId, Date.now() + WRAP_DEDUP_TTL_MS);
+  sweepExpired(deliveryDedup);
 
   try {
     evictPendingCache(data.groupId);

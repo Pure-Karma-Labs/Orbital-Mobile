@@ -246,7 +246,7 @@ export async function joinOrbit(
       await processReceivedGroupKey(
         response.groupId,
         response.wrappedGroupKey,
-        (response as { wrappedBy?: string | null }).wrappedBy ?? null,
+        response.wrappedBy ?? null,
       );
     } catch {
       // Key delivery may be async via WS wrapped_key_delivered

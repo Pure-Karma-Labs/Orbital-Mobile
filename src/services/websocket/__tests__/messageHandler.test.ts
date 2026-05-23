@@ -42,6 +42,7 @@ const mockAddTypingUser = jest.fn();
 jest.mock('../../../stores/useAppStore', () => ({
   useAppStore: {
     getState: jest.fn(() => ({
+      userId: 'test-user-id',
       upsertThread: mockUpsertThread,
       upsertReply: mockUpsertReply,
       upsertContact: mockUpsertContact,
@@ -63,14 +64,23 @@ import { snakeToCamel } from '../../api/client';
 import {
   getOrFetchGroupKey,
   invalidateGroupKey,
+  wrapGroupKey,
+  evictPendingCache,
 } from '../../crypto/contentCrypto';
+import { resolveRemoteIdentityKey } from '../../crypto/identityKeyAccess';
+import { submitWrappedKey } from '../../api/groups';
 import { decryptThreadFields, decryptReplyBody } from '../../threadService';
+import { useAppStore } from '../../../stores/useAppStore';
 
 const mockSnakeToCamel = snakeToCamel as jest.MockedFunction<typeof snakeToCamel>;
 const mockGetOrFetchGroupKey = getOrFetchGroupKey as jest.MockedFunction<typeof getOrFetchGroupKey>;
 const mockInvalidateGroupKey = invalidateGroupKey as jest.MockedFunction<typeof invalidateGroupKey>;
 const mockDecryptThreadFields = decryptThreadFields as jest.MockedFunction<typeof decryptThreadFields>;
 const mockDecryptReplyBody = decryptReplyBody as jest.MockedFunction<typeof decryptReplyBody>;
+const mockWrapGroupKey = wrapGroupKey as jest.MockedFunction<typeof wrapGroupKey>;
+const mockEvictPendingCache = evictPendingCache as jest.MockedFunction<typeof evictPendingCache>;
+const mockSubmitWrappedKey = submitWrappedKey as jest.MockedFunction<typeof submitWrappedKey>;
+const mockResolveRemoteIdentityKey = resolveRemoteIdentityKey as jest.MockedFunction<typeof resolveRemoteIdentityKey>;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -379,5 +389,118 @@ describe('edge cases', () => {
     await expect(handleServerMessage(msg)).resolves.toBeUndefined();
     expect(mockUpsertThread).not.toHaveBeenCalled();
     expect(mockUpsertReply).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// wrap_key_request handler
+// ---------------------------------------------------------------------------
+
+describe('wrap_key_request', () => {
+  function makeWrapKeyRequest(groupId = 'group-1', targetUserId = 'target-user') {
+    return JSON.stringify({
+      type: 'new_message',
+      conversationId: groupId,
+      timestamp: Date.now(),
+      data: {
+        type: 'wrap_key_request',
+        groupId,
+        targetUserId,
+        targetIdentityPublicKey: 'ignored-base64',
+      },
+    });
+  }
+
+  beforeEach(() => {
+    mockGetOrFetchGroupKey.mockResolvedValue(fakeGroupKey);
+  });
+
+  it('wraps and submits the group key for the target user', async () => {
+    await handleServerMessage(makeWrapKeyRequest());
+
+    expect(mockGetOrFetchGroupKey).toHaveBeenCalledWith('group-1');
+    expect(mockResolveRemoteIdentityKey).toHaveBeenCalledWith('target-user', 'test-user-id');
+    expect(mockWrapGroupKey).toHaveBeenCalledWith(fakeGroupKey, expect.any(ArrayBuffer));
+    expect(mockSubmitWrappedKey).toHaveBeenCalledWith('group-1', 'target-user', 'wrapped-key-base64');
+  });
+
+  it('deduplicates within 30s TTL', async () => {
+    await handleServerMessage(makeWrapKeyRequest('group-dedup', 'target-dedup'));
+    await handleServerMessage(makeWrapKeyRequest('group-dedup', 'target-dedup'));
+
+    expect(mockSubmitWrappedKey).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns early when userId is null', async () => {
+    (useAppStore.getState as jest.Mock).mockReturnValueOnce({
+      userId: null,
+      upsertThread: mockUpsertThread,
+      upsertReply: mockUpsertReply,
+      upsertContact: mockUpsertContact,
+      setConnectionStatus: mockSetConnectionStatus,
+      setLastConnectedAt: mockSetLastConnectedAt,
+      setReconnectAttempt: mockSetReconnectAttempt,
+      addTypingUser: mockAddTypingUser,
+      contacts: {},
+    });
+
+    await handleServerMessage(makeWrapKeyRequest('group-auth', 'user-auth'));
+
+    expect(mockSubmitWrappedKey).not.toHaveBeenCalled();
+  });
+
+  it('clears dedup entry on error so retry succeeds', async () => {
+    mockGetOrFetchGroupKey
+      .mockRejectedValueOnce(new Error('key not available'))
+      .mockResolvedValueOnce(fakeGroupKey);
+
+    await handleServerMessage(makeWrapKeyRequest('group-retry', 'user-retry'));
+    await handleServerMessage(makeWrapKeyRequest('group-retry', 'user-retry'));
+
+    expect(mockGetOrFetchGroupKey).toHaveBeenCalledTimes(2);
+    expect(mockSubmitWrappedKey).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// wrapped_key_delivered handler
+// ---------------------------------------------------------------------------
+
+describe('wrapped_key_delivered', () => {
+  function makeDeliveredEvent(groupId = 'group-1') {
+    return JSON.stringify({
+      type: 'new_message',
+      conversationId: groupId,
+      timestamp: Date.now(),
+      data: {
+        type: 'wrapped_key_delivered',
+        groupId,
+        senderUserId: 'sender-1',
+      },
+    });
+  }
+
+  beforeEach(() => {
+    mockGetOrFetchGroupKey.mockResolvedValue(fakeGroupKey);
+  });
+
+  it('evicts pending cache and fetches group key', async () => {
+    await handleServerMessage(makeDeliveredEvent());
+
+    expect(mockEvictPendingCache).toHaveBeenCalledWith('group-1');
+    expect(mockGetOrFetchGroupKey).toHaveBeenCalledWith('group-1');
+  });
+
+  it('deduplicates within 30s TTL', async () => {
+    await handleServerMessage(makeDeliveredEvent('group-dedup-d'));
+    await handleServerMessage(makeDeliveredEvent('group-dedup-d'));
+
+    expect(mockGetOrFetchGroupKey).toHaveBeenCalledTimes(1);
+  });
+
+  it('swallows errors without throwing', async () => {
+    mockGetOrFetchGroupKey.mockRejectedValueOnce(new Error('fetch failed'));
+
+    await expect(handleServerMessage(makeDeliveredEvent('group-err'))).resolves.toBeUndefined();
   });
 });

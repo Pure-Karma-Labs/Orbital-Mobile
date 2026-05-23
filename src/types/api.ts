@@ -143,6 +143,7 @@ export interface JoinGroupResponse {
   memberCount: number;
   joinedAt: string;
   wrappedGroupKey: string | null;
+  wrappedBy?: string | null;
 }
 
 /**

@@ -14,6 +14,16 @@ jest.mock('../../api/client', () => ({
 jest.mock('../../crypto/contentCrypto', () => ({
   getOrFetchGroupKey: jest.fn(),
   invalidateGroupKey: jest.fn(),
+  wrapGroupKey: jest.fn(() => 'wrapped-key-base64'),
+  evictPendingCache: jest.fn(),
+}));
+
+jest.mock('../../crypto/identityKeyAccess', () => ({
+  resolveRemoteIdentityKey: jest.fn().mockResolvedValue(new ArrayBuffer(33)),
+}));
+
+jest.mock('../../api/groups', () => ({
+  submitWrappedKey: jest.fn().mockResolvedValue({ success: true }),
 }));
 
 jest.mock('../../threadService', () => ({

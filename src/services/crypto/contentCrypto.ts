@@ -23,7 +23,9 @@ import {
   clearGroupMasterKey,
 } from '../../database/repositories/conversationRepository';
 import { arrayBufferToBase64, base64ToArrayBuffer, toArrayBuffer } from './utils';
-import { getIdentityKeyPair } from './identityKeyAccess';
+import { getIdentityKeyPair, resolveRemoteIdentityKey } from './identityKeyAccess';
+import { markEciesLocked, isEciesLocked } from './downgradeProtection';
+import { useAppStore } from '../../stores/useAppStore';
 
 // ---------------------------------------------------------------------------
 // Text encoder/decoder
@@ -131,6 +133,34 @@ export function unwrapGroupKey(
   return new Uint8Array(plaintext);
 }
 
+export async function processReceivedGroupKey(
+  groupId: string,
+  wrappedGroupKey: string,
+  wrappedBy: string | null,
+): Promise<void> {
+  const format = detectKeyFormat(wrappedGroupKey);
+
+  if (format === 'ecies-v1') {
+    if (!wrappedBy) {
+      throw new Error('ECIES envelope requires sender identity');
+    }
+    const currentUserId = useAppStore.getState().userId;
+    if (!currentUserId) {
+      throw new Error('No authenticated user');
+    }
+    const senderPubKey = await resolveRemoteIdentityKey(wrappedBy, currentUserId);
+    const rawKey = unwrapGroupKey(wrappedGroupKey, senderPubKey);
+    markEciesLocked(groupId);
+    persistGroupKey(groupId, arrayBufferToBase64(toArrayBuffer(rawKey)));
+    return;
+  }
+
+  if (isEciesLocked(groupId)) {
+    throw new Error('Downgrade rejected: group is ECIES-locked');
+  }
+  persistGroupKey(groupId, wrappedGroupKey);
+}
+
 /**
  * Load a group key from SQLCipher (conversations.group_master_key BLOB).
  * Returns null if the conversation doesn't exist or has no key stored.
@@ -169,6 +199,8 @@ export async function getOrFetchGroupKey(groupId: string): Promise<Uint8Array> {
     throw new Error('Group key not yet available (pending wrap)');
   }
 
+  // Tier 2: persisted key. Grandfathered raw keys stored before ECIES existed
+  // correctly bypass format detection and downgrade protection here.
   try {
     const persisted = loadPersistedGroupKey(groupId);
     if (persisted) {
@@ -189,23 +221,26 @@ export async function getOrFetchGroupKey(groupId: string): Promise<Uint8Array> {
         pendingGroups.set(groupId, Date.now() + PENDING_CACHE_TTL_MS);
         throw new Error('Group key not yet available (pending wrap)');
       }
-      const format = detectKeyFormat(response.wrappedGroupKey);
-      let keyBytes: Uint8Array;
-      if (format === 'ecies-v1') {
-        keyBytes = unwrapGroupKey(
-          response.wrappedGroupKey,
-          getIdentityKeyPair().publicKey,
-        );
-      } else {
-        keyBytes = validateAndDecode(response.wrappedGroupKey);
-      }
       try {
-        setGroupMasterKey(groupId, keyBytes);
-      } catch {
-        // DB may not be initialized (e.g., Metro Fast Refresh)
+        await processReceivedGroupKey(
+          groupId,
+          response.wrappedGroupKey,
+          response.wrappedBy ?? null,
+        );
+      } catch (e) {
+        if (
+          e instanceof Error &&
+          e.message === 'ECIES envelope requires sender identity'
+        ) {
+          pendingGroups.set(groupId, Date.now() + PENDING_CACHE_TTL_MS);
+        }
+        throw e;
       }
-      groupKeyCache.set(groupId, keyBytes);
-      return keyBytes;
+      const resolved = groupKeyCache.get(groupId);
+      if (!resolved) {
+        throw new Error('Group key not available after processing');
+      }
+      return resolved;
     } finally {
       inflight.delete(groupId);
     }

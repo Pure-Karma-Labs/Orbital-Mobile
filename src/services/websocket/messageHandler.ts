@@ -12,7 +12,11 @@ import { snakeToCamel } from '../api/client';
 import {
   getOrFetchGroupKey,
   invalidateGroupKey,
+  wrapGroupKey,
+  evictPendingCache,
 } from '../crypto/contentCrypto';
+import { resolveRemoteIdentityKey } from '../crypto/identityKeyAccess';
+import { submitWrappedKey } from '../api/groups';
 import { decryptThreadFields, decryptReplyBody, processMediaMetadata } from '../threadService';
 import { useAppStore } from '../../stores/useAppStore';
 import { LRUSet } from './lruSet';
@@ -23,6 +27,8 @@ import type {
   NewReplyPayload,
   DisplayNameChangedPayload,
   TypingPayload,
+  WrapKeyRequestPayload,
+  WrappedKeyDeliveredPayload,
 } from './types';
 import type { Thread, Reply } from '../../types/store';
 
@@ -31,6 +37,10 @@ import type { Thread, Reply } from '../../types/store';
 // ============================================================
 
 const dedupSet = new LRUSet(500);
+
+const wrapDedup = new Map<string, number>();
+const deliveryDedup = new Map<string, number>();
+const WRAP_DEDUP_TTL_MS = 30_000;
 
 // ============================================================
 // Allowed broadcast data.type values (WS-05)
@@ -167,11 +177,11 @@ async function handleBroadcast(envelope: BroadcastEnvelope): Promise<void> {
       break;
 
     case 'wrap_key_request':
-      // Handled by conversationService — import is deferred to avoid circular deps
+      await handleWrapKeyRequest(data as WrapKeyRequestPayload);
       break;
 
     case 'wrapped_key_delivered':
-      // Handled by conversationService — import is deferred to avoid circular deps
+      await handleWrappedKeyDelivered(data as WrappedKeyDeliveredPayload);
       break;
   }
 }
@@ -313,6 +323,52 @@ function handleTyping(data: TypingPayload): void {
     userId: data.userId,
     expiresAt: Date.now() + 5_000,
   });
+}
+
+// ============================================================
+// wrap_key_request handler
+// ============================================================
+
+async function handleWrapKeyRequest(data: WrapKeyRequestPayload): Promise<void> {
+  const dedupKey = `${data.groupId}:${data.targetUserId}`;
+  const dedupUntil = wrapDedup.get(dedupKey);
+  if (dedupUntil && Date.now() < dedupUntil) return;
+  wrapDedup.set(dedupKey, Date.now() + WRAP_DEDUP_TTL_MS);
+
+  try {
+    const groupKey = await getOrFetchGroupKey(data.groupId);
+    const currentUserId = useAppStore.getState().userId;
+    if (!currentUserId) return;
+    const targetPubKey = await resolveRemoteIdentityKey(data.targetUserId, currentUserId);
+    const wrapped = wrapGroupKey(groupKey, targetPubKey);
+    await submitWrappedKey(data.groupId, data.targetUserId, wrapped);
+  } catch (e) {
+    wrapDedup.delete(dedupKey);
+    if (__DEV__) {
+      console.warn('[WS] wrap_key_request failed:', e instanceof Error ? e.message : e);
+    }
+  }
+}
+
+// ============================================================
+// wrapped_key_delivered handler
+// ============================================================
+
+async function handleWrappedKeyDelivered(data: WrappedKeyDeliveredPayload): Promise<void> {
+  const dedupUntil = deliveryDedup.get(data.groupId);
+  if (dedupUntil && Date.now() < dedupUntil) return;
+  deliveryDedup.set(data.groupId, Date.now() + WRAP_DEDUP_TTL_MS);
+
+  try {
+    evictPendingCache(data.groupId);
+    // When group key rotation lands, must invalidateGroupKey before getOrFetchGroupKey
+    // to avoid the cache short-circuit.
+    await getOrFetchGroupKey(data.groupId);
+  } catch (e) {
+    if (__DEV__) {
+      console.warn('[WS] wrapped_key_delivered failed:', e instanceof Error ? e.message : e);
+    }
+  }
 }
 
 // ============================================================

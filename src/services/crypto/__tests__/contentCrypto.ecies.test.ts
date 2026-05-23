@@ -14,18 +14,42 @@ jest.mock('../../../database/repositories/conversationRepository', () => ({
 
 jest.mock('../../../database/repositories/itemRepository', () => ({
   getItem: jest.fn(() => '05' + 'aa'.repeat(32)),
+  setItem: jest.fn(),
+  getAllItems: jest.fn(() => []),
 }));
 
 jest.mock('../keyGenerationService', () => ({
   getCachedIdentityPrivateKeyHex: jest.fn(() => 'bb'.repeat(32)),
 }));
 
+const mockResolveRemoteIdentityKey = jest.fn();
+jest.mock('../identityKeyAccess', () => ({
+  getIdentityKeyPair: jest.fn(() => ({
+    privateKey: new ArrayBuffer(32),
+    publicKey: new ArrayBuffer(33),
+  })),
+  resolveRemoteIdentityKey: (...args: unknown[]) => mockResolveRemoteIdentityKey(...args),
+}));
+
+jest.mock('../../../database/repositories/signalIdentityKeyRepository', () => ({
+  getIdentityKey: jest.fn(),
+  saveIdentityKey: jest.fn(),
+}));
+
+jest.mock('../../../stores/useAppStore', () => ({
+  useAppStore: {
+    getState: jest.fn(() => ({ userId: 'test-self-user' })),
+  },
+}));
+
 import { eciesSeal, eciesOpen } from 'orbital-signal';
+import { setGroupMasterKey } from '../../../database/repositories/conversationRepository';
 import {
   wrapGroupKey,
   unwrapGroupKey,
   detectKeyFormat,
   evictPendingCache,
+  processReceivedGroupKey,
 } from '../contentCrypto';
 import { arrayBufferToBase64 } from '../utils';
 
@@ -72,5 +96,60 @@ describe('detectKeyFormat', () => {
 describe('evictPendingCache', () => {
   it('does not throw', () => {
     expect(() => evictPendingCache('test-group-id')).not.toThrow();
+  });
+});
+
+describe('processReceivedGroupKey', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockResolveRemoteIdentityKey.mockResolvedValue(new ArrayBuffer(33));
+  });
+
+  it('unwraps ECIES-v1 envelope and persists raw key', async () => {
+    const envelope = new Uint8Array(190);
+    envelope[0] = 0x01;
+    const b64 = arrayBufferToBase64(envelope.buffer);
+
+    await processReceivedGroupKey('group-1', b64, 'sender-user');
+
+    expect(mockResolveRemoteIdentityKey).toHaveBeenCalledWith('sender-user', 'test-self-user');
+    expect(eciesOpen).toHaveBeenCalled();
+    expect(setGroupMasterKey).toHaveBeenCalled();
+  });
+
+  it('persists raw 32-byte key without unwrapping', async () => {
+    const raw = new Uint8Array(32);
+    const b64 = arrayBufferToBase64(raw.buffer);
+
+    await processReceivedGroupKey('group-2', b64, null);
+
+    expect(mockResolveRemoteIdentityKey).not.toHaveBeenCalled();
+    expect(eciesOpen).not.toHaveBeenCalled();
+    expect(setGroupMasterKey).toHaveBeenCalled();
+  });
+
+  it('throws when ECIES envelope has no wrappedBy', async () => {
+    const envelope = new Uint8Array(190);
+    envelope[0] = 0x01;
+    const b64 = arrayBufferToBase64(envelope.buffer);
+
+    await expect(processReceivedGroupKey('group-3', b64, null)).rejects.toThrow(
+      'ECIES envelope requires sender identity',
+    );
+    expect(setGroupMasterKey).not.toHaveBeenCalled();
+  });
+
+  it('rejects raw key for ECIES-locked group', async () => {
+    const envelope = new Uint8Array(190);
+    envelope[0] = 0x01;
+    const envelopeB64 = arrayBufferToBase64(envelope.buffer);
+    await processReceivedGroupKey('locked-group', envelopeB64, 'sender-user');
+
+    const raw = new Uint8Array(32);
+    const rawB64 = arrayBufferToBase64(raw.buffer);
+
+    await expect(processReceivedGroupKey('locked-group', rawB64, null)).rejects.toThrow(
+      'Downgrade rejected',
+    );
   });
 });

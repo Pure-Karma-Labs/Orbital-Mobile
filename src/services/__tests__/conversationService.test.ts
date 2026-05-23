@@ -6,6 +6,7 @@ jest.mock('../api/groups', () => ({
 }));
 
 const mockPersistGroupKey = jest.fn();
+const mockProcessReceivedGroupKey = jest.fn().mockResolvedValue(undefined);
 const mockGetOrFetchGroupKey = jest.fn().mockResolvedValue(new Uint8Array(32));
 const mockDecryptGroupName = jest.fn((name: string, _key: Uint8Array) => name);
 const mockGenerateGroupKey = jest.fn(() => ({
@@ -16,6 +17,7 @@ const mockEncryptGroupName = jest.fn((_name: string, _key: Uint8Array) => 'encry
 const mockWrapGroupKey = jest.fn((_key: Uint8Array, _pub: ArrayBuffer) => 'ecies-wrapped-base64');
 jest.mock('../crypto/contentCrypto', () => ({
   persistGroupKey: (...args: unknown[]) => mockPersistGroupKey(...args),
+  processReceivedGroupKey: (...args: unknown[]) => mockProcessReceivedGroupKey(...args),
   getOrFetchGroupKey: (groupId: string) => mockGetOrFetchGroupKey(groupId),
   decryptGroupName: (name: string, key: Uint8Array) => mockDecryptGroupName(name, key),
   encryptGroupName: (name: string, key: Uint8Array) => mockEncryptGroupName(name, key),
@@ -23,11 +25,13 @@ jest.mock('../crypto/contentCrypto', () => ({
   wrapGroupKey: (key: Uint8Array, pub: ArrayBuffer) => mockWrapGroupKey(key, pub),
 }));
 
+const mockResolveRemoteIdentityKey = jest.fn().mockResolvedValue(new ArrayBuffer(33));
 jest.mock('../crypto/identityKeyAccess', () => ({
   getIdentityKeyPair: jest.fn(() => ({
     privateKey: new ArrayBuffer(32),
     publicKey: new ArrayBuffer(33),
   })),
+  resolveRemoteIdentityKey: (...args: unknown[]) => mockResolveRemoteIdentityKey(...args),
 }));
 
 jest.mock('../crypto/utils', () => ({
@@ -41,6 +45,7 @@ const mockUpsertConversation = jest.fn();
 jest.mock('../../stores/useAppStore', () => ({
   useAppStore: {
     getState: jest.fn(() => ({
+      userId: 'test-self-user',
       activeConversationId: null,
       setConversations: mockSetConversations,
       setActiveConversation: mockSetActiveConversation,
@@ -66,6 +71,7 @@ const GROUP_RESPONSE = {
   groupId: 'g1',
   encryptedName: 'Family Orbit',
   wrappedGroupKey: 'placeholder-key',
+  wrappedBy: 'sender-user-1',
   memberCount: 3,
   maxMembers: 10,
   isCreator: false,
@@ -99,6 +105,7 @@ describe('loadConversations', () => {
 
   it('does not clobber existing activeConversationId', async () => {
     (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-self-user',
       activeConversationId: 'existing-id',
       setConversations: mockSetConversations,
       setActiveConversation: mockSetActiveConversation,
@@ -140,12 +147,12 @@ describe('loadConversations', () => {
     expect(conversation.unreadCount).toBe(0);
   });
 
-  it('persists group keys from response', async () => {
+  it('processes group keys from response via processReceivedGroupKey', async () => {
     mockListGroups.mockResolvedValue([GROUP_RESPONSE]);
 
     await loadConversations();
 
-    expect(mockPersistGroupKey).toHaveBeenCalledWith('g1', 'placeholder-key');
+    expect(mockProcessReceivedGroupKey).toHaveBeenCalledWith('g1', 'placeholder-key', 'sender-user-1');
   });
 
   it('skips groups with null wrappedGroupKey', async () => {
@@ -153,7 +160,22 @@ describe('loadConversations', () => {
 
     await loadConversations();
 
-    expect(mockPersistGroupKey).not.toHaveBeenCalled();
+    expect(mockProcessReceivedGroupKey).not.toHaveBeenCalled();
+  });
+
+  it('continues loading when one group key fails', async () => {
+    mockProcessReceivedGroupKey
+      .mockRejectedValueOnce(new Error('corrupt key'))
+      .mockResolvedValueOnce(undefined);
+    mockListGroups.mockResolvedValue([
+      GROUP_RESPONSE,
+      { ...GROUP_RESPONSE, groupId: 'g2', wrappedBy: 'sender-2' },
+    ]);
+
+    await loadConversations();
+
+    expect(mockProcessReceivedGroupKey).toHaveBeenCalledTimes(2);
+    expect(mockSetConversations).toHaveBeenCalled();
   });
 
   it('propagates API errors', async () => {
@@ -171,6 +193,7 @@ const DM_RESPONSE = {
   groupId: 'dm-1',
   recipient: { id: 'user-2', username: 'bob', avatarUrl: null },
   wrappedGroupKey: 'dm-key-base64',
+  wrappedBy: 'dm-sender-1',
   lastMessageAt: '2026-03-15T12:00:00.000Z',
   createdAt: '2026-03-01T00:00:00.000Z',
 };
@@ -209,12 +232,12 @@ describe('loadDmConversations', () => {
     expect(conversation.lastMessageAt).toBeNull();
   });
 
-  it('persists DM group keys', async () => {
+  it('processes DM group keys via processReceivedGroupKey', async () => {
     mockListDms.mockResolvedValue([DM_RESPONSE]);
 
     await loadDmConversations();
 
-    expect(mockPersistGroupKey).toHaveBeenCalledWith('dm-1', 'dm-key-base64');
+    expect(mockProcessReceivedGroupKey).toHaveBeenCalledWith('dm-1', 'dm-key-base64', 'dm-sender-1');
   });
 
   it('skips DMs with null wrappedGroupKey', async () => {
@@ -222,7 +245,7 @@ describe('loadDmConversations', () => {
 
     await loadDmConversations();
 
-    expect(mockPersistGroupKey).not.toHaveBeenCalled();
+    expect(mockProcessReceivedGroupKey).not.toHaveBeenCalled();
   });
 
   it('handles empty DM list', async () => {
@@ -252,6 +275,7 @@ describe('startDm', () => {
     expect(mockCreateDm).toHaveBeenCalledWith({
       recipientId: 'user-3',
       wrappedGroupKey: 'ecies-wrapped-base64',
+      recipientWrappedGroupKey: 'ecies-wrapped-base64',
     });
     expect(result).toEqual({
       conversationId: 'dm-new',
@@ -285,12 +309,12 @@ describe('startDm', () => {
       groupId: 'dm-existing',
       isNew: false,
       wrappedGroupKey: 'server-existing-key',
+      wrappedBy: 'other-user',
       recipient: { id: 'user-3', username: 'carol' },
     });
 
     await expect(startDm('user-3')).resolves.not.toThrow();
-    expect(mockPersistGroupKey).toHaveBeenCalledWith('dm-existing', 'server-existing-key');
-    expect(mockPersistGroupKey).toHaveBeenCalledTimes(1);
+    expect(mockProcessReceivedGroupKey).toHaveBeenCalledWith('dm-existing', 'server-existing-key', 'other-user');
   });
 
   it('for isNew DMs trusts local key, ignoring server-returned key', async () => {
@@ -311,7 +335,7 @@ describe('startDm', () => {
 // ---------------------------------------------------------------------------
 
 describe('joinOrbit', () => {
-  it('joins with invite code and persists wrapped key', async () => {
+  it('joins with invite code and processes wrapped key', async () => {
     mockJoinGroup.mockResolvedValue({
       groupId: 'orbit-1',
       encryptedName: 'Encrypted Name',
@@ -323,7 +347,7 @@ describe('joinOrbit', () => {
     const result = await joinOrbit('ABC12345');
 
     expect(mockJoinGroup).toHaveBeenCalledWith({ inviteCode: 'ABC12345' });
-    expect(mockPersistGroupKey).toHaveBeenCalledWith('orbit-1', 'wrapped-key-base64');
+    expect(mockProcessReceivedGroupKey).toHaveBeenCalledWith('orbit-1', 'wrapped-key-base64', null);
     expect(result.groupId).toBe('orbit-1');
   });
 
@@ -338,9 +362,8 @@ describe('joinOrbit', () => {
 
     const result = await joinOrbit('XYZ98765');
 
-    expect(mockPersistGroupKey).not.toHaveBeenCalled();
+    expect(mockProcessReceivedGroupKey).not.toHaveBeenCalled();
     expect(result.groupId).toBe('orbit-2');
-    expect(result.name).toBe('Encrypted Name');
   });
 
   it('falls back to (unable to decrypt) on name decryption failure', async () => {

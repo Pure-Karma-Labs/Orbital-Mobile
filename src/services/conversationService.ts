@@ -13,9 +13,9 @@ import {
   decryptGroupName,
   getOrFetchGroupKey,
   wrapGroupKey,
+  processReceivedGroupKey,
 } from './crypto/contentCrypto';
-import { getIdentityKeyPair } from './crypto/identityKeyAccess';
-import { base64ToArrayBuffer } from './crypto/utils';
+import { getIdentityKeyPair, resolveRemoteIdentityKey } from './crypto/identityKeyAccess';
 import { useAppStore } from '../stores/useAppStore';
 import type { Conversation } from '../types/store';
 import type { DmResponse, GroupResponse } from '../types/api';
@@ -48,11 +48,26 @@ async function mapGroupResponse(response: GroupResponse): Promise<Conversation> 
 
 export async function loadConversations(): Promise<void> {
   const groups = await listGroups();
+  const currentUserId = useAppStore.getState().userId;
+
+  const uniqueSenders = new Set<string>();
+  for (const group of groups) {
+    if (group.wrappedGroupKey && group.wrappedBy) {
+      uniqueSenders.add(group.wrappedBy);
+    }
+  }
+  if (currentUserId && uniqueSenders.size > 0) {
+    await Promise.all(
+      Array.from(uniqueSenders).map((id) =>
+        resolveRemoteIdentityKey(id, currentUserId).catch(() => {}),
+      ),
+    );
+  }
 
   for (const group of groups) {
     if (group.wrappedGroupKey) {
       try {
-        persistGroupKey(group.groupId, group.wrappedGroupKey);
+        await processReceivedGroupKey(group.groupId, group.wrappedGroupKey, group.wrappedBy);
       } catch {
         if (__DEV__) console.warn('[loadConversations] invalid group key for', group.groupId);
       }
@@ -120,11 +135,26 @@ function mapDmResponse(response: DmResponse): Conversation {
 
 export async function loadDmConversations(): Promise<void> {
   const dms = await listDms();
+  const currentUserId = useAppStore.getState().userId;
+
+  const uniqueSenders = new Set<string>();
+  for (const dm of dms) {
+    if (dm.wrappedGroupKey && dm.wrappedBy) {
+      uniqueSenders.add(dm.wrappedBy);
+    }
+  }
+  if (currentUserId && uniqueSenders.size > 0) {
+    await Promise.all(
+      Array.from(uniqueSenders).map((id) =>
+        resolveRemoteIdentityKey(id, currentUserId).catch(() => {}),
+      ),
+    );
+  }
 
   for (const dm of dms) {
     if (dm.wrappedGroupKey) {
       try {
-        persistGroupKey(dm.groupId, dm.wrappedGroupKey);
+        await processReceivedGroupKey(dm.groupId, dm.wrappedGroupKey, dm.wrappedBy);
       } catch {
         if (__DEV__) console.warn('[loadDmConversations] invalid group key for', dm.groupId);
       }
@@ -146,15 +176,31 @@ export async function startDm(
   const { publicKey: ownPubKey } = getIdentityKeyPair();
   const wrappedBase64 = wrapGroupKey(key, ownPubKey);
 
+  const currentUserId = useAppStore.getState().userId;
+  let recipientWrappedGroupKey: string | undefined;
+  if (currentUserId) {
+    try {
+      const recipientPubKey = await resolveRemoteIdentityKey(recipientId, currentUserId);
+      recipientWrappedGroupKey = wrapGroupKey(key, recipientPubKey);
+    } catch {
+      // Recipient key resolution failed — send without recipient wrap
+    }
+  }
+
   const response = await createDm({
     recipientId,
     wrappedGroupKey: wrappedBase64,
+    recipientWrappedGroupKey: recipientWrappedGroupKey ?? null,
   });
 
   if (response.isNew) {
     persistGroupKey(response.groupId, keyBase64);
   } else if (response.wrappedGroupKey) {
-    persistGroupKey(response.groupId, response.wrappedGroupKey);
+    try {
+      await processReceivedGroupKey(response.groupId, response.wrappedGroupKey, response.wrappedBy);
+    } catch {
+      if (__DEV__) console.warn('[startDm] failed to process existing DM key');
+    }
   }
 
   const now = Date.now();
@@ -196,14 +242,22 @@ export async function joinOrbit(
   });
 
   if (response.wrappedGroupKey) {
-    persistGroupKey(response.groupId, response.wrappedGroupKey);
+    try {
+      await processReceivedGroupKey(
+        response.groupId,
+        response.wrappedGroupKey,
+        response.wrappedBy ?? null,
+      );
+    } catch {
+      // Key delivery may be async via WS wrapped_key_delivered
+    }
   }
 
   let decryptedName: string | null = response.encryptedName ?? null;
-  if (response.encryptedName && response.wrappedGroupKey) {
+  if (response.encryptedName) {
     try {
-      const groupKeyBytes = new Uint8Array(base64ToArrayBuffer(response.wrappedGroupKey));
-      decryptedName = decryptGroupName(response.encryptedName, groupKeyBytes);
+      const groupKey = await getOrFetchGroupKey(response.groupId);
+      decryptedName = decryptGroupName(response.encryptedName, groupKey);
     } catch {
       decryptedName = '(unable to decrypt)';
     }

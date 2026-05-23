@@ -17,6 +17,7 @@ import {
   clearIdentityKeyCache,
 } from './crypto/keyGenerationService';
 import { clearGroupKeyCache } from './crypto/contentCrypto';
+import { clearEciesLockState, loadEciesLockState } from './crypto/downgradeProtection';
 import { clearProcessedMediaIds } from './threadService';
 import { clearAllGroupMasterKeys } from '../database/repositories/conversationRepository';
 import { removeSecureItem } from './secure-storage/secureStorage';
@@ -43,6 +44,7 @@ export async function loginUser(
     displayName: null,
     avatarPath: null,
   });
+  loadEciesLockState();
   await loadConversations().catch((e: unknown) => {
     if (__DEV__) console.warn('[ConversationSync]', e instanceof Error ? e.message : e);
   });
@@ -79,6 +81,7 @@ export async function signupUser(
   } catch (e: unknown) {
     if (__DEV__) console.warn('[KeyGeneration]', e instanceof Error ? e.message : e);
   }
+  loadEciesLockState();
   await loadConversations().catch((e: unknown) => {
     if (__DEV__) console.warn('[ConversationSync]', e instanceof Error ? e.message : e);
   });
@@ -107,6 +110,7 @@ export async function restoreSession(): Promise<boolean> {
       displayName: profile.displayName,
       avatarPath: profile.avatarUrl ?? null,
     });
+    loadEciesLockState();
     await loadConversations().catch((e: unknown) => {
       if (__DEV__) console.warn('[ConversationSync]', e instanceof Error ? e.message : e);
     });
@@ -145,6 +149,7 @@ export async function logout(): Promise<void> {
   state.setContacts([]);
   clearIdentityKeyCache();
   clearGroupKeyCache();
+  clearEciesLockState();
   clearProcessedMediaIds();
 
   // Clear identity private key from Keychain

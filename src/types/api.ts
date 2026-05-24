@@ -166,6 +166,13 @@ export interface GroupMembersResponse {
   members: GroupMember[];
 }
 
+export interface GenerateInviteCodeResponse {
+  inviteCode: string;
+  expiresAt: string;
+  createdAt: string;
+  targetEmail: string;
+}
+
 /**
  * GET /api/groups/:groupId/key response.
  *

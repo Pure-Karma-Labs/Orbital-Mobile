@@ -232,7 +232,7 @@ export async function startDm(
 /**
  * Fetch all groups the user belongs to, including active invite codes.
  *
- * Used by the InviteFriends screen to display shareable invite codes per orbit.
+ * Used by the ManageOrbits screen to display shareable invite codes per orbit.
  * The GroupResponse type already includes `activeInviteCode`.
  */
 export async function fetchGroupsWithInviteCodes(): Promise<GroupResponse[]> {

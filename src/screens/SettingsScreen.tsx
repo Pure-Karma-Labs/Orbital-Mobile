@@ -102,8 +102,8 @@ export function SettingsScreen(): React.JSX.Element {
     setSoundEnabled(!soundEnabled);
   }, [soundEnabled, setSoundEnabled]);
 
-  const handleInviteFriends = useCallback(() => {
-    navigation.navigate('InviteFriends');
+  const handleManageOrbits = useCallback(() => {
+    navigation.navigate('ManageOrbits');
   }, [navigation]);
 
   const containerStyle: ViewStyle = {
@@ -170,11 +170,11 @@ export function SettingsScreen(): React.JSX.Element {
 
         <SectionHeader label="Account" />
         <SettingsRow
-          emojiUnified="1F4E4"
-          label="Invite Friends"
+          emojiUnified="1FA90"
+          label="Manage Orbits"
           chevron
-          onPress={handleInviteFriends}
-          testID="invite-friends-row"
+          onPress={handleManageOrbits}
+          testID="manage-orbits-row"
         />
         <SettingsRow
           emojiUnified="1F6AA"

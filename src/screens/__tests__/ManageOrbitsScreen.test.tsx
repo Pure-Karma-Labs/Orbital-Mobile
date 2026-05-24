@@ -1,5 +1,5 @@
 /**
- * Tests for InviteFriendsScreen — rendering, loading, and share action.
+ * Tests for ManageOrbitsScreen — rendering, loading, filtering, and share action.
  */
 
 import React from 'react';
@@ -7,7 +7,7 @@ import { Share } from 'react-native';
 import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'react-test-renderer';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../../theme';
-import { InviteFriendsScreen } from '../InviteFriendsScreen';
+import { ManageOrbitsScreen } from '../ManageOrbitsScreen';
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -22,8 +22,33 @@ jest.mock('../../services/crypto/contentCrypto', () => ({
   getOrFetchGroupKey: jest.fn().mockResolvedValue(new Uint8Array(32)),
 }));
 
+jest.mock('../../services/api/groups', () => ({
+  getGroupMembers: jest.fn().mockResolvedValue([]),
+  generateInviteCode: jest.fn().mockResolvedValue({
+    inviteCode: 'NEW123',
+    expiresAt: '2026-06-01T00:00:00Z',
+    createdAt: '2026-05-24T00:00:00Z',
+    targetEmail: 'test@example.com',
+  }),
+  removeMember: jest.fn().mockResolvedValue(undefined),
+}));
+
 jest.mock('../../components/OrbitalSpinner', () => ({
   OrbitalSpinner: () => null,
+}));
+
+jest.mock('../../stores', () => ({
+  useAuth: jest.fn(() => ({
+    isAuthenticated: true,
+    userId: 'current-user-id',
+    username: 'testuser',
+    displayName: 'Test User',
+    avatarPath: null,
+    setUser: jest.fn(),
+    clearAuth: jest.fn(),
+    setAuthenticated: jest.fn(),
+    updateProfile: jest.fn(),
+  })),
 }));
 
 import { fetchGroupsWithInviteCodes } from '../../services/conversationService';
@@ -60,8 +85,8 @@ const mockNavigation = {
 };
 
 const mockRoute = {
-  key: 'InviteFriends',
-  name: 'InviteFriends' as const,
+  key: 'ManageOrbits',
+  name: 'ManageOrbits' as const,
   params: undefined,
 };
 
@@ -69,6 +94,10 @@ function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstanc
   const found = root.findAll((node) => node.props.testID === testID);
   if (found.length === 0) throw new Error(`No element with testID "${testID}"`);
   return found[0];
+}
+
+function findAllByTestId(root: ReactTestInstance, testID: string): ReactTestInstance[] {
+  return root.findAll((node) => node.props.testID === testID);
 }
 
 // ---------------------------------------------------------------------------
@@ -83,7 +112,7 @@ beforeEach(() => {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('InviteFriendsScreen — rendering', () => {
+describe('ManageOrbitsScreen — rendering', () => {
   it('renders the screen with testID', async () => {
     mockFetchGroups.mockResolvedValue([]);
     let renderer!: ReactTestRenderer;
@@ -96,19 +125,19 @@ describe('InviteFriendsScreen — rendering', () => {
           React.createElement(
             ThemeProvider,
             { colorSchemeOverride: 'light' },
-            React.createElement(InviteFriendsScreen, {
-              navigation: mockNavigation as unknown as React.ComponentProps<typeof InviteFriendsScreen>['navigation'],
-              route: mockRoute as unknown as React.ComponentProps<typeof InviteFriendsScreen>['route'],
+            React.createElement(ManageOrbitsScreen, {
+              navigation: mockNavigation as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['navigation'],
+              route: mockRoute as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['route'],
             }),
           ),
         ),
       );
     });
 
-    expect(() => findByTestId(renderer.root, 'invite-friends-screen')).not.toThrow();
+    expect(() => findByTestId(renderer.root, 'manage-orbits-screen')).not.toThrow();
   });
 
-  it('shows empty state when no groups', async () => {
+  it('shows empty state when no creator groups', async () => {
     mockFetchGroups.mockResolvedValue([]);
     let renderer!: ReactTestRenderer;
 
@@ -120,9 +149,9 @@ describe('InviteFriendsScreen — rendering', () => {
           React.createElement(
             ThemeProvider,
             { colorSchemeOverride: 'light' },
-            React.createElement(InviteFriendsScreen, {
-              navigation: mockNavigation as unknown as React.ComponentProps<typeof InviteFriendsScreen>['navigation'],
-              route: mockRoute as unknown as React.ComponentProps<typeof InviteFriendsScreen>['route'],
+            React.createElement(ManageOrbitsScreen, {
+              navigation: mockNavigation as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['navigation'],
+              route: mockRoute as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['route'],
             }),
           ),
         ),
@@ -133,12 +162,12 @@ describe('InviteFriendsScreen — rendering', () => {
     const emptyText = allText.find(
       (node) =>
         typeof node.props.children === 'string' &&
-        node.props.children.includes('No orbits'),
+        node.props.children.includes("don't manage any orbits"),
     );
     expect(emptyText).toBeDefined();
   });
 
-  it('renders groups with invite codes', async () => {
+  it('renders creator groups with invite codes', async () => {
     mockFetchGroups.mockResolvedValue([
       {
         groupId: 'g-1',
@@ -161,26 +190,70 @@ describe('InviteFriendsScreen — rendering', () => {
           React.createElement(
             ThemeProvider,
             { colorSchemeOverride: 'light' },
-            React.createElement(InviteFriendsScreen, {
-              navigation: mockNavigation as unknown as React.ComponentProps<typeof InviteFriendsScreen>['navigation'],
-              route: mockRoute as unknown as React.ComponentProps<typeof InviteFriendsScreen>['route'],
+            React.createElement(ManageOrbitsScreen, {
+              navigation: mockNavigation as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['navigation'],
+              route: mockRoute as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['route'],
             }),
           ),
         ),
       );
     });
 
-    expect(() => findByTestId(renderer.root, 'invite-group-g-1')).not.toThrow();
-    expect(() => findByTestId(renderer.root, 'invite-code-g-1')).not.toThrow();
-    expect(() => findByTestId(renderer.root, 'share-button-g-1')).not.toThrow();
+    expect(() => findByTestId(renderer.root, 'orbit-row-g-1')).not.toThrow();
+    expect(() => findByTestId(renderer.root, 'orbit-header-g-1')).not.toThrow();
+  });
 
-    const codeEl = findByTestId(renderer.root, 'invite-code-g-1');
-    expect(codeEl.props.children).toBe('ABC123');
+  it('does NOT render non-creator groups', async () => {
+    mockFetchGroups.mockResolvedValue([
+      {
+        groupId: 'g-creator',
+        encryptedName: 'enc-name',
+        wrappedGroupKey: 'enc-key',
+        memberCount: 3,
+        maxMembers: 10,
+        isCreator: true,
+        activeInviteCode: 'ABC123',
+        joinedAt: '2026-05-01T00:00:00Z',
+      },
+      {
+        groupId: 'g-member-only',
+        encryptedName: 'enc-name-2',
+        wrappedGroupKey: 'enc-key-2',
+        memberCount: 5,
+        maxMembers: 10,
+        isCreator: false,
+        activeInviteCode: 'DEF456',
+        joinedAt: '2026-05-02T00:00:00Z',
+      },
+    ]);
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        React.createElement(
+          SafeAreaProvider,
+          { initialMetrics: safeAreaMetrics },
+          React.createElement(
+            ThemeProvider,
+            { colorSchemeOverride: 'light' },
+            React.createElement(ManageOrbitsScreen, {
+              navigation: mockNavigation as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['navigation'],
+              route: mockRoute as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['route'],
+            }),
+          ),
+        ),
+      );
+    });
+
+    // Creator group should be rendered
+    expect(() => findByTestId(renderer.root, 'orbit-row-g-creator')).not.toThrow();
+    // Non-creator group should NOT be rendered
+    expect(findAllByTestId(renderer.root, 'orbit-row-g-member-only')).toHaveLength(0);
   });
 });
 
-describe('InviteFriendsScreen — share', () => {
-  it('triggers Share.share when share button is pressed', async () => {
+describe('ManageOrbitsScreen — share', () => {
+  it('triggers Share.share when share button is pressed after expand', async () => {
     const shareSpy = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' } as never);
 
     mockFetchGroups.mockResolvedValue([
@@ -205,13 +278,19 @@ describe('InviteFriendsScreen — share', () => {
           React.createElement(
             ThemeProvider,
             { colorSchemeOverride: 'light' },
-            React.createElement(InviteFriendsScreen, {
-              navigation: mockNavigation as unknown as React.ComponentProps<typeof InviteFriendsScreen>['navigation'],
-              route: mockRoute as unknown as React.ComponentProps<typeof InviteFriendsScreen>['route'],
+            React.createElement(ManageOrbitsScreen, {
+              navigation: mockNavigation as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['navigation'],
+              route: mockRoute as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['route'],
             }),
           ),
         ),
       );
+    });
+
+    // Expand the orbit row
+    const header = findByTestId(renderer.root, 'orbit-header-g-1');
+    await act(async () => {
+      header.props.onPress();
     });
 
     const shareButton = findByTestId(renderer.root, 'share-button-g-1');

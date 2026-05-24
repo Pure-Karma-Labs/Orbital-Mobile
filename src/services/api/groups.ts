@@ -124,18 +124,9 @@ export function generateInviteCode(
 }
 
 export async function removeMember(groupId: string, userId: string): Promise<void> {
-  try {
-    await request<void>({
-      method: 'DELETE',
-      path: `/api/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}`,
-    });
-  } catch (err: unknown) {
-    // Backend returns 204 No Content on success, which causes a JSON parse error
-    // in the client. If the error is a parse error, the DELETE was successful.
-    if (err && typeof err === 'object' && 'code' in err && (err as { code: string }).code === 'PARSE_ERROR') {
-      return;
-    }
-    throw err;
-  }
+  await request<void>({
+    method: 'DELETE',
+    path: `/api/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}`,
+  });
 }
 

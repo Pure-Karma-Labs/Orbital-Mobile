@@ -87,6 +87,16 @@ export async function signupUser(
     displayName: null,
     avatarPath: null,
   });
+
+  // Account-switch guard: wipe residual crypto if a different user was here before
+  if (isDatabaseInitialized()) {
+    const lastUserId = getItem('lastUserId');
+    if (lastUserId && lastUserId !== response.userId) {
+      await fullCryptoWipe();
+    }
+    setItem('lastUserId', response.userId);
+  }
+
   try {
     await generateInitialKeys();
     await uploadInitialPreKeyBundle();

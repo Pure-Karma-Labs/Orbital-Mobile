@@ -15,16 +15,15 @@ import {
   uploadInitialPreKeyBundle,
   ensureKeysInitialized,
   clearIdentityKeyCache,
+  fullCryptoWipe,
 } from './crypto/keyGenerationService';
 import { clearGroupKeyCache } from './crypto/contentCrypto';
 import { clearEciesLockState, loadEciesLockState } from './crypto/downgradeProtection';
 import { clearProcessedMediaIds } from './threadService';
-import { clearAllGroupMasterKeys } from '../database/repositories/conversationRepository';
-import { removeSecureItem } from './secure-storage/secureStorage';
-import { SecureKeys } from './secure-storage/constants';
 import { execute } from '../database/queryHelpers';
 import { isDatabaseInitialized } from '../database/connection';
-import { loadConversations, loadDmConversations } from './conversationService';
+import { getItem, setItem } from '../database/repositories/itemRepository';
+import { loadConversations, loadDmConversations, fulfillPendingWraps } from './conversationService';
 import { websocketManager } from './websocket';
 import { deregisterCurrentDevice } from './notificationService';
 
@@ -44,12 +43,25 @@ export async function loginUser(
     displayName: null,
     avatarPath: null,
   });
+
+  // Account-switch guard: if a different user logs in, wipe all crypto state
+  if (isDatabaseInitialized()) {
+    const lastUserId = getItem('lastUserId');
+    if (lastUserId && lastUserId !== response.userId) {
+      await fullCryptoWipe();
+    }
+    setItem('lastUserId', response.userId);
+  }
+
   loadEciesLockState();
   await loadConversations().catch((e: unknown) => {
     if (__DEV__) console.warn('[ConversationSync]', e instanceof Error ? e.message : e);
   });
   await loadDmConversations().catch((e: unknown) => {
     if (__DEV__) console.warn('[DmSync]', e instanceof Error ? e.message : e);
+  });
+  fulfillPendingWraps().catch((e: unknown) => {
+    if (__DEV__) console.warn('[PendingWraps]', e instanceof Error ? e.message : e);
   });
   ensureKeysInitialized().catch((e: unknown) => {
     if (__DEV__) console.warn('[KeyMaintenance]', e instanceof Error ? e.message : e);
@@ -67,7 +79,7 @@ export async function signupUser(
   email: string,
   inviteCode: string,
 ): Promise<void> {
-  const response = await auth.signup({ username, password, email, inviteCode });
+  const response = await auth.signup({ username, password, email, inviteCode, publicKey: { type: 'placeholder' } });
   await tokenManager.setTokens(response.token, undefined);
   useAppStore.getState().setUser({
     userId: response.userId,
@@ -110,12 +122,25 @@ export async function restoreSession(): Promise<boolean> {
       displayName: profile.displayName,
       avatarPath: profile.avatarUrl ?? null,
     });
+
+    // Account-switch guard: if a different user logs in, wipe all crypto state
+    if (isDatabaseInitialized()) {
+      const lastUserId = getItem('lastUserId');
+      if (lastUserId && lastUserId !== profile.id) {
+        await fullCryptoWipe();
+      }
+      setItem('lastUserId', profile.id);
+    }
+
     loadEciesLockState();
     await loadConversations().catch((e: unknown) => {
       if (__DEV__) console.warn('[ConversationSync]', e instanceof Error ? e.message : e);
     });
     await loadDmConversations().catch((e: unknown) => {
       if (__DEV__) console.warn('[DmSync]', e instanceof Error ? e.message : e);
+    });
+    fulfillPendingWraps().catch((e: unknown) => {
+      if (__DEV__) console.warn('[PendingWraps]', e instanceof Error ? e.message : e);
     });
     ensureKeysInitialized().catch((e: unknown) => {
       if (__DEV__) console.warn('[KeyMaintenance]', e instanceof Error ? e.message : e);
@@ -152,22 +177,15 @@ export async function logout(): Promise<void> {
   clearEciesLockState();
   clearProcessedMediaIds();
 
-  // Clear identity private key from Keychain
-  await removeSecureItem(SecureKeys.IDENTITY_KEY_PRIVATE).catch(() => {});
-
-  // Clear SQLCipher: group keys, items table, and all Signal Protocol stores
+  // Clear per-session Signal Protocol state only.
+  // Identity keys, pre-keys, and items are PRESERVED so the same user can
+  // log back in without losing the ability to decrypt ECIES-wrapped group keys.
   if (isDatabaseInitialized()) {
     try {
-      clearAllGroupMasterKeys();
-      execute('DELETE FROM items');
-      execute('DELETE FROM signal_identity_keys');
       execute('DELETE FROM signal_sessions');
-      execute('DELETE FROM signal_pre_keys');
-      execute('DELETE FROM signal_signed_pre_keys');
-      execute('DELETE FROM signal_kyber_pre_keys');
       execute('DELETE FROM signal_sender_keys');
     } catch {
-      if (__DEV__) console.warn('[Logout] Failed to clear database tables');
+      if (__DEV__) console.warn('[Logout] Failed to clear session tables');
     }
   }
 

@@ -5,7 +5,7 @@
  * Components never call the groups API or store directly.
  */
 
-import { listGroups, createGroup, joinGroup, listDms, createDm } from './api/groups';
+import { listGroups, createGroup, joinGroup, listDms, createDm, getPendingWraps, submitWrappedKey } from './api/groups';
 import {
   persistGroupKey,
   generateGroupKey,
@@ -285,4 +285,52 @@ export async function joinOrbit(
   store.setActiveConversation(response.groupId);
 
   return { groupId: response.groupId, name: decryptedName };
+}
+
+// ---------------------------------------------------------------------------
+// Pending wraps fulfillment
+// ---------------------------------------------------------------------------
+
+let lastPendingWrapsSweep = 0;
+const PENDING_WRAPS_DEBOUNCE_MS = 60_000;
+
+/**
+ * Proactively wrap and deliver group keys to members who are still waiting.
+ * Debounced to at most once per minute to avoid hammering the API.
+ *
+ * Follows the same pattern as handleWrapKeyRequest in messageHandler.ts:
+ * resolve the target's identity key via the pre-key bundle API, then ECIES-wrap.
+ */
+export async function fulfillPendingWraps(): Promise<void> {
+  const now = Date.now();
+  if (now - lastPendingWrapsSweep < PENDING_WRAPS_DEBOUNCE_MS) return;
+  lastPendingWrapsSweep = now;
+
+  const currentUserId = useAppStore.getState().userId;
+  if (!currentUserId) return;
+
+  const conversations = useAppStore.getState().conversations;
+  const groupIds = Object.values(conversations)
+    .filter(c => c.type === 'group')
+    .map(c => c.id);
+
+  for (const groupId of groupIds.slice(0, 10)) {
+    try {
+      const groupKey = await getOrFetchGroupKey(groupId);
+      const pending = await getPendingWraps(groupId);
+      if (pending.length === 0) continue;
+
+      for (const member of pending.slice(0, 5)) {
+        try {
+          const targetPubKey = await resolveRemoteIdentityKey(member.userId, currentUserId);
+          const wrapped = wrapGroupKey(groupKey, targetPubKey, groupId);
+          await submitWrappedKey(groupId, member.userId, wrapped);
+        } catch {
+          // Skip members whose identity key can't be resolved
+        }
+      }
+    } catch {
+      // Skip groups where we don't have a key (we're the pending one)
+    }
+  }
 }

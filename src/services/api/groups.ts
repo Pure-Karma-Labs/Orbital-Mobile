@@ -9,7 +9,10 @@ import type {
   CreateGroupRequest,
   CreateGroupResponse,
   DmResponse,
+  GenerateInviteCodeResponse,
   GroupKeyResponse,
+  GroupMember,
+  GroupMembersResponse,
   GroupQuotaResponse,
   GroupResponse,
   JoinGroupRequest,
@@ -99,5 +102,31 @@ export async function getPendingWraps(
     path: `/api/groups/${encodeURIComponent(groupId)}/pending-wraps`,
   });
   return response.pending;
+}
+
+export async function getGroupMembers(groupId: string): Promise<GroupMember[]> {
+  const response = await request<GroupMembersResponse>({
+    method: 'GET',
+    path: `/api/groups/${encodeURIComponent(groupId)}/members`,
+  });
+  return response.members;
+}
+
+export function generateInviteCode(
+  groupId: string,
+  targetEmail: string,
+): Promise<GenerateInviteCodeResponse> {
+  return request<GenerateInviteCodeResponse>({
+    method: 'POST',
+    path: `/api/groups/${encodeURIComponent(groupId)}/invite-codes`,
+    body: { targetEmail },
+  });
+}
+
+export async function removeMember(groupId: string, userId: string): Promise<void> {
+  await request<void>({
+    method: 'DELETE',
+    path: `/api/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}`,
+  });
 }
 

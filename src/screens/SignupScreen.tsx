@@ -57,7 +57,7 @@ export function SignupScreen({ onSwitchToLogin }: SignupScreenProps): React.JSX.
       // Auth store update triggers isAuthenticated → App re-renders
     } catch (e) {
       if (e instanceof AuthError || e instanceof ValidationError) {
-        setError('Invalid username or password');
+        setError(e.message || 'Invalid username or password');
       } else if (e instanceof NetworkError) {
         setError(e.message);
       } else {

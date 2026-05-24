@@ -338,6 +338,11 @@ async function _executeRequest(options: RequestOptions): Promise<Response> {
 export async function request<T>(options: RequestOptions): Promise<T> {
   const response = await _executeRequest(options);
 
+  // 204 No Content has no body — return undefined without parsing
+  if (response.status === 204) {
+    return undefined as T;
+  }
+
   // Parse JSON and transform keys to camelCase
   let json: unknown;
   try {

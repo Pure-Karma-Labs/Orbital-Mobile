@@ -12,7 +12,7 @@ import { savePreKey } from '../../database/repositories/signalPreKeyRepository';
 import { saveSignedPreKey } from '../../database/repositories/signalSignedPreKeyRepository';
 import { saveKyberPreKey } from '../../database/repositories/signalKyberPreKeyRepository';
 import { getDatabase, isDatabaseInitialized } from '../../database/connection';
-import { queryOne } from '../../database/queryHelpers';
+import { queryOne, execute } from '../../database/queryHelpers';
 import {
   uploadPreKeyBundle as uploadBundle,
   getPreKeyCount,
@@ -28,7 +28,7 @@ import type {
   PreKeyPublicUpload,
   KyberPreKeyPublicUpload,
 } from '../../types/api';
-import { getSecureItem, setSecureItem } from '../secure-storage';
+import { getSecureItem, setSecureItem, removeSecureItem } from '../secure-storage';
 import { SecureKeys } from '../secure-storage/constants';
 
 const ITEM_KEYS = {
@@ -494,4 +494,28 @@ export async function ensureKeysInitialized(): Promise<void> {
   });
 
   return initializationPromise;
+}
+
+/**
+ * Full destructive wipe of all crypto state. Used when a different user
+ * logs in on the same device — the old identity keys are irrecoverable for
+ * the new user so everything must be regenerated.
+ */
+export async function fullCryptoWipe(): Promise<void> {
+  // Remove identity private key from Keychain
+  await removeSecureItem(SecureKeys.IDENTITY_KEY_PRIVATE).catch(() => {});
+
+  // Clear in-memory cache
+  clearIdentityKeyCache();
+
+  // Clear all Signal Protocol tables and items
+  if (isDatabaseInitialized()) {
+    execute('DELETE FROM items');
+    execute('DELETE FROM signal_identity_keys');
+    execute('DELETE FROM signal_sessions');
+    execute('DELETE FROM signal_pre_keys');
+    execute('DELETE FROM signal_signed_pre_keys');
+    execute('DELETE FROM signal_kyber_pre_keys');
+    execute('DELETE FROM signal_sender_keys');
+  }
 }

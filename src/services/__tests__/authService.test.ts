@@ -33,12 +33,14 @@ const mockGenerateInitialKeys = jest.fn().mockResolvedValue(undefined);
 const mockUploadInitialPreKeyBundle = jest.fn().mockResolvedValue(undefined);
 const mockEnsureKeysInitialized = jest.fn().mockResolvedValue(undefined);
 const mockClearIdentityKeyCache = jest.fn();
+const mockFullCryptoWipe = jest.fn().mockResolvedValue(undefined);
 
 jest.mock('../crypto/keyGenerationService', () => ({
   generateInitialKeys: (...args: unknown[]) => mockGenerateInitialKeys(...args),
   uploadInitialPreKeyBundle: (...args: unknown[]) => mockUploadInitialPreKeyBundle(...args),
   ensureKeysInitialized: (...args: unknown[]) => mockEnsureKeysInitialized(...args),
   clearIdentityKeyCache: () => mockClearIdentityKeyCache(),
+  fullCryptoWipe: (...args: unknown[]) => mockFullCryptoWipe(...args),
 }));
 
 const mockClearGroupKeyCache = jest.fn();
@@ -46,17 +48,11 @@ jest.mock('../crypto/contentCrypto', () => ({
   clearGroupKeyCache: () => mockClearGroupKeyCache(),
 }));
 
-const mockClearAllGroupMasterKeys = jest.fn();
-jest.mock('../../database/repositories/conversationRepository', () => ({
-  clearAllGroupMasterKeys: () => mockClearAllGroupMasterKeys(),
-}));
-
-jest.mock('../secure-storage/secureStorage', () => ({
-  removeSecureItem: jest.fn().mockResolvedValue(undefined),
-}));
-
-jest.mock('../secure-storage/constants', () => ({
-  SecureKeys: { IDENTITY_KEY_PRIVATE: 'mock-identity-key' },
+const mockGetItem = jest.fn().mockReturnValue(null);
+const mockSetItem = jest.fn();
+jest.mock('../../database/repositories/itemRepository', () => ({
+  getItem: (...args: unknown[]) => mockGetItem(...args),
+  setItem: (...args: unknown[]) => mockSetItem(...args),
 }));
 
 const mockExecute = jest.fn();
@@ -70,9 +66,11 @@ jest.mock('../../database/connection', () => ({
 
 const mockLoadConversations = jest.fn().mockResolvedValue(undefined);
 const mockLoadDmConversations = jest.fn().mockResolvedValue(undefined);
+const mockFulfillPendingWraps = jest.fn().mockResolvedValue(undefined);
 jest.mock('../conversationService', () => ({
   loadConversations: (...args: unknown[]) => mockLoadConversations(...args),
   loadDmConversations: (...args: unknown[]) => mockLoadDmConversations(...args),
+  fulfillPendingWraps: (...args: unknown[]) => mockFulfillPendingWraps(...args),
 }));
 
 jest.mock('../../stores/middleware/persistence', () => ({
@@ -228,6 +226,7 @@ describe('signupUser', () => {
       password: 'password',
       email: 'dave@example.com',
       inviteCode: 'INV-CODE',
+      publicKey: { type: 'placeholder' },
     });
     expect(mockSetTokens).toHaveBeenCalledWith('access-abc', undefined);
     expect(mockSetUser).toHaveBeenCalledWith({
@@ -407,15 +406,16 @@ describe('logout', () => {
     expect(mockSetContacts).toHaveBeenCalledWith([]);
   });
 
-  it('clears all crypto state on logout', async () => {
+  it('clears per-session crypto state on logout (preserves identity)', async () => {
     await logout();
 
     expect(mockClearGroupKeyCache).toHaveBeenCalledTimes(1);
-    expect(mockClearAllGroupMasterKeys).toHaveBeenCalledTimes(1);
-    expect(mockExecute).toHaveBeenCalledWith('DELETE FROM items');
     expect(mockExecute).toHaveBeenCalledWith('DELETE FROM signal_sessions');
-    expect(mockExecute).toHaveBeenCalledWith('DELETE FROM signal_pre_keys');
-    expect(mockExecute).toHaveBeenCalledWith('DELETE FROM signal_identity_keys');
+    expect(mockExecute).toHaveBeenCalledWith('DELETE FROM signal_sender_keys');
+    // Identity keys, pre-keys, and items are PRESERVED for same-user re-login
+    expect(mockExecute).not.toHaveBeenCalledWith('DELETE FROM items');
+    expect(mockExecute).not.toHaveBeenCalledWith('DELETE FROM signal_pre_keys');
+    expect(mockExecute).not.toHaveBeenCalledWith('DELETE FROM signal_identity_keys');
   });
 
   it('does not throw if MMKV clearAll fails', async () => {

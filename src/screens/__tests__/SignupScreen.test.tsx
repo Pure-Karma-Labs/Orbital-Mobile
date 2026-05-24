@@ -194,7 +194,7 @@ describe('SignupScreen — error handling', () => {
     const errorText = allText.find(
       (node) =>
         typeof node.props.children === 'string' &&
-        node.props.children.toLowerCase().includes('invalid'),
+        node.props.children.toLowerCase().includes('authentication'),
     );
     expect(errorText).toBeDefined();
   });

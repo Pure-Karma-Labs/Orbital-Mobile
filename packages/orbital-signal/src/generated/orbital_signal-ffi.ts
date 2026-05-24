@@ -71,12 +71,14 @@ interface NativeModuleInterface {
   ): Uint8Array;
   ubrn_uniffi_orbital_signal_fn_func_ecies_open(
     sealed: Uint8Array,
+    groupId: Uint8Array,
     recipientSecretKey: Uint8Array,
     expectedSenderPublicKey: Uint8Array,
     uniffi_out_err: UniffiRustCallStatus,
   ): Uint8Array;
   ubrn_uniffi_orbital_signal_fn_func_ecies_seal(
     plaintext: Uint8Array,
+    groupId: Uint8Array,
     recipientPublicKey: Uint8Array,
     senderPrivateKey: Uint8Array,
     senderPublicKey: Uint8Array,

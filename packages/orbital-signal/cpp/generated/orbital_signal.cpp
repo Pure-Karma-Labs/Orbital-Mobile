@@ -318,12 +318,14 @@ extern "C" {
     );
     RustBuffer uniffi_orbital_signal_fn_func_ecies_open(
         RustBuffer sealed, 
+        RustBuffer group_id, 
         RustBuffer recipient_secret_key, 
         RustBuffer expected_sender_public_key, 
         RustCallStatus *uniffi_out_err
     );
     RustBuffer uniffi_orbital_signal_fn_func_ecies_seal(
         RustBuffer plaintext, 
+        RustBuffer group_id, 
         RustBuffer recipient_public_key, 
         RustBuffer sender_private_key, 
         RustBuffer sender_public_key, 
@@ -6247,7 +6249,7 @@ NativeOrbitalSignal::NativeOrbitalSignal(
     props["ubrn_uniffi_orbital_signal_fn_func_ecies_open"] = jsi::Function::createFromHostFunction(
         rt,
         jsi::PropNameID::forAscii(rt, "ubrn_uniffi_orbital_signal_fn_func_ecies_open"),
-        3,
+        4,
         [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
             return this->cpp_uniffi_orbital_signal_fn_func_ecies_open(rt, thisVal, args, count);
         }
@@ -6255,7 +6257,7 @@ NativeOrbitalSignal::NativeOrbitalSignal(
     props["ubrn_uniffi_orbital_signal_fn_func_ecies_seal"] = jsi::Function::createFromHostFunction(
         rt,
         jsi::PropNameID::forAscii(rt, "ubrn_uniffi_orbital_signal_fn_func_ecies_seal"),
-        4,
+        5,
         [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
             return this->cpp_uniffi_orbital_signal_fn_func_ecies_seal(rt, thisVal, args, count);
         }
@@ -7364,7 +7366,7 @@ jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_fn_func_aes_gcm_encryp
 }
 jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_fn_func_ecies_open(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
         RustCallStatus status = uniffi::orbital_signal::Bridging<RustCallStatus>::rustSuccess(rt);
-        auto value = uniffi_orbital_signal_fn_func_ecies_open(uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[0]), uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[1]), uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[2]), 
+        auto value = uniffi_orbital_signal_fn_func_ecies_open(uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[0]), uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[1]), uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[2]), uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[3]), 
             &status
         );
         uniffi::orbital_signal::Bridging<RustCallStatus>::copyIntoJs(rt, callInvoker, status, args[count - 1]);
@@ -7374,7 +7376,7 @@ jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_fn_func_ecies_open(jsi
 }
 jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_fn_func_ecies_seal(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
         RustCallStatus status = uniffi::orbital_signal::Bridging<RustCallStatus>::rustSuccess(rt);
-        auto value = uniffi_orbital_signal_fn_func_ecies_seal(uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[0]), uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[1]), uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[2]), uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[3]), 
+        auto value = uniffi_orbital_signal_fn_func_ecies_seal(uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[0]), uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[1]), uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[2]), uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[3]), uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[4]), 
             &status
         );
         uniffi::orbital_signal::Bridging<RustCallStatus>::copyIntoJs(rt, callInvoker, status, args[count - 1]);

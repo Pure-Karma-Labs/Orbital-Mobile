@@ -43,10 +43,10 @@ const SEALED_LEN: usize = 1 + 32 + 12 + CIPHERTEXT_WITH_TAG_LEN + 33 + 64; // 19
 const UNSIGNED_LEN: usize = 1 + 32 + 12 + CIPHERTEXT_WITH_TAG_LEN; // 93
 
 /// HKDF info prefix — domain-separated to this specific use case.
-const HKDF_INFO_PREFIX: &[u8] = b"orbital-group-key-wrap-v1";
+const HKDF_INFO_PREFIX: &[u8] = b"orbital-group-key-wrap";
 
 /// Current envelope version byte.
-const VERSION: u8 = 0x01;
+const VERSION: u8 = 0x02;
 
 /// Signal DJB key type prefix byte.
 const DJB_TYPE: u8 = 0x05;
@@ -74,6 +74,7 @@ const DJB_TYPE: u8 = 0x05;
 #[uniffi::export]
 pub fn ecies_seal(
     plaintext: Vec<u8>,
+    group_id: Vec<u8>,
     recipient_public_key: Vec<u8>,
     sender_private_key: Vec<u8>,
     sender_public_key: Vec<u8>,
@@ -141,6 +142,7 @@ pub fn ecies_seal(
     let ephemeral_pub_bytes = ephemeral_public.to_bytes();
     let derived_key = derive_symmetric_key(
         &*shared_secret_bytes,
+        &group_id,
         &ephemeral_pub_bytes,
         &recipient_pub_raw,
     )?;
@@ -220,6 +222,7 @@ pub fn ecies_seal(
 #[uniffi::export]
 pub fn ecies_open(
     sealed: Vec<u8>,
+    group_id: Vec<u8>,
     recipient_secret_key: Vec<u8>,
     expected_sender_public_key: Vec<u8>,
 ) -> Result<Vec<u8>, SignalError> {
@@ -326,6 +329,7 @@ pub fn ecies_open(
 
     let derived_key = derive_symmetric_key(
         &*shared_secret_bytes,
+        &group_id,
         &ephemeral_pub_bytes,
         &recipient_pub_raw,
     )?;
@@ -391,14 +395,16 @@ fn validate_recipient_public_key(key: &[u8]) -> Result<[u8; 32], SignalError> {
 
 /// Derive a 32-byte symmetric key from a shared secret using HKDF-SHA256.
 ///
-/// info = "orbital-group-key-wrap-v1" || ephemeral_pub(32) || recipient_pub_raw(32)
+/// info = "orbital-group-key-wrap" || group_id || ephemeral_pub(32) || recipient_pub_raw(32)
 fn derive_symmetric_key(
     shared_secret: &[u8],
+    group_id: &[u8],
     ephemeral_pub: &[u8; 32],
     recipient_pub_raw: &[u8; 32],
 ) -> Result<Zeroizing<[u8; 32]>, SignalError> {
-    let mut info = Vec::with_capacity(HKDF_INFO_PREFIX.len() + 32 + 32);
+    let mut info = Vec::with_capacity(HKDF_INFO_PREFIX.len() + group_id.len() + 32 + 32);
     info.extend_from_slice(HKDF_INFO_PREFIX);
+    info.extend_from_slice(group_id);
     info.extend_from_slice(ephemeral_pub);
     info.extend_from_slice(recipient_pub_raw);
 
@@ -420,6 +426,12 @@ mod tests {
     use super::*;
     use libsignal_core::curve::KeyPair;
 
+    const TEST_GROUP_ID: &[u8] = b"test-group-id";
+
+    fn test_gid() -> Vec<u8> {
+        TEST_GROUP_ID.to_vec()
+    }
+
     /// Helper: generate a libsignal Curve25519 key pair, returning
     /// (private_key_raw_32, public_key_djb_33).
     fn generate_signal_keypair() -> (Vec<u8>, Vec<u8>) {
@@ -438,6 +450,7 @@ mod tests {
 
         let sealed = ecies_seal(
             plaintext.clone(),
+            test_gid(),
             recipient_pub.clone(),
             sender_priv,
             sender_pub.clone(),
@@ -446,7 +459,7 @@ mod tests {
 
         assert_eq!(sealed.len(), SEALED_LEN, "sealed envelope must be 190 bytes");
 
-        let opened = ecies_open(sealed, recipient_priv, sender_pub).expect("open should succeed");
+        let opened = ecies_open(sealed, test_gid(), recipient_priv, sender_pub).expect("open should succeed");
 
         assert_eq!(opened, plaintext, "roundtrip must recover original plaintext");
     }
@@ -458,11 +471,11 @@ mod tests {
         let (_recipient_priv, recipient_pub) = generate_signal_keypair();
         let (wrong_priv, _wrong_pub) = generate_signal_keypair();
 
-        let sealed = ecies_seal(plaintext, recipient_pub, sender_priv, sender_pub.clone())
+        let sealed = ecies_seal(plaintext, test_gid(), recipient_pub, sender_priv, sender_pub.clone())
             .expect("seal should succeed");
 
         let err =
-            ecies_open(sealed, wrong_priv, sender_pub).expect_err("wrong recipient key must fail");
+            ecies_open(sealed, test_gid(), wrong_priv, sender_pub).expect_err("wrong recipient key must fail");
 
         assert!(
             matches!(err, SignalError::InvalidMessage { .. }),
@@ -477,11 +490,11 @@ mod tests {
         let (recipient_priv, recipient_pub) = generate_signal_keypair();
         let (_other_priv, other_pub) = generate_signal_keypair();
 
-        let sealed = ecies_seal(plaintext, recipient_pub, sender_priv, sender_pub)
+        let sealed = ecies_seal(plaintext, test_gid(), recipient_pub, sender_priv, sender_pub)
             .expect("seal should succeed");
 
         // Recipient expects `other_pub` but the envelope was signed by `sender_pub`.
-        let err = ecies_open(sealed, recipient_priv, other_pub)
+        let err = ecies_open(sealed, test_gid(), recipient_priv, other_pub)
             .expect_err("mismatched sender pub must fail");
 
         assert!(
@@ -498,6 +511,7 @@ mod tests {
 
         let mut sealed = ecies_seal(
             plaintext,
+            test_gid(),
             recipient_pub,
             sender_priv,
             sender_pub.clone(),
@@ -507,7 +521,7 @@ mod tests {
         // Tamper with a ciphertext byte (offset 45 is start of ciphertext).
         sealed[50] ^= 0xFF;
 
-        let err = ecies_open(sealed, recipient_priv, sender_pub)
+        let err = ecies_open(sealed, test_gid(), recipient_priv, sender_pub)
             .expect_err("tampered ciphertext must fail");
 
         // Byte 50 is in the unsigned portion — signature must fail before decryption.
@@ -525,6 +539,7 @@ mod tests {
 
         let mut sealed = ecies_seal(
             plaintext,
+            test_gid(),
             recipient_pub,
             sender_priv,
             sender_pub.clone(),
@@ -534,7 +549,7 @@ mod tests {
         // Tamper with a signature byte (offset 126 is start of signature).
         sealed[130] ^= 0xFF;
 
-        let err = ecies_open(sealed, recipient_priv, sender_pub)
+        let err = ecies_open(sealed, test_gid(), recipient_priv, sender_pub)
             .expect_err("tampered signature must fail");
 
         assert!(
@@ -552,7 +567,7 @@ mod tests {
         let mut small_order_key = vec![DJB_TYPE];
         small_order_key.extend_from_slice(&[0u8; 32]);
 
-        let err = ecies_seal(plaintext, small_order_key, sender_priv, sender_pub)
+        let err = ecies_seal(plaintext, test_gid(), small_order_key, sender_priv, sender_pub)
             .expect_err("small-order point must be rejected");
 
         assert!(
@@ -569,16 +584,17 @@ mod tests {
 
         let mut sealed = ecies_seal(
             plaintext,
+            test_gid(),
             recipient_pub,
             sender_priv,
             sender_pub.clone(),
         )
         .expect("seal should succeed");
 
-        // Replace version byte with 0x02.
-        sealed[0] = 0x02;
+        // Replace version byte with 0x03 (unsupported).
+        sealed[0] = 0x03;
 
-        let err = ecies_open(sealed, recipient_priv, sender_pub)
+        let err = ecies_open(sealed, test_gid(), recipient_priv, sender_pub)
             .expect_err("unsupported version must fail");
 
         assert!(
@@ -600,6 +616,7 @@ mod tests {
         // Attacker seals with their own key pair.
         let sealed = ecies_seal(
             plaintext,
+            test_gid(),
             recipient_pub,
             attacker_priv,
             attacker_pub,
@@ -607,7 +624,7 @@ mod tests {
         .expect("attacker seal should succeed");
 
         // Recipient expects the legitimate sender.
-        let err = ecies_open(sealed, recipient_priv, legit_sender_pub)
+        let err = ecies_open(sealed, test_gid(), recipient_priv, legit_sender_pub)
             .expect_err("server substitution must fail");
 
         assert!(
@@ -622,12 +639,12 @@ mod tests {
         let (_recipient_priv, recipient_pub) = generate_signal_keypair();
 
         // 16 bytes — too short
-        let err = ecies_seal(vec![0u8; 16], recipient_pub.clone(), sender_priv.clone(), sender_pub.clone())
+        let err = ecies_seal(vec![0u8; 16], test_gid(), recipient_pub.clone(), sender_priv.clone(), sender_pub.clone())
             .expect_err("16-byte plaintext must be rejected");
         assert!(matches!(err, SignalError::InvalidArgument { .. }));
 
         // 64 bytes — too long
-        let err = ecies_seal(vec![0u8; 64], recipient_pub, sender_priv, sender_pub)
+        let err = ecies_seal(vec![0u8; 64], test_gid(), recipient_pub, sender_priv, sender_pub)
             .expect_err("64-byte plaintext must be rejected");
         assert!(matches!(err, SignalError::InvalidArgument { .. }));
     }
@@ -637,7 +654,7 @@ mod tests {
         let (recipient_priv, _recipient_pub) = generate_signal_keypair();
         let (_sender_priv, sender_pub) = generate_signal_keypair();
 
-        let err = ecies_open(vec![0u8; 100], recipient_priv, sender_pub)
+        let err = ecies_open(vec![0u8; 100], test_gid(), recipient_priv, sender_pub)
             .expect_err("wrong sealed length must fail");
         assert!(matches!(err, SignalError::InvalidMessage { .. }));
     }
@@ -651,13 +668,14 @@ mod tests {
 
         let sealed1 = ecies_seal(
             plaintext.clone(),
+            test_gid(),
             recipient_pub.clone(),
             sender_priv.clone(),
             sender_pub.clone(),
         )
         .expect("seal 1 should succeed");
 
-        let sealed2 = ecies_seal(plaintext, recipient_pub, sender_priv, sender_pub)
+        let sealed2 = ecies_seal(plaintext, test_gid(), recipient_pub, sender_priv, sender_pub)
             .expect("seal 2 should succeed");
 
         assert_ne!(sealed1, sealed2, "envelopes must differ due to ephemeral key and nonce");
@@ -669,10 +687,10 @@ mod tests {
         let (sender_priv, sender_pub) = generate_signal_keypair();
         let (recipient_priv, recipient_pub) = generate_signal_keypair();
 
-        let sealed = ecies_seal(plaintext, recipient_pub, sender_priv, sender_pub)
+        let sealed = ecies_seal(plaintext, test_gid(), recipient_pub, sender_priv, sender_pub)
             .expect("seal should succeed");
 
-        let err = ecies_open(sealed, recipient_priv, vec![0u8; 10])
+        let err = ecies_open(sealed, test_gid(), recipient_priv, vec![0u8; 10])
             .expect_err("short expected_sender_public_key must fail");
         assert!(matches!(err, SignalError::InvalidKey { .. }));
     }
@@ -681,10 +699,10 @@ mod tests {
     fn test_wrong_recipient_secret_key_length() {
         let (sender_priv, sender_pub) = generate_signal_keypair();
         let (_, recipient_pub) = generate_signal_keypair();
-        let sealed = ecies_seal(vec![0x77; 32], recipient_pub, sender_priv, sender_pub.clone())
+        let sealed = ecies_seal(vec![0x77; 32], test_gid(), recipient_pub, sender_priv, sender_pub.clone())
             .expect("seal should succeed");
 
-        let err = ecies_open(sealed, vec![0u8; 16], sender_pub)
+        let err = ecies_open(sealed, test_gid(), vec![0u8; 16], sender_pub)
             .expect_err("short recipient_secret_key must fail");
         assert!(matches!(err, SignalError::InvalidKey { .. }));
     }
@@ -701,6 +719,7 @@ mod tests {
         // Legitimate seal
         let mut sealed = ecies_seal(
             plaintext.clone(),
+            test_gid(),
             recipient_pub.clone(),
             legit_sender_priv,
             legit_sender_pub.clone(),
@@ -715,7 +734,7 @@ mod tests {
             .unwrap();
         sealed[126..190].copy_from_slice(&forged_sig);
 
-        let err = ecies_open(sealed, recipient_priv, legit_sender_pub)
+        let err = ecies_open(sealed, test_gid(), recipient_priv, legit_sender_pub)
             .expect_err("forged signature must fail");
         assert!(
             matches!(err, SignalError::InvalidSignature),
@@ -730,8 +749,35 @@ mod tests {
         let (_, wrong_pub) = generate_signal_keypair();
         let (_, recipient_pub) = generate_signal_keypair();
 
-        let err = ecies_seal(plaintext, recipient_pub, sender_priv, wrong_pub)
+        let err = ecies_seal(plaintext, test_gid(), recipient_pub, sender_priv, wrong_pub)
             .expect_err("mismatched sender keypair must fail");
         assert!(matches!(err, SignalError::InvalidArgument { .. }));
+    }
+
+    #[test]
+    fn test_cross_group_replay_rejected() {
+        let plaintext = vec![0xAA; 32];
+        let (sender_priv, sender_pub) = generate_signal_keypair();
+        let (recipient_priv, recipient_pub) = generate_signal_keypair();
+
+        let group_a = b"group-a-uuid".to_vec();
+        let group_b = b"group-b-uuid".to_vec();
+
+        let sealed = ecies_seal(
+            plaintext,
+            group_a,
+            recipient_pub,
+            sender_priv,
+            sender_pub.clone(),
+        )
+        .expect("seal should succeed");
+
+        let err = ecies_open(sealed, group_b, recipient_priv, sender_pub)
+            .expect_err("cross-group replay must fail");
+
+        assert!(
+            matches!(err, SignalError::InvalidMessage { .. }),
+            "expected InvalidMessage for cross-group replay (HKDF mismatch → AES-GCM auth failure), got: {err:?}"
+        );
     }
 }

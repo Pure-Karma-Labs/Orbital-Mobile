@@ -100,22 +100,25 @@ export function persistGroupKey(groupId: string, keyBase64: string): void {
 // ---------------------------------------------------------------------------
 
 const ECIES_ENVELOPE_LEN = 190;
-const ECIES_VERSION_BYTE = 0x01;
+const ECIES_VERSION_BYTE = 0x02;
 
-export function detectKeyFormat(keyBase64: string): 'raw' | 'ecies-v1' {
+export function detectKeyFormat(keyBase64: string): 'raw' | 'ecies' {
   const bytes = new Uint8Array(base64ToArrayBuffer(keyBase64));
   if (bytes.length === 32) return 'raw';
-  if (bytes.length === ECIES_ENVELOPE_LEN && bytes[0] === ECIES_VERSION_BYTE) return 'ecies-v1';
+  if (bytes.length === ECIES_ENVELOPE_LEN && bytes[0] === ECIES_VERSION_BYTE) return 'ecies';
   throw new Error(`Unknown key format: ${bytes.length} bytes`);
 }
 
 export function wrapGroupKey(
   groupKey: Uint8Array,
   recipientPubKey: ArrayBuffer,
+  groupId: string,
 ): string {
   const { privateKey, publicKey } = getIdentityKeyPair();
+  const groupIdBytes = toArrayBuffer(encodeUTF8(groupId));
   const sealed = eciesSeal(
     toArrayBuffer(groupKey),
+    groupIdBytes,
     recipientPubKey,
     privateKey,
     publicKey,
@@ -126,10 +129,12 @@ export function wrapGroupKey(
 export function unwrapGroupKey(
   wrappedBase64: string,
   senderPubKey: ArrayBuffer,
+  groupId: string,
 ): Uint8Array {
   const { privateKey } = getIdentityKeyPair();
   const sealed = base64ToArrayBuffer(wrappedBase64);
-  const plaintext = eciesOpen(sealed, privateKey, senderPubKey);
+  const groupIdBytes = toArrayBuffer(encodeUTF8(groupId));
+  const plaintext = eciesOpen(sealed, groupIdBytes, privateKey, senderPubKey);
   return new Uint8Array(plaintext);
 }
 
@@ -140,7 +145,7 @@ export async function processReceivedGroupKey(
 ): Promise<void> {
   const format = detectKeyFormat(wrappedGroupKey);
 
-  if (format === 'ecies-v1') {
+  if (format === 'ecies') {
     if (!wrappedBy) {
       throw new Error('ECIES envelope requires sender identity');
     }
@@ -149,7 +154,7 @@ export async function processReceivedGroupKey(
       throw new Error('No authenticated user');
     }
     const senderPubKey = await resolveRemoteIdentityKey(wrappedBy, currentUserId);
-    const rawKey = unwrapGroupKey(wrappedGroupKey, senderPubKey);
+    const rawKey = unwrapGroupKey(wrappedGroupKey, senderPubKey, groupId);
     markEciesLocked(groupId);
     persistGroupKey(groupId, arrayBufferToBase64(toArrayBuffer(rawKey)));
     return;

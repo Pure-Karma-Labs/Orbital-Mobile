@@ -14,12 +14,7 @@ import { ManageOrbitsScreen } from '../ManageOrbitsScreen';
 // ---------------------------------------------------------------------------
 
 jest.mock('../../services/conversationService', () => ({
-  fetchGroupsWithInviteCodes: jest.fn(),
-}));
-
-jest.mock('../../services/crypto/contentCrypto', () => ({
-  decryptGroupName: jest.fn((_enc: string, _key: Uint8Array) => 'Family Orbit'),
-  getOrFetchGroupKey: jest.fn().mockResolvedValue(new Uint8Array(32)),
+  fetchCreatorOrbitsDecrypted: jest.fn(),
 }));
 
 jest.mock('../../services/api/groups', () => ({
@@ -51,9 +46,9 @@ jest.mock('../../stores', () => ({
   })),
 }));
 
-import { fetchGroupsWithInviteCodes } from '../../services/conversationService';
+import { fetchCreatorOrbitsDecrypted } from '../../services/conversationService';
 
-const mockFetchGroups = fetchGroupsWithInviteCodes as jest.Mock;
+const mockFetchGroups = fetchCreatorOrbitsDecrypted as jest.Mock;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -94,10 +89,6 @@ function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstanc
   const found = root.findAll((node) => node.props.testID === testID);
   if (found.length === 0) throw new Error(`No element with testID "${testID}"`);
   return found[0];
-}
-
-function findAllByTestId(root: ReactTestInstance, testID: string): ReactTestInstance[] {
-  return root.findAll((node) => node.props.testID === testID);
 }
 
 // ---------------------------------------------------------------------------
@@ -171,13 +162,10 @@ describe('ManageOrbitsScreen — rendering', () => {
     mockFetchGroups.mockResolvedValue([
       {
         groupId: 'g-1',
-        encryptedName: 'enc-name',
-        wrappedGroupKey: 'enc-key',
+        name: 'Family Orbit',
         memberCount: 3,
-        maxMembers: 10,
         isCreator: true,
-        activeInviteCode: 'ABC123',
-        joinedAt: '2026-05-01T00:00:00Z',
+        inviteCode: 'ABC123',
       },
     ]);
 
@@ -203,53 +191,6 @@ describe('ManageOrbitsScreen — rendering', () => {
     expect(() => findByTestId(renderer.root, 'orbit-header-g-1')).not.toThrow();
   });
 
-  it('does NOT render non-creator groups', async () => {
-    mockFetchGroups.mockResolvedValue([
-      {
-        groupId: 'g-creator',
-        encryptedName: 'enc-name',
-        wrappedGroupKey: 'enc-key',
-        memberCount: 3,
-        maxMembers: 10,
-        isCreator: true,
-        activeInviteCode: 'ABC123',
-        joinedAt: '2026-05-01T00:00:00Z',
-      },
-      {
-        groupId: 'g-member-only',
-        encryptedName: 'enc-name-2',
-        wrappedGroupKey: 'enc-key-2',
-        memberCount: 5,
-        maxMembers: 10,
-        isCreator: false,
-        activeInviteCode: 'DEF456',
-        joinedAt: '2026-05-02T00:00:00Z',
-      },
-    ]);
-
-    let renderer!: ReactTestRenderer;
-    await act(async () => {
-      renderer = create(
-        React.createElement(
-          SafeAreaProvider,
-          { initialMetrics: safeAreaMetrics },
-          React.createElement(
-            ThemeProvider,
-            { colorSchemeOverride: 'light' },
-            React.createElement(ManageOrbitsScreen, {
-              navigation: mockNavigation as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['navigation'],
-              route: mockRoute as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['route'],
-            }),
-          ),
-        ),
-      );
-    });
-
-    // Creator group should be rendered
-    expect(() => findByTestId(renderer.root, 'orbit-row-g-creator')).not.toThrow();
-    // Non-creator group should NOT be rendered
-    expect(findAllByTestId(renderer.root, 'orbit-row-g-member-only')).toHaveLength(0);
-  });
 });
 
 describe('ManageOrbitsScreen — interactions', () => {
@@ -288,13 +229,10 @@ describe('ManageOrbitsScreen — interactions', () => {
     mockFetchGroups.mockResolvedValue([
       {
         groupId: 'g-1',
-        encryptedName: 'enc-name',
-        wrappedGroupKey: 'enc-key',
+        name: 'Family Orbit',
         memberCount: 3,
-        maxMembers: 10,
         isCreator: true,
-        activeInviteCode: 'ABC123',
-        joinedAt: '2026-05-01T00:00:00Z',
+        inviteCode: 'ABC123',
       },
     ]);
 
@@ -340,13 +278,10 @@ describe('ManageOrbitsScreen — interactions', () => {
     mockFetchGroups.mockResolvedValue([
       {
         groupId: 'g-1',
-        encryptedName: 'enc-name',
-        wrappedGroupKey: 'enc-key',
+        name: 'Family Orbit',
         memberCount: 3,
-        maxMembers: 10,
         isCreator: true,
-        activeInviteCode: 'ABC123',
-        joinedAt: '2026-05-01T00:00:00Z',
+        inviteCode: 'ABC123',
       },
     ]);
 
@@ -394,13 +329,10 @@ describe('ManageOrbitsScreen — share', () => {
     mockFetchGroups.mockResolvedValue([
       {
         groupId: 'g-1',
-        encryptedName: 'enc-name',
-        wrappedGroupKey: 'enc-key',
+        name: 'Family Orbit',
         memberCount: 3,
-        maxMembers: 10,
         isCreator: true,
-        activeInviteCode: 'XYZ789',
-        joinedAt: '2026-05-01T00:00:00Z',
+        inviteCode: 'XYZ789',
       },
     ]);
 

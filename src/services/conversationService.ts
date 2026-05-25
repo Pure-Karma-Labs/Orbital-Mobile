@@ -21,17 +21,29 @@ import { useAppStore } from '../stores/useAppStore';
 import type { Conversation } from '../types/store';
 import type { DmResponse, GroupResponse } from '../types/api';
 
-async function mapGroupResponse(response: GroupResponse): Promise<Conversation> {
-  let name: string | null = response.encryptedName ?? null;
+export interface DecryptedGroup {
+  groupId: string;
+  name: string;
+  inviteCode: string | null;
+  memberCount: number;
+  isCreator: boolean;
+}
 
-  if (response.encryptedName) {
-    try {
-      const groupKey = await getOrFetchGroupKey(response.groupId);
-      name = decryptGroupName(response.encryptedName, groupKey);
-    } catch {
-      name = '(unable to decrypt)';
-    }
+async function decryptGroupNameSafe(
+  encryptedName: string | null,
+  groupId: string,
+): Promise<string | null> {
+  if (!encryptedName) return null;
+  try {
+    const groupKey = await getOrFetchGroupKey(groupId);
+    return decryptGroupName(encryptedName, groupKey);
+  } catch {
+    return '(unable to decrypt)';
   }
+}
+
+async function mapGroupResponse(response: GroupResponse): Promise<Conversation> {
+  const name = await decryptGroupNameSafe(response.encryptedName ?? null, response.groupId);
 
   return {
     id: response.groupId,
@@ -229,14 +241,22 @@ export async function startDm(
   };
 }
 
-/**
- * Fetch all groups the user belongs to, including active invite codes.
- *
- * Used by the ManageOrbits screen to display shareable invite codes per orbit.
- * The GroupResponse type already includes `activeInviteCode`.
- */
-export async function fetchGroupsWithInviteCodes(): Promise<GroupResponse[]> {
-  return listGroups();
+export async function fetchCreatorOrbitsDecrypted(): Promise<DecryptedGroup[]> {
+  const allGroups = await listGroups();
+  const creatorGroups = allGroups.filter((g) => g.isCreator);
+
+  const results: DecryptedGroup[] = [];
+  for (const group of creatorGroups) {
+    const name = (await decryptGroupNameSafe(group.encryptedName, group.groupId)) ?? group.groupId;
+    results.push({
+      groupId: group.groupId,
+      name,
+      inviteCode: group.activeInviteCode,
+      memberCount: group.memberCount,
+      isCreator: group.isCreator,
+    });
+  }
+  return results;
 }
 
 export async function joinOrbit(
@@ -258,15 +278,7 @@ export async function joinOrbit(
     }
   }
 
-  let decryptedName: string | null = response.encryptedName ?? null;
-  if (response.encryptedName) {
-    try {
-      const groupKey = await getOrFetchGroupKey(response.groupId);
-      decryptedName = decryptGroupName(response.encryptedName, groupKey);
-    } catch {
-      decryptedName = '(unable to decrypt)';
-    }
-  }
+  const decryptedName = await decryptGroupNameSafe(response.encryptedName ?? null, response.groupId);
 
   const now = Date.now();
   const store = useAppStore.getState();

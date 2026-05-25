@@ -58,7 +58,7 @@ jest.mock('../../stores/useAppStore', () => ({
   },
 }));
 
-import { loadConversations, loadDmConversations, startDm, joinOrbit } from '../conversationService';
+import { loadConversations, loadDmConversations, startDm, joinOrbit, fetchCreatorOrbitsDecrypted } from '../conversationService';
 import { listGroups, listDms, createDm, joinGroup } from '../api/groups';
 import { useAppStore } from '../../stores/useAppStore';
 
@@ -384,5 +384,99 @@ describe('joinOrbit', () => {
     const result = await joinOrbit('CODE1234');
 
     expect(result.name).toBe('(unable to decrypt)');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fetchCreatorOrbitsDecrypted
+// ---------------------------------------------------------------------------
+
+const CREATOR_GROUP = {
+  groupId: 'creator-1',
+  encryptedName: 'Family Orbit',
+  wrappedGroupKey: 'wrapped-key',
+  wrappedBy: 'sender-1',
+  memberCount: 4,
+  maxMembers: 10,
+  isCreator: true,
+  activeInviteCode: 'INV123',
+  joinedAt: '2026-01-01T00:00:00.000Z',
+};
+
+const NON_CREATOR_GROUP = {
+  groupId: 'member-1',
+  encryptedName: 'Other Orbit',
+  wrappedGroupKey: 'wrapped-key-2',
+  wrappedBy: 'sender-2',
+  memberCount: 6,
+  maxMembers: 10,
+  isCreator: false,
+  activeInviteCode: 'INV456',
+  joinedAt: '2026-02-01T00:00:00.000Z',
+};
+
+describe('fetchCreatorOrbitsDecrypted', () => {
+  it('filters out non-creator groups', async () => {
+    mockListGroups.mockResolvedValue([CREATOR_GROUP, NON_CREATOR_GROUP]);
+
+    const result = await fetchCreatorOrbitsDecrypted();
+
+    expect(result).toHaveLength(1);
+    expect(result[0].groupId).toBe('creator-1');
+  });
+
+  it('decrypts group names via getOrFetchGroupKey + decryptGroupName', async () => {
+    mockListGroups.mockResolvedValue([CREATOR_GROUP]);
+
+    const result = await fetchCreatorOrbitsDecrypted();
+
+    expect(mockGetOrFetchGroupKey).toHaveBeenCalledWith('creator-1');
+    expect(mockDecryptGroupName).toHaveBeenCalledWith('Family Orbit', new Uint8Array(32));
+    expect(result[0].name).toBe('Family Orbit');
+  });
+
+  it('falls back to (unable to decrypt) when key fetch fails', async () => {
+    mockGetOrFetchGroupKey.mockRejectedValueOnce(new Error('no key'));
+    mockListGroups.mockResolvedValue([CREATOR_GROUP]);
+
+    const result = await fetchCreatorOrbitsDecrypted();
+
+    expect(result[0].name).toBe('(unable to decrypt)');
+  });
+
+  it('uses groupId as name when encryptedName is null', async () => {
+    mockListGroups.mockResolvedValue([
+      { ...CREATOR_GROUP, encryptedName: null },
+    ]);
+
+    const result = await fetchCreatorOrbitsDecrypted();
+
+    expect(result[0].name).toBe('creator-1');
+  });
+
+  it('passes through inviteCode, memberCount, and isCreator', async () => {
+    mockListGroups.mockResolvedValue([CREATOR_GROUP]);
+
+    const result = await fetchCreatorOrbitsDecrypted();
+
+    expect(result[0]).toEqual(expect.objectContaining({
+      inviteCode: 'INV123',
+      memberCount: 4,
+      isCreator: true,
+    }));
+  });
+
+  it('returns empty array when listGroups returns empty', async () => {
+    mockListGroups.mockResolvedValue([]);
+
+    const result = await fetchCreatorOrbitsDecrypted();
+
+    expect(result).toEqual([]);
+  });
+
+  it('propagates API errors from listGroups', async () => {
+    mockListGroups.mockRejectedValue(new Error('network failure'));
+
+    await expect(fetchCreatorOrbitsDecrypted()).rejects.toThrow('network failure');
   });
 });

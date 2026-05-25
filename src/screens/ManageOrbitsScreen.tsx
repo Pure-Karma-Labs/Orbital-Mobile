@@ -27,22 +27,14 @@ import { OrbitalSpinner } from '../components/OrbitalSpinner';
 import { ErrorBanner } from '../components/ErrorBanner';
 import { EmojiText } from '../components/EmojiText';
 import { Emoji } from '../components/Emoji';
-import { fetchGroupsWithInviteCodes } from '../services/conversationService';
-import { decryptGroupName, getOrFetchGroupKey } from '../services/crypto/contentCrypto';
+import { fetchCreatorOrbitsDecrypted } from '../services/conversationService';
+import type { DecryptedGroup } from '../services/conversationService';
 import { getGroupMembers, generateInviteCode, removeMember } from '../services/api/groups';
 import { useAuth } from '../stores';
 import type { GroupMember } from '../types/api';
 import type { SettingsStackParamList } from '../navigation/types';
 
 type Props = NativeStackScreenProps<SettingsStackParamList, 'ManageOrbits'>;
-
-interface DecryptedGroup {
-  groupId: string;
-  name: string;
-  inviteCode: string | null;
-  memberCount: number;
-  isCreator: boolean;
-}
 
 export function ManageOrbitsScreen({ navigation }: Props): React.JSX.Element {
   const theme = useTheme();
@@ -64,29 +56,7 @@ export function ManageOrbitsScreen({ navigation }: Props): React.JSX.Element {
 
     async function load() {
       try {
-        const rawGroups = await fetchGroupsWithInviteCodes();
-        const creatorGroups = rawGroups.filter((g) => g.isCreator);
-        const decrypted: DecryptedGroup[] = [];
-
-        for (const group of creatorGroups) {
-          let name = group.encryptedName ?? group.groupId;
-          if (group.encryptedName) {
-            try {
-              const groupKey = await getOrFetchGroupKey(group.groupId);
-              name = decryptGroupName(group.encryptedName, groupKey);
-            } catch {
-              name = '(encrypted)';
-            }
-          }
-          decrypted.push({
-            groupId: group.groupId,
-            name,
-            inviteCode: group.activeInviteCode,
-            memberCount: group.memberCount,
-            isCreator: group.isCreator,
-          });
-        }
-
+        const decrypted = await fetchCreatorOrbitsDecrypted();
         if (!cancelled) {
           setGroups(decrypted);
           setError(null);

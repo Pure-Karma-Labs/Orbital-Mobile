@@ -252,6 +252,141 @@ describe('ManageOrbitsScreen — rendering', () => {
   });
 });
 
+describe('ManageOrbitsScreen — interactions', () => {
+  it('navigates back when the Header back button is pressed', async () => {
+    mockFetchGroups.mockResolvedValue([]);
+    let renderer!: ReactTestRenderer;
+
+    await act(async () => {
+      renderer = create(
+        React.createElement(
+          SafeAreaProvider,
+          { initialMetrics: safeAreaMetrics },
+          React.createElement(
+            ThemeProvider,
+            { colorSchemeOverride: 'light' },
+            React.createElement(ManageOrbitsScreen, {
+              navigation: mockNavigation as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['navigation'],
+              route: mockRoute as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['route'],
+            }),
+          ),
+        ),
+      );
+    });
+
+    const backButton = renderer.root.findAll(
+      (node) => node.props.accessibilityLabel === 'Go back',
+    );
+    expect(backButton.length).toBeGreaterThan(0);
+    await act(async () => {
+      backButton[0].props.onPress();
+    });
+    expect(mockNavigation.goBack).toHaveBeenCalled();
+  });
+
+  it('opens email modal when new-code button is pressed', async () => {
+    mockFetchGroups.mockResolvedValue([
+      {
+        groupId: 'g-1',
+        encryptedName: 'enc-name',
+        wrappedGroupKey: 'enc-key',
+        memberCount: 3,
+        maxMembers: 10,
+        isCreator: true,
+        activeInviteCode: 'ABC123',
+        joinedAt: '2026-05-01T00:00:00Z',
+      },
+    ]);
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        React.createElement(
+          SafeAreaProvider,
+          { initialMetrics: safeAreaMetrics },
+          React.createElement(
+            ThemeProvider,
+            { colorSchemeOverride: 'light' },
+            React.createElement(ManageOrbitsScreen, {
+              navigation: mockNavigation as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['navigation'],
+              route: mockRoute as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['route'],
+            }),
+          ),
+        ),
+      );
+    });
+
+    // Expand the orbit row
+    const header = findByTestId(renderer.root, 'orbit-header-g-1');
+    await act(async () => {
+      header.props.onPress();
+    });
+
+    // Press the new-code button to open the email modal
+    const newCodeBtn = findByTestId(renderer.root, 'new-code-button-g-1');
+    await act(async () => {
+      newCodeBtn.props.onPress();
+    });
+
+    // The email modal should now be visible
+    expect(() => findByTestId(renderer.root, 'email-input')).not.toThrow();
+    expect(() => findByTestId(renderer.root, 'generate-button')).not.toThrow();
+    expect(() => findByTestId(renderer.root, 'cancel-button')).not.toThrow();
+  });
+
+  it('generates an invite code via the email modal', async () => {
+    const { generateInviteCode: mockGenerate } = require('../../services/api/groups');
+
+    mockFetchGroups.mockResolvedValue([
+      {
+        groupId: 'g-1',
+        encryptedName: 'enc-name',
+        wrappedGroupKey: 'enc-key',
+        memberCount: 3,
+        maxMembers: 10,
+        isCreator: true,
+        activeInviteCode: 'ABC123',
+        joinedAt: '2026-05-01T00:00:00Z',
+      },
+    ]);
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        React.createElement(
+          SafeAreaProvider,
+          { initialMetrics: safeAreaMetrics },
+          React.createElement(
+            ThemeProvider,
+            { colorSchemeOverride: 'light' },
+            React.createElement(ManageOrbitsScreen, {
+              navigation: mockNavigation as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['navigation'],
+              route: mockRoute as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['route'],
+            }),
+          ),
+        ),
+      );
+    });
+
+    // Expand → open modal → fill email → generate
+    const header = findByTestId(renderer.root, 'orbit-header-g-1');
+    await act(async () => { header.props.onPress(); });
+
+    const newCodeBtn = findByTestId(renderer.root, 'new-code-button-g-1');
+    await act(async () => { newCodeBtn.props.onPress(); });
+
+    const emailInput = findByTestId(renderer.root, 'email-input');
+    await act(async () => {
+      emailInput.props.onChangeText('family@example.com');
+    });
+
+    const generateBtn = findByTestId(renderer.root, 'generate-button');
+    await act(async () => { generateBtn.props.onPress(); });
+
+    expect(mockGenerate).toHaveBeenCalledWith('g-1', 'family@example.com');
+  });
+});
+
 describe('ManageOrbitsScreen — share', () => {
   it('triggers Share.share when share button is pressed after expand', async () => {
     const shareSpy = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' } as never);

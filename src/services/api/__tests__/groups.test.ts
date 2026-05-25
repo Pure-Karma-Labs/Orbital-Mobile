@@ -15,6 +15,11 @@ import {
   getGroupQuota,
   createDm,
   listDms,
+  submitWrappedKey,
+  getPendingWraps,
+  getGroupMembers,
+  generateInviteCode,
+  removeMember,
 } from '../groups';
 
 const mockRequest = request as jest.MockedFunction<typeof request>;
@@ -112,6 +117,132 @@ describe('listDms', () => {
     expect(result).toEqual([
       { groupId: 'dm-1', recipient: { id: 'u1', username: 'alice', avatarUrl: null } },
     ]);
+  });
+});
+
+describe('getGroupMembers', () => {
+  it('calls GET /api/groups/:groupId/members and unwraps members', async () => {
+    const members = [
+      {
+        userId: 'user-1',
+        username: 'alice',
+        displayName: 'Alice',
+        publicKey: 'dGVzdC1wdWJsaWMta2V5',
+        avatarUrl: null,
+        joinedAt: '2026-05-01T00:00:00Z',
+      },
+    ];
+    mockRequest.mockResolvedValue({ members });
+    const result = await getGroupMembers('group-1');
+
+    expect(mockRequest).toHaveBeenCalledWith({
+      method: 'GET',
+      path: '/api/groups/group-1/members',
+    });
+    expect(result).toEqual(members);
+  });
+
+  it('encodes groupId in the URL path', async () => {
+    mockRequest.mockResolvedValue({ members: [] });
+    await getGroupMembers('g/../admin');
+
+    expect(mockRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/groups/g%2F..%2Fadmin/members',
+      }),
+    );
+  });
+});
+
+describe('generateInviteCode', () => {
+  it('calls POST /api/groups/:groupId/invite-codes with targetEmail', async () => {
+    await generateInviteCode('group-1', 'test@example.com');
+
+    expect(mockRequest).toHaveBeenCalledWith({
+      method: 'POST',
+      path: '/api/groups/group-1/invite-codes',
+      body: { targetEmail: 'test@example.com' },
+    });
+  });
+
+  it('encodes groupId in the URL path', async () => {
+    await generateInviteCode('g/../admin', 'test@example.com');
+
+    expect(mockRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/groups/g%2F..%2Fadmin/invite-codes',
+      }),
+    );
+  });
+});
+
+describe('removeMember', () => {
+  it('calls DELETE /api/groups/:groupId/members/:userId', async () => {
+    await removeMember('group-1', 'user-1');
+
+    expect(mockRequest).toHaveBeenCalledWith({
+      method: 'DELETE',
+      path: '/api/groups/group-1/members/user-1',
+    });
+  });
+
+  it('encodes groupId and userId in the URL path', async () => {
+    await removeMember('g/../admin', 'u/../root');
+
+    expect(mockRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/groups/g%2F..%2Fadmin/members/u%2F..%2Froot',
+      }),
+    );
+  });
+});
+
+describe('submitWrappedKey', () => {
+  it('calls POST /api/groups/:groupId/members/:userId/wrapped-key', async () => {
+    await submitWrappedKey('group-1', 'user-1', 'wrapped-key-data');
+
+    expect(mockRequest).toHaveBeenCalledWith({
+      method: 'POST',
+      path: '/api/groups/group-1/members/user-1/wrapped-key',
+      body: { wrappedGroupKey: 'wrapped-key-data' },
+    });
+  });
+
+  it('encodes groupId and userId in the URL path', async () => {
+    await submitWrappedKey('g/../admin', 'u/../root', 'key');
+
+    expect(mockRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/groups/g%2F..%2Fadmin/members/u%2F..%2Froot/wrapped-key',
+      }),
+    );
+  });
+});
+
+describe('getPendingWraps', () => {
+  it('calls GET /api/groups/:groupId/pending-wraps and unwraps pending', async () => {
+    const pending = [
+      { userId: 'user-2', identityPublicKey: 'dGVzdC1wdWJsaWMta2V5' },
+    ];
+    mockRequest.mockResolvedValue({ pending });
+    const result = await getPendingWraps('group-1');
+
+    expect(mockRequest).toHaveBeenCalledWith({
+      method: 'GET',
+      path: '/api/groups/group-1/pending-wraps',
+    });
+    expect(result).toEqual(pending);
+  });
+
+  it('encodes groupId in the URL path', async () => {
+    mockRequest.mockResolvedValue({ pending: [] });
+    await getPendingWraps('g/../admin');
+
+    expect(mockRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/groups/g%2F..%2Fadmin/pending-wraps',
+      }),
+    );
   });
 });
 

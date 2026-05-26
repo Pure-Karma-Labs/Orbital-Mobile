@@ -7,7 +7,14 @@ jest.mock('../client', () => ({
 }));
 
 import { request } from '../client';
-import { login, signup, verifyToken, getPublicKey } from '../auth';
+import {
+  login,
+  signup,
+  verifyToken,
+  getPublicKey,
+  forgotPassword,
+  resetPasswordWithCode,
+} from '../auth';
 
 const mockRequest = request as jest.MockedFunction<typeof request>;
 
@@ -82,5 +89,35 @@ describe('getPublicKey', () => {
         path: '/api/users/user%20name/public-key',
       }),
     );
+  });
+});
+
+describe('forgotPassword', () => {
+  it('calls POST /api/forgot-password with correct body and skipAuth', async () => {
+    await forgotPassword('alice@example.com');
+
+    expect(mockRequest).toHaveBeenCalledWith({
+      method: 'POST',
+      path: '/api/forgot-password',
+      body: { email: 'alice@example.com' },
+      skipAuth: true,
+    });
+  });
+});
+
+describe('resetPasswordWithCode', () => {
+  it('calls POST /api/reset-password-with-code with all fields and skipAuth', async () => {
+    await resetPasswordWithCode('alice@example.com', 'ABCD1234', 'newS3cret!');
+
+    expect(mockRequest).toHaveBeenCalledWith({
+      method: 'POST',
+      path: '/api/reset-password-with-code',
+      body: {
+        email: 'alice@example.com',
+        code: 'ABCD1234',
+        newPassword: 'newS3cret!',
+      },
+      skipAuth: true,
+    });
   });
 });

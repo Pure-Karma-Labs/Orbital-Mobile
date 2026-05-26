@@ -7,9 +7,13 @@
 
 import { request } from './client';
 import type {
+  ForgotPasswordRequest,
+  ForgotPasswordResponse,
   LoginRequest,
   LoginResponse,
   PublicKeyResponse,
+  ResetPasswordWithCodeRequest,
+  ResetPasswordWithCodeResponse,
   SignupRequest,
   SignupResponse,
   VerifyTokenResponse,
@@ -44,6 +48,30 @@ export function getPublicKey(username: string): Promise<PublicKeyResponse> {
   return request<PublicKeyResponse>({
     method: 'GET',
     path: `/api/users/${encodeURIComponent(username)}/public-key`,
+    skipAuth: true,
+  });
+}
+
+export function forgotPassword(
+  email: string,
+): Promise<ForgotPasswordResponse> {
+  return request<ForgotPasswordResponse>({
+    method: 'POST',
+    path: '/api/forgot-password',
+    body: { email } as ForgotPasswordRequest,
+    skipAuth: true,
+  });
+}
+
+export function resetPasswordWithCode(
+  email: string,
+  code: string,
+  newPassword: string,
+): Promise<ResetPasswordWithCodeResponse> {
+  return request<ResetPasswordWithCodeResponse>({
+    method: 'POST',
+    path: '/api/reset-password-with-code',
+    body: { email, code, newPassword } as ResetPasswordWithCodeRequest,
     skipAuth: true,
   });
 }

@@ -207,3 +207,23 @@ export async function logout(): Promise<void> {
     // MMKV may not be initialized in tests or if bootstrap hasn't run
   }
 }
+
+/**
+ * Request a password reset code be sent to the given email.
+ * The backend always returns a generic success to prevent email enumeration.
+ */
+export async function requestPasswordReset(email: string): Promise<void> {
+  await auth.forgotPassword(email);
+}
+
+/**
+ * Reset the user's password using a code received via email.
+ * On success the user must log in again with the new password.
+ */
+export async function resetPassword(
+  email: string,
+  code: string,
+  newPassword: string,
+): Promise<void> {
+  await auth.resetPasswordWithCode(email, code, newPassword);
+}

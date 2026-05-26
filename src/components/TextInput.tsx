@@ -12,6 +12,7 @@ import {
   type TextStyle,
   type ViewStyle,
 } from 'react-native';
+import type { TextInputProps as RNTextInputProps } from 'react-native';
 import { useTheme } from '../theme';
 
 export interface TextInputProps {
@@ -22,6 +23,7 @@ export interface TextInputProps {
   autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters';
   autoCorrect?: boolean;
   keyboardType?: KeyboardTypeOptions;
+  textContentType?: RNTextInputProps['textContentType'];
   maxLength?: number;
   testID?: string;
 }
@@ -34,6 +36,7 @@ export function TextInput({
   autoCapitalize = 'sentences',
   autoCorrect = true,
   keyboardType = 'default',
+  textContentType,
   maxLength,
   testID,
 }: TextInputProps): React.JSX.Element {
@@ -90,6 +93,7 @@ export function TextInput({
           autoCapitalize={autoCapitalize}
           autoCorrect={autoCorrect}
           keyboardType={keyboardType}
+          textContentType={textContentType}
           maxLength={maxLength}
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}

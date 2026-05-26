@@ -4,6 +4,7 @@
 
 import React from 'react';
 import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'react-test-renderer';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../../theme';
 import { LoginScreen } from '../LoginScreen';
 import { AuthError, NetworkError } from '../../services/api/errors';
@@ -27,14 +28,26 @@ const mockLoginUser = loginUser as jest.Mock;
 // Helpers
 // ---------------------------------------------------------------------------
 
-function renderLoginScreen(onSwitchToSignup = jest.fn()): ReactTestRenderer {
+const safeAreaMetrics = {
+  frame: { x: 0, y: 0, width: 390, height: 844 },
+  insets: { top: 47, right: 0, bottom: 34, left: 0 },
+};
+
+function renderLoginScreen(
+  onNavigate = jest.fn(),
+  successMessage?: string,
+): ReactTestRenderer {
   let renderer!: ReactTestRenderer;
   act(() => {
     renderer = create(
       React.createElement(
-        ThemeProvider,
-        { colorSchemeOverride: 'light' },
-        React.createElement(LoginScreen, { onSwitchToSignup }),
+        SafeAreaProvider,
+        { initialMetrics: safeAreaMetrics },
+        React.createElement(
+          ThemeProvider,
+          { colorSchemeOverride: 'light' },
+          React.createElement(LoginScreen, { onNavigate, successMessage }),
+        ),
       ),
     );
   });
@@ -73,6 +86,12 @@ describe('LoginScreen — rendering', () => {
     const renderer = renderLoginScreen();
     const root = renderer.root;
     expect(() => findByTestId(root, 'login-switch-to-signup')).not.toThrow();
+  });
+
+  it('renders the forgot password link', () => {
+    const renderer = renderLoginScreen();
+    const root = renderer.root;
+    expect(() => findByTestId(root, 'login-forgot-password')).not.toThrow();
   });
 });
 
@@ -191,15 +210,59 @@ describe('LoginScreen — error handling', () => {
 });
 
 describe('LoginScreen — navigation', () => {
-  it('calls onSwitchToSignup when the sign up link is pressed', () => {
-    const onSwitchToSignup = jest.fn();
-    const renderer = renderLoginScreen(onSwitchToSignup);
+  it('calls onNavigate with signup when the sign up link is pressed', () => {
+    const onNavigate = jest.fn();
+    const renderer = renderLoginScreen(onNavigate);
     const root = renderer.root;
 
     act(() => {
       findByTestId(root, 'login-switch-to-signup').props.onPress();
     });
 
-    expect(onSwitchToSignup).toHaveBeenCalledTimes(1);
+    expect(onNavigate).toHaveBeenCalledWith('signup');
+  });
+
+  it('calls onNavigate with forgotPassword when forgot password link is pressed', () => {
+    const onNavigate = jest.fn();
+    const renderer = renderLoginScreen(onNavigate);
+    const root = renderer.root;
+
+    act(() => {
+      findByTestId(root, 'login-forgot-password').props.onPress();
+    });
+
+    expect(onNavigate).toHaveBeenCalledWith('forgotPassword');
+  });
+});
+
+describe('LoginScreen — success banner', () => {
+  it('renders success banner when successMessage is provided', () => {
+    const renderer = renderLoginScreen(jest.fn(), 'Password reset successfully. Please log in.');
+    const root = renderer.root;
+    expect(() => findByTestId(root, 'login-success-banner')).not.toThrow();
+  });
+
+  it('hides success banner when user starts typing', () => {
+    const renderer = renderLoginScreen(jest.fn(), 'Password reset successfully. Please log in.');
+    const root = renderer.root;
+
+    // Banner is visible initially
+    expect(() => findByTestId(root, 'login-success-banner')).not.toThrow();
+
+    // User starts typing
+    act(() => {
+      findByTestId(root, 'login-username-input').props.onChangeText('a');
+    });
+
+    // Banner should be gone
+    const found = root.findAll((node) => node.props.testID === 'login-success-banner');
+    expect(found.length).toBe(0);
+  });
+
+  it('does not render success banner when no successMessage', () => {
+    const renderer = renderLoginScreen();
+    const root = renderer.root;
+    const found = root.findAll((node) => node.props.testID === 'login-success-banner');
+    expect(found.length).toBe(0);
   });
 });

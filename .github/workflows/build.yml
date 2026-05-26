@@ -49,13 +49,13 @@ jobs:
 
       - name: Setup Rust
         run: |
-          if ! command -v cargo &>/dev/null; then
+          if [ ! -f "$HOME/.cargo/bin/cargo" ]; then
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
           fi
-          source "$HOME/.cargo/env"
-          rustup target add aarch64-linux-android x86_64-linux-android
-          cargo install cargo-ndk@4.1.2
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
+          rustup target add aarch64-linux-android x86_64-linux-android
+          cargo install cargo-ndk@4.1.2 --locked 2>/dev/null || true
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -118,12 +118,12 @@ jobs:
 
       - name: Setup Rust
         run: |
-          if ! command -v cargo &>/dev/null; then
+          if [ ! -f "$HOME/.cargo/bin/cargo" ]; then
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
           fi
-          source "$HOME/.cargo/env"
-          rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
+          rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

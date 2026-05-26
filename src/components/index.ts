@@ -34,6 +34,9 @@ export type { OrbitalSpinnerProps } from './OrbitalSpinner';
 export { AsciiBanner } from './AsciiBanner';
 export type { AsciiBannerProps } from './AsciiBanner';
 
+export { SuccessBanner } from './SuccessBanner';
+export type { SuccessBannerProps } from './SuccessBanner';
+
 // MediaItemView, MediaGallery, and MediaLightbox are imported directly
 // by consuming components (not via barrel) to avoid pulling the download
 // service + useAppStore chain into unrelated screens.

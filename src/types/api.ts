@@ -78,6 +78,24 @@ export interface PublicKeyResponse {
   publicKey: unknown;
 }
 
+export interface ForgotPasswordRequest {
+  email: string;
+}
+
+export interface ForgotPasswordResponse {
+  message: string;
+}
+
+export interface ResetPasswordWithCodeRequest {
+  email: string;
+  code: string;
+  newPassword: string;
+}
+
+export interface ResetPasswordWithCodeResponse {
+  success: boolean;
+}
+
 // ============================================================
 // Groups / Orbits
 // ============================================================

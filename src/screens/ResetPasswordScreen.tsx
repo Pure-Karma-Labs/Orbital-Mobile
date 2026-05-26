@@ -163,6 +163,8 @@ export function ResetPasswordScreen({
             value={newPassword}
             onChangeText={setNewPassword}
             secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
             textContentType="newPassword"
             maxLength={128}
             testID="reset-new-password-input"
@@ -172,6 +174,8 @@ export function ResetPasswordScreen({
             value={confirmPassword}
             onChangeText={setConfirmPassword}
             secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
             textContentType="newPassword"
             maxLength={128}
             testID="reset-confirm-password-input"

@@ -123,6 +123,7 @@ export function ForgotPasswordScreen({
             keyboardType="email-address"
             autoCapitalize="none"
             autoCorrect={false}
+            textContentType="emailAddress"
             maxLength={256}
             testID="forgot-email-input"
           />

@@ -6,7 +6,6 @@
  */
 
 import * as auth from './api/auth';
-import { forgotPassword as apiForgotPassword, resetPasswordWithCode as apiResetPasswordWithCode } from './api/auth';
 import * as users from './api/users';
 import { tokenManager } from './api/tokenManager';
 import { NetworkError } from './api/errors';
@@ -214,7 +213,7 @@ export async function logout(): Promise<void> {
  * The backend always returns a generic success to prevent email enumeration.
  */
 export async function requestPasswordReset(email: string): Promise<void> {
-  await apiForgotPassword(email);
+  await auth.forgotPassword(email);
 }
 
 /**
@@ -226,5 +225,5 @@ export async function resetPassword(
   code: string,
   newPassword: string,
 ): Promise<void> {
-  await apiResetPasswordWithCode(email, code, newPassword);
+  await auth.resetPasswordWithCode(email, code, newPassword);
 }

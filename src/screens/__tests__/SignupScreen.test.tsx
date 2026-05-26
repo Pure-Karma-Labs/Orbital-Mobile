@@ -28,10 +28,14 @@ const mockSignupUser = signupUser as jest.Mock;
 // Helpers
 // ---------------------------------------------------------------------------
 
-function renderSignupScreen(onSwitchToLogin = jest.fn()): ReactTestRenderer {
+const safeAreaMetrics = {
+  frame: { x: 0, y: 0, width: 390, height: 844 },
+  insets: { top: 47, right: 0, bottom: 34, left: 0 },
+};
+
+function renderSignupScreen(onNavigate = jest.fn()): ReactTestRenderer {
   let renderer!: ReactTestRenderer;
   act(() => {
-    const safeAreaMetrics = { frame: { x: 0, y: 0, width: 390, height: 844 }, insets: { top: 47, right: 0, bottom: 34, left: 0 } };
     renderer = create(
       React.createElement(
         SafeAreaProvider,
@@ -39,7 +43,7 @@ function renderSignupScreen(onSwitchToLogin = jest.fn()): ReactTestRenderer {
         React.createElement(
           ThemeProvider,
           { colorSchemeOverride: 'light' },
-          React.createElement(SignupScreen, { onSwitchToLogin }),
+          React.createElement(SignupScreen, { onNavigate }),
         ),
       ),
     );
@@ -259,15 +263,15 @@ describe('SignupScreen — error handling', () => {
 });
 
 describe('SignupScreen — navigation', () => {
-  it('calls onSwitchToLogin when the log in link is pressed', () => {
-    const onSwitchToLogin = jest.fn();
-    const renderer = renderSignupScreen(onSwitchToLogin);
+  it('calls onNavigate with login when the log in link is pressed', () => {
+    const onNavigate = jest.fn();
+    const renderer = renderSignupScreen(onNavigate);
     const root = renderer.root;
 
     act(() => {
       findByTestId(root, 'signup-switch-to-login').props.onPress();
     });
 
-    expect(onSwitchToLogin).toHaveBeenCalledTimes(1);
+    expect(onNavigate).toHaveBeenCalledWith('login');
   });
 });

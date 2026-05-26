@@ -24,8 +24,11 @@ import {
   setupForegroundHandler,
   setupNotificationTapHandler,
 } from './services/notificationService';
+import type { PreAuthScreen, PreAuthParams } from './navigation/preAuthTypes';
 import { LoginScreen } from './screens/LoginScreen';
 import { SignupScreen } from './screens/SignupScreen';
+import { ForgotPasswordScreen } from './screens/ForgotPasswordScreen';
+import { ResetPasswordScreen } from './screens/ResetPasswordScreen';
 import { AppNavigator } from './navigation';
 import { OrbitalSpinner } from './components/OrbitalSpinner';
 
@@ -44,8 +47,14 @@ function App(): React.JSX.Element {
 
 function AppContent(): React.JSX.Element {
   const [authStatus, setAuthStatus] = useState<AuthStatus>('loading');
-  const [showSignup, setShowSignup] = useState(false);
+  const [preAuthScreen, setPreAuthScreen] = useState<PreAuthScreen>('login');
+  const [preAuthParams, setPreAuthParams] = useState<PreAuthParams>({});
   const { isAuthenticated } = useAuth();
+
+  function handleNavigate(screen: PreAuthScreen, params?: PreAuthParams): void {
+    setPreAuthScreen(screen);
+    setPreAuthParams(params ?? {});
+  }
   const theme = useTheme();
   const isDark = theme.colorScheme === 'dark';
 
@@ -107,10 +116,17 @@ function AppContent(): React.JSX.Element {
         backgroundColor={theme.colors.background}
       />
       {authStatus === 'loading' && <LoadingView />}
-      {authStatus === 'unauthenticated' && (
-        showSignup
-          ? <SignupScreen onSwitchToLogin={() => setShowSignup(false)} />
-          : <LoginScreen onSwitchToSignup={() => setShowSignup(true)} />
+      {authStatus === 'unauthenticated' && preAuthScreen === 'login' && (
+        <LoginScreen onNavigate={handleNavigate} successMessage={preAuthParams.successMessage} />
+      )}
+      {authStatus === 'unauthenticated' && preAuthScreen === 'signup' && (
+        <SignupScreen onNavigate={handleNavigate} />
+      )}
+      {authStatus === 'unauthenticated' && preAuthScreen === 'forgotPassword' && (
+        <ForgotPasswordScreen onNavigate={handleNavigate} email={preAuthParams.email} />
+      )}
+      {authStatus === 'unauthenticated' && preAuthScreen === 'resetPassword' && (
+        <ResetPasswordScreen onNavigate={handleNavigate} email={preAuthParams.email ?? ''} />
       )}
       {authStatus === 'authenticated' && (
         <AppNavigator />

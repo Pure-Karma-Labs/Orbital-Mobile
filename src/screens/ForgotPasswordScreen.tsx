@@ -1,5 +1,5 @@
 /**
- * Signup screen — new account creation form with invite code.
+ * Forgot password screen — sends a reset code to the user's email.
  */
 
 import React, { useState } from 'react';
@@ -14,39 +14,29 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../theme';
 import { TextInput, Button, ErrorBanner, OrbitalLoader, AsciiBanner } from '../components';
-import { signupUser } from '../services/authService';
-import { AuthError, NetworkError, ValidationError } from '../services/api/errors';
+import { requestPasswordReset } from '../services/authService';
+import { ApiError, NetworkError } from '../services/api/errors';
 import type { OnPreAuthNavigate } from '../navigation/preAuthTypes';
 
-export interface SignupScreenProps {
+export interface ForgotPasswordScreenProps {
   onNavigate: OnPreAuthNavigate;
+  email?: string;
 }
 
-export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Element {
+export function ForgotPasswordScreen({
+  onNavigate,
+  email: initialEmail,
+}: ForgotPasswordScreenProps): React.JSX.Element {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
 
-  const [username, setUsername] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [inviteCode, setInviteCode] = useState('');
+  const [email, setEmail] = useState(initialEmail ?? '');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  async function handleSignup(): Promise<void> {
-    // Validate all required fields
-    if (
-      username.trim().length === 0 ||
-      email.trim().length === 0 ||
-      password.length === 0 ||
-      inviteCode.trim().length === 0
-    ) {
-      setError('All fields are required');
-      return;
-    }
-
-    // Validate email format
-    if (!email.includes('@')) {
+  async function handleSubmit(): Promise<void> {
+    const trimmed = email.trim();
+    if (trimmed.length === 0 || !trimmed.includes('@')) {
       setError('Please enter a valid email address');
       return;
     }
@@ -54,11 +44,11 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
     setError(null);
     setLoading(true);
     try {
-      await signupUser(username.trim(), password, email.trim(), inviteCode.trim());
-      // Auth store update triggers isAuthenticated → App re-renders
+      await requestPasswordReset(trimmed);
+      onNavigate('resetPassword', { email: trimmed });
     } catch (e) {
-      if (e instanceof AuthError || e instanceof ValidationError) {
-        setError(e.message || 'Invalid username or password');
+      if (e instanceof ApiError && e.code === 'RATE_LIMITED') {
+        setError('Too many attempts — please wait a few minutes');
       } else if (e instanceof NetworkError) {
         setError(e.message);
       } else {
@@ -90,9 +80,15 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
     marginBottom: theme.spacing.xs,
   };
 
+  const warningStyle: TextStyle = {
+    fontFamily: theme.typography.fontFamily.body,
+    fontSize: theme.typography.fontSize.sm,
+    color: theme.colors.textSecondary,
+    textAlign: 'center',
+    marginBottom: theme.spacing.lg,
+  };
 
-
-  const switchLinkStyle: TextStyle = {
+  const backLinkStyle: TextStyle = {
     fontFamily: theme.typography.fontFamily.body,
     fontSize: theme.typography.fontSize.base,
     color: theme.colors.blue,
@@ -109,69 +105,45 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
         keyboardDismissMode="interactive"
         automaticallyAdjustKeyboardInsets
       >
-        <View style={{marginBottom: theme.spacing.lg}}>
+        <View style={{ marginBottom: theme.spacing.lg }}>
           <OrbitalLoader size={64} />
         </View>
         <Text style={titleStyle}>Orbital</Text>
-        <AsciiBanner text="Create your account" />
+        <AsciiBanner text="Reset your password" />
+
+        <Text style={warningStyle}>
+          This resets your login password. Messages on a lost device cannot be recovered.
+        </Text>
 
         <View>
-          <TextInput
-            label="Username"
-            value={username}
-            onChangeText={setUsername}
-            autoCapitalize="none"
-            autoCorrect={false}
-            maxLength={64}
-            testID="signup-username-input"
-          />
           <TextInput
             label="Email"
             value={email}
             onChangeText={setEmail}
-            autoCapitalize="none"
-            autoCorrect={false}
             keyboardType="email-address"
-            maxLength={256}
-            testID="signup-email-input"
-          />
-          <TextInput
-            label="Password"
-            value={password}
-            onChangeText={setPassword}
-            secureTextEntry
             autoCapitalize="none"
             autoCorrect={false}
-            maxLength={128}
-            testID="signup-password-input"
-          />
-          <TextInput
-            label="Invite Code"
-            value={inviteCode}
-            onChangeText={setInviteCode}
-            autoCapitalize="characters"
-            autoCorrect={false}
-            maxLength={64}
-            testID="signup-invite-code-input"
+            maxLength={256}
+            testID="forgot-email-input"
           />
 
           <ErrorBanner message={error} />
 
           <Button
-            title="Sign Up"
-            onPress={handleSignup}
+            title="Send Reset Code"
+            onPress={handleSubmit}
             loading={loading}
-            testID="signup-submit-button"
+            testID="forgot-submit-button"
           />
         </View>
 
         <TouchableOpacity
           onPress={() => onNavigate('login')}
           accessibilityRole="button"
-          accessibilityLabel="Switch to log in"
-          testID="signup-switch-to-login"
+          accessibilityLabel="Back to log in"
+          testID="forgot-back-link"
         >
-          <Text style={switchLinkStyle}>Already have an account? Log in</Text>
+          <Text style={backLinkStyle}>Back to log in</Text>
         </TouchableOpacity>
       </ScrollView>
     </View>

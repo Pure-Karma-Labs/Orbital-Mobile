@@ -4,10 +4,13 @@ agent: react-native-engineer
 
 core_files:
   - path: src/App.tsx
-    purpose: "Application entry point — wraps SafeAreaProvider + ThemeProvider. Push notification init + foreground handler + tap handler in useEffect([isAuthenticated]). Token refresh unsubscribe captured to prevent leak on login/logout cycles."
+    purpose: "Application entry point — wraps SafeAreaProvider + ThemeProvider. Pre-auth uses PreAuthScreen state machine (login/signup/forgotPassword/resetPassword) with PreAuthParams for inter-screen data. Push notification init + foreground handler + tap handler in useEffect([isAuthenticated]). Token refresh unsubscribe captured to prevent leak on login/logout cycles."
     key_symbols:
       - App
       - AppContent
+      - PreAuthScreen
+      - PreAuthParams
+      - handleNavigate
     last_hash: modified
 
   - path: index.js
@@ -224,9 +227,16 @@ core_files:
       - UseMediaDownloadResult
     last_hash: ebd267c
 
+  - path: src/components/SuccessBanner.tsx
+    purpose: "Inline success banner — mirrors ErrorBanner structure but uses theme.colors.success. Accepts optional testID prop. Used on LoginScreen after password reset."
+    key_symbols:
+      - SuccessBanner
+      - SuccessBannerProps
+    last_hash: new
+
   - path: src/components/index.ts
-    purpose: "Barrel export — TextInput, Button, ErrorBanner, Header, AsciiDay, AsciiSection, Avatar, Badge, OrbitalLoader, AsciiBanner, OrbitalSpinner. NOTE: MediaItemView/MediaGallery/MediaLightbox excluded to avoid pulling download service chain into unrelated screens."
-    last_hash: ebd267c
+    purpose: "Barrel export — TextInput, Button, ErrorBanner, SuccessBanner, Header, AsciiDay, AsciiSection, Avatar, Badge, OrbitalLoader, AsciiBanner, OrbitalSpinner. NOTE: MediaItemView/MediaGallery/MediaLightbox excluded to avoid pulling download service chain into unrelated screens."
+    last_hash: modified
 
   - path: src/components/OrbitalSpinner.tsx
     purpose: "Compact three-dot spinner — blue/purple/yellow dots rotating clockwise. Uses recursive Animated.timing (not Animated.loop) for smooth continuous rotation. Configurable size prop (default 24px)."
@@ -249,19 +259,53 @@ core_files:
       - UsePullToRefreshResult
     last_hash: 1faa458
 
+  - path: src/navigation/preAuthTypes.ts
+    purpose: "Shared types for pre-auth screen navigation state machine — PreAuthScreen union, PreAuthParams, OnPreAuthNavigate callback type."
+    key_symbols:
+      - PreAuthScreen
+      - PreAuthParams
+      - OnPreAuthNavigate
+    last_hash: new
+
   - path: src/screens/LoginScreen.tsx
-    purpose: "Login screen — OrbitalLoader + Fira Sans title + AsciiBanner subtitle + username/password form + underlined switch link (fontSize.base)"
+    purpose: "Login screen — OrbitalLoader + title + AsciiBanner + username/password form + 'Forgot password?' link + optional SuccessBanner (after password reset) + sign-up link. Uses onNavigate prop, useSafeAreaInsets()."
     key_symbols:
       - LoginScreen
       - LoginScreenProps
     last_hash: modified
 
   - path: src/screens/SignupScreen.tsx
-    purpose: "Signup screen — same layout as login with username/email/password/invite fields. Uses useSafeAreaInsets() for notch-safe top padding."
+    purpose: "Signup screen — same layout as login with username/email/password/invite fields. Uses onNavigate prop, useSafeAreaInsets()."
     key_symbols:
       - SignupScreen
       - SignupScreenProps
     last_hash: modified
+
+  - path: src/screens/ForgotPasswordScreen.tsx
+    purpose: "Forgot password screen — email input + 'Send Reset Code' button. Calls requestPasswordReset from authService. Navigates to resetPassword with { email } on success. Pre-fills email from preAuthParams."
+    key_symbols:
+      - ForgotPasswordScreen
+      - ForgotPasswordScreenProps
+    last_hash: new
+
+  - path: src/screens/ResetPasswordScreen.tsx
+    purpose: "Reset password screen — code input (Crockford Base32, autoCapitalize=characters, textContentType=oneTimeCode) + new password + confirm password. Client-side code normalization and password validation. No auto-login on success."
+    key_symbols:
+      - ResetPasswordScreen
+      - ResetPasswordScreenProps
+    last_hash: new
+
+  - path: src/utils/maskEmail.ts
+    purpose: "Email masking utility — shows first char of local part + *** + @domain. Used on ResetPasswordScreen for privacy."
+    key_symbols:
+      - maskEmail
+    last_hash: new
+
+  - path: src/utils/validatePassword.ts
+    purpose: "Client-side password validation mirroring backend rules (12+ chars, uppercase, lowercase, number). Returns null if valid, first failing rule message otherwise."
+    key_symbols:
+      - validatePassword
+    last_hash: new
 
   - path: src/screens/SettingsScreen.tsx
     purpose: "Settings screen — ScrollView with ProfileCard, theme toggle (system/light/dark), storage quota, orbit name, and logout. Composes ProfileCard, SettingsRow, QuotaBar sub-components."
@@ -431,7 +475,10 @@ patterns:
     description: "Project uses three font families: BitstreamVeraSans (body, PostScript: BitstreamVeraSans-Roman), FiraSans (headers — Trebuchet MS substitute, PostScript: FiraSans-Regular for header token, FiraSans-Bold available but not used — Bold was too heavy at display sizes), BitstreamVeraSansMono (monospace, PostScript: BitstreamVeraSansMono-Roman). 7 fonts total in iOS UIAppFonts. All must be linked via npx react-native-asset and rebuilt natively."
 
   - name: auth-screen-layout
-    description: "Auth screens compose: OrbitalLoader (animated, 64px, with spacing.lg bottom margin) -> Fira Sans title ('Orbital') -> AsciiBanner (replaces subtitle text) -> form fields -> underlined switch link at fontSize.base (not fontSize.sm). SignupScreen uses useSafeAreaInsets() for notch safety."
+    description: "All 4 pre-auth screens compose: OrbitalLoader (animated, 64px, with spacing.lg bottom margin) -> Fira Sans title ('Orbital') -> AsciiBanner -> form fields -> underlined links at fontSize.base. All use useSafeAreaInsets() for notch safety, ScrollView with keyboardShouldPersistTaps='handled' + automaticallyAdjustKeyboardInsets + paddingBottom:300. Screens import OnPreAuthNavigate from navigation/preAuthTypes."
+
+  - name: password-reset-flow
+    description: "ForgotPassword -> ResetPassword -> Login with success banner. Screens import from authService (requestPasswordReset, resetPassword), never api/auth directly. Error handling uses screen-local message mapping (not e.message from ValidationError). Code input normalizes whitespace/hyphens, backend handles Crockford substitutions. No auto-login after reset — user re-enters credentials. Sensitive state cleared before navigation."
 
   - name: rn-animation-no-transform-origin
     description: "React Native has no transform-origin support. For off-center rotation (like orbiting dots), use tall invisible 'arm' views centered on the pivot point with visible elements at the ends. Animated.loop() snaps on reset — use recursive Animated.timing() with setValue() for smooth continuous rotation."

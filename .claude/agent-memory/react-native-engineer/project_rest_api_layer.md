@@ -11,7 +11,7 @@ Key files:
 - `errors.ts` — typed error hierarchy: `ApiError` (base) → `NetworkError`, `AuthError`, `ValidationError`, `ServerError`, `NotFoundError`
 - `tokenManager.ts` — `TokenManager` class with pluggable `TokenStorage` interface; `onTokensCleared` callback fires 401 store clearAuth
 - `index.ts` — barrel re-exporting all domain services
-- Domain service files: `auth.ts`, `users.ts`, `groups.ts`, `threads.ts`, `messages.ts`, `media.ts`, `devices.ts`, `invites.ts`, `version.ts`
+- Domain service files: `auth.ts` (login, signup, verifyToken, getPublicKey, forgotPassword, resetPasswordWithCode), `users.ts`, `groups.ts`, `threads.ts`, `messages.ts`, `media.ts`, `devices.ts`, `invites.ts`, `version.ts`
 - `src/types/api.ts` — all request/response DTOs (camelCase) for every endpoint
 
 Important patterns:

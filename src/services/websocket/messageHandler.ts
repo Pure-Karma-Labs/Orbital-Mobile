@@ -26,7 +26,6 @@ import type {
   NewThreadPayload,
   NewReplyPayload,
   DisplayNameChangedPayload,
-  TypingPayload,
   WrapKeyRequestPayload,
   WrappedKeyDeliveredPayload,
   MediaUploadedPayload,
@@ -331,17 +330,6 @@ function handleDisplayNameChanged(data: DisplayNameChangedPayload): void {
 }
 
 // ============================================================
-// typing handler (stub — backend doesn't broadcast yet)
-// ============================================================
-
-function handleTyping(data: TypingPayload): void {
-  const store = useAppStore.getState();
-  store.addTypingUser(data.conversationId, {
-    userId: data.userId,
-    expiresAt: Date.now() + 5_000,
-  });
-}
-
 // ============================================================
 // media_uploaded handler
 // ============================================================

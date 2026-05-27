@@ -182,6 +182,9 @@ export function loadPersistedGroupKey(groupId: string): Uint8Array | null {
  * getOrFetchGroupKey callers while the network self-wrap call is in-flight.
  */
 export function setCachedGroupKey(groupId: string, key: Uint8Array): void {
+  if (key.length !== 32) {
+    throw new Error(`Invalid group key length: expected 32, got ${key.length}`);
+  }
   groupKeyCache.set(groupId, key);
 }
 

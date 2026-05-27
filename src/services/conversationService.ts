@@ -96,8 +96,8 @@ export async function loadConversations(): Promise<void> {
   await Promise.all(
     groups
       .filter(g => !g.wrappedGroupKey)
-      .map(g => selfWrapIfNeeded(g.groupId).catch(() => {
-        if (__DEV__) console.warn('[loadConversations] self-wrap failed', g.groupId);
+      .map(g => selfWrapIfNeeded(g.groupId).catch((e) => {
+        if (__DEV__) console.warn('[loadConversations] self-wrap failed', g.groupId, e);
       }))
   );
 
@@ -195,8 +195,8 @@ export async function loadDmConversations(): Promise<void> {
   await Promise.all(
     dms
       .filter(d => !d.wrappedGroupKey)
-      .map(d => selfWrapIfNeeded(d.groupId).catch(() => {
-        if (__DEV__) console.warn('[loadDmConversations] self-wrap failed', d.groupId);
+      .map(d => selfWrapIfNeeded(d.groupId).catch((e) => {
+        if (__DEV__) console.warn('[loadDmConversations] self-wrap failed', d.groupId, e);
       }))
   );
 

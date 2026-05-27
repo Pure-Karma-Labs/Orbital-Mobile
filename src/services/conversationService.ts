@@ -5,7 +5,7 @@
  * Components never call the groups API or store directly.
  */
 
-import { listGroups, createGroup, joinGroup, listDms, createDm, getPendingWraps, submitWrappedKey } from './api/groups';
+import { listGroups, createGroup, joinGroup, listDms, createDm, getPendingWraps, submitWrappedKey, selfWrapGroupKey } from './api/groups';
 import {
   persistGroupKey,
   generateGroupKey,
@@ -14,8 +14,12 @@ import {
   getOrFetchGroupKey,
   wrapGroupKey,
   processReceivedGroupKey,
+  loadPersistedGroupKey,
+  setCachedGroupKey,
+  evictPendingCache,
 } from './crypto/contentCrypto';
 import { getIdentityKeyPair, resolveRemoteIdentityKey } from './crypto/identityKeyAccess';
+import { ApiError } from './api/errors';
 import { generateUUID } from '../utils/uuid';
 import { useAppStore } from '../stores/useAppStore';
 import type { Conversation } from '../types/store';
@@ -86,6 +90,16 @@ export async function loadConversations(): Promise<void> {
       }
     }
   }
+
+  // Self-wrap recovery: re-upload local keys the server is missing
+  // MUST run as a separate loop AFTER processReceivedGroupKey completes
+  await Promise.all(
+    groups
+      .filter(g => !g.wrappedGroupKey)
+      .map(g => selfWrapIfNeeded(g.groupId).catch(() => {
+        if (__DEV__) console.warn('[loadConversations] self-wrap failed', g.groupId);
+      }))
+  );
 
   const conversations = await Promise.all(groups.map(mapGroupResponse));
 
@@ -175,6 +189,16 @@ export async function loadDmConversations(): Promise<void> {
       }
     }
   }
+
+  // Self-wrap recovery: re-upload local keys the server is missing
+  // MUST run as a separate loop AFTER processReceivedGroupKey completes
+  await Promise.all(
+    dms
+      .filter(d => !d.wrappedGroupKey)
+      .map(d => selfWrapIfNeeded(d.groupId).catch(() => {
+        if (__DEV__) console.warn('[loadDmConversations] self-wrap failed', d.groupId);
+      }))
+  );
 
   const conversations = dms.map(mapDmResponse);
 
@@ -297,6 +321,56 @@ export async function joinOrbit(
   store.setActiveConversation(response.groupId);
 
   return { groupId: response.groupId, name: decryptedName };
+}
+
+// ---------------------------------------------------------------------------
+// Self-wrap recovery (post-migration key re-upload)
+// ---------------------------------------------------------------------------
+
+const selfWrapInflight = new Map<string, Promise<void>>();
+
+export async function selfWrapIfNeeded(groupId: string): Promise<void> {
+  // Inflight dedup
+  const existing = selfWrapInflight.get(groupId);
+  if (existing) return existing;
+
+  const p = _doSelfWrap(groupId);
+  selfWrapInflight.set(groupId, p);
+  try {
+    await p;
+  } finally {
+    selfWrapInflight.delete(groupId);
+  }
+}
+
+async function _doSelfWrap(groupId: string): Promise<void> {
+  // Check if local key exists
+  const localKey = loadPersistedGroupKey(groupId);
+  if (!localKey) return;
+
+  // Check if identity key pair is available
+  let ownPubKey: ArrayBuffer;
+  try {
+    const { publicKey } = getIdentityKeyPair();
+    ownPubKey = publicKey;
+  } catch {
+    return; // Identity keys not loaded yet
+  }
+
+  // Populate in-memory cache BEFORE network call
+  setCachedGroupKey(groupId, localKey);
+
+  // ECIES-wrap to self
+  const wrapped = wrapGroupKey(localKey, ownPubKey, groupId);
+
+  try {
+    await selfWrapGroupKey(groupId, wrapped);
+    evictPendingCache(groupId);
+  } catch (e) {
+    // 409 = another device beat us, silently ignore
+    if (e instanceof ApiError && e.statusCode === 409) return;
+    throw e;
+  }
 }
 
 // ---------------------------------------------------------------------------

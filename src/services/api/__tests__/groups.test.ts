@@ -16,6 +16,7 @@ import {
   createDm,
   listDms,
   submitWrappedKey,
+  selfWrapGroupKey,
   getPendingWraps,
   getGroupMembers,
   generateInviteCode,
@@ -214,6 +215,26 @@ describe('submitWrappedKey', () => {
     expect(mockRequest).toHaveBeenCalledWith(
       expect.objectContaining({
         path: '/api/groups/g%2F..%2Fadmin/members/u%2F..%2Froot/wrapped-key',
+      }),
+    );
+  });
+});
+
+describe('selfWrapGroupKey', () => {
+  it('calls POST /api/groups/:groupId/self-wrap with correct body', async () => {
+    await selfWrapGroupKey('group-1', 'wrapped-key-data');
+    expect(mockRequest).toHaveBeenCalledWith({
+      method: 'POST',
+      path: '/api/groups/group-1/self-wrap',
+      body: { wrappedGroupKey: 'wrapped-key-data' },
+    });
+  });
+
+  it('encodes groupId in the URL path', async () => {
+    await selfWrapGroupKey('g/../admin', 'wrapped-key-data');
+    expect(mockRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/groups/g%2F..%2Fadmin/self-wrap',
       }),
     );
   });

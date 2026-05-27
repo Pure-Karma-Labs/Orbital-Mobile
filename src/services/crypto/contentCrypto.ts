@@ -170,10 +170,19 @@ export async function processReceivedGroupKey(
  * Load a group key from SQLCipher (conversations.group_master_key BLOB).
  * Returns null if the conversation doesn't exist or has no key stored.
  */
-function loadPersistedGroupKey(groupId: string): Uint8Array | null {
+export function loadPersistedGroupKey(groupId: string): Uint8Array | null {
   const key = getGroupMasterKey(groupId);
   if (!key || key.length !== 32) return null;
   return key;
+}
+
+/**
+ * Populate the in-memory group key cache without persisting to SQLCipher.
+ * Used by selfWrapIfNeeded to make the key available to concurrent
+ * getOrFetchGroupKey callers while the network self-wrap call is in-flight.
+ */
+export function setCachedGroupKey(groupId: string, key: Uint8Array): void {
+  groupKeyCache.set(groupId, key);
 }
 
 /**

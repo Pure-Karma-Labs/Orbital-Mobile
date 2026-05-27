@@ -197,10 +197,6 @@ async function handleBroadcast(envelope: BroadcastEnvelope): Promise<void> {
       handleDisplayNameChanged(data as DisplayNameChangedPayload);
       break;
 
-    case 'typing':
-      handleTyping(data as TypingPayload);
-      break;
-
     case 'media_uploaded':
       handleMediaUploaded(data as MediaUploadedPayload);
       break;

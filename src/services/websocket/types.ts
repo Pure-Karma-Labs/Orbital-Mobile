@@ -151,8 +151,6 @@ export type BroadcastPayload =
   | NewSignalMessagePayload
   | DisplayNameChangedPayload
   | TypingPayload
-  | WrapKeyRequestPayload
-  | WrappedKeyDeliveredPayload
   | MediaUploadedPayload;
 
 // ============================================================

@@ -330,11 +330,12 @@ describe('display_name_changed broadcast', () => {
 });
 
 // ---------------------------------------------------------------------------
-// typing broadcast
+// typing broadcast (removed from KNOWN_BROADCAST_TYPES — backend never broadcasts it)
 // ---------------------------------------------------------------------------
 
 describe('typing broadcast', () => {
-  it('adds typing user to store', async () => {
+  it('typing inside broadcast envelope is rejected by allow-list', async () => {
+    const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
     const msg = JSON.stringify({
       type: 'new_message',
       conversationId: 'group-1',
@@ -348,10 +349,11 @@ describe('typing broadcast', () => {
 
     await handleServerMessage(msg);
 
-    expect(mockAddTypingUser).toHaveBeenCalledWith(
-      'group-1',
-      expect.objectContaining({ userId: 'user-6' }),
-    );
+    // Should be blocked by the allow-list guard
+    expect(consoleSpy).toHaveBeenCalledWith('[WS:unknown_broadcast]');
+    expect(mockAddTypingUser).not.toHaveBeenCalled();
+
+    consoleSpy.mockRestore();
   });
 });
 

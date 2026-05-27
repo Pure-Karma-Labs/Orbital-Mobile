@@ -56,13 +56,17 @@ function sweepExpired(map: Map<string, number>): void {
 // Allowed broadcast data.type values (WS-05)
 // ============================================================
 
-const KNOWN_BROADCAST_TYPES = new Set([
+export const KNOWN_BROADCAST_TYPES = new Set([
   'new_thread',
   'new_reply',
   'new_message',
   'display_name_changed',
-  'typing',
   'media_uploaded',
+]);
+
+export const KNOWN_UNICAST_TYPES = new Set([
+  'wrap_key_request',
+  'wrapped_key_delivered',
 ]);
 
 // ============================================================

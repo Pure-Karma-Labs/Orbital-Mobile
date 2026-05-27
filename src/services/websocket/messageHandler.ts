@@ -120,6 +120,14 @@ export async function handleServerMessage(raw: string): Promise<void> {
       await handleBroadcast(message as unknown as BroadcastEnvelope);
       break;
 
+    case 'wrap_key_request':
+      await handleWrapKeyRequest(message as unknown as WrapKeyRequestPayload);
+      break;
+
+    case 'wrapped_key_delivered':
+      await handleWrappedKeyDelivered(message as unknown as WrappedKeyDeliveredPayload);
+      break;
+
     default:
       if (__DEV__) {
         console.warn('[WS] Unknown message type:', type);

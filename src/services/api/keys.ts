@@ -11,18 +11,18 @@ export function uploadPreKeyBundle(
 ): Promise<UploadPreKeyBundleResponse> {
   return request<UploadPreKeyBundleResponse>({
     method: 'POST',
-    path: '/api/keys/bundle',
+    path: '/v1/keys/bundle',
     body: data,
   });
 }
 
 export function getPreKeyCount(): Promise<PreKeyCountResponse> {
-  return request<PreKeyCountResponse>({ method: 'GET', path: '/api/keys/count' });
+  return request<PreKeyCountResponse>({ method: 'GET', path: '/v1/keys/count' });
 }
 
 export function getPreKeyBundle(serviceId: string): Promise<PreKeyBundleResponse> {
   return request<PreKeyBundleResponse>({
     method: 'GET',
-    path: `/api/keys/bundle/${encodeURIComponent(serviceId)}`,
+    path: `/v1/keys/bundle/${encodeURIComponent(serviceId)}`,
   });
 }

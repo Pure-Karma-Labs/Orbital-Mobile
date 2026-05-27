@@ -364,8 +364,11 @@ core_files:
     last_hash: modified
 
   - path: src/navigation/MainTabNavigator.tsx
-    purpose: "Bottom tab navigator — Threads, Chats, Settings tabs. Settings tab points to SettingsStackNavigator for nested push navigation."
-    last_hash: ce2229d
+    purpose: "Bottom tab navigator — Threads, Chats, Settings tabs. CustomTabBar hides on Android when keyboard opens (Keyboard.addListener in CustomTabBar, returns null when keyboardVisible). This fixes adjustResize pushing the tab bar above the keyboard and breaking KAV layout."
+    key_symbols:
+      - MainTabNavigator
+      - CustomTabBar
+    last_hash: modified
 
   - path: ios/OrbitalMobile/Info.plist
     purpose: "iOS config — UIAppFonts has 7 entries (5 BitstreamVera + 2 FiraSans). Fonts linked via npx react-native-asset."
@@ -490,7 +493,7 @@ patterns:
     description: "Always read docs/design/ specs before UI work. Read order: CLAUDE-DESIGN-BRIEF.md (rules) -> MOBILE-DESIGN-FOUNDATION.md (tokens) -> MOBILE-PATTERNS.md (mobile patterns) -> per-screen spec. Code tokens must match spec exactly — verify on-device after changes."
 
   - name: thread-detail-layout
-    description: "Correct layout for list + bottom composer + keyboard: outer View (not SafeAreaView) flex:1 -> SafeAreaView edges=['top'] wraps Header only -> KeyboardAvoidingView behavior='padding' keyboardVerticalOffset=0 flex:1 -> FlatList style={flex:1} + ReplyComposer as siblings. Do NOT wrap FlatList in extra View. Do NOT use SafeAreaView edges=['bottom'] with KAV — they fight."
+    description: "Correct layout for list + bottom composer + keyboard: outer View (not SafeAreaView) flex:1 -> SafeAreaView edges=['top'] wraps Header only -> KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset=0 flex:1 -> FlatList style={flex:1} + ReplyComposer as siblings. On Android, KAV behavior is undefined — adjustResize handles window resizing, and CustomTabBar hides when keyboard opens. Do NOT wrap FlatList in extra View. Do NOT use SafeAreaView edges=['bottom'] with KAV — they fight."
 
   - name: flatlist-infinite-loop-guard
     description: "In onEndReached handlers, set hasMoreRef.current=false in catch blocks. Otherwise a failed API call leaves hasMore=true and onEndReached fires again immediately, creating an infinite 429 loop."
@@ -575,3 +578,15 @@ patterns:
 
   - name: jest-worktree-override
     description: "jest.config.js excludes .claude/worktrees/ paths. To run tests from a worktree, override with --testPathIgnorePatterns='/node_modules/' --modulePathIgnorePatterns=''. SettingsScreen tests must mock useNotifications after notification slice is added."
+
+  - name: android-keyboard-tab-bar-hide
+    description: "On Android, adjustResize in AndroidManifest resizes the window when keyboard opens. The custom tab bar gets pushed above the keyboard, eating into screen content and breaking KAV layout. Fix: CustomTabBar uses Keyboard.addListener to detect keyboard visibility and returns null when open on Android. KAV behavior is set to undefined on Android (iOS uses 'padding'). This combination gives the full resized window to screen content."
+
+  - name: android-dev-environment
+    description: "Android dev on macOS Apple Silicon: JDK 17 at /opt/homebrew/opt/openjdk@17, Android SDK at /opt/homebrew/share/android-commandlinetools, NDK 27.1. Emulator: Pixel_7_API_34 (ARM64 native, google_apis). Rust cross-compilation: npm run build:rust:android (20-40min cold). ABI filter: arm64-v8a,x86_64 only (no armeabi-v7a/x86). android/local.properties: sdk.dir only, no ndk.dir (let Gradle resolve from ndkVersion)."
+
+  - name: signal-key-api-v1-prefix
+    description: "Signal Protocol key endpoints use /v1/ prefix (not /api/) because backend mounts signal-relay routes under app.use('/v1', signalRelayRoutes). Mobile keys.ts must use /v1/keys/bundle, /v1/keys/count, /v1/keys/bundle/:id. All other API modules use /api/ prefix. This mismatch caused a silent bug where identity key uploads 404'd for months."
+
+  - name: ws-top-level-dispatch
+    description: "WebSocket messages arrive in two forms: (1) top-level with type field (connection_ack, pong, new_message, wrap_key_request, wrapped_key_delivered), (2) nested inside new_message broadcast envelope with data.type (new_thread, new_reply, etc). Both dispatch paths must be maintained in handleIncomingMessage. wrap_key_request is a top-level message, NOT a broadcast — adding it only to handleBroadcast was a silent bug."

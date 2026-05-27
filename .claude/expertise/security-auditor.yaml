@@ -32,8 +32,8 @@ core_files:
     purpose: AES-256-CBC + HMAC-SHA256 attachment encrypt/decrypt — wraps Rust FFI; key generation via CSPRNG (crypto.getRandomValues)
     key_symbols: [generateAttachmentKeys, encryptAttachment, decryptAttachment, EncryptAttachmentResult]
   - path: src/services/crypto/contentCrypto.ts
-    purpose: "AES-256-GCM content encryption + ECIES group key wrapping — wrapGroupKey/unwrapGroupKey use eciesSeal/eciesOpen from Rust; detectKeyFormat discriminates raw (32B) vs ECIES-v1 (190B); negative cache for pending groups"
-    key_symbols: [encryptContent, decryptContent, getOrFetchGroupKey, persistGroupKey, invalidateGroupKey, clearGroupKeyCache, generateGroupKey, wrapGroupKey, unwrapGroupKey, detectKeyFormat, evictPendingCache]
+    purpose: "AES-256-GCM content encryption + ECIES group key wrapping — wrapGroupKey/unwrapGroupKey use eciesSeal/eciesOpen from Rust; detectKeyFormat discriminates raw (32B) vs ECIES-v2 (190B); negative cache for pending groups; loadPersistedGroupKey and setCachedGroupKey exported for selfWrapIfNeeded"
+    key_symbols: [encryptContent, decryptContent, getOrFetchGroupKey, persistGroupKey, invalidateGroupKey, clearGroupKeyCache, generateGroupKey, wrapGroupKey, unwrapGroupKey, detectKeyFormat, evictPendingCache, loadPersistedGroupKey, setCachedGroupKey]
   - path: src/services/crypto/identityKeyAccess.ts
     purpose: "Shared identity key pair accessor — loads private from Keychain cache, public from items table, returns ArrayBuffer pair for ECIES operations"
     key_symbols: [getIdentityKeyPair]

@@ -8,9 +8,9 @@ core_files:
   - path: src/services/api/tokenManager.ts
     role: Token lifecycle and storage backend management
   - path: src/services/api/auth.ts
-    role: Auth endpoints (login, signup, verifyToken, getPublicKey)
+    role: "Auth endpoints (login, signup, verifyToken, getPublicKey, forgotPassword, resetPasswordWithCode)"
   - path: src/services/api/groups.ts
-    role: "Group endpoints (listGroups, getGroupKey, createGroup, joinGroup, createDm, listDms, submitWrappedKey, getPendingWraps)"
+    role: "Group endpoints (listGroups, getGroupKey, createGroup, joinGroup, createDm, listDms, submitWrappedKey, getPendingWraps, selfWrapGroupKey)"
   - path: src/services/api/threads.ts
     role: Thread/reply endpoints (createThread, getThread, getThreadReplies, createReply)
   - path: src/services/api/messages.ts
@@ -26,7 +26,7 @@ core_files:
   - path: src/services/api/index.ts
     role: "Barrel re-export for all API modules (namespace exports: auth, groups, threads, messages, users, invites, media, devices, keys, version)"
   - path: src/services/api/keys.ts
-    role: Signal Protocol key endpoints (uploadPreKeyBundle, getPreKeyCount, getPreKeyBundle)
+    role: "Signal Protocol key endpoints (uploadPreKeyBundle, getPreKeyCount, getPreKeyBundle). IMPORTANT: paths use /v1/ prefix (not /api/) — backend mounts signal-relay routes under /v1"
   - path: src/services/api/version.ts
     role: App version check endpoint
   - path: src/services/threadService.ts

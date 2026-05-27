@@ -94,6 +94,17 @@ export function submitWrappedKey(
   });
 }
 
+export function selfWrapGroupKey(
+  groupId: string,
+  wrappedGroupKey: string,
+): Promise<{ success: boolean }> {
+  return request<{ success: boolean }>({
+    method: 'POST',
+    path: `/api/groups/${encodeURIComponent(groupId)}/self-wrap`,
+    body: { wrappedGroupKey },
+  });
+}
+
 export async function getPendingWraps(
   groupId: string,
 ): Promise<PendingWrapsResponse['pending']> {

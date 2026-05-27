@@ -35,12 +35,12 @@ const sampleBundle: UploadPreKeyBundleRequest = {
 };
 
 describe('uploadPreKeyBundle', () => {
-  it('calls POST /api/keys/bundle with the provided data', async () => {
+  it('calls POST /v1/keys/bundle with the provided data', async () => {
     await uploadPreKeyBundle(sampleBundle);
 
     expect(mockRequest).toHaveBeenCalledWith({
       method: 'POST',
-      path: '/api/keys/bundle',
+      path: '/v1/keys/bundle',
       body: sampleBundle,
     });
   });
@@ -55,14 +55,14 @@ describe('uploadPreKeyBundle', () => {
 });
 
 describe('getPreKeyCount', () => {
-  it('calls GET /api/keys/count', async () => {
+  it('calls GET /v1/keys/count', async () => {
     mockRequest.mockResolvedValue({ count: 42 });
 
     await getPreKeyCount();
 
     expect(mockRequest).toHaveBeenCalledWith({
       method: 'GET',
-      path: '/api/keys/count',
+      path: '/v1/keys/count',
     });
   });
 

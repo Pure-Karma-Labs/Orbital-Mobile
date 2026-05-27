@@ -1,5 +1,7 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
+  Keyboard,
+  Platform,
   Text,
   TouchableOpacity,
   View,
@@ -29,9 +31,26 @@ function capitalizeFirst(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-function CustomTabBar({ state, descriptors, navigation }: BottomTabBarProps): React.JSX.Element {
+function CustomTabBar({ state, descriptors, navigation }: BottomTabBarProps): React.JSX.Element | null {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
+
+  // On Android, adjustResize pushes the tab bar above the keyboard, eating
+  // into the screen content area and breaking KeyboardAvoidingView layout.
+  // Hide the tab bar while the keyboard is open (same as tabBarHideOnKeyboard
+  // for the default tab bar, which doesn't apply to custom tabBar renders).
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const showSub = Keyboard.addListener('keyboardDidShow', () => setKeyboardVisible(true));
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => setKeyboardVisible(false));
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
+
+  if (keyboardVisible) return null;
 
   const barStyle: ViewStyle = {
     flexDirection: 'row',

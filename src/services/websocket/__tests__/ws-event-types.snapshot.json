@@ -1,0 +1,13 @@
+{
+  "broadcastTypes": {
+    "NEW_THREAD": "new_thread",
+    "NEW_REPLY": "new_reply",
+    "NEW_MESSAGE": "new_message",
+    "DISPLAY_NAME_CHANGED": "display_name_changed",
+    "MEDIA_UPLOADED": "media_uploaded"
+  },
+  "unicastTypes": {
+    "WRAP_KEY_REQUEST": "wrap_key_request",
+    "WRAPPED_KEY_DELIVERED": "wrapped_key_delivered"
+  }
+}

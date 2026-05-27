@@ -3,7 +3,7 @@
  */
 
 export { websocketManager, createWebSocketManager } from './websocketManager';
-export { handleServerMessage } from './messageHandler';
+export { handleServerMessage, KNOWN_BROADCAST_TYPES, KNOWN_UNICAST_TYPES } from './messageHandler';
 export { LRUSet } from './lruSet';
 export { calculateBackoff, shouldReconnect } from './reconnect';
 export type {

@@ -99,7 +99,7 @@ export function JoinOrbitScreen({
       />
       <KeyboardAvoidingView
         style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
         <View style={contentStyle}>
           <TextInput

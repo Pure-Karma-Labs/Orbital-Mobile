@@ -356,6 +356,113 @@ describe('typing broadcast', () => {
 });
 
 // ---------------------------------------------------------------------------
+// media_uploaded broadcast
+// ---------------------------------------------------------------------------
+
+describe('media_uploaded broadcast', () => {
+  it('dispatches without error and does not upsert thread or reply', async () => {
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: 'group-1',
+      timestamp: 1700000006000,
+      data: {
+        type: 'media_uploaded',
+        mediaId: 'media-ws-1',
+        groupId: 'group-1',
+        authorId: 'user-1',
+        encryptedMetadata: 'enc-meta-base64',
+        sizeBytes: 1024,
+        uploadedAt: '2026-04-01T12:00:00Z',
+        expiresAt: '2026-05-01T12:00:00Z',
+      },
+    });
+
+    await expect(handleServerMessage(msg)).resolves.toBeUndefined();
+
+    // Should NOT trigger thread/reply upserts
+    expect(mockUpsertThread).not.toHaveBeenCalled();
+    expect(mockUpsertReply).not.toHaveBeenCalled();
+  });
+
+  it('is not blocked by the broadcast allow-list', async () => {
+    const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: 'group-1',
+      timestamp: 1700000007000,
+      data: {
+        type: 'media_uploaded',
+        mediaId: 'media-ws-2',
+        groupId: 'group-1',
+        authorId: 'user-2',
+        encryptedMetadata: 'enc-meta-base64',
+        sizeBytes: 2048,
+        uploadedAt: '2026-04-01T13:00:00Z',
+        expiresAt: '2026-05-01T13:00:00Z',
+      },
+    });
+
+    await handleServerMessage(msg);
+
+    // Should NOT log [WS:unknown_broadcast] — it's a known type
+    expect(consoleSpy).not.toHaveBeenCalledWith('[WS:unknown_broadcast]');
+
+    consoleSpy.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dead broadcast entries removed (#193)
+// ---------------------------------------------------------------------------
+
+describe('dead broadcast entries removed', () => {
+  it('wrap_key_request inside broadcast envelope is rejected by allow-list', async () => {
+    const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: 'group-1',
+      timestamp: 1700000008000,
+      data: {
+        type: 'wrap_key_request',
+        groupId: 'group-1',
+        targetUserId: 'target-user',
+        targetIdentityPublicKey: 'key-base64',
+      },
+    });
+
+    await handleServerMessage(msg);
+
+    // Should be blocked by the allow-list guard
+    expect(consoleSpy).toHaveBeenCalledWith('[WS:unknown_broadcast]');
+    expect(mockSubmitWrappedKey).not.toHaveBeenCalled();
+
+    consoleSpy.mockRestore();
+  });
+
+  it('wrapped_key_delivered inside broadcast envelope is rejected by allow-list', async () => {
+    const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: 'group-1',
+      timestamp: 1700000009000,
+      data: {
+        type: 'wrapped_key_delivered',
+        groupId: 'group-1',
+        senderUserId: 'sender-1',
+      },
+    });
+
+    await handleServerMessage(msg);
+
+    // Should be blocked by the allow-list guard
+    expect(consoleSpy).toHaveBeenCalledWith('[WS:unknown_broadcast]');
+    expect(mockEvictPendingCache).not.toHaveBeenCalled();
+
+    consoleSpy.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Edge cases
 // ---------------------------------------------------------------------------
 
@@ -397,17 +504,14 @@ describe('edge cases', () => {
 // ---------------------------------------------------------------------------
 
 describe('wrap_key_request', () => {
+  // wrap_key_request arrives as a top-level message (via sendToUser),
+  // NOT inside a broadcast envelope.
   function makeWrapKeyRequest(groupId = 'group-1', targetUserId = 'target-user') {
     return JSON.stringify({
-      type: 'new_message',
-      conversationId: groupId,
-      timestamp: Date.now(),
-      data: {
-        type: 'wrap_key_request',
-        groupId,
-        targetUserId,
-        targetIdentityPublicKey: 'ignored-base64',
-      },
+      type: 'wrap_key_request',
+      groupId,
+      targetUserId,
+      targetIdentityPublicKey: 'ignored-base64',
     });
   }
 
@@ -467,16 +571,13 @@ describe('wrap_key_request', () => {
 // ---------------------------------------------------------------------------
 
 describe('wrapped_key_delivered', () => {
+  // wrapped_key_delivered arrives as a top-level message (via sendToUser),
+  // NOT inside a broadcast envelope.
   function makeDeliveredEvent(groupId = 'group-1') {
     return JSON.stringify({
-      type: 'new_message',
-      conversationId: groupId,
-      timestamp: Date.now(),
-      data: {
-        type: 'wrapped_key_delivered',
-        groupId,
-        senderUserId: 'sender-1',
-      },
+      type: 'wrapped_key_delivered',
+      groupId,
+      senderUserId: 'sender-1',
     });
   }
 
@@ -502,5 +603,95 @@ describe('wrapped_key_delivered', () => {
     mockGetOrFetchGroupKey.mockRejectedValueOnce(new Error('fetch failed'));
 
     await expect(handleServerMessage(makeDeliveredEvent('group-err'))).resolves.toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Production error logging (#190)
+// ---------------------------------------------------------------------------
+
+describe('production error logging', () => {
+  let consoleSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    consoleSpy = jest.spyOn(console, 'error').mockImplementation();
+  });
+
+  afterEach(() => {
+    consoleSpy.mockRestore();
+  });
+
+  it('logs [WS:parse_failure] on invalid JSON', async () => {
+    await handleServerMessage('not json at all');
+
+    expect(consoleSpy).toHaveBeenCalledWith('[WS:parse_failure]');
+  });
+
+  it('logs [WS:missing_type] when type field is absent', async () => {
+    await handleServerMessage('{"data": "no-type"}');
+
+    expect(consoleSpy).toHaveBeenCalledWith('[WS:missing_type]');
+  });
+
+  it('logs [WS:unknown_type] for unrecognized top-level type', async () => {
+    const msg = JSON.stringify({ type: 'alien_message' });
+    await handleServerMessage(msg);
+
+    expect(consoleSpy).toHaveBeenCalledWith('[WS:unknown_type]');
+  });
+
+  it('logs [WS:unknown_broadcast] for unrecognized broadcast data.type', async () => {
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: 'group-1',
+      timestamp: Date.now(),
+      data: {
+        type: 'some_future_event',
+      },
+    });
+    await handleServerMessage(msg);
+
+    expect(consoleSpy).toHaveBeenCalledWith('[WS:unknown_broadcast]');
+  });
+
+  it('logs [WS:decrypt_retry] on decrypt failure before retry', async () => {
+    mockDecryptThreadFields
+      .mockRejectedValueOnce(new Error('AES-GCM auth failed'))
+      .mockResolvedValueOnce({ title: 'Retried', body: 'Body' });
+
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: 'group-1',
+      timestamp: Date.now(),
+      data: {
+        type: 'new_thread',
+        threadId: 'thread-decrypt-retry-log',
+        groupId: 'group-1',
+        authorId: 'user-1',
+        authorName: 'alice',
+        encryptedTitle: 'enc',
+        encryptedBody: 'enc',
+        titleIv: 'iv',
+        bodyIv: 'iv',
+        createdAt: '2026-04-01T10:00:00Z',
+        media: [],
+      },
+    });
+
+    await handleServerMessage(msg);
+
+    expect(consoleSpy).toHaveBeenCalledWith('[WS:decrypt_retry]');
+  });
+
+  it('production error logs contain ONLY the category string, no dynamic data', async () => {
+    // Unknown type — verify console.error is called with exactly 1 arg
+    const msg = JSON.stringify({ type: 'alien_message' });
+    await handleServerMessage(msg);
+
+    const unknownTypeCall = consoleSpy.mock.calls.find(
+      (args: unknown[]) => args[0] === '[WS:unknown_type]',
+    );
+    expect(unknownTypeCall).toBeDefined();
+    expect(unknownTypeCall).toHaveLength(1); // Only the category string, no extra args
   });
 });

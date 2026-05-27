@@ -134,6 +134,17 @@ export interface WrappedKeyDeliveredPayload {
   senderUserId: string;
 }
 
+export interface MediaUploadedPayload {
+  type: 'media_uploaded';
+  mediaId: string;
+  groupId: string;
+  authorId: string;
+  encryptedMetadata: string;
+  sizeBytes: number;
+  uploadedAt: string;
+  expiresAt: string;
+}
+
 export type BroadcastPayload =
   | NewThreadPayload
   | NewReplyPayload
@@ -141,7 +152,8 @@ export type BroadcastPayload =
   | DisplayNameChangedPayload
   | TypingPayload
   | WrapKeyRequestPayload
-  | WrappedKeyDeliveredPayload;
+  | WrappedKeyDeliveredPayload
+  | MediaUploadedPayload;
 
 // ============================================================
 // Broadcast envelope (wraps all broadcast payloads)

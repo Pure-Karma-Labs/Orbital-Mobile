@@ -26,7 +26,6 @@ import type {
   NewThreadPayload,
   NewReplyPayload,
   DisplayNameChangedPayload,
-  TypingPayload,
   WrapKeyRequestPayload,
   WrappedKeyDeliveredPayload,
   MediaUploadedPayload,
@@ -56,13 +55,17 @@ function sweepExpired(map: Map<string, number>): void {
 // Allowed broadcast data.type values (WS-05)
 // ============================================================
 
-const KNOWN_BROADCAST_TYPES = new Set([
+export const KNOWN_BROADCAST_TYPES = new Set([
   'new_thread',
   'new_reply',
   'new_message',
   'display_name_changed',
-  'typing',
   'media_uploaded',
+]);
+
+export const KNOWN_UNICAST_TYPES = new Set([
+  'wrap_key_request',
+  'wrapped_key_delivered',
 ]);
 
 // ============================================================
@@ -191,10 +194,6 @@ async function handleBroadcast(envelope: BroadcastEnvelope): Promise<void> {
 
     case 'display_name_changed':
       handleDisplayNameChanged(data as DisplayNameChangedPayload);
-      break;
-
-    case 'typing':
-      handleTyping(data as TypingPayload);
       break;
 
     case 'media_uploaded':
@@ -331,17 +330,6 @@ function handleDisplayNameChanged(data: DisplayNameChangedPayload): void {
 }
 
 // ============================================================
-// typing handler (stub — backend doesn't broadcast yet)
-// ============================================================
-
-function handleTyping(data: TypingPayload): void {
-  const store = useAppStore.getState();
-  store.addTypingUser(data.conversationId, {
-    userId: data.userId,
-    expiresAt: Date.now() + 5_000,
-  });
-}
-
 // ============================================================
 // media_uploaded handler
 // ============================================================

@@ -29,6 +29,7 @@ import type {
   TypingPayload,
   WrapKeyRequestPayload,
   WrappedKeyDeliveredPayload,
+  MediaUploadedPayload,
 } from './types';
 import type { Thread, Reply } from '../../types/store';
 
@@ -61,8 +62,7 @@ const KNOWN_BROADCAST_TYPES = new Set([
   'new_message',
   'display_name_changed',
   'typing',
-  'wrap_key_request',
-  'wrapped_key_delivered',
+  'media_uploaded',
 ]);
 
 // ============================================================
@@ -79,6 +79,7 @@ export async function handleServerMessage(raw: string): Promise<void> {
   try {
     parsed = JSON.parse(raw);
   } catch {
+    console.error('[WS:parse_failure]');
     if (__DEV__) {
       console.warn('[WS] Failed to parse message as JSON');
     }
@@ -89,6 +90,7 @@ export async function handleServerMessage(raw: string): Promise<void> {
   const type = message.type as string | undefined;
 
   if (!type) {
+    console.error('[WS:missing_type]');
     if (__DEV__) {
       console.warn('[WS] Message missing type field');
     }
@@ -129,6 +131,7 @@ export async function handleServerMessage(raw: string): Promise<void> {
       break;
 
     default:
+      console.error('[WS:unknown_type]');
       if (__DEV__) {
         console.warn('[WS] Unknown message type:', type);
       }
@@ -163,6 +166,7 @@ async function handleBroadcast(envelope: BroadcastEnvelope): Promise<void> {
 
   // WS-05: allow-list guard
   if (!KNOWN_BROADCAST_TYPES.has(data.type)) {
+    console.error('[WS:unknown_broadcast]');
     if (__DEV__) {
       console.warn('[WS] Unknown broadcast data.type:', data.type);
     }
@@ -193,12 +197,8 @@ async function handleBroadcast(envelope: BroadcastEnvelope): Promise<void> {
       handleTyping(data as TypingPayload);
       break;
 
-    case 'wrap_key_request':
-      await handleWrapKeyRequest(data as WrapKeyRequestPayload);
-      break;
-
-    case 'wrapped_key_delivered':
-      await handleWrappedKeyDelivered(data as WrappedKeyDeliveredPayload);
+    case 'media_uploaded':
+      handleMediaUploaded(data as MediaUploadedPayload);
       break;
   }
 }
@@ -343,6 +343,25 @@ function handleTyping(data: TypingPayload): void {
 }
 
 // ============================================================
+// media_uploaded handler
+// ============================================================
+
+/**
+ * Handle media_uploaded broadcast.
+ *
+ * This fires when another member completes a media upload. The media will
+ * be associated with a thread/reply when the corresponding new_thread or
+ * new_reply broadcast arrives (which calls processMediaMetadata). For now
+ * we log in __DEV__ to confirm receipt — the actual processing is deferred
+ * to the thread/reply handler that provides the parent context.
+ */
+function handleMediaUploaded(_data: MediaUploadedPayload): void {
+  if (__DEV__) {
+    console.log('[WS] media_uploaded received');
+  }
+}
+
+// ============================================================
 // wrap_key_request handler
 // ============================================================
 
@@ -408,6 +427,7 @@ async function decryptWithRetry<T>(
   try {
     return await decryptFn(groupKey);
   } catch {
+    console.error('[WS:decrypt_retry]');
     if (__DEV__) {
       console.warn('[WS] Decrypt failed, invalidating key and retrying');
     }

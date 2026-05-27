@@ -61,10 +61,17 @@ export interface LoginResponse {
   token: string;
 }
 
+/**
+ * POST /api/verify-token response.
+ *
+ * Backend PR-B1 changes verify-token to use `authenticate` middleware.
+ * A 200 means the token is valid; no `valid` boolean is needed.
+ * Note: until PR-B1 ships, the backend still returns `valid: true` alongside
+ * these fields — the extra field is harmless (TS ignores surplus properties).
+ */
 export interface VerifyTokenResponse {
-  valid: boolean;
-  userId?: string;
-  username?: string;
+  userId: string;
+  username: string;
 }
 
 /**
@@ -199,13 +206,6 @@ export interface GenerateInviteCodeResponse {
 export interface GroupKeyResponse {
   wrappedGroupKey: string | null;
   wrappedBy: string | null;
-}
-
-/**
- * POST /api/groups/:groupId/members/:userId/wrapped-key request.
- */
-export interface SubmitWrappedKeyRequest {
-  wrappedGroupKey: string;
 }
 
 /**
@@ -446,56 +446,6 @@ export interface ListRepliesResponse {
 }
 
 // ============================================================
-// Signal Protocol Relay
-// ============================================================
-
-/**
- * POST /v1/messages request.
- *
- * Backend expects: { conversation_id, encrypted_envelope, timestamp? }
- */
-export interface SendMessageRequest {
-  conversationId: string;
-  encryptedEnvelope: string;
-  timestamp?: number;
-}
-
-/**
- * POST /v1/messages response.
- *
- * Backend returns: { message_id, server_timestamp }
- */
-export interface SendMessageResponse {
-  messageId: string;
-  serverTimestamp: number;
-}
-
-/**
- * Message envelope from GET /v1/messages.
- */
-export interface MessageEnvelope {
-  messageId: string;
-  conversationId: string;
-  encryptedEnvelope: string;
-  serverTimestamp: number;
-}
-
-export interface FetchMessagesRequest {
-  since?: number;
-  limit?: number;
-}
-
-/**
- * GET /v1/messages response.
- *
- * Backend returns: { messages, has_more }
- */
-export interface FetchMessagesResponse {
-  messages: MessageEnvelope[];
-  hasMore: boolean;
-}
-
-// ============================================================
 // Media
 // ============================================================
 
@@ -516,24 +466,19 @@ export interface MediaMetadata {
   duration: number | undefined;
 }
 
-export interface UploadChunkRequest {
-  uploadId?: string;
-  chunkIndex: number;
-  totalChunks: number;
-  encryptedChunk: string;
-  hmac: string;
-  encryptedMetadata?: string;
-}
-
+/**
+ * POST /api/media/upload/chunk response.
+ *
+ * Backend returns (media.js:249-256): { media_id, chunk_index,
+ *   chunks_received, total_chunks, progress, complete }
+ */
 export interface UploadChunkResponse {
-  uploadId: string;
-  received: number;
+  mediaId: string;
+  chunkIndex: number;
+  chunksReceived: number;
+  totalChunks: number;
+  progress: string;
   complete: boolean;
-  mediaId?: string;
-}
-
-export interface MediaDownloadResponse {
-  data: ArrayBuffer;
 }
 
 // ============================================================
@@ -553,10 +498,6 @@ export interface UserProfile {
   createdAt?: string;
 }
 
-export interface UpdateDisplayNameRequest {
-  displayName: string;
-}
-
 export interface UpdateDisplayNameResponse {
   displayName: string;
   updatedAt: string;
@@ -565,67 +506,6 @@ export interface UpdateDisplayNameResponse {
 export interface UploadAvatarResponse {
   avatarUrl: string;
   updatedAt: string;
-}
-
-// ============================================================
-// Invites
-// ============================================================
-
-/**
- * POST /api/invites/generate request.
- *
- * Backend expects: { groupId, targetEmail }
- */
-export interface GenerateInviteRequest {
-  groupId: string;
-  targetEmail: string;
-}
-
-/**
- * POST /api/invites/generate response.
- *
- * Timestamps are Unix epoch milliseconds.
- */
-export interface InviteResponse {
-  code: string;
-  expiresAt: number;
-  createdAt: number;
-  targetEmail: string;
-}
-
-/**
- * POST /api/invites/generate-link request.
- *
- * Backend expects: { groupId, targetEmail, linkType? }
- */
-export interface GenerateInviteLinkRequest {
-  groupId: string;
-  targetEmail: string;
-  linkType?: 'orbital' | 'web';
-}
-
-/**
- * POST /api/invites/generate-link response.
- */
-export interface InviteLinkResponse {
-  link: string;
-  code: string;
-  expiresAt: number;
-  createdAt: number;
-  targetEmail: string;
-}
-
-/**
- * GET /api/invites/status/:code response.
- *
- * Timestamps are Unix epoch milliseconds.
- */
-export interface InviteStatusResponse {
-  status: 'pending' | 'accepted' | 'expired';
-  createdAt: number;
-  expiresAt: number;
-  usedAt: number | null;
-  usedBy: string | null;
 }
 
 // ============================================================
@@ -642,16 +522,6 @@ export interface RegisterDeviceResponse {
   deviceId: string;
   platform: 'ios' | 'android';
   registeredAt: string;
-}
-
-// ============================================================
-// Version check
-// ============================================================
-
-export interface VersionCheckResponse {
-  updateRequired: boolean;
-  latestVersion: string;
-  updateUrl?: string;
 }
 
 // ============================================================

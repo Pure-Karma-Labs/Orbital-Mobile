@@ -84,8 +84,11 @@ beforeEach(() => {
 describe('uploadChunk', () => {
   it('sends POST to /api/media/upload/chunk with FormData', async () => {
     mockFetchOk({
-      upload_id: 'upload-1',
-      received: 1,
+      media_id: 'media-123',
+      chunk_index: 0,
+      chunks_received: 1,
+      total_chunks: 3,
+      progress: '33.33%',
       complete: false,
     });
 
@@ -99,14 +102,17 @@ describe('uploadChunk', () => {
     expect(init.method).toBe('POST');
     expect(init.body).toBeInstanceOf(FormData);
 
-    // Verify response is parsed and transformed
-    expect(result.uploadId).toBe('upload-1');
-    expect(result.received).toBe(1);
+    // Verify response is parsed and transformed (snake_case -> camelCase)
+    expect(result.mediaId).toBe('media-123');
+    expect(result.chunkIndex).toBe(0);
+    expect(result.chunksReceived).toBe(1);
+    expect(result.totalChunks).toBe(3);
+    expect(result.progress).toBe('33.33%');
     expect(result.complete).toBe(false);
   });
 
   it('includes optional encryptedMetadata and encryptionIv in FormData', async () => {
-    mockFetchOk({ upload_id: 'upload-1', received: 1, complete: false });
+    mockFetchOk({ media_id: 'media-123', chunk_index: 0, chunks_received: 1, total_chunks: 3, progress: '33.33%', complete: false });
 
     const params: UploadChunkParams = {
       ...sampleUploadParams,
@@ -126,7 +132,7 @@ describe('uploadChunk', () => {
   });
 
   it('omits optional fields when not provided', async () => {
-    mockFetchOk({ upload_id: 'upload-1', received: 1, complete: false });
+    mockFetchOk({ media_id: 'media-123', chunk_index: 0, chunks_received: 1, total_chunks: 3, progress: '33.33%', complete: false });
 
     await uploadChunk(sampleUploadParams);
 
@@ -139,7 +145,7 @@ describe('uploadChunk', () => {
   });
 
   it('uses 60s timeout', async () => {
-    mockFetchOk({ upload_id: 'upload-1', received: 1, complete: false });
+    mockFetchOk({ media_id: 'media-123', chunk_index: 0, chunks_received: 1, total_chunks: 3, progress: '33.33%', complete: false });
 
     await uploadChunk(sampleUploadParams);
 

@@ -275,6 +275,20 @@ describe('signupUser', () => {
     expect(mockLoadDmConversations).toHaveBeenCalledTimes(1);
   });
 
+  it('calls fulfillPendingWraps after signup', async () => {
+    mockSignup.mockResolvedValue({
+      token: 'tok',
+      userId: 'u1',
+      username: 'frank',
+      email: 'f@x.com',
+      groupId: null,
+    });
+
+    await signupUser('frank', 'pass', 'f@x.com', 'CODE');
+
+    expect(mockFulfillPendingWraps).toHaveBeenCalled();
+  });
+
   it('does not throw if key generation fails after signup', async () => {
     mockSignup.mockResolvedValue({
       token: 'tok',

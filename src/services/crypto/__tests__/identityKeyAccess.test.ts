@@ -14,9 +14,9 @@ jest.mock('../../../database/repositories/signalIdentityKeyRepository', () => ({
   saveIdentityKey: (...args: unknown[]) => mockSaveIdentityKey(...args),
 }));
 
-const mockGetPreKeyBundle = jest.fn();
+const mockFetchRemoteIdentityKeyBundle = jest.fn();
 jest.mock('../../api/keys', () => ({
-  getPreKeyBundle: (...args: unknown[]) => mockGetPreKeyBundle(...args),
+  fetchRemoteIdentityKeyBundle: (...args: unknown[]) => mockFetchRemoteIdentityKeyBundle(...args),
 }));
 
 import { resolveRemoteIdentityKey, getIdentityKeyPair } from '../identityKeyAccess';
@@ -33,7 +33,7 @@ describe('resolveRemoteIdentityKey', () => {
     const result = await resolveRemoteIdentityKey(selfUserId, selfUserId);
     expect(result).toBeInstanceOf(ArrayBuffer);
     expect(mockGetIdentityKey).not.toHaveBeenCalled();
-    expect(mockGetPreKeyBundle).not.toHaveBeenCalled();
+    expect(mockFetchRemoteIdentityKeyBundle).not.toHaveBeenCalled();
   });
 
   it('returns stored identity key from local DB', async () => {
@@ -51,26 +51,21 @@ describe('resolveRemoteIdentityKey', () => {
     expect(result).toBeInstanceOf(ArrayBuffer);
     expect(new Uint8Array(result).length).toBe(33);
     expect(mockGetIdentityKey).toHaveBeenCalledWith('remote-user');
-    expect(mockGetPreKeyBundle).not.toHaveBeenCalled();
+    expect(mockFetchRemoteIdentityKeyBundle).not.toHaveBeenCalled();
   });
 
-  it('fetches via getPreKeyBundle when not in local DB', async () => {
+  it('fetches via fetchRemoteIdentityKeyBundle when not in local DB', async () => {
     mockGetIdentityKey.mockReturnValueOnce(null);
     const bundleKey = new Uint8Array(33);
     bundleKey[0] = 0x05;
     bundleKey.fill(0xcc, 1);
-    mockGetPreKeyBundle.mockResolvedValueOnce({
+    mockFetchRemoteIdentityKeyBundle.mockResolvedValueOnce({
       identityKey: arrayBufferToBase64(bundleKey.buffer),
-      registrationId: 1,
-      deviceId: 1,
-      signedPreKey: { keyId: 1, publicKey: '', signature: '' },
-      preKey: null,
-      kyberPreKey: null,
     });
 
     const result = await resolveRemoteIdentityKey('new-user', selfUserId);
     expect(result).toBeInstanceOf(ArrayBuffer);
-    expect(mockGetPreKeyBundle).toHaveBeenCalledWith('new-user');
+    expect(mockFetchRemoteIdentityKeyBundle).toHaveBeenCalledWith('new-user');
     expect(mockSaveIdentityKey).toHaveBeenCalledWith(
       expect.objectContaining({
         address: 'new-user',
@@ -83,13 +78,8 @@ describe('resolveRemoteIdentityKey', () => {
     mockGetIdentityKey.mockReturnValueOnce(null);
     const rawKey = new Uint8Array(32);
     rawKey.fill(0xdd);
-    mockGetPreKeyBundle.mockResolvedValueOnce({
+    mockFetchRemoteIdentityKeyBundle.mockResolvedValueOnce({
       identityKey: arrayBufferToBase64(rawKey.buffer),
-      registrationId: 1,
-      deviceId: 1,
-      signedPreKey: { keyId: 1, publicKey: '', signature: '' },
-      preKey: null,
-      kyberPreKey: null,
     });
 
     const result = await resolveRemoteIdentityKey('raw-key-user', selfUserId);
@@ -102,13 +92,8 @@ describe('resolveRemoteIdentityKey', () => {
   it('rejects invalid key lengths', async () => {
     mockGetIdentityKey.mockReturnValueOnce(null);
     const badKey = new Uint8Array(50);
-    mockGetPreKeyBundle.mockResolvedValueOnce({
+    mockFetchRemoteIdentityKeyBundle.mockResolvedValueOnce({
       identityKey: arrayBufferToBase64(badKey.buffer),
-      registrationId: 1,
-      deviceId: 1,
-      signedPreKey: { keyId: 1, publicKey: '', signature: '' },
-      preKey: null,
-      kyberPreKey: null,
     });
 
     await expect(
@@ -121,13 +106,8 @@ describe('resolveRemoteIdentityKey', () => {
     mockGetIdentityKey.mockReturnValue(null);
     const bundleKey = new Uint8Array(33);
     bundleKey[0] = 0x05;
-    mockGetPreKeyBundle.mockResolvedValue({
+    mockFetchRemoteIdentityKeyBundle.mockResolvedValue({
       identityKey: arrayBufferToBase64(bundleKey.buffer),
-      registrationId: 1,
-      deviceId: 1,
-      signedPreKey: { keyId: 1, publicKey: '', signature: '' },
-      preKey: null,
-      kyberPreKey: null,
     });
 
     const [r1, r2, r3] = await Promise.all([
@@ -136,7 +116,7 @@ describe('resolveRemoteIdentityKey', () => {
       resolveRemoteIdentityKey('coalesce-user', selfUserId),
     ]);
 
-    expect(mockGetPreKeyBundle).toHaveBeenCalledTimes(1);
+    expect(mockFetchRemoteIdentityKeyBundle).toHaveBeenCalledTimes(1);
     expect(r1).toBe(r2);
     expect(r2).toBe(r3);
   });

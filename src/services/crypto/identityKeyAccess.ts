@@ -4,7 +4,7 @@ import {
   saveIdentityKey,
 } from '../../database/repositories/signalIdentityKeyRepository';
 import { getCachedIdentityPrivateKeyHex } from './keyGenerationService';
-import { getPreKeyBundle } from '../api/keys';
+import { fetchRemoteIdentityKeyBundle } from '../api/keys';
 import { hexToUint8Array, toArrayBuffer, base64ToArrayBuffer } from './utils';
 
 const IDENTITY_KEY_PUBLIC_ITEM = 'identityKeyPublic';
@@ -44,7 +44,7 @@ export async function resolveRemoteIdentityKey(
 
   const promise = (async () => {
     try {
-      const bundle = await getPreKeyBundle(userId);
+      const bundle = await fetchRemoteIdentityKeyBundle(userId);
       const decoded = new Uint8Array(base64ToArrayBuffer(bundle.identityKey));
 
       let keyBytes: Uint8Array;

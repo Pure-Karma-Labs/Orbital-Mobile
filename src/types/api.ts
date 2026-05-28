@@ -560,26 +560,11 @@ export interface UploadPreKeyBundleResponse {
   success: boolean;
 }
 
-export interface PreKeyCountResponse {
-  count: number;
+/** GET /v1/keys/bundle/:userId -- returns identity key only for ECIES wrapping. */
+export interface IdentityKeyResponse {
+  identityKey: string;
 }
 
-export interface PreKeyBundleResponse {
-  registrationId: number;
-  deviceId: number;
-  identityKey: string;
-  signedPreKey: {
-    keyId: number;
-    publicKey: string;
-    signature: string;
-  };
-  preKey: {
-    keyId: number;
-    publicKey: string;
-  } | null;
-  kyberPreKey: {
-    keyId: number;
-    publicKey: string;
-    signature: string;
-  } | null;
+export interface PreKeyCountResponse {
+  count: number;
 }

@@ -462,15 +462,17 @@ export async function hydrateContactsFromOrbits(): Promise<void> {
   const results = await Promise.all(
     groupConvs.map((conv) =>
       getGroupMembers(conv.id)
-        .then((members) => ({ convId: conv.id, members }))
-        .catch(() => ({ convId: conv.id, members: [] as GroupMember[] })),
+        .then((members) => ({ convId: conv.id, members, ok: true }))
+        .catch(() => ({ convId: conv.id, members: [] as GroupMember[], ok: false })),
     ),
   );
 
   const incoming: Contact[] = [];
   const serverMemberIds = new Set<string>();
+  const succeededConvIds = new Set<string>();
 
-  for (const { convId, members } of results) {
+  for (const { convId, members, ok } of results) {
+    if (ok) succeededConvIds.add(convId);
     for (const member of members) {
       if (member.userId === currentUserId) continue;
       serverMemberIds.add(member.userId);
@@ -488,14 +490,16 @@ export async function hydrateContactsFromOrbits(): Promise<void> {
     store.mergeContacts(incoming);
   }
 
-  // Reconcile: remove contacts whose only conversationIds were orbits
-  // and who are no longer in any orbit on the server
+  // Reconcile: remove contacts whose only conversationIds were successfully
+  // fetched orbits and who are no longer in any of those orbits on the server.
+  // Skip orbits where the fetch failed to avoid false-positive deletions.
+  if (succeededConvIds.size === 0) return;
   const latestContacts = useAppStore.getState().contacts;
   for (const [id, contact] of Object.entries(latestContacts)) {
     if (
       !serverMemberIds.has(id) &&
       (contact.conversationIds ?? []).every((cid) =>
-        groupConvs.some((g) => g.id === cid),
+        succeededConvIds.has(cid),
       )
     ) {
       useAppStore.getState().removeContact(id);

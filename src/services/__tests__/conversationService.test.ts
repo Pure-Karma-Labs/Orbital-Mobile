@@ -649,4 +649,58 @@ describe('hydrateContactsFromOrbits', () => {
       expect.objectContaining({ id: 'member-1', username: 'alice' }),
     ]);
   });
+
+  it('removes orphaned contacts no longer in any orbit', async () => {
+    const mockRemoveContact = jest.fn();
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-self-user',
+      conversations: {
+        'g1': { id: 'g1', type: 'group', name: 'Orbit 1' },
+      },
+      contacts: {
+        'stale-user': {
+          id: 'stale-user',
+          username: 'stale',
+          displayName: 'Stale',
+          avatarPath: null,
+          conversationIds: ['g1'],
+        },
+      },
+      mergeContacts: mockMergeContacts,
+      removeContact: mockRemoveContact,
+    });
+    mockGetGroupMembers.mockResolvedValue([
+      { userId: 'member-1', username: 'alice', displayName: 'Alice', publicKey: 'pk', avatarUrl: null, joinedAt: '2026-01-01' },
+    ]);
+
+    await hydrateContactsFromOrbits();
+
+    expect(mockRemoveContact).toHaveBeenCalledWith('stale-user');
+  });
+
+  it('does not remove contacts when their orbit fetch failed', async () => {
+    const mockRemoveContact = jest.fn();
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-self-user',
+      conversations: {
+        'g1': { id: 'g1', type: 'group', name: 'Orbit 1' },
+      },
+      contacts: {
+        'bob': {
+          id: 'bob',
+          username: 'bob',
+          displayName: 'Bob',
+          avatarPath: null,
+          conversationIds: ['g1'],
+        },
+      },
+      mergeContacts: mockMergeContacts,
+      removeContact: mockRemoveContact,
+    });
+    mockGetGroupMembers.mockRejectedValue(new Error('network'));
+
+    await hydrateContactsFromOrbits();
+
+    expect(mockRemoveContact).not.toHaveBeenCalled();
+  });
 });

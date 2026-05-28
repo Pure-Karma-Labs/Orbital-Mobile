@@ -107,14 +107,6 @@ function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstanc
   return found[0];
 }
 
-function findAllByTestIdPrefix(root: ReactTestInstance, prefix: string): ReactTestInstance[] {
-  return root.findAll(
-    (node) =>
-      typeof node.props.testID === 'string' &&
-      node.props.testID.startsWith(prefix) &&
-      node.props.accessibilityRole === 'button',
-  );
-}
 
 beforeEach(() => {
   jest.clearAllMocks();

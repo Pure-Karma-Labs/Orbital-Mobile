@@ -110,6 +110,9 @@ export async function signupUser(
   await loadDmConversations().catch((e: unknown) => {
     if (__DEV__) console.warn('[DmSync]', e instanceof Error ? e.message : e);
   });
+  fulfillPendingWraps().catch((e: unknown) => {
+    if (__DEV__) console.warn('[PendingWraps]', e instanceof Error ? e.message : e);
+  });
 }
 
 /**

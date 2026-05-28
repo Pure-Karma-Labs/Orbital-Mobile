@@ -323,6 +323,7 @@ function handleDisplayNameChanged(data: DisplayNameChangedPayload): void {
 
   store.upsertContact({
     id: data.userId,
+    username: existing?.username ?? null,
     displayName: data.displayName,
     avatarPath: existing?.avatarPath ?? null,
     conversationIds: existing?.conversationIds ?? [],

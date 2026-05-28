@@ -50,11 +50,9 @@ export function NewChatScreen({
     setError(null);
     const trimmed = username.trim().toLowerCase();
 
-    // Find recipient in contacts store by displayName (contacts lack a username
-    // field -- displayName is the closest match since the backend falls back
-    // username -> displayName). This is an MVP limitation.
+    // Find recipient in contacts store by username (populated from orbit members)
     const contact = Object.values(contacts).find(
-      (c) => c.displayName?.toLowerCase() === trimmed,
+      (c) => c.username?.toLowerCase() === trimmed,
     );
 
     if (!contact) {

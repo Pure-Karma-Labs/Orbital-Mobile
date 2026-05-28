@@ -5,7 +5,7 @@
  * Components never call the groups API or store directly.
  */
 
-import { listGroups, createGroup, joinGroup, listDms, createDm, getPendingWraps, submitWrappedKey, selfWrapGroupKey } from './api/groups';
+import { listGroups, createGroup, joinGroup, listDms, createDm, getPendingWraps, submitWrappedKey, selfWrapGroupKey, getGroupMembers } from './api/groups';
 import {
   persistGroupKey,
   generateGroupKey,
@@ -22,8 +22,8 @@ import { getIdentityKeyPair, resolveRemoteIdentityKey } from './crypto/identityK
 import { ApiError } from './api/errors';
 import { generateUUID } from '../utils/uuid';
 import { useAppStore } from '../stores/useAppStore';
-import type { Conversation } from '../types/store';
-import type { DmResponse, GroupResponse } from '../types/api';
+import type { Contact, Conversation } from '../types/store';
+import type { DmResponse, GroupMember, GroupResponse } from '../types/api';
 
 export interface DecryptedGroup {
   groupId: string;
@@ -205,6 +205,19 @@ export async function loadDmConversations(): Promise<void> {
   const store = useAppStore.getState();
   for (const conversation of conversations) {
     store.upsertConversation(conversation);
+  }
+
+  // Merge DM recipients into the contacts store so they're discoverable
+  // in the New Chat contact picker
+  const dmContacts: Contact[] = dms.map((dm) => ({
+    id: dm.recipient.id,
+    username: dm.recipient.username,
+    displayName: dm.recipient.username,
+    avatarPath: dm.recipient.avatarUrl ?? null,
+    conversationIds: [dm.groupId],
+  }));
+  if (dmContacts.length > 0) {
+    store.mergeContacts(dmContacts);
   }
 }
 
@@ -417,6 +430,75 @@ export async function fulfillPendingWraps(): Promise<void> {
       }
     } catch {
       // Skip groups where we don't have a key (we're the pending one)
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Contact hydration from orbit membership
+// ---------------------------------------------------------------------------
+
+let lastContactHydration = 0;
+const CONTACT_HYDRATION_DEBOUNCE_MS = 60_000;
+
+/**
+ * Populate the contacts store with members from all orbits.
+ * Debounced to at most once per minute. Also reconciles removed members.
+ */
+export async function hydrateContactsFromOrbits(): Promise<void> {
+  const now = Date.now();
+  if (now - lastContactHydration < CONTACT_HYDRATION_DEBOUNCE_MS) return;
+  lastContactHydration = now;
+
+  const store = useAppStore.getState();
+  const currentUserId = store.userId;
+  if (!currentUserId) return;
+
+  const groupConvs = Object.values(store.conversations).filter(
+    (c) => c.type === 'group',
+  );
+  if (groupConvs.length === 0) return;
+
+  const results = await Promise.all(
+    groupConvs.map((conv) =>
+      getGroupMembers(conv.id)
+        .then((members) => ({ convId: conv.id, members }))
+        .catch(() => ({ convId: conv.id, members: [] as GroupMember[] })),
+    ),
+  );
+
+  const incoming: Contact[] = [];
+  const serverMemberIds = new Set<string>();
+
+  for (const { convId, members } of results) {
+    for (const member of members) {
+      if (member.userId === currentUserId) continue;
+      serverMemberIds.add(member.userId);
+      incoming.push({
+        id: member.userId,
+        username: member.username,
+        displayName: member.displayName || member.username,
+        avatarPath: member.avatarUrl ?? null,
+        conversationIds: [convId],
+      });
+    }
+  }
+
+  if (incoming.length > 0) {
+    store.mergeContacts(incoming);
+  }
+
+  // Reconcile: remove contacts whose only conversationIds were orbits
+  // and who are no longer in any orbit on the server
+  const latestContacts = useAppStore.getState().contacts;
+  for (const [id, contact] of Object.entries(latestContacts)) {
+    if (
+      !serverMemberIds.has(id) &&
+      (contact.conversationIds ?? []).every((cid) =>
+        groupConvs.some((g) => g.id === cid),
+      )
+    ) {
+      useAppStore.getState().removeContact(id);
     }
   }
 }

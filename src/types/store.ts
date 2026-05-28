@@ -77,6 +77,8 @@ export interface Reply {
 export interface Contact {
   /** Service ID — matches service_id in signal tables */
   id: string;
+  /** Backend username — used for DM contact lookup */
+  username: string | null;
   displayName: string | null;
   avatarPath: string | null;
   /** IDs of conversations (groups) this contact is a member of */
@@ -181,6 +183,8 @@ export interface ContactsState {
 
 export interface ContactsActions {
   setContacts: (contacts: Contact[]) => void;
+  /** Additive field-level merge — unions conversationIds, preserves existing fields. */
+  mergeContacts: (contacts: Contact[]) => void;
   upsertContact: (contact: Contact) => void;
   removeContact: (id: string) => void;
 }

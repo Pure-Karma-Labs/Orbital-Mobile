@@ -19,6 +19,27 @@ export const createContactsSlice: StateCreator<
     set({ contacts: map }, false, 'contacts/setContacts');
   },
 
+  mergeContacts: (incoming) => {
+    const { contacts } = get();
+    const merged = { ...contacts };
+    for (const c of incoming) {
+      const existing = merged[c.id];
+      merged[c.id] = {
+        id: c.id,
+        username: c.username ?? existing?.username ?? null,
+        displayName: c.displayName ?? existing?.displayName ?? null,
+        avatarPath: c.avatarPath ?? existing?.avatarPath ?? null,
+        conversationIds: [
+          ...new Set([
+            ...(existing?.conversationIds ?? []),
+            ...(c.conversationIds ?? []),
+          ]),
+        ],
+      };
+    }
+    set({ contacts: merged }, false, 'contacts/mergeContacts');
+  },
+
   upsertContact: (contact) => {
     const { contacts } = get();
     set(

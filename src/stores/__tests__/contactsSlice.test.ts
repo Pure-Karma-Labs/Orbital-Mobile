@@ -71,6 +71,7 @@ function makeStore() {
 function makeContact(overrides: Partial<Contact> = {}): Contact {
   return {
     id: 'contact-1',
+    username: 'alice',
     displayName: 'Alice',
     avatarPath: null,
     conversationIds: ['conv-1'],
@@ -140,5 +141,80 @@ describe('contactsSlice — removeContact', () => {
   it('is a no-op for unknown contact', () => {
     const store = makeStore();
     expect(() => store.getState().removeContact('nonexistent')).not.toThrow();
+  });
+});
+
+describe('contactsSlice — mergeContacts', () => {
+  it('inserts new contacts into an empty map', () => {
+    const store = makeStore();
+    const c1 = makeContact({ id: 'contact-1', username: 'alice' });
+    const c2 = makeContact({ id: 'contact-2', username: 'bob', displayName: 'Bob' });
+    store.getState().mergeContacts([c1, c2]);
+    const state = store.getState();
+    expect(Object.keys(state.contacts)).toHaveLength(2);
+    expect(state.contacts['contact-1'].username).toBe('alice');
+    expect(state.contacts['contact-2'].username).toBe('bob');
+  });
+
+  it('unions conversationIds without duplicates', () => {
+    const store = makeStore();
+    store.getState().setContacts([
+      makeContact({ id: 'c1', conversationIds: ['conv-1', 'conv-2'] }),
+    ]);
+    store.getState().mergeContacts([
+      makeContact({ id: 'c1', conversationIds: ['conv-2', 'conv-3'] }),
+    ]);
+    const ids = store.getState().contacts['c1'].conversationIds;
+    expect(ids).toEqual(expect.arrayContaining(['conv-1', 'conv-2', 'conv-3']));
+    expect(ids).toHaveLength(3);
+  });
+
+  it('preserves existing fields when incoming has null', () => {
+    const store = makeStore();
+    store.getState().setContacts([
+      makeContact({ id: 'c1', username: 'alice', displayName: 'Alice', avatarPath: '/path.jpg' }),
+    ]);
+    store.getState().mergeContacts([
+      makeContact({ id: 'c1', username: null, displayName: null, avatarPath: null }),
+    ]);
+    const contact = store.getState().contacts['c1'];
+    expect(contact.username).toBe('alice');
+    expect(contact.displayName).toBe('Alice');
+    expect(contact.avatarPath).toBe('/path.jpg');
+  });
+
+  it('overwrites existing fields when incoming has non-null values', () => {
+    const store = makeStore();
+    store.getState().setContacts([
+      makeContact({ id: 'c1', username: 'alice', displayName: 'Alice' }),
+    ]);
+    store.getState().mergeContacts([
+      makeContact({ id: 'c1', username: 'alice_new', displayName: 'Alice Updated' }),
+    ]);
+    const contact = store.getState().contacts['c1'];
+    expect(contact.username).toBe('alice_new');
+    expect(contact.displayName).toBe('Alice Updated');
+  });
+
+  it('deduplicates by id when incoming contains duplicates', () => {
+    const store = makeStore();
+    store.getState().mergeContacts([
+      makeContact({ id: 'c1', username: 'alice', conversationIds: ['conv-1'] }),
+      makeContact({ id: 'c1', username: 'alice', conversationIds: ['conv-2'] }),
+    ]);
+    const contact = store.getState().contacts['c1'];
+    expect(contact.conversationIds).toEqual(expect.arrayContaining(['conv-1', 'conv-2']));
+  });
+
+  it('does not affect contacts not in the incoming list', () => {
+    const store = makeStore();
+    store.getState().setContacts([
+      makeContact({ id: 'c1', username: 'alice' }),
+      makeContact({ id: 'c2', username: 'bob' }),
+    ]);
+    store.getState().mergeContacts([
+      makeContact({ id: 'c1', username: 'alice_updated' }),
+    ]);
+    expect(store.getState().contacts['c2'].username).toBe('bob');
   });
 });

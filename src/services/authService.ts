@@ -23,7 +23,7 @@ import { clearProcessedMediaIds } from './threadService';
 import { execute } from '../database/queryHelpers';
 import { isDatabaseInitialized } from '../database/connection';
 import { getItem, setItem } from '../database/repositories/itemRepository';
-import { loadConversations, loadDmConversations, fulfillPendingWraps } from './conversationService';
+import { loadConversations, loadDmConversations, fulfillPendingWraps, hydrateContactsFromOrbits } from './conversationService';
 import { websocketManager } from './websocket';
 import { deregisterCurrentDevice } from './notificationService';
 
@@ -49,6 +49,7 @@ export async function loginUser(
     const lastUserId = getItem('lastUserId');
     if (lastUserId && lastUserId !== response.userId) {
       await fullCryptoWipe();
+      useAppStore.getState().setContacts([]);
     }
     setItem('lastUserId', response.userId);
   }
@@ -59,6 +60,9 @@ export async function loginUser(
   });
   await loadDmConversations().catch((e: unknown) => {
     if (__DEV__) console.warn('[DmSync]', e instanceof Error ? e.message : e);
+  });
+  hydrateContactsFromOrbits().catch((e: unknown) => {
+    if (__DEV__) console.warn('[ContactHydration]', e instanceof Error ? e.message : e);
   });
   fulfillPendingWraps().catch((e: unknown) => {
     if (__DEV__) console.warn('[PendingWraps]', e instanceof Error ? e.message : e);
@@ -93,6 +97,7 @@ export async function signupUser(
     const lastUserId = getItem('lastUserId');
     if (lastUserId && lastUserId !== response.userId) {
       await fullCryptoWipe();
+      useAppStore.getState().setContacts([]);
     }
     setItem('lastUserId', response.userId);
   }
@@ -112,6 +117,9 @@ export async function signupUser(
   });
   fulfillPendingWraps().catch((e: unknown) => {
     if (__DEV__) console.warn('[PendingWraps]', e instanceof Error ? e.message : e);
+  });
+  hydrateContactsFromOrbits().catch((e: unknown) => {
+    if (__DEV__) console.warn('[ContactHydration]', e instanceof Error ? e.message : e);
   });
 }
 
@@ -141,6 +149,7 @@ export async function restoreSession(): Promise<boolean> {
       const lastUserId = getItem('lastUserId');
       if (lastUserId && lastUserId !== profile.id) {
         await fullCryptoWipe();
+        useAppStore.getState().setContacts([]);
       }
       setItem('lastUserId', profile.id);
     }
@@ -151,6 +160,9 @@ export async function restoreSession(): Promise<boolean> {
     });
     await loadDmConversations().catch((e: unknown) => {
       if (__DEV__) console.warn('[DmSync]', e instanceof Error ? e.message : e);
+    });
+    hydrateContactsFromOrbits().catch((e: unknown) => {
+      if (__DEV__) console.warn('[ContactHydration]', e instanceof Error ? e.message : e);
     });
     fulfillPendingWraps().catch((e: unknown) => {
       if (__DEV__) console.warn('[PendingWraps]', e instanceof Error ? e.message : e);

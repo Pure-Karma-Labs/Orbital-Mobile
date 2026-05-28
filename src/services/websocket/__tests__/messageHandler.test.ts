@@ -322,6 +322,7 @@ describe('display_name_changed broadcast', () => {
 
     expect(mockUpsertContact).toHaveBeenCalledWith({
       id: 'user-5',
+      username: null,
       displayName: 'New Name',
       avatarPath: null,
       conversationIds: [],

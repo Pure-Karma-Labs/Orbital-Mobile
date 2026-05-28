@@ -178,7 +178,7 @@ describe('NewChatScreen — contact lookup', () => {
     expect(mockStartDm).not.toHaveBeenCalled();
   });
 
-  it('looks up contact case-insensitively by displayName', async () => {
+  it('looks up contact case-insensitively by username', async () => {
     mockUseContacts.mockReturnValue(contactsWithBob);
     mockStartDm.mockResolvedValue({ conversationId: 'dm-1', recipientName: 'bob' });
     const renderer = renderScreen();

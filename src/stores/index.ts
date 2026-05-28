@@ -61,6 +61,7 @@ export const useContacts = () =>
   useAppStore(useShallow((s) => ({
     contacts: s.contacts,
     setContacts: s.setContacts,
+    mergeContacts: s.mergeContacts,
     upsertContact: s.upsertContact,
     removeContact: s.removeContact,
   })));

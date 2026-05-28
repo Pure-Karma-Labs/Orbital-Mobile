@@ -3,7 +3,7 @@ import type {
   UploadPreKeyBundleRequest,
   UploadPreKeyBundleResponse,
   PreKeyCountResponse,
-  PreKeyBundleResponse,
+  IdentityKeyResponse,
 } from '../../types/api';
 
 export function uploadPreKeyBundle(
@@ -20,8 +20,10 @@ export function getPreKeyCount(): Promise<PreKeyCountResponse> {
   return request<PreKeyCountResponse>({ method: 'GET', path: '/v1/keys/count' });
 }
 
-export function getPreKeyBundle(serviceId: string): Promise<PreKeyBundleResponse> {
-  return request<PreKeyBundleResponse>({
+export function fetchRemoteIdentityKeyBundle(
+  serviceId: string,
+): Promise<IdentityKeyResponse> {
+  return request<IdentityKeyResponse>({
     method: 'GET',
     path: `/v1/keys/bundle/${encodeURIComponent(serviceId)}`,
   });

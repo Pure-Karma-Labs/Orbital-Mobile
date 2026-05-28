@@ -3,7 +3,7 @@ jest.mock('../client', () => ({
 }));
 
 import { request } from '../client';
-import { uploadPreKeyBundle, getPreKeyCount } from '../keys';
+import { uploadPreKeyBundle, getPreKeyCount, fetchRemoteIdentityKeyBundle } from '../keys';
 import type { UploadPreKeyBundleRequest } from '../../../types/api';
 
 const mockRequest = request as jest.MockedFunction<typeof request>;
@@ -71,5 +71,37 @@ describe('getPreKeyCount', () => {
 
     const result = await getPreKeyCount();
     expect(result).toEqual({ count: 17 });
+  });
+});
+
+describe('fetchRemoteIdentityKeyBundle', () => {
+  it('calls GET /v1/keys/bundle/:serviceId', async () => {
+    mockRequest.mockResolvedValue({ identityKey: 'base64key' });
+
+    await fetchRemoteIdentityKeyBundle('user-uuid-123');
+
+    expect(mockRequest).toHaveBeenCalledWith({
+      method: 'GET',
+      path: '/v1/keys/bundle/user-uuid-123',
+    });
+  });
+
+  it('encodes the serviceId parameter', async () => {
+    mockRequest.mockResolvedValue({ identityKey: 'base64key' });
+
+    await fetchRemoteIdentityKeyBundle('user/with/slashes');
+
+    expect(mockRequest).toHaveBeenCalledWith({
+      method: 'GET',
+      path: '/v1/keys/bundle/user%2Fwith%2Fslashes',
+    });
+  });
+
+  it('returns the response from request()', async () => {
+    const mockResponse = { identityKey: 'AQID' };
+    mockRequest.mockResolvedValue(mockResponse);
+
+    const result = await fetchRemoteIdentityKeyBundle('user-uuid');
+    expect(result).toEqual(mockResponse);
   });
 });

@@ -3,6 +3,7 @@ jest.mock('../api/groups', () => ({
   listDms: jest.fn(),
   createDm: jest.fn(),
   joinGroup: jest.fn(),
+  getGroupMembers: jest.fn(),
 }));
 
 const mockPersistGroupKey = jest.fn();
@@ -45,30 +46,47 @@ jest.mock('../crypto/utils', () => ({
 const mockSetConversations = jest.fn();
 const mockSetActiveConversation = jest.fn();
 const mockUpsertConversation = jest.fn();
+const mockMergeContacts = jest.fn();
 
 jest.mock('../../stores/useAppStore', () => ({
   useAppStore: {
     getState: jest.fn(() => ({
       userId: 'test-self-user',
       activeConversationId: null,
+      conversations: {},
+      contacts: {},
       setConversations: mockSetConversations,
       setActiveConversation: mockSetActiveConversation,
       upsertConversation: mockUpsertConversation,
+      mergeContacts: mockMergeContacts,
+      removeContact: jest.fn(),
     })),
   },
 }));
 
-import { loadConversations, loadDmConversations, startDm, joinOrbit, fetchCreatorOrbitsDecrypted } from '../conversationService';
-import { listGroups, listDms, createDm, joinGroup } from '../api/groups';
+import { loadConversations, loadDmConversations, startDm, joinOrbit, fetchCreatorOrbitsDecrypted, hydrateContactsFromOrbits } from '../conversationService';
+import { listGroups, listDms, createDm, joinGroup, getGroupMembers } from '../api/groups';
 import { useAppStore } from '../../stores/useAppStore';
 
 const mockListGroups = listGroups as jest.Mock;
 const mockListDms = listDms as jest.Mock;
 const mockCreateDm = createDm as jest.Mock;
 const mockJoinGroup = joinGroup as jest.Mock;
+const mockGetGroupMembers = getGroupMembers as jest.Mock;
 
 beforeEach(() => {
   jest.clearAllMocks();
+  (useAppStore.getState as jest.Mock).mockReturnValue({
+    userId: 'test-self-user',
+    activeConversationId: null,
+    conversations: {},
+    contacts: {},
+    setConversations: mockSetConversations,
+    setActiveConversation: mockSetActiveConversation,
+    upsertConversation: mockUpsertConversation,
+    mergeContacts: mockMergeContacts,
+    removeContact: jest.fn(),
+  });
 });
 
 const GROUP_RESPONSE = {
@@ -111,9 +129,13 @@ describe('loadConversations', () => {
     (useAppStore.getState as jest.Mock).mockReturnValue({
       userId: 'test-self-user',
       activeConversationId: 'existing-id',
+      conversations: {},
+      contacts: {},
       setConversations: mockSetConversations,
       setActiveConversation: mockSetActiveConversation,
       upsertConversation: mockUpsertConversation,
+      mergeContacts: mockMergeContacts,
+      removeContact: jest.fn(),
     });
     mockListGroups.mockResolvedValue([GROUP_RESPONSE]);
 
@@ -478,5 +500,153 @@ describe('fetchCreatorOrbitsDecrypted', () => {
     mockListGroups.mockRejectedValue(new Error('network failure'));
 
     await expect(fetchCreatorOrbitsDecrypted()).rejects.toThrow('network failure');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loadDmConversations — contact merge
+// ---------------------------------------------------------------------------
+
+describe('loadDmConversations — contact merge', () => {
+  it('merges DM recipients as contacts after loading DMs', async () => {
+    mockListDms.mockResolvedValue([DM_RESPONSE]);
+
+    await loadDmConversations();
+
+    expect(mockMergeContacts).toHaveBeenCalledWith([
+      expect.objectContaining({
+        id: 'user-2',
+        username: 'bob',
+        displayName: 'bob',
+        conversationIds: ['dm-1'],
+      }),
+    ]);
+  });
+
+  it('does not call mergeContacts when DM list is empty', async () => {
+    mockListDms.mockResolvedValue([]);
+
+    await loadDmConversations();
+
+    expect(mockMergeContacts).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// hydrateContactsFromOrbits
+// ---------------------------------------------------------------------------
+
+let hydrateTestClock = Date.now();
+describe('hydrateContactsFromOrbits', () => {
+  beforeEach(() => {
+    hydrateTestClock += 120_000;
+    jest.useFakeTimers();
+    jest.setSystemTime(hydrateTestClock);
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('fetches members from group conversations and merges as contacts', async () => {
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-self-user',
+      conversations: {
+        'g1': { id: 'g1', type: 'group', name: 'Orbit 1' },
+      },
+      contacts: {},
+      mergeContacts: mockMergeContacts,
+      removeContact: jest.fn(),
+    });
+    mockGetGroupMembers.mockResolvedValue([
+      { userId: 'member-1', username: 'alice', displayName: 'Alice', publicKey: 'pk', avatarUrl: null, joinedAt: '2026-01-01' },
+      { userId: 'test-self-user', username: 'self', displayName: 'Self', publicKey: 'pk', avatarUrl: null, joinedAt: '2026-01-01' },
+    ]);
+
+    await hydrateContactsFromOrbits();
+
+    expect(mockGetGroupMembers).toHaveBeenCalledWith('g1');
+    expect(mockMergeContacts).toHaveBeenCalledWith([
+      expect.objectContaining({
+        id: 'member-1',
+        username: 'alice',
+        displayName: 'Alice',
+        conversationIds: ['g1'],
+      }),
+    ]);
+  });
+
+  it('excludes the current user from merged contacts', async () => {
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-self-user',
+      conversations: {
+        'g1': { id: 'g1', type: 'group', name: 'Orbit 1' },
+      },
+      contacts: {},
+      mergeContacts: mockMergeContacts,
+      removeContact: jest.fn(),
+    });
+    mockGetGroupMembers.mockResolvedValue([
+      { userId: 'test-self-user', username: 'self', displayName: 'Self', publicKey: 'pk', avatarUrl: null, joinedAt: '2026-01-01' },
+    ]);
+
+    await hydrateContactsFromOrbits();
+
+    expect(mockMergeContacts).not.toHaveBeenCalled();
+  });
+
+  it('skips direct conversations (only processes groups)', async () => {
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-self-user',
+      conversations: {
+        'dm-1': { id: 'dm-1', type: 'direct', name: 'Bob' },
+      },
+      contacts: {},
+      mergeContacts: mockMergeContacts,
+      removeContact: jest.fn(),
+    });
+
+    await hydrateContactsFromOrbits();
+
+    expect(mockGetGroupMembers).not.toHaveBeenCalled();
+    expect(mockMergeContacts).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when userId is null', async () => {
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: null,
+      conversations: {},
+      contacts: {},
+      mergeContacts: mockMergeContacts,
+      removeContact: jest.fn(),
+    });
+
+    await hydrateContactsFromOrbits();
+
+    expect(mockGetGroupMembers).not.toHaveBeenCalled();
+  });
+
+  it('continues when one group member fetch fails', async () => {
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-self-user',
+      conversations: {
+        'g1': { id: 'g1', type: 'group', name: 'Orbit 1' },
+        'g2': { id: 'g2', type: 'group', name: 'Orbit 2' },
+      },
+      contacts: {},
+      mergeContacts: mockMergeContacts,
+      removeContact: jest.fn(),
+    });
+    mockGetGroupMembers
+      .mockRejectedValueOnce(new Error('network'))
+      .mockResolvedValueOnce([
+        { userId: 'member-1', username: 'alice', displayName: 'Alice', publicKey: 'pk', avatarUrl: null, joinedAt: '2026-01-01' },
+      ]);
+
+    await hydrateContactsFromOrbits();
+
+    expect(mockMergeContacts).toHaveBeenCalledWith([
+      expect.objectContaining({ id: 'member-1', username: 'alice' }),
+    ]);
   });
 });

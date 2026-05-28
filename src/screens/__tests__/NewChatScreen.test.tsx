@@ -1,5 +1,5 @@
 /**
- * Tests for NewChatScreen — username input, contact lookup, startDm, and navigation.
+ * Tests for NewChatScreen — contact list, filtering, startDm, and navigation.
  */
 
 import React from 'react';
@@ -7,10 +7,6 @@ import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'rea
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../../theme';
 import { NewChatScreen } from '../NewChatScreen';
-
-// ---------------------------------------------------------------------------
-// Module mocks
-// ---------------------------------------------------------------------------
 
 jest.mock('../../services/conversationService', () => ({
   startDm: jest.fn(),
@@ -29,20 +25,18 @@ jest.mock('../../stores', () => ({
 import { startDm } from '../../services/conversationService';
 const mockStartDm = startDm as jest.Mock;
 
-// ---------------------------------------------------------------------------
-// Fixtures
-// ---------------------------------------------------------------------------
-
 const contactsWithBob = {
   contacts: {
     'contact-1': {
       id: 'contact-1',
-      displayName: 'bob',
+      displayName: 'Bob Smith',
       username: 'bob',
       avatarPath: null,
+      conversationIds: [],
     },
   },
   setContacts: jest.fn(),
+  mergeContacts: jest.fn(),
   upsertContact: jest.fn(),
   removeContact: jest.fn(),
 };
@@ -50,13 +44,10 @@ const contactsWithBob = {
 const emptyContactsState = {
   contacts: {},
   setContacts: jest.fn(),
+  mergeContacts: jest.fn(),
   upsertContact: jest.fn(),
   removeContact: jest.fn(),
 };
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 const safeAreaMetrics = {
   frame: { x: 0, y: 0, width: 390, height: 844 },
@@ -116,113 +107,76 @@ function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstanc
   return found[0];
 }
 
-// ---------------------------------------------------------------------------
-// Setup
-// ---------------------------------------------------------------------------
 
 beforeEach(() => {
   jest.clearAllMocks();
   mockUseContacts.mockReturnValue(emptyContactsState);
 });
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 describe('NewChatScreen — rendering', () => {
-  it('renders the screen container, username input, and submit button', () => {
+  it('renders the screen and search input', () => {
     const renderer = renderScreen();
     expect(() => findByTestId(renderer.root, 'new-chat-screen')).not.toThrow();
     expect(() => findByTestId(renderer.root, 'new-chat-username-input')).not.toThrow();
-    expect(() => findByTestId(renderer.root, 'new-chat-submit-btn')).not.toThrow();
+  });
+
+  it('shows empty message when no contacts exist', () => {
+    const renderer = renderScreen();
+    const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
+    const emptyText = allText.find(
+      (node) =>
+        typeof node.props.children === 'string' &&
+        node.props.children.includes('No contacts yet'),
+    );
+    expect(emptyText).toBeDefined();
   });
 });
 
-describe('NewChatScreen — validation', () => {
-  it('submit button is disabled when username is empty', () => {
+describe('NewChatScreen — contact list', () => {
+  it('shows contacts from the store', () => {
+    mockUseContacts.mockReturnValue(contactsWithBob);
     const renderer = renderScreen();
-    const btn = findByTestId(renderer.root, 'new-chat-submit-btn');
-    expect(btn.props.disabled).toBe(true);
+    expect(() => findByTestId(renderer.root, 'contact-row-contact-1')).not.toThrow();
   });
 
-  it('submit button is enabled when username has content', () => {
-    const renderer = renderScreen();
-    act(() => {
-      findByTestId(renderer.root, 'new-chat-username-input').props.onChangeText('bob');
-    });
-    expect(findByTestId(renderer.root, 'new-chat-submit-btn').props.disabled).toBe(false);
-  });
-});
-
-describe('NewChatScreen — contact lookup', () => {
-  it('shows error when user is not found in contacts', async () => {
-    // contacts is empty — bob not found
-    mockUseContacts.mockReturnValue(emptyContactsState);
+  it('filters out non-matching contacts', () => {
+    mockUseContacts.mockReturnValue(contactsWithBob);
     const renderer = renderScreen();
 
     act(() => {
-      findByTestId(renderer.root, 'new-chat-username-input').props.onChangeText('bob');
-    });
-
-    await act(async () => {
-      findByTestId(renderer.root, 'new-chat-submit-btn').props.onPress();
+      findByTestId(renderer.root, 'new-chat-username-input').props.onChangeText('xyz');
     });
 
     const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
-    const errorText = allText.find(
+    const emptyText = allText.find(
       (node) =>
         typeof node.props.children === 'string' &&
-        node.props.children.toLowerCase().includes('not found'),
+        node.props.children.includes('No matching contacts'),
     );
-    expect(errorText).toBeDefined();
-    expect(mockStartDm).not.toHaveBeenCalled();
-  });
-
-  it('looks up contact case-insensitively by username', async () => {
-    mockUseContacts.mockReturnValue(contactsWithBob);
-    mockStartDm.mockResolvedValue({ conversationId: 'dm-1', recipientName: 'bob' });
-    const renderer = renderScreen();
-
-    act(() => {
-      findByTestId(renderer.root, 'new-chat-username-input').props.onChangeText('BOB');
-    });
-
-    await act(async () => {
-      findByTestId(renderer.root, 'new-chat-submit-btn').props.onPress();
-    });
-
-    expect(mockStartDm).toHaveBeenCalledWith('contact-1');
+    expect(emptyText).toBeDefined();
   });
 });
 
-describe('NewChatScreen — submission', () => {
-  it('calls startDm with contact id on successful lookup', async () => {
+describe('NewChatScreen — selection', () => {
+  it('calls startDm when a contact is tapped', async () => {
     mockUseContacts.mockReturnValue(contactsWithBob);
     mockStartDm.mockResolvedValue({ conversationId: 'dm-1', recipientName: 'bob' });
     const renderer = renderScreen();
 
-    act(() => {
-      findByTestId(renderer.root, 'new-chat-username-input').props.onChangeText('bob');
-    });
-
     await act(async () => {
-      findByTestId(renderer.root, 'new-chat-submit-btn').props.onPress();
+      findByTestId(renderer.root, 'contact-row-contact-1').props.onPress();
     });
 
     expect(mockStartDm).toHaveBeenCalledWith('contact-1');
   });
 
-  it('navigates to ChatDetail via replace on success', async () => {
+  it('navigates to ChatDetail on success', async () => {
     mockUseContacts.mockReturnValue(contactsWithBob);
     mockStartDm.mockResolvedValue({ conversationId: 'dm-1', recipientName: 'bob' });
     const renderer = renderScreen();
 
-    act(() => {
-      findByTestId(renderer.root, 'new-chat-username-input').props.onChangeText('bob');
-    });
-
     await act(async () => {
-      findByTestId(renderer.root, 'new-chat-submit-btn').props.onPress();
+      findByTestId(renderer.root, 'contact-row-contact-1').props.onPress();
     });
 
     expect(mockNavigation.replace).toHaveBeenCalledWith('ChatDetail', {
@@ -236,12 +190,8 @@ describe('NewChatScreen — submission', () => {
     mockStartDm.mockRejectedValue(new Error('Network error'));
     const renderer = renderScreen();
 
-    act(() => {
-      findByTestId(renderer.root, 'new-chat-username-input').props.onChangeText('bob');
-    });
-
     await act(async () => {
-      findByTestId(renderer.root, 'new-chat-submit-btn').props.onPress();
+      findByTestId(renderer.root, 'contact-row-contact-1').props.onPress();
     });
 
     const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);

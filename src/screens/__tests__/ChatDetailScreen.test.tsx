@@ -202,7 +202,7 @@ describe('ChatDetailScreen — rendering', () => {
     const emptyNode = allText.find(
       (node) =>
         typeof node.props.children === 'string' &&
-        node.props.children.includes('No threads yet'),
+        node.props.children.includes('No messages yet'),
     );
     expect(emptyNode).toBeDefined();
   });

@@ -213,6 +213,25 @@ export function aesGcmEncrypt(
   );
 }
 /**
+ * Compute the SHA-256 digest of arbitrary data.
+ *
+ * Returns a 32-byte hash. Used for safety number computation
+ * (fingerprint of identity keys).
+ */
+export function sha256Hash(data: ArrayBuffer): ArrayBuffer {
+  return FfiConverterArrayBuffer.lift(
+    uniffiCaller.rustCall(
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_sha256_hash(
+          FfiConverterArrayBuffer.lower(data),
+          callStatus,
+        );
+      },
+      /*liftString:*/ FfiConverterString.lift,
+    ),
+  );
+}
+/**
  * Open (verify + decrypt) a 190-byte sealed envelope.
  *
  * Verifies the sender's XEdDSA signature, checks that the sender matches the
@@ -3478,6 +3497,11 @@ function uniffiEnsureInitialized() {
   if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_aes_gcm_encrypt() !== 2665) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_orbital_signal_checksum_func_aes_gcm_encrypt',
+    );
+  }
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_sha256_hash() !== 7715) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_func_sha256_hash',
     );
   }
   if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_ecies_open() !== 31560) {

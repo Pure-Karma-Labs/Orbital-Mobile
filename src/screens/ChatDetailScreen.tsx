@@ -19,13 +19,13 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useTheme } from '../theme';
-import { useThreads } from '../stores';
+import { useAuth, useThreads } from '../stores';
 import type { Thread } from '../types/store';
 import type { ChatsStackParamList } from '../navigation/types';
 import { Button } from '../components/Button';
 import { Header } from '../components/Header';
 import { AsciiDay, AsciiSection } from '../components/AsciiSeparator';
-import { ThreadItem } from './threads/ThreadItem';
+import { ChatMessageItem } from './chats/ChatMessageItem';
 import { loadThreadsForGroup } from '../services/threadService';
 import { PullToRefreshOverlay } from '../components/PullToRefreshOverlay';
 import { usePullToRefresh } from '../hooks/usePullToRefresh';
@@ -142,6 +142,7 @@ export function ChatDetailScreen({
   const { conversationId, recipientName } = route.params;
 
   const { threads, threadIdsByConversation } = useThreads();
+  const { userId } = useAuth();
   const [refreshing, setRefreshing] = useState(false);
   const { scrollY, scrollProps } = usePullToRefresh();
 
@@ -166,7 +167,7 @@ export function ChatDetailScreen({
       const thread = threads[threadId];
       navigation.push('ThreadDetail', {
         threadId,
-        threadTitle: thread?.title ?? undefined,
+        threadTitle: thread?.title || undefined,
       });
     },
     [navigation, threads],
@@ -184,7 +185,7 @@ export function ChatDetailScreen({
   }, [conversationId]);
 
   const handleCompose = useCallback(() => {
-    navigation.navigate('ComposeChatThread', { groupId: conversationId });
+    navigation.navigate('ComposeChatThread', { groupId: conversationId, isDm: true });
   }, [navigation, conversationId]);
 
   const renderRow = useCallback(
@@ -197,25 +198,22 @@ export function ChatDetailScreen({
         case 'thread': {
           const t = item.thread;
           return (
-            <ThreadItem
+            <ChatMessageItem
               threadId={t.id}
-              title={t.title ?? '(no title)'}
+              body={t.body}
               author={t.authorUsername}
               time={new Date(t.createdAt).toLocaleTimeString('en-US', {
                 hour: 'numeric',
                 minute: '2-digit',
               })}
-              replyCount={t.replyCount}
-              hasMedia={t.contentType === 'media'}
-              state="read"
-              unreadCount={0}
+              isOwn={t.authorId === userId}
               onPress={handleThreadPress}
             />
           );
         }
       }
     },
-    [handleThreadPress],
+    [handleThreadPress, userId],
   );
 
   const keyExtractor = useCallback((item: ListRow) => item.key, []);

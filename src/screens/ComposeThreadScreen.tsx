@@ -37,7 +37,7 @@ export function ComposeThreadScreen({
 }: ComposeThreadScreenProps): React.JSX.Element {
   const theme = useTheme();
   const { userId, username } = useAuth();
-  const { groupId } = route.params;
+  const { groupId, isDm } = route.params;
 
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
@@ -47,7 +47,9 @@ export function ComposeThreadScreen({
   const { selectedMedia, pickPhotos, removeMedia } = useMediaPicker();
 
   const busy = loading || uploading;
-  const canSubmit = title.trim().length > 0 && body.trim().length > 0 && !busy;
+  const canSubmit = isDm
+    ? body.trim().length > 0 && !busy
+    : title.trim().length > 0 && body.trim().length > 0 && !busy;
 
   const handlePost = useCallback(async () => {
     if (!canSubmit || !userId || !username) {
@@ -72,15 +74,19 @@ export function ComposeThreadScreen({
 
       const thread = await createNewThread(
         groupId,
-        title.trim(),
+        isDm ? '' : title.trim(),
         body.trim(),
         { authorId: userId, authorUsername: username },
         mediaIds ? { mediaIds } : undefined,
       );
-      navigation.replace('ThreadDetail', {
-        threadId: thread.id,
-        threadTitle: thread.title ?? undefined,
-      });
+      if (isDm) {
+        navigation.goBack();
+      } else {
+        navigation.replace('ThreadDetail', {
+          threadId: thread.id,
+          threadTitle: thread.title ?? undefined,
+        });
+      }
     } catch (e) {
       if (__DEV__) {
         console.warn('[Compose] error:', e instanceof Error ? e.message : e);
@@ -89,7 +95,7 @@ export function ComposeThreadScreen({
     } finally {
       setLoading(false);
     }
-  }, [canSubmit, userId, username, groupId, title, body, navigation, selectedMedia]);
+  }, [canSubmit, userId, username, groupId, isDm, title, body, navigation, selectedMedia]);
 
   const containerStyle: ViewStyle = {
     flex: 1,
@@ -141,18 +147,18 @@ export function ComposeThreadScreen({
   return (
     <SafeAreaView style={containerStyle} edges={['top']}>
       <Header
-        title="New Thread"
+        title={isDm ? "New Message" : "New Thread"}
         onBack={() => navigation.goBack()}
         right={
           <TouchableOpacity
             onPress={handlePost}
             disabled={!canSubmit}
             accessibilityRole="button"
-            accessibilityLabel="Post thread"
+            accessibilityLabel={isDm ? "Send message" : "Post thread"}
             style={postButtonStyle}
           >
             <Text style={postButtonTextStyle}>
-              {uploading ? 'Uploading...' : loading ? 'Posting...' : 'Post'}
+              {uploading ? 'Uploading...' : loading ? 'Posting...' : isDm ? 'Send' : 'Post'}
             </Text>
           </TouchableOpacity>
         }
@@ -167,21 +173,23 @@ export function ComposeThreadScreen({
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="interactive"
         >
-          <View>
-            <Text style={labelStyle}>Title</Text>
-            <TextInput
-              style={inputStyle}
-              value={title}
-              onChangeText={setTitle}
-              placeholder="Thread title"
-              placeholderTextColor={theme.colors.textTertiary}
-              autoFocus
-              maxLength={200}
-              returnKeyType="next"
-              editable={!busy}
-              testID="compose-title-input"
-            />
-          </View>
+          {!isDm && (
+            <View>
+              <Text style={labelStyle}>Title</Text>
+              <TextInput
+                style={inputStyle}
+                value={title}
+                onChangeText={setTitle}
+                placeholder="Thread title"
+                placeholderTextColor={theme.colors.textTertiary}
+                autoFocus
+                maxLength={200}
+                returnKeyType="next"
+                editable={!busy}
+                testID="compose-title-input"
+              />
+            </View>
+          )}
 
           <View>
             <Text style={labelStyle}>Body</Text>

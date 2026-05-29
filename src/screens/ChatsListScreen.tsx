@@ -16,12 +16,13 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useTheme } from '../theme';
-import { useConversations } from '../stores';
+import { useConversations, useContacts } from '../stores';
 import type { Conversation } from '../types/store';
 import type { ChatsStackParamList } from '../navigation/types';
 import { Button } from '../components/Button';
 import { Header } from '../components/Header';
 import { ChatItem } from './chats/ChatItem';
+import { getAvatarUrl } from '../utils/avatarUrl';
 import { loadDmConversations } from '../services/conversationService';
 import { PullToRefreshOverlay } from '../components/PullToRefreshOverlay';
 import { usePullToRefresh } from '../hooks/usePullToRefresh';
@@ -81,6 +82,7 @@ function EmptyState({ onNewChat }: { onNewChat: () => void }): React.JSX.Element
 export function ChatsListScreen({ navigation }: ChatsListScreenProps): React.JSX.Element {
   const theme = useTheme();
   const { conversations } = useConversations();
+  const { contacts } = useContacts();
   const [refreshing, setRefreshing] = useState(false);
   const { scrollY, scrollProps } = usePullToRefresh();
 
@@ -92,6 +94,17 @@ export function ChatsListScreen({ navigation }: ChatsListScreenProps): React.JSX
       return bTime - aTime;
     });
   }, [conversations]);
+
+  const avatarByConversation = useMemo(() => {
+    const map: Record<string, string | null> = {};
+    for (const contact of Object.values(contacts)) {
+      const url = getAvatarUrl(contact.avatarPath);
+      for (const convId of contact.conversationIds) {
+        map[convId] = url;
+      }
+    }
+    return map;
+  }, [contacts]);
 
   useEffect(() => {
     loadDmConversations().catch((e) => {
@@ -131,10 +144,11 @@ export function ChatsListScreen({ navigation }: ChatsListScreenProps): React.JSX
         conversationId={item.id}
         recipientName={item.name ?? 'Unknown'}
         lastMessageAt={item.lastMessageAt}
+        avatarUrl={avatarByConversation[item.id]}
         onPress={handleChatPress}
       />
     ),
-    [handleChatPress],
+    [handleChatPress, avatarByConversation],
   );
 
   const keyExtractor = useCallback((item: Conversation) => item.id, []);

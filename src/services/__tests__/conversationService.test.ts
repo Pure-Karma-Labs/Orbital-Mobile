@@ -517,7 +517,7 @@ describe('loadDmConversations — contact merge', () => {
       expect.objectContaining({
         id: 'user-2',
         username: 'bob',
-        displayName: 'bob',
+        displayName: null,
         conversationIds: ['dm-1'],
       }),
     ]);

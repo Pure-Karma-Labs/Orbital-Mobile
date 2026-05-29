@@ -39,6 +39,7 @@ const mockUseThreads = jest.fn();
 
 jest.mock('../../stores', () => ({
   useThreads: (...args: unknown[]) => mockUseThreads(...args),
+  useAuth: () => ({ userId: 'test-user-id', username: 'testuser' }),
 }));
 
 import { loadThreadsForGroup } from '../../services/threadService';
@@ -223,15 +224,15 @@ describe('ChatDetailScreen — with thread data', () => {
     mockUseThreads.mockReturnValue(populatedThreadsState);
   });
 
-  it('renders thread title when threads are present', () => {
+  it('renders message body when threads are present', () => {
     const renderer = renderScreen('Bob');
     const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
-    const titleNode = allText.find(
+    const bodyNode = allText.find(
       (node) =>
         typeof node.props.children === 'string' &&
-        node.props.children === 'Hello there',
+        node.props.children === 'First message in this DM',
     );
-    expect(titleNode).toBeDefined();
+    expect(bodyNode).toBeDefined();
   });
 });
 
@@ -240,18 +241,17 @@ describe('ChatDetailScreen — navigation', () => {
     mockUseThreads.mockReturnValue(populatedThreadsState);
   });
 
-  it('navigates to ThreadDetail when a thread item is pressed', () => {
+  it('navigates to ThreadDetail when a message item is pressed', () => {
     const renderer = renderScreen('Bob');
 
-    // ThreadItem renders a TouchableOpacity with accessibilityLabel="Thread: {title}"
-    const threadItems = renderer.root.findAll(
-      (node) => node.props.accessibilityLabel === 'Thread: Hello there',
+    // ChatMessageItem renders a TouchableOpacity with accessibilityLabel="Message from {author}"
+    const messageItems = renderer.root.findAll(
+      (node) => node.props.accessibilityLabel === 'Message from bob',
     );
-    expect(threadItems.length).toBeGreaterThan(0);
+    expect(messageItems.length).toBeGreaterThan(0);
 
     act(() => {
-      // handlePress is a closure — call with no argument; it passes threadId internally
-      threadItems[0].props.onPress();
+      messageItems[0].props.onPress();
     });
 
     expect(mockNavigation.push).toHaveBeenCalledWith('ThreadDetail', {

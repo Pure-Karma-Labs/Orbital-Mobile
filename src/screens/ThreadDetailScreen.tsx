@@ -420,7 +420,7 @@ export function ThreadDetailScreen({
     <View style={containerStyle} testID="thread-detail-screen">
       <SafeAreaView edges={['top']} style={{ backgroundColor: theme.colors.background }}>
         <Header
-          title={thread?.title ?? threadTitle ?? 'Thread'}
+          title={thread?.title || threadTitle || 'Thread'}
           onBack={() => navigation.goBack()}
         />
       </SafeAreaView>

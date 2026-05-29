@@ -212,7 +212,7 @@ export async function loadDmConversations(): Promise<void> {
   const dmContacts: Contact[] = dms.map((dm) => ({
     id: dm.recipient.id,
     username: dm.recipient.username,
-    displayName: dm.recipient.username,
+    displayName: null,
     avatarPath: dm.recipient.avatarUrl ?? null,
     conversationIds: [dm.groupId],
   }));

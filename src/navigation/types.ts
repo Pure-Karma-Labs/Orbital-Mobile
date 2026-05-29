@@ -6,11 +6,13 @@ export type MainTabParamList = {
   Settings: NavigatorScreenParams<SettingsStackParamList> | undefined;
 };
 
+export type ComposeThreadParams = { groupId: string; isDm?: boolean };
+
 // Skeleton for future nested stacks inside tabs
 export type ThreadsStackParamList = {
   ThreadsList: undefined;
   ThreadDetail: { threadId: string; threadTitle?: string };
-  ComposeThread: { groupId: string };
+  ComposeThread: ComposeThreadParams;
   CreateOrbit: undefined;
   JoinOrbit: { code?: string } | undefined;
   OrbitSelector: undefined;
@@ -19,7 +21,7 @@ export type ThreadsStackParamList = {
 export type ChatsStackParamList = {
   ChatsList: undefined;
   ChatDetail: { conversationId: string; recipientName?: string };
-  ComposeChatThread: { groupId: string };
+  ComposeChatThread: ComposeThreadParams;
   ThreadDetail: { threadId: string; threadTitle?: string };
   NewChat: undefined;
 };

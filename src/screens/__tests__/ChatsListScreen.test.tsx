@@ -32,9 +32,15 @@ jest.mock('../../components/OrbitalSpinner', () => ({
 }));
 
 const mockUseConversations = jest.fn();
+const mockUseContacts = jest.fn();
 
 jest.mock('../../stores', () => ({
   useConversations: (...args: unknown[]) => mockUseConversations(...args),
+  useContacts: (...args: unknown[]) => mockUseContacts(...args),
+}));
+
+jest.mock('../../utils/avatarUrl', () => ({
+  getAvatarUrl: jest.fn(() => null),
 }));
 
 import { loadDmConversations } from '../../services/conversationService';
@@ -158,6 +164,7 @@ function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstanc
 beforeEach(() => {
   jest.clearAllMocks();
   mockUseConversations.mockReturnValue(emptyConversationsState);
+  mockUseContacts.mockReturnValue({ contacts: {} });
 });
 
 // ---------------------------------------------------------------------------

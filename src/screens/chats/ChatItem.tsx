@@ -21,6 +21,7 @@ export interface ChatItemProps {
   conversationId: string;
   recipientName: string;
   lastMessageAt: number | null;
+  avatarUrl?: string | null;
   onPress: (conversationId: string) => void;
 }
 
@@ -51,6 +52,7 @@ export const ChatItem = React.memo(function ChatItem({
   conversationId,
   recipientName,
   lastMessageAt,
+  avatarUrl,
   onPress,
 }: ChatItemProps): React.JSX.Element {
   const theme = useTheme();
@@ -101,7 +103,7 @@ export const ChatItem = React.memo(function ChatItem({
       <Avatar
         name={recipientName}
         size={40}
-        color={theme.colors.surfaceElevated}
+        imageUrl={avatarUrl ?? undefined}
       />
       <View style={mainStyle}>
         <Text style={nameStyle} numberOfLines={1}>

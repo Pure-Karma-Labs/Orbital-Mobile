@@ -1,0 +1,101 @@
+/**
+ * Flat DM message row — simplified display for chat-style conversations.
+ *
+ * Shows author, timestamp, and message body without thread structure
+ * (no reply count, badges, or media indicators).
+ */
+
+import React, { useCallback } from 'react';
+import {
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+  type TextStyle,
+  type ViewStyle,
+} from 'react-native';
+import { useTheme } from '../../theme';
+import { EmojiText } from '../../components/EmojiText';
+
+export interface ChatMessageItemProps {
+  threadId: string;
+  body: string | null;
+  author: string;
+  time: string;
+  isOwn: boolean;
+  onPress: (threadId: string) => void;
+}
+
+export const ChatMessageItem = React.memo(function ChatMessageItem({
+  threadId,
+  body,
+  author,
+  time,
+  isOwn,
+  onPress,
+}: ChatMessageItemProps): React.JSX.Element {
+  const theme = useTheme();
+
+  const handlePress = useCallback(() => {
+    onPress(threadId);
+  }, [onPress, threadId]);
+
+  const containerStyle: ViewStyle = {
+    flexDirection: 'column',
+    paddingHorizontal: theme.spacing.base,
+    paddingVertical: theme.spacing.md,
+    borderLeftWidth: 3,
+    borderLeftColor: isOwn ? theme.colors.blue : theme.colors.borderSubtle,
+    backgroundColor: 'transparent',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: theme.colors.borderSubtle,
+  };
+
+  const metaStyle: ViewStyle = {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 2,
+  };
+
+  const authorStyle: TextStyle = {
+    fontFamily: theme.typography.fontFamily.bodyBold,
+    fontSize: theme.typography.fontSize.sm,
+    color: theme.colors.textPrimary,
+  };
+
+  const timeStyle: TextStyle = {
+    fontFamily: theme.typography.fontFamily.body,
+    fontSize: theme.typography.fontSize.sm,
+    color: theme.colors.textTertiary,
+    marginLeft: theme.spacing.xs,
+  };
+
+  const bodyStyle: TextStyle = {
+    fontFamily: theme.typography.fontFamily.body,
+    fontSize: theme.typography.fontSize.base,
+    color: theme.colors.textPrimary,
+    lineHeight: theme.typography.fontSize.base * 1.45,
+  };
+
+  return (
+    <TouchableOpacity
+      style={containerStyle}
+      onPress={handlePress}
+      activeOpacity={0.7}
+      accessibilityRole="button"
+      accessibilityLabel={`Message from ${author}`}
+    >
+      <View style={metaStyle}>
+        <Text style={authorStyle} numberOfLines={1}>
+          {author}
+        </Text>
+        <Text style={timeStyle}>{time}</Text>
+      </View>
+      {body ? (
+        <EmojiText style={bodyStyle} numberOfLines={4}>
+          {body}
+        </EmojiText>
+      ) : null}
+    </TouchableOpacity>
+  );
+});

@@ -96,6 +96,13 @@ When making decisions about push payload content or token storage, always consul
 2. **Test**: Verify each endpoint works with mobile client patterns (JWT in Authorization header, JSON bodies)
 3. **Document**: Note any mobile-specific considerations (pagination defaults, response size limits, timeout adjustments)
 
+## Git Worktree Rules
+
+When running in an isolated worktree:
+- **NEVER prune, remove, or clean up your worktree.** The orchestrator manages worktree lifecycle. Your job is to make changes, commit, and push — then stop.
+- **NEVER run `git worktree remove`, `git worktree prune`, or delete the worktree directory.**
+- If your work is incomplete when you run out of turns, commit and push what you have. Partial progress on a branch is recoverable; a pruned worktree with uncommitted changes is not.
+
 ## Persistent Memory
 
 You own and MUST maintain two persistence locations — write to both as needed:

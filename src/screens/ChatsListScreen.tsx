@@ -126,12 +126,17 @@ export function ChatsListScreen({ navigation }: ChatsListScreenProps): React.JSX
   const handleChatPress = useCallback(
     (conversationId: string) => {
       const conversation = conversations[conversationId];
+      // Find the contact associated with this DM conversation
+      const contact = Object.values(contacts).find((c) =>
+        c.conversationIds.includes(conversationId),
+      );
       navigation.push('ChatDetail', {
         conversationId,
         recipientName: conversation?.name ?? undefined,
+        recipientId: contact?.id,
       });
     },
-    [navigation, conversations],
+    [navigation, conversations, contacts],
   );
 
   const handleNewChat = useCallback(() => {

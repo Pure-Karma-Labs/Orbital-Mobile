@@ -219,6 +219,23 @@ export async function loadDmConversations(): Promise<void> {
   if (dmContacts.length > 0) {
     store.mergeContacts(dmContacts);
   }
+
+  // Fire-and-forget identity checks for ALL stored identity keys.
+  // Covers both DM recipients and orbit members.
+  // Lazy imports avoid pulling DB/crypto into test contexts.
+  if (currentUserId) {
+    Promise.all([
+      import('../database/repositories/signalIdentityKeyRepository'),
+      import('./verificationService'),
+    ]).then(([{ getAllIdentityKeys }, { checkIdentityAndNotify }]) => {
+      const allKeys = getAllIdentityKeys();
+      for (const key of allKeys) {
+        if (key.address !== 'local' && key.address !== currentUserId) {
+          checkIdentityAndNotify(key.address, currentUserId).catch(() => {});
+        }
+      }
+    }).catch(() => {});
+  }
 }
 
 export async function startDm(

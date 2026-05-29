@@ -13,6 +13,7 @@ import type {
   ThreadContentType,
   DraftContextType,
 } from './database';
+import { VerifiedStatus } from './database';
 
 // ============================================================
 // Shared
@@ -83,6 +84,8 @@ export interface Contact {
   avatarPath: string | null;
   /** IDs of conversations (groups) this contact is a member of */
   conversationIds: string[];
+  /** Identity key verification status — synced from SQLCipher identity store */
+  verifiedStatus?: VerifiedStatus;
 }
 
 export interface Draft {
@@ -187,6 +190,8 @@ export interface ContactsActions {
   mergeContacts: (contacts: Contact[]) => void;
   upsertContact: (contact: Contact) => void;
   removeContact: (id: string) => void;
+  /** Update verification status for a contact. No-op for unknown contacts. */
+  setContactVerifiedStatus: (contactId: string, status: VerifiedStatus) => void;
 }
 
 export type ContactsSlice = ContactsState & ContactsActions;

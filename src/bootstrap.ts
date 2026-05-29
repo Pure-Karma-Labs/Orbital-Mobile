@@ -32,6 +32,11 @@ export async function bootstrap(): Promise<void> {
   initDatabase(dbKey);
   runMigrations();
   await initIdentityKeyCache();
+  // Sync identity key verification status into the contacts store.
+  // Lazy import avoids pulling verificationService into bootstrap import chain.
+  import('./services/verificationService').then(({ syncVerifiedStatusToStore }) =>
+    syncVerifiedStatusToStore(),
+  );
   tokenManager.configure(new KeychainTokenStorage());
   // Global 401 handler: when tokens are cleared (e.g. on HTTP 401),
   // automatically clear auth state so the app gate shows the login screen.

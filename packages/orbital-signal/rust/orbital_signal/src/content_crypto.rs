@@ -122,6 +122,16 @@ pub fn aes_gcm_decrypt(
     Ok(plaintext)
 }
 
+/// Compute the SHA-256 digest of arbitrary data.
+///
+/// Returns a 32-byte hash. Used for safety number computation
+/// (fingerprint of identity keys).
+#[uniffi::export]
+pub fn sha256_hash(data: Vec<u8>) -> Vec<u8> {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(&data).to_vec()
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

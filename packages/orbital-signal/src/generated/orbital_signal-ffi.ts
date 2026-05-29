@@ -69,6 +69,10 @@ interface NativeModuleInterface {
     aad: Uint8Array,
     uniffi_out_err: UniffiRustCallStatus,
   ): Uint8Array;
+  ubrn_uniffi_orbital_signal_fn_func_sha256_hash(
+    data: Uint8Array,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array;
   ubrn_uniffi_orbital_signal_fn_func_ecies_open(
     sealed: Uint8Array,
     groupId: Uint8Array,
@@ -301,6 +305,7 @@ interface NativeModuleInterface {
   ubrn_uniffi_orbital_signal_checksum_func_attachment_encrypt(): number;
   ubrn_uniffi_orbital_signal_checksum_func_aes_gcm_decrypt(): number;
   ubrn_uniffi_orbital_signal_checksum_func_aes_gcm_encrypt(): number;
+  ubrn_uniffi_orbital_signal_checksum_func_sha256_hash(): number;
   ubrn_uniffi_orbital_signal_checksum_func_ecies_open(): number;
   ubrn_uniffi_orbital_signal_checksum_func_ecies_seal(): number;
   ubrn_uniffi_orbital_signal_checksum_func_create_sender_key_distribution_message(): number;

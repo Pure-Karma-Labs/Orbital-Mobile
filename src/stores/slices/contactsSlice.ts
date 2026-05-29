@@ -35,6 +35,7 @@ export const createContactsSlice: StateCreator<
             ...(c.conversationIds ?? []),
           ]),
         ],
+        verifiedStatus: c.verifiedStatus ?? existing?.verifiedStatus,
       };
     }
     set({ contacts: merged }, false, 'contacts/mergeContacts');
@@ -42,8 +43,17 @@ export const createContactsSlice: StateCreator<
 
   upsertContact: (contact) => {
     const { contacts } = get();
+    const existing = contacts[contact.id];
     set(
-      { contacts: { ...contacts, [contact.id]: contact } },
+      {
+        contacts: {
+          ...contacts,
+          [contact.id]: {
+            ...contact,
+            verifiedStatus: contact.verifiedStatus ?? existing?.verifiedStatus,
+          },
+        },
+      },
       false,
       'contacts/upsertContact',
     );
@@ -54,5 +64,21 @@ export const createContactsSlice: StateCreator<
     const updated = { ...contacts };
     delete updated[id];
     set({ contacts: updated }, false, 'contacts/removeContact');
+  },
+
+  setContactVerifiedStatus: (contactId, status) => {
+    const { contacts } = get();
+    const existing = contacts[contactId];
+    if (!existing) return; // No-op for unknown contacts
+    set(
+      {
+        contacts: {
+          ...contacts,
+          [contactId]: { ...existing, verifiedStatus: status },
+        },
+      },
+      false,
+      'contacts/setContactVerifiedStatus',
+    );
   },
 });

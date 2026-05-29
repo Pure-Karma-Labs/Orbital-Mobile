@@ -40,6 +40,7 @@ const mockUseThreads = jest.fn();
 jest.mock('../../stores', () => ({
   useThreads: (...args: unknown[]) => mockUseThreads(...args),
   useAuth: () => ({ userId: 'test-user-id', username: 'testuser' }),
+  useContactForConversation: () => null,
 }));
 
 import { loadThreadsForGroup } from '../../services/threadService';

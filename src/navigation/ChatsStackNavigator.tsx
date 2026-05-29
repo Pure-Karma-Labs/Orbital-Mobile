@@ -12,6 +12,7 @@ import { ChatDetailScreen } from '../screens/ChatDetailScreen';
 import { ComposeThreadScreen } from '../screens/ComposeThreadScreen';
 import ThreadDetailScreen from '../screens/ThreadDetailScreen';
 import { NewChatScreen } from '../screens/NewChatScreen';
+import { SafetyNumberScreen } from '../screens/SafetyNumberScreen';
 
 const Stack = createNativeStackNavigator<ChatsStackParamList>();
 
@@ -39,6 +40,11 @@ export function ChatsStackNavigator(): React.JSX.Element {
       <Stack.Screen
         name="NewChat"
         component={NewChatScreen}
+        options={{ presentation: 'modal' }}
+      />
+      <Stack.Screen
+        name="SafetyNumber"
+        component={SafetyNumberScreen}
         options={{ presentation: 'modal' }}
       />
     </Stack.Navigator>

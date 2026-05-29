@@ -20,10 +20,11 @@ export type ThreadsStackParamList = {
 
 export type ChatsStackParamList = {
   ChatsList: undefined;
-  ChatDetail: { conversationId: string; recipientName?: string };
+  ChatDetail: { conversationId: string; recipientName?: string; recipientId?: string };
   ComposeChatThread: ComposeThreadParams;
   ThreadDetail: { threadId: string; threadTitle?: string };
   NewChat: undefined;
+  SafetyNumber: { contactId: string; contactName: string };
 };
 
 export type SettingsStackParamList = {

@@ -41,6 +41,7 @@ jest.mock('../../stores', () => ({
     displayName: 'Alice',
     avatarPath: null,
   }),
+  useContactForConversation: () => null,
 }));
 
 import { createNewThread } from '../../services/threadService';

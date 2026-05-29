@@ -19,12 +19,14 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useTheme } from '../theme';
-import { useAuth, useThreads } from '../stores';
+import { useAuth, useThreads, useContactForConversation } from '../stores';
 import type { Thread } from '../types/store';
+import { VerifiedStatus } from '../types/database';
 import type { ChatsStackParamList } from '../navigation/types';
 import { Button } from '../components/Button';
 import { Header } from '../components/Header';
 import { AsciiDay, AsciiSection } from '../components/AsciiSeparator';
+import { IdentityChangeBanner } from '../components/IdentityChangeBanner';
 import { ChatMessageItem } from './chats/ChatMessageItem';
 import { loadThreadsForGroup } from '../services/threadService';
 import { PullToRefreshOverlay } from '../components/PullToRefreshOverlay';
@@ -143,6 +145,7 @@ export function ChatDetailScreen({
 
   const { threads, threadIdsByConversation } = useThreads();
   const { userId } = useAuth();
+  const contact = useContactForConversation(conversationId);
   const [refreshing, setRefreshing] = useState(false);
   const { scrollY, scrollProps } = usePullToRefresh();
 
@@ -187,6 +190,18 @@ export function ChatDetailScreen({
   const handleCompose = useCallback(() => {
     navigation.navigate('ComposeChatThread', { groupId: conversationId, isDm: true });
   }, [navigation, conversationId]);
+
+  const handleBannerPress = useCallback(() => {
+    if (contact) {
+      navigation.navigate('SafetyNumber', {
+        contactId: contact.id,
+        contactName: recipientName ?? contact.username ?? 'Unknown',
+      });
+    }
+  }, [navigation, contact, recipientName]);
+
+  const showIdentityBanner =
+    contact?.verifiedStatus === VerifiedStatus.Unverified;
 
   const renderRow = useCallback(
     ({ item }: ListRenderItemInfo<ListRow>) => {
@@ -245,6 +260,13 @@ export function ChatDetailScreen({
           </TouchableOpacity>
         }
       />
+
+      {showIdentityBanner && (
+        <IdentityChangeBanner
+          contactName={recipientName ?? contact?.username ?? 'Unknown'}
+          onPress={handleBannerPress}
+        />
+      )}
 
       {listRows.length === 0 ? (
         <EmptyState onCompose={handleCompose} />

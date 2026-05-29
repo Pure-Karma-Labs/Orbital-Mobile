@@ -4,6 +4,7 @@
 
 import React, { useCallback, useState } from 'react';
 import {
+  Alert,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -17,7 +18,8 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useTheme } from '../theme';
-import { useAuth } from '../stores';
+import { useAuth, useContactForConversation } from '../stores';
+import { VerifiedStatus } from '../types/database';
 import { createNewThread } from '../services/threadService';
 import { uploadMediaBatch } from '../services/mediaUploadService';
 import { useMediaPicker } from '../hooks/useMediaPicker';
@@ -38,6 +40,7 @@ export function ComposeThreadScreen({
   const theme = useTheme();
   const { userId, username } = useAuth();
   const { groupId, isDm } = route.params;
+  const contact = useContactForConversation(isDm ? groupId : null);
 
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
@@ -51,7 +54,7 @@ export function ComposeThreadScreen({
     ? body.trim().length > 0 && !busy
     : title.trim().length > 0 && body.trim().length > 0 && !busy;
 
-  const handlePost = useCallback(async () => {
+  const doPost = useCallback(async () => {
     if (!canSubmit || !userId || !username) {
       if (__DEV__) {
         console.warn('[Compose] blocked:', { canSubmit, userId, username, groupId });
@@ -96,6 +99,22 @@ export function ComposeThreadScreen({
       setLoading(false);
     }
   }, [canSubmit, userId, username, groupId, isDm, title, body, navigation, selectedMedia]);
+
+  const handlePost = useCallback(() => {
+    if (isDm && contact?.verifiedStatus === VerifiedStatus.Unverified) {
+      const name = contact.displayName ?? contact.username ?? 'this contact';
+      Alert.alert(
+        'Safety Number Changed',
+        `Safety number has changed for ${name}. Their identity key may have changed because they reinstalled the app or got a new device. Send anyway?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Send', onPress: () => { doPost(); } },
+        ],
+      );
+      return;
+    }
+    doPost();
+  }, [isDm, contact, doPost]);
 
   const containerStyle: ViewStyle = {
     flex: 1,

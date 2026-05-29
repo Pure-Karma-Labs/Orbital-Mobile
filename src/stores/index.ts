@@ -8,7 +8,7 @@ export { useAppStore } from './useAppStore';
 
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from './useAppStore';
-import type { MediaItem, TypingEntry } from '../types/store';
+import type { Contact, MediaItem, TypingEntry } from '../types/store';
 
 export const useAuth = () =>
   useAppStore(useShallow((s) => ({
@@ -64,6 +64,7 @@ export const useContacts = () =>
     mergeContacts: s.mergeContacts,
     upsertContact: s.upsertContact,
     removeContact: s.removeContact,
+    setContactVerifiedStatus: s.setContactVerifiedStatus,
   })));
 
 export const useUI = () =>
@@ -136,5 +137,23 @@ export const useMediaForReply = (replyId: string | null): MediaItem[] =>
       if (!replyId) return [];
       const ids = s.mediaIdsByReply[replyId] ?? [];
       return ids.map((id) => s.media[id]).filter(Boolean);
+    }),
+  );
+
+/**
+ * Reverse-lookup: find the contact whose conversationIds includes
+ * the given conversationId. Used by DM screens to access the
+ * recipient's contact record (including verifiedStatus).
+ */
+export const useContactForConversation = (conversationId: string | null): Contact | null =>
+  useAppStore(
+    useShallow((s) => {
+      if (!conversationId) return null;
+      for (const contact of Object.values(s.contacts)) {
+        if (contact.conversationIds.includes(conversationId)) {
+          return contact;
+        }
+      }
+      return null;
     }),
   );

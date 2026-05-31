@@ -7,7 +7,7 @@ jest.mock('../client', () => ({
 }));
 
 import { request } from '../client';
-import { getMe, updateDisplayName, uploadAvatar, deleteAvatar } from '../users';
+import { getMe, updateDisplayName, uploadAvatar, deleteAvatar, deleteAccount } from '../users';
 
 const mockRequest = request as jest.MockedFunction<typeof request>;
 
@@ -65,6 +65,28 @@ describe('deleteAvatar', () => {
     expect(mockRequest).toHaveBeenCalledWith({
       method: 'DELETE',
       path: '/api/users/avatar',
+    });
+  });
+});
+
+describe('deleteAccount', () => {
+  it('calls DELETE /api/users/:userId with password body', async () => {
+    await deleteAccount('user-123', 's3cret');
+
+    expect(mockRequest).toHaveBeenCalledWith({
+      method: 'DELETE',
+      path: '/api/users/user-123',
+      body: { password: 's3cret' },
+    });
+  });
+
+  it('encodes the userId in the path', async () => {
+    await deleteAccount('user/with special', 'pw');
+
+    expect(mockRequest).toHaveBeenCalledWith({
+      method: 'DELETE',
+      path: '/api/users/user%2Fwith%20special',
+      body: { password: 'pw' },
     });
   });
 });

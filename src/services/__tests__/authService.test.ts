@@ -1,12 +1,44 @@
 /**
- * Tests for authService — login, signup, session restore, logout orchestration.
+ * Tests for authService — login, signup, session restore, logout, deleteAccount orchestration.
  */
 
-import { loginUser, signupUser, restoreSession, logout } from '../authService';
+import { loginUser, signupUser, restoreSession, logout, deleteAccount } from '../authService';
 
 // ---------------------------------------------------------------------------
 // Module mocks
 // ---------------------------------------------------------------------------
+
+// Mocks needed by imports added for deleteAccount/localWipe
+jest.mock('../notificationService', () => ({
+  deregisterCurrentDevice: jest.fn().mockResolvedValue(undefined),
+}));
+
+const mockUnlink = jest.fn().mockResolvedValue(undefined);
+const mockExists = jest.fn().mockResolvedValue(false);
+const mockReadDir = jest.fn().mockResolvedValue([]);
+const MOCK_DOC_DIR = '/mock/documents';
+
+jest.mock('@dr.pogodin/react-native-fs', () => ({
+  DocumentDirectoryPath: '/mock/documents',
+  CachesDirectoryPath: '/mock/caches',
+  unlink: (...args: unknown[]) => mockUnlink(...args),
+  exists: (...args: unknown[]) => mockExists(...args),
+  readDir: (...args: unknown[]) => mockReadDir(...args),
+}));
+
+const mockClearSecureStorage = jest.fn().mockResolvedValue(undefined);
+jest.mock('../secure-storage', () => ({
+  clearAll: (...args: unknown[]) => mockClearSecureStorage(...args),
+}));
+
+jest.mock('../crypto/downgradeProtection', () => ({
+  clearEciesLockState: jest.fn(),
+  loadEciesLockState: jest.fn(),
+}));
+
+jest.mock('../threadService', () => ({
+  clearProcessedMediaIds: jest.fn(),
+}));
 
 jest.mock('../api/auth', () => ({
   login: jest.fn(),
@@ -16,6 +48,7 @@ jest.mock('../api/auth', () => ({
 
 jest.mock('../api/users', () => ({
   getMe: jest.fn(),
+  deleteAccount: jest.fn(),
 }));
 
 jest.mock('../api/tokenManager', () => ({
@@ -60,8 +93,10 @@ jest.mock('../../database/queryHelpers', () => ({
   execute: (...args: unknown[]) => mockExecute(...args),
 }));
 
+const mockCloseDatabase = jest.fn();
 jest.mock('../../database/connection', () => ({
   isDatabaseInitialized: jest.fn(() => true),
+  closeDatabase: () => mockCloseDatabase(),
 }));
 
 const mockLoadConversations = jest.fn().mockResolvedValue(undefined);
@@ -97,6 +132,7 @@ const mockClearTypingUsers = jest.fn();
 jest.mock('../../stores/useAppStore', () => ({
   useAppStore: {
     getState: jest.fn(() => ({
+      userId: 'user-1',
       setUser: mockSetUser,
       clearAuth: mockClearAuth,
       setConversations: mockSetConversations,
@@ -114,15 +150,19 @@ jest.mock('../../stores/useAppStore', () => ({
 import * as authApi from '../api/auth';
 import * as usersApi from '../api/users';
 import { tokenManager } from '../api/tokenManager';
-import { NetworkError, AuthError } from '../api/errors';
+import { ApiError, NetworkError, AuthError } from '../api/errors';
+import { websocketManager } from '../websocket';
 
 const mockLogin = authApi.login as jest.Mock;
 const mockSignup = authApi.signup as jest.Mock;
 const mockVerifyToken = authApi.verifyToken as jest.Mock;
 const mockGetMe = usersApi.getMe as jest.Mock;
+const mockDeleteAccountApi = usersApi.deleteAccount as jest.Mock;
 const mockGetAccessToken = tokenManager.getAccessToken as jest.Mock;
 const mockSetTokens = tokenManager.setTokens as jest.Mock;
 const mockClearTokens = tokenManager.clearTokens as jest.Mock;
+const mockWsConnect = websocketManager.connect as jest.Mock;
+const mockWsDisconnect = websocketManager.disconnect as jest.Mock;
 
 // ---------------------------------------------------------------------------
 // Test setup
@@ -500,5 +540,117 @@ describe('logout', () => {
 
     await expect(logout()).resolves.not.toThrow();
     expect(mockClearTokens).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT call fullCryptoWipe or unlink the DB file (logout preserves identity)', async () => {
+    await logout();
+
+    expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+    expect(mockUnlink).not.toHaveBeenCalled();
+    expect(mockClearSecureStorage).not.toHaveBeenCalled();
+    expect(mockCloseDatabase).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// deleteAccount
+// ---------------------------------------------------------------------------
+
+describe('deleteAccount', () => {
+  beforeEach(() => {
+    mockDeleteAccountApi.mockResolvedValue(undefined);
+  });
+
+  it('on success: calls users.deleteAccount, performs full wipe, returns success', async () => {
+    const result = await deleteAccount('mypassword');
+
+    expect(result).toEqual({ status: 'success' });
+    expect(mockDeleteAccountApi).toHaveBeenCalledWith('user-1', 'mypassword');
+    expect(mockWsDisconnect).toHaveBeenCalled();
+    expect(mockFullCryptoWipe).toHaveBeenCalled();
+    expect(mockCloseDatabase).toHaveBeenCalled();
+    expect(mockClearSecureStorage).toHaveBeenCalled();
+  });
+
+  it('on success: DB unlink happens BEFORE clearSecureStorage (critical ordering)', async () => {
+    const result = await deleteAccount('pw');
+
+    expect(result).toEqual({ status: 'success' });
+
+    // Find the call that unlinks orbital.db
+    const dbUnlinkIndex = mockUnlink.mock.calls.findIndex(
+      (c: unknown[]) => c[0] === `${MOCK_DOC_DIR}/orbital.db`,
+    );
+    expect(dbUnlinkIndex).toBeGreaterThanOrEqual(0);
+
+    // clearSecureStorage must have been called after that unlink
+    const dbUnlinkOrder = mockUnlink.mock.invocationCallOrder[dbUnlinkIndex];
+    const clearSecureOrder = mockClearSecureStorage.mock.invocationCallOrder[0];
+    expect(dbUnlinkOrder).toBeLessThan(clearSecureOrder);
+  });
+
+  it('on API 403: returns incorrect_password and performs NO wipe', async () => {
+    mockDeleteAccountApi.mockRejectedValue(new AuthError(403, 'bad password'));
+
+    const result = await deleteAccount('wrong');
+
+    expect(result).toEqual({ status: 'incorrect_password' });
+    // No wipe operations called
+    expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+    expect(mockClearSecureStorage).not.toHaveBeenCalled();
+    expect(mockUnlink).not.toHaveBeenCalled();
+    expect(mockCloseDatabase).not.toHaveBeenCalled();
+    // Tokens NOT cleared (user remains logged in)
+    expect(mockClearTokens).not.toHaveBeenCalled();
+    // WS reconnected
+    expect(mockWsConnect).toHaveBeenCalled();
+  });
+
+  it('on API 409: returns blocking_orbits and performs NO wipe', async () => {
+    mockDeleteAccountApi.mockRejectedValue(
+      new ApiError('Conflict', 409, 'CONFLICT', false),
+    );
+
+    const result = await deleteAccount('pw');
+
+    expect(result).toEqual({ status: 'blocking_orbits' });
+    expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+    expect(mockClearSecureStorage).not.toHaveBeenCalled();
+    expect(mockUnlink).not.toHaveBeenCalled();
+    expect(mockCloseDatabase).not.toHaveBeenCalled();
+    expect(mockClearTokens).not.toHaveBeenCalled();
+    expect(mockWsConnect).toHaveBeenCalled();
+  });
+
+  it('on NetworkError: returns error and performs NO wipe', async () => {
+    mockDeleteAccountApi.mockRejectedValue(new NetworkError('timeout'));
+
+    const result = await deleteAccount('pw');
+
+    expect(result).toEqual({
+      status: 'error',
+      message: 'Network error — please check your connection',
+    });
+    expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+    expect(mockClearSecureStorage).not.toHaveBeenCalled();
+    expect(mockUnlink).not.toHaveBeenCalled();
+    expect(mockClearTokens).not.toHaveBeenCalled();
+    expect(mockWsConnect).toHaveBeenCalled();
+  });
+
+  it('returns error when userId is null (not authenticated)', async () => {
+    const { useAppStore } = require('../../stores/useAppStore');
+    (useAppStore.getState as jest.Mock).mockReturnValueOnce({
+      userId: null,
+      setUser: mockSetUser,
+      clearAuth: mockClearAuth,
+      setConversations: mockSetConversations,
+      setContacts: mockSetContacts,
+    });
+
+    const result = await deleteAccount('pw');
+
+    expect(result).toEqual({ status: 'error', message: 'Not authenticated' });
+    expect(mockDeleteAccountApi).not.toHaveBeenCalled();
   });
 });

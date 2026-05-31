@@ -8,7 +8,7 @@
 import * as auth from './api/auth';
 import * as users from './api/users';
 import { tokenManager } from './api/tokenManager';
-import { NetworkError } from './api/errors';
+import { ApiError, NetworkError } from './api/errors';
 import { useAppStore } from '../stores/useAppStore';
 import {
   generateInitialKeys,
@@ -21,11 +21,29 @@ import { clearGroupKeyCache } from './crypto/contentCrypto';
 import { clearEciesLockState, loadEciesLockState } from './crypto/downgradeProtection';
 import { clearProcessedMediaIds } from './threadService';
 import { execute } from '../database/queryHelpers';
-import { isDatabaseInitialized } from '../database/connection';
+import { isDatabaseInitialized, closeDatabase } from '../database/connection';
 import { getItem, setItem } from '../database/repositories/itemRepository';
 import { loadConversations, loadDmConversations, fulfillPendingWraps, hydrateContactsFromOrbits } from './conversationService';
 import { websocketManager } from './websocket';
 import { deregisterCurrentDevice } from './notificationService';
+import {
+  DocumentDirectoryPath,
+  CachesDirectoryPath,
+  unlink,
+  readDir,
+  exists,
+} from '@dr.pogodin/react-native-fs';
+import { clearAll as clearSecureStorage } from './secure-storage';
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export type DeleteAccountResult =
+  | { status: 'success' }
+  | { status: 'incorrect_password' }
+  | { status: 'blocking_orbits' }
+  | { status: 'error'; message: string };
 
 /**
  * Log in with username + password. On success, stores tokens and populates
@@ -179,19 +197,30 @@ export async function restoreSession(): Promise<boolean> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// localWipe — shared teardown used by both logout and deleteAccount
+// ---------------------------------------------------------------------------
+
 /**
- * Log out the current user.
+ * Local device wipe shared by logout and account deletion.
  *
- * Clears tokens, resets ALL store slices to prevent data leaking to the next
- * user, and wipes MMKV persistence.
+ * @param preserveIdentity
+ *   - `true` (logout): clears sessions/sender-keys but preserves identity keys,
+ *     pre-keys, items, and the DB file — the same user can re-login.
+ *   - `false` (delete): full crypto wipe, deletes decrypted media, temp chunks,
+ *     the DB file, and all secure storage. The device is left pristine.
+ *
+ * ORDERING (critical for preserveIdentity=false):
+ *   1. fullCryptoWipe (while DB is open — clears signal_* tables + Keychain identity key)
+ *   2. closeDatabase() — releases the file handle
+ *   3. unlink orbital.db + WAL/SHM files
+ *   4. clearSecureStorage (removes DATABASE_ENCRYPTION_KEY last)
+ *
+ * Each step is wrapped in try/catch — best-effort. A mid-wipe failure must not
+ * brick next launch by leaving an unopenable DB (key gone but file remains).
  */
-export async function logout(): Promise<void> {
-  // Disconnect WebSocket BEFORE clearing tokens to prevent reconnect attempts
-  // with stale JWT during the cleanup window.
-  websocketManager.disconnect();
-  // Deregister device from push notifications while we still have a valid JWT.
-  // Best-effort — errors are swallowed so they never block logout.
-  await deregisterCurrentDevice();
+export async function localWipe({ preserveIdentity }: { preserveIdentity: boolean }): Promise<void> {
+  // --- Phase 1: Clear tokens and store state ---
   await tokenManager.clearTokens();
   useAppStore.getState().clearAuth();
   const state = useAppStore.getState();
@@ -202,25 +231,160 @@ export async function logout(): Promise<void> {
   clearEciesLockState();
   clearProcessedMediaIds();
 
-  // Clear per-session Signal Protocol state only.
-  // Identity keys, pre-keys, and items are PRESERVED so the same user can
-  // log back in without losing the ability to decrypt ECIES-wrapped group keys.
-  if (isDatabaseInitialized()) {
+  if (preserveIdentity) {
+    // --- Logout path: clear per-session Signal state only ---
+    if (isDatabaseInitialized()) {
+      try {
+        execute('DELETE FROM signal_sessions');
+        execute('DELETE FROM signal_sender_keys');
+      } catch {
+        if (__DEV__) console.warn('[LocalWipe] Failed to clear session tables');
+      }
+    }
+  } else {
+    // --- Deletion path: full destructive wipe ---
+
+    // 1. Full crypto wipe (while DB is still open)
     try {
-      execute('DELETE FROM signal_sessions');
-      execute('DELETE FROM signal_sender_keys');
+      await fullCryptoWipe();
     } catch {
-      if (__DEV__) console.warn('[Logout] Failed to clear session tables');
+      if (__DEV__) console.warn('[LocalWipe] fullCryptoWipe failed');
+    }
+
+    // 2. Delete decrypted media directory
+    const mediaDirPath = `${DocumentDirectoryPath}/media`;
+    try {
+      const mediaExists = await exists(mediaDirPath);
+      if (mediaExists) {
+        // Recursively delete all files in media dir
+        const files = await readDir(mediaDirPath);
+        for (const file of files) {
+          await unlink(file.path).catch(() => {});
+        }
+        await unlink(mediaDirPath).catch(() => {});
+      }
+    } catch {
+      if (__DEV__) console.warn('[LocalWipe] Failed to delete media dir');
+    }
+
+    // 3. Delete temp upload chunks from CachesDirectory
+    try {
+      const cacheFiles = await readDir(CachesDirectoryPath);
+      for (const file of cacheFiles) {
+        if (file.name.includes('-chunk-') && file.name.endsWith('.bin')) {
+          await unlink(file.path).catch(() => {});
+        }
+      }
+    } catch {
+      if (__DEV__) console.warn('[LocalWipe] Failed to clean temp chunks');
+    }
+
+    // 4. Close DB connection then unlink the file
+    try {
+      closeDatabase();
+    } catch {
+      if (__DEV__) console.warn('[LocalWipe] closeDatabase failed');
+    }
+
+    const dbPath = `${DocumentDirectoryPath}/orbital.db`;
+    try {
+      await unlink(dbPath);
+    } catch {
+      if (__DEV__) console.warn('[LocalWipe] Failed to unlink orbital.db');
+    }
+    try {
+      await unlink(`${dbPath}-wal`);
+    } catch {
+      // WAL may not exist
+    }
+    try {
+      await unlink(`${dbPath}-shm`);
+    } catch {
+      // SHM may not exist
+    }
+
+    // 5. Clear all Keychain entries (DATABASE_ENCRYPTION_KEY, etc.)
+    try {
+      await clearSecureStorage();
+    } catch {
+      if (__DEV__) console.warn('[LocalWipe] clearSecureStorage failed');
     }
   }
 
-  // Clear MMKV persistence
+  // --- Clear MMKV persistence (both paths) ---
   const { getMMKVInstance } = require('../stores/middleware/persistence');
   try {
     getMMKVInstance().clearAll();
   } catch {
     // MMKV may not be initialized in tests or if bootstrap hasn't run
   }
+}
+
+/**
+ * Log out the current user.
+ *
+ * Disconnects WebSocket, deregisters push token (while JWT is still valid),
+ * then performs a local wipe preserving identity keys for re-login.
+ */
+export async function logout(): Promise<void> {
+  // Disconnect WebSocket BEFORE clearing tokens to prevent reconnect attempts
+  // with stale JWT during the cleanup window.
+  websocketManager.disconnect();
+  // Deregister device from push notifications while we still have a valid JWT.
+  // Best-effort — errors are swallowed so they never block logout.
+  await deregisterCurrentDevice();
+  await localWipe({ preserveIdentity: true });
+}
+
+/**
+ * Permanently delete the user's account. Remote-first, then local wipe.
+ *
+ * Flow:
+ * 1. Disconnect WebSocket (prevent stale reconnects during deletion)
+ * 2. Call DELETE /api/users/:userId with password confirmation
+ * 3. On success: full local wipe (preserveIdentity: false)
+ * 4. On failure: nothing is wiped; error surfaced to caller
+ *
+ * Returns a discriminated result so the UI can react appropriately:
+ * - 'success': account deleted, local state wiped, app navigates to login
+ * - 'incorrect_password': 403, inline error in modal
+ * - 'blocking_orbits': 409, user must transfer/dissolve orbits first
+ * - 'error': network or unexpected error
+ */
+export async function deleteAccount(password: string): Promise<DeleteAccountResult> {
+  const userId = useAppStore.getState().userId;
+  if (!userId) {
+    return { status: 'error', message: 'Not authenticated' };
+  }
+
+  // Disconnect WS before the API call — token will be dead after deletion
+  websocketManager.disconnect();
+
+  try {
+    await users.deleteAccount(userId, password);
+  } catch (e: unknown) {
+    // On ANY failure, do NOT wipe. Reconnect WS so user remains logged in.
+    websocketManager.connect();
+
+    if (e instanceof ApiError) {
+      if (e.statusCode === 403) {
+        return { status: 'incorrect_password' };
+      }
+      if (e.statusCode === 409) {
+        return { status: 'blocking_orbits' };
+      }
+      if (e instanceof NetworkError) {
+        return { status: 'error', message: 'Network error — please check your connection' };
+      }
+      return { status: 'error', message: e.message };
+    }
+    return { status: 'error', message: e instanceof Error ? e.message : 'Unknown error' };
+  }
+
+  // Success — perform full local wipe (do NOT call deregisterDevice; token is dead,
+  // device_tokens cascade-deleted server-side)
+  await localWipe({ preserveIdentity: false });
+  return { status: 'success' };
 }
 
 /**

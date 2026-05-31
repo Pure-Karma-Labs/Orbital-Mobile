@@ -39,3 +39,22 @@ export function deleteAvatar(): Promise<void> {
   });
 }
 
+/**
+ * Permanently delete the authenticated user's account.
+ * Requires password re-entry for confirmation.
+ *
+ * Backend returns:
+ * - 200: success
+ * - 403: incorrect password (INCORRECT_PASSWORD)
+ * - 409: user still admins multi-member orbits (must transfer/dissolve first)
+ * - 400: missing password
+ * - 429: rate limited
+ */
+export function deleteAccount(userId: string, password: string): Promise<void> {
+  return request<void>({
+    method: 'DELETE',
+    path: `/api/users/${encodeURIComponent(userId)}`,
+    body: { password },
+  });
+}
+

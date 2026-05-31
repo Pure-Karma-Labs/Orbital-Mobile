@@ -1,13 +1,19 @@
 /**
- * Tests for ManageOrbitsScreen — rendering, loading, filtering, and share action.
+ * Tests for ManageOrbitsScreen — rendering, loading, filtering, share, and admin actions.
  */
 
 import React from 'react';
-import { Share } from 'react-native';
+import { Alert, Share } from 'react-native';
 import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'react-test-renderer';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../../theme';
 import { ManageOrbitsScreen } from '../ManageOrbitsScreen';
+
+// ---------------------------------------------------------------------------
+// Stable mock references (hoisted for assertion)
+// ---------------------------------------------------------------------------
+
+const mockRemoveConversation = jest.fn();
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -15,6 +21,7 @@ import { ManageOrbitsScreen } from '../ManageOrbitsScreen';
 
 jest.mock('../../services/conversationService', () => ({
   fetchCreatorOrbitsDecrypted: jest.fn(),
+  loadConversations: jest.fn().mockResolvedValue(undefined),
 }));
 
 jest.mock('../../services/api/groups', () => ({
@@ -26,6 +33,8 @@ jest.mock('../../services/api/groups', () => ({
     targetEmail: 'test@example.com',
   }),
   removeMember: jest.fn().mockResolvedValue(undefined),
+  transferOrbitOwner: jest.fn().mockResolvedValue(undefined),
+  dissolveOrbit: jest.fn().mockResolvedValue(undefined),
 }));
 
 jest.mock('../../components/OrbitalSpinner', () => ({
@@ -44,11 +53,57 @@ jest.mock('../../stores', () => ({
     setAuthenticated: jest.fn(),
     updateProfile: jest.fn(),
   })),
+  useConversations: jest.fn(() => ({
+    conversations: {},
+    conversationIds: [],
+    activeConversationId: null,
+    setConversations: jest.fn(),
+    upsertConversation: jest.fn(),
+    removeConversation: mockRemoveConversation,
+    setActiveConversation: jest.fn(),
+    updateUnreadCount: jest.fn(),
+    markConversationRead: jest.fn(),
+  })),
 }));
 
-import { fetchCreatorOrbitsDecrypted } from '../../services/conversationService';
+import {
+  fetchCreatorOrbitsDecrypted,
+  loadConversations,
+} from '../../services/conversationService';
+import {
+  getGroupMembers,
+  transferOrbitOwner,
+  dissolveOrbit,
+} from '../../services/api/groups';
 
 const mockFetchGroups = fetchCreatorOrbitsDecrypted as jest.Mock;
+const mockLoadConversations = loadConversations as jest.Mock;
+const mockGetMembers = getGroupMembers as jest.Mock;
+const mockTransfer = transferOrbitOwner as jest.Mock;
+const mockDissolve = dissolveOrbit as jest.Mock;
+
+// ---------------------------------------------------------------------------
+// Test data
+// ---------------------------------------------------------------------------
+
+const testMembers = [
+  {
+    userId: 'current-user-id',
+    username: 'testuser',
+    displayName: 'Test User',
+    publicKey: 'pk1',
+    avatarUrl: null,
+    joinedAt: '2026-01-01T00:00:00Z',
+  },
+  {
+    userId: 'user-2',
+    username: 'alice',
+    displayName: 'Alice',
+    publicKey: 'pk2',
+    avatarUrl: null,
+    joinedAt: '2026-01-02T00:00:00Z',
+  },
+];
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -91,12 +146,34 @@ function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstanc
   return found[0];
 }
 
+function findAllByTestId(root: ReactTestInstance, testID: string): ReactTestInstance[] {
+  return root.findAll((node) => node.props.testID === testID);
+}
+
+/**
+ * Helper to extract a button from an Alert.alert spy.
+ */
+function getAlertButton(
+  alertSpy: jest.SpyInstance,
+  callIndex: number,
+  buttonText: string,
+): { text: string; onPress?: () => void | Promise<void> } {
+  const alertArgs = alertSpy.mock.calls[callIndex];
+  const buttons = alertArgs[2] as Array<{ text: string; onPress?: () => void | Promise<void> }>;
+  const btn = buttons.find((b) => b.text === buttonText);
+  if (!btn) throw new Error(`No button "${buttonText}" in Alert call #${callIndex}`);
+  return btn;
+}
+
 // ---------------------------------------------------------------------------
 // Setup
 // ---------------------------------------------------------------------------
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockLoadConversations.mockResolvedValue(undefined);
+  mockTransfer.mockResolvedValue(undefined);
+  mockDissolve.mockResolvedValue(undefined);
 });
 
 // ---------------------------------------------------------------------------
@@ -303,7 +380,7 @@ describe('ManageOrbitsScreen — interactions', () => {
       );
     });
 
-    // Expand → open modal → fill email → generate
+    // Expand -> open modal -> fill email -> generate
     const header = findByTestId(renderer.root, 'orbit-header-g-1');
     await act(async () => { header.props.onPress(); });
 
@@ -370,5 +447,174 @@ describe('ManageOrbitsScreen — share', () => {
     });
 
     shareSpy.mockRestore();
+  });
+});
+
+describe('ManageOrbitsScreen — admin actions', () => {
+  it('renders admin actions when orbit row is expanded', async () => {
+    mockFetchGroups.mockResolvedValue([
+      {
+        groupId: 'g-1',
+        name: 'Family Orbit',
+        memberCount: 3,
+        isCreator: true,
+        inviteCode: 'ABC123',
+      },
+    ]);
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        React.createElement(
+          SafeAreaProvider,
+          { initialMetrics: safeAreaMetrics },
+          React.createElement(
+            ThemeProvider,
+            { colorSchemeOverride: 'light' },
+            React.createElement(ManageOrbitsScreen, {
+              navigation: mockNavigation as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['navigation'],
+              route: mockRoute as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['route'],
+            }),
+          ),
+        ),
+      );
+    });
+
+    // Expand the orbit row
+    const header = findByTestId(renderer.root, 'orbit-header-g-1');
+    await act(async () => {
+      header.props.onPress();
+    });
+
+    // Admin actions should be visible
+    expect(() => findByTestId(renderer.root, 'admin-actions-g-1')).not.toThrow();
+    expect(() => findByTestId(renderer.root, 'transfer-button-g-1')).not.toThrow();
+    expect(() => findByTestId(renderer.root, 'dissolve-button-g-1')).not.toThrow();
+  });
+
+  it('transfer triggers a re-fetch of creator orbits and refreshes conversations', async () => {
+    // Provide members so OrbitAdminActions can show the picker
+    mockGetMembers.mockResolvedValue(testMembers);
+    mockFetchGroups
+      .mockResolvedValueOnce([
+        {
+          groupId: 'g-1',
+          name: 'Family Orbit',
+          memberCount: 3,
+          isCreator: true,
+          inviteCode: 'ABC123',
+        },
+      ])
+      // Second call (after transfer) returns empty — orbit is no longer ours
+      .mockResolvedValueOnce([]);
+
+    const alertSpy = jest.spyOn(Alert, 'alert');
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        React.createElement(
+          SafeAreaProvider,
+          { initialMetrics: safeAreaMetrics },
+          React.createElement(
+            ThemeProvider,
+            { colorSchemeOverride: 'light' },
+            React.createElement(ManageOrbitsScreen, {
+              navigation: mockNavigation as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['navigation'],
+              route: mockRoute as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['route'],
+            }),
+          ),
+        ),
+      );
+    });
+
+    // Expand to load members
+    await act(async () => {
+      findByTestId(renderer.root, 'orbit-header-g-1').props.onPress();
+    });
+
+    // Open transfer modal
+    await act(async () => {
+      findByTestId(renderer.root, 'transfer-button-g-1').props.onPress();
+    });
+
+    // Select alice — triggers confirmation Alert
+    await act(async () => {
+      findByTestId(renderer.root, 'transfer-select-user-2').props.onPress();
+    });
+
+    // Confirm the transfer via Alert
+    const transferBtn = getAlertButton(alertSpy, 0, 'Transfer');
+    await act(async () => {
+      await transferBtn.onPress?.();
+    });
+
+    expect(mockTransfer).toHaveBeenCalledWith('g-1', 'user-2');
+    // fetchCreatorOrbitsDecrypted should have been called twice (initial + refresh)
+    expect(mockFetchGroups).toHaveBeenCalledTimes(2);
+    // loadConversations called to refresh inbox
+    expect(mockLoadConversations).toHaveBeenCalled();
+    // Orbit should be gone from the list after re-fetch
+    expect(findAllByTestId(renderer.root, 'orbit-row-g-1')).toHaveLength(0);
+
+    alertSpy.mockRestore();
+  });
+
+  it('dissolve calls removeConversation and removes orbit from list', async () => {
+    mockFetchGroups.mockResolvedValue([
+      {
+        groupId: 'g-1',
+        name: 'Family Orbit',
+        memberCount: 3,
+        isCreator: true,
+        inviteCode: 'ABC123',
+      },
+    ]);
+
+    const alertSpy = jest.spyOn(Alert, 'alert');
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        React.createElement(
+          SafeAreaProvider,
+          { initialMetrics: safeAreaMetrics },
+          React.createElement(
+            ThemeProvider,
+            { colorSchemeOverride: 'light' },
+            React.createElement(ManageOrbitsScreen, {
+              navigation: mockNavigation as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['navigation'],
+              route: mockRoute as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['route'],
+            }),
+          ),
+        ),
+      );
+    });
+
+    // Expand the orbit row
+    await act(async () => {
+      findByTestId(renderer.root, 'orbit-header-g-1').props.onPress();
+    });
+
+    // Press dissolve — triggers OrbitAdminActions dissolve which shows Alert
+    await act(async () => {
+      findByTestId(renderer.root, 'dissolve-button-g-1').props.onPress();
+    });
+
+    // Confirm the dissolve via Alert
+    const dissolveBtn = getAlertButton(alertSpy, 0, 'Dissolve');
+    await act(async () => {
+      await dissolveBtn.onPress?.();
+    });
+
+    expect(mockDissolve).toHaveBeenCalledWith('g-1');
+    // removeConversation should be called with the groupId
+    expect(mockRemoveConversation).toHaveBeenCalledWith('g-1');
+    // loadConversations called to refresh inbox
+    expect(mockLoadConversations).toHaveBeenCalled();
+    // Orbit should be removed from the list
+    expect(findAllByTestId(renderer.root, 'orbit-row-g-1')).toHaveLength(0);
+
+    alertSpy.mockRestore();
   });
 });

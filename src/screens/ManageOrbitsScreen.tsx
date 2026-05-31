@@ -30,15 +30,18 @@ import { Emoji } from '../components/Emoji';
 import { fetchCreatorOrbitsDecrypted } from '../services/conversationService';
 import type { DecryptedGroup } from '../services/conversationService';
 import { getGroupMembers, generateInviteCode, removeMember } from '../services/api/groups';
-import { useAuth } from '../stores';
+import { loadConversations } from '../services/conversationService';
+import { useAuth, useConversations } from '../stores';
 import type { GroupMember } from '../types/api';
 import type { SettingsStackParamList } from '../navigation/types';
+import { OrbitAdminActions } from './settings/OrbitAdminActions';
 
 type Props = NativeStackScreenProps<SettingsStackParamList, 'ManageOrbits'>;
 
 export function ManageOrbitsScreen({ navigation }: Props): React.JSX.Element {
   const theme = useTheme();
   const { userId } = useAuth();
+  const { removeConversation } = useConversations();
 
   const [groups, setGroups] = useState<DecryptedGroup[]>([]);
   const [loading, setLoading] = useState(true);
@@ -168,6 +171,27 @@ export function ManageOrbitsScreen({ navigation }: Props): React.JSX.Element {
     navigation.goBack();
   }, [navigation]);
 
+  const handleAdminAction = useCallback(
+    async (action: 'transfer' | 'dissolve', groupId: string) => {
+      if (action === 'dissolve') {
+        // Remove dissolved orbit from local list and Zustand store
+        setGroups((prev) => prev.filter((g) => g.groupId !== groupId));
+        removeConversation(groupId);
+      } else {
+        // Transfer: re-fetch — this orbit is no longer ours
+        try {
+          const refreshed = await fetchCreatorOrbitsDecrypted();
+          setGroups(refreshed);
+        } catch {
+          // Silently — worst case the user sees stale data until next load
+        }
+      }
+      // Also refresh the global conversation list so inbox/orbit selector updates
+      loadConversations().catch(() => {});
+    },
+    [removeConversation],
+  );
+
   // ---------------------------------------------------------------------------
   // Styles
   // ---------------------------------------------------------------------------
@@ -207,9 +231,10 @@ export function ManageOrbitsScreen({ navigation }: Props): React.JSX.Element {
         onRemoveMember={handleRemoveMember}
         onShare={handleShare}
         onNewCode={handleOpenEmailModal}
+        onAdminAction={handleAdminAction}
       />
     ),
-    [expandedOrbitId, membersByGroupId, loadingMembers, userId, handleToggleExpand, handleRemoveMember, handleShare, handleOpenEmailModal],
+    [expandedOrbitId, membersByGroupId, loadingMembers, userId, handleToggleExpand, handleRemoveMember, handleShare, handleOpenEmailModal, handleAdminAction],
   );
 
   const keyExtractor = useCallback((item: DecryptedGroup) => item.groupId, []);
@@ -363,6 +388,7 @@ interface OrbitRowProps {
   onRemoveMember: (groupId: string, member: GroupMember) => void;
   onShare: (name: string, code: string) => void;
   onNewCode: (groupId: string) => void;
+  onAdminAction: (action: 'transfer' | 'dissolve', groupId: string) => void;
 }
 
 const OrbitRow = React.memo(function OrbitRow({
@@ -375,6 +401,7 @@ const OrbitRow = React.memo(function OrbitRow({
   onRemoveMember,
   onShare,
   onNewCode,
+  onAdminAction,
 }: OrbitRowProps): React.JSX.Element {
   const theme = useTheme();
 
@@ -602,6 +629,13 @@ const OrbitRow = React.memo(function OrbitRow({
               <Text style={newCodeTextStyle}>New Code</Text>
             </TouchableOpacity>
           </View>
+
+          {/* Admin actions: transfer ownership / dissolve */}
+          <OrbitAdminActions
+            group={group}
+            members={members}
+            onCompleted={onAdminAction}
+          />
         </View>
       )}
     </View>

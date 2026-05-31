@@ -1,9 +1,12 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
+  FlatList,
   ScrollView,
   Text,
+  TouchableOpacity,
   View,
+  type ListRenderItemInfo,
   type TextStyle,
   type ViewStyle,
 } from 'react-native';
@@ -12,12 +15,20 @@ import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useTheme } from '../theme';
 import { useAuth, useUI, useConversations, useNotifications } from '../stores';
-import { logout } from '../services/authService';
+import { logout, deleteAccount } from '../services/authService';
+import type { DeleteAccountResult } from '../services/authService';
+import type { BlockingOrbit } from '../services/api/errors';
 import { getGroupQuota } from '../services/api/groups';
+import { fetchCreatorOrbitsDecrypted } from '../services/conversationService';
+import type { DecryptedGroup } from '../services/conversationService';
 import { Header } from '../components/Header';
 import { ProfileCard } from './settings/ProfileCard';
 import { SettingsRow } from './settings/SettingsRow';
 import { QuotaBar } from './settings/QuotaBar';
+import { DeletePasswordModal } from './settings/DeletePasswordModal';
+import { OrbitAdminActions } from './settings/OrbitAdminActions';
+import { OrbitalSpinner } from '../components/OrbitalSpinner';
+import { EmojiText } from '../components/EmojiText';
 import type { GroupQuotaResponse } from '../types/api';
 import type { SettingsStackParamList } from '../navigation/types';
 
@@ -68,6 +79,12 @@ export function SettingsScreen(): React.JSX.Element {
 
   const [quota, setQuota] = useState<GroupQuotaResponse | null>(null);
 
+  // --- Delete account state ---
+  const [deleteModalVisible, setDeleteModalVisible] = useState(false);
+  const [deletePasswordError, setDeletePasswordError] = useState<string | null>(null);
+  const [blockingOrbits, setBlockingOrbits] = useState<DecryptedGroup[] | null>(null);
+  const [loadingBlockingOrbits, setLoadingBlockingOrbits] = useState(false);
+
   useEffect(() => {
     if (!activeConversationId) return;
     const activeConv = conversations[activeConversationId];
@@ -106,10 +123,166 @@ export function SettingsScreen(): React.JSX.Element {
     navigation.navigate('ManageOrbits');
   }, [navigation]);
 
+  // --- Delete account handlers ---
+
+  const handleDeleteAccountPress = useCallback(() => {
+    Alert.alert(
+      'Delete your account?',
+      'This permanently deletes your account, all your messages, and removes you from all orbits. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            setDeletePasswordError(null);
+            setDeleteModalVisible(true);
+          },
+        },
+      ],
+    );
+  }, []);
+
+  const handleDeletePasswordSubmit = useCallback(async (password: string) => {
+    setDeletePasswordError(null);
+    const result: DeleteAccountResult = await deleteAccount(password);
+
+    switch (result.status) {
+      case 'success':
+        // App auto-navigates to login via clearAuth → auth store
+        setDeleteModalVisible(false);
+        break;
+      case 'incorrect_password':
+        setDeletePasswordError('Incorrect password');
+        break;
+      case 'blocking_orbits':
+        // Close the password modal and show the blocking orbits gate.
+        // Use the AUTHORITATIVE list from the 409 response — this excludes DMs
+        // and any other orbits the backend doesn't consider blocking.
+        setDeleteModalVisible(false);
+        setLoadingBlockingOrbits(true);
+        try {
+          const authoritativeIds = new Set(result.blockingOrbits.map((o: BlockingOrbit) => o.id));
+          const orbits = await fetchCreatorOrbitsDecrypted();
+          // Keep only orbits whose id is in the backend's authoritative blocking list
+          setBlockingOrbits(orbits.filter((o) => authoritativeIds.has(o.groupId)));
+        } catch {
+          setBlockingOrbits([]);
+        } finally {
+          setLoadingBlockingOrbits(false);
+        }
+        break;
+      case 'error':
+        setDeletePasswordError(result.message);
+        break;
+    }
+  }, []);
+
+  const handleDeletePasswordCancel = useCallback(() => {
+    setDeleteModalVisible(false);
+    setDeletePasswordError(null);
+  }, []);
+
+  const handleBlockingOrbitCompleted = useCallback(
+    (_action: 'transfer' | 'dissolve', groupId: string) => {
+      setBlockingOrbits((prev) => {
+        if (!prev) return prev;
+        const updated = prev.filter((o) => o.groupId !== groupId);
+        return updated;
+      });
+    },
+    [],
+  );
+
+  const handleBlockingGateDismiss = useCallback(() => {
+    setBlockingOrbits(null);
+  }, []);
+
+  const handleRetryDeleteAfterGate = useCallback(() => {
+    setBlockingOrbits(null);
+    setDeletePasswordError(null);
+    setDeleteModalVisible(true);
+  }, []);
+
   const containerStyle: ViewStyle = {
     flex: 1,
     backgroundColor: theme.colors.background,
   };
+
+  // --- Blocking orbits gate view ---
+  if (blockingOrbits !== null || loadingBlockingOrbits) {
+    return (
+      <SafeAreaView style={containerStyle} edges={['top']} testID="settings-screen">
+        <Header title="Transfer or Dissolve" />
+        {loadingBlockingOrbits ? (
+          <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+            <OrbitalSpinner size={32} />
+          </View>
+        ) : blockingOrbits && blockingOrbits.length > 0 ? (
+          <FlatList
+            data={blockingOrbits}
+            keyExtractor={(item: DecryptedGroup) => item.groupId}
+            renderItem={({ item }: ListRenderItemInfo<DecryptedGroup>) => (
+              <BlockingOrbitRow
+                group={item}
+                onCompleted={handleBlockingOrbitCompleted}
+              />
+            )}
+            ListHeaderComponent={
+              <View style={{ padding: theme.spacing.base }}>
+                <Text style={{
+                  fontFamily: theme.typography.fontFamily.body,
+                  fontSize: theme.typography.fontSize.base,
+                  color: theme.colors.textSecondary,
+                  marginBottom: theme.spacing.md,
+                }}>
+                  You must transfer ownership or dissolve these orbits before deleting your account:
+                </Text>
+              </View>
+            }
+            ListFooterComponent={
+              <View style={{ padding: theme.spacing.base }}>
+                <TouchableOpacityButton
+                  label="Cancel"
+                  onPress={handleBlockingGateDismiss}
+                  testID="blocking-gate-cancel"
+                  theme={theme}
+                />
+              </View>
+            }
+            contentContainerStyle={{ paddingBottom: theme.spacing.xl }}
+            testID="blocking-orbits-list"
+          />
+        ) : (
+          <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: theme.spacing.base }}>
+            <Text style={{
+              fontFamily: theme.typography.fontFamily.body,
+              fontSize: theme.typography.fontSize.base,
+              color: theme.colors.textSecondary,
+              textAlign: 'center',
+              marginBottom: theme.spacing.lg,
+            }}>
+              All blocking orbits resolved. You can now delete your account.
+            </Text>
+            <TouchableOpacityButton
+              label="Continue with Deletion"
+              destructive
+              onPress={handleRetryDeleteAfterGate}
+              testID="retry-delete-button"
+              theme={theme}
+            />
+            <View style={{ height: theme.spacing.md }} />
+            <TouchableOpacityButton
+              label="Cancel"
+              onPress={handleBlockingGateDismiss}
+              testID="blocking-gate-cancel"
+              theme={theme}
+            />
+          </View>
+        )}
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={containerStyle} edges={['top']} testID="settings-screen">
@@ -183,10 +356,104 @@ export function SettingsScreen(): React.JSX.Element {
           onPress={handleLogout}
           testID="logout-button"
         />
+        <SettingsRow
+          emojiUnified="1F5D1-FE0F"
+          label="Delete Account"
+          destructive
+          onPress={handleDeleteAccountPress}
+          testID="delete-account-button"
+        />
 
         <View style={{ height: theme.spacing.xl }} />
       </ScrollView>
+
+      <DeletePasswordModal
+        visible={deleteModalVisible}
+        onCancel={handleDeletePasswordCancel}
+        onSubmit={handleDeletePasswordSubmit}
+        errorMessage={deletePasswordError}
+      />
     </SafeAreaView>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// BlockingOrbitRow — renders OrbitAdminActions for a single blocking orbit
+// ---------------------------------------------------------------------------
+
+interface BlockingOrbitRowProps {
+  group: DecryptedGroup;
+  onCompleted: (action: 'transfer' | 'dissolve', groupId: string) => void;
+}
+
+const BlockingOrbitRow = React.memo(function BlockingOrbitRow({
+  group,
+  onCompleted,
+}: BlockingOrbitRowProps): React.JSX.Element {
+  const theme = useTheme();
+
+  const rowStyle: ViewStyle = {
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.borderSubtle,
+    paddingHorizontal: theme.spacing.base,
+    paddingVertical: theme.spacing.md,
+  };
+
+  const nameStyle: TextStyle = {
+    fontFamily: theme.typography.fontFamily.bodyBold,
+    fontSize: theme.typography.fontSize.base,
+    color: theme.colors.textPrimary,
+    marginBottom: theme.spacing.sm,
+  };
+
+  return (
+    <View style={rowStyle} testID={`blocking-orbit-${group.groupId}`}>
+      <EmojiText style={nameStyle}>{group.name}</EmojiText>
+      <OrbitAdminActions group={group} onCompleted={onCompleted} />
+    </View>
+  );
+});
+
+// ---------------------------------------------------------------------------
+// TouchableOpacityButton — simple inline button helper
+// ---------------------------------------------------------------------------
+
+interface TouchableOpacityButtonProps {
+  label: string;
+  onPress: () => void;
+  destructive?: boolean;
+  testID?: string;
+  theme: ReturnType<typeof useTheme>;
+}
+
+function TouchableOpacityButton({
+  label,
+  onPress,
+  destructive = false,
+  testID,
+  theme,
+}: TouchableOpacityButtonProps): React.JSX.Element {
+  const buttonStyle: ViewStyle = {
+    backgroundColor: destructive ? theme.colors.error : theme.colors.surface,
+    borderRadius: theme.borderRadius.base,
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.sm,
+    borderWidth: destructive ? 0 : 1,
+    borderColor: theme.colors.borderSubtle,
+    alignSelf: 'center',
+  };
+
+  const textStyle: TextStyle = {
+    fontFamily: theme.typography.fontFamily.bodyBold,
+    fontSize: theme.typography.fontSize.base,
+    color: destructive ? '#FFFFFF' : theme.colors.textPrimary,
+    textAlign: 'center',
+  };
+
+  return (
+    <TouchableOpacity onPress={onPress} style={buttonStyle} activeOpacity={0.7} testID={testID}>
+      <Text style={textStyle}>{label}</Text>
+    </TouchableOpacity>
   );
 }
 

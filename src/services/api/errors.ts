@@ -99,3 +99,46 @@ export class NotFoundError extends ApiError {
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }
+
+/**
+ * HTTP 409 — conflict. The request cannot be completed due to a conflict
+ * with the current state of the resource.
+ *
+ * For account deletion, the backend returns blocking_orbits in the response body
+ * that prevent deletion. This field is prod-retained (not __DEV__-gated) because
+ * it contains only the user's own orbit ids + encrypted names, not server internals.
+ */
+export interface BlockingOrbit {
+  id: string;
+  encryptedName: string;
+}
+
+export class ConflictError extends ApiError {
+  /** Orbits blocking account deletion — always available (prod-retained). */
+  readonly blockingOrbits: BlockingOrbit[];
+
+  constructor(rawBody?: string) {
+    super('Conflict — action cannot be completed', 409, 'CONFLICT', false, rawBody);
+    this.name = 'ConflictError';
+
+    // Parse blocking_orbits from the raw 409 response body (snake_case from server)
+    let orbits: BlockingOrbit[] = [];
+    if (rawBody) {
+      try {
+        const parsed = JSON.parse(rawBody);
+        const raw = parsed?.details?.blocking_orbits;
+        if (Array.isArray(raw)) {
+          orbits = raw.map((o: Record<string, unknown>) => ({
+            id: typeof o.id === 'string' ? o.id : '',
+            encryptedName: typeof o.encrypted_name === 'string' ? o.encrypted_name : '',
+          }));
+        }
+      } catch {
+        // Parse failure — default to empty array
+      }
+    }
+    this.blockingOrbits = orbits;
+
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}

@@ -1,12 +1,44 @@
 /**
- * Tests for authService — login, signup, session restore, logout orchestration.
+ * Tests for authService — login, signup, session restore, logout, deleteAccount orchestration.
  */
 
-import { loginUser, signupUser, restoreSession, logout } from '../authService';
+import { loginUser, signupUser, restoreSession, logout, deleteAccount } from '../authService';
 
 // ---------------------------------------------------------------------------
 // Module mocks
 // ---------------------------------------------------------------------------
+
+// Mocks needed by imports added for deleteAccount/localWipe
+jest.mock('../notificationService', () => ({
+  deregisterCurrentDevice: jest.fn().mockResolvedValue(undefined),
+}));
+
+const mockUnlink = jest.fn().mockResolvedValue(undefined);
+const mockExists = jest.fn().mockResolvedValue(false);
+const mockReadDir = jest.fn().mockResolvedValue([]);
+const MOCK_DOC_DIR = '/mock/documents';
+
+jest.mock('@dr.pogodin/react-native-fs', () => ({
+  DocumentDirectoryPath: '/mock/documents',
+  CachesDirectoryPath: '/mock/caches',
+  unlink: (...args: unknown[]) => mockUnlink(...args),
+  exists: (...args: unknown[]) => mockExists(...args),
+  readDir: (...args: unknown[]) => mockReadDir(...args),
+}));
+
+const mockClearSecureStorage = jest.fn().mockResolvedValue(undefined);
+jest.mock('../secure-storage', () => ({
+  clearAll: (...args: unknown[]) => mockClearSecureStorage(...args),
+}));
+
+jest.mock('../crypto/downgradeProtection', () => ({
+  clearEciesLockState: jest.fn(),
+  loadEciesLockState: jest.fn(),
+}));
+
+jest.mock('../threadService', () => ({
+  clearProcessedMediaIds: jest.fn(),
+}));
 
 jest.mock('../api/auth', () => ({
   login: jest.fn(),
@@ -16,6 +48,7 @@ jest.mock('../api/auth', () => ({
 
 jest.mock('../api/users', () => ({
   getMe: jest.fn(),
+  deleteAccount: jest.fn(),
 }));
 
 jest.mock('../api/tokenManager', () => ({
@@ -60,8 +93,10 @@ jest.mock('../../database/queryHelpers', () => ({
   execute: (...args: unknown[]) => mockExecute(...args),
 }));
 
+const mockCloseDatabase = jest.fn();
 jest.mock('../../database/connection', () => ({
   isDatabaseInitialized: jest.fn(() => true),
+  closeDatabase: () => mockCloseDatabase(),
 }));
 
 const mockLoadConversations = jest.fn().mockResolvedValue(undefined);
@@ -97,6 +132,7 @@ const mockClearTypingUsers = jest.fn();
 jest.mock('../../stores/useAppStore', () => ({
   useAppStore: {
     getState: jest.fn(() => ({
+      userId: 'user-1',
       setUser: mockSetUser,
       clearAuth: mockClearAuth,
       setConversations: mockSetConversations,
@@ -114,15 +150,19 @@ jest.mock('../../stores/useAppStore', () => ({
 import * as authApi from '../api/auth';
 import * as usersApi from '../api/users';
 import { tokenManager } from '../api/tokenManager';
-import { NetworkError, AuthError } from '../api/errors';
+import { ConflictError, NetworkError, AuthError } from '../api/errors';
+import { websocketManager } from '../websocket';
 
 const mockLogin = authApi.login as jest.Mock;
 const mockSignup = authApi.signup as jest.Mock;
 const mockVerifyToken = authApi.verifyToken as jest.Mock;
 const mockGetMe = usersApi.getMe as jest.Mock;
+const mockDeleteAccountApi = usersApi.deleteAccount as jest.Mock;
 const mockGetAccessToken = tokenManager.getAccessToken as jest.Mock;
 const mockSetTokens = tokenManager.setTokens as jest.Mock;
 const mockClearTokens = tokenManager.clearTokens as jest.Mock;
+const mockWsConnect = websocketManager.connect as jest.Mock;
+const mockWsDisconnect = websocketManager.disconnect as jest.Mock;
 
 // ---------------------------------------------------------------------------
 // Test setup
@@ -500,5 +540,178 @@ describe('logout', () => {
 
     await expect(logout()).resolves.not.toThrow();
     expect(mockClearTokens).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT call fullCryptoWipe or unlink the DB file (logout preserves identity)', async () => {
+    await logout();
+
+    expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+    expect(mockUnlink).not.toHaveBeenCalled();
+    expect(mockClearSecureStorage).not.toHaveBeenCalled();
+    expect(mockCloseDatabase).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// deleteAccount
+// ---------------------------------------------------------------------------
+
+describe('deleteAccount', () => {
+  beforeEach(() => {
+    mockDeleteAccountApi.mockResolvedValue(undefined);
+  });
+
+  it('on success: calls users.deleteAccount, performs full wipe, returns success', async () => {
+    const result = await deleteAccount('mypassword');
+
+    expect(result).toEqual({ status: 'success' });
+    expect(mockDeleteAccountApi).toHaveBeenCalledWith('user-1', 'mypassword');
+    expect(mockWsDisconnect).toHaveBeenCalled();
+    expect(mockFullCryptoWipe).toHaveBeenCalled();
+    expect(mockCloseDatabase).toHaveBeenCalled();
+    expect(mockClearSecureStorage).toHaveBeenCalled();
+  });
+
+  it('on success: DB unlink happens BEFORE clearSecureStorage (critical ordering)', async () => {
+    const result = await deleteAccount('pw');
+
+    expect(result).toEqual({ status: 'success' });
+
+    // Find the call that unlinks orbital.db
+    const dbUnlinkIndex = mockUnlink.mock.calls.findIndex(
+      (c: unknown[]) => c[0] === `${MOCK_DOC_DIR}/orbital.db`,
+    );
+    expect(dbUnlinkIndex).toBeGreaterThanOrEqual(0);
+
+    // clearSecureStorage must have been called after that unlink
+    const dbUnlinkOrder = mockUnlink.mock.invocationCallOrder[dbUnlinkIndex];
+    const clearSecureOrder = mockClearSecureStorage.mock.invocationCallOrder[0];
+    expect(dbUnlinkOrder).toBeLessThan(clearSecureOrder);
+  });
+
+  it('on API 403: returns incorrect_password and performs NO wipe', async () => {
+    mockDeleteAccountApi.mockRejectedValue(new AuthError(403, 'bad password'));
+
+    const result = await deleteAccount('wrong');
+
+    expect(result).toEqual({ status: 'incorrect_password' });
+    // No wipe operations called
+    expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+    expect(mockClearSecureStorage).not.toHaveBeenCalled();
+    expect(mockUnlink).not.toHaveBeenCalled();
+    expect(mockCloseDatabase).not.toHaveBeenCalled();
+    // Tokens NOT cleared (user remains logged in)
+    expect(mockClearTokens).not.toHaveBeenCalled();
+    // WS reconnected
+    expect(mockWsConnect).toHaveBeenCalled();
+  });
+
+  it('on API 409 (ConflictError): returns blocking_orbits with authoritative list and performs NO wipe', async () => {
+    const rawBody = JSON.stringify({
+      error: 'Cannot delete account',
+      details: {
+        blocking_orbits: [
+          { id: 'orbit-1', encrypted_name: 'enc-name-1' },
+          { id: 'orbit-2', encrypted_name: 'enc-name-2' },
+        ],
+      },
+    });
+    mockDeleteAccountApi.mockRejectedValue(new ConflictError(rawBody));
+
+    const result = await deleteAccount('pw');
+
+    expect(result).toEqual({
+      status: 'blocking_orbits',
+      blockingOrbits: [
+        { id: 'orbit-1', encryptedName: 'enc-name-1' },
+        { id: 'orbit-2', encryptedName: 'enc-name-2' },
+      ],
+    });
+    expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+    expect(mockClearSecureStorage).not.toHaveBeenCalled();
+    expect(mockUnlink).not.toHaveBeenCalled();
+    expect(mockCloseDatabase).not.toHaveBeenCalled();
+    expect(mockClearTokens).not.toHaveBeenCalled();
+    expect(mockWsConnect).toHaveBeenCalled();
+  });
+
+  it('on NetworkError: returns error and performs NO wipe', async () => {
+    mockDeleteAccountApi.mockRejectedValue(new NetworkError('timeout'));
+
+    const result = await deleteAccount('pw');
+
+    expect(result).toEqual({
+      status: 'error',
+      message: 'Network error — please check your connection',
+    });
+    expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+    expect(mockClearSecureStorage).not.toHaveBeenCalled();
+    expect(mockUnlink).not.toHaveBeenCalled();
+    expect(mockClearTokens).not.toHaveBeenCalled();
+    expect(mockWsConnect).toHaveBeenCalled();
+  });
+
+  it('returns error when userId is null (not authenticated)', async () => {
+    const { useAppStore } = require('../../stores/useAppStore');
+    (useAppStore.getState as jest.Mock).mockReturnValueOnce({
+      userId: null,
+      setUser: mockSetUser,
+      clearAuth: mockClearAuth,
+      setConversations: mockSetConversations,
+      setContacts: mockSetContacts,
+    });
+
+    const result = await deleteAccount('pw');
+
+    expect(result).toEqual({ status: 'error', message: 'Not authenticated' });
+    expect(mockDeleteAccountApi).not.toHaveBeenCalled();
+  });
+
+  it('on success: asserts clearTokens AND clearAuth are called (navigation mechanism)', async () => {
+    const result = await deleteAccount('pw');
+
+    expect(result).toEqual({ status: 'success' });
+    expect(mockClearTokens).toHaveBeenCalled();
+    expect(mockClearAuth).toHaveBeenCalled();
+  });
+
+  it('on success: media files and chunk cache files are unlinked', async () => {
+    // Set up FS mocks so media dir exists with files
+    mockExists.mockImplementation(async (path: string) => {
+      if (path === `${MOCK_DOC_DIR}/media`) return true;
+      return false;
+    });
+    mockReadDir.mockImplementation(async (path: string) => {
+      if (path === `${MOCK_DOC_DIR}/media`) {
+        return [{ path: `${MOCK_DOC_DIR}/media/photo.jpg`, name: 'photo.jpg' }];
+      }
+      // CachesDirectoryPath readDir
+      if (path === '/mock/caches') {
+        return [{ path: '/mock/caches/abc-chunk-0.bin', name: 'abc-chunk-0.bin' }];
+      }
+      return [];
+    });
+
+    const result = await deleteAccount('pw');
+
+    expect(result).toEqual({ status: 'success' });
+    // Media file should be unlinked
+    expect(mockUnlink).toHaveBeenCalledWith(`${MOCK_DOC_DIR}/media/photo.jpg`);
+    // Chunk cache file should be unlinked
+    expect(mockUnlink).toHaveBeenCalledWith('/mock/caches/abc-chunk-0.bin');
+  });
+
+  it('mid-wipe failure (fullCryptoWipe rejects): still returns success and runs clearTokens + closeDatabase + DB unlink', async () => {
+    mockFullCryptoWipe.mockRejectedValueOnce(new Error('crypto wipe exploded'));
+
+    const result = await deleteAccount('pw');
+
+    expect(result).toEqual({ status: 'success' });
+    // clearTokens must have been called (either in localWipe Phase 1 or fallback)
+    expect(mockClearTokens).toHaveBeenCalled();
+    // closeDatabase should still run after fullCryptoWipe fails
+    expect(mockCloseDatabase).toHaveBeenCalled();
+    // DB file unlink should still happen
+    expect(mockUnlink).toHaveBeenCalledWith(`${MOCK_DOC_DIR}/orbital.db`);
   });
 });

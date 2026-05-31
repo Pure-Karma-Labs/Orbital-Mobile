@@ -3,12 +3,16 @@
  *
  * Covers:
  * - Only renders for creator orbits (isCreator guard)
+ * - Transfer confirm Alert before API call
  * - Transfer success path calls API + onCompleted
  * - Transfer 400 "no key" shows inline error, does NOT call onCompleted
  * - Transfer 403 shows inline error
+ * - Transfer generic error (500 / thrown Error) shows fallback message
  * - Dissolve confirm calls API + onCompleted
  * - Dissolve cancel does nothing
  * - Members list excludes current user
+ * - Empty/sole-member state renders when no error
+ * - Empty state hidden when transfer error is showing
  */
 
 import React from 'react';
@@ -138,6 +142,22 @@ function renderComponent(
   return renderer;
 }
 
+/**
+ * Helper to extract the confirm button from an Alert.alert spy.
+ * Works for both transfer ("Transfer") and dissolve ("Dissolve") alerts.
+ */
+function getAlertButton(
+  alertSpy: jest.SpyInstance,
+  callIndex: number,
+  buttonText: string,
+): { text: string; onPress?: () => void | Promise<void> } {
+  const alertArgs = alertSpy.mock.calls[callIndex];
+  const buttons = alertArgs[2] as Array<{ text: string; onPress?: () => void | Promise<void> }>;
+  const btn = buttons.find((b) => b.text === buttonText);
+  if (!btn) throw new Error(`No button "${buttonText}" in Alert call #${callIndex}`);
+  return btn;
+}
+
 // ---------------------------------------------------------------------------
 // Setup
 // ---------------------------------------------------------------------------
@@ -181,7 +201,37 @@ describe('OrbitAdminActions — transfer', () => {
     expect(() => findByTestId(renderer.root, 'transfer-member-user-3')).not.toThrow();
   });
 
-  it('calls transferOrbitOwner and onCompleted on success', async () => {
+  it('shows confirmation Alert before calling transferOrbitOwner', async () => {
+    const alertSpy = jest.spyOn(Alert, 'alert');
+    const renderer = renderComponent();
+
+    // Open modal
+    await act(async () => {
+      findByTestId(renderer.root, 'transfer-button-g-1').props.onPress();
+    });
+
+    // Select Alice — should trigger Alert, NOT the API directly
+    await act(async () => {
+      findByTestId(renderer.root, 'transfer-select-user-2').props.onPress();
+    });
+
+    expect(alertSpy).toHaveBeenCalledWith(
+      'Transfer ownership?',
+      expect.stringContaining('@alice'),
+      expect.arrayContaining([
+        expect.objectContaining({ text: 'Cancel', style: 'cancel' }),
+        expect.objectContaining({ text: 'Transfer', style: 'destructive' }),
+      ]),
+    );
+
+    // API should NOT have been called yet (only after confirm)
+    expect(mockTransfer).not.toHaveBeenCalled();
+
+    alertSpy.mockRestore();
+  });
+
+  it('calls transferOrbitOwner and onCompleted on confirm', async () => {
+    const alertSpy = jest.spyOn(Alert, 'alert');
     const onCompleted = jest.fn();
     const renderer = renderComponent({ onCompleted });
 
@@ -190,19 +240,28 @@ describe('OrbitAdminActions — transfer', () => {
       findByTestId(renderer.root, 'transfer-button-g-1').props.onPress();
     });
 
-    // Select Alice
+    // Select Alice — triggers confirm Alert
     await act(async () => {
       findByTestId(renderer.root, 'transfer-select-user-2').props.onPress();
     });
 
+    // Confirm the transfer via Alert
+    const transferBtn = getAlertButton(alertSpy, 0, 'Transfer');
+    await act(async () => {
+      await transferBtn.onPress?.();
+    });
+
     expect(mockTransfer).toHaveBeenCalledWith('g-1', 'user-2');
     expect(onCompleted).toHaveBeenCalledWith('transfer', 'g-1');
+
+    alertSpy.mockRestore();
   });
 
   it('shows inline error on 400 (no key) and does NOT call onCompleted', async () => {
     mockTransfer.mockRejectedValue(
       new ValidationError(400, 'Target member has not yet received the group key'),
     );
+    const alertSpy = jest.spyOn(Alert, 'alert');
     const onCompleted = jest.fn();
     const renderer = renderComponent({ onCompleted });
 
@@ -214,6 +273,12 @@ describe('OrbitAdminActions — transfer', () => {
     // Select Alice
     await act(async () => {
       findByTestId(renderer.root, 'transfer-select-user-2').props.onPress();
+    });
+
+    // Confirm the transfer via Alert
+    const transferBtn = getAlertButton(alertSpy, 0, 'Transfer');
+    await act(async () => {
+      await transferBtn.onPress?.();
     });
 
     expect(mockTransfer).toHaveBeenCalledWith('g-1', 'user-2');
@@ -226,10 +291,13 @@ describe('OrbitAdminActions — transfer', () => {
     );
     const errorText = allTextNodes.map((n) => n.children[0]).join('');
     expect(errorText).toContain("hasn't received the orbit's key yet");
+
+    alertSpy.mockRestore();
   });
 
   it('shows inline error on 403 and does NOT call onCompleted', async () => {
     mockTransfer.mockRejectedValue(new AuthError(403, 'Not the creator'));
+    const alertSpy = jest.spyOn(Alert, 'alert');
     const onCompleted = jest.fn();
     const renderer = renderComponent({ onCompleted });
 
@@ -241,6 +309,12 @@ describe('OrbitAdminActions — transfer', () => {
       findByTestId(renderer.root, 'transfer-select-user-2').props.onPress();
     });
 
+    // Confirm the transfer via Alert
+    const transferBtn = getAlertButton(alertSpy, 0, 'Transfer');
+    await act(async () => {
+      await transferBtn.onPress?.();
+    });
+
     expect(onCompleted).not.toHaveBeenCalled();
 
     const errorEl = findByTestId(renderer.root, 'transfer-error');
@@ -249,6 +323,43 @@ describe('OrbitAdminActions — transfer', () => {
     );
     const errorText = allTextNodes.map((n) => n.children[0]).join('');
     expect(errorText).toContain('Only the orbit creator');
+
+    alertSpy.mockRestore();
+  });
+
+  it('shows generic fallback error on non-400/403 failure (e.g. 500)', async () => {
+    mockTransfer.mockRejectedValue(new Error('Internal server error'));
+    const alertSpy = jest.spyOn(Alert, 'alert');
+    const onCompleted = jest.fn();
+    const renderer = renderComponent({ onCompleted });
+
+    // Open modal
+    await act(async () => {
+      findByTestId(renderer.root, 'transfer-button-g-1').props.onPress();
+    });
+
+    // Select Alice
+    await act(async () => {
+      findByTestId(renderer.root, 'transfer-select-user-2').props.onPress();
+    });
+
+    // Confirm via Alert
+    const transferBtn = getAlertButton(alertSpy, 0, 'Transfer');
+    await act(async () => {
+      await transferBtn.onPress?.();
+    });
+
+    expect(onCompleted).not.toHaveBeenCalled();
+
+    // Generic inline error should appear
+    const errorEl = findByTestId(renderer.root, 'transfer-error');
+    const allTextNodes = errorEl.findAll(
+      (node) => typeof node.children?.[0] === 'string',
+    );
+    const errorText = allTextNodes.map((n) => n.children[0]).join('');
+    expect(errorText).toContain('Transfer failed. Please try again.');
+
+    alertSpy.mockRestore();
   });
 
   it('fetches members on-demand when members prop is not provided', async () => {
@@ -278,12 +389,46 @@ describe('OrbitAdminActions — transfer', () => {
     });
 
     // Modal closed — member rows should not be present (Modal visible=false)
-    // The modal content may still be in the tree but the Modal is not visible
     // Check that the transfer error is cleared for the next open
     await act(async () => {
       findByTestId(renderer.root, 'transfer-button-g-1').props.onPress();
     });
     expect(findAllByTestId(renderer.root, 'transfer-error')).toHaveLength(0);
+  });
+});
+
+describe('OrbitAdminActions — empty/sole-member state', () => {
+  it('shows "No other members" when only self is in the list', async () => {
+    // Only the current user — otherMembers will be empty
+    const selfOnly = [members[0]];
+    const renderer = renderComponent({ members: selfOnly });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'transfer-button-g-1').props.onPress();
+    });
+
+    expect(() => findByTestId(renderer.root, 'transfer-empty')).not.toThrow();
+    const emptyEl = findByTestId(renderer.root, 'transfer-empty');
+    const allTextNodes = emptyEl.findAll(
+      (node) => typeof node.children?.[0] === 'string',
+    );
+    const text = allTextNodes.map((n) => n.children[0]).join('');
+    expect(text).toContain('No other members to transfer to.');
+  });
+
+  it('hides empty state when there is a transfer error (no dual messaging)', async () => {
+    // members=undefined will trigger on-demand fetch; make it fail
+    mockGetMembers.mockRejectedValue(new Error('network error'));
+    const renderer = renderComponent({ members: undefined });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'transfer-button-g-1').props.onPress();
+    });
+
+    // Error banner should be visible
+    expect(() => findByTestId(renderer.root, 'transfer-error')).not.toThrow();
+    // Empty state should NOT be visible
+    expect(findAllByTestId(renderer.root, 'transfer-empty')).toHaveLength(0);
   });
 });
 
@@ -318,12 +463,10 @@ describe('OrbitAdminActions — dissolve', () => {
     });
 
     // Get the destructive onPress handler
-    const alertArgs = alertSpy.mock.calls[0];
-    const buttons = alertArgs[2] as Array<{ text: string; onPress?: () => void }>;
-    const dissolveButton = buttons.find((b) => b.text === 'Dissolve');
+    const dissolveButton = getAlertButton(alertSpy, 0, 'Dissolve');
 
     await act(async () => {
-      dissolveButton?.onPress?.();
+      await dissolveButton.onPress?.();
     });
 
     expect(mockDissolve).toHaveBeenCalledWith('g-1');
@@ -342,12 +485,10 @@ describe('OrbitAdminActions — dissolve', () => {
     });
 
     // Get cancel button from alert
-    const alertArgs = alertSpy.mock.calls[0];
-    const buttons = alertArgs[2] as Array<{ text: string; onPress?: () => void }>;
-    const cancelButton = buttons.find((b) => b.text === 'Cancel');
+    const cancelButton = getAlertButton(alertSpy, 0, 'Cancel');
 
     // Cancel has no onPress or it does nothing
-    cancelButton?.onPress?.();
+    cancelButton.onPress?.();
 
     expect(mockDissolve).not.toHaveBeenCalled();
     expect(onCompleted).not.toHaveBeenCalled();
@@ -366,12 +507,10 @@ describe('OrbitAdminActions — dissolve', () => {
     });
 
     // Get dissolve button
-    const alertArgs = alertSpy.mock.calls[0];
-    const buttons = alertArgs[2] as Array<{ text: string; onPress?: () => void }>;
-    const dissolveBtn = buttons.find((b) => b.text === 'Dissolve');
+    const dissolveBtn = getAlertButton(alertSpy, 0, 'Dissolve');
 
     await act(async () => {
-      dissolveBtn?.onPress?.();
+      await dissolveBtn.onPress?.();
     });
 
     expect(onCompleted).not.toHaveBeenCalled();

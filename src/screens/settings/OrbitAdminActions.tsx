@@ -59,9 +59,6 @@ export const OrbitAdminActions = React.memo(function OrbitAdminActions({
   const theme = useTheme();
   const { userId } = useAuth();
 
-  // If the current user is not the creator, render nothing.
-  if (!group.isCreator) return null;
-
   // Transfer modal state
   const [transferModalVisible, setTransferModalVisible] = useState(false);
   const [modalMembers, setModalMembers] = useState<GroupMember[] | null>(
@@ -70,6 +67,7 @@ export const OrbitAdminActions = React.memo(function OrbitAdminActions({
   const [loadingMembers, setLoadingMembers] = useState(false);
   const [transferring, setTransferring] = useState(false);
   const [transferError, setTransferError] = useState<string | null>(null);
+  const [dissolving, setDissolving] = useState(false);
 
   // Sync prop members into local state if prop changes
   useEffect(() => {
@@ -99,30 +97,41 @@ export const OrbitAdminActions = React.memo(function OrbitAdminActions({
   }, [group.groupId, modalMembers, loadingMembers]);
 
   const handleTransferTo = useCallback(
-    async (member: GroupMember) => {
-      setTransferring(true);
-      setTransferError(null);
-      try {
-        await transferOrbitOwner(group.groupId, member.userId);
-        setTransferModalVisible(false);
-        onCompleted?.('transfer', group.groupId);
-      } catch (e) {
-        if (e instanceof ValidationError && e.statusCode === 400) {
-          // The only realistic 400 from the transfer endpoint for a valid
-          // member selection is the "no key yet" case.
-          setTransferError(
-            "That member hasn't received the orbit's key yet — they can't take ownership until they've synced.",
-          );
-        } else if (e instanceof AuthError && e.statusCode === 403) {
-          setTransferError('Only the orbit creator can transfer ownership.');
-        } else {
-          setTransferError('Transfer failed. Please try again.');
-        }
-      } finally {
-        setTransferring(false);
-      }
+    (member: GroupMember) => {
+      Alert.alert(
+        'Transfer ownership?',
+        `Transfer "${group.name}" to @${member.username}? You'll no longer be the owner.`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Transfer',
+            style: 'destructive',
+            onPress: async () => {
+              setTransferring(true);
+              setTransferError(null);
+              try {
+                await transferOrbitOwner(group.groupId, member.userId);
+                setTransferModalVisible(false);
+                onCompleted?.('transfer', group.groupId);
+              } catch (e) {
+                if (e instanceof ValidationError && e.statusCode === 400) {
+                  setTransferError(
+                    "That member hasn't received the orbit's key yet — they can't take ownership until they've synced.",
+                  );
+                } else if (e instanceof AuthError && e.statusCode === 403) {
+                  setTransferError('Only the orbit creator can transfer ownership.');
+                } else {
+                  setTransferError('Transfer failed. Please try again.');
+                }
+              } finally {
+                setTransferring(false);
+              }
+            },
+          },
+        ],
+      );
     },
-    [group.groupId, onCompleted],
+    [group.groupId, group.name, onCompleted],
   );
 
   const handleCloseTransfer = useCallback(() => {
@@ -142,6 +151,7 @@ export const OrbitAdminActions = React.memo(function OrbitAdminActions({
           text: 'Dissolve',
           style: 'destructive',
           onPress: async () => {
+            setDissolving(true);
             try {
               await dissolveOrbit(group.groupId);
               onCompleted?.('dissolve', group.groupId);
@@ -151,6 +161,8 @@ export const OrbitAdminActions = React.memo(function OrbitAdminActions({
               } else {
                 Alert.alert('Error', 'Failed to dissolve orbit. Please try again.');
               }
+            } finally {
+              setDissolving(false);
             }
           },
         },
@@ -255,43 +267,6 @@ export const OrbitAdminActions = React.memo(function OrbitAdminActions({
     marginBottom: theme.spacing.md,
   };
 
-  const memberRowStyle: ViewStyle = {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: theme.spacing.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.borderSubtle,
-  };
-
-  const memberInfoStyle: ViewStyle = {
-    flex: 1,
-  };
-
-  const memberNameStyle: TextStyle = {
-    fontFamily: theme.typography.fontFamily.body,
-    fontSize: theme.typography.fontSize.base,
-    color: theme.colors.textPrimary,
-  };
-
-  const memberHandleStyle: TextStyle = {
-    fontFamily: theme.typography.fontFamily.mono,
-    fontSize: theme.typography.fontSize.sm,
-    color: theme.colors.textTertiary,
-  };
-
-  const selectButtonStyle: ViewStyle = {
-    backgroundColor: theme.colors.blue,
-    borderRadius: theme.borderRadius.base,
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.xs,
-  };
-
-  const selectTextStyle: TextStyle = {
-    fontFamily: theme.typography.fontFamily.bodyBold,
-    fontSize: theme.typography.fontSize.sm,
-    color: '#FFFFFF',
-  };
-
   const cancelButtonStyle: ViewStyle = {
     marginTop: theme.spacing.md,
     paddingVertical: theme.spacing.sm,
@@ -316,37 +291,71 @@ export const OrbitAdminActions = React.memo(function OrbitAdminActions({
   // ------- Render -------
 
   const renderMemberItem = useCallback(
-    ({ item }: ListRenderItemInfo<GroupMember>) => (
-      <View style={memberRowStyle} testID={`transfer-member-${item.userId}`}>
-        <View style={memberInfoStyle}>
-          <Text style={memberNameStyle}>{item.displayName}</Text>
-          <Text style={memberHandleStyle}>@{item.username}</Text>
+    ({ item }: ListRenderItemInfo<GroupMember>) => {
+      const memberRowStyle: ViewStyle = {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingVertical: theme.spacing.sm,
+        borderBottomWidth: 1,
+        borderBottomColor: theme.colors.borderSubtle,
+      };
+      const memberInfoStyle: ViewStyle = {
+        flex: 1,
+        marginRight: theme.spacing.sm,
+      };
+      const memberNameStyle: TextStyle = {
+        fontFamily: theme.typography.fontFamily.body,
+        fontSize: theme.typography.fontSize.base,
+        color: theme.colors.textPrimary,
+      };
+      const memberHandleStyle: TextStyle = {
+        fontFamily: theme.typography.fontFamily.mono,
+        fontSize: theme.typography.fontSize.sm,
+        color: theme.colors.textTertiary,
+      };
+      const selectBtnStyle: ViewStyle = {
+        backgroundColor: theme.colors.blue,
+        borderRadius: theme.borderRadius.base,
+        paddingHorizontal: theme.spacing.md,
+        paddingVertical: theme.spacing.xs,
+      };
+      const selectTxtStyle: TextStyle = {
+        fontFamily: theme.typography.fontFamily.bodyBold,
+        fontSize: theme.typography.fontSize.sm,
+        color: '#FFFFFF',
+      };
+
+      return (
+        <View style={memberRowStyle} testID={`transfer-member-${item.userId}`}>
+          <View style={memberInfoStyle}>
+            <Text style={memberNameStyle} numberOfLines={1}>
+              {item.displayName}
+            </Text>
+            <Text style={memberHandleStyle} numberOfLines={1}>
+              @{item.username}
+            </Text>
+          </View>
+          <TouchableOpacity
+            style={[selectBtnStyle, transferring && { opacity: 0.5 }]}
+            onPress={() => handleTransferTo(item)}
+            disabled={transferring}
+            testID={`transfer-select-${item.userId}`}
+          >
+            <Text style={selectTxtStyle}>
+              {transferring ? 'Transferring...' : 'Transfer'}
+            </Text>
+          </TouchableOpacity>
         </View>
-        <TouchableOpacity
-          style={[selectButtonStyle, transferring && { opacity: 0.5 }]}
-          onPress={() => handleTransferTo(item)}
-          disabled={transferring}
-          testID={`transfer-select-${item.userId}`}
-        >
-          <Text style={selectTextStyle}>
-            {transferring ? 'Transferring...' : 'Transfer'}
-          </Text>
-        </TouchableOpacity>
-      </View>
-    ),
-    [
-      memberRowStyle,
-      memberInfoStyle,
-      memberNameStyle,
-      memberHandleStyle,
-      selectButtonStyle,
-      selectTextStyle,
-      transferring,
-      handleTransferTo,
-    ],
+      );
+    },
+    [theme, transferring, handleTransferTo],
   );
 
   const keyExtractor = useCallback((item: GroupMember) => item.userId, []);
+
+  // If the current user is not the creator, render nothing.
+  // Guard placed after all hooks to satisfy rules-of-hooks.
+  if (!group.isCreator) return null;
 
   return (
     <View style={containerStyle} testID={`admin-actions-${group.groupId}`}>
@@ -361,12 +370,15 @@ export const OrbitAdminActions = React.memo(function OrbitAdminActions({
           <Text style={transferTextStyle}>Transfer Ownership</Text>
         </TouchableOpacity>
         <TouchableOpacity
-          style={dissolveButtonStyle}
+          style={[dissolveButtonStyle, dissolving && { opacity: 0.5 }]}
           onPress={handleDissolve}
+          disabled={dissolving}
           activeOpacity={0.7}
           testID={`dissolve-button-${group.groupId}`}
         >
-          <Text style={dissolveTextStyle}>Dissolve Orbit</Text>
+          <Text style={dissolveTextStyle}>
+            {dissolving ? 'Dissolving...' : 'Dissolve Orbit'}
+          </Text>
         </TouchableOpacity>
       </View>
 
@@ -397,7 +409,7 @@ export const OrbitAdminActions = React.memo(function OrbitAdminActions({
               >
                 <OrbitalSpinner size={24} />
               </View>
-            ) : otherMembers.length === 0 ? (
+            ) : otherMembers.length === 0 && !transferError ? (
               <Text style={emptyStyle} testID="transfer-empty">
                 No other members to transfer to.
               </Text>

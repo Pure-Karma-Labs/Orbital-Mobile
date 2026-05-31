@@ -17,6 +17,7 @@ import { useTheme } from '../theme';
 import { useAuth, useUI, useConversations, useNotifications } from '../stores';
 import { logout, deleteAccount } from '../services/authService';
 import type { DeleteAccountResult } from '../services/authService';
+import type { BlockingOrbit } from '../services/api/errors';
 import { getGroupQuota } from '../services/api/groups';
 import { fetchCreatorOrbitsDecrypted } from '../services/conversationService';
 import type { DecryptedGroup } from '../services/conversationService';
@@ -155,13 +156,16 @@ export function SettingsScreen(): React.JSX.Element {
         setDeletePasswordError('Incorrect password');
         break;
       case 'blocking_orbits':
-        // Close the password modal and show the blocking orbits gate
+        // Close the password modal and show the blocking orbits gate.
+        // Use the AUTHORITATIVE list from the 409 response — this excludes DMs
+        // and any other orbits the backend doesn't consider blocking.
         setDeleteModalVisible(false);
         setLoadingBlockingOrbits(true);
         try {
+          const authoritativeIds = new Set(result.blockingOrbits.map((o: BlockingOrbit) => o.id));
           const orbits = await fetchCreatorOrbitsDecrypted();
-          // Filter to multi-member orbits only (memberCount includes self)
-          setBlockingOrbits(orbits.filter((o) => o.memberCount > 1));
+          // Keep only orbits whose id is in the backend's authoritative blocking list
+          setBlockingOrbits(orbits.filter((o) => authoritativeIds.has(o.groupId)));
         } catch {
           setBlockingOrbits([]);
         } finally {

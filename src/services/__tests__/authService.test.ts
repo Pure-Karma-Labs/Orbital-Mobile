@@ -150,7 +150,7 @@ jest.mock('../../stores/useAppStore', () => ({
 import * as authApi from '../api/auth';
 import * as usersApi from '../api/users';
 import { tokenManager } from '../api/tokenManager';
-import { ApiError, NetworkError, AuthError } from '../api/errors';
+import { ConflictError, NetworkError, AuthError } from '../api/errors';
 import { websocketManager } from '../websocket';
 
 const mockLogin = authApi.login as jest.Mock;
@@ -606,14 +606,27 @@ describe('deleteAccount', () => {
     expect(mockWsConnect).toHaveBeenCalled();
   });
 
-  it('on API 409: returns blocking_orbits and performs NO wipe', async () => {
-    mockDeleteAccountApi.mockRejectedValue(
-      new ApiError('Conflict', 409, 'CONFLICT', false),
-    );
+  it('on API 409 (ConflictError): returns blocking_orbits with authoritative list and performs NO wipe', async () => {
+    const rawBody = JSON.stringify({
+      error: 'Cannot delete account',
+      details: {
+        blocking_orbits: [
+          { id: 'orbit-1', encrypted_name: 'enc-name-1' },
+          { id: 'orbit-2', encrypted_name: 'enc-name-2' },
+        ],
+      },
+    });
+    mockDeleteAccountApi.mockRejectedValue(new ConflictError(rawBody));
 
     const result = await deleteAccount('pw');
 
-    expect(result).toEqual({ status: 'blocking_orbits' });
+    expect(result).toEqual({
+      status: 'blocking_orbits',
+      blockingOrbits: [
+        { id: 'orbit-1', encryptedName: 'enc-name-1' },
+        { id: 'orbit-2', encryptedName: 'enc-name-2' },
+      ],
+    });
     expect(mockFullCryptoWipe).not.toHaveBeenCalled();
     expect(mockClearSecureStorage).not.toHaveBeenCalled();
     expect(mockUnlink).not.toHaveBeenCalled();
@@ -652,5 +665,53 @@ describe('deleteAccount', () => {
 
     expect(result).toEqual({ status: 'error', message: 'Not authenticated' });
     expect(mockDeleteAccountApi).not.toHaveBeenCalled();
+  });
+
+  it('on success: asserts clearTokens AND clearAuth are called (navigation mechanism)', async () => {
+    const result = await deleteAccount('pw');
+
+    expect(result).toEqual({ status: 'success' });
+    expect(mockClearTokens).toHaveBeenCalled();
+    expect(mockClearAuth).toHaveBeenCalled();
+  });
+
+  it('on success: media files and chunk cache files are unlinked', async () => {
+    // Set up FS mocks so media dir exists with files
+    mockExists.mockImplementation(async (path: string) => {
+      if (path === `${MOCK_DOC_DIR}/media`) return true;
+      return false;
+    });
+    mockReadDir.mockImplementation(async (path: string) => {
+      if (path === `${MOCK_DOC_DIR}/media`) {
+        return [{ path: `${MOCK_DOC_DIR}/media/photo.jpg`, name: 'photo.jpg' }];
+      }
+      // CachesDirectoryPath readDir
+      if (path === '/mock/caches') {
+        return [{ path: '/mock/caches/abc-chunk-0.bin', name: 'abc-chunk-0.bin' }];
+      }
+      return [];
+    });
+
+    const result = await deleteAccount('pw');
+
+    expect(result).toEqual({ status: 'success' });
+    // Media file should be unlinked
+    expect(mockUnlink).toHaveBeenCalledWith(`${MOCK_DOC_DIR}/media/photo.jpg`);
+    // Chunk cache file should be unlinked
+    expect(mockUnlink).toHaveBeenCalledWith('/mock/caches/abc-chunk-0.bin');
+  });
+
+  it('mid-wipe failure (fullCryptoWipe rejects): still returns success and runs clearTokens + closeDatabase + DB unlink', async () => {
+    mockFullCryptoWipe.mockRejectedValueOnce(new Error('crypto wipe exploded'));
+
+    const result = await deleteAccount('pw');
+
+    expect(result).toEqual({ status: 'success' });
+    // clearTokens must have been called (either in localWipe Phase 1 or fallback)
+    expect(mockClearTokens).toHaveBeenCalled();
+    // closeDatabase should still run after fullCryptoWipe fails
+    expect(mockCloseDatabase).toHaveBeenCalled();
+    // DB file unlink should still happen
+    expect(mockUnlink).toHaveBeenCalledWith(`${MOCK_DOC_DIR}/orbital.db`);
   });
 });

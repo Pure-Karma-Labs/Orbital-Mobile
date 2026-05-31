@@ -9,6 +9,7 @@
 import {
   ApiError,
   AuthError,
+  ConflictError,
   NetworkError,
   NotFoundError,
   ServerError,
@@ -285,6 +286,10 @@ async function _executeRequest(options: RequestOptions): Promise<Response> {
 
     if (status === 404) {
       throw new NotFoundError(rawBody);
+    }
+
+    if (status === 409) {
+      throw new ConflictError(rawBody);
     }
 
     if (status === 400 || status === 422) {

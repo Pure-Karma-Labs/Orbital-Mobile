@@ -8,7 +8,8 @@
 import * as auth from './api/auth';
 import * as users from './api/users';
 import { tokenManager } from './api/tokenManager';
-import { ApiError, NetworkError } from './api/errors';
+import { ApiError, ConflictError, NetworkError } from './api/errors';
+import type { BlockingOrbit } from './api/errors';
 import { useAppStore } from '../stores/useAppStore';
 import {
   generateInitialKeys,
@@ -42,7 +43,7 @@ import { clearAll as clearSecureStorage } from './secure-storage';
 export type DeleteAccountResult =
   | { status: 'success' }
   | { status: 'incorrect_password' }
-  | { status: 'blocking_orbits' }
+  | { status: 'blocking_orbits'; blockingOrbits: BlockingOrbit[] }
   | { status: 'error'; message: string };
 
 /**
@@ -220,16 +221,34 @@ export async function restoreSession(): Promise<boolean> {
  * brick next launch by leaving an unopenable DB (key gone but file remains).
  */
 export async function localWipe({ preserveIdentity }: { preserveIdentity: boolean }): Promise<void> {
-  // --- Phase 1: Clear tokens and store state ---
-  await tokenManager.clearTokens();
-  useAppStore.getState().clearAuth();
-  const state = useAppStore.getState();
-  state.setConversations([]);
-  state.setContacts([]);
-  clearIdentityKeyCache();
-  clearGroupKeyCache();
-  clearEciesLockState();
-  clearProcessedMediaIds();
+  // --- Phase 1: Clear tokens and store state (best-effort per-step) ---
+  // Each step is isolated so a failure in one (e.g., Keychain op) never
+  // aborts the remaining cleanup steps or the destructive wipe that follows.
+  try { await tokenManager.clearTokens(); } catch {
+    if (__DEV__) console.warn('[LocalWipe] clearTokens failed');
+  }
+  try { useAppStore.getState().clearAuth(); } catch {
+    if (__DEV__) console.warn('[LocalWipe] clearAuth failed');
+  }
+  try {
+    const state = useAppStore.getState();
+    state.setConversations([]);
+    state.setContacts([]);
+  } catch {
+    if (__DEV__) console.warn('[LocalWipe] store reset failed');
+  }
+  try { clearIdentityKeyCache(); } catch {
+    if (__DEV__) console.warn('[LocalWipe] clearIdentityKeyCache failed');
+  }
+  try { clearGroupKeyCache(); } catch {
+    if (__DEV__) console.warn('[LocalWipe] clearGroupKeyCache failed');
+  }
+  try { clearEciesLockState(); } catch {
+    if (__DEV__) console.warn('[LocalWipe] clearEciesLockState failed');
+  }
+  try { clearProcessedMediaIds(); } catch {
+    if (__DEV__) console.warn('[LocalWipe] clearProcessedMediaIds failed');
+  }
 
   if (preserveIdentity) {
     // --- Logout path: clear per-session Signal state only ---
@@ -366,12 +385,12 @@ export async function deleteAccount(password: string): Promise<DeleteAccountResu
     // On ANY failure, do NOT wipe. Reconnect WS so user remains logged in.
     websocketManager.connect();
 
+    if (e instanceof ConflictError) {
+      return { status: 'blocking_orbits', blockingOrbits: e.blockingOrbits };
+    }
     if (e instanceof ApiError) {
       if (e.statusCode === 403) {
         return { status: 'incorrect_password' };
-      }
-      if (e.statusCode === 409) {
-        return { status: 'blocking_orbits' };
       }
       if (e instanceof NetworkError) {
         return { status: 'error', message: 'Network error — please check your connection' };
@@ -381,9 +400,16 @@ export async function deleteAccount(password: string): Promise<DeleteAccountResu
     return { status: 'error', message: e instanceof Error ? e.message : 'Unknown error' };
   }
 
-  // Success — perform full local wipe (do NOT call deregisterDevice; token is dead,
-  // device_tokens cascade-deleted server-side)
-  await localWipe({ preserveIdentity: false });
+  // Success — the account IS gone server-side. Perform full local wipe best-effort.
+  // Even if the wipe partially fails, we must return success and ensure the app
+  // navigates to login (clearAuth/clearTokens must run).
+  try {
+    await localWipe({ preserveIdentity: false });
+  } catch {
+    // Best-effort: ensure clearAuth/clearTokens ran so auth gate navigates to login
+    try { await tokenManager.clearTokens(); } catch { /* swallow */ }
+    try { useAppStore.getState().clearAuth(); } catch { /* swallow */ }
+  }
   return { status: 'success' };
 }
 

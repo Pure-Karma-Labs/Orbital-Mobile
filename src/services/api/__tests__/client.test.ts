@@ -16,6 +16,7 @@ jest.mock('../tokenManager', () => ({
 import { request, requestBinary, snakeToCamel, camelToSnake } from '../client';
 import {
   AuthError,
+  ConflictError,
   NetworkError,
   NotFoundError,
   ServerError,
@@ -425,5 +426,66 @@ describe('camelToSnake edge cases', () => {
     expect(camelToSnake({ outerKey: { innerValue: 1 } })).toEqual({
       outer_key: { inner_value: 1 },
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ConflictError (409) — mapping and parsing
+// ---------------------------------------------------------------------------
+
+describe('ConflictError', () => {
+  it('maps 409 to ConflictError', async () => {
+    mockFetchError(409, JSON.stringify({ error: 'Conflict' }));
+    await expect(request({ method: 'DELETE', path: '/api/test' })).rejects.toBeInstanceOf(
+      ConflictError,
+    );
+  });
+
+  it('parses blocking_orbits from 409 response body', async () => {
+    const body = JSON.stringify({
+      error: 'Cannot delete',
+      details: {
+        blocking_orbits: [
+          { id: 'orbit-1', encrypted_name: 'enc-name-1' },
+          { id: 'orbit-2', encrypted_name: 'enc-name-2' },
+        ],
+      },
+    });
+    mockFetchError(409, body);
+
+    const err = await request({ method: 'DELETE', path: '/api/test' }).catch(
+      (e: unknown) => e,
+    ) as ConflictError;
+
+    expect(err).toBeInstanceOf(ConflictError);
+    expect(err.blockingOrbits).toEqual([
+      { id: 'orbit-1', encryptedName: 'enc-name-1' },
+      { id: 'orbit-2', encryptedName: 'enc-name-2' },
+    ]);
+    expect(err.statusCode).toBe(409);
+    expect(err.code).toBe('CONFLICT');
+    expect(err.isRetryable).toBe(false);
+  });
+
+  it('defaults to empty blockingOrbits on bad/missing body', async () => {
+    mockFetchError(409, 'not json at all');
+
+    const err = await request({ method: 'DELETE', path: '/api/test' }).catch(
+      (e: unknown) => e,
+    ) as ConflictError;
+
+    expect(err).toBeInstanceOf(ConflictError);
+    expect(err.blockingOrbits).toEqual([]);
+  });
+
+  it('defaults to empty blockingOrbits when details.blocking_orbits is missing', async () => {
+    mockFetchError(409, JSON.stringify({ error: 'Conflict', details: {} }));
+
+    const err = await request({ method: 'DELETE', path: '/api/test' }).catch(
+      (e: unknown) => e,
+    ) as ConflictError;
+
+    expect(err).toBeInstanceOf(ConflictError);
+    expect(err.blockingOrbits).toEqual([]);
   });
 });

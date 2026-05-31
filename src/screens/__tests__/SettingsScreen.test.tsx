@@ -21,9 +21,21 @@ jest.mock('../../services/conversationService', () => ({
   fetchCreatorOrbitsDecrypted: jest.fn(),
 }));
 
-// Stub OrbitAdminActions to avoid importing its heavy service chain
+// Stub OrbitAdminActions to avoid importing its heavy service chain.
+// Renders a touchable so tests can simulate completion callbacks.
 jest.mock('../settings/OrbitAdminActions', () => ({
-  OrbitAdminActions: () => 'OrbitAdminActions',
+  OrbitAdminActions: (props: { onCompleted?: (action: string, groupId: string) => void; group?: { groupId: string } }) => {
+    const React = require('react');
+    const { TouchableOpacity, Text } = require('react-native');
+    return React.createElement(
+      TouchableOpacity,
+      {
+        testID: `admin-actions-${props.group?.groupId ?? 'unknown'}`,
+        onPress: () => props.onCompleted?.('dissolve', props.group?.groupId ?? ''),
+      },
+      React.createElement(Text, null, 'MockAdminActions'),
+    );
+  },
 }));
 
 jest.mock('../../services/api/groups', () => ({
@@ -274,11 +286,16 @@ describe('SettingsScreen — delete account', () => {
     alertSpy.mockRestore();
   });
 
-  it('on blocking_orbits: closes modal and shows blocking orbits list', async () => {
-    mockDeleteAccount.mockResolvedValue({ status: 'blocking_orbits' });
+  it('on blocking_orbits: closes modal and shows ONLY orbits in the authoritative list (DMs excluded)', async () => {
+    // The backend's 409 response says only orbit-1 is blocking (orbit-dm is a DM, not blocking)
+    mockDeleteAccount.mockResolvedValue({
+      status: 'blocking_orbits',
+      blockingOrbits: [{ id: 'orbit-1', encryptedName: 'enc-family' }],
+    });
+    // fetchCreatorOrbitsDecrypted returns ALL creator orbits including a DM-like one
     mockFetchCreatorOrbitsDecrypted.mockResolvedValue([
       { groupId: 'orbit-1', name: 'Family', inviteCode: null, memberCount: 3, isCreator: true },
-      { groupId: 'orbit-2', name: 'Solo', inviteCode: null, memberCount: 1, isCreator: true },
+      { groupId: 'orbit-dm', name: 'DM with Bob', inviteCode: null, memberCount: 2, isCreator: true },
     ]);
     const alertSpy = jest.spyOn(Alert, 'alert');
     const renderer = renderSettingsScreen();
@@ -300,12 +317,76 @@ describe('SettingsScreen — delete account', () => {
       await submitBtn.props.onPress();
     });
 
-    // Blocking orbits list should be rendered (only multi-member orbits)
+    // Blocking orbits list should be rendered
     const orbitList = findByTestId(renderer.root, 'blocking-orbits-list');
     expect(orbitList).toBeDefined();
-    // orbit-1 has memberCount 3, should appear; orbit-2 has memberCount 1, filtered out
+    // orbit-1 IS in the authoritative list → shown
     expect(() => findByTestId(renderer.root, 'blocking-orbit-orbit-1')).not.toThrow();
-    expect(renderer.root.findAll((n) => n.props.testID === 'blocking-orbit-orbit-2')).toHaveLength(0);
+    // orbit-dm is NOT in the authoritative list (it's a DM) → excluded
+    expect(renderer.root.findAll((n) => n.props.testID === 'blocking-orbit-orbit-dm')).toHaveLength(0);
+    alertSpy.mockRestore();
+  });
+
+  it('resolving all blocking orbits shows Continue button and retry re-attempts deletion', async () => {
+    // First call: 409 with one blocking orbit
+    mockDeleteAccount.mockResolvedValueOnce({
+      status: 'blocking_orbits',
+      blockingOrbits: [{ id: 'orbit-1', encryptedName: 'enc-family' }],
+    });
+    mockFetchCreatorOrbitsDecrypted.mockResolvedValue([
+      { groupId: 'orbit-1', name: 'Family', inviteCode: null, memberCount: 3, isCreator: true },
+    ]);
+    const alertSpy = jest.spyOn(Alert, 'alert');
+    const renderer = renderSettingsScreen();
+
+    // Open modal and trigger blocking_orbits
+    const button = findByTestId(renderer.root, 'delete-account-button');
+    act(() => { button.props.onPress(); });
+    const alertArgs = alertSpy.mock.calls[0];
+    const buttons = alertArgs[2] as Array<{ text: string; onPress?: () => void }>;
+    const deleteBtn = buttons.find((b) => b.text === 'Delete');
+    act(() => { deleteBtn!.onPress!(); });
+
+    const input = findByTestId(renderer.root, 'delete-password-input');
+    act(() => { input.props.onChangeText('pw'); });
+    const submitBtn = findByTestId(renderer.root, 'delete-password-submit');
+    await act(async () => {
+      await submitBtn.props.onPress();
+    });
+
+    // Simulate resolving the blocking orbit via the mock OrbitAdminActions button
+    const adminActionsBtn = findByTestId(renderer.root, 'admin-actions-orbit-1');
+    act(() => {
+      adminActionsBtn.props.onPress();
+    });
+
+    // After all orbits resolved, the "Continue with Deletion" button should appear
+    const retryBtn = findByTestId(renderer.root, 'retry-delete-button');
+    expect(retryBtn).toBeDefined();
+
+    // Set up the second call to succeed
+    mockDeleteAccount.mockResolvedValueOnce({ status: 'success' });
+
+    // Tap Continue — it should re-open the password modal
+    act(() => {
+      retryBtn.props.onPress();
+    });
+
+    // Modal should now be visible again for re-entry
+    const modal = findByTestId(renderer.root, 'delete-password-modal');
+    expect(modal.props.visible).toBe(true);
+
+    // Enter password and submit again
+    const input2 = findByTestId(renderer.root, 'delete-password-input');
+    act(() => { input2.props.onChangeText('pw2'); });
+    const submitBtn2 = findByTestId(renderer.root, 'delete-password-submit');
+    await act(async () => {
+      await submitBtn2.props.onPress();
+    });
+
+    // Second call should have been made
+    expect(mockDeleteAccount).toHaveBeenCalledTimes(2);
+    expect(mockDeleteAccount).toHaveBeenLastCalledWith('pw2');
     alertSpy.mockRestore();
   });
 });

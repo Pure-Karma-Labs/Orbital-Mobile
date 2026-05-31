@@ -42,6 +42,9 @@ export const DeletePasswordModal = React.memo(function DeletePasswordModal({
     setSubmitting(true);
     try {
       await onSubmit(password);
+      // Clear password from component state after submission completes
+      // (regardless of outcome — prevents sensitive data lingering in memory)
+      setPassword('');
     } finally {
       setSubmitting(false);
     }

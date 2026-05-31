@@ -21,6 +21,8 @@ import {
   getGroupMembers,
   generateInviteCode,
   removeMember,
+  transferOrbitOwner,
+  dissolveOrbit,
 } from '../groups';
 
 const mockRequest = request as jest.MockedFunction<typeof request>;
@@ -262,6 +264,53 @@ describe('getPendingWraps', () => {
     expect(mockRequest).toHaveBeenCalledWith(
       expect.objectContaining({
         path: '/api/groups/g%2F..%2Fadmin/pending-wraps',
+      }),
+    );
+  });
+});
+
+describe('transferOrbitOwner', () => {
+  it('calls POST /api/groups/:groupId/transfer-owner with newOwnerId', async () => {
+    mockRequest.mockResolvedValue({ success: true });
+    await transferOrbitOwner('group-1', 'user-2');
+
+    expect(mockRequest).toHaveBeenCalledWith({
+      method: 'POST',
+      path: '/api/groups/group-1/transfer-owner',
+      body: { newOwnerId: 'user-2' },
+    });
+  });
+
+  it('encodes groupId in the URL path', async () => {
+    mockRequest.mockResolvedValue({ success: true });
+    await transferOrbitOwner('g/../admin', 'user-2');
+
+    expect(mockRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/groups/g%2F..%2Fadmin/transfer-owner',
+      }),
+    );
+  });
+});
+
+describe('dissolveOrbit', () => {
+  it('calls DELETE /api/groups/:groupId', async () => {
+    mockRequest.mockResolvedValue({ success: true });
+    await dissolveOrbit('group-1');
+
+    expect(mockRequest).toHaveBeenCalledWith({
+      method: 'DELETE',
+      path: '/api/groups/group-1',
+    });
+  });
+
+  it('encodes groupId in the URL path', async () => {
+    mockRequest.mockResolvedValue({ success: true });
+    await dissolveOrbit('g/../admin');
+
+    expect(mockRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/groups/g%2F..%2Fadmin',
       }),
     );
   });

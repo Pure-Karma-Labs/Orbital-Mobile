@@ -141,3 +141,21 @@ export async function removeMember(groupId: string, userId: string): Promise<voi
   });
 }
 
+export async function transferOrbitOwner(
+  groupId: string,
+  newOwnerId: string,
+): Promise<void> {
+  await request<{ success: boolean }>({
+    method: 'POST',
+    path: `/api/groups/${encodeURIComponent(groupId)}/transfer-owner`,
+    body: { newOwnerId },
+  });
+}
+
+export async function dissolveOrbit(groupId: string): Promise<void> {
+  await request<{ success: boolean }>({
+    method: 'DELETE',
+    path: `/api/groups/${encodeURIComponent(groupId)}`,
+  });
+}
+

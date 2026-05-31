@@ -15,6 +15,7 @@ import { ManageOrbitsScreen } from '../ManageOrbitsScreen';
 
 jest.mock('../../services/conversationService', () => ({
   fetchCreatorOrbitsDecrypted: jest.fn(),
+  loadConversations: jest.fn().mockResolvedValue(undefined),
 }));
 
 jest.mock('../../services/api/groups', () => ({
@@ -26,6 +27,8 @@ jest.mock('../../services/api/groups', () => ({
     targetEmail: 'test@example.com',
   }),
   removeMember: jest.fn().mockResolvedValue(undefined),
+  transferOrbitOwner: jest.fn().mockResolvedValue(undefined),
+  dissolveOrbit: jest.fn().mockResolvedValue(undefined),
 }));
 
 jest.mock('../../components/OrbitalSpinner', () => ({
@@ -43,6 +46,17 @@ jest.mock('../../stores', () => ({
     clearAuth: jest.fn(),
     setAuthenticated: jest.fn(),
     updateProfile: jest.fn(),
+  })),
+  useConversations: jest.fn(() => ({
+    conversations: {},
+    conversationIds: [],
+    activeConversationId: null,
+    setConversations: jest.fn(),
+    upsertConversation: jest.fn(),
+    removeConversation: jest.fn(),
+    setActiveConversation: jest.fn(),
+    updateUnreadCount: jest.fn(),
+    markConversationRead: jest.fn(),
   })),
 }));
 
@@ -370,5 +384,48 @@ describe('ManageOrbitsScreen — share', () => {
     });
 
     shareSpy.mockRestore();
+  });
+});
+
+describe('ManageOrbitsScreen — admin actions', () => {
+  it('renders admin actions when orbit row is expanded', async () => {
+    mockFetchGroups.mockResolvedValue([
+      {
+        groupId: 'g-1',
+        name: 'Family Orbit',
+        memberCount: 3,
+        isCreator: true,
+        inviteCode: 'ABC123',
+      },
+    ]);
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        React.createElement(
+          SafeAreaProvider,
+          { initialMetrics: safeAreaMetrics },
+          React.createElement(
+            ThemeProvider,
+            { colorSchemeOverride: 'light' },
+            React.createElement(ManageOrbitsScreen, {
+              navigation: mockNavigation as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['navigation'],
+              route: mockRoute as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['route'],
+            }),
+          ),
+        ),
+      );
+    });
+
+    // Expand the orbit row
+    const header = findByTestId(renderer.root, 'orbit-header-g-1');
+    await act(async () => {
+      header.props.onPress();
+    });
+
+    // Admin actions should be visible
+    expect(() => findByTestId(renderer.root, 'admin-actions-g-1')).not.toThrow();
+    expect(() => findByTestId(renderer.root, 'transfer-button-g-1')).not.toThrow();
+    expect(() => findByTestId(renderer.root, 'dissolve-button-g-1')).not.toThrow();
   });
 });

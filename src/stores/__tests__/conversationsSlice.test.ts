@@ -211,3 +211,31 @@ describe('conversationsSlice — markConversationRead', () => {
     expect(store.getState().conversations['conv-1'].unreadCount).toBe(0);
   });
 });
+
+describe('conversationsSlice — incrementUnreadCount', () => {
+  it('increments unread count by 1', () => {
+    const store = makeStore();
+    const c1 = makeConversation({ id: 'conv-1', unreadCount: 3 });
+    store.getState().setConversations([c1]);
+    store.getState().incrementUnreadCount('conv-1');
+    expect(store.getState().conversations['conv-1'].unreadCount).toBe(4);
+  });
+
+  it('is a no-op for unknown conversation', () => {
+    const store = makeStore();
+    expect(() =>
+      store.getState().incrementUnreadCount('nonexistent'),
+    ).not.toThrow();
+  });
+});
+
+describe('conversationsSlice — setViewingConversation', () => {
+  it('sets and clears viewingConversationId', () => {
+    const store = makeStore();
+    expect(store.getState().viewingConversationId).toBeNull();
+    store.getState().setViewingConversation('conv-1');
+    expect(store.getState().viewingConversationId).toBe('conv-1');
+    store.getState().setViewingConversation(null);
+    expect(store.getState().viewingConversationId).toBeNull();
+  });
+});

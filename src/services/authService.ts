@@ -236,6 +236,7 @@ export async function localWipe({ preserveIdentity }: { preserveIdentity: boolea
     const state = useAppStore.getState();
     state.setConversations([]);
     state.setContacts([]);
+    state.setViewingConversation(null);
   } catch {
     if (__DEV__) console.warn('[LocalWipe] store reset failed');
   }

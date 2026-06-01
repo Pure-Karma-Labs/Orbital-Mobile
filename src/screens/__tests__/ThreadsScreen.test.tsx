@@ -34,11 +34,14 @@ jest.mock('../../hooks/usePullToRefresh', () => ({
   }),
 }));
 
+const mockSetViewingConversation = jest.fn();
+const mockMarkConversationRead = jest.fn();
+
 jest.mock('../../stores', () => ({
   useAppStore: {
     getState: jest.fn(() => ({
-      setViewingConversation: jest.fn(),
-      markConversationRead: jest.fn(),
+      setViewingConversation: mockSetViewingConversation,
+      markConversationRead: mockMarkConversationRead,
     })),
   },
   useAuth: () => ({
@@ -287,5 +290,25 @@ describe('ThreadsScreen — with thread data', () => {
         node.props.children === '─── Today ───',
     );
     expect(dayNode).toBeDefined();
+  });
+});
+
+describe('ThreadsScreen — focus lifecycle', () => {
+  it('calls setViewingConversation and markConversationRead on mount', () => {
+    renderThreadsScreen();
+
+    expect(mockSetViewingConversation).toHaveBeenCalledWith('group-1');
+    expect(mockMarkConversationRead).toHaveBeenCalledWith('group-1');
+  });
+
+  it('calls setViewingConversation(null) on unmount', () => {
+    const renderer = renderThreadsScreen();
+
+    mockSetViewingConversation.mockClear();
+    act(() => {
+      renderer.unmount();
+    });
+
+    expect(mockSetViewingConversation).toHaveBeenCalledWith(null);
   });
 });

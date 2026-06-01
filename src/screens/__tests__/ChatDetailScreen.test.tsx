@@ -287,3 +287,25 @@ describe('ChatDetailScreen — navigation', () => {
     });
   });
 });
+
+describe('ChatDetailScreen — focus lifecycle', () => {
+  it('calls setViewingConversation and markConversationRead on mount', () => {
+    mockUseThreads.mockReturnValue(emptyThreadsState);
+    renderScreen('Alice');
+
+    expect(mockSetViewingConversation).toHaveBeenCalledWith('dm-conv-1');
+    expect(mockMarkConversationRead).toHaveBeenCalledWith('dm-conv-1');
+  });
+
+  it('calls setViewingConversation(null) on unmount', () => {
+    mockUseThreads.mockReturnValue(emptyThreadsState);
+    const renderer = renderScreen('Alice');
+
+    mockSetViewingConversation.mockClear();
+    act(() => {
+      renderer.unmount();
+    });
+
+    expect(mockSetViewingConversation).toHaveBeenCalledWith(null);
+  });
+});

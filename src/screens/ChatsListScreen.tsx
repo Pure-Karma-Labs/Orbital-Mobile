@@ -150,6 +150,7 @@ export function ChatsListScreen({ navigation }: ChatsListScreenProps): React.JSX
         recipientName={item.name ?? 'Unknown'}
         lastMessageAt={item.lastMessageAt}
         avatarUrl={avatarByConversation[item.id]}
+        unreadCount={item.unreadCount}
         onPress={handleChatPress}
       />
     ),

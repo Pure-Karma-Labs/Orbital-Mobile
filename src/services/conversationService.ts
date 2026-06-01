@@ -580,3 +580,14 @@ export async function hydrateContactsFromOrbits(): Promise<void> {
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Session cleanup
+// ---------------------------------------------------------------------------
+
+export function clearConversationServiceState(): void {
+  selfWrapInflight.clear();
+  ensureDmInflight.clear();
+  lastPendingWrapsSweep = 0;
+  lastContactHydration = 0;
+}

@@ -28,12 +28,15 @@ export const useConversations = () =>
     conversations: s.conversations,
     conversationIds: s.conversationIds,
     activeConversationId: s.activeConversationId,
+    viewingConversationId: s.viewingConversationId,
     setConversations: s.setConversations,
     upsertConversation: s.upsertConversation,
     removeConversation: s.removeConversation,
     setActiveConversation: s.setActiveConversation,
     updateUnreadCount: s.updateUnreadCount,
+    incrementUnreadCount: s.incrementUnreadCount,
     markConversationRead: s.markConversationRead,
+    setViewingConversation: s.setViewingConversation,
   })));
 
 export const useThreads = () =>

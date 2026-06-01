@@ -295,6 +295,11 @@ export function clearGroupKeyCache(): void {
   groupKeyCache.clear();
 }
 
+export function clearContentCryptoInflight(): void {
+  inflight.clear();
+  pendingGroups.clear();
+}
+
 /**
  * Generate a new random 32-byte AES-256 group key.
  * Returns both raw bytes (for immediate crypto use) and base64 string

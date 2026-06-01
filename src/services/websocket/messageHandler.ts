@@ -52,6 +52,12 @@ function sweepExpired(map: Map<string, number>): void {
   }
 }
 
+export function clearMessageHandlerState(): void {
+  dedupSet.clear();
+  wrapDedup.clear();
+  deliveryDedup.clear();
+}
+
 // ============================================================
 // Allowed broadcast data.type values (WS-05)
 // ============================================================
@@ -251,6 +257,11 @@ async function handleNewThread(data: NewThreadPayload): Promise<void> {
       new Date(data.createdAt).getTime(),
     );
 
+    const storeAfterBump = useAppStore.getState();
+    if (data.groupId !== storeAfterBump.viewingConversationId) {
+      storeAfterBump.incrementUnreadCount(data.groupId);
+    }
+
     // Process thread media (non-blocking)
     if (data.media && data.media.length > 0) {
       const groupKey = await getOrFetchGroupKey(data.groupId);
@@ -311,6 +322,11 @@ async function handleNewReply(data: NewReplyPayload): Promise<void> {
       data.groupId,
       new Date(data.createdAt).getTime(),
     );
+
+    const storeAfterBump = useAppStore.getState();
+    if (data.groupId !== storeAfterBump.viewingConversationId) {
+      storeAfterBump.incrementUnreadCount(data.groupId);
+    }
 
     // Process reply media (non-blocking)
     if (data.media && data.media.length > 0) {

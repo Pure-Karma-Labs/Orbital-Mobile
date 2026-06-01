@@ -21,7 +21,7 @@ jest.mock('../../hooks/useWebSocketSubscription', () => ({
 
 jest.mock('@react-navigation/native', () => ({
   useFocusEffect: (cb: () => (() => void) | void) => {
-    // eslint-disable-next-line react-hooks/rules-of-hooks
+    // eslint-disable-next-line react-hooks/rules-of-hooks, react-hooks/exhaustive-deps
     const React = require('react');
     React.useEffect(() => cb(), []);
   },

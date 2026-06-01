@@ -212,6 +212,62 @@ describe('conversationsSlice — markConversationRead', () => {
   });
 });
 
+describe('conversationsSlice — bumpLastMessageAt', () => {
+  it('updates lastMessageAt and updatedAt when timestamp is newer', () => {
+    const store = makeStore();
+    const c1 = makeConversation({ id: 'conv-1', lastMessageAt: 1000, updatedAt: 1000 });
+    store.getState().setConversations([c1]);
+    store.getState().bumpLastMessageAt('conv-1', 2000);
+    const updated = store.getState().conversations['conv-1'];
+    expect(updated.lastMessageAt).toBe(2000);
+    expect(updated.updatedAt).toBe(2000);
+  });
+
+  it('does not update when timestamp is older (monotonic guard)', () => {
+    const store = makeStore();
+    const c1 = makeConversation({ id: 'conv-1', lastMessageAt: 3000, updatedAt: 3000 });
+    store.getState().setConversations([c1]);
+    store.getState().bumpLastMessageAt('conv-1', 1000);
+    const unchanged = store.getState().conversations['conv-1'];
+    expect(unchanged.lastMessageAt).toBe(3000);
+    expect(unchanged.updatedAt).toBe(3000);
+  });
+
+  it('does not update when timestamp equals current (equal guard)', () => {
+    const store = makeStore();
+    const c1 = makeConversation({ id: 'conv-1', lastMessageAt: 2000, updatedAt: 2000 });
+    store.getState().setConversations([c1]);
+    store.getState().bumpLastMessageAt('conv-1', 2000);
+    expect(store.getState().conversations['conv-1'].lastMessageAt).toBe(2000);
+  });
+
+  it('is a no-op for unknown conversation', () => {
+    const store = makeStore();
+    expect(() =>
+      store.getState().bumpLastMessageAt('nonexistent', 5000),
+    ).not.toThrow();
+    expect(store.getState().conversations).toEqual({});
+  });
+
+  it('re-sorts conversationIds after bump', () => {
+    const store = makeStore();
+    const c1 = makeConversation({ id: 'conv-1', lastMessageAt: 3000 });
+    const c2 = makeConversation({ id: 'conv-2', lastMessageAt: 1000 });
+    store.getState().setConversations([c1, c2]);
+    expect(store.getState().conversationIds).toEqual(['conv-1', 'conv-2']);
+    store.getState().bumpLastMessageAt('conv-2', 5000);
+    expect(store.getState().conversationIds).toEqual(['conv-2', 'conv-1']);
+  });
+
+  it('handles null lastMessageAt correctly', () => {
+    const store = makeStore();
+    const c1 = makeConversation({ id: 'conv-1', lastMessageAt: null });
+    store.getState().setConversations([c1]);
+    store.getState().bumpLastMessageAt('conv-1', 1000);
+    expect(store.getState().conversations['conv-1'].lastMessageAt).toBe(1000);
+  });
+});
+
 describe('conversationsSlice — incrementUnreadCount', () => {
   it('increments unread count by 1', () => {
     const store = makeStore();

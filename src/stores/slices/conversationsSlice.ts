@@ -110,4 +110,24 @@ export const createConversationsSlice: StateCreator<
       'conversations/markConversationRead',
     );
   },
+  bumpLastMessageAt: (id, timestamp) => {
+    const { conversations } = get();
+    const existing = conversations[id];
+    if (!existing) {
+      return;
+    }
+    if (timestamp <= (existing.lastMessageAt ?? 0)) {
+      return;
+    }
+    const updated = { ...existing, lastMessageAt: timestamp, updatedAt: timestamp };
+    const updatedMap = { ...conversations, [id]: updated };
+    const updatedIds = Object.values(updatedMap)
+      .sort(sortByLastMessage)
+      .map((c) => c.id);
+    set(
+      { conversations: updatedMap, conversationIds: updatedIds },
+      false,
+      'conversations/bumpLastMessageAt',
+    );
+  },
 });

@@ -140,6 +140,7 @@ export interface ConversationsActions {
   setActiveConversation: (id: string | null) => void;
   updateUnreadCount: (id: string, count: number) => void;
   markConversationRead: (id: string) => void;
+  bumpLastMessageAt: (id: string, timestamp: number) => void;
 }
 
 export type ConversationsSlice = ConversationsState & ConversationsActions;

@@ -61,6 +61,27 @@ describe('LRUSet', () => {
     expect(set.has('a')).toBe(false);
   });
 
+
+  it('delete() returns true for existing key', () => {
+    const set = new LRUSet(10);
+    set.add('a');
+    expect(set.delete('a')).toBe(true);
+  });
+
+  it('delete() returns false for missing key', () => {
+    const set = new LRUSet(10);
+    expect(set.delete('nonexistent')).toBe(false);
+  });
+
+  it('deleted key is not found by has()', () => {
+    const set = new LRUSet(10);
+    set.add('a');
+    set.add('b');
+    set.delete('a');
+    expect(set.has('a')).toBe(false);
+    expect(set.has('b')).toBe(true);
+    expect(set.size).toBe(1);
+  });
   it('works with default capacity (500)', () => {
     const set = new LRUSet();
     for (let i = 0; i < 500; i++) {

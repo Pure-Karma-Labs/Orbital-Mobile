@@ -142,12 +142,14 @@ describe('ensureDmConversation', () => {
     );
   });
 
-  it('returns null for unknown groupId', async () => {
+  it('returns null for unknown groupId and does not mutate store', async () => {
     mockListDms.mockResolvedValue([DM_RESPONSE]);
 
     const result = await ensureDmConversation('unknown-group');
 
     expect(result).toBeNull();
+    expect(mockUpsertConversation).not.toHaveBeenCalled();
+    expect(mockMergeContacts).not.toHaveBeenCalled();
   });
 
   it('concurrent calls coalesce (only one listDms call)', async () => {

@@ -274,6 +274,8 @@ describe('new_thread broadcast', () => {
 
     await handleServerMessage(msg);
 
+    const { ensureDmConversation } = require('../../conversationService');
+    expect(ensureDmConversation).toHaveBeenCalledWith('group-1');
     expect(mockBumpLastMessageAt).toHaveBeenCalledWith(
       'group-1',
       new Date('2026-04-01T10:00:00Z').getTime(),

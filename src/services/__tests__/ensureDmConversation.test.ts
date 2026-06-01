@@ -180,4 +180,27 @@ describe('ensureDmConversation', () => {
 
     expect(mockProcessReceivedGroupKey).not.toHaveBeenCalled();
   });
+
+  it('propagates listDms rejection and cleans up inflight', async () => {
+    mockListDms.mockRejectedValue(new Error('network error'));
+
+    await expect(ensureDmConversation('dm-1')).rejects.toThrow('network error');
+    expect(mockUpsertConversation).not.toHaveBeenCalled();
+
+    // Inflight entry cleaned up — subsequent call retries instead of returning stale rejection
+    mockListDms.mockResolvedValue([DM_RESPONSE]);
+    const result = await ensureDmConversation('dm-1');
+    expect(result).toEqual(expect.objectContaining({ id: 'dm-1' }));
+  });
+
+  it('still upserts conversation when processReceivedGroupKey fails', async () => {
+    mockListDms.mockResolvedValue([DM_RESPONSE]);
+    mockProcessReceivedGroupKey.mockRejectedValue(new Error('key error'));
+
+    const result = await ensureDmConversation('dm-1');
+
+    expect(result).toEqual(expect.objectContaining({ id: 'dm-1', type: 'direct' }));
+    expect(mockUpsertConversation).toHaveBeenCalled();
+    expect(mockMergeContacts).toHaveBeenCalled();
+  });
 });

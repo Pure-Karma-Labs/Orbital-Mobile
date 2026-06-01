@@ -162,6 +162,63 @@ function mapDmResponse(response: DmResponse): Conversation {
   };
 }
 
+
+// ---------------------------------------------------------------------------
+// Ensure a DM conversation exists in the store (on-demand, for WS handlers)
+// ---------------------------------------------------------------------------
+
+const ensureDmInflight = new Map<string, Promise<Conversation | null>>();
+
+export async function ensureDmConversation(groupId: string): Promise<Conversation | null> {
+  const store = useAppStore.getState();
+  const existing = store.conversations[groupId];
+  if (existing) return existing;
+
+  const inflight = ensureDmInflight.get(groupId);
+  if (inflight) return inflight;
+
+  const promise = (async () => {
+    try {
+      const currentUserId = useAppStore.getState().userId;
+      const dms = await listDms();
+      const dm = dms.find(d => d.groupId === groupId);
+      if (!dm) return null;
+
+      if (dm.wrappedGroupKey && dm.wrappedBy) {
+        if (currentUserId) {
+          try {
+            await resolveRemoteIdentityKey(dm.wrappedBy, currentUserId);
+          } catch { /* identity key resolution failed */ }
+        }
+        try {
+          await processReceivedGroupKey(dm.groupId, dm.wrappedGroupKey, dm.wrappedBy);
+        } catch {
+          if (__DEV__) console.warn('[ensureDmConversation] key processing failed');
+        }
+      }
+
+      const conversation = mapDmResponse(dm);
+      const storeNow = useAppStore.getState();
+      storeNow.upsertConversation(conversation);
+
+      storeNow.mergeContacts([{
+        id: dm.recipient.id,
+        username: dm.recipient.username,
+        displayName: null,
+        avatarPath: dm.recipient.avatarUrl ?? null,
+        conversationIds: [dm.groupId],
+      }]);
+
+      return conversation;
+    } finally {
+      ensureDmInflight.delete(groupId);
+    }
+  })();
+
+  ensureDmInflight.set(groupId, promise);
+  return promise;
+}
+
 export async function loadDmConversations(): Promise<void> {
   const dms = await listDms();
   const currentUserId = useAppStore.getState().userId;

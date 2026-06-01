@@ -296,6 +296,8 @@ async function handleNewReply(data: NewReplyPayload): Promise<void> {
   dedupSet.add(data.replyId);
 
   try {
+    await ensureDmConversation(data.groupId);
+
     const body = await decryptWithRetry(
       data.groupId,
       async (groupKey) =>

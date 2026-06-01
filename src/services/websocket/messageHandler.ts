@@ -18,6 +18,7 @@ import {
 import { resolveRemoteIdentityKey } from '../crypto/identityKeyAccess';
 import { submitWrappedKey } from '../api/groups';
 import { decryptThreadFields, decryptReplyBody, processMediaMetadata } from '../threadService';
+import { ensureDmConversation } from '../conversationService';
 import { useAppStore } from '../../stores/useAppStore';
 import { LRUSet } from './lruSet';
 import type {
@@ -207,57 +208,69 @@ async function handleBroadcast(envelope: BroadcastEnvelope): Promise<void> {
 // ============================================================
 
 async function handleNewThread(data: NewThreadPayload): Promise<void> {
-  // Dedup check
   if (dedupSet.has(data.threadId)) {
     return;
   }
   dedupSet.add(data.threadId);
 
-  const { title, body } = await decryptWithRetry(
-    data.groupId,
-    async (groupKey) =>
-      decryptThreadFields(
-        data.encryptedTitle,
-        data.titleIv,
-        data.encryptedBody,
-        data.bodyIv,
+  try {
+    await ensureDmConversation(data.groupId);
+
+    const { title, body } = await decryptWithRetry(
+      data.groupId,
+      async (groupKey) =>
+        decryptThreadFields(
+          data.encryptedTitle,
+          data.titleIv,
+          data.encryptedBody,
+          data.bodyIv,
+          groupKey,
+          data.groupId,
+        ),
+    );
+
+    const thread: Thread = {
+      id: data.threadId,
+      conversationId: data.groupId,
+      authorId: data.authorId,
+      authorUsername: data.authorName,
+      title,
+      body,
+      contentType: 'text',
+      pinned: false,
+      replyCount: 0,
+      lastReplyAt: null,
+      createdAt: new Date(data.createdAt).getTime(),
+      updatedAt: new Date(data.createdAt).getTime(),
+      syncStatus: 'synced',
+    };
+
+    useAppStore.getState().upsertThread(thread);
+    useAppStore.getState().bumpLastMessageAt(
+      data.groupId,
+      new Date(data.createdAt).getTime(),
+    );
+
+    // Process thread media (non-blocking)
+    if (data.media && data.media.length > 0) {
+      const groupKey = await getOrFetchGroupKey(data.groupId);
+      processMediaMetadata(
+        data.media,
         groupKey,
         data.groupId,
-      ),
-  );
-
-  const thread: Thread = {
-    id: data.threadId,
-    conversationId: data.groupId,
-    authorId: data.authorId,
-    // WS uses authorName, store expects authorUsername
-    authorUsername: data.authorName,
-    title,
-    body,
-    contentType: 'text',
-    pinned: false,
-    replyCount: 0,
-    lastReplyAt: null,
-    createdAt: new Date(data.createdAt).getTime(),
-    updatedAt: new Date(data.createdAt).getTime(),
-    syncStatus: 'synced',
-  };
-
-  useAppStore.getState().upsertThread(thread);
-
-  // Process thread media (non-blocking)
-  if (data.media && data.media.length > 0) {
-    const groupKey = await getOrFetchGroupKey(data.groupId);
-    processMediaMetadata(
-      data.media,
-      groupKey,
-      data.groupId,
-      { threadId: data.threadId },
-    ).catch((e) => {
-      if (__DEV__) {
-        console.warn('[WS handleNewThread] media processing failed:', e instanceof Error ? e.message : e);
-      }
-    });
+        { threadId: data.threadId },
+      ).catch((e) => {
+        if (__DEV__) {
+          console.warn('[WS handleNewThread] media processing failed:', e instanceof Error ? e.message : e);
+        }
+      });
+    }
+  } catch (e) {
+    dedupSet.delete(data.threadId);
+    console.error('[WS:new_thread_failed]');
+    if (__DEV__) {
+      console.warn('[WS handleNewThread] failed:', e instanceof Error ? e.message : e);
+    }
   }
 }
 
@@ -266,50 +279,59 @@ async function handleNewThread(data: NewThreadPayload): Promise<void> {
 // ============================================================
 
 async function handleNewReply(data: NewReplyPayload): Promise<void> {
-  // Dedup check
   if (dedupSet.has(data.replyId)) {
     return;
   }
   dedupSet.add(data.replyId);
 
-  const body = await decryptWithRetry(
-    data.groupId,
-    async (groupKey) =>
-      decryptReplyBody(data.encryptedBody, data.bodyIv, groupKey, data.groupId),
-  );
-
-  // WS payload has no `level` field — compute depth from parentReplyId
-  const depth = data.parentReplyId === null ? 0 : 1;
-
-  const reply: Reply = {
-    id: data.replyId,
-    threadId: data.threadId,
-    authorId: data.authorId,
-    // WS uses authorName, store expects authorUsername
-    authorUsername: data.authorName,
-    body,
-    parentReplyId: data.parentReplyId,
-    depth,
-    createdAt: new Date(data.createdAt).getTime(),
-    updatedAt: new Date(data.createdAt).getTime(),
-    syncStatus: 'synced',
-  };
-
-  useAppStore.getState().upsertReply(reply);
-
-  // Process reply media (non-blocking)
-  if (data.media && data.media.length > 0) {
-    const groupKey = await getOrFetchGroupKey(data.groupId);
-    processMediaMetadata(
-      data.media,
-      groupKey,
+  try {
+    const body = await decryptWithRetry(
       data.groupId,
-      { replyId: data.replyId },
-    ).catch((e) => {
-      if (__DEV__) {
-        console.warn('[WS handleNewReply] media processing failed:', e instanceof Error ? e.message : e);
-      }
-    });
+      async (groupKey) =>
+        decryptReplyBody(data.encryptedBody, data.bodyIv, groupKey, data.groupId),
+    );
+
+    const depth = data.parentReplyId === null ? 0 : 1;
+
+    const reply: Reply = {
+      id: data.replyId,
+      threadId: data.threadId,
+      authorId: data.authorId,
+      authorUsername: data.authorName,
+      body,
+      parentReplyId: data.parentReplyId,
+      depth,
+      createdAt: new Date(data.createdAt).getTime(),
+      updatedAt: new Date(data.createdAt).getTime(),
+      syncStatus: 'synced',
+    };
+
+    useAppStore.getState().upsertReply(reply);
+    useAppStore.getState().bumpLastMessageAt(
+      data.groupId,
+      new Date(data.createdAt).getTime(),
+    );
+
+    // Process reply media (non-blocking)
+    if (data.media && data.media.length > 0) {
+      const groupKey = await getOrFetchGroupKey(data.groupId);
+      processMediaMetadata(
+        data.media,
+        groupKey,
+        data.groupId,
+        { replyId: data.replyId },
+      ).catch((e) => {
+        if (__DEV__) {
+          console.warn('[WS handleNewReply] media processing failed:', e instanceof Error ? e.message : e);
+        }
+      });
+    }
+  } catch (e) {
+    dedupSet.delete(data.replyId);
+    console.error('[WS:new_reply_failed]');
+    if (__DEV__) {
+      console.warn('[WS handleNewReply] failed:', e instanceof Error ? e.message : e);
+    }
   }
 }
 

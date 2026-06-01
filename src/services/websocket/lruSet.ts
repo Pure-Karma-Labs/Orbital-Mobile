@@ -27,6 +27,11 @@ export class LRUSet {
     return true;
   }
 
+  /** Remove a key. Returns true if the key was present. */
+  delete(key: string): boolean {
+    return this.set.delete(key);
+  }
+
   /** Add a key. Evicts the oldest entry if at capacity. */
   add(key: string): void {
     if (this.set.has(key)) {

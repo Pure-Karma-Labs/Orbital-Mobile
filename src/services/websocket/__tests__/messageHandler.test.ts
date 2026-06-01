@@ -29,6 +29,11 @@ jest.mock('../../api/groups', () => ({
 jest.mock('../../threadService', () => ({
   decryptThreadFields: jest.fn(),
   decryptReplyBody: jest.fn(),
+  processMediaMetadata: jest.fn().mockResolvedValue(undefined),
+}));
+
+jest.mock('../../conversationService', () => ({
+  ensureDmConversation: jest.fn().mockResolvedValue(null),
 }));
 
 const mockUpsertThread = jest.fn();
@@ -38,6 +43,7 @@ const mockSetConnectionStatus = jest.fn();
 const mockSetLastConnectedAt = jest.fn();
 const mockSetReconnectAttempt = jest.fn();
 const mockAddTypingUser = jest.fn();
+const mockBumpLastMessageAt = jest.fn();
 
 jest.mock('../../../stores/useAppStore', () => ({
   useAppStore: {
@@ -50,6 +56,7 @@ jest.mock('../../../stores/useAppStore', () => ({
       setLastConnectedAt: mockSetLastConnectedAt,
       setReconnectAttempt: mockSetReconnectAttempt,
       addTypingUser: mockAddTypingUser,
+      bumpLastMessageAt: mockBumpLastMessageAt,
       contacts: {},
     })),
   },
@@ -244,6 +251,72 @@ describe('new_thread broadcast', () => {
     expect(mockUpsertThread).toHaveBeenCalledTimes(1);
     expect(mockUpsertThread.mock.calls[0][0].title).toBe('Retried Title');
   });
+
+  it('bumps lastMessageAt after upserting thread', async () => {
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: 'group-1',
+      timestamp: 1700000000000,
+      data: {
+        type: 'new_thread',
+        threadId: 'thread-bump-test',
+        groupId: 'group-1',
+        authorId: 'user-1',
+        authorName: 'alice',
+        encryptedTitle: 'enc-title',
+        encryptedBody: 'enc-body',
+        titleIv: 'title-iv',
+        bodyIv: 'body-iv',
+        createdAt: '2026-04-01T10:00:00Z',
+        media: [],
+      },
+    });
+
+    await handleServerMessage(msg);
+
+    const { ensureDmConversation } = require('../../conversationService');
+    expect(ensureDmConversation).toHaveBeenCalledWith('group-1');
+    expect(mockBumpLastMessageAt).toHaveBeenCalledWith(
+      'group-1',
+      new Date('2026-04-01T10:00:00Z').getTime(),
+    );
+  });
+
+  it('clears dedup entry and logs on failure so message can be retried', async () => {
+    const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
+    mockGetOrFetchGroupKey.mockRejectedValue(new Error('key unavailable'));
+
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: 'group-1',
+      timestamp: 1700000000000,
+      data: {
+        type: 'new_thread',
+        threadId: 'thread-fail-dedup',
+        groupId: 'group-1',
+        authorId: 'user-1',
+        authorName: 'alice',
+        encryptedTitle: 'enc-title',
+        encryptedBody: 'enc-body',
+        titleIv: 'title-iv',
+        bodyIv: 'body-iv',
+        createdAt: '2026-04-01T10:00:00Z',
+        media: [],
+      },
+    });
+
+    await handleServerMessage(msg);
+
+    expect(consoleSpy).toHaveBeenCalledWith('[WS:new_thread_failed]');
+    expect(mockUpsertThread).not.toHaveBeenCalled();
+
+    // Dedup entry was cleared — retrying processes the message
+    mockGetOrFetchGroupKey.mockResolvedValue(fakeGroupKey);
+    await handleServerMessage(msg);
+    expect(mockUpsertThread).toHaveBeenCalledTimes(1);
+
+    consoleSpy.mockRestore();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -297,6 +370,69 @@ describe('new_reply broadcast', () => {
     const reply = mockUpsertReply.mock.calls[0][0];
     expect(reply.depth).toBe(1);
     expect(reply.parentReplyId).toBe('reply-ws-1');
+  });
+
+  it('bumps lastMessageAt after upserting reply', async () => {
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: 'group-1',
+      timestamp: 1700000001000,
+      data: {
+        type: 'new_reply',
+        replyId: 'reply-bump-test',
+        threadId: 'thread-1',
+        groupId: 'group-1',
+        authorId: 'user-2',
+        authorName: 'bob',
+        encryptedBody: 'enc-reply-body',
+        bodyIv: 'reply-body-iv',
+        parentReplyId: null,
+        createdAt: '2026-04-01T11:00:00Z',
+        media: [],
+      },
+    });
+
+    await handleServerMessage(msg);
+
+    expect(mockBumpLastMessageAt).toHaveBeenCalledWith(
+      'group-1',
+      new Date('2026-04-01T11:00:00Z').getTime(),
+    );
+  });
+
+  it('clears dedup entry on reply failure so message can be retried', async () => {
+    const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
+    mockGetOrFetchGroupKey.mockRejectedValue(new Error('key unavailable'));
+
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: 'group-1',
+      timestamp: 1700000001000,
+      data: {
+        type: 'new_reply',
+        replyId: 'reply-fail-dedup',
+        threadId: 'thread-1',
+        groupId: 'group-1',
+        authorId: 'user-2',
+        authorName: 'bob',
+        encryptedBody: 'enc-reply-body',
+        bodyIv: 'reply-body-iv',
+        parentReplyId: null,
+        createdAt: '2026-04-01T11:00:00Z',
+        media: [],
+      },
+    });
+
+    await handleServerMessage(msg);
+
+    expect(consoleSpy).toHaveBeenCalledWith('[WS:new_reply_failed]');
+    expect(mockUpsertReply).not.toHaveBeenCalled();
+
+    mockGetOrFetchGroupKey.mockResolvedValue(fakeGroupKey);
+    await handleServerMessage(msg);
+    expect(mockUpsertReply).toHaveBeenCalledTimes(1);
+
+    consoleSpy.mockRestore();
   });
 });
 
@@ -548,6 +684,7 @@ describe('wrap_key_request', () => {
       setLastConnectedAt: mockSetLastConnectedAt,
       setReconnectAttempt: mockSetReconnectAttempt,
       addTypingUser: mockAddTypingUser,
+      bumpLastMessageAt: mockBumpLastMessageAt,
       contacts: {},
     });
 

@@ -44,11 +44,13 @@ const mockSetLastConnectedAt = jest.fn();
 const mockSetReconnectAttempt = jest.fn();
 const mockAddTypingUser = jest.fn();
 const mockBumpLastMessageAt = jest.fn();
+const mockIncrementUnreadCount = jest.fn();
 
 jest.mock('../../../stores/useAppStore', () => ({
   useAppStore: {
     getState: jest.fn(() => ({
       userId: 'test-user-id',
+      viewingConversationId: null,
       upsertThread: mockUpsertThread,
       upsertReply: mockUpsertReply,
       upsertContact: mockUpsertContact,
@@ -57,6 +59,7 @@ jest.mock('../../../stores/useAppStore', () => ({
       setReconnectAttempt: mockSetReconnectAttempt,
       addTypingUser: mockAddTypingUser,
       bumpLastMessageAt: mockBumpLastMessageAt,
+      incrementUnreadCount: mockIncrementUnreadCount,
       contacts: {},
     })),
   },
@@ -66,7 +69,7 @@ jest.mock('../../../stores/useAppStore', () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
-import { handleServerMessage } from '../messageHandler';
+import { handleServerMessage, clearMessageHandlerState } from '../messageHandler';
 import { snakeToCamel } from '../../api/client';
 import {
   getOrFetchGroupKey,
@@ -143,6 +146,7 @@ function makeNewReplyMessage(): string {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  clearMessageHandlerState();
   // Default: snakeToCamel is identity (test sends pre-transformed camelCase)
   mockSnakeToCamel.mockImplementation((v: unknown) => v);
   mockGetOrFetchGroupKey.mockResolvedValue(fakeGroupKey);
@@ -677,6 +681,7 @@ describe('wrap_key_request', () => {
   it('returns early when userId is null', async () => {
     (useAppStore.getState as jest.Mock).mockReturnValueOnce({
       userId: null,
+      viewingConversationId: null,
       upsertThread: mockUpsertThread,
       upsertReply: mockUpsertReply,
       upsertContact: mockUpsertContact,
@@ -685,6 +690,7 @@ describe('wrap_key_request', () => {
       setReconnectAttempt: mockSetReconnectAttempt,
       addTypingUser: mockAddTypingUser,
       bumpLastMessageAt: mockBumpLastMessageAt,
+      incrementUnreadCount: mockIncrementUnreadCount,
       contacts: {},
     });
 
@@ -833,5 +839,193 @@ describe('production error logging', () => {
     );
     expect(unknownTypeCall).toBeDefined();
     expect(unknownTypeCall).toHaveLength(1); // Only the category string, no extra args
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unread count increment (#228)
+// ---------------------------------------------------------------------------
+
+describe('unread count increment', () => {
+  afterEach(() => {
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-user-id',
+      viewingConversationId: null,
+      upsertThread: mockUpsertThread,
+      upsertReply: mockUpsertReply,
+      upsertContact: mockUpsertContact,
+      setConnectionStatus: mockSetConnectionStatus,
+      setLastConnectedAt: mockSetLastConnectedAt,
+      setReconnectAttempt: mockSetReconnectAttempt,
+      addTypingUser: mockAddTypingUser,
+      bumpLastMessageAt: mockBumpLastMessageAt,
+      incrementUnreadCount: mockIncrementUnreadCount,
+      contacts: {},
+    });
+  });
+
+  it('increments unread when viewingConversationId differs from groupId (new_thread)', async () => {
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: 'group-1',
+      timestamp: Date.now(),
+      data: {
+        type: 'new_thread',
+        threadId: 'thread-unread-1',
+        groupId: 'group-1',
+        authorId: 'user-1',
+        authorName: 'alice',
+        encryptedTitle: 'enc-title',
+        encryptedBody: 'enc-body',
+        titleIv: 'title-iv',
+        bodyIv: 'body-iv',
+        createdAt: '2026-04-01T10:00:00Z',
+        media: [],
+      },
+    });
+
+    await handleServerMessage(msg);
+
+    expect(mockIncrementUnreadCount).toHaveBeenCalledWith('group-1');
+  });
+
+  it('does NOT increment unread when viewingConversationId === groupId (new_thread)', async () => {
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-user-id',
+      viewingConversationId: 'group-1',
+      upsertThread: mockUpsertThread,
+      upsertReply: mockUpsertReply,
+      upsertContact: mockUpsertContact,
+      setConnectionStatus: mockSetConnectionStatus,
+      setLastConnectedAt: mockSetLastConnectedAt,
+      setReconnectAttempt: mockSetReconnectAttempt,
+      addTypingUser: mockAddTypingUser,
+      bumpLastMessageAt: mockBumpLastMessageAt,
+      incrementUnreadCount: mockIncrementUnreadCount,
+      contacts: {},
+    });
+
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: 'group-1',
+      timestamp: Date.now(),
+      data: {
+        type: 'new_thread',
+        threadId: 'thread-unread-2',
+        groupId: 'group-1',
+        authorId: 'user-1',
+        authorName: 'alice',
+        encryptedTitle: 'enc-title',
+        encryptedBody: 'enc-body',
+        titleIv: 'title-iv',
+        bodyIv: 'body-iv',
+        createdAt: '2026-04-01T10:00:00Z',
+        media: [],
+      },
+    });
+
+    await handleServerMessage(msg);
+
+    expect(mockIncrementUnreadCount).not.toHaveBeenCalled();
+  });
+
+  it('increments unread when viewingConversationId differs from groupId (new_reply)', async () => {
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: 'group-1',
+      timestamp: Date.now(),
+      data: {
+        type: 'new_reply',
+        replyId: 'reply-unread-1',
+        threadId: 'thread-1',
+        groupId: 'group-1',
+        authorId: 'user-2',
+        authorName: 'bob',
+        encryptedBody: 'enc-reply-body',
+        bodyIv: 'reply-body-iv',
+        parentReplyId: null,
+        createdAt: '2026-04-01T11:00:00Z',
+        media: [],
+      },
+    });
+
+    await handleServerMessage(msg);
+
+    expect(mockIncrementUnreadCount).toHaveBeenCalledWith('group-1');
+  });
+
+  it('does NOT increment unread when viewingConversationId === groupId (new_reply)', async () => {
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-user-id',
+      viewingConversationId: 'group-1',
+      upsertThread: mockUpsertThread,
+      upsertReply: mockUpsertReply,
+      upsertContact: mockUpsertContact,
+      setConnectionStatus: mockSetConnectionStatus,
+      setLastConnectedAt: mockSetLastConnectedAt,
+      setReconnectAttempt: mockSetReconnectAttempt,
+      addTypingUser: mockAddTypingUser,
+      bumpLastMessageAt: mockBumpLastMessageAt,
+      incrementUnreadCount: mockIncrementUnreadCount,
+      contacts: {},
+    });
+
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: 'group-1',
+      timestamp: Date.now(),
+      data: {
+        type: 'new_reply',
+        replyId: 'reply-unread-2',
+        threadId: 'thread-1',
+        groupId: 'group-1',
+        authorId: 'user-2',
+        authorName: 'bob',
+        encryptedBody: 'enc-reply-body',
+        bodyIv: 'reply-body-iv',
+        parentReplyId: null,
+        createdAt: '2026-04-01T11:00:00Z',
+        media: [],
+      },
+    });
+
+    await handleServerMessage(msg);
+
+    expect(mockIncrementUnreadCount).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// clearMessageHandlerState (#204)
+// ---------------------------------------------------------------------------
+
+describe('clearMessageHandlerState', () => {
+  it('clears dedup state so previously seen messages are processed again', async () => {
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: 'group-1',
+      timestamp: Date.now(),
+      data: {
+        type: 'new_thread',
+        threadId: 'thread-clear-test',
+        groupId: 'group-1',
+        authorId: 'user-1',
+        authorName: 'alice',
+        encryptedTitle: 'enc-title',
+        encryptedBody: 'enc-body',
+        titleIv: 'title-iv',
+        bodyIv: 'body-iv',
+        createdAt: '2026-04-01T10:00:00Z',
+        media: [],
+      },
+    });
+
+    await handleServerMessage(msg);
+    expect(mockUpsertThread).toHaveBeenCalledTimes(1);
+
+    clearMessageHandlerState();
+
+    await handleServerMessage(msg);
+    expect(mockUpsertThread).toHaveBeenCalledTimes(2);
   });
 });

@@ -131,6 +131,8 @@ export interface ConversationsState {
   /** Ordered by lastMessageAt descending */
   conversationIds: string[];
   activeConversationId: string | null;
+  /** The conversation the user is currently viewing (for unread suppression) */
+  viewingConversationId: string | null;
 }
 
 export interface ConversationsActions {
@@ -139,7 +141,9 @@ export interface ConversationsActions {
   removeConversation: (id: string) => void;
   setActiveConversation: (id: string | null) => void;
   updateUnreadCount: (id: string, count: number) => void;
+  incrementUnreadCount: (id: string) => void;
   markConversationRead: (id: string) => void;
+  setViewingConversation: (id: string | null) => void;
   bumpLastMessageAt: (id: string, timestamp: number) => void;
 }
 

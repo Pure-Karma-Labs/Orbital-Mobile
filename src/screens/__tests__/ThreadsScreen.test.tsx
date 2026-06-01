@@ -19,6 +19,14 @@ jest.mock('../../hooks/useWebSocketSubscription', () => ({
   useWebSocketSubscription: jest.fn(),
 }));
 
+jest.mock('@react-navigation/native', () => ({
+  useFocusEffect: (cb: () => (() => void) | void) => {
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    const React = require('react');
+    React.useEffect(() => cb(), []);
+  },
+}));
+
 jest.mock('../../hooks/usePullToRefresh', () => ({
   usePullToRefresh: () => ({
     scrollY: { interpolate: () => 0 },
@@ -27,6 +35,12 @@ jest.mock('../../hooks/usePullToRefresh', () => ({
 }));
 
 jest.mock('../../stores', () => ({
+  useAppStore: {
+    getState: jest.fn(() => ({
+      setViewingConversation: jest.fn(),
+      markConversationRead: jest.fn(),
+    })),
+  },
   useAuth: () => ({
     isAuthenticated: false,
     userId: null,

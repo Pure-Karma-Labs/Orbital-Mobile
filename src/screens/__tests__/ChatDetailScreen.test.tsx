@@ -20,6 +20,26 @@ jest.mock('../../hooks/useWebSocketSubscription', () => ({
   useWebSocketSubscription: jest.fn(),
 }));
 
+jest.mock('@react-navigation/native', () => ({
+  useFocusEffect: (cb: () => (() => void) | void) => {
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    const React = require('react');
+    React.useEffect(() => cb(), []);
+  },
+}));
+
+const mockSetViewingConversation = jest.fn();
+const mockMarkConversationRead = jest.fn();
+
+jest.mock('../../stores/useAppStore', () => ({
+  useAppStore: {
+    getState: jest.fn(() => ({
+      setViewingConversation: mockSetViewingConversation,
+      markConversationRead: mockMarkConversationRead,
+    })),
+  },
+}));
+
 jest.mock('../../hooks/usePullToRefresh', () => ({
   usePullToRefresh: () => ({
     scrollY: { interpolate: () => 0 },
@@ -41,6 +61,12 @@ jest.mock('../../stores', () => ({
   useThreads: (...args: unknown[]) => mockUseThreads(...args),
   useAuth: () => ({ userId: 'test-user-id', username: 'testuser' }),
   useContactForConversation: () => null,
+  useAppStore: {
+    getState: jest.fn(() => ({
+      setViewingConversation: mockSetViewingConversation,
+      markConversationRead: mockMarkConversationRead,
+    })),
+  },
 }));
 
 import { loadThreadsForGroup } from '../../services/threadService';

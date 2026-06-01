@@ -18,13 +18,15 @@ import {
   clearIdentityKeyCache,
   fullCryptoWipe,
 } from './crypto/keyGenerationService';
-import { clearGroupKeyCache } from './crypto/contentCrypto';
+import { clearGroupKeyCache, clearContentCryptoInflight } from './crypto/contentCrypto';
 import { clearEciesLockState, loadEciesLockState } from './crypto/downgradeProtection';
 import { clearProcessedMediaIds } from './threadService';
+import { clearIdentityInflightState } from './crypto/identityKeyAccess';
+import { clearMessageHandlerState } from './websocket/messageHandler';
 import { execute } from '../database/queryHelpers';
 import { isDatabaseInitialized, closeDatabase } from '../database/connection';
 import { getItem, setItem } from '../database/repositories/itemRepository';
-import { loadConversations, loadDmConversations, fulfillPendingWraps, hydrateContactsFromOrbits } from './conversationService';
+import { loadConversations, loadDmConversations, fulfillPendingWraps, hydrateContactsFromOrbits, clearConversationServiceState } from './conversationService';
 import { websocketManager } from './websocket';
 import { deregisterCurrentDevice } from './notificationService';
 import {
@@ -248,6 +250,18 @@ export async function localWipe({ preserveIdentity }: { preserveIdentity: boolea
   }
   try { clearProcessedMediaIds(); } catch {
     if (__DEV__) console.warn('[LocalWipe] clearProcessedMediaIds failed');
+  }
+  try { clearConversationServiceState(); } catch {
+    if (__DEV__) console.warn('[LocalWipe] clearConversationServiceState failed');
+  }
+  try { clearContentCryptoInflight(); } catch {
+    if (__DEV__) console.warn('[LocalWipe] clearContentCryptoInflight failed');
+  }
+  try { clearIdentityInflightState(); } catch {
+    if (__DEV__) console.warn('[LocalWipe] clearIdentityInflightState failed');
+  }
+  try { clearMessageHandlerState(); } catch {
+    if (__DEV__) console.warn('[LocalWipe] clearMessageHandlerState failed');
   }
 
   if (preserveIdentity) {

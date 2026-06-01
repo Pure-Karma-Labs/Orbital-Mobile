@@ -22,6 +22,7 @@ export const createConversationsSlice: StateCreator<
   conversations: {},
   conversationIds: [],
   activeConversationId: null,
+  viewingConversationId: null,
 
   // Actions
   setConversations: (conversations) => {
@@ -93,6 +94,24 @@ export const createConversationsSlice: StateCreator<
     );
   },
 
+  incrementUnreadCount: (id) => {
+    const { conversations } = get();
+    const existing = conversations[id];
+    if (!existing) {
+      return;
+    }
+    set(
+      {
+        conversations: {
+          ...conversations,
+          [id]: { ...existing, unreadCount: existing.unreadCount + 1 },
+        },
+      },
+      false,
+      'conversations/incrementUnreadCount',
+    );
+  },
+
   markConversationRead: (id) => {
     const { conversations } = get();
     const existing = conversations[id];
@@ -110,6 +129,14 @@ export const createConversationsSlice: StateCreator<
       'conversations/markConversationRead',
     );
   },
+
+  setViewingConversation: (id) =>
+    set(
+      { viewingConversationId: id },
+      false,
+      'conversations/setViewingConversation',
+    ),
+
   bumpLastMessageAt: (id, timestamp) => {
     const { conversations } = get();
     const existing = conversations[id];

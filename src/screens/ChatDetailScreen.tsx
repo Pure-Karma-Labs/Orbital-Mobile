@@ -6,6 +6,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   Animated,
   RefreshControl,
@@ -19,6 +20,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useTheme } from '../theme';
+import { useAppStore } from '../stores';
 import { useAuth, useThreads, useContactForConversation } from '../stores';
 import type { Thread } from '../types/store';
 import { VerifiedStatus } from '../types/database';
@@ -151,6 +153,17 @@ export function ChatDetailScreen({
 
   // Subscribe to real-time updates for this DM conversation
   useWebSocketSubscription(conversationId);
+
+  useFocusEffect(
+    useCallback(() => {
+      const store = useAppStore.getState();
+      store.setViewingConversation(conversationId);
+      store.markConversationRead(conversationId);
+      return () => {
+        useAppStore.getState().setViewingConversation(null);
+      };
+    }, [conversationId]),
+  );
 
   const threadList = useMemo((): Thread[] => {
     const ids = threadIdsByConversation[conversationId] ?? [];

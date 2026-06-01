@@ -376,6 +376,32 @@ describe('new_reply broadcast', () => {
     expect(reply.parentReplyId).toBe('reply-ws-1');
   });
 
+  it('calls ensureDmConversation before decryption', async () => {
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: 'group-1',
+      timestamp: 1700000001000,
+      data: {
+        type: 'new_reply',
+        replyId: 'reply-ensure-dm-test',
+        threadId: 'thread-1',
+        groupId: 'group-1',
+        authorId: 'user-2',
+        authorName: 'bob',
+        encryptedBody: 'enc-reply-body',
+        bodyIv: 'reply-body-iv',
+        parentReplyId: null,
+        createdAt: '2026-04-01T11:00:00Z',
+        media: [],
+      },
+    });
+
+    await handleServerMessage(msg);
+
+    const { ensureDmConversation } = require('../../conversationService');
+    expect(ensureDmConversation).toHaveBeenCalledWith('group-1');
+  });
+
   it('bumps lastMessageAt after upserting reply', async () => {
     const msg = JSON.stringify({
       type: 'new_message',

@@ -16,12 +16,14 @@ import {
 } from 'react-native';
 import { useTheme } from '../../theme';
 import { Avatar } from '../../components/Avatar';
+import { Badge } from '../../components/Badge';
 
 export interface ChatItemProps {
   conversationId: string;
   recipientName: string;
   lastMessageAt: number | null;
   avatarUrl?: string | null;
+  unreadCount?: number;
   onPress: (conversationId: string) => void;
 }
 
@@ -53,6 +55,7 @@ export const ChatItem = React.memo(function ChatItem({
   recipientName,
   lastMessageAt,
   avatarUrl,
+  unreadCount,
   onPress,
 }: ChatItemProps): React.JSX.Element {
   const theme = useTheme();
@@ -112,6 +115,9 @@ export const ChatItem = React.memo(function ChatItem({
       </View>
       {lastMessageAt != null && (
         <Text style={timeStyle}>{formatTime(lastMessageAt)}</Text>
+      )}
+      {unreadCount != null && unreadCount > 0 && (
+        <Badge count={unreadCount} testID="unread-badge" />
       )}
     </TouchableOpacity>
   );

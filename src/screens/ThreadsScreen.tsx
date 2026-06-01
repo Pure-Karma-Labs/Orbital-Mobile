@@ -3,6 +3,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   Animated,
   RefreshControl,
@@ -15,7 +16,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useTheme } from '../theme';
-import { useThreads, useConversations } from '../stores';
+import { useAppStore, useThreads, useConversations, useConnection } from '../stores';
 import type { Thread } from '../types/store';
 import type { ThreadsStackParamList } from '../navigation/types';
 import { Button } from '../components/Button';
@@ -28,7 +29,6 @@ import { loadThreadsForGroup } from '../services/threadService';
 import { PullToRefreshOverlay } from '../components/PullToRefreshOverlay';
 import { usePullToRefresh } from '../hooks/usePullToRefresh';
 import { useWebSocketSubscription } from '../hooks/useWebSocketSubscription';
-import { useConnection } from '../stores';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -212,6 +212,19 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
 
   // Subscribe to real-time updates for the active conversation
   useWebSocketSubscription(activeConversationId);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (activeConversationId) {
+        const store = useAppStore.getState();
+        store.setViewingConversation(activeConversationId);
+        store.markConversationRead(activeConversationId);
+      }
+      return () => {
+        useAppStore.getState().setViewingConversation(null);
+      };
+    }, [activeConversationId]),
+  );
 
   // Get threads for the active conversation (or all threads if no active conversation)
   const threadList = useMemo((): Thread[] => {

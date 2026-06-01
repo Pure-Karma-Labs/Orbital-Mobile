@@ -19,6 +19,14 @@ jest.mock('../../hooks/useWebSocketSubscription', () => ({
   useWebSocketSubscription: jest.fn(),
 }));
 
+jest.mock('@react-navigation/native', () => ({
+  useFocusEffect: (cb: () => (() => void) | void) => {
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    const React = require('react');
+    React.useEffect(() => cb(), []);
+  },
+}));
+
 jest.mock('../../hooks/usePullToRefresh', () => ({
   usePullToRefresh: () => ({
     scrollY: { interpolate: () => 0 },
@@ -26,7 +34,16 @@ jest.mock('../../hooks/usePullToRefresh', () => ({
   }),
 }));
 
+const mockSetViewingConversation = jest.fn();
+const mockMarkConversationRead = jest.fn();
+
 jest.mock('../../stores', () => ({
+  useAppStore: {
+    getState: jest.fn(() => ({
+      setViewingConversation: mockSetViewingConversation,
+      markConversationRead: mockMarkConversationRead,
+    })),
+  },
   useAuth: () => ({
     isAuthenticated: false,
     userId: null,
@@ -273,5 +290,25 @@ describe('ThreadsScreen — with thread data', () => {
         node.props.children === '─── Today ───',
     );
     expect(dayNode).toBeDefined();
+  });
+});
+
+describe('ThreadsScreen — focus lifecycle', () => {
+  it('calls setViewingConversation and markConversationRead on mount', () => {
+    renderThreadsScreen();
+
+    expect(mockSetViewingConversation).toHaveBeenCalledWith('group-1');
+    expect(mockMarkConversationRead).toHaveBeenCalledWith('group-1');
+  });
+
+  it('calls setViewingConversation(null) on unmount', () => {
+    const renderer = renderThreadsScreen();
+
+    mockSetViewingConversation.mockClear();
+    act(() => {
+      renderer.unmount();
+    });
+
+    expect(mockSetViewingConversation).toHaveBeenCalledWith(null);
   });
 });

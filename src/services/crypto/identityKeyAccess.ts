@@ -164,3 +164,8 @@ export function getStoredIdentityVerifiedStatus(userId: string): VerifiedStatus 
   const stored = getIdentityKey(userId);
   return stored ? stored.verified : null;
 }
+
+export function clearIdentityInflightState(): void {
+  identityInflight.clear();
+  refreshInflight.clear();
+}

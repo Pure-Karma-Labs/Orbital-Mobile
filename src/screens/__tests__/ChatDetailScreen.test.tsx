@@ -20,6 +20,26 @@ jest.mock('../../hooks/useWebSocketSubscription', () => ({
   useWebSocketSubscription: jest.fn(),
 }));
 
+jest.mock('@react-navigation/native', () => ({
+  useFocusEffect: (cb: () => (() => void) | void) => {
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    const React = require('react');
+    React.useEffect(() => cb(), []);
+  },
+}));
+
+const mockSetViewingConversation = jest.fn();
+const mockMarkConversationRead = jest.fn();
+
+jest.mock('../../stores/useAppStore', () => ({
+  useAppStore: {
+    getState: jest.fn(() => ({
+      setViewingConversation: mockSetViewingConversation,
+      markConversationRead: mockMarkConversationRead,
+    })),
+  },
+}));
+
 jest.mock('../../hooks/usePullToRefresh', () => ({
   usePullToRefresh: () => ({
     scrollY: { interpolate: () => 0 },
@@ -41,6 +61,12 @@ jest.mock('../../stores', () => ({
   useThreads: (...args: unknown[]) => mockUseThreads(...args),
   useAuth: () => ({ userId: 'test-user-id', username: 'testuser' }),
   useContactForConversation: () => null,
+  useAppStore: {
+    getState: jest.fn(() => ({
+      setViewingConversation: mockSetViewingConversation,
+      markConversationRead: mockMarkConversationRead,
+    })),
+  },
 }));
 
 import { loadThreadsForGroup } from '../../services/threadService';
@@ -259,5 +285,27 @@ describe('ChatDetailScreen — navigation', () => {
       threadId: 'thread-1',
       threadTitle: 'Hello there',
     });
+  });
+});
+
+describe('ChatDetailScreen — focus lifecycle', () => {
+  it('calls setViewingConversation and markConversationRead on mount', () => {
+    mockUseThreads.mockReturnValue(emptyThreadsState);
+    renderScreen('Alice');
+
+    expect(mockSetViewingConversation).toHaveBeenCalledWith('dm-conv-1');
+    expect(mockMarkConversationRead).toHaveBeenCalledWith('dm-conv-1');
+  });
+
+  it('calls setViewingConversation(null) on unmount', () => {
+    mockUseThreads.mockReturnValue(emptyThreadsState);
+    const renderer = renderScreen('Alice');
+
+    mockSetViewingConversation.mockClear();
+    act(() => {
+      renderer.unmount();
+    });
+
+    expect(mockSetViewingConversation).toHaveBeenCalledWith(null);
   });
 });

@@ -6,6 +6,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Animated,
   RefreshControl,
+  ScrollView,
   Text,
   TouchableOpacity,
   View,
@@ -23,7 +24,7 @@ import { Button } from '../components/Button';
 import { Header } from '../components/Header';
 import { ChatItem } from './chats/ChatItem';
 import { getAvatarUrl } from '../utils/avatarUrl';
-import { loadDmConversations } from '../services/conversationService';
+import { loadDmConversations, hydrateContactsFromOrbits } from '../services/conversationService';
 import { PullToRefreshOverlay } from '../components/PullToRefreshOverlay';
 import { usePullToRefresh } from '../hooks/usePullToRefresh';
 
@@ -115,7 +116,10 @@ export function ChatsListScreen({ navigation }: ChatsListScreenProps): React.JSX
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      await loadDmConversations();
+      await Promise.all([
+        loadDmConversations(),
+        hydrateContactsFromOrbits(),
+      ]);
     } catch {
       // Silently fail -- stale data is still visible
     } finally {
@@ -187,7 +191,14 @@ export function ChatsListScreen({ navigation }: ChatsListScreenProps): React.JSX
       />
 
       {dmConversations.length === 0 ? (
-        <EmptyState onNewChat={handleNewChat} />
+        <ScrollView
+          contentContainerStyle={{ flexGrow: 1 }}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
+          }
+        >
+          <EmptyState onNewChat={handleNewChat} />
+        </ScrollView>
       ) : (
         <View style={{ flex: 1 }}>
           <PullToRefreshOverlay scrollY={scrollY} refreshing={refreshing} />

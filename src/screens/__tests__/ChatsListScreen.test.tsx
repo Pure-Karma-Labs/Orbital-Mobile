@@ -14,6 +14,7 @@ import { ChatsListScreen } from '../ChatsListScreen';
 
 jest.mock('../../services/conversationService', () => ({
   loadDmConversations: jest.fn().mockResolvedValue(undefined),
+  hydrateContactsFromOrbits: jest.fn().mockResolvedValue(undefined),
 }));
 
 jest.mock('../../hooks/usePullToRefresh', () => ({

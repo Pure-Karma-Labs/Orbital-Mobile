@@ -354,7 +354,7 @@ export async function startDm(
 
 export async function fetchCreatorOrbitsDecrypted(): Promise<DecryptedGroup[]> {
   const allGroups = await listGroups();
-  const creatorGroups = allGroups.filter((g) => g.isCreator);
+  const creatorGroups = allGroups.filter((g) => g.isCreator && g.groupType !== 'dm');
 
   const results: DecryptedGroup[] = [];
   for (const group of creatorGroups) {

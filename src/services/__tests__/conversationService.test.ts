@@ -437,6 +437,14 @@ const NON_CREATOR_GROUP = {
   joinedAt: '2026-02-01T00:00:00.000Z',
 };
 
+const CREATOR_DM = {
+  ...CREATOR_GROUP,
+  groupId: 'dm-created-by-me',
+  encryptedName: 'DM',
+  memberCount: 2,
+  groupType: 'dm' as const,
+};
+
 describe('fetchCreatorOrbitsDecrypted', () => {
   it('filters out non-creator groups', async () => {
     mockListGroups.mockResolvedValue([CREATOR_GROUP, NON_CREATOR_GROUP]);
@@ -500,6 +508,26 @@ describe('fetchCreatorOrbitsDecrypted', () => {
     mockListGroups.mockRejectedValue(new Error('network failure'));
 
     await expect(fetchCreatorOrbitsDecrypted()).rejects.toThrow('network failure');
+  });
+
+  it('filters out creator DMs (groupType === dm)', async () => {
+    mockListGroups.mockResolvedValue([CREATOR_GROUP, CREATOR_DM]);
+
+    const result = await fetchCreatorOrbitsDecrypted();
+
+    expect(result).toHaveLength(1);
+    expect(result[0].groupId).toBe('creator-1');
+  });
+
+  it('includes groups without groupType (backwards compat)', async () => {
+    const groupWithoutType = { ...CREATOR_GROUP };
+    delete (groupWithoutType as any).groupType;
+    mockListGroups.mockResolvedValue([groupWithoutType]);
+
+    const result = await fetchCreatorOrbitsDecrypted();
+
+    expect(result).toHaveLength(1);
+    expect(result[0].groupId).toBe('creator-1');
   });
 });
 

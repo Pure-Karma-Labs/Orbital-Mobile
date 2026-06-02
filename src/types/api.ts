@@ -134,8 +134,9 @@ export interface CreateGroupResponse {
  * GET /api/groups response item (from getUserGroups).
  *
  * Backend returns per group:
- * { group_id, encrypted_name, wrapped_group_key, member_count,
- *   max_members, is_creator, active_invite_code, joined_at }
+ * { group_id, encrypted_name, wrapped_group_key, wrapped_by,
+ *   member_count, max_members, is_creator, active_invite_code,
+ *   joined_at, group_type }
  */
 export interface GroupResponse {
   groupId: string;
@@ -147,6 +148,7 @@ export interface GroupResponse {
   isCreator: boolean;
   activeInviteCode: string | null;
   joinedAt: string;
+  groupType?: 'orbit' | 'dm';
 }
 
 /**

@@ -21,6 +21,7 @@ import {
 import { clearGroupKeyCache, clearContentCryptoInflight } from './crypto/contentCrypto';
 import { clearEciesLockState, loadEciesLockState } from './crypto/downgradeProtection';
 import { clearProcessedMediaIds } from './threadService';
+import { clearLinkPreviewCache } from '../hooks/useLinkPreview';
 import { clearIdentityInflightState } from './crypto/identityKeyAccess';
 import { clearMessageHandlerState } from './websocket/messageHandler';
 import { execute } from '../database/queryHelpers';
@@ -263,6 +264,9 @@ export async function localWipe({ preserveIdentity }: { preserveIdentity: boolea
   }
   try { clearMessageHandlerState(); } catch {
     if (__DEV__) console.warn('[LocalWipe] clearMessageHandlerState failed');
+  }
+  try { clearLinkPreviewCache(); } catch {
+    if (__DEV__) console.warn('[LocalWipe] clearLinkPreviewCache failed');
   }
 
   if (preserveIdentity) {

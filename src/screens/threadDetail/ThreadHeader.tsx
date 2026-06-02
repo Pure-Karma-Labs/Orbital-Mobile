@@ -11,6 +11,7 @@ import { useTheme } from '../../theme';
 import { Avatar } from '../../components/Avatar';
 import { EmojiText } from '../../components/EmojiText';
 import { MediaGallery } from '../../components/MediaGallery';
+import { LinkPreviewCard } from '../../components/LinkPreviewCard';
 import { MediaLightbox } from '../../components/MediaLightbox';
 import { useMediaForThread } from '../../stores';
 
@@ -123,6 +124,7 @@ export const ThreadHeader = React.memo(function ThreadHeader({
       {body != null && body.length > 0 && (
         <EmojiText style={bodyStyle}>{body}</EmojiText>
       )}
+      <LinkPreviewCard text={body} />
       {mediaItems.length > 0 && (
         <MediaGallery
           mediaItems={mediaItems}

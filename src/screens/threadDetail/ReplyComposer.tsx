@@ -21,6 +21,7 @@ import {
 } from 'react-native';
 import { useTheme } from '../../theme';
 import { Emoji } from '../../components/Emoji';
+import { LinkPreviewCard } from '../../components/LinkPreviewCard';
 import { MediaThumbnailStrip } from '../../components/MediaThumbnailStrip';
 import type { PickedMedia } from '../../hooks/useMediaPicker';
 
@@ -190,6 +191,7 @@ export const ReplyComposer = React.memo(function ReplyComposer({
       {(media?.length ?? 0) > 0 && (
         <MediaThumbnailStrip media={media!} onRemove={onRemoveMedia ?? (() => {})} />
       )}
+      <LinkPreviewCard text={text} debounceMs={500} dismissible />
       <View style={inputRowStyle}>
         {onToggleEmojiPicker != null && (
           <TouchableOpacity

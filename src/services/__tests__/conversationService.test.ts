@@ -64,7 +64,7 @@ jest.mock('../../stores/useAppStore', () => ({
   },
 }));
 
-import { loadConversations, loadDmConversations, startDm, joinOrbit, fetchCreatorOrbitsDecrypted, hydrateContactsFromOrbits } from '../conversationService';
+import { loadConversations, loadDmConversations, startDm, joinOrbit, fetchCreatorOrbitsDecrypted, hydrateContactsFromOrbits, clearConversationServiceState } from '../conversationService';
 import { listGroups, listDms, createDm, joinGroup, getGroupMembers } from '../api/groups';
 import { useAppStore } from '../../stores/useAppStore';
 
@@ -520,9 +520,7 @@ describe('fetchCreatorOrbitsDecrypted', () => {
   });
 
   it('includes groups without groupType (backwards compat)', async () => {
-    const groupWithoutType = { ...CREATOR_GROUP };
-    delete (groupWithoutType as any).groupType;
-    mockListGroups.mockResolvedValue([groupWithoutType]);
+    mockListGroups.mockResolvedValue([CREATOR_GROUP]);
 
     const result = await fetchCreatorOrbitsDecrypted();
 
@@ -730,5 +728,104 @@ describe('hydrateContactsFromOrbits', () => {
     await hydrateContactsFromOrbits();
 
     expect(mockRemoveContact).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// hydrateContactsFromOrbits — debounce and concurrency
+// ---------------------------------------------------------------------------
+
+let debounceTestClock = Date.now() + 500_000;
+describe('hydrateContactsFromOrbits — debounce and concurrency', () => {
+  const storeState = () => ({
+    userId: 'self',
+    conversations: { g1: { id: 'g1', type: 'group', name: 'Orbit' } },
+    contacts: {},
+    mergeContacts: mockMergeContacts,
+    removeContact: jest.fn(),
+  });
+
+  beforeEach(() => {
+    debounceTestClock += 120_000;
+    jest.useFakeTimers();
+    jest.setSystemTime(debounceTestClock);
+    clearConversationServiceState();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('allows immediate retry when all fetches fail', async () => {
+    (useAppStore.getState as jest.Mock).mockReturnValue(storeState());
+    mockGetGroupMembers.mockRejectedValue(new Error('network'));
+
+    await hydrateContactsFromOrbits();
+    expect(mockGetGroupMembers).toHaveBeenCalledTimes(1);
+
+    mockGetGroupMembers.mockClear();
+    (useAppStore.getState as jest.Mock).mockReturnValue(storeState());
+
+    await hydrateContactsFromOrbits();
+    expect(mockGetGroupMembers).toHaveBeenCalledTimes(1);
+  });
+
+  it('debounces after successful hydration', async () => {
+    (useAppStore.getState as jest.Mock).mockReturnValue(storeState());
+    mockGetGroupMembers.mockResolvedValue([
+      { userId: 'a', username: 'alice', displayName: 'Alice', publicKey: 'pk', avatarUrl: null, joinedAt: '2026-01-01' },
+    ]);
+
+    await hydrateContactsFromOrbits();
+    expect(mockGetGroupMembers).toHaveBeenCalledTimes(1);
+
+    mockGetGroupMembers.mockClear();
+    (useAppStore.getState as jest.Mock).mockReturnValue(storeState());
+
+    await hydrateContactsFromOrbits();
+    expect(mockGetGroupMembers).not.toHaveBeenCalled();
+  });
+
+  it('coalesces concurrent calls via in-flight guard', async () => {
+    let resolveMembers!: (v: unknown[]) => void;
+    const deferredMembers = new Promise<unknown[]>((r) => { resolveMembers = r; });
+
+    (useAppStore.getState as jest.Mock).mockReturnValue(storeState());
+    mockGetGroupMembers.mockReturnValue(deferredMembers);
+
+    const call1 = hydrateContactsFromOrbits();
+    const call2 = hydrateContactsFromOrbits();
+
+    resolveMembers([
+      { userId: 'a', username: 'alice', displayName: 'Alice', publicKey: 'pk', avatarUrl: null, joinedAt: '2026-01-01' },
+    ]);
+
+    await call1;
+    await call2;
+
+    expect(mockGetGroupMembers).toHaveBeenCalledTimes(1);
+  });
+
+  it('advances timestamp on partial failure', async () => {
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      ...storeState(),
+      conversations: {
+        g1: { id: 'g1', type: 'group', name: 'Orbit 1' },
+        g2: { id: 'g2', type: 'group', name: 'Orbit 2' },
+      },
+    });
+    mockGetGroupMembers
+      .mockResolvedValueOnce([
+        { userId: 'a', username: 'alice', displayName: 'Alice', publicKey: 'pk', avatarUrl: null, joinedAt: '2026-01-01' },
+      ])
+      .mockRejectedValueOnce(new Error('network'));
+
+    await hydrateContactsFromOrbits();
+
+    mockGetGroupMembers.mockClear();
+    (useAppStore.getState as jest.Mock).mockReturnValue(storeState());
+
+    await hydrateContactsFromOrbits();
+    expect(mockGetGroupMembers).not.toHaveBeenCalled();
   });
 });

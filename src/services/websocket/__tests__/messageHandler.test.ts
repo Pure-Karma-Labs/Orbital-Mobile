@@ -34,6 +34,7 @@ jest.mock('../../threadService', () => ({
 
 jest.mock('../../conversationService', () => ({
   ensureDmConversation: jest.fn().mockResolvedValue(null),
+  hydrateContactsFromOrbits: jest.fn().mockResolvedValue(undefined),
 }));
 
 const mockUpsertThread = jest.fn();

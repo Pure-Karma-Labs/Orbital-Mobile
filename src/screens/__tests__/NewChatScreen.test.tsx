@@ -10,6 +10,7 @@ import { NewChatScreen } from '../NewChatScreen';
 
 jest.mock('../../services/conversationService', () => ({
   startDm: jest.fn(),
+  hydrateContactsFromOrbits: jest.fn().mockResolvedValue(undefined),
 }));
 
 jest.mock('../../components/OrbitalSpinner', () => ({

@@ -18,7 +18,7 @@ import {
 import { resolveRemoteIdentityKey } from '../crypto/identityKeyAccess';
 import { submitWrappedKey } from '../api/groups';
 import { decryptThreadFields, decryptReplyBody, processMediaMetadata } from '../threadService';
-import { ensureDmConversation } from '../conversationService';
+import { ensureDmConversation, hydrateContactsFromOrbits } from '../conversationService';
 import { useAppStore } from '../../stores/useAppStore';
 import { LRUSet } from './lruSet';
 import type {
@@ -134,6 +134,7 @@ export async function handleServerMessage(raw: string): Promise<void> {
 
     case 'wrap_key_request':
       await handleWrapKeyRequest(message as unknown as WrapKeyRequestPayload);
+      hydrateContactsFromOrbits().catch(() => {});
       break;
 
     case 'wrapped_key_delivered':

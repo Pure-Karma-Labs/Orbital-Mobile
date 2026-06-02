@@ -514,16 +514,23 @@ export async function fulfillPendingWraps(): Promise<void> {
 
 let lastContactHydration = 0;
 const CONTACT_HYDRATION_DEBOUNCE_MS = 60_000;
+let hydrateInflight: Promise<void> | null = null;
 
 /**
  * Populate the contacts store with members from all orbits.
- * Debounced to at most once per minute. Also reconciles removed members.
+ * Debounced to at most once per minute with in-flight coalescing.
+ * Also reconciles removed members.
  */
 export async function hydrateContactsFromOrbits(): Promise<void> {
   const now = Date.now();
   if (now - lastContactHydration < CONTACT_HYDRATION_DEBOUNCE_MS) return;
-  lastContactHydration = now;
+  if (hydrateInflight) return hydrateInflight;
 
+  hydrateInflight = doHydrateContacts();
+  try { await hydrateInflight; } finally { hydrateInflight = null; }
+}
+
+async function doHydrateContacts(): Promise<void> {
   const store = useAppStore.getState();
   const currentUserId = store.userId;
   if (!currentUserId) return;
@@ -564,6 +571,10 @@ export async function hydrateContactsFromOrbits(): Promise<void> {
     store.mergeContacts(incoming);
   }
 
+  if (succeededConvIds.size > 0) {
+    lastContactHydration = Date.now();
+  }
+
   // Reconcile: remove contacts whose only conversationIds were successfully
   // fetched orbits and who are no longer in any of those orbits on the server.
   // Skip orbits where the fetch failed to avoid false-positive deletions.
@@ -588,6 +599,7 @@ export async function hydrateContactsFromOrbits(): Promise<void> {
 export function clearConversationServiceState(): void {
   selfWrapInflight.clear();
   ensureDmInflight.clear();
+  hydrateInflight = null;
   lastPendingWrapsSweep = 0;
   lastContactHydration = 0;
 }

@@ -5,7 +5,7 @@
  * Typing filters the list by username or display name.
  */
 
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   FlatList,
   KeyboardAvoidingView,
@@ -21,7 +21,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useTheme } from '../theme';
 import { useContacts } from '../stores';
-import { startDm } from '../services/conversationService';
+import { startDm, hydrateContactsFromOrbits } from '../services/conversationService';
 import { Header } from '../components/Header';
 import { ErrorBanner } from '../components/ErrorBanner';
 import { TextInput } from '../components/TextInput';
@@ -42,6 +42,10 @@ export function NewChatScreen({
   const [filter, setFilter] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    hydrateContactsFromOrbits().catch(() => {});
+  }, []);
 
   const contactList = useMemo(() => {
     const all = Object.values(contacts);

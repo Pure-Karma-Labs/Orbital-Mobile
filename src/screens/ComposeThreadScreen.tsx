@@ -24,6 +24,7 @@ import { createNewThread } from '../services/threadService';
 import { uploadMediaBatch } from '../services/mediaUploadService';
 import { useMediaPicker } from '../hooks/useMediaPicker';
 import { Header } from '../components/Header';
+import { LinkPreviewCard } from '../components/LinkPreviewCard';
 import { ErrorBanner } from '../components/ErrorBanner';
 import { MediaThumbnailStrip } from '../components/MediaThumbnailStrip';
 import type { ThreadsStackParamList } from '../navigation/types';
@@ -224,6 +225,8 @@ export function ComposeThreadScreen({
               testID="compose-body-input"
             />
           </View>
+
+          <LinkPreviewCard text={body} debounceMs={500} dismissible />
 
           <MediaThumbnailStrip media={selectedMedia} onRemove={removeMedia} />
 

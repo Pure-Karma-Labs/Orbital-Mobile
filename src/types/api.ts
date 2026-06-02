@@ -570,3 +570,19 @@ export interface IdentityKeyResponse {
 export interface PreKeyCountResponse {
   count: number;
 }
+
+// ============================================================
+// Link Preview
+// ============================================================
+
+/**
+ * GET /api/link-preview response.
+ */
+export interface LinkPreviewResponse {
+  url: string;
+  title: string | null;
+  description: string | null;
+  imageUrl: string | null;
+  siteName: string | null;
+  type: string | null;
+}

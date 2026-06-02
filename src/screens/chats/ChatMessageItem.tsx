@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 import { useTheme } from '../../theme';
 import { EmojiText } from '../../components/EmojiText';
+import { LinkPreviewCard } from '../../components/LinkPreviewCard';
 
 export interface ChatMessageItemProps {
   threadId: string;
@@ -96,6 +97,7 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
           {body}
         </EmojiText>
       ) : null}
+      <LinkPreviewCard text={body} />
     </TouchableOpacity>
   );
 });

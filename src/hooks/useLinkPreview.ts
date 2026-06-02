@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { getLinkPreview } from '../services/api/linkPreviews';
+import { NotFoundError } from '../services/api/errors';
 import type { LinkPreviewResponse } from '../types/api';
 
 const URL_REGEX = /https?:\/\/[^\s<>"{}|\\^`\[\]]+/gi;
@@ -49,8 +50,10 @@ async function fetchPreview(
       previewCache.set(url, data);
       return data;
     })
-    .catch(() => {
-      previewCache.set(url, null);
+    .catch((err) => {
+      if (err instanceof NotFoundError) {
+        previewCache.set(url, null);
+      }
       return null;
     })
     .finally(() => {

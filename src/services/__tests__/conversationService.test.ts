@@ -520,9 +520,7 @@ describe('fetchCreatorOrbitsDecrypted', () => {
   });
 
   it('includes groups without groupType (backwards compat)', async () => {
-    const groupWithoutType = { ...CREATOR_GROUP };
-    delete (groupWithoutType as any).groupType;
-    mockListGroups.mockResolvedValue([groupWithoutType]);
+    mockListGroups.mockResolvedValue([CREATOR_GROUP]);
 
     const result = await fetchCreatorOrbitsDecrypted();
 

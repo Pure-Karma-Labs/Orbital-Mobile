@@ -21,6 +21,7 @@ import { Dimensions, Text, TouchableOpacity, View, type TextStyle, type ViewStyl
 import { useTheme } from '../../theme';
 import { getReplyDepthColors } from '../../theme/colors';
 import { EmojiText } from '../../components/EmojiText';
+import { LinkPreviewCard } from '../../components/LinkPreviewCard';
 import { MediaGallery } from '../../components/MediaGallery';
 import { MediaLightbox } from '../../components/MediaLightbox';
 import { useMediaForReply } from '../../stores';
@@ -165,6 +166,7 @@ export const ReplyItem = React.memo(function ReplyItem({
       {body != null && body.length > 0 && (
         <EmojiText style={bodyStyle}>{body}</EmojiText>
       )}
+      <LinkPreviewCard text={body} />
       {mediaItems.length > 0 && (
         <MediaGallery
           mediaItems={mediaItems}

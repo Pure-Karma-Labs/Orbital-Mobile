@@ -13,3 +13,4 @@ export {
   ServerError,
   NotFoundError,
 } from './errors';
+export { getLinkPreview } from './linkPreviews';

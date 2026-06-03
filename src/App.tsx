@@ -11,6 +11,7 @@ import {
   View,
   type ViewStyle,
 } from 'react-native';
+import * as Sentry from '@sentry/react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider, useTheme } from './theme';
 import { useAuth } from './stores';
@@ -65,7 +66,10 @@ function AppContent(): React.JSX.Element {
       .then((restored) => {
         if (!restored) setAuthStatus('unauthenticated');
       })
-      .catch(() => setAuthStatus('unauthenticated'));
+      .catch((e: unknown) => {
+        Sentry.captureException(e);
+        setAuthStatus('unauthenticated');
+      });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -73,8 +77,11 @@ function AppContent(): React.JSX.Element {
   useEffect(() => {
     if (isAuthenticated) {
       setAuthStatus('authenticated');
+      const userId = useAuth.getState().userId;
+      Sentry.setUser(userId ? { id: userId } : null);
     } else if (authStatus !== 'loading') {
       setAuthStatus('unauthenticated');
+      Sentry.setUser(null);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated]);
@@ -152,4 +159,4 @@ function LoadingView(): React.JSX.Element {
   );
 }
 
-export default App;
+export default Sentry.wrap(App);

@@ -4,12 +4,18 @@
 
 import 'react-native-get-random-values';
 import 'react-native-gesture-handler';
+import * as Sentry from '@sentry/react-native';
 import { AppRegistry } from 'react-native';
 import { enableScreens } from 'react-native-screens';
 import messaging from '@react-native-firebase/messaging';
 import notifee, { AndroidImportance, EventType } from '@notifee/react-native';
 import App from './src/App';
 import { name as appName } from './app.json';
+
+Sentry.init({
+  dsn: 'https://610af249fc66881e6074156e43749df6@o4511027419348992.ingest.us.sentry.io/4511502734786560',
+  environment: __DEV__ ? 'development' : 'production',
+});
 
 enableScreens();
 

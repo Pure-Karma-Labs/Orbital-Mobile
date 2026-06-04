@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
   FlatList,
+  Linking,
   ScrollView,
   Text,
   TouchableOpacity,
@@ -324,6 +325,22 @@ export function SettingsScreen(): React.JSX.Element {
         <SectionHeader label="Privacy" />
         <SettingsRow emojiUnified="1F512" label="Safety Numbers" chevron disabled />
         <SettingsRow emojiUnified="1F441-FE0F" label="Read Receipts" value="On" chevron disabled />
+
+        <SectionHeader label="Legal" />
+        <SettingsRow
+          emojiUnified="1F4DC"
+          label="Privacy Policy"
+          chevron
+          onPress={() => Linking.openURL('https://orbitl.org/privacy')}
+          testID="privacy-policy-row"
+        />
+        <SettingsRow
+          emojiUnified="1F4CB"
+          label="Terms of Service"
+          chevron
+          onPress={() => Linking.openURL('https://orbitl.org/terms')}
+          testID="terms-of-service-row"
+        />
 
         <SectionHeader label="Storage" />
         <SettingsRow

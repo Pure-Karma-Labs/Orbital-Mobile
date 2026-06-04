@@ -25,6 +25,23 @@ import { useAppStore } from '../stores/useAppStore';
 import type { Contact, Conversation } from '../types/store';
 import type { DmResponse, GroupMember, GroupResponse } from '../types/api';
 
+// ---------------------------------------------------------------------------
+// Session-stale guard — prevents cross-session data contamination (#241)
+// ---------------------------------------------------------------------------
+
+let sessionGeneration = 0;
+
+function captureSession(): { userId: string; generation: number } | null {
+  const userId = useAppStore.getState().userId;
+  if (!userId) return null;
+  return { userId, generation: sessionGeneration };
+}
+
+function isSessionStale(captured: { userId: string; generation: number }): boolean {
+  return useAppStore.getState().userId !== captured.userId
+    || sessionGeneration !== captured.generation;
+}
+
 export interface DecryptedGroup {
   groupId: string;
   name: string;
@@ -64,8 +81,10 @@ async function mapGroupResponse(response: GroupResponse): Promise<Conversation> 
 }
 
 export async function loadConversations(): Promise<void> {
+  const session = captureSession();
+  if (!session) return;
+
   const groups = await listGroups();
-  const currentUserId = useAppStore.getState().userId;
 
   const uniqueSenders = new Set<string>();
   for (const group of groups) {
@@ -73,10 +92,10 @@ export async function loadConversations(): Promise<void> {
       uniqueSenders.add(group.wrappedBy);
     }
   }
-  if (currentUserId && uniqueSenders.size > 0) {
+  if (uniqueSenders.size > 0) {
     await Promise.all(
       Array.from(uniqueSenders).map((id) =>
-        resolveRemoteIdentityKey(id, currentUserId).catch(() => {}),
+        resolveRemoteIdentityKey(id, session.userId).catch(() => {}),
       ),
     );
   }
@@ -103,6 +122,7 @@ export async function loadConversations(): Promise<void> {
 
   const conversations = await Promise.all(groups.map(mapGroupResponse));
 
+  if (isSessionStale(session)) return;
   const store = useAppStore.getState();
   store.setConversations(conversations);
 
@@ -179,17 +199,17 @@ export async function ensureDmConversation(groupId: string): Promise<Conversatio
 
   const promise = (async () => {
     try {
-      const currentUserId = useAppStore.getState().userId;
+      const session = captureSession();
+      if (!session) return null;
+
       const dms = await listDms();
       const dm = dms.find(d => d.groupId === groupId);
       if (!dm) return null;
 
       if (dm.wrappedGroupKey && dm.wrappedBy) {
-        if (currentUserId) {
-          try {
-            await resolveRemoteIdentityKey(dm.wrappedBy, currentUserId);
-          } catch { /* identity key resolution failed */ }
-        }
+        try {
+          await resolveRemoteIdentityKey(dm.wrappedBy, session.userId);
+        } catch { /* identity key resolution failed */ }
         try {
           await processReceivedGroupKey(dm.groupId, dm.wrappedGroupKey, dm.wrappedBy);
         } catch {
@@ -198,6 +218,7 @@ export async function ensureDmConversation(groupId: string): Promise<Conversatio
       }
 
       const conversation = mapDmResponse(dm);
+      if (isSessionStale(session)) return null;
       const storeNow = useAppStore.getState();
       storeNow.upsertConversation(conversation);
 
@@ -220,8 +241,10 @@ export async function ensureDmConversation(groupId: string): Promise<Conversatio
 }
 
 export async function loadDmConversations(): Promise<void> {
+  const session = captureSession();
+  if (!session) return;
+
   const dms = await listDms();
-  const currentUserId = useAppStore.getState().userId;
 
   const uniqueSenders = new Set<string>();
   for (const dm of dms) {
@@ -229,10 +252,10 @@ export async function loadDmConversations(): Promise<void> {
       uniqueSenders.add(dm.wrappedBy);
     }
   }
-  if (currentUserId && uniqueSenders.size > 0) {
+  if (uniqueSenders.size > 0) {
     await Promise.all(
       Array.from(uniqueSenders).map((id) =>
-        resolveRemoteIdentityKey(id, currentUserId).catch(() => {}),
+        resolveRemoteIdentityKey(id, session.userId).catch(() => {}),
       ),
     );
   }
@@ -259,6 +282,7 @@ export async function loadDmConversations(): Promise<void> {
 
   const conversations = dms.map(mapDmResponse);
 
+  if (isSessionStale(session)) return;
   const store = useAppStore.getState();
   for (const conversation of conversations) {
     store.upsertConversation(conversation);
@@ -280,19 +304,18 @@ export async function loadDmConversations(): Promise<void> {
   // Fire-and-forget identity checks for ALL stored identity keys.
   // Covers both DM recipients and orbit members.
   // Lazy imports avoid pulling DB/crypto into test contexts.
-  if (currentUserId) {
-    Promise.all([
-      import('../database/repositories/signalIdentityKeyRepository'),
-      import('./verificationService'),
-    ]).then(([{ getAllIdentityKeys }, { checkIdentityAndNotify }]) => {
-      const allKeys = getAllIdentityKeys();
-      for (const key of allKeys) {
-        if (key.address !== 'local' && key.address !== currentUserId) {
-          checkIdentityAndNotify(key.address, currentUserId).catch(() => {});
-        }
+  Promise.all([
+    import('../database/repositories/signalIdentityKeyRepository'),
+    import('./verificationService'),
+  ]).then(([{ getAllIdentityKeys }, { checkIdentityAndNotify }]) => {
+    if (isSessionStale(session)) return;
+    const allKeys = getAllIdentityKeys();
+    for (const key of allKeys) {
+      if (key.address !== 'local' && key.address !== session.userId) {
+        checkIdentityAndNotify(key.address, session.userId).catch(() => {});
       }
-    }).catch(() => {});
-  }
+    }
+  }).catch(() => {});
 }
 
 export async function startDm(
@@ -479,8 +502,8 @@ export async function fulfillPendingWraps(): Promise<void> {
   if (now - lastPendingWrapsSweep < PENDING_WRAPS_DEBOUNCE_MS) return;
   lastPendingWrapsSweep = now;
 
-  const currentUserId = useAppStore.getState().userId;
-  if (!currentUserId) return;
+  const session = captureSession();
+  if (!session) return;
 
   const conversations = useAppStore.getState().conversations;
   const groupIds = Object.values(conversations)
@@ -488,6 +511,7 @@ export async function fulfillPendingWraps(): Promise<void> {
     .map(c => c.id);
 
   for (const groupId of groupIds.slice(0, 10)) {
+    if (isSessionStale(session)) return;
     try {
       const groupKey = await getOrFetchGroupKey(groupId);
       const pending = await getPendingWraps(groupId);
@@ -495,7 +519,7 @@ export async function fulfillPendingWraps(): Promise<void> {
 
       for (const member of pending.slice(0, 5)) {
         try {
-          const targetPubKey = await resolveRemoteIdentityKey(member.userId, currentUserId);
+          const targetPubKey = await resolveRemoteIdentityKey(member.userId, session.userId);
           const wrapped = wrapGroupKey(groupKey, targetPubKey, groupId);
           await submitWrappedKey(groupId, member.userId, wrapped);
         } catch {
@@ -531,11 +555,10 @@ export async function hydrateContactsFromOrbits(): Promise<void> {
 }
 
 async function doHydrateContacts(): Promise<void> {
-  const store = useAppStore.getState();
-  const currentUserId = store.userId;
-  if (!currentUserId) return;
+  const session = captureSession();
+  if (!session) return;
 
-  const groupConvs = Object.values(store.conversations).filter(
+  const groupConvs = Object.values(useAppStore.getState().conversations).filter(
     (c) => c.type === 'group',
   );
   if (groupConvs.length === 0) return;
@@ -548,6 +571,9 @@ async function doHydrateContacts(): Promise<void> {
     ),
   );
 
+  if (isSessionStale(session)) return;
+  const store = useAppStore.getState();
+
   const incoming: Contact[] = [];
   const serverMemberIds = new Set<string>();
   const succeededConvIds = new Set<string>();
@@ -555,7 +581,7 @@ async function doHydrateContacts(): Promise<void> {
   for (const { convId, members, ok } of results) {
     if (ok) succeededConvIds.add(convId);
     for (const member of members) {
-      if (member.userId === currentUserId) continue;
+      if (member.userId === session.userId) continue;
       serverMemberIds.add(member.userId);
       incoming.push({
         id: member.userId,
@@ -597,6 +623,7 @@ async function doHydrateContacts(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export function clearConversationServiceState(): void {
+  sessionGeneration++;
   selfWrapInflight.clear();
   ensureDmInflight.clear();
   hydrateInflight = null;

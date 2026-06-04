@@ -42,6 +42,12 @@ jest.mock('orbital-signal', () => ({
   aesGcmDecrypt: jest.fn(),
 }));
 
+jest.mock('@sentry/react-native', () => ({
+  captureException: jest.fn(),
+  setUser: jest.fn(),
+  wrap: jest.fn((component: unknown) => component),
+}));
+
 // Mock bootstrap so it doesn't run the real secure-storage init
 jest.mock('../src/bootstrap', () => ({
   bootstrap: jest.fn(() => Promise.resolve()),

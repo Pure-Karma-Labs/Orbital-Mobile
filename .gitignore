@@ -36,6 +36,7 @@ GoogleService-Info.plist
 google-services.json
 *.keystore
 !android/app/debug.keystore
+android/keystore.properties
 *.jks
 *.p12
 *.mobileprovision

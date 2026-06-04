@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>OrbitalMobile</string>
+	<string>Orbital</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -22,6 +22,17 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleSignature</key>
 	<string>????</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.orbital.mobile</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>orbital</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
@@ -33,14 +44,22 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Orbital needs access to your photo library to share photos in conversations.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Orbital needs access to your camera to take photos for conversations.</string>
-	<key>NSLocationWhenInUseUsageDescription</key>
-	<string/>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Orbital needs access to your photo library to share photos in conversations.</string>
 	<key>RCTNewArchEnabled</key>
 	<true/>
+	<key>UIAppFonts</key>
+	<array>
+		<string>BitstreamVeraSans.ttf</string>
+		<string>BitstreamVeraSans-Bold.ttf</string>
+		<string>BitstreamVeraSans-Italic.ttf</string>
+		<string>BitstreamVeraSansMono.ttf</string>
+		<string>BitstreamVeraSansMono-Bold.ttf</string>
+		<string>FiraSans-Regular.ttf</string>
+		<string>FiraSans-Bold.ttf</string>
+	</array>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIRequiredDeviceCapabilities</key>
@@ -53,28 +72,7 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
-	<key>UIAppFonts</key>
-	<array>
-		<string>BitstreamVeraSans.ttf</string>
-		<string>BitstreamVeraSans-Bold.ttf</string>
-		<string>BitstreamVeraSans-Italic.ttf</string>
-		<string>BitstreamVeraSansMono.ttf</string>
-		<string>BitstreamVeraSansMono-Bold.ttf</string>
-		<string>FiraSans-Regular.ttf</string>
-		<string>FiraSans-Bold.ttf</string>
-	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<false/>
-	<key>CFBundleURLTypes</key>
-	<array>
-		<dict>
-			<key>CFBundleURLSchemes</key>
-			<array>
-				<string>orbital</string>
-			</array>
-			<key>CFBundleURLName</key>
-			<string>com.orbital.mobile</string>
-		</dict>
-	</array>
 </dict>
 </plist>

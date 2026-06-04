@@ -4,6 +4,9 @@ jest.mock('../api/groups', () => ({
   createDm: jest.fn(),
   joinGroup: jest.fn(),
   getGroupMembers: jest.fn(),
+  getPendingWraps: jest.fn(),
+  submitWrappedKey: jest.fn(),
+  selfWrapGroupKey: jest.fn(),
 }));
 
 const mockPersistGroupKey = jest.fn();
@@ -64,8 +67,8 @@ jest.mock('../../stores/useAppStore', () => ({
   },
 }));
 
-import { loadConversations, loadDmConversations, startDm, joinOrbit, fetchCreatorOrbitsDecrypted, hydrateContactsFromOrbits, clearConversationServiceState } from '../conversationService';
-import { listGroups, listDms, createDm, joinGroup, getGroupMembers } from '../api/groups';
+import { loadConversations, loadDmConversations, startDm, joinOrbit, fetchCreatorOrbitsDecrypted, hydrateContactsFromOrbits, ensureDmConversation, fulfillPendingWraps, clearConversationServiceState } from '../conversationService';
+import { listGroups, listDms, createDm, joinGroup, getGroupMembers, getPendingWraps, submitWrappedKey } from '../api/groups';
 import { useAppStore } from '../../stores/useAppStore';
 
 const mockListGroups = listGroups as jest.Mock;
@@ -73,6 +76,8 @@ const mockListDms = listDms as jest.Mock;
 const mockCreateDm = createDm as jest.Mock;
 const mockJoinGroup = joinGroup as jest.Mock;
 const mockGetGroupMembers = getGroupMembers as jest.Mock;
+const mockGetPendingWraps = getPendingWraps as jest.Mock;
+const mockSubmitWrappedKey = submitWrappedKey as jest.Mock;
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -948,6 +953,77 @@ describe('session-stale guards', () => {
       // listGroups was called (we got past the early return)
       expect(mockListGroups).toHaveBeenCalled();
       // But setConversations was NOT called because generation changed
+      expect(mockSetConversations).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('ensureDmConversation bails on mid-flight logout', () => {
+    it('does not call upsertConversation when userId becomes null mid-flight', async () => {
+      // First getState (store.conversations lookup) returns no existing conv
+      // Second getState (captureSession inside IIFE) returns valid user
+      // After awaits, getState returns null userId
+      (useAppStore.getState as jest.Mock)
+        .mockReturnValueOnce({ ...validUserState(), conversations: {} }) // existing conv lookup
+        .mockReturnValueOnce(validUserState()) // captureSession
+        .mockReturnValue(nullUserState()); // after await — session stale
+
+      mockListDms.mockResolvedValue([DM_RESPONSE]);
+
+      const result = await ensureDmConversation('dm-1');
+
+      expect(mockListDms).toHaveBeenCalled();
+      expect(mockUpsertConversation).not.toHaveBeenCalled();
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('fulfillPendingWraps bails on mid-flight session change', () => {
+    it('skips second group when session becomes stale during first', async () => {
+      // Guard is at the top of the outer loop, so it catches staleness
+      // between group iterations, not within a single group.
+      const stateWithGroups = {
+        ...validUserState(),
+        conversations: {
+          g1: { id: 'g1', type: 'group', name: 'Orbit 1' },
+          g2: { id: 'g2', type: 'group', name: 'Orbit 2' },
+        },
+      };
+      (useAppStore.getState as jest.Mock).mockReturnValue(stateWithGroups);
+
+      mockGetOrFetchGroupKey.mockResolvedValue(new Uint8Array(32));
+      // First group: bump generation during processing
+      mockGetPendingWraps.mockImplementationOnce(async () => {
+        clearConversationServiceState(); // bump generation after first iteration started
+        return [{ userId: 'member-1' }];
+      });
+      // Second group: should never be reached
+      mockGetPendingWraps.mockResolvedValue([{ userId: 'member-2' }]);
+
+      await fulfillPendingWraps();
+
+      // First group was processed (guard passed at top of first iteration)
+      expect(mockGetPendingWraps).toHaveBeenCalledTimes(1);
+      // Second group was skipped because isSessionStale returned true
+      expect(mockSubmitWrappedKey).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('cross-user session change (user A to user B)', () => {
+    it('bails when a different user logs in mid-flight', async () => {
+      const userBState = () => ({
+        ...validUserState(),
+        userId: 'different-user-B',
+      });
+
+      (useAppStore.getState as jest.Mock)
+        .mockReturnValueOnce(validUserState()) // captureSession as user A
+        .mockReturnValue(userBState()); // after await — different user
+
+      mockListGroups.mockResolvedValue([GROUP_RESPONSE]);
+
+      await loadConversations();
+
+      expect(mockListGroups).toHaveBeenCalled();
       expect(mockSetConversations).not.toHaveBeenCalled();
     });
   });

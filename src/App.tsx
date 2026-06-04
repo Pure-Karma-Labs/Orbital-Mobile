@@ -50,7 +50,7 @@ function AppContent(): React.JSX.Element {
   const [authStatus, setAuthStatus] = useState<AuthStatus>('loading');
   const [preAuthScreen, setPreAuthScreen] = useState<PreAuthScreen>('login');
   const [preAuthParams, setPreAuthParams] = useState<PreAuthParams>({});
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, userId } = useAuth();
 
   function handleNavigate(screen: PreAuthScreen, params?: PreAuthParams): void {
     setPreAuthScreen(screen);
@@ -77,7 +77,6 @@ function AppContent(): React.JSX.Element {
   useEffect(() => {
     if (isAuthenticated) {
       setAuthStatus('authenticated');
-      const userId = useAuth.getState().userId;
       Sentry.setUser(userId ? { id: userId } : null);
     } else if (authStatus !== 'loading') {
       setAuthStatus('unauthenticated');

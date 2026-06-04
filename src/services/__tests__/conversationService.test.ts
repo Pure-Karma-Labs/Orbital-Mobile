@@ -829,3 +829,126 @@ describe('hydrateContactsFromOrbits — debounce and concurrency', () => {
     expect(mockGetGroupMembers).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Session-stale guards (#241) — cross-session data contamination prevention
+// ---------------------------------------------------------------------------
+
+describe('session-stale guards', () => {
+  /** Store state with all required methods but a null userId */
+  const nullUserState = () => ({
+    userId: null,
+    activeConversationId: null,
+    conversations: {},
+    contacts: {},
+    setConversations: mockSetConversations,
+    setActiveConversation: mockSetActiveConversation,
+    upsertConversation: mockUpsertConversation,
+    mergeContacts: mockMergeContacts,
+    removeContact: jest.fn(),
+  });
+
+  /** Store state with a valid userId and all required methods */
+  const validUserState = () => ({
+    userId: 'test-self-user',
+    activeConversationId: null,
+    conversations: {},
+    contacts: {},
+    setConversations: mockSetConversations,
+    setActiveConversation: mockSetActiveConversation,
+    upsertConversation: mockUpsertConversation,
+    mergeContacts: mockMergeContacts,
+    removeContact: jest.fn(),
+  });
+
+  describe('loadConversations bails on mid-flight logout', () => {
+    it('does not call setConversations when userId becomes null mid-flight', async () => {
+      // First getState() call (captureSession) returns valid user
+      // Subsequent calls (after await) return null userId
+      (useAppStore.getState as jest.Mock)
+        .mockReturnValueOnce(validUserState())
+        .mockReturnValue(nullUserState());
+
+      mockListGroups.mockResolvedValue([GROUP_RESPONSE]);
+
+      await loadConversations();
+
+      expect(mockListGroups).toHaveBeenCalled();
+      expect(mockSetConversations).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('loadDmConversations bails on mid-flight logout', () => {
+    it('does not call upsertConversation when userId becomes null mid-flight', async () => {
+      (useAppStore.getState as jest.Mock)
+        .mockReturnValueOnce(validUserState())
+        .mockReturnValue(nullUserState());
+
+      mockListDms.mockResolvedValue([DM_RESPONSE]);
+
+      await loadDmConversations();
+
+      expect(mockListDms).toHaveBeenCalled();
+      expect(mockUpsertConversation).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('hydrateContactsFromOrbits bails on mid-flight logout', () => {
+    let hydrateStaleTestClock = Date.now() + 1_000_000;
+
+    beforeEach(() => {
+      hydrateStaleTestClock += 120_000;
+      jest.useFakeTimers();
+      jest.setSystemTime(hydrateStaleTestClock);
+      clearConversationServiceState();
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('does not call mergeContacts when userId becomes null after API call', async () => {
+      // First getState (captureSession) returns valid user with a group conversation
+      // Second getState (for conversations) also returns valid state with the group
+      // After the await Promise.all, getState returns null userId
+      const stateWithGroup = {
+        ...validUserState(),
+        conversations: { g1: { id: 'g1', type: 'group', name: 'Orbit' } },
+      };
+      (useAppStore.getState as jest.Mock)
+        .mockReturnValueOnce(stateWithGroup) // captureSession
+        .mockReturnValueOnce(stateWithGroup) // read conversations
+        .mockReturnValue(nullUserState()); // after await — session stale
+
+      mockGetGroupMembers.mockResolvedValue([
+        { userId: 'member-1', username: 'alice', displayName: 'Alice', publicKey: 'pk', avatarUrl: null, joinedAt: '2026-01-01' },
+      ]);
+
+      await hydrateContactsFromOrbits();
+
+      // Verify we actually called the API (got past early returns)
+      expect(mockGetGroupMembers).toHaveBeenCalled();
+      // But the guard prevented the store write
+      expect(mockMergeContacts).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('session generation change (same userId, different session)', () => {
+    it('bails when clearConversationServiceState is called mid-flight', async () => {
+      // Use mockImplementation to bump generation during the async gap
+      mockListGroups.mockImplementation(async () => {
+        clearConversationServiceState(); // bumps generation after captureSession ran
+        return [GROUP_RESPONSE];
+      });
+
+      (useAppStore.getState as jest.Mock).mockReturnValue(validUserState());
+
+      await loadConversations();
+
+      // listGroups was called (we got past the early return)
+      expect(mockListGroups).toHaveBeenCalled();
+      // But setConversations was NOT called because generation changed
+      expect(mockSetConversations).not.toHaveBeenCalled();
+    });
+  });
+});

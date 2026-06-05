@@ -10,6 +10,7 @@ export const createAuthSlice: StateCreator<AppState, [['zustand/devtools', never
   username: null,
   displayName: null,
   avatarPath: null,
+  avatarDigest: null,
 
   // Actions
   // NOTE: JWT tokens and encryption keys are intentionally NOT stored here.
@@ -22,6 +23,7 @@ export const createAuthSlice: StateCreator<AppState, [['zustand/devtools', never
         username: user.username,
         displayName: user.displayName,
         avatarPath: user.avatarPath,
+        avatarDigest: null,
       },
       false,
       'auth/setUser',
@@ -35,6 +37,7 @@ export const createAuthSlice: StateCreator<AppState, [['zustand/devtools', never
         username: null,
         displayName: null,
         avatarPath: null,
+        avatarDigest: null,
       },
       false,
       'auth/clearAuth',
@@ -48,6 +51,7 @@ export const createAuthSlice: StateCreator<AppState, [['zustand/devtools', never
       (state) => ({
         displayName: patch.displayName !== undefined ? patch.displayName : state.displayName,
         avatarPath: patch.avatarPath !== undefined ? patch.avatarPath : state.avatarPath,
+        avatarDigest: patch.avatarDigest !== undefined ? patch.avatarDigest : state.avatarDigest,
       }),
       false,
       'auth/updateProfile',

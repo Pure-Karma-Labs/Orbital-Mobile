@@ -115,6 +115,13 @@ export interface DisplayNameChangedPayload {
   timestamp: number;
 }
 
+export interface AvatarChangedPayload {
+  type: 'avatar_changed';
+  userId: string;
+  avatarDigest: string | null;
+  timestamp: number;
+}
+
 export interface TypingPayload {
   type: 'typing';
   userId: string;
@@ -150,6 +157,7 @@ export type BroadcastPayload =
   | NewReplyPayload
   | NewSignalMessagePayload
   | DisplayNameChangedPayload
+  | AvatarChangedPayload
   | TypingPayload
   | MediaUploadedPayload;
 

@@ -86,6 +86,14 @@ export interface Contact {
   conversationIds: string[];
   /** Identity key verification status — synced from SQLCipher identity store */
   verifiedStatus?: VerifiedStatus;
+  /** Encrypted avatar attachment key (AES-GCM ciphertext, base64) */
+  avatarEncryptedKey?: string | null;
+  /** IV for avatar key decryption (base64) */
+  avatarKeyIv?: string | null;
+  /** SHA-256 digest of encrypted avatar blob (base64) — presence means encrypted avatar exists */
+  avatarDigest?: string | null;
+  /** Local file URI for the decrypted avatar image */
+  localAvatarUri?: string | null;
 }
 
 export interface Draft {
@@ -105,6 +113,7 @@ export interface AuthState {
   username: string | null;
   displayName: string | null;
   avatarPath: string | null;
+  avatarDigest: string | null;
 }
 
 /** Auth actions — JWT tokens and encryption keys are NOT stored here */
@@ -117,7 +126,7 @@ export interface AuthActions {
   }) => void;
   clearAuth: () => void;
   setAuthenticated: (authenticated: boolean) => void;
-  updateProfile: (patch: Partial<Pick<AuthState, 'displayName' | 'avatarPath'>>) => void;
+  updateProfile: (patch: Partial<Pick<AuthState, 'displayName' | 'avatarPath' | 'avatarDigest'>>) => void;
 }
 
 export type AuthSlice = AuthState & AuthActions;

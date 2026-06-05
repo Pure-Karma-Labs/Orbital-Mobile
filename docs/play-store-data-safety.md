@@ -18,10 +18,10 @@ Exact answers for the Google Play Console Data Safety questionnaire. Fill in the
 | Email address | Personal info > Email address | Yes | No | No | Yes | Account management |
 | Username | Personal info > Name | Yes | No | No | Yes | App functionality |
 | Display name | Personal info > Name | Yes | No | No | No | App functionality |
-| User ID | App activity > Other user-generated content | Yes | No | No | Yes (auto-generated) | App functionality |
+| User ID | Personal info > User IDs | Yes | No | No | Yes (auto-generated) | App functionality |
 | FCM push token | Device or other IDs | Yes | No | No | Yes | App functionality |
 | Device UUID | Device or other IDs | Yes | No | No | Yes | App functionality |
-| Crash logs | App info and performance > Crash logs | Yes | Yes (Sentry) | No | No | Analytics |
+| Crash logs | App info and performance > Crash logs | Yes | No | No | No | Analytics |
 
 ### Not Collected (E2EE)
 
@@ -63,15 +63,11 @@ These data types are encrypted client-side before upload. The server stores only
 - **Is this data shared with any third parties?** No
 
 ### Crash logs
-- **Is this data collected, shared, or both?** Both (shared with Sentry for crash reporting)
+- **Is this data collected, shared, or both?** Collected
 - **Is this data processed ephemerally?** No
 - **Is this data required for your app, or can users choose whether it's collected?** Collected automatically
 - **Why is this user data collected?** Analytics (app stability monitoring)
-- **Is this data shared with any third parties?** Yes
-  - **Third party:** Sentry (functional.software GmbH)
-  - **Purpose:** App diagnostics and crash reporting
-  - **Is this data transferred as part of a service provider relationship?** Yes (Sentry acts as a data processor)
-  - **Is this data sold?** No
+- **Is this data shared with any third parties?** No (Sentry acts as a service provider / data processor on behalf of the developer — not considered "sharing" per Google's Data Safety policy)
 
 ## Security Practices
 

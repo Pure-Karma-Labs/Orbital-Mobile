@@ -6,8 +6,6 @@
 	<true/>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<true/>
-	<key>ITSEncryptionExportComplianceCode</key>
-	<string></string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>remote-notification</string>

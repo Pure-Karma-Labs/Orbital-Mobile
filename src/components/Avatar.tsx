@@ -54,10 +54,10 @@ export function Avatar({
     return () => { mountedRef.current = false; };
   }, []);
 
-  // Reset image error when imageUrl changes
+  // Reset image error when image source changes
   useEffect(() => {
     setImageError(false);
-  }, [imageUrl]);
+  }, [imageUrl, localUri]);
 
   // Resolve encrypted avatar
   useEffect(() => {

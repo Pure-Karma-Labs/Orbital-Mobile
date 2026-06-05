@@ -113,6 +113,7 @@ export interface AuthState {
   username: string | null;
   displayName: string | null;
   avatarPath: string | null;
+  avatarDigest: string | null;
 }
 
 /** Auth actions — JWT tokens and encryption keys are NOT stored here */
@@ -125,7 +126,7 @@ export interface AuthActions {
   }) => void;
   clearAuth: () => void;
   setAuthenticated: (authenticated: boolean) => void;
-  updateProfile: (patch: Partial<Pick<AuthState, 'displayName' | 'avatarPath'>>) => void;
+  updateProfile: (patch: Partial<Pick<AuthState, 'displayName' | 'avatarPath' | 'avatarDigest'>>) => void;
 }
 
 export type AuthSlice = AuthState & AuthActions;

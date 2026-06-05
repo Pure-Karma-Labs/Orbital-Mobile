@@ -190,8 +190,11 @@ export async function uploadEncryptedAvatar(
     // Best effort — avatar will be re-downloaded if needed
   }
 
-  // Update the store
-  useAppStore.getState().updateProfile({ avatarPath: uploadResponse.avatarUrl });
+  // Update the store with both avatar path and digest
+  useAppStore.getState().updateProfile({
+    avatarPath: uploadResponse.avatarUrl,
+    avatarDigest: digestBase64,
+  });
 
   return uploadResponse.avatarUrl;
 }

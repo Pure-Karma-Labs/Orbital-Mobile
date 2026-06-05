@@ -15,6 +15,7 @@ import { name as appName } from './app.json';
 Sentry.init({
   dsn: 'https://610af249fc66881e6074156e43749df6@o4511027419348992.ingest.us.sentry.io/4511502734786560',
   environment: __DEV__ ? 'development' : 'production',
+  sendDefaultPii: false,
 });
 
 enableScreens();

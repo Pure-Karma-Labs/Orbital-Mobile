@@ -228,6 +228,9 @@ export async function ensureDmConversation(groupId: string): Promise<Conversatio
         displayName: null,
         avatarPath: dm.recipient.avatarUrl ?? null,
         conversationIds: [dm.groupId],
+        avatarEncryptedKey: dm.recipient.avatarEncryptedKey ?? null,
+        avatarKeyIv: dm.recipient.avatarKeyIv ?? null,
+        avatarDigest: dm.recipient.avatarDigest ?? null,
       }]);
 
       return conversation;
@@ -296,6 +299,9 @@ export async function loadDmConversations(): Promise<void> {
     displayName: null,
     avatarPath: dm.recipient.avatarUrl ?? null,
     conversationIds: [dm.groupId],
+    avatarEncryptedKey: dm.recipient.avatarEncryptedKey ?? null,
+    avatarKeyIv: dm.recipient.avatarKeyIv ?? null,
+    avatarDigest: dm.recipient.avatarDigest ?? null,
   }));
   if (dmContacts.length > 0) {
     store.mergeContacts(dmContacts);
@@ -589,6 +595,9 @@ async function doHydrateContacts(): Promise<void> {
         displayName: member.displayName || member.username,
         avatarPath: member.avatarUrl ?? null,
         conversationIds: [convId],
+        avatarEncryptedKey: member.avatarEncryptedKey ?? null,
+        avatarKeyIv: member.avatarKeyIv ?? null,
+        avatarDigest: member.avatarDigest ?? null,
       });
     }
   }

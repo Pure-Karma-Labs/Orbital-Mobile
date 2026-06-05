@@ -16,6 +16,10 @@ export interface ProfileCardProps {
   username: string;
   avatarUrl: string | null;
   onEdit: () => void;
+  /** User ID for encrypted avatar resolution */
+  userId?: string | null;
+  /** SHA-256 digest of encrypted avatar blob */
+  avatarDigest?: string | null;
 }
 
 export const ProfileCard = React.memo(function ProfileCard({
@@ -23,6 +27,8 @@ export const ProfileCard = React.memo(function ProfileCard({
   username,
   avatarUrl,
   onEdit,
+  userId,
+  avatarDigest,
 }: ProfileCardProps): React.JSX.Element {
   const theme = useTheme();
 
@@ -71,7 +77,13 @@ export const ProfileCard = React.memo(function ProfileCard({
       accessibilityLabel={`${displayName}, @${username}, edit profile`}
       testID="profile-card"
     >
-      <Avatar name={displayName} size={48} imageUrl={getAvatarUrl(avatarUrl)} />
+      <Avatar
+        name={displayName}
+        size={48}
+        imageUrl={getAvatarUrl(avatarUrl)}
+        userId={userId}
+        avatarDigest={avatarDigest}
+      />
       <View style={infoStyle}>
         <EmojiText style={nameStyle} numberOfLines={1}>
           {displayName}

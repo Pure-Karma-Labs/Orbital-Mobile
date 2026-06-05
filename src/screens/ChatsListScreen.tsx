@@ -96,12 +96,11 @@ export function ChatsListScreen({ navigation }: ChatsListScreenProps): React.JSX
     });
   }, [conversations]);
 
-  const avatarByConversation = useMemo(() => {
-    const map: Record<string, string | null> = {};
+  const contactByConversation = useMemo(() => {
+    const map: Record<string, typeof contacts[string]> = {};
     for (const contact of Object.values(contacts)) {
-      const url = getAvatarUrl(contact.avatarPath);
       for (const convId of contact.conversationIds) {
-        map[convId] = url;
+        map[convId] = contact;
       }
     }
     return map;
@@ -148,17 +147,25 @@ export function ChatsListScreen({ navigation }: ChatsListScreenProps): React.JSX
   }, [navigation]);
 
   const renderItem = useCallback(
-    ({ item }: ListRenderItemInfo<Conversation>) => (
-      <ChatItem
-        conversationId={item.id}
-        recipientName={item.name ?? 'Unknown'}
-        lastMessageAt={item.lastMessageAt}
-        avatarUrl={avatarByConversation[item.id]}
-        unreadCount={item.unreadCount}
-        onPress={handleChatPress}
-      />
-    ),
-    [handleChatPress, avatarByConversation],
+    ({ item }: ListRenderItemInfo<Conversation>) => {
+      const contact = contactByConversation[item.id];
+      return (
+        <ChatItem
+          conversationId={item.id}
+          recipientName={item.name ?? 'Unknown'}
+          lastMessageAt={item.lastMessageAt}
+          avatarUrl={contact ? getAvatarUrl(contact.avatarPath) : null}
+          unreadCount={item.unreadCount}
+          onPress={handleChatPress}
+          userId={contact?.id}
+          groupId={item.id}
+          encryptedAvatarKey={contact?.avatarEncryptedKey}
+          avatarKeyIv={contact?.avatarKeyIv}
+          avatarDigest={contact?.avatarDigest}
+        />
+      );
+    },
+    [handleChatPress, contactByConversation],
   );
 
   const keyExtractor = useCallback((item: Conversation) => item.id, []);

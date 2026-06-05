@@ -19,6 +19,7 @@ import { resolveRemoteIdentityKey } from '../crypto/identityKeyAccess';
 import { submitWrappedKey } from '../api/groups';
 import { decryptThreadFields, decryptReplyBody, processMediaMetadata } from '../threadService';
 import { ensureDmConversation, hydrateContactsFromOrbits } from '../conversationService';
+import { invalidateAvatarCache } from '../avatarService';
 import { useAppStore } from '../../stores/useAppStore';
 import { LRUSet } from './lruSet';
 import type {
@@ -27,6 +28,7 @@ import type {
   NewThreadPayload,
   NewReplyPayload,
   DisplayNameChangedPayload,
+  AvatarChangedPayload,
   WrapKeyRequestPayload,
   WrappedKeyDeliveredPayload,
   MediaUploadedPayload,
@@ -68,6 +70,7 @@ export const KNOWN_BROADCAST_TYPES = new Set([
   'new_message',
   'display_name_changed',
   'media_uploaded',
+  'avatar_changed',
 ]);
 
 export const KNOWN_UNICAST_TYPES = new Set([
@@ -206,6 +209,10 @@ async function handleBroadcast(envelope: BroadcastEnvelope): Promise<void> {
 
     case 'media_uploaded':
       handleMediaUploaded(data as MediaUploadedPayload);
+      break;
+
+    case 'avatar_changed':
+      handleAvatarChanged(data as AvatarChangedPayload);
       break;
   }
 }
@@ -389,6 +396,25 @@ function handleMediaUploaded(_data: MediaUploadedPayload): void {
   if (__DEV__) {
     console.log('[WS] media_uploaded received');
   }
+}
+
+// ============================================================
+// avatar_changed handler
+// ============================================================
+
+function handleAvatarChanged(data: AvatarChangedPayload): void {
+  const store = useAppStore.getState();
+  const existing = store.contacts[data.userId];
+
+  if (existing) {
+    store.upsertContact({
+      ...existing,
+      avatarDigest: data.avatarDigest ?? null,
+      localAvatarUri: null,
+    });
+  }
+
+  invalidateAvatarCache(data.userId).catch(() => {});
 }
 
 // ============================================================

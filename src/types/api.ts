@@ -187,6 +187,12 @@ export interface GroupMember {
   publicKey: string;
   avatarUrl: string | null;
   joinedAt: string;
+  /** Encrypted avatar attachment key (AES-GCM ciphertext, base64) */
+  avatarEncryptedKey?: string | null;
+  /** IV for avatar key decryption (base64) */
+  avatarKeyIv?: string | null;
+  /** SHA-256 digest of encrypted avatar blob (base64) */
+  avatarDigest?: string | null;
 }
 
 export interface GroupMembersResponse {
@@ -280,6 +286,12 @@ export interface DmResponse {
     id: string;
     username: string;
     avatarUrl: string | null;
+    /** Encrypted avatar attachment key (AES-GCM ciphertext, base64) */
+    avatarEncryptedKey?: string | null;
+    /** IV for avatar key decryption (base64) */
+    avatarKeyIv?: string | null;
+    /** SHA-256 digest of encrypted avatar blob (base64) */
+    avatarDigest?: string | null;
   };
   wrappedGroupKey: string | null;
   wrappedBy: string | null;
@@ -508,6 +520,8 @@ export interface UpdateDisplayNameResponse {
 export interface UploadAvatarResponse {
   avatarUrl: string;
   updatedAt: string;
+  /** Present when encrypted avatar was uploaded */
+  avatarDigest?: string;
 }
 
 // ============================================================

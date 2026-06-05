@@ -6,7 +6,7 @@ Reference document for U.S. Bureau of Industry and Security (BIS) self-classific
 
 **ECCN:** 5D002 — Software using or performing cryptographic functions
 
-**Exemption:** EAR 740.17(b)(1) — Mass market encryption software
+**License Exception:** EAR 740.17(b)(1) — Mass market encryption software
 
 Eligibility basis:
 - App is publicly available via App Store / Play Store (mass market)
@@ -42,7 +42,7 @@ Eligibility basis:
 
 **Filing details:**
 - Due: February 1 each year (next deadline: February 1, 2027)
-- Recipients: BIS (`crypt@bis.doc.gov`) and ENC Encryption Request Coordinator (`enc@nsa.gov`)
+- Recipients: BIS (`crypt-supp8@bis.doc.gov`) and ENC Encryption Request Coordinator (`enc@nsa.gov`)
 - Format: CSV per Supplement No. 8 specifications
 
 **Required fields:**
@@ -51,16 +51,16 @@ Eligibility basis:
 - Manufacturer: Pure Karma Labs
 - ECCN: 5D002
 - Authorization type: 740.17(b)(1)
-- Encryption algorithm(s): AES-256-GCM, AES-256-CBC, X25519, HKDF-SHA256, Signal Protocol
-- Key lengths: 256-bit (AES), 256-bit (X25519)
+- Encryption algorithm(s): AES-256-GCM, AES-256-CBC, HMAC-SHA256, SHA-256, X25519, XEdDSA/Ed25519, HKDF-SHA256, Signal Protocol, SQLCipher
+- Key lengths: 256-bit (AES), 256-bit (X25519), 256-bit (HMAC)
 
 ## Apple App Store
 
 - `ITSAppUsesNonExemptEncryption` = `true` (set in Info.plist)
-- `ITSEncryptionExportComplianceCode` = empty string (no CCATS filed; mass-market exemption applies)
 - App Store Connect will present export compliance questions during submission
 - Select: "Yes, the app uses encryption" and "The app qualifies for an exemption"
+- If Apple issues an `ITSEncryptionExportComplianceCode`, add it to Info.plist to skip the prompt on future uploads
 
 ## French ANSSI Declaration
 
-Not required. The app uses only standard, publicly available cryptographic libraries (no custom algorithms). ANSSI declarations apply only to apps that implement proprietary encryption or use encryption in ways not covered by standard library usage.
+**Requires legal review.** French law (Decree 2007-663) regulates the supply, import, and transfer of cryptographic means. The app likely qualifies for a mass-market exemption under EU Regulation 2021/821 Category 5 Note 3, but the specific exemption basis should be confirmed with legal counsel before distribution in France.

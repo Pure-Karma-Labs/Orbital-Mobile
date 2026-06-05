@@ -36,6 +36,10 @@ export const createContactsSlice: StateCreator<
           ]),
         ],
         verifiedStatus: c.verifiedStatus ?? existing?.verifiedStatus,
+        avatarEncryptedKey: c.avatarEncryptedKey ?? existing?.avatarEncryptedKey ?? null,
+        avatarKeyIv: c.avatarKeyIv ?? existing?.avatarKeyIv ?? null,
+        avatarDigest: c.avatarDigest ?? existing?.avatarDigest ?? null,
+        localAvatarUri: c.localAvatarUri ?? existing?.localAvatarUri ?? null,
       };
     }
     set({ contacts: merged }, false, 'contacts/mergeContacts');

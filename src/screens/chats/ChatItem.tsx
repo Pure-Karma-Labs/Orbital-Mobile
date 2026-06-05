@@ -25,6 +25,16 @@ export interface ChatItemProps {
   avatarUrl?: string | null;
   unreadCount?: number;
   onPress: (conversationId: string) => void;
+  /** User ID — required for encrypted avatar resolution */
+  userId?: string | null;
+  /** Group ID for group key lookup */
+  groupId?: string | null;
+  /** Encrypted avatar attachment key (base64) */
+  encryptedAvatarKey?: string | null;
+  /** IV for avatar key decryption (base64) */
+  avatarKeyIv?: string | null;
+  /** SHA-256 digest of encrypted avatar blob (base64) */
+  avatarDigest?: string | null;
 }
 
 function formatTime(timestamp: number | null): string {
@@ -57,6 +67,11 @@ export const ChatItem = React.memo(function ChatItem({
   avatarUrl,
   unreadCount,
   onPress,
+  userId,
+  groupId,
+  encryptedAvatarKey,
+  avatarKeyIv,
+  avatarDigest,
 }: ChatItemProps): React.JSX.Element {
   const theme = useTheme();
 
@@ -107,6 +122,11 @@ export const ChatItem = React.memo(function ChatItem({
         name={recipientName}
         size={40}
         imageUrl={avatarUrl ?? undefined}
+        userId={userId}
+        groupId={groupId}
+        encryptedAvatarKey={encryptedAvatarKey}
+        avatarKeyIv={avatarKeyIv}
+        avatarDigest={avatarDigest}
       />
       <View style={mainStyle}>
         <Text style={nameStyle} numberOfLines={1}>

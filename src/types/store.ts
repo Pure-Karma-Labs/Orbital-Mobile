@@ -86,6 +86,14 @@ export interface Contact {
   conversationIds: string[];
   /** Identity key verification status — synced from SQLCipher identity store */
   verifiedStatus?: VerifiedStatus;
+  /** Encrypted avatar attachment key (AES-GCM ciphertext, base64) */
+  avatarEncryptedKey?: string | null;
+  /** IV for avatar key decryption (base64) */
+  avatarKeyIv?: string | null;
+  /** SHA-256 digest of encrypted avatar blob (base64) — presence means encrypted avatar exists */
+  avatarDigest?: string | null;
+  /** Local file URI for the decrypted avatar image */
+  localAvatarUri?: string | null;
 }
 
 export interface Draft {

@@ -7,7 +7,8 @@
  * conversationService.
  */
 
-import { updateDisplayName, uploadAvatar, deleteAvatar } from './api/users';
+import { updateDisplayName, deleteAvatar } from './api/users';
+import { uploadEncryptedAvatar } from './avatarService';
 import { useAppStore } from '../stores/useAppStore';
 
 const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
@@ -25,8 +26,8 @@ export async function updateUserDisplayName(displayName: string): Promise<void> 
 /**
  * Upload a new avatar image from the device photo library.
  *
- * Validates mime type, builds FormData with a hardcoded safe filename
- * (SEC-02), calls the API, then updates the store.
+ * Validates mime type, encrypts the image client-side, wraps the attachment
+ * key for all groups, and uploads the encrypted blob to the server.
  *
  * @param imageUri  - Local file URI from the image picker
  * @param mimeType  - MIME type of the selected image
@@ -40,24 +41,7 @@ export async function updateUserAvatar(
     throw new Error('Unsupported image type. Please use JPEG, PNG, GIF, or WebP.');
   }
 
-  const MIME_TO_EXT: Record<string, string> = {
-    'image/jpeg': 'avatar.jpg',
-    'image/png': 'avatar.png',
-    'image/gif': 'avatar.gif',
-    'image/webp': 'avatar.webp',
-  };
-  const fileName = MIME_TO_EXT[mimeType] ?? 'avatar.jpg';
-
-  const formData = new FormData();
-  formData.append('avatar', {
-    uri: imageUri,
-    type: mimeType,
-    name: fileName,
-  } as unknown as Blob);
-
-  const response = await uploadAvatar(formData);
-  useAppStore.getState().updateProfile({ avatarPath: response.avatarUrl });
-  return response.avatarUrl;
+  return uploadEncryptedAvatar(imageUri, mimeType);
 }
 
 /**

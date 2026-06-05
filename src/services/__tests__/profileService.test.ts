@@ -4,8 +4,12 @@
 
 jest.mock('../api/users', () => ({
   updateDisplayName: jest.fn(),
-  uploadAvatar: jest.fn(),
   deleteAvatar: jest.fn(),
+}));
+
+const mockUploadEncryptedAvatar = jest.fn();
+jest.mock('../avatarService', () => ({
+  uploadEncryptedAvatar: (...args: unknown[]) => mockUploadEncryptedAvatar(...args),
 }));
 
 const mockUpdateProfile = jest.fn();
@@ -23,10 +27,9 @@ import {
   updateUserAvatar,
   removeUserAvatar,
 } from '../profileService';
-import { updateDisplayName, uploadAvatar, deleteAvatar } from '../api/users';
+import { updateDisplayName, deleteAvatar } from '../api/users';
 
 const mockUpdateDisplayName = updateDisplayName as jest.Mock;
-const mockUploadAvatar = uploadAvatar as jest.Mock;
 const mockDeleteAvatar = deleteAvatar as jest.Mock;
 
 beforeEach(() => {
@@ -52,13 +55,12 @@ describe('updateUserDisplayName', () => {
 });
 
 describe('updateUserAvatar', () => {
-  it('uploads and updates store on success', async () => {
-    mockUploadAvatar.mockResolvedValue({ avatarUrl: '/avatars/new.jpg' });
+  it('delegates to uploadEncryptedAvatar and returns the URL', async () => {
+    mockUploadEncryptedAvatar.mockResolvedValue('/avatars/new.jpg');
 
     const result = await updateUserAvatar('file:///photo.jpg', 'image/jpeg');
 
-    expect(mockUploadAvatar).toHaveBeenCalledTimes(1);
-    expect(mockUpdateProfile).toHaveBeenCalledWith({ avatarPath: '/avatars/new.jpg' });
+    expect(mockUploadEncryptedAvatar).toHaveBeenCalledWith('file:///photo.jpg', 'image/jpeg');
     expect(result).toBe('/avatars/new.jpg');
   });
 
@@ -66,39 +68,38 @@ describe('updateUserAvatar', () => {
     await expect(updateUserAvatar('file:///photo.heic', 'image/heic')).rejects.toThrow(
       'Unsupported image type',
     );
-    expect(mockUploadAvatar).not.toHaveBeenCalled();
-    expect(mockUpdateProfile).not.toHaveBeenCalled();
+    expect(mockUploadEncryptedAvatar).not.toHaveBeenCalled();
   });
 
   it('accepts image/png', async () => {
-    mockUploadAvatar.mockResolvedValue({ avatarUrl: '/avatars/new.png' });
+    mockUploadEncryptedAvatar.mockResolvedValue('/avatars/new.png');
 
     await updateUserAvatar('file:///photo.png', 'image/png');
 
-    const formData = mockUploadAvatar.mock.calls[0][0] as FormData;
-    expect(formData).toBeInstanceOf(FormData);
+    expect(mockUploadEncryptedAvatar).toHaveBeenCalledWith('file:///photo.png', 'image/png');
   });
 
   it('accepts image/gif', async () => {
-    mockUploadAvatar.mockResolvedValue({ avatarUrl: '/avatars/new.gif' });
+    mockUploadEncryptedAvatar.mockResolvedValue('/avatars/new.gif');
 
     await updateUserAvatar('file:///photo.gif', 'image/gif');
-    expect(mockUploadAvatar).toHaveBeenCalledTimes(1);
+    expect(mockUploadEncryptedAvatar).toHaveBeenCalledTimes(1);
   });
 
   it('accepts image/webp', async () => {
-    mockUploadAvatar.mockResolvedValue({ avatarUrl: '/avatars/new.webp' });
+    mockUploadEncryptedAvatar.mockResolvedValue('/avatars/new.webp');
 
     await updateUserAvatar('file:///photo.webp', 'image/webp');
-    expect(mockUploadAvatar).toHaveBeenCalledTimes(1);
+    expect(mockUploadEncryptedAvatar).toHaveBeenCalledTimes(1);
   });
 
   it('does not update store on upload failure', async () => {
-    mockUploadAvatar.mockRejectedValue(new Error('Upload failed'));
+    mockUploadEncryptedAvatar.mockRejectedValue(new Error('Upload failed'));
 
     await expect(updateUserAvatar('file:///photo.jpg', 'image/jpeg')).rejects.toThrow(
       'Upload failed',
     );
+    // Store update happens inside avatarService (mocked), so updateProfile is not called
     expect(mockUpdateProfile).not.toHaveBeenCalled();
   });
 });

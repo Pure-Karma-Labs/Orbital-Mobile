@@ -37,6 +37,12 @@ jest.mock('../../conversationService', () => ({
   hydrateContactsFromOrbits: jest.fn().mockResolvedValue(undefined),
 }));
 
+jest.mock('../../avatarService', () => ({
+  invalidateAvatarCache: jest.fn(),
+  uploadEncryptedAvatar: jest.fn(),
+  resolveAvatarUri: jest.fn(),
+}));
+
 const mockUpsertThread = jest.fn();
 const mockUpsertReply = jest.fn();
 const mockUpsertContact = jest.fn();

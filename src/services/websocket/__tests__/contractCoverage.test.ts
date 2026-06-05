@@ -47,6 +47,8 @@ jest.mock('../../threadService', () => ({
   processMediaMetadata: jest.fn(),
 }));
 
+jest.mock('../../avatarService');
+
 jest.mock('../../../stores/useAppStore', () => ({
   useAppStore: {
     getState: jest.fn(() => ({})),

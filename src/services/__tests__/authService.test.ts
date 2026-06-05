@@ -114,6 +114,13 @@ jest.mock('../../stores/middleware/persistence', () => ({
   getMMKVInstance: jest.fn(() => ({ clearAll: jest.fn() })),
 }));
 
+jest.mock('../avatarService');
+
+jest.mock('../websocket/messageHandler', () => ({
+  clearMessageHandlerState: jest.fn(),
+  handleServerMessage: jest.fn(),
+}));
+
 jest.mock('../websocket', () => ({
   websocketManager: {
     connect: jest.fn(),

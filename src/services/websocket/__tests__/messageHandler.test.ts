@@ -35,12 +35,11 @@ jest.mock('../../threadService', () => ({
 jest.mock('../../conversationService', () => ({
   ensureDmConversation: jest.fn().mockResolvedValue(null),
   hydrateContactsFromOrbits: jest.fn().mockResolvedValue(undefined),
+  refreshContactAvatar: jest.fn().mockResolvedValue(undefined),
 }));
 
 jest.mock('../../avatarService', () => ({
-  invalidateAvatarCache: jest.fn(),
-  uploadEncryptedAvatar: jest.fn(),
-  resolveAvatarUri: jest.fn(),
+  invalidateAvatarCache: jest.fn().mockResolvedValue(undefined),
 }));
 
 const mockUpsertThread = jest.fn();
@@ -1025,6 +1024,215 @@ describe('unread count increment', () => {
     await handleServerMessage(msg);
 
     expect(mockIncrementUnreadCount).not.toHaveBeenCalled();
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// avatar_changed broadcast
+// ---------------------------------------------------------------------------
+
+describe('avatar_changed broadcast', () => {
+  it('updates avatarDigest and clears localAvatarUri for known contact', async () => {
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-user-id',
+      viewingConversationId: null,
+      upsertThread: mockUpsertThread,
+      upsertReply: mockUpsertReply,
+      upsertContact: mockUpsertContact,
+      setConnectionStatus: mockSetConnectionStatus,
+      setLastConnectedAt: mockSetLastConnectedAt,
+      setReconnectAttempt: mockSetReconnectAttempt,
+      addTypingUser: mockAddTypingUser,
+      bumpLastMessageAt: mockBumpLastMessageAt,
+      incrementUnreadCount: mockIncrementUnreadCount,
+      contacts: {
+        'user-avatar': {
+          id: 'user-avatar',
+          username: 'bob',
+          displayName: 'Bob',
+          avatarPath: '/old/path.jpg',
+          conversationIds: ['group-1'],
+          avatarDigest: 'old-digest',
+          localAvatarUri: 'file:///old/local.jpg',
+        },
+      },
+    });
+
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: 'group-1',
+      timestamp: 1700000010000,
+      data: {
+        type: 'avatar_changed',
+        userId: 'user-avatar',
+        avatarDigest: 'new-digest-abc',
+        timestamp: 1700000010000,
+      },
+    });
+
+    await handleServerMessage(msg);
+
+    expect(mockUpsertContact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'user-avatar',
+        avatarDigest: 'new-digest-abc',
+        localAvatarUri: null,
+      }),
+    );
+  });
+
+  it('calls invalidateAvatarCache with correct userId', async () => {
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: 'group-1',
+      timestamp: 1700000011000,
+      data: {
+        type: 'avatar_changed',
+        userId: 'user-cache-test',
+        avatarDigest: 'digest-123',
+        timestamp: 1700000011000,
+      },
+    });
+
+    await handleServerMessage(msg);
+
+    const { invalidateAvatarCache } = require('../../avatarService');
+    expect(invalidateAvatarCache).toHaveBeenCalledWith('user-cache-test');
+  });
+
+  it('calls refreshContactAvatar for known contact', async () => {
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-user-id',
+      viewingConversationId: null,
+      upsertThread: mockUpsertThread,
+      upsertReply: mockUpsertReply,
+      upsertContact: mockUpsertContact,
+      setConnectionStatus: mockSetConnectionStatus,
+      setLastConnectedAt: mockSetLastConnectedAt,
+      setReconnectAttempt: mockSetReconnectAttempt,
+      addTypingUser: mockAddTypingUser,
+      bumpLastMessageAt: mockBumpLastMessageAt,
+      incrementUnreadCount: mockIncrementUnreadCount,
+      contacts: {
+        'user-refresh': {
+          id: 'user-refresh',
+          username: 'carol',
+          displayName: 'Carol',
+          avatarPath: null,
+          conversationIds: ['group-1'],
+        },
+      },
+    });
+
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: 'group-1',
+      timestamp: 1700000012000,
+      data: {
+        type: 'avatar_changed',
+        userId: 'user-refresh',
+        avatarDigest: 'new-digest',
+        timestamp: 1700000012000,
+      },
+    });
+
+    await handleServerMessage(msg);
+
+    const { refreshContactAvatar } = require('../../conversationService');
+    expect(refreshContactAvatar).toHaveBeenCalledWith('user-refresh');
+  });
+
+  it('does not call upsertContact or refreshContactAvatar for unknown contact', async () => {
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: 'group-1',
+      timestamp: 1700000013000,
+      data: {
+        type: 'avatar_changed',
+        userId: 'unknown-user',
+        avatarDigest: 'some-digest',
+        timestamp: 1700000013000,
+      },
+    });
+
+    await handleServerMessage(msg);
+
+    expect(mockUpsertContact).not.toHaveBeenCalled();
+    const { refreshContactAvatar } = require('../../conversationService');
+    expect(refreshContactAvatar).not.toHaveBeenCalled();
+    // Cache is still invalidated even for unknown contacts
+    const { invalidateAvatarCache } = require('../../avatarService');
+    expect(invalidateAvatarCache).toHaveBeenCalledWith('unknown-user');
+  });
+
+  it('handles null avatarDigest (avatar removed)', async () => {
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-user-id',
+      viewingConversationId: null,
+      upsertThread: mockUpsertThread,
+      upsertReply: mockUpsertReply,
+      upsertContact: mockUpsertContact,
+      setConnectionStatus: mockSetConnectionStatus,
+      setLastConnectedAt: mockSetLastConnectedAt,
+      setReconnectAttempt: mockSetReconnectAttempt,
+      addTypingUser: mockAddTypingUser,
+      bumpLastMessageAt: mockBumpLastMessageAt,
+      incrementUnreadCount: mockIncrementUnreadCount,
+      contacts: {
+        'user-remove-avatar': {
+          id: 'user-remove-avatar',
+          username: 'dave',
+          displayName: 'Dave',
+          avatarPath: '/old.jpg',
+          conversationIds: ['group-1'],
+          avatarDigest: 'old-digest',
+          localAvatarUri: 'file:///old.jpg',
+        },
+      },
+    });
+
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: 'group-1',
+      timestamp: 1700000014000,
+      data: {
+        type: 'avatar_changed',
+        userId: 'user-remove-avatar',
+        avatarDigest: null,
+        timestamp: 1700000014000,
+      },
+    });
+
+    await handleServerMessage(msg);
+
+    expect(mockUpsertContact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        avatarDigest: null,
+        localAvatarUri: null,
+      }),
+    );
+  });
+
+  it('is not blocked by the broadcast allow-list', async () => {
+    const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
+
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: 'group-1',
+      timestamp: 1700000015000,
+      data: {
+        type: 'avatar_changed',
+        userId: 'user-allowlist',
+        avatarDigest: 'digest-x',
+        timestamp: 1700000015000,
+      },
+    });
+
+    await handleServerMessage(msg);
+
+    expect(consoleSpy).not.toHaveBeenCalledWith('[WS:unknown_broadcast]');
+    consoleSpy.mockRestore();
   });
 });
 

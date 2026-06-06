@@ -18,7 +18,7 @@ import {
 import { resolveRemoteIdentityKey } from '../crypto/identityKeyAccess';
 import { submitWrappedKey } from '../api/groups';
 import { decryptThreadFields, decryptReplyBody, processMediaMetadata } from '../threadService';
-import { ensureDmConversation, hydrateContactsFromOrbits } from '../conversationService';
+import { ensureDmConversation, hydrateContactsFromOrbits, refreshContactAvatar } from '../conversationService';
 import { invalidateAvatarCache } from '../avatarService';
 import { useAppStore } from '../../stores/useAppStore';
 import { LRUSet } from './lruSet';
@@ -411,6 +411,9 @@ function handleAvatarChanged(data: AvatarChangedPayload): void {
       ...existing,
       avatarDigest: data.avatarDigest ?? null,
       localAvatarUri: null,
+    });
+    refreshContactAvatar(data.userId).catch(() => {
+      if (__DEV__) console.error('[WS:avatar_refresh_failed]');
     });
   }
 

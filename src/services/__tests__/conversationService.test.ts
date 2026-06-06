@@ -67,7 +67,7 @@ jest.mock('../../stores/useAppStore', () => ({
   },
 }));
 
-import { loadConversations, loadDmConversations, startDm, joinOrbit, fetchCreatorOrbitsDecrypted, hydrateContactsFromOrbits, ensureDmConversation, fulfillPendingWraps, clearConversationServiceState } from '../conversationService';
+import { loadConversations, loadDmConversations, startDm, joinOrbit, fetchCreatorOrbitsDecrypted, hydrateContactsFromOrbits, ensureDmConversation, fulfillPendingWraps, clearConversationServiceState, refreshContactAvatar } from '../conversationService';
 import { listGroups, listDms, createDm, joinGroup, getGroupMembers, getPendingWraps, submitWrappedKey } from '../api/groups';
 import { useAppStore } from '../../stores/useAppStore';
 
@@ -1026,5 +1026,244 @@ describe('session-stale guards', () => {
       expect(mockListGroups).toHaveBeenCalled();
       expect(mockSetConversations).not.toHaveBeenCalled();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// refreshContactAvatar
+// ---------------------------------------------------------------------------
+
+describe('refreshContactAvatar', () => {
+  beforeEach(() => {
+    clearConversationServiceState();
+  });
+
+  it('fetches group members and merges contact with avatar metadata', async () => {
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-self-user',
+      conversations: {
+        'g1': { id: 'g1', type: 'group', name: 'Orbit 1' },
+      },
+      contacts: {
+        'member-1': {
+          id: 'member-1',
+          username: 'alice',
+          displayName: 'Alice',
+          avatarPath: null,
+          conversationIds: ['g1'],
+        },
+      },
+      mergeContacts: mockMergeContacts,
+    });
+
+    mockGetGroupMembers.mockResolvedValue([
+      {
+        userId: 'member-1',
+        username: 'alice',
+        displayName: 'Alice',
+        publicKey: 'pk',
+        avatarUrl: '/avatars/alice.enc',
+        joinedAt: '2026-01-01',
+        avatarEncryptedKey: 'enc-key-base64',
+        avatarKeyIv: 'iv-base64',
+        avatarDigest: 'digest-base64',
+      },
+    ]);
+
+    await refreshContactAvatar('member-1');
+
+    expect(mockGetGroupMembers).toHaveBeenCalledWith('g1');
+    expect(mockMergeContacts).toHaveBeenCalledWith([
+      expect.objectContaining({
+        id: 'member-1',
+        username: 'alice',
+        avatarPath: '/avatars/alice.enc',
+        avatarEncryptedKey: 'enc-key-base64',
+        avatarKeyIv: 'iv-base64',
+        avatarDigest: 'digest-base64',
+        conversationIds: ['g1'],
+      }),
+    ]);
+  });
+
+  it('returns early for own userId', async () => {
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-self-user',
+      conversations: {},
+      contacts: {},
+      mergeContacts: mockMergeContacts,
+    });
+
+    await refreshContactAvatar('test-self-user');
+
+    expect(mockGetGroupMembers).not.toHaveBeenCalled();
+    expect(mockMergeContacts).not.toHaveBeenCalled();
+  });
+
+  it('returns early when contact is not found', async () => {
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-self-user',
+      conversations: {},
+      contacts: {},
+      mergeContacts: mockMergeContacts,
+    });
+
+    await refreshContactAvatar('unknown-user');
+
+    expect(mockGetGroupMembers).not.toHaveBeenCalled();
+    expect(mockMergeContacts).not.toHaveBeenCalled();
+  });
+
+  it('returns early when contact has empty conversationIds', async () => {
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-self-user',
+      conversations: {},
+      contacts: {
+        'member-1': {
+          id: 'member-1',
+          username: 'alice',
+          displayName: 'Alice',
+          avatarPath: null,
+          conversationIds: [],
+        },
+      },
+      mergeContacts: mockMergeContacts,
+    });
+
+    await refreshContactAvatar('member-1');
+
+    expect(mockGetGroupMembers).not.toHaveBeenCalled();
+  });
+
+  it('returns early when contact only has DM-type conversationIds', async () => {
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-self-user',
+      conversations: {
+        'dm-1': { id: 'dm-1', type: 'direct', name: 'Alice DM' },
+      },
+      contacts: {
+        'member-1': {
+          id: 'member-1',
+          username: 'alice',
+          displayName: 'Alice',
+          avatarPath: null,
+          conversationIds: ['dm-1'],
+        },
+      },
+      mergeContacts: mockMergeContacts,
+    });
+
+    await refreshContactAvatar('member-1');
+
+    expect(mockGetGroupMembers).not.toHaveBeenCalled();
+  });
+
+  it('does not call mergeContacts when session becomes stale', async () => {
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-self-user',
+      conversations: {
+        'g1': { id: 'g1', type: 'group', name: 'Orbit 1' },
+      },
+      contacts: {
+        'member-1': {
+          id: 'member-1',
+          username: 'alice',
+          displayName: 'Alice',
+          avatarPath: null,
+          conversationIds: ['g1'],
+        },
+      },
+      mergeContacts: mockMergeContacts,
+    });
+
+    mockGetGroupMembers.mockImplementation(async () => {
+      // Bump session generation during the async gap
+      clearConversationServiceState();
+      return [
+        {
+          userId: 'member-1',
+          username: 'alice',
+          displayName: 'Alice',
+          publicKey: 'pk',
+          avatarUrl: null,
+          joinedAt: '2026-01-01',
+          avatarEncryptedKey: 'enc-key',
+          avatarKeyIv: 'iv',
+          avatarDigest: 'digest',
+        },
+      ];
+    });
+
+    await refreshContactAvatar('member-1');
+
+    expect(mockGetGroupMembers).toHaveBeenCalled();
+    expect(mockMergeContacts).not.toHaveBeenCalled();
+  });
+
+  it('propagates getGroupMembers errors to the caller', async () => {
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-self-user',
+      conversations: {
+        'g1': { id: 'g1', type: 'group', name: 'Orbit 1' },
+      },
+      contacts: {
+        'member-1': {
+          id: 'member-1',
+          username: 'alice',
+          displayName: 'Alice',
+          avatarPath: null,
+          conversationIds: ['g1'],
+        },
+      },
+      mergeContacts: mockMergeContacts,
+    });
+
+    mockGetGroupMembers.mockRejectedValue(new Error('network'));
+
+    await expect(refreshContactAvatar('member-1')).rejects.toThrow('network');
+    expect(mockMergeContacts).not.toHaveBeenCalled();
+  });
+
+  it('deduplicates concurrent calls — getGroupMembers called once', async () => {
+    let resolveMembers!: (v: unknown[]) => void;
+    const deferred = new Promise<unknown[]>((r) => { resolveMembers = r; });
+
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-self-user',
+      conversations: {
+        'g1': { id: 'g1', type: 'group', name: 'Orbit 1' },
+      },
+      contacts: {
+        'member-1': {
+          id: 'member-1',
+          username: 'alice',
+          displayName: 'Alice',
+          avatarPath: null,
+          conversationIds: ['g1'],
+        },
+      },
+      mergeContacts: mockMergeContacts,
+    });
+
+    mockGetGroupMembers.mockReturnValue(deferred);
+
+    const call1 = refreshContactAvatar('member-1');
+    const call2 = refreshContactAvatar('member-1');
+
+    resolveMembers([
+      {
+        userId: 'member-1',
+        username: 'alice',
+        displayName: 'Alice',
+        publicKey: 'pk',
+        avatarUrl: null,
+        joinedAt: '2026-01-01',
+      },
+    ]);
+
+    await call1;
+    await call2;
+
+    expect(mockGetGroupMembers).toHaveBeenCalledTimes(1);
   });
 });

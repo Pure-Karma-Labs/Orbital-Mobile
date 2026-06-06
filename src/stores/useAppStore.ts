@@ -9,6 +9,7 @@ import { createUISlice } from './slices/uiSlice';
 import { createConnectionSlice } from './slices/connectionSlice';
 import { createMediaSlice } from './slices/mediaSlice';
 import { createNotificationSlice } from './slices/notificationSlice';
+import { createBlockedUsersSlice } from './slices/blockedUsersSlice';
 import type { AppState } from '../types/store';
 
 /**
@@ -17,7 +18,7 @@ import type { AppState } from '../types/store';
  */
 type PersistedState = Pick<
   AppState,
-  'conversations' | 'conversationIds' | 'contacts' | 'colorScheme' | 'activeTab' | 'soundEnabled'
+  'conversations' | 'conversationIds' | 'contacts' | 'colorScheme' | 'activeTab' | 'soundEnabled' | 'blockedUserIds' | 'blockedUserProfiles'
 >;
 
 export const useAppStore = create<AppState>()(
@@ -32,6 +33,7 @@ export const useAppStore = create<AppState>()(
         ...createConnectionSlice(...a),
         ...createMediaSlice(...a),
         ...createNotificationSlice(...a),
+        ...createBlockedUsersSlice(...a),
       }),
       {
         name: 'orbital-app-store',
@@ -55,6 +57,8 @@ export const useAppStore = create<AppState>()(
           colorScheme: state.colorScheme,
           activeTab: state.activeTab,
           soundEnabled: state.soundEnabled,
+          blockedUserIds: state.blockedUserIds,
+          blockedUserProfiles: state.blockedUserProfiles,
         }),
       },
     ),

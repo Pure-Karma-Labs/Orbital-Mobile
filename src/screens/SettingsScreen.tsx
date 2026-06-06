@@ -324,6 +324,13 @@ export function SettingsScreen(): React.JSX.Element {
 
         <SectionHeader label="Privacy" />
         <SettingsRow emojiUnified="1F512" label="Safety Numbers" chevron disabled />
+        <SettingsRow
+          emojiUnified="1F6AB"
+          label="Blocked Users"
+          chevron
+          onPress={() => navigation.navigate('BlockedUsers')}
+          testID="blocked-users-row"
+        />
         <SettingsRow emojiUnified="1F441-FE0F" label="Read Receipts" value="On" chevron disabled />
 
         <SectionHeader label="Legal" />

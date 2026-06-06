@@ -15,6 +15,10 @@ jest.mock('../../services/threadService', () => ({
   loadThreadsForGroup: jest.fn().mockResolvedValue([]),
 }));
 
+jest.mock('../../hooks/useBlockedSet', () => ({
+  useBlockedSet: () => new Set<string>(),
+}));
+
 jest.mock('../../hooks/useWebSocketSubscription', () => ({
   useWebSocketSubscription: jest.fn(),
 }));

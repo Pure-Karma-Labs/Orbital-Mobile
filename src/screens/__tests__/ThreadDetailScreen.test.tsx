@@ -2,6 +2,29 @@
  * Tests for ThreadDetailScreen — thread detail view with nested replies and composer.
  */
 
+jest.mock('../../hooks/useBlockedSet', () => ({
+  useBlockedSet: () => new Set<string>(),
+}));
+
+jest.mock('../../stores/useAppStore', () => ({
+  useAppStore: Object.assign(
+    jest.fn((selector: (s: Record<string, unknown>) => unknown) =>
+      selector({
+        userId: 'user-1',
+        blockedUserIds: [],
+        blockUser: jest.fn(),
+      }),
+    ),
+    {
+      getState: jest.fn(() => ({
+        userId: 'user-1',
+        blockedUserIds: [],
+        blockUser: jest.fn(),
+      })),
+    },
+  ),
+}));
+
 jest.mock('../../components/MediaGallery', () => ({
   MediaGallery: () => null,
 }));

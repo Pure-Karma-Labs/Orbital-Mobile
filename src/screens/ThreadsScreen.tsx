@@ -29,6 +29,7 @@ import { loadThreadsForGroup } from '../services/threadService';
 import { PullToRefreshOverlay } from '../components/PullToRefreshOverlay';
 import { usePullToRefresh } from '../hooks/usePullToRefresh';
 import { useWebSocketSubscription } from '../hooks/useWebSocketSubscription';
+import { useBlockedSet } from '../hooks/useBlockedSet';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -227,14 +228,19 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
   );
 
   // Get threads for the active conversation (or all threads if no active conversation)
+  const blockedSet = useBlockedSet();
+
   const threadList = useMemo((): Thread[] => {
+    let list: Thread[];
     if (activeConversationId) {
       const ids = threadIdsByConversation[activeConversationId] ?? [];
-      return ids.map((id) => threads[id]).filter((t): t is Thread => t != null);
+      list = ids.map((id) => threads[id]).filter((t): t is Thread => t != null);
+    } else {
+      // Show all threads across all conversations when no specific conversation is active
+      list = Object.values(threads);
     }
-    // Show all threads across all conversations when no specific conversation is active
-    return Object.values(threads);
-  }, [threads, threadIdsByConversation, activeConversationId]);
+    return blockedSet.size > 0 ? list.filter((t) => !blockedSet.has(t.authorId)) : list;
+  }, [threads, threadIdsByConversation, activeConversationId, blockedSet]);
 
   const listRows = useMemo(() => buildListRows(threadList), [threadList]);
 

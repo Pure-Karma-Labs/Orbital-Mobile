@@ -6,7 +6,7 @@
  */
 
 import React, { useCallback, useState } from 'react';
-import { Dimensions, View, Text, type TextStyle, type ViewStyle } from 'react-native';
+import { Alert, Dimensions, Linking, View, Text, TouchableOpacity, type TextStyle, type ViewStyle } from 'react-native';
 import { useTheme } from '../../theme';
 import { Avatar } from '../../components/Avatar';
 import { EmojiText } from '../../components/EmojiText';
@@ -14,12 +14,17 @@ import { MediaGallery } from '../../components/MediaGallery';
 import { LinkPreviewCard } from '../../components/LinkPreviewCard';
 import { MediaLightbox } from '../../components/MediaLightbox';
 import { useMediaForThread } from '../../stores';
+import { useAppStore } from '../../stores/useAppStore';
+
+const REPORT_EMAIL = 'report@orbitl.org';
 
 export interface ThreadHeaderProps {
   threadId: string;
   title: string | null;
   body: string | null;
   authorUsername: string;
+  authorId: string;
+  currentUserId: string | null;
   createdAt: number;
 }
 
@@ -49,6 +54,8 @@ export const ThreadHeader = React.memo(function ThreadHeader({
   title,
   body,
   authorUsername,
+  authorId,
+  currentUserId,
   createdAt,
 }: ThreadHeaderProps): React.JSX.Element {
   const theme = useTheme();
@@ -64,6 +71,51 @@ export const ThreadHeader = React.memo(function ThreadHeader({
   const handleLightboxClose = useCallback(() => {
     setLightboxVisible(false);
   }, []);
+
+  const handleReport = useCallback(() => {
+    const subject = 'Content Report — Orbital';
+    const reportBody = `Reporting user: @${authorUsername}\n\nNote: Orbital uses end-to-end encryption, so we cannot view message content. Please describe the issue below.\n\n---\n`;
+    const mailto = `mailto:${REPORT_EMAIL}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(reportBody)}`;
+    Linking.canOpenURL(mailto).then((supported) => {
+      if (supported) {
+        Linking.openURL(mailto);
+      } else {
+        Alert.alert(
+          'Send Report',
+          `Email ${REPORT_EMAIL} with details about this user.`,
+          [{ text: 'OK' }],
+        );
+      }
+    });
+  }, [authorUsername]);
+
+  const handleAuthorPress = useCallback(() => {
+    // Don't show action sheet for self
+    if (authorId === currentUserId) return;
+
+    Alert.alert(authorUsername, '', [
+      {
+        text: 'Block',
+        style: 'destructive',
+        onPress: () => {
+          Alert.alert(
+            `Block @${authorUsername}?`,
+            'You will no longer see their posts or replies.',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              {
+                text: 'Block',
+                style: 'destructive',
+                onPress: () => useAppStore.getState().blockUser(authorId, authorUsername),
+              },
+            ],
+          );
+        },
+      },
+      { text: 'Report', onPress: handleReport },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  }, [authorId, currentUserId, authorUsername, handleReport]);
 
   const containerStyle: ViewStyle = {
     backgroundColor: theme.colors.surfaceElevated,
@@ -111,13 +163,22 @@ export const ThreadHeader = React.memo(function ThreadHeader({
     lineHeight: theme.typography.fontSize.base * theme.typography.lineHeight.relaxed,
   };
 
+  const isSelf = authorId === currentUserId;
+
   return (
     <View style={containerStyle} testID="thread-header">
-      <View style={authorRowStyle}>
+      <TouchableOpacity
+        style={authorRowStyle}
+        onPress={handleAuthorPress}
+        activeOpacity={isSelf ? 1 : 0.7}
+        disabled={isSelf}
+        accessibilityRole={isSelf ? undefined : 'button'}
+        accessibilityLabel={isSelf ? undefined : `Actions for ${authorUsername}`}
+      >
         <Avatar name={authorUsername} size={28} />
         <Text style={authorTextStyle}>{authorUsername}</Text>
         <Text style={timestampStyle}>{formatTimestamp(createdAt)}</Text>
-      </View>
+      </TouchableOpacity>
       {title != null && title.length > 0 && (
         <Text style={titleStyle}>{title}</Text>
       )}

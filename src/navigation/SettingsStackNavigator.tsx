@@ -6,6 +6,7 @@ import SettingsScreen from '../screens/SettingsScreen';
 import EditProfileScreen from '../screens/EditProfileScreen';
 import ManageOrbitsScreen from '../screens/ManageOrbitsScreen';
 import { FileLibraryScreen } from '../screens/FileLibraryScreen';
+import BlockedUsersScreen from '../screens/settings/BlockedUsersScreen';
 
 const Stack = createNativeStackNavigator<SettingsStackParamList>();
 
@@ -24,6 +25,7 @@ export function SettingsStackNavigator(): React.JSX.Element {
       <Stack.Screen name="EditProfile" component={EditProfileScreen} />
       <Stack.Screen name="ManageOrbits" component={ManageOrbitsScreen} />
       <Stack.Screen name="FileLibrary" component={FileLibraryScreen} />
+      <Stack.Screen name="BlockedUsers" component={BlockedUsersScreen} />
     </Stack.Navigator>
   );
 }

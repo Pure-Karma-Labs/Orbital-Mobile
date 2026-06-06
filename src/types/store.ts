@@ -321,6 +321,24 @@ export interface NotificationActions {
 export type NotificationSlice = NotificationState & NotificationActions;
 
 // ============================================================
+// Blocked users slice state
+// ============================================================
+
+export interface BlockedUsersState {
+  blockedUserIds: string[];
+  /** Fallback username for display when the user is not in contacts */
+  blockedUserProfiles: Record<string, string>;
+}
+
+export interface BlockedUsersActions {
+  blockUser: (userId: string, username: string) => void;
+  unblockUser: (userId: string) => void;
+  resetBlockedUsers: () => void;
+}
+
+export type BlockedUsersSlice = BlockedUsersState & BlockedUsersActions;
+
+// ============================================================
 // Combined app state
 // ============================================================
 
@@ -331,4 +349,5 @@ export type AppState = AuthSlice &
   UISlice &
   ConnectionSlice &
   MediaSlice &
-  NotificationSlice;
+  NotificationSlice &
+  BlockedUsersSlice;

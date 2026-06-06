@@ -46,6 +46,7 @@ import { ReplyComposer, type ReplyTarget } from './threadDetail/ReplyComposer';
 import { EmojiPicker } from '../components/EmojiPicker';
 import type { Reply, Thread } from '../types/store';
 import type { ThreadsStackParamList } from '../navigation/types';
+import { useBlockedSet } from '../hooks/useBlockedSet';
 import { OrbitalSpinner } from '../components/OrbitalSpinner';
 import { PullToRefreshOverlay } from '../components/PullToRefreshOverlay';
 import { usePullToRefresh } from '../hooks/usePullToRefresh';
@@ -194,13 +195,16 @@ export function ThreadDetailScreen({
   // Subscribe to real-time updates for this thread's conversation
   useWebSocketSubscription(thread?.conversationId ?? null);
 
-  // Derive reply list from store — ordered by replyIdsByThread
+  const blockedSet = useBlockedSet();
+
+  // Derive reply list from store — ordered by replyIdsByThread, excluding blocked users
   const replyList = useMemo((): Reply[] => {
     const ids = replyIdsByThread[threadId] ?? [];
-    return ids
+    const list = ids
       .map((id) => allReplies[id])
       .filter((r): r is Reply => r != null);
-  }, [allReplies, replyIdsByThread, threadId]);
+    return blockedSet.size > 0 ? list.filter((r) => !blockedSet.has(r.authorId)) : list;
+  }, [allReplies, replyIdsByThread, threadId, blockedSet]);
 
   const replyRows = useMemo((): ReplyRow[] => {
     return replyList.map((r) => {
@@ -349,6 +353,8 @@ export function ThreadDetailScreen({
           replyId={item.reply.id}
           body={item.reply.body}
           authorUsername={item.reply.authorUsername}
+          authorId={item.reply.authorId}
+          currentUserId={userId}
           depth={item.reply.depth}
           createdAt={item.reply.createdAt}
           syncStatus={item.reply.syncStatus}
@@ -357,7 +363,7 @@ export function ThreadDetailScreen({
         />
       );
     },
-    [handleReplyPress],
+    [handleReplyPress, userId],
   );
 
   const keyExtractor = useCallback((item: ReplyRow) => item.key, []);
@@ -370,10 +376,12 @@ export function ThreadDetailScreen({
         title={thread.title}
         body={thread.body}
         authorUsername={thread.authorUsername}
+        authorId={thread.authorId}
+        currentUserId={userId}
         createdAt={thread.createdAt}
       />
     );
-  }, [thread, threadId]);
+  }, [thread, threadId, userId]);
 
   const listFooter = useMemo(() => {
     if (loadingMore) {

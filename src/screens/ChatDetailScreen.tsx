@@ -34,6 +34,7 @@ import { loadThreadsForGroup } from '../services/threadService';
 import { PullToRefreshOverlay } from '../components/PullToRefreshOverlay';
 import { usePullToRefresh } from '../hooks/usePullToRefresh';
 import { useWebSocketSubscription } from '../hooks/useWebSocketSubscription';
+import { useBlockedSet } from '../hooks/useBlockedSet';
 
 export type ChatDetailScreenProps = NativeStackScreenProps<
   ChatsStackParamList,
@@ -165,10 +166,13 @@ export function ChatDetailScreen({
     }, [conversationId]),
   );
 
+  const blockedSet = useBlockedSet();
+
   const threadList = useMemo((): Thread[] => {
     const ids = threadIdsByConversation[conversationId] ?? [];
-    return ids.map((id) => threads[id]).filter((t): t is Thread => t != null);
-  }, [threads, threadIdsByConversation, conversationId]);
+    const list = ids.map((id) => threads[id]).filter((t): t is Thread => t != null);
+    return blockedSet.size > 0 ? list.filter((t) => !blockedSet.has(t.authorId)) : list;
+  }, [threads, threadIdsByConversation, conversationId, blockedSet]);
 
   const listRows = useMemo(() => buildListRows(threadList), [threadList]);
 

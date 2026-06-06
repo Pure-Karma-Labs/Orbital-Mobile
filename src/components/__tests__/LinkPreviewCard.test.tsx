@@ -108,9 +108,7 @@ describe('LinkPreviewCard', () => {
     // Check domain text exists
     const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
     const domainNode = allText.find(
-      (node) =>
-        typeof node.props.children === 'string' &&
-        node.props.children === 'example.com',
+      (node) => typeof node.props.children === 'string' && node.props.children === 'example.com',
     );
     expect(domainNode).toBeDefined();
   });

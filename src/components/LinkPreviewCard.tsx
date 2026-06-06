@@ -20,7 +20,6 @@ interface LinkPreviewCardProps {
   onDismiss?: () => void;
 }
 
-
 // ---------------------------------------------------------------------------
 // Private child component — keyed by URI so React resets state on URL change
 // ---------------------------------------------------------------------------
@@ -59,7 +58,10 @@ function LinkPreviewImage({ uri, theme }: { uri: string; theme: ReturnType<typeo
         style={imgStyle}
         resizeMode="cover"
         onLoad={() => setLoading(false)}
-        onError={() => { setLoading(false); setError(true); }}
+        onError={() => {
+          setLoading(false);
+          setError(true);
+        }}
         testID="link-preview-image"
       />
       {loading && (
@@ -100,7 +102,9 @@ export function LinkPreviewCard({
   let domain = '';
   try {
     domain = new URL(preview.url).hostname.replace(/^www\./, '');
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 
   const handlePress = () => {
     Linking.openURL(preview.url).catch(() => {});

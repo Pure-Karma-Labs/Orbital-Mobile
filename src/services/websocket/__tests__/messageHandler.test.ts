@@ -69,7 +69,6 @@ jest.mock('../../../stores/useAppStore', () => ({
       bumpLastMessageAt: mockBumpLastMessageAt,
       incrementUnreadCount: mockIncrementUnreadCount,
       contacts: {},
-      blockedUserIds: [],
     })),
   },
 }));
@@ -1066,5 +1065,93 @@ describe('clearMessageHandlerState', () => {
 
     await handleServerMessage(msg);
     expect(mockUpsertThread).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ============================================================
+// blocked user guard
+// ============================================================
+
+describe('blocked user guard', () => {
+  it('drops new_thread from blocked user', async () => {
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-user-id',
+      viewingConversationId: null,
+      upsertThread: mockUpsertThread,
+      upsertReply: mockUpsertReply,
+      upsertContact: mockUpsertContact,
+      setConnectionStatus: mockSetConnectionStatus,
+      setLastConnectedAt: mockSetLastConnectedAt,
+      setReconnectAttempt: mockSetReconnectAttempt,
+      blockedUserIds: ['blocked-user-1'],
+      addTypingUser: mockAddTypingUser,
+      bumpLastMessageAt: mockBumpLastMessageAt,
+      incrementUnreadCount: mockIncrementUnreadCount,
+      contacts: {},
+    });
+
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: 'group-1',
+      timestamp: Date.now(),
+      data: {
+        type: 'new_thread',
+        threadId: 'thread-blocked-1',
+        groupId: 'group-1',
+        authorId: 'blocked-user-1',
+        authorName: 'baduser',
+        encryptedTitle: 'enc-title',
+        encryptedBody: 'enc-body',
+        titleIv: 'iv',
+        bodyIv: 'iv',
+        createdAt: '2026-06-06T00:00:00Z',
+        media: [],
+      },
+    });
+
+    await handleServerMessage(msg);
+    expect(mockUpsertThread).not.toHaveBeenCalled();
+    expect(mockIncrementUnreadCount).not.toHaveBeenCalled();
+  });
+
+  it('drops new_reply from blocked user', async () => {
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-user-id',
+      viewingConversationId: null,
+      upsertThread: mockUpsertThread,
+      upsertReply: mockUpsertReply,
+      upsertContact: mockUpsertContact,
+      setConnectionStatus: mockSetConnectionStatus,
+      setLastConnectedAt: mockSetLastConnectedAt,
+      setReconnectAttempt: mockSetReconnectAttempt,
+      blockedUserIds: ['blocked-user-2'],
+      addTypingUser: mockAddTypingUser,
+      bumpLastMessageAt: mockBumpLastMessageAt,
+      incrementUnreadCount: mockIncrementUnreadCount,
+      contacts: {},
+    });
+
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: 'group-1',
+      timestamp: Date.now(),
+      data: {
+        type: 'new_reply',
+        replyId: 'reply-blocked-1',
+        threadId: 'thread-1',
+        groupId: 'group-1',
+        authorId: 'blocked-user-2',
+        authorName: 'baduser2',
+        encryptedBody: 'enc-body',
+        bodyIv: 'iv',
+        parentReplyId: null,
+        createdAt: '2026-06-06T00:00:00Z',
+        media: [],
+      },
+    });
+
+    await handleServerMessage(msg);
+    expect(mockUpsertReply).not.toHaveBeenCalled();
+    expect(mockIncrementUnreadCount).not.toHaveBeenCalled();
   });
 });

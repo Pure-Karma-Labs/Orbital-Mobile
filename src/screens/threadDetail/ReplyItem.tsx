@@ -17,7 +17,7 @@
  */
 
 import React, { useCallback, useState } from 'react';
-import { Dimensions, Text, TouchableOpacity, View, type TextStyle, type ViewStyle } from 'react-native';
+import { Alert, Dimensions, Linking, Text, TouchableOpacity, type TextStyle, type ViewStyle } from 'react-native';
 import { useTheme } from '../../theme';
 import { getReplyDepthColors } from '../../theme/colors';
 import { EmojiText } from '../../components/EmojiText';
@@ -25,11 +25,16 @@ import { LinkPreviewCard } from '../../components/LinkPreviewCard';
 import { MediaGallery } from '../../components/MediaGallery';
 import { MediaLightbox } from '../../components/MediaLightbox';
 import { useMediaForReply } from '../../stores';
+import { useAppStore } from '../../stores/useAppStore';
+
+const REPORT_EMAIL = 'report@orbitl.org';
 
 export interface ReplyItemProps {
   replyId: string;
   body: string | null;
   authorUsername: string;
+  authorId: string;
+  currentUserId: string | null;
   depth: number;
   createdAt: number;
   syncStatus: 'synced' | 'pending' | 'syncing' | 'failed';
@@ -62,6 +67,8 @@ export const ReplyItem = React.memo(function ReplyItem({
   replyId,
   body,
   authorUsername,
+  authorId,
+  currentUserId,
   depth,
   createdAt,
   syncStatus,
@@ -86,6 +93,51 @@ export const ReplyItem = React.memo(function ReplyItem({
     setLightboxVisible(false);
   }, []);
 
+  const handleReport = useCallback(() => {
+    const subject = 'Content Report — Orbital';
+    const reportBody = `Reporting user: @${authorUsername}\n\nNote: Orbital uses end-to-end encryption, so we cannot view message content. Please describe the issue below.\n\n---\n`;
+    const mailto = `mailto:${REPORT_EMAIL}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(reportBody)}`;
+    Linking.canOpenURL(mailto).then((supported) => {
+      if (supported) {
+        Linking.openURL(mailto);
+      } else {
+        Alert.alert(
+          'Send Report',
+          `Email ${REPORT_EMAIL} with details about this user.`,
+          [{ text: 'OK' }],
+        );
+      }
+    });
+  }, [authorUsername]);
+
+  const handleAuthorPress = useCallback(() => {
+    // Don't show action sheet for self
+    if (authorId === currentUserId) return;
+
+    Alert.alert(authorUsername, '', [
+      {
+        text: 'Block',
+        style: 'destructive',
+        onPress: () => {
+          Alert.alert(
+            `Block @${authorUsername}?`,
+            'You will no longer see their posts or replies.',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              {
+                text: 'Block',
+                style: 'destructive',
+                onPress: () => useAppStore.getState().blockUser(authorId, authorUsername),
+              },
+            ],
+          );
+        },
+      },
+      { text: 'Report', onPress: handleReport },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  }, [authorId, currentUserId, authorUsername, handleReport]);
+
   // displayDepth: offset by 1 because depth 0 in replies = level 1 visually
   // (level 0 is the original post rendered by ThreadHeader)
   const displayDepth = Math.min(depth + 1, 4);
@@ -93,6 +145,7 @@ export const ReplyItem = React.memo(function ReplyItem({
   const depthColor = depthColors[displayDepth];
 
   const leftMargin = theme.threadIndent.perLevel * Math.min(depth, 4);
+  const isSelf = authorId === currentUserId;
 
   const containerStyle: ViewStyle = {
     backgroundColor: depthColor.background,
@@ -159,10 +212,16 @@ export const ReplyItem = React.memo(function ReplyItem({
       {parentAuthorUsername != null && (
         <Text style={replyContextStyle}>{`↳ Replying to @${parentAuthorUsername}`}</Text>
       )}
-      <View style={authorRowStyle}>
+      <TouchableOpacity
+        style={authorRowStyle}
+        onPress={handleAuthorPress}
+        activeOpacity={isSelf ? 1 : 0.7}
+        disabled={isSelf}
+        hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
+      >
         <Text style={authorTextStyle}>{authorUsername}</Text>
         <Text style={timestampStyle}>{formatTimestamp(createdAt)}</Text>
-      </View>
+      </TouchableOpacity>
       {body != null && body.length > 0 && (
         <EmojiText style={bodyStyle}>{body}</EmojiText>
       )}

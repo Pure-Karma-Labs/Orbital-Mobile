@@ -222,6 +222,13 @@ async function handleBroadcast(envelope: BroadcastEnvelope): Promise<void> {
 // ============================================================
 
 async function handleNewThread(data: NewThreadPayload): Promise<void> {
+  // Block guard: silently drop content from blocked users before any processing
+  const blockedIds = useAppStore.getState().blockedUserIds;
+  if (blockedIds.includes(data.authorId)) {
+    if (__DEV__) console.log('[WS] dropped thread from blocked user', data.authorId);
+    return;
+  }
+
   if (dedupSet.has(data.threadId)) {
     return;
   }
@@ -298,6 +305,13 @@ async function handleNewThread(data: NewThreadPayload): Promise<void> {
 // ============================================================
 
 async function handleNewReply(data: NewReplyPayload): Promise<void> {
+  // Block guard: silently drop content from blocked users before any processing
+  const blockedIds = useAppStore.getState().blockedUserIds;
+  if (blockedIds.includes(data.authorId)) {
+    if (__DEV__) console.log('[WS] dropped reply from blocked user', data.authorId);
+    return;
+  }
+
   if (dedupSet.has(data.replyId)) {
     return;
   }

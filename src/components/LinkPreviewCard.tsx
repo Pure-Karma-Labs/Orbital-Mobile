@@ -11,12 +11,64 @@ import {
 } from 'react-native';
 import { useTheme } from '../theme';
 import { useLinkPreview } from '../hooks/useLinkPreview';
+import { OrbitalSpinner } from './OrbitalSpinner';
 
 interface LinkPreviewCardProps {
   text: string | null;
   debounceMs?: number;
   dismissible?: boolean;
   onDismiss?: () => void;
+}
+
+
+// ---------------------------------------------------------------------------
+// Private child component — keyed by URI so React resets state on URL change
+// ---------------------------------------------------------------------------
+
+function LinkPreviewImage({ uri, theme }: { uri: string; theme: ReturnType<typeof useTheme> }) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+
+  if (error) return null; // collapse — parent layout adapts via flex
+
+  const containerStyle: ViewStyle = {
+    width: 80,
+    height: 80,
+  };
+
+  const overlayStyle: ViewStyle = {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: theme.colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  };
+
+  const imgStyle: ImageStyle = {
+    width: 80,
+    height: 80,
+  };
+
+  return (
+    <View style={containerStyle} testID="link-preview-image-container">
+      <Image
+        source={{ uri }}
+        style={imgStyle}
+        resizeMode="cover"
+        onLoad={() => setLoading(false)}
+        onError={() => { setLoading(false); setError(true); }}
+        testID="link-preview-image"
+      />
+      {loading && (
+        <View style={overlayStyle} testID="link-preview-image-loading">
+          <OrbitalSpinner size={24} />
+        </View>
+      )}
+    </View>
+  );
 }
 
 export function LinkPreviewCard({
@@ -28,7 +80,6 @@ export function LinkPreviewCard({
   const theme = useTheme();
   const { preview, loading } = useLinkPreview(text, { debounceMs });
   const [dismissed, setDismissed] = useState(false);
-  const [imageError, setImageError] = useState(false);
 
   if (dismissed) return null;
   if (!loading && !preview) return null;
@@ -67,11 +118,6 @@ export function LinkPreviewCard({
     borderRadius: theme.borderRadius.base,
     overflow: 'hidden',
     marginTop: theme.spacing.sm,
-  };
-
-  const imageStyle: ImageStyle = {
-    width: 80,
-    height: 80,
   };
 
   const contentStyle: ViewStyle = {
@@ -127,14 +173,8 @@ export function LinkPreviewCard({
       accessibilityLabel={`Link preview: ${preview.title ?? domain}`}
       testID="link-preview-card"
     >
-      {preview.imageUrl && !imageError && (
-        <Image
-          source={{ uri: preview.imageUrl }}
-          style={imageStyle}
-          resizeMode="cover"
-          onError={() => setImageError(true)}
-          testID="link-preview-image"
-        />
+      {preview.imageUrl && (
+        <LinkPreviewImage key={preview.imageUrl} uri={preview.imageUrl} theme={theme} />
       )}
       <View style={contentStyle}>
         {preview.title && (

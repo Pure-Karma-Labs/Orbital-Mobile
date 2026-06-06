@@ -628,6 +628,66 @@ async function doHydrateContacts(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Single-contact avatar refresh (triggered by avatar_changed WS event)
+// ---------------------------------------------------------------------------
+
+const refreshAvatarInflight = new Map<string, Promise<void>>();
+
+/**
+ * Re-fetch a single contact's avatar metadata from the server.
+ *
+ * Called after an avatar_changed broadcast to pick up the new encrypted
+ * avatar key, IV, and digest without waiting for a full hydration cycle.
+ *
+ * Skips the current user (own avatar is handled differently) and contacts
+ * that only belong to DM conversations (DMs have no avatar key rows).
+ */
+export async function refreshContactAvatar(userId: string): Promise<void> {
+  const session = captureSession();
+  if (!session || userId === session.userId) return;
+
+  const store = useAppStore.getState();
+  const contact = store.contacts[userId];
+  if (!contact || !contact.conversationIds?.length) return;
+
+  // Filter to group-type conversations (DMs have no avatar key rows)
+  const groupConvId = contact.conversationIds.find(
+    (cid) => store.conversations[cid]?.type === 'group',
+  );
+  if (!groupConvId) return;
+
+  // Inflight dedup
+  const existing = refreshAvatarInflight.get(userId);
+  if (existing) return existing;
+
+  const work = (async () => {
+    try {
+      const members = await getGroupMembers(groupConvId);
+      if (isSessionStale(session)) return;
+
+      const member = members.find((m) => m.userId === userId);
+      if (!member) return;
+
+      useAppStore.getState().mergeContacts([{
+        id: member.userId,
+        username: member.username,
+        displayName: member.displayName || member.username,
+        avatarPath: member.avatarUrl ?? null,
+        conversationIds: [groupConvId],
+        avatarEncryptedKey: member.avatarEncryptedKey ?? null,
+        avatarKeyIv: member.avatarKeyIv ?? null,
+        avatarDigest: member.avatarDigest ?? null,
+      }]);
+    } finally {
+      refreshAvatarInflight.delete(userId);
+    }
+  })();
+
+  refreshAvatarInflight.set(userId, work);
+  return work;
+}
+
+// ---------------------------------------------------------------------------
 // Session cleanup
 // ---------------------------------------------------------------------------
 
@@ -635,6 +695,7 @@ export function clearConversationServiceState(): void {
   sessionGeneration++;
   selfWrapInflight.clear();
   ensureDmInflight.clear();
+  refreshAvatarInflight.clear();
   hydrateInflight = null;
   lastPendingWrapsSweep = 0;
   lastContactHydration = 0;

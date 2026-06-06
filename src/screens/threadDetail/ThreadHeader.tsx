@@ -6,7 +6,7 @@
  */
 
 import React, { useCallback, useState } from 'react';
-import { Dimensions, View, Text, type TextStyle, type ViewStyle } from 'react-native';
+import { Dimensions, View, Text, TouchableOpacity, type TextStyle, type ViewStyle } from 'react-native';
 import { useTheme } from '../../theme';
 import { Avatar } from '../../components/Avatar';
 import { EmojiText } from '../../components/EmojiText';
@@ -14,12 +14,15 @@ import { MediaGallery } from '../../components/MediaGallery';
 import { LinkPreviewCard } from '../../components/LinkPreviewCard';
 import { MediaLightbox } from '../../components/MediaLightbox';
 import { useMediaForThread } from '../../stores';
+import { useAuthorActions } from '../../hooks/useAuthorActions';
 
 export interface ThreadHeaderProps {
   threadId: string;
   title: string | null;
   body: string | null;
   authorUsername: string;
+  authorId: string;
+  currentUserId: string | null;
   createdAt: number;
 }
 
@@ -49,6 +52,8 @@ export const ThreadHeader = React.memo(function ThreadHeader({
   title,
   body,
   authorUsername,
+  authorId,
+  currentUserId,
   createdAt,
 }: ThreadHeaderProps): React.JSX.Element {
   const theme = useTheme();
@@ -64,6 +69,8 @@ export const ThreadHeader = React.memo(function ThreadHeader({
   const handleLightboxClose = useCallback(() => {
     setLightboxVisible(false);
   }, []);
+
+  const { handleAuthorPress } = useAuthorActions(authorId, authorUsername, currentUserId);
 
   const containerStyle: ViewStyle = {
     backgroundColor: theme.colors.surfaceElevated,
@@ -111,13 +118,22 @@ export const ThreadHeader = React.memo(function ThreadHeader({
     lineHeight: theme.typography.fontSize.base * theme.typography.lineHeight.relaxed,
   };
 
+  const isSelf = authorId === currentUserId;
+
   return (
     <View style={containerStyle} testID="thread-header">
-      <View style={authorRowStyle}>
+      <TouchableOpacity
+        style={authorRowStyle}
+        onPress={handleAuthorPress}
+        activeOpacity={isSelf ? 1 : 0.7}
+        disabled={isSelf}
+        accessibilityRole={isSelf ? undefined : 'button'}
+        accessibilityLabel={isSelf ? undefined : `Actions for ${authorUsername}`}
+      >
         <Avatar name={authorUsername} size={28} />
         <Text style={authorTextStyle}>{authorUsername}</Text>
         <Text style={timestampStyle}>{formatTimestamp(createdAt)}</Text>
-      </View>
+      </TouchableOpacity>
       {title != null && title.length > 0 && (
         <Text style={titleStyle}>{title}</Text>
       )}

@@ -268,6 +268,9 @@ export async function localWipe({ preserveIdentity }: { preserveIdentity: boolea
   try { clearLinkPreviewCache(); } catch {
     if (__DEV__) console.warn('[LocalWipe] clearLinkPreviewCache failed');
   }
+  try { useAppStore.getState().resetBlockedUsers(); } catch {
+    if (__DEV__) console.warn('[LocalWipe] resetBlockedUsers failed');
+  }
 
   if (preserveIdentity) {
     // --- Logout path: clear per-session Signal state only ---

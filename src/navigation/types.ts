@@ -32,6 +32,7 @@ export type SettingsStackParamList = {
   EditProfile: undefined;
   ManageOrbits: undefined;
   FileLibrary: undefined;
+  BlockedUsers: undefined;
 };
 
 export type RootStackParamList = {

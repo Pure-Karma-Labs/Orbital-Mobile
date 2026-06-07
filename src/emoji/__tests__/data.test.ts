@@ -186,7 +186,111 @@ describe('emoji/data', () => {
       const result = findEmojiInText(text);
       expect(result.length).toBe(1);
       expect(result[0].type).toBe('emoji');
-      expect(result[0].unified).toBe('1F600');
+      expect(result[0].type === 'emoji' && result[0].unified).toBe('1F600');
+    });
+  });
+
+  describe('URL detection in findEmojiInText', () => {
+    it('text with HTTPS URL', () => {
+      const result = findEmojiInText('visit https://example.com for details');
+      expect(result).toEqual([
+        { type: 'text', value: 'visit ' },
+        { type: 'link', value: 'https://example.com', url: 'https://example.com' },
+        { type: 'text', value: ' for details' },
+      ]);
+    });
+
+    it('text with HTTP URL', () => {
+      const result = findEmojiInText('see http://example.com');
+      const linkSegment = result.find((s) => s.type === 'link');
+      expect(linkSegment).toBeDefined();
+      expect(linkSegment!.type === 'link' && linkSegment!.url).toBe('http://example.com');
+    });
+
+    it('multiple URLs', () => {
+      const result = findEmojiInText('see https://a.com and https://b.com');
+      const links = result.filter((s) => s.type === 'link');
+      expect(links.length).toBe(2);
+      expect(links[0].type === 'link' && links[0].url).toBe('https://a.com');
+      expect(links[1].type === 'link' && links[1].url).toBe('https://b.com');
+    });
+
+    it('URL only', () => {
+      const result = findEmojiInText('https://example.com');
+      expect(result).toEqual([
+        { type: 'link', value: 'https://example.com', url: 'https://example.com' },
+      ]);
+    });
+
+    it('URL with query string', () => {
+      const result = findEmojiInText('https://example.com/path?a=1&b=2#frag');
+      expect(result.length).toBe(1);
+      expect(result[0]).toEqual({
+        type: 'link',
+        value: 'https://example.com/path?a=1&b=2#frag',
+        url: 'https://example.com/path?a=1&b=2#frag',
+      });
+    });
+
+    it('URL followed by period', () => {
+      const result = findEmojiInText('visit https://example.com.');
+      const linkSegment = result.find((s) => s.type === 'link');
+      expect(linkSegment).toBeDefined();
+      expect(linkSegment!.type === 'link' && linkSegment!.value).toBe('https://example.com');
+    });
+
+    it('URL followed by comma', () => {
+      const result = findEmojiInText('see https://example.com, then');
+      const linkSegment = result.find((s) => s.type === 'link');
+      expect(linkSegment).toBeDefined();
+      expect(linkSegment!.type === 'link' && linkSegment!.value).toBe('https://example.com');
+    });
+
+    it('Wikipedia URL with balanced parens', () => {
+      const result = findEmojiInText('https://en.wikipedia.org/wiki/Foo_(bar)');
+      const linkSegment = result.find((s) => s.type === 'link');
+      expect(linkSegment).toBeDefined();
+      expect(linkSegment!.type === 'link' && linkSegment!.value).toBe(
+        'https://en.wikipedia.org/wiki/Foo_(bar)',
+      );
+    });
+
+    it('URL with unbalanced trailing paren', () => {
+      const result = findEmojiInText('(see https://example.com)');
+      const linkSegment = result.find((s) => s.type === 'link');
+      expect(linkSegment).toBeDefined();
+      expect(linkSegment!.type === 'link' && linkSegment!.value).toBe('https://example.com');
+    });
+
+    it('URL and emoji in same text', () => {
+      const result = findEmojiInText('check https://example.com \u{1F600}');
+      const linkSegment = result.find((s) => s.type === 'link');
+      const emojiSegment = result.find((s) => s.type === 'emoji');
+      expect(linkSegment).toBeDefined();
+      expect(emojiSegment).toBeDefined();
+      expect(linkSegment!.type === 'link' && linkSegment!.url).toBe('https://example.com');
+    });
+
+    it('emoji before URL', () => {
+      const result = findEmojiInText('\u{1F600} https://example.com');
+      const emojiSegment = result.find((s) => s.type === 'emoji');
+      const linkSegment = result.find((s) => s.type === 'link');
+      expect(emojiSegment).toBeDefined();
+      expect(linkSegment).toBeDefined();
+      expect(linkSegment!.type === 'link' && linkSegment!.url).toBe('https://example.com');
+    });
+
+    it('bare www without scheme stays as text', () => {
+      const result = findEmojiInText('visit www.example.com');
+      const linkSegments = result.filter((s) => s.type === 'link');
+      expect(linkSegments.length).toBe(0);
+      expect(result).toEqual([{ type: 'text', value: 'visit www.example.com' }]);
+    });
+
+    it('javascript: scheme stays as text', () => {
+      const result = findEmojiInText('javascript:alert(1)');
+      const linkSegments = result.filter((s) => s.type === 'link');
+      expect(linkSegments.length).toBe(0);
     });
   });
 });

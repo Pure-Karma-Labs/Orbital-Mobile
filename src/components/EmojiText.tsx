@@ -1,8 +1,9 @@
 /**
- * EmojiText component — renders text with inline OpenMoji emoji.
+ * EmojiText component — renders text with inline OpenMoji emoji and tappable URLs.
  *
- * Parses the children string for Unicode emoji characters, replaces them
- * with inline <Emoji> components rendered from the OpenMoji sprite sheet.
+ * Parses the children string for Unicode emoji characters and URLs, replaces emoji
+ * with inline <Emoji> components rendered from the OpenMoji sprite sheet, and
+ * renders URLs as tappable blue underlined links.
  *
  * Uses <View> inside <Text> for inline emoji rendering. The Emoji views
  * are given explicit width/height matching the computed emoji size so
@@ -12,9 +13,10 @@
  */
 
 import React, { useMemo } from 'react';
-import { Text, View, type TextStyle, StyleSheet } from 'react-native';
+import { Linking, Text, View, type TextStyle, StyleSheet } from 'react-native';
 import { findEmojiInText } from '../emoji';
 import { Emoji } from './Emoji';
+import { useTheme } from '../theme';
 
 // ---------------------------------------------------------------------------
 // Props
@@ -60,6 +62,7 @@ export const EmojiText = React.memo(function EmojiText({
   testID,
   emojiScale,
 }: EmojiTextProps): React.JSX.Element {
+  const theme = useTheme();
   const fontSize = StyleSheet.flatten(style)?.fontSize ?? DEFAULT_FONT_SIZE;
   const emojiSize = Math.round(fontSize * (emojiScale ?? EMOJI_SIZE_MULTIPLIER));
   const emojiMarginH = Math.round(fontSize * EMOJI_MARGIN_MULTIPLIER);
@@ -69,9 +72,9 @@ export const EmojiText = React.memo(function EmojiText({
 
   const segments = useMemo(() => findEmojiInText(children), [children]);
 
-  // If no emoji found, render as plain text for performance
-  const hasEmoji = segments.some((s) => s.type === 'emoji');
-  if (!hasEmoji) {
+  // If no emoji or links found, render as plain text for performance
+  const hasSpecialSegments = segments.some((s) => s.type === 'emoji' || s.type === 'link');
+  if (!hasSpecialSegments) {
     return (
       <Text style={style} numberOfLines={numberOfLines} testID={testID}>
         {children}
@@ -88,6 +91,25 @@ export const EmojiText = React.memo(function EmojiText({
           );
         }
 
+        if (segment.type === 'link') {
+          return (
+            <Text
+              key={index}
+              style={{ color: theme.colors.blue, textDecorationLine: 'underline' }}
+              onPress={() => {
+                const url = segment.url;
+                if (url.startsWith('http://') || url.startsWith('https://')) {
+                  Linking.openURL(url).catch(() => {});
+                }
+              }}
+              accessibilityRole="link"
+              testID="emoji-text-link"
+            >
+              {segment.value}
+            </Text>
+          );
+        }
+
         // Emoji segment — render inline via View-in-Text
         return (
           <View
@@ -100,7 +122,7 @@ export const EmojiText = React.memo(function EmojiText({
             }}
           >
             <Emoji
-              unified={segment.unified!}
+              unified={segment.unified}
               size={emojiSize}
             />
           </View>

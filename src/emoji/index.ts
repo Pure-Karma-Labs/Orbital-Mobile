@@ -9,6 +9,9 @@ export {
   // Types
   type EmojiDataEntry,
   type EmojiSegment,
+  type TextSegment,
+  type LinkSegment,
+  type RichTextSegment,
   // Constants
   SHEET_COLUMNS,
   CELL_SIZE_32,

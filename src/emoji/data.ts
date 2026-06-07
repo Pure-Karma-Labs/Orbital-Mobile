@@ -6,6 +6,8 @@
  * to resolve Unicode emoji to OpenMoji sprite sheet positions.
  */
 
+import { URL_PATTERN_SOURCE } from '../utils/urlPattern';
+
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const emojiData: EmojiDataEntry[] = require('emoji-datasource/emoji.json');
 
@@ -34,12 +36,10 @@ export interface EmojiDataEntry {
   has_img_facebook: boolean;
 }
 
-export interface EmojiSegment {
-  type: 'text' | 'emoji';
-  value: string;
-  /** Present when type === 'emoji' — the unified hex code (e.g. "1F600") */
-  unified?: string;
-}
+export type TextSegment = { type: 'text'; value: string };
+export type EmojiSegment = { type: 'emoji'; value: string; unified: string };
+export type LinkSegment = { type: 'link'; value: string; url: string };
+export type RichTextSegment = TextSegment | EmojiSegment | LinkSegment;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -131,6 +131,26 @@ function buildEmojiRegex(): RegExp {
 const emojiRegex = buildEmojiRegex();
 
 // ---------------------------------------------------------------------------
+// URL detection helpers
+// ---------------------------------------------------------------------------
+
+const TRAILING_PUNCT = /[.,;:!?'")\]}>]+$/;
+
+function trimTrailingPunctuation(rawUrl: string): string {
+  let url = rawUrl;
+  while (TRAILING_PUNCT.test(url)) {
+    const lastChar = url[url.length - 1];
+    if (lastChar === ')') {
+      const openCount = (url.match(/\(/g) || []).length;
+      const closeCount = (url.match(/\)/g) || []).length;
+      if (openCount >= closeCount) break;
+    }
+    url = url.slice(0, -1);
+  }
+  return url;
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -203,16 +223,13 @@ export function searchEmoji(
 }
 
 /**
- * Parse a text string and split it into segments of plain text and emoji.
- * Each emoji segment includes the unified code for rendering with the Emoji component.
- *
- * Multi-codepoint sequences (ZWJ, skin tones, flags) are handled correctly
- * because the regex is sorted longest-first.
+ * Parse a text span for emoji only (no URL detection).
+ * This is the inner loop extracted from the original findEmojiInText.
  */
-export function findEmojiInText(text: string): EmojiSegment[] {
+function findEmojiInTextSpan(text: string): RichTextSegment[] {
   if (!text) return [];
 
-  const segments: EmojiSegment[] = [];
+  const segments: RichTextSegment[] = [];
   let lastIndex = 0;
 
   // Reset regex state
@@ -259,6 +276,83 @@ export function findEmojiInText(text: string): EmojiSegment[] {
   }
 
   return segments;
+}
+
+/**
+ * Parse a text string and split it into segments of plain text, emoji, and URLs.
+ *
+ * Two-pass approach:
+ * 1. URL-first pass: split text into link and text segments
+ * 2. Emoji pass: scan text segments for emoji
+ *
+ * Multi-codepoint sequences (ZWJ, skin tones, flags) are handled correctly
+ * because the emoji regex is sorted longest-first.
+ */
+export function findEmojiInText(text: string): RichTextSegment[] {
+  if (!text) return [];
+
+  // Pass 1: split by URLs
+  const urlRegex = new RegExp(URL_PATTERN_SOURCE, 'gi');
+  const pass1Segments: RichTextSegment[] = [];
+  let lastIndex = 0;
+
+  let match: RegExpExecArray | null;
+  while ((match = urlRegex.exec(text)) !== null) {
+    const matchStart = match.index;
+    const rawUrl = match[0];
+
+    // Add preceding text if any
+    if (matchStart > lastIndex) {
+      pass1Segments.push({
+        type: 'text',
+        value: text.slice(lastIndex, matchStart),
+      });
+    }
+
+    // Trim trailing punctuation from the URL
+    const trimmedUrl = trimTrailingPunctuation(rawUrl);
+    pass1Segments.push({
+      type: 'link',
+      value: trimmedUrl,
+      url: trimmedUrl,
+    });
+
+    // If characters were trimmed, add them as a text segment
+    const trimmedChars = rawUrl.slice(trimmedUrl.length);
+    if (trimmedChars) {
+      pass1Segments.push({
+        type: 'text',
+        value: trimmedChars,
+      });
+    }
+
+    lastIndex = matchStart + rawUrl.length;
+  }
+
+  // Add trailing text if any
+  if (lastIndex < text.length) {
+    pass1Segments.push({
+      type: 'text',
+      value: text.slice(lastIndex),
+    });
+  }
+
+  // If no URLs found, fall through to pure emoji parsing
+  if (pass1Segments.length === 0) {
+    return findEmojiInTextSpan(text);
+  }
+
+  // Pass 2: scan text segments for emoji, leave link segments untouched
+  const result: RichTextSegment[] = [];
+  for (const segment of pass1Segments) {
+    if (segment.type === 'text') {
+      result.push(...findEmojiInTextSpan(segment.value));
+    } else {
+      result.push(segment);
+    }
+  }
+
+  return result;
 }
 
 // Re-export the raw data for potential use by emoji picker (future)

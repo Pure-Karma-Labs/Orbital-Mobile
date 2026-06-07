@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import { getLinkPreview } from '../services/api/linkPreviews';
 import { NotFoundError } from '../services/api/errors';
 import type { LinkPreviewResponse } from '../types/api';
+import { URL_PATTERN_SOURCE } from '../utils/urlPattern';
 
-const URL_REGEX = /https?:\/\/[^\s<>"{}|\\^`\[\]]+/gi;
+const URL_REGEX = new RegExp(URL_PATTERN_SOURCE, 'gi');
 const MAX_CACHE_SIZE = 200;
 
 const previewCache = new Map<string, LinkPreviewResponse | null>();

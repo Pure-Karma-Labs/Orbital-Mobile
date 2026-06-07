@@ -153,6 +153,24 @@ describe('EmojiText', () => {
     expect(images.length).toBe(1);
   });
 
+  it('autocapitalized URL scheme still opens on tap', () => {
+    const openURLSpy = jest
+      .spyOn(Linking, 'openURL')
+      .mockResolvedValue(undefined as never);
+    const renderer = renderEmojiText({
+      children: 'Https://example.com',
+    });
+    const linkNodes = findLinkNodes(renderer.root);
+    expect(linkNodes.length).toBeGreaterThanOrEqual(1);
+
+    act(() => {
+      linkNodes[0].props.onPress();
+    });
+
+    expect(openURLSpy).toHaveBeenCalledWith('Https://example.com');
+    openURLSpy.mockRestore();
+  });
+
   it('URL without emoji still renders as link (fast-path test)', () => {
     const renderer = renderEmojiText({
       children: 'visit https://example.com',

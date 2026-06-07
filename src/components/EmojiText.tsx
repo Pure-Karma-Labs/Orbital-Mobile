@@ -97,9 +97,9 @@ export const EmojiText = React.memo(function EmojiText({
               key={index}
               style={{ color: theme.colors.blue, textDecorationLine: 'underline' }}
               onPress={() => {
-                const url = segment.url;
+                const url = segment.url.toLowerCase();
                 if (url.startsWith('http://') || url.startsWith('https://')) {
-                  Linking.openURL(url).catch(() => {});
+                  Linking.openURL(segment.url).catch(() => {});
                 }
               }}
               accessibilityRole="link"

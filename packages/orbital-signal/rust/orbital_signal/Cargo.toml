@@ -18,7 +18,7 @@ rand = "0.9"
 uuid = { version = "1.5", features = ["v4"] }
 
 # libsignal-protocol from Signal's repo, pinned to v0.83.0
-libsignal-protocol = { git = "https://github.com/signalapp/libsignal", tag = "v0.83.0" }
+libsignal-protocol = { git = "https://github.com/signalapp/libsignal", tag = "v0.95.0" }
 libsignal-core = { git = "https://github.com/signalapp/libsignal", tag = "v0.83.0" }
 
 # AES-256-GCM for content encryption (threads, replies — per-field with AAD)

@@ -106,8 +106,8 @@ async fn roundtrip_inner(plaintext: &[u8]) -> Result<RoundtripResult, SignalErro
     .map_err(SignalError::from)?;
 
     // --- 4. Alice processes the bundle (establishes outgoing session) ---
-    let bob_address = ProtocolAddress::new("+14155551234".to_string(), device_id);
-    let alice_address = ProtocolAddress::new("+14155559876".to_string(), device_id);
+    let bob_address = ProtocolAddress::new("b0b00000-1111-4222-8333-444455556666".to_string(), device_id);
+    let alice_address = ProtocolAddress::new("a11ce000-1111-4222-8333-444455556666".to_string(), device_id);
 
     libsignal_protocol::process_prekey_bundle(
         &bob_address,

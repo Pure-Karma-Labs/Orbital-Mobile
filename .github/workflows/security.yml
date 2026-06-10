@@ -261,7 +261,10 @@ jobs:
 
       - name: Cargo test
         working-directory: packages/orbital-signal/rust/orbital_signal
-        run: cargo test
+        # dev-roundtrip enables the Issue #11 encrypt/decrypt PoC integration
+        # tests (a no-dependency feature flag; tests are cfg-gated to keep
+        # plain `cargo test` compiling)
+        run: cargo test --features dev-roundtrip
 
       - name: Cargo clippy (deny warnings)
         working-directory: packages/orbital-signal/rust/orbital_signal

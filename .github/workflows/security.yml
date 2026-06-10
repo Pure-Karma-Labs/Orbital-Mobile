@@ -240,6 +240,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install protoc
+        # libsignal's spqr dependency (SparsePostQuantumRatchet) compiles
+        # protobufs in its build script and requires protoc on the host
+        run: sudo apt-get update -q && sudo apt-get install -y -q protobuf-compiler
+
       - name: Install Rust 1.94.1 (minimal profile)
         run: |
           rustup toolchain install 1.94.1 --profile minimal
@@ -285,8 +290,9 @@ jobs:
         run: rustup toolchain install 1.94.1 --profile minimal
 
       - name: Install cargo-audit
-        # SHA-pinned: 899b013517f9e7774591216672bf75a46bb9a481 = v2.9.4
-        uses: taiki-e/install-action@899b013517f9e7774591216672bf75a46bb9a481 # v2.9.4
+        # SHA-pinned: fd2f5e3d644b484055ebf4268f474c565f148f25 = v2.81.9
+        # (older install-action releases can't parse current tool manifests)
+        uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2.81.9
         with:
           tool: cargo-audit
 

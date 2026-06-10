@@ -64,6 +64,7 @@ pub fn process_pre_key_bundle(
         let identity_key_pair = reconstruct_identity_key_pair(&input.identity_key_pair)?;
         let mut store = create_store(identity_key_pair, input.registration_id)?;
         let protocol_address = to_protocol_address(&input.remote_address)?;
+        let local_address = to_protocol_address(&input.local_address)?;
 
         // Pre-load existing session if provided
         if let Some(session_bytes) = &input.existing_session_record {
@@ -194,6 +195,7 @@ pub fn process_pre_key_bundle(
         // Process the pre-key bundle (X3DH key agreement)
         libsignal_protocol::process_prekey_bundle(
             &protocol_address,
+            &local_address,
             &mut store.session_store,
             &mut store.identity_store,
             &bundle,
@@ -246,6 +248,7 @@ pub fn signal_encrypt(input: EncryptInput) -> Result<EncryptResult, SignalError>
         let mut store = create_store(identity_key_pair, input.registration_id)?;
 
         let protocol_address = to_protocol_address(&input.remote_address)?;
+        let local_address = to_protocol_address(&input.local_address)?;
 
         // Pre-load session record if provided
         if let Some(session_bytes) = &input.session_record {
@@ -277,6 +280,7 @@ pub fn signal_encrypt(input: EncryptInput) -> Result<EncryptResult, SignalError>
         let ciphertext = libsignal_protocol::message_encrypt(
             &input.plaintext,
             &protocol_address,
+            &local_address,
             &mut store.session_store,
             &mut store.identity_store,
             SystemTime::now(),
@@ -329,6 +333,7 @@ pub fn signal_decrypt(input: DecryptInput) -> Result<DecryptResult, SignalError>
         let identity_key_pair = reconstruct_identity_key_pair(&input.identity_key_pair)?;
         let mut store = create_store(identity_key_pair, input.registration_id)?;
         let protocol_address = to_protocol_address(&input.sender_address)?;
+        let local_address = to_protocol_address(&input.local_address)?;
 
         // Pre-load session record (required for standard messages)
         let session_record = SessionRecord::deserialize(&input.session_record).map_err(|e| {
@@ -364,6 +369,7 @@ pub fn signal_decrypt(input: DecryptInput) -> Result<DecryptResult, SignalError>
         let plaintext = libsignal_protocol::message_decrypt_signal(
             &signal_message,
             &protocol_address,
+            &local_address,
             &mut store.session_store,
             &mut store.identity_store,
             &mut rand::rng(),
@@ -406,6 +412,7 @@ pub fn signal_decrypt_pre_key(
         let identity_key_pair = reconstruct_identity_key_pair(&input.identity_key_pair)?;
         let mut store = create_store(identity_key_pair, input.registration_id)?;
         let protocol_address = to_protocol_address(&input.sender_address)?;
+        let local_address = to_protocol_address(&input.local_address)?;
 
         // Pre-load existing session if provided
         if let Some(session_bytes) = &input.existing_session_record {
@@ -493,6 +500,7 @@ pub fn signal_decrypt_pre_key(
         let plaintext = libsignal_protocol::message_decrypt_prekey(
             &prekey_signal_message,
             &protocol_address,
+            &local_address,
             &mut store.session_store,
             &mut store.identity_store,
             &mut store.pre_key_store,

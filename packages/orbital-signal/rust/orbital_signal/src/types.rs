@@ -95,6 +95,11 @@ pub struct EncryptInput {
     pub remote_identity: Option<Vec<u8>>,
     /// Remote address to encrypt to.
     pub remote_address: ProtocolAddressData,
+    /// Our own protocol address. `name` = own user UUID (must remain a bare
+    /// hyphenated UUID — libsignal v0.95+ parses it as a Signal ACI ServiceId
+    /// and binds both addresses into the message MAC), `device_id` = 1 for
+    /// phone-only beta.
+    pub local_address: ProtocolAddressData,
     /// Plaintext message bytes.
     pub plaintext: Vec<u8>,
 }
@@ -118,6 +123,8 @@ pub struct ProcessPreKeyBundleInput {
     pub identity_key_pair: IdentityKeyPairData,
     pub registration_id: u32,
     pub remote_address: ProtocolAddressData,
+    /// Our own protocol address (own user UUID as a bare hyphenated UUID + device_id 1).
+    pub local_address: ProtocolAddressData,
     pub bundle: PreKeyBundleData,
     pub existing_session_record: Option<Vec<u8>>,
     pub remote_identity: Option<Vec<u8>>,
@@ -137,6 +144,8 @@ pub struct DecryptInput {
     pub identity_key_pair: IdentityKeyPairData,
     pub registration_id: u32,
     pub sender_address: ProtocolAddressData,
+    /// Our own protocol address (own user UUID as a bare hyphenated UUID + device_id 1).
+    pub local_address: ProtocolAddressData,
     pub session_record: Vec<u8>,
     pub remote_identity: Option<Vec<u8>>,
     pub ciphertext: Vec<u8>,
@@ -155,6 +164,8 @@ pub struct DecryptPreKeyInput {
     pub identity_key_pair: IdentityKeyPairData,
     pub registration_id: u32,
     pub sender_address: ProtocolAddressData,
+    /// Our own protocol address (own user UUID as a bare hyphenated UUID + device_id 1).
+    pub local_address: ProtocolAddressData,
     pub existing_session_record: Option<Vec<u8>>,
     pub remote_identity: Option<Vec<u8>>,
     pub pre_key_record: Option<Vec<u8>>,

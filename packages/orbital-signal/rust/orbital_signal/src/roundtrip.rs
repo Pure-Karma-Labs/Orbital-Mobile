@@ -111,6 +111,7 @@ async fn roundtrip_inner(plaintext: &[u8]) -> Result<RoundtripResult, SignalErro
 
     libsignal_protocol::process_prekey_bundle(
         &bob_address,
+        &alice_address,
         &mut alice_store.session_store,
         &mut alice_store.identity_store,
         &bundle,
@@ -124,6 +125,7 @@ async fn roundtrip_inner(plaintext: &[u8]) -> Result<RoundtripResult, SignalErro
     let ciphertext_message = libsignal_protocol::message_encrypt(
         plaintext,
         &bob_address,
+        &alice_address,
         &mut alice_store.session_store,
         &mut alice_store.identity_store,
         SystemTime::now(),
@@ -142,6 +144,7 @@ async fn roundtrip_inner(plaintext: &[u8]) -> Result<RoundtripResult, SignalErro
     let decrypted = libsignal_protocol::message_decrypt_prekey(
         &prekey_signal_message,
         &alice_address,
+        &bob_address,
         &mut bob_store.session_store,
         &mut bob_store.identity_store,
         &mut bob_store.pre_key_store,

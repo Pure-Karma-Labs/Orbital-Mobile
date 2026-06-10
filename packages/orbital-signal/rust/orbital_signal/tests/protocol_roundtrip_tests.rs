@@ -84,10 +84,15 @@ fn test_session_roundtrip_via_public_api() {
         name: "bob-uuid-session-rt".to_string(),
         device_id: 1,
     };
+    let alice_address = ProtocolAddressData {
+        name: "alice-uuid-session-rt".to_string(),
+        device_id: 1,
+    };
     let bundle_result = process_pre_key_bundle(ProcessPreKeyBundleInput {
         identity_key_pair: alice_identity.clone(),
         registration_id: 1,
         remote_address: bob_address.clone(),
+        local_address: alice_address.clone(),
         bundle,
         existing_session_record: None,
         remote_identity: None,
@@ -107,6 +112,7 @@ fn test_session_roundtrip_via_public_api() {
         session_record: Some(bundle_result.updated_session_record.clone()),
         remote_identity: Some(bundle_result.identity_key.clone()),
         remote_address: bob_address.clone(),
+        local_address: alice_address.clone(),
         plaintext: plaintext_msg.to_vec(),
     })
     .expect("signal_encrypt should succeed");
@@ -117,14 +123,11 @@ fn test_session_roundtrip_via_public_api() {
     );
 
     // 7. Bob: signal_decrypt_pre_key (first message is always PreKeySignalMessage)
-    let alice_address = ProtocolAddressData {
-        name: "alice-uuid-session-rt".to_string(),
-        device_id: 1,
-    };
     let decrypt_result = signal_decrypt_pre_key(DecryptPreKeyInput {
         identity_key_pair: bob_identity.clone(),
         registration_id: 2,
         sender_address: alice_address.clone(),
+        local_address: bob_address.clone(),
         existing_session_record: None,
         remote_identity: None, // Bob has not seen Alice before
         pre_key_record: Some(bob_pre_key_record),
@@ -272,6 +275,7 @@ fn test_identity_change_detection_same_identity() {
         identity_key_pair: alice_identity.clone(),
         registration_id: 1,
         remote_address: bob_address.clone(),
+        local_address: alice_address.clone(),
         bundle,
         existing_session_record: None,
         remote_identity: None,
@@ -285,6 +289,7 @@ fn test_identity_change_detection_same_identity() {
         session_record: Some(bundle_result.updated_session_record),
         remote_identity: Some(bundle_result.identity_key),
         remote_address: bob_address.clone(),
+        local_address: alice_address.clone(),
         plaintext: b"same identity test".to_vec(),
     })
     .expect("signal_encrypt");
@@ -294,6 +299,7 @@ fn test_identity_change_detection_same_identity() {
         identity_key_pair: bob_identity.clone(),
         registration_id: 2,
         sender_address: alice_address.clone(),
+        local_address: bob_address.clone(),
         existing_session_record: None,
         remote_identity: None, // No prior identity -> identity_changed: false
         pre_key_record: Some(bob_pre_key_record),
@@ -386,6 +392,7 @@ fn test_identity_change_detection_different_identity() {
         identity_key_pair: alice1_identity.clone(),
         registration_id: 1,
         remote_address: bob_address.clone(),
+        local_address: alice_address.clone(),
         bundle: bundle1,
         existing_session_record: None,
         remote_identity: None,
@@ -399,6 +406,7 @@ fn test_identity_change_detection_different_identity() {
         session_record: Some(bundle_result1.updated_session_record),
         remote_identity: Some(bundle_result1.identity_key),
         remote_address: bob_address.clone(),
+        local_address: alice_address.clone(),
         plaintext: b"message from alice #1".to_vec(),
     })
     .expect("Alice #1 signal_encrypt");
@@ -408,6 +416,7 @@ fn test_identity_change_detection_different_identity() {
         identity_key_pair: bob_identity.clone(),
         registration_id: 2,
         sender_address: alice_address.clone(),
+        local_address: bob_address.clone(),
         existing_session_record: None,
         remote_identity: None,
         pre_key_record: Some(bob_pre_key1),
@@ -454,6 +463,7 @@ fn test_identity_change_detection_different_identity() {
         identity_key_pair: alice2_identity.clone(),
         registration_id: 3,
         remote_address: bob_address.clone(),
+        local_address: alice_address.clone(),
         bundle: bundle2,
         existing_session_record: None,
         remote_identity: None,
@@ -467,6 +477,7 @@ fn test_identity_change_detection_different_identity() {
         session_record: Some(bundle_result2.updated_session_record),
         remote_identity: Some(bundle_result2.identity_key),
         remote_address: bob_address.clone(),
+        local_address: alice_address.clone(),
         plaintext: b"message from alice #2".to_vec(),
     })
     .expect("Alice #2 signal_encrypt");
@@ -476,6 +487,7 @@ fn test_identity_change_detection_different_identity() {
         identity_key_pair: bob_identity.clone(),
         registration_id: 2,
         sender_address: alice_address.clone(),
+        local_address: bob_address.clone(),
         existing_session_record: Some(decrypt_result1.updated_session_record.clone()),
         remote_identity: Some(alice1_identity_key_from_msg.clone()),
         pre_key_record: Some(bob_pre_key2.clone()),
@@ -505,6 +517,7 @@ fn test_identity_change_detection_different_identity() {
         identity_key_pair: bob_identity.clone(),
         registration_id: 2,
         sender_address: alice_address.clone(),
+        local_address: bob_address.clone(),
         existing_session_record: Some(decrypt_result1.updated_session_record),
         remote_identity: None, // Omit to allow trust-on-first-use
         pre_key_record: Some(bob_pre_key2),

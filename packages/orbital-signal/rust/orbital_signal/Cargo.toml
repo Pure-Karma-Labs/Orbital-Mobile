@@ -26,7 +26,7 @@ aes-gcm = { version = "0.10", features = ["zeroize"] }
 
 # AES-256-CBC + HMAC-SHA256 for attachment encryption (Signal Protocol format)
 aes = { version = "0.8", features = ["zeroize"] }
-cbc = { version = "0.1", features = ["zeroize"] }
+cbc = { version = "0.2", features = ["zeroize"] }
 hmac = { version = "0.12", features = ["reset"] }
 sha2 = "0.10"
 

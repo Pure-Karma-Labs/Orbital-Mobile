@@ -1,0 +1,401 @@
+# Security scanning workflow for Orbital-Mobile
+#
+# Invariant ownership model:
+#   ESLint              -> syntactic invariants (code style, obvious anti-patterns)
+#   Jest                -> behavioral invariants (unit/integration correctness)
+#   invariants script   -> cross-file invariants [Phase 2, not yet wired]
+#   Semgrep             -> generic vulnerability patterns (OWASP, JS/TS/React anti-patterns)
+#
+# All third-party actions are SHA-pinned to a specific commit.
+# Quarterly pin-refresh cadence: update SHAs and version comments each calendar quarter.
+# GitHub-owned actions (actions/checkout, actions/setup-node) remain tag-pinned @v4
+# since they are audited continuously by GitHub Security.
+
+name: Security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Every Monday at 06:00 UTC -- full audit mode including report-only checks
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  # Schedule runs share a single slot so they don't stack up.
+  # PR/push runs cancel earlier runs on the same ref.
+  group: security-${{ github.event_name == 'schedule' && 'scheduled' || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # 1. Secret scanning -- detects accidentally committed credentials
+  # ---------------------------------------------------------------------------
+  secret-scan:
+    name: Secret Scan (TruffleHog)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history for diff scanning)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: TruffleHog secret scan
+        # SHA-pinned: d411fff7b8879a62509f3fa98c07f247ac089a51 = v3.95.5
+        uses: trufflesecurity/trufflehog@d411fff7b8879a62509f3fa98c07f247ac089a51 # v3.95.5
+        with:
+          extra_args: --only-verified
+
+  # ---------------------------------------------------------------------------
+  # 2. npm audit -- dependency vulnerability check
+  # ---------------------------------------------------------------------------
+  npm-audit:
+    name: npm Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Blocking audit (PR / push -- critical only)
+        # Threshold: critical only.
+        # Rationale: the React Native dependency tree has chronic high-severity
+        # advisories in dev-adjacent transitive deps that are not reachable in
+        # production. Gating on "high" would produce constant red CI for issues
+        # the team cannot fix upstream, training everyone to ignore failing checks.
+        # Critical advisories have no acceptable risk tolerance and always block.
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        run: npm audit --omit=dev --audit-level=critical
+
+      - name: Full audit report (scheduled / manual -- all severities, report-only)
+        # Run weekly to surface high/moderate advisories for human review.
+        # Not blocking -- findings go to the job summary for triage.
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: |
+          set +e
+          npm audit --json > audit-report.json 2>&1
+          EXIT_CODE=$?
+          set -e
+
+          echo "## npm Audit Report" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          python3 - <<'PYEOF'
+          import json, os, sys
+          with open("audit-report.json") as f:
+              raw = f.read()
+          try:
+              data = json.loads(raw)
+          except json.JSONDecodeError:
+              print("Could not parse audit JSON -- raw output:")
+              print(raw[:2000])
+              sys.exit(0)
+
+          meta = data.get("metadata", {})
+          vulns = meta.get("vulnerabilities", {})
+          total = sum(vulns.values())
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as s:
+              s.write("| Severity | Count |\n|---|---|\n")
+              for level in ["critical","high","moderate","low","info"]:
+                  count = vulns.get(level, 0)
+                  flag = " :warning:" if level in ("critical","high") and count > 0 else ""
+                  s.write(f"| {level.capitalize()} | {count}{flag} |\n")
+              s.write(f"\n**Total advisories:** {total}\n\n")
+
+              advisories = data.get("vulnerabilities", {})
+              if advisories:
+                  s.write("Notable advisories\n\n")
+                  for name, info in list(advisories.items())[:20]:
+                      sev = info.get("severity","?")
+                      via = ", ".join(
+                          v.get("title","?") if isinstance(v, dict) else str(v)
+                          for v in info.get("via",[])
+                      )
+                      s.write(f"- **{name}** ({sev}): {via}\n")
+                  if len(advisories) > 20:
+                      s.write(f"\n...and {len(advisories)-20} more. Run `npm audit` locally for full list.\n")
+          PYEOF
+
+  # ---------------------------------------------------------------------------
+  # 3. Semgrep -- generic vulnerability pattern scanning (OWASP, JS/TS/React)
+  # ---------------------------------------------------------------------------
+  semgrep:
+    name: Semgrep SAST
+    runs-on: ubuntu-latest
+    # Pinned to a concrete image tag to ensure reproducible scans.
+    # Tag chosen: 1.165.0 (latest stable as of 2026-06-10).
+    container:
+      image: semgrep/semgrep:1.165.0
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Semgrep scan
+        # TODO(Phase 2): vendor true-positive rules into .github/semgrep-rules/
+        # and remove continue-on-error once the false-positive baseline is established.
+        continue-on-error: true
+        run: |
+          semgrep scan \
+            --config p/javascript \
+            --config p/typescript \
+            --config p/react \
+            --severity ERROR \
+            --error \
+            --json-output=semgrep-results.json \
+            . || true
+
+          echo "## Semgrep SAST Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          python3 - <<'PYEOF'
+          import json, os, sys
+          try:
+              with open("semgrep-results.json") as f:
+                  data = json.load(f)
+          except (FileNotFoundError, json.JSONDecodeError):
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as s:
+                  s.write("No structured results (scan may have failed to produce JSON).\n")
+              sys.exit(0)
+
+          results = data.get("results", [])
+          errors = data.get("errors", [])
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as s:
+              s.write(f"**Findings:** {len(results)} | **Errors:** {len(errors)}\n\n")
+              if results:
+                  s.write("| Rule | File | Line | Severity |\n|---|---|---|---|\n")
+                  for r in results[:30]:
+                      rule = r.get("check_id","?").split(".")[-1]
+                      path = r.get("path","?")
+                      line = r.get("start",{}).get("line","?")
+                      sev  = r.get("extra",{}).get("severity","?")
+                      s.write(f"| {rule} | {path} | {line} | {sev} |\n")
+                  if len(results) > 30:
+                      s.write(f"\n...{len(results)-30} more findings truncated.\n")
+              else:
+                  s.write("No findings at ERROR severity.\n")
+          PYEOF
+
+  # ---------------------------------------------------------------------------
+  # 4. Gate job: detect Rust source changes (used by rust-test + rust-audit)
+  # ---------------------------------------------------------------------------
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Paths filter
+        id: filter
+        # SHA-pinned: fbd0ab8f3e69293af611ebaee6363fc25e6d187d = v4.0.1
+        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+        with:
+          filters: |
+            rust:
+              - 'packages/orbital-signal/**'
+              - 'rust-toolchain.toml'
+
+  # ---------------------------------------------------------------------------
+  # 5. Rust tests + Clippy -- runs on Rust changes OR scheduled/manual
+  # ---------------------------------------------------------------------------
+  rust-test:
+    name: Rust Test & Clippy
+    runs-on: ubuntu-latest
+    needs: changes
+    # paths-filter outputs are empty strings on schedule events (no diff context),
+    # which would silently skip the job. Always run on schedule/dispatch.
+    # Do NOT add a guard that silently skips scheduled runs.
+    if: >
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      needs.changes.outputs.rust == 'true'
+    timeout-minutes: 30 # BoringSSL compiles from source cold (~8-12 min first run)
+    env:
+      # Override rust-toolchain.toml which lists 5 Apple/Android targets that
+      # would fail on a Linux runner. If first run still attempts Apple targets,
+      # fallback is: rustup override set 1.94.1 && rustup target add x86_64-unknown-linux-gnu
+      RUSTUP_TOOLCHAIN: "1.94.1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.94.1 (minimal profile)
+        run: |
+          rustup toolchain install 1.94.1 --profile minimal
+          rustup component add clippy --toolchain 1.94.1
+
+      - name: Rust cache
+        # SHA-pinned: c19371144df3bb44fab255c43d04cbc2ab54d1c4 = v2.9.1
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: packages/orbital-signal/rust/orbital_signal
+          shared-key: rust-security
+          # Only save the cache from main to avoid cache thrash across PR branches
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Cargo test
+        working-directory: packages/orbital-signal/rust/orbital_signal
+        run: cargo test
+
+      - name: Cargo clippy (deny warnings)
+        working-directory: packages/orbital-signal/rust/orbital_signal
+        run: cargo clippy -- -D warnings
+
+  # ---------------------------------------------------------------------------
+  # 6. cargo audit -- Rust dependency vulnerability check (RustSec advisory DB)
+  # ---------------------------------------------------------------------------
+  rust-audit:
+    name: Rust Audit (cargo-audit)
+    runs-on: ubuntu-latest
+    needs: changes
+    # Same schedule-guard rationale as rust-test above
+    if: >
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      needs.changes.outputs.rust == 'true'
+    env:
+      RUSTUP_TOOLCHAIN: "1.94.1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.94.1
+        run: rustup toolchain install 1.94.1 --profile minimal
+
+      - name: Install cargo-audit
+        # SHA-pinned: 899b013517f9e7774591216672bf75a46bb9a481 = v2.9.4
+        uses: taiki-e/install-action@899b013517f9e7774591216672bf75a46bb9a481 # v2.9.4
+        with:
+          tool: cargo-audit
+
+      - name: cargo audit (blocking)
+        working-directory: packages/orbital-signal/rust/orbital_signal
+        run: cargo audit
+
+  # ---------------------------------------------------------------------------
+  # 7. libsignal upstream version check -- create GH issue when behind
+  # ---------------------------------------------------------------------------
+  libsignal-check:
+    name: libsignal Version Check
+    runs-on: ubuntu-latest
+    # Report-only, scheduled and manual only -- never triggered on PRs/push.
+    # Never fails the workflow except on script errors.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check libsignal version and file issue if behind
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # Extract the pinned libsignal tag from Cargo.toml
+          PINNED_TAG=$(grep -E 'tag\s*=\s*"v[0-9]+\.[0-9]+\.[0-9]+"' \
+            packages/orbital-signal/rust/orbital_signal/Cargo.toml \
+            | head -1 \
+            | sed 's/.*tag\s*=\s*"\(v[0-9][^"]*\)".*/\1/')
+
+          if [ -z "$PINNED_TAG" ]; then
+            echo "::error::Could not extract pinned libsignal tag from Cargo.toml"
+            exit 1
+          fi
+
+          echo "Pinned libsignal tag: $PINNED_TAG"
+
+          # Fetch all upstream tags and find the latest semver release
+          LATEST_TAG=$(git ls-remote --tags https://github.com/signalapp/libsignal \
+            | grep 'refs/tags/v[0-9]' \
+            | grep -v '\^{}' \
+            | awk '{print $2}' \
+            | sed 's|refs/tags/||' \
+            | sort -V \
+            | tail -1)
+
+          if [ -z "$LATEST_TAG" ]; then
+            echo "::error::Could not fetch libsignal upstream tags"
+            exit 1
+          fi
+
+          echo "Latest libsignal tag: $LATEST_TAG"
+
+          # Write comparison to step summary (always, regardless of result)
+          cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
+          ## libsignal Version Check
+
+          | | Version |
+          |---|---|
+          | Pinned in Cargo.toml | \`$PINNED_TAG\` |
+          | Latest upstream | \`$LATEST_TAG\` |
+          SUMMARY
+
+          if [ "$PINNED_TAG" = "$LATEST_TAG" ]; then
+            echo "Up to date." >> "$GITHUB_STEP_SUMMARY"
+            echo "libsignal is up to date at $PINNED_TAG"
+            exit 0
+          fi
+
+          # Versions differ -- check if an issue already exists
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Update available: $PINNED_TAG -> $LATEST_TAG" >> "$GITHUB_STEP_SUMMARY"
+
+          ISSUE_TITLE="libsignal update available: $LATEST_TAG"
+          EXISTING=$(gh issue list \
+            --repo Pure-Karma-Labs/Orbital-Mobile \
+            --state open \
+            --search "$ISSUE_TITLE" \
+            --json number \
+            --jq '.[0].number // empty')
+
+          if [ -n "$EXISTING" ]; then
+            echo "Open issue #$EXISTING already exists for $LATEST_TAG -- skipping creation."
+            echo "Existing issue: https://github.com/Pure-Karma-Labs/Orbital-Mobile/issues/$EXISTING" \
+              >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Creating new issue for $LATEST_TAG..."
+            ISSUE_BODY=$(cat <<ISSUEBODY
+          libsignal update available: $PINNED_TAG -> $LATEST_TAG
+
+          The Orbital-Mobile crate is pinned to $PINNED_TAG but the upstream Signal repository has released $LATEST_TAG.
+
+          Why manual review is required:
+          cargo-audit cannot detect advisories for git-sourced dependencies (our libsignal dependency is a { git = "...", tag = "..." } entry, not a crates.io package). This means the RustSec advisory database will not flag CVEs or breaking changes introduced between releases. Manual review of the upstream changelog is required before updating.
+
+          Review checklist:
+          - Read the libsignal changelog at https://github.com/signalapp/libsignal/releases between $PINNED_TAG and $LATEST_TAG
+          - Check for security advisories or breaking API changes
+          - Update the tag field in packages/orbital-signal/rust/orbital_signal/Cargo.toml to $LATEST_TAG
+          - Run cargo test and cargo clippy in the crate directory
+          - Verify iOS and Android builds succeed
+
+          This issue was created automatically by the weekly security workflow.
+          ISSUEBODY
+          )
+            gh issue create \
+              --repo Pure-Karma-Labs/Orbital-Mobile \
+              --title "$ISSUE_TITLE" \
+              --body "$ISSUE_BODY" \
+              --label "security,dependencies" 2>/dev/null \
+            || gh issue create \
+              --repo Pure-Karma-Labs/Orbital-Mobile \
+              --title "$ISSUE_TITLE" \
+              --body "$ISSUE_BODY"
+          fi

@@ -1,0 +1,20 @@
+version: 2
+
+updates:
+  # npm dependencies (root package.json)
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+
+  # Rust/Cargo dependencies (orbital_signal crate)
+  - package-ecosystem: cargo
+    directory: /packages/orbital-signal/rust/orbital_signal
+    schedule:
+      interval: weekly
+
+  # GitHub Actions (workflow files)
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

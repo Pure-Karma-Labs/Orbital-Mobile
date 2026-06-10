@@ -298,7 +298,7 @@ pub fn signal_encrypt(input: EncryptInput) -> Result<EncryptResult, SignalError>
             .load_session(&protocol_address)
             .await
             .map_err(SignalError::from)?
-            .ok_or_else(|| SignalError::NoSession)?;
+            .ok_or(SignalError::NoSession)?;
 
         let updated_session_bytes =
             updated_session.serialize().map_err(SignalError::from)?;
@@ -483,7 +483,7 @@ pub fn signal_decrypt_pre_key(
                 .map_err(SignalError::from)?;
 
         // Extract sender identity key from the message BEFORE decryption
-        let sender_identity_key = prekey_signal_message.identity_key().clone();
+        let sender_identity_key = *prekey_signal_message.identity_key();
 
         // Extract consumed key IDs from the message
         let consumed_pre_key_id = prekey_signal_message.pre_key_id().map(u32::from);

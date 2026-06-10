@@ -1,0 +1,17 @@
+# cargo-audit configuration for orbital_signal
+#
+# All ignored advisories below are transitive dependencies of libsignal v0.83.0
+# (hpke-rs via signal-crypto; libcrux-sha3 via libcrux-ml-kem and spqr).
+# They cannot be fixed without upgrading the pinned libsignal tag — tracked in
+# the "upgrade libsignal" GitHub issue filed 2026-06-10. Remove these entries
+# when libsignal is bumped (upstream v0.95.0+ carries fixed versions).
+#
+# Do NOT add new entries here without a tracking issue and a comment.
+
+[advisories]
+ignore = [
+    "RUSTSEC-2026-0069", # hpke-rs 0.3.0: incorrect length encoding on KDF export
+    "RUSTSEC-2026-0070", # hpke-rs 0.3.0: panic on export-only context (high 8.2)
+    "RUSTSEC-2026-0071", # hpke-rs 0.3.0: nonce reuse in HPKE context (critical 9.3)
+    "RUSTSEC-2026-0074", # libcrux-sha3 0.0.2/0.0.3: incorrect incremental SHAKE output
+]

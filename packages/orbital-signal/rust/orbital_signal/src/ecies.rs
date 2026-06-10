@@ -119,7 +119,7 @@ pub fn ecies_seal(
 
     // -- Ephemeral keypair --
 
-    let ephemeral_secret = EphemeralSecret::random_from_rng(&mut rand_core::OsRng);
+    let ephemeral_secret = EphemeralSecret::random_from_rng(rand_core::OsRng);
     let ephemeral_public = X25519PublicKey::from(&ephemeral_secret);
 
     // -- ECDH --

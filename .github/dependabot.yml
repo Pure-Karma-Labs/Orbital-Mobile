@@ -1,0 +1,33 @@
+version: 2
+
+updates:
+  # npm dependencies (root package.json)
+  # Grouped to avoid flooding the PR queue: React Native's dependency graph is
+  # very active and ungrouped weekly updates would produce 10+ PRs per week.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      production-dependencies:
+        dependency-type: production
+      development-dependencies:
+        dependency-type: development
+        update-types: ["minor", "patch"]
+
+  # Rust/Cargo dependencies (orbital_signal crate)
+  # Note: the libsignal git dependency is NOT covered by Dependabot or
+  # cargo-audit -- the weekly libsignal-check job in security.yml tracks it.
+  - package-ecosystem: cargo
+    directory: /packages/orbital-signal/rust/orbital_signal
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # GitHub Actions (workflow files)
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

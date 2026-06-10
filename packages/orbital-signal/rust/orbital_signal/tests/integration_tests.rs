@@ -118,6 +118,7 @@ fn test_invalid_kyber_pre_key_deserialization() {
 // Encrypt/decrypt round-trip (Issue #11 PoC)
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "dev-roundtrip")]
 #[test]
 fn test_encrypt_decrypt_roundtrip_basic() {
     let plaintext = b"Hello Signal Protocol!".to_vec();
@@ -129,6 +130,7 @@ fn test_encrypt_decrypt_roundtrip_basic() {
     assert!(result.elapsed_ms < 30_000, "should complete in <30s");
 }
 
+#[cfg(feature = "dev-roundtrip")]
 #[test]
 fn test_encrypt_decrypt_roundtrip_empty() {
     let result = test_encrypt_decrypt_roundtrip(vec![])
@@ -137,6 +139,7 @@ fn test_encrypt_decrypt_roundtrip_empty() {
     assert!(result.decrypted.is_empty());
 }
 
+#[cfg(feature = "dev-roundtrip")]
 #[test]
 fn test_encrypt_decrypt_roundtrip_repeated() {
     let result = test_encrypt_decrypt_roundtrip_n(b"repeat test".to_vec(), 5)

@@ -1613,6 +1613,10 @@ export type DecryptInput = {
   identityKeyPair: IdentityKeyPairData;
   registrationId: /*u32*/ number;
   senderAddress: ProtocolAddressData;
+  /**
+   * Our own protocol address (own user UUID as a bare hyphenated UUID + device_id 1).
+   */
+  localAddress: ProtocolAddressData;
   sessionRecord: ArrayBuffer;
   remoteIdentity?: ArrayBuffer;
   ciphertext: ArrayBuffer;
@@ -1641,6 +1645,7 @@ const FfiConverterTypeDecryptInput = (() => {
         identityKeyPair: FfiConverterTypeIdentityKeyPairData.read(from),
         registrationId: FfiConverterUInt32.read(from),
         senderAddress: FfiConverterTypeProtocolAddressData.read(from),
+        localAddress: FfiConverterTypeProtocolAddressData.read(from),
         sessionRecord: FfiConverterArrayBuffer.read(from),
         remoteIdentity: FfiConverterOptionalArrayBuffer.read(from),
         ciphertext: FfiConverterArrayBuffer.read(from),
@@ -1650,6 +1655,7 @@ const FfiConverterTypeDecryptInput = (() => {
       FfiConverterTypeIdentityKeyPairData.write(value.identityKeyPair, into);
       FfiConverterUInt32.write(value.registrationId, into);
       FfiConverterTypeProtocolAddressData.write(value.senderAddress, into);
+      FfiConverterTypeProtocolAddressData.write(value.localAddress, into);
       FfiConverterArrayBuffer.write(value.sessionRecord, into);
       FfiConverterOptionalArrayBuffer.write(value.remoteIdentity, into);
       FfiConverterArrayBuffer.write(value.ciphertext, into);
@@ -1659,6 +1665,7 @@ const FfiConverterTypeDecryptInput = (() => {
         FfiConverterTypeIdentityKeyPairData.allocationSize(value.identityKeyPair) +
         FfiConverterUInt32.allocationSize(value.registrationId) +
         FfiConverterTypeProtocolAddressData.allocationSize(value.senderAddress) +
+        FfiConverterTypeProtocolAddressData.allocationSize(value.localAddress) +
         FfiConverterArrayBuffer.allocationSize(value.sessionRecord) +
         FfiConverterOptionalArrayBuffer.allocationSize(value.remoteIdentity) +
         FfiConverterArrayBuffer.allocationSize(value.ciphertext)
@@ -1675,6 +1682,10 @@ export type DecryptPreKeyInput = {
   identityKeyPair: IdentityKeyPairData;
   registrationId: /*u32*/ number;
   senderAddress: ProtocolAddressData;
+  /**
+   * Our own protocol address (own user UUID as a bare hyphenated UUID + device_id 1).
+   */
+  localAddress: ProtocolAddressData;
   existingSessionRecord?: ArrayBuffer;
   remoteIdentity?: ArrayBuffer;
   preKeyRecord?: ArrayBuffer;
@@ -1706,6 +1717,7 @@ const FfiConverterTypeDecryptPreKeyInput = (() => {
         identityKeyPair: FfiConverterTypeIdentityKeyPairData.read(from),
         registrationId: FfiConverterUInt32.read(from),
         senderAddress: FfiConverterTypeProtocolAddressData.read(from),
+        localAddress: FfiConverterTypeProtocolAddressData.read(from),
         existingSessionRecord: FfiConverterOptionalArrayBuffer.read(from),
         remoteIdentity: FfiConverterOptionalArrayBuffer.read(from),
         preKeyRecord: FfiConverterOptionalArrayBuffer.read(from),
@@ -1718,6 +1730,7 @@ const FfiConverterTypeDecryptPreKeyInput = (() => {
       FfiConverterTypeIdentityKeyPairData.write(value.identityKeyPair, into);
       FfiConverterUInt32.write(value.registrationId, into);
       FfiConverterTypeProtocolAddressData.write(value.senderAddress, into);
+      FfiConverterTypeProtocolAddressData.write(value.localAddress, into);
       FfiConverterOptionalArrayBuffer.write(value.existingSessionRecord, into);
       FfiConverterOptionalArrayBuffer.write(value.remoteIdentity, into);
       FfiConverterOptionalArrayBuffer.write(value.preKeyRecord, into);
@@ -1730,6 +1743,7 @@ const FfiConverterTypeDecryptPreKeyInput = (() => {
         FfiConverterTypeIdentityKeyPairData.allocationSize(value.identityKeyPair) +
         FfiConverterUInt32.allocationSize(value.registrationId) +
         FfiConverterTypeProtocolAddressData.allocationSize(value.senderAddress) +
+        FfiConverterTypeProtocolAddressData.allocationSize(value.localAddress) +
         FfiConverterOptionalArrayBuffer.allocationSize(value.existingSessionRecord) +
         FfiConverterOptionalArrayBuffer.allocationSize(value.remoteIdentity) +
         FfiConverterOptionalArrayBuffer.allocationSize(value.preKeyRecord) +
@@ -1877,6 +1891,13 @@ export type EncryptInput = {
    */
   remoteAddress: ProtocolAddressData;
   /**
+   * Our own protocol address. `name` = own user UUID (must remain a bare
+   * hyphenated UUID — libsignal v0.95+ parses it as a Signal ACI ServiceId
+   * and binds both addresses into the message MAC), `device_id` = 1 for
+   * phone-only beta.
+   */
+  localAddress: ProtocolAddressData;
+  /**
    * Plaintext message bytes.
    */
   plaintext: ArrayBuffer;
@@ -1907,6 +1928,7 @@ const FfiConverterTypeEncryptInput = (() => {
         sessionRecord: FfiConverterOptionalArrayBuffer.read(from),
         remoteIdentity: FfiConverterOptionalArrayBuffer.read(from),
         remoteAddress: FfiConverterTypeProtocolAddressData.read(from),
+        localAddress: FfiConverterTypeProtocolAddressData.read(from),
         plaintext: FfiConverterArrayBuffer.read(from),
       };
     }
@@ -1916,6 +1938,7 @@ const FfiConverterTypeEncryptInput = (() => {
       FfiConverterOptionalArrayBuffer.write(value.sessionRecord, into);
       FfiConverterOptionalArrayBuffer.write(value.remoteIdentity, into);
       FfiConverterTypeProtocolAddressData.write(value.remoteAddress, into);
+      FfiConverterTypeProtocolAddressData.write(value.localAddress, into);
       FfiConverterArrayBuffer.write(value.plaintext, into);
     }
     allocationSize(value: TypeName): number {
@@ -1925,6 +1948,7 @@ const FfiConverterTypeEncryptInput = (() => {
         FfiConverterOptionalArrayBuffer.allocationSize(value.sessionRecord) +
         FfiConverterOptionalArrayBuffer.allocationSize(value.remoteIdentity) +
         FfiConverterTypeProtocolAddressData.allocationSize(value.remoteAddress) +
+        FfiConverterTypeProtocolAddressData.allocationSize(value.localAddress) +
         FfiConverterArrayBuffer.allocationSize(value.plaintext)
       );
     }
@@ -2492,6 +2516,10 @@ export type ProcessPreKeyBundleInput = {
   identityKeyPair: IdentityKeyPairData;
   registrationId: /*u32*/ number;
   remoteAddress: ProtocolAddressData;
+  /**
+   * Our own protocol address (own user UUID as a bare hyphenated UUID + device_id 1).
+   */
+  localAddress: ProtocolAddressData;
   bundle: PreKeyBundleData;
   existingSessionRecord?: ArrayBuffer;
   remoteIdentity?: ArrayBuffer;
@@ -2520,6 +2548,7 @@ const FfiConverterTypeProcessPreKeyBundleInput = (() => {
         identityKeyPair: FfiConverterTypeIdentityKeyPairData.read(from),
         registrationId: FfiConverterUInt32.read(from),
         remoteAddress: FfiConverterTypeProtocolAddressData.read(from),
+        localAddress: FfiConverterTypeProtocolAddressData.read(from),
         bundle: FfiConverterTypePreKeyBundleData.read(from),
         existingSessionRecord: FfiConverterOptionalArrayBuffer.read(from),
         remoteIdentity: FfiConverterOptionalArrayBuffer.read(from),
@@ -2529,6 +2558,7 @@ const FfiConverterTypeProcessPreKeyBundleInput = (() => {
       FfiConverterTypeIdentityKeyPairData.write(value.identityKeyPair, into);
       FfiConverterUInt32.write(value.registrationId, into);
       FfiConverterTypeProtocolAddressData.write(value.remoteAddress, into);
+      FfiConverterTypeProtocolAddressData.write(value.localAddress, into);
       FfiConverterTypePreKeyBundleData.write(value.bundle, into);
       FfiConverterOptionalArrayBuffer.write(value.existingSessionRecord, into);
       FfiConverterOptionalArrayBuffer.write(value.remoteIdentity, into);
@@ -2538,6 +2568,7 @@ const FfiConverterTypeProcessPreKeyBundleInput = (() => {
         FfiConverterTypeIdentityKeyPairData.allocationSize(value.identityKeyPair) +
         FfiConverterUInt32.allocationSize(value.registrationId) +
         FfiConverterTypeProtocolAddressData.allocationSize(value.remoteAddress) +
+        FfiConverterTypeProtocolAddressData.allocationSize(value.localAddress) +
         FfiConverterTypePreKeyBundleData.allocationSize(value.bundle) +
         FfiConverterOptionalArrayBuffer.allocationSize(value.existingSessionRecord) +
         FfiConverterOptionalArrayBuffer.allocationSize(value.remoteIdentity)

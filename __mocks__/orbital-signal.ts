@@ -4,6 +4,13 @@
  * The native binary is unavailable in the Jest environment. This mock provides
  * no-op stubs for all exported functions. Tests that need specific return values
  * override with jest.mock('orbital-signal', () => ({ ... })) per-file.
+ *
+ * NOTE (libsignal v0.95+): the session functions (processPreKeyBundle,
+ * signalEncrypt, signalDecrypt, signalDecryptPreKey) require `localAddress`
+ * in their input records — the real FFI serializer rejects a missing field,
+ * but these untyped stubs will NOT. When writing tests for the 1:1 session
+ * service (Issue #17), always pass localAddress = { name: <own userId,
+ * bare UUID>, deviceId: 1 } or your test will pass while the device fails.
  */
 
 const noopBuffer = () => new ArrayBuffer(0);

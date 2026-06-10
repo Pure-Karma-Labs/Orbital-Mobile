@@ -36,6 +36,11 @@ pub enum SignalError {
 
 impl From<SignalProtocolError> for SignalError {
     fn from(err: SignalProtocolError) -> Self {
+        // Exhaustive on purpose (no wildcard arm): a libsignal upgrade that
+        // adds error variants must fail compilation here so each new variant
+        // gets a deliberate mapping instead of silently degrading to
+        // InternalError. (v0.83→v0.95 added InvalidKeyAgreement, which a
+        // previous wildcard absorbed without anyone noticing.)
         match &err {
             SignalProtocolError::InvalidArgument(_) => SignalError::InvalidArgument {
                 reason: err.to_string(),
@@ -103,8 +108,7 @@ impl From<SignalProtocolError> for SignalError {
             SignalProtocolError::InvalidProtocolAddress { .. } => SignalError::InvalidArgument {
                 reason: err.to_string(),
             },
-            #[allow(unreachable_patterns)]
-            _ => SignalError::InternalError {
+            SignalProtocolError::InvalidKeyAgreement => SignalError::InvalidKey {
                 reason: err.to_string(),
             },
         }

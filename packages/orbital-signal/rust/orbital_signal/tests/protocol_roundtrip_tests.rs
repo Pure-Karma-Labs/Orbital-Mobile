@@ -84,10 +84,15 @@ fn test_session_roundtrip_via_public_api() {
         name: "bob-uuid-session-rt".to_string(),
         device_id: 1,
     };
+    let alice_address = ProtocolAddressData {
+        name: "alice-uuid-session-rt".to_string(),
+        device_id: 1,
+    };
     let bundle_result = process_pre_key_bundle(ProcessPreKeyBundleInput {
         identity_key_pair: alice_identity.clone(),
         registration_id: 1,
         remote_address: bob_address.clone(),
+        local_address: alice_address.clone(),
         bundle,
         existing_session_record: None,
         remote_identity: None,
@@ -107,6 +112,7 @@ fn test_session_roundtrip_via_public_api() {
         session_record: Some(bundle_result.updated_session_record.clone()),
         remote_identity: Some(bundle_result.identity_key.clone()),
         remote_address: bob_address.clone(),
+        local_address: alice_address.clone(),
         plaintext: plaintext_msg.to_vec(),
     })
     .expect("signal_encrypt should succeed");
@@ -117,14 +123,11 @@ fn test_session_roundtrip_via_public_api() {
     );
 
     // 7. Bob: signal_decrypt_pre_key (first message is always PreKeySignalMessage)
-    let alice_address = ProtocolAddressData {
-        name: "alice-uuid-session-rt".to_string(),
-        device_id: 1,
-    };
     let decrypt_result = signal_decrypt_pre_key(DecryptPreKeyInput {
         identity_key_pair: bob_identity.clone(),
         registration_id: 2,
         sender_address: alice_address.clone(),
+        local_address: bob_address.clone(),
         existing_session_record: None,
         remote_identity: None, // Bob has not seen Alice before
         pre_key_record: Some(bob_pre_key_record),
@@ -272,6 +275,7 @@ fn test_identity_change_detection_same_identity() {
         identity_key_pair: alice_identity.clone(),
         registration_id: 1,
         remote_address: bob_address.clone(),
+        local_address: alice_address.clone(),
         bundle,
         existing_session_record: None,
         remote_identity: None,
@@ -285,6 +289,7 @@ fn test_identity_change_detection_same_identity() {
         session_record: Some(bundle_result.updated_session_record),
         remote_identity: Some(bundle_result.identity_key),
         remote_address: bob_address.clone(),
+        local_address: alice_address.clone(),
         plaintext: b"same identity test".to_vec(),
     })
     .expect("signal_encrypt");
@@ -294,6 +299,7 @@ fn test_identity_change_detection_same_identity() {
         identity_key_pair: bob_identity.clone(),
         registration_id: 2,
         sender_address: alice_address.clone(),
+        local_address: bob_address.clone(),
         existing_session_record: None,
         remote_identity: None, // No prior identity -> identity_changed: false
         pre_key_record: Some(bob_pre_key_record),
@@ -386,6 +392,7 @@ fn test_identity_change_detection_different_identity() {
         identity_key_pair: alice1_identity.clone(),
         registration_id: 1,
         remote_address: bob_address.clone(),
+        local_address: alice_address.clone(),
         bundle: bundle1,
         existing_session_record: None,
         remote_identity: None,
@@ -399,6 +406,7 @@ fn test_identity_change_detection_different_identity() {
         session_record: Some(bundle_result1.updated_session_record),
         remote_identity: Some(bundle_result1.identity_key),
         remote_address: bob_address.clone(),
+        local_address: alice_address.clone(),
         plaintext: b"message from alice #1".to_vec(),
     })
     .expect("Alice #1 signal_encrypt");
@@ -408,6 +416,7 @@ fn test_identity_change_detection_different_identity() {
         identity_key_pair: bob_identity.clone(),
         registration_id: 2,
         sender_address: alice_address.clone(),
+        local_address: bob_address.clone(),
         existing_session_record: None,
         remote_identity: None,
         pre_key_record: Some(bob_pre_key1),
@@ -454,6 +463,7 @@ fn test_identity_change_detection_different_identity() {
         identity_key_pair: alice2_identity.clone(),
         registration_id: 3,
         remote_address: bob_address.clone(),
+        local_address: alice_address.clone(),
         bundle: bundle2,
         existing_session_record: None,
         remote_identity: None,
@@ -467,6 +477,7 @@ fn test_identity_change_detection_different_identity() {
         session_record: Some(bundle_result2.updated_session_record),
         remote_identity: Some(bundle_result2.identity_key),
         remote_address: bob_address.clone(),
+        local_address: alice_address.clone(),
         plaintext: b"message from alice #2".to_vec(),
     })
     .expect("Alice #2 signal_encrypt");
@@ -476,6 +487,7 @@ fn test_identity_change_detection_different_identity() {
         identity_key_pair: bob_identity.clone(),
         registration_id: 2,
         sender_address: alice_address.clone(),
+        local_address: bob_address.clone(),
         existing_session_record: Some(decrypt_result1.updated_session_record.clone()),
         remote_identity: Some(alice1_identity_key_from_msg.clone()),
         pre_key_record: Some(bob_pre_key2.clone()),
@@ -505,6 +517,7 @@ fn test_identity_change_detection_different_identity() {
         identity_key_pair: bob_identity.clone(),
         registration_id: 2,
         sender_address: alice_address.clone(),
+        local_address: bob_address.clone(),
         existing_session_record: Some(decrypt_result1.updated_session_record),
         remote_identity: None, // Omit to allow trust-on-first-use
         pre_key_record: Some(bob_pre_key2),
@@ -527,5 +540,123 @@ fn test_identity_change_detection_different_identity() {
     assert_ne!(
         alice1_identity_key_from_msg, decrypt_result2.sender_identity_key,
         "Alice #1 and #2 should have different sender identity keys in their messages"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 8d: UUID address names exercise the v0.95 ServiceId MAC-binding path
+// ---------------------------------------------------------------------------
+//
+// Since libsignal v0.95, address names that parse as Signal ACI ServiceIds
+// (bare hyphenated UUIDs — the production format) are bound into the message
+// MAC together with the device IDs. Names that don't parse skip the binding
+// (graceful path), which is what every other test in this file exercises.
+// This test uses real UUIDs so the binding is active, and asserts both the
+// happy path and that a receiver claiming the wrong local address fails.
+
+#[test]
+fn test_session_roundtrip_with_uuid_addresses_mac_binding() {
+    let plaintext_msg = b"MAC-bound message between real ACI addresses";
+
+    let alice_identity = generate_identity_key_pair();
+    let bob_identity = generate_identity_key_pair();
+
+    let bob_pre_key_record = generate_pre_key(31).expect("pre-key generation");
+    let bob_signed_pre_key_record =
+        generate_signed_pre_key(31, bob_identity.clone(), 1700000000000)
+            .expect("signed pre-key generation");
+    let bob_kyber_result =
+        generate_kyber_pre_key_sync(31, bob_identity.clone(), 1700000000000, false);
+
+    let pre_key_pub = get_pre_key_public(bob_pre_key_record.clone()).expect("pre-key public");
+    let signed_pre_key_pub = get_signed_pre_key_public(bob_signed_pre_key_record.clone())
+        .expect("signed pre-key public");
+    let kyber_pre_key_pub =
+        get_kyber_pre_key_public(bob_kyber_result.record.clone()).expect("kyber pre-key public");
+
+    let bundle = PreKeyBundleData {
+        registration_id: 2,
+        device_id: 1,
+        pre_key_id: Some(pre_key_pub.id),
+        pre_key_public: Some(pre_key_pub.public_key),
+        signed_pre_key_id: signed_pre_key_pub.id,
+        signed_pre_key_public: signed_pre_key_pub.public_key,
+        signed_pre_key_signature: signed_pre_key_pub.signature,
+        identity_key: bob_identity.public_key.clone(),
+        kyber_pre_key_id: Some(kyber_pre_key_pub.id),
+        kyber_pre_key_public: Some(kyber_pre_key_pub.public_key),
+        kyber_pre_key_signature: Some(kyber_pre_key_pub.signature),
+    };
+
+    // Bare hyphenated UUIDs — parse as ACI ServiceIds in libsignal v0.95+
+    let bob_address = ProtocolAddressData {
+        name: "f47ac10b-58cc-4372-a567-0e02b2c3d479".to_string(),
+        device_id: 1,
+    };
+    let alice_address = ProtocolAddressData {
+        name: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+        device_id: 1,
+    };
+
+    let bundle_result = process_pre_key_bundle(ProcessPreKeyBundleInput {
+        identity_key_pair: alice_identity.clone(),
+        registration_id: 1,
+        remote_address: bob_address.clone(),
+        local_address: alice_address.clone(),
+        bundle,
+        existing_session_record: None,
+        remote_identity: None,
+    })
+    .expect("process_pre_key_bundle with UUID addresses");
+
+    let encrypt_result = signal_encrypt(EncryptInput {
+        identity_key_pair: alice_identity.clone(),
+        registration_id: 1,
+        session_record: Some(bundle_result.updated_session_record.clone()),
+        remote_identity: Some(bundle_result.identity_key.clone()),
+        remote_address: bob_address.clone(),
+        local_address: alice_address.clone(),
+        plaintext: plaintext_msg.to_vec(),
+    })
+    .expect("signal_encrypt with UUID addresses");
+
+    // Happy path: Bob decrypts with HIS OWN address as local
+    let decrypt_result = signal_decrypt_pre_key(DecryptPreKeyInput {
+        identity_key_pair: bob_identity.clone(),
+        registration_id: 2,
+        sender_address: alice_address.clone(),
+        local_address: bob_address.clone(),
+        existing_session_record: None,
+        remote_identity: None,
+        pre_key_record: Some(bob_pre_key_record.clone()),
+        signed_pre_key_record: bob_signed_pre_key_record.clone(),
+        kyber_pre_key_record: Some(bob_kyber_result.record.clone()),
+        ciphertext: encrypt_result.ciphertext.serialized.clone(),
+    })
+    .expect("decrypt with correct local address");
+    assert_eq!(decrypt_result.plaintext, plaintext_msg.to_vec());
+
+    // Negative: a receiver claiming a DIFFERENT local identity must fail —
+    // the addresses are bound into the MAC, so the message cannot be
+    // re-targeted to another recipient address.
+    let mallory_address = ProtocolAddressData {
+        name: "99999999-9999-4999-8999-999999999999".to_string(),
+        device_id: 1,
+    };
+    let wrong_local_result = signal_decrypt_pre_key(DecryptPreKeyInput {
+        identity_key_pair: bob_identity.clone(),
+        registration_id: 2,
+        sender_address: alice_address.clone(),
+        local_address: mallory_address,
+        existing_session_record: None,
+        remote_identity: None,
+        pre_key_record: Some(bob_pre_key_record),
+        signed_pre_key_record: bob_signed_pre_key_record,
+        kyber_pre_key_record: Some(bob_kyber_result.record),
+        ciphertext: encrypt_result.ciphertext.serialized,
+    });
+    assert!(
+        wrong_local_result.is_err(),
+        "decrypting with a wrong local address must fail MAC verification (got Ok)"
     );
 }

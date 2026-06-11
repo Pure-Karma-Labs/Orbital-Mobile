@@ -23,6 +23,12 @@ const mockEncryptContent = jest.fn();
 const mockDecryptContent = jest.fn();
 
 jest.mock('../crypto/contentCrypto', () => ({
+  PendingWrapError: class PendingWrapError extends Error {
+    constructor() {
+      super('Group key not yet available (pending wrap)');
+      this.name = 'PendingWrapError';
+    }
+  },
   getOrFetchGroupKey: (...args: unknown[]) => mockGetOrFetchGroupKey(...args),
   encryptContent: (...args: unknown[]) => mockEncryptContent(...args),
   decryptContent: (...args: unknown[]) => mockDecryptContent(...args),

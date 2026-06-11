@@ -203,6 +203,19 @@ export function setCachedGroupKey(groupId: string, key: Uint8Array): void {
 const pendingGroups = new Map<string, number>();
 const PENDING_CACHE_TTL_MS = 30_000;
 
+/**
+ * Thrown when a group key is not yet available because the wrap from another
+ * member hasn't been delivered. Transient — callers may retry after
+ * wrapped_key_delivered. Distinct from genuine decrypt failures, which are
+ * permanent.
+ */
+export class PendingWrapError extends Error {
+  constructor() {
+    super('Group key not yet available (pending wrap)');
+    this.name = 'PendingWrapError';
+  }
+}
+
 export function evictPendingCache(groupId: string): void {
   pendingGroups.delete(groupId);
 }
@@ -213,7 +226,7 @@ export async function getOrFetchGroupKey(groupId: string): Promise<Uint8Array> {
 
   const pendingUntil = pendingGroups.get(groupId);
   if (pendingUntil && Date.now() < pendingUntil) {
-    throw new Error('Group key not yet available (pending wrap)');
+    throw new PendingWrapError();
   }
 
   // Tier 2: persisted key. Grandfathered raw keys stored before ECIES existed
@@ -236,7 +249,7 @@ export async function getOrFetchGroupKey(groupId: string): Promise<Uint8Array> {
       const response = await getGroupKey(groupId);
       if (!response.wrappedGroupKey) {
         pendingGroups.set(groupId, Date.now() + PENDING_CACHE_TTL_MS);
-        throw new Error('Group key not yet available (pending wrap)');
+        throw new PendingWrapError();
       }
       try {
         await processReceivedGroupKey(

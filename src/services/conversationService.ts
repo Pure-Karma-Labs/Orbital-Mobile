@@ -17,6 +17,7 @@ import {
   loadPersistedGroupKey,
   setCachedGroupKey,
   evictPendingCache,
+  PendingWrapError,
 } from './crypto/contentCrypto';
 import { getIdentityKeyPair, resolveRemoteIdentityKey } from './crypto/identityKeyAccess';
 import { ApiError } from './api/errors';
@@ -86,13 +87,15 @@ export async function retryPendingNameDecrypt(groupId: string): Promise<void> {
 
     if (isSessionStale(session)) return;
 
-    pendingNameRegistry.delete(groupId);
-
     // Merge with existing conversation to preserve unread counts, timestamps, etc.
+    // Only drop the registry entry once the name actually lands in the store —
+    // if the conversation isn't there yet (join upsert still in flight), keep
+    // the entry so a later attempt can complete.
     const store = useAppStore.getState();
     const existing = store.conversations[groupId];
     if (existing) {
       store.upsertConversation({ ...existing, name });
+      pendingNameRegistry.delete(groupId);
     }
   } catch {
     // Key fetch or decrypt still failed — leave the registry entry for next attempt
@@ -117,7 +120,7 @@ async function decryptGroupNameSafe(
     return decryptGroupName(encryptedName, groupKey);
   } catch (e) {
     // Distinguish pending-key (transient) from genuine decrypt failure (permanent)
-    if (e instanceof Error && e.message.includes('pending wrap')) {
+    if (e instanceof PendingWrapError) {
       registerPendingName(groupId, encryptedName);
       return null;
     }

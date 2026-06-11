@@ -13,6 +13,12 @@ jest.mock('../api/threads', () => ({
 }));
 
 jest.mock('../crypto/contentCrypto', () => ({
+  PendingWrapError: class PendingWrapError extends Error {
+    constructor() {
+      super('Group key not yet available (pending wrap)');
+      this.name = 'PendingWrapError';
+    }
+  },
   decryptContent: jest.fn(),
   encryptContent: jest.fn(),
   getOrFetchGroupKey: jest.fn(),

@@ -1,5 +1,5 @@
 /**
- * Temporary jest config for running tests inside a .claude/worktrees/ checkout.
+ * Jest config for running tests inside a .claude/worktrees/ checkout.
  * The main jest.config.js ignores worktree paths — this override allows tests to run.
  */
 const base = require('./jest.config');

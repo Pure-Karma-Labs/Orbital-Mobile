@@ -21,6 +21,12 @@ const mockGetOrFetchGroupKey = jest.fn();
 const mockDecryptGroupName = jest.fn((name: string, _key: Uint8Array) => name);
 const mockProcessReceivedGroupKey = jest.fn().mockResolvedValue(undefined);
 jest.mock('../crypto/contentCrypto', () => ({
+  PendingWrapError: class PendingWrapError extends Error {
+    constructor() {
+      super('Group key not yet available (pending wrap)');
+      this.name = 'PendingWrapError';
+    }
+  },
   persistGroupKey: jest.fn(),
   processReceivedGroupKey: (...args: unknown[]) => mockProcessReceivedGroupKey(...args),
   getOrFetchGroupKey: (groupId: string) => mockGetOrFetchGroupKey(groupId),
@@ -113,7 +119,7 @@ beforeEach(() => {
 describe('joinOrbit with pending key', () => {
   it('returns null name and registers in pendingNameRegistry when key is pending', async () => {
     mockGetOrFetchGroupKey.mockRejectedValue(
-      new Error('Group key not yet available (pending wrap)'),
+      new (jest.requireMock('../crypto/contentCrypto').PendingWrapError)(),
     );
     mockJoinGroup.mockResolvedValue({
       groupId: 'orbit-pending',
@@ -166,7 +172,7 @@ describe('retryPendingNameDecrypt', () => {
   it('re-decrypts name and updates the store when key becomes available', async () => {
     // Simulate: orbit was joined but key was pending
     mockGetOrFetchGroupKey.mockRejectedValueOnce(
-      new Error('Group key not yet available (pending wrap)'),
+      new (jest.requireMock('../crypto/contentCrypto').PendingWrapError)(),
     );
     mockJoinGroup.mockResolvedValue({
       groupId: 'orbit-retry',
@@ -220,6 +226,40 @@ describe('retryPendingNameDecrypt', () => {
     );
   });
 
+  it('preserves registry entry when conversation is not yet in the store', async () => {
+    mockGetOrFetchGroupKey.mockRejectedValueOnce(
+      new (jest.requireMock('../crypto/contentCrypto').PendingWrapError)(),
+    );
+    mockJoinGroup.mockResolvedValue({
+      groupId: 'orbit-early',
+      encryptedName: 'EncryptedEarly',
+      memberCount: 2,
+      joinedAt: '2026-06-01T00:00:00Z',
+      wrappedGroupKey: null,
+    });
+
+    await joinOrbit('EARLY_CODE');
+    expect(_getPendingNameRegistry().has('orbit-early')).toBe(true);
+    mockUpsertConversation.mockClear();
+
+    const groupKey = new Uint8Array(32);
+    mockGetOrFetchGroupKey.mockResolvedValue(groupKey);
+    mockDecryptGroupName.mockReturnValue('Early Orbit');
+
+    // Store does NOT have the conversation yet (join upsert still in flight)
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-self-user',
+      conversations: {},
+      upsertConversation: mockUpsertConversation,
+    });
+
+    await retryPendingNameDecrypt('orbit-early');
+
+    // No store write, and the registry entry must survive for a later attempt
+    expect(mockUpsertConversation).not.toHaveBeenCalled();
+    expect(_getPendingNameRegistry().has('orbit-early')).toBe(true);
+  });
+
   it('does nothing when groupId is not in the pending registry', async () => {
     await retryPendingNameDecrypt('unknown-group');
 
@@ -230,7 +270,7 @@ describe('retryPendingNameDecrypt', () => {
   it('leaves registry entry intact when retry fails', async () => {
     // Seed the registry by simulating a pending join
     mockGetOrFetchGroupKey.mockRejectedValueOnce(
-      new Error('Group key not yet available (pending wrap)'),
+      new (jest.requireMock('../crypto/contentCrypto').PendingWrapError)(),
     );
     mockJoinGroup.mockResolvedValue({
       groupId: 'orbit-still-pending',
@@ -308,7 +348,7 @@ describe('stale session guard in retryPendingNameDecrypt', () => {
   it('does not write to store when userId changes during retry', async () => {
     // Seed the registry
     mockGetOrFetchGroupKey.mockRejectedValueOnce(
-      new Error('Group key not yet available (pending wrap)'),
+      new (jest.requireMock('../crypto/contentCrypto').PendingWrapError)(),
     );
     mockJoinGroup.mockResolvedValue({
       groupId: 'orbit-logout',
@@ -344,7 +384,7 @@ describe('stale session guard in retryPendingNameDecrypt', () => {
   it('does not write to store when userId is null', async () => {
     // Seed the registry
     mockGetOrFetchGroupKey.mockRejectedValueOnce(
-      new Error('Group key not yet available (pending wrap)'),
+      new (jest.requireMock('../crypto/contentCrypto').PendingWrapError)(),
     );
     mockJoinGroup.mockResolvedValue({
       groupId: 'orbit-null',
@@ -383,7 +423,7 @@ describe('clearConversationServiceState clears pendingNameRegistry', () => {
   it('removes all pending name entries on session cleanup', async () => {
     // Seed the registry
     mockGetOrFetchGroupKey.mockRejectedValue(
-      new Error('Group key not yet available (pending wrap)'),
+      new (jest.requireMock('../crypto/contentCrypto').PendingWrapError)(),
     );
     mockJoinGroup.mockResolvedValue({
       groupId: 'orbit-cleanup',
@@ -408,7 +448,7 @@ describe('clearConversationServiceState clears pendingNameRegistry', () => {
 describe('loadConversations with pending key', () => {
   it('registers pending name when group key is pending during loadConversations', async () => {
     mockGetOrFetchGroupKey.mockRejectedValue(
-      new Error('Group key not yet available (pending wrap)'),
+      new (jest.requireMock('../crypto/contentCrypto').PendingWrapError)(),
     );
     mockListGroups.mockResolvedValue([
       {

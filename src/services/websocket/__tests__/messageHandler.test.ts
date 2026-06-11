@@ -12,6 +12,12 @@ jest.mock('../../api/client', () => ({
 }));
 
 jest.mock('../../crypto/contentCrypto', () => ({
+  PendingWrapError: class PendingWrapError extends Error {
+    constructor() {
+      super('Group key not yet available (pending wrap)');
+      this.name = 'PendingWrapError';
+    }
+  },
   getOrFetchGroupKey: jest.fn(),
   invalidateGroupKey: jest.fn(),
   wrapGroupKey: jest.fn(() => 'wrapped-key-base64'),
@@ -771,6 +777,24 @@ describe('wrapped_key_delivered', () => {
 
     expect(mockEvictPendingCache).toHaveBeenCalledWith('group-1');
     expect(mockGetOrFetchGroupKey).toHaveBeenCalledWith('group-1');
+  });
+
+  it('retries pending orbit name decrypt after key acquisition', async () => {
+    const { retryPendingNameDecrypt } = jest.requireMock('../../conversationService');
+
+    await handleServerMessage(makeDeliveredEvent('group-name-retry'));
+
+    expect(retryPendingNameDecrypt).toHaveBeenCalledWith('group-name-retry');
+  });
+
+  it('does not retry name decrypt when key fetch fails', async () => {
+    const { retryPendingNameDecrypt } = jest.requireMock('../../conversationService');
+    (retryPendingNameDecrypt as jest.Mock).mockClear();
+    mockGetOrFetchGroupKey.mockRejectedValueOnce(new Error('fetch failed'));
+
+    await handleServerMessage(makeDeliveredEvent('group-name-retry-fail'));
+
+    expect(retryPendingNameDecrypt).not.toHaveBeenCalled();
   });
 
   it('deduplicates within 30s TTL', async () => {

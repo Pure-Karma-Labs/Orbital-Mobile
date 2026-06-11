@@ -20,6 +20,12 @@ const mockGenerateGroupKey = jest.fn(() => ({
 const mockEncryptGroupName = jest.fn((_name: string, _key: Uint8Array) => 'encrypted-name');
 const mockWrapGroupKey = jest.fn((_key: Uint8Array, _pub: ArrayBuffer, _gid: string) => 'ecies-wrapped-base64');
 jest.mock('../crypto/contentCrypto', () => ({
+  PendingWrapError: class PendingWrapError extends Error {
+    constructor() {
+      super('Group key not yet available (pending wrap)');
+      this.name = 'PendingWrapError';
+    }
+  },
   persistGroupKey: (...args: unknown[]) => mockPersistGroupKey(...args),
   processReceivedGroupKey: (...args: unknown[]) => mockProcessReceivedGroupKey(...args),
   getOrFetchGroupKey: (groupId: string) => mockGetOrFetchGroupKey(groupId),

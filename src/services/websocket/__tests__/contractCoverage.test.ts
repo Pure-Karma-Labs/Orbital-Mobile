@@ -27,6 +27,12 @@ jest.mock('../../api/client', () => ({
 }));
 
 jest.mock('../../crypto/contentCrypto', () => ({
+  PendingWrapError: class PendingWrapError extends Error {
+    constructor() {
+      super('Group key not yet available (pending wrap)');
+      this.name = 'PendingWrapError';
+    }
+  },
   getOrFetchGroupKey: jest.fn(),
   invalidateGroupKey: jest.fn(),
   wrapGroupKey: jest.fn(),

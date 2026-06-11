@@ -6,7 +6,7 @@ Filing package for the annual encryption self-classification report required by 
 - **Canonical rationale:** `docs/encryption-export-compliance.md` — the CSV values are derived from that document; if classification facts change, update the doc first, then regenerate the year's CSV
 - **Derived:** 2026-06-11, from `docs/encryption-export-compliance.md` and codebase verification (libsignal v0.95.0, Cargo.lock)
 - **Deadline:** must reach BIS by **February 1, 2027** (covers calendar year 2026)
-- **Official sample:** `project-docs/sample-annual-self-classification-report.xlsx` (BIS-provided; our row format matches its "Client App" example)
+- **Official sample:** `project-docs/sample-annual-self-classification-report.xlsx` (BIS-provided; our 12-column format and ITEM TYPE match its "Client App" row; our ECCN/AUTHORIZATION TYPE intentionally differ — see Notes below)
 
 ## Before sending — fill in the 4 contact cells
 

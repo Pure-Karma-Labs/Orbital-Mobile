@@ -11,7 +11,7 @@ Reference document for U.S. Bureau of Industry and Security (BIS) self-classific
 > Note: §740.17(b)(1) is License Exception ENC, not the "mass market" provision — mass market is §742.15(b) and would classify as 5D992 with authorization type `MMKT`. Orbital files as 5D002 + ENC, the standard posture for consumer E2EE messaging apps (Signal and WhatsApp use the same path).
 
 Eligibility basis:
-- App is publicly available via App Store / Play Store (mass market)
+- App is publicly available via App Store / Play Store (consumer distribution)
 - Encryption is used solely for data protection of user content
 - No custom cryptographic hardware
 - Consumer-facing social networking application

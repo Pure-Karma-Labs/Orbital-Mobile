@@ -25,7 +25,7 @@ libsignal-core = { git = "https://github.com/signalapp/libsignal", tag = "v0.95.
 aes-gcm = { version = "0.10", features = ["zeroize"] }
 
 # AES-256-CBC + HMAC-SHA256 for attachment encryption (Signal Protocol format)
-aes = { version = "0.8", features = ["zeroize"] }
+aes = { version = "0.9", features = ["zeroize"] }
 cbc = { version = "0.1", features = ["zeroize"] }
 hmac = { version = "0.12", features = ["reset"] }
 sha2 = "0.10"

@@ -36,6 +36,7 @@ jest.mock('../../conversationService', () => ({
   ensureDmConversation: jest.fn().mockResolvedValue(null),
   hydrateContactsFromOrbits: jest.fn().mockResolvedValue(undefined),
   refreshContactAvatar: jest.fn().mockResolvedValue(undefined),
+  retryPendingNameDecrypt: jest.fn().mockResolvedValue(undefined),
 }));
 
 jest.mock('../../avatarService', () => ({

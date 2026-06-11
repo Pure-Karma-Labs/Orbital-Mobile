@@ -50,6 +50,63 @@ export interface DecryptedGroup {
   isCreator: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// Pending name registry — tracks encrypted orbit names whose group key hasn't
+// arrived yet. When handleWrappedKeyDelivered obtains the key it calls
+// retryPendingNameDecrypt to re-decrypt and update the store.  (#325)
+// ---------------------------------------------------------------------------
+
+const pendingNameRegistry = new Map<string, string>();
+
+/**
+ * Register an encrypted orbit name for deferred decryption once its group
+ * key becomes available. Called when decryptGroupNameSafe encounters a
+ * "pending wrap" error.
+ */
+function registerPendingName(groupId: string, encryptedName: string): void {
+  pendingNameRegistry.set(groupId, encryptedName);
+}
+
+/**
+ * Re-decrypt and update the store name for a group whose key just arrived.
+ *
+ * Session-stale guard: if the user logged out between key delivery and this
+ * call the store write is skipped.
+ */
+export async function retryPendingNameDecrypt(groupId: string): Promise<void> {
+  const encryptedName = pendingNameRegistry.get(groupId);
+  if (!encryptedName) return;
+
+  const session = captureSession();
+  if (!session) return;
+
+  try {
+    const groupKey = await getOrFetchGroupKey(groupId);
+    const name = decryptGroupName(encryptedName, groupKey);
+
+    if (isSessionStale(session)) return;
+
+    pendingNameRegistry.delete(groupId);
+
+    // Merge with existing conversation to preserve unread counts, timestamps, etc.
+    const store = useAppStore.getState();
+    const existing = store.conversations[groupId];
+    if (existing) {
+      store.upsertConversation({ ...existing, name });
+    }
+  } catch {
+    // Key fetch or decrypt still failed — leave the registry entry for next attempt
+    if (__DEV__) {
+      console.warn('[retryPendingNameDecrypt] still unable to decrypt name for', groupId);
+    }
+  }
+}
+
+/** @internal Exposed for tests only */
+export function _getPendingNameRegistry(): ReadonlyMap<string, string> {
+  return pendingNameRegistry;
+}
+
 async function decryptGroupNameSafe(
   encryptedName: string | null,
   groupId: string,
@@ -58,7 +115,12 @@ async function decryptGroupNameSafe(
   try {
     const groupKey = await getOrFetchGroupKey(groupId);
     return decryptGroupName(encryptedName, groupKey);
-  } catch {
+  } catch (e) {
+    // Distinguish pending-key (transient) from genuine decrypt failure (permanent)
+    if (e instanceof Error && e.message.includes('pending wrap')) {
+      registerPendingName(groupId, encryptedName);
+      return null;
+    }
     return '(unable to decrypt)';
   }
 }
@@ -696,6 +758,7 @@ export function clearConversationServiceState(): void {
   selfWrapInflight.clear();
   ensureDmInflight.clear();
   refreshAvatarInflight.clear();
+  pendingNameRegistry.clear();
   hydrateInflight = null;
   lastPendingWrapsSweep = 0;
   lastContactHydration = 0;

@@ -849,7 +849,26 @@ dependencies = [
  "curve25519-dalek",
  "derive_more",
  "displaydoc",
- "libsignal-debug",
+ "libsignal-debug 0.95.0",
+ "log",
+ "rand",
+ "sha2",
+ "subtle",
+ "thiserror",
+ "uuid",
+ "x25519-dalek",
+ "zerocopy",
+]
+
+[[package]]
+name = "libsignal-core"
+version = "0.1.0"
+source = "git+https://github.com/signalapp/libsignal?tag=v0.96.0#65eac5eb751b491a1f89040b1705cf0b250c3869"
+dependencies = [
+ "curve25519-dalek",
+ "derive_more",
+ "displaydoc",
+ "libsignal-debug 0.96.0",
  "log",
  "rand",
  "sha2",
@@ -869,9 +888,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "libsignal-debug"
+version = "0.96.0"
+source = "git+https://github.com/signalapp/libsignal?tag=v0.96.0#65eac5eb751b491a1f89040b1705cf0b250c3869"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "libsignal-protocol"
 version = "0.1.0"
-source = "git+https://github.com/signalapp/libsignal?tag=v0.95.0#aeff97723ce00abc7942fdfc24976f5a06c96184"
+source = "git+https://github.com/signalapp/libsignal?tag=v0.96.0#65eac5eb751b491a1f89040b1705cf0b250c3869"
 dependencies = [
  "aes",
  "aes-gcm-siv",
@@ -890,8 +917,8 @@ dependencies = [
  "indexmap",
  "itertools",
  "libcrux-ml-kem",
- "libsignal-core",
- "libsignal-debug",
+ "libsignal-core 0.1.0 (git+https://github.com/signalapp/libsignal?tag=v0.96.0)",
+ "libsignal-debug 0.96.0",
  "log",
  "prost",
  "prost-build",
@@ -1020,7 +1047,7 @@ dependencies = [
  "hex-literal",
  "hkdf",
  "hmac",
- "libsignal-core",
+ "libsignal-core 0.1.0 (git+https://github.com/signalapp/libsignal?tag=v0.95.0)",
  "libsignal-protocol",
  "rand",
  "rand_core 0.6.4",
@@ -1456,7 +1483,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 [[package]]
 name = "signal-crypto"
 version = "0.1.0"
-source = "git+https://github.com/signalapp/libsignal?tag=v0.95.0#aeff97723ce00abc7942fdfc24976f5a06c96184"
+source = "git+https://github.com/signalapp/libsignal?tag=v0.96.0#65eac5eb751b491a1f89040b1705cf0b250c3869"
 dependencies = [
  "aes",
  "cbc",
@@ -1468,8 +1495,8 @@ dependencies = [
  "hmac",
  "hpke-rs",
  "hpke-rs-crypto",
- "libsignal-core",
- "libsignal-debug",
+ "libsignal-core 0.1.0 (git+https://github.com/signalapp/libsignal?tag=v0.96.0)",
+ "libsignal-debug 0.96.0",
  "rand_chacha",
  "rand_core 0.9.5",
  "sha1",

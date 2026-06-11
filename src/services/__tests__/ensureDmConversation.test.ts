@@ -8,6 +8,12 @@ jest.mock('../api/groups', () => ({
 
 const mockProcessReceivedGroupKey = jest.fn().mockResolvedValue(undefined);
 jest.mock('../crypto/contentCrypto', () => ({
+  PendingWrapError: class PendingWrapError extends Error {
+    constructor() {
+      super('Group key not yet available (pending wrap)');
+      this.name = 'PendingWrapError';
+    }
+  },
   persistGroupKey: jest.fn(),
   processReceivedGroupKey: (...args: unknown[]) => mockProcessReceivedGroupKey(...args),
   getOrFetchGroupKey: jest.fn().mockResolvedValue(new Uint8Array(32)),

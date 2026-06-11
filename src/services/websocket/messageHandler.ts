@@ -18,7 +18,7 @@ import {
 import { resolveRemoteIdentityKey } from '../crypto/identityKeyAccess';
 import { submitWrappedKey } from '../api/groups';
 import { decryptThreadFields, decryptReplyBody, processMediaMetadata } from '../threadService';
-import { ensureDmConversation, hydrateContactsFromOrbits, refreshContactAvatar } from '../conversationService';
+import { ensureDmConversation, hydrateContactsFromOrbits, refreshContactAvatar, retryPendingNameDecrypt } from '../conversationService';
 import { invalidateAvatarCache } from '../avatarService';
 import { useAppStore } from '../../stores/useAppStore';
 import { LRUSet } from './lruSet';
@@ -475,6 +475,9 @@ async function handleWrappedKeyDelivered(data: WrappedKeyDeliveredPayload): Prom
     // When group key rotation lands, must invalidateGroupKey before getOrFetchGroupKey
     // to avoid the cache short-circuit.
     await getOrFetchGroupKey(data.groupId);
+
+    // Key obtained — re-decrypt any orbit name that was pending (#325)
+    await retryPendingNameDecrypt(data.groupId);
   } catch (e) {
     if (__DEV__) {
       console.warn('[WS] wrapped_key_delivered failed:', e instanceof Error ? e.message : e);

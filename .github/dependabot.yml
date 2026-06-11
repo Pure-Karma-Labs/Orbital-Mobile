@@ -15,6 +15,26 @@ updates:
       development-dependencies:
         dependency-type: development
         update-types: ["minor", "patch"]
+    ignore:
+      # React Native upgrades are deliberate projects (native template changes,
+      # codegen, library compat), not dependency bumps — tracked in issue #311.
+      # RN minors are de facto majors; patches still flow. The grouped RN-family
+      # bumps also produce broken lockfiles (missing @react-native/metro-* entries).
+      - dependency-name: "react-native"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "@react-native/*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "@react-native-community/*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "react"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "react-test-renderer"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      # jest majors ride along with RN preset support (see closed #306)
+      - dependency-name: "jest"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/jest"
+        update-types: ["version-update:semver-major"]
 
   # Rust/Cargo dependencies (orbital_signal crate)
   # Note: the libsignal git dependency is NOT covered by Dependabot or

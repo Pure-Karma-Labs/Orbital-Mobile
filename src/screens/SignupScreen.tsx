@@ -4,6 +4,7 @@
 
 import React, { useState } from 'react';
 import {
+  Linking,
   ScrollView,
   Text,
   TouchableOpacity,
@@ -92,6 +93,20 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
 
 
 
+  const legalTextStyle: TextStyle = {
+    fontFamily: theme.typography.fontFamily.body,
+    fontSize: theme.typography.fontSize.sm,
+    color: theme.colors.textSecondary,
+    textAlign: 'center',
+    marginTop: theme.spacing.md,
+    marginBottom: theme.spacing.md,
+  };
+
+  const legalLinkStyle: TextStyle = {
+    color: theme.colors.blue,
+    textDecorationLine: 'underline',
+  };
+
   const switchLinkStyle: TextStyle = {
     fontFamily: theme.typography.fontFamily.body,
     fontSize: theme.typography.fontSize.base,
@@ -156,6 +171,28 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
           />
 
           <ErrorBanner message={error} />
+
+          <Text style={legalTextStyle}>
+            By creating an account, you agree to our{' '}
+            <Text
+              style={legalLinkStyle}
+              accessibilityRole="link"
+              testID="signup-terms-link"
+              onPress={() => Linking.openURL('https://orbitl.org/terms').catch(() => {})}
+            >
+              Terms of Service
+            </Text>
+            {' '}and{' '}
+            <Text
+              style={legalLinkStyle}
+              accessibilityRole="link"
+              testID="signup-privacy-link"
+              onPress={() => Linking.openURL('https://orbitl.org/privacy').catch(() => {})}
+            >
+              Privacy Policy
+            </Text>
+            .
+          </Text>
 
           <Button
             title="Sign Up"

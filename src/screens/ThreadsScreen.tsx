@@ -2,7 +2,7 @@
  * Threads inbox screen — orbit selector, search bar, day-grouped thread list.
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import {
   Animated,
@@ -26,6 +26,7 @@ import { SearchBar } from './threads/SearchBar';
 import { ThreadItem } from './threads/ThreadItem';
 import { OnboardingEmptyState } from './threads/OnboardingEmptyState';
 import { loadThreadsForGroup } from '../services/threadService';
+import { markConversationReadEverywhere } from '../services/conversationService';
 import { PullToRefreshOverlay } from '../components/PullToRefreshOverlay';
 import { usePullToRefresh } from '../hooks/usePullToRefresh';
 import { useWebSocketSubscription } from '../hooks/useWebSocketSubscription';
@@ -72,11 +73,32 @@ function getDayKey(timestamp: number): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-function getThreadState(
-  _thread: Thread,
+/**
+ * Compute per-thread unread state.
+ *
+ * A thread is 'unread' when its latest activity (createdAt or lastReplyAt) is
+ * more recent than both:
+ *   - the user's last view of that specific thread (threadLastViewedAt)
+ *   - the server-side lastReadAt watermark for the conversation (snapshot)
+ *
+ * The lastReadAt snapshot MUST be captured once on focus and held as a ref
+ * for the entire focus session. Reading it live would cause the debounced
+ * markConversationReadEverywhere to flip all threads to 'read' seconds later.
+ *
+ * Exported for unit testing.
+ */
+export function getThreadState(
+  thread: Thread,
+  threadLastViewedAt: Record<string, number>,
+  lastReadAtSnapshot: number | null,
 ): 'read' | 'active' | 'unread' {
-  // Active/unread state will be wired to activeThreadId and unreadCount in a later phase.
-  // For Phase 1, all threads render as 'read'.
+  const threadActivity = Math.max(thread.createdAt, thread.lastReplyAt ?? 0);
+  const viewedAt = threadLastViewedAt[thread.id] ?? 0;
+  const watermark = Math.max(viewedAt, lastReadAtSnapshot ?? 0);
+
+  if (threadActivity > watermark) {
+    return 'unread';
+  }
   return 'read';
 }
 
@@ -205,11 +227,16 @@ function ConnectionStatusBanner({
 
 export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Element {
   const theme = useTheme();
-  const { threads, threadIdsByConversation, activeConversationId, conversations } =
+  const { threads, threadIdsByConversation, threadLastViewedAt, activeConversationId, conversations } =
     useThreadsAndConversation();
   const { connectionStatus } = useConnection();
   const [refreshing, setRefreshing] = useState(false);
   const { scrollY, scrollProps } = usePullToRefresh();
+
+  // Snapshot lastReadAt on focus — held for the entire focus session.
+  // CRITICAL: Do NOT read conversation.lastReadAt live in render —
+  // the debounced mark-read would flip all threads to 'read' seconds after focusing.
+  const lastReadAtSnapshotRef = useRef<number | null>(null);
 
   // Subscribe to real-time updates for the active conversation
   useWebSocketSubscription(activeConversationId);
@@ -217,9 +244,12 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
   useFocusEffect(
     useCallback(() => {
       if (activeConversationId) {
-        const store = useAppStore.getState();
-        store.setViewingConversation(activeConversationId);
-        store.markConversationRead(activeConversationId);
+        // Capture the lastReadAt snapshot for the focus session
+        const conv = useAppStore.getState().conversations[activeConversationId];
+        lastReadAtSnapshotRef.current = conv?.lastReadAt ?? null;
+
+        useAppStore.getState().setViewingConversation(activeConversationId);
+        markConversationReadEverywhere(activeConversationId);
       }
       return () => {
         useAppStore.getState().setViewingConversation(null);
@@ -283,6 +313,8 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
     navigation.navigate('OrbitSelector');
   }, [navigation]);
 
+  const lastReadAtSnapshot = lastReadAtSnapshotRef.current;
+
   const renderRow = useCallback(
     ({ item }: ListRenderItemInfo<ListRow>) => {
       switch (item.type) {
@@ -303,7 +335,7 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
               })}
               replyCount={t.replyCount}
               hasMedia={t.contentType === 'media'}
-              state={getThreadState(t)}
+              state={getThreadState(t, threadLastViewedAt, lastReadAtSnapshot)}
               unreadCount={0}
               onPress={handleThreadPress}
             />
@@ -311,7 +343,7 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
         }
       }
     },
-    [handleThreadPress],
+    [handleThreadPress, threadLastViewedAt, lastReadAtSnapshot],
   );
 
   const keyExtractor = useCallback((item: ListRow) => item.key, []);
@@ -333,6 +365,17 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
     navigation.push('JoinOrbit');
   }, [navigation]);
 
+  // Compute total unread count for other orbits (all group conversations except the active one)
+  const otherOrbitsUnread = useMemo(() => {
+    let total = 0;
+    for (const conv of Object.values(conversations)) {
+      if (conv.type === 'group' && conv.id !== activeConversationId) {
+        total += conv.unreadCount;
+      }
+    }
+    return total;
+  }, [conversations, activeConversationId]);
+
   const isOnboarding = activeConversationId == null;
   const activeConversation = activeConversationId
     ? conversations[activeConversationId]
@@ -351,6 +394,7 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
             orbitName={activeConversation?.name ?? 'Orbit'}
             onOpenOrbits={handleOpenOrbits}
             onCompose={handleCompose}
+            otherOrbitsUnread={otherOrbitsUnread}
           />
           {connectionStatus === 'reconnecting' && (
             <ConnectionStatusBanner theme={theme} />
@@ -393,9 +437,9 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
 // ---------------------------------------------------------------------------
 
 function useThreadsAndConversation() {
-  const { threads, threadIdsByConversation } = useThreads();
+  const { threads, threadIdsByConversation, threadLastViewedAt } = useThreads();
   const { activeConversationId, conversations } = useConversations();
-  return { threads, threadIdsByConversation, activeConversationId, conversations };
+  return { threads, threadIdsByConversation, threadLastViewedAt, activeConversationId, conversations };
 }
 
 export default ThreadsScreen;

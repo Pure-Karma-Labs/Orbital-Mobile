@@ -31,6 +31,7 @@ import { AsciiDay, AsciiSection } from '../components/AsciiSeparator';
 import { IdentityChangeBanner } from '../components/IdentityChangeBanner';
 import { ChatMessageItem } from './chats/ChatMessageItem';
 import { loadThreadsForGroup } from '../services/threadService';
+import { markConversationReadEverywhere } from '../services/conversationService';
 import { PullToRefreshOverlay } from '../components/PullToRefreshOverlay';
 import { usePullToRefresh } from '../hooks/usePullToRefresh';
 import { useWebSocketSubscription } from '../hooks/useWebSocketSubscription';
@@ -157,9 +158,8 @@ export function ChatDetailScreen({
 
   useFocusEffect(
     useCallback(() => {
-      const store = useAppStore.getState();
-      store.setViewingConversation(conversationId);
-      store.markConversationRead(conversationId);
+      useAppStore.getState().setViewingConversation(conversationId);
+      markConversationReadEverywhere(conversationId);
       return () => {
         useAppStore.getState().setViewingConversation(null);
       };

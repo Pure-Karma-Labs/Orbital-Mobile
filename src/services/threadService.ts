@@ -494,7 +494,7 @@ async function mapThreadListItem(
     contentType: 'text',
     pinned: false,
     replyCount: item.replyCount,
-    lastReplyAt: null,
+    lastReplyAt: item.lastReplyAt ? Date.parse(item.lastReplyAt) : null,
     createdAt: new Date(item.createdAt).getTime(),
     updatedAt: new Date(item.createdAt).getTime(),
     syncStatus: 'synced',

@@ -159,3 +159,16 @@ export async function dissolveOrbit(groupId: string): Promise<void> {
   });
 }
 
+/**
+ * Mark a group as read for the current user.
+ * POST /api/groups/:groupId/read (no body) → 200 { last_read_at }
+ */
+export function markGroupRead(
+  groupId: string,
+): Promise<{ lastReadAt: string }> {
+  return request<{ lastReadAt: string }>({
+    method: 'POST',
+    path: `/api/groups/${encodeURIComponent(groupId)}/read`,
+  });
+}
+

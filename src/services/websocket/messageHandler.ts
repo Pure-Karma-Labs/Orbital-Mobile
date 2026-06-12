@@ -18,7 +18,7 @@ import {
 import { resolveRemoteIdentityKey } from '../crypto/identityKeyAccess';
 import { submitWrappedKey } from '../api/groups';
 import { decryptThreadFields, decryptReplyBody, processMediaMetadata } from '../threadService';
-import { ensureDmConversation, hydrateContactsFromOrbits, refreshContactAvatar, retryPendingNameDecrypt } from '../conversationService';
+import { ensureDmConversation, hydrateContactsFromOrbits, refreshContactAvatar, retryPendingNameDecrypt, markConversationReadEverywhere } from '../conversationService';
 import { invalidateAvatarCache } from '../avatarService';
 import { useAppStore } from '../../stores/useAppStore';
 import { LRUSet } from './lruSet';
@@ -275,6 +275,9 @@ async function handleNewThread(data: NewThreadPayload): Promise<void> {
     const storeAfterBump = useAppStore.getState();
     if (data.groupId !== storeAfterBump.viewingConversationId) {
       storeAfterBump.incrementUnreadCount(data.groupId);
+    } else {
+      // User is viewing this conversation — advance the server watermark
+      markConversationReadEverywhere(data.groupId);
     }
 
     // Process thread media (non-blocking)
@@ -341,15 +344,31 @@ async function handleNewReply(data: NewReplyPayload): Promise<void> {
       syncStatus: 'synced',
     };
 
-    useAppStore.getState().upsertReply(reply);
+    const storeBeforeReply = useAppStore.getState();
+    storeBeforeReply.upsertReply(reply);
+
+    // Bump the parent thread's replyCount and lastReplyAt
+    const replyCreatedAt = new Date(data.createdAt).getTime();
+    const parentThread = storeBeforeReply.threads[data.threadId];
+    if (parentThread) {
+      useAppStore.getState().upsertThread({
+        ...parentThread,
+        replyCount: parentThread.replyCount + 1,
+        lastReplyAt: Math.max(parentThread.lastReplyAt ?? 0, replyCreatedAt),
+      });
+    }
+
     useAppStore.getState().bumpLastMessageAt(
       data.groupId,
-      new Date(data.createdAt).getTime(),
+      replyCreatedAt,
     );
 
     const storeAfterBump = useAppStore.getState();
     if (data.groupId !== storeAfterBump.viewingConversationId) {
       storeAfterBump.incrementUnreadCount(data.groupId);
+    } else {
+      // User is viewing this conversation — advance the server watermark
+      markConversationReadEverywhere(data.groupId);
     }
 
     // Process reply media (non-blocking)

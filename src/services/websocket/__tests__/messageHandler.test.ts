@@ -38,11 +38,13 @@ jest.mock('../../threadService', () => ({
   processMediaMetadata: jest.fn().mockResolvedValue(undefined),
 }));
 
+const mockMarkConversationReadEverywhere = jest.fn();
 jest.mock('../../conversationService', () => ({
   ensureDmConversation: jest.fn().mockResolvedValue(null),
   hydrateContactsFromOrbits: jest.fn().mockResolvedValue(undefined),
   refreshContactAvatar: jest.fn().mockResolvedValue(undefined),
   retryPendingNameDecrypt: jest.fn().mockResolvedValue(undefined),
+  markConversationReadEverywhere: (...args: unknown[]) => mockMarkConversationReadEverywhere(...args),
 }));
 
 jest.mock('../../avatarService', () => ({
@@ -75,6 +77,7 @@ jest.mock('../../../stores/useAppStore', () => ({
       bumpLastMessageAt: mockBumpLastMessageAt,
       incrementUnreadCount: mockIncrementUnreadCount,
       contacts: {},
+      threads: {},
     })),
   },
 }));
@@ -733,6 +736,7 @@ describe('wrap_key_request', () => {
       bumpLastMessageAt: mockBumpLastMessageAt,
       incrementUnreadCount: mockIncrementUnreadCount,
       contacts: {},
+      threads: {},
     });
 
     await handleServerMessage(makeWrapKeyRequest('group-auth', 'user-auth'));
@@ -921,6 +925,7 @@ describe('unread count increment', () => {
       bumpLastMessageAt: mockBumpLastMessageAt,
       incrementUnreadCount: mockIncrementUnreadCount,
       contacts: {},
+      threads: {},
     });
   });
 
@@ -964,6 +969,7 @@ describe('unread count increment', () => {
       bumpLastMessageAt: mockBumpLastMessageAt,
       incrementUnreadCount: mockIncrementUnreadCount,
       contacts: {},
+      threads: {},
     });
 
     const msg = JSON.stringify({
@@ -1030,6 +1036,7 @@ describe('unread count increment', () => {
       bumpLastMessageAt: mockBumpLastMessageAt,
       incrementUnreadCount: mockIncrementUnreadCount,
       contacts: {},
+      threads: {},
     });
 
     const msg = JSON.stringify({
@@ -1321,6 +1328,7 @@ describe('blocked user guard', () => {
       bumpLastMessageAt: mockBumpLastMessageAt,
       incrementUnreadCount: mockIncrementUnreadCount,
       contacts: {},
+      threads: {},
     });
 
     const msg = JSON.stringify({
@@ -1362,6 +1370,7 @@ describe('blocked user guard', () => {
       bumpLastMessageAt: mockBumpLastMessageAt,
       incrementUnreadCount: mockIncrementUnreadCount,
       contacts: {},
+      threads: {},
     });
 
     const msg = JSON.stringify({

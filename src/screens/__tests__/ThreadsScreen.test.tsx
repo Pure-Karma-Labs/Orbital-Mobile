@@ -5,7 +5,8 @@
 import React from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { ThemeProvider } from '../../theme';
-import { ThreadsScreen } from '../ThreadsScreen';
+import { ThreadsScreen, getThreadState } from '../ThreadsScreen';
+import type { Thread } from '../../types/store';
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -13,6 +14,10 @@ import { ThreadsScreen } from '../ThreadsScreen';
 
 jest.mock('../../services/threadService', () => ({
   loadThreadsForGroup: jest.fn().mockResolvedValue([]),
+}));
+
+jest.mock('../../services/conversationService', () => ({
+  markConversationReadEverywhere: jest.fn(),
 }));
 
 jest.mock('../../hooks/useBlockedSet', () => ({
@@ -46,6 +51,7 @@ jest.mock('../../stores', () => ({
     getState: jest.fn(() => ({
       setViewingConversation: mockSetViewingConversation,
       markConversationRead: mockMarkConversationRead,
+      conversations: {},
     })),
   },
   useAuth: () => ({
@@ -58,6 +64,7 @@ jest.mock('../../stores', () => ({
   useThreads: jest.fn(() => ({
     threads: {},
     threadIdsByConversation: {},
+    threadLastViewedAt: {},
     replies: {},
     replyIdsByThread: {},
     activeThreadId: null,
@@ -65,6 +72,7 @@ jest.mock('../../stores', () => ({
     upsertThread: jest.fn(),
     removeThread: jest.fn(),
     setActiveThread: jest.fn(),
+    markThreadViewed: jest.fn(),
     setReplies: jest.fn(),
     upsertReply: jest.fn(),
     addOptimisticThread: jest.fn(),
@@ -90,6 +98,7 @@ jest.mock('../../stores', () => ({
     conversationIds: ['group-1'],
     activeConversationId: 'group-1',
     setConversations: jest.fn(),
+    setGroupConversations: jest.fn(),
     upsertConversation: jest.fn(),
     removeConversation: jest.fn(),
     setActiveConversation: jest.fn(),
@@ -235,6 +244,7 @@ describe('ThreadsScreen — with thread data', () => {
         },
       },
       threadIdsByConversation: { 'group-1': ['thread-1'] },
+      threadLastViewedAt: {},
       replies: {},
       replyIdsByThread: {},
       activeThreadId: null,
@@ -242,6 +252,7 @@ describe('ThreadsScreen — with thread data', () => {
       upsertThread: jest.fn(),
       removeThread: jest.fn(),
       setActiveThread: jest.fn(),
+      markThreadViewed: jest.fn(),
       setReplies: jest.fn(),
       upsertReply: jest.fn(),
       addOptimisticThread: jest.fn(),
@@ -265,6 +276,7 @@ describe('ThreadsScreen — with thread data', () => {
       upsertThread: jest.fn(),
       removeThread: jest.fn(),
       setActiveThread: jest.fn(),
+      markThreadViewed: jest.fn(),
       setReplies: jest.fn(),
       upsertReply: jest.fn(),
       addOptimisticThread: jest.fn(),
@@ -298,11 +310,14 @@ describe('ThreadsScreen — with thread data', () => {
 });
 
 describe('ThreadsScreen — focus lifecycle', () => {
-  it('calls setViewingConversation and markConversationRead on mount', () => {
+  it('calls setViewingConversation and markConversationReadEverywhere on mount', () => {
+    const { markConversationReadEverywhere } = jest.requireMock(
+      '../../services/conversationService',
+    ) as { markConversationReadEverywhere: jest.Mock };
     renderThreadsScreen();
 
     expect(mockSetViewingConversation).toHaveBeenCalledWith('group-1');
-    expect(mockMarkConversationRead).toHaveBeenCalledWith('group-1');
+    expect(markConversationReadEverywhere).toHaveBeenCalledWith('group-1');
   });
 
   it('calls setViewingConversation(null) on unmount', () => {
@@ -314,5 +329,61 @@ describe('ThreadsScreen — focus lifecycle', () => {
     });
 
     expect(mockSetViewingConversation).toHaveBeenCalledWith(null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getThreadState — per-thread unread rule (#329)
+// ---------------------------------------------------------------------------
+
+function makeThread(overrides: Partial<Thread> = {}): Thread {
+  return {
+    id: 'thread-1',
+    conversationId: 'group-1',
+    authorId: 'user-1',
+    title: 'Test thread',
+    body: null,
+    contentType: 'text',
+    pinned: false,
+    replyCount: 0,
+    lastReplyAt: null,
+    createdAt: 10_000,
+    updatedAt: 10_000,
+    syncStatus: 'synced',
+    ...overrides,
+  } as Thread;
+}
+
+describe('getThreadState', () => {
+  it('returns unread for a never-viewed thread with no watermark', () => {
+    expect(getThreadState(makeThread(), {}, null)).toBe('unread');
+  });
+
+  it('returns read when the thread was viewed after its latest activity', () => {
+    const thread = makeThread({ createdAt: 10_000, lastReplyAt: 12_000 });
+    expect(getThreadState(thread, { 'thread-1': 13_000 }, null)).toBe('read');
+  });
+
+  it('returns unread when a reply arrives after the last view', () => {
+    const thread = makeThread({ createdAt: 10_000, lastReplyAt: 20_000 });
+    expect(getThreadState(thread, { 'thread-1': 15_000 }, null)).toBe('unread');
+  });
+
+  it('falls back to the conversation lastReadAt snapshot (reinstall case)', () => {
+    // Never viewed locally, but the server watermark covers the activity
+    const thread = makeThread({ createdAt: 10_000, lastReplyAt: 12_000 });
+    expect(getThreadState(thread, {}, 13_000)).toBe('read');
+  });
+
+  it('uses the max of per-thread view and conversation snapshot', () => {
+    // Snapshot is old, but the thread itself was viewed recently
+    const thread = makeThread({ createdAt: 10_000, lastReplyAt: 20_000 });
+    expect(getThreadState(thread, { 'thread-1': 25_000 }, 5_000)).toBe('read');
+  });
+
+  it('treats threads with no replies by createdAt alone', () => {
+    const thread = makeThread({ createdAt: 30_000, lastReplyAt: null });
+    expect(getThreadState(thread, {}, 25_000)).toBe('unread');
+    expect(getThreadState(thread, {}, 35_000)).toBe('read');
   });
 });

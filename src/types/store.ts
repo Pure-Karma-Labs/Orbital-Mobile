@@ -35,6 +35,8 @@ export interface Conversation {
   muteUntil: number | null;
   lastMessageAt: number | null;
   unreadCount: number;
+  /** Epoch ms snapshot from server load — when the user last read this conversation */
+  lastReadAt: number | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -146,6 +148,11 @@ export interface ConversationsState {
 
 export interface ConversationsActions {
   setConversations: (conversations: Conversation[]) => void;
+  /**
+   * Replace all group-type conversations while preserving existing DM conversations.
+   * Fixes the load-wipe bug where loadConversations() would erase DM unread counts.
+   */
+  setGroupConversations: (groupConversations: Conversation[]) => void;
   upsertConversation: (conversation: Conversation) => void;
   removeConversation: (id: string) => void;
   setActiveConversation: (id: string | null) => void;
@@ -170,6 +177,8 @@ export interface ThreadsState {
   /** Maps threadId -> ordered reply IDs */
   replyIdsByThread: Record<string, string[]>;
   activeThreadId: string | null;
+  /** Epoch ms of when the user last viewed each thread (persisted for per-thread unread) */
+  threadLastViewedAt: Record<string, number>;
 }
 
 export interface ThreadsActions {
@@ -186,6 +195,8 @@ export interface ThreadsActions {
   addOptimisticReply: (reply: Reply) => void;
   updateThreadSyncStatus: (id: string, status: SyncStatus) => void;
   updateReplySyncStatus: (id: string, status: SyncStatus) => void;
+  /** Record the user's last view time for a thread (for per-thread unread) */
+  markThreadViewed: (threadId: string) => void;
 }
 
 export type ThreadsSlice = ThreadsState & ThreadsActions;

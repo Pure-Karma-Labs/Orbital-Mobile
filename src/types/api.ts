@@ -149,6 +149,12 @@ export interface GroupResponse {
   activeInviteCode: string | null;
   joinedAt: string;
   groupType?: 'orbit' | 'dm';
+  /** ISO timestamp of the most recent thread/reply in this group (null if no activity) */
+  lastMessageAt?: string | null;
+  /** Server-side unread count for the current user */
+  unreadCount?: number;
+  /** ISO timestamp of when the current user last read this group */
+  lastReadAt?: string | null;
 }
 
 /**
@@ -297,6 +303,10 @@ export interface DmResponse {
   wrappedBy: string | null;
   lastMessageAt: string | null;
   createdAt: string;
+  /** Server-side unread count for the current user */
+  unreadCount?: number;
+  /** ISO timestamp of when the current user last read this DM */
+  lastReadAt?: string | null;
 }
 
 // ============================================================
@@ -372,6 +382,8 @@ export interface ThreadListItem {
   replyCount: number;
   mediaCount: number;
   createdAt: string;
+  /** ISO timestamp of the most recent reply (null if no replies) */
+  lastReplyAt?: string | null;
 }
 
 /**

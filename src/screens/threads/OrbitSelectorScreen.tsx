@@ -68,6 +68,7 @@ export function OrbitSelectorScreen({
         memberCount={item.memberCount}
         isActive={item.id === activeConversationId}
         onPress={handleSelectOrbit}
+        unreadCount={item.unreadCount}
       />
     ),
     [activeConversationId, handleSelectOrbit],

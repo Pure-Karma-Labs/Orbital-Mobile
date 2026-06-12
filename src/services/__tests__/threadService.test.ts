@@ -30,6 +30,7 @@ jest.mock('../../utils/uuid', () => ({
 
 // Mock the zustand store — provide getState with mock actions
 const mockUpsertThread = jest.fn();
+const mockMarkThreadViewed = jest.fn();
 const mockSetReplies = jest.fn();
 const mockAppendReplies = jest.fn();
 const mockAddOptimisticReply = jest.fn();
@@ -40,6 +41,8 @@ const mockUpsertReply = jest.fn();
 jest.mock('../../stores/useAppStore', () => ({
   useAppStore: {
     getState: jest.fn(() => ({
+      threads: {},
+      markThreadViewed: mockMarkThreadViewed,
       upsertThread: mockUpsertThread,
       setReplies: mockSetReplies,
       appendReplies: mockAppendReplies,
@@ -331,6 +334,78 @@ describe('postReply', () => {
     expect(mockAddOptimisticReply).toHaveBeenCalledTimes(1);
 
     expect(mockUpdateReplySyncStatus).toHaveBeenCalledWith('client-uuid-000', 'failed');
+  });
+
+  it('bumps the parent thread replyCount and lastReplyAt after a successful post (#329)', async () => {
+    const { useAppStore } = jest.requireMock('../../stores/useAppStore') as {
+      useAppStore: { getState: jest.Mock };
+    };
+    useAppStore.getState.mockReturnValue({
+      threads: {
+        'thread-1': {
+          id: 'thread-1',
+          conversationId: 'group-1',
+          authorId: 'user-1',
+          authorUsername: 'alice',
+          title: 'T',
+          body: null,
+          contentType: 'text',
+          pinned: false,
+          replyCount: 4,
+          lastReplyAt: 1000,
+          createdAt: 900,
+          updatedAt: 1000,
+          syncStatus: 'synced',
+        },
+      },
+      markThreadViewed: mockMarkThreadViewed,
+      upsertThread: mockUpsertThread,
+      setReplies: mockSetReplies,
+      appendReplies: mockAppendReplies,
+      addOptimisticReply: mockAddOptimisticReply,
+      updateReplySyncStatus: mockUpdateReplySyncStatus,
+      removeReply: mockRemoveReply,
+      upsertReply: mockUpsertReply,
+    });
+    mockCreateReply.mockResolvedValue({
+      replyId: 'server-reply-id',
+      threadId: 'thread-1',
+      createdAt: '2026-04-01T12:00:00Z',
+      media: [],
+    });
+
+    await postReply('thread-1', 'group-1', 'Hi', null, 0, {
+      authorId: 'user-1',
+      authorUsername: 'alice',
+    });
+
+    expect(mockUpsertThread).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'thread-1',
+        replyCount: 5,
+        lastReplyAt: new Date('2026-04-01T12:00:00Z').getTime(),
+      }),
+    );
+    expect(mockMarkThreadViewed).toHaveBeenCalledWith('thread-1');
+  });
+
+  it('does not crash when the parent thread is not in the store', async () => {
+    mockCreateReply.mockResolvedValue({
+      replyId: 'server-reply-id',
+      threadId: 'thread-unknown',
+      createdAt: '2026-04-01T12:00:00Z',
+      media: [],
+    });
+
+    await expect(
+      postReply('thread-unknown', 'group-1', 'Hi', null, 0, {
+        authorId: 'user-1',
+        authorUsername: 'alice',
+      }),
+    ).resolves.toBeDefined();
+
+    expect(mockUpsertThread).not.toHaveBeenCalled();
+    expect(mockMarkThreadViewed).toHaveBeenCalledWith('thread-unknown');
   });
 
   it('passes parentReplyId and depth for nested replies', async () => {

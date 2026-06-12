@@ -653,6 +653,20 @@ export async function postReply(
     store.removeReply(clientId);
     store.upsertReply(confirmedReply);
 
+    // Bump the parent thread so list rows stay live without a refetch (#329).
+    // Mirrors the WS new_reply handler; without this the posting device's
+    // thread list shows a stale reply count until the next server load.
+    const parentThread = getStoreActions().threads[threadId];
+    if (parentThread) {
+      getStoreActions().upsertThread({
+        ...parentThread,
+        replyCount: parentThread.replyCount + 1,
+        lastReplyAt: Math.max(parentThread.lastReplyAt ?? 0, confirmedReply.createdAt),
+      });
+    }
+    // Own reply must not flag the author's own thread as unread
+    getStoreActions().markThreadViewed(threadId);
+
     // Process server-confirmed media (updates expiresAt, server-set fields)
     // Uses existing-row check to avoid overwriting local attachment_key/localPath
     if (response.media && response.media.length > 0) {
@@ -747,6 +761,8 @@ export async function createNewThread(
 
     store.removeThread(clientId);
     store.upsertThread(finalThread);
+    // A thread you just created is not unread for you
+    store.markThreadViewed(finalThread.id);
 
     // Process server-confirmed media (updates expiresAt, server-set fields)
     // Uses existing-row check to avoid overwriting local attachment_key/localPath

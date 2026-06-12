@@ -24,6 +24,8 @@ export interface ChatMessageItemProps {
   author: string;
   time: string;
   isOwn: boolean;
+  /** Unread indicator — yellow accent border + dot (#329). Never set for own messages. */
+  unread?: boolean;
   onPress: (threadId: string) => void;
 }
 
@@ -33,6 +35,7 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
   author,
   time,
   isOwn,
+  unread = false,
   onPress,
 }: ChatMessageItemProps): React.JSX.Element {
   const theme = useTheme();
@@ -46,10 +49,20 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
     paddingHorizontal: theme.spacing.base,
     paddingVertical: theme.spacing.md,
     borderLeftWidth: 3,
-    borderLeftColor: isOwn ? theme.colors.blue : theme.colors.borderSubtle,
+    borderLeftColor: isOwn
+      ? theme.colors.blue
+      : unread
+        ? theme.colors.yellow
+        : theme.colors.borderSubtle,
     backgroundColor: 'transparent',
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: theme.colors.borderSubtle,
+  };
+
+  const unreadDotStyle: TextStyle = {
+    fontSize: theme.typography.fontSize.sm,
+    color: theme.colors.yellow,
+    marginLeft: theme.spacing.xs,
   };
 
   const metaStyle: ViewStyle = {
@@ -84,13 +97,18 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
       onPress={handlePress}
       activeOpacity={0.7}
       accessibilityRole="button"
-      accessibilityLabel={`Message from ${author}`}
+      accessibilityLabel={unread ? `Unread message from ${author}` : `Message from ${author}`}
     >
       <View style={metaStyle}>
         <Text style={authorStyle} numberOfLines={1}>
           {author}
         </Text>
         <Text style={timeStyle}>{time}</Text>
+        {unread && (
+          <Text style={unreadDotStyle} testID={`chat-unread-dot-${threadId}`}>
+            ●
+          </Text>
+        )}
       </View>
       {body ? (
         <EmojiText style={bodyStyle} numberOfLines={4}>

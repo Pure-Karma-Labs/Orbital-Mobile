@@ -5,7 +5,7 @@
  * Threads within the DM are displayed with day grouping.
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import {
   Animated,
@@ -23,6 +23,7 @@ import { useTheme } from '../theme';
 import { useAppStore } from '../stores';
 import { useAuth, useThreads, useContactForConversation } from '../stores';
 import type { Thread } from '../types/store';
+import { getThreadState } from '../utils/threadState';
 import { VerifiedStatus } from '../types/database';
 import type { ChatsStackParamList } from '../navigation/types';
 import { Button } from '../components/Button';
@@ -147,7 +148,7 @@ export function ChatDetailScreen({
   const theme = useTheme();
   const { conversationId, recipientName } = route.params;
 
-  const { threads, threadIdsByConversation } = useThreads();
+  const { threads, threadIdsByConversation, threadLastViewedAt } = useThreads();
   const { userId } = useAuth();
   const contact = useContactForConversation(conversationId);
   const [refreshing, setRefreshing] = useState(false);
@@ -156,8 +157,16 @@ export function ChatDetailScreen({
   // Subscribe to real-time updates for this DM conversation
   useWebSocketSubscription(conversationId);
 
+  // Snapshot lastReadAt on focus — held for the entire focus session.
+  // Do NOT read conversation.lastReadAt live in render: the debounced
+  // mark-read below would flip all rows to 'read' seconds after focusing.
+  const lastReadAtSnapshotRef = useRef<number | null>(null);
+
   useFocusEffect(
     useCallback(() => {
+      const conv = useAppStore.getState().conversations[conversationId];
+      lastReadAtSnapshotRef.current = conv?.lastReadAt ?? null;
+
       useAppStore.getState().setViewingConversation(conversationId);
       markConversationReadEverywhere(conversationId);
       return () => {
@@ -220,6 +229,8 @@ export function ChatDetailScreen({
   const showIdentityBanner =
     contact?.verifiedStatus === VerifiedStatus.Unverified;
 
+  const lastReadAtSnapshot = lastReadAtSnapshotRef.current;
+
   const renderRow = useCallback(
     ({ item }: ListRenderItemInfo<ListRow>) => {
       switch (item.type) {
@@ -229,6 +240,7 @@ export function ChatDetailScreen({
           return <AsciiSection />;
         case 'thread': {
           const t = item.thread;
+          const isOwn = t.authorId === userId;
           return (
             <ChatMessageItem
               threadId={t.id}
@@ -238,14 +250,18 @@ export function ChatDetailScreen({
                 hour: 'numeric',
                 minute: '2-digit',
               })}
-              isOwn={t.authorId === userId}
+              isOwn={isOwn}
+              unread={
+                !isOwn &&
+                getThreadState(t, threadLastViewedAt, lastReadAtSnapshot) === 'unread'
+              }
               onPress={handleThreadPress}
             />
           );
         }
       }
     },
-    [handleThreadPress, userId],
+    [handleThreadPress, userId, threadLastViewedAt, lastReadAtSnapshot],
   );
 
   const keyExtractor = useCallback((item: ListRow) => item.key, []);

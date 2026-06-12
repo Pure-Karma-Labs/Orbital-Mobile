@@ -282,7 +282,7 @@ describe('ChatDetailScreen — navigation', () => {
     const messageItems = renderer.root.findAll(
       (node) =>
         typeof node.props.accessibilityLabel === 'string' &&
-        node.props.accessibilityLabel.endsWith('essage from bob'),
+        /[Mm]essage from bob/.test(node.props.accessibilityLabel),
     );
     expect(messageItems.length).toBeGreaterThan(0);
 

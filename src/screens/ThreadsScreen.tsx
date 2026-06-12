@@ -31,6 +31,7 @@ import { PullToRefreshOverlay } from '../components/PullToRefreshOverlay';
 import { usePullToRefresh } from '../hooks/usePullToRefresh';
 import { useWebSocketSubscription } from '../hooks/useWebSocketSubscription';
 import { useBlockedSet } from '../hooks/useBlockedSet';
+import { getThreadState } from '../utils/threadState';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -72,10 +73,6 @@ function getDayKey(timestamp: number): string {
   const d = new Date(timestamp);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
-
-// Re-exported for existing unit tests; shared with ChatDetailScreen.
-import { getThreadState } from '../utils/threadState';
-export { getThreadState };
 
 // ---------------------------------------------------------------------------
 // Build flat list rows from threads, grouping by day

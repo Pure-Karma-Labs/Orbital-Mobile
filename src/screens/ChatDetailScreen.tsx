@@ -251,10 +251,7 @@ export function ChatDetailScreen({
                 minute: '2-digit',
               })}
               isOwn={isOwn}
-              unread={
-                !isOwn &&
-                getThreadState(t, threadLastViewedAt, lastReadAtSnapshot) === 'unread'
-              }
+              unread={getThreadState(t, threadLastViewedAt, lastReadAtSnapshot) === 'unread'}
               onPress={handleThreadPress}
             />
           );

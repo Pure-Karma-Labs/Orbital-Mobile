@@ -24,7 +24,12 @@ export interface ChatMessageItemProps {
   author: string;
   time: string;
   isOwn: boolean;
-  /** Unread indicator — yellow accent border + dot (#329). Never set for own messages. */
+  /**
+   * Unread indicator — yellow accent border + dot (#329).
+   * In DMs a row is a thread: it can be unread even if the local user
+   * authored it (the other person replied). Self-flagging is prevented
+   * upstream by markThreadViewed on post, not by authorship.
+   */
   unread?: boolean;
   onPress: (threadId: string) => void;
 }
@@ -40,9 +45,6 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
 }: ChatMessageItemProps): React.JSX.Element {
   const theme = useTheme();
 
-  // Invariant: your own messages are never unread, regardless of caller input
-  const showUnread = unread && !isOwn;
-
   const handlePress = useCallback(() => {
     onPress(threadId);
   }, [onPress, threadId]);
@@ -52,10 +54,10 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
     paddingHorizontal: theme.spacing.base,
     paddingVertical: theme.spacing.md,
     borderLeftWidth: 3,
-    borderLeftColor: isOwn
-      ? theme.colors.blue
-      : showUnread
-        ? theme.colors.yellow
+    borderLeftColor: unread
+      ? theme.colors.yellow
+      : isOwn
+        ? theme.colors.blue
         : theme.colors.borderSubtle,
     backgroundColor: 'transparent',
     borderBottomWidth: StyleSheet.hairlineWidth,
@@ -100,14 +102,14 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
       onPress={handlePress}
       activeOpacity={0.7}
       accessibilityRole="button"
-      accessibilityLabel={showUnread ? `Unread message from ${author}` : `Message from ${author}`}
+      accessibilityLabel={unread ? `Unread message from ${author}` : `Message from ${author}`}
     >
       <View style={metaStyle}>
         <Text style={authorStyle} numberOfLines={1}>
           {author}
         </Text>
         <Text style={timeStyle}>{time}</Text>
-        {showUnread && (
+        {unread && (
           <Text style={unreadDotStyle} testID={`chat-unread-dot-${threadId}`}>
             ●
           </Text>

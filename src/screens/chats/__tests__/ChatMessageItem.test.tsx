@@ -49,15 +49,13 @@ describe('ChatMessageItem — unread indicator', () => {
     ).toHaveLength(0);
   });
 
-  it('never shows the dot for own messages, even if unread is passed', () => {
+  it('shows the dot on own-authored thread rows too (other party replied)', () => {
+    // In DMs a row is a thread; replies from the other person make it
+    // unread regardless of who created the thread (#333 follow-up).
     const renderer = renderItem({ isOwn: true, unread: true });
     expect(
-      renderer.root.findAll((n) => n.props.testID === 'chat-unread-dot-t-1'),
-    ).toHaveLength(0);
-    const labelled = renderer.root.findAll(
-      (n) => n.props.accessibilityLabel === 'Message from bob',
-    );
-    expect(labelled.length).toBeGreaterThan(0);
+      renderer.root.findAll((n) => n.props.testID === 'chat-unread-dot-t-1').length,
+    ).toBeGreaterThan(0);
   });
 
   it('hides the dot by default (prop omitted)', () => {

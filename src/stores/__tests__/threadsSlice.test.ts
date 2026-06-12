@@ -274,3 +274,55 @@ describe('threadsSlice — optimistic updates', () => {
     expect(store.getState().replies.A2.syncStatus).toBe('pending');
   });
 });
+
+// ---------------------------------------------------------------------------
+// markThreadViewed — per-thread read watermark (#329)
+// ---------------------------------------------------------------------------
+
+describe('markThreadViewed', () => {
+  it('records the current timestamp for the thread', () => {
+    const store = makeStore();
+    const before = Date.now();
+    store.getState().markThreadViewed('thread-1');
+    const after = Date.now();
+
+    const viewedAt = store.getState().threadLastViewedAt['thread-1'];
+    expect(viewedAt).toBeGreaterThanOrEqual(before);
+    expect(viewedAt).toBeLessThanOrEqual(after);
+  });
+
+  it('updates the timestamp on repeat views', () => {
+    const store = makeStore();
+    store.getState().markThreadViewed('thread-1');
+    const first = store.getState().threadLastViewedAt['thread-1'];
+
+    jest.useFakeTimers().setSystemTime(first + 60_000);
+    store.getState().markThreadViewed('thread-1');
+    expect(store.getState().threadLastViewedAt['thread-1']).toBe(first + 60_000);
+    jest.useRealTimers();
+  });
+
+  it('evicts oldest-by-timestamp entries beyond the 2000-entry cap', () => {
+    const store = makeStore();
+    jest.useFakeTimers().setSystemTime(1_000_000);
+
+    // Seed 2000 entries with increasing timestamps
+    for (let i = 0; i < 2000; i++) {
+      jest.setSystemTime(1_000_000 + i);
+      store.getState().markThreadViewed(`thread-${i}`);
+    }
+    expect(Object.keys(store.getState().threadLastViewedAt)).toHaveLength(2000);
+
+    // One more pushes past the cap — the oldest entry (thread-0) is evicted
+    jest.setSystemTime(2_000_000);
+    store.getState().markThreadViewed('thread-newest');
+
+    const map = store.getState().threadLastViewedAt;
+    expect(Object.keys(map)).toHaveLength(2000);
+    expect(map['thread-0']).toBeUndefined();
+    expect(map['thread-newest']).toBe(2_000_000);
+    expect(map['thread-1999']).toBeDefined();
+
+    jest.useRealTimers();
+  });
+});

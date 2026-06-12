@@ -3,6 +3,7 @@
  */
 
 import React from 'react';
+import { Linking } from 'react-native';
 import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'react-test-renderer';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../../theme';
@@ -273,5 +274,47 @@ describe('SignupScreen — navigation', () => {
     });
 
     expect(onNavigate).toHaveBeenCalledWith('login');
+  });
+});
+
+describe('SignupScreen — legal links', () => {
+  beforeEach(() => {
+    jest.spyOn(Linking, 'openURL').mockResolvedValue(undefined as unknown as void);
+  });
+
+  afterEach(() => {
+    (Linking.openURL as jest.Mock).mockRestore();
+  });
+
+  it('renders the Terms of Service link', () => {
+    const renderer = renderSignupScreen();
+    expect(() => findByTestId(renderer.root, 'signup-terms-link')).not.toThrow();
+  });
+
+  it('renders the Privacy Policy link', () => {
+    const renderer = renderSignupScreen();
+    expect(() => findByTestId(renderer.root, 'signup-privacy-link')).not.toThrow();
+  });
+
+  it('opens the terms URL when Terms of Service is pressed', () => {
+    const renderer = renderSignupScreen();
+    const termsLink = findByTestId(renderer.root, 'signup-terms-link');
+
+    act(() => {
+      termsLink.props.onPress();
+    });
+
+    expect(Linking.openURL).toHaveBeenCalledWith('https://orbitl.org/terms');
+  });
+
+  it('opens the privacy URL when Privacy Policy is pressed', () => {
+    const renderer = renderSignupScreen();
+    const privacyLink = findByTestId(renderer.root, 'signup-privacy-link');
+
+    act(() => {
+      privacyLink.props.onPress();
+    });
+
+    expect(Linking.openURL).toHaveBeenCalledWith('https://orbitl.org/privacy');
   });
 });

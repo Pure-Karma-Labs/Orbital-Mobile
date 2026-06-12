@@ -107,6 +107,7 @@ export function ThreadDetailScreen({
     replies: allReplies,
     replyIdsByThread,
     setActiveThread,
+    markThreadViewed,
   } = useThreads();
   const { userId, username } = useAuth();
 
@@ -247,11 +248,14 @@ export function ThreadDetailScreen({
   // Mount/unmount lifecycle
   useEffect(() => {
     setActiveThread(threadId);
+    markThreadViewed(threadId);
     fetchData();
     return () => {
+      // Mark viewed again on cleanup — captures replies streamed while reading
+      markThreadViewed(threadId);
       setActiveThread(null);
     };
-  }, [threadId, setActiveThread, fetchData]);
+  }, [threadId, setActiveThread, markThreadViewed, fetchData]);
 
   // Pull-to-refresh
   const handleRefresh = useCallback(async () => {

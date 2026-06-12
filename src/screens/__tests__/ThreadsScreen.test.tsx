@@ -15,6 +15,10 @@ jest.mock('../../services/threadService', () => ({
   loadThreadsForGroup: jest.fn().mockResolvedValue([]),
 }));
 
+jest.mock('../../services/conversationService', () => ({
+  markConversationReadEverywhere: jest.fn(),
+}));
+
 jest.mock('../../hooks/useBlockedSet', () => ({
   useBlockedSet: () => new Set<string>(),
 }));
@@ -46,6 +50,7 @@ jest.mock('../../stores', () => ({
     getState: jest.fn(() => ({
       setViewingConversation: mockSetViewingConversation,
       markConversationRead: mockMarkConversationRead,
+      conversations: {},
     })),
   },
   useAuth: () => ({
@@ -58,6 +63,7 @@ jest.mock('../../stores', () => ({
   useThreads: jest.fn(() => ({
     threads: {},
     threadIdsByConversation: {},
+    threadLastViewedAt: {},
     replies: {},
     replyIdsByThread: {},
     activeThreadId: null,
@@ -65,6 +71,7 @@ jest.mock('../../stores', () => ({
     upsertThread: jest.fn(),
     removeThread: jest.fn(),
     setActiveThread: jest.fn(),
+    markThreadViewed: jest.fn(),
     setReplies: jest.fn(),
     upsertReply: jest.fn(),
     addOptimisticThread: jest.fn(),
@@ -90,6 +97,7 @@ jest.mock('../../stores', () => ({
     conversationIds: ['group-1'],
     activeConversationId: 'group-1',
     setConversations: jest.fn(),
+    setGroupConversations: jest.fn(),
     upsertConversation: jest.fn(),
     removeConversation: jest.fn(),
     setActiveConversation: jest.fn(),
@@ -235,6 +243,7 @@ describe('ThreadsScreen — with thread data', () => {
         },
       },
       threadIdsByConversation: { 'group-1': ['thread-1'] },
+      threadLastViewedAt: {},
       replies: {},
       replyIdsByThread: {},
       activeThreadId: null,
@@ -242,6 +251,7 @@ describe('ThreadsScreen — with thread data', () => {
       upsertThread: jest.fn(),
       removeThread: jest.fn(),
       setActiveThread: jest.fn(),
+      markThreadViewed: jest.fn(),
       setReplies: jest.fn(),
       upsertReply: jest.fn(),
       addOptimisticThread: jest.fn(),
@@ -265,6 +275,7 @@ describe('ThreadsScreen — with thread data', () => {
       upsertThread: jest.fn(),
       removeThread: jest.fn(),
       setActiveThread: jest.fn(),
+      markThreadViewed: jest.fn(),
       setReplies: jest.fn(),
       upsertReply: jest.fn(),
       addOptimisticThread: jest.fn(),
@@ -298,11 +309,14 @@ describe('ThreadsScreen — with thread data', () => {
 });
 
 describe('ThreadsScreen — focus lifecycle', () => {
-  it('calls setViewingConversation and markConversationRead on mount', () => {
+  it('calls setViewingConversation and markConversationReadEverywhere on mount', () => {
+    const { markConversationReadEverywhere } = jest.requireMock(
+      '../../services/conversationService',
+    ) as { markConversationReadEverywhere: jest.Mock };
     renderThreadsScreen();
 
     expect(mockSetViewingConversation).toHaveBeenCalledWith('group-1');
-    expect(mockMarkConversationRead).toHaveBeenCalledWith('group-1');
+    expect(markConversationReadEverywhere).toHaveBeenCalledWith('group-1');
   });
 
   it('calls setViewingConversation(null) on unmount', () => {

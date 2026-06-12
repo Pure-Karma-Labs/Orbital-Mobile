@@ -8,21 +8,26 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
+  View,
   type TextStyle,
   type ViewStyle,
 } from 'react-native';
 import { useTheme } from '../../theme';
+import { Badge } from '../../components/Badge';
 
 export interface OrbitBarProps {
   orbitName: string;
   onOpenOrbits: () => void;
   onCompose: () => void;
+  /** Total unread count across all orbits except the active one */
+  otherOrbitsUnread?: number;
 }
 
 export function OrbitBar({
   orbitName,
   onOpenOrbits,
   onCompose,
+  otherOrbitsUnread = 0,
 }: OrbitBarProps): React.JSX.Element {
   const theme = useTheme();
 
@@ -37,10 +42,17 @@ export function OrbitBar({
   };
 
   const orbitNameStyle: TextStyle = {
-    flex: 1,
     fontFamily: theme.typography.fontFamily.bodyBold,
     fontSize: theme.typography.fontSize.base,
     color: theme.colors.textPrimary,
+    flexShrink: 1,
+  };
+
+  const selectorAreaStyle: ViewStyle = {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
   };
 
   const composeBtnStyle: TextStyle = {
@@ -60,7 +72,12 @@ export function OrbitBar({
       accessibilityRole="button"
       accessibilityLabel="Open orbit selector"
     >
-      <Text style={orbitNameStyle}>{`${orbitName} ▾`}</Text>
+      <View style={selectorAreaStyle}>
+        <Text style={orbitNameStyle} numberOfLines={1}>{`${orbitName} ▾`}</Text>
+        {otherOrbitsUnread > 0 && (
+          <Badge count={otherOrbitsUnread} testID="orbit-bar-badge" />
+        )}
+      </View>
       <TouchableOpacity
         onPress={onCompose}
         hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}

@@ -18,7 +18,7 @@ import type { AppState } from '../types/store';
  */
 type PersistedState = Pick<
   AppState,
-  'conversations' | 'conversationIds' | 'contacts' | 'colorScheme' | 'activeTab' | 'soundEnabled' | 'blockedUserIds' | 'blockedUserProfiles'
+  'conversations' | 'conversationIds' | 'contacts' | 'colorScheme' | 'activeTab' | 'soundEnabled' | 'blockedUserIds' | 'blockedUserProfiles' | 'threadLastViewedAt'
 >;
 
 export const useAppStore = create<AppState>()(
@@ -59,6 +59,7 @@ export const useAppStore = create<AppState>()(
           soundEnabled: state.soundEnabled,
           blockedUserIds: state.blockedUserIds,
           blockedUserProfiles: state.blockedUserProfiles,
+          threadLastViewedAt: state.threadLastViewedAt,
         }),
       },
     ),

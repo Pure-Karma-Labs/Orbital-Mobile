@@ -73,6 +73,7 @@ function makeConversation(overrides: Partial<Conversation> = {}): Conversation {
     muteUntil: null,
     lastMessageAt: 1000,
     unreadCount: 0,
+    lastReadAt: null,
     createdAt: 900,
     updatedAt: 1000,
     ...overrides,

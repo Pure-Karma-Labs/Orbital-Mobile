@@ -40,6 +40,9 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
 }: ChatMessageItemProps): React.JSX.Element {
   const theme = useTheme();
 
+  // Invariant: your own messages are never unread, regardless of caller input
+  const showUnread = unread && !isOwn;
+
   const handlePress = useCallback(() => {
     onPress(threadId);
   }, [onPress, threadId]);
@@ -51,7 +54,7 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
     borderLeftWidth: 3,
     borderLeftColor: isOwn
       ? theme.colors.blue
-      : unread
+      : showUnread
         ? theme.colors.yellow
         : theme.colors.borderSubtle,
     backgroundColor: 'transparent',
@@ -97,14 +100,14 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
       onPress={handlePress}
       activeOpacity={0.7}
       accessibilityRole="button"
-      accessibilityLabel={unread ? `Unread message from ${author}` : `Message from ${author}`}
+      accessibilityLabel={showUnread ? `Unread message from ${author}` : `Message from ${author}`}
     >
       <View style={metaStyle}>
         <Text style={authorStyle} numberOfLines={1}>
           {author}
         </Text>
         <Text style={timeStyle}>{time}</Text>
-        {unread && (
+        {showUnread && (
           <Text style={unreadDotStyle} testID={`chat-unread-dot-${threadId}`}>
             ●
           </Text>

@@ -40,6 +40,7 @@ jest.mock('../../stores/useAppStore', () => ({
     getState: jest.fn(() => ({
       setViewingConversation: mockSetViewingConversation,
       markConversationRead: mockMarkConversationRead,
+      conversations: {},
     })),
   },
 }));
@@ -69,6 +70,7 @@ jest.mock('../../stores', () => ({
     getState: jest.fn(() => ({
       setViewingConversation: mockSetViewingConversation,
       markConversationRead: mockMarkConversationRead,
+      conversations: {},
     })),
   },
 }));
@@ -85,6 +87,7 @@ const now = Date.now();
 const emptyThreadsState = {
   threads: {},
   threadIdsByConversation: {},
+  threadLastViewedAt: {},
   replies: {},
   replyIdsByThread: {},
   activeThreadId: null,
@@ -277,7 +280,9 @@ describe('ChatDetailScreen — navigation', () => {
 
     // ChatMessageItem renders a TouchableOpacity with accessibilityLabel="Message from {author}"
     const messageItems = renderer.root.findAll(
-      (node) => node.props.accessibilityLabel === 'Message from bob',
+      (node) =>
+        typeof node.props.accessibilityLabel === 'string' &&
+        /[Mm]essage from bob/.test(node.props.accessibilityLabel),
     );
     expect(messageItems.length).toBeGreaterThan(0);
 

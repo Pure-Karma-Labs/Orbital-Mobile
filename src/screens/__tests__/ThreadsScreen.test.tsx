@@ -5,7 +5,8 @@
 import React from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { ThemeProvider } from '../../theme';
-import { ThreadsScreen, getThreadState } from '../ThreadsScreen';
+import { ThreadsScreen } from '../ThreadsScreen';
+import { getThreadState } from '../../utils/threadState';
 import type { Thread } from '../../types/store';
 
 // ---------------------------------------------------------------------------

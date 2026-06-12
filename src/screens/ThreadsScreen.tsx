@@ -31,6 +31,7 @@ import { PullToRefreshOverlay } from '../components/PullToRefreshOverlay';
 import { usePullToRefresh } from '../hooks/usePullToRefresh';
 import { useWebSocketSubscription } from '../hooks/useWebSocketSubscription';
 import { useBlockedSet } from '../hooks/useBlockedSet';
+import { getThreadState } from '../utils/threadState';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -71,35 +72,6 @@ function getDayLabel(timestamp: number): string {
 function getDayKey(timestamp: number): string {
   const d = new Date(timestamp);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
-/**
- * Compute per-thread unread state.
- *
- * A thread is 'unread' when its latest activity (createdAt or lastReplyAt) is
- * more recent than both:
- *   - the user's last view of that specific thread (threadLastViewedAt)
- *   - the server-side lastReadAt watermark for the conversation (snapshot)
- *
- * The lastReadAt snapshot MUST be captured once on focus and held as a ref
- * for the entire focus session. Reading it live would cause the debounced
- * markConversationReadEverywhere to flip all threads to 'read' seconds later.
- *
- * Exported for unit testing.
- */
-export function getThreadState(
-  thread: Thread,
-  threadLastViewedAt: Record<string, number>,
-  lastReadAtSnapshot: number | null,
-): 'read' | 'active' | 'unread' {
-  const threadActivity = Math.max(thread.createdAt, thread.lastReplyAt ?? 0);
-  const viewedAt = threadLastViewedAt[thread.id] ?? 0;
-  const watermark = Math.max(viewedAt, lastReadAtSnapshot ?? 0);
-
-  if (threadActivity > watermark) {
-    return 'unread';
-  }
-  return 'read';
 }
 
 // ---------------------------------------------------------------------------

@@ -95,7 +95,7 @@ CREATE TABLE conversations (
   active            INTEGER NOT NULL DEFAULT 1,  -- 1=active, 0=archived/left
   mute_until        INTEGER,          -- Unix epoch seconds, NULL=not muted
   last_message_at   INTEGER,          -- Unix epoch seconds, for sort order
-  unread_count      INTEGER NOT NULL DEFAULT 0,
+  unread_count      INTEGER NOT NULL DEFAULT 0,  -- RESERVED: not used by app; unread state lives in Zustand store sourced from server API
   created_at        INTEGER NOT NULL,  -- Unix epoch seconds
   updated_at        INTEGER NOT NULL,  -- Unix epoch seconds
   PRIMARY KEY (id)

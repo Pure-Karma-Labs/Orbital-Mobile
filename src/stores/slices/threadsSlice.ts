@@ -19,6 +19,7 @@ export const createThreadsSlice: StateCreator<
   replies: {},
   replyIdsByThread: {},
   activeThreadId: null,
+  threadLastViewedAt: {},
 
   // Actions
   setThreads: (conversationId, threads) => {
@@ -258,6 +259,29 @@ export const createThreadsSlice: StateCreator<
       { replies: { ...replies, [id]: { ...existing, syncStatus: status } } },
       false,
       'threads/updateReplySyncStatus',
+    );
+  },
+
+  markThreadViewed: (threadId: string) => {
+    const { threadLastViewedAt } = get();
+    const now = Date.now();
+    const updated = { ...threadLastViewedAt, [threadId]: now };
+
+    // Evict oldest entries when map exceeds 2000 to prevent unbounded growth
+    const MAX_ENTRIES = 2000;
+    if (Object.keys(updated).length > MAX_ENTRIES) {
+      const entries = Object.entries(updated);
+      entries.sort((a, b) => a[1] - b[1]); // oldest first
+      const toRemove = entries.length - MAX_ENTRIES;
+      for (let i = 0; i < toRemove; i++) {
+        delete updated[entries[i][0]];
+      }
+    }
+
+    set(
+      { threadLastViewedAt: updated },
+      false,
+      'threads/markThreadViewed',
     );
   },
 });

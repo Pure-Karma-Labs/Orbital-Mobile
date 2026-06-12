@@ -7,6 +7,7 @@ jest.mock('../api/groups', () => ({
   getPendingWraps: jest.fn(),
   submitWrappedKey: jest.fn(),
   selfWrapGroupKey: jest.fn(),
+  markGroupRead: jest.fn(),
 }));
 
 const mockPersistGroupKey = jest.fn();
@@ -65,6 +66,7 @@ jest.mock('../../stores/useAppStore', () => ({
       conversations: {},
       contacts: {},
       setConversations: mockSetConversations,
+      setGroupConversations: mockSetConversations,
       setActiveConversation: mockSetActiveConversation,
       upsertConversation: mockUpsertConversation,
       mergeContacts: mockMergeContacts,
@@ -73,8 +75,8 @@ jest.mock('../../stores/useAppStore', () => ({
   },
 }));
 
-import { loadConversations, loadDmConversations, startDm, joinOrbit, fetchCreatorOrbitsDecrypted, hydrateContactsFromOrbits, ensureDmConversation, fulfillPendingWraps, clearConversationServiceState, refreshContactAvatar } from '../conversationService';
-import { listGroups, listDms, createDm, joinGroup, getGroupMembers, getPendingWraps, submitWrappedKey } from '../api/groups';
+import { loadConversations, loadDmConversations, startDm, joinOrbit, fetchCreatorOrbitsDecrypted, hydrateContactsFromOrbits, ensureDmConversation, fulfillPendingWraps, clearConversationServiceState, refreshContactAvatar, markConversationReadEverywhere } from '../conversationService';
+import { listGroups, listDms, createDm, joinGroup, getGroupMembers, getPendingWraps, submitWrappedKey, markGroupRead } from '../api/groups';
 import { useAppStore } from '../../stores/useAppStore';
 
 const mockListGroups = listGroups as jest.Mock;
@@ -93,6 +95,7 @@ beforeEach(() => {
     conversations: {},
     contacts: {},
     setConversations: mockSetConversations,
+    setGroupConversations: mockSetConversations,
     setActiveConversation: mockSetActiveConversation,
     upsertConversation: mockUpsertConversation,
     mergeContacts: mockMergeContacts,
@@ -143,6 +146,7 @@ describe('loadConversations', () => {
       conversations: {},
       contacts: {},
       setConversations: mockSetConversations,
+      setGroupConversations: mockSetConversations,
       setActiveConversation: mockSetActiveConversation,
       upsertConversation: mockUpsertConversation,
       mergeContacts: mockMergeContacts,
@@ -853,6 +857,7 @@ describe('session-stale guards', () => {
     conversations: {},
     contacts: {},
     setConversations: mockSetConversations,
+    setGroupConversations: mockSetConversations,
     setActiveConversation: mockSetActiveConversation,
     upsertConversation: mockUpsertConversation,
     mergeContacts: mockMergeContacts,
@@ -866,6 +871,7 @@ describe('session-stale guards', () => {
     conversations: {},
     contacts: {},
     setConversations: mockSetConversations,
+    setGroupConversations: mockSetConversations,
     setActiveConversation: mockSetActiveConversation,
     upsertConversation: mockUpsertConversation,
     mergeContacts: mockMergeContacts,
@@ -1271,5 +1277,120 @@ describe('refreshContactAvatar', () => {
     await call2;
 
     expect(mockGetGroupMembers).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// markConversationReadEverywhere — local zero + debounced remote (#329)
+// ---------------------------------------------------------------------------
+
+describe('markConversationReadEverywhere', () => {
+  const mockMarkGroupRead = markGroupRead as jest.Mock;
+  const mockMarkConversationRead = jest.fn();
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    mockMarkGroupRead.mockResolvedValue({ lastReadAt: '2026-06-12T00:00:00Z' });
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-self-user',
+      activeConversationId: null,
+      conversations: {},
+      contacts: {},
+      viewingConversationId: null,
+      markConversationRead: mockMarkConversationRead,
+      setConversations: mockSetConversations,
+      setGroupConversations: mockSetConversations,
+      setActiveConversation: mockSetActiveConversation,
+      upsertConversation: mockUpsertConversation,
+      mergeContacts: mockMergeContacts,
+      removeContact: jest.fn(),
+    });
+  });
+
+  afterEach(() => {
+    clearConversationServiceState();
+    jest.useRealTimers();
+  });
+
+  it('zeroes the local count immediately, defers the server call', () => {
+    markConversationReadEverywhere('conv-1');
+
+    expect(mockMarkConversationRead).toHaveBeenCalledWith('conv-1');
+    expect(mockMarkGroupRead).not.toHaveBeenCalled();
+
+    jest.advanceTimersByTime(3_000);
+    expect(mockMarkGroupRead).toHaveBeenCalledTimes(1);
+    expect(mockMarkGroupRead).toHaveBeenCalledWith('conv-1');
+  });
+
+  it('debounces rapid calls per conversation into one server call', () => {
+    markConversationReadEverywhere('conv-1');
+    jest.advanceTimersByTime(1_000);
+    markConversationReadEverywhere('conv-1');
+    jest.advanceTimersByTime(1_000);
+    markConversationReadEverywhere('conv-1');
+
+    jest.advanceTimersByTime(3_000);
+    expect(mockMarkGroupRead).toHaveBeenCalledTimes(1);
+  });
+
+  it('debounces independently per conversation', () => {
+    markConversationReadEverywhere('conv-1');
+    markConversationReadEverywhere('conv-2');
+
+    jest.advanceTimersByTime(3_000);
+    expect(mockMarkGroupRead).toHaveBeenCalledTimes(2);
+    expect(mockMarkGroupRead).toHaveBeenCalledWith('conv-1');
+    expect(mockMarkGroupRead).toHaveBeenCalledWith('conv-2');
+  });
+
+  it('clearConversationServiceState cancels pending server calls (logout)', () => {
+    markConversationReadEverywhere('conv-1');
+    clearConversationServiceState();
+
+    jest.advanceTimersByTime(10_000);
+    expect(mockMarkGroupRead).not.toHaveBeenCalled();
+  });
+
+  it('swallows server errors (fire-and-forget)', async () => {
+    mockMarkGroupRead.mockRejectedValue(new Error('network down'));
+    markConversationReadEverywhere('conv-1');
+
+    jest.advanceTimersByTime(3_000);
+    // Flush the rejected promise — must not throw or produce unhandled rejection
+    await Promise.resolve();
+    expect(mockMarkGroupRead).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loadConversations uses the type-partitioned action (#329 load-wipe regression)
+// ---------------------------------------------------------------------------
+
+describe('loadConversations — store action choice (load-wipe regression)', () => {
+  it('calls setGroupConversations, never the map-replacing setConversations', async () => {
+    const distinctSetConversations = jest.fn();
+    const distinctSetGroupConversations = jest.fn();
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-self-user',
+      activeConversationId: 'existing-id',
+      conversations: {},
+      contacts: {},
+      viewingConversationId: null,
+      setConversations: distinctSetConversations,
+      setGroupConversations: distinctSetGroupConversations,
+      setActiveConversation: mockSetActiveConversation,
+      upsertConversation: mockUpsertConversation,
+      mergeContacts: mockMergeContacts,
+      removeContact: jest.fn(),
+    });
+    mockListGroups.mockResolvedValue([GROUP_RESPONSE]);
+
+    await loadConversations();
+
+    // The DM-wiping bug was loadConversations calling setConversations(groups),
+    // replacing the entire map. It must use the type-partitioned action instead.
+    expect(distinctSetGroupConversations).toHaveBeenCalledTimes(1);
+    expect(distinctSetConversations).not.toHaveBeenCalled();
   });
 });

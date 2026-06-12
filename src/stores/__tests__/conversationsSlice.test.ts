@@ -73,6 +73,7 @@ function makeConversation(overrides: Partial<Conversation> = {}): Conversation {
     muteUntil: null,
     lastMessageAt: 1000,
     unreadCount: 0,
+    lastReadAt: null,
     createdAt: 900,
     updatedAt: 1000,
     ...overrides,
@@ -293,5 +294,57 @@ describe('conversationsSlice — setViewingConversation', () => {
     expect(store.getState().viewingConversationId).toBe('conv-1');
     store.getState().setViewingConversation(null);
     expect(store.getState().viewingConversationId).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// setGroupConversations — type-partitioned replace (#329 load-wipe regression)
+// ---------------------------------------------------------------------------
+
+describe('setGroupConversations', () => {
+  it('preserves existing direct conversations and their unread counts (load-wipe regression)', () => {
+    const store = makeStore();
+    const dm = makeConversation({
+      id: 'dm-1',
+      type: 'direct',
+      unreadCount: 5,
+      lastMessageAt: 3000,
+    });
+    const oldGroup = makeConversation({ id: 'group-old', type: 'group' });
+    store.getState().setConversations([dm, oldGroup]);
+
+    const freshGroup = makeConversation({ id: 'group-new', type: 'group', lastMessageAt: 2000 });
+    store.getState().setGroupConversations([freshGroup]);
+
+    const state = store.getState();
+    // DM survives untouched — this is the bug that hid all badges in the smoke test
+    expect(state.conversations['dm-1']).toBeDefined();
+    expect(state.conversations['dm-1'].unreadCount).toBe(5);
+    // Group partition fully replaced: stale group gone, new group present
+    expect(state.conversations['group-old']).toBeUndefined();
+    expect(state.conversations['group-new']).toBeDefined();
+  });
+
+  it('removes group conversations absent from the server list (leaving an orbit)', () => {
+    const store = makeStore();
+    const g1 = makeConversation({ id: 'g-1', type: 'group' });
+    const g2 = makeConversation({ id: 'g-2', type: 'group' });
+    store.getState().setConversations([g1, g2]);
+
+    store.getState().setGroupConversations([g1]);
+
+    expect(store.getState().conversations['g-2']).toBeUndefined();
+    expect(store.getState().conversationIds).toEqual(['g-1']);
+  });
+
+  it('sorts merged conversations by lastMessageAt descending', () => {
+    const store = makeStore();
+    const dm = makeConversation({ id: 'dm-1', type: 'direct', lastMessageAt: 1000 });
+    store.getState().setConversations([dm]);
+
+    const g = makeConversation({ id: 'g-1', type: 'group', lastMessageAt: 9000 });
+    store.getState().setGroupConversations([g]);
+
+    expect(store.getState().conversationIds).toEqual(['g-1', 'dm-1']);
   });
 });

@@ -5,7 +5,7 @@
  * Components never call the groups API or store directly.
  */
 
-import { listGroups, createGroup, joinGroup, listDms, createDm, getPendingWraps, submitWrappedKey, selfWrapGroupKey, getGroupMembers } from './api/groups';
+import { listGroups, createGroup, joinGroup, listDms, createDm, getPendingWraps, submitWrappedKey, selfWrapGroupKey, getGroupMembers, markGroupRead } from './api/groups';
 import {
   persistGroupKey,
   generateGroupKey,
@@ -131,6 +131,11 @@ async function decryptGroupNameSafe(
 async function mapGroupResponse(response: GroupResponse): Promise<Conversation> {
   const name = await decryptGroupNameSafe(response.encryptedName ?? null, response.groupId);
 
+  // Viewing guard: if the user is currently looking at this conversation,
+  // force unreadCount to 0 to avoid showing stale server counts
+  const viewingId = useAppStore.getState().viewingConversationId;
+  const unreadCount = response.groupId === viewingId ? 0 : (response.unreadCount ?? 0);
+
   return {
     id: response.groupId,
     type: 'group',
@@ -138,8 +143,11 @@ async function mapGroupResponse(response: GroupResponse): Promise<Conversation> 
     memberCount: response.memberCount,
     active: true,
     muteUntil: null,
-    lastMessageAt: null,
-    unreadCount: 0,
+    lastMessageAt: response.lastMessageAt
+      ? new Date(response.lastMessageAt).getTime()
+      : null,
+    unreadCount,
+    lastReadAt: response.lastReadAt ? Date.parse(response.lastReadAt) : null,
     createdAt: new Date(response.joinedAt).getTime(),
     updatedAt: new Date(response.joinedAt).getTime(),
   };
@@ -189,7 +197,9 @@ export async function loadConversations(): Promise<void> {
 
   if (isSessionStale(session)) return;
   const store = useAppStore.getState();
-  store.setConversations(conversations);
+  // Type-partitioned replace: only replace group-type conversations,
+  // preserving all existing DM conversations and their unread counts.
+  store.setGroupConversations(conversations);
 
   if (store.activeConversationId === null && conversations.length > 0) {
     store.setActiveConversation(conversations[0].id);
@@ -222,6 +232,7 @@ export async function createOrbit(name: string): Promise<{ groupId: string; invi
     muteUntil: null,
     lastMessageAt: null,
     unreadCount: 0,
+    lastReadAt: now,
     createdAt: now,
     updatedAt: now,
   });
@@ -231,6 +242,11 @@ export async function createOrbit(name: string): Promise<{ groupId: string; invi
 }
 
 function mapDmResponse(response: DmResponse): Conversation {
+  // Viewing guard: if the user is currently looking at this conversation,
+  // force unreadCount to 0 to avoid showing stale server counts
+  const viewingId = useAppStore.getState().viewingConversationId;
+  const unreadCount = response.groupId === viewingId ? 0 : (response.unreadCount ?? 0);
+
   return {
     id: response.groupId,
     type: 'direct',
@@ -241,7 +257,8 @@ function mapDmResponse(response: DmResponse): Conversation {
     lastMessageAt: response.lastMessageAt
       ? new Date(response.lastMessageAt).getTime()
       : null,
-    unreadCount: 0,
+    unreadCount,
+    lastReadAt: response.lastReadAt ? Date.parse(response.lastReadAt) : null,
     createdAt: new Date(response.createdAt).getTime(),
     updatedAt: new Date(response.createdAt).getTime(),
   };
@@ -436,6 +453,7 @@ export async function startDm(
     muteUntil: null,
     lastMessageAt: null,
     unreadCount: 0,
+    lastReadAt: now,
     createdAt: now,
     updatedAt: now,
   });
@@ -496,6 +514,7 @@ export async function joinOrbit(
     muteUntil: null,
     lastMessageAt: null,
     unreadCount: 0,
+    lastReadAt: now,
     createdAt: now,
     updatedAt: now,
   });
@@ -753,6 +772,37 @@ export async function refreshContactAvatar(userId: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// markConversationReadEverywhere — local + debounced remote
+// ---------------------------------------------------------------------------
+
+const markReadTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const MARK_READ_DEBOUNCE_MS = 3_000;
+
+/**
+ * Mark a conversation as read locally (immediate) AND on the server (debounced 3s).
+ * The server call is fire-and-forget — errors are swallowed because the local
+ * mark-read already cleared the badge in the UI.
+ */
+export function markConversationReadEverywhere(conversationId: string): void {
+  const store = useAppStore.getState();
+  store.markConversationRead(conversationId);
+
+  // Debounce the remote call per conversation ID
+  const existing = markReadTimers.get(conversationId);
+  if (existing) clearTimeout(existing);
+
+  markReadTimers.set(
+    conversationId,
+    setTimeout(() => {
+      markReadTimers.delete(conversationId);
+      markGroupRead(conversationId).catch(() => {
+        // Fire-and-forget — server watermark will catch up on next load
+      });
+    }, MARK_READ_DEBOUNCE_MS),
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Session cleanup
 // ---------------------------------------------------------------------------
 
@@ -765,4 +815,9 @@ export function clearConversationServiceState(): void {
   hydrateInflight = null;
   lastPendingWrapsSweep = 0;
   lastContactHydration = 0;
+  // Clear debounced mark-read timers
+  for (const timer of markReadTimers.values()) {
+    clearTimeout(timer);
+  }
+  markReadTimers.clear();
 }

@@ -38,6 +38,29 @@ export const createConversationsSlice: StateCreator<
     );
   },
 
+  setGroupConversations: (groupConversations) => {
+    const { conversations: existing } = get();
+    // Preserve all existing DM ('direct') conversations
+    const merged: Record<string, Conversation> = {};
+    for (const [id, conv] of Object.entries(existing)) {
+      if (conv.type === 'direct') {
+        merged[id] = conv;
+      }
+    }
+    // Replace the entire group partition with the new server list
+    for (const c of groupConversations) {
+      merged[c.id] = c;
+    }
+    const ids = Object.values(merged)
+      .sort(sortByLastMessage)
+      .map((c) => c.id);
+    set(
+      { conversations: merged, conversationIds: ids },
+      false,
+      'conversations/setGroupConversations',
+    );
+  },
+
   upsertConversation: (conversation) => {
     const { conversations } = get();
     const updatedMap = { ...conversations, [conversation.id]: conversation };

@@ -30,6 +30,7 @@ export const useConversations = () =>
     activeConversationId: s.activeConversationId,
     viewingConversationId: s.viewingConversationId,
     setConversations: s.setConversations,
+    setGroupConversations: s.setGroupConversations,
     upsertConversation: s.upsertConversation,
     removeConversation: s.removeConversation,
     setActiveConversation: s.setActiveConversation,
@@ -46,6 +47,7 @@ export const useThreads = () =>
     replies: s.replies,
     replyIdsByThread: s.replyIdsByThread,
     activeThreadId: s.activeThreadId,
+    threadLastViewedAt: s.threadLastViewedAt,
     setThreads: s.setThreads,
     upsertThread: s.upsertThread,
     removeThread: s.removeThread,
@@ -58,6 +60,7 @@ export const useThreads = () =>
     addOptimisticReply: s.addOptimisticReply,
     updateThreadSyncStatus: s.updateThreadSyncStatus,
     updateReplySyncStatus: s.updateReplySyncStatus,
+    markThreadViewed: s.markThreadViewed,
   })));
 
 export const useContacts = () =>

@@ -96,6 +96,15 @@ describe('LinkPreviewCard', () => {
     expect(renderer.toJSON()).toBeNull();
   });
 
+  it('renders null when preview has empty string title and description', () => {
+    mockUseLinkPreview.mockReturnValue({
+      preview: { ...fakePreview, title: '', description: '' },
+      loading: false,
+    });
+    const renderer = renderCard();
+    expect(renderer.toJSON()).toBeNull();
+  });
+
   it('renders card when preview has title but no description', () => {
     mockUseLinkPreview.mockReturnValue({
       preview: { ...fakePreview, description: null },

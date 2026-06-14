@@ -4,6 +4,20 @@
  */
 
 // ---------------------------------------------------------------------------
+// Test UUID helper (must be before mocks — Jest hoists jest.mock calls)
+// ---------------------------------------------------------------------------
+
+/** Convert a short test label into a deterministic valid v4 UUID. */
+function testUUID(label: string): string {
+  let hash = 0;
+  for (let i = 0; i < label.length; i++) {
+    hash = ((hash << 5) - hash + label.charCodeAt(i)) | 0;
+  }
+  const hex = (Math.abs(hash) >>> 0).toString(16).padStart(8, '0').slice(-8);
+  return `${hex}-0000-4000-a000-000000000000`;
+}
+
+// ---------------------------------------------------------------------------
 // Module mocks — must be declared before imports
 // ---------------------------------------------------------------------------
 
@@ -61,10 +75,12 @@ const mockAddTypingUser = jest.fn();
 const mockBumpLastMessageAt = jest.fn();
 const mockIncrementUnreadCount = jest.fn();
 
+const TEST_USER_UUID = '49172bda-0000-4000-a000-000000000000';
+
 jest.mock('../../../stores/useAppStore', () => ({
   useAppStore: {
     getState: jest.fn(() => ({
-      userId: 'test-user-id',
+      userId: TEST_USER_UUID,
       viewingConversationId: null,
       upsertThread: mockUpsertThread,
       upsertReply: mockUpsertReply,
@@ -118,13 +134,13 @@ const fakeGroupKey = new Uint8Array(32).fill(0xab);
 function makeNewThreadMessage(): string {
   return JSON.stringify({
     type: 'new_message',
-    conversationId: 'group-1',
+    conversationId: testUUID('group-1'),
     timestamp: 1700000000000,
     data: {
       type: 'new_thread',
-      threadId: 'thread-ws-1',
-      groupId: 'group-1',
-      authorId: 'user-1',
+      threadId: testUUID('thread-ws-1'),
+      groupId: testUUID('group-1'),
+      authorId: testUUID('user-1'),
       authorName: 'alice',
       encryptedTitle: 'enc-title',
       encryptedBody: 'enc-body',
@@ -139,14 +155,14 @@ function makeNewThreadMessage(): string {
 function makeNewReplyMessage(): string {
   return JSON.stringify({
     type: 'new_message',
-    conversationId: 'group-1',
+    conversationId: testUUID('group-1'),
     timestamp: 1700000001000,
     data: {
       type: 'new_reply',
-      replyId: 'reply-ws-1',
-      threadId: 'thread-1',
-      groupId: 'group-1',
-      authorId: 'user-2',
+      replyId: testUUID('reply-ws-1'),
+      threadId: testUUID('thread-1'),
+      groupId: testUUID('group-1'),
+      authorId: testUUID('user-2'),
       authorName: 'bob',
       encryptedBody: 'enc-reply-body',
       bodyIv: 'reply-body-iv',
@@ -194,20 +210,20 @@ describe('new_thread broadcast', () => {
   it('decrypts and upserts a thread', async () => {
     await handleServerMessage(makeNewThreadMessage());
 
-    expect(mockGetOrFetchGroupKey).toHaveBeenCalledWith('group-1');
+    expect(mockGetOrFetchGroupKey).toHaveBeenCalledWith(testUUID('group-1'));
     expect(mockDecryptThreadFields).toHaveBeenCalledWith(
       'enc-title',
       'title-iv',
       'enc-body',
       'body-iv',
       fakeGroupKey,
-      'group-1',
+      testUUID('group-1'),
     );
 
     expect(mockUpsertThread).toHaveBeenCalledTimes(1);
     const thread = mockUpsertThread.mock.calls[0][0];
-    expect(thread.id).toBe('thread-ws-1');
-    expect(thread.conversationId).toBe('group-1');
+    expect(thread.id).toBe(testUUID('thread-ws-1'));
+    expect(thread.conversationId).toBe(testUUID('group-1'));
     expect(thread.authorUsername).toBe('alice');
     expect(thread.title).toBe('Decrypted Title');
     expect(thread.body).toBe('Decrypted Body');
@@ -218,13 +234,13 @@ describe('new_thread broadcast', () => {
   it('deduplicates by threadId', async () => {
     const msg = JSON.stringify({
       type: 'new_message',
-      conversationId: 'group-1',
+      conversationId: testUUID('group-1'),
       timestamp: 1700000000000,
       data: {
         type: 'new_thread',
-        threadId: 'thread-dedup-test',
-        groupId: 'group-1',
-        authorId: 'user-1',
+        threadId: testUUID('thread-dedup-test'),
+        groupId: testUUID('group-1'),
+        authorId: testUUID('user-1'),
         authorName: 'alice',
         encryptedTitle: 'enc-title',
         encryptedBody: 'enc-body',
@@ -248,13 +264,13 @@ describe('new_thread broadcast', () => {
     // Use a unique threadId so dedup doesn't block it
     const msg = JSON.stringify({
       type: 'new_message',
-      conversationId: 'group-1',
+      conversationId: testUUID('group-1'),
       timestamp: 1700000000000,
       data: {
         type: 'new_thread',
-        threadId: 'thread-ws-retry',
-        groupId: 'group-1',
-        authorId: 'user-1',
+        threadId: testUUID('thread-ws-retry'),
+        groupId: testUUID('group-1'),
+        authorId: testUUID('user-1'),
         authorName: 'alice',
         encryptedTitle: 'enc-title',
         encryptedBody: 'enc-body',
@@ -267,7 +283,7 @@ describe('new_thread broadcast', () => {
 
     await handleServerMessage(msg);
 
-    expect(mockInvalidateGroupKey).toHaveBeenCalledWith('group-1');
+    expect(mockInvalidateGroupKey).toHaveBeenCalledWith(testUUID('group-1'));
     expect(mockGetOrFetchGroupKey).toHaveBeenCalledTimes(2);
     expect(mockUpsertThread).toHaveBeenCalledTimes(1);
     expect(mockUpsertThread.mock.calls[0][0].title).toBe('Retried Title');
@@ -276,13 +292,13 @@ describe('new_thread broadcast', () => {
   it('bumps lastMessageAt after upserting thread', async () => {
     const msg = JSON.stringify({
       type: 'new_message',
-      conversationId: 'group-1',
+      conversationId: testUUID('group-1'),
       timestamp: 1700000000000,
       data: {
         type: 'new_thread',
-        threadId: 'thread-bump-test',
-        groupId: 'group-1',
-        authorId: 'user-1',
+        threadId: testUUID('thread-bump-test'),
+        groupId: testUUID('group-1'),
+        authorId: testUUID('user-1'),
         authorName: 'alice',
         encryptedTitle: 'enc-title',
         encryptedBody: 'enc-body',
@@ -296,9 +312,9 @@ describe('new_thread broadcast', () => {
     await handleServerMessage(msg);
 
     const { ensureDmConversation } = require('../../conversationService');
-    expect(ensureDmConversation).toHaveBeenCalledWith('group-1');
+    expect(ensureDmConversation).toHaveBeenCalledWith(testUUID('group-1'));
     expect(mockBumpLastMessageAt).toHaveBeenCalledWith(
-      'group-1',
+      testUUID('group-1'),
       new Date('2026-04-01T10:00:00Z').getTime(),
     );
   });
@@ -309,13 +325,13 @@ describe('new_thread broadcast', () => {
 
     const msg = JSON.stringify({
       type: 'new_message',
-      conversationId: 'group-1',
+      conversationId: testUUID('group-1'),
       timestamp: 1700000000000,
       data: {
         type: 'new_thread',
-        threadId: 'thread-fail-dedup',
-        groupId: 'group-1',
-        authorId: 'user-1',
+        threadId: testUUID('thread-fail-dedup'),
+        groupId: testUUID('group-1'),
+        authorId: testUUID('user-1'),
         authorName: 'alice',
         encryptedTitle: 'enc-title',
         encryptedBody: 'enc-body',
@@ -348,18 +364,18 @@ describe('new_reply broadcast', () => {
   it('decrypts and upserts a reply', async () => {
     await handleServerMessage(makeNewReplyMessage());
 
-    expect(mockGetOrFetchGroupKey).toHaveBeenCalledWith('group-1');
+    expect(mockGetOrFetchGroupKey).toHaveBeenCalledWith(testUUID('group-1'));
     expect(mockDecryptReplyBody).toHaveBeenCalledWith(
       'enc-reply-body',
       'reply-body-iv',
       fakeGroupKey,
-      'group-1',
+      testUUID('group-1'),
     );
 
     expect(mockUpsertReply).toHaveBeenCalledTimes(1);
     const reply = mockUpsertReply.mock.calls[0][0];
-    expect(reply.id).toBe('reply-ws-1');
-    expect(reply.threadId).toBe('thread-1');
+    expect(reply.id).toBe(testUUID('reply-ws-1'));
+    expect(reply.threadId).toBe(testUUID('thread-1'));
     expect(reply.authorUsername).toBe('bob');
     expect(reply.body).toBe('Decrypted Reply');
     expect(reply.depth).toBe(0);
@@ -369,18 +385,18 @@ describe('new_reply broadcast', () => {
   it('sets depth to 1 for nested replies (parentReplyId present)', async () => {
     const msg = JSON.stringify({
       type: 'new_message',
-      conversationId: 'group-1',
+      conversationId: testUUID('group-1'),
       timestamp: 1700000002000,
       data: {
         type: 'new_reply',
-        replyId: 'reply-ws-nested',
-        threadId: 'thread-1',
-        groupId: 'group-1',
-        authorId: 'user-3',
+        replyId: testUUID('reply-ws-nested'),
+        threadId: testUUID('thread-1'),
+        groupId: testUUID('group-1'),
+        authorId: testUUID('user-3'),
         authorName: 'charlie',
         encryptedBody: 'enc-nested',
         bodyIv: 'nested-iv',
-        parentReplyId: 'reply-ws-1',
+        parentReplyId: testUUID('reply-ws-1'),
         createdAt: '2026-04-01T11:30:00Z',
         media: [],
       },
@@ -390,20 +406,20 @@ describe('new_reply broadcast', () => {
 
     const reply = mockUpsertReply.mock.calls[0][0];
     expect(reply.depth).toBe(1);
-    expect(reply.parentReplyId).toBe('reply-ws-1');
+    expect(reply.parentReplyId).toBe(testUUID('reply-ws-1'));
   });
 
   it('calls ensureDmConversation before decryption', async () => {
     const msg = JSON.stringify({
       type: 'new_message',
-      conversationId: 'group-1',
+      conversationId: testUUID('group-1'),
       timestamp: 1700000001000,
       data: {
         type: 'new_reply',
-        replyId: 'reply-ensure-dm-test',
-        threadId: 'thread-1',
-        groupId: 'group-1',
-        authorId: 'user-2',
+        replyId: testUUID('reply-ensure-dm-test'),
+        threadId: testUUID('thread-1'),
+        groupId: testUUID('group-1'),
+        authorId: testUUID('user-2'),
         authorName: 'bob',
         encryptedBody: 'enc-reply-body',
         bodyIv: 'reply-body-iv',
@@ -416,20 +432,20 @@ describe('new_reply broadcast', () => {
     await handleServerMessage(msg);
 
     const { ensureDmConversation } = require('../../conversationService');
-    expect(ensureDmConversation).toHaveBeenCalledWith('group-1');
+    expect(ensureDmConversation).toHaveBeenCalledWith(testUUID('group-1'));
   });
 
   it('bumps lastMessageAt after upserting reply', async () => {
     const msg = JSON.stringify({
       type: 'new_message',
-      conversationId: 'group-1',
+      conversationId: testUUID('group-1'),
       timestamp: 1700000001000,
       data: {
         type: 'new_reply',
-        replyId: 'reply-bump-test',
-        threadId: 'thread-1',
-        groupId: 'group-1',
-        authorId: 'user-2',
+        replyId: testUUID('reply-bump-test'),
+        threadId: testUUID('thread-1'),
+        groupId: testUUID('group-1'),
+        authorId: testUUID('user-2'),
         authorName: 'bob',
         encryptedBody: 'enc-reply-body',
         bodyIv: 'reply-body-iv',
@@ -442,7 +458,7 @@ describe('new_reply broadcast', () => {
     await handleServerMessage(msg);
 
     expect(mockBumpLastMessageAt).toHaveBeenCalledWith(
-      'group-1',
+      testUUID('group-1'),
       new Date('2026-04-01T11:00:00Z').getTime(),
     );
   });
@@ -453,14 +469,14 @@ describe('new_reply broadcast', () => {
 
     const msg = JSON.stringify({
       type: 'new_message',
-      conversationId: 'group-1',
+      conversationId: testUUID('group-1'),
       timestamp: 1700000001000,
       data: {
         type: 'new_reply',
-        replyId: 'reply-fail-dedup',
-        threadId: 'thread-1',
-        groupId: 'group-1',
-        authorId: 'user-2',
+        replyId: testUUID('reply-fail-dedup'),
+        threadId: testUUID('thread-1'),
+        groupId: testUUID('group-1'),
+        authorId: testUUID('user-2'),
         authorName: 'bob',
         encryptedBody: 'enc-reply-body',
         bodyIv: 'reply-body-iv',
@@ -491,11 +507,11 @@ describe('display_name_changed broadcast', () => {
   it('upserts contact with new displayName', async () => {
     const msg = JSON.stringify({
       type: 'new_message',
-      conversationId: 'group-1',
+      conversationId: testUUID('group-1'),
       timestamp: 1700000003000,
       data: {
         type: 'display_name_changed',
-        userId: 'user-5',
+        userId: testUUID('user-5'),
         displayName: 'New Name',
         timestamp: 1700000003000,
       },
@@ -504,7 +520,7 @@ describe('display_name_changed broadcast', () => {
     await handleServerMessage(msg);
 
     expect(mockUpsertContact).toHaveBeenCalledWith({
-      id: 'user-5',
+      id: testUUID('user-5'),
       username: null,
       displayName: 'New Name',
       avatarPath: null,
@@ -522,12 +538,12 @@ describe('typing broadcast', () => {
     const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
     const msg = JSON.stringify({
       type: 'new_message',
-      conversationId: 'group-1',
+      conversationId: testUUID('group-1'),
       timestamp: 1700000004000,
       data: {
         type: 'typing',
-        userId: 'user-6',
-        conversationId: 'group-1',
+        userId: testUUID('user-6'),
+        conversationId: testUUID('group-1'),
       },
     });
 
@@ -549,13 +565,13 @@ describe('media_uploaded broadcast', () => {
   it('dispatches without error and does not upsert thread or reply', async () => {
     const msg = JSON.stringify({
       type: 'new_message',
-      conversationId: 'group-1',
+      conversationId: testUUID('group-1'),
       timestamp: 1700000006000,
       data: {
         type: 'media_uploaded',
         mediaId: 'media-ws-1',
-        groupId: 'group-1',
-        authorId: 'user-1',
+        groupId: testUUID('group-1'),
+        authorId: testUUID('user-1'),
         encryptedMetadata: 'enc-meta-base64',
         sizeBytes: 1024,
         uploadedAt: '2026-04-01T12:00:00Z',
@@ -574,13 +590,13 @@ describe('media_uploaded broadcast', () => {
     const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
     const msg = JSON.stringify({
       type: 'new_message',
-      conversationId: 'group-1',
+      conversationId: testUUID('group-1'),
       timestamp: 1700000007000,
       data: {
         type: 'media_uploaded',
         mediaId: 'media-ws-2',
-        groupId: 'group-1',
-        authorId: 'user-2',
+        groupId: testUUID('group-1'),
+        authorId: testUUID('user-2'),
         encryptedMetadata: 'enc-meta-base64',
         sizeBytes: 2048,
         uploadedAt: '2026-04-01T13:00:00Z',
@@ -606,11 +622,11 @@ describe('dead broadcast entries removed', () => {
     const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
     const msg = JSON.stringify({
       type: 'new_message',
-      conversationId: 'group-1',
+      conversationId: testUUID('group-1'),
       timestamp: 1700000008000,
       data: {
         type: 'wrap_key_request',
-        groupId: 'group-1',
+        groupId: testUUID('group-1'),
         targetUserId: 'target-user',
         targetIdentityPublicKey: 'key-base64',
       },
@@ -629,11 +645,11 @@ describe('dead broadcast entries removed', () => {
     const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
     const msg = JSON.stringify({
       type: 'new_message',
-      conversationId: 'group-1',
+      conversationId: testUUID('group-1'),
       timestamp: 1700000009000,
       data: {
         type: 'wrapped_key_delivered',
-        groupId: 'group-1',
+        groupId: testUUID('group-1'),
         senderUserId: 'sender-1',
       },
     });
@@ -671,7 +687,7 @@ describe('edge cases', () => {
   it('ignores unknown broadcast data.type (WS-05)', async () => {
     const msg = JSON.stringify({
       type: 'new_message',
-      conversationId: 'group-1',
+      conversationId: testUUID('group-1'),
       timestamp: 1700000005000,
       data: {
         type: 'future_event',
@@ -692,7 +708,7 @@ describe('edge cases', () => {
 describe('wrap_key_request', () => {
   // wrap_key_request arrives as a top-level message (via sendToUser),
   // NOT inside a broadcast envelope.
-  function makeWrapKeyRequest(groupId = 'group-1', targetUserId = 'target-user') {
+  function makeWrapKeyRequest(groupId = testUUID('group-1'), targetUserId = testUUID('target-user')) {
     return JSON.stringify({
       type: 'wrap_key_request',
       groupId,
@@ -708,15 +724,15 @@ describe('wrap_key_request', () => {
   it('wraps and submits the group key for the target user', async () => {
     await handleServerMessage(makeWrapKeyRequest());
 
-    expect(mockGetOrFetchGroupKey).toHaveBeenCalledWith('group-1');
-    expect(mockResolveRemoteIdentityKey).toHaveBeenCalledWith('target-user', 'test-user-id');
-    expect(mockWrapGroupKey).toHaveBeenCalledWith(fakeGroupKey, expect.any(ArrayBuffer), 'group-1');
-    expect(mockSubmitWrappedKey).toHaveBeenCalledWith('group-1', 'target-user', 'wrapped-key-base64');
+    expect(mockGetOrFetchGroupKey).toHaveBeenCalledWith(testUUID('group-1'));
+    expect(mockResolveRemoteIdentityKey).toHaveBeenCalledWith(testUUID('target-user'), testUUID('test-user'));
+    expect(mockWrapGroupKey).toHaveBeenCalledWith(fakeGroupKey, expect.any(ArrayBuffer), testUUID('group-1'));
+    expect(mockSubmitWrappedKey).toHaveBeenCalledWith(testUUID('group-1'), testUUID('target-user'), 'wrapped-key-base64');
   });
 
   it('deduplicates within 30s TTL', async () => {
-    await handleServerMessage(makeWrapKeyRequest('group-dedup', 'target-dedup'));
-    await handleServerMessage(makeWrapKeyRequest('group-dedup', 'target-dedup'));
+    await handleServerMessage(makeWrapKeyRequest(testUUID('group-dedup'), testUUID('target-dedup')));
+    await handleServerMessage(makeWrapKeyRequest(testUUID('group-dedup'), testUUID('target-dedup')));
 
     expect(mockSubmitWrappedKey).toHaveBeenCalledTimes(1);
   });
@@ -739,7 +755,7 @@ describe('wrap_key_request', () => {
       threads: {},
     });
 
-    await handleServerMessage(makeWrapKeyRequest('group-auth', 'user-auth'));
+    await handleServerMessage(makeWrapKeyRequest(testUUID('group-auth'), testUUID('user-auth')));
 
     expect(mockSubmitWrappedKey).not.toHaveBeenCalled();
   });
@@ -749,8 +765,8 @@ describe('wrap_key_request', () => {
       .mockRejectedValueOnce(new Error('key not available'))
       .mockResolvedValueOnce(fakeGroupKey);
 
-    await handleServerMessage(makeWrapKeyRequest('group-retry', 'user-retry'));
-    await handleServerMessage(makeWrapKeyRequest('group-retry', 'user-retry'));
+    await handleServerMessage(makeWrapKeyRequest(testUUID('group-retry'), testUUID('user-retry')));
+    await handleServerMessage(makeWrapKeyRequest(testUUID('group-retry'), testUUID('user-retry')));
 
     expect(mockGetOrFetchGroupKey).toHaveBeenCalledTimes(2);
     expect(mockSubmitWrappedKey).toHaveBeenCalledTimes(1);
@@ -764,7 +780,7 @@ describe('wrap_key_request', () => {
 describe('wrapped_key_delivered', () => {
   // wrapped_key_delivered arrives as a top-level message (via sendToUser),
   // NOT inside a broadcast envelope.
-  function makeDeliveredEvent(groupId = 'group-1') {
+  function makeDeliveredEvent(groupId = testUUID('group-1')) {
     return JSON.stringify({
       type: 'wrapped_key_delivered',
       groupId,
@@ -779,16 +795,16 @@ describe('wrapped_key_delivered', () => {
   it('evicts pending cache and fetches group key', async () => {
     await handleServerMessage(makeDeliveredEvent());
 
-    expect(mockEvictPendingCache).toHaveBeenCalledWith('group-1');
-    expect(mockGetOrFetchGroupKey).toHaveBeenCalledWith('group-1');
+    expect(mockEvictPendingCache).toHaveBeenCalledWith(testUUID('group-1'));
+    expect(mockGetOrFetchGroupKey).toHaveBeenCalledWith(testUUID('group-1'));
   });
 
   it('retries pending orbit name decrypt after key acquisition', async () => {
     const { retryPendingNameDecrypt } = jest.requireMock('../../conversationService');
 
-    await handleServerMessage(makeDeliveredEvent('group-name-retry'));
+    await handleServerMessage(makeDeliveredEvent(testUUID('group-name-retry')));
 
-    expect(retryPendingNameDecrypt).toHaveBeenCalledWith('group-name-retry');
+    expect(retryPendingNameDecrypt).toHaveBeenCalledWith(testUUID('group-name-retry'));
   });
 
   it('does not retry name decrypt when key fetch fails', async () => {
@@ -796,14 +812,14 @@ describe('wrapped_key_delivered', () => {
     (retryPendingNameDecrypt as jest.Mock).mockClear();
     mockGetOrFetchGroupKey.mockRejectedValueOnce(new Error('fetch failed'));
 
-    await handleServerMessage(makeDeliveredEvent('group-name-retry-fail'));
+    await handleServerMessage(makeDeliveredEvent(testUUID('group-name-retry-fail')));
 
     expect(retryPendingNameDecrypt).not.toHaveBeenCalled();
   });
 
   it('deduplicates within 30s TTL', async () => {
-    await handleServerMessage(makeDeliveredEvent('group-dedup-d'));
-    await handleServerMessage(makeDeliveredEvent('group-dedup-d'));
+    await handleServerMessage(makeDeliveredEvent(testUUID('group-dedup-d')));
+    await handleServerMessage(makeDeliveredEvent(testUUID('group-dedup-d')));
 
     expect(mockGetOrFetchGroupKey).toHaveBeenCalledTimes(1);
   });
@@ -811,7 +827,7 @@ describe('wrapped_key_delivered', () => {
   it('swallows errors without throwing', async () => {
     mockGetOrFetchGroupKey.mockRejectedValueOnce(new Error('fetch failed'));
 
-    await expect(handleServerMessage(makeDeliveredEvent('group-err'))).resolves.toBeUndefined();
+    await expect(handleServerMessage(makeDeliveredEvent(testUUID('group-err')))).resolves.toBeUndefined();
   });
 });
 
@@ -852,7 +868,7 @@ describe('production error logging', () => {
   it('logs [WS:unknown_broadcast] for unrecognized broadcast data.type', async () => {
     const msg = JSON.stringify({
       type: 'new_message',
-      conversationId: 'group-1',
+      conversationId: testUUID('group-1'),
       timestamp: Date.now(),
       data: {
         type: 'some_future_event',
@@ -870,13 +886,13 @@ describe('production error logging', () => {
 
     const msg = JSON.stringify({
       type: 'new_message',
-      conversationId: 'group-1',
+      conversationId: testUUID('group-1'),
       timestamp: Date.now(),
       data: {
         type: 'new_thread',
-        threadId: 'thread-decrypt-retry-log',
-        groupId: 'group-1',
-        authorId: 'user-1',
+        threadId: testUUID('thread-decrypt-retry-log'),
+        groupId: testUUID('group-1'),
+        authorId: testUUID('user-1'),
         authorName: 'alice',
         encryptedTitle: 'enc',
         encryptedBody: 'enc',
@@ -912,7 +928,7 @@ describe('production error logging', () => {
 describe('unread count increment', () => {
   afterEach(() => {
     (useAppStore.getState as jest.Mock).mockReturnValue({
-      userId: 'test-user-id',
+      userId: testUUID('test-user'),
       viewingConversationId: null,
       upsertThread: mockUpsertThread,
       upsertReply: mockUpsertReply,
@@ -932,13 +948,13 @@ describe('unread count increment', () => {
   it('increments unread when viewingConversationId differs from groupId (new_thread)', async () => {
     const msg = JSON.stringify({
       type: 'new_message',
-      conversationId: 'group-1',
+      conversationId: testUUID('group-1'),
       timestamp: Date.now(),
       data: {
         type: 'new_thread',
-        threadId: 'thread-unread-1',
-        groupId: 'group-1',
-        authorId: 'user-1',
+        threadId: testUUID('thread-unread-1'),
+        groupId: testUUID('group-1'),
+        authorId: testUUID('user-1'),
         authorName: 'alice',
         encryptedTitle: 'enc-title',
         encryptedBody: 'enc-body',
@@ -951,13 +967,13 @@ describe('unread count increment', () => {
 
     await handleServerMessage(msg);
 
-    expect(mockIncrementUnreadCount).toHaveBeenCalledWith('group-1');
+    expect(mockIncrementUnreadCount).toHaveBeenCalledWith(testUUID('group-1'));
   });
 
   it('does NOT increment unread when viewingConversationId === groupId (new_thread)', async () => {
     (useAppStore.getState as jest.Mock).mockReturnValue({
-      userId: 'test-user-id',
-      viewingConversationId: 'group-1',
+      userId: testUUID('test-user'),
+      viewingConversationId: testUUID('group-1'),
       upsertThread: mockUpsertThread,
       upsertReply: mockUpsertReply,
       upsertContact: mockUpsertContact,
@@ -974,13 +990,13 @@ describe('unread count increment', () => {
 
     const msg = JSON.stringify({
       type: 'new_message',
-      conversationId: 'group-1',
+      conversationId: testUUID('group-1'),
       timestamp: Date.now(),
       data: {
         type: 'new_thread',
-        threadId: 'thread-unread-2',
-        groupId: 'group-1',
-        authorId: 'user-1',
+        threadId: testUUID('thread-unread-2'),
+        groupId: testUUID('group-1'),
+        authorId: testUUID('user-1'),
         authorName: 'alice',
         encryptedTitle: 'enc-title',
         encryptedBody: 'enc-body',
@@ -999,14 +1015,14 @@ describe('unread count increment', () => {
   it('increments unread when viewingConversationId differs from groupId (new_reply)', async () => {
     const msg = JSON.stringify({
       type: 'new_message',
-      conversationId: 'group-1',
+      conversationId: testUUID('group-1'),
       timestamp: Date.now(),
       data: {
         type: 'new_reply',
-        replyId: 'reply-unread-1',
-        threadId: 'thread-1',
-        groupId: 'group-1',
-        authorId: 'user-2',
+        replyId: testUUID('reply-unread-1'),
+        threadId: testUUID('thread-1'),
+        groupId: testUUID('group-1'),
+        authorId: testUUID('user-2'),
         authorName: 'bob',
         encryptedBody: 'enc-reply-body',
         bodyIv: 'reply-body-iv',
@@ -1018,13 +1034,13 @@ describe('unread count increment', () => {
 
     await handleServerMessage(msg);
 
-    expect(mockIncrementUnreadCount).toHaveBeenCalledWith('group-1');
+    expect(mockIncrementUnreadCount).toHaveBeenCalledWith(testUUID('group-1'));
   });
 
   it('does NOT increment unread when viewingConversationId === groupId (new_reply)', async () => {
     (useAppStore.getState as jest.Mock).mockReturnValue({
-      userId: 'test-user-id',
-      viewingConversationId: 'group-1',
+      userId: testUUID('test-user'),
+      viewingConversationId: testUUID('group-1'),
       upsertThread: mockUpsertThread,
       upsertReply: mockUpsertReply,
       upsertContact: mockUpsertContact,
@@ -1041,14 +1057,14 @@ describe('unread count increment', () => {
 
     const msg = JSON.stringify({
       type: 'new_message',
-      conversationId: 'group-1',
+      conversationId: testUUID('group-1'),
       timestamp: Date.now(),
       data: {
         type: 'new_reply',
-        replyId: 'reply-unread-2',
-        threadId: 'thread-1',
-        groupId: 'group-1',
-        authorId: 'user-2',
+        replyId: testUUID('reply-unread-2'),
+        threadId: testUUID('thread-1'),
+        groupId: testUUID('group-1'),
+        authorId: testUUID('user-2'),
         authorName: 'bob',
         encryptedBody: 'enc-reply-body',
         bodyIv: 'reply-body-iv',
@@ -1072,7 +1088,7 @@ describe('unread count increment', () => {
 describe('avatar_changed broadcast', () => {
   it('updates avatarDigest and clears localAvatarUri for known contact', async () => {
     (useAppStore.getState as jest.Mock).mockReturnValue({
-      userId: 'test-user-id',
+      userId: testUUID('test-user'),
       viewingConversationId: null,
       upsertThread: mockUpsertThread,
       upsertReply: mockUpsertReply,
@@ -1084,12 +1100,12 @@ describe('avatar_changed broadcast', () => {
       bumpLastMessageAt: mockBumpLastMessageAt,
       incrementUnreadCount: mockIncrementUnreadCount,
       contacts: {
-        'user-avatar': {
-          id: 'user-avatar',
+        [testUUID('user-avatar')]: {
+          id: testUUID('user-avatar'),
           username: 'bob',
           displayName: 'Bob',
           avatarPath: '/old/path.jpg',
-          conversationIds: ['group-1'],
+          conversationIds: [testUUID('group-1')],
           avatarDigest: 'old-digest',
           localAvatarUri: 'file:///old/local.jpg',
         },
@@ -1098,11 +1114,11 @@ describe('avatar_changed broadcast', () => {
 
     const msg = JSON.stringify({
       type: 'new_message',
-      conversationId: 'group-1',
+      conversationId: testUUID('group-1'),
       timestamp: 1700000010000,
       data: {
         type: 'avatar_changed',
-        userId: 'user-avatar',
+        userId: testUUID('user-avatar'),
         avatarDigest: 'new-digest-abc',
         timestamp: 1700000010000,
       },
@@ -1112,7 +1128,7 @@ describe('avatar_changed broadcast', () => {
 
     expect(mockUpsertContact).toHaveBeenCalledWith(
       expect.objectContaining({
-        id: 'user-avatar',
+        id: testUUID('user-avatar'),
         avatarDigest: 'new-digest-abc',
         localAvatarUri: null,
       }),
@@ -1122,11 +1138,11 @@ describe('avatar_changed broadcast', () => {
   it('calls invalidateAvatarCache with correct userId', async () => {
     const msg = JSON.stringify({
       type: 'new_message',
-      conversationId: 'group-1',
+      conversationId: testUUID('group-1'),
       timestamp: 1700000011000,
       data: {
         type: 'avatar_changed',
-        userId: 'user-cache-test',
+        userId: testUUID('user-cache-test'),
         avatarDigest: 'digest-123',
         timestamp: 1700000011000,
       },
@@ -1135,12 +1151,12 @@ describe('avatar_changed broadcast', () => {
     await handleServerMessage(msg);
 
     const { invalidateAvatarCache } = require('../../avatarService');
-    expect(invalidateAvatarCache).toHaveBeenCalledWith('user-cache-test');
+    expect(invalidateAvatarCache).toHaveBeenCalledWith(testUUID('user-cache-test'));
   });
 
   it('calls refreshContactAvatar for known contact', async () => {
     (useAppStore.getState as jest.Mock).mockReturnValue({
-      userId: 'test-user-id',
+      userId: testUUID('test-user'),
       viewingConversationId: null,
       upsertThread: mockUpsertThread,
       upsertReply: mockUpsertReply,
@@ -1152,23 +1168,23 @@ describe('avatar_changed broadcast', () => {
       bumpLastMessageAt: mockBumpLastMessageAt,
       incrementUnreadCount: mockIncrementUnreadCount,
       contacts: {
-        'user-refresh': {
-          id: 'user-refresh',
+        [testUUID('user-refresh')]: {
+          id: testUUID('user-refresh'),
           username: 'carol',
           displayName: 'Carol',
           avatarPath: null,
-          conversationIds: ['group-1'],
+          conversationIds: [testUUID('group-1')],
         },
       },
     });
 
     const msg = JSON.stringify({
       type: 'new_message',
-      conversationId: 'group-1',
+      conversationId: testUUID('group-1'),
       timestamp: 1700000012000,
       data: {
         type: 'avatar_changed',
-        userId: 'user-refresh',
+        userId: testUUID('user-refresh'),
         avatarDigest: 'new-digest',
         timestamp: 1700000012000,
       },
@@ -1177,17 +1193,18 @@ describe('avatar_changed broadcast', () => {
     await handleServerMessage(msg);
 
     const { refreshContactAvatar } = require('../../conversationService');
-    expect(refreshContactAvatar).toHaveBeenCalledWith('user-refresh');
+    expect(refreshContactAvatar).toHaveBeenCalledWith(testUUID('user-refresh'));
   });
 
   it('does not call upsertContact or refreshContactAvatar for unknown contact', async () => {
+    const unknownUserId = testUUID('unknown-contact');
     const msg = JSON.stringify({
       type: 'new_message',
-      conversationId: 'group-1',
+      conversationId: testUUID('group-1'),
       timestamp: 1700000013000,
       data: {
         type: 'avatar_changed',
-        userId: 'unknown-user',
+        userId: unknownUserId,
         avatarDigest: 'some-digest',
         timestamp: 1700000013000,
       },
@@ -1200,12 +1217,12 @@ describe('avatar_changed broadcast', () => {
     expect(refreshContactAvatar).not.toHaveBeenCalled();
     // Cache is still invalidated even for unknown contacts
     const { invalidateAvatarCache } = require('../../avatarService');
-    expect(invalidateAvatarCache).toHaveBeenCalledWith('unknown-user');
+    expect(invalidateAvatarCache).toHaveBeenCalledWith(unknownUserId);
   });
 
   it('handles null avatarDigest (avatar removed)', async () => {
     (useAppStore.getState as jest.Mock).mockReturnValue({
-      userId: 'test-user-id',
+      userId: testUUID('test-user'),
       viewingConversationId: null,
       upsertThread: mockUpsertThread,
       upsertReply: mockUpsertReply,
@@ -1217,12 +1234,12 @@ describe('avatar_changed broadcast', () => {
       bumpLastMessageAt: mockBumpLastMessageAt,
       incrementUnreadCount: mockIncrementUnreadCount,
       contacts: {
-        'user-remove-avatar': {
-          id: 'user-remove-avatar',
+        [testUUID('user-remove-avatar')]: {
+          id: testUUID('user-remove-avatar'),
           username: 'dave',
           displayName: 'Dave',
           avatarPath: '/old.jpg',
-          conversationIds: ['group-1'],
+          conversationIds: [testUUID('group-1')],
           avatarDigest: 'old-digest',
           localAvatarUri: 'file:///old.jpg',
         },
@@ -1231,11 +1248,11 @@ describe('avatar_changed broadcast', () => {
 
     const msg = JSON.stringify({
       type: 'new_message',
-      conversationId: 'group-1',
+      conversationId: testUUID('group-1'),
       timestamp: 1700000014000,
       data: {
         type: 'avatar_changed',
-        userId: 'user-remove-avatar',
+        userId: testUUID('user-remove-avatar'),
         avatarDigest: null,
         timestamp: 1700000014000,
       },
@@ -1256,11 +1273,11 @@ describe('avatar_changed broadcast', () => {
 
     const msg = JSON.stringify({
       type: 'new_message',
-      conversationId: 'group-1',
+      conversationId: testUUID('group-1'),
       timestamp: 1700000015000,
       data: {
         type: 'avatar_changed',
-        userId: 'user-allowlist',
+        userId: testUUID('user-allowlist'),
         avatarDigest: 'digest-x',
         timestamp: 1700000015000,
       },
@@ -1281,13 +1298,13 @@ describe('clearMessageHandlerState', () => {
   it('clears dedup state so previously seen messages are processed again', async () => {
     const msg = JSON.stringify({
       type: 'new_message',
-      conversationId: 'group-1',
+      conversationId: testUUID('group-1'),
       timestamp: Date.now(),
       data: {
         type: 'new_thread',
-        threadId: 'thread-clear-test',
-        groupId: 'group-1',
-        authorId: 'user-1',
+        threadId: testUUID('thread-clear-test'),
+        groupId: testUUID('group-1'),
+        authorId: testUUID('user-1'),
         authorName: 'alice',
         encryptedTitle: 'enc-title',
         encryptedBody: 'enc-body',
@@ -1315,7 +1332,7 @@ describe('clearMessageHandlerState', () => {
 describe('blocked user guard', () => {
   it('drops new_thread from blocked user', async () => {
     (useAppStore.getState as jest.Mock).mockReturnValue({
-      userId: 'test-user-id',
+      userId: testUUID('test-user'),
       viewingConversationId: null,
       upsertThread: mockUpsertThread,
       upsertReply: mockUpsertReply,
@@ -1333,12 +1350,12 @@ describe('blocked user guard', () => {
 
     const msg = JSON.stringify({
       type: 'new_message',
-      conversationId: 'group-1',
+      conversationId: testUUID('group-1'),
       timestamp: Date.now(),
       data: {
         type: 'new_thread',
-        threadId: 'thread-blocked-1',
-        groupId: 'group-1',
+        threadId: testUUID('thread-blocked-1'),
+        groupId: testUUID('group-1'),
         authorId: 'blocked-user-1',
         authorName: 'baduser',
         encryptedTitle: 'enc-title',
@@ -1357,7 +1374,7 @@ describe('blocked user guard', () => {
 
   it('drops new_reply from blocked user', async () => {
     (useAppStore.getState as jest.Mock).mockReturnValue({
-      userId: 'test-user-id',
+      userId: testUUID('test-user'),
       viewingConversationId: null,
       upsertThread: mockUpsertThread,
       upsertReply: mockUpsertReply,
@@ -1375,13 +1392,13 @@ describe('blocked user guard', () => {
 
     const msg = JSON.stringify({
       type: 'new_message',
-      conversationId: 'group-1',
+      conversationId: testUUID('group-1'),
       timestamp: Date.now(),
       data: {
         type: 'new_reply',
-        replyId: 'reply-blocked-1',
-        threadId: 'thread-1',
-        groupId: 'group-1',
+        replyId: testUUID('reply-blocked-1'),
+        threadId: testUUID('thread-1'),
+        groupId: testUUID('group-1'),
         authorId: 'blocked-user-2',
         authorName: 'baduser2',
         encryptedBody: 'enc-body',

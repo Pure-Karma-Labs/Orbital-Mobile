@@ -68,3 +68,9 @@ android/              # Android native project
 fastlane/             # Fastlane automation
 .github/workflows/    # CI/CD pipelines
 ```
+
+## License
+
+This project is licensed under the [GNU Affero General Public License v3.0 or later](LICENSE).
+
+Orbital-Mobile uses [libsignal](https://github.com/signalapp/libsignal) for end-to-end encryption, which is also licensed under AGPL-3.0.

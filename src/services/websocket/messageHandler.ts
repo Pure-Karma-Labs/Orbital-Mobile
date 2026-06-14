@@ -21,6 +21,7 @@ import { decryptThreadFields, decryptReplyBody, processMediaMetadata } from '../
 import { ensureDmConversation, hydrateContactsFromOrbits, refreshContactAvatar, retryPendingNameDecrypt, markConversationReadEverywhere } from '../conversationService';
 import { invalidateAvatarCache } from '../avatarService';
 import { useAppStore } from '../../stores/useAppStore';
+import { isValidUUIDv4 } from '../../utils/uuid';
 import { LRUSet } from './lruSet';
 import type {
   BroadcastEnvelope,
@@ -222,6 +223,11 @@ async function handleBroadcast(envelope: BroadcastEnvelope): Promise<void> {
 // ============================================================
 
 async function handleNewThread(data: NewThreadPayload): Promise<void> {
+  if (!isValidUUIDv4(data.groupId) || !isValidUUIDv4(data.threadId) || !isValidUUIDv4(data.authorId)) {
+    console.error('[WS:invalid_uuid]');
+    return;
+  }
+
   // Block guard: silently drop content from blocked users before any processing
   const blockedSet = new Set(useAppStore.getState().blockedUserIds);
   if (blockedSet.has(data.authorId)) {
@@ -308,6 +314,11 @@ async function handleNewThread(data: NewThreadPayload): Promise<void> {
 // ============================================================
 
 async function handleNewReply(data: NewReplyPayload): Promise<void> {
+  if (!isValidUUIDv4(data.groupId) || !isValidUUIDv4(data.replyId) || !isValidUUIDv4(data.threadId) || !isValidUUIDv4(data.authorId)) {
+    console.error('[WS:invalid_uuid]');
+    return;
+  }
+
   // Block guard: silently drop content from blocked users before any processing
   const blockedSet = new Set(useAppStore.getState().blockedUserIds);
   if (blockedSet.has(data.authorId)) {
@@ -399,6 +410,11 @@ async function handleNewReply(data: NewReplyPayload): Promise<void> {
 // ============================================================
 
 function handleDisplayNameChanged(data: DisplayNameChangedPayload): void {
+  if (!isValidUUIDv4(data.userId)) {
+    console.error('[WS:invalid_uuid]');
+    return;
+  }
+
   const store = useAppStore.getState();
   const existing = store.contacts[data.userId];
 
@@ -436,6 +452,11 @@ function handleMediaUploaded(_data: MediaUploadedPayload): void {
 // ============================================================
 
 function handleAvatarChanged(data: AvatarChangedPayload): void {
+  if (!isValidUUIDv4(data.userId)) {
+    console.error('[WS:invalid_uuid]');
+    return;
+  }
+
   const store = useAppStore.getState();
   const existing = store.contacts[data.userId];
 
@@ -458,6 +479,11 @@ function handleAvatarChanged(data: AvatarChangedPayload): void {
 // ============================================================
 
 async function handleWrapKeyRequest(data: WrapKeyRequestPayload): Promise<void> {
+  if (!isValidUUIDv4(data.groupId) || !isValidUUIDv4(data.targetUserId)) {
+    console.error('[WS:invalid_uuid]');
+    return;
+  }
+
   const dedupKey = `${data.groupId}:${data.targetUserId}`;
   const dedupUntil = wrapDedup.get(dedupKey);
   if (dedupUntil && Date.now() < dedupUntil) return;
@@ -484,6 +510,11 @@ async function handleWrapKeyRequest(data: WrapKeyRequestPayload): Promise<void> 
 // ============================================================
 
 async function handleWrappedKeyDelivered(data: WrappedKeyDeliveredPayload): Promise<void> {
+  if (!isValidUUIDv4(data.groupId)) {
+    console.error('[WS:invalid_uuid]');
+    return;
+  }
+
   const dedupUntil = deliveryDedup.get(data.groupId);
   if (dedupUntil && Date.now() < dedupUntil) return;
   deliveryDedup.set(data.groupId, Date.now() + WRAP_DEDUP_TTL_MS);

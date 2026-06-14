@@ -13,6 +13,13 @@
  *
  * @returns A UUID in the form `xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx`
  */
+const UUID_V4_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function isValidUUIDv4(value: string): boolean {
+  return UUID_V4_REGEX.test(value);
+}
+
 export function generateUUID(): string {
   const cryptoGlobal = (
     globalThis as unknown as {

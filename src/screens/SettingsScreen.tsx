@@ -348,6 +348,13 @@ export function SettingsScreen(): React.JSX.Element {
           onPress={() => Linking.openURL('https://orbitl.org/terms')}
           testID="terms-of-service-row"
         />
+        <SettingsRow
+          emojiUnified="1F4BB"
+          label="Source Code"
+          chevron
+          onPress={() => Linking.openURL('https://github.com/Pure-Karma-Labs/Orbital-Mobile')}
+          testID="source-code-row"
+        />
 
         <SectionHeader label="Storage" />
         <SettingsRow

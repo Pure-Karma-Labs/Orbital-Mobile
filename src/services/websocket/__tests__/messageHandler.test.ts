@@ -1340,7 +1340,7 @@ describe('blocked user guard', () => {
       setConnectionStatus: mockSetConnectionStatus,
       setLastConnectedAt: mockSetLastConnectedAt,
       setReconnectAttempt: mockSetReconnectAttempt,
-      blockedUserIds: ['blocked-user-1'],
+      blockedUserIds: [testUUID('blocked-user-1')],
       addTypingUser: mockAddTypingUser,
       bumpLastMessageAt: mockBumpLastMessageAt,
       incrementUnreadCount: mockIncrementUnreadCount,
@@ -1356,7 +1356,7 @@ describe('blocked user guard', () => {
         type: 'new_thread',
         threadId: testUUID('thread-blocked-1'),
         groupId: testUUID('group-1'),
-        authorId: 'blocked-user-1',
+        authorId: testUUID('blocked-user-1'),
         authorName: 'baduser',
         encryptedTitle: 'enc-title',
         encryptedBody: 'enc-body',
@@ -1382,7 +1382,7 @@ describe('blocked user guard', () => {
       setConnectionStatus: mockSetConnectionStatus,
       setLastConnectedAt: mockSetLastConnectedAt,
       setReconnectAttempt: mockSetReconnectAttempt,
-      blockedUserIds: ['blocked-user-2'],
+      blockedUserIds: [testUUID('blocked-user-2')],
       addTypingUser: mockAddTypingUser,
       bumpLastMessageAt: mockBumpLastMessageAt,
       incrementUnreadCount: mockIncrementUnreadCount,
@@ -1399,7 +1399,7 @@ describe('blocked user guard', () => {
         replyId: testUUID('reply-blocked-1'),
         threadId: testUUID('thread-1'),
         groupId: testUUID('group-1'),
-        authorId: 'blocked-user-2',
+        authorId: testUUID('blocked-user-2'),
         authorName: 'baduser2',
         encryptedBody: 'enc-body',
         bodyIv: 'iv',
@@ -1412,5 +1412,126 @@ describe('blocked user guard', () => {
     await handleServerMessage(msg);
     expect(mockUpsertReply).not.toHaveBeenCalled();
     expect(mockIncrementUnreadCount).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// UUID validation guards (#328)
+// ---------------------------------------------------------------------------
+
+describe('UUID validation guards', () => {
+  let consoleSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    consoleSpy = jest.spyOn(console, 'error').mockImplementation();
+  });
+
+  afterEach(() => {
+    consoleSpy.mockRestore();
+  });
+
+  it('drops new_thread with invalid groupId', async () => {
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: 'bad',
+      timestamp: Date.now(),
+      data: {
+        type: 'new_thread',
+        threadId: testUUID('t1'),
+        groupId: 'not-a-uuid',
+        authorId: testUUID('u1'),
+        authorName: 'a',
+        encryptedTitle: 'x',
+        encryptedBody: 'x',
+        titleIv: 'x',
+        bodyIv: 'x',
+        createdAt: '2026-01-01T00:00:00Z',
+        media: [],
+      },
+    });
+    await handleServerMessage(msg);
+    expect(consoleSpy).toHaveBeenCalledWith('[WS:invalid_uuid]');
+    expect(mockUpsertThread).not.toHaveBeenCalled();
+  });
+
+  it('drops new_reply with invalid replyId', async () => {
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: testUUID('g1'),
+      timestamp: Date.now(),
+      data: {
+        type: 'new_reply',
+        replyId: 'bad-id',
+        threadId: testUUID('t1'),
+        groupId: testUUID('g1'),
+        authorId: testUUID('u1'),
+        authorName: 'a',
+        encryptedBody: 'x',
+        bodyIv: 'x',
+        parentReplyId: null,
+        createdAt: '2026-01-01T00:00:00Z',
+        media: [],
+      },
+    });
+    await handleServerMessage(msg);
+    expect(consoleSpy).toHaveBeenCalledWith('[WS:invalid_uuid]');
+    expect(mockUpsertReply).not.toHaveBeenCalled();
+  });
+
+  it('drops wrap_key_request with invalid targetUserId', async () => {
+    const msg = JSON.stringify({
+      type: 'wrap_key_request',
+      groupId: testUUID('g1'),
+      targetUserId: 'not-uuid',
+      targetIdentityPublicKey: 'base64key',
+    });
+    await handleServerMessage(msg);
+    expect(consoleSpy).toHaveBeenCalledWith('[WS:invalid_uuid]');
+    expect(mockSubmitWrappedKey).not.toHaveBeenCalled();
+  });
+
+  it('drops wrapped_key_delivered with invalid groupId', async () => {
+    const msg = JSON.stringify({
+      type: 'wrapped_key_delivered',
+      groupId: '../traversal',
+      senderUserId: testUUID('u1'),
+    });
+    await handleServerMessage(msg);
+    expect(consoleSpy).toHaveBeenCalledWith('[WS:invalid_uuid]');
+    expect(mockGetOrFetchGroupKey).not.toHaveBeenCalled();
+  });
+
+  it('drops display_name_changed with invalid userId', async () => {
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: testUUID('g1'),
+      timestamp: Date.now(),
+      data: {
+        type: 'display_name_changed',
+        userId: '__proto__',
+        displayName: 'hacked',
+        timestamp: Date.now(),
+      },
+    });
+    await handleServerMessage(msg);
+    expect(consoleSpy).toHaveBeenCalledWith('[WS:invalid_uuid]');
+    expect(mockUpsertContact).not.toHaveBeenCalled();
+  });
+
+  it('drops avatar_changed with invalid userId', async () => {
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: testUUID('g1'),
+      timestamp: Date.now(),
+      data: {
+        type: 'avatar_changed',
+        userId: 'not-a-uuid',
+        avatarDigest: 'digest',
+        timestamp: Date.now(),
+      },
+    });
+    await handleServerMessage(msg);
+    expect(consoleSpy).toHaveBeenCalledWith('[WS:invalid_uuid]');
+    expect(mockUpsertContact).not.toHaveBeenCalled();
   });
 });

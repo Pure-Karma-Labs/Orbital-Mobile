@@ -99,6 +99,8 @@ export function LinkPreviewCard({
 
   if (!preview) return null;
 
+  if (!preview.title && !preview.description) return null;
+
   let domain = '';
   try {
     domain = new URL(preview.url).hostname.replace(/^www\./, '');

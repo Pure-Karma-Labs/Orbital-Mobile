@@ -87,6 +87,42 @@ describe('LinkPreviewCard', () => {
     expect(renderer.toJSON()).toBeNull();
   });
 
+  it('renders null when preview has no title and no description', () => {
+    mockUseLinkPreview.mockReturnValue({
+      preview: { ...fakePreview, title: null, description: null },
+      loading: false,
+    });
+    const renderer = renderCard();
+    expect(renderer.toJSON()).toBeNull();
+  });
+
+  it('renders null when preview has empty string title and description', () => {
+    mockUseLinkPreview.mockReturnValue({
+      preview: { ...fakePreview, title: '', description: '' },
+      loading: false,
+    });
+    const renderer = renderCard();
+    expect(renderer.toJSON()).toBeNull();
+  });
+
+  it('renders card when preview has title but no description', () => {
+    mockUseLinkPreview.mockReturnValue({
+      preview: { ...fakePreview, description: null },
+      loading: false,
+    });
+    const renderer = renderCard();
+    expect(findByTestId(renderer, 'link-preview-card')).not.toBeNull();
+  });
+
+  it('renders card when preview has description but no title', () => {
+    mockUseLinkPreview.mockReturnValue({
+      preview: { ...fakePreview, title: null },
+      loading: false,
+    });
+    const renderer = renderCard();
+    expect(findByTestId(renderer, 'link-preview-card')).not.toBeNull();
+  });
+
   it('renders a loading skeleton when loading', () => {
     mockUseLinkPreview.mockReturnValue({ preview: null, loading: true });
     const renderer = renderCard();

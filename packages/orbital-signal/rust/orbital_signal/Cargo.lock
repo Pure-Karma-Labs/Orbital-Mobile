@@ -844,7 +844,7 @@ dependencies = [
 [[package]]
 name = "libsignal-core"
 version = "0.1.0"
-source = "git+https://github.com/signalapp/libsignal?tag=v0.95.0#aeff97723ce00abc7942fdfc24976f5a06c96184"
+source = "git+https://github.com/signalapp/libsignal?tag=v0.96.0#65eac5eb751b491a1f89040b1705cf0b250c3869"
 dependencies = [
  "curve25519-dalek",
  "derive_more",
@@ -862,8 +862,8 @@ dependencies = [
 
 [[package]]
 name = "libsignal-debug"
-version = "0.95.0"
-source = "git+https://github.com/signalapp/libsignal?tag=v0.95.0#aeff97723ce00abc7942fdfc24976f5a06c96184"
+version = "0.96.0"
+source = "git+https://github.com/signalapp/libsignal?tag=v0.96.0#65eac5eb751b491a1f89040b1705cf0b250c3869"
 dependencies = [
  "cfg-if",
 ]
@@ -871,7 +871,7 @@ dependencies = [
 [[package]]
 name = "libsignal-protocol"
 version = "0.1.0"
-source = "git+https://github.com/signalapp/libsignal?tag=v0.95.0#aeff97723ce00abc7942fdfc24976f5a06c96184"
+source = "git+https://github.com/signalapp/libsignal?tag=v0.96.0#65eac5eb751b491a1f89040b1705cf0b250c3869"
 dependencies = [
  "aes",
  "aes-gcm-siv",
@@ -1456,7 +1456,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 [[package]]
 name = "signal-crypto"
 version = "0.1.0"
-source = "git+https://github.com/signalapp/libsignal?tag=v0.95.0#aeff97723ce00abc7942fdfc24976f5a06c96184"
+source = "git+https://github.com/signalapp/libsignal?tag=v0.96.0#65eac5eb751b491a1f89040b1705cf0b250c3869"
 dependencies = [
  "aes",
  "cbc",
@@ -2120,13 +2120,3 @@ name = "zmij"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
-
-[[patch.unused]]
-name = "boring"
-version = "5.0.2"
-source = "git+https://github.com/signalapp/boring?tag=signal-v5.0.2#2c157897feea0c54f5eca93407a157fa90703b5f"
-
-[[patch.unused]]
-name = "boring-sys"
-version = "5.0.2"
-source = "git+https://github.com/signalapp/boring?tag=signal-v5.0.2#2c157897feea0c54f5eca93407a157fa90703b5f"

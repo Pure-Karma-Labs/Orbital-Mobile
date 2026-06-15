@@ -17,6 +17,10 @@ jest.mock('../../services/threadService', () => ({
   hydrateThreadsFromLocal: jest.fn(),
 }));
 
+jest.mock('../../services/conversationService', () => ({
+  markConversationReadEverywhere: jest.fn(),
+}));
+
 jest.mock('../../hooks/useBlockedSet', () => ({
   useBlockedSet: () => new Set<string>(),
 }));
@@ -59,6 +63,20 @@ jest.mock('../../components/PullToRefreshOverlay', () => ({
 
 jest.mock('../../components/OrbitalSpinner', () => ({
   OrbitalSpinner: () => null,
+}));
+
+jest.mock('../../hooks/useSQLiteSearch', () => ({
+  useSQLiteSearch: () => ({
+    searchText: '',
+    setSearchText: jest.fn(),
+    resultThreadIds: [],
+    isSearching: false,
+    clearSearch: jest.fn(),
+  }),
+}));
+
+jest.mock('../../components/Emoji', () => ({
+  Emoji: () => null,
 }));
 
 const mockUseThreads = jest.fn();
@@ -299,12 +317,15 @@ describe('ChatDetailScreen — navigation', () => {
 });
 
 describe('ChatDetailScreen — focus lifecycle', () => {
-  it('calls setViewingConversation and markConversationRead on mount', () => {
+  it('calls setViewingConversation and markConversationReadEverywhere on mount', () => {
     mockUseThreads.mockReturnValue(emptyThreadsState);
+    const { markConversationReadEverywhere } = jest.requireMock(
+      '../../services/conversationService',
+    ) as { markConversationReadEverywhere: jest.Mock };
     renderScreen('Alice');
 
     expect(mockSetViewingConversation).toHaveBeenCalledWith('dm-conv-1');
-    expect(mockMarkConversationRead).toHaveBeenCalledWith('dm-conv-1');
+    expect(markConversationReadEverywhere).toHaveBeenCalledWith('dm-conv-1');
   });
 
   it('calls setViewingConversation(null) on unmount', () => {

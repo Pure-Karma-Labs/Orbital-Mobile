@@ -17,7 +17,6 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import type { IFuseOptions } from 'fuse.js';
 import { useTheme } from '../theme';
 import { useAppStore, useThreads, useConversations, useConnection } from '../stores';
 import type { Thread } from '../types/store';
@@ -33,26 +32,10 @@ import { loadThreadsForGroup, hydrateThreadsFromLocal } from '../services/thread
 import { markConversationReadEverywhere } from '../services/conversationService';
 import { PullToRefreshOverlay } from '../components/PullToRefreshOverlay';
 import { usePullToRefresh } from '../hooks/usePullToRefresh';
-import { useFuseSearch } from '../hooks/useFuseSearch';
+import { useSQLiteSearch } from '../hooks/useSQLiteSearch';
 import { useWebSocketSubscription } from '../hooks/useWebSocketSubscription';
 import { useBlockedSet } from '../hooks/useBlockedSet';
 import { getThreadState } from '../utils/threadState';
-
-// ---------------------------------------------------------------------------
-// Fuse search options — module-level constant for stable WeakMap cache key
-// ---------------------------------------------------------------------------
-
-const THREAD_SEARCH_OPTIONS: IFuseOptions<Thread> = {
-  threshold: 0.2,
-  distance: 200,
-  includeScore: true,
-  ignoreDiacritics: true,
-  keys: [
-    { name: 'title', weight: 1 },
-    { name: 'body', weight: 0.8 },
-    { name: 'authorUsername', weight: 0.6 },
-  ],
-};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -266,21 +249,24 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
     return blockedSet.size > 0 ? list.filter((t) => !blockedSet.has(t.authorId)) : list;
   }, [threads, threadIdsByConversation, activeConversationId, blockedSet]);
 
-  // Fuzzy search filtering
-  const { searchText, setSearchText, results: filteredThreads, isSearching, clearSearch } =
-    useFuseSearch(threadList, THREAD_SEARCH_OPTIONS);
+  // FTS5 full-text search
+  const { searchText, setSearchText, resultThreadIds, isSearching, clearSearch } =
+    useSQLiteSearch(activeConversationId);
 
   // Build list rows: flat when searching (no day separators), grouped when not
   const listRows = useMemo((): ListRow[] => {
     if (isSearching) {
-      return (filteredThreads as Thread[]).map((thread) => ({
-        type: 'thread' as const,
-        thread,
-        key: `thread-${thread.id}`,
-      }));
+      return resultThreadIds
+        .map((id) => threads[id])
+        .filter((t): t is Thread => t != null)
+        .map((thread) => ({
+          type: 'thread' as const,
+          thread,
+          key: `thread-${thread.id}`,
+        }));
     }
     return buildListRows(threadList);
-  }, [isSearching, filteredThreads, threadList]);
+  }, [isSearching, resultThreadIds, threads, threadList]);
 
   // Scroll to top when entering/exiting search mode
   useEffect(() => {
@@ -398,7 +384,7 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
     : undefined;
 
   // Determine which empty state to show
-  const showSearchEmpty = isSearching && filteredThreads.length === 0;
+  const showSearchEmpty = isSearching && resultThreadIds.length === 0;
   const showEmpty = !isSearching && threadList.length === 0;
 
   return (

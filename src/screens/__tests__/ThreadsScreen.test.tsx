@@ -49,6 +49,16 @@ jest.mock('../../components/Emoji', () => ({
   Emoji: () => null,
 }));
 
+jest.mock('../../hooks/useSQLiteSearch', () => ({
+  useSQLiteSearch: () => ({
+    searchText: '',
+    setSearchText: jest.fn(),
+    resultThreadIds: [],
+    isSearching: false,
+    clearSearch: jest.fn(),
+  }),
+}));
+
 const mockSetViewingConversation = jest.fn();
 const mockMarkConversationRead = jest.fn();
 

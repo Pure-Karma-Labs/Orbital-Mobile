@@ -186,7 +186,7 @@ describe('ChatsListScreen — rendering', () => {
     const renderer = renderScreen();
     const inputs = renderer.root.findAllByType('TextInput' as unknown as React.ComponentType);
     const searchInput = inputs.find(
-      (node) => node.props.placeholder === 'Search chats...',
+      (node) => node.props.placeholder === 'Search contacts...',
     );
     expect(searchInput).toBeDefined();
   });

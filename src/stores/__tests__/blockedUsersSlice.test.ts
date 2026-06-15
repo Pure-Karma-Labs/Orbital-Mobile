@@ -31,6 +31,7 @@ function makeStore() {
     activeConversationId: null,
     viewingConversationId: null,
     setConversations: jest.fn(),
+    setGroupConversations: jest.fn(),
     upsertConversation: jest.fn(),
     removeConversation: jest.fn(),
     setActiveConversation: jest.fn(),
@@ -45,6 +46,7 @@ function makeStore() {
     replies: {},
     replyIdsByThread: {},
     activeThreadId: null,
+    threadLastViewedAt: {},
     setThreads: jest.fn(),
     upsertThread: jest.fn(),
     removeThread: jest.fn(),
@@ -57,6 +59,7 @@ function makeStore() {
     addOptimisticReply: jest.fn(),
     updateThreadSyncStatus: jest.fn(),
     updateReplySyncStatus: jest.fn(),
+    markThreadViewed: jest.fn(),
 
     contacts: {},
     setContacts: jest.fn(),

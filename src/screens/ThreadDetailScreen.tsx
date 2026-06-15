@@ -35,7 +35,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useTheme } from '../theme';
 import { useAuth, useThreads } from '../stores';
-import { loadThread, loadReplies, postReply } from '../services/threadService';
+import { loadThread, loadReplies, postReply, hydrateRepliesFromLocal } from '../services/threadService';
 import { uploadMediaBatch } from '../services/mediaUploadService';
 import { useMediaPicker } from '../hooks/useMediaPicker';
 import { Header } from '../components/Header';
@@ -249,6 +249,8 @@ export function ThreadDetailScreen({
   useEffect(() => {
     setActiveThread(threadId);
     markThreadViewed(threadId);
+    // Instant hydration from local SQLCipher cache before async API fetch
+    hydrateRepliesFromLocal(threadId);
     fetchData();
     return () => {
       // Mark viewed again on cleanup — captures replies streamed while reading

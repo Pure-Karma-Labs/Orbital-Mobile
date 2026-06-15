@@ -19,6 +19,9 @@ import { resolveRemoteIdentityKey } from '../crypto/identityKeyAccess';
 import { submitWrappedKey } from '../api/groups';
 import { decryptThreadFields, decryptReplyBody, processMediaMetadata } from '../threadService';
 import { ensureDmConversation, hydrateContactsFromOrbits, refreshContactAvatar, retryPendingNameDecrypt, markConversationReadEverywhere } from '../conversationService';
+import { isDatabaseInitialized } from '../../database/connection';
+import { saveThread as dbSaveThread } from '../../database/repositories/threadRepository';
+import { saveReply as dbSaveReply } from '../../database/repositories/replyRepository';
 import { invalidateAvatarCache } from '../avatarService';
 import { useAppStore } from '../../stores/useAppStore';
 import { isValidUUIDv4 } from '../../utils/uuid';
@@ -272,6 +275,15 @@ async function handleNewThread(data: NewThreadPayload): Promise<void> {
       syncStatus: 'synced',
     };
 
+    // Write-through: persist decrypted thread to SQLCipher
+    if (isDatabaseInitialized()) {
+      try {
+        dbSaveThread(thread);
+      } catch (e) {
+        if (__DEV__) console.warn('[WS handleNewThread] DB write failed:', e instanceof Error ? e.message : e);
+      }
+    }
+
     useAppStore.getState().upsertThread(thread);
     useAppStore.getState().bumpLastMessageAt(
       data.groupId,
@@ -354,6 +366,15 @@ async function handleNewReply(data: NewReplyPayload): Promise<void> {
       updatedAt: new Date(data.createdAt).getTime(),
       syncStatus: 'synced',
     };
+
+    // Write-through: persist decrypted reply to SQLCipher
+    if (isDatabaseInitialized()) {
+      try {
+        dbSaveReply(reply);
+      } catch (e) {
+        if (__DEV__) console.warn('[WS handleNewReply] DB write failed:', e instanceof Error ? e.message : e);
+      }
+    }
 
     const storeBeforeReply = useAppStore.getState();
     storeBeforeReply.upsertReply(reply);

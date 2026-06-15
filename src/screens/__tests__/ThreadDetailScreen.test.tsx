@@ -71,6 +71,7 @@ jest.mock('../../services/threadService', () => ({
   loadThread: (...args: unknown[]) => mockLoadThread(...args),
   loadReplies: (...args: unknown[]) => mockLoadReplies(...args),
   postReply: (...args: unknown[]) => mockPostReply(...args),
+  hydrateRepliesFromLocal: jest.fn(),
 }));
 
 const mockUploadMediaBatch = jest.fn();

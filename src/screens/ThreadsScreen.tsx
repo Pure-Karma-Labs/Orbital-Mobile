@@ -29,7 +29,7 @@ import { OrbitBar } from './threads/OrbitBar';
 import { SearchBar } from './threads/SearchBar';
 import { ThreadItem } from './threads/ThreadItem';
 import { OnboardingEmptyState } from './threads/OnboardingEmptyState';
-import { loadThreadsForGroup } from '../services/threadService';
+import { loadThreadsForGroup, hydrateThreadsFromLocal } from '../services/threadService';
 import { markConversationReadEverywhere } from '../services/conversationService';
 import { PullToRefreshOverlay } from '../components/PullToRefreshOverlay';
 import { usePullToRefresh } from '../hooks/usePullToRefresh';
@@ -289,6 +289,8 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
 
   useEffect(() => {
     if (!activeConversationId) return;
+    // Instant hydration from local SQLCipher cache before async API fetch
+    hydrateThreadsFromLocal(activeConversationId);
     loadThreadsForGroup(activeConversationId).catch((e) => {
       if (__DEV__) console.warn('[ThreadsScreen] load failed:', e instanceof Error ? e.message : e);
     });

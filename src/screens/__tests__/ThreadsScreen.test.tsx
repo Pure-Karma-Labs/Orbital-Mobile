@@ -15,6 +15,7 @@ import type { Thread } from '../../types/store';
 
 jest.mock('../../services/threadService', () => ({
   loadThreadsForGroup: jest.fn().mockResolvedValue([]),
+  hydrateThreadsFromLocal: jest.fn(),
 }));
 
 jest.mock('../../services/conversationService', () => ({

@@ -21,6 +21,8 @@ import {
 import { clearGroupKeyCache, clearContentCryptoInflight } from './crypto/contentCrypto';
 import { clearEciesLockState, loadEciesLockState } from './crypto/downgradeProtection';
 import { clearProcessedMediaIds } from './threadService';
+import { clearAllThreads } from '../database/repositories/threadRepository';
+import { clearAllReplies } from '../database/repositories/replyRepository';
 import { clearLinkPreviewCache } from '../hooks/useLinkPreview';
 import { clearIdentityInflightState } from './crypto/identityKeyAccess';
 import { clearMessageHandlerState } from './websocket/messageHandler';
@@ -267,6 +269,12 @@ export async function localWipe({ preserveIdentity }: { preserveIdentity: boolea
   }
   try { clearLinkPreviewCache(); } catch {
     if (__DEV__) console.warn('[LocalWipe] clearLinkPreviewCache failed');
+  }
+  try { clearAllThreads(); } catch {
+    if (__DEV__) console.warn('[LocalWipe] clearAllThreads failed');
+  }
+  try { clearAllReplies(); } catch {
+    if (__DEV__) console.warn('[LocalWipe] clearAllReplies failed');
   }
   try { useAppStore.getState().resetBlockedUsers(); } catch {
     if (__DEV__) console.warn('[LocalWipe] resetBlockedUsers failed');

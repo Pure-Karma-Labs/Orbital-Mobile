@@ -23,6 +23,9 @@ import { getIdentityKeyPair, resolveRemoteIdentityKey } from './crypto/identityK
 import { ApiError } from './api/errors';
 import { generateUUID } from '../utils/uuid';
 import { useAppStore } from '../stores/useAppStore';
+import { isDatabaseInitialized } from '../database/connection';
+import { getConversationIdsWithThreads, deleteThreadsForConversation } from '../database/repositories/threadRepository';
+import { deleteRepliesForConversation } from '../database/repositories/replyRepository';
 import type { Contact, Conversation } from '../types/store';
 import type { DmResponse, GroupMember, GroupResponse } from '../types/api';
 
@@ -200,6 +203,25 @@ export async function loadConversations(): Promise<void> {
   // Type-partitioned replace: only replace group-type conversations,
   // preserving all existing DM conversations and their unread counts.
   store.setGroupConversations(conversations);
+
+  // Reconciliation: purge local threads/replies for dissolved groups.
+  // If the server no longer returns a group, it was dissolved or the user
+  // was removed — local cache must be cleaned to avoid stale data.
+  if (isDatabaseInitialized()) {
+    try {
+      const serverGroupIds = new Set(conversations.map(c => c.id));
+      const localConversationIds = getConversationIdsWithThreads();
+      for (const localId of localConversationIds) {
+        if (!serverGroupIds.has(localId)) {
+          // Delete replies first (they reference thread_id, not conversation_id)
+          deleteRepliesForConversation(localId);
+          deleteThreadsForConversation(localId);
+        }
+      }
+    } catch (e) {
+      if (__DEV__) console.warn('[loadConversations] cleanup failed:', e instanceof Error ? e.message : e);
+    }
+  }
 
   if (store.activeConversationId === null && conversations.length > 0) {
     store.setActiveConversation(conversations[0].id);

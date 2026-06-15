@@ -23,7 +23,7 @@ import { getIdentityKeyPair, resolveRemoteIdentityKey } from './crypto/identityK
 import { ApiError } from './api/errors';
 import { generateUUID } from '../utils/uuid';
 import { useAppStore } from '../stores/useAppStore';
-import { isDatabaseInitialized } from '../database/connection';
+import { isDatabaseInitialized, getDatabase } from '../database/connection';
 import { getConversationIdsWithThreads, deleteThreadsForConversation } from '../database/repositories/threadRepository';
 import { deleteRepliesForConversation } from '../database/repositories/replyRepository';
 import type { Contact, Conversation } from '../types/store';
@@ -211,11 +211,19 @@ export async function loadConversations(): Promise<void> {
     try {
       const serverGroupIds = new Set(conversations.map(c => c.id));
       const localConversationIds = getConversationIdsWithThreads();
-      for (const localId of localConversationIds) {
-        if (!serverGroupIds.has(localId)) {
-          // Delete replies first (they reference thread_id, not conversation_id)
-          deleteRepliesForConversation(localId);
-          deleteThreadsForConversation(localId);
+      const dissolved = localConversationIds.filter(id => !serverGroupIds.has(id));
+      if (dissolved.length > 0) {
+        const db = getDatabase();
+        db.executeSync('BEGIN IMMEDIATE');
+        try {
+          for (const localId of dissolved) {
+            deleteRepliesForConversation(localId);
+            deleteThreadsForConversation(localId);
+          }
+          db.executeSync('COMMIT');
+        } catch (txError) {
+          db.executeSync('ROLLBACK');
+          throw txError;
         }
       }
     } catch (e) {

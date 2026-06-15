@@ -70,7 +70,7 @@ export interface Reply {
   /** Decrypted from body_encrypted + body_iv in database */
   body: string | null;
   parentReplyId: string | null;
-  /** Computed depth for UI rendering — not stored in database */
+  /** Reply nesting depth (0 = top-level). Persisted to SQLCipher. */
   depth: number;
   createdAt: number;
   updatedAt: number;

@@ -7,6 +7,7 @@ on:
       - 'packages/orbital-signal/**'
       - 'android/**'
       - 'ios/**'
+      - 'src/config/**'
       - 'package.json'
       - 'package-lock.json'
       - 'rust-toolchain.toml'
@@ -16,6 +17,7 @@ on:
       - 'packages/orbital-signal/**'
       - 'android/**'
       - 'ios/**'
+      - 'src/config/**'
       - 'package.json'
       - 'package-lock.json'
       - 'rust-toolchain.toml'
@@ -64,6 +66,13 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Create .env from secrets
+        run: |
+          cat > .env <<'ENVEOF'
+          SENTRY_DSN=${{ secrets.SENTRY_DSN }}
+          API_URL=${{ secrets.API_URL }}
+          ENVEOF
 
       - name: Inject google-services.json
         run: echo "${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}" | base64 --decode > android/app/google-services.json
@@ -132,6 +141,13 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Create .env from secrets
+        run: |
+          cat > .env <<'ENVEOF'
+          SENTRY_DSN=${{ secrets.SENTRY_DSN }}
+          API_URL=${{ secrets.API_URL }}
+          ENVEOF
 
       - name: Inject GoogleService-Info.plist
         run: echo "${{ secrets.GOOGLE_SERVICE_INFO_PLIST_BASE64 }}" | base64 --decode > ios/OrbitalMobile/GoogleService-Info.plist

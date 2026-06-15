@@ -11,12 +11,15 @@ import messaging from '@react-native-firebase/messaging';
 import notifee, { AndroidImportance, EventType } from '@notifee/react-native';
 import App from './src/App';
 import { name as appName } from './app.json';
+import { SENTRY_DSN } from './src/config/env';
 
-Sentry.init({
-  dsn: 'https://610af249fc66881e6074156e43749df6@o4511027419348992.ingest.us.sentry.io/4511502734786560',
-  environment: __DEV__ ? 'development' : 'production',
-  sendDefaultPii: false,
-});
+if (SENTRY_DSN) {
+  Sentry.init({
+    dsn: SENTRY_DSN,
+    environment: __DEV__ ? 'development' : 'production',
+    sendDefaultPii: false,
+  });
+}
 
 enableScreens();
 

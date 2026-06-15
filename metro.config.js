@@ -11,6 +11,11 @@ const config = {
   watchFolders: [
     path.resolve(__dirname, 'packages/orbital-signal'),
   ],
+  resolver: {
+    // Prefer CJS — fuse.js v7 ships .mjs referencing @babel/runtime helpers
+    // that Metro can't resolve; resolving main (CJS) before module (ESM) fixes it
+    resolverMainFields: ['react-native', 'main', 'module'],
+  },
 };
 
 module.exports = mergeConfig(getDefaultConfig(__dirname), config);

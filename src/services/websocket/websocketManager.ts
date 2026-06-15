@@ -39,7 +39,7 @@ interface WSCloseEvent {
 // Constants
 // ============================================================
 
-const WS_URL = 'wss://api.orbitl.org/v1/websocket';
+import { WS_URL } from '../../config/env';
 const PING_INTERVAL_MS = 25_000;
 const WATCHDOG_TIMEOUT_MS = 45_000;
 const BACKGROUND_GRACE_MS = 30_000;
@@ -319,8 +319,8 @@ export function createWebSocketManager(createSocket?: SocketFactory) {
         return;
       }
 
-      // WS-04: Enforce wss://
-      if (!WS_URL.startsWith('wss://')) {
+      // WS-04: Enforce wss:// in production (allow ws://localhost in dev)
+      if (!__DEV__ && !WS_URL.startsWith('wss://')) {
         throw new Error('[WS] URL must use wss://');
       }
 

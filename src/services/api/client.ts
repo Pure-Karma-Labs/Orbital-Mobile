@@ -17,14 +17,9 @@ import {
 } from './errors';
 import { tokenManager } from './tokenManager';
 
-export const API_BASE_URL = 'https://api.orbitl.org';
+import { API_BASE_URL } from '../../config/env';
 
-// Guard: enforce HTTPS at module load time
-if (!API_BASE_URL.startsWith('https://')) {
-  throw new Error(
-    `[ApiClient] Base URL must use HTTPS. Got: ${API_BASE_URL}`,
-  );
-}
+export { API_BASE_URL };
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 

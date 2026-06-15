@@ -245,7 +245,7 @@ export function ChatsListScreen({ navigation }: ChatsListScreenProps): React.JSX
         value={searchText}
         onChangeText={setSearchText}
         onClear={clearSearch}
-        placeholder="Search chats..."
+        placeholder="Search contacts..."
         testID="chats-search"
       />
 

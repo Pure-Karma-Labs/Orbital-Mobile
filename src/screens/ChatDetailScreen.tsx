@@ -31,7 +31,7 @@ import { Header } from '../components/Header';
 import { AsciiDay, AsciiSection } from '../components/AsciiSeparator';
 import { IdentityChangeBanner } from '../components/IdentityChangeBanner';
 import { ChatMessageItem } from './chats/ChatMessageItem';
-import { loadThreadsForGroup } from '../services/threadService';
+import { loadThreadsForGroup, hydrateThreadsFromLocal } from '../services/threadService';
 import { markConversationReadEverywhere } from '../services/conversationService';
 import { PullToRefreshOverlay } from '../components/PullToRefreshOverlay';
 import { usePullToRefresh } from '../hooks/usePullToRefresh';
@@ -186,6 +186,8 @@ export function ChatDetailScreen({
   const listRows = useMemo(() => buildListRows(threadList), [threadList]);
 
   useEffect(() => {
+    // Instant hydration from local SQLCipher cache before async API fetch
+    hydrateThreadsFromLocal(conversationId);
     loadThreadsForGroup(conversationId).catch((e) => {
       if (__DEV__) console.warn('[ChatDetail] load failed:', e instanceof Error ? e.message : e);
     });

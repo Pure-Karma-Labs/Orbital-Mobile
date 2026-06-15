@@ -22,6 +22,8 @@ import { useAppStore } from '../stores/useAppStore';
 import { generateUUID } from '../utils/uuid';
 import { base64ToArrayBuffer } from './crypto/utils';
 import { getMedia, saveMedia } from '../database/repositories/mediaRepository';
+import { saveThread as dbSaveThread, saveThreadBatch, getThreadsForConversation } from '../database/repositories/threadRepository';
+import { saveReply as dbSaveReply, saveReplyBatch, getRepliesForThread } from '../database/repositories/replyRepository';
 import { mediaRowToItem } from '../database/repositories/mediaMapper';
 import { isDatabaseInitialized } from '../database/connection';
 import type { Thread, Reply, MediaItem } from '../types/store';
@@ -517,6 +519,15 @@ export async function loadThreadsForGroup(groupId: string): Promise<Thread[]> {
     response.threads.map((item) => mapThreadListItem(item, groupKey)),
   );
 
+  // Write-through: persist decrypted threads to SQLCipher
+  if (isDatabaseInitialized()) {
+    try {
+      saveThreadBatch(groupId, threads);
+    } catch (e) {
+      if (__DEV__) console.warn('[loadThreadsForGroup] DB write failed:', e instanceof Error ? e.message : e);
+    }
+  }
+
   const store = getStoreActions();
   store.setThreads(groupId, threads);
   return threads;
@@ -529,6 +540,15 @@ export async function loadThread(threadId: string): Promise<Thread> {
   const response = await getThread(threadId);
   const groupKey = await getOrFetchGroupKey(response.groupId);
   const thread = await mapThreadResponse(response, groupKey);
+
+  // Write-through: persist decrypted thread to SQLCipher
+  if (isDatabaseInitialized()) {
+    try {
+      dbSaveThread(thread);
+    } catch (e) {
+      if (__DEV__) console.warn('[loadThread] DB write failed:', e instanceof Error ? e.message : e);
+    }
+  }
 
   getStoreActions().upsertThread(thread);
   return thread;
@@ -559,6 +579,15 @@ export async function loadReplies(
   const replies = results
     .filter((r): r is PromiseFulfilledResult<Reply> => r.status === 'fulfilled')
     .map((r) => r.value);
+
+  // Write-through: persist decrypted replies to SQLCipher
+  if (isDatabaseInitialized()) {
+    try {
+      saveReplyBatch(threadId, replies);
+    } catch (e) {
+      if (__DEV__) console.warn('[loadReplies] DB write failed:', e instanceof Error ? e.message : e);
+    }
+  }
 
   const store = getStoreActions();
   if (!offset) {
@@ -647,6 +676,15 @@ export async function postReply(
       updatedAt: new Date(response.createdAt).getTime(),
       syncStatus: 'synced',
     };
+
+    // Write-through: persist confirmed reply to SQLCipher
+    if (isDatabaseInitialized()) {
+      try {
+        dbSaveReply(confirmedReply);
+      } catch (e) {
+        if (__DEV__) console.warn('[postReply] DB write failed:', e instanceof Error ? e.message : e);
+      }
+    }
 
     // Replace the optimistic reply (client ID) with the server-confirmed reply
     // so subsequent replies-to-this-reply use the real server ID.
@@ -759,6 +797,15 @@ export async function createNewThread(
       syncStatus: 'synced',
     };
 
+    // Write-through: persist confirmed thread to SQLCipher
+    if (isDatabaseInitialized()) {
+      try {
+        dbSaveThread(finalThread);
+      } catch (e) {
+        if (__DEV__) console.warn('[createNewThread] DB write failed:', e instanceof Error ? e.message : e);
+      }
+    }
+
     store.removeThread(clientId);
     store.upsertThread(finalThread);
     // A thread you just created is not unread for you
@@ -786,5 +833,43 @@ export async function createNewThread(
     }
     store.updateThreadSyncStatus(clientId, 'failed');
     throw new Error('Failed to create thread');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Local hydration — instant screen loads from SQLCipher cache
+// ---------------------------------------------------------------------------
+
+/**
+ * Hydrate the store with threads from the local database.
+ * Called synchronously before async API fetch for instant UI.
+ */
+export function hydrateThreadsFromLocal(conversationId: string): void {
+  if (!isDatabaseInitialized()) return;
+  try {
+    const threads = getThreadsForConversation(conversationId);
+    if (threads.length > 0) {
+      const store = useAppStore.getState();
+      store.setThreads(conversationId, threads);
+    }
+  } catch (e) {
+    if (__DEV__) console.warn('[hydrateThreadsFromLocal] failed:', e instanceof Error ? e.message : e);
+  }
+}
+
+/**
+ * Hydrate the store with replies from the local database.
+ * Called synchronously before async API fetch for instant UI.
+ */
+export function hydrateRepliesFromLocal(threadId: string): void {
+  if (!isDatabaseInitialized()) return;
+  try {
+    const replies = getRepliesForThread(threadId);
+    if (replies.length > 0) {
+      const store = useAppStore.getState();
+      store.setReplies(threadId, replies);
+    }
+  } catch (e) {
+    if (__DEV__) console.warn('[hydrateRepliesFromLocal] failed:', e instanceof Error ? e.message : e);
   }
 }

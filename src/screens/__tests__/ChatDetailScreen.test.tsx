@@ -14,6 +14,7 @@ import { ChatDetailScreen } from '../ChatDetailScreen';
 
 jest.mock('../../services/threadService', () => ({
   loadThreadsForGroup: jest.fn().mockResolvedValue([]),
+  hydrateThreadsFromLocal: jest.fn(),
 }));
 
 jest.mock('../../hooks/useBlockedSet', () => ({

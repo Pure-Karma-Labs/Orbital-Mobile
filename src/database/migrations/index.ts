@@ -2,6 +2,7 @@ import { getDatabase } from '../connection';
 import { VERSION as V1, SQL as SQL_V1 } from './001_initial_schema';
 import { VERSION as V2, SQL as SQL_V2 } from './002_media_blur_hash_expires';
 import { VERSION as V3, SQL as SQL_V3 } from './003_drop_media_fks';
+import { VERSION as V4, SQL as SQL_V4 } from './004_thread_reply_persistence';
 
 interface Migration {
   version: number;
@@ -13,6 +14,7 @@ const migrations: Migration[] = [
   { version: V1, sql: SQL_V1 },
   { version: V2, sql: SQL_V2 },
   { version: V3, sql: SQL_V3, disableForeignKeys: true },
+  { version: V4, sql: SQL_V4, disableForeignKeys: true },
 ];
 
 /**

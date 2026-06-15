@@ -9,6 +9,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useFocusEffect } from '@react-navigation/native';
 import {
   Animated,
+  FlatList,
+  Keyboard,
   RefreshControl,
   Text,
   TouchableOpacity,
@@ -29,12 +31,15 @@ import type { ChatsStackParamList } from '../navigation/types';
 import { Button } from '../components/Button';
 import { Header } from '../components/Header';
 import { AsciiDay, AsciiSection } from '../components/AsciiSeparator';
+import { SearchEmptyState } from '../components/SearchEmptyState';
 import { IdentityChangeBanner } from '../components/IdentityChangeBanner';
+import { SearchBar } from './threads/SearchBar';
 import { ChatMessageItem } from './chats/ChatMessageItem';
 import { loadThreadsForGroup, hydrateThreadsFromLocal } from '../services/threadService';
 import { markConversationReadEverywhere } from '../services/conversationService';
 import { PullToRefreshOverlay } from '../components/PullToRefreshOverlay';
 import { usePullToRefresh } from '../hooks/usePullToRefresh';
+import { useSQLiteSearch } from '../hooks/useSQLiteSearch';
 import { useWebSocketSubscription } from '../hooks/useWebSocketSubscription';
 import { useBlockedSet } from '../hooks/useBlockedSet';
 
@@ -176,6 +181,7 @@ export function ChatDetailScreen({
   );
 
   const blockedSet = useBlockedSet();
+  const flatListRef = useRef<FlatList<ListRow>>(null);
 
   const threadList = useMemo((): Thread[] => {
     const ids = threadIdsByConversation[conversationId] ?? [];
@@ -183,7 +189,28 @@ export function ChatDetailScreen({
     return blockedSet.size > 0 ? list.filter((t) => !blockedSet.has(t.authorId)) : list;
   }, [threads, threadIdsByConversation, conversationId, blockedSet]);
 
-  const listRows = useMemo(() => buildListRows(threadList), [threadList]);
+  // FTS5 full-text search
+  const { searchText, setSearchText, resultThreadIds, isSearching, clearSearch } =
+    useSQLiteSearch(conversationId);
+
+  const listRows = useMemo((): ListRow[] => {
+    if (isSearching) {
+      return resultThreadIds
+        .map((id) => threads[id])
+        .filter((t): t is Thread => t != null)
+        .map((thread) => ({
+          type: 'thread' as const,
+          thread,
+          key: `thread-${thread.id}`,
+        }));
+    }
+    return buildListRows(threadList);
+  }, [isSearching, resultThreadIds, threads, threadList]);
+
+  // Scroll to top when entering/exiting search mode
+  useEffect(() => {
+    flatListRef.current?.scrollToOffset({ offset: 0, animated: false });
+  }, [isSearching]);
 
   useEffect(() => {
     // Instant hydration from local SQLCipher cache before async API fetch
@@ -195,6 +222,7 @@ export function ChatDetailScreen({
 
   const handleThreadPress = useCallback(
     (threadId: string) => {
+      Keyboard.dismiss();
       const thread = threads[threadId];
       navigation.push('ThreadDetail', {
         threadId,
@@ -300,16 +328,28 @@ export function ChatDetailScreen({
         />
       )}
 
-      {listRows.length === 0 ? (
+      <SearchBar
+        value={searchText}
+        onChangeText={setSearchText}
+        onClear={clearSearch}
+        placeholder="Search messages..."
+        testID="chat-detail-search"
+      />
+
+      {isSearching && resultThreadIds.length === 0 ? (
+        <SearchEmptyState searchText={searchText} />
+      ) : listRows.length === 0 ? (
         <EmptyState onCompose={handleCompose} />
       ) : (
         <View style={{ flex: 1 }}>
           <PullToRefreshOverlay scrollY={scrollY} refreshing={refreshing} />
           <Animated.FlatList
+            ref={flatListRef as React.RefObject<FlatList<ListRow>>}
             data={listRows}
             keyExtractor={keyExtractor}
             renderItem={renderRow}
             contentContainerStyle={{ flexGrow: 1 }}
+            keyboardDismissMode="on-drag"
             refreshControl={
               <RefreshControl
                 refreshing={refreshing}

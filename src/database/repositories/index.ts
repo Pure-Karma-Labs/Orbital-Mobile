@@ -9,3 +9,4 @@ export * from './signalPreKeyRepository';
 export * from './signalSignedPreKeyRepository';
 export * from './signalKyberPreKeyRepository';
 export * from './signalSenderKeyRepository';
+export * from './searchRepository';

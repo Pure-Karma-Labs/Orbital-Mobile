@@ -6,7 +6,7 @@
  * avoid a flash where day-grouping disappears before results are computed.
  */
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { IFuseOptions } from 'fuse.js';
 import { getCachedFuseIndex } from '../utils/fuse';
 
@@ -61,11 +61,15 @@ export function useFuseSearch<T>(
 
   const isSearching = debouncedText.length > 0;
 
-  const results: ReadonlyArray<T> = isSearching
-    ? getCachedFuseIndex(items, options)
-        .search(debouncedText)
-        .map((r) => r.item)
-    : items;
+  const results = useMemo<ReadonlyArray<T>>(
+    () =>
+      isSearching
+        ? getCachedFuseIndex(items, options)
+            .search(debouncedText)
+            .map((r) => r.item)
+        : items,
+    [isSearching, items, options, debouncedText],
+  );
 
   const clearSearch = useCallback(() => {
     setSearchText('');

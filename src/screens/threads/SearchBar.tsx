@@ -83,6 +83,7 @@ export function SearchBar({
           autoComplete="off"
           spellCheck={false}
           textContentType="none"
+          importantForAutofill="no"
           returnKeyType="search"
           onSubmitEditing={() => Keyboard.dismiss()}
           testID={testID ? `${testID}-input` : undefined}

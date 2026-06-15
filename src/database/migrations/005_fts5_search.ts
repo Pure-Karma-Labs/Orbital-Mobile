@@ -43,13 +43,15 @@ CREATE TRIGGER reply_fts_ai AFTER INSERT ON orbital_replies WHEN new.body IS NOT
 END;
 
 -- Auto-sync triggers: UPDATE
-CREATE TRIGGER thread_fts_au AFTER UPDATE OF title, body ON orbital_threads BEGIN
+CREATE TRIGGER thread_fts_au AFTER UPDATE OF title, body, author_username ON orbital_threads
+WHEN new.body IS NOT NULL BEGIN
   DELETE FROM thread_fts WHERE thread_id = old.id;
   INSERT INTO thread_fts(thread_id, conversation_id, title, body, author_username)
   VALUES (new.id, new.conversation_id, new.title, new.body, new.author_username);
 END;
 
-CREATE TRIGGER reply_fts_au AFTER UPDATE OF body ON orbital_replies BEGIN
+CREATE TRIGGER reply_fts_au AFTER UPDATE OF body, author_username ON orbital_replies
+WHEN new.body IS NOT NULL BEGIN
   DELETE FROM reply_fts WHERE reply_id = old.id;
   INSERT INTO reply_fts(reply_id, thread_id, conversation_id, body, author_username)
   VALUES (new.id, new.thread_id,

@@ -27,6 +27,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Create .env from secrets
+        run: |
+          echo "SENTRY_DSN=${{ secrets.SENTRY_DSN }}" >> .env
+          echo "API_URL=${{ secrets.API_URL }}" >> .env
+
       - name: ESLint
         run: npm run lint
 

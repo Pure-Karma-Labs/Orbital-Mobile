@@ -44,6 +44,10 @@ jest.mock('../../hooks/usePullToRefresh', () => ({
   }),
 }));
 
+jest.mock('../../components/Emoji', () => ({
+  Emoji: () => null,
+}));
+
 const mockSetViewingConversation = jest.fn();
 const mockMarkConversationRead = jest.fn();
 
@@ -195,15 +199,13 @@ describe('ThreadsScreen', () => {
     expect(orbitNode).toBeDefined();
   });
 
-  it('renders the search bar placeholder', () => {
+  it('renders the search bar with placeholder', () => {
     const renderer = renderThreadsScreen();
-    const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
-    const searchNode = allText.find(
-      (node) =>
-        typeof node.props.children === 'string' &&
-        node.props.children === 'Search threads...',
+    const inputs = renderer.root.findAllByType('TextInput' as unknown as React.ComponentType);
+    const searchInput = inputs.find(
+      (node) => node.props.placeholder === 'Search threads...',
     );
-    expect(searchNode).toBeDefined();
+    expect(searchInput).toBeDefined();
   });
 
   it('renders the empty state when there are no threads', () => {
@@ -233,6 +235,7 @@ describe('ThreadsScreen — with thread data', () => {
           id: 'thread-1',
           conversationId: 'group-1',
           authorId: 'user-1',
+          authorUsername: 'alice',
           title: "Farmer's market on Saturday?",
           body: null,
           contentType: 'text',

@@ -6,6 +6,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useFocusEffect } from '@react-navigation/native';
 import {
   Animated,
+  FlatList,
+  Keyboard,
   RefreshControl,
   Text,
   View,
@@ -15,12 +17,14 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
+import type { IFuseOptions } from 'fuse.js';
 import { useTheme } from '../theme';
 import { useAppStore, useThreads, useConversations, useConnection } from '../stores';
 import type { Thread } from '../types/store';
 import type { ThreadsStackParamList } from '../navigation/types';
 import { Button } from '../components/Button';
 import { AsciiDay, AsciiSection } from '../components/AsciiSeparator';
+import { SearchEmptyState } from '../components/SearchEmptyState';
 import { OrbitBar } from './threads/OrbitBar';
 import { SearchBar } from './threads/SearchBar';
 import { ThreadItem } from './threads/ThreadItem';
@@ -29,9 +33,26 @@ import { loadThreadsForGroup } from '../services/threadService';
 import { markConversationReadEverywhere } from '../services/conversationService';
 import { PullToRefreshOverlay } from '../components/PullToRefreshOverlay';
 import { usePullToRefresh } from '../hooks/usePullToRefresh';
+import { useFuseSearch } from '../hooks/useFuseSearch';
 import { useWebSocketSubscription } from '../hooks/useWebSocketSubscription';
 import { useBlockedSet } from '../hooks/useBlockedSet';
 import { getThreadState } from '../utils/threadState';
+
+// ---------------------------------------------------------------------------
+// Fuse search options — module-level constant for stable WeakMap cache key
+// ---------------------------------------------------------------------------
+
+const THREAD_SEARCH_OPTIONS: IFuseOptions<Thread> = {
+  threshold: 0.2,
+  distance: 200,
+  includeScore: true,
+  ignoreDiacritics: true,
+  keys: [
+    { name: 'title', weight: 1 },
+    { name: 'body', weight: 0.8 },
+    { name: 'authorUsername', weight: 0.6 },
+  ],
+};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -204,6 +225,7 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
   const { connectionStatus } = useConnection();
   const [refreshing, setRefreshing] = useState(false);
   const { scrollY, scrollProps } = usePullToRefresh();
+  const flatListRef = useRef<FlatList<ListRow>>(null);
 
   // Snapshot lastReadAt on focus — held for the entire focus session.
   // CRITICAL: Do NOT read conversation.lastReadAt live in render —
@@ -244,7 +266,26 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
     return blockedSet.size > 0 ? list.filter((t) => !blockedSet.has(t.authorId)) : list;
   }, [threads, threadIdsByConversation, activeConversationId, blockedSet]);
 
-  const listRows = useMemo(() => buildListRows(threadList), [threadList]);
+  // Fuzzy search filtering
+  const { searchText, setSearchText, results: filteredThreads, isSearching, clearSearch } =
+    useFuseSearch(threadList, THREAD_SEARCH_OPTIONS);
+
+  // Build list rows: flat when searching (no day separators), grouped when not
+  const listRows = useMemo((): ListRow[] => {
+    if (isSearching) {
+      return (filteredThreads as Thread[]).map((thread) => ({
+        type: 'thread' as const,
+        thread,
+        key: `thread-${thread.id}`,
+      }));
+    }
+    return buildListRows(threadList);
+  }, [isSearching, filteredThreads, threadList]);
+
+  // Scroll to top when entering/exiting search mode
+  useEffect(() => {
+    flatListRef.current?.scrollToOffset({ offset: 0, animated: false });
+  }, [isSearching]);
 
   useEffect(() => {
     if (!activeConversationId) return;
@@ -255,6 +296,7 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
 
   const handleThreadPress = useCallback(
     (threadId: string) => {
+      Keyboard.dismiss();
       const thread = threads[threadId];
       navigation.push('ThreadDetail', {
         threadId,
@@ -353,6 +395,10 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
     ? conversations[activeConversationId]
     : undefined;
 
+  // Determine which empty state to show
+  const showSearchEmpty = isSearching && filteredThreads.length === 0;
+  const showEmpty = !isSearching && threadList.length === 0;
+
   return (
     <SafeAreaView style={containerStyle} edges={['top']} testID="threads-screen">
       {isOnboarding ? (
@@ -371,18 +417,28 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
           {connectionStatus === 'reconnecting' && (
             <ConnectionStatusBanner theme={theme} />
           )}
-          <SearchBar />
+          <SearchBar
+            value={searchText}
+            onChangeText={setSearchText}
+            onClear={clearSearch}
+            placeholder="Search threads..."
+            testID="threads-search"
+          />
 
-          {listRows.length === 0 ? (
+          {showSearchEmpty ? (
+            <SearchEmptyState searchText={searchText} testID="search-empty-state" />
+          ) : showEmpty ? (
             <EmptyState onCompose={handleCompose} />
           ) : (
             <View style={{ flex: 1 }}>
               <PullToRefreshOverlay scrollY={scrollY} refreshing={refreshing} />
               <Animated.FlatList
+                ref={flatListRef as React.RefObject<FlatList<ListRow>>}
                 data={listRows}
                 keyExtractor={keyExtractor}
                 renderItem={renderRow}
                 contentContainerStyle={listContentStyle}
+                keyboardDismissMode="on-drag"
                 refreshControl={
                   <RefreshControl
                     refreshing={refreshing}

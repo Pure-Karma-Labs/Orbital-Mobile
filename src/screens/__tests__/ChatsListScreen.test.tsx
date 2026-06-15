@@ -32,6 +32,10 @@ jest.mock('../../components/OrbitalSpinner', () => ({
   OrbitalSpinner: () => null,
 }));
 
+jest.mock('../../components/Emoji', () => ({
+  Emoji: () => null,
+}));
+
 const mockUseConversations = jest.fn();
 const mockUseContacts = jest.fn();
 
@@ -176,6 +180,15 @@ describe('ChatsListScreen — rendering', () => {
   it('has testID "chats-list-screen"', () => {
     const renderer = renderScreen();
     expect(() => findByTestId(renderer.root, 'chats-list-screen')).not.toThrow();
+  });
+
+  it('renders the search bar with placeholder', () => {
+    const renderer = renderScreen();
+    const inputs = renderer.root.findAllByType('TextInput' as unknown as React.ComponentType);
+    const searchInput = inputs.find(
+      (node) => node.props.placeholder === 'Search chats...',
+    );
+    expect(searchInput).toBeDefined();
   });
 
   it('renders empty state when there are no DM conversations', () => {

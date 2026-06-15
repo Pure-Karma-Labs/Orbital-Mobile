@@ -1,24 +1,38 @@
 /**
- * Thread search bar — decorative in Phase 1, functional in later phases.
+ * Thread/DM search bar — functional TextInput with debounced filtering.
+ * Shared by ThreadsScreen and ChatsListScreen.
  */
 
-import React from 'react';
+import React, { useState } from 'react';
 import {
-  StyleSheet,
+  Keyboard,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
   type TextStyle,
   type ViewStyle,
 } from 'react-native';
 import { useTheme } from '../../theme';
+import { Emoji } from '../../components/Emoji';
 
 export interface SearchBarProps {
-  onPress?: () => void;
+  value: string;
+  onChangeText: (text: string) => void;
+  placeholder?: string;
+  onClear?: () => void;
+  testID?: string;
 }
 
-export function SearchBar({ onPress }: SearchBarProps): React.JSX.Element {
+export function SearchBar({
+  value,
+  onChangeText,
+  placeholder = 'Search...',
+  onClear,
+  testID,
+}: SearchBarProps): React.JSX.Element {
   const theme = useTheme();
+  const [focused, setFocused] = useState(false);
 
   const wrapperStyle: ViewStyle = {
     paddingHorizontal: theme.spacing.base,
@@ -31,38 +45,58 @@ export function SearchBar({ onPress }: SearchBarProps): React.JSX.Element {
     alignItems: 'center',
     backgroundColor: theme.colors.surfaceElevated,
     borderWidth: 1,
-    borderColor: theme.colors.borderSubtle,
+    borderColor: focused ? theme.colors.blue : theme.colors.borderSubtle,
     borderRadius: theme.borderRadius.base,
     paddingHorizontal: theme.spacing.sm,
     gap: theme.spacing.xs,
   };
 
-  const iconStyle: TextStyle = {
+  const inputStyle: TextStyle = {
+    flex: 1,
+    fontFamily: theme.typography.fontFamily.body,
     fontSize: theme.typography.fontSize.base,
-    lineHeight: 20,
+    color: theme.colors.textPrimary,
+    padding: 0,
   };
 
-  const placeholderStyle: TextStyle = {
+  const clearTextStyle: TextStyle = {
     fontFamily: theme.typography.fontFamily.body,
     fontSize: theme.typography.fontSize.base,
     color: theme.colors.textTertiary,
+    lineHeight: 20,
   };
 
   return (
-    <View style={wrapperStyle}>
-      <TouchableOpacity
-        style={containerStyle}
-        onPress={onPress}
-        activeOpacity={0.7}
-        accessibilityRole="search"
-        accessibilityLabel="Search threads"
-      >
-        <Text style={iconStyle}>🔍</Text>
-        <Text style={placeholderStyle}>Search threads...</Text>
-      </TouchableOpacity>
+    <View style={wrapperStyle} accessibilityRole="search" testID={testID}>
+      <View style={containerStyle}>
+        <Emoji unified="1F50D" size={16} />
+        <TextInput
+          style={inputStyle}
+          value={value}
+          onChangeText={onChangeText}
+          placeholder={placeholder}
+          placeholderTextColor={theme.colors.textTertiary}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          autoCorrect={false}
+          autoCapitalize="none"
+          autoComplete="off"
+          spellCheck={false}
+          textContentType="none"
+          returnKeyType="search"
+          onSubmitEditing={() => Keyboard.dismiss()}
+          testID={testID ? `${testID}-input` : undefined}
+        />
+        {value.length > 0 && (
+          <TouchableOpacity
+            onPress={onClear}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            accessibilityLabel="Clear search"
+          >
+            <Text style={clearTextStyle}>{'✕'}</Text>
+          </TouchableOpacity>
+        )}
+      </View>
     </View>
   );
 }
-
-const _styles = StyleSheet.create({});
-void _styles;

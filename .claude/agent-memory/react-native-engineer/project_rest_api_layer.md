@@ -7,7 +7,7 @@ type: project
 API layer lives at `src/services/api/`. No axios — uses native `fetch`.
 
 Key files:
-- `client.ts` — core `request<T>()` function: builds URL, injects Authorization header, serializes body to snake_case, applies 15s timeout via AbortController, parses response as camelCase
+- `client.ts` — core `request<T>()` function: builds URL, injects Authorization header, serializes body to snake_case, applies 15s timeout via AbortController, parses response as camelCase. `API_BASE_URL` is now imported from `src/config/env.ts` (PR #344) and re-exported for backward compatibility
 - `errors.ts` — typed error hierarchy: `ApiError` (base) → `NetworkError`, `AuthError`, `ValidationError`, `ServerError`, `NotFoundError`
 - `tokenManager.ts` — `TokenManager` class with pluggable `TokenStorage` interface; `onTokensCleared` callback fires 401 store clearAuth
 - `index.ts` — barrel re-exporting all domain services

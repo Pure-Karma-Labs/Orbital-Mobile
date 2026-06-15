@@ -6,6 +6,20 @@
       "Bash"
     ]
   },
+  "skills": {
+    "smoke-test": {
+      "description": "Full-stack smoke test — re-provisions demo accounts, erases simulator, builds fresh, and verifies core flows (login, E2EE, search, offline, persistence)",
+      "allowedTools": ["Read", "Bash", "Grep", "Glob"]
+    },
+    "wrap-up": {
+      "description": "End-of-session wrap-up — collect merged PRs, launch agents to update memory and expertise files from actual diffs",
+      "allowedTools": ["Read", "Bash", "Grep", "Glob", "Write", "Edit"]
+    },
+    "bootstrap": {
+      "description": "Bootstrap your first domain agent by exploring the codebase and invoking agent-builder",
+      "allowedTools": ["Read", "Glob", "Grep", "Bash"]
+    }
+  },
   "agents": {
     "agent-builder": {
       "model": "claude-opus-4-6",
@@ -102,6 +116,7 @@
       "model": "claude-sonnet-4-6",
       "description": "Own test strategy, Jest/Detox configuration, device matrix testing, beta coordination, and MVP verification for Orbital Mobile",
       "collaboration": "collaborative",
+      "skills": ["smoke-test"],
       "reviews": ["react-native-engineer", "rust-native-engineer"],
       "reportsTo": ["project-manager"]
     },

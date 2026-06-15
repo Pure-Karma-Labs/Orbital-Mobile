@@ -115,7 +115,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
-  - NitroModules (0.35.4):
+  - NitroModules (0.35.9):
     - boost
     - DoubleConversion
     - fast_float
@@ -144,7 +144,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
-  - op-sqlite (15.2.11):
+  - op-sqlite (16.2.0):
     - boost
     - DoubleConversion
     - fast_float
@@ -2034,7 +2034,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
-  - react-native-safe-area-context (5.7.0):
+  - react-native-safe-area-context (5.8.0):
     - boost
     - DoubleConversion
     - fast_float
@@ -2052,8 +2052,8 @@ PODS:
     - React-graphics
     - React-ImageManager
     - React-jsi
-    - react-native-safe-area-context/common (= 5.7.0)
-    - react-native-safe-area-context/fabric (= 5.7.0)
+    - react-native-safe-area-context/common (= 5.8.0)
+    - react-native-safe-area-context/fabric (= 5.8.0)
     - React-NativeModulesApple
     - React-RCTFabric
     - React-renderercss
@@ -2064,7 +2064,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
-  - react-native-safe-area-context/common (5.7.0):
+  - react-native-safe-area-context/common (5.8.0):
     - boost
     - DoubleConversion
     - fast_float
@@ -2092,7 +2092,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
-  - react-native-safe-area-context/fabric (5.7.0):
+  - react-native-safe-area-context/fabric (5.8.0):
     - boost
     - DoubleConversion
     - fast_float
@@ -2688,7 +2688,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
-  - RNFBApp (24.0.0):
+  - RNFBApp (24.1.1):
     - boost
     - DoubleConversion
     - fast_float
@@ -2717,7 +2717,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
-  - RNFBMessaging (24.0.0):
+  - RNFBMessaging (24.1.1):
     - boost
     - DoubleConversion
     - fast_float
@@ -2748,7 +2748,7 @@ PODS:
     - RNFBApp
     - SocketRocket
     - Yoga
-  - RNGestureHandler (2.31.0):
+  - RNGestureHandler (3.0.1):
     - boost
     - DoubleConversion
     - fast_float
@@ -2809,7 +2809,7 @@ PODS:
     - RNNotifee/NotifeeCore (= 9.1.8)
   - RNNotifee/NotifeeCore (9.1.8):
     - React-Core
-  - RNScreens (4.24.0):
+  - RNScreens (4.25.2):
     - boost
     - DoubleConversion
     - fast_float
@@ -2836,10 +2836,10 @@ PODS:
     - ReactCodegen
     - ReactCommon/turbomodule/bridging
     - ReactCommon/turbomodule/core
-    - RNScreens/common (= 4.24.0)
+    - RNScreens/common (= 4.25.2)
     - SocketRocket
     - Yoga
-  - RNScreens/common (4.24.0):
+  - RNScreens/common (4.25.2):
     - boost
     - DoubleConversion
     - fast_float
@@ -3222,8 +3222,8 @@ SPEC CHECKSUMS:
   MMKVCore: 3d16ce9f7d411e135020915fde98a056859a1efa
   nanopb: fad817b59e0457d11a5dfbde799381cd727c1275
   NitroMmkv: c68bb2c29c154913707bc6e66791b2b30dd723c1
-  NitroModules: b24827b7772f5a030aef074547a2393a6e03579e
-  op-sqlite: 74da3223b42673524c62926e10095f9a3a97d4f0
+  NitroModules: 8ab2b6936d6d3b6283d22b3e1394ab141c6cb8c2
+  op-sqlite: bc935eaffed835a10783ce12826909fefe5a0e40
   OpenSSL-Universal: 9110d21982bb7e8b22a962b6db56a8aa805afde7
   OrbitalSignal: 39d2010fd67eacb834e2b4ec67dc4c2095d1cbff
   PromisesObjC: f5707f49cb48b9636751c5b2e7d227e43fba9f47
@@ -3262,7 +3262,7 @@ SPEC CHECKSUMS:
   React-microtasksnativemodule: d1ee999dc9052e23f6488b730fa2d383a4ea40e5
   react-native-get-random-values: e2acf4070fe4b7325705a05af047449637a27a21
   react-native-image-picker: 0314366753615115fa55c3cc937ac44cb7e75702
-  react-native-safe-area-context: befb5404eb8a16fdc07fa2bebab3568ecabcbb8a
+  react-native-safe-area-context: ebd2c2ece5e6e650a6963184039ec8cfd8960d86
   React-NativeModulesApple: 46690a0fe94ec28fc6fc686ec797b911d251ded0
   React-oscompat: 95875e81f5d4b3c7b2c888d5bd2c9d83450d8bdb
   React-perflogger: 2e229bf33e42c094fd64516d89ec1187a2b79b5b
@@ -3293,15 +3293,15 @@ SPEC CHECKSUMS:
   React-utils: abf37b162f560cd0e3e5d037af30bb796512246d
   React-webperformancenativemodule: 50a57c713a90d27ae3ab947a6c9c8859bcb49709
   ReactAppDependencyProvider: a45ef34bb22dc1c9b2ac1f74167d9a28af961176
-  ReactCodegen: 878add6c7d8ff8cea87697c44d29c03b79b6f2d9
+  ReactCodegen: aa8e38a4e15ab1d052d167c9f0491a4938dc08b1
   ReactCommon: 804dc80944fa90b86800b43c871742ec005ca424
   ReactNativeFs: 8ee52268099f843309fac2d0e291d254116d1df2
-  RNFBApp: 569341984b0459d270e2f0fe168541e549038f13
-  RNFBMessaging: 10993e6962a474152e3bf5871c39b1a9b2432caa
-  RNGestureHandler: 81109ef839f8144cc66b7430cb4e0ae6cf5702cc
+  RNFBApp: 4749952428360944ee37913fafc796810b5133b3
+  RNFBMessaging: 20ed9e31881b2add8ebbf13b15daa519e5cae00a
+  RNGestureHandler: b78202c48c68c5d13755d4cfcc6eab8f7f9508c6
   RNKeychain: a2c134ab796272c3d605e035ab727591000b30f3
   RNNotifee: 5e3b271e8ea7456a36eec994085543c9adca9168
-  RNScreens: 7f643ee0fd1407dc5085c7795460bd93da113b8f
+  RNScreens: 9269ab4971b2bd24917be84295d2c2ae7d06e9be
   RNSentry: 7077776018fd4f5c6ec022275113c782c28d22fe
   Sentry: d5b72948d692d369ded835e2e77baadcd3c492dd
   SocketRocket: d4aabe649be1e368d1318fdf28a022d714d65748
@@ -3310,4 +3310,4 @@ SPEC CHECKSUMS:
 
 PODFILE CHECKSUM: 0bb1bbbda50228fc2f2765cf599626889e18576b
 
-COCOAPODS: 1.16.2
+COCOAPODS: 1.15.2

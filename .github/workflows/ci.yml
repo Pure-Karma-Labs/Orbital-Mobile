@@ -29,8 +29,10 @@ jobs:
 
       - name: Create .env from secrets
         run: |
-          echo "SENTRY_DSN=${{ secrets.SENTRY_DSN }}" >> .env
-          echo "API_URL=${{ secrets.API_URL }}" >> .env
+          cat > .env <<'ENVEOF'
+          SENTRY_DSN=${{ secrets.SENTRY_DSN }}
+          API_URL=${{ secrets.API_URL }}
+          ENVEOF
 
       - name: ESLint
         run: npm run lint

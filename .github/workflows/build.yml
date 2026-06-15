@@ -69,8 +69,10 @@ jobs:
 
       - name: Create .env from secrets
         run: |
-          echo "SENTRY_DSN=${{ secrets.SENTRY_DSN }}" >> .env
-          echo "API_URL=${{ secrets.API_URL }}" >> .env
+          cat > .env <<'ENVEOF'
+          SENTRY_DSN=${{ secrets.SENTRY_DSN }}
+          API_URL=${{ secrets.API_URL }}
+          ENVEOF
 
       - name: Inject google-services.json
         run: echo "${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}" | base64 --decode > android/app/google-services.json
@@ -142,8 +144,10 @@ jobs:
 
       - name: Create .env from secrets
         run: |
-          echo "SENTRY_DSN=${{ secrets.SENTRY_DSN }}" >> .env
-          echo "API_URL=${{ secrets.API_URL }}" >> .env
+          cat > .env <<'ENVEOF'
+          SENTRY_DSN=${{ secrets.SENTRY_DSN }}
+          API_URL=${{ secrets.API_URL }}
+          ENVEOF
 
       - name: Inject GoogleService-Info.plist
         run: echo "${{ secrets.GOOGLE_SERVICE_INFO_PLIST_BASE64 }}" | base64 --decode > ios/OrbitalMobile/GoogleService-Info.plist

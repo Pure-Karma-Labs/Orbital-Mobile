@@ -27,6 +27,7 @@ function makeStore() {
         username: null,
         displayName: null,
         avatarPath: null,
+        avatarDigest: null,
         setUser: jest.fn(),
         clearAuth: jest.fn(),
         setAuthenticated: jest.fn(),
@@ -36,12 +37,17 @@ function makeStore() {
         conversations: {},
         conversationIds: [],
         activeConversationId: null,
+        viewingConversationId: null,
         setConversations: jest.fn(),
+        setGroupConversations: jest.fn(),
         upsertConversation: jest.fn(),
         removeConversation: jest.fn(),
         setActiveConversation: jest.fn(),
         updateUnreadCount: jest.fn(),
+        incrementUnreadCount: jest.fn(),
         markConversationRead: jest.fn(),
+        setViewingConversation: jest.fn(),
+        bumpLastMessageAt: jest.fn(),
 
         // Threads slice stubs
         threads: {},
@@ -49,6 +55,7 @@ function makeStore() {
         replies: {},
         replyIdsByThread: {},
         activeThreadId: null,
+        threadLastViewedAt: {},
         setThreads: jest.fn(),
         upsertThread: jest.fn(),
         removeThread: jest.fn(),
@@ -61,19 +68,22 @@ function makeStore() {
         addOptimisticReply: jest.fn(),
         updateThreadSyncStatus: jest.fn(),
         updateReplySyncStatus: jest.fn(),
+        markThreadViewed: jest.fn(),
 
         // Contacts slice stubs
         contacts: {},
         setContacts: jest.fn(),
+        mergeContacts: jest.fn(),
         upsertContact: jest.fn(),
         removeContact: jest.fn(),
+        setContactVerifiedStatus: jest.fn(),
 
         // UI slice stubs
-        colorScheme: 'system',
-        activeTab: 'threads',
+        colorScheme: 'system' as const,
+        activeTab: 'threads' as const,
         composerDraft: null,
         isComposerOpen: false,
-        syncOverallStatus: 'synced',
+        syncOverallStatus: 'synced' as const,
         soundEnabled: true,
         setColorScheme: jest.fn(),
         setActiveTab: jest.fn(),
@@ -83,7 +93,7 @@ function makeStore() {
         setSoundEnabled: jest.fn(),
 
         // Connection slice stubs
-        connectionStatus: 'disconnected',
+        connectionStatus: 'disconnected' as const,
         lastConnectedAt: null,
         reconnectAttempt: 0,
         typingUsers: {},
@@ -93,6 +103,19 @@ function makeStore() {
         addTypingUser: jest.fn(),
         removeTypingUser: jest.fn(),
         clearTypingUsers: jest.fn(),
+
+        // Notification slice stubs
+        pushPermissionGranted: false,
+        pushToken: null,
+        setPushPermission: jest.fn(),
+        setPushToken: jest.fn(),
+
+        // BlockedUsers slice stubs
+        blockedUserIds: [],
+        blockedUserProfiles: {},
+        blockUser: jest.fn(),
+        unblockUser: jest.fn(),
+        resetBlockedUsers: jest.fn(),
       }),
       { name: 'setMediaBatch-test' },
     ),

@@ -55,6 +55,7 @@ export function useMediaPicker() {
         maxHeight: 2048,
         quality: 0.9,
         includeBase64: true,
+        assetRepresentationMode: 'compatible',
       });
 
       if (result.didCancel || !result.assets) return;

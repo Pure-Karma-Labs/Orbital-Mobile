@@ -33,6 +33,7 @@
     "orbital-signal": "file:./packages/orbital-signal",
     "react": "19.1.1",
     "react-native": "0.82.1",
+    "react-native-bootsplash": "^7.3.1",
     "react-native-config": "^1.6.1",
     "react-native-gesture-handler": "^3.0.1",
     "react-native-get-random-values": "^2.0.0",

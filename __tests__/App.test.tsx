@@ -48,6 +48,12 @@ jest.mock('@sentry/react-native', () => ({
   wrap: jest.fn((component: unknown) => component),
 }));
 
+jest.mock('react-native-bootsplash', () => ({
+  hide: jest.fn(() => Promise.resolve()),
+  isVisible: jest.fn(() => Promise.resolve(false)),
+  useHideAnimation: jest.fn(),
+}));
+
 // Mock bootstrap so it doesn't run the real secure-storage init
 jest.mock('../src/bootstrap', () => ({
   bootstrap: jest.fn(() => Promise.resolve()),

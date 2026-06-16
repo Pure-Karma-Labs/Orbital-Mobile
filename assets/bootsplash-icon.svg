@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200">
+  <!-- Ring (tilted -45deg, scaleY 0.95 to match OrbitalLoader) -->
+  <g transform="translate(100,100) rotate(-45) scale(1,0.95)">
+    <circle cx="0" cy="0" r="72" fill="none" stroke="#E8E5E0" stroke-width="3"/>
+  </g>
+
+  <!-- Dots at initial angular positions on the tilted ring -->
+  <!-- Blue dot at 0deg (top of ring) -->
+  <g transform="translate(100,100) rotate(-45) scale(1,0.95)">
+    <circle cx="0" cy="-72" r="10" fill="#5B9FED" stroke="#E8E5E0" stroke-width="2"/>
+  </g>
+  <!-- Purple dot at 120deg -->
+  <g transform="translate(100,100) rotate(-45) scale(1,0.95) rotate(120)">
+    <circle cx="0" cy="-72" r="10" fill="#9B87F5" stroke="#E8E5E0" stroke-width="2"/>
+  </g>
+  <!-- Yellow dot at 240deg -->
+  <g transform="translate(100,100) rotate(-45) scale(1,0.95) rotate(240)">
+    <circle cx="0" cy="-72" r="10" fill="#FFC700" stroke="#E8E5E0" stroke-width="2"/>
+  </g>
+</svg>

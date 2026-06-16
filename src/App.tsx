@@ -31,7 +31,8 @@ import { SignupScreen } from './screens/SignupScreen';
 import { ForgotPasswordScreen } from './screens/ForgotPasswordScreen';
 import { ResetPasswordScreen } from './screens/ResetPasswordScreen';
 import { AppNavigator } from './navigation';
-import { OrbitalSpinner } from './components/OrbitalSpinner';
+import BootSplash from 'react-native-bootsplash';
+import { OrbitalLoader } from './components/OrbitalLoader';
 
 type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated';
 
@@ -69,6 +70,9 @@ function AppContent(): React.JSX.Element {
       .catch((e: unknown) => {
         Sentry.captureException(e);
         setAuthStatus('unauthenticated');
+      })
+      .finally(() => {
+        BootSplash.hide({ fade: true });
       });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -153,7 +157,7 @@ function LoadingView(): React.JSX.Element {
 
   return (
     <View style={containerStyle}>
-      <OrbitalSpinner size={32} />
+      <OrbitalLoader size={80} />
     </View>
   );
 }

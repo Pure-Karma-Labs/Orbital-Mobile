@@ -61,9 +61,10 @@ export type ThreadDetailScreenProps = NativeStackScreenProps<
   'ThreadDetail'
 >;
 
-/** A row in the reply FlatList — a reply with pre-computed parent context */
+/** A row in the reply FlatList — a reply with parent context for display */
 type ReplyRow = {
   reply: Reply;
+  parentAuthorId: string | null;
   parentAuthorUsername: string | null;
   key: string;
 };
@@ -210,11 +211,12 @@ export function ThreadDetailScreen({
   const replyRows = useMemo((): ReplyRow[] => {
     return replyList.map((r) => {
       const parent = r.parentReplyId ? allReplies[r.parentReplyId] : undefined;
-      const parentAuthor =
-        parent && typeof parent.authorUsername === 'string'
-          ? parent.authorUsername
-          : null;
-      return { reply: r, parentAuthorUsername: parentAuthor, key: `reply-${r.id}` };
+      return {
+        reply: r,
+        parentAuthorId: parent?.authorId ?? null,
+        parentAuthorUsername: parent?.authorUsername ?? null,
+        key: `reply-${r.id}`,
+      };
     });
   }, [replyList, allReplies]);
 
@@ -364,6 +366,7 @@ export function ThreadDetailScreen({
           depth={item.reply.depth}
           createdAt={item.reply.createdAt}
           syncStatus={item.reply.syncStatus}
+          parentAuthorId={item.parentAuthorId}
           parentAuthorUsername={item.parentAuthorUsername}
           onPress={handleReplyPress}
         />

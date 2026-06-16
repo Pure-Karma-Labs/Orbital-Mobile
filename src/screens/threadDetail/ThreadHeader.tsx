@@ -15,6 +15,7 @@ import { LinkPreviewCard } from '../../components/LinkPreviewCard';
 import { MediaLightbox } from '../../components/MediaLightbox';
 import { useMediaForThread } from '../../stores';
 import { useAuthorActions } from '../../hooks/useAuthorActions';
+import { useDisplayName } from '../../hooks/useDisplayName';
 
 export interface ThreadHeaderProps {
   threadId: string;
@@ -57,6 +58,7 @@ export const ThreadHeader = React.memo(function ThreadHeader({
   createdAt,
 }: ThreadHeaderProps): React.JSX.Element {
   const theme = useTheme();
+  const displayName = useDisplayName(authorId, authorUsername);
   const mediaItems = useMediaForThread(threadId);
   const [lightboxVisible, setLightboxVisible] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
@@ -128,10 +130,10 @@ export const ThreadHeader = React.memo(function ThreadHeader({
         activeOpacity={isSelf ? 1 : 0.7}
         disabled={isSelf}
         accessibilityRole={isSelf ? undefined : 'button'}
-        accessibilityLabel={isSelf ? undefined : `Actions for ${authorUsername}`}
+        accessibilityLabel={isSelf ? undefined : `Actions for ${displayName}`}
       >
-        <Avatar name={authorUsername} size={28} />
-        <Text style={authorTextStyle}>{authorUsername}</Text>
+        <Avatar name={displayName} size={28} />
+        <Text style={authorTextStyle}>{displayName}</Text>
         <Text style={timestampStyle}>{formatTimestamp(createdAt)}</Text>
       </TouchableOpacity>
       {title != null && title.length > 0 && (

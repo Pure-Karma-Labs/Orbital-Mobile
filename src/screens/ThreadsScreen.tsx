@@ -329,6 +329,7 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
           return (
             <ThreadItem
               threadId={t.id}
+              authorId={t.authorId}
               title={t.title ?? '(no title)'}
               author={t.authorUsername}
               time={new Date(t.createdAt).toLocaleTimeString('en-US', {

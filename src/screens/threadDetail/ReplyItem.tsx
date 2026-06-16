@@ -26,6 +26,7 @@ import { MediaGallery } from '../../components/MediaGallery';
 import { MediaLightbox } from '../../components/MediaLightbox';
 import { useMediaForReply } from '../../stores';
 import { useAuthorActions } from '../../hooks/useAuthorActions';
+import { useDisplayName } from '../../hooks/useDisplayName';
 
 
 
@@ -38,7 +39,9 @@ export interface ReplyItemProps {
   depth: number;
   createdAt: number;
   syncStatus: 'synced' | 'pending' | 'syncing' | 'failed';
-  /** Username of the parent reply author, or null for top-level replies */
+  /** ID of the parent reply author, or null for top-level replies */
+  parentAuthorId: string | null;
+  /** Username fallback of the parent reply author, or null for top-level replies */
   parentAuthorUsername: string | null;
   /** Called when the reply is tapped (to set it as reply-to target) */
   onPress: (replyId: string, authorUsername: string, depth: number) => void;
@@ -72,17 +75,20 @@ export const ReplyItem = React.memo(function ReplyItem({
   depth,
   createdAt,
   syncStatus,
+  parentAuthorId,
   parentAuthorUsername,
   onPress,
 }: ReplyItemProps): React.JSX.Element {
   const theme = useTheme();
+  const displayName = useDisplayName(authorId, authorUsername);
+  const parentDisplayName = useDisplayName(parentAuthorId, parentAuthorUsername ?? '');
   const mediaItems = useMediaForReply(replyId);
   const [lightboxVisible, setLightboxVisible] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
 
   const handlePress = useCallback(() => {
-    onPress(replyId, authorUsername, depth);
-  }, [onPress, replyId, authorUsername, depth]);
+    onPress(replyId, displayName, depth);
+  }, [onPress, replyId, displayName, depth]);
 
   const handleMediaPress = useCallback((index: number) => {
     setLightboxIndex(index);
@@ -163,11 +169,11 @@ export const ReplyItem = React.memo(function ReplyItem({
       onPress={handlePress}
       activeOpacity={0.7}
       accessibilityRole="button"
-      accessibilityLabel={`Reply by ${authorUsername}`}
+      accessibilityLabel={`Reply by ${displayName}`}
       testID={`reply-item-${replyId}`}
     >
       {parentAuthorUsername != null && (
-        <Text style={replyContextStyle}>{`↳ Replying to @${parentAuthorUsername}`}</Text>
+        <Text style={replyContextStyle}>{`↳ Replying to @${parentDisplayName}`}</Text>
       )}
       <TouchableOpacity
         style={authorRowStyle}
@@ -176,7 +182,7 @@ export const ReplyItem = React.memo(function ReplyItem({
         disabled={isSelf}
         hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
       >
-        <Text style={authorTextStyle}>{authorUsername}</Text>
+        <Text style={authorTextStyle}>{displayName}</Text>
         <Text style={timestampStyle}>{formatTimestamp(createdAt)}</Text>
       </TouchableOpacity>
       {body != null && body.length > 0 && (

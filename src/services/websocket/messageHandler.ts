@@ -436,13 +436,18 @@ function handleDisplayNameChanged(data: DisplayNameChangedPayload): void {
     return;
   }
 
+  const sanitized = typeof data.displayName === 'string'
+    ? data.displayName.replace(/[\p{Cc}\p{Cf}\u200B-\u200F\u2028-\u202F\uFEFF]/gu, '').trim().slice(0, 15)
+    : null;
+  const displayName = sanitized && sanitized.length > 0 ? sanitized : null;
+
   const store = useAppStore.getState();
   const existing = store.contacts[data.userId];
 
   store.upsertContact({
     id: data.userId,
     username: existing?.username ?? null,
-    displayName: data.displayName,
+    displayName,
     avatarPath: existing?.avatarPath ?? null,
     conversationIds: existing?.conversationIds ?? [],
   });

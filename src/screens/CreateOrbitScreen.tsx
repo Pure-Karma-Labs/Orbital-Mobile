@@ -18,6 +18,7 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useTheme } from '../theme';
 import { TextInput } from '../components/TextInput';
 import { Button } from '../components/Button';
+import { EmojiText } from '../components/EmojiText';
 import { Header } from '../components/Header';
 import { createOrbit } from '../services/conversationService';
 import type { ThreadsStackParamList } from '../navigation/types';
@@ -145,7 +146,7 @@ export function CreateOrbitScreen({
       <View style={containerStyle} testID="create-orbit-success">
         <Header title="Orbit Created" />
         <View style={contentStyle}>
-          <Text style={successTitleStyle}>{createdName}</Text>
+          <EmojiText style={successTitleStyle}>{createdName}</EmojiText>
           <Text style={successSubtitleStyle}>
             Share this invite code so others can join your orbit.
           </Text>

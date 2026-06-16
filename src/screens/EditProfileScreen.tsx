@@ -83,6 +83,7 @@ export function EditProfileScreen({ navigation }: Props): React.JSX.Element {
         maxWidth: 800,
         maxHeight: 800,
         quality: 0.8,
+        assetRepresentationMode: 'compatible',
       });
 
       if (result.didCancel || !result.assets || result.assets.length === 0) return;

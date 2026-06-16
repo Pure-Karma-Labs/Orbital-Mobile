@@ -17,9 +17,11 @@ import {
 import { useTheme } from '../../theme';
 import { EmojiText } from '../../components/EmojiText';
 import { LinkPreviewCard } from '../../components/LinkPreviewCard';
+import { useDisplayName } from '../../hooks/useDisplayName';
 
 export interface ChatMessageItemProps {
   threadId: string;
+  authorId: string;
   body: string | null;
   author: string;
   time: string;
@@ -36,6 +38,7 @@ export interface ChatMessageItemProps {
 
 export const ChatMessageItem = React.memo(function ChatMessageItem({
   threadId,
+  authorId,
   body,
   author,
   time,
@@ -44,6 +47,7 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
   onPress,
 }: ChatMessageItemProps): React.JSX.Element {
   const theme = useTheme();
+  const displayName = useDisplayName(authorId, author);
 
   const handlePress = useCallback(() => {
     onPress(threadId);
@@ -102,11 +106,11 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
       onPress={handlePress}
       activeOpacity={0.7}
       accessibilityRole="button"
-      accessibilityLabel={unread ? `Unread message from ${author}` : `Message from ${author}`}
+      accessibilityLabel={unread ? `Unread message from ${displayName}` : `Message from ${displayName}`}
     >
       <View style={metaStyle}>
         <Text style={authorStyle} numberOfLines={1}>
-          {author}
+          {displayName}
         </Text>
         <Text style={timeStyle}>{time}</Text>
         {unread && (

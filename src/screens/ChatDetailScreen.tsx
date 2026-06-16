@@ -274,6 +274,7 @@ export function ChatDetailScreen({
           return (
             <ChatMessageItem
               threadId={t.id}
+              authorId={t.authorId}
               body={t.body}
               author={t.authorUsername}
               time={new Date(t.createdAt).toLocaleTimeString('en-US', {

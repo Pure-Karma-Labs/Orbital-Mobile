@@ -11,6 +11,8 @@ jest.mock('../../stores/useAppStore', () => ({
     jest.fn((selector: (s: Record<string, unknown>) => unknown) =>
       selector({
         userId: 'user-1',
+        displayName: null,
+        contacts: {},
         blockedUserIds: [],
         blockUser: jest.fn(),
       }),
@@ -18,6 +20,8 @@ jest.mock('../../stores/useAppStore', () => ({
     {
       getState: jest.fn(() => ({
         userId: 'user-1',
+        displayName: null,
+        contacts: {},
         blockedUserIds: [],
         blockUser: jest.fn(),
       })),
@@ -100,7 +104,19 @@ jest.mock('../../hooks/useWebSocketSubscription', () => ({
 
 const mockSetActiveThread = jest.fn();
 
-jest.mock('../../stores', () => ({
+jest.mock('../../stores', () => {
+  const state = {
+    userId: 'user-1',
+    displayName: 'Alice',
+    contacts: {},
+    blockedUserIds: [],
+    blockUser: jest.fn(),
+  };
+  return {
+  useAppStore: Object.assign(
+    (selector: (s: typeof state) => unknown) => selector(state),
+    { getState: jest.fn(() => state) },
+  ),
   useAuth: () => ({
     isAuthenticated: true,
     userId: 'user-1',
@@ -134,7 +150,7 @@ jest.mock('../../stores', () => ({
   }),
   useMediaForThread: () => [],
   useMediaForReply: () => [],
-}));
+};});
 
 jest.mock('@react-navigation/native-stack', () => ({
   createNativeStackNavigator: jest.fn(),
@@ -402,7 +418,7 @@ describe('ThreadDetailScreen — with thread data', () => {
     expect(titleNode).toBeDefined();
   });
 
-  it('renders the author username in the thread header', async () => {
+  it('renders the author display name in the thread header', async () => {
     const renderer = await renderScreen();
     const allText = renderer.root.findAllByType(
       'Text' as unknown as React.ComponentType,
@@ -410,7 +426,7 @@ describe('ThreadDetailScreen — with thread data', () => {
     const authorNode = allText.find(
       (node) =>
         typeof node.props.children === 'string' &&
-        node.props.children === 'alice',
+        node.props.children === 'Alice',
     );
     expect(authorNode).toBeDefined();
   });

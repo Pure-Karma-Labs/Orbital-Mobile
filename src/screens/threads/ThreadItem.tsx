@@ -19,12 +19,14 @@ import {
 import { useTheme } from '../../theme';
 import { Badge } from '../../components/Badge';
 import { Emoji } from '../../components/Emoji';
+import { useDisplayName } from '../../hooks/useDisplayName';
 
 export type ThreadItemState = 'read' | 'active' | 'unread';
 
 export interface ThreadItemProps {
   threadId: string;
   title: string;
+  authorId: string;
   author: string;
   time: string;
   replyCount: number;
@@ -36,6 +38,7 @@ export interface ThreadItemProps {
 
 export const ThreadItem = React.memo(function ThreadItem({
   threadId,
+  authorId,
   title,
   author,
   time,
@@ -46,6 +49,7 @@ export const ThreadItem = React.memo(function ThreadItem({
   onPress,
 }: ThreadItemProps): React.JSX.Element {
   const theme = useTheme();
+  const displayName = useDisplayName(authorId, author);
 
   const handlePress = useCallback(() => {
     onPress(threadId);
@@ -114,7 +118,7 @@ export const ThreadItem = React.memo(function ThreadItem({
           {title}
         </Text>
         <Text style={metaStyle} numberOfLines={1}>
-          {author} {'·'} {time} {'·'} {replyCount}{' '}
+          {displayName} {'·'} {time} {'·'} {replyCount}{' '}
           <View style={{ width: emojiSize, height: emojiSize }}>
             <Emoji unified="1F4AC" size={emojiSize} />
           </View>

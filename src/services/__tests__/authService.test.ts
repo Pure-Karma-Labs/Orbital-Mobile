@@ -200,7 +200,7 @@ describe('loginUser', () => {
 
     await loginUser('alice', 'secret');
 
-    expect(mockLogin).toHaveBeenCalledWith({ username: 'alice', password: 'secret' });
+    expect(mockLogin).toHaveBeenCalledWith({ email: 'alice', password: 'secret' });
     expect(mockSetTokens).toHaveBeenCalledWith('access-123', undefined);
     expect(mockSetUser).toHaveBeenCalledWith({
       userId: 'user-1',

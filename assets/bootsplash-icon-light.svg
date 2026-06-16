@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200">
+  <!-- Light mode variant: dark ring/dot borders on light background -->
+  <g transform="translate(100,100) rotate(-45) scale(1,0.95)">
+    <circle cx="0" cy="0" r="70" fill="none" stroke="#000000" stroke-width="4.4"/>
+  </g>
+  <g transform="translate(100,100) rotate(-45) scale(1,0.95)">
+    <circle cx="0" cy="-70" r="17.5" fill="#5B9FED" stroke="#000000" stroke-width="3.3"/>
+  </g>
+  <g transform="translate(100,100) rotate(-45) scale(1,0.95) rotate(120)">
+    <circle cx="0" cy="-70" r="17.5" fill="#9B87F5" stroke="#000000" stroke-width="3.3"/>
+  </g>
+  <g transform="translate(100,100) rotate(-45) scale(1,0.95) rotate(240)">
+    <circle cx="0" cy="-70" r="17.5" fill="#FFC700" stroke="#000000" stroke-width="3.3"/>
+  </g>
+</svg>

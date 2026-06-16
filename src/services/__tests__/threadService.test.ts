@@ -25,8 +25,10 @@ jest.mock('../../database/connection', () => ({
 
 jest.mock('../api/threads', () => ({
   getThread: jest.fn(),
+  getGroupThreads: jest.fn(),
   getThreadReplies: jest.fn(),
   createReply: jest.fn(),
+  createThread: jest.fn(),
 }));
 
 jest.mock('../crypto/contentCrypto', () => ({
@@ -54,6 +56,10 @@ const mockAddOptimisticReply = jest.fn();
 const mockUpdateReplySyncStatus = jest.fn();
 const mockRemoveReply = jest.fn();
 const mockUpsertReply = jest.fn();
+const mockAddOptimisticThread = jest.fn();
+const mockRemoveThread = jest.fn();
+const mockSetThreads = jest.fn();
+const mockUpdateThreadSyncStatus = jest.fn();
 
 jest.mock('../../stores/useAppStore', () => ({
   useAppStore: {
@@ -67,6 +73,10 @@ jest.mock('../../stores/useAppStore', () => ({
       updateReplySyncStatus: mockUpdateReplySyncStatus,
       removeReply: mockRemoveReply,
       upsertReply: mockUpsertReply,
+      addOptimisticThread: mockAddOptimisticThread,
+      removeThread: mockRemoveThread,
+      setThreads: mockSetThreads,
+      updateThreadSyncStatus: mockUpdateThreadSyncStatus,
     })),
   },
 }));
@@ -75,26 +85,29 @@ jest.mock('../../stores/useAppStore', () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
-import { loadThread, loadReplies, postReply, hydrateThreadsFromLocal, hydrateRepliesFromLocal } from '../threadService';
-import { saveThread as dbSaveThread, getThreadsForConversation } from '../../database/repositories/threadRepository';
+import { loadThread, loadReplies, postReply, hydrateThreadsFromLocal, hydrateRepliesFromLocal, loadThreadsForGroup, createNewThread } from '../threadService';
+import { saveThread as dbSaveThread, saveThreadBatch, getThreadsForConversation } from '../../database/repositories/threadRepository';
 import { saveReply as dbSaveReply, saveReplyBatch, getRepliesForThread } from '../../database/repositories/replyRepository';
 import { isDatabaseInitialized } from '../../database/connection';
-import { getThread, getThreadReplies, createReply } from '../api/threads';
+import { getThread, getGroupThreads, getThreadReplies, createReply, createThread } from '../api/threads';
 import {
   decryptContent,
   encryptContent,
   getOrFetchGroupKey,
 } from '../crypto/contentCrypto';
-import type { ThreadResponse, ReplyResponse, ListRepliesResponse, CreateReplyResponse } from '../../types/api';
+import type { ThreadResponse, ReplyResponse, ListRepliesResponse, CreateReplyResponse, ListThreadsResponse, ThreadListItem } from '../../types/api';
 
 const mockGetThread = getThread as jest.MockedFunction<typeof getThread>;
+const mockGetGroupThreads = getGroupThreads as jest.MockedFunction<typeof getGroupThreads>;
 const mockGetThreadReplies = getThreadReplies as jest.MockedFunction<typeof getThreadReplies>;
 const mockCreateReply = createReply as jest.MockedFunction<typeof createReply>;
+const mockCreateThread = createThread as jest.MockedFunction<typeof createThread>;
 const mockDecryptContent = decryptContent as jest.MockedFunction<typeof decryptContent>;
 const mockEncryptContent = encryptContent as jest.MockedFunction<typeof encryptContent>;
 const mockGetOrFetchGroupKey = getOrFetchGroupKey as jest.MockedFunction<typeof getOrFetchGroupKey>;
 
 const mockDbSaveThread = dbSaveThread as jest.MockedFunction<typeof dbSaveThread>;
+const mockSaveThreadBatch = saveThreadBatch as jest.MockedFunction<typeof saveThreadBatch>;
 const mockGetThreadsForConversation = getThreadsForConversation as jest.MockedFunction<typeof getThreadsForConversation>;
 const mockDbSaveReply = dbSaveReply as jest.MockedFunction<typeof dbSaveReply>;
 const mockSaveReplyBatch = saveReplyBatch as jest.MockedFunction<typeof saveReplyBatch>;
@@ -142,6 +155,25 @@ function makeReplyResponse(overrides: Partial<ReplyResponse> = {}): ReplyRespons
   };
 }
 
+function makeThreadListItem(overrides: Partial<ThreadListItem> = {}): ThreadListItem {
+  return {
+    threadId: 'thread-1',
+    groupId: 'group-1',
+    authorId: 'user-1',
+    authorUsername: 'alice',
+    authorDisplayName: 'Alice',
+    encryptedTitle: 'enc-title-base64',
+    titleIv: 'title-iv-base64',
+    encryptedBody: 'enc-body-base64',
+    bodyIv: 'body-iv-base64',
+    replyCount: 0,
+    mediaCount: 0,
+    createdAt: '2026-04-01T10:00:00Z',
+    lastReplyAt: null,
+    ...overrides,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Setup
 // ---------------------------------------------------------------------------
@@ -162,6 +194,10 @@ beforeEach(() => {
     updateReplySyncStatus: mockUpdateReplySyncStatus,
     removeReply: mockRemoveReply,
     upsertReply: mockUpsertReply,
+    addOptimisticThread: mockAddOptimisticThread,
+    removeThread: mockRemoveThread,
+    setThreads: mockSetThreads,
+    updateThreadSyncStatus: mockUpdateThreadSyncStatus,
   });
   mockGetOrFetchGroupKey.mockResolvedValue(fakeGroupKey);
   mockDecryptContent.mockImplementation((ciphertext: string) => {
@@ -585,6 +621,56 @@ describe('persistence write-through', () => {
 
     expect(mockSaveReplyBatch).not.toHaveBeenCalled();
     expect(mockSetReplies).toHaveBeenCalledTimes(1);
+  });
+
+  it('loadThreadsForGroup calls saveThreadBatch with decrypted threads', async () => {
+    const listResponse: ListThreadsResponse = {
+      threads: [
+        makeThreadListItem({ threadId: 'thread-1' }),
+        makeThreadListItem({ threadId: 'thread-2' }),
+      ],
+      totalCount: 2,
+      hasMore: false,
+    };
+    mockGetGroupThreads.mockResolvedValue(listResponse);
+
+    await loadThreadsForGroup('group-1');
+
+    expect(mockGetGroupThreads).toHaveBeenCalledWith('group-1');
+    expect(mockSaveThreadBatch).toHaveBeenCalledTimes(1);
+    const [batchGroupId, batchThreads] = mockSaveThreadBatch.mock.calls[0];
+    expect(batchGroupId).toBe('group-1');
+    expect(batchThreads).toHaveLength(2);
+    expect(batchThreads[0].syncStatus).toBe('synced');
+    expect(mockSetThreads).toHaveBeenCalledWith('group-1', expect.arrayContaining([
+      expect.objectContaining({ id: 'thread-1' }),
+      expect.objectContaining({ id: 'thread-2' }),
+    ]));
+  });
+
+  it('createNewThread calls dbSaveThread with the server-confirmed thread', async () => {
+    const createResponse = {
+      threadId: 'server-thread-id',
+      groupId: 'group-1',
+      createdAt: '2026-04-01T10:00:00Z',
+      media: [],
+    };
+    mockCreateThread.mockResolvedValue(createResponse);
+
+    const result = await createNewThread(
+      'group-1',
+      'My Thread Title',
+      'My thread body',
+      { authorId: 'user-1', authorUsername: 'alice' },
+    );
+
+    expect(mockDbSaveThread).toHaveBeenCalledTimes(1);
+    const savedThread = mockDbSaveThread.mock.calls[0][0];
+    expect(savedThread.id).toBe('server-thread-id');
+    expect(savedThread.syncStatus).toBe('synced');
+    expect(savedThread.conversationId).toBe('group-1');
+    expect(result.id).toBe('server-thread-id');
+    expect(result.syncStatus).toBe('synced');
   });
 });
 

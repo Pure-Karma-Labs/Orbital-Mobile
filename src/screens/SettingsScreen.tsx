@@ -126,6 +126,8 @@ export function SettingsScreen(): React.JSX.Element {
   const unsubRef = useRef<(() => void) | null>(null);
   const togglingRef = useRef(false);
 
+  useEffect(() => () => { unsubRef.current?.(); }, []);
+
   const handleTogglePush = useCallback(async () => {
     if (togglingRef.current) return;
     togglingRef.current = true;

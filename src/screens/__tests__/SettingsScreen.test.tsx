@@ -67,13 +67,15 @@ jest.mock('@react-native-firebase/messaging', () => {
   });
 });
 
+const mockSetPushPermission = jest.fn();
+const mockSetPushToken = jest.fn();
 jest.mock('../../stores/useAppStore', () => ({
-  useAppStore: {
+  useAppStore: Object.assign(jest.fn(() => ({})), {
     getState: jest.fn(() => ({
-      setPushPermission: jest.fn(),
-      setPushToken: jest.fn(),
+      setPushPermission: mockSetPushPermission,
+      setPushToken: mockSetPushToken,
     })),
-  },
+  }),
 }));
 
 jest.mock('../../stores', () => ({
@@ -86,6 +88,11 @@ jest.mock('../../stores', () => ({
 import { useAuth, useUI, useConversations, useNotifications } from '../../stores';
 import { logout, deleteAccount } from '../../services/authService';
 import { fetchCreatorOrbitsDecrypted } from '../../services/conversationService';
+import { requestPermissionAndRegister, deregisterCurrentDevice } from '../../services/notificationService';
+import messaging from '@react-native-firebase/messaging';
+
+const mockRequestPermission = requestPermissionAndRegister as jest.Mock;
+const mockDeregister = deregisterCurrentDevice as jest.Mock;
 
 const mockUseAuth = useAuth as jest.Mock;
 const mockUseUI = useUI as jest.Mock;
@@ -417,6 +424,68 @@ describe('SettingsScreen — delete account', () => {
     // Second call should have been made
     expect(mockDeleteAccount).toHaveBeenCalledTimes(2);
     expect(mockDeleteAccount).toHaveBeenLastCalledWith('pw2');
+    alertSpy.mockRestore();
+  });
+});
+
+describe('SettingsScreen — push toggle', () => {
+  it('push row is interactive (not disabled)', () => {
+    const renderer = renderSettingsScreen();
+    const pushRow = findByTestId(renderer.root, 'push-row');
+    expect(pushRow.props.disabled).toBeFalsy();
+    expect(pushRow.props.onPress).toBeDefined();
+  });
+
+  it('tapping push row when OFF calls requestPermissionAndRegister', async () => {
+    mockUseNotifications.mockReturnValue({ pushPermissionGranted: false, pushToken: null });
+    const renderer = renderSettingsScreen();
+    const pushRow = findByTestId(renderer.root, 'push-row');
+
+    await act(async () => {
+      await pushRow.props.onPress();
+    });
+
+    expect(mockRequestPermission).toHaveBeenCalledTimes(1);
+    expect(mockDeregister).not.toHaveBeenCalled();
+  });
+
+  it('tapping push row when ON calls deregisterCurrentDevice and clears store', async () => {
+    mockUseNotifications.mockReturnValue({ pushPermissionGranted: true, pushToken: 'tok' });
+    const renderer = renderSettingsScreen();
+    const pushRow = findByTestId(renderer.root, 'push-row');
+
+    await act(async () => {
+      await pushRow.props.onPress();
+    });
+
+    expect(mockDeregister).toHaveBeenCalledTimes(1);
+    expect(mockSetPushPermission).toHaveBeenCalledWith(false);
+    expect(mockSetPushToken).toHaveBeenCalledWith(null);
+    expect(mockRequestPermission).not.toHaveBeenCalled();
+  });
+
+  it('shows alert when OS permission is denied', async () => {
+    mockUseNotifications.mockReturnValue({ pushPermissionGranted: false, pushToken: null });
+    (messaging as unknown as jest.Mock).mockReturnValueOnce({
+      hasPermission: jest.fn().mockResolvedValue(0),
+    });
+    const alertSpy = jest.spyOn(Alert, 'alert');
+    const renderer = renderSettingsScreen();
+    const pushRow = findByTestId(renderer.root, 'push-row');
+
+    await act(async () => {
+      await pushRow.props.onPress();
+    });
+
+    expect(alertSpy).toHaveBeenCalledWith(
+      'Notifications Disabled',
+      'Push notifications were previously denied. Enable them in Settings.',
+      expect.arrayContaining([
+        expect.objectContaining({ text: 'Cancel' }),
+        expect.objectContaining({ text: 'Open Settings' }),
+      ]),
+    );
+    expect(mockRequestPermission).not.toHaveBeenCalled();
     alertSpy.mockRestore();
   });
 });

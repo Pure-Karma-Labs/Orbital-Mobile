@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200">
+  <!--
+    Proportions from OrbitalLoader.tsx at any size:
+    - ringDiameter = size
+    - borderWidth = size/32
+    - dotDiameter = size/32 * 8 = size/4
+    - dotBorderWidth = size/42
+
+    Using size=140 in a 200x200 viewport:
+    - ringRadius = 70, borderWidth = 4.375
+    - dotRadius = 17.5, dotBorderWidth = 3.33
+    - Ring tilted -45deg, scaleY 0.95
+  -->
+  <!-- Ring -->
+  <g transform="translate(100,100) rotate(-45) scale(1,0.95)">
+    <circle cx="0" cy="0" r="70" fill="none" stroke="#E8E5E0" stroke-width="4.4"/>
+  </g>
+
+  <!-- Blue dot at 0deg (top) -->
+  <g transform="translate(100,100) rotate(-45) scale(1,0.95)">
+    <circle cx="0" cy="-70" r="17.5" fill="#5B9FED" stroke="#E8E5E0" stroke-width="3.3"/>
+  </g>
+  <!-- Purple dot at 120deg -->
+  <g transform="translate(100,100) rotate(-45) scale(1,0.95) rotate(120)">
+    <circle cx="0" cy="-70" r="17.5" fill="#9B87F5" stroke="#E8E5E0" stroke-width="3.3"/>
+  </g>
+  <!-- Yellow dot at 240deg -->
+  <g transform="translate(100,100) rotate(-45) scale(1,0.95) rotate(240)">
+    <circle cx="0" cy="-70" r="17.5" fill="#FFC700" stroke="#E8E5E0" stroke-width="3.3"/>
+  </g>
+</svg>

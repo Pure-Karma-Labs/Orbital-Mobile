@@ -52,14 +52,14 @@ export type DeleteAccountResult =
   | { status: 'error'; message: string };
 
 /**
- * Log in with username + password. On success, stores tokens and populates
+ * Log in with email + password. On success, stores tokens and populates
  * the auth store slice. Throws on any API error.
  */
 export async function loginUser(
-  username: string,
+  email: string,
   password: string,
 ): Promise<void> {
-  const response = await auth.login({ username, password });
+  const response = await auth.login({ email, password });
   await tokenManager.setTokens(response.token, undefined);
   useAppStore.getState().setUser({
     userId: response.userId,

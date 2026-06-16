@@ -1,7 +1,7 @@
 /**
  * Authentication API service.
  *
- * signup, login, and getPublicKey use skipAuth: true — no token required.
+ * signup and login use skipAuth: true — no token required.
  * verifyToken uses auth (validates the current token).
  */
 
@@ -11,7 +11,6 @@ import type {
   ForgotPasswordResponse,
   LoginRequest,
   LoginResponse,
-  PublicKeyResponse,
   ResetPasswordWithCodeRequest,
   ResetPasswordWithCodeResponse,
   SignupRequest,
@@ -41,14 +40,6 @@ export function verifyToken(): Promise<VerifyTokenResponse> {
   return request<VerifyTokenResponse>({
     method: 'POST',
     path: '/api/verify-token',
-  });
-}
-
-export function getPublicKey(username: string): Promise<PublicKeyResponse> {
-  return request<PublicKeyResponse>({
-    method: 'GET',
-    path: `/api/users/${encodeURIComponent(username)}/public-key`,
-    skipAuth: true,
   });
 }
 

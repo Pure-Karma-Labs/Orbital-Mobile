@@ -11,7 +11,6 @@ import {
   login,
   signup,
   verifyToken,
-  getPublicKey,
   forgotPassword,
   resetPasswordWithCode,
 } from '../auth';
@@ -25,7 +24,7 @@ beforeEach(() => {
 
 describe('login', () => {
   it('calls POST /api/login with correct body', async () => {
-    const data = { username: 'alice', password: 's3cret' };
+    const data = { email: 'alice@example.com', password: 's3cret' };
     await login(data);
 
     expect(mockRequest).toHaveBeenCalledWith({
@@ -67,28 +66,6 @@ describe('verifyToken', () => {
     // Critically: skipAuth must NOT be present (or must be falsy)
     const callArg = mockRequest.mock.calls[0][0];
     expect(callArg).not.toHaveProperty('skipAuth', true);
-  });
-});
-
-describe('getPublicKey', () => {
-  it('calls GET /api/users/:username/public-key with skipAuth', async () => {
-    await getPublicKey('alice');
-
-    expect(mockRequest).toHaveBeenCalledWith({
-      method: 'GET',
-      path: '/api/users/alice/public-key',
-      skipAuth: true,
-    });
-  });
-
-  it('encodes special characters in username', async () => {
-    await getPublicKey('user name');
-
-    expect(mockRequest).toHaveBeenCalledWith(
-      expect.objectContaining({
-        path: '/api/users/user%20name/public-key',
-      }),
-    );
   });
 });
 

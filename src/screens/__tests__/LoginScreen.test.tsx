@@ -69,10 +69,10 @@ beforeEach(() => {
 });
 
 describe('LoginScreen — rendering', () => {
-  it('renders username and password inputs', () => {
+  it('renders email and password inputs', () => {
     const renderer = renderLoginScreen();
     const root = renderer.root;
-    expect(() => findByTestId(root, 'login-username-input')).not.toThrow();
+    expect(() => findByTestId(root, 'login-email-input')).not.toThrow();
     expect(() => findByTestId(root, 'login-password-input')).not.toThrow();
   });
 
@@ -109,7 +109,7 @@ describe('LoginScreen — validation', () => {
     const allText = root.findAllByType('Text' as unknown as React.ComponentType);
     const errorText = allText.find((node) =>
       typeof node.props.children === 'string' &&
-      node.props.children.toLowerCase().includes('username'),
+      node.props.children.toLowerCase().includes('email'),
     );
     expect(errorText).toBeDefined();
     expect(mockLoginUser).not.toHaveBeenCalled();
@@ -117,18 +117,18 @@ describe('LoginScreen — validation', () => {
 });
 
 describe('LoginScreen — submission', () => {
-  it('calls loginUser with trimmed username and password on valid submission', async () => {
+  it('calls loginUser with trimmed email and password on valid submission', async () => {
     mockLoginUser.mockResolvedValue(undefined);
     const renderer = renderLoginScreen();
     const root = renderer.root;
 
     // Fill in fields
-    const usernameInput = findByTestId(root, 'login-username-input');
+    const emailInput = findByTestId(root, 'login-email-input');
     const passwordInput = findByTestId(root, 'login-password-input');
     const button = findByTestId(root, 'login-submit-button');
 
     act(() => {
-      usernameInput.props.onChangeText('alice');
+      emailInput.props.onChangeText('alice@example.com');
       passwordInput.props.onChangeText('mypassword');
     });
 
@@ -136,7 +136,7 @@ describe('LoginScreen — submission', () => {
       button.props.onPress();
     });
 
-    expect(mockLoginUser).toHaveBeenCalledWith('alice', 'mypassword');
+    expect(mockLoginUser).toHaveBeenCalledWith('alice@example.com', 'mypassword');
   });
 });
 
@@ -147,7 +147,7 @@ describe('LoginScreen — error handling', () => {
     const root = renderer.root;
 
     act(() => {
-      findByTestId(root, 'login-username-input').props.onChangeText('user');
+      findByTestId(root, 'login-email-input').props.onChangeText('user');
       findByTestId(root, 'login-password-input').props.onChangeText('pass');
     });
 
@@ -170,7 +170,7 @@ describe('LoginScreen — error handling', () => {
     const root = renderer.root;
 
     act(() => {
-      findByTestId(root, 'login-username-input').props.onChangeText('user');
+      findByTestId(root, 'login-email-input').props.onChangeText('user');
       findByTestId(root, 'login-password-input').props.onChangeText('pass');
     });
 
@@ -192,7 +192,7 @@ describe('LoginScreen — error handling', () => {
     const root = renderer.root;
 
     act(() => {
-      findByTestId(root, 'login-username-input').props.onChangeText('user');
+      findByTestId(root, 'login-email-input').props.onChangeText('user');
       findByTestId(root, 'login-password-input').props.onChangeText('pass');
     });
 
@@ -251,7 +251,7 @@ describe('LoginScreen — success banner', () => {
 
     // User starts typing
     act(() => {
-      findByTestId(root, 'login-username-input').props.onChangeText('a');
+      findByTestId(root, 'login-email-input').props.onChangeText('a');
     });
 
     // Banner should be gone

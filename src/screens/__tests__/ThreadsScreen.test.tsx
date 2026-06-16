@@ -62,14 +62,21 @@ jest.mock('../../hooks/useSQLiteSearch', () => ({
 const mockSetViewingConversation = jest.fn();
 const mockMarkConversationRead = jest.fn();
 
-jest.mock('../../stores', () => ({
-  useAppStore: {
-    getState: jest.fn(() => ({
-      setViewingConversation: mockSetViewingConversation,
-      markConversationRead: mockMarkConversationRead,
-      conversations: {},
-    })),
-  },
+jest.mock('../../stores', () => {
+  const getState = () => ({
+    setViewingConversation: mockSetViewingConversation,
+    markConversationRead: mockMarkConversationRead,
+    conversations: {},
+    userId: null,
+    displayName: null,
+    contacts: {},
+  });
+  const useAppStore = Object.assign(
+    (selector: (s: ReturnType<typeof getState>) => unknown) => selector(getState()),
+    { getState: jest.fn(getState) },
+  );
+  return {
+  useAppStore,
   useAuth: () => ({
     isAuthenticated: false,
     userId: null,
@@ -130,7 +137,7 @@ jest.mock('../../stores', () => ({
     setReconnectAttempt: jest.fn(),
     clearTypingUsers: jest.fn(),
   }),
-}));
+};});
 
 // Mock @react-navigation/native-stack for navigation prop
 jest.mock('@react-navigation/native-stack', () => ({

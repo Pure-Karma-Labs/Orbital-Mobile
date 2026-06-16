@@ -34,7 +34,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useTheme } from '../theme';
-import { useAuth, useThreads } from '../stores';
+import { useAppStore, useAuth, useThreads } from '../stores';
 import { loadThread, loadReplies, postReply, hydrateRepliesFromLocal } from '../services/threadService';
 import { uploadMediaBatch } from '../services/mediaUploadService';
 import { useMediaPicker } from '../hooks/useMediaPicker';
@@ -210,10 +210,11 @@ export function ThreadDetailScreen({
   const replyRows = useMemo((): ReplyRow[] => {
     return replyList.map((r) => {
       const parent = r.parentReplyId ? allReplies[r.parentReplyId] : undefined;
-      const parentAuthor =
-        parent && typeof parent.authorUsername === 'string'
-          ? parent.authorUsername
-          : null;
+      let parentAuthor: string | null = null;
+      if (parent && typeof parent.authorUsername === 'string') {
+        const contacts = useAppStore.getState().contacts;
+        parentAuthor = contacts[parent.authorId]?.displayName ?? parent.authorUsername;
+      }
       return { reply: r, parentAuthorUsername: parentAuthor, key: `reply-${r.id}` };
     });
   }, [replyList, allReplies]);

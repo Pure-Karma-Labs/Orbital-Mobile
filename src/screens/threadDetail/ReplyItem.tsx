@@ -26,6 +26,7 @@ import { MediaGallery } from '../../components/MediaGallery';
 import { MediaLightbox } from '../../components/MediaLightbox';
 import { useMediaForReply } from '../../stores';
 import { useAuthorActions } from '../../hooks/useAuthorActions';
+import { useDisplayName } from '../../hooks/useDisplayName';
 
 
 
@@ -76,13 +77,14 @@ export const ReplyItem = React.memo(function ReplyItem({
   onPress,
 }: ReplyItemProps): React.JSX.Element {
   const theme = useTheme();
+  const displayName = useDisplayName(authorId, authorUsername);
   const mediaItems = useMediaForReply(replyId);
   const [lightboxVisible, setLightboxVisible] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
 
   const handlePress = useCallback(() => {
-    onPress(replyId, authorUsername, depth);
-  }, [onPress, replyId, authorUsername, depth]);
+    onPress(replyId, displayName, depth);
+  }, [onPress, replyId, displayName, depth]);
 
   const handleMediaPress = useCallback((index: number) => {
     setLightboxIndex(index);
@@ -163,7 +165,7 @@ export const ReplyItem = React.memo(function ReplyItem({
       onPress={handlePress}
       activeOpacity={0.7}
       accessibilityRole="button"
-      accessibilityLabel={`Reply by ${authorUsername}`}
+      accessibilityLabel={`Reply by ${displayName}`}
       testID={`reply-item-${replyId}`}
     >
       {parentAuthorUsername != null && (
@@ -176,7 +178,7 @@ export const ReplyItem = React.memo(function ReplyItem({
         disabled={isSelf}
         hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
       >
-        <Text style={authorTextStyle}>{authorUsername}</Text>
+        <Text style={authorTextStyle}>{displayName}</Text>
         <Text style={timestampStyle}>{formatTimestamp(createdAt)}</Text>
       </TouchableOpacity>
       {body != null && body.length > 0 && (

@@ -7,6 +7,10 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { ThemeProvider } from '../../../theme';
 import { ChatMessageItem } from '../ChatMessageItem';
 
+jest.mock('../../../hooks/useDisplayName', () => ({
+  useDisplayName: (_authorId: string, fallback: string) => fallback,
+}));
+
 function renderItem(
   props: Partial<React.ComponentProps<typeof ChatMessageItem>> = {},
 ): ReactTestRenderer {
@@ -18,6 +22,7 @@ function renderItem(
         { colorSchemeOverride: 'light' },
         React.createElement(ChatMessageItem, {
           threadId: 't-1',
+          authorId: 'u-bob',
           body: 'hello',
           author: 'bob',
           time: '11:00 AM',

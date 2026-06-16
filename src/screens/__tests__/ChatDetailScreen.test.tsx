@@ -40,15 +40,22 @@ jest.mock('@react-navigation/native', () => ({
 const mockSetViewingConversation = jest.fn();
 const mockMarkConversationRead = jest.fn();
 
-jest.mock('../../stores/useAppStore', () => ({
-  useAppStore: {
-    getState: jest.fn(() => ({
-      setViewingConversation: mockSetViewingConversation,
-      markConversationRead: mockMarkConversationRead,
-      conversations: {},
-    })),
-  },
-}));
+jest.mock('../../stores/useAppStore', () => {
+  const state = {
+    setViewingConversation: mockSetViewingConversation,
+    markConversationRead: mockMarkConversationRead,
+    conversations: {},
+    userId: null,
+    displayName: null,
+    contacts: {},
+  };
+  return {
+    useAppStore: Object.assign(
+      (selector: (s: typeof state) => unknown) => selector(state),
+      { getState: jest.fn(() => state) },
+    ),
+  };
+});
 
 jest.mock('../../hooks/usePullToRefresh', () => ({
   usePullToRefresh: () => ({
@@ -85,13 +92,26 @@ jest.mock('../../stores', () => ({
   useThreads: (...args: unknown[]) => mockUseThreads(...args),
   useAuth: () => ({ userId: 'test-user-id', username: 'testuser' }),
   useContactForConversation: () => null,
-  useAppStore: {
-    getState: jest.fn(() => ({
+  useAppStore: Object.assign(
+    (selector: (s: Record<string, unknown>) => unknown) => selector({
       setViewingConversation: mockSetViewingConversation,
       markConversationRead: mockMarkConversationRead,
       conversations: {},
-    })),
-  },
+      userId: null,
+      displayName: null,
+      contacts: {},
+    }),
+    {
+      getState: jest.fn(() => ({
+        setViewingConversation: mockSetViewingConversation,
+        markConversationRead: mockMarkConversationRead,
+        conversations: {},
+        userId: null,
+        displayName: null,
+        contacts: {},
+      })),
+    },
+  ),
 }));
 
 import { loadThreadsForGroup } from '../../services/threadService';

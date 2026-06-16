@@ -12,10 +12,6 @@ jest.mock('react-native-keychain', () => ({
 
 jest.mock('react-native', () => ({
   Platform: { OS: 'android' },
-  Settings: {
-    get: jest.fn(),
-    set: jest.fn(),
-  },
 }));
 
 import * as Keychain from 'react-native-keychain';
@@ -27,7 +23,7 @@ import {
   clearKeychainIfFreshInstall,
 } from '../secureStorage';
 import { SecureKeys, KEYCHAIN_USERNAME } from '../constants';
-import { Platform, Settings } from 'react-native';
+import { Platform } from 'react-native';
 
 // STORAGE_TYPE enum value used in mock return objects
 const MOCK_STORAGE_TYPE = 'keychain' as unknown as Keychain.STORAGE_TYPE;
@@ -145,21 +141,32 @@ describe('clearKeychainIfFreshInstall', () => {
     (Platform as { OS: string }).OS = 'android';
     await clearKeychainIfFreshInstall();
     expect(mockKeychain.resetGenericPassword).not.toHaveBeenCalled();
-    expect(Settings.set).not.toHaveBeenCalled();
+    expect(mockKeychain.setGenericPassword).not.toHaveBeenCalled();
   });
 
   it('clears keychain and sets sentinel on iOS fresh install', async () => {
     (Platform as { OS: string }).OS = 'ios';
-    (Settings.get as jest.Mock).mockReturnValue(null);
+    // Sentinel not present — fresh install
+    mockKeychain.getGenericPassword.mockResolvedValueOnce(false);
     await clearKeychainIfFreshInstall();
     const allKeys = Object.values(SecureKeys);
     expect(mockKeychain.resetGenericPassword).toHaveBeenCalledTimes(allKeys.length);
-    expect(Settings.set).toHaveBeenCalledWith({ '@orbital:installed': '1' });
+    expect(mockKeychain.setGenericPassword).toHaveBeenCalledWith(
+      expect.any(String),
+      '1',
+      expect.objectContaining({ service: SecureKeys.INSTALLED_SENTINEL }),
+    );
   });
 
   it('does not clear keychain on iOS when already installed', async () => {
     (Platform as { OS: string }).OS = 'ios';
-    (Settings.get as jest.Mock).mockReturnValue('1');
+    // Sentinel present — not a fresh install
+    mockKeychain.getGenericPassword.mockResolvedValueOnce({
+      service: SecureKeys.INSTALLED_SENTINEL,
+      username: KEYCHAIN_USERNAME,
+      password: '1',
+      storage: 'keychain' as unknown as Keychain.STORAGE_TYPE,
+    });
     await clearKeychainIfFreshInstall();
     expect(mockKeychain.resetGenericPassword).not.toHaveBeenCalled();
   });

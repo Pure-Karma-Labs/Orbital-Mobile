@@ -1,8 +1,6 @@
 import * as Keychain from 'react-native-keychain';
-import { Platform, Settings } from 'react-native';
+import { Platform } from 'react-native';
 import { SecureKeys, KEYCHAIN_USERNAME } from './constants';
-
-const INSTALLED_KEY = '@orbital:installed';
 
 /**
  * Stores a secure string value under the given key.
@@ -50,16 +48,20 @@ export async function clearAll(): Promise<void> {
 
 /**
  * On iOS, Keychain survives app uninstall. This function detects a fresh
- * install via NSUserDefaults (Settings) — which DOES get wiped on uninstall —
- * and clears stale Keychain data from a previous installation.
+ * install by checking for a Keychain sentinel key — Keychain entries from
+ * a previous install are cleared if the sentinel is absent.
+ *
+ * Using Keychain (rather than NSUserDefaults/Settings) for the sentinel
+ * prevents a Metro Fast Refresh race where Settings.set hadn't persisted
+ * yet on the second JS reload, causing a spurious double-wipe of the DB key.
  *
  * No-op on Android (Keystore entries are tied to the app installation).
  */
 export async function clearKeychainIfFreshInstall(): Promise<void> {
   if (Platform.OS !== 'ios') return;
-  const installed = Settings.get(INSTALLED_KEY);
+  const installed = await getSecureItem(SecureKeys.INSTALLED_SENTINEL);
   if (!installed) {
     await clearAll();
-    Settings.set({ [INSTALLED_KEY]: '1' });
+    await setSecureItem(SecureKeys.INSTALLED_SENTINEL, '1');
   }
 }

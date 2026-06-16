@@ -58,3 +58,31 @@ export function deleteAccount(userId: string, password: string): Promise<void> {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Block / Unblock
+// ---------------------------------------------------------------------------
+
+export function blockUserApi(userId: string): Promise<void> {
+  return request<void>({
+    method: 'PUT',
+    path: `/api/users/${encodeURIComponent(userId)}/block`,
+  });
+}
+
+export function unblockUserApi(userId: string): Promise<void> {
+  return request<void>({
+    method: 'DELETE',
+    path: `/api/users/${encodeURIComponent(userId)}/block`,
+  });
+}
+
+export interface BlockedUsersResponse {
+  blockedUserIds: string[];
+}
+
+export function getBlockedUsers(): Promise<BlockedUsersResponse> {
+  return request<BlockedUsersResponse>({
+    method: 'GET',
+    path: '/api/users/blocked',
+  });
+}

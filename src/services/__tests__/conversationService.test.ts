@@ -1,3 +1,18 @@
+jest.mock('../../database/repositories/replyRepository', () => ({
+  deleteRepliesForConversation: jest.fn(),
+}));
+
+jest.mock('../../database/repositories/threadRepository', () => ({
+  getConversationIdsWithThreads: jest.fn(() => []),
+  deleteThreadsForConversation: jest.fn(),
+}));
+
+const mockGetDatabase = jest.fn();
+jest.mock('../../database/connection', () => ({
+  isDatabaseInitialized: jest.fn(() => false),
+  getDatabase: (...args: unknown[]) => mockGetDatabase(...args),
+}));
+
 jest.mock('../api/groups', () => ({
   listGroups: jest.fn(),
   listDms: jest.fn(),

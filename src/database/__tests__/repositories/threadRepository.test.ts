@@ -1,6 +1,5 @@
-import { open } from '@op-engineering/op-sqlite';
-import type { DB } from '@op-engineering/op-sqlite';
-import { closeDatabase, resetDatabaseForTesting } from '../../connection';
+import { closeDatabase } from '../../connection';
+import { makeDb } from '../../testUtils/dbMockHelpers';
 import {
   saveThread,
   saveThreadBatch,
@@ -19,15 +18,6 @@ jest.mock('@op-engineering/op-sqlite', () => ({
     close: jest.fn(),
   })),
 }));
-
-const mockOpen = open as jest.MockedFunction<typeof open>;
-
-function makeDb(executeSync: jest.Mock) {
-  const mockDb = { executeSync, close: jest.fn() };
-  mockOpen.mockReturnValueOnce(mockDb as unknown as DB);
-  resetDatabaseForTesting();
-  return mockDb;
-}
 
 const sampleThread: Thread = {
   id: 'thread-1',

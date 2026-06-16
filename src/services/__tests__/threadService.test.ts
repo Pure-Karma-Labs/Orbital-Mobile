@@ -6,6 +6,23 @@
 // Module mocks — must be declared before imports
 // ---------------------------------------------------------------------------
 
+jest.mock('../../database/repositories/threadRepository', () => ({
+  saveThread: jest.fn(),
+  saveThreadBatch: jest.fn(),
+  getThreadsForConversation: jest.fn(() => []),
+  getThread: jest.fn(() => null),
+}));
+
+jest.mock('../../database/repositories/replyRepository', () => ({
+  saveReply: jest.fn(),
+  saveReplyBatch: jest.fn(),
+  getRepliesForThread: jest.fn(() => []),
+}));
+
+jest.mock('../../database/connection', () => ({
+  isDatabaseInitialized: jest.fn(() => true),
+}));
+
 jest.mock('../api/threads', () => ({
   getThread: jest.fn(),
   getThreadReplies: jest.fn(),
@@ -58,7 +75,10 @@ jest.mock('../../stores/useAppStore', () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
-import { loadThread, loadReplies, postReply } from '../threadService';
+import { loadThread, loadReplies, postReply, hydrateThreadsFromLocal, hydrateRepliesFromLocal } from '../threadService';
+import { saveThread as dbSaveThread, getThreadsForConversation } from '../../database/repositories/threadRepository';
+import { saveReply as dbSaveReply, saveReplyBatch, getRepliesForThread } from '../../database/repositories/replyRepository';
+import { isDatabaseInitialized } from '../../database/connection';
 import { getThread, getThreadReplies, createReply } from '../api/threads';
 import {
   decryptContent,
@@ -73,6 +93,13 @@ const mockCreateReply = createReply as jest.MockedFunction<typeof createReply>;
 const mockDecryptContent = decryptContent as jest.MockedFunction<typeof decryptContent>;
 const mockEncryptContent = encryptContent as jest.MockedFunction<typeof encryptContent>;
 const mockGetOrFetchGroupKey = getOrFetchGroupKey as jest.MockedFunction<typeof getOrFetchGroupKey>;
+
+const mockDbSaveThread = dbSaveThread as jest.MockedFunction<typeof dbSaveThread>;
+const mockGetThreadsForConversation = getThreadsForConversation as jest.MockedFunction<typeof getThreadsForConversation>;
+const mockDbSaveReply = dbSaveReply as jest.MockedFunction<typeof dbSaveReply>;
+const mockSaveReplyBatch = saveReplyBatch as jest.MockedFunction<typeof saveReplyBatch>;
+const mockGetRepliesForThread = getRepliesForThread as jest.MockedFunction<typeof getRepliesForThread>;
+const mockIsDatabaseInitialized = isDatabaseInitialized as jest.MockedFunction<typeof isDatabaseInitialized>;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -121,6 +148,21 @@ function makeReplyResponse(overrides: Partial<ReplyResponse> = {}): ReplyRespons
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockIsDatabaseInitialized.mockReturnValue(true);
+  const { useAppStore } = jest.requireMock('../../stores/useAppStore') as {
+    useAppStore: { getState: jest.Mock };
+  };
+  useAppStore.getState.mockReturnValue({
+    threads: {},
+    markThreadViewed: mockMarkThreadViewed,
+    upsertThread: mockUpsertThread,
+    setReplies: mockSetReplies,
+    appendReplies: mockAppendReplies,
+    addOptimisticReply: mockAddOptimisticReply,
+    updateReplySyncStatus: mockUpdateReplySyncStatus,
+    removeReply: mockRemoveReply,
+    upsertReply: mockUpsertReply,
+  });
   mockGetOrFetchGroupKey.mockResolvedValue(fakeGroupKey);
   mockDecryptContent.mockImplementation((ciphertext: string) => {
     if (ciphertext.includes('title')) return 'Decrypted Title';
@@ -435,5 +477,241 @@ describe('postReply', () => {
       bodyIv: 'encrypted-iv',
       parentReplyId: 'parent-reply-1',
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// persistence write-through
+// ---------------------------------------------------------------------------
+
+describe('persistence write-through', () => {
+  it('loadThread calls dbSaveThread after decrypt', async () => {
+    const apiResponse = makeThreadResponse();
+    mockGetThread.mockResolvedValue(apiResponse);
+
+    await loadThread('thread-1');
+
+    expect(mockDbSaveThread).toHaveBeenCalledTimes(1);
+    const savedThread = mockDbSaveThread.mock.calls[0][0];
+    expect(savedThread.id).toBe('thread-1');
+    expect(savedThread.title).toBe('Decrypted Title');
+    expect(savedThread.syncStatus).toBe('synced');
+  });
+
+  it('loadReplies calls saveReplyBatch with decrypted replies', async () => {
+    const response: ListRepliesResponse = {
+      replies: [makeReplyResponse({ replyId: 'reply-1' }), makeReplyResponse({ replyId: 'reply-2' })],
+      media: [],
+      totalCount: 2,
+      hasMore: false,
+    };
+    mockGetThreadReplies.mockResolvedValue(response);
+
+    await loadReplies('thread-1', 'group-1');
+
+    expect(mockSaveReplyBatch).toHaveBeenCalledTimes(1);
+    const [batchThreadId, batchReplies] = mockSaveReplyBatch.mock.calls[0];
+    expect(batchThreadId).toBe('thread-1');
+    expect(batchReplies).toHaveLength(2);
+    expect(batchReplies[0].syncStatus).toBe('synced');
+  });
+
+  it('postReply calls dbSaveReply on server confirmation', async () => {
+    const createResponse: CreateReplyResponse = {
+      replyId: 'server-reply-id',
+      threadId: 'thread-1',
+      createdAt: '2026-04-01T12:00:00Z',
+      media: [],
+    };
+    mockCreateReply.mockResolvedValue(createResponse);
+
+    await postReply('thread-1', 'group-1', 'Hello', null, 0, { authorId: 'user-1', authorUsername: 'alice' });
+
+    expect(mockDbSaveReply).toHaveBeenCalledTimes(1);
+    const savedReply = mockDbSaveReply.mock.calls[0][0];
+    expect(savedReply.id).toBe('server-reply-id');
+    expect(savedReply.syncStatus).toBe('synced');
+  });
+
+  it('DB throws during loadThread, store upsert still called', async () => {
+    mockDbSaveThread.mockImplementationOnce(() => { throw new Error('disk full'); });
+    const apiResponse = makeThreadResponse();
+    mockGetThread.mockResolvedValue(apiResponse);
+
+    await expect(loadThread('thread-1')).resolves.toBeDefined();
+
+    expect(mockUpsertThread).toHaveBeenCalledTimes(1);
+  });
+
+  it('DB throws during postReply, store upsert still called', async () => {
+    mockDbSaveReply.mockImplementationOnce(() => { throw new Error('disk full'); });
+    const createResponse: CreateReplyResponse = {
+      replyId: 'server-reply-id',
+      threadId: 'thread-1',
+      createdAt: '2026-04-01T12:00:00Z',
+      media: [],
+    };
+    mockCreateReply.mockResolvedValue(createResponse);
+
+    const result = await postReply('thread-1', 'group-1', 'Hello', null, 0, { authorId: 'user-1', authorUsername: 'alice' });
+
+    expect(result.id).toBe('server-reply-id');
+    expect(mockUpsertReply).toHaveBeenCalledWith(expect.objectContaining({ id: 'server-reply-id' }));
+  });
+
+  it('isDatabaseInitialized false — DB functions not called, store still updated (loadThread)', async () => {
+    mockIsDatabaseInitialized.mockReturnValueOnce(false);
+    const apiResponse = makeThreadResponse();
+    mockGetThread.mockResolvedValue(apiResponse);
+
+    const result = await loadThread('thread-1');
+
+    expect(mockDbSaveThread).not.toHaveBeenCalled();
+    expect(mockUpsertThread).toHaveBeenCalledTimes(1);
+    expect(result.id).toBe('thread-1');
+  });
+
+  it('isDatabaseInitialized false — DB functions not called, store still updated (loadReplies)', async () => {
+    mockIsDatabaseInitialized.mockReturnValueOnce(false);
+    const response: ListRepliesResponse = {
+      replies: [makeReplyResponse()],
+      media: [],
+      totalCount: 1,
+      hasMore: false,
+    };
+    mockGetThreadReplies.mockResolvedValue(response);
+
+    await loadReplies('thread-1', 'group-1');
+
+    expect(mockSaveReplyBatch).not.toHaveBeenCalled();
+    expect(mockSetReplies).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// hydration
+// ---------------------------------------------------------------------------
+
+describe('hydration', () => {
+  it('hydrateThreadsFromLocal calls getThreadsForConversation and populates store', () => {
+    const fakeThreads = [
+      {
+        id: 'thread-1',
+        conversationId: 'conv-1',
+        authorId: 'user-1',
+        authorUsername: 'alice',
+        title: 'Cached thread',
+        body: null,
+        contentType: 'text' as const,
+        pinned: false,
+        replyCount: 0,
+        lastReplyAt: null,
+        createdAt: 1700000000000,
+        updatedAt: 1700000000000,
+        syncStatus: 'synced' as const,
+      },
+    ];
+    mockGetThreadsForConversation.mockReturnValueOnce(fakeThreads);
+
+    const mockSetThreads = jest.fn();
+    const { useAppStore } = jest.requireMock('../../stores/useAppStore') as {
+      useAppStore: { getState: jest.Mock };
+    };
+    useAppStore.getState.mockReturnValueOnce({
+      threads: {},
+      markThreadViewed: mockMarkThreadViewed,
+      upsertThread: mockUpsertThread,
+      setReplies: mockSetReplies,
+      appendReplies: mockAppendReplies,
+      addOptimisticReply: mockAddOptimisticReply,
+      updateReplySyncStatus: mockUpdateReplySyncStatus,
+      removeReply: mockRemoveReply,
+      upsertReply: mockUpsertReply,
+      setThreads: mockSetThreads,
+    });
+
+    hydrateThreadsFromLocal('conv-1');
+
+    expect(mockGetThreadsForConversation).toHaveBeenCalledWith('conv-1');
+    expect(mockSetThreads).toHaveBeenCalledWith('conv-1', fakeThreads);
+  });
+
+  it('hydrateThreadsFromLocal returns without store update when DB returns empty', () => {
+    mockGetThreadsForConversation.mockReturnValueOnce([]);
+
+    // Do NOT queue a getState once-value here: hydrateThreadsFromLocal guards
+    // behind `threads.length > 0`, so getState() is never called on the empty
+    // path.  A stale once-value left in the queue would be consumed by the
+    // next test and cause localSetReplies to receive the wrong mock object.
+    hydrateThreadsFromLocal('conv-1');
+
+    expect(mockSetReplies).not.toHaveBeenCalled();
+  });
+
+  it('hydrateRepliesFromLocal calls getRepliesForThread and populates store', () => {
+    const fakeReplies = [
+      {
+        id: 'reply-1',
+        threadId: 'thread-1',
+        authorId: 'user-1',
+        authorUsername: 'alice',
+        body: 'Cached reply',
+        parentReplyId: null,
+        depth: 0,
+        createdAt: 1700000000000,
+        updatedAt: 1700000000000,
+        syncStatus: 'synced' as const,
+      },
+    ];
+    mockGetRepliesForThread.mockReturnValueOnce(fakeReplies);
+
+    const localSetReplies = jest.fn();
+    const { useAppStore } = jest.requireMock('../../stores/useAppStore') as {
+      useAppStore: { getState: jest.Mock };
+    };
+    useAppStore.getState.mockReturnValueOnce({
+      setReplies: localSetReplies,
+    });
+
+    hydrateRepliesFromLocal('thread-1');
+
+    expect(mockGetRepliesForThread).toHaveBeenCalledWith('thread-1');
+    expect(localSetReplies).toHaveBeenCalledWith('thread-1', fakeReplies);
+  });
+
+  it('hydrateRepliesFromLocal returns without store update when DB returns empty', () => {
+    mockGetRepliesForThread.mockReturnValueOnce([]);
+
+    hydrateRepliesFromLocal('thread-1');
+
+    expect(mockSetReplies).not.toHaveBeenCalled();
+  });
+
+  it('hydrateThreadsFromLocal swallows errors', () => {
+    mockGetThreadsForConversation.mockImplementationOnce(() => { throw new Error('DB error'); });
+
+    expect(() => hydrateThreadsFromLocal('conv-1')).not.toThrow();
+  });
+
+  it('hydrateRepliesFromLocal swallows errors', () => {
+    mockGetRepliesForThread.mockImplementationOnce(() => { throw new Error('DB error'); });
+
+    expect(() => hydrateRepliesFromLocal('thread-1')).not.toThrow();
+  });
+
+  it('hydrateThreadsFromLocal no-ops when database not initialized', () => {
+    mockIsDatabaseInitialized.mockReturnValueOnce(false);
+
+    hydrateThreadsFromLocal('conv-1');
+
+    expect(mockGetThreadsForConversation).not.toHaveBeenCalled();
+  });
+
+  it('hydrateRepliesFromLocal no-ops when database not initialized', () => {
+    mockIsDatabaseInitialized.mockReturnValueOnce(false);
+
+    hydrateRepliesFromLocal('thread-1');
+
+    expect(mockGetRepliesForThread).not.toHaveBeenCalled();
   });
 });

@@ -21,6 +21,18 @@ function testUUID(label: string): string {
 // Module mocks — must be declared before imports
 // ---------------------------------------------------------------------------
 
+jest.mock('../../../database/repositories/threadRepository', () => ({
+  saveThread: jest.fn(),
+}));
+
+jest.mock('../../../database/repositories/replyRepository', () => ({
+  saveReply: jest.fn(),
+}));
+
+jest.mock('../../../database/connection', () => ({
+  isDatabaseInitialized: jest.fn(() => true),
+}));
+
 jest.mock('../../api/client', () => ({
   snakeToCamel: jest.fn((v: unknown) => v),
 }));
@@ -114,6 +126,9 @@ import { resolveRemoteIdentityKey } from '../../crypto/identityKeyAccess';
 import { submitWrappedKey } from '../../api/groups';
 import { decryptThreadFields, decryptReplyBody } from '../../threadService';
 import { useAppStore } from '../../../stores/useAppStore';
+import { saveThread as dbSaveThread } from '../../../database/repositories/threadRepository';
+import { saveReply as dbSaveReply } from '../../../database/repositories/replyRepository';
+import { isDatabaseInitialized } from '../../../database/connection';
 
 const mockSnakeToCamel = snakeToCamel as jest.MockedFunction<typeof snakeToCamel>;
 const mockGetOrFetchGroupKey = getOrFetchGroupKey as jest.MockedFunction<typeof getOrFetchGroupKey>;
@@ -124,6 +139,9 @@ const mockWrapGroupKey = wrapGroupKey as jest.MockedFunction<typeof wrapGroupKey
 const mockEvictPendingCache = evictPendingCache as jest.MockedFunction<typeof evictPendingCache>;
 const mockSubmitWrappedKey = submitWrappedKey as jest.MockedFunction<typeof submitWrappedKey>;
 const mockResolveRemoteIdentityKey = resolveRemoteIdentityKey as jest.MockedFunction<typeof resolveRemoteIdentityKey>;
+const mockDbSaveThread = dbSaveThread as jest.MockedFunction<typeof dbSaveThread>;
+const mockDbSaveReply = dbSaveReply as jest.MockedFunction<typeof dbSaveReply>;
+const mockIsDatabaseInitialized = isDatabaseInitialized as jest.MockedFunction<typeof isDatabaseInitialized>;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -1533,5 +1551,143 @@ describe('UUID validation guards', () => {
     await handleServerMessage(msg);
     expect(consoleSpy).toHaveBeenCalledWith('[WS:invalid_uuid]');
     expect(mockUpsertContact).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DB write-through: handleNewThread and handleNewReply
+// ---------------------------------------------------------------------------
+
+describe('DB write-through', () => {
+  it('handleNewThread: dbSaveThread called after decrypt', async () => {
+    await handleServerMessage(makeNewThreadMessage());
+
+    expect(mockDbSaveThread).toHaveBeenCalledTimes(1);
+    const savedThread = mockDbSaveThread.mock.calls[0][0];
+    expect(savedThread.id).toBe(testUUID('thread-ws-1'));
+    expect(savedThread.title).toBe('Decrypted Title');
+    expect(savedThread.syncStatus).toBe('synced');
+  });
+
+  it('handleNewReply: dbSaveReply called after decrypt', async () => {
+    await handleServerMessage(makeNewReplyMessage());
+
+    expect(mockDbSaveReply).toHaveBeenCalledTimes(1);
+    const savedReply = mockDbSaveReply.mock.calls[0][0];
+    expect(savedReply.id).toBe(testUUID('reply-ws-1'));
+    expect(savedReply.body).toBe('Decrypted Reply');
+    expect(savedReply.syncStatus).toBe('synced');
+  });
+
+  it('DB throws on new_thread, store upsert still called', async () => {
+    mockDbSaveThread.mockImplementationOnce(() => { throw new Error('disk full'); });
+
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: testUUID('group-1'),
+      timestamp: Date.now(),
+      data: {
+        type: 'new_thread',
+        threadId: testUUID('thread-db-throw'),
+        groupId: testUUID('group-1'),
+        authorId: testUUID('user-1'),
+        authorName: 'alice',
+        encryptedTitle: 'enc-title',
+        encryptedBody: 'enc-body',
+        titleIv: 'title-iv',
+        bodyIv: 'body-iv',
+        createdAt: '2026-04-01T10:00:00Z',
+        media: [],
+      },
+    });
+
+    await handleServerMessage(msg);
+
+    expect(mockDbSaveThread).toHaveBeenCalledTimes(1);
+    expect(mockUpsertThread).toHaveBeenCalledTimes(1);
+  });
+
+  it('DB throws on new_reply, store upsert still called', async () => {
+    mockDbSaveReply.mockImplementationOnce(() => { throw new Error('disk full'); });
+
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: testUUID('group-1'),
+      timestamp: Date.now(),
+      data: {
+        type: 'new_reply',
+        replyId: testUUID('reply-db-throw'),
+        threadId: testUUID('thread-1'),
+        groupId: testUUID('group-1'),
+        authorId: testUUID('user-2'),
+        authorName: 'bob',
+        encryptedBody: 'enc-reply-body',
+        bodyIv: 'reply-body-iv',
+        parentReplyId: null,
+        createdAt: '2026-04-01T11:00:00Z',
+        media: [],
+      },
+    });
+
+    await handleServerMessage(msg);
+
+    expect(mockDbSaveReply).toHaveBeenCalledTimes(1);
+    expect(mockUpsertReply).toHaveBeenCalledTimes(1);
+  });
+
+  it('isDatabaseInitialized false — DB calls skipped for new_thread', async () => {
+    mockIsDatabaseInitialized.mockReturnValueOnce(false);
+
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: testUUID('group-1'),
+      timestamp: Date.now(),
+      data: {
+        type: 'new_thread',
+        threadId: testUUID('thread-no-db'),
+        groupId: testUUID('group-1'),
+        authorId: testUUID('user-1'),
+        authorName: 'alice',
+        encryptedTitle: 'enc-title',
+        encryptedBody: 'enc-body',
+        titleIv: 'title-iv',
+        bodyIv: 'body-iv',
+        createdAt: '2026-04-01T10:00:00Z',
+        media: [],
+      },
+    });
+
+    await handleServerMessage(msg);
+
+    expect(mockDbSaveThread).not.toHaveBeenCalled();
+    expect(mockUpsertThread).toHaveBeenCalledTimes(1);
+  });
+
+  it('isDatabaseInitialized false — DB calls skipped for new_reply', async () => {
+    mockIsDatabaseInitialized.mockReturnValueOnce(false);
+
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: testUUID('group-1'),
+      timestamp: Date.now(),
+      data: {
+        type: 'new_reply',
+        replyId: testUUID('reply-no-db'),
+        threadId: testUUID('thread-1'),
+        groupId: testUUID('group-1'),
+        authorId: testUUID('user-2'),
+        authorName: 'bob',
+        encryptedBody: 'enc-reply-body',
+        bodyIv: 'reply-body-iv',
+        parentReplyId: null,
+        createdAt: '2026-04-01T11:00:00Z',
+        media: [],
+      },
+    });
+
+    await handleServerMessage(msg);
+
+    expect(mockDbSaveReply).not.toHaveBeenCalled();
+    expect(mockUpsertReply).toHaveBeenCalledTimes(1);
   });
 });

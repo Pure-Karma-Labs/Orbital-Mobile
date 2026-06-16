@@ -145,7 +145,7 @@ export const createConversationsSlice: StateCreator<
       {
         conversations: {
           ...conversations,
-          [id]: { ...existing, unreadCount: 0 },
+          [id]: { ...existing, unreadCount: 0, lastReadAt: Date.now() },
         },
       },
       false,

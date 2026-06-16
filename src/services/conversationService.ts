@@ -150,7 +150,7 @@ async function mapGroupResponse(response: GroupResponse): Promise<Conversation> 
       ? new Date(response.lastMessageAt).getTime()
       : null,
     unreadCount,
-    lastReadAt: response.lastReadAt ? Date.parse(response.lastReadAt) : null,
+    lastReadAt: response.lastReadAt ? new Date(response.lastReadAt).getTime() : null,
     createdAt: new Date(response.joinedAt).getTime(),
     updatedAt: new Date(response.joinedAt).getTime(),
   };
@@ -288,7 +288,7 @@ function mapDmResponse(response: DmResponse): Conversation {
       ? new Date(response.lastMessageAt).getTime()
       : null,
     unreadCount,
-    lastReadAt: response.lastReadAt ? Date.parse(response.lastReadAt) : null,
+    lastReadAt: response.lastReadAt ? new Date(response.lastReadAt).getTime() : null,
     createdAt: new Date(response.createdAt).getTime(),
     updatedAt: new Date(response.createdAt).getTime(),
   };

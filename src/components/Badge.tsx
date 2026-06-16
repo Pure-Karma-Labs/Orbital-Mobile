@@ -3,7 +3,7 @@
  */
 
 import React from 'react';
-import { StyleSheet, Text, View, type TextStyle, type ViewStyle } from 'react-native';
+import { Text, View, type TextStyle, type ViewStyle } from 'react-native';
 import { useTheme } from '../theme';
 
 export interface BadgeProps {
@@ -46,5 +46,3 @@ export function Badge({ count, testID }: BadgeProps): React.JSX.Element | null {
   );
 }
 
-const _styles = StyleSheet.create({});
-void _styles;

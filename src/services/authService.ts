@@ -40,6 +40,34 @@ import {
   exists,
 } from '@dr.pogodin/react-native-fs';
 import { clearAll as clearSecureStorage } from './secure-storage';
+import { syncBlockedUsers } from './blockedUsersSync';
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function warnCatch(tag: string) {
+  return (e: unknown) => {
+    if (__DEV__) console.warn(tag, e instanceof Error ? e.message : e);
+  };
+}
+
+/**
+ * Shared post-authentication bootstrap sequence.
+ *
+ * Called after login, signup, and session restore to hydrate conversations,
+ * contacts, pending wraps, and crypto state. Each step is catch-guarded so
+ * a single failure never prevents the remaining bootstrap tasks.
+ */
+async function postAuthBootstrap(): Promise<void> {
+  loadEciesLockState();
+  await loadConversations().catch(warnCatch('[ConversationSync]'));
+  await loadDmConversations().catch(warnCatch('[DmSync]'));
+  hydrateContactsFromOrbits().catch(warnCatch('[ContactHydration]'));
+  fulfillPendingWraps().catch(warnCatch('[PendingWraps]'));
+  ensureKeysInitialized().catch(warnCatch('[KeyMaintenance]'));
+  syncBlockedUsers().catch(warnCatch('[BlockedUsersSync]'));
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -78,22 +106,7 @@ export async function loginUser(
     setItem('lastUserId', response.userId);
   }
 
-  loadEciesLockState();
-  await loadConversations().catch((e: unknown) => {
-    if (__DEV__) console.warn('[ConversationSync]', e instanceof Error ? e.message : e);
-  });
-  await loadDmConversations().catch((e: unknown) => {
-    if (__DEV__) console.warn('[DmSync]', e instanceof Error ? e.message : e);
-  });
-  hydrateContactsFromOrbits().catch((e: unknown) => {
-    if (__DEV__) console.warn('[ContactHydration]', e instanceof Error ? e.message : e);
-  });
-  fulfillPendingWraps().catch((e: unknown) => {
-    if (__DEV__) console.warn('[PendingWraps]', e instanceof Error ? e.message : e);
-  });
-  ensureKeysInitialized().catch((e: unknown) => {
-    if (__DEV__) console.warn('[KeyMaintenance]', e instanceof Error ? e.message : e);
-  });
+  await postAuthBootstrap();
 }
 
 /**
@@ -132,19 +145,7 @@ export async function signupUser(
   } catch (e: unknown) {
     if (__DEV__) console.warn('[KeyGeneration]', e instanceof Error ? e.message : e);
   }
-  loadEciesLockState();
-  await loadConversations().catch((e: unknown) => {
-    if (__DEV__) console.warn('[ConversationSync]', e instanceof Error ? e.message : e);
-  });
-  await loadDmConversations().catch((e: unknown) => {
-    if (__DEV__) console.warn('[DmSync]', e instanceof Error ? e.message : e);
-  });
-  fulfillPendingWraps().catch((e: unknown) => {
-    if (__DEV__) console.warn('[PendingWraps]', e instanceof Error ? e.message : e);
-  });
-  hydrateContactsFromOrbits().catch((e: unknown) => {
-    if (__DEV__) console.warn('[ContactHydration]', e instanceof Error ? e.message : e);
-  });
+  await postAuthBootstrap();
 }
 
 /**
@@ -178,22 +179,7 @@ export async function restoreSession(): Promise<boolean> {
       setItem('lastUserId', profile.id);
     }
 
-    loadEciesLockState();
-    await loadConversations().catch((e: unknown) => {
-      if (__DEV__) console.warn('[ConversationSync]', e instanceof Error ? e.message : e);
-    });
-    await loadDmConversations().catch((e: unknown) => {
-      if (__DEV__) console.warn('[DmSync]', e instanceof Error ? e.message : e);
-    });
-    hydrateContactsFromOrbits().catch((e: unknown) => {
-      if (__DEV__) console.warn('[ContactHydration]', e instanceof Error ? e.message : e);
-    });
-    fulfillPendingWraps().catch((e: unknown) => {
-      if (__DEV__) console.warn('[PendingWraps]', e instanceof Error ? e.message : e);
-    });
-    ensureKeysInitialized().catch((e: unknown) => {
-      if (__DEV__) console.warn('[KeyMaintenance]', e instanceof Error ? e.message : e);
-    });
+    await postAuthBootstrap();
     return true;
   } catch (e) {
     if (e instanceof NetworkError) throw e;

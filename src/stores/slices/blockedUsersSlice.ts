@@ -1,5 +1,6 @@
 import type { StateCreator } from 'zustand';
 import type { AppState, BlockedUsersSlice } from '../../types/store';
+import { blockUserApi, unblockUserApi } from '../../services/api/users';
 
 export const createBlockedUsersSlice: StateCreator<
   AppState,
@@ -23,6 +24,9 @@ export const createBlockedUsersSlice: StateCreator<
       false,
       'blockedUsers/blockUser',
     );
+    blockUserApi(userId).catch((e: unknown) => {
+      if (__DEV__) console.warn('[BlockedUsers] blockUser API failed:', e instanceof Error ? e.message : e);
+    });
   },
 
   unblockUser: (userId) => {
@@ -38,6 +42,9 @@ export const createBlockedUsersSlice: StateCreator<
       false,
       'blockedUsers/unblockUser',
     );
+    unblockUserApi(userId).catch((e: unknown) => {
+      if (__DEV__) console.warn('[BlockedUsers] unblockUser API failed:', e instanceof Error ? e.message : e);
+    });
   },
 
   resetBlockedUsers: () => {
@@ -45,6 +52,25 @@ export const createBlockedUsersSlice: StateCreator<
       { blockedUserIds: [], blockedUserProfiles: {} },
       false,
       'blockedUsers/resetBlockedUsers',
+    );
+  },
+
+  hydrateBlockedUsers: (serverBlockedIds) => {
+    const { blockedUserIds, blockedUserProfiles } = get();
+    const localSet = new Set(blockedUserIds);
+    const newIds = serverBlockedIds.filter((id) => !localSet.has(id));
+    if (newIds.length === 0) return;
+    const updatedProfiles = { ...blockedUserProfiles };
+    for (const id of newIds) {
+      updatedProfiles[id] = updatedProfiles[id] ?? 'Unknown';
+    }
+    set(
+      {
+        blockedUserIds: [...blockedUserIds, ...newIds],
+        blockedUserProfiles: updatedProfiles,
+      },
+      false,
+      'blockedUsers/hydrateBlockedUsers',
     );
   },
 });

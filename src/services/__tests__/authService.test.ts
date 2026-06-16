@@ -122,6 +122,11 @@ jest.mock('../../stores/middleware/persistence', () => ({
 
 jest.mock('../avatarService');
 
+const mockSyncBlockedUsers = jest.fn().mockResolvedValue(undefined);
+jest.mock('../blockedUsersSync', () => ({
+  syncBlockedUsers: (...args: unknown[]) => mockSyncBlockedUsers(...args),
+}));
+
 jest.mock('../websocket/messageHandler', () => ({
   clearMessageHandlerState: jest.fn(),
   handleServerMessage: jest.fn(),

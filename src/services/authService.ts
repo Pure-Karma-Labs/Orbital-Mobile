@@ -40,6 +40,7 @@ import {
   exists,
 } from '@dr.pogodin/react-native-fs';
 import { clearAll as clearSecureStorage } from './secure-storage';
+import { syncBlockedUsers } from './blockedUsersSync';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -65,6 +66,7 @@ async function postAuthBootstrap(): Promise<void> {
   hydrateContactsFromOrbits().catch(warnCatch('[ContactHydration]'));
   fulfillPendingWraps().catch(warnCatch('[PendingWraps]'));
   ensureKeysInitialized().catch(warnCatch('[KeyMaintenance]'));
+  syncBlockedUsers().catch(warnCatch('[BlockedUsersSync]'));
 }
 
 // ---------------------------------------------------------------------------

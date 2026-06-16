@@ -436,9 +436,10 @@ function handleDisplayNameChanged(data: DisplayNameChangedPayload): void {
     return;
   }
 
-  const displayName = typeof data.displayName === 'string'
-    ? data.displayName.replace(/[^a-zA-Z0-9_ ]/g, '').slice(0, 15)
+  const sanitized = typeof data.displayName === 'string'
+    ? data.displayName.replace(/[\p{Cc}\p{Cf}\u200B-\u200F\u2028-\u202F\uFEFF]/gu, '').trim().slice(0, 15)
     : null;
+  const displayName = sanitized && sanitized.length > 0 ? sanitized : null;
 
   const store = useAppStore.getState();
   const existing = store.contacts[data.userId];

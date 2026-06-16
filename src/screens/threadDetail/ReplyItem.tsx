@@ -39,7 +39,9 @@ export interface ReplyItemProps {
   depth: number;
   createdAt: number;
   syncStatus: 'synced' | 'pending' | 'syncing' | 'failed';
-  /** Username of the parent reply author, or null for top-level replies */
+  /** ID of the parent reply author, or null for top-level replies */
+  parentAuthorId: string | null;
+  /** Username fallback of the parent reply author, or null for top-level replies */
   parentAuthorUsername: string | null;
   /** Called when the reply is tapped (to set it as reply-to target) */
   onPress: (replyId: string, authorUsername: string, depth: number) => void;
@@ -73,11 +75,13 @@ export const ReplyItem = React.memo(function ReplyItem({
   depth,
   createdAt,
   syncStatus,
+  parentAuthorId,
   parentAuthorUsername,
   onPress,
 }: ReplyItemProps): React.JSX.Element {
   const theme = useTheme();
   const displayName = useDisplayName(authorId, authorUsername);
+  const parentDisplayName = useDisplayName(parentAuthorId, parentAuthorUsername ?? '');
   const mediaItems = useMediaForReply(replyId);
   const [lightboxVisible, setLightboxVisible] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
@@ -169,7 +173,7 @@ export const ReplyItem = React.memo(function ReplyItem({
       testID={`reply-item-${replyId}`}
     >
       {parentAuthorUsername != null && (
-        <Text style={replyContextStyle}>{`↳ Replying to @${parentAuthorUsername}`}</Text>
+        <Text style={replyContextStyle}>{`↳ Replying to @${parentDisplayName}`}</Text>
       )}
       <TouchableOpacity
         style={authorRowStyle}

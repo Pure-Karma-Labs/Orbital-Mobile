@@ -34,7 +34,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useTheme } from '../theme';
-import { useAppStore, useAuth, useThreads } from '../stores';
+import { useAuth, useThreads } from '../stores';
 import { loadThread, loadReplies, postReply, hydrateRepliesFromLocal } from '../services/threadService';
 import { uploadMediaBatch } from '../services/mediaUploadService';
 import { useMediaPicker } from '../hooks/useMediaPicker';
@@ -61,9 +61,10 @@ export type ThreadDetailScreenProps = NativeStackScreenProps<
   'ThreadDetail'
 >;
 
-/** A row in the reply FlatList — a reply with pre-computed parent context */
+/** A row in the reply FlatList — a reply with parent context for display */
 type ReplyRow = {
   reply: Reply;
+  parentAuthorId: string | null;
   parentAuthorUsername: string | null;
   key: string;
 };
@@ -210,12 +211,12 @@ export function ThreadDetailScreen({
   const replyRows = useMemo((): ReplyRow[] => {
     return replyList.map((r) => {
       const parent = r.parentReplyId ? allReplies[r.parentReplyId] : undefined;
-      let parentAuthor: string | null = null;
-      if (parent && typeof parent.authorUsername === 'string') {
-        const contacts = useAppStore.getState().contacts;
-        parentAuthor = contacts[parent.authorId]?.displayName ?? parent.authorUsername;
-      }
-      return { reply: r, parentAuthorUsername: parentAuthor, key: `reply-${r.id}` };
+      return {
+        reply: r,
+        parentAuthorId: parent?.authorId ?? null,
+        parentAuthorUsername: parent?.authorUsername ?? null,
+        key: `reply-${r.id}`,
+      };
     });
   }, [replyList, allReplies]);
 
@@ -365,6 +366,7 @@ export function ThreadDetailScreen({
           depth={item.reply.depth}
           createdAt={item.reply.createdAt}
           syncStatus={item.reply.syncStatus}
+          parentAuthorId={item.parentAuthorId}
           parentAuthorUsername={item.parentAuthorUsername}
           onPress={handleReplyPress}
         />

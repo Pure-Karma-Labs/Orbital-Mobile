@@ -46,6 +46,36 @@ jest.mock('../../services/api/groups', () => ({
   }),
 }));
 
+jest.mock('../../services/notificationService', () => ({
+  requestPermissionAndRegister: jest.fn().mockResolvedValue(jest.fn()),
+  deregisterCurrentDevice: jest.fn().mockResolvedValue(undefined),
+}));
+
+jest.mock('@react-native-firebase/messaging', () => {
+  const mockMessaging = jest.fn(() => ({
+    hasPermission: jest.fn().mockResolvedValue(1),
+  }));
+  return Object.assign(mockMessaging, {
+    __esModule: true,
+    default: mockMessaging,
+    AuthorizationStatus: {
+      NOT_DETERMINED: -1,
+      DENIED: 0,
+      AUTHORIZED: 1,
+      PROVISIONAL: 2,
+    },
+  });
+});
+
+jest.mock('../../stores/useAppStore', () => ({
+  useAppStore: {
+    getState: jest.fn(() => ({
+      setPushPermission: jest.fn(),
+      setPushToken: jest.fn(),
+    })),
+  },
+}));
+
 jest.mock('../../stores', () => ({
   useAuth: jest.fn(),
   useUI: jest.fn(),

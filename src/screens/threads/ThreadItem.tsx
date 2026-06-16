@@ -19,6 +19,7 @@ import {
 import { useTheme } from '../../theme';
 import { Badge } from '../../components/Badge';
 import { Emoji } from '../../components/Emoji';
+import { EmojiText } from '../../components/EmojiText';
 import { useDisplayName } from '../../hooks/useDisplayName';
 
 export type ThreadItemState = 'read' | 'active' | 'unread';
@@ -114,9 +115,9 @@ export const ThreadItem = React.memo(function ThreadItem({
       accessibilityLabel={`Thread: ${title}`}
     >
       <View style={mainStyle}>
-        <Text style={titleStyle} numberOfLines={1}>
+        <EmojiText style={titleStyle} numberOfLines={1}>
           {title}
-        </Text>
+        </EmojiText>
         <Text style={metaStyle} numberOfLines={1}>
           {displayName} {'·'} {time} {'·'} {replyCount}{' '}
           <View style={{ width: emojiSize, height: emojiSize }}>

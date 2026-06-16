@@ -173,7 +173,7 @@ export const ReplyItem = React.memo(function ReplyItem({
       testID={`reply-item-${replyId}`}
     >
       {parentAuthorUsername != null && (
-        <Text style={replyContextStyle}>{`↳ Replying to @${parentDisplayName}`}</Text>
+        <EmojiText style={replyContextStyle}>{`↳ Replying to @${parentDisplayName}`}</EmojiText>
       )}
       <TouchableOpacity
         style={authorRowStyle}
@@ -182,7 +182,7 @@ export const ReplyItem = React.memo(function ReplyItem({
         disabled={isSelf}
         hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
       >
-        <Text style={authorTextStyle}>{displayName}</Text>
+        <EmojiText style={authorTextStyle}>{displayName}</EmojiText>
         <Text style={timestampStyle}>{formatTimestamp(createdAt)}</Text>
       </TouchableOpacity>
       {body != null && body.length > 0 && (

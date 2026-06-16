@@ -576,7 +576,7 @@ const OrbitRow = React.memo(function OrbitRow({
             (members ?? []).map((member) => (
               <View key={member.userId} style={memberRowStyle} testID={`member-${member.userId}`}>
                 <View style={memberInfoStyle}>
-                  <Text style={memberNameStyle}>{member.displayName}</Text>
+                  <EmojiText style={memberNameStyle}>{member.displayName}</EmojiText>
                   <Text style={memberHandleStyle}>@{member.username}</Text>
                 </View>
                 {member.userId !== currentUserId && (

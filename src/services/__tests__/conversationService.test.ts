@@ -93,6 +93,14 @@ jest.mock('../../stores/useAppStore', () => ({
 import { loadConversations, loadDmConversations, startDm, joinOrbit, fetchCreatorOrbitsDecrypted, hydrateContactsFromOrbits, ensureDmConversation, fulfillPendingWraps, clearConversationServiceState, refreshContactAvatar, markConversationReadEverywhere } from '../conversationService';
 import { listGroups, listDms, createDm, joinGroup, getGroupMembers, getPendingWraps, submitWrappedKey, markGroupRead } from '../api/groups';
 import { useAppStore } from '../../stores/useAppStore';
+import { deleteRepliesForConversation } from '../../database/repositories/replyRepository';
+import { getConversationIdsWithThreads, deleteThreadsForConversation } from '../../database/repositories/threadRepository';
+import { isDatabaseInitialized } from '../../database/connection';
+
+const mockDeleteReplies = deleteRepliesForConversation as jest.Mock;
+const mockDeleteThreads = deleteThreadsForConversation as jest.Mock;
+const mockGetLocalConvIds = getConversationIdsWithThreads as jest.Mock;
+const mockIsDatabaseInitialized = isDatabaseInitialized as jest.Mock;
 
 const mockListGroups = listGroups as jest.Mock;
 const mockListDms = listDms as jest.Mock;
@@ -238,6 +246,53 @@ describe('loadConversations', () => {
     mockListGroups.mockRejectedValue(new Error('network'));
 
     await expect(loadConversations()).rejects.toThrow('network');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loadConversations — dissolution cleanup
+// ---------------------------------------------------------------------------
+
+describe('loadConversations — dissolution cleanup', () => {
+  it('dissolved group triggers transactional delete of replies and threads', async () => {
+    mockIsDatabaseInitialized.mockReturnValue(true);
+    mockGetLocalConvIds.mockReturnValue(['g1', 'dissolved-group']);
+    mockListGroups.mockResolvedValue([GROUP_RESPONSE]); // server only returns g1
+
+    const mockExecuteSync = jest.fn();
+    mockGetDatabase.mockReturnValue({ executeSync: mockExecuteSync });
+
+    await loadConversations();
+
+    expect(mockDeleteReplies).toHaveBeenCalledWith('dissolved-group');
+    expect(mockDeleteThreads).toHaveBeenCalledWith('dissolved-group');
+    expect(mockExecuteSync).toHaveBeenCalledWith('BEGIN IMMEDIATE');
+    expect(mockExecuteSync).toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('no dissolved groups — delete functions not called', async () => {
+    mockIsDatabaseInitialized.mockReturnValue(true);
+    mockGetLocalConvIds.mockReturnValue(['g1']); // matches the single server group
+    mockListGroups.mockResolvedValue([GROUP_RESPONSE]);
+
+    const mockExecuteSync = jest.fn();
+    mockGetDatabase.mockReturnValue({ executeSync: mockExecuteSync });
+
+    await loadConversations();
+
+    expect(mockDeleteReplies).not.toHaveBeenCalled();
+    expect(mockDeleteThreads).not.toHaveBeenCalled();
+  });
+
+  it('isDatabaseInitialized false — cleanup skipped entirely', async () => {
+    mockIsDatabaseInitialized.mockReturnValue(false);
+    mockListGroups.mockResolvedValue([GROUP_RESPONSE]);
+
+    await loadConversations();
+
+    expect(mockGetLocalConvIds).not.toHaveBeenCalled();
+    expect(mockDeleteReplies).not.toHaveBeenCalled();
+    expect(mockDeleteThreads).not.toHaveBeenCalled();
   });
 });
 

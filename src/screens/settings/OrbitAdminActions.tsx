@@ -328,9 +328,9 @@ export const OrbitAdminActions = React.memo(function OrbitAdminActions({
       return (
         <View style={memberRowStyle} testID={`transfer-member-${item.userId}`}>
           <View style={memberInfoStyle}>
-            <Text style={memberNameStyle} numberOfLines={1}>
+            <EmojiText style={memberNameStyle} numberOfLines={1}>
               {item.displayName}
-            </Text>
+            </EmojiText>
             <Text style={memberHandleStyle} numberOfLines={1}>
               @{item.username}
             </Text>

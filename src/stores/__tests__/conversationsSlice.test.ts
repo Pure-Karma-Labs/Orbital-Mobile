@@ -98,6 +98,7 @@ function makeStore() {
     blockUser: jest.fn(),
     unblockUser: jest.fn(),
     resetBlockedUsers: jest.fn(),
+    hydrateBlockedUsers: jest.fn(),
   })));
 }
 

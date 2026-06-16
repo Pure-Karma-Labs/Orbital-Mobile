@@ -8,6 +8,20 @@ import { createBlockedUsersSlice } from '../slices/blockedUsersSlice';
 import type { AppState } from '../../types/store';
 
 // ---------------------------------------------------------------------------
+// Module mocks
+// ---------------------------------------------------------------------------
+
+const mockBlockUserApi = jest.fn().mockResolvedValue(undefined);
+const mockUnblockUserApi = jest.fn().mockResolvedValue(undefined);
+const mockGetBlockedUsers = jest.fn().mockResolvedValue({ blockedUserIds: [] });
+
+jest.mock('../../services/api/users', () => ({
+  blockUserApi: (...args: unknown[]) => mockBlockUserApi(...args),
+  unblockUserApi: (...args: unknown[]) => mockUnblockUserApi(...args),
+  getBlockedUsers: (...args: unknown[]) => mockGetBlockedUsers(...args),
+}));
+
+// ---------------------------------------------------------------------------
 // Minimal store factory
 // ---------------------------------------------------------------------------
 
@@ -114,6 +128,10 @@ function makeStore() {
 // Tests
 // ---------------------------------------------------------------------------
 
+beforeEach(() => {
+  jest.clearAllMocks();
+});
+
 describe('blockedUsersSlice - initial state', () => {
   it('starts with empty blocked users', () => {
     const store = makeStore();
@@ -198,5 +216,79 @@ describe('blockedUsersSlice - resetBlockedUsers', () => {
     const store = makeStore();
     expect(() => store.getState().resetBlockedUsers()).not.toThrow();
     expect(store.getState().blockedUserIds).toEqual([]);
+  });
+});
+
+describe('blockedUsersSlice - blockUser API wiring', () => {
+  it('calls blockUserApi after updating state', () => {
+    const store = makeStore();
+    store.getState().blockUser('user-1', 'alice');
+    expect(store.getState().blockedUserIds).toEqual(['user-1']);
+    expect(mockBlockUserApi).toHaveBeenCalledWith('user-1');
+  });
+
+  it('does not call blockUserApi when user is already blocked', () => {
+    const store = makeStore();
+    store.getState().blockUser('user-1', 'alice');
+    mockBlockUserApi.mockClear();
+    store.getState().blockUser('user-1', 'alice');
+    expect(mockBlockUserApi).not.toHaveBeenCalled();
+  });
+});
+
+describe('blockedUsersSlice - unblockUser API wiring', () => {
+  it('calls unblockUserApi after updating state', () => {
+    const store = makeStore();
+    store.getState().blockUser('user-1', 'alice');
+    mockUnblockUserApi.mockClear();
+    store.getState().unblockUser('user-1');
+    expect(store.getState().blockedUserIds).toEqual([]);
+    expect(mockUnblockUserApi).toHaveBeenCalledWith('user-1');
+  });
+
+  it('does not call unblockUserApi for unknown user', () => {
+    const store = makeStore();
+    store.getState().unblockUser('user-999');
+    expect(mockUnblockUserApi).not.toHaveBeenCalled();
+  });
+});
+
+describe('blockedUsersSlice - hydrateBlockedUsers', () => {
+  it('merges new IDs from server without duplicating existing ones', () => {
+    const store = makeStore();
+    store.getState().blockUser('user-1', 'alice');
+    store.getState().hydrateBlockedUsers(['user-1', 'user-2', 'user-3']);
+    const state = store.getState();
+    expect(state.blockedUserIds).toEqual(['user-1', 'user-2', 'user-3']);
+    expect(state.blockedUserProfiles['user-1']).toBe('alice');
+    expect(state.blockedUserProfiles['user-2']).toBe('Unknown');
+    expect(state.blockedUserProfiles['user-3']).toBe('Unknown');
+  });
+
+  it('is a no-op when all server IDs are already present locally', () => {
+    const store = makeStore();
+    store.getState().blockUser('user-1', 'alice');
+    store.getState().blockUser('user-2', 'bob');
+    const stateBefore = store.getState();
+    store.getState().hydrateBlockedUsers(['user-1', 'user-2']);
+    const stateAfter = store.getState();
+    // State reference should not change on no-op (no set() called)
+    expect(stateAfter.blockedUserIds).toBe(stateBefore.blockedUserIds);
+  });
+
+  it('handles hydration from empty local state', () => {
+    const store = makeStore();
+    store.getState().hydrateBlockedUsers(['user-1', 'user-2']);
+    const state = store.getState();
+    expect(state.blockedUserIds).toEqual(['user-1', 'user-2']);
+    expect(state.blockedUserProfiles['user-1']).toBe('Unknown');
+    expect(state.blockedUserProfiles['user-2']).toBe('Unknown');
+  });
+
+  it('handles empty server list as no-op', () => {
+    const store = makeStore();
+    store.getState().blockUser('user-1', 'alice');
+    store.getState().hydrateBlockedUsers([]);
+    expect(store.getState().blockedUserIds).toEqual(['user-1']);
   });
 });

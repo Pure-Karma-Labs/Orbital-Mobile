@@ -345,6 +345,7 @@ export interface BlockedUsersActions {
   blockUser: (userId: string, username: string) => void;
   unblockUser: (userId: string) => void;
   resetBlockedUsers: () => void;
+  hydrateBlockedUsers: (blockedUserIds: string[]) => void;
 }
 
 export type BlockedUsersSlice = BlockedUsersState & BlockedUsersActions;

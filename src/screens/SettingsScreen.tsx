@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
   FlatList,
@@ -22,6 +22,9 @@ import type { BlockingOrbit } from '../services/api/errors';
 import { getGroupQuota } from '../services/api/groups';
 import { fetchCreatorOrbitsDecrypted } from '../services/conversationService';
 import type { DecryptedGroup } from '../services/conversationService';
+import { requestPermissionAndRegister, deregisterCurrentDevice } from '../services/notificationService';
+import { useAppStore } from '../stores/useAppStore';
+import messaging from '@react-native-firebase/messaging';
 import { Header } from '../components/Header';
 import { ProfileCard } from './settings/ProfileCard';
 import { SettingsRow } from './settings/SettingsRow';
@@ -119,6 +122,41 @@ export function SettingsScreen(): React.JSX.Element {
   const handleToggleSound = useCallback(() => {
     setSoundEnabled(!soundEnabled);
   }, [soundEnabled, setSoundEnabled]);
+
+  const unsubRef = useRef<(() => void) | null>(null);
+  const togglingRef = useRef(false);
+
+  const handleTogglePush = useCallback(async () => {
+    if (togglingRef.current) return;
+    togglingRef.current = true;
+    try {
+      if (pushPermissionGranted) {
+        unsubRef.current?.();
+        unsubRef.current = null;
+        await deregisterCurrentDevice();
+        useAppStore.getState().setPushPermission(false);
+        useAppStore.getState().setPushToken(null);
+      } else {
+        const authStatus = await messaging().hasPermission();
+        if (authStatus === messaging.AuthorizationStatus.DENIED) {
+          Alert.alert(
+            'Notifications Disabled',
+            'Push notifications were previously denied. Enable them in Settings.',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Open Settings', onPress: () => Linking.openSettings() },
+            ],
+          );
+          return;
+        }
+        unsubRef.current?.();
+        const unsub = await requestPermissionAndRegister();
+        unsubRef.current = unsub;
+      }
+    } finally {
+      togglingRef.current = false;
+    }
+  }, [pushPermissionGranted]);
 
   const handleManageOrbits = useCallback(() => {
     navigation.navigate('ManageOrbits');
@@ -310,8 +348,7 @@ export function SettingsScreen(): React.JSX.Element {
           emojiUnified="1F514"
           label="Push"
           value={pushPermissionGranted ? 'On' : 'Off'}
-          chevron
-          disabled
+          onPress={handleTogglePush}
           testID="push-row"
         />
         <SettingsRow

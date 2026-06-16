@@ -45,7 +45,7 @@ export interface SignupResponse {
 }
 
 export interface LoginRequest {
-  username: string;
+  email: string;
   password: string;
 }
 
@@ -72,17 +72,6 @@ export interface LoginResponse {
 export interface VerifyTokenResponse {
   userId: string;
   username: string;
-}
-
-/**
- * GET /api/users/:username/public-key response.
- *
- * Backend returns: { user_id, username, public_key }
- */
-export interface PublicKeyResponse {
-  userId: string;
-  username: string;
-  publicKey: unknown;
 }
 
 export interface ForgotPasswordRequest {

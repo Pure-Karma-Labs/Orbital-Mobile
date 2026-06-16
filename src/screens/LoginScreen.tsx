@@ -1,5 +1,5 @@
 /**
- * Login screen — username + password auth form.
+ * Login screen — email + password auth form.
  */
 
 import React, { useState } from 'react';
@@ -15,7 +15,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../theme';
 import { TextInput, Button, ErrorBanner, SuccessBanner, OrbitalLoader, AsciiBanner } from '../components';
 import { loginUser } from '../services/authService';
-import { AuthError, NetworkError, ValidationError } from '../services/api/errors';
+import { AuthError, ConflictError, NetworkError, ValidationError } from '../services/api/errors';
 import type { OnPreAuthNavigate } from '../navigation/preAuthTypes';
 
 export interface LoginScreenProps {
@@ -27,26 +27,26 @@ export function LoginScreen({ onNavigate, successMessage }: LoginScreenProps): R
   const theme = useTheme();
   const insets = useSafeAreaInsets();
 
-  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [showSuccess, setShowSuccess] = useState(true);
 
   async function handleLogin(): Promise<void> {
-    if (username.trim().length === 0 || password.length === 0) {
-      setError('Please enter your username and password');
+    if (email.trim().length === 0 || password.length === 0) {
+      setError('Please enter your email and password');
       return;
     }
 
     setError(null);
     setLoading(true);
     try {
-      await loginUser(username.trim(), password);
+      await loginUser(email.trim(), password);
       // Auth store update triggers isAuthenticated → App re-renders
     } catch (e) {
-      if (e instanceof AuthError || e instanceof ValidationError) {
-        setError('Invalid username or password');
+      if (e instanceof AuthError || e instanceof ValidationError || e instanceof ConflictError) {
+        setError('Invalid email or password');
       } else if (e instanceof NetworkError) {
         setError(e.message);
       } else {
@@ -98,8 +98,8 @@ export function LoginScreen({ onNavigate, successMessage }: LoginScreenProps): R
     marginTop: theme.spacing.base,
   };
 
-  function handleUsernameChange(text: string): void {
-    setUsername(text);
+  function handleEmailChange(text: string): void {
+    setEmail(text);
     setShowSuccess(false);
   }
 
@@ -128,13 +128,14 @@ export function LoginScreen({ onNavigate, successMessage }: LoginScreenProps): R
 
         <View>
           <TextInput
-            label="Username"
-            value={username}
-            onChangeText={handleUsernameChange}
+            label="Email"
+            value={email}
+            onChangeText={handleEmailChange}
             autoCapitalize="none"
             autoCorrect={false}
-            maxLength={64}
-            testID="login-username-input"
+            keyboardType="email-address"
+            maxLength={256}
+            testID="login-email-input"
           />
           <TextInput
             label="Password"

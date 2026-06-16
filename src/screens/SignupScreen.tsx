@@ -16,7 +16,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../theme';
 import { TextInput, Button, ErrorBanner, OrbitalLoader, AsciiBanner } from '../components';
 import { signupUser } from '../services/authService';
-import { AuthError, NetworkError, ValidationError } from '../services/api/errors';
+import { AuthError, ConflictError, NetworkError, ValidationError } from '../services/api/errors';
 import type { OnPreAuthNavigate } from '../navigation/preAuthTypes';
 
 export interface SignupScreenProps {
@@ -58,8 +58,8 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
       await signupUser(username.trim(), password, email.trim(), inviteCode.trim());
       // Auth store update triggers isAuthenticated → App re-renders
     } catch (e) {
-      if (e instanceof AuthError || e instanceof ValidationError) {
-        setError(e.message || 'Invalid username or password');
+      if (e instanceof AuthError || e instanceof ValidationError || e instanceof ConflictError) {
+        setError(e.message || 'Signup failed');
       } else if (e instanceof NetworkError) {
         setError(e.message);
       } else {

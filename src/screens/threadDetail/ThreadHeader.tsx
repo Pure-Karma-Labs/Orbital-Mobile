@@ -133,11 +133,11 @@ export const ThreadHeader = React.memo(function ThreadHeader({
         accessibilityLabel={isSelf ? undefined : `Actions for ${displayName}`}
       >
         <Avatar name={displayName} size={28} />
-        <Text style={authorTextStyle}>{displayName}</Text>
+        <EmojiText style={authorTextStyle}>{displayName}</EmojiText>
         <Text style={timestampStyle}>{formatTimestamp(createdAt)}</Text>
       </TouchableOpacity>
       {title != null && title.length > 0 && (
-        <Text style={titleStyle}>{title}</Text>
+        <EmojiText style={titleStyle}>{title}</EmojiText>
       )}
       {body != null && body.length > 0 && (
         <EmojiText style={bodyStyle}>{body}</EmojiText>

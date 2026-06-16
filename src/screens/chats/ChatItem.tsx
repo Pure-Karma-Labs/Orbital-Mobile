@@ -17,6 +17,7 @@ import {
 import { useTheme } from '../../theme';
 import { Avatar } from '../../components/Avatar';
 import { Badge } from '../../components/Badge';
+import { EmojiText } from '../../components/EmojiText';
 
 export interface ChatItemProps {
   conversationId: string;
@@ -129,9 +130,9 @@ export const ChatItem = React.memo(function ChatItem({
         avatarDigest={avatarDigest}
       />
       <View style={mainStyle}>
-        <Text style={nameStyle} numberOfLines={1}>
+        <EmojiText style={nameStyle} numberOfLines={1}>
           {recipientName}
-        </Text>
+        </EmojiText>
       </View>
       {lastMessageAt != null && (
         <Text style={timeStyle}>{formatTime(lastMessageAt)}</Text>

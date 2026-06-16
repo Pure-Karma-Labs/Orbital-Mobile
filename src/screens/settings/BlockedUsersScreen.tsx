@@ -6,11 +6,12 @@
  * for username when the user is not in contacts.
  */
 
-import React, { useCallback } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { Alert, FlatList, Text, TouchableOpacity, View, type ListRenderItemInfo, type TextStyle, type ViewStyle } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { useTheme } from '../../theme';
+import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../stores/useAppStore';
 import { Header } from '../../components/Header';
 import { EmojiText } from '../../components/EmojiText';
@@ -21,13 +22,18 @@ interface BlockedUserRow {
 }
 
 function useBlockedUserRows(): BlockedUserRow[] {
-  return useAppStore((s) => {
-    return s.blockedUserIds.map((id) => {
-      const contact = s.contacts[id];
-      const name = contact?.username ?? s.blockedUserProfiles[id] ?? 'Unknown';
-      return { id, displayName: name };
-    });
-  });
+  const blockedUserIds = useAppStore(useShallow((s) => s.blockedUserIds));
+  const contacts = useAppStore((s) => s.contacts);
+  const profiles = useAppStore((s) => s.blockedUserProfiles);
+
+  return useMemo(
+    () =>
+      blockedUserIds.map((id) => ({
+        id,
+        displayName: contacts[id]?.username ?? profiles[id] ?? 'Unknown',
+      })),
+    [blockedUserIds, contacts, profiles],
+  );
 }
 
 export function BlockedUsersScreen(): React.JSX.Element {

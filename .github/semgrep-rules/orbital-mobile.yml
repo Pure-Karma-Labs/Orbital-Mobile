@@ -20,6 +20,8 @@ rules:
       include:
         - src/services/crypto/
         - src/services/secure-storage/
+      exclude:
+        - "*__tests__*"
     message: Math.random() is not cryptographically secure. Use crypto.getRandomValues().
     languages: [typescript, javascript]
     severity: ERROR
@@ -31,11 +33,14 @@ rules:
       - pattern: console.error(...)
       - pattern: console.debug(...)
       - pattern: console.info(...)
+      - pattern: console.trace(...)
     paths:
       include:
         - src/services/crypto/
         - src/services/secure-storage/
         - src/database/
+      exclude:
+        - "*__tests__*"
     message: Console output in crypto/security paths risks leaking key material.
     languages: [typescript, javascript]
     severity: ERROR

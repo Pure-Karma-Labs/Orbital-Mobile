@@ -3,6 +3,7 @@ mod content_crypto;
 mod ecies;
 mod error;
 mod group;
+mod invite_crypto;
 mod keys;
 #[cfg(feature = "dev-roundtrip")]
 mod roundtrip;
@@ -26,6 +27,7 @@ pub use content_crypto::*;
 pub use ecies::*;
 pub use error::*;
 pub use group::*;
+pub use invite_crypto::*;
 pub use keys::*;
 #[cfg(feature = "dev-roundtrip")]
 pub use roundtrip::*;

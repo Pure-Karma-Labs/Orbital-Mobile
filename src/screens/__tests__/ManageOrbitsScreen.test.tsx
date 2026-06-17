@@ -275,7 +275,6 @@ describe('ManageOrbitsScreen — rendering', () => {
         name: 'Family Orbit',
         memberCount: 3,
         isCreator: true,
-        inviteCode: null,
       },
     ]);
 
@@ -341,7 +340,6 @@ describe('ManageOrbitsScreen — interactions', () => {
         name: 'Family Orbit',
         memberCount: 3,
         isCreator: true,
-        inviteCode: null,
       },
     ]);
     mockListInvites.mockResolvedValue(testInvites);
@@ -384,7 +382,6 @@ describe('ManageOrbitsScreen — interactions', () => {
         name: 'Family Orbit',
         memberCount: 3,
         isCreator: true,
-        inviteCode: null,
       },
     ]);
     mockListInvites.mockResolvedValue(testInvites);
@@ -434,7 +431,6 @@ describe('ManageOrbitsScreen — interactions', () => {
         name: 'Family Orbit',
         memberCount: 3,
         isCreator: true,
-        inviteCode: null,
       },
     ]);
 
@@ -479,7 +475,6 @@ describe('ManageOrbitsScreen — interactions', () => {
         name: 'Family Orbit',
         memberCount: 3,
         isCreator: true,
-        inviteCode: null,
       },
     ]);
 
@@ -538,7 +533,6 @@ describe('ManageOrbitsScreen — interactions', () => {
         name: 'Family Orbit',
         memberCount: 3,
         isCreator: true,
-        inviteCode: null,
       },
     ]);
 
@@ -595,7 +589,6 @@ describe('ManageOrbitsScreen — interactions', () => {
         name: 'Family Orbit',
         memberCount: 3,
         isCreator: true,
-        inviteCode: null,
       },
     ]);
 
@@ -651,7 +644,6 @@ describe('ManageOrbitsScreen — admin actions', () => {
         name: 'Family Orbit',
         memberCount: 3,
         isCreator: true,
-        inviteCode: null,
       },
     ]);
 
@@ -694,8 +686,7 @@ describe('ManageOrbitsScreen — admin actions', () => {
           name: 'Family Orbit',
           memberCount: 3,
           isCreator: true,
-          inviteCode: null,
-        },
+          },
       ])
       // Second call (after transfer) returns empty — orbit is no longer ours
       .mockResolvedValueOnce([]);
@@ -759,7 +750,6 @@ describe('ManageOrbitsScreen — admin actions', () => {
         name: 'Family Orbit',
         memberCount: 3,
         isCreator: true,
-        inviteCode: null,
       },
     ]);
 

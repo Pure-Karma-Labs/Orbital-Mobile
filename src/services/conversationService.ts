@@ -51,7 +51,6 @@ function isSessionStale(captured: { userId: string; generation: number }): boole
 export interface DecryptedGroup {
   groupId: string;
   name: string;
-  inviteCode: string | null;
   memberCount: number;
   isCreator: boolean;
 }
@@ -238,7 +237,7 @@ export async function loadConversations(): Promise<void> {
   }
 }
 
-export async function createOrbit(name: string): Promise<{ groupId: string; inviteCode: string | null }> {
+export async function createOrbit(name: string): Promise<{ groupId: string }> {
   const groupId = generateUUID();
   const { key, keyBase64 } = generateGroupKey();
   const encryptedName = encryptGroupName(name, key);
@@ -270,7 +269,7 @@ export async function createOrbit(name: string): Promise<{ groupId: string; invi
   });
   store.setActiveConversation(response.groupId);
 
-  return { groupId: response.groupId, inviteCode: response.inviteCode ?? null };
+  return { groupId: response.groupId };
 }
 
 export async function createInviteCode(
@@ -520,7 +519,6 @@ export async function fetchCreatorOrbitsDecrypted(): Promise<DecryptedGroup[]> {
     results.push({
       groupId: group.groupId,
       name,
-      inviteCode: group.activeInviteCode,
       memberCount: group.memberCount,
       isCreator: group.isCreator,
     });
@@ -534,7 +532,7 @@ export async function joinOrbit(
   const cleanCode = inviteCrypto.stripInviteCode(inviteCode);
   const response = await joinGroup({inviteCode: cleanCode});
 
-  if (response.inviteEncryptedGroupKey && inviteCrypto.isV2InviteCode(cleanCode)) {
+  if (response.inviteEncryptedGroupKey) {
     // v2: decrypt group key from invite blob (synchronous key delivery)
     try {
       const groupKey = inviteCrypto.decryptGroupKeyFromInvite(
@@ -548,17 +546,6 @@ export async function joinOrbit(
       selfWrapIfNeeded(response.groupId).catch(() => {});
     } catch {
       if (__DEV__) console.warn('[invite-join] v2 decrypt failed, falling back to async key delivery');
-    }
-  } else if (response.wrappedGroupKey) {
-    // v1: ECIES-wrapped key from another member (or self-wrap)
-    try {
-      await processReceivedGroupKey(
-        response.groupId,
-        response.wrappedGroupKey,
-        response.wrappedBy ?? null,
-      );
-    } catch {
-      // Key delivery may be async via WS wrapped_key_delivered
     }
   }
 

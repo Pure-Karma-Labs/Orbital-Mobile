@@ -18,7 +18,9 @@ import {
   clearIdentityKeyCache,
   fullCryptoWipe,
 } from './crypto/keyGenerationService';
-import { clearGroupKeyCache, clearContentCryptoInflight } from './crypto/contentCrypto';
+import { clearGroupKeyCache, clearContentCryptoInflight, persistGroupKey } from './crypto/contentCrypto';
+import * as inviteCrypto from './crypto/inviteCrypto';
+import { arrayBufferToBase64, toArrayBuffer } from './crypto/utils';
 import { clearEciesLockState, loadEciesLockState } from './crypto/downgradeProtection';
 import { clearProcessedMediaIds } from './threadService';
 import { clearAllThreads } from '../database/repositories/threadRepository';
@@ -145,6 +147,21 @@ export async function signupUser(
   } catch (e: unknown) {
     if (__DEV__) console.warn('[KeyGeneration]', e instanceof Error ? e.message : e);
   }
+
+  // v2 invite key delivery: decrypt group key from invite blob if present
+  if (response.inviteEncryptedGroupKey && response.groupId) {
+    try {
+      const cleanCode = inviteCrypto.stripInviteCode(inviteCode);
+      const groupKey = inviteCrypto.decryptGroupKeyFromInvite(
+        response.inviteEncryptedGroupKey, cleanCode, response.groupId,
+      );
+      persistGroupKey(response.groupId, arrayBufferToBase64(toArrayBuffer(groupKey)));
+    } catch (e) {
+      // Async fallback: sendWrapKeyRequests already fired server-side
+      if (__DEV__) console.warn('[signup] v2 invite key decrypt failed, relying on async delivery', e);
+    }
+  }
+
   await postAuthBootstrap();
 }
 

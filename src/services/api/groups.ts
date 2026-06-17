@@ -10,7 +10,6 @@ import type {
   CreateGroupResponse,
   DmResponse,
   GenerateInviteCodeOptions,
-  GenerateInviteCodeResponse,
   GenerateInviteCodeV2Response,
   GroupKeyResponse,
   GroupMember,
@@ -129,26 +128,16 @@ export async function getGroupMembers(groupId: string): Promise<GroupMember[]> {
 export function generateInviteCode(
   groupId: string,
   targetEmail: string,
-): Promise<GenerateInviteCodeResponse>;
-export function generateInviteCode(
-  groupId: string,
-  targetEmail: string,
   options: GenerateInviteCodeOptions,
-): Promise<GenerateInviteCodeV2Response>;
-export function generateInviteCode(
-  groupId: string,
-  targetEmail: string,
-  options?: GenerateInviteCodeOptions,
-): Promise<GenerateInviteCodeResponse | GenerateInviteCodeV2Response> {
-  const body: Record<string, string> = {targetEmail};
-  if (options) {
-    body.code = options.code;
-    body.encryptedGroupKey = options.encryptedGroupKey;
-  }
-  return request<GenerateInviteCodeResponse | GenerateInviteCodeV2Response>({
+): Promise<GenerateInviteCodeV2Response> {
+  return request<GenerateInviteCodeV2Response>({
     method: 'POST',
     path: `/api/groups/${encodeURIComponent(groupId)}/invite-codes`,
-    body,
+    body: {
+      targetEmail,
+      code: options.code,
+      encryptedGroupKey: options.encryptedGroupKey,
+    },
   });
 }
 

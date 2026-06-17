@@ -142,7 +142,7 @@ describe('CreateOrbitScreen — validation', () => {
 
 describe('CreateOrbitScreen — submission', () => {
   it('calls createOrbit with trimmed name on submit', async () => {
-    mockCreateOrbit.mockResolvedValue({ groupId: 'g-1', inviteCode: null });
+    mockCreateOrbit.mockResolvedValue({ groupId: 'g-1' });
     const renderer = renderScreen();
     const input = findByTestId(renderer.root, 'orbit-name-input');
 
@@ -159,7 +159,7 @@ describe('CreateOrbitScreen — submission', () => {
   });
 
   it('shows Phase 1 success view with email input after creation', async () => {
-    mockCreateOrbit.mockResolvedValue({ groupId: 'g-1', inviteCode: null });
+    mockCreateOrbit.mockResolvedValue({ groupId: 'g-1' });
     const renderer = renderScreen();
 
     act(() => {
@@ -177,7 +177,7 @@ describe('CreateOrbitScreen — submission', () => {
   });
 
   it('skip button calls navigation.goBack()', async () => {
-    mockCreateOrbit.mockResolvedValue({ groupId: 'g-1', inviteCode: null });
+    mockCreateOrbit.mockResolvedValue({ groupId: 'g-1' });
     const renderer = renderScreen();
 
     act(() => {
@@ -198,7 +198,7 @@ describe('CreateOrbitScreen — submission', () => {
 
 describe('CreateOrbitScreen — invite generation', () => {
   it('generates v2 invite code and shows formatted code', async () => {
-    mockCreateOrbit.mockResolvedValue({ groupId: 'g-1', inviteCode: null });
+    mockCreateOrbit.mockResolvedValue({ groupId: 'g-1' });
     mockCreateInviteCode.mockResolvedValue('ABCD1234EFGH5678JKMN');
 
     const renderer = renderScreen();
@@ -236,7 +236,7 @@ describe('CreateOrbitScreen — invite generation', () => {
   });
 
   it('done button calls navigation.goBack() from Phase 2', async () => {
-    mockCreateOrbit.mockResolvedValue({ groupId: 'g-1', inviteCode: null });
+    mockCreateOrbit.mockResolvedValue({ groupId: 'g-1' });
     mockCreateInviteCode.mockResolvedValue('ABCD1234EFGH5678JKMN');
 
     const renderer = renderScreen();
@@ -290,7 +290,7 @@ describe('CreateOrbitScreen — error handling', () => {
 
 describe('CreateOrbitScreen — loading state', () => {
   it('calls createOrbit once and shows success view after resolution', async () => {
-    mockCreateOrbit.mockResolvedValue({ groupId: 'g-1', inviteCode: null });
+    mockCreateOrbit.mockResolvedValue({ groupId: 'g-1' });
     const renderer = renderScreen();
 
     act(() => {

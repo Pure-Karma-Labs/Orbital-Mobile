@@ -134,7 +134,6 @@ const GROUP_RESPONSE = {
   memberCount: 3,
   maxMembers: 10,
   isCreator: false,
-  activeInviteCode: 'TEST1234',
   joinedAt: '2026-01-01T00:00:00.000Z',
 };
 
@@ -447,32 +446,31 @@ describe('startDm', () => {
 // ---------------------------------------------------------------------------
 
 describe('joinOrbit', () => {
-  it('joins with invite code and processes wrapped key', async () => {
+  it('joins with invite code and decrypts v2 invite key', async () => {
     mockJoinGroup.mockResolvedValue({
       groupId: 'orbit-1',
       encryptedName: 'Encrypted Name',
       memberCount: 3,
       joinedAt: '2026-05-01T00:00:00Z',
-      wrappedGroupKey: 'wrapped-key-base64',
+      inviteEncryptedGroupKey: 'encrypted-blob-base64',
     });
 
-    const result = await joinOrbit('ABC12345');
+    const result = await joinOrbit('ABCD-1234-EFGH-5678-JKMN');
 
-    expect(mockJoinGroup).toHaveBeenCalledWith({ inviteCode: 'ABC12345' });
-    expect(mockProcessReceivedGroupKey).toHaveBeenCalledWith('orbit-1', 'wrapped-key-base64', null);
+    expect(mockJoinGroup).toHaveBeenCalledWith({ inviteCode: 'ABCD1234EFGH5678JKMN' });
     expect(result.groupId).toBe('orbit-1');
   });
 
-  it('handles null wrappedGroupKey (pending key state)', async () => {
+  it('handles null inviteEncryptedGroupKey (pending key state)', async () => {
     mockJoinGroup.mockResolvedValue({
       groupId: 'orbit-2',
       encryptedName: 'Encrypted Name',
       memberCount: 2,
       joinedAt: '2026-05-01T00:00:00Z',
-      wrappedGroupKey: null,
+      inviteEncryptedGroupKey: null,
     });
 
-    const result = await joinOrbit('XYZ98765');
+    const result = await joinOrbit('ABCD-1234-EFGH-5678-JKMN');
 
     expect(mockProcessReceivedGroupKey).not.toHaveBeenCalled();
     expect(result.groupId).toBe('orbit-2');
@@ -506,7 +504,6 @@ const CREATOR_GROUP = {
   memberCount: 4,
   maxMembers: 10,
   isCreator: true,
-  activeInviteCode: 'INV123',
   joinedAt: '2026-01-01T00:00:00.000Z',
 };
 
@@ -518,7 +515,6 @@ const NON_CREATOR_GROUP = {
   memberCount: 6,
   maxMembers: 10,
   isCreator: false,
-  activeInviteCode: 'INV456',
   joinedAt: '2026-02-01T00:00:00.000Z',
 };
 
@@ -569,13 +565,12 @@ describe('fetchCreatorOrbitsDecrypted', () => {
     expect(result[0].name).toBe('creator-1');
   });
 
-  it('passes through inviteCode, memberCount, and isCreator', async () => {
+  it('passes through memberCount and isCreator', async () => {
     mockListGroups.mockResolvedValue([CREATOR_GROUP]);
 
     const result = await fetchCreatorOrbitsDecrypted();
 
     expect(result[0]).toEqual(expect.objectContaining({
-      inviteCode: 'INV123',
       memberCount: 4,
       isCreator: true,
     }));

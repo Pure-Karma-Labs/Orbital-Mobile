@@ -16,7 +16,8 @@
     "typecheck": "tsc --noEmit",
     "build:rust:ios": "cd packages/orbital-signal && npm run build:ios && cd ../../ios && pod install",
     "build:rust:android": "cd packages/orbital-signal && npm run build:android",
-    "build:rust": "npm run build:rust:ios && npm run build:rust:android"
+    "build:rust": "npm run build:rust:ios && npm run build:rust:android",
+    "security:invariants": "node scripts/check-security-invariants.mjs"
   },
   "dependencies": {
     "@dr.pogodin/react-native-fs": "^2.38.2",

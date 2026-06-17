@@ -77,6 +77,7 @@ jest.mock('../crypto/keyGenerationService', () => ({
 }));
 
 const mockClearGroupKeyCache = jest.fn();
+const mockPersistGroupKey = jest.fn();
 jest.mock('../crypto/contentCrypto', () => ({
   PendingWrapError: class PendingWrapError extends Error {
     constructor() {
@@ -85,6 +86,20 @@ jest.mock('../crypto/contentCrypto', () => ({
     }
   },
   clearGroupKeyCache: () => mockClearGroupKeyCache(),
+  persistGroupKey: (...args: unknown[]) => mockPersistGroupKey(...args),
+  clearContentCryptoInflight: jest.fn(),
+}));
+
+const mockStripInviteCode = jest.fn((s: string) => s.replace(/-/g, '').toUpperCase());
+const mockDecryptGroupKeyFromInvite = jest.fn((_a: string, _b: string, _c: string) => new Uint8Array(32));
+jest.mock('../crypto/inviteCrypto', () => ({
+  stripInviteCode: (s: string) => mockStripInviteCode(s),
+  decryptGroupKeyFromInvite: (a: string, b: string, c: string) => mockDecryptGroupKeyFromInvite(a, b, c),
+}));
+
+jest.mock('../crypto/utils', () => ({
+  arrayBufferToBase64: jest.fn(() => 'base64-key'),
+  toArrayBuffer: jest.fn((u8: Uint8Array) => u8.buffer),
 }));
 
 const mockGetItem = jest.fn().mockReturnValue(null);
@@ -304,6 +319,7 @@ describe('signupUser', () => {
       username: 'dave',
       email: 'dave@example.com',
       groupId: 'group-1',
+      inviteEncryptedGroupKey: null,
     });
 
     await signupUser('dave', 'password', 'dave@example.com', 'INV-CODE');
@@ -340,6 +356,7 @@ describe('signupUser', () => {
       username: 'frank',
       email: 'f@x.com',
       groupId: null,
+      inviteEncryptedGroupKey: null,
     });
 
     await signupUser('frank', 'pass', 'f@x.com', 'CODE');
@@ -355,6 +372,7 @@ describe('signupUser', () => {
       username: 'frank',
       email: 'f@x.com',
       groupId: null,
+      inviteEncryptedGroupKey: null,
     });
 
     await signupUser('frank', 'pass', 'f@x.com', 'CODE');
@@ -369,6 +387,7 @@ describe('signupUser', () => {
       username: 'frank',
       email: 'f@x.com',
       groupId: null,
+      inviteEncryptedGroupKey: null,
     });
 
     await signupUser('frank', 'pass', 'f@x.com', 'CODE');
@@ -383,6 +402,7 @@ describe('signupUser', () => {
       username: 'frank',
       email: 'f@x.com',
       groupId: null,
+      inviteEncryptedGroupKey: null,
     });
 
     await signupUser('frank', 'pass', 'f@x.com', 'CODE');
@@ -397,6 +417,7 @@ describe('signupUser', () => {
       username: 'grace',
       email: 'g@x.com',
       groupId: null,
+      inviteEncryptedGroupKey: null,
     });
     mockGenerateInitialKeys.mockRejectedValue(new Error('FFI crash'));
 
@@ -404,6 +425,66 @@ describe('signupUser', () => {
       signupUser('grace', 'pass', 'g@x.com', 'CODE'),
     ).resolves.not.toThrow();
     expect(mockSetUser).toHaveBeenCalled();
+  });
+
+  it('decrypts v2 invite group key when inviteEncryptedGroupKey is present', async () => {
+    mockSignup.mockResolvedValue({
+      token: 'tok',
+      userId: 'u1',
+      username: 'hank',
+      email: 'h@x.com',
+      groupId: 'group-abc',
+      inviteEncryptedGroupKey: 'encrypted-blob-base64',
+    });
+
+    await signupUser('hank', 'pass', 'h@x.com', 'ABCD-EFGH-JKMN-PQRS-TVW0');
+
+    expect(mockStripInviteCode).toHaveBeenCalledWith('ABCD-EFGH-JKMN-PQRS-TVW0');
+    expect(mockDecryptGroupKeyFromInvite).toHaveBeenCalledWith(
+      'encrypted-blob-base64',
+      'ABCDEFGHJKMNPQRSTVW0',
+      'group-abc',
+    );
+    expect(mockPersistGroupKey).toHaveBeenCalledWith('group-abc', 'base64-key');
+  });
+
+  it('does not decrypt when inviteEncryptedGroupKey is null', async () => {
+    mockSignup.mockResolvedValue({
+      token: 'tok',
+      userId: 'u1',
+      username: 'ivy',
+      email: 'i@x.com',
+      groupId: 'group-abc',
+      inviteEncryptedGroupKey: null,
+    });
+
+    await signupUser('ivy', 'pass', 'i@x.com', 'SOMECODE');
+
+    expect(mockDecryptGroupKeyFromInvite).not.toHaveBeenCalled();
+    expect(mockPersistGroupKey).not.toHaveBeenCalled();
+  });
+
+  it('does not throw when v2 invite key decryption fails (async fallback)', async () => {
+    mockSignup.mockResolvedValue({
+      token: 'tok',
+      userId: 'u1',
+      username: 'jack',
+      email: 'j@x.com',
+      groupId: 'group-xyz',
+      inviteEncryptedGroupKey: 'bad-blob',
+    });
+    mockDecryptGroupKeyFromInvite.mockImplementationOnce(() => {
+      throw new Error('decryption failed');
+    });
+
+    await expect(
+      signupUser('jack', 'pass', 'j@x.com', 'BADCODE12345678901234'),
+    ).resolves.not.toThrow();
+
+    expect(mockDecryptGroupKeyFromInvite).toHaveBeenCalled();
+    expect(mockPersistGroupKey).not.toHaveBeenCalled();
+    // postAuthBootstrap should still run
+    expect(mockLoadConversations).toHaveBeenCalled();
   });
 });
 

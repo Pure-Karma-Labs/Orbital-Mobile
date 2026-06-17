@@ -2,7 +2,7 @@
  * Signup screen — new account creation form with invite code.
  */
 
-import React, { useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   Linking,
   ScrollView,
@@ -17,6 +17,7 @@ import { useTheme } from '../theme';
 import { TextInput, Button, ErrorBanner, OrbitalLoader, AsciiBanner } from '../components';
 import { signupUser } from '../services/authService';
 import { AuthError, ConflictError, NetworkError, ValidationError } from '../services/api/errors';
+import { formatInviteCode, stripInviteCode } from '../services/crypto/inviteCrypto';
 import type { OnPreAuthNavigate } from '../navigation/preAuthTypes';
 
 export interface SignupScreenProps {
@@ -33,6 +34,11 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
   const [inviteCode, setInviteCode] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  const handleInviteCodeChange = useCallback((text: string) => {
+    const sanitized = text.replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 20);
+    setInviteCode(sanitized.length > 0 ? formatInviteCode(sanitized) : '');
+  }, []);
 
   async function handleSignup(): Promise<void> {
     // Validate all required fields
@@ -55,7 +61,7 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
     setError(null);
     setLoading(true);
     try {
-      await signupUser(username.trim(), password, email.trim(), inviteCode.trim());
+      await signupUser(username.trim(), password, email.trim(), stripInviteCode(inviteCode));
       // Auth store update triggers isAuthenticated → App re-renders
     } catch (e) {
       if (e instanceof AuthError || e instanceof ValidationError || e instanceof ConflictError) {
@@ -163,10 +169,11 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
           <TextInput
             label="Invite Code"
             value={inviteCode}
-            onChangeText={setInviteCode}
+            onChangeText={handleInviteCodeChange}
             autoCapitalize="characters"
             autoCorrect={false}
-            maxLength={64}
+            maxLength={24}
+            placeholder="XXXX-XXXX-XXXX-XXXX-XXXX"
             testID="signup-invite-code-input"
           />
 

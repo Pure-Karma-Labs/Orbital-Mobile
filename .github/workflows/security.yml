@@ -146,11 +146,9 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Semgrep scan
-        # TODO(Phase 2): vendor true-positive rules into .github/semgrep-rules/
-        # and remove continue-on-error once the false-positive baseline is established.
-        continue-on-error: true
         run: |
           semgrep scan \
+            --config .github/semgrep-rules/ \
             --config p/javascript \
             --config p/typescript \
             --config p/react \
@@ -192,7 +190,26 @@ jobs:
           PYEOF
 
   # ---------------------------------------------------------------------------
-  # 4. Gate job: detect Rust source changes (used by rust-test + rust-audit)
+  # 4. Security invariants — cross-file static analysis + Jest invariant tests
+  # ---------------------------------------------------------------------------
+  invariants:
+    name: Security Invariants
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Run security invariants
+        run: npm run security:invariants
+
+  # ---------------------------------------------------------------------------
+  # 5. Gate job: detect Rust source changes (used by rust-test + rust-audit)
   # ---------------------------------------------------------------------------
   changes:
     name: Detect Changes
@@ -214,7 +231,7 @@ jobs:
               - 'rust-toolchain.toml'
 
   # ---------------------------------------------------------------------------
-  # 5. Rust tests + Clippy -- runs on Rust changes OR scheduled/manual
+  # 6. Rust tests + Clippy -- runs on Rust changes OR scheduled/manual
   # ---------------------------------------------------------------------------
   rust-test:
     name: Rust Test & Clippy
@@ -271,7 +288,7 @@ jobs:
         run: cargo clippy -- -D warnings
 
   # ---------------------------------------------------------------------------
-  # 6. cargo audit -- Rust dependency vulnerability check (RustSec advisory DB)
+  # 7. cargo audit -- Rust dependency vulnerability check (RustSec advisory DB)
   # ---------------------------------------------------------------------------
   rust-audit:
     name: Rust Audit (cargo-audit)
@@ -304,7 +321,7 @@ jobs:
         run: cargo audit
 
   # ---------------------------------------------------------------------------
-  # 7. libsignal upstream version check -- create GH issue when behind
+  # 8. libsignal upstream version check -- create GH issue when behind
   # ---------------------------------------------------------------------------
   libsignal-check:
     name: libsignal Version Check

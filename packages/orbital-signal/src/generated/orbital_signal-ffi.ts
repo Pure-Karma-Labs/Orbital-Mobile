@@ -104,6 +104,18 @@ interface NativeModuleInterface {
     input: Uint8Array,
     uniffi_out_err: UniffiRustCallStatus,
   ): Uint8Array;
+  ubrn_uniffi_orbital_signal_fn_func_invite_decrypt_group_key(
+    encryptedBlob: Uint8Array,
+    inviteCode: Uint8Array,
+    groupId: Uint8Array,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array;
+  ubrn_uniffi_orbital_signal_fn_func_invite_encrypt_group_key(
+    groupKey: Uint8Array,
+    inviteCode: Uint8Array,
+    groupId: Uint8Array,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array;
   ubrn_uniffi_orbital_signal_fn_func_generate_identity_key_pair(
     uniffi_out_err: UniffiRustCallStatus,
   ): Uint8Array;
@@ -312,6 +324,8 @@ interface NativeModuleInterface {
   ubrn_uniffi_orbital_signal_checksum_func_group_decrypt(): number;
   ubrn_uniffi_orbital_signal_checksum_func_group_encrypt(): number;
   ubrn_uniffi_orbital_signal_checksum_func_process_sender_key_distribution_message(): number;
+  ubrn_uniffi_orbital_signal_checksum_func_invite_decrypt_group_key(): number;
+  ubrn_uniffi_orbital_signal_checksum_func_invite_encrypt_group_key(): number;
   ubrn_uniffi_orbital_signal_checksum_func_generate_identity_key_pair(): number;
   ubrn_uniffi_orbital_signal_checksum_func_generate_kyber_pre_key(): number;
   ubrn_uniffi_orbital_signal_checksum_func_generate_pre_key(): number;

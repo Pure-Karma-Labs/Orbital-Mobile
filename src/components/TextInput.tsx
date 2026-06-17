@@ -25,6 +25,7 @@ export interface TextInputProps {
   keyboardType?: KeyboardTypeOptions;
   textContentType?: RNTextInputProps['textContentType'];
   maxLength?: number;
+  placeholder?: string;
   testID?: string;
 }
 
@@ -38,6 +39,7 @@ export function TextInput({
   keyboardType = 'default',
   textContentType,
   maxLength,
+  placeholder,
   testID,
 }: TextInputProps): React.JSX.Element {
   const theme = useTheme();
@@ -95,6 +97,7 @@ export function TextInput({
           keyboardType={keyboardType}
           textContentType={textContentType}
           maxLength={maxLength}
+          placeholder={placeholder}
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}
           placeholderTextColor={theme.colors.textTertiary}

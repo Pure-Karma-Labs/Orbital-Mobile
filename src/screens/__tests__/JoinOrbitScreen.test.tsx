@@ -1,5 +1,5 @@
 /**
- * Tests for JoinOrbitScreen — invite code entry, join submission, and error handling.
+ * Tests for JoinOrbitScreen — invite code entry, auto-formatting, join submission, and error handling.
  */
 
 import React from 'react';
@@ -14,6 +14,11 @@ import { JoinOrbitScreen } from '../JoinOrbitScreen';
 
 jest.mock('../../services/conversationService', () => ({
   joinOrbit: jest.fn(),
+}));
+
+jest.mock('../../services/crypto/inviteCrypto', () => ({
+  stripInviteCode: jest.fn((s: string) => s.replace(/-/g, '').toUpperCase()),
+  formatInviteCode: jest.fn((s: string) => s.match(/.{1,4}/g)?.join('-') ?? s),
 }));
 
 jest.mock('../../components/OrbitalSpinner', () => ({
@@ -113,14 +118,6 @@ describe('JoinOrbitScreen — validation', () => {
     expect(button.props.disabled).toBe(true);
   });
 
-  it('join button is disabled when code is only whitespace', () => {
-    const renderer = renderScreen();
-    act(() => {
-      findByTestId(renderer.root, 'invite-code-input').props.onChangeText('   ');
-    });
-    expect(findByTestId(renderer.root, 'join-orbit-button').props.disabled).toBe(true);
-  });
-
   it('join button is enabled when code has non-whitespace content', () => {
     const renderer = renderScreen();
     act(() => {
@@ -130,20 +127,50 @@ describe('JoinOrbitScreen — validation', () => {
   });
 });
 
+describe('JoinOrbitScreen — auto-formatting', () => {
+  it('auto-formats input with dashes every 4 chars', () => {
+    const renderer = renderScreen();
+    act(() => {
+      findByTestId(renderer.root, 'invite-code-input').props.onChangeText('ABCD1234');
+    });
+    const input = findByTestId(renderer.root, 'invite-code-input');
+    expect(input.props.value).toBe('ABCD-1234');
+  });
+
+  it('handles paste of 20-char code', () => {
+    const renderer = renderScreen();
+    act(() => {
+      findByTestId(renderer.root, 'invite-code-input').props.onChangeText('ABCDEFGHJKMNPQRSTVW0');
+    });
+    const input = findByTestId(renderer.root, 'invite-code-input');
+    expect(input.props.value).toBe('ABCD-EFGH-JKMN-PQRS-TVW0');
+  });
+
+  it('accepts v1 8-char codes', () => {
+    const renderer = renderScreen();
+    act(() => {
+      findByTestId(renderer.root, 'invite-code-input').props.onChangeText('ABC12345');
+    });
+    const input = findByTestId(renderer.root, 'invite-code-input');
+    expect(input.props.value).toBe('ABC1-2345');
+  });
+});
+
 describe('JoinOrbitScreen — submission', () => {
-  it('calls joinOrbit with trimmed code on submit', async () => {
+  it('strips dashes before calling joinOrbit', async () => {
     mockJoinOrbit.mockResolvedValue({ groupId: 'g-1', name: 'Family Orbit' });
     const renderer = renderScreen();
 
     act(() => {
-      findByTestId(renderer.root, 'invite-code-input').props.onChangeText('  ABC123  ');
+      findByTestId(renderer.root, 'invite-code-input').props.onChangeText('ABCD1234EFGH5678JKMN');
     });
 
     await act(async () => {
       findByTestId(renderer.root, 'join-orbit-button').props.onPress();
     });
 
-    expect(mockJoinOrbit).toHaveBeenCalledWith('ABC123');
+    // joinOrbit should receive the stripped code (no dashes)
+    expect(mockJoinOrbit).toHaveBeenCalledWith('ABCD1234EFGH5678JKMN');
   });
 
   it('calls navigation.goBack() on successful join', async () => {

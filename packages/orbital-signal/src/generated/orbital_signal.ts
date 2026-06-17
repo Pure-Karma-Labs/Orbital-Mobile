@@ -395,6 +395,46 @@ export function processSenderKeyDistributionMessage(
     ),
   );
 }
+export function inviteDecryptGroupKey(
+  encryptedBlob: ArrayBuffer,
+  inviteCode: ArrayBuffer,
+  groupId: ArrayBuffer,
+): ArrayBuffer /*throws*/ {
+  return FfiConverterArrayBuffer.lift(
+    uniffiCaller.rustCallWithError(
+      /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_invite_decrypt_group_key(
+          FfiConverterArrayBuffer.lower(encryptedBlob),
+          FfiConverterArrayBuffer.lower(inviteCode),
+          FfiConverterArrayBuffer.lower(groupId),
+          callStatus,
+        );
+      },
+      /*liftString:*/ FfiConverterString.lift,
+    ),
+  );
+}
+export function inviteEncryptGroupKey(
+  groupKey: ArrayBuffer,
+  inviteCode: ArrayBuffer,
+  groupId: ArrayBuffer,
+): ArrayBuffer /*throws*/ {
+  return FfiConverterArrayBuffer.lift(
+    uniffiCaller.rustCallWithError(
+      /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_invite_encrypt_group_key(
+          FfiConverterArrayBuffer.lower(groupKey),
+          FfiConverterArrayBuffer.lower(inviteCode),
+          FfiConverterArrayBuffer.lower(groupId),
+          callStatus,
+        );
+      },
+      /*liftString:*/ FfiConverterString.lift,
+    ),
+  );
+}
 /**
  * Generate a new identity key pair (Curve25519).
  */
@@ -739,15 +779,15 @@ export function parsePrekeyMessageIds(ciphertext: ArrayBuffer): PreKeyMessageIds
  * Identity key storage — manages our key pair and trust decisions for remote keys.
  */
 export interface OrbitalIdentityKeyStore {
-  getIdentityKeyPair(): /*throws*/ IdentityKeyPairData;
-  getLocalRegistrationId(): /*throws*/ /*u32*/ number;
-  saveIdentity(address: ProtocolAddressData, identityKey: ArrayBuffer): /*throws*/ boolean;
+  getIdentityKeyPair() /*throws*/ : IdentityKeyPairData;
+  getLocalRegistrationId() /*throws*/ : /*u32*/ number;
+  saveIdentity(address: ProtocolAddressData, identityKey: ArrayBuffer) /*throws*/ : boolean;
   isTrustedIdentity(
     address: ProtocolAddressData,
     identityKey: ArrayBuffer,
     direction: Direction,
-  ): /*throws*/ boolean;
-  getIdentity(address: ProtocolAddressData): /*throws*/ ArrayBuffer | undefined;
+  ) /*throws*/ : boolean;
+  getIdentity(address: ProtocolAddressData) /*throws*/ : ArrayBuffer | undefined;
 }
 
 // Put the implementation in a struct so we don't pollute the top-level namespace
@@ -902,9 +942,9 @@ const FfiConverterTypeOrbitalIdentityKeyStore = new FfiConverterCallback<Orbital
  * Kyber (post-quantum) pre-key storage.
  */
 export interface OrbitalKyberPreKeyStore {
-  loadKyberPreKey(id: /*u32*/ number): /*throws*/ ArrayBuffer | undefined;
-  storeKyberPreKey(id: /*u32*/ number, record: ArrayBuffer): /*throws*/ void;
-  markKyberPreKeyUsed(id: /*u32*/ number): /*throws*/ void;
+  loadKyberPreKey(id: /*u32*/ number) /*throws*/ : ArrayBuffer | undefined;
+  storeKyberPreKey(id: /*u32*/ number, record: ArrayBuffer) /*throws*/ : void;
+  markKyberPreKeyUsed(id: /*u32*/ number) /*throws*/ : void;
 }
 
 // Put the implementation in a struct so we don't pollute the top-level namespace
@@ -1002,9 +1042,9 @@ const FfiConverterTypeOrbitalKyberPreKeyStore = new FfiConverterCallback<Orbital
  * One-time pre-key storage.
  */
 export interface OrbitalPreKeyStore {
-  loadPreKey(id: /*u32*/ number): /*throws*/ ArrayBuffer | undefined;
-  storePreKey(id: /*u32*/ number, record: ArrayBuffer): /*throws*/ void;
-  removePreKey(id: /*u32*/ number): /*throws*/ void;
+  loadPreKey(id: /*u32*/ number) /*throws*/ : ArrayBuffer | undefined;
+  storePreKey(id: /*u32*/ number, record: ArrayBuffer) /*throws*/ : void;
+  removePreKey(id: /*u32*/ number) /*throws*/ : void;
 }
 
 // Put the implementation in a struct so we don't pollute the top-level namespace
@@ -1106,11 +1146,11 @@ export interface OrbitalSenderKeyStore {
     sender: ProtocolAddressData,
     distributionId: string,
     record: ArrayBuffer,
-  ): /*throws*/ void;
+  ) /*throws*/ : void;
   loadSenderKey(
     sender: ProtocolAddressData,
     distributionId: string,
-  ): /*throws*/ ArrayBuffer | undefined;
+  ) /*throws*/ : ArrayBuffer | undefined;
 }
 
 // Put the implementation in a struct so we don't pollute the top-level namespace
@@ -1197,8 +1237,8 @@ const FfiConverterTypeOrbitalSenderKeyStore = new FfiConverterCallback<OrbitalSe
  * Session storage — Double Ratchet session state.
  */
 export interface OrbitalSessionStore {
-  loadSession(address: ProtocolAddressData): /*throws*/ ArrayBuffer | undefined;
-  storeSession(address: ProtocolAddressData, record: ArrayBuffer): /*throws*/ void;
+  loadSession(address: ProtocolAddressData) /*throws*/ : ArrayBuffer | undefined;
+  storeSession(address: ProtocolAddressData, record: ArrayBuffer) /*throws*/ : void;
 }
 
 // Put the implementation in a struct so we don't pollute the top-level namespace
@@ -1276,8 +1316,8 @@ const FfiConverterTypeOrbitalSessionStore = new FfiConverterCallback<OrbitalSess
  * Signed pre-key storage (rotated every 30 days).
  */
 export interface OrbitalSignedPreKeyStore {
-  loadSignedPreKey(id: /*u32*/ number): /*throws*/ ArrayBuffer | undefined;
-  storeSignedPreKey(id: /*u32*/ number, record: ArrayBuffer): /*throws*/ void;
+  loadSignedPreKey(id: /*u32*/ number) /*throws*/ : ArrayBuffer | undefined;
+  storeSignedPreKey(id: /*u32*/ number, record: ArrayBuffer) /*throws*/ : void;
 }
 
 // Put the implementation in a struct so we don't pollute the top-level namespace
@@ -3569,6 +3609,18 @@ function uniffiEnsureInitialized() {
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_orbital_signal_checksum_func_process_sender_key_distribution_message',
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_orbital_signal_checksum_func_invite_decrypt_group_key() !== 49480
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_func_invite_decrypt_group_key',
+    );
+  }
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_invite_encrypt_group_key() !== 7535) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_func_invite_encrypt_group_key',
     );
   }
   if (

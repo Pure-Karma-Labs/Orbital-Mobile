@@ -1,0 +1,41 @@
+rules:
+  - id: no-eval
+    patterns:
+      - pattern-either:
+          - pattern: eval(...)
+          - pattern: new Function(...)
+    message: eval() and Function() constructor are forbidden — they enable code injection.
+    languages: [typescript, javascript]
+    severity: ERROR
+
+  - id: no-dangerous-inner-html
+    pattern: dangerouslySetInnerHTML={...}
+    message: dangerouslySetInnerHTML enables XSS. Use safe rendering instead.
+    languages: [typescript, javascript]
+    severity: ERROR
+
+  - id: no-math-random-crypto
+    pattern: Math.random()
+    paths:
+      include:
+        - src/services/crypto/
+        - src/services/secure-storage/
+    message: Math.random() is not cryptographically secure. Use crypto.getRandomValues().
+    languages: [typescript, javascript]
+    severity: ERROR
+
+  - id: no-console-in-crypto
+    pattern-either:
+      - pattern: console.log(...)
+      - pattern: console.warn(...)
+      - pattern: console.error(...)
+      - pattern: console.debug(...)
+      - pattern: console.info(...)
+    paths:
+      include:
+        - src/services/crypto/
+        - src/services/secure-storage/
+        - src/database/
+    message: Console output in crypto/security paths risks leaking key material.
+    languages: [typescript, javascript]
+    severity: ERROR

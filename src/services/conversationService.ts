@@ -5,7 +5,8 @@
  * Components never call the groups API or store directly.
  */
 
-import { listGroups, createGroup, joinGroup, listDms, createDm, getPendingWraps, submitWrappedKey, selfWrapGroupKey, getGroupMembers, markGroupRead } from './api/groups';
+import { listGroups, createGroup, joinGroup, generateInviteCode as generateInviteCodeApi, listDms, createDm, getPendingWraps, submitWrappedKey, selfWrapGroupKey, getGroupMembers, markGroupRead } from './api/groups';
+import * as inviteCrypto from './crypto/inviteCrypto';
 import {
   persistGroupKey,
   generateGroupKey,
@@ -20,6 +21,7 @@ import {
   PendingWrapError,
 } from './crypto/contentCrypto';
 import { getIdentityKeyPair, resolveRemoteIdentityKey } from './crypto/identityKeyAccess';
+import { arrayBufferToBase64, toArrayBuffer } from './crypto/utils';
 import { ApiError } from './api/errors';
 import { generateUUID } from '../utils/uuid';
 import { useAppStore } from '../stores/useAppStore';
@@ -271,6 +273,20 @@ export async function createOrbit(name: string): Promise<{ groupId: string; invi
   return { groupId: response.groupId, inviteCode: response.inviteCode ?? null };
 }
 
+export async function createInviteCode(
+  groupId: string,
+  targetEmail: string,
+): Promise<string> {
+  const code = inviteCrypto.generateInviteCode();
+
+  const groupKey = await getOrFetchGroupKey(groupId);
+  const encryptedGroupKey = inviteCrypto.encryptGroupKeyForInvite(groupKey, code, groupId);
+
+  await generateInviteCodeApi(groupId, targetEmail, {code, encryptedGroupKey});
+
+  return code;
+}
+
 function mapDmResponse(response: DmResponse): Conversation {
   // Viewing guard: if the user is currently looking at this conversation,
   // force unreadCount to 0 to avoid showing stale server counts
@@ -515,11 +531,26 @@ export async function fetchCreatorOrbitsDecrypted(): Promise<DecryptedGroup[]> {
 export async function joinOrbit(
   inviteCode: string,
 ): Promise<{ groupId: string; name: string | null }> {
-  const response = await joinGroup({
-    inviteCode,
-  });
+  const cleanCode = inviteCrypto.stripInviteCode(inviteCode);
+  const response = await joinGroup({inviteCode: cleanCode});
 
-  if (response.wrappedGroupKey) {
+  if (response.inviteEncryptedGroupKey && inviteCrypto.isV2InviteCode(cleanCode)) {
+    // v2: decrypt group key from invite blob (synchronous key delivery)
+    try {
+      const groupKey = inviteCrypto.decryptGroupKeyFromInvite(
+        response.inviteEncryptedGroupKey,
+        cleanCode,
+        response.groupId,
+      );
+      const keyBase64 = arrayBufferToBase64(toArrayBuffer(groupKey));
+      persistGroupKey(response.groupId, keyBase64);
+      // Self-wrap with ECIES and upload (non-blocking — selfWrapIfNeeded retries on failure)
+      selfWrapIfNeeded(response.groupId).catch(() => {});
+    } catch {
+      if (__DEV__) console.warn('[invite-join] v2 decrypt failed, falling back to async key delivery');
+    }
+  } else if (response.wrappedGroupKey) {
+    // v1: ECIES-wrapped key from another member (or self-wrap)
     try {
       await processReceivedGroupKey(
         response.groupId,

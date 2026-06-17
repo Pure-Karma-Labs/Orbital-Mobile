@@ -7,7 +7,6 @@ import {
   generateInviteCode,
   formatInviteCode,
   stripInviteCode,
-  isV2InviteCode,
   encryptGroupKeyForInvite,
   decryptGroupKeyFromInvite,
 } from '../inviteCrypto';
@@ -56,20 +55,6 @@ describe('inviteCrypto', () => {
 
     it('handles code without dashes', () => {
       expect(stripInviteCode('ABCDEFGHJKMNPQRSTVW0')).toBe('ABCDEFGHJKMNPQRSTVW0');
-    });
-  });
-
-  describe('isV2InviteCode', () => {
-    it('returns true for 20-char codes', () => {
-      expect(isV2InviteCode('ABCDEFGHJKMNPQRSTVW0')).toBe(true);
-    });
-
-    it('returns true for 20-char codes with dashes', () => {
-      expect(isV2InviteCode('ABCD-EFGH-JKMN-PQRS-TVW0')).toBe(true);
-    });
-
-    it('returns false for 8-char codes', () => {
-      expect(isV2InviteCode('ABCD1234')).toBe(false);
     });
   });
 

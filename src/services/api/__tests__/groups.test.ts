@@ -159,17 +159,17 @@ describe('getGroupMembers', () => {
 
 describe('generateInviteCode', () => {
   it('calls POST /api/groups/:groupId/invite-codes with targetEmail', async () => {
-    await generateInviteCode('group-1', 'test@example.com');
+    await generateInviteCode('group-1', 'test@example.com', { code: 'ABCD1234EFGH5678JKMN', encryptedGroupKey: 'base64blob' });
 
     expect(mockRequest).toHaveBeenCalledWith({
       method: 'POST',
       path: '/api/groups/group-1/invite-codes',
-      body: { targetEmail: 'test@example.com' },
+      body: { targetEmail: 'test@example.com', code: 'ABCD1234EFGH5678JKMN', encryptedGroupKey: 'base64blob' },
     });
   });
 
   it('encodes groupId in the URL path', async () => {
-    await generateInviteCode('g/../admin', 'test@example.com');
+    await generateInviteCode('g/../admin', 'test@example.com', { code: 'ABCD1234EFGH5678JKMN', encryptedGroupKey: 'base64blob' });
 
     expect(mockRequest).toHaveBeenCalledWith(
       expect.objectContaining({

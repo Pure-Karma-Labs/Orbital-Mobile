@@ -42,6 +42,7 @@ export interface SignupResponse {
   email: string;
   token: string;
   groupId: string | null;
+  inviteEncryptedGroupKey: string | null;
 }
 
 export interface LoginRequest {
@@ -110,12 +111,10 @@ export interface CreateGroupRequest {
 /**
  * POST /api/groups response.
  *
- * Backend returns: { group_id, invite_code, expires_at, created_at }
+ * Backend returns: { group_id, created_at }
  */
 export interface CreateGroupResponse {
   groupId: string;
-  inviteCode: string | null;
-  expiresAt: string | null;
   createdAt: string;
 }
 
@@ -135,7 +134,6 @@ export interface GroupResponse {
   memberCount: number;
   maxMembers: number;
   isCreator: boolean;
-  activeInviteCode: string | null;
   joinedAt: string;
   groupType?: 'orbit' | 'dm';
   /** ISO timestamp of the most recent thread/reply in this group (null if no activity) */
@@ -193,13 +191,6 @@ export interface GroupMember {
 
 export interface GroupMembersResponse {
   members: GroupMember[];
-}
-
-export interface GenerateInviteCodeResponse {
-  inviteCode: string;
-  expiresAt: string;
-  createdAt: string;
-  targetEmail: string;
 }
 
 export interface GenerateInviteCodeV2Response {

@@ -18,6 +18,11 @@ jest.mock('../../services/authService', () => ({
   signupUser: jest.fn(),
 }));
 
+jest.mock('../../services/crypto/inviteCrypto', () => ({
+  formatInviteCode: jest.fn((s: string) => s.match(/.{1,4}/g)?.join('-') ?? s),
+  stripInviteCode: jest.fn((s: string) => s.replace(/-/g, '').toUpperCase()),
+}));
+
 jest.mock('../../components/OrbitalLoader', () => ({
   OrbitalLoader: () => null,
 }));
@@ -150,7 +155,7 @@ describe('SignupScreen — validation', () => {
 });
 
 describe('SignupScreen — submission', () => {
-  it('calls signupUser with all fields on valid submission', async () => {
+  it('calls signupUser with stripped invite code on valid submission', async () => {
     mockSignupUser.mockResolvedValue(undefined);
     const renderer = renderSignupScreen();
     const root = renderer.root;
@@ -159,18 +164,23 @@ describe('SignupScreen — submission', () => {
       findByTestId(root, 'signup-username-input').props.onChangeText('alice');
       findByTestId(root, 'signup-email-input').props.onChangeText('alice@example.com');
       findByTestId(root, 'signup-password-input').props.onChangeText('password123');
-      findByTestId(root, 'signup-invite-code-input').props.onChangeText('INVITE123');
+    });
+
+    // Simulate typing a v2 invite code — the handler auto-formats it
+    act(() => {
+      findByTestId(root, 'signup-invite-code-input').props.onChangeText('ABCDEFGHJKMNPQRSTVW0');
     });
 
     await act(async () => {
       findByTestId(root, 'signup-submit-button').props.onPress();
     });
 
+    // stripInviteCode removes dashes and uppercases
     expect(mockSignupUser).toHaveBeenCalledWith(
       'alice',
       'password123',
       'alice@example.com',
-      'INVITE123',
+      'ABCDEFGHJKMNPQRSTVW0',
     );
   });
 });
@@ -274,6 +284,84 @@ describe('SignupScreen — navigation', () => {
     });
 
     expect(onNavigate).toHaveBeenCalledWith('login');
+  });
+});
+
+describe('SignupScreen — invite code auto-format', () => {
+  it('auto-formats invite code input with dashes', () => {
+    const renderer = renderSignupScreen();
+    const root = renderer.root;
+    const input = findByTestId(root, 'signup-invite-code-input');
+
+    act(() => {
+      input.props.onChangeText('ABCDEFGHJK');
+    });
+
+    // Should be formatted as ABCD-EFGH-JK
+    expect(input.props.value).toBe('ABCD-EFGH-JK');
+  });
+
+  it('strips non-alphanumeric characters from invite code input', () => {
+    const renderer = renderSignupScreen();
+    const root = renderer.root;
+    const input = findByTestId(root, 'signup-invite-code-input');
+
+    act(() => {
+      input.props.onChangeText('AB-CD!EF@GH');
+    });
+
+    // Non-alphanumeric stripped, then formatted
+    expect(input.props.value).toBe('ABCD-EFGH');
+  });
+
+  it('uppercases lowercase invite code input', () => {
+    const renderer = renderSignupScreen();
+    const root = renderer.root;
+    const input = findByTestId(root, 'signup-invite-code-input');
+
+    act(() => {
+      input.props.onChangeText('abcdefgh');
+    });
+
+    expect(input.props.value).toBe('ABCD-EFGH');
+  });
+
+  it('limits invite code to 20 characters (before formatting)', () => {
+    const renderer = renderSignupScreen();
+    const root = renderer.root;
+    const input = findByTestId(root, 'signup-invite-code-input');
+
+    act(() => {
+      input.props.onChangeText('ABCDEFGHJKMNPQRSTVW0EXTRACHARACTERS');
+    });
+
+    // Should be capped at 20 chars raw, formatted as XXXX-XXXX-XXXX-XXXX-XXXX
+    expect(input.props.value).toBe('ABCD-EFGH-JKMN-PQRS-TVW0');
+  });
+
+  it('sets empty string for empty input', () => {
+    const renderer = renderSignupScreen();
+    const root = renderer.root;
+    const input = findByTestId(root, 'signup-invite-code-input');
+
+    // First set a value
+    act(() => {
+      input.props.onChangeText('ABCD');
+    });
+    expect(input.props.value).toBe('ABCD');
+
+    // Then clear it
+    act(() => {
+      input.props.onChangeText('');
+    });
+    expect(input.props.value).toBe('');
+  });
+
+  it('has maxLength of 24 and placeholder for v2 code format', () => {
+    const renderer = renderSignupScreen();
+    const input = findByTestId(renderer.root, 'signup-invite-code-input');
+    expect(input.props.maxLength).toBe(24);
+    expect(input.props.placeholder).toBe('XXXX-XXXX-XXXX-XXXX-XXXX');
   });
 });
 

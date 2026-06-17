@@ -29,10 +29,6 @@ export function stripInviteCode(formatted: string): string {
   return formatted.replace(/-/g, '').toUpperCase();
 }
 
-export function isV2InviteCode(code: string): boolean {
-  return stripInviteCode(code).length === V2_CODE_LENGTH;
-}
-
 export function encryptGroupKeyForInvite(
   groupKey: Uint8Array,
   inviteCode: string,

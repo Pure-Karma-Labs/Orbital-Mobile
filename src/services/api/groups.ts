@@ -17,6 +17,7 @@ import type {
   GroupMembersResponse,
   GroupQuotaResponse,
   GroupResponse,
+  InviteListItem,
   JoinGroupRequest,
   JoinGroupResponse,
   PendingWrapsResponse,
@@ -149,6 +150,15 @@ export function generateInviteCode(
     path: `/api/groups/${encodeURIComponent(groupId)}/invite-codes`,
     body,
   });
+}
+
+// Note: endpoint is on /api/invites/ router, not /api/groups/
+export async function listInviteHistory(groupId: string): Promise<InviteListItem[]> {
+  const response = await request<{ inviteCodes: InviteListItem[] }>({
+    method: 'GET',
+    path: `/api/invites/group/${encodeURIComponent(groupId)}`,
+  });
+  return response.inviteCodes;
 }
 
 export async function removeMember(groupId: string, userId: string): Promise<void> {

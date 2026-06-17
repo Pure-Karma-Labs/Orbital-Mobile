@@ -43,6 +43,10 @@ describe('inviteCrypto', () => {
     it('inserts dashes every 4 characters', () => {
       expect(formatInviteCode('ABCDEFGHJKMNPQRSTVW0')).toBe('ABCD-EFGH-JKMN-PQRS-TVW0');
     });
+
+    it('returns empty string for empty input', () => {
+      expect(formatInviteCode('')).toBe('');
+    });
   });
 
   describe('stripInviteCode', () => {

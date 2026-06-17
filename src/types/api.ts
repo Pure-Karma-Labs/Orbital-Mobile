@@ -215,6 +215,15 @@ export interface GenerateInviteCodeOptions {
   encryptedGroupKey: string;
 }
 
+export interface InviteListItem {
+  id: string;
+  codeVersion: number;
+  createdAt: number;
+  expiresAt: number;
+  status: 'pending' | 'accepted' | 'expired';
+  targetEmail: string;
+}
+
 /**
  * GET /api/groups/:groupId/key response.
  *

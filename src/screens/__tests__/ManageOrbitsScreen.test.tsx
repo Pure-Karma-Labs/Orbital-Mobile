@@ -1,5 +1,5 @@
 /**
- * Tests for ManageOrbitsScreen — rendering, loading, filtering, share, and admin actions.
+ * Tests for ManageOrbitsScreen — rendering, loading, invite list, code generation, and admin actions.
  */
 
 import React from 'react';
@@ -22,19 +22,19 @@ const mockRemoveConversation = jest.fn();
 jest.mock('../../services/conversationService', () => ({
   fetchCreatorOrbitsDecrypted: jest.fn(),
   loadConversations: jest.fn().mockResolvedValue(undefined),
+  createInviteCode: jest.fn(),
 }));
 
 jest.mock('../../services/api/groups', () => ({
   getGroupMembers: jest.fn().mockResolvedValue([]),
-  generateInviteCode: jest.fn().mockResolvedValue({
-    inviteCode: 'NEW123',
-    expiresAt: '2026-06-01T00:00:00Z',
-    createdAt: '2026-05-24T00:00:00Z',
-    targetEmail: 'test@example.com',
-  }),
+  listInviteHistory: jest.fn().mockResolvedValue([]),
   removeMember: jest.fn().mockResolvedValue(undefined),
   transferOrbitOwner: jest.fn().mockResolvedValue(undefined),
   dissolveOrbit: jest.fn().mockResolvedValue(undefined),
+}));
+
+jest.mock('../../services/crypto/inviteCrypto', () => ({
+  formatInviteCode: jest.fn((s: string) => s.match(/.{1,4}/g)?.join('-') ?? s),
 }));
 
 jest.mock('../../components/OrbitalSpinner', () => ({
@@ -69,9 +69,11 @@ jest.mock('../../stores', () => ({
 import {
   fetchCreatorOrbitsDecrypted,
   loadConversations,
+  createInviteCode,
 } from '../../services/conversationService';
 import {
   getGroupMembers,
+  listInviteHistory,
   transferOrbitOwner,
   dissolveOrbit,
 } from '../../services/api/groups';
@@ -79,6 +81,8 @@ import {
 const mockFetchGroups = fetchCreatorOrbitsDecrypted as jest.Mock;
 const mockLoadConversations = loadConversations as jest.Mock;
 const mockGetMembers = getGroupMembers as jest.Mock;
+const mockListInvites = listInviteHistory as jest.Mock;
+const mockCreateInviteCode = createInviteCode as jest.Mock;
 const mockTransfer = transferOrbitOwner as jest.Mock;
 const mockDissolve = dissolveOrbit as jest.Mock;
 
@@ -102,6 +106,33 @@ const testMembers = [
     publicKey: 'pk2',
     avatarUrl: null,
     joinedAt: '2026-01-02T00:00:00Z',
+  },
+];
+
+const testInvites = [
+  {
+    id: 'inv-1',
+    codeVersion: 2,
+    createdAt: 1717200000000,
+    expiresAt: 1717804800000,
+    status: 'pending' as const,
+    targetEmail: 'alice@example.com',
+  },
+  {
+    id: 'inv-2',
+    codeVersion: 2,
+    createdAt: 1717100000000,
+    expiresAt: 1717704800000,
+    status: 'accepted' as const,
+    targetEmail: 'bob@example.com',
+  },
+  {
+    id: 'inv-3',
+    codeVersion: 1,
+    createdAt: 1717000000000,
+    expiresAt: 1717604800000,
+    status: 'expired' as const,
+    targetEmail: 'charlie@example.com',
   },
 ];
 
@@ -174,6 +205,8 @@ beforeEach(() => {
   mockLoadConversations.mockResolvedValue(undefined);
   mockTransfer.mockResolvedValue(undefined);
   mockDissolve.mockResolvedValue(undefined);
+  mockListInvites.mockResolvedValue([]);
+  mockCreateInviteCode.mockResolvedValue('ABCD1234EFGH5678JKMN');
 });
 
 // ---------------------------------------------------------------------------
@@ -235,14 +268,14 @@ describe('ManageOrbitsScreen — rendering', () => {
     expect(emptyText).toBeDefined();
   });
 
-  it('renders creator groups with invite codes', async () => {
+  it('renders creator groups', async () => {
     mockFetchGroups.mockResolvedValue([
       {
         groupId: 'g-1',
         name: 'Family Orbit',
         memberCount: 3,
         isCreator: true,
-        inviteCode: 'ABC123',
+        inviteCode: null,
       },
     ]);
 
@@ -267,7 +300,6 @@ describe('ManageOrbitsScreen — rendering', () => {
     expect(() => findByTestId(renderer.root, 'orbit-row-g-1')).not.toThrow();
     expect(() => findByTestId(renderer.root, 'orbit-header-g-1')).not.toThrow();
   });
-
 });
 
 describe('ManageOrbitsScreen — interactions', () => {
@@ -302,6 +334,99 @@ describe('ManageOrbitsScreen — interactions', () => {
     expect(mockNavigation.goBack).toHaveBeenCalled();
   });
 
+  it('loads invite history when orbit is expanded', async () => {
+    mockFetchGroups.mockResolvedValue([
+      {
+        groupId: 'g-1',
+        name: 'Family Orbit',
+        memberCount: 3,
+        isCreator: true,
+        inviteCode: null,
+      },
+    ]);
+    mockListInvites.mockResolvedValue(testInvites);
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        React.createElement(
+          SafeAreaProvider,
+          { initialMetrics: safeAreaMetrics },
+          React.createElement(
+            ThemeProvider,
+            { colorSchemeOverride: 'light' },
+            React.createElement(ManageOrbitsScreen, {
+              navigation: mockNavigation as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['navigation'],
+              route: mockRoute as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['route'],
+            }),
+          ),
+        ),
+      );
+    });
+
+    // Expand the orbit row
+    await act(async () => {
+      findByTestId(renderer.root, 'orbit-header-g-1').props.onPress();
+    });
+
+    expect(mockListInvites).toHaveBeenCalledWith('g-1');
+
+    // Invite rows should be visible
+    expect(() => findByTestId(renderer.root, 'invite-inv-1')).not.toThrow();
+    expect(() => findByTestId(renderer.root, 'invite-inv-2')).not.toThrow();
+    expect(() => findByTestId(renderer.root, 'invite-inv-3')).not.toThrow();
+  });
+
+  it('shows status badges for pending/accepted/expired', async () => {
+    mockFetchGroups.mockResolvedValue([
+      {
+        groupId: 'g-1',
+        name: 'Family Orbit',
+        memberCount: 3,
+        isCreator: true,
+        inviteCode: null,
+      },
+    ]);
+    mockListInvites.mockResolvedValue(testInvites);
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        React.createElement(
+          SafeAreaProvider,
+          { initialMetrics: safeAreaMetrics },
+          React.createElement(
+            ThemeProvider,
+            { colorSchemeOverride: 'light' },
+            React.createElement(ManageOrbitsScreen, {
+              navigation: mockNavigation as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['navigation'],
+              route: mockRoute as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['route'],
+            }),
+          ),
+        ),
+      );
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'orbit-header-g-1').props.onPress();
+    });
+
+    // Find status badge elements
+    const pendingBadge = findByTestId(renderer.root, 'invite-status-inv-1');
+    const acceptedBadge = findByTestId(renderer.root, 'invite-status-inv-2');
+    const expiredBadge = findByTestId(renderer.root, 'invite-status-inv-3');
+
+    // Verify status text in badge children
+    const pendingText = pendingBadge.findAllByType('Text' as unknown as React.ComponentType);
+    expect(pendingText.some((t) => t.props.children === 'pending')).toBe(true);
+
+    const acceptedText = acceptedBadge.findAllByType('Text' as unknown as React.ComponentType);
+    expect(acceptedText.some((t) => t.props.children === 'accepted')).toBe(true);
+
+    const expiredText = expiredBadge.findAllByType('Text' as unknown as React.ComponentType);
+    expect(expiredText.some((t) => t.props.children === 'expired')).toBe(true);
+  });
+
   it('opens email modal when new-code button is pressed', async () => {
     mockFetchGroups.mockResolvedValue([
       {
@@ -309,7 +434,7 @@ describe('ManageOrbitsScreen — interactions', () => {
         name: 'Family Orbit',
         memberCount: 3,
         isCreator: true,
-        inviteCode: 'ABC123',
+        inviteCode: null,
       },
     ]);
 
@@ -332,33 +457,29 @@ describe('ManageOrbitsScreen — interactions', () => {
     });
 
     // Expand the orbit row
-    const header = findByTestId(renderer.root, 'orbit-header-g-1');
     await act(async () => {
-      header.props.onPress();
+      findByTestId(renderer.root, 'orbit-header-g-1').props.onPress();
     });
 
     // Press the new-code button to open the email modal
-    const newCodeBtn = findByTestId(renderer.root, 'new-code-button-g-1');
     await act(async () => {
-      newCodeBtn.props.onPress();
+      findByTestId(renderer.root, 'new-code-button-g-1').props.onPress();
     });
 
-    // The email modal should now be visible
+    // Phase 1 of modal: email input should be visible
     expect(() => findByTestId(renderer.root, 'email-input')).not.toThrow();
     expect(() => findByTestId(renderer.root, 'generate-button')).not.toThrow();
     expect(() => findByTestId(renderer.root, 'cancel-button')).not.toThrow();
   });
 
-  it('generates an invite code via the email modal', async () => {
-    const { generateInviteCode: mockGenerate } = require('../../services/api/groups');
-
+  it('generates a v2 invite code via the email modal and transitions to Phase 2', async () => {
     mockFetchGroups.mockResolvedValue([
       {
         groupId: 'g-1',
         name: 'Family Orbit',
         memberCount: 3,
         isCreator: true,
-        inviteCode: 'ABC123',
+        inviteCode: null,
       },
     ]);
 
@@ -381,35 +502,43 @@ describe('ManageOrbitsScreen — interactions', () => {
     });
 
     // Expand -> open modal -> fill email -> generate
-    const header = findByTestId(renderer.root, 'orbit-header-g-1');
-    await act(async () => { header.props.onPress(); });
-
-    const newCodeBtn = findByTestId(renderer.root, 'new-code-button-g-1');
-    await act(async () => { newCodeBtn.props.onPress(); });
+    await act(async () => {
+      findByTestId(renderer.root, 'orbit-header-g-1').props.onPress();
+    });
+    await act(async () => {
+      findByTestId(renderer.root, 'new-code-button-g-1').props.onPress();
+    });
 
     const emailInput = findByTestId(renderer.root, 'email-input');
     await act(async () => {
       emailInput.props.onChangeText('family@example.com');
     });
 
-    const generateBtn = findByTestId(renderer.root, 'generate-button');
-    await act(async () => { generateBtn.props.onPress(); });
+    await act(async () => {
+      findByTestId(renderer.root, 'generate-button').props.onPress();
+    });
 
-    expect(mockGenerate).toHaveBeenCalledWith('g-1', 'family@example.com');
+    expect(mockCreateInviteCode).toHaveBeenCalledWith('g-1', 'family@example.com');
+
+    // Phase 2: formatted code should be visible in the modal
+    expect(() => findByTestId(renderer.root, 'modal-invite-code')).not.toThrow();
+    const codeEl = findByTestId(renderer.root, 'modal-invite-code');
+    expect(codeEl.props.children).toBe('ABCD-1234-EFGH-5678-JKMN');
+
+    // Warning and buttons visible
+    expect(() => findByTestId(renderer.root, 'modal-code-warning')).not.toThrow();
+    expect(() => findByTestId(renderer.root, 'modal-share-button')).not.toThrow();
+    expect(() => findByTestId(renderer.root, 'modal-done-button')).not.toThrow();
   });
-});
 
-describe('ManageOrbitsScreen — share', () => {
-  it('triggers Share.share when share button is pressed after expand', async () => {
-    const shareSpy = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' } as never);
-
+  it('generatedCode is nulled on modal dismiss', async () => {
     mockFetchGroups.mockResolvedValue([
       {
         groupId: 'g-1',
         name: 'Family Orbit',
         memberCount: 3,
         isCreator: true,
-        inviteCode: 'XYZ789',
+        inviteCode: null,
       },
     ]);
 
@@ -431,19 +560,83 @@ describe('ManageOrbitsScreen — share', () => {
       );
     });
 
-    // Expand the orbit row
-    const header = findByTestId(renderer.root, 'orbit-header-g-1');
+    // Expand -> open modal -> generate code -> dismiss
     await act(async () => {
-      header.props.onPress();
+      findByTestId(renderer.root, 'orbit-header-g-1').props.onPress();
+    });
+    await act(async () => {
+      findByTestId(renderer.root, 'new-code-button-g-1').props.onPress();
+    });
+    await act(async () => {
+      findByTestId(renderer.root, 'email-input').props.onChangeText('test@test.com');
+    });
+    await act(async () => {
+      findByTestId(renderer.root, 'generate-button').props.onPress();
     });
 
-    const shareButton = findByTestId(renderer.root, 'share-button-g-1');
+    // Phase 2 should be visible
+    expect(() => findByTestId(renderer.root, 'modal-invite-code')).not.toThrow();
+
+    // Dismiss via Done button
     await act(async () => {
-      shareButton.props.onPress();
+      findByTestId(renderer.root, 'modal-done-button').props.onPress();
+    });
+
+    // Modal should be closed — no more modal-invite-code
+    expect(findAllByTestId(renderer.root, 'modal-invite-code')).toHaveLength(0);
+  });
+
+  it('shares formatted code from modal Phase 2', async () => {
+    const shareSpy = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' } as never);
+
+    mockFetchGroups.mockResolvedValue([
+      {
+        groupId: 'g-1',
+        name: 'Family Orbit',
+        memberCount: 3,
+        isCreator: true,
+        inviteCode: null,
+      },
+    ]);
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        React.createElement(
+          SafeAreaProvider,
+          { initialMetrics: safeAreaMetrics },
+          React.createElement(
+            ThemeProvider,
+            { colorSchemeOverride: 'light' },
+            React.createElement(ManageOrbitsScreen, {
+              navigation: mockNavigation as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['navigation'],
+              route: mockRoute as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['route'],
+            }),
+          ),
+        ),
+      );
+    });
+
+    // Expand -> open modal -> generate -> share
+    await act(async () => {
+      findByTestId(renderer.root, 'orbit-header-g-1').props.onPress();
+    });
+    await act(async () => {
+      findByTestId(renderer.root, 'new-code-button-g-1').props.onPress();
+    });
+    await act(async () => {
+      findByTestId(renderer.root, 'email-input').props.onChangeText('family@example.com');
+    });
+    await act(async () => {
+      findByTestId(renderer.root, 'generate-button').props.onPress();
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'modal-share-button').props.onPress();
     });
 
     expect(shareSpy).toHaveBeenCalledWith({
-      message: 'Join my orbit "Family Orbit" on Orbital! Use invite code: XYZ789',
+      message: 'Join my orbit "Family Orbit" on Orbital! Use invite code: ABCD-1234-EFGH-5678-JKMN',
     });
 
     shareSpy.mockRestore();
@@ -458,7 +651,7 @@ describe('ManageOrbitsScreen — admin actions', () => {
         name: 'Family Orbit',
         memberCount: 3,
         isCreator: true,
-        inviteCode: 'ABC123',
+        inviteCode: null,
       },
     ]);
 
@@ -481,9 +674,8 @@ describe('ManageOrbitsScreen — admin actions', () => {
     });
 
     // Expand the orbit row
-    const header = findByTestId(renderer.root, 'orbit-header-g-1');
     await act(async () => {
-      header.props.onPress();
+      findByTestId(renderer.root, 'orbit-header-g-1').props.onPress();
     });
 
     // Admin actions should be visible
@@ -502,7 +694,7 @@ describe('ManageOrbitsScreen — admin actions', () => {
           name: 'Family Orbit',
           memberCount: 3,
           isCreator: true,
-          inviteCode: 'ABC123',
+          inviteCode: null,
         },
       ])
       // Second call (after transfer) returns empty — orbit is no longer ours
@@ -567,7 +759,7 @@ describe('ManageOrbitsScreen — admin actions', () => {
         name: 'Family Orbit',
         memberCount: 3,
         isCreator: true,
-        inviteCode: 'ABC123',
+        inviteCode: null,
       },
     ]);
 

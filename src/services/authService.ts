@@ -31,7 +31,7 @@ import { clearMessageHandlerState } from './websocket/messageHandler';
 import { execute } from '../database/queryHelpers';
 import { isDatabaseInitialized, closeDatabase } from '../database/connection';
 import { getItem, setItem } from '../database/repositories/itemRepository';
-import { loadConversations, loadDmConversations, fulfillPendingWraps, hydrateContactsFromOrbits, clearConversationServiceState } from './conversationService';
+import { loadConversations, loadDmConversations, fulfillPendingWraps, hydrateContactsFromOrbits, clearConversationServiceState, selfWrapIfNeeded } from './conversationService';
 import { websocketManager } from './websocket';
 import { deregisterCurrentDevice } from './notificationService';
 import {
@@ -156,6 +156,7 @@ export async function signupUser(
         response.inviteEncryptedGroupKey, cleanCode, response.groupId,
       );
       persistGroupKey(response.groupId, arrayBufferToBase64(toArrayBuffer(groupKey)));
+      selfWrapIfNeeded(response.groupId).catch(() => {});
     } catch (e) {
       // Async fallback: sendWrapKeyRequests already fired server-side
       if (__DEV__) console.warn('[signup] v2 invite key decrypt failed, relying on async delivery', e);

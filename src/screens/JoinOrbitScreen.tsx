@@ -19,6 +19,7 @@ import { TextInput } from '../components/TextInput';
 import { Button } from '../components/Button';
 import { Header } from '../components/Header';
 import { joinOrbit } from '../services/conversationService';
+import { stripInviteCode, formatInviteCode } from '../services/crypto/inviteCrypto';
 import type { ThreadsStackParamList } from '../navigation/types';
 
 // ---------------------------------------------------------------------------
@@ -44,8 +45,13 @@ export function JoinOrbitScreen({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const trimmedCode = code.trim();
+  const trimmedCode = stripInviteCode(code);
   const isValid = trimmedCode.length > 0;
+
+  const handleCodeChange = useCallback((text: string) => {
+    const sanitized = text.replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 20);
+    setCode(sanitized.length > 0 ? formatInviteCode(sanitized) : '');
+  }, []);
 
   const handleJoin = useCallback(async () => {
     if (!isValid || loading) {
@@ -105,10 +111,11 @@ export function JoinOrbitScreen({
           <TextInput
             label="Invite Code"
             value={code}
-            onChangeText={setCode}
+            onChangeText={handleCodeChange}
             autoCapitalize="characters"
             autoCorrect={false}
-            maxLength={8}
+            maxLength={24}
+            placeholder="XXXX-XXXX-XXXX-XXXX-XXXX"
             testID="invite-code-input"
           />
 

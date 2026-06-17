@@ -27,12 +27,13 @@ import { OrbitalSpinner } from '../components/OrbitalSpinner';
 import { ErrorBanner } from '../components/ErrorBanner';
 import { EmojiText } from '../components/EmojiText';
 import { Emoji } from '../components/Emoji';
-import { fetchCreatorOrbitsDecrypted } from '../services/conversationService';
+import { fetchCreatorOrbitsDecrypted, createInviteCode } from '../services/conversationService';
 import type { DecryptedGroup } from '../services/conversationService';
-import { getGroupMembers, generateInviteCode, removeMember } from '../services/api/groups';
+import { getGroupMembers, listInviteHistory, removeMember } from '../services/api/groups';
 import { loadConversations } from '../services/conversationService';
+import { formatInviteCode } from '../services/crypto/inviteCrypto';
 import { useAuth, useConversations } from '../stores';
-import type { GroupMember } from '../types/api';
+import type { GroupMember, InviteListItem } from '../types/api';
 import type { SettingsStackParamList } from '../navigation/types';
 import { OrbitAdminActions } from './settings/OrbitAdminActions';
 
@@ -53,6 +54,9 @@ export function ManageOrbitsScreen({ navigation }: Props): React.JSX.Element {
   const [emailModalVisible, setEmailModalVisible] = useState(false);
   const [emailModalGroupId, setEmailModalGroupId] = useState<string | null>(null);
   const [emailInput, setEmailInput] = useState('');
+  const [invitesByGroupId, setInvitesByGroupId] = useState<Record<string, InviteListItem[]>>({});
+  const [loadingInvites, setLoadingInvites] = useState<Record<string, boolean>>({});
+  const [generatedCode, setGeneratedCode] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -81,19 +85,35 @@ export function ManageOrbitsScreen({ navigation }: Props): React.JSX.Element {
     const newExpanded = groupId === expandedOrbitId ? null : groupId;
     setExpandedOrbitId(newExpanded);
 
-    // Lazy-load members on first expand
-    if (newExpanded && !membersByGroupId[newExpanded] && !loadingMembers[newExpanded]) {
-      setLoadingMembers((prev) => ({ ...prev, [newExpanded]: true }));
-      try {
-        const members = await getGroupMembers(newExpanded);
-        setMembersByGroupId((prev) => ({ ...prev, [newExpanded]: members }));
-      } catch {
-        // Silently fail — members section will show empty
-      } finally {
-        setLoadingMembers((prev) => ({ ...prev, [newExpanded]: false }));
+    if (newExpanded) {
+      // Lazy-load members on first expand
+      if (!membersByGroupId[newExpanded] && !loadingMembers[newExpanded]) {
+        setLoadingMembers((prev) => ({ ...prev, [newExpanded]: true }));
+        try {
+          const members = await getGroupMembers(newExpanded);
+          setMembersByGroupId((prev) => ({ ...prev, [newExpanded]: members }));
+        } catch {
+          // Silently fail — members section will show empty
+        } finally {
+          setLoadingMembers((prev) => ({ ...prev, [newExpanded]: false }));
+        }
+      }
+
+      // Lazy-load invite history on first expand
+      if (!invitesByGroupId[newExpanded] && !loadingInvites[newExpanded]) {
+        setLoadingInvites((prev) => ({ ...prev, [newExpanded]: true }));
+        try {
+          const invites = await listInviteHistory(newExpanded);
+          setInvitesByGroupId((prev) => ({ ...prev, [newExpanded]: invites }));
+        } catch {
+          // Silently fail — treat as empty list (includes 403 for non-creator)
+          setInvitesByGroupId((prev) => ({ ...prev, [newExpanded]: [] }));
+        } finally {
+          setLoadingInvites((prev) => ({ ...prev, [newExpanded]: false }));
+        }
       }
     }
-  }, [expandedOrbitId, membersByGroupId, loadingMembers]);
+  }, [expandedOrbitId, membersByGroupId, loadingMembers, invitesByGroupId, loadingInvites]);
 
   const handleRemoveMember = useCallback((groupId: string, member: GroupMember) => {
     Alert.alert(
@@ -140,16 +160,15 @@ export function ManageOrbitsScreen({ navigation }: Props): React.JSX.Element {
 
     setGeneratingCode(true);
     try {
-      const result = await generateInviteCode(emailModalGroupId, emailInput.trim());
-      // Update group's invite code in local state
-      setGroups((prev) =>
-        prev.map((g) =>
-          g.groupId === emailModalGroupId
-            ? { ...g, inviteCode: result.inviteCode }
-            : g,
-        ),
-      );
-      setEmailModalVisible(false);
+      const rawCode = await createInviteCode(emailModalGroupId, emailInput.trim());
+      setGeneratedCode(rawCode);
+      // Refresh invite list for this group
+      try {
+        const invites = await listInviteHistory(emailModalGroupId);
+        setInvitesByGroupId((prev) => ({ ...prev, [emailModalGroupId]: invites }));
+      } catch {
+        // Silently fail — invite list refresh is best-effort
+      }
     } catch {
       Alert.alert('Error', 'Failed to generate invite code. Please try again.');
     } finally {
@@ -157,14 +176,23 @@ export function ManageOrbitsScreen({ navigation }: Props): React.JSX.Element {
     }
   }, [emailModalGroupId, emailInput]);
 
-  const handleShare = useCallback(async (groupName: string, inviteCode: string) => {
+  const handleShareCode = useCallback(async () => {
+    if (!generatedCode || !emailModalGroupId) return;
+    const group = groups.find((g) => g.groupId === emailModalGroupId);
+    const groupName = group?.name ?? 'an orbit';
     try {
       await Share.share({
-        message: `Join my orbit "${groupName}" on Orbital! Use invite code: ${inviteCode}`,
+        message: `Join my orbit "${groupName}" on Orbital! Use invite code: ${formatInviteCode(generatedCode)}`,
       });
     } catch {
       // User cancelled share
     }
+  }, [generatedCode, emailModalGroupId, groups]);
+
+  const handleDismissModal = useCallback(() => {
+    setGeneratedCode(null);
+    setEmailModalVisible(false);
+    setEmailInput('');
   }, []);
 
   const handleBack = useCallback(() => {
@@ -226,15 +254,16 @@ export function ManageOrbitsScreen({ navigation }: Props): React.JSX.Element {
         isExpanded={item.groupId === expandedOrbitId}
         members={membersByGroupId[item.groupId] ?? null}
         loadingMembers={loadingMembers[item.groupId] ?? false}
+        invites={invitesByGroupId[item.groupId] ?? null}
+        loadingInvites={loadingInvites[item.groupId] ?? false}
         currentUserId={userId ?? ''}
         onToggleExpand={handleToggleExpand}
         onRemoveMember={handleRemoveMember}
-        onShare={handleShare}
         onNewCode={handleOpenEmailModal}
         onAdminAction={handleAdminAction}
       />
     ),
-    [expandedOrbitId, membersByGroupId, loadingMembers, userId, handleToggleExpand, handleRemoveMember, handleShare, handleOpenEmailModal, handleAdminAction],
+    [expandedOrbitId, membersByGroupId, loadingMembers, invitesByGroupId, loadingInvites, userId, handleToggleExpand, handleRemoveMember, handleOpenEmailModal, handleAdminAction],
   );
 
   const keyExtractor = useCallback((item: DecryptedGroup) => item.groupId, []);
@@ -267,12 +296,12 @@ export function ManageOrbitsScreen({ navigation }: Props): React.JSX.Element {
         />
       )}
 
-      {/* Email input modal for invite code generation */}
+      {/* Email input modal for invite code generation — two phases */}
       <Modal
         visible={emailModalVisible}
         transparent
         animationType="fade"
-        onRequestClose={() => setEmailModalVisible(false)}
+        onRequestClose={handleDismissModal}
       >
         <View style={{
           flex: 1,
@@ -288,85 +317,163 @@ export function ManageOrbitsScreen({ navigation }: Props): React.JSX.Element {
             width: '100%',
             maxWidth: 340,
           }}>
-            <Text style={{
-              fontFamily: theme.typography.fontFamily.header,
-              fontSize: theme.typography.fontSize.lg,
-              color: theme.colors.textPrimary,
-              marginBottom: theme.spacing.md,
-            }}>
-              Generate Invite Code
-            </Text>
-            <Text style={{
-              fontFamily: theme.typography.fontFamily.body,
-              fontSize: theme.typography.fontSize.sm,
-              color: theme.colors.textSecondary,
-              marginBottom: theme.spacing.sm,
-            }}>
-              Invitee's email:
-            </Text>
-            <TextInput
-              style={{
-                borderWidth: 1,
-                borderColor: theme.colors.borderSubtle,
-                borderRadius: theme.borderRadius.base,
-                paddingHorizontal: theme.spacing.md,
-                paddingVertical: theme.spacing.sm,
-                fontFamily: theme.typography.fontFamily.body,
-                fontSize: theme.typography.fontSize.base,
-                color: theme.colors.textPrimary,
-                marginBottom: theme.spacing.lg,
-              }}
-              value={emailInput}
-              onChangeText={setEmailInput}
-              placeholder="email@example.com"
-              placeholderTextColor={theme.colors.textTertiary}
-              keyboardType="email-address"
-              autoCapitalize="none"
-              autoCorrect={false}
-              testID="email-input"
-            />
-            <View style={{
-              flexDirection: 'row',
-              justifyContent: 'flex-end',
-            }}>
-              <TouchableOpacity
-                onPress={() => setEmailModalVisible(false)}
-                style={{
-                  paddingHorizontal: theme.spacing.md,
-                  paddingVertical: theme.spacing.sm,
-                  marginRight: theme.spacing.md,
-                }}
-                testID="cancel-button"
-              >
+            {generatedCode != null ? (
+              /* Phase 2: code generated — show formatted code */
+              <>
+                <Text style={{
+                  fontFamily: theme.typography.fontFamily.header,
+                  fontSize: theme.typography.fontSize.lg,
+                  color: theme.colors.textPrimary,
+                  marginBottom: theme.spacing.md,
+                }}>
+                  Invite Code Generated
+                </Text>
+                <View style={{
+                  borderWidth: 1,
+                  borderColor: theme.colors.borderSubtle,
+                  borderRadius: theme.borderRadius.base,
+                  padding: theme.spacing.lg,
+                  alignItems: 'center',
+                  marginBottom: theme.spacing.md,
+                  backgroundColor: theme.colors.surfaceElevated,
+                }}>
+                  <Text style={{
+                    fontFamily: theme.typography.fontFamily.mono,
+                    fontSize: theme.typography.fontSize.lg,
+                    color: theme.colors.textPrimary,
+                  }} selectable testID="modal-invite-code">
+                    {formatInviteCode(generatedCode)}
+                  </Text>
+                </View>
                 <Text style={{
                   fontFamily: theme.typography.fontFamily.body,
-                  fontSize: theme.typography.fontSize.base,
-                  color: theme.colors.textSecondary,
-                }}>
-                  Cancel
+                  fontSize: theme.typography.fontSize.sm,
+                  color: theme.colors.error,
+                  textAlign: 'center',
+                  marginBottom: theme.spacing.lg,
+                }} testID="modal-code-warning">
+                  This code will not be shown again.
                 </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={handleGenerateCode}
-                disabled={generatingCode || !emailInput.trim()}
-                style={{
-                  backgroundColor: theme.colors.blue,
-                  borderRadius: theme.borderRadius.base,
-                  paddingHorizontal: theme.spacing.md,
-                  paddingVertical: theme.spacing.sm,
-                  opacity: generatingCode || !emailInput.trim() ? 0.5 : 1,
-                }}
-                testID="generate-button"
-              >
+                <TouchableOpacity
+                  onPress={handleShareCode}
+                  style={{
+                    backgroundColor: theme.colors.blue,
+                    borderRadius: theme.borderRadius.base,
+                    paddingVertical: theme.spacing.sm,
+                    alignItems: 'center',
+                    marginBottom: theme.spacing.sm,
+                  }}
+                  testID="modal-share-button"
+                >
+                  <Text style={{
+                    fontFamily: theme.typography.fontFamily.bodyBold,
+                    fontSize: theme.typography.fontSize.base,
+                    color: '#FFFFFF',
+                  }}>
+                    Share
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={handleDismissModal}
+                  style={{
+                    paddingVertical: theme.spacing.sm,
+                    alignItems: 'center',
+                  }}
+                  testID="modal-done-button"
+                >
+                  <Text style={{
+                    fontFamily: theme.typography.fontFamily.body,
+                    fontSize: theme.typography.fontSize.base,
+                    color: theme.colors.textSecondary,
+                  }}>
+                    Done
+                  </Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              /* Phase 1: email input */
+              <>
                 <Text style={{
-                  fontFamily: theme.typography.fontFamily.bodyBold,
-                  fontSize: theme.typography.fontSize.base,
-                  color: '#FFFFFF',
+                  fontFamily: theme.typography.fontFamily.header,
+                  fontSize: theme.typography.fontSize.lg,
+                  color: theme.colors.textPrimary,
+                  marginBottom: theme.spacing.md,
                 }}>
-                  {generatingCode ? 'Generating...' : 'Generate'}
+                  Generate Invite Code
                 </Text>
-              </TouchableOpacity>
-            </View>
+                <Text style={{
+                  fontFamily: theme.typography.fontFamily.body,
+                  fontSize: theme.typography.fontSize.sm,
+                  color: theme.colors.textSecondary,
+                  marginBottom: theme.spacing.sm,
+                }}>
+                  Invitee's email:
+                </Text>
+                <TextInput
+                  style={{
+                    borderWidth: 1,
+                    borderColor: theme.colors.borderSubtle,
+                    borderRadius: theme.borderRadius.base,
+                    paddingHorizontal: theme.spacing.md,
+                    paddingVertical: theme.spacing.sm,
+                    fontFamily: theme.typography.fontFamily.body,
+                    fontSize: theme.typography.fontSize.base,
+                    color: theme.colors.textPrimary,
+                    marginBottom: theme.spacing.lg,
+                  }}
+                  value={emailInput}
+                  onChangeText={setEmailInput}
+                  placeholder="email@example.com"
+                  placeholderTextColor={theme.colors.textTertiary}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  testID="email-input"
+                />
+                <View style={{
+                  flexDirection: 'row',
+                  justifyContent: 'flex-end',
+                }}>
+                  <TouchableOpacity
+                    onPress={handleDismissModal}
+                    style={{
+                      paddingHorizontal: theme.spacing.md,
+                      paddingVertical: theme.spacing.sm,
+                      marginRight: theme.spacing.md,
+                    }}
+                    testID="cancel-button"
+                  >
+                    <Text style={{
+                      fontFamily: theme.typography.fontFamily.body,
+                      fontSize: theme.typography.fontSize.base,
+                      color: theme.colors.textSecondary,
+                    }}>
+                      Cancel
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={handleGenerateCode}
+                    disabled={generatingCode || !emailInput.trim()}
+                    style={{
+                      backgroundColor: theme.colors.blue,
+                      borderRadius: theme.borderRadius.base,
+                      paddingHorizontal: theme.spacing.md,
+                      paddingVertical: theme.spacing.sm,
+                      opacity: generatingCode || !emailInput.trim() ? 0.5 : 1,
+                    }}
+                    testID="generate-button"
+                  >
+                    <Text style={{
+                      fontFamily: theme.typography.fontFamily.bodyBold,
+                      fontSize: theme.typography.fontSize.base,
+                      color: '#FFFFFF',
+                    }}>
+                      {generatingCode ? 'Generating...' : 'Generate'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
           </View>
         </View>
       </Modal>
@@ -383,10 +490,11 @@ interface OrbitRowProps {
   isExpanded: boolean;
   members: GroupMember[] | null;
   loadingMembers: boolean;
+  invites: InviteListItem[] | null;
+  loadingInvites: boolean;
   currentUserId: string;
   onToggleExpand: (groupId: string) => void;
   onRemoveMember: (groupId: string, member: GroupMember) => void;
-  onShare: (name: string, code: string) => void;
   onNewCode: (groupId: string) => void;
   onAdminAction: (action: 'transfer' | 'dissolve', groupId: string) => void;
 }
@@ -396,10 +504,11 @@ const OrbitRow = React.memo(function OrbitRow({
   isExpanded,
   members,
   loadingMembers,
+  invites,
+  loadingInvites,
   currentUserId,
   onToggleExpand,
   onRemoveMember,
-  onShare,
   onNewCode,
   onAdminAction,
 }: OrbitRowProps): React.JSX.Element {
@@ -502,33 +611,6 @@ const OrbitRow = React.memo(function OrbitRow({
     color: theme.colors.error,
   };
 
-  const codeContainerStyle: ViewStyle = {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: theme.spacing.xs,
-  };
-
-  const codeStyle: TextStyle = {
-    fontFamily: theme.typography.fontFamily.mono,
-    fontSize: theme.typography.fontSize.sm,
-    color: theme.colors.textSecondary,
-    flex: 1,
-  };
-
-  const actionButtonStyle: ViewStyle = {
-    backgroundColor: theme.colors.blue,
-    borderRadius: theme.borderRadius.base,
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.xs,
-    marginLeft: theme.spacing.sm,
-  };
-
-  const actionTextStyle: TextStyle = {
-    fontFamily: theme.typography.fontFamily.bodyBold,
-    fontSize: theme.typography.fontSize.sm,
-    color: '#FFFFFF',
-  };
-
   const newCodeButtonStyle: ViewStyle = {
     borderWidth: 1,
     borderColor: theme.colors.borderSubtle,
@@ -592,34 +674,55 @@ const OrbitRow = React.memo(function OrbitRow({
             ))
           )}
 
-          {/* Invite section */}
-          <Text style={sectionLabelStyle}>Invite Code</Text>
-          <View style={codeContainerStyle}>
-            {group.inviteCode ? (
-              <>
-                <Text style={codeStyle} selectable testID={`invite-code-${group.groupId}`}>
-                  {group.inviteCode}
+          {/* Invites section */}
+          <Text style={sectionLabelStyle}>Invites</Text>
+          {loadingInvites ? (
+            <OrbitalSpinner size={20} />
+          ) : invites && invites.length > 0 ? (
+            invites.map((invite) => (
+              <View key={invite.id} style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                paddingVertical: theme.spacing.xs,
+              }} testID={`invite-${invite.id}`}>
+                <Text style={{
+                  fontFamily: theme.typography.fontFamily.body,
+                  fontSize: theme.typography.fontSize.sm,
+                  color: theme.colors.textPrimary,
+                  flex: 1,
+                }}>
+                  {invite.targetEmail}
                 </Text>
-                <TouchableOpacity
-                  style={actionButtonStyle}
-                  onPress={() => onShare(group.name, group.inviteCode!)}
-                  activeOpacity={0.7}
-                  testID={`share-button-${group.groupId}`}
-                >
-                  <Text style={actionTextStyle}>Share</Text>
-                </TouchableOpacity>
-              </>
-            ) : (
-              <Text style={{
-                fontFamily: theme.typography.fontFamily.body,
-                fontSize: theme.typography.fontSize.sm,
-                color: theme.colors.textTertiary,
-                fontStyle: 'italic',
-                flex: 1,
-              }}>
-                No active invite code
-              </Text>
-            )}
+                <View style={{
+                  borderRadius: 8,
+                  paddingHorizontal: theme.spacing.sm,
+                  paddingVertical: 2,
+                  backgroundColor:
+                    invite.status === 'pending' ? theme.colors.blue :
+                    invite.status === 'accepted' ? '#34C759' :
+                    theme.colors.textTertiary,
+                }} testID={`invite-status-${invite.id}`}>
+                  <Text style={{
+                    fontFamily: theme.typography.fontFamily.body,
+                    fontSize: theme.typography.fontSize.xs,
+                    color: '#FFFFFF',
+                  }}>
+                    {invite.status}
+                  </Text>
+                </View>
+              </View>
+            ))
+          ) : (
+            <Text style={{
+              fontFamily: theme.typography.fontFamily.body,
+              fontSize: theme.typography.fontSize.sm,
+              color: theme.colors.textTertiary,
+              fontStyle: 'italic',
+            }}>
+              No invites yet
+            </Text>
+          )}
+          <View style={{ marginTop: theme.spacing.sm }}>
             <TouchableOpacity
               style={newCodeButtonStyle}
               onPress={() => onNewCode(group.groupId)}

@@ -1,5 +1,5 @@
 /**
- * Tests for CreateOrbitScreen — create orbit form, success view, and error handling.
+ * Tests for CreateOrbitScreen — create orbit form, two-phase success view, and error handling.
  */
 
 import React from 'react';
@@ -14,14 +14,20 @@ import { CreateOrbitScreen } from '../CreateOrbitScreen';
 
 jest.mock('../../services/conversationService', () => ({
   createOrbit: jest.fn(),
+  createInviteCode: jest.fn(),
+}));
+
+jest.mock('../../services/crypto/inviteCrypto', () => ({
+  formatInviteCode: jest.fn((s: string) => s.match(/.{1,4}/g)?.join('-') ?? s),
 }));
 
 jest.mock('../../components/OrbitalSpinner', () => ({
   OrbitalSpinner: () => null,
 }));
 
-import { createOrbit } from '../../services/conversationService';
+import { createOrbit, createInviteCode } from '../../services/conversationService';
 const mockCreateOrbit = createOrbit as jest.Mock;
+const mockCreateInviteCode = createInviteCode as jest.Mock;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -136,7 +142,7 @@ describe('CreateOrbitScreen — validation', () => {
 
 describe('CreateOrbitScreen — submission', () => {
   it('calls createOrbit with trimmed name on submit', async () => {
-    mockCreateOrbit.mockResolvedValue({ groupId: 'g-1', inviteCode: 'ABC123' });
+    mockCreateOrbit.mockResolvedValue({ groupId: 'g-1', inviteCode: null });
     const renderer = renderScreen();
     const input = findByTestId(renderer.root, 'orbit-name-input');
 
@@ -152,25 +158,8 @@ describe('CreateOrbitScreen — submission', () => {
     expect(mockCreateOrbit).toHaveBeenCalledWith('Family Orbit');
   });
 
-  it('shows success view with invite code after creation', async () => {
-    mockCreateOrbit.mockResolvedValue({ groupId: 'g-1', inviteCode: 'XYZ789' });
-    const renderer = renderScreen();
-    const input = findByTestId(renderer.root, 'orbit-name-input');
-
-    act(() => {
-      input.props.onChangeText('Family Orbit');
-    });
-
-    const button = findByTestId(renderer.root, 'create-orbit-button');
-    await act(async () => {
-      button.props.onPress();
-    });
-
-    expect(() => findByTestId(renderer.root, 'create-orbit-success')).not.toThrow();
-  });
-
-  it('displays the invite code text correctly in success view', async () => {
-    mockCreateOrbit.mockResolvedValue({ groupId: 'g-1', inviteCode: 'XYZ789' });
+  it('shows Phase 1 success view with email input after creation', async () => {
+    mockCreateOrbit.mockResolvedValue({ groupId: 'g-1', inviteCode: null });
     const renderer = renderScreen();
 
     act(() => {
@@ -181,12 +170,14 @@ describe('CreateOrbitScreen — submission', () => {
       findByTestId(renderer.root, 'create-orbit-button').props.onPress();
     });
 
-    const inviteCodeEl = findByTestId(renderer.root, 'invite-code-text');
-    expect(inviteCodeEl.props.children).toBe('XYZ789');
+    expect(() => findByTestId(renderer.root, 'create-orbit-success')).not.toThrow();
+    expect(() => findByTestId(renderer.root, 'invite-email-input')).not.toThrow();
+    expect(() => findByTestId(renderer.root, 'generate-invite-button')).not.toThrow();
+    expect(() => findByTestId(renderer.root, 'skip-button')).not.toThrow();
   });
 
-  it('done button calls navigation.goBack()', async () => {
-    mockCreateOrbit.mockResolvedValue({ groupId: 'g-1', inviteCode: 'ABC123' });
+  it('skip button calls navigation.goBack()', async () => {
+    mockCreateOrbit.mockResolvedValue({ groupId: 'g-1', inviteCode: null });
     const renderer = renderScreen();
 
     act(() => {
@@ -195,6 +186,75 @@ describe('CreateOrbitScreen — submission', () => {
 
     await act(async () => {
       findByTestId(renderer.root, 'create-orbit-button').props.onPress();
+    });
+
+    act(() => {
+      findByTestId(renderer.root, 'skip-button').props.onPress();
+    });
+
+    expect(mockNavigation.goBack).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('CreateOrbitScreen — invite generation', () => {
+  it('generates v2 invite code and shows formatted code', async () => {
+    mockCreateOrbit.mockResolvedValue({ groupId: 'g-1', inviteCode: null });
+    mockCreateInviteCode.mockResolvedValue('ABCD1234EFGH5678JKMN');
+
+    const renderer = renderScreen();
+
+    act(() => {
+      findByTestId(renderer.root, 'orbit-name-input').props.onChangeText('Family Orbit');
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'create-orbit-button').props.onPress();
+    });
+
+    // Phase 1 — enter email
+    const emailInput = findByTestId(renderer.root, 'invite-email-input');
+    act(() => {
+      emailInput.props.onChangeText('member@example.com');
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'generate-invite-button').props.onPress();
+    });
+
+    expect(mockCreateInviteCode).toHaveBeenCalledWith('g-1', 'member@example.com');
+
+    // Phase 2 — formatted code shown
+    const codeText = findByTestId(renderer.root, 'invite-code-text');
+    expect(codeText.props.children).toBe('ABCD-1234-EFGH-5678-JKMN');
+
+    // Warning text visible
+    expect(() => findByTestId(renderer.root, 'code-warning')).not.toThrow();
+
+    // Share and Done buttons visible
+    expect(() => findByTestId(renderer.root, 'share-invite-button')).not.toThrow();
+    expect(() => findByTestId(renderer.root, 'done-button')).not.toThrow();
+  });
+
+  it('done button calls navigation.goBack() from Phase 2', async () => {
+    mockCreateOrbit.mockResolvedValue({ groupId: 'g-1', inviteCode: null });
+    mockCreateInviteCode.mockResolvedValue('ABCD1234EFGH5678JKMN');
+
+    const renderer = renderScreen();
+
+    act(() => {
+      findByTestId(renderer.root, 'orbit-name-input').props.onChangeText('My Orbit');
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'create-orbit-button').props.onPress();
+    });
+
+    act(() => {
+      findByTestId(renderer.root, 'invite-email-input').props.onChangeText('test@test.com');
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'generate-invite-button').props.onPress();
     });
 
     act(() => {
@@ -229,8 +289,8 @@ describe('CreateOrbitScreen — error handling', () => {
 });
 
 describe('CreateOrbitScreen — loading state', () => {
-  it('calls createOrbit once and re-enables button after resolution', async () => {
-    mockCreateOrbit.mockResolvedValue({ groupId: 'g-1', inviteCode: 'CODE' });
+  it('calls createOrbit once and shows success view after resolution', async () => {
+    mockCreateOrbit.mockResolvedValue({ groupId: 'g-1', inviteCode: null });
     const renderer = renderScreen();
 
     act(() => {
@@ -241,9 +301,7 @@ describe('CreateOrbitScreen — loading state', () => {
       findByTestId(renderer.root, 'create-orbit-button').props.onPress();
     });
 
-    // createOrbit was called exactly once
     expect(mockCreateOrbit).toHaveBeenCalledTimes(1);
-    // Success view is shown after resolution — form is no longer rendered
     expect(() => findByTestId(renderer.root, 'create-orbit-success')).not.toThrow();
   });
 });

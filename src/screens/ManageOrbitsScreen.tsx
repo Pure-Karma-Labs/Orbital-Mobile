@@ -699,7 +699,7 @@ const OrbitRow = React.memo(function OrbitRow({
                   paddingVertical: 2,
                   backgroundColor:
                     invite.status === 'pending' ? theme.colors.blue :
-                    invite.status === 'accepted' ? '#34C759' :
+                    invite.status === 'accepted' ? theme.colors.success :
                     theme.colors.textTertiary,
                 }} testID={`invite-status-${invite.id}`}>
                   <Text style={{

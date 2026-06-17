@@ -121,6 +121,8 @@ export function CreateOrbitScreen({
   }, []);
 
   const handleBack = useCallback(() => {
+    setGeneratedCode(null);
+    setEmail('');
     navigation.goBack();
   }, [navigation]);
 

@@ -15,7 +15,7 @@ dev-roundtrip = []
 [dependencies]
 uniffi = "0.31.0"
 thiserror = "2.0"
-rand = "0.9"
+rand = "0.10"
 uuid = { version = "1.5", features = ["v4"] }
 
 # libsignal-protocol from Signal's repo (keep both tags + boring patch in lockstep)

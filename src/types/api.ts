@@ -167,6 +167,7 @@ export interface JoinGroupResponse {
   joinedAt: string;
   wrappedGroupKey: string | null;
   wrappedBy?: string | null;
+  inviteEncryptedGroupKey?: string | null;
 }
 
 /**
@@ -199,6 +200,19 @@ export interface GenerateInviteCodeResponse {
   expiresAt: string;
   createdAt: string;
   targetEmail: string;
+}
+
+export interface GenerateInviteCodeV2Response {
+  inviteId: string;
+  expiresAt: string;
+  createdAt: string;
+  targetEmail: string;
+  codeVersion: number;
+}
+
+export interface GenerateInviteCodeOptions {
+  code: string;
+  encryptedGroupKey: string;
 }
 
 /**

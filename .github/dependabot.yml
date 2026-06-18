@@ -30,6 +30,19 @@ updates:
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
       - dependency-name: "react-test-renderer"
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      # react 19.1.x patches break react-test-renderer — pinned at 19.1.1
+      # until upstream fix lands (see project_react19_compat.md)
+      - dependency-name: "react"
+        versions: [">= 19.1.2", "< 19.2.0"]
+      - dependency-name: "react-test-renderer"
+        versions: [">= 19.1.2", "< 19.2.0"]
+      # Babel 8 and ESLint 10 require RN ecosystem support — tracked in #311
+      - dependency-name: "@babel/core"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@babel/preset-env"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "eslint"
+        update-types: ["version-update:semver-major"]
       # jest majors ride along with RN preset support (see closed #306)
       - dependency-name: "jest"
         update-types: ["version-update:semver-major"]

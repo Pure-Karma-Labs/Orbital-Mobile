@@ -57,6 +57,11 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      # rand 0.10 requires trait renames incompatible with libsignal's
+      # rand 0.9 bounds — defer until libsignal supports it (see #399)
+      - dependency-name: "rand"
+        versions: [">= 0.10.0"]
 
   # GitHub Actions (workflow files)
   - package-ecosystem: github-actions

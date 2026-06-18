@@ -77,16 +77,12 @@ jobs:
       - name: Inject google-services.json
         run: echo "${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}" | base64 --decode > android/app/google-services.json
 
-      - name: Cache Rust build
-        uses: actions/cache@v5
+      - name: Rust cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            packages/orbital-signal/rust/orbital_signal/target
-          key: rust-android-${{ hashFiles('packages/orbital-signal/rust/orbital_signal/Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: |
-            rust-android-
+          workspaces: packages/orbital-signal/rust/orbital_signal
+          shared-key: rust-build-android
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build Rust for Android
         run: |
@@ -119,7 +115,7 @@ jobs:
     name: iOS Debug Build
     if: github.ref == 'refs/heads/main'
     runs-on: [self-hosted, macOS]
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -152,16 +148,12 @@ jobs:
       - name: Inject GoogleService-Info.plist
         run: echo "${{ secrets.GOOGLE_SERVICE_INFO_PLIST_BASE64 }}" | base64 --decode > ios/OrbitalMobile/GoogleService-Info.plist
 
-      - name: Cache Rust build
-        uses: actions/cache@v5
+      - name: Rust cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            packages/orbital-signal/rust/orbital_signal/target
-          key: rust-ios-${{ hashFiles('packages/orbital-signal/rust/orbital_signal/Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: |
-            rust-ios-
+          workspaces: packages/orbital-signal/rust/orbital_signal
+          shared-key: rust-build-ios
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build Rust for iOS
         run: |

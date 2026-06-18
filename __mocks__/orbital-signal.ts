@@ -33,5 +33,7 @@ module.exports = {
   processPreKeyBundle: () => {},
   messageEncrypt: noopBuffer,
   messageDecrypt: noopBuffer,
+  inviteEncryptGroupKey: noopBuffer,
+  inviteDecryptGroupKey: noopBuffer,
   createProtocolAddress: () => ({ name: '', deviceId: 0 }),
 };

@@ -23,6 +23,7 @@ jest.mock('../api/groups', () => ({
   submitWrappedKey: jest.fn(),
   selfWrapGroupKey: jest.fn(),
   markGroupRead: jest.fn(),
+  generateInviteCode: jest.fn().mockResolvedValue(undefined),
 }));
 
 const mockPersistGroupKey = jest.fn();
@@ -64,6 +65,13 @@ jest.mock('../crypto/identityKeyAccess', () => ({
   resolveRemoteIdentityKey: (...args: unknown[]) => mockResolveRemoteIdentityKey(...args),
 }));
 
+jest.mock('../crypto/inviteCrypto', () => ({
+  generateInviteCode: jest.fn(() => 'TESTCODE1234567890AB'),
+  encryptGroupKeyForInvite: jest.fn(() => 'encrypted-key-base64'),
+  stripInviteCode: jest.fn((s: string) => s.replace(/-/g, '').toUpperCase()),
+  decryptGroupKeyFromInvite: jest.fn(),
+}));
+
 jest.mock('../crypto/utils', () => ({
   base64ToArrayBuffer: jest.fn(() => new ArrayBuffer(32)),
 }));
@@ -90,8 +98,8 @@ jest.mock('../../stores/useAppStore', () => ({
   },
 }));
 
-import { loadConversations, loadDmConversations, startDm, joinOrbit, fetchCreatorOrbitsDecrypted, hydrateContactsFromOrbits, ensureDmConversation, fulfillPendingWraps, clearConversationServiceState, refreshContactAvatar, markConversationReadEverywhere } from '../conversationService';
-import { listGroups, listDms, createDm, joinGroup, getGroupMembers, getPendingWraps, submitWrappedKey, markGroupRead } from '../api/groups';
+import { loadConversations, loadDmConversations, startDm, joinOrbit, fetchCreatorOrbitsDecrypted, hydrateContactsFromOrbits, ensureDmConversation, fulfillPendingWraps, clearConversationServiceState, refreshContactAvatar, markConversationReadEverywhere, createInviteCode } from '../conversationService';
+import { listGroups, listDms, createDm, joinGroup, getGroupMembers, getPendingWraps, submitWrappedKey, markGroupRead, generateInviteCode as generateInviteCodeApi } from '../api/groups';
 import { useAppStore } from '../../stores/useAppStore';
 import { deleteRepliesForConversation } from '../../database/repositories/replyRepository';
 import { getConversationIdsWithThreads, deleteThreadsForConversation } from '../../database/repositories/threadRepository';
@@ -1457,5 +1465,30 @@ describe('loadConversations — store action choice (load-wipe regression)', () 
     // replacing the entire map. It must use the type-partitioned action instead.
     expect(distinctSetGroupConversations).toHaveBeenCalledTimes(1);
     expect(distinctSetConversations).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createInviteCode — input validation (#375)
+// ---------------------------------------------------------------------------
+
+describe('createInviteCode', () => {
+  it('throws when groupId is empty', async () => {
+    await expect(createInviteCode('', 'test@example.com')).rejects.toThrow('groupId is required');
+  });
+
+  it('throws when targetEmail is empty', async () => {
+    await expect(createInviteCode('group-1', '')).rejects.toThrow('targetEmail is required');
+  });
+
+  it('generates invite code and calls API on valid inputs', async () => {
+    const code = await createInviteCode('group-1', 'test@example.com');
+
+    expect(code).toBe('TESTCODE1234567890AB');
+    expect(mockGetOrFetchGroupKey).toHaveBeenCalledWith('group-1');
+    expect(generateInviteCodeApi).toHaveBeenCalledWith('group-1', 'test@example.com', {
+      code: 'TESTCODE1234567890AB',
+      encryptedGroupKey: 'encrypted-key-base64',
+    });
   });
 });

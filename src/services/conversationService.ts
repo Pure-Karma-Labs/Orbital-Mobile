@@ -276,6 +276,8 @@ export async function createInviteCode(
   groupId: string,
   targetEmail: string,
 ): Promise<string> {
+  if (!groupId) throw new Error('groupId is required');
+  if (!targetEmail) throw new Error('targetEmail is required');
   const code = inviteCrypto.generateInviteCode();
 
   const groupKey = await getOrFetchGroupKey(groupId);

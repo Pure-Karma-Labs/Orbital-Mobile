@@ -144,7 +144,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
-  - op-sqlite (16.2.0):
+  - op-sqlite (16.2.2):
     - boost
     - DoubleConversion
     - fast_float
@@ -2690,7 +2690,7 @@ PODS:
     - React-perflogger (= 0.82.1)
     - React-utils (= 0.82.1)
     - SocketRocket
-  - ReactNativeFs (2.38.2):
+  - ReactNativeFs (2.39.0):
     - boost
     - DoubleConversion
     - fast_float
@@ -2926,7 +2926,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
-  - RNSentry (8.13.0):
+  - RNSentry (8.14.0):
     - boost
     - DoubleConversion
     - fast_float
@@ -2953,12 +2953,12 @@ PODS:
     - ReactCodegen
     - ReactCommon/turbomodule/bridging
     - ReactCommon/turbomodule/core
-    - Sentry (= 9.15.0)
+    - Sentry (= 9.16.1)
     - SocketRocket
     - Yoga
-  - Sentry (9.15.0):
-    - Sentry/Core (= 9.15.0)
-  - Sentry/Core (9.15.0)
+  - Sentry (9.16.1):
+    - Sentry/Core (= 9.16.1)
+  - Sentry/Core (9.16.1)
   - SocketRocket (0.7.1)
   - uniffi-bindgen-react-native (0.31.0-2):
     - React-Core
@@ -3287,7 +3287,7 @@ SPEC CHECKSUMS:
   nanopb: fad817b59e0457d11a5dfbde799381cd727c1275
   NitroMmkv: c68bb2c29c154913707bc6e66791b2b30dd723c1
   NitroModules: 8ab2b6936d6d3b6283d22b3e1394ab141c6cb8c2
-  op-sqlite: 937a60829e81fedffffe5a99d2b0e0fe49d0a4f6
+  op-sqlite: c91ad479c85744584e7c096f3c390deb80ab4ee9
   OpenSSL-Universal: 9110d21982bb7e8b22a962b6db56a8aa805afde7
   OrbitalSignal: 39d2010fd67eacb834e2b4ec67dc4c2095d1cbff
   PromisesObjC: f5707f49cb48b9636751c5b2e7d227e43fba9f47
@@ -3360,7 +3360,7 @@ SPEC CHECKSUMS:
   ReactAppDependencyProvider: a45ef34bb22dc1c9b2ac1f74167d9a28af961176
   ReactCodegen: 878add6c7d8ff8cea87697c44d29c03b79b6f2d9
   ReactCommon: 804dc80944fa90b86800b43c871742ec005ca424
-  ReactNativeFs: 8ee52268099f843309fac2d0e291d254116d1df2
+  ReactNativeFs: af03e04998658ed8a62e4c478e0632f3a073be1d
   RNBootSplash: 0be0994fa7c528ed5f03b6f2803d7e86aa18170f
   RNFBApp: 4749952428360944ee37913fafc796810b5133b3
   RNFBMessaging: 20ed9e31881b2add8ebbf13b15daa519e5cae00a
@@ -3368,12 +3368,12 @@ SPEC CHECKSUMS:
   RNKeychain: a2c134ab796272c3d605e035ab727591000b30f3
   RNNotifee: 5e3b271e8ea7456a36eec994085543c9adca9168
   RNScreens: 9269ab4971b2bd24917be84295d2c2ae7d06e9be
-  RNSentry: 7077776018fd4f5c6ec022275113c782c28d22fe
-  Sentry: d5b72948d692d369ded835e2e77baadcd3c492dd
+  RNSentry: 381768abdc4009f20aed5c73d9fa7128fe104a74
+  Sentry: e5d82a3c1f2d951f75c04c57215a0abb1facbd51
   SocketRocket: d4aabe649be1e368d1318fdf28a022d714d65748
   uniffi-bindgen-react-native: 205a15613d97a49fe17d5bda57f7fa46a7bbafd0
   Yoga: 689c8e04277f3ad631e60fe2a08e41d411daf8eb
 
 PODFILE CHECKSUM: 0bb1bbbda50228fc2f2765cf599626889e18576b
 
-COCOAPODS: 1.15.2
+COCOAPODS: 1.16.2

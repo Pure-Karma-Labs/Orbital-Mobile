@@ -133,7 +133,7 @@ dependencies {
 }
 
 tasks.matching { it.name == 'preBuild' }.configureEach {
-    dependsOn rootProject.tasks.named('checkRustBinaries')
+    dependsOn tasks.named('checkRustBinaries')
 }
 
 apply plugin: 'com.google.gms.google-services'

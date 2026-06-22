@@ -20,6 +20,7 @@ tasks.register('checkRustBinaries') {
     def rustSrcDir = file("${projectRoot}/packages/orbital-signal/rust/orbital_signal/src")
     def cargoToml = file("${projectRoot}/packages/orbital-signal/rust/orbital_signal/Cargo.toml")
     def cargoLock = file("${projectRoot}/packages/orbital-signal/rust/orbital_signal/Cargo.lock")
+    def rustToolchain = file("${projectRoot}/rust-toolchain.toml")
 
     def arm64Lib = file("${projectRoot}/packages/orbital-signal/android/src/main/jniLibs/arm64-v8a/liborbital_signal.a")
     def x86_64Lib = file("${projectRoot}/packages/orbital-signal/android/src/main/jniLibs/x86_64/liborbital_signal.a")
@@ -27,6 +28,7 @@ tasks.register('checkRustBinaries') {
     inputs.dir(rustSrcDir)
     inputs.file(cargoToml)
     inputs.file(cargoLock)
+    if (rustToolchain.exists()) inputs.file(rustToolchain)
     outputs.files(arm64Lib, x86_64Lib)
 
     doLast {
@@ -54,11 +56,14 @@ tasks.register('checkRustBinaries') {
         if (cargoLock.lastModified() > oldestBinaryTime) {
             staleFiles.add('Cargo.lock')
         }
+        if (rustToolchain.exists() && rustToolchain.lastModified() > oldestBinaryTime) {
+            staleFiles.add('rust-toolchain.toml')
+        }
 
         // 4. If stale, either auto-rebuild or fail with guidance
         if (!staleFiles.isEmpty()) {
             if (project.findProperty('orbital.autoRebuildRust') == 'true') {
-                logger.warn("Rust sources changed — auto-rebuilding Android binaries...")
+                logger.warn("Rust sources changed (${staleFiles.join(', ')}) — auto-rebuilding Android binaries...")
                 exec {
                     commandLine 'npm', 'run', 'build:rust:android'
                     workingDir projectRoot

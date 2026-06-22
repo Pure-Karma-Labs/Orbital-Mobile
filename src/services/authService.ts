@@ -94,7 +94,7 @@ export async function loginUser(
   useAppStore.getState().setUser({
     userId: response.userId,
     username: response.username,
-    displayName: null,
+    displayName: response.displayName ?? null,
     avatarPath: null,
   });
 

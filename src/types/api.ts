@@ -53,11 +53,12 @@ export interface LoginRequest {
 /**
  * POST /api/login response.
  *
- * Backend returns: { user_id, username, public_key, token }
+ * Backend returns: { user_id, username, display_name, public_key, token }
  */
 export interface LoginResponse {
   userId: string;
   username: string;
+  displayName: string | null;
   publicKey: unknown;
   token: string;
 }

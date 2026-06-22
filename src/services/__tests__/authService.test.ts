@@ -230,7 +230,23 @@ describe('loginUser', () => {
     });
   });
 
-  it('sets null displayName and avatarPath since login does not return them', async () => {
+  it('passes displayName from login response to store when present', async () => {
+    mockLogin.mockResolvedValue({
+      token: 'tok',
+      userId: 'u1',
+      username: 'bob',
+      displayName: 'Bobby',
+      publicKey: null,
+    });
+
+    await loginUser('bob', 'pass');
+
+    expect(mockSetUser).toHaveBeenCalledWith(
+      expect.objectContaining({ displayName: 'Bobby', avatarPath: null }),
+    );
+  });
+
+  it('falls back to null displayName when backend omits it (backward compat)', async () => {
     mockLogin.mockResolvedValue({
       token: 'tok',
       userId: 'u1',

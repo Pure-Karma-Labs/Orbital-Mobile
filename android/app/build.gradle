@@ -2,6 +2,7 @@ apply plugin: "com.android.application"
 apply plugin: "org.jetbrains.kotlin.android"
 apply plugin: "com.facebook.react"
 apply from: project(':react-native-config').projectDir.getPath() + "/dotenv.gradle"
+apply from: "$rootDir/check-rust-freshness.gradle"
 
 def keystorePropertiesFile = rootProject.file("keystore.properties")
 def keystoreProperties = new Properties()
@@ -129,6 +130,10 @@ dependencies {
     } else {
         implementation jscFlavor
     }
+}
+
+tasks.matching { it.name == 'preBuild' }.configureEach {
+    dependsOn rootProject.tasks.named('checkRustBinaries')
 }
 
 apply plugin: 'com.google.gms.google-services'

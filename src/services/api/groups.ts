@@ -150,6 +150,13 @@ export async function listInviteHistory(groupId: string): Promise<InviteListItem
   return response.inviteCodes;
 }
 
+export async function cancelInvite(inviteId: string): Promise<{ success: boolean }> {
+  return request<{ success: boolean }>({
+    method: 'POST',
+    path: `/api/invites/${encodeURIComponent(inviteId)}/cancel`,
+  });
+}
+
 export async function removeMember(groupId: string, userId: string): Promise<void> {
   await request<void>({
     method: 'DELETE',

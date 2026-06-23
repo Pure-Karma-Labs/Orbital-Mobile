@@ -35,6 +35,7 @@ import { setItem, getItem } from '../database/repositories/itemRepository';
 import { useAppStore } from '../stores/useAppStore';
 import type { UploadAvatarResponse } from '../types/api';
 import {
+  readFile,
   writeFile,
   exists,
   mkdir,
@@ -96,10 +97,9 @@ export async function uploadEncryptedAvatar(
     throw new Error('Not authenticated');
   }
 
-  // 1. Read image bytes from URI
-  const response = await fetch(imageUri);
-  const imageBuffer = await response.arrayBuffer();
-  const imageBytes = new Uint8Array(imageBuffer);
+  // 1. Read image bytes from URI via RNFS (handles content:// URIs on Android)
+  const imageBase64 = await readFile(imageUri, 'base64');
+  const imageBytes = new Uint8Array(base64ToArrayBuffer(imageBase64));
 
   // 2. Generate fresh attachment keys
   const { keys, keysBase64 } = generateAttachmentKeys();

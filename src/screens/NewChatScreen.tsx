@@ -8,8 +8,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   FlatList,
-  KeyboardAvoidingView,
-  Platform,
   Text,
   TouchableOpacity,
   View,
@@ -23,6 +21,7 @@ import { useTheme } from '../theme';
 import { useContacts } from '../stores';
 import { startDm, hydrateContactsFromOrbits } from '../services/conversationService';
 import { Header } from '../components/Header';
+import { OrbitalKeyboardAvoidingView } from '../components/OrbitalKeyboardAvoidingView';
 import { ErrorBanner } from '../components/ErrorBanner';
 import { TextInput } from '../components/TextInput';
 import type { ChatsStackParamList } from '../navigation/types';
@@ -163,11 +162,7 @@ export function NewChatScreen({
           </TouchableOpacity>
         }
       />
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={0}
-      >
+      <OrbitalKeyboardAvoidingView keyboardVerticalOffset={0}>
         <View style={{ paddingHorizontal: theme.spacing.base, paddingTop: theme.spacing.base }}>
           <TextInput
             label="Search by username"
@@ -194,7 +189,7 @@ export function NewChatScreen({
             </Text>
           }
         />
-      </KeyboardAvoidingView>
+      </OrbitalKeyboardAvoidingView>
     </SafeAreaView>
   );
 }

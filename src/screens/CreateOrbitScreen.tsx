@@ -6,8 +6,6 @@
 import React, { useCallback, useState } from 'react';
 import {
   Alert,
-  KeyboardAvoidingView,
-  Platform,
   Share,
   Text,
   TextInput as RNTextInput,
@@ -22,6 +20,7 @@ import { TextInput } from '../components/TextInput';
 import { Button } from '../components/Button';
 import { EmojiText } from '../components/EmojiText';
 import { Header } from '../components/Header';
+import { OrbitalKeyboardAvoidingView } from '../components/OrbitalKeyboardAvoidingView';
 import { createOrbit, createInviteCode } from '../services/conversationService';
 import { formatInviteCode } from '../services/crypto/inviteCrypto';
 import type { ThreadsStackParamList } from '../navigation/types';
@@ -258,10 +257,7 @@ export function CreateOrbitScreen({
     return (
       <View style={containerStyle} testID="create-orbit-success">
         <Header title="Orbit Created" />
-        <KeyboardAvoidingView
-          style={{ flex: 1 }}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        >
+        <OrbitalKeyboardAvoidingView>
           <View style={contentStyle}>
             <EmojiText style={successTitleStyle}>{createdName}</EmojiText>
             <Text style={successSubtitleStyle}>Invite your first member</Text>
@@ -303,7 +299,7 @@ export function CreateOrbitScreen({
               testID="skip-button"
             />
           </View>
-        </KeyboardAvoidingView>
+        </OrbitalKeyboardAvoidingView>
       </View>
     );
   }
@@ -315,10 +311,7 @@ export function CreateOrbitScreen({
         onBack={handleBack}
         backLabel="Back"
       />
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      >
+      <OrbitalKeyboardAvoidingView>
         <View style={contentStyle}>
           <TextInput
             label="Orbit Name"
@@ -341,7 +334,7 @@ export function CreateOrbitScreen({
             testID="create-orbit-button"
           />
         </View>
-      </KeyboardAvoidingView>
+      </OrbitalKeyboardAvoidingView>
     </View>
   );
 }

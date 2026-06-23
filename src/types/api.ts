@@ -212,7 +212,7 @@ export interface InviteListItem {
   codeVersion: number;
   createdAt: number;
   expiresAt: number;
-  status: 'pending' | 'accepted' | 'expired';
+  status: 'pending' | 'accepted' | 'expired' | 'cancelled';
   targetEmail: string;
 }
 

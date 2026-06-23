@@ -29,7 +29,7 @@ import { EmojiText } from '../components/EmojiText';
 import { Emoji } from '../components/Emoji';
 import { fetchCreatorOrbitsDecrypted, createInviteCode } from '../services/conversationService';
 import type { DecryptedGroup } from '../services/conversationService';
-import { getGroupMembers, listInviteHistory, removeMember } from '../services/api/groups';
+import { getGroupMembers, listInviteHistory, removeMember, cancelInvite } from '../services/api/groups';
 import { loadConversations } from '../services/conversationService';
 import { formatInviteCode } from '../services/crypto/inviteCrypto';
 import { useAuth, useConversations } from '../stores';
@@ -149,6 +149,34 @@ export function ManageOrbitsScreen({ navigation }: Props): React.JSX.Element {
     );
   }, []);
 
+  const handleCancelInvite = useCallback((groupId: string, inviteId: string, targetEmail: string) => {
+    Alert.alert(
+      'Cancel Invite',
+      `Cancel the invite to ${targetEmail}?`,
+      [
+        { text: 'Keep', style: 'cancel' },
+        {
+          text: 'Cancel Invite',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await cancelInvite(inviteId);
+              // Refresh invite list for this group
+              try {
+                const invites = await listInviteHistory(groupId);
+                setInvitesByGroupId((prev) => ({ ...prev, [groupId]: invites }));
+              } catch {
+                // Best-effort refresh
+              }
+            } catch {
+              Alert.alert('Error', 'Failed to cancel invite. Please try again.');
+            }
+          },
+        },
+      ],
+    );
+  }, []);
+
   const handleOpenEmailModal = useCallback((groupId: string) => {
     setEmailModalGroupId(groupId);
     setEmailInput('');
@@ -260,10 +288,11 @@ export function ManageOrbitsScreen({ navigation }: Props): React.JSX.Element {
         onToggleExpand={handleToggleExpand}
         onRemoveMember={handleRemoveMember}
         onNewCode={handleOpenEmailModal}
+        onCancelInvite={handleCancelInvite}
         onAdminAction={handleAdminAction}
       />
     ),
-    [expandedOrbitId, membersByGroupId, loadingMembers, invitesByGroupId, loadingInvites, userId, handleToggleExpand, handleRemoveMember, handleOpenEmailModal, handleAdminAction],
+    [expandedOrbitId, membersByGroupId, loadingMembers, invitesByGroupId, loadingInvites, userId, handleToggleExpand, handleRemoveMember, handleOpenEmailModal, handleCancelInvite, handleAdminAction],
   );
 
   const keyExtractor = useCallback((item: DecryptedGroup) => item.groupId, []);
@@ -496,6 +525,7 @@ interface OrbitRowProps {
   onToggleExpand: (groupId: string) => void;
   onRemoveMember: (groupId: string, member: GroupMember) => void;
   onNewCode: (groupId: string) => void;
+  onCancelInvite: (groupId: string, inviteId: string, targetEmail: string) => void;
   onAdminAction: (action: 'transfer' | 'dissolve', groupId: string) => void;
 }
 
@@ -510,6 +540,7 @@ const OrbitRow = React.memo(function OrbitRow({
   onToggleExpand,
   onRemoveMember,
   onNewCode,
+  onCancelInvite,
   onAdminAction,
 }: OrbitRowProps): React.JSX.Element {
   const theme = useTheme();
@@ -693,6 +724,21 @@ const OrbitRow = React.memo(function OrbitRow({
                 }}>
                   {invite.targetEmail}
                 </Text>
+                {invite.status === 'pending' && (
+                  <TouchableOpacity
+                    onPress={() => onCancelInvite(group.groupId, invite.id, invite.targetEmail)}
+                    style={{ paddingHorizontal: theme.spacing.sm, paddingVertical: theme.spacing.xs }}
+                    testID={`cancel-invite-${invite.id}`}
+                  >
+                    <Text style={{
+                      fontFamily: theme.typography.fontFamily.body,
+                      fontSize: theme.typography.fontSize.sm,
+                      color: theme.colors.error,
+                    }}>
+                      Cancel
+                    </Text>
+                  </TouchableOpacity>
+                )}
                 <View style={{
                   borderRadius: 8,
                   paddingHorizontal: theme.spacing.sm,

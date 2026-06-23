@@ -68,6 +68,26 @@ export function saveMedia(row: MediaRow): void {
   execute(sql, params);
 }
 
+/**
+ * Update the thread_id and reply_id on an existing media row.
+ *
+ * When media is uploaded before the reply/thread is created server-side,
+ * the initial media row has NULL parent IDs. This function patches them
+ * after the server confirms the reply/thread, so the file library's
+ * JOIN chain can resolve conversation_id for orbit filtering.
+ */
+export function updateMediaParent(
+  mediaId: string,
+  threadId: string,
+  replyId: string | null,
+): void {
+  if (!isDatabaseInitialized()) return;
+  execute(
+    'UPDATE orbital_media SET thread_id = ?, reply_id = ? WHERE id = ?',
+    [threadId, replyId, mediaId],
+  );
+}
+
 export function getMedia(id: string): MediaRow | null {
   return queryOne<MediaRow>(
     'SELECT * FROM orbital_media WHERE id = ?',

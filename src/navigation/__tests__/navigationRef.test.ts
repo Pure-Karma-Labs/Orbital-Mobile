@@ -1,8 +1,10 @@
 /**
- * Tests for the navigation ref module — pending payload queue and flush.
+ * Tests for the navigation ref module — pending payload queue, flush,
+ * and immediate delivery when consumer + nav are ready.
  */
 
 import {
+  navigationRef,
   setPendingNotificationPayload,
   setPayloadConsumer,
   flushPendingNotificationPayload,
@@ -11,6 +13,12 @@ import {
 
 beforeEach(() => {
   resetNavigationRefForTesting();
+  // Default: nav NOT ready (killed-state scenario)
+  jest.spyOn(navigationRef, 'isReady').mockReturnValue(false);
+});
+
+afterEach(() => {
+  jest.restoreAllMocks();
 });
 
 describe('pending notification payload', () => {
@@ -73,5 +81,60 @@ describe('pending notification payload', () => {
     flushPendingNotificationPayload();
 
     expect(consumer).not.toHaveBeenCalled();
+  });
+});
+
+describe('immediate delivery (background tap with nav ready)', () => {
+  it('delivers payload immediately when consumer is registered and nav is ready', () => {
+    const consumer = jest.fn();
+    jest.spyOn(navigationRef, 'isReady').mockReturnValue(true);
+    setPayloadConsumer(consumer);
+
+    setPendingNotificationPayload({ t: 'new_dm', gid: 'dm-1' });
+
+    // Should be called immediately, not queued
+    expect(consumer).toHaveBeenCalledWith({ t: 'new_dm', gid: 'dm-1' });
+  });
+
+  it('does not queue payload when delivered immediately', () => {
+    const consumer = jest.fn();
+    jest.spyOn(navigationRef, 'isReady').mockReturnValue(true);
+    setPayloadConsumer(consumer);
+
+    setPendingNotificationPayload({ t: 'new_thread', tid: 't-1' });
+    consumer.mockClear();
+
+    // Flushing should not call consumer again — payload was not queued
+    flushPendingNotificationPayload();
+    expect(consumer).not.toHaveBeenCalled();
+  });
+
+  it('queues payload when consumer is registered but nav is NOT ready', () => {
+    const consumer = jest.fn();
+    jest.spyOn(navigationRef, 'isReady').mockReturnValue(false);
+    setPayloadConsumer(consumer);
+
+    setPendingNotificationPayload({ t: 'new_thread', tid: 't-1' });
+
+    // Should NOT be called immediately
+    expect(consumer).not.toHaveBeenCalled();
+
+    // Should be flushed later
+    flushPendingNotificationPayload();
+    expect(consumer).toHaveBeenCalledWith({ t: 'new_thread', tid: 't-1' });
+  });
+
+  it('queues payload when nav is ready but no consumer is registered', () => {
+    jest.spyOn(navigationRef, 'isReady').mockReturnValue(true);
+
+    // No consumer registered
+    setPendingNotificationPayload({ t: 'new_dm', gid: 'dm-1' });
+
+    // Register consumer and flush
+    const consumer = jest.fn();
+    setPayloadConsumer(consumer);
+    flushPendingNotificationPayload();
+
+    expect(consumer).toHaveBeenCalledWith({ t: 'new_dm', gid: 'dm-1' });
   });
 });

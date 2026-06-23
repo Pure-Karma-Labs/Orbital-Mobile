@@ -11,8 +11,10 @@ const messagingInstance = {
   getToken: jest.fn().mockResolvedValue('mock-fcm-token'),
   onTokenRefresh: jest.fn().mockReturnValue(jest.fn()), // returns unsubscribe
   onMessage: jest.fn().mockReturnValue(jest.fn()), // returns unsubscribe
+  onNotificationOpenedApp: jest.fn().mockReturnValue(jest.fn()), // returns unsubscribe
   getInitialNotification: jest.fn().mockResolvedValue(null),
   deleteToken: jest.fn().mockResolvedValue(undefined),
+  hasPermission: jest.fn().mockResolvedValue(1), // AUTHORIZED
 };
 
 const messaging = Object.assign(jest.fn(() => messagingInstance), {

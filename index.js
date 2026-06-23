@@ -23,6 +23,17 @@ if (SENTRY_DSN) {
 
 enableScreens();
 
+// Create Android notification channel eagerly at bundle load.
+// The background message handler (below) fires at JS bundle load time —
+// before auth and before initNotifications(). Displaying a notification
+// on a non-existent channel is silently dropped on Android.
+// This call is idempotent — calling it again in initNotifications() is harmless.
+notifee.createChannel({
+  id: 'orbital-default',
+  name: 'Orbital',
+  importance: AndroidImportance.HIGH,
+});
+
 // Must be registered at module top-level BEFORE AppRegistry.registerComponent.
 // Without this, Android data-only push payloads are silently consumed when the
 // app is killed or backgrounded — no system notification appears.
@@ -35,6 +46,7 @@ messaging().setBackgroundMessageHandler(async (remoteMessage) => {
     new_reply: 'New reply in a thread',
     new_dm: 'New direct message',
     orbit_invite: "You've been invited to an Orbit",
+    member_joined: 'A new member joined your Orbit',
   };
   const title = titles[data.t] || 'Orbital';
 

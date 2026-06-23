@@ -1,9 +1,9 @@
 /**
  * Tests for notificationService — push notification permission, foreground
- * display, and device deregistration.
+ * display, tap handling, and device deregistration.
  *
  * Covers: requestPermissionAndRegister, setupForegroundHandler,
- * deregisterCurrentDevice.
+ * setupNotificationTapHandler, deregisterCurrentDevice.
  */
 
 // ---------------------------------------------------------------------------
@@ -49,6 +49,7 @@ import notifee from '@notifee/react-native';
 import {
   requestPermissionAndRegister,
   setupForegroundHandler,
+  setupNotificationTapHandler,
   deregisterCurrentDevice,
 } from '../notificationService';
 
@@ -67,12 +68,18 @@ function getMessagingInstance() {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  jest.useFakeTimers();
   // Reset default mock returns
   (getMessagingInstance().requestPermission as jest.Mock).mockResolvedValue(
     messaging.AuthorizationStatus.AUTHORIZED,
   );
   (getMessagingInstance().getToken as jest.Mock).mockResolvedValue('mock-fcm-token');
   (getMessagingInstance().onTokenRefresh as jest.Mock).mockReturnValue(jest.fn());
+  (getMessagingInstance().onNotificationOpenedApp as jest.Mock).mockReturnValue(jest.fn());
+});
+
+afterEach(() => {
+  jest.useRealTimers();
 });
 
 // ---------------------------------------------------------------------------
@@ -118,14 +125,38 @@ describe('requestPermissionAndRegister', () => {
     expect(mockRegisterDevice).toHaveBeenCalled();
   });
 
-  it('does not propagate error when registerDevice throws', async () => {
-    mockRegisterDevice.mockRejectedValueOnce(new Error('Network error'));
+  it('retries registration after 5s when registerDevice throws', async () => {
+    mockRegisterDevice
+      .mockRejectedValueOnce(new Error('Network error'))
+      .mockResolvedValueOnce({ success: true });
 
-    // Should not throw
-    const unsubscribe = await requestPermissionAndRegister();
+    await requestPermissionAndRegister();
 
     expect(mockSetPushPermission).toHaveBeenCalledWith(true);
-    expect(typeof unsubscribe).toBe('function');
+    // First call failed
+    expect(mockRegisterDevice).toHaveBeenCalledTimes(1);
+
+    // Advance timer to trigger retry
+    jest.advanceTimersByTime(5000);
+    // Let the async retry run
+    await Promise.resolve();
+
+    expect(mockRegisterDevice).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not propagate error when both initial and retry registration fail', async () => {
+    mockRegisterDevice
+      .mockRejectedValueOnce(new Error('Network error'))
+      .mockRejectedValueOnce(new Error('Still failing'));
+
+    // Should not throw
+    await requestPermissionAndRegister();
+
+    jest.advanceTimersByTime(5000);
+    await Promise.resolve();
+
+    // Both calls made, no error propagated
+    expect(mockRegisterDevice).toHaveBeenCalledTimes(2);
   });
 
   it('returns an unsubscribe function from onTokenRefresh', async () => {
@@ -195,6 +226,17 @@ describe('setupForegroundHandler', () => {
     );
   });
 
+  it('displays correct title for member_joined type', async () => {
+    const cb = getOnMessageCallback();
+    await cb({ data: { t: 'member_joined', gid: 'group-123' } });
+
+    expect(notifee.displayNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'A new member joined your Orbit',
+      }),
+    );
+  });
+
   it('does not display notification for unknown type', async () => {
     const cb = getOnMessageCallback();
     await cb({ data: { t: 'unknown_event_type' } });
@@ -223,6 +265,38 @@ describe('setupForegroundHandler', () => {
     const unsubscribe = setupForegroundHandler();
 
     expect(unsubscribe).toBe(mockUnsub);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// setupNotificationTapHandler
+// ---------------------------------------------------------------------------
+
+describe('setupNotificationTapHandler', () => {
+  it('registers onNotificationOpenedApp handler', () => {
+    setupNotificationTapHandler();
+
+    expect(getMessagingInstance().onNotificationOpenedApp).toHaveBeenCalledTimes(1);
+    expect(typeof (getMessagingInstance().onNotificationOpenedApp as jest.Mock).mock.calls[0][0]).toBe('function');
+  });
+
+  it('cleanup unsubscribes onNotificationOpenedApp', () => {
+    const mockUnsubOpenedApp = jest.fn();
+    (getMessagingInstance().onNotificationOpenedApp as jest.Mock).mockReturnValueOnce(mockUnsubOpenedApp);
+
+    const cleanup = setupNotificationTapHandler();
+    cleanup();
+
+    expect(mockUnsubOpenedApp).toHaveBeenCalled();
+  });
+
+  it('registers setPayloadConsumer', () => {
+    const { setPayloadConsumer: mockSetPayloadConsumer } = require('../../navigation/navigationRef');
+
+    setupNotificationTapHandler();
+
+    expect(mockSetPayloadConsumer).toHaveBeenCalledTimes(1);
+    expect(typeof mockSetPayloadConsumer.mock.calls[0][0]).toBe('function');
   });
 });
 

@@ -5,8 +5,6 @@
 
 import React, { useCallback, useState } from 'react';
 import {
-  KeyboardAvoidingView,
-  Platform,
   Text,
   View,
   type TextStyle,
@@ -18,6 +16,7 @@ import { useTheme } from '../theme';
 import { TextInput } from '../components/TextInput';
 import { Button } from '../components/Button';
 import { Header } from '../components/Header';
+import { OrbitalKeyboardAvoidingView } from '../components/OrbitalKeyboardAvoidingView';
 import { joinOrbit } from '../services/conversationService';
 import { stripInviteCode, formatInviteCode } from '../services/crypto/inviteCrypto';
 import type { ThreadsStackParamList } from '../navigation/types';
@@ -103,10 +102,7 @@ export function JoinOrbitScreen({
         onBack={handleBack}
         backLabel="Back"
       />
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      >
+      <OrbitalKeyboardAvoidingView>
         <View style={contentStyle}>
           <TextInput
             label="Invite Code"
@@ -130,7 +126,7 @@ export function JoinOrbitScreen({
             testID="join-orbit-button"
           />
         </View>
-      </KeyboardAvoidingView>
+      </OrbitalKeyboardAvoidingView>
     </View>
   );
 }

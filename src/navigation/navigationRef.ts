@@ -5,6 +5,10 @@
  * user taps a push notification. Handles the killed-state cold-start race where
  * getInitialNotification resolves before the navigation tree mounts by queuing
  * the pending payload and flushing it from NavigationContainer's onReady callback.
+ *
+ * Also handles background-state taps where the nav tree IS ready — if a consumer
+ * is registered and nav is ready, the payload is delivered immediately instead of
+ * being queued.
  */
 
 import { createNavigationContainerRef } from '@react-navigation/native';
@@ -35,10 +39,21 @@ let payloadConsumer: PayloadConsumer | null = null;
 
 /**
  * Queue a notification payload for deferred navigation.
- * Called by notificationService when the nav tree is not ready yet.
+ * Called by notificationService when the nav tree is not ready yet,
+ * or by index.js onBackgroundEvent.
+ *
+ * If a consumer is registered and navigation is already ready (background tap
+ * scenario), the payload is delivered immediately rather than queued. This
+ * handles the case where the app was backgrounded (nav already mounted) and
+ * the user taps a notification — previously the payload sat in the queue
+ * because onReady had already fired.
  */
 export function setPendingNotificationPayload(data: Record<string, string>): void {
-  pendingPayload = data;
+  if (payloadConsumer && navigationRef.isReady()) {
+    payloadConsumer(data);
+  } else {
+    pendingPayload = data;
+  }
 }
 
 /**

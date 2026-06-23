@@ -12,7 +12,7 @@
  * appear in catch blocks (review finding #7).
  */
 
-import { AppState as RNAppState, Platform } from 'react-native';
+import { AppState as RNAppState, PermissionsAndroid, Platform } from 'react-native';
 import messaging, {
   type FirebaseMessagingTypes,
 } from '@react-native-firebase/messaging';
@@ -39,6 +39,7 @@ const NOTIFICATION_TITLES: Record<string, string> = {
   new_reply: 'New reply in a thread',
   new_dm: 'New direct message',
   orbit_invite: "You've been invited to an Orbit",
+  member_joined: 'A new member joined your Orbit',
 };
 
 // ---------------------------------------------------------------------------
@@ -108,6 +109,20 @@ export async function initNotifications(): Promise<void> {
  * @returns Unsubscribe function for the token refresh listener.
  */
 export async function requestPermissionAndRegister(): Promise<() => void> {
+  // Android 13+ (API 33) requires explicit runtime permission request
+  // for POST_NOTIFICATIONS. Firebase's requestPermission() handles iOS
+  // but may not trigger the Android system dialog.
+  if (Platform.OS === 'android' && Platform.Version >= 33) {
+    const result = await PermissionsAndroid.request(
+      PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
+    );
+    if (result !== PermissionsAndroid.RESULTS.GRANTED) {
+      useAppStore.getState().setPushPermission(false);
+      if (__DEV__) console.warn('[Push] POST_NOTIFICATIONS denied');
+      return () => {};
+    }
+  }
+
   const authStatus = await messaging().requestPermission();
 
   const granted =
@@ -122,6 +137,7 @@ export async function requestPermissionAndRegister(): Promise<() => void> {
   }
 
   const token = await messaging().getToken();
+  if (__DEV__) console.warn(`[Push] FCM token obtained (${token.length} chars)`);
   useAppStore.getState().setPushToken(token);
 
   const deviceId = getDeviceId();
@@ -129,9 +145,16 @@ export async function requestPermissionAndRegister(): Promise<() => void> {
 
   try {
     await registerDevice({ platform, pushToken: token, deviceId });
+    if (__DEV__) console.warn('[Push] Device registered with backend');
   } catch {
-    // Don't block the app if registration fails — will retry on next launch
-    if (__DEV__) console.warn('[Push] Device registration failed');
+    if (__DEV__) console.warn('[Push] Device registration failed, retrying in 5s');
+    setTimeout(async () => {
+      try {
+        await registerDevice({ platform, pushToken: token, deviceId });
+      } catch {
+        if (__DEV__) console.warn('[Push] Device registration retry failed');
+      }
+    }, 5000);
   }
 
   // Listen for token refresh and re-register.
@@ -202,6 +225,7 @@ export function setupForegroundHandler(): () => void {
             pressAction: { id: 'default' },
           },
         });
+        if (__DEV__) console.warn(`[Push] Foreground notification displayed: ${type}`);
 
         // Increment badge count so the app icon reflects unread notifications.
         // Primarily meaningful on iOS; Android badge behavior is launcher-dependent.
@@ -227,7 +251,7 @@ export function setupForegroundHandler(): () => void {
  * Navigate to the appropriate screen based on push notification payload data.
  *
  * Payload fields:
- * - `t`: notification type — 'new_thread' | 'new_reply' | 'new_dm' | 'orbit_invite'
+ * - `t`: notification type — 'new_thread' | 'new_reply' | 'new_dm' | 'orbit_invite' | 'member_joined'
  * - `gid`: group/conversation ID
  * - `tid`: thread ID (for new_thread and new_reply)
  * - `code`: invite code (for orbit_invite)
@@ -284,6 +308,11 @@ function navigateFromNotification(data: Record<string, string>): void {
       });
       break;
 
+    case 'member_joined':
+      // Navigate to Threads tab — ThreadsList doesn't accept groupId params
+      navigationRef.navigate('MainTabs', { screen: 'Threads' });
+      break;
+
     default:
       // Unknown notification type — no-op
       break;
@@ -295,17 +324,18 @@ function navigateFromNotification(data: Record<string, string>): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Set up notification tap handling from all three launch states, plus an
+ * Set up notification tap handling from all launch states, plus an
  * AppState listener that clears the badge when the app comes to the foreground.
  *
- * Three notification tap sources:
+ * Four notification tap sources:
  * 1. **Foreground tap** — user taps a local notification displayed by Notifee
- * 2. **Background tap** — app was backgrounded; user taps the system notification
+ * 2a. **Background tap (iOS)** — Firebase onNotificationOpenedApp for APNs alerts
+ * 2b. **Background tap (Android)** — Notifee onBackgroundEvent in index.js
  * 3. **Killed-state tap** — app was terminated; Firebase getInitialNotification()
  *
- * Returns an unsubscribe function that removes the Notifee foreground event
- * listener and the AppState listener. The Notifee background event handler is
- * registered globally (does not return an unsubscribe) per Notifee API design.
+ * Returns an unsubscribe function that removes all event listeners. The Notifee
+ * background event handler is registered globally (does not return an unsubscribe)
+ * per Notifee API design.
  *
  * Call once after authentication — typically in the useEffect([isAuthenticated])
  * block in App.tsx.
@@ -324,9 +354,20 @@ export function setupNotificationTapHandler(): () => void {
     },
   );
 
-  // 2. Background tap — handled by onBackgroundEvent in index.js (must be
-  // registered at module top-level per Notifee docs). Background taps queue
-  // the payload via setPendingNotificationPayload, flushed on nav onReady.
+  // 2a. Background tap (iOS) — Firebase notification opened from background state.
+  // On iOS, the system displays the APNs alert notification (not Notifee),
+  // so tapping it fires this handler rather than Notifee's onBackgroundEvent.
+  const unsubOpenedApp = messaging().onNotificationOpenedApp(
+    (remoteMessage: FirebaseMessagingTypes.RemoteMessage) => {
+      if (remoteMessage?.data) {
+        navigateFromNotification(remoteMessage.data as Record<string, string>);
+      }
+    },
+  );
+
+  // 2b. Background tap (Android) — handled by onBackgroundEvent in index.js
+  // (must be registered at module top-level per Notifee docs). Background taps
+  // queue the payload via setPendingNotificationPayload, flushed on nav onReady.
 
   // 3. Killed-state tap — Firebase getInitialNotification() is one-shot.
   // If the nav tree isn't ready yet, the payload is queued automatically
@@ -355,6 +396,7 @@ export function setupNotificationTapHandler(): () => void {
 
   return () => {
     unsubForegroundEvent();
+    unsubOpenedApp();
     appStateSubscription.remove();
   };
 }

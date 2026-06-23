@@ -22,7 +22,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Animated,
   Keyboard,
-  KeyboardAvoidingView,
   Platform,
   RefreshControl,
   Text,
@@ -39,6 +38,7 @@ import { loadThread, loadReplies, postReply, hydrateRepliesFromLocal } from '../
 import { uploadMediaBatch } from '../services/mediaUploadService';
 import { useMediaPicker } from '../hooks/useMediaPicker';
 import { Header } from '../components/Header';
+import { OrbitalKeyboardAvoidingView } from '../components/OrbitalKeyboardAvoidingView';
 import { AsciiSection } from '../components/AsciiSeparator';
 import { ThreadHeader } from './threadDetail/ThreadHeader';
 import { ReplyItem } from './threadDetail/ReplyItem';
@@ -442,11 +442,7 @@ export function ThreadDetailScreen({
         />
       </SafeAreaView>
 
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={0}
-      >
+      <OrbitalKeyboardAvoidingView keyboardVerticalOffset={0}>
         {loading && !thread ? (
           <View style={centerStyle}>
             <OrbitalSpinner size={32} />
@@ -504,7 +500,7 @@ export function ThreadDetailScreen({
           onSelectEmoji={handleEmojiSelect}
           height={keyboardHeight > 0 ? keyboardHeight : 300}
         />
-      </KeyboardAvoidingView>
+      </OrbitalKeyboardAvoidingView>
     </View>
   );
 }

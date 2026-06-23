@@ -5,8 +5,6 @@
 import React, { useCallback, useState } from 'react';
 import {
   Alert,
-  KeyboardAvoidingView,
-  Platform,
   ScrollView,
   Text,
   TextInput,
@@ -24,6 +22,7 @@ import { createNewThread } from '../services/threadService';
 import { uploadMediaBatch } from '../services/mediaUploadService';
 import { useMediaPicker } from '../hooks/useMediaPicker';
 import { Header } from '../components/Header';
+import { OrbitalKeyboardAvoidingView } from '../components/OrbitalKeyboardAvoidingView';
 import { LinkPreviewCard } from '../components/LinkPreviewCard';
 import { ErrorBanner } from '../components/ErrorBanner';
 import { MediaThumbnailStrip } from '../components/MediaThumbnailStrip';
@@ -183,11 +182,7 @@ export function ComposeThreadScreen({
           </TouchableOpacity>
         }
       />
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={0}
-      >
+      <OrbitalKeyboardAvoidingView keyboardVerticalOffset={0}>
         <ScrollView
           contentContainerStyle={scrollContentStyle}
           keyboardShouldPersistTaps="handled"
@@ -254,7 +249,7 @@ export function ComposeThreadScreen({
 
           <ErrorBanner message={error} />
         </ScrollView>
-      </KeyboardAvoidingView>
+      </OrbitalKeyboardAvoidingView>
     </SafeAreaView>
   );
 }

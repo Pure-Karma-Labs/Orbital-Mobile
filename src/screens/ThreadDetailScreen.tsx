@@ -36,6 +36,7 @@ import { useTheme } from '../theme';
 import { useAuth, useThreads } from '../stores';
 import { loadThread, loadReplies, postReply, hydrateRepliesFromLocal } from '../services/threadService';
 import { uploadMediaBatch } from '../services/mediaUploadService';
+import { updateMediaParent } from '../database/repositories/mediaRepository';
 import { useMediaPicker } from '../hooks/useMediaPicker';
 import { Header } from '../components/Header';
 import { OrbitalKeyboardAvoidingView } from '../components/OrbitalKeyboardAvoidingView';
@@ -329,7 +330,7 @@ export function ThreadDetailScreen({
         }
         const parentReplyId = replyTarget?.replyId ?? null;
         const depth = replyTarget ? replyTarget.depth + 1 : 0;
-        await postReply(
+        const reply = await postReply(
           threadId,
           thread.conversationId,
           body,
@@ -338,6 +339,15 @@ export function ThreadDetailScreen({
           { authorId: userId, authorUsername: username },
           mediaIds ? { mediaIds } : undefined,
         );
+
+        // Update local media rows with the confirmed reply/thread IDs
+        // so the file library orbit filter can resolve conversation_id
+        if (mediaIds && mediaIds.length > 0) {
+          for (const mid of mediaIds) {
+            updateMediaParent(mid, threadId, reply.id);
+          }
+        }
+
         setComposerText('');
         clearMedia();
         setReplyTarget(null);

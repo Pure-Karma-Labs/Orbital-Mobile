@@ -88,6 +88,7 @@ import {
   uploadEncryptedAvatar,
 } from '../avatarService';
 import {
+  readFile,
   writeFile,
   exists,
   moveFile,
@@ -95,6 +96,7 @@ import {
 } from '@dr.pogodin/react-native-fs';
 import { useAppStore } from '../../stores/useAppStore';
 
+const mockReadFile = readFile as jest.MockedFunction<typeof readFile>;
 const mockExists = exists as jest.MockedFunction<typeof exists>;
 const mockWriteFile = writeFile as jest.MockedFunction<typeof writeFile>;
 const mockMoveFile = moveFile as jest.MockedFunction<typeof moveFile>;
@@ -115,7 +117,6 @@ const fakeDigest = new Uint8Array(32).fill(0xdd);
 // Global mocks
 // ---------------------------------------------------------------------------
 
-const originalFetch = global.fetch;
 const originalFormData = (global as Record<string, unknown>).FormData;
 
 beforeEach(() => {
@@ -132,10 +133,9 @@ beforeEach(() => {
   // Default mock for binary download
   mockRequestBinary.mockResolvedValue({ data: fakeCiphertext.buffer });
 
-  // Mock fetch for upload (reading image URI)
-  global.fetch = jest.fn().mockResolvedValue({
-    arrayBuffer: () => Promise.resolve(fakePlaintext.buffer),
-  }) as unknown as typeof fetch;
+  // Mock readFile for upload (reading image URI via RNFS)
+  const fakePlaintextBase64 = Buffer.from(fakePlaintext).toString('base64');
+  mockReadFile.mockResolvedValue(fakePlaintextBase64);
 
   // Mock FormData
   (global as Record<string, unknown>).FormData = jest.fn().mockImplementation(() => ({
@@ -144,7 +144,6 @@ beforeEach(() => {
 });
 
 afterAll(() => {
-  global.fetch = originalFetch;
   (global as Record<string, unknown>).FormData = originalFormData;
 });
 

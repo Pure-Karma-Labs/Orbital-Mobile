@@ -51,21 +51,8 @@ jest.mock('../../services/notificationService', () => ({
   deregisterCurrentDevice: jest.fn().mockResolvedValue(undefined),
 }));
 
-jest.mock('@react-native-firebase/messaging', () => {
-  const mockMessaging = jest.fn(() => ({
-    hasPermission: jest.fn().mockResolvedValue(1),
-  }));
-  return Object.assign(mockMessaging, {
-    __esModule: true,
-    default: mockMessaging,
-    AuthorizationStatus: {
-      NOT_DETERMINED: -1,
-      DENIED: 0,
-      AUTHORIZED: 1,
-      PROVISIONAL: 2,
-    },
-  });
-});
+// @notifee/react-native is auto-mocked via __mocks__/@notifee/react-native.ts.
+// Import it here to override getNotificationSettings in per-test setups.
 
 const mockSetPushPermission = jest.fn();
 const mockSetPushToken = jest.fn();
@@ -89,7 +76,7 @@ import { useAuth, useUI, useConversations, useNotifications } from '../../stores
 import { logout, deleteAccount } from '../../services/authService';
 import { fetchCreatorOrbitsDecrypted } from '../../services/conversationService';
 import { requestPermissionAndRegister, deregisterCurrentDevice } from '../../services/notificationService';
-import messaging from '@react-native-firebase/messaging';
+import notifee from '@notifee/react-native';
 
 const mockRequestPermission = requestPermissionAndRegister as jest.Mock;
 const mockDeregister = deregisterCurrentDevice as jest.Mock;
@@ -466,8 +453,10 @@ describe('SettingsScreen — push toggle', () => {
 
   it('shows alert when OS permission is denied', async () => {
     mockUseNotifications.mockReturnValue({ pushPermissionGranted: false, pushToken: null });
-    (messaging as unknown as jest.Mock).mockReturnValueOnce({
-      hasPermission: jest.fn().mockResolvedValue(0),
+    (notifee.getNotificationSettings as jest.Mock).mockResolvedValueOnce({
+      authorizationStatus: 0, // DENIED
+      android: {},
+      ios: {},
     });
     const alertSpy = jest.spyOn(Alert, 'alert');
     const renderer = renderSettingsScreen();

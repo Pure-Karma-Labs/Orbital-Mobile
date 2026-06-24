@@ -15,6 +15,8 @@ const notifee = {
   getChannels: jest.fn().mockResolvedValue([]),
   onForegroundEvent: jest.fn().mockReturnValue(jest.fn()),
   onBackgroundEvent: jest.fn(),
+  requestPermission: jest.fn().mockResolvedValue({ authorizationStatus: 1 }),
+  getNotificationSettings: jest.fn().mockResolvedValue({ authorizationStatus: 1, android: {}, ios: {} }),
 };
 
 export default notifee;
@@ -25,6 +27,13 @@ export const AndroidImportance = {
   LOW: 2,
   MIN: 1,
   NONE: 0,
+};
+
+export const AuthorizationStatus = {
+  NOT_DETERMINED: -1 as const,
+  DENIED: 0 as const,
+  AUTHORIZED: 1 as const,
+  PROVISIONAL: 2 as const,
 };
 
 export const EventType = {

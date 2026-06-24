@@ -44,3 +44,18 @@ rules:
     message: Console output in crypto/security paths risks leaking key material.
     languages: [typescript, javascript]
     severity: ERROR
+
+  - id: no-sentry-replay
+    pattern-either:
+      - pattern: mobileReplayIntegration(...)
+      - pattern: "networkCaptureBodies: true"
+      - pattern: "maskAllText: false"
+      - pattern: "maskAllImages: false"
+      - pattern: "attachScreenshot: true"
+      - pattern: "enableCaptureFailedRequests: true"
+    message: >
+      Sentry Session Replay, screenshot capture, and network body capture
+      are forbidden — they could exfiltrate encrypted API payloads or
+      E2EE message content. Requires security review before enabling.
+    languages: [typescript, javascript]
+    severity: ERROR

@@ -16,7 +16,7 @@ import { AppState as RNAppState, PermissionsAndroid, Platform } from 'react-nati
 import messaging, {
   type FirebaseMessagingTypes,
 } from '@react-native-firebase/messaging';
-import notifee, { AndroidImportance, EventType, type Event as NotifeeEvent } from '@notifee/react-native';
+import notifee, { AndroidImportance, AuthorizationStatus, EventType, type Event as NotifeeEvent } from '@notifee/react-native';
 import { registerDevice, deregisterDevice } from './api/devices';
 import { getDeviceId } from './deviceId';
 import { useAppStore } from '../stores/useAppStore';
@@ -123,11 +123,11 @@ export async function requestPermissionAndRegister(): Promise<() => void> {
     }
   }
 
-  const authStatus = await messaging().requestPermission();
+  const settings = await notifee.requestPermission();
 
   const granted =
-    authStatus === messaging.AuthorizationStatus.AUTHORIZED ||
-    authStatus === messaging.AuthorizationStatus.PROVISIONAL;
+    settings.authorizationStatus === AuthorizationStatus.AUTHORIZED ||
+    settings.authorizationStatus === AuthorizationStatus.PROVISIONAL;
 
   useAppStore.getState().setPushPermission(granted);
 

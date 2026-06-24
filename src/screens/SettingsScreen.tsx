@@ -24,7 +24,7 @@ import { fetchCreatorOrbitsDecrypted } from '../services/conversationService';
 import type { DecryptedGroup } from '../services/conversationService';
 import { requestPermissionAndRegister, deregisterCurrentDevice } from '../services/notificationService';
 import { useAppStore } from '../stores/useAppStore';
-import messaging from '@react-native-firebase/messaging';
+import notifee, { AuthorizationStatus } from '@notifee/react-native';
 import { Header } from '../components/Header';
 import { ProfileCard } from './settings/ProfileCard';
 import { SettingsRow } from './settings/SettingsRow';
@@ -139,8 +139,8 @@ export function SettingsScreen(): React.JSX.Element {
         useAppStore.getState().setPushPermission(false);
         useAppStore.getState().setPushToken(null);
       } else {
-        const authStatus = await messaging().hasPermission();
-        if (authStatus === messaging.AuthorizationStatus.DENIED) {
+        const settings = await notifee.getNotificationSettings();
+        if (settings.authorizationStatus === AuthorizationStatus.DENIED) {
           Alert.alert(
             'Notifications Disabled',
             'Push notifications were previously denied. Enable them in Settings.',

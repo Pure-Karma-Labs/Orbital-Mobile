@@ -70,9 +70,9 @@ beforeEach(() => {
   jest.clearAllMocks();
   jest.useFakeTimers();
   // Reset default mock returns
-  (getMessagingInstance().requestPermission as jest.Mock).mockResolvedValue(
-    messaging.AuthorizationStatus.AUTHORIZED,
-  );
+  (notifee.requestPermission as jest.Mock).mockResolvedValue({
+    authorizationStatus: 1, // AUTHORIZED
+  });
   (getMessagingInstance().getToken as jest.Mock).mockResolvedValue('mock-fcm-token');
   (getMessagingInstance().onTokenRefresh as jest.Mock).mockReturnValue(jest.fn());
   (getMessagingInstance().onNotificationOpenedApp as jest.Mock).mockReturnValue(jest.fn());
@@ -88,9 +88,9 @@ afterEach(() => {
 
 describe('requestPermissionAndRegister', () => {
   it('sets pushPermission(false) and returns early when permission is denied', async () => {
-    (getMessagingInstance().requestPermission as jest.Mock).mockResolvedValueOnce(
-      messaging.AuthorizationStatus.DENIED,
-    );
+    (notifee.requestPermission as jest.Mock).mockResolvedValueOnce({
+      authorizationStatus: 0, // DENIED
+    });
 
     const unsubscribe = await requestPermissionAndRegister();
 
@@ -115,9 +115,9 @@ describe('requestPermissionAndRegister', () => {
   });
 
   it('sets pushPermission(true) when provisional permission is granted', async () => {
-    (getMessagingInstance().requestPermission as jest.Mock).mockResolvedValueOnce(
-      messaging.AuthorizationStatus.PROVISIONAL,
-    );
+    (notifee.requestPermission as jest.Mock).mockResolvedValueOnce({
+      authorizationStatus: 2, // PROVISIONAL
+    });
 
     await requestPermissionAndRegister();
 

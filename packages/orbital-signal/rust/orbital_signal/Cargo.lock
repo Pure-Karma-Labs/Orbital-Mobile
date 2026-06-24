@@ -860,7 +860,26 @@ dependencies = [
  "curve25519-dalek",
  "derive_more",
  "displaydoc",
- "libsignal-debug",
+ "libsignal-debug 0.96.2",
+ "log",
+ "rand",
+ "sha2",
+ "subtle",
+ "thiserror",
+ "uuid",
+ "x25519-dalek",
+ "zerocopy",
+]
+
+[[package]]
+name = "libsignal-core"
+version = "0.1.0"
+source = "git+https://github.com/signalapp/libsignal?tag=v0.96.3#6733123fc92fb37613f2293983d5a51ed713693b"
+dependencies = [
+ "curve25519-dalek",
+ "derive_more",
+ "displaydoc",
+ "libsignal-debug 0.96.3",
  "log",
  "rand",
  "sha2",
@@ -875,6 +894,14 @@ dependencies = [
 name = "libsignal-debug"
 version = "0.96.2"
 source = "git+https://github.com/signalapp/libsignal?tag=v0.96.2#38428a7bb70509910d72b3f78208c1daf33774d8"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
+name = "libsignal-debug"
+version = "0.96.3"
+source = "git+https://github.com/signalapp/libsignal?tag=v0.96.3#6733123fc92fb37613f2293983d5a51ed713693b"
 dependencies = [
  "cfg-if",
 ]
@@ -901,8 +928,8 @@ dependencies = [
  "indexmap",
  "itertools",
  "libcrux-ml-kem",
- "libsignal-core",
- "libsignal-debug",
+ "libsignal-core 0.1.0 (git+https://github.com/signalapp/libsignal?tag=v0.96.2)",
+ "libsignal-debug 0.96.2",
  "log",
  "prost",
  "prost-build",
@@ -1031,7 +1058,7 @@ dependencies = [
  "hex-literal",
  "hkdf",
  "hmac",
- "libsignal-core",
+ "libsignal-core 0.1.0 (git+https://github.com/signalapp/libsignal?tag=v0.96.3)",
  "libsignal-protocol",
  "rand",
  "rand_core 0.6.4",
@@ -1479,8 +1506,8 @@ dependencies = [
  "hmac",
  "hpke-rs",
  "hpke-rs-crypto",
- "libsignal-core",
- "libsignal-debug",
+ "libsignal-core 0.1.0 (git+https://github.com/signalapp/libsignal?tag=v0.96.2)",
+ "libsignal-debug 0.96.2",
  "rand_chacha",
  "rand_core 0.9.5",
  "sha1",

@@ -16,8 +16,9 @@
  * use displayDepth = depth + 1 for color lookup (clamped to 4).
  */
 
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { Dimensions, StyleSheet, Text, TouchableOpacity, View, type TextStyle, type ViewStyle } from 'react-native';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { useTheme } from '../../theme';
 import { getReplyDepthColors } from '../../theme/colors';
 import { EmojiText } from '../../components/EmojiText';
@@ -89,9 +90,12 @@ export const ReplyItem = React.memo(function ReplyItem({
   const [lightboxVisible, setLightboxVisible] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
 
-  const handlePress = useCallback(() => {
-    onPress(replyId, displayName, depth);
-  }, [onPress, replyId, displayName, depth]);
+  const tapGesture = useMemo(
+    () => Gesture.Tap().onEnd(() => {
+      onPress(replyId, displayName, depth);
+    }).runOnJS(true),
+    [onPress, replyId, displayName, depth],
+  );
 
   const handleMediaPress = useCallback((index: number) => {
     setLightboxIndex(index);
@@ -167,10 +171,9 @@ export const ReplyItem = React.memo(function ReplyItem({
   };
 
   return (
-    <TouchableOpacity
+    <GestureDetector gesture={tapGesture}>
+    <View
       style={containerStyle}
-      onPress={handlePress}
-      activeOpacity={0.7}
       accessibilityRole="button"
       accessibilityLabel={`Reply by ${displayName}`}
       testID={`reply-item-${replyId}`}
@@ -228,6 +231,7 @@ export const ReplyItem = React.memo(function ReplyItem({
           onClose={handleLightboxClose}
         />
       )}
-    </TouchableOpacity>
+    </View>
+    </GestureDetector>
   );
 });

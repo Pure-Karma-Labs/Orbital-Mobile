@@ -17,6 +17,7 @@ import { Linking, Text, View, type TextStyle, StyleSheet } from 'react-native';
 import { findEmojiInText } from '../emoji';
 import { Emoji } from './Emoji';
 import { useTheme } from '../theme';
+import { stripFormatChars } from '../utils/urlPattern';
 
 // ---------------------------------------------------------------------------
 // Props
@@ -97,9 +98,10 @@ export const EmojiText = React.memo(function EmojiText({
               key={index}
               style={{ color: theme.colors.blue, textDecorationLine: 'underline' }}
               onPress={() => {
-                const url = segment.url.toLowerCase();
-                if (url.startsWith('http://') || url.startsWith('https://')) {
-                  Linking.openURL(segment.url).catch(() => {});
+                const clean = stripFormatChars(segment.url);
+                const lower = clean.toLowerCase();
+                if (lower.startsWith('http://') || lower.startsWith('https://')) {
+                  Linking.openURL(clean).catch(() => {});
                 }
               }}
               accessibilityRole="link"

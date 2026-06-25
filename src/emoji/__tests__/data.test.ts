@@ -293,4 +293,49 @@ describe('emoji/data', () => {
       expect(linkSegments.length).toBe(0);
     });
   });
+
+  describe('URL format-char stripping', () => {
+    it('strips RTL Override from URL segment', () => {
+      const text = 'visit https://evil.com‮moc.elgoog';
+      const result = findEmojiInText(text);
+      const link = result.find(s => s.type === 'link');
+      expect(link).toBeDefined();
+      expect(link!.url).not.toContain('‮');
+      expect(link!.value).not.toContain('‮');
+    });
+
+    it('strips zero-width space from URL', () => {
+      const text = 'https://example​.com/path';
+      const result = findEmojiInText(text);
+      const link = result.find(s => s.type === 'link');
+      expect(link).toBeDefined();
+      expect(link!.url).toBe('https://example.com/path');
+    });
+
+    it('strips multiple format chars from URL', () => {
+      const text = 'https://‏example‪.com⁦';
+      const result = findEmojiInText(text);
+      const link = result.find(s => s.type === 'link');
+      expect(link).toBeDefined();
+      expect(link!.url).toBe('https://example.com');
+    });
+
+    it('leaves clean URLs unchanged', () => {
+      const result = findEmojiInText('https://example.com/path?q=1');
+      const link = result.find(s => s.type === 'link');
+      expect(link!.url).toBe('https://example.com/path?q=1');
+    });
+  });
+
+  describe('trimTrailingPunctuation loop cap', () => {
+    it('completes quickly with adversarial trailing punctuation', () => {
+      const adversarial = 'https://example.com' + '.'.repeat(1000);
+      const start = Date.now();
+      const result = findEmojiInText(adversarial);
+      const elapsed = Date.now() - start;
+      const link = result.find(s => s.type === 'link');
+      expect(link).toBeDefined();
+      expect(elapsed).toBeLessThan(100);
+    });
+  });
 });

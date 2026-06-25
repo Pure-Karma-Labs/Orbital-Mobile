@@ -64,6 +64,10 @@ describe('extractFirstUrl', () => {
       extractFirstUrl('look at https://example.com/path?q=1&r=2'),
     ).toBe('https://example.com/path?q=1&r=2');
   });
+
+  it('strips format chars from extracted URL', () => {
+    expect(extractFirstUrl('https://evil‮.example.com')).toBe('https://evil.example.com');
+  });
 });
 
 // ---------------------------------------------------------------------------

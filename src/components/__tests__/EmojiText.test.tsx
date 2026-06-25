@@ -195,4 +195,42 @@ describe('EmojiText', () => {
     );
     expect(withNumberOfLines).toBeDefined();
   });
+
+  it('passes selectable prop to Text when set', () => {
+    const renderer = renderEmojiText({
+      children: 'selectable text',
+      selectable: true,
+    });
+    const root = renderer.root;
+    const textNodes = root.findAllByType('Text' as unknown as React.ComponentType);
+    const selectableText = textNodes.find(
+      (node) => node.props.selectable === true,
+    );
+    expect(selectableText).toBeDefined();
+  });
+
+  it('does not set selectable by default', () => {
+    const renderer = renderEmojiText({
+      children: 'non-selectable text',
+    });
+    const root = renderer.root;
+    const textNodes = root.findAllByType('Text' as unknown as React.ComponentType);
+    const selectableText = textNodes.find(
+      (node) => node.props.selectable === true,
+    );
+    expect(selectableText).toBeUndefined();
+  });
+
+  it('passes selectable to outer Text on mixed emoji+text content', () => {
+    const renderer = renderEmojiText({
+      children: 'hello \u{1F600} world',
+      selectable: true,
+    });
+    const root = renderer.root;
+    const textNodes = root.findAllByType('Text' as unknown as React.ComponentType);
+    const selectableText = textNodes.find(
+      (node) => node.props.selectable === true,
+    );
+    expect(selectableText).toBeDefined();
+  });
 });

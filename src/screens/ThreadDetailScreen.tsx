@@ -336,9 +336,6 @@ export function ThreadDetailScreen({
   useEffect(() => {
     setActiveThread(threadId);
     markThreadViewed(threadId);
-    if (thread?.conversationId) {
-      useAppStore.getState().setViewingConversation(thread.conversationId);
-    }
     // Instant hydration from local SQLCipher cache before async API fetch
     hydrateRepliesFromLocal(threadId);
     fetchData();
@@ -346,9 +343,19 @@ export function ThreadDetailScreen({
       // Mark viewed again on cleanup — captures replies streamed while reading
       markThreadViewed(threadId);
       setActiveThread(null);
+    };
+  }, [threadId, setActiveThread, markThreadViewed, fetchData]);
+
+  // Track which conversation the user is viewing (for foreground push suppression)
+  const conversationId = thread?.conversationId;
+  useEffect(() => {
+    if (conversationId) {
+      useAppStore.getState().setViewingConversation(conversationId);
+    }
+    return () => {
       useAppStore.getState().setViewingConversation(null);
     };
-  }, [threadId, setActiveThread, markThreadViewed, fetchData, thread?.conversationId]);
+  }, [conversationId]);
 
   // Pull-to-refresh
   const handleRefresh = useCallback(async () => {

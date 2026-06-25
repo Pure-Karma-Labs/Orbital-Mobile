@@ -120,7 +120,7 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
         )}
       </View>
       {body ? (
-        <EmojiText style={bodyStyle} numberOfLines={4}>
+        <EmojiText style={bodyStyle} numberOfLines={4} selectable>
           {body}
         </EmojiText>
       ) : null}

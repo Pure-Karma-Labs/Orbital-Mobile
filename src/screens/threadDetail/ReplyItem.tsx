@@ -200,7 +200,7 @@ export const ReplyItem = React.memo(function ReplyItem({
         <Text style={timestampStyle}>{formatTimestamp(createdAt)}</Text>
       </TouchableOpacity>
       {body != null && body.length > 0 && (
-        <EmojiText style={bodyStyle}>{body}</EmojiText>
+        <EmojiText style={bodyStyle} selectable>{body}</EmojiText>
       )}
       <LinkPreviewCard text={body} />
       {mediaItems.length > 0 && (

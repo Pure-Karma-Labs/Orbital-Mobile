@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { getLinkPreview } from '../services/api/linkPreviews';
 import { NotFoundError } from '../services/api/errors';
 import type { LinkPreviewResponse } from '../types/api';
-import { URL_PATTERN_SOURCE } from '../utils/urlPattern';
+import { URL_PATTERN_SOURCE, stripFormatChars } from '../utils/urlPattern';
 
 const URL_REGEX = new RegExp(URL_PATTERN_SOURCE, 'gi');
 const MAX_CACHE_SIZE = 200;
@@ -16,8 +16,9 @@ export function extractFirstUrl(text: string | null): string | null {
   if (!matches) return null;
   for (const match of matches) {
     try {
-      const url = new URL(match);
-      if (url.protocol === 'https:') return match;
+      const cleaned = stripFormatChars(match);
+      const url = new URL(cleaned);
+      if (url.protocol === 'https:') return cleaned;
     } catch {
       // invalid URL, try next
     }

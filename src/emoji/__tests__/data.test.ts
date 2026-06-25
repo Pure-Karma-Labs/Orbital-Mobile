@@ -293,4 +293,62 @@ describe('emoji/data', () => {
       expect(linkSegments.length).toBe(0);
     });
   });
+
+  describe('URL format-char stripping', () => {
+    it('strips RTL Override from URL segment', () => {
+      const text = 'visit https://evil.com‮moc.elgoog';
+      const result = findEmojiInText(text);
+      const link = result.find(s => s.type === 'link');
+      expect(link).toBeDefined();
+      expect(link!.url).not.toContain('‮');
+      expect(link!.value).not.toContain('‮');
+    });
+
+    it('strips zero-width space from URL', () => {
+      const text = 'https://example​.com/path';
+      const result = findEmojiInText(text);
+      const link = result.find(s => s.type === 'link');
+      expect(link).toBeDefined();
+      expect(link!.url).toBe('https://example.com/path');
+    });
+
+    it('strips multiple format chars from URL', () => {
+      const text = 'https://‏example‪.com⁦';
+      const result = findEmojiInText(text);
+      const link = result.find(s => s.type === 'link');
+      expect(link).toBeDefined();
+      expect(link!.url).toBe('https://example.com');
+    });
+
+    it('leaves clean URLs unchanged', () => {
+      const result = findEmojiInText('https://example.com/path?q=1');
+      const link = result.find(s => s.type === 'link');
+      expect(link!.url).toBe('https://example.com/path?q=1');
+    });
+  });
+
+  describe('trimTrailingPunctuation loop cap', () => {
+    it('caps trimming at 10 iterations on adversarial trailing dots', () => {
+      const adversarial = 'https://example.com' + '.'.repeat(1000);
+      const result = findEmojiInText(adversarial);
+      const link = result.find(s => s.type === 'link');
+      expect(link).toBeDefined();
+      expect(link!.url).toBe('https://example.com' + '.'.repeat(990));
+    });
+
+    it('caps trimming on adversarial trailing parens (O(n^2) branch)', () => {
+      const adversarial = 'https://example.com/path' + ')'.repeat(500);
+      const result = findEmojiInText(adversarial);
+      const link = result.find(s => s.type === 'link');
+      expect(link).toBeDefined();
+      expect(link!.url).toBe('https://example.com/path' + ')'.repeat(490));
+    });
+
+    it('fully trims normal trailing punctuation within cap', () => {
+      const result = findEmojiInText('https://example.com/path.)');
+      const link = result.find(s => s.type === 'link');
+      expect(link).toBeDefined();
+      expect(link!.url).toBe('https://example.com/path');
+    });
+  });
 });

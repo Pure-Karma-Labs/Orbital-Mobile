@@ -195,4 +195,32 @@ describe('EmojiText', () => {
     );
     expect(withNumberOfLines).toBeDefined();
   });
+
+  // --- Selectable prop tests ---
+
+  it('passes selectable prop to Text when set', () => {
+    const renderer = renderEmojiText({
+      children: 'selectable text',
+      selectable: true,
+    });
+    const root = renderer.root;
+    const textNodes = root.findAllByType('Text' as unknown as React.ComponentType);
+    const selectableText = textNodes.find(
+      (node) => node.props.selectable === true,
+    );
+    expect(selectableText).toBeDefined();
+  });
+
+  it('does not set selectable by default', () => {
+    const renderer = renderEmojiText({
+      children: 'non-selectable text',
+    });
+    const root = renderer.root;
+    const textNodes = root.findAllByType('Text' as unknown as React.ComponentType);
+    // The root Text should not have selectable set to true
+    const selectableText = textNodes.find(
+      (node) => node.props.selectable === true,
+    );
+    expect(selectableText).toBeUndefined();
+  });
 });

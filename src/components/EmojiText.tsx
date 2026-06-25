@@ -33,6 +33,8 @@ export interface EmojiTextProps {
   testID?: string;
   /** Override emoji size multiplier (default: 1.15). Use ~1.6 for composer inputs. */
   emojiScale?: number;
+  /** Enable text selection (long-press to select). Defaults to false. */
+  selectable?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -61,6 +63,7 @@ export const EmojiText = React.memo(function EmojiText({
   numberOfLines,
   testID,
   emojiScale,
+  selectable,
 }: EmojiTextProps): React.JSX.Element {
   const theme = useTheme();
   const fontSize = StyleSheet.flatten(style)?.fontSize ?? DEFAULT_FONT_SIZE;
@@ -76,14 +79,14 @@ export const EmojiText = React.memo(function EmojiText({
   const hasSpecialSegments = segments.some((s) => s.type === 'emoji' || s.type === 'link');
   if (!hasSpecialSegments) {
     return (
-      <Text style={style} numberOfLines={numberOfLines} testID={testID}>
+      <Text style={style} numberOfLines={numberOfLines} testID={testID} selectable={selectable}>
         {children}
       </Text>
     );
   }
 
   return (
-    <Text style={style} numberOfLines={numberOfLines} testID={testID}>
+    <Text style={style} numberOfLines={numberOfLines} testID={testID} selectable={selectable}>
       {segments.map((segment, index) => {
         if (segment.type === 'text') {
           return (

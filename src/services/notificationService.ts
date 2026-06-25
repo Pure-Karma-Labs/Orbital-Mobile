@@ -41,6 +41,9 @@ import { LRUSet } from './websocket/lruSet';
 /** LRU set for foreground push deduplication (WS + push race). */
 const pushDedupSet = new LRUSet(200);
 
+/** Timer ID for the device registration retry so it can be cleared on logout. */
+let retryTimerId: ReturnType<typeof setTimeout> | undefined;
+
 // ---------------------------------------------------------------------------
 // Notifee availability check
 // ---------------------------------------------------------------------------
@@ -147,7 +150,8 @@ export async function requestPermissionAndRegister(): Promise<() => void> {
     if (__DEV__) console.warn('[Push] Device registered with backend');
   } catch {
     if (__DEV__) console.warn('[Push] Device registration failed, retrying in 5s');
-    setTimeout(async () => {
+    retryTimerId = setTimeout(async () => {
+      retryTimerId = undefined;
       try {
         await registerDevice({ platform, pushToken: token, deviceId });
       } catch {
@@ -167,7 +171,13 @@ export async function requestPermissionAndRegister(): Promise<() => void> {
     }
   });
 
-  return unsubTokenRefresh;
+  return () => {
+    unsubTokenRefresh();
+    if (retryTimerId != null) {
+      clearTimeout(retryTimerId);
+      retryTimerId = undefined;
+    }
+  };
 }
 
 /**

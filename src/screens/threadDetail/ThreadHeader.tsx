@@ -137,10 +137,10 @@ export const ThreadHeader = React.memo(function ThreadHeader({
         <Text style={timestampStyle}>{formatTimestamp(createdAt)}</Text>
       </TouchableOpacity>
       {title != null && title.length > 0 && (
-        <EmojiText style={titleStyle}>{title}</EmojiText>
+        <EmojiText style={titleStyle} selectable>{title}</EmojiText>
       )}
       {body != null && body.length > 0 && (
-        <EmojiText style={bodyStyle}>{body}</EmojiText>
+        <EmojiText style={bodyStyle} selectable>{body}</EmojiText>
       )}
       <LinkPreviewCard text={body} />
       {mediaItems.length > 0 && (

@@ -11,7 +11,7 @@ export type ComposeThreadParams = { groupId: string; isDm?: boolean };
 // Skeleton for future nested stacks inside tabs
 export type ThreadsStackParamList = {
   ThreadsList: undefined;
-  ThreadDetail: { threadId: string; threadTitle?: string };
+  ThreadDetail: { threadId: string; threadTitle?: string; targetReplyId?: string };
   ComposeThread: ComposeThreadParams;
   CreateOrbit: undefined;
   JoinOrbit: { code?: string } | undefined;
@@ -22,7 +22,7 @@ export type ChatsStackParamList = {
   ChatsList: undefined;
   ChatDetail: { conversationId: string; recipientName?: string; recipientId?: string };
   ComposeChatThread: ComposeThreadParams;
-  ThreadDetail: { threadId: string; threadTitle?: string };
+  ThreadDetail: { threadId: string; threadTitle?: string; targetReplyId?: string };
   NewChat: undefined;
   SafetyNumber: { contactId: string; contactName: string };
 };

@@ -17,7 +17,7 @@
  */
 
 import React, { useCallback, useState } from 'react';
-import { Dimensions, Text, TouchableOpacity, type TextStyle, type ViewStyle } from 'react-native';
+import { Dimensions, StyleSheet, Text, TouchableOpacity, View, type TextStyle, type ViewStyle } from 'react-native';
 import { useTheme } from '../../theme';
 import { getReplyDepthColors } from '../../theme/colors';
 import { EmojiText } from '../../components/EmojiText';
@@ -45,6 +45,8 @@ export interface ReplyItemProps {
   parentAuthorUsername: string | null;
   /** Called when the reply is tapped (to set it as reply-to target) */
   onPress: (replyId: string, authorUsername: string, depth: number) => void;
+  /** When true, renders a brief highlight overlay (notification deep-link target) */
+  isHighlighted?: boolean;
 }
 
 /** Format a timestamp as a relative or absolute time string */
@@ -78,6 +80,7 @@ export const ReplyItem = React.memo(function ReplyItem({
   parentAuthorId,
   parentAuthorUsername,
   onPress,
+  isHighlighted,
 }: ReplyItemProps): React.JSX.Element {
   const theme = useTheme();
   const displayName = useDisplayName(authorId, authorUsername);
@@ -172,6 +175,17 @@ export const ReplyItem = React.memo(function ReplyItem({
       accessibilityLabel={`Reply by ${displayName}`}
       testID={`reply-item-${replyId}`}
     >
+      {isHighlighted && (
+        <View
+          style={{
+            ...StyleSheet.absoluteFillObject,
+            backgroundColor: theme.colors.blue,
+            opacity: 0.15,
+            borderRadius: theme.borderRadius.base,
+          }}
+          pointerEvents="none"
+        />
+      )}
       {parentAuthorUsername != null && (
         <EmojiText style={replyContextStyle}>{`↳ Replying to @${parentDisplayName}`}</EmojiText>
       )}

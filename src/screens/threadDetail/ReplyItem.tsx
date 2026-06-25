@@ -172,12 +172,12 @@ export const ReplyItem = React.memo(function ReplyItem({
 
   return (
     <GestureDetector gesture={tapGesture}>
-    <View
-      style={containerStyle}
-      accessibilityRole="button"
-      accessibilityLabel={`Reply by ${displayName}`}
-      testID={`reply-item-${replyId}`}
-    >
+      <View
+        style={containerStyle}
+        accessibilityRole="button"
+        accessibilityLabel={`Reply by ${displayName}`}
+        testID={`reply-item-${replyId}`}
+      >
       {isHighlighted && (
         <View
           style={{
@@ -231,7 +231,7 @@ export const ReplyItem = React.memo(function ReplyItem({
           onClose={handleLightboxClose}
         />
       )}
-    </View>
+      </View>
     </GestureDetector>
   );
 });

@@ -2,6 +2,15 @@
  * Tests for ThreadDetailScreen — thread detail view with nested replies and composer.
  */
 
+jest.mock('react-native-gesture-handler', () => {
+  const { View } = require('react-native');
+  return {
+    Gesture: { Tap: () => ({ onEnd: () => ({ runOnJS: () => ({}) }) }) },
+    GestureDetector: ({ children }: { children: React.ReactNode }) => children,
+    GestureHandlerRootView: View,
+  };
+});
+
 jest.mock('../../hooks/useBlockedSet', () => ({
   useBlockedSet: () => new Set<string>(),
 }));

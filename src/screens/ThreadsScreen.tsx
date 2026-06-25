@@ -87,15 +87,20 @@ function buildListRows(threads: Thread[]): ListRow[] {
     return [];
   }
 
-  // Sort by createdAt descending (newest first) — already ordered by store but enforce it
-  const sorted = [...threads].sort((a, b) => b.createdAt - a.createdAt);
+  // Sort by most recent activity (lastReplyAt or createdAt) descending
+  const sorted = [...threads].sort((a, b) => {
+    const aTime = a.lastReplyAt ?? a.createdAt;
+    const bTime = b.lastReplyAt ?? b.createdAt;
+    return bTime - aTime;
+  });
 
   const rows: ListRow[] = [];
   let lastDayKey: string | null = null;
   let groupIndex = 0;
 
   for (const thread of sorted) {
-    const dayKey = getDayKey(thread.createdAt);
+    const activityTime = thread.lastReplyAt ?? thread.createdAt;
+    const dayKey = getDayKey(activityTime);
     if (dayKey !== lastDayKey) {
       // Insert section separator between day groups (not before first group)
       if (lastDayKey !== null) {
@@ -104,7 +109,7 @@ function buildListRows(threads: Thread[]): ListRow[] {
       }
       rows.push({
         type: 'day',
-        label: getDayLabel(thread.createdAt),
+        label: getDayLabel(activityTime),
         key: `day-${dayKey}`,
       });
       lastDayKey = dayKey;

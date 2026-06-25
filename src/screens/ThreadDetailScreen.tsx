@@ -16,11 +16,16 @@
  *   Level 4+ = deepest (purple 12%, purple border)
  *
  * Indentation: threadIndent.perLevel (24) * Math.min(depth, 4)
+ *
+ * Deep-link scroll: when `targetReplyId` is passed via route params (from a
+ * push notification tap), the list auto-scrolls to and briefly highlights
+ * the target reply once content loads.
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
+  FlatList,
   Keyboard,
   Platform,
   RefreshControl,
@@ -101,7 +106,7 @@ export function ThreadDetailScreen({
   navigation,
 }: ThreadDetailScreenProps): React.JSX.Element {
   const theme = useTheme();
-  const { threadId, threadTitle } = route.params;
+  const { threadId, threadTitle, targetReplyId } = route.params;
 
   // Store selectors
   const {
@@ -112,6 +117,35 @@ export function ThreadDetailScreen({
     markThreadViewed,
   } = useThreads();
   const { userId, username } = useAuth();
+
+  // The current thread from the store
+  const thread: Thread | undefined = threads[threadId];
+
+  // Subscribe to real-time updates for this thread's conversation
+  useWebSocketSubscription(thread?.conversationId ?? null);
+
+  const blockedSet = useBlockedSet();
+
+  // Derive reply list from store — ordered by replyIdsByThread, excluding blocked users
+  const replyList = useMemo((): Reply[] => {
+    const ids = replyIdsByThread[threadId] ?? [];
+    const list = ids
+      .map((id) => allReplies[id])
+      .filter((r): r is Reply => r != null);
+    return blockedSet.size > 0 ? list.filter((r) => !blockedSet.has(r.authorId)) : list;
+  }, [allReplies, replyIdsByThread, threadId, blockedSet]);
+
+  const replyRows = useMemo((): ReplyRow[] => {
+    return replyList.map((r) => {
+      const parent = r.parentReplyId ? allReplies[r.parentReplyId] : undefined;
+      return {
+        reply: r,
+        parentAuthorId: parent?.authorId ?? null,
+        parentAuthorUsername: parent?.authorUsername ?? null,
+        key: `reply-${r.id}`,
+      };
+    });
+  }, [replyList, allReplies]);
 
   // Local state
   const [loading, setLoading] = useState(true);
@@ -136,6 +170,80 @@ export function ThreadDetailScreen({
   // Pagination offset (local — not stored in Zustand)
   const offsetRef = useRef(0);
   const hasMoreRef = useRef(true);
+
+  // ---------------------------------------------------------------------------
+  // Deep-link scroll + highlight
+  // ---------------------------------------------------------------------------
+
+  const listRef = useRef<FlatList<ReplyRow>>(null);
+  const highlightRef = useRef<string | null>(targetReplyId ?? null);
+  const scrollAttemptedRef = useRef(false);
+  const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const retryCountRef = useRef(0);
+  const [highlightTick, setHighlightTick] = useState(0);
+
+  // Reset scroll state when targetReplyId changes (new deep link while screen is mounted)
+  useEffect(() => {
+    highlightRef.current = targetReplyId ?? null;
+    scrollAttemptedRef.current = false;
+    retryCountRef.current = 0;
+    if (targetReplyId) {
+      setHighlightTick(n => n + 1);
+    }
+  }, [targetReplyId]);
+
+  // Safety timeout — give up scrolling after 10 seconds
+  useEffect(() => {
+    if (!targetReplyId) return;
+    scrollTimeoutRef.current = setTimeout(() => {
+      scrollAttemptedRef.current = true;
+      highlightRef.current = null;
+      setHighlightTick(n => n + 1);
+      navigation.setParams({ targetReplyId: undefined });
+    }, 10000);
+    return () => {
+      if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
+    };
+  }, [targetReplyId, navigation]);
+
+  const handleContentSizeChange = useCallback(() => {
+    if (!targetReplyId || scrollAttemptedRef.current || !listRef.current) return;
+    const idx = replyRows.findIndex(r => r.reply.id === targetReplyId);
+    if (idx === -1) return;
+
+    scrollAttemptedRef.current = true;
+    if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
+
+    listRef.current.scrollToIndex({ index: idx, animated: true, viewPosition: 0.3 });
+
+    // Trigger highlight and clear after 2 seconds
+    highlightRef.current = targetReplyId;
+    setHighlightTick(n => n + 1);
+    setTimeout(() => {
+      highlightRef.current = null;
+      setHighlightTick(n => n + 1);
+      navigation.setParams({ targetReplyId: undefined });
+    }, 2000);
+  }, [targetReplyId, replyRows, navigation]);
+
+  const handleScrollToIndexFailed = useCallback(
+    (info: { index: number; averageItemLength: number }) => {
+      if (retryCountRef.current >= 3) return;
+      retryCountRef.current++;
+      listRef.current?.scrollToOffset({
+        offset: info.averageItemLength * info.index,
+        animated: true,
+      });
+      setTimeout(() => {
+        listRef.current?.scrollToIndex({
+          index: info.index,
+          animated: true,
+          viewPosition: 0.3,
+        });
+      }, 200);
+    },
+    [],
+  );
 
   // ---------------------------------------------------------------------------
   // Keyboard coordination
@@ -191,35 +299,6 @@ export function ThreadDetailScreen({
   const handleEmojiSelect = useCallback((native: string) => {
     setComposerText((prev) => prev + native);
   }, []);
-
-  // The current thread from the store
-  const thread: Thread | undefined = threads[threadId];
-
-  // Subscribe to real-time updates for this thread's conversation
-  useWebSocketSubscription(thread?.conversationId ?? null);
-
-  const blockedSet = useBlockedSet();
-
-  // Derive reply list from store — ordered by replyIdsByThread, excluding blocked users
-  const replyList = useMemo((): Reply[] => {
-    const ids = replyIdsByThread[threadId] ?? [];
-    const list = ids
-      .map((id) => allReplies[id])
-      .filter((r): r is Reply => r != null);
-    return blockedSet.size > 0 ? list.filter((r) => !blockedSet.has(r.authorId)) : list;
-  }, [allReplies, replyIdsByThread, threadId, blockedSet]);
-
-  const replyRows = useMemo((): ReplyRow[] => {
-    return replyList.map((r) => {
-      const parent = r.parentReplyId ? allReplies[r.parentReplyId] : undefined;
-      return {
-        reply: r,
-        parentAuthorId: parent?.authorId ?? null,
-        parentAuthorUsername: parent?.authorUsername ?? null,
-        key: `reply-${r.id}`,
-      };
-    });
-  }, [replyList, allReplies]);
 
   // ---------------------------------------------------------------------------
   // Data loading
@@ -379,6 +458,7 @@ export function ThreadDetailScreen({
           parentAuthorId={item.parentAuthorId}
           parentAuthorUsername={item.parentAuthorUsername}
           onPress={handleReplyPress}
+          isHighlighted={highlightRef.current === item.reply.id}
         />
       );
     },
@@ -465,6 +545,7 @@ export function ThreadDetailScreen({
           <View style={{ flex: 1 }}>
             <PullToRefreshOverlay scrollY={scrollY} refreshing={refreshing} />
             <Animated.FlatList
+              ref={listRef as React.RefObject<FlatList<ReplyRow>>}
               style={{ flex: 1 }}
               data={replyRows}
               keyExtractor={keyExtractor}
@@ -482,6 +563,9 @@ export function ThreadDetailScreen({
               {...scrollProps}
               onEndReached={handleEndReached}
               onEndReachedThreshold={0.3}
+              onContentSizeChange={handleContentSizeChange}
+              onScrollToIndexFailed={handleScrollToIndexFailed}
+              extraData={highlightTick}
               initialNumToRender={20}
               maxToRenderPerBatch={10}
               windowSize={5}

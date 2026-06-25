@@ -25,22 +25,21 @@ import {
   setPendingNotificationPayload,
   setPayloadConsumer,
 } from '../navigation/navigationRef';
+import {
+  NOTIFICATION_TITLES,
+  ANDROID_CHANNEL_ID,
+  ANDROID_CHANNEL_NAME,
+  resolveAnchor,
+  dedupKeyForPayload,
+} from './notificationConstants';
+import { LRUSet } from './websocket/lruSet';
 
 // ---------------------------------------------------------------------------
-// Constants
+// Dedup
 // ---------------------------------------------------------------------------
 
-const ANDROID_CHANNEL_ID = 'orbital-default';
-const ANDROID_CHANNEL_NAME = 'Orbital';
-
-/** Maps push payload type to a content-free display title. */
-const NOTIFICATION_TITLES: Record<string, string> = {
-  new_thread: 'New thread in an Orbit',
-  new_reply: 'New reply in a thread',
-  new_dm: 'New direct message',
-  orbit_invite: "You've been invited to an Orbit",
-  member_joined: 'A new member joined your Orbit',
-};
+/** LRU set for foreground push deduplication (WS + push race). */
+const pushDedupSet = new LRUSet(200);
 
 // ---------------------------------------------------------------------------
 // Notifee availability check
@@ -197,6 +196,9 @@ export async function deregisterCurrentDevice(): Promise<void> {
  * no-op — foreground messages are silently consumed. This is acceptable for
  * v1: the user is already in the app and will see new content via WebSocket.
  *
+ * Foreground suppression: if the user is currently viewing the conversation
+ * that the notification targets, the notification is not displayed.
+ *
  * @returns Unsubscribe function to tear down the listener.
  */
 export function setupForegroundHandler(): () => void {
@@ -209,6 +211,24 @@ export function setupForegroundHandler(): () => void {
 
       const type = data.t as string | undefined;
       if (!type) return;
+
+      // Foreground suppression: don't show notification if user is viewing the target
+      const store = useAppStore.getState();
+      if (
+        (type === 'new_thread' || type === 'new_reply') &&
+        data.gid &&
+        store.viewingConversationId === data.gid
+      ) {
+        return;
+      }
+      if (type === 'new_dm' && data.gid && store.viewingConversationId === data.gid) {
+        return;
+      }
+
+      // Push dedup — skip if we already displayed this event
+      const dedupKey = dedupKeyForPayload(data as Record<string, string>);
+      if (dedupKey && pushDedupSet.has(dedupKey)) return;
+      if (dedupKey) pushDedupSet.add(dedupKey);
 
       const title = NOTIFICATION_TITLES[type];
       if (!title) return;
@@ -250,19 +270,12 @@ export function setupForegroundHandler(): () => void {
 /**
  * Navigate to the appropriate screen based on push notification payload data.
  *
- * Payload fields:
- * - `t`: notification type — 'new_thread' | 'new_reply' | 'new_dm' | 'orbit_invite' | 'member_joined'
- * - `gid`: group/conversation ID
- * - `tid`: thread ID (for new_thread and new_reply)
- * - `code`: invite code (for orbit_invite)
+ * Uses resolveAnchor() to parse the payload into a typed destination, then
+ * navigates via the root stack → tab → nested stack hierarchy.
  *
- * Missing or empty IDs are silently ignored (no navigation).
+ * Missing or malformed data results in no navigation (resolveAnchor returns null).
  */
 function navigateFromNotification(data: Record<string, string>): void {
-  const { t, gid, tid, code } = data;
-
-  if (!t) return;
-
   if (!navigationRef.isReady()) {
     // Navigation tree not mounted yet (killed-state cold start).
     // Queue the payload — it will be flushed from NavigationContainer's onReady.
@@ -270,51 +283,42 @@ function navigateFromNotification(data: Record<string, string>): void {
     return;
   }
 
-  switch (t) {
-    case 'new_thread':
-    case 'new_reply':
-      if (!tid) return;
-      // Navigate into the Threads tab → ThreadDetail
+  const anchor = resolveAnchor(data);
+  if (!anchor) return;
+
+  switch (anchor.type) {
+    case 'thread':
       navigationRef.navigate('MainTabs', {
         screen: 'Threads',
         params: {
           screen: 'ThreadDetail',
-          params: { threadId: tid },
+          params: {
+            threadId: anchor.threadId,
+            targetReplyId: anchor.targetReplyId,
+          },
         },
       });
       break;
-
-    case 'new_dm':
-      if (!gid) return;
-      // Navigate into the Chats tab → ChatDetail
+    case 'chat':
       navigationRef.navigate('MainTabs', {
         screen: 'Chats',
         params: {
           screen: 'ChatDetail',
-          params: { conversationId: gid },
+          params: { conversationId: anchor.conversationId },
         },
       });
       break;
-
-    case 'orbit_invite':
-      if (!code) return;
-      // Navigate into the Threads tab → JoinOrbit with prefilled code
+    case 'joinOrbit':
       navigationRef.navigate('MainTabs', {
         screen: 'Threads',
         params: {
           screen: 'JoinOrbit',
-          params: { code },
+          params: { code: anchor.code },
         },
       });
       break;
-
-    case 'member_joined':
-      // Navigate to Threads tab — ThreadsList doesn't accept groupId params
+    case 'threadsList':
       navigationRef.navigate('MainTabs', { screen: 'Threads' });
-      break;
-
-    default:
-      // Unknown notification type — no-op
       break;
   }
 }

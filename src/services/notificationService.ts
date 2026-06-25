@@ -212,16 +212,9 @@ export function setupForegroundHandler(): () => void {
       const type = data.t as string | undefined;
       if (!type) return;
 
-      // Foreground suppression: don't show notification if user is viewing the target
-      const store = useAppStore.getState();
-      if (
-        (type === 'new_thread' || type === 'new_reply') &&
-        data.gid &&
-        store.viewingConversationId === data.gid
-      ) {
-        return;
-      }
-      if (type === 'new_dm' && data.gid && store.viewingConversationId === data.gid) {
+      // Foreground suppression: skip if user is viewing the target conversation/group
+      const suppressible = type === 'new_thread' || type === 'new_reply' || type === 'new_dm';
+      if (suppressible && data.gid && useAppStore.getState().viewingConversationId === data.gid) {
         return;
       }
 

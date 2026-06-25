@@ -98,8 +98,8 @@ describe('dedupKeyForPayload', () => {
     expect(dedupKeyForPayload({ t: 'new_reply', rid: 'r1', tid: 't1' })).toBe('reply:r1');
   });
 
-  it('generates dm key for new_dm', () => {
-    expect(dedupKeyForPayload({ t: 'new_dm', gid: 'g1' })).toBe('dm:g1');
+  it('skips dedup for new_dm (would collapse sequential DMs)', () => {
+    expect(dedupKeyForPayload({ t: 'new_dm', gid: 'g1' })).toBeNull();
   });
 
   it('generates invite key for orbit_invite', () => {

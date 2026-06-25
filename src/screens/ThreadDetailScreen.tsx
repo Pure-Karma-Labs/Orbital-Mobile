@@ -39,6 +39,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useTheme } from '../theme';
 import { useAuth, useThreads } from '../stores';
+import { useAppStore } from '../stores/useAppStore';
 import { loadThread, loadReplies, postReply, hydrateRepliesFromLocal } from '../services/threadService';
 import { uploadMediaBatch } from '../services/mediaUploadService';
 import { updateMediaParent } from '../database/repositories/mediaRepository';
@@ -179,6 +180,8 @@ export function ThreadDetailScreen({
   const highlightRef = useRef<string | null>(targetReplyId ?? null);
   const scrollAttemptedRef = useRef(false);
   const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const highlightClearRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const retryClearRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const retryCountRef = useRef(0);
   const [highlightTick, setHighlightTick] = useState(0);
 
@@ -203,6 +206,8 @@ export function ThreadDetailScreen({
     }, 10000);
     return () => {
       if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
+      if (highlightClearRef.current) clearTimeout(highlightClearRef.current);
+      if (retryClearRef.current) clearTimeout(retryClearRef.current);
     };
   }, [targetReplyId, navigation]);
 
@@ -219,7 +224,7 @@ export function ThreadDetailScreen({
     // Trigger highlight and clear after 2 seconds
     highlightRef.current = targetReplyId;
     setHighlightTick(n => n + 1);
-    setTimeout(() => {
+    highlightClearRef.current = setTimeout(() => {
       highlightRef.current = null;
       setHighlightTick(n => n + 1);
       navigation.setParams({ targetReplyId: undefined });
@@ -234,7 +239,7 @@ export function ThreadDetailScreen({
         offset: info.averageItemLength * info.index,
         animated: true,
       });
-      setTimeout(() => {
+      retryClearRef.current = setTimeout(() => {
         listRef.current?.scrollToIndex({
           index: info.index,
           animated: true,
@@ -331,6 +336,9 @@ export function ThreadDetailScreen({
   useEffect(() => {
     setActiveThread(threadId);
     markThreadViewed(threadId);
+    if (thread?.conversationId) {
+      useAppStore.getState().setViewingConversation(thread.conversationId);
+    }
     // Instant hydration from local SQLCipher cache before async API fetch
     hydrateRepliesFromLocal(threadId);
     fetchData();
@@ -338,8 +346,9 @@ export function ThreadDetailScreen({
       // Mark viewed again on cleanup — captures replies streamed while reading
       markThreadViewed(threadId);
       setActiveThread(null);
+      useAppStore.getState().setViewingConversation(null);
     };
-  }, [threadId, setActiveThread, markThreadViewed, fetchData]);
+  }, [threadId, setActiveThread, markThreadViewed, fetchData, thread?.conversationId]);
 
   // Pull-to-refresh
   const handleRefresh = useCallback(async () => {

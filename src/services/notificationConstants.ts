@@ -72,11 +72,11 @@ export function resolveAnchor(data: Record<string, string>): NotificationAnchor 
  * duplicate notifications for the same event (e.g., WS + push race).
  */
 export function dedupKeyForPayload(data: Record<string, string>): string | null {
-  const { t, tid, rid, gid, code } = data;
+  const { t, tid, rid, code } = data;
   switch (t) {
     case 'new_thread': return tid ? `thread:${tid}` : null;
     case 'new_reply': return rid ? `reply:${rid}` : null;
-    case 'new_dm': return gid ? `dm:${gid}` : null;
+    // new_dm: skip dedup — keyed by conversation, not message; would collapse sequential DMs
     case 'orbit_invite': return code ? `invite:${code}` : null;
     // member_joined: skip dedup — no unique event ID, would collapse distinct joins
     default: return null;

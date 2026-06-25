@@ -6,7 +6,7 @@
  * to resolve Unicode emoji to OpenMoji sprite sheet positions.
  */
 
-import { URL_PATTERN_SOURCE } from '../utils/urlPattern';
+import { URL_PATTERN_SOURCE, stripFormatChars } from '../utils/urlPattern';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const emojiData: EmojiDataEntry[] = require('emoji-datasource/emoji.json');
@@ -138,7 +138,8 @@ const TRAILING_PUNCT = /[.,;:!?'")\]}>]+$/;
 
 function trimTrailingPunctuation(rawUrl: string): string {
   let url = rawUrl;
-  while (TRAILING_PUNCT.test(url)) {
+  let iterations = 0;
+  while (iterations++ < 10 && TRAILING_PUNCT.test(url)) {
     const lastChar = url[url.length - 1];
     if (lastChar === ')') {
       const openCount = (url.match(/\(/g) || []).length;
@@ -309,12 +310,13 @@ export function findEmojiInText(text: string): RichTextSegment[] {
       });
     }
 
-    // Trim trailing punctuation from the URL
+    // Trim trailing punctuation, then strip Unicode format chars (bidi spoofing)
     const trimmedUrl = trimTrailingPunctuation(rawUrl);
+    const cleanUrl = stripFormatChars(trimmedUrl);
     pass1Segments.push({
       type: 'link',
-      value: trimmedUrl,
-      url: trimmedUrl,
+      value: cleanUrl,
+      url: cleanUrl,
     });
 
     // If characters were trimmed, add them as a text segment

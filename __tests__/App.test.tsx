@@ -11,6 +11,15 @@ import React from 'react';
 import { act, create } from 'react-test-renderer';
 
 // Mock native modules before importing App
+jest.mock('react-native-gesture-handler', () => {
+  const { View } = require('react-native');
+  return {
+    Gesture: { Tap: () => ({ onEnd: () => ({ runOnJS: () => ({}) }) }) },
+    GestureDetector: ({ children }: { children: React.ReactNode }) => children,
+    GestureHandlerRootView: View,
+  };
+});
+
 jest.mock('react-native-mmkv', () => ({
   createMMKV: jest.fn(() => ({
     getString: jest.fn(() => null),

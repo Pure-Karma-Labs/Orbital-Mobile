@@ -328,14 +328,27 @@ describe('emoji/data', () => {
   });
 
   describe('trimTrailingPunctuation loop cap', () => {
-    it('completes quickly with adversarial trailing punctuation', () => {
+    it('caps trimming at 10 iterations on adversarial trailing dots', () => {
       const adversarial = 'https://example.com' + '.'.repeat(1000);
-      const start = Date.now();
       const result = findEmojiInText(adversarial);
-      const elapsed = Date.now() - start;
       const link = result.find(s => s.type === 'link');
       expect(link).toBeDefined();
-      expect(elapsed).toBeLessThan(100);
+      expect(link!.url).toBe('https://example.com' + '.'.repeat(990));
+    });
+
+    it('caps trimming on adversarial trailing parens (O(n^2) branch)', () => {
+      const adversarial = 'https://example.com/path' + ')'.repeat(500);
+      const result = findEmojiInText(adversarial);
+      const link = result.find(s => s.type === 'link');
+      expect(link).toBeDefined();
+      expect(link!.url).toBe('https://example.com/path' + ')'.repeat(490));
+    });
+
+    it('fully trims normal trailing punctuation within cap', () => {
+      const result = findEmojiInText('https://example.com/path.)');
+      const link = result.find(s => s.type === 'link');
+      expect(link).toBeDefined();
+      expect(link!.url).toBe('https://example.com/path');
     });
   });
 });

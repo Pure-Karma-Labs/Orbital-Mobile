@@ -24,6 +24,8 @@ jest.mock('../../stores/useAppStore', () => ({
         contacts: {},
         blockedUserIds: [],
         blockUser: jest.fn(),
+        viewingConversationId: null,
+        setViewingConversation: jest.fn(),
       })),
     },
   ),

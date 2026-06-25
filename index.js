@@ -12,6 +12,13 @@ import notifee, { AndroidImportance, EventType } from '@notifee/react-native';
 import App from './src/App';
 import { name as appName } from './app.json';
 import { SENTRY_DSN } from './src/config/env';
+import {
+  NOTIFICATION_TITLES,
+  ANDROID_CHANNEL_ID,
+  ANDROID_CHANNEL_NAME,
+  dedupKeyForPayload,
+} from './src/services/notificationConstants';
+import { LRUSet } from './src/services/websocket/lruSet';
 
 if (SENTRY_DSN) {
   Sentry.init({
@@ -23,14 +30,17 @@ if (SENTRY_DSN) {
 
 enableScreens();
 
+// LRU set for background push deduplication.
+const bgDedupSet = new LRUSet(200);
+
 // Create Android notification channel eagerly at bundle load.
 // The background message handler (below) fires at JS bundle load time —
 // before auth and before initNotifications(). Displaying a notification
 // on a non-existent channel is silently dropped on Android.
 // This call is idempotent — calling it again in initNotifications() is harmless.
 notifee.createChannel({
-  id: 'orbital-default',
-  name: 'Orbital',
+  id: ANDROID_CHANNEL_ID,
+  name: ANDROID_CHANNEL_NAME,
   importance: AndroidImportance.HIGH,
 });
 
@@ -41,21 +51,19 @@ messaging().setBackgroundMessageHandler(async (remoteMessage) => {
   const data = remoteMessage.data;
   if (!data || !data.t) return;
 
-  const titles = {
-    new_thread: 'New thread in an Orbit',
-    new_reply: 'New reply in a thread',
-    new_dm: 'New direct message',
-    orbit_invite: "You've been invited to an Orbit",
-    member_joined: 'A new member joined your Orbit',
-  };
-  const title = titles[data.t] || 'Orbital';
+  // Background dedup — skip if we already displayed this event
+  const dedupKey = dedupKeyForPayload(data);
+  if (dedupKey && bgDedupSet.has(dedupKey)) return;
+  if (dedupKey) bgDedupSet.add(dedupKey);
+
+  const title = NOTIFICATION_TITLES[data.t] || 'Orbital';
 
   await notifee.displayNotification({
     title,
     body: 'Tap to view',
     data,
     android: {
-      channelId: 'orbital-default',
+      channelId: ANDROID_CHANNEL_ID,
       smallIcon: 'ic_notification',
       importance: AndroidImportance.HIGH,
       pressAction: { id: 'default' },

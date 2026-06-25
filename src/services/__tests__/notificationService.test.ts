@@ -159,13 +159,15 @@ describe('requestPermissionAndRegister', () => {
     expect(mockRegisterDevice).toHaveBeenCalledTimes(2);
   });
 
-  it('returns an unsubscribe function from onTokenRefresh', async () => {
+  it('returns a cleanup function that calls onTokenRefresh unsubscribe', async () => {
     const mockUnsub = jest.fn();
     (getMessagingInstance().onTokenRefresh as jest.Mock).mockReturnValueOnce(mockUnsub);
 
-    const unsubscribe = await requestPermissionAndRegister();
+    const cleanup = await requestPermissionAndRegister();
+    expect(typeof cleanup).toBe('function');
 
-    expect(unsubscribe).toBe(mockUnsub);
+    cleanup();
+    expect(mockUnsub).toHaveBeenCalled();
   });
 });
 

@@ -1,7 +1,3 @@
-/**
- * Tests for searchRepository — FTS5 full-text search over threads and replies.
- */
-
 import { open } from '@op-engineering/op-sqlite';
 import type { DB } from '@op-engineering/op-sqlite';
 import { closeDatabase, resetDatabaseForTesting } from '../../connection';
@@ -28,16 +24,25 @@ function makeDb(executeSync: jest.Mock) {
 // ---------------------------------------------------------------------------
 
 describe('sanitizeFtsQuery', () => {
-  it('wraps plain text in double quotes', () => {
-    expect(sanitizeFtsQuery('hello world')).toBe('"hello world"');
+  it('tokenizes and quotes each word with prefix on last token', () => {
+    expect(sanitizeFtsQuery('hello world')).toBe('"hello" "world"*');
   });
 
-  it('escapes embedded double quotes', () => {
-    expect(sanitizeFtsQuery('say "hello"')).toBe('"say ""hello"""');
+  it('appends prefix wildcard to single token', () => {
+    expect(sanitizeFtsQuery('hello')).toBe('"hello"*');
+  });
+
+  it('supports prefix matching on partial words', () => {
+    expect(sanitizeFtsQuery('hel')).toBe('"hel"*');
+    expect(sanitizeFtsQuery('hello wor')).toBe('"hello" "wor"*');
+  });
+
+  it('strips special characters and quotes are removed', () => {
+    expect(sanitizeFtsQuery('say "hello"')).toBe('"say" "hello"*');
   });
 
   it('trims whitespace', () => {
-    expect(sanitizeFtsQuery('  search term  ')).toBe('"search term"');
+    expect(sanitizeFtsQuery('  search term  ')).toBe('"search" "term"*');
   });
 
   it('returns empty quoted string for blank input', () => {
@@ -45,10 +50,36 @@ describe('sanitizeFtsQuery', () => {
     expect(sanitizeFtsQuery('   ')).toBe('""');
   });
 
-  it('handles FTS5 special characters safely', () => {
-    // These would cause parse errors if not quoted
-    expect(sanitizeFtsQuery('NOT a*')).toBe('"NOT a*"');
-    expect(sanitizeFtsQuery('NEAR/2')).toBe('"NEAR/2"');
+  it('filters FTS5 reserved words', () => {
+    expect(sanitizeFtsQuery('NOT a*')).toBe('""'); // 'a' is single char after filtering
+    expect(sanitizeFtsQuery('cats AND dogs')).toBe('"cats" "dogs"*');
+    expect(sanitizeFtsQuery('NOT hello')).toBe('"hello"*');
+  });
+
+  it('returns empty for all-reserved-word input', () => {
+    expect(sanitizeFtsQuery('NOT')).toBe('""');
+    expect(sanitizeFtsQuery('NOT AND OR')).toBe('""');
+  });
+
+  it('filters reserved words case-insensitively', () => {
+    expect(sanitizeFtsQuery('not applicable')).toBe('"applicable"*');
+    expect(sanitizeFtsQuery('near here')).toBe('"here"*');
+  });
+
+  it('strips FTS5 operators from input', () => {
+    expect(sanitizeFtsQuery('NEAR/2')).toBe('""'); // '2' is single char after filtering
+    expect(sanitizeFtsQuery('hello*')).toBe('"hello"*');
+    expect(sanitizeFtsQuery('(test)')).toBe('"test"*');
+  });
+
+  it('returns empty for single-character input', () => {
+    expect(sanitizeFtsQuery('a')).toBe('""');
+    expect(sanitizeFtsQuery('x')).toBe('""');
+  });
+
+  it('allows single token of 2+ characters', () => {
+    expect(sanitizeFtsQuery('ab')).toBe('"ab"*');
+    expect(sanitizeFtsQuery('hi')).toBe('"hi"*');
   });
 });
 
@@ -63,7 +94,6 @@ describe('searchAll', () => {
   });
 
   it('returns empty array when database is not initialized', () => {
-    // Do not call resetDatabaseForTesting — DB stays uninitialized
     const result = searchAll('conv-1', 'test');
     expect(result).toEqual([]);
   });
@@ -71,12 +101,10 @@ describe('searchAll', () => {
   it('returns empty array for blank query', () => {
     const executeSync = jest.fn(() => ({ rows: [], rowsAffected: 0 }));
     makeDb(executeSync);
-    // resetDatabaseForTesting calls executeSync once (PRAGMA foreign_keys = ON)
     executeSync.mockClear();
 
     const result = searchAll('conv-1', '');
     expect(result).toEqual([]);
-    // Should not have called any search query
     expect(executeSync).not.toHaveBeenCalled();
   });
 
@@ -90,6 +118,17 @@ describe('searchAll', () => {
     expect(executeSync).not.toHaveBeenCalled();
   });
 
+  it('returns empty array for input that sanitizes to empty', () => {
+    const executeSync = jest.fn(() => ({ rows: [], rowsAffected: 0 }));
+    makeDb(executeSync);
+    executeSync.mockClear();
+
+    expect(searchAll('conv-1', 'a')).toEqual([]);
+    expect(searchAll('conv-1', 'NOT')).toEqual([]);
+    expect(searchAll('conv-1', 'NOT AND OR')).toEqual([]);
+    expect(executeSync).not.toHaveBeenCalled();
+  });
+
   it('executes thread and reply FTS5 queries with sanitized input', () => {
     const executeSync = jest.fn(
       (_sql: string, _params?: unknown[]) => ({ rows: [] as Record<string, unknown>[], rowsAffected: 0 }),
@@ -99,31 +138,28 @@ describe('searchAll', () => {
 
     searchAll('conv-1', 'hello');
 
-    // Should have been called twice: once for thread_fts, once for reply_fts
     expect(executeSync).toHaveBeenCalledTimes(2);
 
     expect(executeSync).toHaveBeenNthCalledWith(
       1,
       expect.stringContaining('thread_fts MATCH ?'),
-      ['"hello"', 'conv-1'],
+      ['"hello"*', 'conv-1'],
     );
     expect(executeSync).toHaveBeenNthCalledWith(
       2,
       expect.stringContaining('reply_fts MATCH ?'),
-      ['"hello"', 'conv-1'],
+      ['"hello"*', 'conv-1'],
     );
   });
 
   it('returns deduplicated thread IDs with thread matches first', () => {
     let searchCallCount = 0;
     const executeSync = jest.fn((sql: string) => {
-      // Skip the PRAGMA call from resetDatabaseForTesting
       if (sql.startsWith('PRAGMA')) {
         return { rows: [], rowsAffected: 0 };
       }
       searchCallCount++;
       if (searchCallCount === 1) {
-        // Thread matches
         return {
           rows: [
             { thread_id: 'thread-1', rank: -1.5 },
@@ -132,7 +168,6 @@ describe('searchAll', () => {
           rowsAffected: 0,
         };
       }
-      // Reply matches -- thread-1 is a duplicate, thread-3 is new
       return {
         rows: [
           { thread_id: 'thread-1', rank: -2.0 },
@@ -145,8 +180,6 @@ describe('searchAll', () => {
 
     const result = searchAll('conv-1', 'hello');
 
-    // thread-1 from threads, thread-2 from threads, thread-3 from replies
-    // thread-1 from replies is deduplicated
     expect(result).toEqual(['thread-1', 'thread-2', 'thread-3']);
   });
 

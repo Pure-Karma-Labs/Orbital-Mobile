@@ -467,6 +467,7 @@ export function ThreadDetailScreen({
           body={item.reply.body}
           authorUsername={item.reply.authorUsername}
           authorId={item.reply.authorId}
+          groupId={thread?.conversationId ?? null}
           currentUserId={userId}
           depth={item.reply.depth}
           createdAt={item.reply.createdAt}
@@ -478,7 +479,7 @@ export function ThreadDetailScreen({
         />
       );
     },
-    [handleReplyPress, userId],
+    [handleReplyPress, userId, thread?.conversationId],
   );
 
   const keyExtractor = useCallback((item: ReplyRow) => item.key, []);
@@ -492,6 +493,7 @@ export function ThreadDetailScreen({
         body={thread.body}
         authorUsername={thread.authorUsername}
         authorId={thread.authorId}
+        groupId={thread.conversationId}
         currentUserId={userId}
         createdAt={thread.createdAt}
       />

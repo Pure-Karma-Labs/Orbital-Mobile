@@ -17,6 +17,7 @@ export const useAuth = () =>
     username: s.username,
     displayName: s.displayName,
     avatarPath: s.avatarPath,
+    avatarDigest: s.avatarDigest,
     setUser: s.setUser,
     clearAuth: s.clearAuth,
     setAuthenticated: s.setAuthenticated,

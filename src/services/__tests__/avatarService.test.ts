@@ -440,12 +440,14 @@ describe('uploadEncryptedAvatar', () => {
     ).rejects.toThrow('Not authenticated');
   });
 
-  it('throws when no group keys are available', async () => {
+  it('succeeds with warning when no group keys are available', async () => {
     mockGetOrFetchGroupKey.mockRejectedValue(new Error('no key'));
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation();
 
-    await expect(
-      uploadEncryptedAvatar('file:///photo.jpg', 'image/jpeg'),
-    ).rejects.toThrow('no group keys available');
+    const result = await uploadEncryptedAvatar('file:///photo.jpg', 'image/jpeg');
+
+    expect(result).toBe('/avatars/new-avatar.enc');
+    warnSpy.mockRestore();
   });
 
   it('cleans up temp file on upload failure', async () => {

@@ -11,6 +11,13 @@ jest.mock('../../../hooks/useDisplayName', () => ({
   useDisplayName: (_authorId: string, fallback: string) => fallback,
 }));
 
+jest.mock('../../../hooks/useContactAvatar', () => ({
+  useContactAvatar: () => ({
+    userId: null, groupId: null,
+    encryptedAvatarKey: null, avatarKeyIv: null, avatarDigest: null,
+  }),
+}));
+
 function renderItem(
   props: Partial<React.ComponentProps<typeof ChatMessageItem>> = {},
 ): ReactTestRenderer {
@@ -25,6 +32,7 @@ function renderItem(
           authorId: 'u-bob',
           body: 'hello',
           author: 'bob',
+          groupId: 'g-1',
           time: '11:00 AM',
           isOwn: false,
           onPress: jest.fn(),

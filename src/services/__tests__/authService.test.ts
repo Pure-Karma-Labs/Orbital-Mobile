@@ -156,6 +156,7 @@ jest.mock('../websocket', () => ({
 
 // Mock the whole store module — we just want to verify action calls
 const mockSetUser = jest.fn();
+const mockUpdateProfile = jest.fn();
 const mockClearAuth = jest.fn();
 const mockSetConversations = jest.fn();
 const mockSetContacts = jest.fn();
@@ -167,6 +168,7 @@ jest.mock('../../stores/useAppStore', () => ({
     getState: jest.fn(() => ({
       userId: 'user-1',
       setUser: mockSetUser,
+      updateProfile: mockUpdateProfile,
       clearAuth: mockClearAuth,
       setConversations: mockSetConversations,
       setContacts: mockSetContacts,

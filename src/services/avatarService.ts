@@ -134,8 +134,8 @@ export async function uploadEncryptedAvatar(
     }
   }
 
-  if (avatarGroupKeys.length === 0) {
-    throw new Error('Cannot upload encrypted avatar: no group keys available');
+  if (avatarGroupKeys.length === 0 && groups.length > 0) {
+    console.warn('[avatarService] No group keys wrapped — avatar will be visible only to self until keys are distributed');
   }
 
   // 5. Build FormData

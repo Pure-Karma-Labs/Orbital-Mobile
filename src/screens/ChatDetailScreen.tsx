@@ -277,6 +277,7 @@ export function ChatDetailScreen({
               authorId={t.authorId}
               body={t.body}
               author={t.authorUsername}
+              groupId={conversationId}
               time={new Date(t.createdAt).toLocaleTimeString('en-US', {
                 hour: 'numeric',
                 minute: '2-digit',

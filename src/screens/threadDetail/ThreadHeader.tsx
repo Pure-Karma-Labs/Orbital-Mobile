@@ -9,6 +9,7 @@ import React, { useCallback, useState } from 'react';
 import { Dimensions, View, Text, TouchableOpacity, type TextStyle, type ViewStyle } from 'react-native';
 import { useTheme } from '../../theme';
 import { Avatar } from '../../components/Avatar';
+import { useContactAvatar } from '../../hooks/useContactAvatar';
 import { EmojiText } from '../../components/EmojiText';
 import { MediaGallery } from '../../components/MediaGallery';
 import { LinkPreviewCard } from '../../components/LinkPreviewCard';
@@ -23,6 +24,7 @@ export interface ThreadHeaderProps {
   body: string | null;
   authorUsername: string;
   authorId: string;
+  groupId: string;
   currentUserId: string | null;
   createdAt: number;
 }
@@ -54,11 +56,13 @@ export const ThreadHeader = React.memo(function ThreadHeader({
   body,
   authorUsername,
   authorId,
+  groupId,
   currentUserId,
   createdAt,
 }: ThreadHeaderProps): React.JSX.Element {
   const theme = useTheme();
   const displayName = useDisplayName(authorId, authorUsername);
+  const avatarProps = useContactAvatar(authorId, groupId);
   const mediaItems = useMediaForThread(threadId);
   const [lightboxVisible, setLightboxVisible] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
@@ -132,7 +136,15 @@ export const ThreadHeader = React.memo(function ThreadHeader({
         accessibilityRole={isSelf ? undefined : 'button'}
         accessibilityLabel={isSelf ? undefined : `Actions for ${displayName}`}
       >
-        <Avatar name={displayName} size={28} />
+        <Avatar
+          name={displayName}
+          size={28}
+          userId={avatarProps.userId}
+          groupId={avatarProps.groupId}
+          encryptedAvatarKey={avatarProps.encryptedAvatarKey}
+          avatarKeyIv={avatarProps.avatarKeyIv}
+          avatarDigest={avatarProps.avatarDigest}
+        />
         <EmojiText style={authorTextStyle}>{displayName}</EmojiText>
         <Text style={timestampStyle}>{formatTimestamp(createdAt)}</Text>
       </TouchableOpacity>

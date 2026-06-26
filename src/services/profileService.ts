@@ -11,7 +11,10 @@ import { updateDisplayName, deleteAvatar } from './api/users';
 import { uploadEncryptedAvatar } from './avatarService';
 import { useAppStore } from '../stores/useAppStore';
 
-const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+const ALLOWED_MIME_TYPES = [
+  'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+  'image/heic', 'image/heif',
+];
 
 /**
  * Update the current user's display name.

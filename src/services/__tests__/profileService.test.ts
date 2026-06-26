@@ -65,10 +65,16 @@ describe('updateUserAvatar', () => {
   });
 
   it('rejects unsupported MIME types', async () => {
-    await expect(updateUserAvatar('file:///photo.heic', 'image/heic')).rejects.toThrow(
+    await expect(updateUserAvatar('file:///photo.tiff', 'image/tiff')).rejects.toThrow(
       'Unsupported image type',
     );
     expect(mockUploadEncryptedAvatar).not.toHaveBeenCalled();
+  });
+
+  it('accepts HEIC images', async () => {
+    mockUploadEncryptedAvatar.mockResolvedValueOnce('/avatars/test.enc');
+    await updateUserAvatar('file:///photo.heic', 'image/heic');
+    expect(mockUploadEncryptedAvatar).toHaveBeenCalledWith('file:///photo.heic', 'image/heic');
   });
 
   it('accepts image/png', async () => {

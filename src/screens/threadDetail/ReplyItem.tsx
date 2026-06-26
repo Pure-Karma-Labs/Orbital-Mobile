@@ -21,12 +21,14 @@ import { Dimensions, StyleSheet, Text, TouchableOpacity, View, type TextStyle, t
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { useTheme } from '../../theme';
 import { getReplyDepthColors } from '../../theme/colors';
+import { Avatar } from '../../components/Avatar';
 import { EmojiText } from '../../components/EmojiText';
 import { LinkPreviewCard } from '../../components/LinkPreviewCard';
 import { MediaGallery } from '../../components/MediaGallery';
 import { MediaLightbox } from '../../components/MediaLightbox';
 import { useMediaForReply } from '../../stores';
 import { useAuthorActions } from '../../hooks/useAuthorActions';
+import { useContactAvatar } from '../../hooks/useContactAvatar';
 import { useDisplayName } from '../../hooks/useDisplayName';
 
 
@@ -36,6 +38,7 @@ export interface ReplyItemProps {
   body: string | null;
   authorUsername: string;
   authorId: string;
+  groupId: string;
   currentUserId: string | null;
   depth: number;
   createdAt: number;
@@ -74,6 +77,7 @@ export const ReplyItem = React.memo(function ReplyItem({
   body,
   authorUsername,
   authorId,
+  groupId,
   currentUserId,
   depth,
   createdAt,
@@ -85,6 +89,7 @@ export const ReplyItem = React.memo(function ReplyItem({
 }: ReplyItemProps): React.JSX.Element {
   const theme = useTheme();
   const displayName = useDisplayName(authorId, authorUsername);
+  const avatarProps = useContactAvatar(authorId, groupId);
   const parentDisplayName = useDisplayName(parentAuthorId, parentAuthorUsername ?? '');
   const mediaItems = useMediaForReply(replyId);
   const [lightboxVisible, setLightboxVisible] = useState(false);
@@ -199,7 +204,16 @@ export const ReplyItem = React.memo(function ReplyItem({
         disabled={isSelf}
         hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
       >
-        <EmojiText style={authorTextStyle}>{displayName}</EmojiText>
+        <Avatar
+          name={displayName}
+          size={20}
+          userId={avatarProps.userId}
+          groupId={avatarProps.groupId}
+          encryptedAvatarKey={avatarProps.encryptedAvatarKey}
+          avatarKeyIv={avatarProps.avatarKeyIv}
+          avatarDigest={avatarProps.avatarDigest}
+        />
+        <EmojiText style={{...authorTextStyle, marginLeft: theme.spacing.xs}}>{displayName}</EmojiText>
         <Text style={timestampStyle}>{formatTimestamp(createdAt)}</Text>
       </TouchableOpacity>
       {body != null && body.length > 0 && (

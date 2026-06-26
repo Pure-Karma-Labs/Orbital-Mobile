@@ -26,7 +26,7 @@ export interface ChatMessageItemProps {
   authorId: string;
   body: string | null;
   author: string;
-  groupId: string;
+  groupId: string | null;
   time: string;
   isOwn: boolean;
   /**
@@ -115,15 +115,7 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
       accessibilityLabel={unread ? `Unread message from ${displayName}` : `Message from ${displayName}`}
     >
       <View style={metaStyle}>
-        <Avatar
-          name={displayName}
-          size={24}
-          userId={avatarProps.userId}
-          groupId={avatarProps.groupId}
-          encryptedAvatarKey={avatarProps.encryptedAvatarKey}
-          avatarKeyIv={avatarProps.avatarKeyIv}
-          avatarDigest={avatarProps.avatarDigest}
-        />
+        <Avatar name={displayName} size={24} {...avatarProps} />
         <Text style={authorStyle} numberOfLines={1}>
           {displayName}
         </Text>

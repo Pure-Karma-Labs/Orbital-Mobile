@@ -467,7 +467,7 @@ export function ThreadDetailScreen({
           body={item.reply.body}
           authorUsername={item.reply.authorUsername}
           authorId={item.reply.authorId}
-          groupId={thread?.conversationId ?? ''}
+          groupId={thread?.conversationId ?? null}
           currentUserId={userId}
           depth={item.reply.depth}
           createdAt={item.reply.createdAt}

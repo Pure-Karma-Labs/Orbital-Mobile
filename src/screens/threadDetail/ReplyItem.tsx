@@ -38,7 +38,7 @@ export interface ReplyItemProps {
   body: string | null;
   authorUsername: string;
   authorId: string;
-  groupId: string;
+  groupId: string | null;
   currentUserId: string | null;
   depth: number;
   createdAt: number;
@@ -143,6 +143,7 @@ export const ReplyItem = React.memo(function ReplyItem({
     fontFamily: theme.typography.fontFamily.bodyBold,
     fontSize: theme.typography.fontSize.base,
     color: theme.colors.textPrimary,
+    marginLeft: theme.spacing.xs,
   };
 
   const timestampStyle: TextStyle = {
@@ -204,16 +205,8 @@ export const ReplyItem = React.memo(function ReplyItem({
         disabled={isSelf}
         hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
       >
-        <Avatar
-          name={displayName}
-          size={20}
-          userId={avatarProps.userId}
-          groupId={avatarProps.groupId}
-          encryptedAvatarKey={avatarProps.encryptedAvatarKey}
-          avatarKeyIv={avatarProps.avatarKeyIv}
-          avatarDigest={avatarProps.avatarDigest}
-        />
-        <EmojiText style={{...authorTextStyle, marginLeft: theme.spacing.xs}}>{displayName}</EmojiText>
+        <Avatar name={displayName} size={20} {...avatarProps} />
+        <EmojiText style={authorTextStyle}>{displayName}</EmojiText>
         <Text style={timestampStyle}>{formatTimestamp(createdAt)}</Text>
       </TouchableOpacity>
       {body != null && body.length > 0 && (

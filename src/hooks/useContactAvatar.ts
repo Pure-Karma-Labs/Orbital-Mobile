@@ -1,3 +1,4 @@
+import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../stores';
 
 export interface ContactAvatarProps {
@@ -20,7 +21,7 @@ export function useContactAvatar(
   authorId: string | null | undefined,
   groupId: string | null | undefined,
 ): ContactAvatarProps {
-  return useAppStore((s) => {
+  return useAppStore(useShallow((s) => {
     if (!authorId) return EMPTY;
     const contact = s.contacts[authorId];
     if (!contact?.avatarDigest) return { ...EMPTY, userId: authorId, groupId: groupId ?? null };
@@ -31,5 +32,5 @@ export function useContactAvatar(
       avatarKeyIv: contact.avatarKeyIv ?? null,
       avatarDigest: contact.avatarDigest,
     };
-  });
+  }));
 }

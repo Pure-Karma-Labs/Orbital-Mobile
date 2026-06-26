@@ -136,15 +136,7 @@ export const ThreadHeader = React.memo(function ThreadHeader({
         accessibilityRole={isSelf ? undefined : 'button'}
         accessibilityLabel={isSelf ? undefined : `Actions for ${displayName}`}
       >
-        <Avatar
-          name={displayName}
-          size={28}
-          userId={avatarProps.userId}
-          groupId={avatarProps.groupId}
-          encryptedAvatarKey={avatarProps.encryptedAvatarKey}
-          avatarKeyIv={avatarProps.avatarKeyIv}
-          avatarDigest={avatarProps.avatarDigest}
-        />
+        <Avatar name={displayName} size={28} {...avatarProps} />
         <EmojiText style={authorTextStyle}>{displayName}</EmojiText>
         <Text style={timestampStyle}>{formatTimestamp(createdAt)}</Text>
       </TouchableOpacity>

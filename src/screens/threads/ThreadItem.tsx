@@ -31,7 +31,7 @@ export interface ThreadItemProps {
   title: string;
   authorId: string;
   author: string;
-  groupId: string;
+  groupId: string | null;
   time: string;
   replyCount: number;
   hasMedia?: boolean;
@@ -120,15 +120,7 @@ export const ThreadItem = React.memo(function ThreadItem({
       accessibilityRole="button"
       accessibilityLabel={`Thread: ${title}`}
     >
-      <Avatar
-        name={displayName}
-        size={32}
-        userId={avatarProps.userId}
-        groupId={avatarProps.groupId}
-        encryptedAvatarKey={avatarProps.encryptedAvatarKey}
-        avatarKeyIv={avatarProps.avatarKeyIv}
-        avatarDigest={avatarProps.avatarDigest}
-      />
+      <Avatar name={displayName} size={32} {...avatarProps} />
       <View style={mainStyle}>
         <EmojiText style={titleStyle} numberOfLines={1}>
           {title}

@@ -23,6 +23,18 @@ export function useContactAvatar(
 ): ContactAvatarProps {
   return useAppStore(useShallow((s) => {
     if (!authorId) return EMPTY;
+
+    // Own avatar: use auth slice (attachment key is in SQLCipher, no group key needed)
+    if (authorId === s.userId && s.avatarDigest) {
+      return {
+        userId: authorId,
+        groupId: null,
+        encryptedAvatarKey: null,
+        avatarKeyIv: null,
+        avatarDigest: s.avatarDigest,
+      };
+    }
+
     const contact = s.contacts[authorId];
     if (!contact?.avatarDigest) return { ...EMPTY, userId: authorId, groupId: groupId ?? null };
     return {

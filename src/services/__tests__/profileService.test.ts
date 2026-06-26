@@ -110,7 +110,7 @@ describe('removeUserAvatar', () => {
     await removeUserAvatar();
 
     expect(mockDeleteAvatar).toHaveBeenCalledTimes(1);
-    expect(mockUpdateProfile).toHaveBeenCalledWith({ avatarPath: null });
+    expect(mockUpdateProfile).toHaveBeenCalledWith({ avatarPath: null, avatarDigest: null });
   });
 
   it('does not update store on API failure', async () => {

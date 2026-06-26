@@ -449,6 +449,10 @@ function handleDisplayNameChanged(data: DisplayNameChangedPayload): void {
     username: existing?.username ?? null,
     displayName,
     avatarPath: existing?.avatarPath ?? null,
+    avatarEncryptedKey: existing?.avatarEncryptedKey ?? null,
+    avatarKeyIv: existing?.avatarKeyIv ?? null,
+    avatarDigest: existing?.avatarDigest ?? null,
+    localAvatarUri: existing?.localAvatarUri ?? null,
     conversationIds: existing?.conversationIds ?? [],
   });
 }
@@ -497,7 +501,9 @@ function handleAvatarChanged(data: AvatarChangedPayload): void {
     });
   }
 
-  invalidateAvatarCache(data.userId).catch(() => {});
+  if (data.userId !== store.userId) {
+    invalidateAvatarCache(data.userId).catch(() => {});
+  }
 }
 
 // ============================================================

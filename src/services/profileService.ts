@@ -41,5 +41,5 @@ export async function updateUserAvatar(
  */
 export async function removeUserAvatar(): Promise<void> {
   await deleteAvatar();
-  useAppStore.getState().updateProfile({ avatarPath: null });
+  useAppStore.getState().updateProfile({ avatarPath: null, avatarDigest: null });
 }

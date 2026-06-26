@@ -118,6 +118,17 @@ describe('searchAll', () => {
     expect(executeSync).not.toHaveBeenCalled();
   });
 
+  it('returns empty array for input that sanitizes to empty', () => {
+    const executeSync = jest.fn(() => ({ rows: [], rowsAffected: 0 }));
+    makeDb(executeSync);
+    executeSync.mockClear();
+
+    expect(searchAll('conv-1', 'a')).toEqual([]);
+    expect(searchAll('conv-1', 'NOT')).toEqual([]);
+    expect(searchAll('conv-1', 'NOT AND OR')).toEqual([]);
+    expect(executeSync).not.toHaveBeenCalled();
+  });
+
   it('executes thread and reply FTS5 queries with sanitized input', () => {
     const executeSync = jest.fn(
       (_sql: string, _params?: unknown[]) => ({ rows: [] as Record<string, unknown>[], rowsAffected: 0 }),

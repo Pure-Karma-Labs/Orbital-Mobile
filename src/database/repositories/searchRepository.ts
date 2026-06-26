@@ -33,6 +33,7 @@ export function searchAll(conversationId: string, query: string): string[] {
   if (query.trim().length === 0) return [];
 
   const sanitized = sanitizeFtsQuery(query);
+  if (sanitized === '""') return [];
 
   // Search thread content
   const threadMatches = queryMany<{ thread_id: string; rank: number }>(

@@ -27,7 +27,7 @@ import { Avatar } from '../components/Avatar';
 import { TextInput } from '../components/TextInput';
 import { Button } from '../components/Button';
 import { ErrorBanner } from '../components/ErrorBanner';
-import { getAvatarUrl } from '../utils/avatarUrl';
+
 import {
   updateUserDisplayName,
   updateUserAvatar,
@@ -43,7 +43,7 @@ const MAX_NAME_LENGTH = 15;
 
 export function EditProfileScreen({ navigation }: Props): React.JSX.Element {
   const theme = useTheme();
-  const { displayName, username, avatarPath } = useAuth();
+  const { displayName, username, userId, avatarDigest } = useAuth();
 
   // Local edit state — not committed until save
   const [editedName, setEditedName] = useState(displayName ?? '');
@@ -60,12 +60,12 @@ export function EditProfileScreen({ navigation }: Props): React.JSX.Element {
   const hasChanges = nameChanged || avatarChanged;
   const canSave = hasChanges && nameValid && !saving;
 
-  // The display URL for the avatar preview
+  // During editing, show the local picker URI; otherwise let Avatar resolve via encrypted path
   const previewAvatarUrl = useMemo(() => {
     if (avatarRemoved) return null;
     if (editedAvatarUri) return editedAvatarUri;
-    return getAvatarUrl(avatarPath);
-  }, [avatarRemoved, editedAvatarUri, avatarPath]);
+    return null;
+  }, [avatarRemoved, editedAvatarUri]);
 
   const handleNameChange = useCallback((text: string) => {
     // Only allow valid characters
@@ -244,6 +244,9 @@ export function EditProfileScreen({ navigation }: Props): React.JSX.Element {
                 name={editedName || username || 'U'}
                 size={80}
                 imageUrl={previewAvatarUrl}
+                userId={editedAvatarUri ? null : userId}
+                groupId={null}
+                avatarDigest={editedAvatarUri || avatarRemoved ? null : avatarDigest}
               />
             </TouchableOpacity>
             <TouchableOpacity onPress={handleAvatarPress} activeOpacity={0.7}>

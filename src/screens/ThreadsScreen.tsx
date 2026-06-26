@@ -352,7 +352,7 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
         }
       }
     },
-    [handleThreadPress, threadLastViewedAt, lastReadAtSnapshot],
+    [handleThreadPress, activeConversationId, threadLastViewedAt, lastReadAtSnapshot],
   );
 
   const keyExtractor = useCallback((item: ListRow) => item.key, []);

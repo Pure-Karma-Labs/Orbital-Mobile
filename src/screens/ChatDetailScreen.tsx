@@ -290,7 +290,7 @@ export function ChatDetailScreen({
         }
       }
     },
-    [handleThreadPress, userId, threadLastViewedAt, lastReadAtSnapshot],
+    [handleThreadPress, userId, conversationId, threadLastViewedAt, lastReadAtSnapshot],
   );
 
   const keyExtractor = useCallback((item: ListRow) => item.key, []);

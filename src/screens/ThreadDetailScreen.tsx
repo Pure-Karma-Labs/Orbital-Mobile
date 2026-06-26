@@ -479,7 +479,7 @@ export function ThreadDetailScreen({
         />
       );
     },
-    [handleReplyPress, userId],
+    [handleReplyPress, userId, thread?.conversationId],
   );
 
   const keyExtractor = useCallback((item: ReplyRow) => item.key, []);

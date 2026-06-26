@@ -1,26 +1,26 @@
-/**
- * FTS5 search repository — full-text search over threads and replies.
- *
- * Uses FTS5 MATCH queries against thread_fts and reply_fts virtual tables.
- * Returns deduplicated thread IDs ranked by relevance (thread matches first,
- * then reply-surfaced parent threads).
- *
- * All inputs are sanitized to prevent FTS5 parse errors from special
- * characters (*, ", NOT, NEAR, etc.) by wrapping in escaped double quotes.
- */
-
 import { queryMany } from '../queryHelpers';
 import { isDatabaseInitialized } from '../connection';
 
+const FTS5_RESERVED = new Set(['NOT', 'AND', 'OR', 'NEAR']);
+
 /**
- * Sanitize user input for FTS5 MATCH queries.
- * Wraps in double quotes to treat as a literal phrase,
- * preventing parse errors from special chars (*, ", NOT, etc).
+ * Sanitize user input for FTS5 MATCH with prefix support on the last token.
  */
 export function sanitizeFtsQuery(input: string): string {
   const trimmed = input.trim();
   if (trimmed.length === 0) return '""';
-  return `"${trimmed.replace(/"/g, '""')}"`;
+
+  const cleaned = trimmed.replace(/[^\p{L}\p{N}\s]/gu, ' ');
+  const tokens = cleaned
+    .split(/\s+/)
+    .filter(t => t.length > 0 && !FTS5_RESERVED.has(t.toUpperCase()));
+
+  if (tokens.length === 0) return '""';
+  if (tokens.length === 1 && tokens[0].length < 2) return '""';
+
+  return tokens
+    .map((t, i) => (i === tokens.length - 1 ? `"${t}"*` : `"${t}"`))
+    .join(' ');
 }
 
 /**

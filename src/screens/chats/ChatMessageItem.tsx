@@ -15,8 +15,10 @@ import {
   type ViewStyle,
 } from 'react-native';
 import { useTheme } from '../../theme';
+import { Avatar } from '../../components/Avatar';
 import { EmojiText } from '../../components/EmojiText';
 import { LinkPreviewCard } from '../../components/LinkPreviewCard';
+import { useContactAvatar } from '../../hooks/useContactAvatar';
 import { useDisplayName } from '../../hooks/useDisplayName';
 
 export interface ChatMessageItemProps {
@@ -24,6 +26,7 @@ export interface ChatMessageItemProps {
   authorId: string;
   body: string | null;
   author: string;
+  groupId: string | null;
   time: string;
   isOwn: boolean;
   /**
@@ -41,6 +44,7 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
   authorId,
   body,
   author,
+  groupId,
   time,
   isOwn,
   unread = false,
@@ -48,6 +52,7 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
 }: ChatMessageItemProps): React.JSX.Element {
   const theme = useTheme();
   const displayName = useDisplayName(authorId, author);
+  const avatarProps = useContactAvatar(authorId, groupId);
 
   const handlePress = useCallback(() => {
     onPress(threadId);
@@ -84,6 +89,7 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
     fontFamily: theme.typography.fontFamily.bodyBold,
     fontSize: theme.typography.fontSize.sm,
     color: theme.colors.textPrimary,
+    marginLeft: theme.spacing.xs,
   };
 
   const timeStyle: TextStyle = {
@@ -109,6 +115,7 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
       accessibilityLabel={unread ? `Unread message from ${displayName}` : `Message from ${displayName}`}
     >
       <View style={metaStyle}>
+        <Avatar name={displayName} size={24} {...avatarProps} />
         <Text style={authorStyle} numberOfLines={1}>
           {displayName}
         </Text>

@@ -20,6 +20,8 @@ import { useTheme } from '../../theme';
 import { Badge } from '../../components/Badge';
 import { Emoji } from '../../components/Emoji';
 import { EmojiText } from '../../components/EmojiText';
+import { Avatar } from '../../components/Avatar';
+import { useContactAvatar } from '../../hooks/useContactAvatar';
 import { useDisplayName } from '../../hooks/useDisplayName';
 
 export type ThreadItemState = 'read' | 'active' | 'unread';
@@ -29,6 +31,7 @@ export interface ThreadItemProps {
   title: string;
   authorId: string;
   author: string;
+  groupId: string | null;
   time: string;
   replyCount: number;
   hasMedia?: boolean;
@@ -42,6 +45,7 @@ export const ThreadItem = React.memo(function ThreadItem({
   authorId,
   title,
   author,
+  groupId,
   time,
   replyCount,
   hasMedia = false,
@@ -51,6 +55,7 @@ export const ThreadItem = React.memo(function ThreadItem({
 }: ThreadItemProps): React.JSX.Element {
   const theme = useTheme();
   const displayName = useDisplayName(authorId, author);
+  const avatarProps = useContactAvatar(authorId, groupId);
 
   const handlePress = useCallback(() => {
     onPress(threadId);
@@ -88,6 +93,7 @@ export const ThreadItem = React.memo(function ThreadItem({
 
   const mainStyle: ViewStyle = {
     flex: 1,
+    marginLeft: theme.spacing.sm,
     marginRight: theme.spacing.sm,
   };
 
@@ -114,6 +120,7 @@ export const ThreadItem = React.memo(function ThreadItem({
       accessibilityRole="button"
       accessibilityLabel={`Thread: ${title}`}
     >
+      <Avatar name={displayName} size={32} {...avatarProps} />
       <View style={mainStyle}>
         <EmojiText style={titleStyle} numberOfLines={1}>
           {title}

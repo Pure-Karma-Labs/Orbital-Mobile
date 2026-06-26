@@ -95,7 +95,10 @@ export async function loginUser(
     userId: response.userId,
     username: response.username,
     displayName: response.displayName ?? null,
-    avatarPath: null,
+    avatarPath: response.avatarUrl ?? null,
+  });
+  useAppStore.getState().updateProfile({
+    avatarDigest: response.avatarDigest ?? null,
   });
 
   // Account-switch guard: if a different user logs in, wipe all crypto state
@@ -185,6 +188,9 @@ export async function restoreSession(): Promise<boolean> {
       username: profile.username,
       displayName: profile.displayName,
       avatarPath: profile.avatarUrl ?? null,
+    });
+    useAppStore.getState().updateProfile({
+      avatarDigest: profile.avatarDigest ?? null,
     });
 
     // Account-switch guard: if a different user logs in, wipe all crypto state

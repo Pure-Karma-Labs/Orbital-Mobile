@@ -64,11 +64,10 @@ describe('updateUserAvatar', () => {
     expect(result).toBe('/avatars/new.jpg');
   });
 
-  it('rejects unsupported MIME types', async () => {
-    await expect(updateUserAvatar('file:///photo.heic', 'image/heic')).rejects.toThrow(
-      'Unsupported image type',
-    );
-    expect(mockUploadEncryptedAvatar).not.toHaveBeenCalled();
+  it('accepts any MIME type (encrypted upload is format-agnostic)', async () => {
+    mockUploadEncryptedAvatar.mockResolvedValueOnce('/avatars/test.enc');
+    await updateUserAvatar('file:///photo.heic', 'image/heic');
+    expect(mockUploadEncryptedAvatar).toHaveBeenCalledWith('file:///photo.heic', 'image/heic');
   });
 
   it('accepts image/png', async () => {
@@ -111,7 +110,7 @@ describe('removeUserAvatar', () => {
     await removeUserAvatar();
 
     expect(mockDeleteAvatar).toHaveBeenCalledTimes(1);
-    expect(mockUpdateProfile).toHaveBeenCalledWith({ avatarPath: null });
+    expect(mockUpdateProfile).toHaveBeenCalledWith({ avatarPath: null, avatarDigest: null });
   });
 
   it('does not update store on API failure', async () => {

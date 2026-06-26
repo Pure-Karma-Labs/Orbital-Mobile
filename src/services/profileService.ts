@@ -11,8 +11,6 @@ import { updateDisplayName, deleteAvatar } from './api/users';
 import { uploadEncryptedAvatar } from './avatarService';
 import { useAppStore } from '../stores/useAppStore';
 
-const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-
 /**
  * Update the current user's display name.
  *
@@ -26,21 +24,13 @@ export async function updateUserDisplayName(displayName: string): Promise<void> 
 /**
  * Upload a new avatar image from the device photo library.
  *
- * Validates mime type, encrypts the image client-side, wraps the attachment
- * key for all groups, and uploads the encrypted blob to the server.
- *
- * @param imageUri  - Local file URI from the image picker
- * @param mimeType  - MIME type of the selected image
- * @returns The new avatar URL path from the server
+ * Encrypts the image client-side, wraps the attachment key for all groups,
+ * and uploads the encrypted blob to the server.
  */
 export async function updateUserAvatar(
   imageUri: string,
   mimeType: string,
 ): Promise<string> {
-  if (!ALLOWED_MIME_TYPES.includes(mimeType)) {
-    throw new Error('Unsupported image type. Please use JPEG, PNG, GIF, or WebP.');
-  }
-
   return uploadEncryptedAvatar(imageUri, mimeType);
 }
 
@@ -51,5 +41,5 @@ export async function updateUserAvatar(
  */
 export async function removeUserAvatar(): Promise<void> {
   await deleteAvatar();
-  useAppStore.getState().updateProfile({ avatarPath: null });
+  useAppStore.getState().updateProfile({ avatarPath: null, avatarDigest: null });
 }

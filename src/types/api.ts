@@ -61,6 +61,8 @@ export interface LoginResponse {
   displayName: string | null;
   publicKey: unknown;
   token: string;
+  avatarUrl?: string | null;
+  avatarDigest?: string | null;
 }
 
 /**
@@ -379,6 +381,10 @@ export interface ThreadListItem {
   authorId: string;
   authorUsername: string;
   authorDisplayName: string;
+  authorAvatarUrl?: string | null;
+  authorAvatarDigest?: string | null;
+  authorAvatarEncryptedKey?: string | null;
+  authorAvatarKeyIv?: string | null;
   encryptedTitle: string | null;
   encryptedBody: string | null;
   titleIv: string | null;
@@ -454,6 +460,10 @@ export interface ReplyResponse {
   authorId: string;
   authorUsername: string;
   authorDisplayName: string;
+  authorAvatarUrl?: string | null;
+  authorAvatarDigest?: string | null;
+  authorAvatarEncryptedKey?: string | null;
+  authorAvatarKeyIv?: string | null;
   encryptedBody: string;
   bodyIv: string | null;
   parentReplyId: string | null;
@@ -525,6 +535,7 @@ export interface UserProfile {
   username: string;
   displayName: string;
   avatarUrl: string | null;
+  avatarDigest?: string | null;
   createdAt?: string;
 }
 

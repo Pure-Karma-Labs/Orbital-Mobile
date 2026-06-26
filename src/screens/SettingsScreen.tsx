@@ -76,7 +76,7 @@ function SectionHeader({ label }: { label: string }): React.JSX.Element {
 export function SettingsScreen(): React.JSX.Element {
   const theme = useTheme();
   const navigation = useNavigation<NativeStackNavigationProp<SettingsStackParamList>>();
-  const { displayName, username, avatarPath } = useAuth();
+  const { displayName, username, avatarPath, userId, avatarDigest } = useAuth();
   const { colorScheme, setColorScheme, soundEnabled, setSoundEnabled } = useUI();
   const { activeConversationId, conversations } = useConversations();
   const { pushPermissionGranted } = useNotifications();
@@ -334,6 +334,8 @@ export function SettingsScreen(): React.JSX.Element {
           username={username ?? 'user'}
           avatarUrl={avatarPath ?? null}
           onEdit={handleEditProfile}
+          userId={userId}
+          avatarDigest={avatarDigest}
         />
 
         <SectionHeader label="Appearance" />

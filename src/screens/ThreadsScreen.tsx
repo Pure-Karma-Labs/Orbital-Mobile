@@ -337,6 +337,7 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
               authorId={t.authorId}
               title={t.title ?? '(no title)'}
               author={t.authorUsername}
+              groupId={activeConversationId ?? null}
               time={new Date(t.createdAt).toLocaleTimeString('en-US', {
                 hour: 'numeric',
                 minute: '2-digit',
@@ -351,7 +352,7 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
         }
       }
     },
-    [handleThreadPress, threadLastViewedAt, lastReadAtSnapshot],
+    [handleThreadPress, activeConversationId, threadLastViewedAt, lastReadAtSnapshot],
   );
 
   const keyExtractor = useCallback((item: ListRow) => item.key, []);

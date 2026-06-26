@@ -542,6 +542,10 @@ describe('display_name_changed broadcast', () => {
       username: null,
       displayName: 'New Name',
       avatarPath: null,
+      avatarEncryptedKey: null,
+      avatarKeyIv: null,
+      avatarDigest: null,
+      localAvatarUri: null,
       conversationIds: [],
     });
   });

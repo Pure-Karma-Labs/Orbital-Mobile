@@ -5,7 +5,7 @@
  * (no reply count, badges, or media indicators).
  */
 
-import React, { useCallback } from 'react';
+import React, { useMemo } from 'react';
 import {
   StyleSheet,
   Text,
@@ -14,12 +14,15 @@ import {
   type TextStyle,
   type ViewStyle,
 } from 'react-native';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { useTheme } from '../../theme';
 import { Avatar } from '../../components/Avatar';
 import { EmojiText } from '../../components/EmojiText';
 import { LinkPreviewCard } from '../../components/LinkPreviewCard';
 import { useContactAvatar } from '../../hooks/useContactAvatar';
 import { useDisplayName } from '../../hooks/useDisplayName';
+import { useAuthorActions } from '../../hooks/useAuthorActions';
+import { useAuth } from '../../stores';
 
 export interface ChatMessageItemProps {
   threadId: string;
@@ -51,12 +54,21 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
   onPress,
 }: ChatMessageItemProps): React.JSX.Element {
   const theme = useTheme();
+  const { userId } = useAuth();
   const displayName = useDisplayName(authorId, author);
   const avatarProps = useContactAvatar(authorId, groupId);
+  const { handleAuthorPress } = useAuthorActions(authorId, displayName, userId);
+  const isSelf = authorId === userId;
 
-  const handlePress = useCallback(() => {
-    onPress(threadId);
-  }, [onPress, threadId]);
+  const tapGesture = useMemo(
+    () =>
+      Gesture.Tap()
+        .onEnd(() => {
+          onPress(threadId);
+        })
+        .runOnJS(true),
+    [onPress, threadId],
+  );
 
   const containerStyle: ViewStyle = {
     flexDirection: 'column',
@@ -73,16 +85,16 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
     borderBottomColor: theme.colors.borderSubtle,
   };
 
+  const authorRowStyle: ViewStyle = {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 2,
+  };
+
   const unreadDotStyle: TextStyle = {
     fontSize: theme.typography.fontSize.sm,
     color: theme.colors.yellow,
     marginLeft: theme.spacing.xs,
-  };
-
-  const metaStyle: ViewStyle = {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 2,
   };
 
   const authorStyle: TextStyle = {
@@ -107,31 +119,38 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
   };
 
   return (
-    <TouchableOpacity
-      style={containerStyle}
-      onPress={handlePress}
-      activeOpacity={0.7}
-      accessibilityRole="button"
-      accessibilityLabel={unread ? `Unread message from ${displayName}` : `Message from ${displayName}`}
-    >
-      <View style={metaStyle}>
-        <Avatar name={displayName} size={24} {...avatarProps} />
-        <Text style={authorStyle} numberOfLines={1}>
-          {displayName}
-        </Text>
-        <Text style={timeStyle}>{time}</Text>
-        {unread && (
-          <Text style={unreadDotStyle} testID={`chat-unread-dot-${threadId}`}>
-            ●
+    <GestureDetector gesture={tapGesture}>
+      <View
+        style={containerStyle}
+        accessible
+        accessibilityRole="button"
+        accessibilityLabel={unread ? `Unread message from ${displayName}` : `Message from ${displayName}`}
+      >
+        <TouchableOpacity
+          style={authorRowStyle}
+          onPress={handleAuthorPress}
+          activeOpacity={isSelf ? 1 : 0.7}
+          disabled={isSelf}
+          hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
+        >
+          <Avatar name={displayName} size={24} {...avatarProps} />
+          <Text style={authorStyle} numberOfLines={1}>
+            {displayName}
           </Text>
-        )}
+          <Text style={timeStyle}>{time}</Text>
+          {unread && (
+            <Text style={unreadDotStyle} testID={`chat-unread-dot-${threadId}`}>
+              ●
+            </Text>
+          )}
+        </TouchableOpacity>
+        {body ? (
+          <EmojiText style={bodyStyle} numberOfLines={4} selectable>
+            {body}
+          </EmojiText>
+        ) : null}
+        <LinkPreviewCard text={body} />
       </View>
-      {body ? (
-        <EmojiText style={bodyStyle} numberOfLines={4} selectable>
-          {body}
-        </EmojiText>
-      ) : null}
-      <LinkPreviewCard text={body} />
-    </TouchableOpacity>
+    </GestureDetector>
   );
 });

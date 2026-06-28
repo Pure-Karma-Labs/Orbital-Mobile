@@ -12,6 +12,15 @@ import { ChatDetailScreen } from '../ChatDetailScreen';
 // Module mocks
 // ---------------------------------------------------------------------------
 
+jest.mock('react-native-gesture-handler', () => {
+  const { View } = require('react-native');
+  return {
+    Gesture: { Tap: () => ({ onEnd: () => ({ runOnJS: () => ({}) }) }) },
+    GestureDetector: ({ children }: { children: React.ReactNode }) => children,
+    GestureHandlerRootView: View,
+  };
+});
+
 jest.mock('../../services/threadService', () => ({
   loadThreadsForGroup: jest.fn().mockResolvedValue([]),
   hydrateThreadsFromLocal: jest.fn(),
@@ -317,16 +326,17 @@ describe('ChatDetailScreen — navigation', () => {
   it('navigates to ThreadDetail when a message item is pressed', () => {
     const renderer = renderScreen('Bob');
 
-    // ChatMessageItem renders a TouchableOpacity with accessibilityLabel="Message from {author}"
+    // Find ChatMessageItem by its onPress prop (GestureDetector is mocked,
+    // so we invoke the component's onPress callback directly)
     const messageItems = renderer.root.findAll(
       (node) =>
-        typeof node.props.accessibilityLabel === 'string' &&
-        /[Mm]essage from bob/.test(node.props.accessibilityLabel),
+        typeof node.props.onPress === 'function' &&
+        typeof node.props.threadId === 'string',
     );
     expect(messageItems.length).toBeGreaterThan(0);
 
     act(() => {
-      messageItems[0].props.onPress();
+      messageItems[0].props.onPress(messageItems[0].props.threadId);
     });
 
     expect(mockNavigation.push).toHaveBeenCalledWith('ThreadDetail', {

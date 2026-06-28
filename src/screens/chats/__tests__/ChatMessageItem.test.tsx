@@ -7,6 +7,15 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { ThemeProvider } from '../../../theme';
 import { ChatMessageItem } from '../ChatMessageItem';
 
+jest.mock('react-native-gesture-handler', () => {
+  const { View } = require('react-native');
+  return {
+    Gesture: { Tap: () => ({ onEnd: () => ({ runOnJS: () => ({}) }) }) },
+    GestureDetector: ({ children }: { children: React.ReactNode }) => children,
+    GestureHandlerRootView: View,
+  };
+});
+
 jest.mock('../../../hooks/useDisplayName', () => ({
   useDisplayName: (_authorId: string, fallback: string) => fallback,
 }));
@@ -16,6 +25,14 @@ jest.mock('../../../hooks/useContactAvatar', () => ({
     userId: null, groupId: null,
     encryptedAvatarKey: null, avatarKeyIv: null, avatarDigest: null,
   }),
+}));
+
+jest.mock('../../../hooks/useAuthorActions', () => ({
+  useAuthorActions: () => ({ handleAuthorPress: jest.fn(), handleReport: jest.fn() }),
+}));
+
+jest.mock('../../../stores', () => ({
+  useAuth: () => ({ userId: 'user-1', username: 'testuser' }),
 }));
 
 function renderItem(

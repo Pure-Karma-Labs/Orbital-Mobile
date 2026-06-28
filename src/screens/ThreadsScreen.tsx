@@ -442,6 +442,7 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
                   />
                 }
                 {...scrollProps}
+                keyboardShouldPersistTaps="handled"
                 removeClippedSubviews
                 initialNumToRender={10}
                 maxToRenderPerBatch={5}

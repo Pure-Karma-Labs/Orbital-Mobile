@@ -172,6 +172,7 @@ export function ThreadDetailScreen({
   // Pagination offset (local — not stored in Zustand)
   const offsetRef = useRef(0);
   const hasMoreRef = useRef(true);
+  const loadingMoreRef = useRef(false);
 
   // ---------------------------------------------------------------------------
   // Deep-link scroll + highlight
@@ -416,14 +417,15 @@ export function ThreadDetailScreen({
 
   // Pagination — load more replies
   const handleEndReached = useCallback(async () => {
-    if (loadingMore || !hasMoreRef.current || !thread) {
+    if (loadingMoreRef.current || !hasMoreRef.current || !conversationId) {
       return;
     }
+    loadingMoreRef.current = true;
     setLoadingMore(true);
     try {
       const result = await loadReplies(
         threadId,
-        thread.conversationId,
+        conversationId,
         offsetRef.current,
       );
       offsetRef.current += result.replies.length;
@@ -431,9 +433,11 @@ export function ThreadDetailScreen({
     } catch {
       hasMoreRef.current = false;
     } finally {
+      loadingMoreRef.current = false;
       if (mountedRef.current) setLoadingMore(false);
     }
-  }, [loadingMore, thread, threadId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- ref-based guard replaces loadingMore state dep
+  }, [threadId, conversationId]);
 
   // ---------------------------------------------------------------------------
   // Reply handling

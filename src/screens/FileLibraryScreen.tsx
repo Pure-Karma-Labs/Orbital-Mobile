@@ -250,6 +250,7 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
       }
       setLoading(false);
       setLoadingMore(false);
+      loadingMoreRef.current = false;
 
       // Async recovery: check if files exist on disk for stale rows.
       // Updates DB + store, then refreshes any recovered rows in local state.
@@ -312,7 +313,6 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
     loadingMoreRef.current = true;
     setLoadingMore(true);
     loadPage(mediaRows.length, true);
-    loadingMoreRef.current = false;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- ref-based guard replaces loadingMore state dep
   }, [loading, mediaRows.length, loadPage]);
 

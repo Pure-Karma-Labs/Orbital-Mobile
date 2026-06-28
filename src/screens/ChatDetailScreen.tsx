@@ -360,6 +360,7 @@ export function ChatDetailScreen({
               />
             }
             {...scrollProps}
+            keyboardShouldPersistTaps="handled"
             initialNumToRender={20}
             maxToRenderPerBatch={10}
             windowSize={5}

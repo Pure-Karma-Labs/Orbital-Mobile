@@ -206,6 +206,7 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const hasMoreRef = useRef(true);
+  const loadingMoreRef = useRef(false);
   const [lightboxVisible, setLightboxVisible] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
   const [quota, setQuota] = useState<GroupQuotaResponse | null>(null);
@@ -305,12 +306,15 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
   // ---------------------------------------------------------------------------
 
   const handleEndReached = useCallback(() => {
-    if (loading || loadingMore || !hasMoreRef.current || mediaRows.length === 0) {
+    if (loading || loadingMoreRef.current || !hasMoreRef.current || mediaRows.length === 0) {
       return;
     }
+    loadingMoreRef.current = true;
     setLoadingMore(true);
     loadPage(mediaRows.length, true);
-  }, [loading, loadingMore, mediaRows.length, loadPage]);
+    loadingMoreRef.current = false;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- ref-based guard replaces loadingMore state dep
+  }, [loading, mediaRows.length, loadPage]);
 
   // ---------------------------------------------------------------------------
   // Sort cycle

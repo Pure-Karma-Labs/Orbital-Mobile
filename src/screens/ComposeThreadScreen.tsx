@@ -3,6 +3,7 @@
  */
 
 import React, { useCallback, useState } from 'react';
+import * as Sentry from '@sentry/react-native';
 import {
   Alert,
   ScrollView,
@@ -88,7 +89,11 @@ export function ComposeThreadScreen({
       // so the file library orbit filter can resolve conversation_id
       if (mediaIds && mediaIds.length > 0) {
         for (const mid of mediaIds) {
-          updateMediaParent(mid, thread.id, null);
+          try {
+            updateMediaParent(mid, thread.id, null);
+          } catch (e) {
+            Sentry.captureException(e);
+          }
         }
       }
 

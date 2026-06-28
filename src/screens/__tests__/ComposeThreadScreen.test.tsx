@@ -11,6 +11,12 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../../theme';
 import { ComposeThreadScreen } from '../ComposeThreadScreen';
 
+jest.mock('@sentry/react-native', () => ({
+  captureException: jest.fn(),
+  setUser: jest.fn(),
+  wrap: (c: unknown) => c,
+}));
+
 // ---------------------------------------------------------------------------
 // Module mocks
 // ---------------------------------------------------------------------------

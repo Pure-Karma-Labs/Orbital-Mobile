@@ -23,6 +23,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import * as Sentry from '@sentry/react-native';
 import {
   Animated,
   FlatList,
@@ -366,7 +367,7 @@ export function ThreadDetailScreen({
       if (__DEV__) console.warn('[ThreadDetail]', e instanceof Error ? e.message : e);
       setError('Could not load thread');
     } finally {
-      setLoading(false);
+      if (mountedRef.current) setLoading(false);
     }
   }, [threadId]);
 
@@ -409,7 +410,7 @@ export function ThreadDetailScreen({
     } catch {
       // Silently fail on refresh — stale data is still visible
     } finally {
-      setRefreshing(false);
+      if (mountedRef.current) setRefreshing(false);
     }
   }, [threadId]);
 
@@ -430,7 +431,7 @@ export function ThreadDetailScreen({
     } catch {
       hasMoreRef.current = false;
     } finally {
-      setLoadingMore(false);
+      if (mountedRef.current) setLoadingMore(false);
     }
   }, [loadingMore, thread, threadId]);
 
@@ -461,7 +462,7 @@ export function ThreadDetailScreen({
           try {
             mediaIds = await uploadMediaBatch(selectedMedia, thread.conversationId);
           } finally {
-            setUploading(false);
+            if (mountedRef.current) setUploading(false);
           }
         }
         const parentReplyId = replyTarget?.replyId ?? null;
@@ -476,21 +477,27 @@ export function ThreadDetailScreen({
           mediaIds ? { mediaIds } : undefined,
         );
 
-        // Update local media rows with the confirmed reply/thread IDs
-        // so the file library orbit filter can resolve conversation_id
-        if (mediaIds && mediaIds.length > 0) {
-          for (const mid of mediaIds) {
-            updateMediaParent(mid, threadId, reply.id);
-          }
+        // Reset composer immediately on successful post
+        if (mountedRef.current) {
+          setComposerText('');
+          clearMedia();
+          setReplyTarget(null);
         }
 
-        setComposerText('');
-        clearMedia();
-        setReplyTarget(null);
+        // Best-effort: update local media rows with confirmed reply/thread IDs
+        if (mediaIds && mediaIds.length > 0) {
+          for (const mid of mediaIds) {
+            try {
+              updateMediaParent(mid, threadId, reply.id);
+            } catch (e) {
+              Sentry.captureException(e);
+            }
+          }
+        }
       } catch (e) {
         if (__DEV__) console.warn('[Reply] failed:', e instanceof Error ? e.message : e);
       } finally {
-        setSending(false);
+        if (mountedRef.current) setSending(false);
       }
     },
     [thread, threadId, userId, username, replyTarget, selectedMedia, clearMedia],

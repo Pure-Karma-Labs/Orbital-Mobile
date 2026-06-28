@@ -34,6 +34,7 @@ import { listGroups } from './api/groups';
 import { setItem, getItem } from '../database/repositories/itemRepository';
 import { useAppStore } from '../stores/useAppStore';
 import type { UploadAvatarResponse } from '../types/api';
+import { createSemaphore } from '../utils/semaphore';
 import {
   readFile,
   writeFile,
@@ -53,6 +54,10 @@ const AVATAR_KEY_ITEM_ID = 'avatarAttachmentKey';
 
 // Inflight dedup for resolve operations
 const resolveInflight = new Map<string, Promise<string | null>>();
+
+// 3 concurrent: avatar decrypt is sync FFI (~10-100ms each);
+// more would starve the JS thread for animations/gestures.
+const avatarSemaphore = createSemaphore(3);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -228,13 +233,19 @@ export async function resolveAvatar(
   const existing = resolveInflight.get(dedupKey);
   if (existing) return existing;
 
-  const promise = _doResolveAvatar(userId, avatarDigest, encryptedKey, keyIv, sharedGroupId);
+  const promise = _doResolveAvatar(userId, avatarDigest, encryptedKey, keyIv, sharedGroupId)
+    .finally(() => {
+      // Identity check: only delete if the map still points to this promise
+      // (prevents clearing a newer request if the key was reused)
+      if (resolveInflight.get(dedupKey) === promise) {
+        resolveInflight.delete(dedupKey);
+      }
+    });
+
+  // Set BEFORE awaiting — prevents race where concurrent callers
+  // slip past the dedup check before the promise is registered
   resolveInflight.set(dedupKey, promise);
-  try {
-    return await promise;
-  } finally {
-    resolveInflight.delete(dedupKey);
-  }
+  return promise;
 }
 
 async function _doResolveAvatar(
@@ -244,7 +255,7 @@ async function _doResolveAvatar(
   keyIv: string | null,
   sharedGroupId: string | null,
 ): Promise<string | null> {
-  // 1. Check cache
+  // 1. Check cache (before acquiring semaphore — fast path)
   await ensureAvatarCacheDir();
   const cachePath = avatarCachePath(userId, avatarDigest);
   const cached = await exists(cachePath);
@@ -252,97 +263,122 @@ async function _doResolveAvatar(
     return `file://${cachePath}`;
   }
 
-  // 2. Get the attachment key
-  let keysBase64: string;
-  const currentUserId = useAppStore.getState().userId;
-
-  if (userId === currentUserId) {
-    // Own avatar — use locally stored key
-    const storedKey = getItem(AVATAR_KEY_ITEM_ID);
-    if (!storedKey) {
-      if (__DEV__) {
-        console.warn('[avatarService] no stored avatar key for own avatar');
-      }
-      return null;
-    }
-    keysBase64 = storedKey;
-  } else {
-    // Other user's avatar — decrypt the key using group key
-    if (!encryptedKey || !keyIv || !sharedGroupId) {
-      if (__DEV__) {
-        console.warn('[avatarService] missing encrypted key data for user', userId);
-      }
-      return null;
-    }
-
-    try {
-      const groupKey = await getOrFetchGroupKey(sharedGroupId);
-      const aad = `${sharedGroupId}:${userId}`;
-      keysBase64 = decryptContent(encryptedKey, keyIv, groupKey, aad);
-    } catch (e) {
-      if (__DEV__) {
-        console.warn('[avatarService] failed to decrypt avatar key:', e instanceof Error ? e.message : e);
-      }
-      return null;
-    }
-  }
-
-  // 3. Decode keysBase64 to 64-byte Uint8Array
-  const keysBuffer = base64ToArrayBuffer(keysBase64);
-  const keys = new Uint8Array(keysBuffer);
-  if (keys.length !== 64) {
-    if (__DEV__) {
-      console.warn('[avatarService] invalid key length:', keys.length);
-    }
-    return null;
-  }
-
-  // 4. Fetch encrypted blob from server
-  let ciphertextBuffer: ArrayBuffer;
+  // 2. Acquire semaphore slot — limits concurrent decrypt/download operations
+  await avatarSemaphore.acquire();
   try {
-    const { data } = await requestBinary({
-      method: 'GET',
-      path: `/api/users/${encodeURIComponent(userId)}/avatar-file`,
-    });
-    ciphertextBuffer = data;
-  } catch (e) {
-    if (__DEV__) {
-      console.warn('[avatarService] failed to download avatar:', e instanceof Error ? e.message : e);
+    // Re-check cache after acquiring slot — another request may have
+    // completed while we were waiting in the semaphore queue
+    const cachedAfterWait = await exists(cachePath);
+    if (cachedAfterWait) {
+      return `file://${cachePath}`;
     }
-    return null;
-  }
 
-  // 5. Decode digest and decrypt
-  const digestBytes = new Uint8Array(base64ToArrayBuffer(avatarDigest));
-  let plaintext: Uint8Array;
-  {
-    const ciphertextBytes = new Uint8Array(ciphertextBuffer);
-    try {
-      plaintext = decryptAttachment(ciphertextBytes, keys, digestBytes);
-    } catch (e) {
+    // 3. Get the attachment key
+    let keysBase64: string;
+    const currentUserId = useAppStore.getState().userId;
+
+    if (userId === currentUserId) {
+      // Own avatar — use locally stored key
+      const storedKey = getItem(AVATAR_KEY_ITEM_ID);
+      if (!storedKey) {
+        if (__DEV__) {
+          console.warn('[avatarService] no stored avatar key for own avatar');
+        }
+        return null;
+      }
+      keysBase64 = storedKey;
+    } else {
+      // Other user's avatar — decrypt the key using group key
+      if (!encryptedKey || !keyIv || !sharedGroupId) {
+        if (__DEV__) {
+          console.warn('[avatarService] missing encrypted key data for user', userId);
+        }
+        return null;
+      }
+
+      try {
+        const groupKey = await getOrFetchGroupKey(sharedGroupId);
+        const aad = `${sharedGroupId}:${userId}`;
+        keysBase64 = decryptContent(encryptedKey, keyIv, groupKey, aad);
+      } catch (e) {
+        if (__DEV__) {
+          console.warn('[avatarService] failed to decrypt avatar key:', e instanceof Error ? e.message : e);
+        }
+        return null;
+      }
+    }
+
+    // 4. Decode keysBase64 to 64-byte Uint8Array
+    const keysBuffer = base64ToArrayBuffer(keysBase64);
+    const keys = new Uint8Array(keysBuffer);
+    if (keys.length !== 64) {
       if (__DEV__) {
-        console.warn('[avatarService] decryption failed:', e instanceof Error ? e.message : e);
+        console.warn('[avatarService] invalid key length:', keys.length);
       }
       return null;
     }
-  }
 
-  // 6. Atomic write to cache
-  const tmpPath = `${cachePath}.tmp`;
-  try {
-    const plaintextBase64 = arrayBufferToBase64(toArrayBuffer(plaintext));
-    await writeFile(tmpPath, plaintextBase64, 'base64');
-    await unlink(cachePath).catch(() => {});
-    await moveFile(tmpPath, cachePath);
-  } catch (e) {
-    await unlink(tmpPath).catch(() => {});
-    if (__DEV__) {
-      console.warn('[avatarService] failed to write cache:', e instanceof Error ? e.message : e);
+    // 5. Fetch, decrypt, and cache — wrapped in try/finally to ensure
+    // key material is zeroed on all exit paths (mirrors Rust Zeroizing<>)
+    try {
+      let ciphertextBuffer: ArrayBuffer;
+      const abortController = new AbortController();
+      const abortTimeout = setTimeout(() => abortController.abort(), 30_000);
+      try {
+        const { data } = await requestBinary({
+          method: 'GET',
+          path: `/api/users/${encodeURIComponent(userId)}/avatar-file`,
+          signal: abortController.signal,
+        });
+        ciphertextBuffer = data;
+      } catch (e) {
+        if (__DEV__) {
+          console.warn('[avatarService] failed to download avatar:', e instanceof Error ? e.message : e);
+        }
+        return null;
+      } finally {
+        clearTimeout(abortTimeout);
+      }
+
+      // 6. Decode digest and decrypt
+      const digestBytes = new Uint8Array(base64ToArrayBuffer(avatarDigest));
+      let plaintext: Uint8Array;
+      {
+        const ciphertextBytes = new Uint8Array(ciphertextBuffer);
+        try {
+          plaintext = decryptAttachment(ciphertextBytes, keys, digestBytes);
+        } catch (e) {
+          if (__DEV__) {
+            console.warn('[avatarService] decryption failed:', e instanceof Error ? e.message : e);
+          }
+          return null;
+        }
+      }
+
+      // 7. Atomic write to cache
+      const tmpPath = `${cachePath}.tmp`;
+      try {
+        const plaintextBase64 = arrayBufferToBase64(toArrayBuffer(plaintext));
+        await writeFile(tmpPath, plaintextBase64, 'base64');
+        await unlink(cachePath).catch(() => {});
+        await moveFile(tmpPath, cachePath);
+      } catch (e) {
+        await unlink(tmpPath).catch(() => {});
+        if (__DEV__) {
+          console.warn('[avatarService] failed to write cache:', e instanceof Error ? e.message : e);
+        }
+        return null;
+      } finally {
+        plaintext.fill(0);
+      }
+
+      return `file://${cachePath}`;
+    } finally {
+      keys.fill(0);
     }
-    return null;
+  } finally {
+    avatarSemaphore.release();
   }
-
-  return `file://${cachePath}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -389,4 +425,13 @@ export async function clearAvatarCache(): Promise<void> {
   } catch {
     // Best effort
   }
+}
+
+/**
+ * Clear avatar service in-memory state. Called on logout/wipe to prevent
+ * stale inflight promises and semaphore slots from leaking across sessions.
+ */
+export function clearAvatarServiceState(): void {
+  resolveInflight.clear();
+  avatarSemaphore.reset();
 }

@@ -443,8 +443,8 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
                 }
                 {...scrollProps}
                 removeClippedSubviews
-                initialNumToRender={20}
-                maxToRenderPerBatch={10}
+                initialNumToRender={10}
+                maxToRenderPerBatch={5}
                 windowSize={5}
               />
             </View>

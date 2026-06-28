@@ -31,6 +31,7 @@ import { SignupScreen } from './screens/SignupScreen';
 import { ForgotPasswordScreen } from './screens/ForgotPasswordScreen';
 import { ResetPasswordScreen } from './screens/ResetPasswordScreen';
 import { AppNavigator } from './navigation';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import BootSplash from 'react-native-bootsplash';
 import { OrbitalLoader } from './components/OrbitalLoader';
 
@@ -39,11 +40,13 @@ type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated';
 function App(): React.JSX.Element {
   const colorScheme = useAppStore((s) => s.colorScheme);
   return (
-    <SafeAreaProvider>
-      <ThemeProvider colorSchemeOverride={colorScheme}>
-        <AppContent />
-      </ThemeProvider>
-    </SafeAreaProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        <ThemeProvider colorSchemeOverride={colorScheme}>
+          <AppContent />
+        </ThemeProvider>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }
 

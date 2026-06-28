@@ -26,6 +26,7 @@ import {
   updateDownloadState,
 } from '../database/repositories/mediaRepository';
 import { useAppStore } from '../stores/useAppStore';
+import { createSemaphore } from '../utils/semaphore';
 import {
   writeFile,
   exists,
@@ -51,27 +52,7 @@ const MEDIA_DIR = `${DocumentDirectoryPath}/media`;
 // Semaphore — limits concurrent downloads to MAX_CONCURRENT
 // ---------------------------------------------------------------------------
 
-let activeCount = 0;
-const waiting: Array<() => void> = [];
-
-function acquireSemaphore(): Promise<void> {
-  if (activeCount < MAX_CONCURRENT) {
-    activeCount++;
-    return Promise.resolve();
-  }
-  return new Promise<void>((resolve) => {
-    waiting.push(resolve);
-  });
-}
-
-function releaseSemaphore(): void {
-  activeCount--;
-  const next = waiting.shift();
-  if (next) {
-    activeCount++;
-    next();
-  }
-}
+const mediaSemaphore = createSemaphore(MAX_CONCURRENT);
 
 // ---------------------------------------------------------------------------
 // Inflight dedup — prevents duplicate concurrent downloads for the same media
@@ -199,7 +180,7 @@ export async function downloadAndDecryptMedia(
   if (existing) return existing;
 
   const promise = (async (): Promise<string> => {
-    await acquireSemaphore();
+    await mediaSemaphore.acquire();
     const ext = getExtension(row!);
     validatePathComponents(mediaId, ext);
     const tmpPath = `${MEDIA_DIR}/${mediaId}.${ext}.tmp`;
@@ -263,7 +244,7 @@ export async function downloadAndDecryptMedia(
 
       throw e;
     } finally {
-      releaseSemaphore();
+      mediaSemaphore.release();
     }
   })();
 

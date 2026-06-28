@@ -29,7 +29,7 @@ export interface AvatarProps {
   avatarDigest?: string | null;
 }
 
-export function Avatar({
+export const Avatar = React.memo(function Avatar({
   name,
   size = 36,
   color,
@@ -69,7 +69,6 @@ export function Avatar({
     let cancelled = false;
     setResolving(true);
 
-    // Lazy import to avoid pulling crypto/API deps into all Avatar consumers
     import('../services/avatarService')
       .then(({ resolveAvatar }) =>
         resolveAvatar(
@@ -153,4 +152,4 @@ export function Avatar({
       {online != null && <View style={presenceDotStyle} />}
     </View>
   );
-}
+});

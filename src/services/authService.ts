@@ -27,6 +27,7 @@ import { clearAllThreads } from '../database/repositories/threadRepository';
 import { clearAllReplies } from '../database/repositories/replyRepository';
 import { clearLinkPreviewCache } from '../hooks/useLinkPreview';
 import { clearIdentityInflightState } from './crypto/identityKeyAccess';
+import { clearAvatarServiceState } from './avatarService';
 import { clearMessageHandlerState } from './websocket/messageHandler';
 import { execute } from '../database/queryHelpers';
 import { isDatabaseInitialized, closeDatabase } from '../database/connection';
@@ -279,6 +280,9 @@ export async function localWipe({ preserveIdentity }: { preserveIdentity: boolea
   }
   try { clearLinkPreviewCache(); } catch {
     if (__DEV__) console.warn('[LocalWipe] clearLinkPreviewCache failed');
+  }
+  try { clearAvatarServiceState(); } catch {
+    if (__DEV__) console.warn('[LocalWipe] clearAvatarServiceState failed');
   }
   try { clearAllThreads(); } catch {
     if (__DEV__) console.warn('[LocalWipe] clearAllThreads failed');

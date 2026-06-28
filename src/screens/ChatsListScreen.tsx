@@ -279,8 +279,8 @@ export function ChatsListScreen({ navigation }: ChatsListScreenProps): React.JSX
             }
             {...scrollProps}
             removeClippedSubviews
-            initialNumToRender={20}
-            maxToRenderPerBatch={10}
+            initialNumToRender={10}
+            maxToRenderPerBatch={5}
             windowSize={5}
           />
         </View>

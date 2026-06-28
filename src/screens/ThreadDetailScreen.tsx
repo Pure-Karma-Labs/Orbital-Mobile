@@ -183,63 +183,99 @@ export function ThreadDetailScreen({
   const highlightClearRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const retryClearRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const retryCountRef = useRef(0);
+  const mountedRef = useRef(true);
+  const workingTargetRef = useRef<string | null>(null);
   const [highlightTick, setHighlightTick] = useState(0);
 
-  // Reset scroll state when targetReplyId changes (new deep link while screen is mounted)
+  // Centralized cleanup — cancels all pending scroll/highlight timeouts
+  const clearAllScrollTimeouts = useCallback(() => {
+    if (scrollTimeoutRef.current) {
+      clearTimeout(scrollTimeoutRef.current);
+      scrollTimeoutRef.current = undefined;
+    }
+    if (highlightClearRef.current) {
+      clearTimeout(highlightClearRef.current);
+      highlightClearRef.current = undefined;
+    }
+    if (retryClearRef.current) {
+      clearTimeout(retryClearRef.current);
+      retryClearRef.current = undefined;
+    }
+    retryCountRef.current = 0;
+  }, []);
+
+  // Deep-link scroll: capture targetReplyId into workingTargetRef and set up
+  // a safety timeout. Uses scrollAttemptedRef as the idempotency guard —
+  // does NOT call navigation.setParams to avoid circular dependency.
   useEffect(() => {
-    highlightRef.current = targetReplyId ?? null;
+    if (!targetReplyId || scrollAttemptedRef.current) return;
+
+    // Capture into working ref for timeout/callback use
+    clearAllScrollTimeouts();
+    workingTargetRef.current = targetReplyId;
+    highlightRef.current = targetReplyId;
     scrollAttemptedRef.current = false;
     retryCountRef.current = 0;
-    if (targetReplyId) {
-      setHighlightTick(n => n + 1);
-    }
-  }, [targetReplyId]);
+    setHighlightTick(n => n + 1);
 
-  // Safety timeout — give up scrolling after 10 seconds
-  useEffect(() => {
-    if (!targetReplyId) return;
+    // Safety timeout: give up after 10s
     scrollTimeoutRef.current = setTimeout(() => {
+      if (!mountedRef.current) return;
+      workingTargetRef.current = null;
       scrollAttemptedRef.current = true;
       highlightRef.current = null;
       setHighlightTick(n => n + 1);
-      navigation.setParams({ targetReplyId: undefined });
     }, 10000);
+
     return () => {
-      if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
-      if (highlightClearRef.current) clearTimeout(highlightClearRef.current);
-      if (retryClearRef.current) clearTimeout(retryClearRef.current);
+      clearAllScrollTimeouts();
     };
-  }, [targetReplyId, navigation]);
+  }, [targetReplyId, clearAllScrollTimeouts]);
 
   const handleContentSizeChange = useCallback(() => {
-    if (!targetReplyId || scrollAttemptedRef.current || !listRef.current) return;
-    const idx = replyRows.findIndex(r => r.reply.id === targetReplyId);
+    const target = workingTargetRef.current;
+    if (!target || scrollAttemptedRef.current || !listRef.current) return;
+    const idx = replyRows.findIndex(r => r.reply.id === target);
     if (idx === -1) return;
 
     scrollAttemptedRef.current = true;
     if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
+    scrollTimeoutRef.current = undefined;
 
     listRef.current.scrollToIndex({ index: idx, animated: true, viewPosition: 0.3 });
 
     // Trigger highlight and clear after 2 seconds
-    highlightRef.current = targetReplyId;
+    highlightRef.current = target;
     setHighlightTick(n => n + 1);
     highlightClearRef.current = setTimeout(() => {
+      if (!mountedRef.current) return;
       highlightRef.current = null;
+      workingTargetRef.current = null;
       setHighlightTick(n => n + 1);
-      navigation.setParams({ targetReplyId: undefined });
     }, 2000);
-  }, [targetReplyId, replyRows, navigation]);
+  }, [replyRows]);
 
   const handleScrollToIndexFailed = useCallback(
     (info: { index: number; averageItemLength: number }) => {
-      if (retryCountRef.current >= 3) return;
+      if (!mountedRef.current) return;
+      if (retryCountRef.current >= 3) {
+        workingTargetRef.current = null;
+        scrollAttemptedRef.current = true;
+        highlightRef.current = null;
+        setHighlightTick(n => n + 1);
+        return;
+      }
       retryCountRef.current++;
+
       listRef.current?.scrollToOffset({
         offset: info.averageItemLength * info.index,
         animated: true,
       });
+
+      // Clear previous retry timeout before setting new one
+      if (retryClearRef.current) clearTimeout(retryClearRef.current);
       retryClearRef.current = setTimeout(() => {
+        if (!mountedRef.current) return;
         listRef.current?.scrollToIndex({
           index: info.index,
           animated: true,
@@ -334,17 +370,20 @@ export function ThreadDetailScreen({
 
   // Mount/unmount lifecycle
   useEffect(() => {
+    mountedRef.current = true;
     setActiveThread(threadId);
     markThreadViewed(threadId);
     // Instant hydration from local SQLCipher cache before async API fetch
     hydrateRepliesFromLocal(threadId);
     fetchData();
     return () => {
+      mountedRef.current = false;
+      clearAllScrollTimeouts();
       // Mark viewed again on cleanup — captures replies streamed while reading
       markThreadViewed(threadId);
       setActiveThread(null);
     };
-  }, [threadId, setActiveThread, markThreadViewed, fetchData]);
+  }, [threadId, setActiveThread, markThreadViewed, fetchData, clearAllScrollTimeouts]);
 
   // Track which conversation the user is viewing (for foreground push suppression)
   const conversationId = thread?.conversationId;

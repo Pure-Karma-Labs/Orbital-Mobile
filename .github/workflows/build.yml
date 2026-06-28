@@ -110,6 +110,8 @@ jobs:
       - name: Build Android Debug
         working-directory: android
         run: ./gradlew assembleDebug --no-daemon
+        env:
+          SENTRY_DISABLE_AUTO_UPLOAD: 'true'
 
   build-ios:
     name: iOS Debug Build
@@ -202,3 +204,5 @@ jobs:
             -destination "platform=iOS Simulator,name=${{ steps.simulator.outputs.device }}" \
             CODE_SIGNING_ALLOWED=NO \
             build 2>&1 | tee xcodebuild.log | tail -50
+        env:
+          SENTRY_DISABLE_AUTO_UPLOAD: 'true'

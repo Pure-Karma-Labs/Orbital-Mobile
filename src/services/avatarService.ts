@@ -318,63 +318,64 @@ async function _doResolveAvatar(
       return null;
     }
 
-    // 5. Fetch encrypted blob from server with 30s abort timeout
-    let ciphertextBuffer: ArrayBuffer;
-    const abortController = new AbortController();
-    const abortTimeout = setTimeout(() => abortController.abort(), 30_000);
+    // 5. Fetch, decrypt, and cache — wrapped in try/finally to ensure
+    // key material is zeroed on all exit paths (mirrors Rust Zeroizing<>)
     try {
-      const { data } = await requestBinary({
-        method: 'GET',
-        path: `/api/users/${encodeURIComponent(userId)}/avatar-file`,
-        signal: abortController.signal,
-      });
-      ciphertextBuffer = data;
-    } catch (e) {
-      if (__DEV__) {
-        console.warn('[avatarService] failed to download avatar:', e instanceof Error ? e.message : e);
-      }
-      return null;
-    } finally {
-      clearTimeout(abortTimeout);
-    }
-
-    // 6. Decode digest and decrypt
-    const digestBytes = new Uint8Array(base64ToArrayBuffer(avatarDigest));
-    let plaintext: Uint8Array;
-    {
-      const ciphertextBytes = new Uint8Array(ciphertextBuffer);
+      let ciphertextBuffer: ArrayBuffer;
+      const abortController = new AbortController();
+      const abortTimeout = setTimeout(() => abortController.abort(), 30_000);
       try {
-        plaintext = decryptAttachment(ciphertextBytes, keys, digestBytes);
+        const { data } = await requestBinary({
+          method: 'GET',
+          path: `/api/users/${encodeURIComponent(userId)}/avatar-file`,
+          signal: abortController.signal,
+        });
+        ciphertextBuffer = data;
       } catch (e) {
         if (__DEV__) {
-          console.warn('[avatarService] decryption failed:', e instanceof Error ? e.message : e);
+          console.warn('[avatarService] failed to download avatar:', e instanceof Error ? e.message : e);
         }
         return null;
+      } finally {
+        clearTimeout(abortTimeout);
       }
-    }
 
-    // Zero the key material after decryption (defense-in-depth, mirrors Rust Zeroizing<>)
-    keys.fill(0);
-
-    // 7. Atomic write to cache
-    const tmpPath = `${cachePath}.tmp`;
-    try {
-      const plaintextBase64 = arrayBufferToBase64(toArrayBuffer(plaintext));
-      await writeFile(tmpPath, plaintextBase64, 'base64');
-      await unlink(cachePath).catch(() => {});
-      await moveFile(tmpPath, cachePath);
-    } catch (e) {
-      await unlink(tmpPath).catch(() => {});
-      if (__DEV__) {
-        console.warn('[avatarService] failed to write cache:', e instanceof Error ? e.message : e);
+      // 6. Decode digest and decrypt
+      const digestBytes = new Uint8Array(base64ToArrayBuffer(avatarDigest));
+      let plaintext: Uint8Array;
+      {
+        const ciphertextBytes = new Uint8Array(ciphertextBuffer);
+        try {
+          plaintext = decryptAttachment(ciphertextBytes, keys, digestBytes);
+        } catch (e) {
+          if (__DEV__) {
+            console.warn('[avatarService] decryption failed:', e instanceof Error ? e.message : e);
+          }
+          return null;
+        }
       }
-      return null;
+
+      // 7. Atomic write to cache
+      const tmpPath = `${cachePath}.tmp`;
+      try {
+        const plaintextBase64 = arrayBufferToBase64(toArrayBuffer(plaintext));
+        await writeFile(tmpPath, plaintextBase64, 'base64');
+        await unlink(cachePath).catch(() => {});
+        await moveFile(tmpPath, cachePath);
+      } catch (e) {
+        await unlink(tmpPath).catch(() => {});
+        if (__DEV__) {
+          console.warn('[avatarService] failed to write cache:', e instanceof Error ? e.message : e);
+        }
+        return null;
+      } finally {
+        plaintext.fill(0);
+      }
+
+      return `file://${cachePath}`;
+    } finally {
+      keys.fill(0);
     }
-
-    // Zero plaintext buffer after write completes
-    plaintext.fill(0);
-
-    return `file://${cachePath}`;
   } finally {
     avatarSemaphore.release();
   }

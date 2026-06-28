@@ -23,11 +23,13 @@ export function createSemaphore(maxConcurrent: number) {
   }
 
   function release(): void {
-    active--;
+    if (active > 0) active--;
     const next = queue.shift();
     if (next) next();
   }
 
+  /** Reset all state. Callers blocked in acquire() will never resolve —
+   *  only safe during session teardown (logout/wipe). */
   function reset(): void {
     active = 0;
     queue.length = 0;

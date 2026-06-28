@@ -229,10 +229,12 @@ export function ThreadDetailScreen({
 
     return () => {
       clearAllScrollTimeouts();
+      scrollAttemptedRef.current = false;
     };
   }, [targetReplyId, clearAllScrollTimeouts]);
 
   const handleContentSizeChange = useCallback(() => {
+    if (!mountedRef.current) return;
     const target = workingTargetRef.current;
     if (!target || scrollAttemptedRef.current || !listRef.current) return;
     const idx = replyRows.findIndex(r => r.reply.id === target);

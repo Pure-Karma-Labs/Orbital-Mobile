@@ -47,6 +47,15 @@ jest.mock('../../secure-storage', () => ({
   setSecureItem: jest.fn().mockResolvedValue(undefined),
 }));
 
+jest.mock('../contentCrypto', () => ({
+  clearGroupKeyCache: jest.fn(),
+  clearContentCryptoInflight: jest.fn(),
+}));
+
+jest.mock('../../../database/repositories/conversationRepository', () => ({
+  clearAllGroupCryptoState: jest.fn(),
+}));
+
 import {
   generateIdentityKeyPair,
   generatePreKey,

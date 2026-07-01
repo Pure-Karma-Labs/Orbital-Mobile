@@ -29,6 +29,8 @@ import type {
   KyberPreKeyPublicUpload,
 } from '../../types/api';
 import { getSecureItem, setSecureItem, removeSecureItem } from '../secure-storage';
+import { clearGroupKeyCache, clearContentCryptoInflight } from './contentCrypto';
+import { clearAllGroupCryptoState } from '../../database/repositories/conversationRepository';
 import { SecureKeys } from '../secure-storage/constants';
 
 const ITEM_KEYS = {
@@ -505,11 +507,14 @@ export async function fullCryptoWipe(): Promise<void> {
   // Remove identity private key from Keychain
   await removeSecureItem(SecureKeys.IDENTITY_KEY_PRIVATE).catch(() => {});
 
-  // Clear in-memory cache
+  // Clear in-memory caches
   clearIdentityKeyCache();
+  clearGroupKeyCache();
+  clearContentCryptoInflight();
 
-  // Clear all Signal Protocol tables and items
+  // Clear group crypto state and all Signal Protocol tables
   if (isDatabaseInitialized()) {
+    clearAllGroupCryptoState();
     execute('DELETE FROM items');
     execute('DELETE FROM signal_identity_keys');
     execute('DELETE FROM signal_sessions');

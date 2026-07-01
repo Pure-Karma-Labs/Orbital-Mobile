@@ -64,3 +64,10 @@ coverage/
 # Misc
 *.log
 *.tsbuildinfo
+
+# Developer-machine overrides (leaks local paths/usernames)
+ios/.xcode.env.local
+
+# Firebase client config — injected from CI secrets, never commit
+android/app/google-services.json
+ios/OrbitalMobile/GoogleService-Info.plist

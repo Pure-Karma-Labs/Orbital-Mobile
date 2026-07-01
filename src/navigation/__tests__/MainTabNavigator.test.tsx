@@ -1,17 +1,21 @@
 /**
  * Tests for CustomTabBar — the custom bottom tab bar component.
  *
- * Covers the onPress handler fix for #470:
- *  1. Non-focused tab press: navigate with initial screen params
- *  2. Focused tab re-press: navigate with initial screen params (popToTop)
- *  3. Prevented tabPress event: no navigate call
- *  4. TAB_INITIAL_SCREENS covers all three tabs
+ * Covers:
+ *  1. Non-focused tab press: navigate with initial screen params (#470)
+ *  2. Focused tab re-press at root: no-op (already at root)
+ *  3. Focused tab re-press with nested screen, no keyboard: animated navigate
+ *  4. Focused tab re-press with nested screen + keyboard: reset without animation
+ *  5. Keyboard.dismiss() called on all tab presses (keyboard → navigate path)
+ *  6. Prevented tabPress event: no navigate call
+ *  7. TAB_INITIAL_SCREENS covers all three tabs
  */
 
 import React from 'react';
-import { TouchableOpacity, Platform } from 'react-native';
+import { TouchableOpacity, Platform, Keyboard } from 'react-native';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
+import type { NavigationState, PartialState, ParamListBase } from '@react-navigation/native';
 
 // ---------------------------------------------------------------------------
 // Module mocks — must precede import of the module under test
@@ -73,20 +77,50 @@ jest.mock('../SettingsStackNavigator', () => ({
 import { CustomTabBar, TAB_INITIAL_SCREENS } from '../MainTabNavigator';
 
 // ---------------------------------------------------------------------------
+// Keyboard mock helpers
+// ---------------------------------------------------------------------------
+
+let keyboardShowCb: (() => void) | null = null;
+let keyboardHideCb: (() => void) | null = null;
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+type NestedState = NavigationState<ParamListBase> | PartialState<NavigationState<ParamListBase>>;
+
+/** Minimal nested navigator state (e.g. a stack with ThreadDetail on top of ThreadsList). */
+function makeNestedStackState(
+  screens: string[],
+  key = 'NestedStack-key',
+): NestedState {
+  return {
+    key,
+    index: screens.length - 1,
+    routes: screens.map((name, i) => ({
+      key: `${name}-key-${i}`,
+      name,
+      params: undefined,
+    })),
+    routeNames: screens,
+    type: 'stack',
+    stale: false as const,
+  };
+}
 
 /** Build minimal BottomTabBarProps with overridable fields. */
 function makeTabBarProps(overrides?: {
   focusedIndex?: number;
   onTabPressPreventDefault?: boolean;
+  /** Nested navigator state for each tab index. */
+  nestedStates?: Record<number, NestedState>;
 }): BottomTabBarProps {
   const focusedIndex = overrides?.focusedIndex ?? 0;
 
   const routes = [
-    { key: 'Threads-key', name: 'Threads', params: undefined },
-    { key: 'Chats-key', name: 'Chats', params: undefined },
-    { key: 'Settings-key', name: 'Settings', params: undefined },
+    { key: 'Threads-key', name: 'Threads', params: undefined, state: overrides?.nestedStates?.[0] },
+    { key: 'Chats-key', name: 'Chats', params: undefined, state: overrides?.nestedStates?.[1] },
+    { key: 'Settings-key', name: 'Settings', params: undefined, state: overrides?.nestedStates?.[2] },
   ];
 
   const descriptors: Record<string, { options: Record<string, unknown>; navigation: unknown; route: unknown }> = {};
@@ -103,6 +137,7 @@ function makeTabBarProps(overrides?: {
   const navigation = {
     emit: jest.fn().mockReturnValue({ defaultPrevented: preventDefault }),
     navigate: jest.fn(),
+    dispatch: jest.fn(),
   };
 
   return {
@@ -123,10 +158,9 @@ function makeTabBarProps(overrides?: {
 }
 
 // ---------------------------------------------------------------------------
-// Tests
+// Setup
 // ---------------------------------------------------------------------------
 
-// Ensure keyboard useEffect doesn't run (it only fires on Android)
 const originalOS = Platform.OS;
 beforeAll(() => {
   (Platform as { OS: string }).OS = 'ios';
@@ -135,8 +169,33 @@ afterAll(() => {
   (Platform as { OS: string }).OS = originalOS;
 });
 
+beforeEach(() => {
+  keyboardShowCb = null;
+  keyboardHideCb = null;
+
+  // Capture keyboard listener callbacks so tests can simulate show/hide.
+  jest.spyOn(Keyboard, 'addListener').mockImplementation(((
+    event: string,
+    callback: () => void,
+  ) => {
+    if (event === 'keyboardWillShow') keyboardShowCb = callback;
+    else if (event === 'keyboardWillHide') keyboardHideCb = callback;
+    return { remove: jest.fn() };
+  }) as unknown as typeof Keyboard.addListener);
+
+  jest.spyOn(Keyboard, 'dismiss').mockImplementation(jest.fn());
+});
+
+afterEach(() => {
+  jest.restoreAllMocks();
+});
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
 describe('CustomTabBar', () => {
-  describe('onPress handler (#470)', () => {
+  describe('onPress handler', () => {
     it('navigates with initial screen params when tapping a non-focused tab', () => {
       // Focused on Threads (index 0), tap Chats (index 1)
       const props = makeTabBarProps({ focusedIndex: 0 });
@@ -157,12 +216,13 @@ describe('CustomTabBar', () => {
         canPreventDefault: true,
       });
       expect(nav.navigate).toHaveBeenCalledWith('Chats', { screen: 'ChatsList' });
+      expect(Keyboard.dismiss).toHaveBeenCalled();
 
       act(() => renderer!.unmount());
     });
 
-    it('navigates with initial screen params when re-pressing the focused tab (popToTop)', () => {
-      // Focused on Threads (index 0), tap Threads again (index 0)
+    it('does nothing when re-pressing focused tab already at root screen', () => {
+      // Focused on Threads (index 0), no nested state (at ThreadsList root)
       const props = makeTabBarProps({ focusedIndex: 0 });
       let renderer: ReactTestRenderer;
       act(() => {
@@ -174,10 +234,79 @@ describe('CustomTabBar', () => {
         threadsTab.props.onPress();
       });
 
-      const nav = props.navigation as unknown as { navigate: jest.Mock };
-      // Key assertion: navigate IS called even when isFocused === true.
-      // Before the #470 fix, the !isFocused guard blocked this path entirely.
+      const nav = props.navigation as unknown as { navigate: jest.Mock; dispatch: jest.Mock };
+      // Already at root — no navigation needed.
+      expect(nav.navigate).not.toHaveBeenCalled();
+      expect(nav.dispatch).not.toHaveBeenCalled();
+
+      act(() => renderer!.unmount());
+    });
+
+    it('navigates with animation when re-pressing focused tab with nested screen and no keyboard', () => {
+      // Focused on Threads (index 0), ThreadDetail is on the stack
+      const props = makeTabBarProps({
+        focusedIndex: 0,
+        nestedStates: {
+          0: makeNestedStackState(['ThreadsList', 'ThreadDetail'], 'ThreadsStack-key'),
+        },
+      });
+      let renderer: ReactTestRenderer;
+      act(() => {
+        renderer = create(<CustomTabBar {...props} />);
+      });
+
+      // Keyboard is NOT visible (default state)
+      const threadsTab = renderer!.root.findAllByType(TouchableOpacity)[0];
+      act(() => {
+        threadsTab.props.onPress();
+      });
+
+      const nav = props.navigation as unknown as { navigate: jest.Mock; dispatch: jest.Mock };
+      // Standard animated pop to root via navigate
       expect(nav.navigate).toHaveBeenCalledWith('Threads', { screen: 'ThreadsList' });
+      expect(nav.dispatch).not.toHaveBeenCalled();
+      expect(Keyboard.dismiss).toHaveBeenCalled();
+
+      act(() => renderer!.unmount());
+    });
+
+    it('dispatches reset (no animation) when re-pressing focused tab with keyboard visible', () => {
+      // Focused on Threads (index 0), ThreadDetail is on the stack
+      const props = makeTabBarProps({
+        focusedIndex: 0,
+        nestedStates: {
+          0: makeNestedStackState(['ThreadsList', 'ThreadDetail'], 'ThreadsStack-key'),
+        },
+      });
+      let renderer: ReactTestRenderer;
+      act(() => {
+        renderer = create(<CustomTabBar {...props} />);
+      });
+
+      // Simulate keyboard becoming visible
+      act(() => {
+        keyboardShowCb?.();
+      });
+
+      const threadsTab = renderer!.root.findAllByType(TouchableOpacity)[0];
+      act(() => {
+        threadsTab.props.onPress();
+      });
+
+      const nav = props.navigation as unknown as { navigate: jest.Mock; dispatch: jest.Mock };
+      // Should NOT use navigate (which would produce an animated pop with KAV glitch)
+      expect(nav.navigate).not.toHaveBeenCalled();
+      // Should dispatch a RESET action targeting the nested stack
+      expect(nav.dispatch).toHaveBeenCalledTimes(1);
+      const dispatchedAction = nav.dispatch.mock.calls[0][0];
+      expect(dispatchedAction.type).toBe('RESET');
+      expect(dispatchedAction.payload).toEqual({
+        index: 0,
+        routes: [{ name: 'ThreadsList' }],
+      });
+      expect(dispatchedAction.target).toBe('ThreadsStack-key');
+      // Keyboard.dismiss should still be called
+      expect(Keyboard.dismiss).toHaveBeenCalled();
 
       act(() => renderer!.unmount());
     });
@@ -194,8 +323,9 @@ describe('CustomTabBar', () => {
         chatsTab.props.onPress();
       });
 
-      const nav = props.navigation as unknown as { navigate: jest.Mock };
+      const nav = props.navigation as unknown as { navigate: jest.Mock; dispatch: jest.Mock };
       expect(nav.navigate).not.toHaveBeenCalled();
+      expect(nav.dispatch).not.toHaveBeenCalled();
 
       act(() => renderer!.unmount());
     });
@@ -215,6 +345,40 @@ describe('CustomTabBar', () => {
 
       const nav = props.navigation as unknown as { navigate: jest.Mock };
       expect(nav.navigate).toHaveBeenCalledWith('Settings', { screen: 'SettingsMain' });
+
+      act(() => renderer!.unmount());
+    });
+
+    it('uses animated navigate for same-tab re-press after keyboard hides', () => {
+      // Keyboard was visible, then hides — should use standard animated navigate
+      const props = makeTabBarProps({
+        focusedIndex: 0,
+        nestedStates: {
+          0: makeNestedStackState(['ThreadsList', 'ThreadDetail'], 'ThreadsStack-key'),
+        },
+      });
+      let renderer: ReactTestRenderer;
+      act(() => {
+        renderer = create(<CustomTabBar {...props} />);
+      });
+
+      // Show then hide keyboard
+      act(() => {
+        keyboardShowCb?.();
+      });
+      act(() => {
+        keyboardHideCb?.();
+      });
+
+      const threadsTab = renderer!.root.findAllByType(TouchableOpacity)[0];
+      act(() => {
+        threadsTab.props.onPress();
+      });
+
+      const nav = props.navigation as unknown as { navigate: jest.Mock; dispatch: jest.Mock };
+      // Keyboard is no longer visible — should use animated navigate, not reset
+      expect(nav.navigate).toHaveBeenCalledWith('Threads', { screen: 'ThreadsList' });
+      expect(nav.dispatch).not.toHaveBeenCalled();
 
       act(() => renderer!.unmount());
     });

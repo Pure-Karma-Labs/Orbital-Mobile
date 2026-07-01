@@ -70,7 +70,3 @@ Eligibility basis:
 - App Store Connect will present export compliance questions during submission
 - Select: "Yes, the app uses encryption" and "The app qualifies for an exemption"
 - If Apple issues an `ITSEncryptionExportComplianceCode`, add it to Info.plist to skip the prompt on future uploads
-
-## French ANSSI Declaration
-
-**Requires legal review.** French law (Decree 2007-663) regulates the supply, import, and transfer of cryptographic means. The app likely qualifies for a mass-market exemption under EU Regulation 2021/821 Category 5 Note 3, but the specific exemption basis should be confirmed with legal counsel before distribution in France.

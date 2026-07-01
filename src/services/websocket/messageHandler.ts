@@ -543,6 +543,10 @@ function handleOwnerChanged(data: OwnerChangedPayload): void {
     return;
   }
 
+  // Defense-in-depth: backend rejects DM ownership transfers (CANNOT_TRANSFER_DM),
+  // so ignore owner_changed for non-group conversations.
+  if (conversation.type !== 'group') return;
+
   // Flip isCreator: true if this user is the new owner, false otherwise
   const isCreator = data.newOwnerId === store.userId;
 

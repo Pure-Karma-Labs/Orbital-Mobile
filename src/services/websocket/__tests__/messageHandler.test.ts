@@ -726,6 +726,49 @@ describe('owner_changed broadcast', () => {
       }),
     );
   });
+
+  it('ignores owner_changed for DM (direct) conversations', async () => {
+    const dmConversation = {
+      ...existingConversation,
+      id: testUUID('dm-conv'),
+      type: 'direct' as const,
+    };
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: TEST_USER_UUID,
+      viewingConversationId: null,
+      upsertThread: mockUpsertThread,
+      upsertReply: mockUpsertReply,
+      upsertContact: mockUpsertContact,
+      upsertConversation: mockUpsertConversation,
+      setConnectionStatus: mockSetConnectionStatus,
+      setLastConnectedAt: mockSetLastConnectedAt,
+      setReconnectAttempt: mockSetReconnectAttempt,
+      blockedUserIds: [],
+      addTypingUser: mockAddTypingUser,
+      bumpLastMessageAt: mockBumpLastMessageAt,
+      incrementUnreadCount: mockIncrementUnreadCount,
+      contacts: {},
+      conversations: { [testUUID('dm-conv')]: dmConversation },
+      threads: {},
+    });
+
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: testUUID('dm-conv'),
+      timestamp: 1700000010000,
+      data: {
+        type: 'owner_changed',
+        groupId: testUUID('dm-conv'),
+        newOwnerId: TEST_USER_UUID,
+        previousOwnerId: testUUID('old-owner'),
+        timestamp: 1700000010000,
+      },
+    });
+
+    await handleServerMessage(msg);
+
+    expect(mockUpsertConversation).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------

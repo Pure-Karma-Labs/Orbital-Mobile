@@ -34,6 +34,6 @@ export function clearGroupMasterKey(conversationId: string): void {
   execute('UPDATE conversations SET group_master_key = NULL WHERE id = ?', [conversationId]);
 }
 
-export function clearAllGroupMasterKeys(): void {
-  execute('UPDATE conversations SET group_master_key = NULL');
+export function clearAllGroupCryptoState(): void {
+  execute('UPDATE conversations SET group_master_key = NULL, group_secret_params = NULL, group_public_params = NULL');
 }

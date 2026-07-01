@@ -36,6 +36,11 @@ const mockGenerateGroupKey = jest.fn(() => ({
 }));
 const mockEncryptGroupName = jest.fn((_name: string, _key: Uint8Array) => 'encrypted-name');
 const mockWrapGroupKey = jest.fn((_key: Uint8Array, _pub: ArrayBuffer, _gid: string) => 'ecies-wrapped-base64');
+// Defaults support selfWrapIfNeeded, which joinOrbit's v2 path triggers fire-and-forget:
+// a persisted key must be present for _doSelfWrap to proceed past its early return.
+const mockLoadPersistedGroupKey = jest.fn((_groupId: string) => new Uint8Array(32).fill(9));
+const mockSetCachedGroupKey = jest.fn();
+const mockEvictPendingCache = jest.fn();
 jest.mock('../crypto/contentCrypto', () => ({
   PendingWrapError: class PendingWrapError extends Error {
     constructor() {
@@ -50,6 +55,9 @@ jest.mock('../crypto/contentCrypto', () => ({
   encryptGroupName: (name: string, key: Uint8Array) => mockEncryptGroupName(name, key),
   generateGroupKey: () => mockGenerateGroupKey(),
   wrapGroupKey: (key: Uint8Array, pub: ArrayBuffer, gid: string) => mockWrapGroupKey(key, pub, gid),
+  loadPersistedGroupKey: (groupId: string) => mockLoadPersistedGroupKey(groupId),
+  setCachedGroupKey: (...args: unknown[]) => mockSetCachedGroupKey(...args),
+  evictPendingCache: (...args: unknown[]) => mockEvictPendingCache(...args),
 }));
 
 jest.mock('../../utils/uuid', () => ({
@@ -72,9 +80,16 @@ jest.mock('../crypto/inviteCrypto', () => ({
   decryptGroupKeyFromInvite: jest.fn(),
 }));
 
-jest.mock('../crypto/utils', () => ({
-  base64ToArrayBuffer: jest.fn(() => new ArrayBuffer(32)),
-}));
+// NOTE: arrayBufferToBase64/toArrayBuffer are real (pure byte<->base64 helpers,
+// not a crypto boundary) so joinOrbit's v2 base64 encoding can be asserted against
+// real output. Only base64ToArrayBuffer (unused by conversationService) stays mocked.
+jest.mock('../crypto/utils', () => {
+  const actual = jest.requireActual('../crypto/utils');
+  return {
+    ...actual,
+    base64ToArrayBuffer: jest.fn(() => new ArrayBuffer(32)),
+  };
+});
 
 const mockSetConversations = jest.fn();
 const mockSetActiveConversation = jest.fn();
@@ -99,7 +114,8 @@ jest.mock('../../stores/useAppStore', () => ({
 }));
 
 import { loadConversations, loadDmConversations, startDm, joinOrbit, fetchCreatorOrbitsDecrypted, hydrateContactsFromOrbits, ensureDmConversation, fulfillPendingWraps, clearConversationServiceState, refreshContactAvatar, markConversationReadEverywhere, createInviteCode } from '../conversationService';
-import { listGroups, listDms, createDm, joinGroup, getGroupMembers, getPendingWraps, submitWrappedKey, markGroupRead, generateInviteCode as generateInviteCodeApi } from '../api/groups';
+import { listGroups, listDms, createDm, joinGroup, getGroupMembers, getPendingWraps, submitWrappedKey, markGroupRead, generateInviteCode as generateInviteCodeApi, selfWrapGroupKey } from '../api/groups';
+import * as inviteCrypto from '../crypto/inviteCrypto';
 import { useAppStore } from '../../stores/useAppStore';
 import { deleteRepliesForConversation } from '../../database/repositories/replyRepository';
 import { getConversationIdsWithThreads, deleteThreadsForConversation } from '../../database/repositories/threadRepository';
@@ -108,6 +124,13 @@ import { isDatabaseInitialized } from '../../database/connection';
 const mockDeleteReplies = deleteRepliesForConversation as jest.Mock;
 const mockDeleteThreads = deleteThreadsForConversation as jest.Mock;
 const mockGetLocalConvIds = getConversationIdsWithThreads as jest.Mock;
+const mockSelfWrapGroupKey = selfWrapGroupKey as jest.Mock;
+const mockDecryptGroupKeyFromInvite = inviteCrypto.decryptGroupKeyFromInvite as jest.Mock;
+const mockEncryptGroupKeyForInvite = inviteCrypto.encryptGroupKeyForInvite as jest.Mock;
+const mockGenerateInviteCodeApi = generateInviteCodeApi as jest.Mock;
+
+/** Flush pending microtasks/timers so fire-and-forget promises (e.g. selfWrapIfNeeded) settle. */
+const flushPromises = () => new Promise<void>((resolve) => setImmediate(resolve));
 const mockIsDatabaseInitialized = isDatabaseInitialized as jest.Mock;
 
 const mockListGroups = listGroups as jest.Mock;
@@ -1490,5 +1513,161 @@ describe('createInviteCode', () => {
       code: 'TESTCODE1234567890AB',
       encryptedGroupKey: 'encrypted-key-base64',
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createInviteCode — service orchestration (#374)
+//
+// Complements the input-validation tests above (#375) with coverage of the
+// crypto-boundary call args, error propagation, and independence across
+// repeated invocations. inviteCrypto is mocked at the same boundary as the
+// rest of this file — its own HKDF/FFI correctness is covered by
+// inviteCrypto.test.ts.
+// ---------------------------------------------------------------------------
+
+describe('createInviteCode — service orchestration (#374)', () => {
+  it('calls encryptGroupKeyForInvite with the fetched group key, generated code, and groupId', async () => {
+    const groupKeyBytes = new Uint8Array(32).fill(7);
+    mockGetOrFetchGroupKey.mockResolvedValueOnce(groupKeyBytes);
+
+    await createInviteCode('group-42', 'test@example.com');
+
+    expect(mockEncryptGroupKeyForInvite).toHaveBeenCalledWith(
+      groupKeyBytes,
+      'TESTCODE1234567890AB',
+      'group-42',
+    );
+  });
+
+  it('propagates an error when the group key cannot be fetched, without calling the API', async () => {
+    mockGetOrFetchGroupKey.mockRejectedValueOnce(new Error('key fetch failed'));
+
+    await expect(createInviteCode('group-1', 'test@example.com')).rejects.toThrow('key fetch failed');
+    expect(mockGenerateInviteCodeApi).not.toHaveBeenCalled();
+  });
+
+  it('propagates a network error from generateInviteCodeApi', async () => {
+    mockGenerateInviteCodeApi.mockRejectedValueOnce(new Error('network down'));
+
+    await expect(createInviteCode('group-1', 'test@example.com')).rejects.toThrow('network down');
+  });
+
+  it('treats repeated calls independently — no caching across invocations', async () => {
+    await createInviteCode('group-1', 'a@example.com');
+    await createInviteCode('group-1', 'b@example.com');
+
+    expect(mockGenerateInviteCodeApi).toHaveBeenCalledTimes(2);
+    expect(mockGenerateInviteCodeApi).toHaveBeenNthCalledWith(1, 'group-1', 'a@example.com', expect.anything());
+    expect(mockGenerateInviteCodeApi).toHaveBeenNthCalledWith(2, 'group-1', 'b@example.com', expect.anything());
+    expect(mockGetOrFetchGroupKey).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// joinOrbit — v2 key delivery (#374)
+//
+// Deepens the joinOrbit describe block above with the specific v2 orchestration
+// steps flagged in #374: decrypt-with-correct-args, persist-the-decrypted-key,
+// the selfWrapIfNeeded fire-and-forget trigger, and the decrypt-failure /
+// missing-key-in-response non-crash paths. Note: v1 invite codes were fully
+// sunset on 2026-06-17 — joinOrbit has no v1 fallback branch to test; the
+// `else` case is simply "no key arrived yet, wait for async delivery".
+// ---------------------------------------------------------------------------
+
+describe('joinOrbit — v2 key delivery (#374)', () => {
+  it('decrypts the invite-delivered group key with the stripped code, blob, and groupId', async () => {
+    mockDecryptGroupKeyFromInvite.mockReturnValueOnce(new Uint8Array(32).fill(3));
+    mockJoinGroup.mockResolvedValue({
+      groupId: 'orbit-v2',
+      encryptedName: 'Encrypted Name',
+      memberCount: 3,
+      joinedAt: '2026-05-01T00:00:00Z',
+      inviteEncryptedGroupKey: 'encrypted-blob-base64',
+    });
+
+    await joinOrbit('ABCD-1234-EFGH-5678-JKMN');
+
+    expect(mockDecryptGroupKeyFromInvite).toHaveBeenCalledWith(
+      'encrypted-blob-base64',
+      'ABCD1234EFGH5678JKMN',
+      'orbit-v2',
+    );
+  });
+
+  it('persists the decrypted group key as real base64 (not the mocked utils stub)', async () => {
+    const rawKeyBytes = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+    mockDecryptGroupKeyFromInvite.mockReturnValueOnce(rawKeyBytes);
+    mockJoinGroup.mockResolvedValue({
+      groupId: 'orbit-v2b',
+      encryptedName: 'Encrypted Name',
+      memberCount: 3,
+      joinedAt: '2026-05-01T00:00:00Z',
+      inviteEncryptedGroupKey: 'encrypted-blob-base64',
+    });
+
+    await joinOrbit('ABCD-1234-EFGH-5678-JKMN');
+
+    const expectedBase64 = Buffer.from(rawKeyBytes).toString('base64');
+    expect(mockPersistGroupKey).toHaveBeenCalledWith('orbit-v2b', expectedBase64);
+  });
+
+  it('triggers selfWrapIfNeeded fire-and-forget, which self-wraps and uploads the key', async () => {
+    mockDecryptGroupKeyFromInvite.mockReturnValueOnce(new Uint8Array(32).fill(3));
+    mockJoinGroup.mockResolvedValue({
+      groupId: 'orbit-v2c',
+      encryptedName: 'Encrypted Name',
+      memberCount: 3,
+      joinedAt: '2026-05-01T00:00:00Z',
+      inviteEncryptedGroupKey: 'encrypted-blob-base64',
+    });
+
+    await joinOrbit('ABCD-1234-EFGH-5678-JKMN');
+    await flushPromises();
+
+    expect(mockLoadPersistedGroupKey).toHaveBeenCalledWith('orbit-v2c');
+    expect(mockSelfWrapGroupKey).toHaveBeenCalledWith('orbit-v2c', 'ecies-wrapped-base64');
+    expect(mockEvictPendingCache).toHaveBeenCalledWith('orbit-v2c');
+  });
+
+  it('v2 decrypt failure does not persist a key, does not throw, and still returns the joined orbit', async () => {
+    mockDecryptGroupKeyFromInvite.mockImplementationOnce(() => {
+      throw new Error('bad or expired code');
+    });
+    mockJoinGroup.mockResolvedValue({
+      groupId: 'orbit-v2-fail',
+      encryptedName: 'Encrypted Name',
+      memberCount: 2,
+      joinedAt: '2026-05-01T00:00:00Z',
+      inviteEncryptedGroupKey: 'corrupted-blob',
+    });
+
+    const result = await joinOrbit('ABCD-1234-EFGH-5678-JKMN');
+
+    expect(mockPersistGroupKey).not.toHaveBeenCalled();
+    expect(result).toEqual({ groupId: 'orbit-v2-fail', name: 'Encrypted Name' });
+  });
+
+  it('v2 response with no inviteEncryptedGroupKey field (undefined, not just null) skips key delivery entirely', async () => {
+    mockJoinGroup.mockResolvedValue({
+      groupId: 'orbit-no-key-field',
+      encryptedName: 'Encrypted Name',
+      memberCount: 2,
+      joinedAt: '2026-05-01T00:00:00Z',
+      // inviteEncryptedGroupKey intentionally omitted
+    });
+
+    const result = await joinOrbit('ABCD-1234-EFGH-5678-JKMN');
+
+    expect(mockDecryptGroupKeyFromInvite).not.toHaveBeenCalled();
+    expect(mockPersistGroupKey).not.toHaveBeenCalled();
+    expect(result.groupId).toBe('orbit-no-key-field');
+  });
+
+  it('an expired/invalid invite code surfaces the joinGroup API error to the caller', async () => {
+    mockJoinGroup.mockRejectedValue(new Error('invite code expired'));
+
+    await expect(joinOrbit('ABCD-1234-EFGH-5678-JKMN')).rejects.toThrow('invite code expired');
+    expect(mockDecryptGroupKeyFromInvite).not.toHaveBeenCalled();
   });
 });

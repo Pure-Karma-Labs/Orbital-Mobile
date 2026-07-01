@@ -9,6 +9,7 @@ import {
   type ViewStyle,
 } from 'react-native';
 import { CommonActions } from '@react-navigation/native';
+import { StackActions } from '@react-navigation/routers';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
@@ -50,24 +51,22 @@ export function CustomTabBar({ state, descriptors, navigation }: BottomTabBarPro
   const theme = useTheme();
   const insets = useSafeAreaInsets();
 
-  // Track keyboard visibility on both platforms:
-  // - Android: hide tab bar while keyboard is open (adjustResize pushes it
-  //   above the keyboard, eating content area and breaking KAV layout).
-  // - iOS: used by the tab press handler to choose between animated pop
-  //   (clean) and instant reset (avoids KAV layout shift during animation).
+  // On Android, adjustResize pushes the tab bar above the keyboard, eating
+  // into the screen content area and breaking KeyboardAvoidingView layout.
+  // Hide the tab bar while the keyboard is open (same as tabBarHideOnKeyboard
+  // for the default tab bar, which doesn't apply to custom tabBar renders).
   const [keyboardVisible, setKeyboardVisible] = useState(false);
   useEffect(() => {
-    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
-    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
-    const showSub = Keyboard.addListener(showEvent, () => setKeyboardVisible(true));
-    const hideSub = Keyboard.addListener(hideEvent, () => setKeyboardVisible(false));
+    if (Platform.OS !== 'android') return;
+    const showSub = Keyboard.addListener('keyboardDidShow', () => setKeyboardVisible(true));
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => setKeyboardVisible(false));
     return () => {
       showSub.remove();
       hideSub.remove();
     };
   }, []);
 
-  if (Platform.OS === 'android' && keyboardVisible) return null;
+  if (keyboardVisible) return null;
 
   const barStyle: ViewStyle = {
     flexDirection: 'row',
@@ -99,35 +98,47 @@ export function CustomTabBar({ state, descriptors, navigation }: BottomTabBarPro
 
             if (isFocused) {
               // Same-tab re-press: pop nested stack to its root screen.
+              //
+              // IMPORTANT: Must use StackActions.popToTop(), NOT navigate().
+              // In React Navigation v7, navigate() inside a stack only matches
+              // the CURRENT route by name — if the target is a different screen
+              // lower in the stack, it PUSHES a duplicate instead of popping.
+              // popToTop produces a proper leftward-slide (pop) animation and
+              // reveals the already-mounted root screen (no fresh mount / no
+              // SafeAreaView inset resolution flash).
               const nestedState = state.routes[index].state;
               const nestedRouteCount = nestedState?.routes?.length ?? 1;
 
-              if (nestedRouteCount <= 1) {
-                // Already at root — nothing to pop.
-                return;
+              if (nestedRouteCount > 1 && nestedState?.key) {
+                navigation.dispatch({
+                  ...StackActions.popToTop(),
+                  target: nestedState.key,
+                });
               }
+              // else: already at root — nothing to pop.
+            } else {
+              // Cross-tab: switch to the target tab and reset its nested stack
+              // to root if it has depth from a previous session.
+              //
+              // The reset must happen WITHOUT animation (the target tab isn't
+              // visible yet, so an animated pop would flash the deep screen).
+              // navigate(tabName) handles the tab switch; the reset targets
+              // the nested stack directly via CommonActions.reset.
+              const targetNestedState = state.routes[index].state;
+              const targetNestedRouteCount = targetNestedState?.routes?.length ?? 1;
 
-              if (keyboardVisible && nestedState?.key) {
-                // Keyboard is visible: reset the nested stack without animation.
-                // Animating the pop while KeyboardAvoidingView adjusts its
-                // padding causes a visible vertical content shift mid-transition
-                // (the outgoing screen's layout changes as the keyboard dismisses
-                // during the slide animation, producing a multi-pixel misalignment
-                // that "snaps" into place when the animation completes).
+              if (targetNestedRouteCount > 1 && targetNestedState?.key) {
+                // Reset target tab's stack to root (instant, no animation).
                 navigation.dispatch({
                   ...CommonActions.reset({
                     index: 0,
                     routes: [{ name: initialScreen }],
                   }),
-                  target: nestedState.key,
+                  target: targetNestedState.key,
                 });
-              } else {
-                // No keyboard: standard animated pop to root.
-                navigation.navigate(route.name, { screen: initialScreen });
               }
-            } else {
-              // Cross-tab: switch tabs and reset target stack to root.
-              navigation.navigate(route.name, { screen: initialScreen });
+              // Switch to the target tab.
+              navigation.navigate(route.name);
             }
           }
         };

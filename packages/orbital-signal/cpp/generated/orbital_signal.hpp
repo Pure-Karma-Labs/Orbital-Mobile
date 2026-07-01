@@ -38,6 +38,8 @@ class NativeOrbitalSignal : public jsi::HostObject {
     jsi::Value cpp_uniffi_orbital_signal_fn_func_group_decrypt(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_fn_func_group_encrypt(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_fn_func_process_sender_key_distribution_message(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_orbital_signal_fn_func_invite_decrypt_group_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_orbital_signal_fn_func_invite_encrypt_group_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_fn_func_generate_identity_key_pair(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_fn_func_generate_kyber_pre_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_fn_func_generate_pre_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
@@ -112,6 +114,8 @@ class NativeOrbitalSignal : public jsi::HostObject {
     jsi::Value cpp_uniffi_orbital_signal_checksum_func_group_decrypt(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_checksum_func_group_encrypt(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_checksum_func_process_sender_key_distribution_message(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_orbital_signal_checksum_func_invite_decrypt_group_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_orbital_signal_checksum_func_invite_encrypt_group_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_checksum_func_generate_identity_key_pair(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_checksum_func_generate_kyber_pre_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_checksum_func_generate_pre_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);

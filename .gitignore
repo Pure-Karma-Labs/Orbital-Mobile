@@ -58,6 +58,9 @@ Thumbs.db
 # Testing
 coverage/
 
+# Sentry (contains auth token for source map uploads)
+**/sentry.properties
+
 # Misc
 *.log
 *.tsbuildinfo

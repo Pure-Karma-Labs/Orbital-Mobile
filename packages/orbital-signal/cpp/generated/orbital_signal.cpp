@@ -351,6 +351,18 @@ extern "C" {
         RustBuffer input, 
         RustCallStatus *uniffi_out_err
     );
+    RustBuffer uniffi_orbital_signal_fn_func_invite_decrypt_group_key(
+        RustBuffer encrypted_blob, 
+        RustBuffer invite_code, 
+        RustBuffer group_id, 
+        RustCallStatus *uniffi_out_err
+    );
+    RustBuffer uniffi_orbital_signal_fn_func_invite_encrypt_group_key(
+        RustBuffer group_key, 
+        RustBuffer invite_code, 
+        RustBuffer group_id, 
+        RustCallStatus *uniffi_out_err
+    );
     RustBuffer uniffi_orbital_signal_fn_func_generate_identity_key_pair(RustCallStatus *uniffi_out_err
     );
     /*handle*/ uint64_t uniffi_orbital_signal_fn_func_generate_kyber_pre_key(
@@ -633,6 +645,10 @@ extern "C" {
     uint16_t uniffi_orbital_signal_checksum_func_group_encrypt(
     );
     uint16_t uniffi_orbital_signal_checksum_func_process_sender_key_distribution_message(
+    );
+    uint16_t uniffi_orbital_signal_checksum_func_invite_decrypt_group_key(
+    );
+    uint16_t uniffi_orbital_signal_checksum_func_invite_encrypt_group_key(
     );
     uint16_t uniffi_orbital_signal_checksum_func_generate_identity_key_pair(
     );
@@ -6308,6 +6324,22 @@ NativeOrbitalSignal::NativeOrbitalSignal(
             return this->cpp_uniffi_orbital_signal_fn_func_process_sender_key_distribution_message(rt, thisVal, args, count);
         }
     );
+    props["ubrn_uniffi_orbital_signal_fn_func_invite_decrypt_group_key"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_orbital_signal_fn_func_invite_decrypt_group_key"),
+        3,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_orbital_signal_fn_func_invite_decrypt_group_key(rt, thisVal, args, count);
+        }
+    );
+    props["ubrn_uniffi_orbital_signal_fn_func_invite_encrypt_group_key"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_orbital_signal_fn_func_invite_encrypt_group_key"),
+        3,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_orbital_signal_fn_func_invite_encrypt_group_key(rt, thisVal, args, count);
+        }
+    );
     props["ubrn_uniffi_orbital_signal_fn_func_generate_identity_key_pair"] = jsi::Function::createFromHostFunction(
         rt,
         jsi::PropNameID::forAscii(rt, "ubrn_uniffi_orbital_signal_fn_func_generate_identity_key_pair"),
@@ -6900,6 +6932,22 @@ NativeOrbitalSignal::NativeOrbitalSignal(
             return this->cpp_uniffi_orbital_signal_checksum_func_process_sender_key_distribution_message(rt, thisVal, args, count);
         }
     );
+    props["ubrn_uniffi_orbital_signal_checksum_func_invite_decrypt_group_key"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_orbital_signal_checksum_func_invite_decrypt_group_key"),
+        0,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_orbital_signal_checksum_func_invite_decrypt_group_key(rt, thisVal, args, count);
+        }
+    );
+    props["ubrn_uniffi_orbital_signal_checksum_func_invite_encrypt_group_key"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_orbital_signal_checksum_func_invite_encrypt_group_key"),
+        0,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_orbital_signal_checksum_func_invite_encrypt_group_key(rt, thisVal, args, count);
+        }
+    );
     props["ubrn_uniffi_orbital_signal_checksum_func_generate_identity_key_pair"] = jsi::Function::createFromHostFunction(
         rt,
         jsi::PropNameID::forAscii(rt, "ubrn_uniffi_orbital_signal_checksum_func_generate_identity_key_pair"),
@@ -7449,6 +7497,26 @@ jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_fn_func_group_encrypt(
 jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_fn_func_process_sender_key_distribution_message(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
         RustCallStatus status = uniffi::orbital_signal::Bridging<RustCallStatus>::rustSuccess(rt);
         auto value = uniffi_orbital_signal_fn_func_process_sender_key_distribution_message(uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[0]), 
+            &status
+        );
+        uniffi::orbital_signal::Bridging<RustCallStatus>::copyIntoJs(rt, callInvoker, status, args[count - 1]);
+
+        
+        return uniffi::orbital_signal::Bridging<RustBuffer>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_fn_func_invite_decrypt_group_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        RustCallStatus status = uniffi::orbital_signal::Bridging<RustCallStatus>::rustSuccess(rt);
+        auto value = uniffi_orbital_signal_fn_func_invite_decrypt_group_key(uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[0]), uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[1]), uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[2]), 
+            &status
+        );
+        uniffi::orbital_signal::Bridging<RustCallStatus>::copyIntoJs(rt, callInvoker, status, args[count - 1]);
+
+        
+        return uniffi::orbital_signal::Bridging<RustBuffer>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_fn_func_invite_encrypt_group_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        RustCallStatus status = uniffi::orbital_signal::Bridging<RustCallStatus>::rustSuccess(rt);
+        auto value = uniffi_orbital_signal_fn_func_invite_encrypt_group_key(uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[0]), uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[1]), uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[2]), 
             &status
         );
         uniffi::orbital_signal::Bridging<RustCallStatus>::copyIntoJs(rt, callInvoker, status, args[count - 1]);
@@ -8040,6 +8108,20 @@ jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_checksum_func_group_en
 }
 jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_checksum_func_process_sender_key_distribution_message(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
         auto value = uniffi_orbital_signal_checksum_func_process_sender_key_distribution_message(
+        );
+
+        
+        return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_checksum_func_invite_decrypt_group_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        auto value = uniffi_orbital_signal_checksum_func_invite_decrypt_group_key(
+        );
+
+        
+        return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_checksum_func_invite_encrypt_group_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        auto value = uniffi_orbital_signal_checksum_func_invite_encrypt_group_key(
         );
 
         

@@ -33,6 +33,7 @@ import type {
   NewReplyPayload,
   DisplayNameChangedPayload,
   AvatarChangedPayload,
+  OwnerChangedPayload,
   WrapKeyRequestPayload,
   WrappedKeyDeliveredPayload,
   MediaUploadedPayload,
@@ -75,6 +76,7 @@ export const KNOWN_BROADCAST_TYPES = new Set([
   'display_name_changed',
   'media_uploaded',
   'avatar_changed',
+  'owner_changed',
 ]);
 
 export const KNOWN_UNICAST_TYPES = new Set([
@@ -217,6 +219,10 @@ async function handleBroadcast(envelope: BroadcastEnvelope): Promise<void> {
 
     case 'avatar_changed':
       handleAvatarChanged(data as AvatarChangedPayload);
+      break;
+
+    case 'owner_changed':
+      handleOwnerChanged(data as OwnerChangedPayload);
       break;
   }
 }
@@ -504,6 +510,46 @@ function handleAvatarChanged(data: AvatarChangedPayload): void {
   if (data.userId !== store.userId) {
     invalidateAvatarCache(data.userId).catch(() => {});
   }
+}
+
+// ============================================================
+// owner_changed handler (#471)
+// ============================================================
+
+/**
+ * Handle owner_changed broadcast — orbit ownership was transferred.
+ *
+ * Updates the cached isCreator flag on the affected conversation so
+ * admin-gated UI (ManageOrbits, OrbitAdminActions) reflects the transfer
+ * immediately without requiring an app restart or manual resync.
+ *
+ * The previous owner does NOT receive this event (they refresh via the
+ * HTTP success path). The new owner IS included in the broadcast.
+ */
+function handleOwnerChanged(data: OwnerChangedPayload): void {
+  if (!isValidUUIDv4(data.groupId) || !isValidUUIDv4(data.newOwnerId) || !isValidUUIDv4(data.previousOwnerId)) {
+    console.error('[WS:invalid_uuid]');
+    return;
+  }
+
+  const store = useAppStore.getState();
+  const conversation = store.conversations[data.groupId];
+
+  if (!conversation) {
+    // Unknown group — possibly left or dissolved; ignore gracefully
+    if (__DEV__) {
+      console.warn('[WS] owner_changed for unknown group', data.groupId);
+    }
+    return;
+  }
+
+  // Flip isCreator: true if this user is the new owner, false otherwise
+  const isCreator = data.newOwnerId === store.userId;
+
+  store.upsertConversation({
+    ...conversation,
+    isCreator,
+  });
 }
 
 // ============================================================

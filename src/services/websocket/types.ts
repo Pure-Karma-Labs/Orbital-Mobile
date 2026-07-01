@@ -122,6 +122,14 @@ export interface AvatarChangedPayload {
   timestamp: number;
 }
 
+export interface OwnerChangedPayload {
+  type: 'owner_changed';
+  groupId: string;
+  newOwnerId: string;
+  previousOwnerId: string;
+  timestamp: number;
+}
+
 export interface TypingPayload {
   type: 'typing';
   userId: string;
@@ -158,6 +166,7 @@ export type BroadcastPayload =
   | NewSignalMessagePayload
   | DisplayNameChangedPayload
   | AvatarChangedPayload
+  | OwnerChangedPayload
   | TypingPayload
   | MediaUploadedPayload;
 

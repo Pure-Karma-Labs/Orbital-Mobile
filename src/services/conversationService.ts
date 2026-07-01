@@ -154,6 +154,7 @@ async function mapGroupResponse(response: GroupResponse): Promise<Conversation> 
     lastReadAt: response.lastReadAt ? new Date(response.lastReadAt).getTime() : null,
     createdAt: new Date(response.joinedAt).getTime(),
     updatedAt: new Date(response.joinedAt).getTime(),
+    isCreator: response.isCreator,
   };
 }
 

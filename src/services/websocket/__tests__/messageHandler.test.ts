@@ -80,6 +80,7 @@ jest.mock('../../avatarService', () => ({
 const mockUpsertThread = jest.fn();
 const mockUpsertReply = jest.fn();
 const mockUpsertContact = jest.fn();
+const mockUpsertConversation = jest.fn();
 const mockSetConnectionStatus = jest.fn();
 const mockSetLastConnectedAt = jest.fn();
 const mockSetReconnectAttempt = jest.fn();
@@ -97,6 +98,7 @@ jest.mock('../../../stores/useAppStore', () => ({
       upsertThread: mockUpsertThread,
       upsertReply: mockUpsertReply,
       upsertContact: mockUpsertContact,
+      upsertConversation: mockUpsertConversation,
       setConnectionStatus: mockSetConnectionStatus,
       setLastConnectedAt: mockSetLastConnectedAt,
       setReconnectAttempt: mockSetReconnectAttempt,
@@ -105,6 +107,7 @@ jest.mock('../../../stores/useAppStore', () => ({
       bumpLastMessageAt: mockBumpLastMessageAt,
       incrementUnreadCount: mockIncrementUnreadCount,
       contacts: {},
+      conversations: {},
       threads: {},
     })),
   },
@@ -548,6 +551,180 @@ describe('display_name_changed broadcast', () => {
       localAvatarUri: null,
       conversationIds: [],
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// owner_changed broadcast (#471)
+// ---------------------------------------------------------------------------
+
+describe('owner_changed broadcast', () => {
+  const existingConversation = {
+    id: testUUID('group-owned'),
+    type: 'group' as const,
+    name: 'My Orbit',
+    memberCount: 5,
+    active: true,
+    muteUntil: null,
+    lastMessageAt: 1700000000000,
+    unreadCount: 0,
+    lastReadAt: null,
+    createdAt: 1700000000000,
+    updatedAt: 1700000000000,
+    isCreator: false,
+  };
+
+  it('updates isCreator to true when new owner is the current user', async () => {
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: TEST_USER_UUID,
+      viewingConversationId: null,
+      upsertThread: mockUpsertThread,
+      upsertReply: mockUpsertReply,
+      upsertContact: mockUpsertContact,
+      upsertConversation: mockUpsertConversation,
+      setConnectionStatus: mockSetConnectionStatus,
+      setLastConnectedAt: mockSetLastConnectedAt,
+      setReconnectAttempt: mockSetReconnectAttempt,
+      blockedUserIds: [],
+      addTypingUser: mockAddTypingUser,
+      bumpLastMessageAt: mockBumpLastMessageAt,
+      incrementUnreadCount: mockIncrementUnreadCount,
+      contacts: {},
+      conversations: { [testUUID('group-owned')]: existingConversation },
+      threads: {},
+    });
+
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: testUUID('group-owned'),
+      timestamp: 1700000010000,
+      data: {
+        type: 'owner_changed',
+        groupId: testUUID('group-owned'),
+        newOwnerId: TEST_USER_UUID,
+        previousOwnerId: testUUID('old-owner'),
+        timestamp: 1700000010000,
+      },
+    });
+
+    await handleServerMessage(msg);
+
+    expect(mockUpsertConversation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: testUUID('group-owned'),
+        name: 'My Orbit',
+        isCreator: true,
+      }),
+    );
+  });
+
+  it('updates isCreator to false when new owner is a different user', async () => {
+    const convAsCreator = { ...existingConversation, isCreator: true };
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: TEST_USER_UUID,
+      viewingConversationId: null,
+      upsertThread: mockUpsertThread,
+      upsertReply: mockUpsertReply,
+      upsertContact: mockUpsertContact,
+      upsertConversation: mockUpsertConversation,
+      setConnectionStatus: mockSetConnectionStatus,
+      setLastConnectedAt: mockSetLastConnectedAt,
+      setReconnectAttempt: mockSetReconnectAttempt,
+      blockedUserIds: [],
+      addTypingUser: mockAddTypingUser,
+      bumpLastMessageAt: mockBumpLastMessageAt,
+      incrementUnreadCount: mockIncrementUnreadCount,
+      contacts: {},
+      conversations: { [testUUID('group-owned')]: convAsCreator },
+      threads: {},
+    });
+
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: testUUID('group-owned'),
+      timestamp: 1700000010000,
+      data: {
+        type: 'owner_changed',
+        groupId: testUUID('group-owned'),
+        newOwnerId: testUUID('other-user'),
+        previousOwnerId: TEST_USER_UUID,
+        timestamp: 1700000010000,
+      },
+    });
+
+    await handleServerMessage(msg);
+
+    expect(mockUpsertConversation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: testUUID('group-owned'),
+        isCreator: false,
+      }),
+    );
+  });
+
+  it('handles unknown group gracefully without crashing', async () => {
+    // Default store mock has no conversations
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: testUUID('group-unknown'),
+      timestamp: 1700000010000,
+      data: {
+        type: 'owner_changed',
+        groupId: testUUID('group-unknown'),
+        newOwnerId: TEST_USER_UUID,
+        previousOwnerId: testUUID('old-owner'),
+        timestamp: 1700000010000,
+      },
+    });
+
+    await expect(handleServerMessage(msg)).resolves.toBeUndefined();
+    expect(mockUpsertConversation).not.toHaveBeenCalled();
+  });
+
+  it('preserves all existing conversation fields', async () => {
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: TEST_USER_UUID,
+      viewingConversationId: null,
+      upsertThread: mockUpsertThread,
+      upsertReply: mockUpsertReply,
+      upsertContact: mockUpsertContact,
+      upsertConversation: mockUpsertConversation,
+      setConnectionStatus: mockSetConnectionStatus,
+      setLastConnectedAt: mockSetLastConnectedAt,
+      setReconnectAttempt: mockSetReconnectAttempt,
+      blockedUserIds: [],
+      addTypingUser: mockAddTypingUser,
+      bumpLastMessageAt: mockBumpLastMessageAt,
+      incrementUnreadCount: mockIncrementUnreadCount,
+      contacts: {},
+      conversations: { [testUUID('group-owned')]: { ...existingConversation, unreadCount: 7 } },
+      threads: {},
+    });
+
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: testUUID('group-owned'),
+      timestamp: 1700000010000,
+      data: {
+        type: 'owner_changed',
+        groupId: testUUID('group-owned'),
+        newOwnerId: TEST_USER_UUID,
+        previousOwnerId: testUUID('old-owner'),
+        timestamp: 1700000010000,
+      },
+    });
+
+    await handleServerMessage(msg);
+
+    expect(mockUpsertConversation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: testUUID('group-owned'),
+        name: 'My Orbit',
+        memberCount: 5,
+        unreadCount: 7,
+        isCreator: true,
+      }),
+    );
   });
 });
 
@@ -1555,6 +1732,24 @@ describe('UUID validation guards', () => {
     await handleServerMessage(msg);
     expect(consoleSpy).toHaveBeenCalledWith('[WS:invalid_uuid]');
     expect(mockUpsertContact).not.toHaveBeenCalled();
+  });
+
+  it('drops owner_changed with invalid groupId (#471)', async () => {
+    const msg = JSON.stringify({
+      type: 'new_message',
+      conversationId: testUUID('g1'),
+      timestamp: Date.now(),
+      data: {
+        type: 'owner_changed',
+        groupId: 'not-a-uuid',
+        newOwnerId: testUUID('user-1'),
+        previousOwnerId: testUUID('user-2'),
+        timestamp: Date.now(),
+      },
+    });
+    await handleServerMessage(msg);
+    expect(consoleSpy).toHaveBeenCalledWith('[WS:invalid_uuid]');
+    expect(mockUpsertConversation).not.toHaveBeenCalled();
   });
 });
 

@@ -39,6 +39,8 @@ export interface Conversation {
   lastReadAt: number | null;
   createdAt: number;
   updatedAt: number;
+  /** Whether the current user is the orbit creator/owner. Updated via WS owner_changed. */
+  isCreator?: boolean;
 }
 
 export interface Thread {

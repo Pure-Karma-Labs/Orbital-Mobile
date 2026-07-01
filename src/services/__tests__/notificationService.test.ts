@@ -44,14 +44,21 @@ jest.mock('../../navigation/navigationRef', () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
-import messaging from '@react-native-firebase/messaging';
-import notifee from '@notifee/react-native';
+import { PermissionsAndroid, Platform } from 'react-native';
+import messaging, {
+  type FirebaseMessagingTypes,
+} from '@react-native-firebase/messaging';
+import notifee, { EventType } from '@notifee/react-native';
 import {
   requestPermissionAndRegister,
   setupForegroundHandler,
   setupNotificationTapHandler,
   deregisterCurrentDevice,
 } from '../notificationService';
+import {
+  navigationRef,
+  setPendingNotificationPayload,
+} from '../../navigation/navigationRef';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -60,6 +67,35 @@ import {
 /** Get the messaging singleton from the mock. */
 function getMessagingInstance() {
   return messaging();
+}
+
+/** Original Platform.OS/Version descriptors, restored after each Platform-mutating test. */
+const originalPlatformOS = Platform.OS;
+const originalPlatformVersionDescriptor = Object.getOwnPropertyDescriptor(Platform, 'Version');
+
+/** Override Platform.OS and Platform.Version for a single test. Restore with restorePlatform(). */
+function mockPlatform(os: 'android' | 'ios', version: number): void {
+  (Platform as { OS: string }).OS = os;
+  Object.defineProperty(Platform, 'Version', {
+    value: version,
+    configurable: true,
+    writable: true,
+  });
+}
+
+/** Restore Platform.OS/Version to their original (test-environment default) values. */
+function restorePlatform(): void {
+  (Platform as { OS: string }).OS = originalPlatformOS;
+  if (originalPlatformVersionDescriptor) {
+    Object.defineProperty(Platform, 'Version', originalPlatformVersionDescriptor);
+  }
+}
+
+/** Build a minimal remoteMessage with the given data payload. */
+function remoteMessage(
+  data: Record<string, string>,
+): FirebaseMessagingTypes.RemoteMessage {
+  return { data } as FirebaseMessagingTypes.RemoteMessage;
 }
 
 // ---------------------------------------------------------------------------
@@ -168,6 +204,76 @@ describe('requestPermissionAndRegister', () => {
 
     cleanup();
     expect(mockUnsub).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// requestPermissionAndRegister — Android 13+ POST_NOTIFICATIONS permission
+// ---------------------------------------------------------------------------
+
+describe('requestPermissionAndRegister — Android 13+ POST_NOTIFICATIONS permission', () => {
+  let requestSpy: jest.SpyInstance;
+
+  afterEach(() => {
+    requestSpy?.mockRestore();
+    restorePlatform();
+  });
+
+  it('proceeds to Firebase requestPermission when POST_NOTIFICATIONS is granted (API 33+)', async () => {
+    mockPlatform('android', 33);
+    requestSpy = jest
+      .spyOn(PermissionsAndroid, 'request')
+      .mockResolvedValue(PermissionsAndroid.RESULTS.GRANTED);
+
+    await requestPermissionAndRegister();
+
+    expect(requestSpy).toHaveBeenCalledWith(
+      PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
+    );
+    expect(notifee.requestPermission).toHaveBeenCalled();
+    expect(mockSetPushPermission).toHaveBeenCalledWith(true);
+    expect(mockRegisterDevice).toHaveBeenCalled();
+  });
+
+  it('returns early with setPushPermission(false) when POST_NOTIFICATIONS is denied (API 33+)', async () => {
+    mockPlatform('android', 33);
+    requestSpy = jest
+      .spyOn(PermissionsAndroid, 'request')
+      .mockResolvedValue(PermissionsAndroid.RESULTS.DENIED);
+
+    const unsubscribe = await requestPermissionAndRegister();
+
+    expect(requestSpy).toHaveBeenCalledWith(
+      PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
+    );
+    expect(mockSetPushPermission).toHaveBeenCalledWith(false);
+    // Should return early — Notifee/Firebase permission flow never runs.
+    expect(notifee.requestPermission).not.toHaveBeenCalled();
+    expect(getMessagingInstance().getToken).not.toHaveBeenCalled();
+    expect(mockRegisterDevice).not.toHaveBeenCalled();
+    expect(typeof unsubscribe).toBe('function');
+  });
+
+  it('skips the POST_NOTIFICATIONS check entirely below API 33', async () => {
+    mockPlatform('android', 32);
+    requestSpy = jest.spyOn(PermissionsAndroid, 'request');
+
+    await requestPermissionAndRegister();
+
+    expect(requestSpy).not.toHaveBeenCalled();
+    // Falls through directly to the Notifee/Firebase flow.
+    expect(notifee.requestPermission).toHaveBeenCalled();
+    expect(mockSetPushPermission).toHaveBeenCalledWith(true);
+  });
+
+  it('does not invoke PermissionsAndroid.request on iOS regardless of Platform.Version', async () => {
+    mockPlatform('ios', 33);
+    requestSpy = jest.spyOn(PermissionsAndroid, 'request');
+
+    await requestPermissionAndRegister();
+
+    expect(requestSpy).not.toHaveBeenCalled();
+    expect(notifee.requestPermission).toHaveBeenCalled();
   });
 });
 
@@ -299,6 +405,239 @@ describe('setupNotificationTapHandler', () => {
 
     expect(mockSetPayloadConsumer).toHaveBeenCalledTimes(1);
     expect(typeof mockSetPayloadConsumer.mock.calls[0][0]).toBe('function');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// onForegroundEvent tap-handler callback (foreground tap, Notifee)
+// ---------------------------------------------------------------------------
+
+describe('setupNotificationTapHandler — onForegroundEvent press callback', () => {
+  afterEach(() => {
+    (navigationRef.isReady as jest.Mock).mockImplementation(() => false);
+  });
+
+  it('navigates when a foreground Notifee notification is pressed', () => {
+    (navigationRef.isReady as jest.Mock).mockReturnValue(true);
+    setupNotificationTapHandler();
+    const cb = (notifee.onForegroundEvent as jest.Mock).mock.calls[0][0];
+
+    cb({
+      type: EventType.PRESS,
+      detail: { notification: { data: { t: 'new_dm', gid: 'conv-5' } } },
+    });
+
+    expect(navigationRef.navigate).toHaveBeenCalledWith('MainTabs', {
+      screen: 'Chats',
+      params: { screen: 'ChatDetail', params: { conversationId: 'conv-5' } },
+    });
+  });
+
+  it('does not navigate for non-PRESS foreground events', () => {
+    (navigationRef.isReady as jest.Mock).mockReturnValue(true);
+    setupNotificationTapHandler();
+    const cb = (notifee.onForegroundEvent as jest.Mock).mock.calls[0][0];
+
+    cb({
+      type: EventType.DISMISSED,
+      detail: { notification: { data: { t: 'new_dm', gid: 'conv-5' } } },
+    });
+
+    expect(navigationRef.navigate).not.toHaveBeenCalled();
+  });
+
+  it('does not navigate when the pressed notification has no data', () => {
+    (navigationRef.isReady as jest.Mock).mockReturnValue(true);
+    setupNotificationTapHandler();
+    const cb = (notifee.onForegroundEvent as jest.Mock).mock.calls[0][0];
+
+    cb({ type: EventType.PRESS, detail: { notification: undefined } });
+
+    expect(navigationRef.navigate).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// onNotificationOpenedApp tap-handler callback (background tap, iOS)
+// ---------------------------------------------------------------------------
+
+describe('setupNotificationTapHandler — onNotificationOpenedApp callback', () => {
+  /** Capture the onNotificationOpenedApp callback registered by the handler. */
+  function getOpenedAppCallback(): (
+    msg: FirebaseMessagingTypes.RemoteMessage,
+  ) => void {
+    setupNotificationTapHandler();
+    return (getMessagingInstance().onNotificationOpenedApp as jest.Mock).mock
+      .calls[0][0];
+  }
+
+  afterEach(() => {
+    (navigationRef.isReady as jest.Mock).mockImplementation(() => false);
+  });
+
+  it('navigates to ThreadDetail when tapping a new_thread notification', () => {
+    (navigationRef.isReady as jest.Mock).mockReturnValue(true);
+    const cb = getOpenedAppCallback();
+
+    cb(remoteMessage({ t: 'new_thread', tid: 'thread-123' }));
+
+    expect(navigationRef.navigate).toHaveBeenCalledWith('MainTabs', {
+      screen: 'Threads',
+      params: {
+        screen: 'ThreadDetail',
+        params: { threadId: 'thread-123', targetReplyId: undefined },
+      },
+    });
+  });
+
+  it('navigates to ThreadDetail with targetReplyId when tapping a new_reply notification', () => {
+    (navigationRef.isReady as jest.Mock).mockReturnValue(true);
+    const cb = getOpenedAppCallback();
+
+    cb(remoteMessage({ t: 'new_reply', tid: 'thread-456', rid: 'reply-789' }));
+
+    expect(navigationRef.navigate).toHaveBeenCalledWith('MainTabs', {
+      screen: 'Threads',
+      params: {
+        screen: 'ThreadDetail',
+        params: { threadId: 'thread-456', targetReplyId: 'reply-789' },
+      },
+    });
+  });
+
+  it('navigates to ChatDetail when tapping a new_dm notification', () => {
+    (navigationRef.isReady as jest.Mock).mockReturnValue(true);
+    const cb = getOpenedAppCallback();
+
+    cb(remoteMessage({ t: 'new_dm', gid: 'conv-1' }));
+
+    expect(navigationRef.navigate).toHaveBeenCalledWith('MainTabs', {
+      screen: 'Chats',
+      params: { screen: 'ChatDetail', params: { conversationId: 'conv-1' } },
+    });
+  });
+
+  it('navigates to JoinOrbit when tapping an orbit_invite notification', () => {
+    (navigationRef.isReady as jest.Mock).mockReturnValue(true);
+    const cb = getOpenedAppCallback();
+
+    cb(remoteMessage({ t: 'orbit_invite', code: 'INV-001' }));
+
+    expect(navigationRef.navigate).toHaveBeenCalledWith('MainTabs', {
+      screen: 'Threads',
+      params: { screen: 'JoinOrbit', params: { code: 'INV-001' } },
+    });
+  });
+
+  it('navigates to the Threads list when tapping a member_joined notification', () => {
+    (navigationRef.isReady as jest.Mock).mockReturnValue(true);
+    const cb = getOpenedAppCallback();
+
+    cb(remoteMessage({ t: 'member_joined', gid: 'group-1' }));
+
+    expect(navigationRef.navigate).toHaveBeenCalledWith('MainTabs', {
+      screen: 'Threads',
+    });
+  });
+
+  it('does not navigate when the remoteMessage has no data', () => {
+    (navigationRef.isReady as jest.Mock).mockReturnValue(true);
+    const cb = getOpenedAppCallback();
+
+    cb({} as FirebaseMessagingTypes.RemoteMessage);
+
+    expect(navigationRef.navigate).not.toHaveBeenCalled();
+  });
+
+  it('does not navigate when the payload type is unrecognized', () => {
+    (navigationRef.isReady as jest.Mock).mockReturnValue(true);
+    const cb = getOpenedAppCallback();
+
+    cb(remoteMessage({ t: 'unknown_type' }));
+
+    expect(navigationRef.navigate).not.toHaveBeenCalled();
+  });
+
+  it('queues the payload instead of navigating when the nav tree is not ready', () => {
+    (navigationRef.isReady as jest.Mock).mockReturnValue(false);
+    const cb = getOpenedAppCallback();
+
+    cb(remoteMessage({ t: 'new_thread', tid: 'thread-123' }));
+
+    expect(setPendingNotificationPayload).toHaveBeenCalledWith({
+      t: 'new_thread',
+      tid: 'thread-123',
+    });
+    expect(navigationRef.navigate).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Killed-state getInitialNotification handling
+// ---------------------------------------------------------------------------
+
+describe('setupNotificationTapHandler — killed-state getInitialNotification', () => {
+  afterEach(() => {
+    (navigationRef.isReady as jest.Mock).mockImplementation(() => false);
+  });
+
+  it('navigates using the cold-start notification payload when nav is ready', async () => {
+    (navigationRef.isReady as jest.Mock).mockReturnValue(true);
+    (getMessagingInstance().getInitialNotification as jest.Mock).mockResolvedValueOnce(
+      remoteMessage({ t: 'new_dm', gid: 'conv-99' }),
+    );
+
+    setupNotificationTapHandler();
+    // Flush the getInitialNotification().then() microtask.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(navigationRef.navigate).toHaveBeenCalledWith('MainTabs', {
+      screen: 'Chats',
+      params: { screen: 'ChatDetail', params: { conversationId: 'conv-99' } },
+    });
+  });
+
+  it('queues the cold-start payload when the nav tree is not ready yet', async () => {
+    (navigationRef.isReady as jest.Mock).mockReturnValue(false);
+    (getMessagingInstance().getInitialNotification as jest.Mock).mockResolvedValueOnce(
+      remoteMessage({ t: 'orbit_invite', code: 'INV-2' }),
+    );
+
+    setupNotificationTapHandler();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(setPendingNotificationPayload).toHaveBeenCalledWith({
+      t: 'orbit_invite',
+      code: 'INV-2',
+    });
+    expect(navigationRef.navigate).not.toHaveBeenCalled();
+  });
+
+  it('does not navigate when there is no cold-start notification (returns null)', async () => {
+    (getMessagingInstance().getInitialNotification as jest.Mock).mockResolvedValueOnce(
+      null,
+    );
+
+    setupNotificationTapHandler();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(navigationRef.navigate).not.toHaveBeenCalled();
+    expect(setPendingNotificationPayload).not.toHaveBeenCalled();
+  });
+
+  it('swallows getInitialNotification rejection without throwing', async () => {
+    (getMessagingInstance().getInitialNotification as jest.Mock).mockRejectedValueOnce(
+      new Error('native bridge unavailable'),
+    );
+
+    expect(() => setupNotificationTapHandler()).not.toThrow();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(navigationRef.navigate).not.toHaveBeenCalled();
   });
 });
 

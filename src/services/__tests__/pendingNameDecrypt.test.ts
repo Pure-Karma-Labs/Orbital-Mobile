@@ -83,6 +83,7 @@ jest.mock('../../stores/useAppStore', () => ({
 import {
   joinOrbit,
   retryPendingNameDecrypt,
+  retryAllPendingNameDecrypts,
   clearConversationServiceState,
   _getPendingNameRegistry,
   loadConversations,
@@ -477,5 +478,197 @@ describe('loadConversations with pending key', () => {
         name: null,
       }),
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (#327) retryAllPendingNameDecrypts — secondary trigger
+// ---------------------------------------------------------------------------
+
+describe('retryAllPendingNameDecrypts (#327)', () => {
+  it('is a no-op when the pending registry is empty', async () => {
+    expect(_getPendingNameRegistry().size).toBe(0);
+    await retryAllPendingNameDecrypts();
+    expect(mockGetOrFetchGroupKey).not.toHaveBeenCalled();
+  });
+
+  it('retries all stranded entries and resolves them', async () => {
+    // Seed the registry with two pending entries
+    const PendingWrapError = jest.requireMock('../crypto/contentCrypto').PendingWrapError;
+    mockGetOrFetchGroupKey.mockRejectedValue(new PendingWrapError());
+    mockJoinGroup.mockResolvedValueOnce({
+      groupId: 'orbit-a',
+      encryptedName: 'EncA',
+      memberCount: 2,
+      joinedAt: '2026-06-01T00:00:00Z',
+      wrappedGroupKey: null,
+    });
+    mockJoinGroup.mockResolvedValueOnce({
+      groupId: 'orbit-b',
+      encryptedName: 'EncB',
+      memberCount: 3,
+      joinedAt: '2026-06-01T00:00:00Z',
+      wrappedGroupKey: null,
+    });
+
+    await joinOrbit('CODE_A');
+    await joinOrbit('CODE_B');
+    expect(_getPendingNameRegistry().size).toBe(2);
+    mockUpsertConversation.mockClear();
+
+    // Now keys arrive — both groups should decrypt
+    mockGetOrFetchGroupKey.mockResolvedValue(new Uint8Array(32));
+    mockDecryptGroupName.mockImplementation((name: string) => `Decrypted-${name}`);
+
+    // Put both conversations in the store
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-self-user',
+      conversations: {
+        'orbit-a': { id: 'orbit-a', type: 'group', name: null, memberCount: 2, active: true, muteUntil: null, lastMessageAt: null, unreadCount: 0, createdAt: 1, updatedAt: 1 },
+        'orbit-b': { id: 'orbit-b', type: 'group', name: null, memberCount: 3, active: true, muteUntil: null, lastMessageAt: null, unreadCount: 0, createdAt: 1, updatedAt: 1 },
+      },
+      upsertConversation: mockUpsertConversation,
+    });
+
+    await retryAllPendingNameDecrypts();
+
+    expect(_getPendingNameRegistry().size).toBe(0);
+    expect(mockUpsertConversation).toHaveBeenCalledTimes(2);
+    expect(mockUpsertConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'orbit-a', name: 'Decrypted-EncA' }),
+    );
+    expect(mockUpsertConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'orbit-b', name: 'Decrypted-EncB' }),
+    );
+  });
+
+  it('leaves entries that still fail, clears ones that succeed', async () => {
+    const PendingWrapError = jest.requireMock('../crypto/contentCrypto').PendingWrapError;
+    mockGetOrFetchGroupKey.mockRejectedValue(new PendingWrapError());
+    mockJoinGroup.mockResolvedValueOnce({
+      groupId: 'orbit-ok',
+      encryptedName: 'EncOk',
+      memberCount: 2,
+      joinedAt: '2026-06-01T00:00:00Z',
+      wrappedGroupKey: null,
+    });
+    mockJoinGroup.mockResolvedValueOnce({
+      groupId: 'orbit-fail',
+      encryptedName: 'EncFail',
+      memberCount: 2,
+      joinedAt: '2026-06-01T00:00:00Z',
+      wrappedGroupKey: null,
+    });
+    await joinOrbit('OK_CODE');
+    await joinOrbit('FAIL_CODE');
+    expect(_getPendingNameRegistry().size).toBe(2);
+    mockUpsertConversation.mockClear();
+
+    // orbit-ok key now available, orbit-fail still fails
+    mockGetOrFetchGroupKey.mockImplementation(async (groupId: string) => {
+      if (groupId === 'orbit-fail') throw new Error('still no key');
+      return new Uint8Array(32);
+    });
+    mockDecryptGroupName.mockImplementation((name: string) => `Decrypted-${name}`);
+
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-self-user',
+      conversations: {
+        'orbit-ok': { id: 'orbit-ok', type: 'group', name: null, memberCount: 2, active: true, muteUntil: null, lastMessageAt: null, unreadCount: 0, createdAt: 1, updatedAt: 1 },
+        'orbit-fail': { id: 'orbit-fail', type: 'group', name: null, memberCount: 2, active: true, muteUntil: null, lastMessageAt: null, unreadCount: 0, createdAt: 1, updatedAt: 1 },
+      },
+      upsertConversation: mockUpsertConversation,
+    });
+
+    await retryAllPendingNameDecrypts();
+
+    // orbit-ok resolved, orbit-fail still stranded
+    expect(_getPendingNameRegistry().has('orbit-ok')).toBe(false);
+    expect(_getPendingNameRegistry().has('orbit-fail')).toBe(true);
+    expect(mockUpsertConversation).toHaveBeenCalledTimes(1);
+    expect(mockUpsertConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'orbit-ok', name: 'Decrypted-EncOk' }),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (#327) Fail-then-succeed: first WS retry fails, loadConversations heals
+// ---------------------------------------------------------------------------
+
+describe('fail-then-succeed: WS retry fails, loadConversations retries and succeeds (#327)', () => {
+  it('resolves the name on the second trigger after the first retry failed', async () => {
+    // Step 1: Join orbit — key is pending, name registered
+    const PendingWrapError = jest.requireMock('../crypto/contentCrypto').PendingWrapError;
+    mockGetOrFetchGroupKey.mockRejectedValue(new PendingWrapError());
+    mockJoinGroup.mockResolvedValue({
+      groupId: 'orbit-heal',
+      encryptedName: 'EncHeal',
+      memberCount: 2,
+      joinedAt: '2026-06-01T00:00:00Z',
+      wrappedGroupKey: null,
+    });
+
+    await joinOrbit('HEAL_CODE');
+    expect(_getPendingNameRegistry().get('orbit-heal')).toBe('EncHeal');
+    mockUpsertConversation.mockClear();
+
+    // Step 2: First retry fails (simulates handleWrappedKeyDelivered failure)
+    mockGetOrFetchGroupKey.mockRejectedValueOnce(new Error('network blip'));
+
+    await retryPendingNameDecrypt('orbit-heal');
+
+    // Entry should still be in the registry
+    expect(_getPendingNameRegistry().has('orbit-heal')).toBe(true);
+    expect(mockUpsertConversation).not.toHaveBeenCalled();
+
+    // Step 3: loadConversations fires (e.g., foregrounding)
+    // processReceivedGroupKey succeeds, key is now cached
+    mockGetOrFetchGroupKey.mockResolvedValue(new Uint8Array(32));
+    mockDecryptGroupName.mockImplementation((name: string) => `Decrypted-${name}`);
+    mockProcessReceivedGroupKey.mockResolvedValue(undefined);
+
+    // Server returns the group with a wrapped key this time
+    mockListGroups.mockResolvedValue([
+      {
+        groupId: 'orbit-heal',
+        encryptedName: 'EncHeal',
+        wrappedGroupKey: 'wrapped-key-data',
+        wrappedBy: 'some-user',
+        memberCount: 2,
+        maxMembers: 10,
+        isCreator: false,
+        joinedAt: '2026-06-01T00:00:00Z',
+      },
+    ]);
+
+    // Store has the conversation (set by setGroupConversations during loadConversations)
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-self-user',
+      activeConversationId: 'orbit-heal',
+      conversations: {
+        'orbit-heal': { id: 'orbit-heal', type: 'group', name: null, memberCount: 2, active: true, muteUntil: null, lastMessageAt: null, unreadCount: 0, lastReadAt: null, createdAt: 1, updatedAt: 1 },
+      },
+      viewingConversationId: null,
+      setConversations: mockSetConversations,
+      setGroupConversations: mockSetConversations,
+      setActiveConversation: mockSetActiveConversation,
+      upsertConversation: mockUpsertConversation,
+      mergeContacts: mockMergeContacts,
+      removeContact: jest.fn(),
+    });
+
+    await loadConversations();
+
+    // The pending entry should now be resolved — either by mapGroupResponse
+    // (fresh decrypt during loadConversations) or by retryAllPendingNameDecrypts
+    // at the end of loadConversations.
+    //
+    // Since getOrFetchGroupKey now succeeds, mapGroupResponse's
+    // decryptGroupNameSafe will decrypt the name and NOT re-register it.
+    // Even if it were still pending, retryAllPendingNameDecrypts would heal it.
+    //
+    // The key assertion: the name is no longer stranded.
+    expect(_getPendingNameRegistry().has('orbit-heal')).toBe(false);
   });
 });

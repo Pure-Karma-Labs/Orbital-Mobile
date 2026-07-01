@@ -18,7 +18,7 @@ import {
 import { resolveRemoteIdentityKey } from '../crypto/identityKeyAccess';
 import { submitWrappedKey } from '../api/groups';
 import { decryptThreadFields, decryptReplyBody, processMediaMetadata } from '../threadService';
-import { ensureDmConversation, hydrateContactsFromOrbits, refreshContactAvatar, retryPendingNameDecrypt, markConversationReadEverywhere } from '../conversationService';
+import { ensureDmConversation, hydrateContactsFromOrbits, refreshContactAvatar, retryPendingNameDecrypt, retryAllPendingNameDecrypts, markConversationReadEverywhere } from '../conversationService';
 import { isDatabaseInitialized } from '../../database/connection';
 import { saveThread as dbSaveThread } from '../../database/repositories/threadRepository';
 import { saveReply as dbSaveReply } from '../../database/repositories/replyRepository';
@@ -166,6 +166,10 @@ function handleConnectionAck(_message: Record<string, unknown>): void {
   store.setConnectionStatus('connected');
   store.setLastConnectedAt(Date.now());
   store.setReconnectAttempt(0);
+
+  // #327: On (re)connect, retry any stranded pending orbit name decrypts.
+  // Fire-and-forget — failures are logged inside retryAllPendingNameDecrypts.
+  retryAllPendingNameDecrypts().catch(() => {});
 }
 
 // ============================================================

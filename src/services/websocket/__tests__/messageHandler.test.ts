@@ -70,6 +70,7 @@ jest.mock('../../conversationService', () => ({
   hydrateContactsFromOrbits: jest.fn().mockResolvedValue(undefined),
   refreshContactAvatar: jest.fn().mockResolvedValue(undefined),
   retryPendingNameDecrypt: jest.fn().mockResolvedValue(undefined),
+  retryAllPendingNameDecrypts: jest.fn().mockResolvedValue(undefined),
   markConversationReadEverywhere: (...args: unknown[]) => mockMarkConversationReadEverywhere(...args),
 }));
 
@@ -217,6 +218,16 @@ describe('connection_ack', () => {
     expect(mockSetConnectionStatus).toHaveBeenCalledWith('connected');
     expect(mockSetLastConnectedAt).toHaveBeenCalledWith(expect.any(Number));
     expect(mockSetReconnectAttempt).toHaveBeenCalledWith(0);
+  });
+
+  it('retries all pending orbit name decrypts on reconnect (#327)', async () => {
+    const { retryAllPendingNameDecrypts } = jest.requireMock('../../conversationService');
+    (retryAllPendingNameDecrypts as jest.Mock).mockClear();
+
+    const raw = JSON.stringify({ type: 'connection_ack', timestamp: 1700000000000 });
+    await handleServerMessage(raw);
+
+    expect(retryAllPendingNameDecrypts).toHaveBeenCalledTimes(1);
   });
 });
 

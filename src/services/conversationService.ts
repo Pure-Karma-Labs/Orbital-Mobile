@@ -109,6 +109,40 @@ export async function retryPendingNameDecrypt(groupId: string): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Retry all pending names — secondary trigger so stranded entries heal
+// without an app restart.  (#327)
+// ---------------------------------------------------------------------------
+
+let retryAllInflight: Promise<void> | null = null;
+
+/**
+ * Retry decryption for ALL entries in the pending name registry.
+ *
+ * Called from loadConversations (after keys are processed and conversations
+ * are in the store) and on WS reconnect (connection_ack) to give stranded
+ * entries a second — and subsequent — chance.
+ *
+ * Idempotent: concurrent calls are coalesced via an inflight promise guard.
+ */
+export async function retryAllPendingNameDecrypts(): Promise<void> {
+  if (pendingNameRegistry.size === 0) return;
+  if (retryAllInflight) return retryAllInflight;
+
+  retryAllInflight = _doRetryAllPending();
+  try {
+    await retryAllInflight;
+  } finally {
+    retryAllInflight = null;
+  }
+}
+
+async function _doRetryAllPending(): Promise<void> {
+  // Snapshot the keys — retryPendingNameDecrypt may delete entries
+  const groupIds = Array.from(pendingNameRegistry.keys());
+  await Promise.allSettled(groupIds.map(id => retryPendingNameDecrypt(id)));
+}
+
 /** @internal Exposed for tests only */
 export function _getPendingNameRegistry(): ReadonlyMap<string, string> {
   return pendingNameRegistry;
@@ -204,6 +238,10 @@ export async function loadConversations(): Promise<void> {
   // Type-partitioned replace: only replace group-type conversations,
   // preserving all existing DM conversations and their unread counts.
   store.setGroupConversations(conversations);
+
+  // #327: Retry any stranded pending-name entries now that keys have been
+  // processed and conversations are in the store.
+  await retryAllPendingNameDecrypts();
 
   // Reconciliation: purge local threads/replies for dissolved groups.
   // If the server no longer returns a group, it was dissolved or the user
@@ -862,6 +900,7 @@ export function clearConversationServiceState(): void {
   ensureDmInflight.clear();
   refreshAvatarInflight.clear();
   pendingNameRegistry.clear();
+  retryAllInflight = null;
   hydrateInflight = null;
   lastPendingWrapsSweep = 0;
   lastContactHydration = 0;

@@ -25,13 +25,27 @@ const TAB_EMOJI: Record<string, string> = {
   Settings: '2699-FE0F',
 };
 
+/**
+ * Maps each tab name to the initial (root) screen of its nested stack navigator.
+ * Used by the tab press handler to reset nested navigation state when switching
+ * tabs or re-pressing the active tab, matching the default BottomTabBar behavior
+ * that the custom tab bar was missing. See #470.
+ * @internal Exported for testing only.
+ */
+export const TAB_INITIAL_SCREENS: Record<string, string> = {
+  Threads: 'ThreadsList',
+  Chats: 'ChatsList',
+  Settings: 'SettingsMain',
+};
+
 const Tab = createBottomTabNavigator<MainTabParamList>();
 
 function capitalizeFirst(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-function CustomTabBar({ state, descriptors, navigation }: BottomTabBarProps): React.JSX.Element | null {
+/** @internal Exported for testing only. */
+export function CustomTabBar({ state, descriptors, navigation }: BottomTabBarProps): React.JSX.Element | null {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
 
@@ -70,8 +84,19 @@ function CustomTabBar({ state, descriptors, navigation }: BottomTabBarProps): Re
 
         const onPress = () => {
           const event = navigation.emit({ type: 'tabPress', target: route.key, canPreventDefault: true });
-          if (!isFocused && !event.defaultPrevented) {
-            navigation.navigate(route.name);
+          if (!event.defaultPrevented) {
+            // Navigate to the tab's initial screen, resetting any nested stack
+            // state. This handles both cases:
+            //  - Switching tabs: resets the target tab to its root screen
+            //  - Re-pressing the active tab: pops nested screens back to root
+            // Without the { screen } param, navigate() preserves nested state,
+            // causing the tab to show a stale deep screen instead of the list.
+            const initialScreen = TAB_INITIAL_SCREENS[route.name];
+            if (initialScreen) {
+              navigation.navigate(route.name, { screen: initialScreen });
+            } else {
+              navigation.navigate(route.name);
+            }
           }
         };
 

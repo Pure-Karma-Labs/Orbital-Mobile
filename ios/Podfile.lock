@@ -3,27 +3,27 @@ PODS:
   - DoubleConversion (1.1.6)
   - fast_float (8.0.0)
   - FBLazyVector (0.82.1)
-  - Firebase/CoreOnly (12.10.0):
-    - FirebaseCore (~> 12.10.0)
-  - Firebase/Messaging (12.10.0):
+  - Firebase/CoreOnly (12.15.0):
+    - FirebaseCore (~> 12.15.0)
+  - Firebase/Messaging (12.15.0):
     - Firebase/CoreOnly
-    - FirebaseMessaging (~> 12.10.0)
-  - FirebaseCore (12.10.0):
-    - FirebaseCoreInternal (~> 12.10.0)
+    - FirebaseMessaging (~> 12.15.0)
+  - FirebaseCore (12.15.0):
+    - FirebaseCoreInternal (~> 12.15.0)
     - GoogleUtilities/Environment (~> 8.1)
     - GoogleUtilities/Logger (~> 8.1)
-  - FirebaseCoreExtension (12.10.0):
-    - FirebaseCore (~> 12.10.0)
-  - FirebaseCoreInternal (12.10.0):
+  - FirebaseCoreExtension (12.15.0):
+    - FirebaseCore (~> 12.15.0)
+  - FirebaseCoreInternal (12.15.0):
     - "GoogleUtilities/NSData+zlib (~> 8.1)"
-  - FirebaseInstallations (12.10.0):
-    - FirebaseCore (~> 12.10.0)
+  - FirebaseInstallations (12.15.0):
+    - FirebaseCore (~> 12.15.0)
     - GoogleUtilities/Environment (~> 8.1)
     - GoogleUtilities/UserDefaults (~> 8.1)
     - PromisesObjC (~> 2.4)
-  - FirebaseMessaging (12.10.0):
-    - FirebaseCore (~> 12.10.0)
-    - FirebaseInstallations (~> 12.10.0)
+  - FirebaseMessaging (12.15.0):
+    - FirebaseCore (~> 12.15.0)
+    - FirebaseInstallations (~> 12.15.0)
     - GoogleDataTransport (~> 10.1)
     - GoogleUtilities/AppDelegateSwizzler (~> 8.1)
     - GoogleUtilities/Environment (~> 8.1)
@@ -35,44 +35,44 @@ PODS:
   - GoogleDataTransport (10.1.0):
     - nanopb (~> 3.30910.0)
     - PromisesObjC (~> 2.4)
-  - GoogleUtilities (8.1.0):
-    - GoogleUtilities/AppDelegateSwizzler (= 8.1.0)
-    - GoogleUtilities/Environment (= 8.1.0)
-    - GoogleUtilities/Logger (= 8.1.0)
-    - GoogleUtilities/MethodSwizzler (= 8.1.0)
-    - GoogleUtilities/Network (= 8.1.0)
-    - "GoogleUtilities/NSData+zlib (= 8.1.0)"
-    - GoogleUtilities/Privacy (= 8.1.0)
-    - GoogleUtilities/Reachability (= 8.1.0)
-    - GoogleUtilities/SwizzlerTestHelpers (= 8.1.0)
-    - GoogleUtilities/UserDefaults (= 8.1.0)
-  - GoogleUtilities/AppDelegateSwizzler (8.1.0):
+  - GoogleUtilities (8.1.2):
+    - GoogleUtilities/AppDelegateSwizzler (= 8.1.2)
+    - GoogleUtilities/Environment (= 8.1.2)
+    - GoogleUtilities/Logger (= 8.1.2)
+    - GoogleUtilities/MethodSwizzler (= 8.1.2)
+    - GoogleUtilities/Network (= 8.1.2)
+    - "GoogleUtilities/NSData+zlib (= 8.1.2)"
+    - GoogleUtilities/Privacy (= 8.1.2)
+    - GoogleUtilities/Reachability (= 8.1.2)
+    - GoogleUtilities/SwizzlerTestHelpers (= 8.1.2)
+    - GoogleUtilities/UserDefaults (= 8.1.2)
+  - GoogleUtilities/AppDelegateSwizzler (8.1.2):
     - GoogleUtilities/Environment
     - GoogleUtilities/Logger
     - GoogleUtilities/Network
     - GoogleUtilities/Privacy
-  - GoogleUtilities/Environment (8.1.0):
+  - GoogleUtilities/Environment (8.1.2):
     - GoogleUtilities/Privacy
-  - GoogleUtilities/Logger (8.1.0):
+  - GoogleUtilities/Logger (8.1.2):
     - GoogleUtilities/Environment
     - GoogleUtilities/Privacy
-  - GoogleUtilities/MethodSwizzler (8.1.0):
+  - GoogleUtilities/MethodSwizzler (8.1.2):
     - GoogleUtilities/Logger
     - GoogleUtilities/Privacy
-  - GoogleUtilities/Network (8.1.0):
+  - GoogleUtilities/Network (8.1.2):
     - GoogleUtilities/Logger
     - "GoogleUtilities/NSData+zlib"
     - GoogleUtilities/Privacy
     - GoogleUtilities/Reachability
-  - "GoogleUtilities/NSData+zlib (8.1.0)":
+  - "GoogleUtilities/NSData+zlib (8.1.2)":
     - GoogleUtilities/Privacy
-  - GoogleUtilities/Privacy (8.1.0)
-  - GoogleUtilities/Reachability (8.1.0):
+  - GoogleUtilities/Privacy (8.1.2)
+  - GoogleUtilities/Reachability (8.1.2):
     - GoogleUtilities/Logger
     - GoogleUtilities/Privacy
-  - GoogleUtilities/SwizzlerTestHelpers (8.1.0):
+  - GoogleUtilities/SwizzlerTestHelpers (8.1.2):
     - GoogleUtilities/MethodSwizzler
-  - GoogleUtilities/UserDefaults (8.1.0):
+  - GoogleUtilities/UserDefaults (8.1.2):
     - GoogleUtilities/Logger
     - GoogleUtilities/Privacy
   - hermes-engine (0.82.1):
@@ -84,7 +84,7 @@ PODS:
     - nanopb/encode (= 3.30910.0)
   - nanopb/decode (3.30910.0)
   - nanopb/encode (3.30910.0)
-  - NitroMmkv (4.3.1):
+  - NitroMmkv (4.3.2):
     - boost
     - DoubleConversion
     - fast_float
@@ -115,7 +115,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
-  - NitroModules (0.35.9):
+  - NitroModules (0.35.10):
     - boost
     - DoubleConversion
     - fast_float
@@ -144,7 +144,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
-  - op-sqlite (16.2.2):
+  - op-sqlite (17.0.0):
     - boost
     - DoubleConversion
     - fast_float
@@ -173,7 +173,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
-  - OpenSSL-Universal (3.6.0000)
+  - OpenSSL-Universal (3.6.2000)
   - OrbitalSignal (0.0.1):
     - boost
     - DoubleConversion
@@ -203,7 +203,7 @@ PODS:
     - SocketRocket
     - uniffi-bindgen-react-native (= 0.31.0-2)
     - Yoga
-  - PromisesObjC (2.4.0)
+  - PromisesObjC (2.4.1)
   - RCT-Folly (2024.11.18.00):
     - boost
     - DoubleConversion
@@ -2718,7 +2718,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
-  - RNBootSplash (7.3.1):
+  - RNBootSplash (7.3.2):
     - boost
     - DoubleConversion
     - fast_float
@@ -2746,11 +2746,11 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
-  - RNFBApp (24.1.1):
+  - RNFBApp (25.0.1):
     - boost
     - DoubleConversion
     - fast_float
-    - Firebase/CoreOnly (= 12.10.0)
+    - Firebase/CoreOnly (= 12.15.0)
     - fmt
     - glog
     - hermes-engine
@@ -2775,11 +2775,11 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
-  - RNFBMessaging (24.1.1):
+  - RNFBMessaging (25.0.1):
     - boost
     - DoubleConversion
     - fast_float
-    - Firebase/Messaging (= 12.10.0)
+    - Firebase/Messaging (= 12.15.0)
     - FirebaseCoreExtension
     - fmt
     - glog
@@ -2806,7 +2806,7 @@ PODS:
     - RNFBApp
     - SocketRocket
     - Yoga
-  - RNGestureHandler (3.0.1):
+  - RNGestureHandler (3.0.2):
     - boost
     - DoubleConversion
     - fast_float
@@ -2926,7 +2926,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
-  - RNSentry (8.14.0):
+  - RNSentry (8.16.0):
     - boost
     - DoubleConversion
     - fast_float
@@ -2953,12 +2953,12 @@ PODS:
     - ReactCodegen
     - ReactCommon/turbomodule/bridging
     - ReactCommon/turbomodule/core
-    - Sentry (= 9.16.1)
+    - Sentry (= 9.19.0)
     - SocketRocket
     - Yoga
-  - Sentry (9.16.1):
-    - Sentry/Core (= 9.16.1)
-  - Sentry/Core (9.16.1)
+  - Sentry (9.19.0):
+    - Sentry/Core (= 9.19.0)
+  - Sentry/Core (9.19.0)
   - SocketRocket (0.7.1)
   - uniffi-bindgen-react-native (0.31.0-2):
     - React-Core
@@ -3272,25 +3272,25 @@ SPEC CHECKSUMS:
   DoubleConversion: cb417026b2400c8f53ae97020b2be961b59470cb
   fast_float: b32c788ed9c6a8c584d114d0047beda9664e7cc6
   FBLazyVector: 0aa6183b9afe3c31fc65b5d1eeef1f3c19b63bfa
-  Firebase: 99f203d3a114c6ba591f3b32263a9626e450af65
-  FirebaseCore: f4428e22415ea3b3eca652c2098413dabf2a23a9
-  FirebaseCoreExtension: 3473a6ec16a91aee29fb75994a86c0220d2cddf3
-  FirebaseCoreInternal: e7bbaeb00ab73011298f35ed223aa7371e212948
-  FirebaseInstallations: 047343aa91fd6a1ebfa3eb374ddecf36a8aaddfd
-  FirebaseMessaging: ed18fb50634e6e85b5d3e77e628c21e2c928cc53
+  Firebase: a8539b633d474fbeb654c7043f9c1649e274045b
+  FirebaseCore: 2e86a4ea1684d4381707069e4a6d89ac808e901e
+  FirebaseCoreExtension: 10d2a627977b39418759ad88ada80fbbd34f1c4f
+  FirebaseCoreInternal: 6ab6a02c94446c026d2cf35cf5383842ebaa4992
+  FirebaseInstallations: eb29ccbf64eaedf86fd5b2ccc7fabde567660b52
+  FirebaseMessaging: 40017d7bc8457ee295b0f41d480a80fdabc9994e
   fmt: a40bb5bd0294ea969aaaba240a927bd33d878cdd
   glog: 5683914934d5b6e4240e497e0f4a3b42d1854183
   GoogleDataTransport: aae35b7ea0c09004c3797d53c8c41f66f219d6a7
-  GoogleUtilities: 00c88b9a86066ef77f0da2fab05f65d7768ed8e1
+  GoogleUtilities: 766ace00c6b10d8148408f329d10c4f051931850
   hermes-engine: 273e30e7fb618279934b0b95ffab60ecedb7acf5
   MMKVCore: 3d16ce9f7d411e135020915fde98a056859a1efa
   nanopb: fad817b59e0457d11a5dfbde799381cd727c1275
-  NitroMmkv: c68bb2c29c154913707bc6e66791b2b30dd723c1
-  NitroModules: 8ab2b6936d6d3b6283d22b3e1394ab141c6cb8c2
-  op-sqlite: c91ad479c85744584e7c096f3c390deb80ab4ee9
-  OpenSSL-Universal: 9110d21982bb7e8b22a962b6db56a8aa805afde7
+  NitroMmkv: 975be1948fd74280e6febcda06671d7bf604a4cd
+  NitroModules: b5c5baefa71a65c40e129876a8b7943a9aef6aa5
+  op-sqlite: e161e439bca8a38b1615e78d3ec4d9d669c1567f
+  OpenSSL-Universal: ecee7b138fa75a74ecf00d7ffd248fb584739b9e
   OrbitalSignal: 39d2010fd67eacb834e2b4ec67dc4c2095d1cbff
-  PromisesObjC: f5707f49cb48b9636751c5b2e7d227e43fba9f47
+  PromisesObjC: 752c3227f599e3467650e47ea36f433eeb10c273
   RCT-Folly: 846fda9475e61ec7bcbf8a3fe81edfcaeb090669
   RCTDeprecation: f17e2ebc07876ca9ab8eb6e4b0a4e4647497ae3a
   RCTRequired: e2c574c1b45231f7efb0834936bd609d75072b63
@@ -3361,15 +3361,15 @@ SPEC CHECKSUMS:
   ReactCodegen: 878add6c7d8ff8cea87697c44d29c03b79b6f2d9
   ReactCommon: 804dc80944fa90b86800b43c871742ec005ca424
   ReactNativeFs: af03e04998658ed8a62e4c478e0632f3a073be1d
-  RNBootSplash: 0be0994fa7c528ed5f03b6f2803d7e86aa18170f
-  RNFBApp: 4749952428360944ee37913fafc796810b5133b3
-  RNFBMessaging: 20ed9e31881b2add8ebbf13b15daa519e5cae00a
-  RNGestureHandler: b78202c48c68c5d13755d4cfcc6eab8f7f9508c6
+  RNBootSplash: 83bc1fef5ff2e9fd3ed0f20a472dd87d8a9ef898
+  RNFBApp: e5ea8c5e484ac2c0f83e7844236a2da51b428f3e
+  RNFBMessaging: 8622ad2e833014984ef620a2f8cb8aa72b8d3f60
+  RNGestureHandler: e9a7deaee5946c21e5c85d3fdaa22b031f2b6848
   RNKeychain: a2c134ab796272c3d605e035ab727591000b30f3
   RNNotifee: 5e3b271e8ea7456a36eec994085543c9adca9168
   RNScreens: 9269ab4971b2bd24917be84295d2c2ae7d06e9be
-  RNSentry: 381768abdc4009f20aed5c73d9fa7128fe104a74
-  Sentry: e5d82a3c1f2d951f75c04c57215a0abb1facbd51
+  RNSentry: 58b46c005538563e432c0639cda65dc8b15871e3
+  Sentry: 996238da99d8710438655666395d94c49604981f
   SocketRocket: d4aabe649be1e368d1318fdf28a022d714d65748
   uniffi-bindgen-react-native: 205a15613d97a49fe17d5bda57f7fa46a7bbafd0
   Yoga: 689c8e04277f3ad631e60fe2a08e41d411daf8eb

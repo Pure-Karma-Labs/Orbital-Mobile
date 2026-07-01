@@ -1,1 +1,0 @@
-- [Three-repo architecture](project_three_repo_architecture.md) — Backend extracted to Pure-Karma-Labs/Orbital-Backend; Desktop being sunsetted; Orbital is now mobile-first

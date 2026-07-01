@@ -1,5 +1,0 @@
-- [Backend repo location](reference_backend_repo.md) — Backend now at Pure-Karma-Labs/Orbital-Backend; deployed via PM2 on 134.199.230.235
-- [Push infrastructure deployed](project_push_infrastructure.md) — Firebase/FCM live; device_tokens table, /api/devices endpoints, dispatch hooks in threads.js and signal-relay.js
-- [Firebase/GCP setup](reference_firebase_gcp.md) — Project ID orbital-mobile-dc0cd, service account, PUSH_ENABLED env var, APNs via Firebase
-- [Push security decisions](feedback_push_security.md) — No raw token logging, content-free payloads, Android data-only, stale token deactivation codes
-- [Push test coverage](reference_push_tests.md) — tests/pushService.test.js (28 tests), tests/devices.test.js (11 tests), mock auth pattern

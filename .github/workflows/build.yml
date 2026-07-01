@@ -97,15 +97,9 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Cache Gradle
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('android/gradle/wrapper/gradle-wrapper.properties', 'android/**/*.gradle', 'android/gradle.properties') }}
-          restore-keys: |
-            gradle-${{ runner.os }}-
+      # Gradle cache: omitted intentionally. The self-hosted runner persists
+      # ~/.gradle between runs on disk. actions/cache would try to upload
+      # ~6 GB to GitHub's cache service after every build, hanging at 0 MB/s.
 
       - name: Build Android Debug
         working-directory: android

@@ -60,6 +60,12 @@ function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstanc
   return found[0];
 }
 
+function findCheckbox(root: ReactTestInstance): ReactTestInstance {
+  const found = root.findAll((node) => node.props.accessibilityRole === 'checkbox');
+  if (found.length === 0) throw new Error('No element with accessibilityRole "checkbox"');
+  return found[0];
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -116,24 +122,55 @@ describe('LoginScreen — validation', () => {
   });
 });
 
+describe('LoginScreen — terms checkbox gate', () => {
+  it('renders the terms checkbox', () => {
+    const renderer = renderLoginScreen();
+    expect(() => findByTestId(renderer.root, 'login-terms-checkbox')).not.toThrow();
+  });
+
+  it('submit button is disabled until terms checkbox is checked', () => {
+    const renderer = renderLoginScreen();
+    const button = findByTestId(renderer.root, 'login-submit-button');
+    expect(button.props.disabled).toBe(true);
+  });
+
+  it('submit button is enabled after checking terms', () => {
+    const renderer = renderLoginScreen();
+
+    act(() => {
+      findCheckbox(renderer.root).props.onPress();
+    });
+
+    const button = findByTestId(renderer.root, 'login-submit-button');
+    expect(button.props.disabled).toBeFalsy();
+  });
+
+  it('renders the Terms of Use link', () => {
+    const renderer = renderLoginScreen();
+    expect(() => findByTestId(renderer.root, 'login-terms-link')).not.toThrow();
+  });
+
+  it('does not render Privacy Policy link on login', () => {
+    const renderer = renderLoginScreen();
+    const found = renderer.root.findAll((n) => n.props.testID === 'login-privacy-link');
+    expect(found).toHaveLength(0);
+  });
+});
+
 describe('LoginScreen — submission', () => {
   it('calls loginUser with trimmed email and password on valid submission', async () => {
     mockLoginUser.mockResolvedValue(undefined);
     const renderer = renderLoginScreen();
     const root = renderer.root;
 
-    // Fill in fields
-    const emailInput = findByTestId(root, 'login-email-input');
-    const passwordInput = findByTestId(root, 'login-password-input');
-    const button = findByTestId(root, 'login-submit-button');
-
     act(() => {
-      emailInput.props.onChangeText('alice@example.com');
-      passwordInput.props.onChangeText('mypassword');
+      findByTestId(root, 'login-email-input').props.onChangeText('alice@example.com');
+      findByTestId(root, 'login-password-input').props.onChangeText('mypassword');
+      findCheckbox(root).props.onPress();
     });
 
     await act(async () => {
-      button.props.onPress();
+      findByTestId(root, 'login-submit-button').props.onPress();
     });
 
     expect(mockLoginUser).toHaveBeenCalledWith('alice@example.com', 'mypassword');
@@ -149,6 +186,7 @@ describe('LoginScreen — error handling', () => {
     act(() => {
       findByTestId(root, 'login-email-input').props.onChangeText('user');
       findByTestId(root, 'login-password-input').props.onChangeText('pass');
+      findCheckbox(root).props.onPress();
     });
 
     await act(async () => {
@@ -172,6 +210,7 @@ describe('LoginScreen — error handling', () => {
     act(() => {
       findByTestId(root, 'login-email-input').props.onChangeText('user');
       findByTestId(root, 'login-password-input').props.onChangeText('pass');
+      findCheckbox(root).props.onPress();
     });
 
     await act(async () => {
@@ -194,6 +233,7 @@ describe('LoginScreen — error handling', () => {
     act(() => {
       findByTestId(root, 'login-email-input').props.onChangeText('user');
       findByTestId(root, 'login-password-input').props.onChangeText('pass');
+      findCheckbox(root).props.onPress();
     });
 
     await act(async () => {

@@ -27,8 +27,14 @@ jest.mock('../../../hooks/useContactAvatar', () => ({
   }),
 }));
 
+const mockUseAuthorActions = jest.fn(
+  (..._args: unknown[]) => ({
+    handleAuthorPress: jest.fn(),
+    handleReport: jest.fn(),
+  }),
+);
 jest.mock('../../../hooks/useAuthorActions', () => ({
-  useAuthorActions: () => ({ handleAuthorPress: jest.fn(), handleReport: jest.fn() }),
+  useAuthorActions: (...args: unknown[]) => mockUseAuthorActions(...args),
 }));
 
 jest.mock('../../../stores', () => ({
@@ -60,6 +66,33 @@ function renderItem(
   });
   return renderer;
 }
+
+describe('ChatMessageItem — useAuthorActions context', () => {
+  it('passes message context with threadId and groupId as 4th argument', () => {
+    mockUseAuthorActions.mockClear();
+    renderItem({ threadId: 't-1', groupId: 'g-1' });
+
+    expect(mockUseAuthorActions).toHaveBeenCalled();
+    const lastCall = mockUseAuthorActions.mock.calls[mockUseAuthorActions.mock.calls.length - 1];
+    expect(lastCall[3]).toEqual({
+      contentType: 'message',
+      contentId: 't-1',
+      groupId: 'g-1',
+    });
+  });
+
+  it('passes undefined groupId when groupId prop is null', () => {
+    mockUseAuthorActions.mockClear();
+    renderItem({ threadId: 't-2', groupId: null });
+
+    const lastCall = mockUseAuthorActions.mock.calls[mockUseAuthorActions.mock.calls.length - 1];
+    expect(lastCall[3]).toEqual({
+      contentType: 'message',
+      contentId: 't-2',
+      groupId: undefined,
+    });
+  });
+});
 
 describe('ChatMessageItem — unread indicator', () => {
   it('shows the unread dot and accessibility label when unread', () => {

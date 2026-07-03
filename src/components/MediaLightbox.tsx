@@ -28,7 +28,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../theme';
 import { useMediaDownload } from '../hooks/useMediaDownload';
 import { OrbitalSpinner } from './OrbitalSpinner';
+import { useAppStore } from '../stores/useAppStore';
 import type { MediaItem } from '../types/store';
+import type { ReportTarget } from '../types/store';
 
 // ---------------------------------------------------------------------------
 // Props
@@ -113,6 +115,7 @@ export function MediaLightbox({
   const insets = useSafeAreaInsets();
   const scrollRef = useRef<ScrollView>(null);
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
+  const pendingReportRef = useRef<ReportTarget | null>(null);
 
   const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 
@@ -152,6 +155,25 @@ export function MediaLightbox({
     scrollRef.current?.scrollTo({ x: newIndex * screenWidth, animated: true });
     setCurrentIndex(newIndex);
   }, [currentIndex, mediaItems.length, screenWidth]);
+
+  const handleReport = useCallback(() => {
+    const currentItem = mediaItems[currentIndex];
+    if (!currentItem) return;
+    // Stash the report target — it will be opened after the modal dismisses
+    pendingReportRef.current = {
+      contentType: 'media',
+      contentId: currentItem.id,
+    };
+    onClose();
+  }, [mediaItems, currentIndex, onClose]);
+
+  const handleDismiss = useCallback(() => {
+    if (pendingReportRef.current) {
+      const target = pendingReportRef.current;
+      pendingReportRef.current = null;
+      useAppStore.getState().openReportSheet(target);
+    }
+  }, []);
 
   // ---------------------------------------------------------------------------
   // Styles
@@ -230,10 +252,34 @@ export function MediaLightbox({
       animationType="fade"
       transparent
       onRequestClose={onClose}
+      onDismiss={handleDismiss}
       statusBarTranslucent
     >
       <StatusBar hidden={visible} />
       <View style={backdropStyle}>
+        {/* Report button */}
+        <TouchableOpacity
+          style={{
+            position: 'absolute',
+            top: insets.top + theme.spacing.sm,
+            left: theme.spacing.base,
+            width: CLOSE_BUTTON_SIZE,
+            height: CLOSE_BUTTON_SIZE,
+            borderRadius: CLOSE_BUTTON_SIZE / 2,
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 10,
+          }}
+          onPress={handleReport}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          accessibilityRole="button"
+          accessibilityLabel="Report photo"
+          testID="media-lightbox-report-button"
+        >
+          <Text style={closeTextStyle}>{'⚑'}</Text>
+        </TouchableOpacity>
+
         {/* Close button */}
         <TouchableOpacity
           style={closeButtonStyle}

@@ -28,7 +28,10 @@ jest.mock('../../../hooks/useContactAvatar', () => ({
 }));
 
 jest.mock('../../../hooks/useAuthorActions', () => ({
-  useAuthorActions: () => ({ handleAuthorPress: jest.fn(), handleReport: jest.fn() }),
+  useAuthorActions: (_id: string, _name: string, _uid: string | null, _ctx?: unknown) => ({
+    handleAuthorPress: jest.fn(),
+    handleReport: jest.fn(),
+  }),
 }));
 
 jest.mock('../../../stores', () => ({

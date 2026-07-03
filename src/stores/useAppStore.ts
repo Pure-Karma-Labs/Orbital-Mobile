@@ -10,6 +10,7 @@ import { createConnectionSlice } from './slices/connectionSlice';
 import { createMediaSlice } from './slices/mediaSlice';
 import { createNotificationSlice } from './slices/notificationSlice';
 import { createBlockedUsersSlice } from './slices/blockedUsersSlice';
+import { createReportSlice } from './slices/reportSlice';
 import type { AppState } from '../types/store';
 
 /**
@@ -34,6 +35,7 @@ export const useAppStore = create<AppState>()(
         ...createMediaSlice(...a),
         ...createNotificationSlice(...a),
         ...createBlockedUsersSlice(...a),
+        ...createReportSlice(...a),
       }),
       {
         name: 'orbital-app-store',

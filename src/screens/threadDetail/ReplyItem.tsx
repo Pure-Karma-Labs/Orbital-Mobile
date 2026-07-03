@@ -111,7 +111,12 @@ export const ReplyItem = React.memo(function ReplyItem({
     setLightboxVisible(false);
   }, []);
 
-  const { handleAuthorPress } = useAuthorActions(authorId, authorUsername, currentUserId);
+  const authorContext = useMemo(() => ({
+    contentType: 'reply' as const,
+    contentId: replyId,
+    groupId: groupId ?? undefined,
+  }), [replyId, groupId]);
+  const { handleAuthorPress } = useAuthorActions(authorId, authorUsername, currentUserId, authorContext);
 
   // displayDepth: offset by 1 because depth 0 in replies = level 1 visually
   // (level 0 is the original post rendered by ThreadHeader)

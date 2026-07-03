@@ -4,7 +4,6 @@
 
 import React, { useCallback, useState } from 'react';
 import {
-  Linking,
   ScrollView,
   Text,
   TouchableOpacity,
@@ -15,6 +14,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../theme';
 import { TextInput, Button, ErrorBanner, OrbitalLoader, AsciiBanner } from '../components';
+import { TermsCheckbox } from '../components/TermsCheckbox';
 import { signupUser } from '../services/authService';
 import { AuthError, ConflictError, NetworkError, ValidationError } from '../services/api/errors';
 import { formatInviteCode, stripInviteCode } from '../services/crypto/inviteCrypto';
@@ -34,6 +34,7 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
   const [inviteCode, setInviteCode] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [termsAccepted, setTermsAccepted] = useState(false);
 
   const handleInviteCodeChange = useCallback((text: string) => {
     const sanitized = text.replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 20);
@@ -98,20 +99,6 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
   };
 
 
-
-  const legalTextStyle: TextStyle = {
-    fontFamily: theme.typography.fontFamily.body,
-    fontSize: theme.typography.fontSize.sm,
-    color: theme.colors.textSecondary,
-    textAlign: 'center',
-    marginTop: theme.spacing.md,
-    marginBottom: theme.spacing.md,
-  };
-
-  const legalLinkStyle: TextStyle = {
-    color: theme.colors.blue,
-    textDecorationLine: 'underline',
-  };
 
   const switchLinkStyle: TextStyle = {
     fontFamily: theme.typography.fontFamily.body,
@@ -179,32 +166,18 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
 
           <ErrorBanner message={error} />
 
-          <Text style={legalTextStyle}>
-            By creating an account, you agree to our{' '}
-            <Text
-              style={legalLinkStyle}
-              accessibilityRole="link"
-              testID="signup-terms-link"
-              onPress={() => Linking.openURL('https://orbitl.org/terms').catch(() => {})}
-            >
-              Terms of Service
-            </Text>
-            {' '}and{' '}
-            <Text
-              style={legalLinkStyle}
-              accessibilityRole="link"
-              testID="signup-privacy-link"
-              onPress={() => Linking.openURL('https://orbitl.org/privacy').catch(() => {})}
-            >
-              Privacy Policy
-            </Text>
-            .
-          </Text>
+          <TermsCheckbox
+            checked={termsAccepted}
+            onToggle={() => setTermsAccepted((v) => !v)}
+            includePrivacyLink
+            testID="signup-terms-checkbox"
+          />
 
           <Button
             title="Sign Up"
             onPress={handleSignup}
             loading={loading}
+            disabled={!termsAccepted}
             testID="signup-submit-button"
           />
         </View>

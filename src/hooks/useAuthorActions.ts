@@ -1,30 +1,28 @@
 import { useCallback } from 'react';
-import { Alert, Linking } from 'react-native';
+import { Alert } from 'react-native';
 import { useAppStore } from '../stores/useAppStore';
 
-const REPORT_EMAIL = 'report@orbitl.org';
+export interface AuthorActionContext {
+  contentType: 'thread' | 'reply' | 'message';
+  contentId: string;
+  groupId?: string;
+}
 
 export function useAuthorActions(
   authorId: string,
   authorUsername: string,
   currentUserId: string | null,
+  context?: AuthorActionContext,
 ) {
   const handleReport = useCallback(() => {
-    const subject = 'Content Report — Orbital';
-    const reportBody = `Reporting user: @${authorUsername}\n\nNote: Orbital uses end-to-end encryption, so we cannot view message content. Please describe the issue below.\n\n---\n`;
-    const mailto = `mailto:${REPORT_EMAIL}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(reportBody)}`;
-    Linking.canOpenURL(mailto).then((supported) => {
-      if (supported) {
-        Linking.openURL(mailto);
-      } else {
-        Alert.alert(
-          'Send Report',
-          `Email ${REPORT_EMAIL} with details about this user.`,
-          [{ text: 'OK' }],
-        );
-      }
+    useAppStore.getState().openReportSheet({
+      contentType: context?.contentType ?? 'user',
+      contentId: context?.contentId,
+      groupId: context?.groupId,
+      reportedUserId: authorId,
+      reportedUsername: authorUsername,
     });
-  }, [authorUsername]);
+  }, [authorId, authorUsername, context?.contentType, context?.contentId, context?.groupId]);
 
   const handleAuthorPress = useCallback(() => {
     if (authorId === currentUserId) return;
@@ -42,7 +40,29 @@ export function useAuthorActions(
               {
                 text: 'Block',
                 style: 'destructive',
-                onPress: () => useAppStore.getState().blockUser(authorId, authorUsername),
+                onPress: () => {
+                  useAppStore.getState().blockUser(authorId, authorUsername);
+                  // Follow-up: offer to also report
+                  Alert.alert(
+                    `Blocked @${authorUsername}`,
+                    'Also report them to Orbital?',
+                    [
+                      { text: 'Done', style: 'cancel' },
+                      {
+                        text: 'Report',
+                        onPress: () => {
+                          useAppStore.getState().openReportSheet({
+                            contentType: context?.contentType ?? 'user',
+                            contentId: context?.contentId,
+                            groupId: context?.groupId,
+                            reportedUserId: authorId,
+                            reportedUsername: authorUsername,
+                          });
+                        },
+                      },
+                    ],
+                  );
+                },
               },
             ],
           );
@@ -51,7 +71,7 @@ export function useAuthorActions(
       { text: 'Report', onPress: handleReport },
       { text: 'Cancel', style: 'cancel' },
     ]);
-  }, [authorId, currentUserId, authorUsername, handleReport]);
+  }, [authorId, currentUserId, authorUsername, handleReport, context?.contentType, context?.contentId, context?.groupId]);
 
   return { handleAuthorPress, handleReport };
 }

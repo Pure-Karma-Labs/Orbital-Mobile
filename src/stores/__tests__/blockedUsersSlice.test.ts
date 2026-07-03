@@ -121,6 +121,10 @@ function makeStore() {
     pushToken: null,
     setPushPermission: jest.fn(),
     setPushToken: jest.fn(),
+
+    reportTarget: null,
+    openReportSheet: jest.fn(),
+    closeReportSheet: jest.fn(),
   })));
 }
 

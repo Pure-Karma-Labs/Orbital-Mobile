@@ -13,7 +13,9 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Dimensions,
   Image,
+  InteractionManager,
   Modal,
+  Platform,
   ScrollView,
   StatusBar,
   Text,
@@ -28,7 +30,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../theme';
 import { useMediaDownload } from '../hooks/useMediaDownload';
 import { OrbitalSpinner } from './OrbitalSpinner';
+import { useAppStore } from '../stores/useAppStore';
 import type { MediaItem } from '../types/store';
+import type { ReportTarget } from '../types/store';
 
 // ---------------------------------------------------------------------------
 // Props
@@ -113,6 +117,7 @@ export function MediaLightbox({
   const insets = useSafeAreaInsets();
   const scrollRef = useRef<ScrollView>(null);
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
+  const pendingReportRef = useRef<ReportTarget | null>(null);
 
   const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 
@@ -152,6 +157,37 @@ export function MediaLightbox({
     scrollRef.current?.scrollTo({ x: newIndex * screenWidth, animated: true });
     setCurrentIndex(newIndex);
   }, [currentIndex, mediaItems.length, screenWidth]);
+
+  const handleReport = useCallback(() => {
+    const currentItem = mediaItems[currentIndex];
+    if (!currentItem) return;
+    const target: ReportTarget = {
+      contentType: 'media',
+      contentId: currentItem.id,
+    };
+
+    if (Platform.OS === 'ios') {
+      // iOS: stash target and open via onDismiss to avoid modal-stacking bug
+      pendingReportRef.current = target;
+      onClose();
+    } else {
+      // Android: Modal.onDismiss never fires (iOS-only in RN).
+      // Close lightbox then open report sheet after interactions settle.
+      onClose();
+      InteractionManager.runAfterInteractions(() => {
+        useAppStore.getState().openReportSheet(target);
+      });
+    }
+  }, [mediaItems, currentIndex, onClose]);
+
+  /** iOS only — Modal.onDismiss fires after the dismiss animation completes. */
+  const handleDismiss = useCallback(() => {
+    if (pendingReportRef.current) {
+      const target = pendingReportRef.current;
+      pendingReportRef.current = null;
+      useAppStore.getState().openReportSheet(target);
+    }
+  }, []);
 
   // ---------------------------------------------------------------------------
   // Styles
@@ -230,10 +266,34 @@ export function MediaLightbox({
       animationType="fade"
       transparent
       onRequestClose={onClose}
+      onDismiss={handleDismiss}
       statusBarTranslucent
     >
       <StatusBar hidden={visible} />
       <View style={backdropStyle}>
+        {/* Report button */}
+        <TouchableOpacity
+          style={{
+            position: 'absolute',
+            top: insets.top + theme.spacing.sm,
+            left: theme.spacing.base,
+            width: CLOSE_BUTTON_SIZE,
+            height: CLOSE_BUTTON_SIZE,
+            borderRadius: CLOSE_BUTTON_SIZE / 2,
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 10,
+          }}
+          onPress={handleReport}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          accessibilityRole="button"
+          accessibilityLabel="Report photo"
+          testID="media-lightbox-report-button"
+        >
+          <Text style={closeTextStyle}>{'⚑'}</Text>
+        </TouchableOpacity>
+
         {/* Close button */}
         <TouchableOpacity
           style={closeButtonStyle}

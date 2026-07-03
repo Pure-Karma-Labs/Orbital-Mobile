@@ -5,7 +5,7 @@
  * 3px border radius, md padding, base horizontal margin.
  */
 
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { Dimensions, View, Text, TouchableOpacity, type TextStyle, type ViewStyle } from 'react-native';
 import { useTheme } from '../../theme';
 import { Avatar } from '../../components/Avatar';
@@ -76,7 +76,12 @@ export const ThreadHeader = React.memo(function ThreadHeader({
     setLightboxVisible(false);
   }, []);
 
-  const { handleAuthorPress } = useAuthorActions(authorId, authorUsername, currentUserId);
+  const authorContext = useMemo(() => ({
+    contentType: 'thread' as const,
+    contentId: threadId,
+    groupId,
+  }), [threadId, groupId]);
+  const { handleAuthorPress } = useAuthorActions(authorId, authorUsername, currentUserId, authorContext);
 
   const containerStyle: ViewStyle = {
     backgroundColor: theme.colors.surfaceElevated,

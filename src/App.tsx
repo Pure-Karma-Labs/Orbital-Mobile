@@ -31,6 +31,7 @@ import { SignupScreen } from './screens/SignupScreen';
 import { ForgotPasswordScreen } from './screens/ForgotPasswordScreen';
 import { ResetPasswordScreen } from './screens/ResetPasswordScreen';
 import { AppNavigator } from './navigation';
+import { ReportContentSheet } from './components/ReportContentSheet';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import BootSplash from 'react-native-bootsplash';
 import { OrbitalLoader } from './components/OrbitalLoader';
@@ -142,7 +143,10 @@ function AppContent(): React.JSX.Element {
         <ResetPasswordScreen onNavigate={handleNavigate} email={preAuthParams.email ?? ''} />
       )}
       {authStatus === 'authenticated' && (
-        <AppNavigator />
+        <>
+          <AppNavigator />
+          <ReportContentSheet />
+        </>
       )}
     </>
   );

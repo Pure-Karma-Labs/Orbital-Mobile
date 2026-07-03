@@ -353,6 +353,29 @@ export interface BlockedUsersActions {
 export type BlockedUsersSlice = BlockedUsersState & BlockedUsersActions;
 
 // ============================================================
+// Report slice state (transient — NOT persisted)
+// ============================================================
+
+export interface ReportTarget {
+  contentType: 'user' | 'thread' | 'reply' | 'message' | 'media';
+  contentId?: string;
+  reportedUserId?: string;
+  reportedUsername?: string;
+  groupId?: string;
+}
+
+export interface ReportState {
+  reportTarget: ReportTarget | null;
+}
+
+export interface ReportActions {
+  openReportSheet: (target: ReportTarget) => void;
+  closeReportSheet: () => void;
+}
+
+export type ReportSlice = ReportState & ReportActions;
+
+// ============================================================
 // Combined app state
 // ============================================================
 
@@ -364,4 +387,5 @@ export type AppState = AuthSlice &
   ConnectionSlice &
   MediaSlice &
   NotificationSlice &
-  BlockedUsersSlice;
+  BlockedUsersSlice &
+  ReportSlice;

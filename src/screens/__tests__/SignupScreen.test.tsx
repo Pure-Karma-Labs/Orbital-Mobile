@@ -63,6 +63,12 @@ function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstanc
   return found[0];
 }
 
+function findCheckbox(root: ReactTestInstance): ReactTestInstance {
+  const found = root.findAll((node) => node.props.accessibilityRole === 'checkbox');
+  if (found.length === 0) throw new Error('No element with accessibilityRole "checkbox"');
+  return found[0];
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -171,6 +177,11 @@ describe('SignupScreen — submission', () => {
       findByTestId(root, 'signup-invite-code-input').props.onChangeText('ABCDEFGHJKMNPQRSTVW0');
     });
 
+    // Accept terms before submitting
+    act(() => {
+      findCheckbox(root).props.onPress();
+    });
+
     await act(async () => {
       findByTestId(root, 'signup-submit-button').props.onPress();
     });
@@ -192,6 +203,7 @@ describe('SignupScreen — error handling', () => {
       findByTestId(root, 'signup-email-input').props.onChangeText('alice@example.com');
       findByTestId(root, 'signup-password-input').props.onChangeText('password123');
       findByTestId(root, 'signup-invite-code-input').props.onChangeText('INVITE');
+      findCheckbox(root).props.onPress();
     });
   }
 
@@ -365,6 +377,40 @@ describe('SignupScreen — invite code auto-format', () => {
   });
 });
 
+describe('SignupScreen — terms checkbox gate', () => {
+  it('renders the terms checkbox', () => {
+    const renderer = renderSignupScreen();
+    expect(() => findByTestId(renderer.root, 'signup-terms-checkbox')).not.toThrow();
+  });
+
+  it('submit button is disabled until terms checkbox is checked', () => {
+    const renderer = renderSignupScreen();
+    const button = findByTestId(renderer.root, 'signup-submit-button');
+    expect(button.props.disabled).toBe(true);
+  });
+
+  it('submit button is enabled after checking terms', () => {
+    const renderer = renderSignupScreen();
+
+    act(() => {
+      findCheckbox(renderer.root).props.onPress();
+    });
+
+    const button = findByTestId(renderer.root, 'signup-submit-button');
+    expect(button.props.disabled).toBeFalsy();
+  });
+
+  it('renders the Terms of Use link', () => {
+    const renderer = renderSignupScreen();
+    expect(() => findByTestId(renderer.root, 'signup-terms-link')).not.toThrow();
+  });
+
+  it('renders the Privacy Policy link', () => {
+    const renderer = renderSignupScreen();
+    expect(() => findByTestId(renderer.root, 'signup-privacy-link')).not.toThrow();
+  });
+});
+
 describe('SignupScreen — legal links', () => {
   beforeEach(() => {
     jest.spyOn(Linking, 'openURL').mockResolvedValue(undefined as unknown as void);
@@ -374,17 +420,7 @@ describe('SignupScreen — legal links', () => {
     (Linking.openURL as jest.Mock).mockRestore();
   });
 
-  it('renders the Terms of Service link', () => {
-    const renderer = renderSignupScreen();
-    expect(() => findByTestId(renderer.root, 'signup-terms-link')).not.toThrow();
-  });
-
-  it('renders the Privacy Policy link', () => {
-    const renderer = renderSignupScreen();
-    expect(() => findByTestId(renderer.root, 'signup-privacy-link')).not.toThrow();
-  });
-
-  it('opens the terms URL when Terms of Service is pressed', () => {
+  it('opens the terms URL when Terms of Use is pressed', () => {
     const renderer = renderSignupScreen();
     const termsLink = findByTestId(renderer.root, 'signup-terms-link');
 

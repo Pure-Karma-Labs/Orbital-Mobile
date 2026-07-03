@@ -116,6 +116,10 @@ function makeStore() {
         unblockUser: jest.fn(),
         resetBlockedUsers: jest.fn(),
     hydrateBlockedUsers: jest.fn(),
+
+    reportTarget: null,
+    openReportSheet: jest.fn(),
+    closeReportSheet: jest.fn(),
       }),
       { name: 'mediaSlice-test' },
     ),

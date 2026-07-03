@@ -57,7 +57,12 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
   const { userId } = useAuth();
   const displayName = useDisplayName(authorId, author);
   const avatarProps = useContactAvatar(authorId, groupId);
-  const { handleAuthorPress } = useAuthorActions(authorId, displayName, userId);
+  const authorContext = useMemo(() => ({
+    contentType: 'message' as const,
+    contentId: threadId,
+    groupId: groupId ?? undefined,
+  }), [threadId, groupId]);
+  const { handleAuthorPress } = useAuthorActions(authorId, displayName, userId, authorContext);
   const isSelf = authorId === userId;
 
   const tapGesture = useMemo(

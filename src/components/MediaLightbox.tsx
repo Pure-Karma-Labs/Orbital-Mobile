@@ -13,7 +13,9 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Dimensions,
   Image,
+  InteractionManager,
   Modal,
+  Platform,
   ScrollView,
   StatusBar,
   Text,
@@ -159,14 +161,26 @@ export function MediaLightbox({
   const handleReport = useCallback(() => {
     const currentItem = mediaItems[currentIndex];
     if (!currentItem) return;
-    // Stash the report target — it will be opened after the modal dismisses
-    pendingReportRef.current = {
+    const target: ReportTarget = {
       contentType: 'media',
       contentId: currentItem.id,
     };
-    onClose();
+
+    if (Platform.OS === 'ios') {
+      // iOS: stash target and open via onDismiss to avoid modal-stacking bug
+      pendingReportRef.current = target;
+      onClose();
+    } else {
+      // Android: Modal.onDismiss never fires (iOS-only in RN).
+      // Close lightbox then open report sheet after interactions settle.
+      onClose();
+      InteractionManager.runAfterInteractions(() => {
+        useAppStore.getState().openReportSheet(target);
+      });
+    }
   }, [mediaItems, currentIndex, onClose]);
 
+  /** iOS only — Modal.onDismiss fires after the dismiss animation completes. */
   const handleDismiss = useCallback(() => {
     if (pendingReportRef.current) {
       const target = pendingReportRef.current;

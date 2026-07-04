@@ -14,7 +14,6 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../theme';
 import { TextInput, Button, ErrorBanner, SuccessBanner, OrbitalLoader, AsciiBanner } from '../components';
-import { TermsCheckbox } from '../components/TermsCheckbox';
 import { loginUser } from '../services/authService';
 import { AuthError, ConflictError, NetworkError, ValidationError } from '../services/api/errors';
 import type { OnPreAuthNavigate } from '../navigation/preAuthTypes';
@@ -33,7 +32,6 @@ export function LoginScreen({ onNavigate, successMessage }: LoginScreenProps): R
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [showSuccess, setShowSuccess] = useState(true);
-  const [termsAccepted, setTermsAccepted] = useState(false);
 
   async function handleLogin(): Promise<void> {
     if (email.trim().length === 0 || password.length === 0) {
@@ -152,17 +150,10 @@ export function LoginScreen({ onNavigate, successMessage }: LoginScreenProps): R
 
           <ErrorBanner message={error} />
 
-          <TermsCheckbox
-            checked={termsAccepted}
-            onToggle={() => setTermsAccepted((v) => !v)}
-            testID="login-terms-checkbox"
-          />
-
           <Button
             title="Log In"
             onPress={handleLogin}
             loading={loading}
-            disabled={!termsAccepted}
             testID="login-submit-button"
           />
         </View>

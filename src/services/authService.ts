@@ -139,6 +139,7 @@ export async function signupUser(
     displayName: null,
     avatarPath: null,
   });
+  useAppStore.getState().setNeedsTermsAcceptance(response.needsTermsAcceptance ?? false);
 
   // Account-switch guard: wipe residual crypto if a different user was here before
   if (isDatabaseInitialized()) {

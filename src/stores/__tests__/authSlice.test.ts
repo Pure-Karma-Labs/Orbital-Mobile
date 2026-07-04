@@ -158,6 +158,29 @@ describe('authSlice — setUser', () => {
     expect(state.displayName).toBeNull();
     expect(state.avatarPath).toBeNull();
   });
+
+  it('resets a stale needsTermsAcceptance on account switch', () => {
+    const store = makeStore();
+    store.getState().setNeedsTermsAcceptance(true);
+    store.getState().setUser({
+      userId: 'user-789',
+      username: 'carol',
+      displayName: null,
+      avatarPath: null,
+    });
+    expect(store.getState().needsTermsAcceptance).toBe(false);
+  });
+});
+
+describe('authSlice — setNeedsTermsAcceptance', () => {
+  it('sets and clears the flag', () => {
+    const store = makeStore();
+    expect(store.getState().needsTermsAcceptance).toBe(false);
+    store.getState().setNeedsTermsAcceptance(true);
+    expect(store.getState().needsTermsAcceptance).toBe(true);
+    store.getState().setNeedsTermsAcceptance(false);
+    expect(store.getState().needsTermsAcceptance).toBe(false);
+  });
 });
 
 describe('authSlice — clearAuth', () => {
@@ -169,6 +192,7 @@ describe('authSlice — clearAuth', () => {
       displayName: 'Alice',
       avatarPath: null,
     });
+    store.getState().setNeedsTermsAcceptance(true);
     store.getState().clearAuth();
     const state = store.getState();
     expect(state.isAuthenticated).toBe(false);
@@ -176,6 +200,7 @@ describe('authSlice — clearAuth', () => {
     expect(state.username).toBeNull();
     expect(state.displayName).toBeNull();
     expect(state.avatarPath).toBeNull();
+    expect(state.needsTermsAcceptance).toBe(false);
   });
 });
 

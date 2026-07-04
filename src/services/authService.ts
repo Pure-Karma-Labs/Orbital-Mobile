@@ -7,9 +7,11 @@
 
 import * as auth from './api/auth';
 import * as users from './api/users';
+import { acceptTerms } from './api/terms';
 import { tokenManager } from './api/tokenManager';
 import { ApiError, ConflictError, NetworkError } from './api/errors';
 import type { BlockingOrbit } from './api/errors';
+import { TERMS_VERSION } from '../config/termsPolicy';
 import { useAppStore } from '../stores/useAppStore';
 import {
   generateInitialKeys,
@@ -92,12 +94,15 @@ export async function loginUser(
 ): Promise<void> {
   const response = await auth.login({ email, password });
   await tokenManager.setTokens(response.token, undefined);
+  // Hydrate user + terms flag in the same synchronous block (before any await)
+  // to avoid a render flash where the main app briefly mounts before the gate.
   useAppStore.getState().setUser({
     userId: response.userId,
     username: response.username,
     displayName: response.displayName ?? null,
     avatarPath: response.avatarUrl ?? null,
   });
+  useAppStore.getState().setNeedsTermsAcceptance(response.needsTermsAcceptance ?? false);
   useAppStore.getState().updateProfile({
     avatarDigest: response.avatarDigest ?? null,
   });
@@ -126,7 +131,7 @@ export async function signupUser(
   email: string,
   inviteCode: string,
 ): Promise<void> {
-  const response = await auth.signup({ username, password, email, inviteCode, publicKey: { type: 'placeholder' } });
+  const response = await auth.signup({ username, password, email, inviteCode, publicKey: { type: 'placeholder' }, termsVersion: TERMS_VERSION });
   await tokenManager.setTokens(response.token, undefined);
   useAppStore.getState().setUser({
     userId: response.userId,
@@ -182,14 +187,17 @@ export async function restoreSession(): Promise<boolean> {
   if (token === null) return false;
 
   try {
-    await auth.verifyToken();
+    const tokenResult = await auth.verifyToken();
     const profile = await users.getMe();
+    // Hydrate user + terms flag in the same synchronous block (before any await)
+    // to avoid a render flash where the main app briefly mounts before the gate.
     useAppStore.getState().setUser({
       userId: profile.id,
       username: profile.username,
       displayName: profile.displayName,
       avatarPath: profile.avatarUrl ?? null,
     });
+    useAppStore.getState().setNeedsTermsAcceptance(tokenResult.needsTermsAcceptance ?? false);
     useAppStore.getState().updateProfile({
       avatarDigest: profile.avatarDigest ?? null,
     });
@@ -212,6 +220,18 @@ export async function restoreSession(): Promise<boolean> {
     await tokenManager.clearTokens();
     return false;
   }
+}
+
+/**
+ * Accept the current Terms of Service on behalf of the authenticated user.
+ *
+ * Posts acceptance to the server; on success clears the gate flag so the app
+ * navigates past the TermsAcceptanceScreen. Throws on failure — the flag is
+ * never cleared without a 2xx from the server.
+ */
+export async function acceptCurrentTerms(): Promise<void> {
+  await acceptTerms();
+  useAppStore.getState().setNeedsTermsAcceptance(false);
 }
 
 // ---------------------------------------------------------------------------

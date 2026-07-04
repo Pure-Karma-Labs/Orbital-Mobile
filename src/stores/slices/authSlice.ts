@@ -11,6 +11,7 @@ export const createAuthSlice: StateCreator<AppState, [['zustand/devtools', never
   displayName: null,
   avatarPath: null,
   avatarDigest: null,
+  needsTermsAcceptance: false,
 
   // Actions
   // NOTE: JWT tokens and encryption keys are intentionally NOT stored here.
@@ -24,6 +25,9 @@ export const createAuthSlice: StateCreator<AppState, [['zustand/devtools', never
         displayName: user.displayName,
         avatarPath: user.avatarPath,
         avatarDigest: null,
+        // Explicitly reset — Zustand merges partials, so omitting this would
+        // carry a stale `true` across account switches.
+        needsTermsAcceptance: false,
       },
       false,
       'auth/setUser',
@@ -38,6 +42,7 @@ export const createAuthSlice: StateCreator<AppState, [['zustand/devtools', never
         displayName: null,
         avatarPath: null,
         avatarDigest: null,
+        needsTermsAcceptance: false,
       },
       false,
       'auth/clearAuth',
@@ -56,4 +61,7 @@ export const createAuthSlice: StateCreator<AppState, [['zustand/devtools', never
       false,
       'auth/updateProfile',
     ),
+
+  setNeedsTermsAcceptance: (needs) =>
+    set({ needsTermsAcceptance: needs }, false, 'auth/setNeedsTermsAcceptance'),
 });

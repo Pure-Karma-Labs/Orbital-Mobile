@@ -118,6 +118,13 @@ export interface AuthState {
   displayName: string | null;
   avatarPath: string | null;
   avatarDigest: string | null;
+  /**
+   * Server-authoritative flag: true when the user must accept the current ToS
+   * before accessing the app. Hydrated from login/verify-token responses;
+   * cleared by acceptCurrentTerms() on successful POST /api/terms/accept.
+   * NOT persisted — re-derived from the server on each session.
+   */
+  needsTermsAcceptance: boolean;
 }
 
 /** Auth actions — JWT tokens and encryption keys are NOT stored here */
@@ -131,6 +138,7 @@ export interface AuthActions {
   clearAuth: () => void;
   setAuthenticated: (authenticated: boolean) => void;
   updateProfile: (patch: Partial<Pick<AuthState, 'displayName' | 'avatarPath' | 'avatarDigest'>>) => void;
+  setNeedsTermsAcceptance: (needs: boolean) => void;
 }
 
 export type AuthSlice = AuthState & AuthActions;

@@ -18,10 +18,12 @@ export const useAuth = () =>
     displayName: s.displayName,
     avatarPath: s.avatarPath,
     avatarDigest: s.avatarDigest,
+    needsTermsAcceptance: s.needsTermsAcceptance,
     setUser: s.setUser,
     clearAuth: s.clearAuth,
     setAuthenticated: s.setAuthenticated,
     updateProfile: s.updateProfile,
+    setNeedsTermsAcceptance: s.setNeedsTermsAcceptance,
   })));
 
 export const useConversations = () =>

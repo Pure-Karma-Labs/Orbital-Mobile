@@ -9,4 +9,8 @@ module.exports = {
   roots: ['<rootDir>/src'],
   testPathIgnorePatterns: ['/node_modules/'],
   modulePathIgnorePatterns: [],
+  moduleNameMapper: {
+    ...base.moduleNameMapper,
+    '^react-native-config$': '<rootDir>/__mocks__/react-native-config.ts',
+  },
 };

@@ -21,10 +21,12 @@ function makeStore() {
     displayName: null,
     avatarPath: null,
     avatarDigest: null,
+    needsTermsAcceptance: false,
     setUser: jest.fn(),
     clearAuth: jest.fn(),
     setAuthenticated: jest.fn(),
     updateProfile: jest.fn(),
+    setNeedsTermsAcceptance: jest.fn(),
 
     threads: {},
     threadIdsByConversation: {},

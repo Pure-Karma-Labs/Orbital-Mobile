@@ -28,6 +28,13 @@ export interface SignupRequest {
   // TODO: Make required once signup flow sends the JWK public key.
   // Backend requires it (400 if missing) but mobile generates keys post-signup.
   publicKey?: Record<string, unknown>;
+  /**
+   * Client-side terms version at the time of signup. Server validates (positive
+   * int or 400), logs drift vs its own TERMS_VERSION, but stamps its own version
+   * — never the client's claim. Required in the TS type to force future callers
+   * at compile time; backend leniency for missing field is transition-only.
+   */
+  termsVersion: number;
 }
 
 /**
@@ -43,6 +50,8 @@ export interface SignupResponse {
   token: string;
   groupId: string | null;
   inviteEncryptedGroupKey: string | null;
+  /** Always false at signup — user just accepted terms via the signup checkbox. */
+  needsTermsAcceptance?: boolean;
 }
 
 export interface LoginRequest {
@@ -63,6 +72,7 @@ export interface LoginResponse {
   token: string;
   avatarUrl?: string | null;
   avatarDigest?: string | null;
+  needsTermsAcceptance?: boolean;
 }
 
 /**
@@ -76,6 +86,7 @@ export interface LoginResponse {
 export interface VerifyTokenResponse {
   userId: string;
   username: string;
+  needsTermsAcceptance?: boolean;
 }
 
 export interface ForgotPasswordRequest {
@@ -94,6 +105,18 @@ export interface ResetPasswordWithCodeRequest {
 
 export interface ResetPasswordWithCodeResponse {
   success: boolean;
+}
+
+/**
+ * POST /api/terms/accept response.
+ *
+ * Backend returns: { accepted, terms_version, terms_accepted_at }
+ * Idempotent — re-accepting stamps the latest server TERMS_VERSION.
+ */
+export interface AcceptTermsResponse {
+  accepted: boolean;
+  termsVersion: number;
+  termsAcceptedAt: string;
 }
 
 // ============================================================

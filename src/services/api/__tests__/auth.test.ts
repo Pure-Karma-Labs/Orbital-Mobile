@@ -37,12 +37,13 @@ describe('login', () => {
 });
 
 describe('signup', () => {
-  it('calls POST /api/signup with correct body', async () => {
+  it('calls POST /api/signup with correct body including termsVersion', async () => {
     const data = {
       username: 'bob',
       password: 'pass123',
       email: 'bob@example.com',
       inviteCode: 'INV-001',
+      termsVersion: 1,
     };
     await signup(data);
 

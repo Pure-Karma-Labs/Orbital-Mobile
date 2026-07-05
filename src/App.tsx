@@ -32,6 +32,7 @@ import { ForgotPasswordScreen } from './screens/ForgotPasswordScreen';
 import { ResetPasswordScreen } from './screens/ResetPasswordScreen';
 import { AppNavigator } from './navigation';
 import { ReportContentSheet } from './components/ReportContentSheet';
+import { TermsAcceptanceScreen } from './screens/TermsAcceptanceScreen';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import BootSplash from 'react-native-bootsplash';
 import { OrbitalLoader } from './components/OrbitalLoader';
@@ -55,7 +56,7 @@ function AppContent(): React.JSX.Element {
   const [authStatus, setAuthStatus] = useState<AuthStatus>('loading');
   const [preAuthScreen, setPreAuthScreen] = useState<PreAuthScreen>('login');
   const [preAuthParams, setPreAuthParams] = useState<PreAuthParams>({});
-  const { isAuthenticated, userId } = useAuth();
+  const { isAuthenticated, userId, needsTermsAcceptance } = useAuth();
 
   function handleNavigate(screen: PreAuthScreen, params?: PreAuthParams): void {
     setPreAuthScreen(screen);
@@ -142,7 +143,10 @@ function AppContent(): React.JSX.Element {
       {authStatus === 'unauthenticated' && preAuthScreen === 'resetPassword' && (
         <ResetPasswordScreen onNavigate={handleNavigate} email={preAuthParams.email ?? ''} />
       )}
-      {authStatus === 'authenticated' && (
+      {authStatus === 'authenticated' && needsTermsAcceptance && (
+        <TermsAcceptanceScreen />
+      )}
+      {authStatus === 'authenticated' && !needsTermsAcceptance && (
         <>
           <AppNavigator />
           <ReportContentSheet />

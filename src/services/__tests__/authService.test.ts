@@ -2,7 +2,7 @@
  * Tests for authService — login, signup, session restore, logout, deleteAccount orchestration.
  */
 
-import { loginUser, signupUser, restoreSession, logout, deleteAccount } from '../authService';
+import { loginUser, signupUser, restoreSession, logout, deleteAccount, acceptCurrentTerms } from '../authService';
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -44,6 +44,19 @@ jest.mock('../api/auth', () => ({
   login: jest.fn(),
   signup: jest.fn(),
   verifyToken: jest.fn(),
+}));
+
+const mockAcceptTerms = jest.fn().mockResolvedValue({
+  accepted: true,
+  termsVersion: 1,
+  termsAcceptedAt: '2026-07-04T00:00:00Z',
+});
+jest.mock('../api/terms', () => ({
+  acceptTerms: (...args: unknown[]) => mockAcceptTerms(...args),
+}));
+
+jest.mock('../../config/termsPolicy', () => ({
+  TERMS_VERSION: 1,
 }));
 
 jest.mock('../api/users', () => ({
@@ -162,6 +175,9 @@ const mockSetConversations = jest.fn();
 const mockSetContacts = jest.fn();
 const mockSetConnectionStatus = jest.fn();
 const mockClearTypingUsers = jest.fn();
+const mockSetNeedsTermsAcceptance = jest.fn();
+const mockResetBlockedUsers = jest.fn();
+const mockSetViewingConversation = jest.fn();
 
 jest.mock('../../stores/useAppStore', () => ({
   useAppStore: {
@@ -174,6 +190,9 @@ jest.mock('../../stores/useAppStore', () => ({
       setContacts: mockSetContacts,
       setConnectionStatus: mockSetConnectionStatus,
       clearTypingUsers: mockClearTypingUsers,
+      setNeedsTermsAcceptance: mockSetNeedsTermsAcceptance,
+      resetBlockedUsers: mockResetBlockedUsers,
+      setViewingConversation: mockSetViewingConversation,
     })),
   },
 }));
@@ -323,6 +342,47 @@ describe('loginUser', () => {
 
     expect(mockSetContacts).toHaveBeenCalledWith([]);
   });
+
+  it('hydrates needsTermsAcceptance=true from login response', async () => {
+    mockLogin.mockResolvedValue({
+      token: 'tok',
+      userId: 'u1',
+      username: 'alice',
+      publicKey: null,
+      needsTermsAcceptance: true,
+    });
+
+    await loginUser('alice', 'secret');
+
+    expect(mockSetNeedsTermsAcceptance).toHaveBeenCalledWith(true);
+  });
+
+  it('hydrates needsTermsAcceptance=false from login response', async () => {
+    mockLogin.mockResolvedValue({
+      token: 'tok',
+      userId: 'u1',
+      username: 'alice',
+      publicKey: null,
+      needsTermsAcceptance: false,
+    });
+
+    await loginUser('alice', 'secret');
+
+    expect(mockSetNeedsTermsAcceptance).toHaveBeenCalledWith(false);
+  });
+
+  it('defaults needsTermsAcceptance to false when absent (backward compat)', async () => {
+    mockLogin.mockResolvedValue({
+      token: 'tok',
+      userId: 'u1',
+      username: 'alice',
+      publicKey: null,
+    });
+
+    await loginUser('alice', 'secret');
+
+    expect(mockSetNeedsTermsAcceptance).toHaveBeenCalledWith(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -348,6 +408,7 @@ describe('signupUser', () => {
       email: 'dave@example.com',
       inviteCode: 'INV-CODE',
       publicKey: { type: 'placeholder' },
+      termsVersion: 1,
     });
     expect(mockSetTokens).toHaveBeenCalledWith('access-abc', undefined);
     expect(mockSetUser).toHaveBeenCalledWith({
@@ -356,6 +417,23 @@ describe('signupUser', () => {
       displayName: null,
       avatarPath: null,
     });
+  });
+
+  it('includes termsVersion in signup request body', async () => {
+    mockSignup.mockResolvedValue({
+      token: 'tok',
+      userId: 'u1',
+      username: 'dave',
+      email: 'dave@example.com',
+      groupId: null,
+      inviteEncryptedGroupKey: null,
+    });
+
+    await signupUser('dave', 'password', 'dave@example.com', 'INV-CODE');
+
+    expect(mockSignup).toHaveBeenCalledWith(
+      expect.objectContaining({ termsVersion: 1 }),
+    );
   });
 
   it('propagates API errors to the caller', async () => {
@@ -619,6 +697,88 @@ describe('restoreSession', () => {
 
     expect(result).toBe(false);
     expect(mockClearTokens).toHaveBeenCalledTimes(1);
+  });
+
+  it('hydrates needsTermsAcceptance=true from verifyToken response', async () => {
+    mockGetAccessToken.mockResolvedValue('stored-token');
+    mockVerifyToken.mockResolvedValue({
+      userId: 'u1',
+      username: 'eve',
+      needsTermsAcceptance: true,
+    });
+    mockGetMe.mockResolvedValue({
+      id: 'u1',
+      username: 'eve',
+      displayName: 'Eve',
+      avatarUrl: null,
+      createdAt: '2024-01-01',
+    });
+
+    const result = await restoreSession();
+
+    expect(result).toBe(true);
+    expect(mockSetNeedsTermsAcceptance).toHaveBeenCalledWith(true);
+  });
+
+  it('hydrates needsTermsAcceptance=false from verifyToken response', async () => {
+    mockGetAccessToken.mockResolvedValue('stored-token');
+    mockVerifyToken.mockResolvedValue({
+      userId: 'u1',
+      username: 'eve',
+      needsTermsAcceptance: false,
+    });
+    mockGetMe.mockResolvedValue({
+      id: 'u1',
+      username: 'eve',
+      displayName: 'Eve',
+      avatarUrl: null,
+      createdAt: '2024-01-01',
+    });
+
+    const result = await restoreSession();
+
+    expect(result).toBe(true);
+    expect(mockSetNeedsTermsAcceptance).toHaveBeenCalledWith(false);
+  });
+
+  it('defaults needsTermsAcceptance to false when absent in verifyToken (backward compat)', async () => {
+    mockGetAccessToken.mockResolvedValue('stored-token');
+    mockVerifyToken.mockResolvedValue({
+      userId: 'u1',
+      username: 'eve',
+    });
+    mockGetMe.mockResolvedValue({
+      id: 'u1',
+      username: 'eve',
+      displayName: 'Eve',
+      avatarUrl: null,
+      createdAt: '2024-01-01',
+    });
+
+    const result = await restoreSession();
+
+    expect(result).toBe(true);
+    expect(mockSetNeedsTermsAcceptance).toHaveBeenCalledWith(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// acceptCurrentTerms
+// ---------------------------------------------------------------------------
+
+describe('acceptCurrentTerms', () => {
+  it('calls acceptTerms API and clears the flag on success', async () => {
+    await acceptCurrentTerms();
+
+    expect(mockAcceptTerms).toHaveBeenCalledTimes(1);
+    expect(mockSetNeedsTermsAcceptance).toHaveBeenCalledWith(false);
+  });
+
+  it('does not clear the flag when acceptTerms rejects', async () => {
+    mockAcceptTerms.mockRejectedValueOnce(new Error('server error'));
+
+    await expect(acceptCurrentTerms()).rejects.toThrow('server error');
+    expect(mockSetNeedsTermsAcceptance).not.toHaveBeenCalled();
   });
 });
 

@@ -32,11 +32,8 @@ hmac = { version = "0.12", features = ["reset"] }
 sha2 = "0.10"
 
 # ECIES: X25519 ECDH, HKDF-SHA256, and EphemeralSecret RNG
-x25519-dalek = { version = "2", features = ["static_secrets"] }
+x25519-dalek = { version = "3", features = ["static_secrets", "getrandom"] }
 hkdf = "0.12"
-# rand_core 0.6 — needed for x25519-dalek::EphemeralSecret::random_from_rng
-# (x25519-dalek v2 depends on rand_core 0.6, not 0.9)
-rand_core = { version = "0.6", features = ["getrandom"] }
 
 # Key zeroization and constant-time comparison
 zeroize = "1.8"

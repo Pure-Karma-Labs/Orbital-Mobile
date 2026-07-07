@@ -45,7 +45,7 @@ pub fn aes_gcm_encrypt(
     // Generate 12-byte IV using OS CSPRNG
     let mut iv_bytes = [0u8; 12];
     rand::fill(&mut iv_bytes);
-    let nonce = Nonce::from_slice(&iv_bytes);
+    let nonce = Nonce::from(iv_bytes);
 
     // Encrypt with AAD
     let payload = aes_gcm::aead::Payload {
@@ -53,7 +53,7 @@ pub fn aes_gcm_encrypt(
         aad: &aad,
     };
     let ciphertext = cipher
-        .encrypt(nonce, payload)
+        .encrypt(&nonce, payload)
         .map_err(|_| SignalError::InternalError {
             reason: "AES-256-GCM encryption failed".to_string(),
         })?;
@@ -105,14 +105,16 @@ pub fn aes_gcm_decrypt(
         reason: "failed to construct AES-256-GCM cipher".to_string(),
     })?;
 
-    let nonce = Nonce::from_slice(&iv);
+    let nonce = Nonce::try_from(iv.as_slice()).map_err(|_| SignalError::InvalidArgument {
+        reason: format!("AES-256-GCM requires a 12-byte IV, got {}", iv.len()),
+    })?;
 
     // aes-gcm expects ciphertext || tag as a single buffer, which is our format
     let payload = aes_gcm::aead::Payload {
         msg: &ciphertext,
         aad: &aad,
     };
-    let plaintext = cipher.decrypt(nonce, payload).map_err(|_| {
+    let plaintext = cipher.decrypt(&nonce, payload).map_err(|_| {
         // Intentionally opaque error — do not differentiate wrong key / wrong AAD / tampered data
         SignalError::InvalidMessage {
             reason: "decryption failed".to_string(),

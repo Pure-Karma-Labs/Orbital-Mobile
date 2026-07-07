@@ -155,9 +155,9 @@ pub fn ecies_seal(
 
     let mut nonce_bytes = [0u8; 12];
     rand::fill(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::from(nonce_bytes);
 
-    let ciphertext = cipher.encrypt(nonce, plaintext.as_ref()).map_err(|_| {
+    let ciphertext = cipher.encrypt(&nonce, plaintext.as_ref()).map_err(|_| {
         SignalError::InternalError {
             reason: "ecies_seal: AES-256-GCM encryption failed".into(),
         }
@@ -340,9 +340,9 @@ pub fn ecies_open(
         reason: "ecies_open: failed to construct AES-256-GCM cipher".into(),
     })?;
 
-    let nonce = Nonce::from_slice(nonce_bytes);
+    let nonce = Nonce::from(*nonce_bytes);
 
-    let plaintext = cipher.decrypt(nonce, ciphertext).map_err(|_| {
+    let plaintext = cipher.decrypt(&nonce, ciphertext).map_err(|_| {
         SignalError::InvalidMessage {
             reason: "ecies_open: decryption failed".into(),
         }

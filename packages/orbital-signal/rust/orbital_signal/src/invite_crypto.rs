@@ -70,9 +70,9 @@ pub fn invite_encrypt_group_key(
 
     let mut nonce_bytes = [0u8; INVITE_NONCE_LEN];
     rand::fill(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::from(nonce_bytes);
 
-    let ciphertext = cipher.encrypt(nonce, group_key.as_ref()).map_err(|_| {
+    let ciphertext = cipher.encrypt(&nonce, group_key.as_ref()).map_err(|_| {
         SignalError::InternalError {
             reason: "invite_encrypt: AES-256-GCM encryption failed".into(),
         }
@@ -122,9 +122,15 @@ pub fn invite_decrypt_group_key(
         }
     })?;
 
-    let nonce = Nonce::from_slice(nonce_bytes);
+    let nonce = Nonce::try_from(nonce_bytes).map_err(|_| SignalError::InvalidArgument {
+        reason: format!(
+            "invite_decrypt: nonce must be exactly {} bytes, got {}",
+            INVITE_NONCE_LEN,
+            nonce_bytes.len()
+        ),
+    })?;
 
-    let plaintext = cipher.decrypt(nonce, ciphertext_with_tag).map_err(|_| {
+    let plaintext = cipher.decrypt(&nonce, ciphertext_with_tag).map_err(|_| {
         SignalError::InvalidMessage {
             reason: "decryption failed".into(),
         }

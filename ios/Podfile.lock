@@ -115,7 +115,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
-  - NitroModules (0.35.10):
+  - NitroModules (0.36.1):
     - boost
     - DoubleConversion
     - fast_float
@@ -144,7 +144,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
-  - op-sqlite (17.0.0):
+  - op-sqlite (17.1.2):
     - boost
     - DoubleConversion
     - fast_float
@@ -2690,7 +2690,7 @@ PODS:
     - React-perflogger (= 0.82.1)
     - React-utils (= 0.82.1)
     - SocketRocket
-  - ReactNativeFs (2.39.0):
+  - ReactNativeFs (2.39.2):
     - boost
     - DoubleConversion
     - fast_float
@@ -2746,7 +2746,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
-  - RNFBApp (25.0.1):
+  - RNFBApp (25.1.0):
     - boost
     - DoubleConversion
     - fast_float
@@ -2775,7 +2775,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
-  - RNFBMessaging (25.0.1):
+  - RNFBMessaging (25.1.0):
     - boost
     - DoubleConversion
     - fast_float
@@ -2926,7 +2926,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
-  - RNSentry (8.16.0):
+  - RNSentry (8.17.2):
     - boost
     - DoubleConversion
     - fast_float
@@ -2953,12 +2953,12 @@ PODS:
     - ReactCodegen
     - ReactCommon/turbomodule/bridging
     - ReactCommon/turbomodule/core
-    - Sentry (= 9.19.0)
+    - Sentry (= 9.19.1)
     - SocketRocket
     - Yoga
-  - Sentry (9.19.0):
-    - Sentry/Core (= 9.19.0)
-  - Sentry/Core (9.19.0)
+  - Sentry (9.19.1):
+    - Sentry/Core (= 9.19.1)
+  - Sentry/Core (9.19.1)
   - SocketRocket (0.7.1)
   - uniffi-bindgen-react-native (0.31.0-2):
     - React-Core
@@ -3286,8 +3286,8 @@ SPEC CHECKSUMS:
   MMKVCore: 3d16ce9f7d411e135020915fde98a056859a1efa
   nanopb: fad817b59e0457d11a5dfbde799381cd727c1275
   NitroMmkv: 975be1948fd74280e6febcda06671d7bf604a4cd
-  NitroModules: b5c5baefa71a65c40e129876a8b7943a9aef6aa5
-  op-sqlite: e161e439bca8a38b1615e78d3ec4d9d669c1567f
+  NitroModules: 8d376059cb66130ebac6a84982c068d69012b567
+  op-sqlite: b477307db1da1465e28cd6659f0cbdc147eab610
   OpenSSL-Universal: ecee7b138fa75a74ecf00d7ffd248fb584739b9e
   OrbitalSignal: 39d2010fd67eacb834e2b4ec67dc4c2095d1cbff
   PromisesObjC: 752c3227f599e3467650e47ea36f433eeb10c273
@@ -3360,16 +3360,16 @@ SPEC CHECKSUMS:
   ReactAppDependencyProvider: a45ef34bb22dc1c9b2ac1f74167d9a28af961176
   ReactCodegen: 878add6c7d8ff8cea87697c44d29c03b79b6f2d9
   ReactCommon: 804dc80944fa90b86800b43c871742ec005ca424
-  ReactNativeFs: af03e04998658ed8a62e4c478e0632f3a073be1d
+  ReactNativeFs: abdd86f6734771a35c55c400799508e2b41c4c92
   RNBootSplash: 83bc1fef5ff2e9fd3ed0f20a472dd87d8a9ef898
-  RNFBApp: e5ea8c5e484ac2c0f83e7844236a2da51b428f3e
-  RNFBMessaging: 8622ad2e833014984ef620a2f8cb8aa72b8d3f60
+  RNFBApp: e58e702c9e1d148255a98f4f8811ce696c9efd80
+  RNFBMessaging: e3364e3b610b4b90b867c0cfaf0bf4c5ee2943be
   RNGestureHandler: e9a7deaee5946c21e5c85d3fdaa22b031f2b6848
   RNKeychain: a2c134ab796272c3d605e035ab727591000b30f3
   RNNotifee: 5e3b271e8ea7456a36eec994085543c9adca9168
   RNScreens: 9269ab4971b2bd24917be84295d2c2ae7d06e9be
-  RNSentry: 58b46c005538563e432c0639cda65dc8b15871e3
-  Sentry: 996238da99d8710438655666395d94c49604981f
+  RNSentry: 22b2d754747bc911254634c594139bf0a8a55c00
+  Sentry: e4588d62ac3fd3c82652bb7c8a215ec8c3de776b
   SocketRocket: d4aabe649be1e368d1318fdf28a022d714d65748
   uniffi-bindgen-react-native: 205a15613d97a49fe17d5bda57f7fa46a7bbafd0
   Yoga: 689c8e04277f3ad631e60fe2a08e41d411daf8eb

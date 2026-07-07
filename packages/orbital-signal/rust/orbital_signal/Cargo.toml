@@ -23,7 +23,7 @@ libsignal-protocol = { git = "https://github.com/signalapp/libsignal", tag = "v0
 libsignal-core = { git = "https://github.com/signalapp/libsignal", tag = "v0.96.4" }
 
 # AES-256-GCM for content encryption (threads, replies — per-field with AAD)
-aes-gcm = { version = "0.10", features = ["zeroize"] }
+aes-gcm = { version = "0.11", features = ["zeroize"] }
 
 # AES-256-CBC + HMAC-SHA256 for attachment encryption (Signal Protocol format)
 aes = { version = "0.8", features = ["zeroize"] }

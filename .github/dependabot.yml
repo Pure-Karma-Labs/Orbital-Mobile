@@ -57,11 +57,28 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      # libsignal-protocol and libsignal-core come from the same monorepo
+      # (signalapp/libsignal) and must share the same git tag. Ungrouped
+      # bumps produce split PRs that fail Rust compilation because two tag
+      # versions of libsignal-core end up in one dependency graph. See the
+      # lockstep comment in Cargo.toml and closed PRs #465/#467.
+      libsignal:
+        patterns:
+          - "libsignal-*"
     ignore:
       # rand 0.10 requires trait renames incompatible with libsignal's
       # rand 0.9 bounds — defer until libsignal supports it (see #399)
       - dependency-name: "rand"
         versions: [">= 0.10.0"]
+      # uniffi 0.32+ reworked the bindgen pipeline API and metadata format.
+      # Our binding generator (uniffi-bindgen-react-native) hard-pins
+      # uniffi = "=0.31.0" and cannot parse 0.32 metadata — Android builds
+      # fail with "invalid utf-8 sequence" extracting UNIFFI_META symbols
+      # (see closed PR #466). No ubrn release supporting 0.32 exists yet;
+      # re-evaluate when jhugman/uniffi-bindgen-react-native ships one.
+      - dependency-name: "uniffi"
+        versions: [">= 0.32.0"]
 
   # GitHub Actions (workflow files)
   - package-ecosystem: github-actions

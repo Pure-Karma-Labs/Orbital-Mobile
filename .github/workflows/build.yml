@@ -77,12 +77,31 @@ jobs:
       - name: Inject google-services.json
         run: echo "${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}" | base64 --decode > android/app/google-services.json
 
+      # Issue #510: on main, this step's `Post` phase uploads the (already
+      # rust-cache-pruned) target/ dir, which took 13+ min per push even on
+      # merges that didn't touch the crate (~half of them). A cheap
+      # lookup-only pass first checks whether an exact-match cache entry
+      # already exists for this key (Cargo.lock/rust-toolchain.toml hash +
+      # the rust-build-android shared-key) without downloading anything; the
+      # real restore step below skips its save when that lookup hits.
+      - name: Rust cache lookup (android)
+        id: rust-cache-lookup-android
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: packages/orbital-signal/rust/orbital_signal
+          shared-key: rust-build-android
+          lookup-only: true
+
       - name: Rust cache
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: packages/orbital-signal/rust/orbital_signal
           shared-key: rust-build-android
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # save-if can't reference this same step's own cache-hit output
+          # (with: inputs are evaluated before the step runs), hence the
+          # separate lookup-only step above. PR restore-only behavior (#310)
+          # is unchanged: save-if is false on PRs regardless of the lookup.
+          save-if: ${{ github.ref == 'refs/heads/main' && steps.rust-cache-lookup-android.outputs.cache-hit != 'true' }}
 
       - name: Build Rust for Android
         run: |
@@ -144,12 +163,23 @@ jobs:
       - name: Inject GoogleService-Info.plist
         run: echo "${{ secrets.GOOGLE_SERVICE_INFO_PLIST_BASE64 }}" | base64 --decode > ios/OrbitalMobile/GoogleService-Info.plist
 
+      # Issue #510: see the matching comment in build-android above. Same
+      # lookup-only-then-restore pattern, keyed on the ios shared-key so the
+      # android/ios caches never clobber each other.
+      - name: Rust cache lookup (ios)
+        id: rust-cache-lookup-ios
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: packages/orbital-signal/rust/orbital_signal
+          shared-key: rust-build-ios
+          lookup-only: true
+
       - name: Rust cache
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: packages/orbital-signal/rust/orbital_signal
           shared-key: rust-build-ios
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' && steps.rust-cache-lookup-ios.outputs.cache-hit != 'true' }}
 
       - name: Build Rust for iOS
         run: |

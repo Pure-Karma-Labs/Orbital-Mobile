@@ -1,5 +1,6 @@
 {
   "name": "orbital-mobile",
+  "description": "QA test commit for #513 positive-path CI check (see test/513-pod-check-fire) - safe to ignore/close",
   "version": "0.0.1",
   "private": true,
   "license": "AGPL-3.0-or-later",

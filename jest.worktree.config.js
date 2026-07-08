@@ -6,7 +6,6 @@ const base = require('./jest.config');
 
 module.exports = {
   ...base,
-  roots: ['<rootDir>/src'],
   testPathIgnorePatterns: ['/node_modules/'],
   modulePathIgnorePatterns: [],
   moduleNameMapper: {

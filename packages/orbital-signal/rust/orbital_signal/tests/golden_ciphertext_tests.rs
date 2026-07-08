@@ -357,9 +357,31 @@ fn golden_content_crypto_corrupted_byte_fails() {
     );
 }
 
-/// Verify that corrupting one byte of the ECIES sealed envelope causes opening to fail.
-#[test]
-fn golden_ecies_corrupted_byte_fails() {
+// ECIES envelope layout (verified against ecies.rs constants and parsing code):
+//
+//   Offset     Field                   Size    Region
+//   ------     -----                   ----    ------
+//   [0]        version byte (0x02)      1      \
+//   [1..33]    ephemeral X25519 pub    32       |  unsigned portion
+//   [33..45]   AES-GCM nonce           12       |  (signed over by XEdDSA)
+//   [45..93]   ciphertext + GCM tag    48      /
+//   [93..126]  sender public key       33      sender identity (0x05 || 32 raw)
+//   [126..190] XEdDSA signature        64      signature over [0..93]
+//
+// Validation order in ecies_open:
+//   1. Length check (190 bytes)
+//   2. Version check (byte 0 == 0x02)
+//   3. Sender identity check (constant-time eq against expected_sender_public_key)
+//   4. Sender public key deserialization
+//   5. XEdDSA signature verification over unsigned portion [0..93]
+//   6. ECDH + KDF
+//   7. AES-256-GCM decryption
+//
+// The three corruption tests below each pin a specific validation layer so that a
+// future refactor that silently reorders or removes a check fails a specific test.
+
+/// Helper: return the golden ECIES fixture inputs (shared across corruption tests).
+fn golden_ecies_fixture() -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
     let sender_public_key: Vec<u8> = hex!(
         "05e17777 018f8e77 14e7b65a 941c8820 9426403c 45f3e8fa"
         "e1baec13 6ea6601a 1c"
@@ -374,8 +396,7 @@ fn golden_ecies_corrupted_byte_fails() {
         "676f6c64 656e2d65 636965732d67726f 75702d69 64"
     )
     .to_vec();
-
-    let mut sealed: Vec<u8> = hex!(
+    let sealed: Vec<u8> = hex!(
         "02e9bd83 db67d708 be8173ea becc0a18 7ecf30de ca0ea3d3"
         "d9c60f4b b0e35c0d 5a8883da 3f56f2bf 11a7e26e 665e7c4e"
         "ca4fce91 b90a24d5 653fc3e0 92c92235 b9e4668b eacbcb72"
@@ -386,14 +407,72 @@ fn golden_ecies_corrupted_byte_fails() {
         "39114e48 f3bea547 621d9f55 1c34b4c9 3f1c6534 6d82"
     )
     .to_vec();
+    (sender_public_key, recipient_private_key, group_id, sealed)
+}
 
-    // Corrupt a byte in the ciphertext portion (offset 50, within the encrypted data)
+/// Corruption case 1: Flip a byte in the unsigned (ciphertext) region [45..93].
+///
+/// Layer exercised: XEdDSA signature verification (step 5).
+/// The unsigned portion has changed but the signature has not, so
+/// `verify_signature(corrupted_unsigned, original_signature)` must fail.
+#[test]
+fn golden_ecies_corrupted_ciphertext_region_fails() {
+    let (sender_pub, recipient_priv, group_id, mut sealed) = golden_ecies_fixture();
+
+    // Offset 50 is within the ciphertext+tag field [45..93], part of the unsigned
+    // portion that the XEdDSA signature covers.
     sealed[50] ^= 0xFF;
 
-    let result = ecies_open(sealed, group_id, recipient_private_key, sender_public_key);
+    let err = ecies_open(sealed, group_id, recipient_priv, sender_pub)
+        .expect_err("corrupted unsigned portion must fail opening");
     assert!(
-        result.is_err(),
-        "corrupted sealed envelope must fail opening (proves the fixture has teeth)"
+        matches!(err, SignalError::InvalidSignature),
+        "corruption in unsigned portion (ciphertext region) must be caught by \
+         signature verification, got: {err:?}"
+    );
+}
+
+/// Corruption case 2: Flip a byte in the sender_pub region [93..126].
+///
+/// Layer exercised: Sender identity check (step 3).
+/// The embedded sender public key no longer matches expected_sender_public_key,
+/// so the constant-time comparison rejects it BEFORE signature verification.
+#[test]
+fn golden_ecies_corrupted_sender_pub_fails() {
+    let (sender_pub, recipient_priv, group_id, mut sealed) = golden_ecies_fixture();
+
+    // Offset 100 is within the sender_pub field [93..126].  Corrupting it makes
+    // the embedded sender key diverge from the expected key passed to ecies_open.
+    sealed[100] ^= 0xFF;
+
+    let err = ecies_open(sealed, group_id, recipient_priv, sender_pub)
+        .expect_err("corrupted sender_pub must fail opening");
+    assert!(
+        matches!(err, SignalError::InvalidKey { .. }),
+        "corruption in sender_pub region must be caught by sender identity check \
+         (constant-time eq), got: {err:?}"
+    );
+}
+
+/// Corruption case 3: Flip a byte in the signature region [126..190].
+///
+/// Layer exercised: XEdDSA signature verification (step 5).
+/// The unsigned portion is intact and the sender_pub matches, so the sender
+/// identity check passes.  But the corrupted signature bytes cause
+/// `verify_signature(valid_unsigned, corrupted_signature)` to fail.
+#[test]
+fn golden_ecies_corrupted_signature_fails() {
+    let (sender_pub, recipient_priv, group_id, mut sealed) = golden_ecies_fixture();
+
+    // Offset 150 is within the signature field [126..190].
+    sealed[150] ^= 0xFF;
+
+    let err = ecies_open(sealed, group_id, recipient_priv, sender_pub)
+        .expect_err("corrupted signature must fail opening");
+    assert!(
+        matches!(err, SignalError::InvalidSignature),
+        "corruption in signature region must be caught by signature verification, \
+         got: {err:?}"
     );
 }
 
@@ -420,5 +499,171 @@ fn golden_invite_crypto_corrupted_byte_fails() {
     assert!(
         result.is_err(),
         "corrupted invite blob must fail decryption (proves the fixture has teeth)"
+    );
+}
+
+// =============================================================================
+// Golden fixture 4: Attachment encryption (AES-256-CBC + HMAC-SHA256)
+// =============================================================================
+
+/// Generator: attachment encryption fixture (AES-256-CBC + HMAC-SHA256).
+///
+/// Uses obvious-constant keys.  Since `attachment_encrypt` generates a random IV
+/// internally, each run produces unique output — run once, capture, hardcode.
+///
+/// ```sh
+/// cargo test --features dev-roundtrip -p orbital_signal \
+///     --test golden_ciphertext_tests -- --ignored --nocapture 2>&1 | grep '^FIXTURE:'
+/// ```
+#[test]
+#[ignore]
+fn generate_attachment_crypto_fixture() {
+    // TEST VECTOR — synthetic 64-byte key (32 AES + 32 HMAC), never used outside this test
+    let keys = {
+        let mut k = vec![0x03u8; 32]; // AES key
+        k.extend_from_slice(&[0x04u8; 32]); // HMAC key
+        k
+    };
+    let plaintext = b"Orbital attachment golden vector!".to_vec();
+
+    let result =
+        attachment_encrypt(plaintext.clone(), keys.clone()).expect("encryption should succeed");
+
+    println!("FIXTURE:attachment_crypto");
+    println!("FIXTURE:keys={}", to_hex(&keys));
+    println!("FIXTURE:plaintext={}", to_hex(&plaintext));
+    println!("FIXTURE:ciphertext={}", to_hex(&result.ciphertext));
+    println!("FIXTURE:digest={}", to_hex(&result.digest));
+    println!("FIXTURE:plaintext_hash={}", to_hex(&result.plaintext_hash));
+
+    // Verify the fixture decrypts correctly
+    let recovered = attachment_decrypt(result.ciphertext, keys, result.digest)
+        .expect("self-check decrypt");
+    assert_eq!(recovered, plaintext, "self-check failed");
+    println!("FIXTURE:self_check=PASS");
+}
+
+/// Golden fixture 4: Signal Protocol attachment encryption (AES-256-CBC + HMAC-SHA256).
+///
+/// Verifies that the current attachment crypto implementation can decrypt a
+/// ciphertext blob produced by an earlier build.  Catches silent wire-format
+/// changes from aes/cbc/hmac crate upgrades.
+///
+/// Attachment ciphertext layout:
+///   IV (16 bytes) || AES-256-CBC encrypted data (PKCS7 padded) || HMAC-SHA256 (32 bytes)
+///
+/// Fixture components:
+/// - Keys: 64 bytes (0x03*32 AES key || 0x04*32 HMAC key)
+/// - Plaintext: "Orbital attachment golden vector!" (32 bytes)
+/// - Ciphertext: 96 bytes (16 IV + 48 encrypted data [32 + 16 PKCS7 pad] + 32 HMAC)
+/// - Digest: SHA-256 of the entire ciphertext blob
+#[test]
+fn golden_attachment_crypto_decrypt() {
+    // TEST VECTOR — synthetic 64-byte key, never used outside this test
+    let keys: Vec<u8> = hex!(
+        "03030303 03030303 03030303 03030303 03030303 03030303 03030303 03030303"
+        "04040404 04040404 04040404 04040404 04040404 04040404 04040404 04040404"
+    )
+    .to_vec();
+
+    // "Orbital attachment golden vector!" (32 bytes)
+    let expected_plaintext: Vec<u8> = hex!(
+        "4f726269 74616c20 61747461 63686d65 6e742067 6f6c6465"
+        "6e207665 63746f72 21"
+    )
+    .to_vec();
+
+    // Captured 96-byte blob (16 IV + 48 AES-256-CBC encrypted data + 32 HMAC-SHA256)
+    let ciphertext: Vec<u8> = hex!(
+        "bbc87c64 af73e23e 71bc201e dda97c20 370bb925 a41beaad"
+        "b6d8d019 3edde5ef ea005319 ef4a0593 36e45fe6 ee497c5b"
+        "65abd473 29a96651 53810b29 d282f52f 7090698d 3c5fb302"
+        "b39e56c6 69e92394 8d6ca3f7 e9a1e8c6 0cdca381 3ef29381"
+    )
+    .to_vec();
+
+    // SHA-256 digest of the entire ciphertext blob
+    let digest: Vec<u8> = hex!(
+        "7a86e23b 19b018d9 1dad0b29 d903d390 c298d824 12b4b53c"
+        "d844d594 e15552b6"
+    )
+    .to_vec();
+
+    let decrypted = attachment_decrypt(ciphertext, keys, digest)
+        .expect("golden attachment fixture must decrypt successfully");
+
+    assert_eq!(
+        decrypted, expected_plaintext,
+        "golden attachment_crypto: decrypted plaintext does not match fixture"
+    );
+
+    assert_eq!(
+        String::from_utf8(decrypted).unwrap(),
+        "Orbital attachment golden vector!"
+    );
+}
+
+/// Negative: corrupted HMAC tag must produce InvalidMessage.
+///
+/// The HMAC is the last 32 bytes of the attachment ciphertext blob.
+/// Corruption is detected before decryption (MAC-then-decrypt).
+#[test]
+fn golden_attachment_crypto_corrupted_mac_fails() {
+    let keys: Vec<u8> = hex!(
+        "03030303 03030303 03030303 03030303 03030303 03030303 03030303 03030303"
+        "04040404 04040404 04040404 04040404 04040404 04040404 04040404 04040404"
+    )
+    .to_vec();
+
+    // Same fixture as golden_attachment_crypto_decrypt (96 bytes)
+    let mut ciphertext: Vec<u8> = hex!(
+        "bbc87c64 af73e23e 71bc201e dda97c20 370bb925 a41beaad"
+        "b6d8d019 3edde5ef ea005319 ef4a0593 36e45fe6 ee497c5b"
+        "65abd473 29a96651 53810b29 d282f52f 7090698d 3c5fb302"
+        "b39e56c6 69e92394 8d6ca3f7 e9a1e8c6 0cdca381 3ef29381"
+    )
+    .to_vec();
+
+    // Digest for the UNCORRUPTED ciphertext (corruption happens after this point,
+    // so the digest check would also fail, but HMAC verification runs first)
+    let digest: Vec<u8> = hex!(
+        "7a86e23b 19b018d9 1dad0b29 d903d390 c298d824 12b4b53c"
+        "d844d594 e15552b6"
+    )
+    .to_vec();
+
+    // Corrupt the last byte of the HMAC tag
+    let last = ciphertext.len() - 1;
+    ciphertext[last] ^= 0xFF;
+
+    let err = attachment_decrypt(ciphertext, keys, digest)
+        .expect_err("corrupted HMAC must fail");
+    assert!(
+        matches!(err, SignalError::InvalidMessage { .. }),
+        "corrupted HMAC must produce opaque InvalidMessage (MAC-then-decrypt), got: {err:?}"
+    );
+}
+
+/// Negative: truncated ciphertext (below minimum 48 bytes) must produce InvalidArgument.
+///
+/// Minimum attachment ciphertext is 48 bytes: 16 (IV) + 0 (empty data) + 32 (HMAC).
+/// Truncation below this threshold is caught by the length check before any crypto.
+#[test]
+fn golden_attachment_crypto_truncated_fails() {
+    let keys: Vec<u8> = hex!(
+        "03030303 03030303 03030303 03030303 03030303 03030303 03030303 03030303"
+        "04040404 04040404 04040404 04040404 04040404 04040404 04040404 04040404"
+    )
+    .to_vec();
+
+    // 47 bytes — one byte short of the 48-byte minimum
+    let truncated: Vec<u8> = vec![0x00; 47];
+    let digest: Vec<u8> = vec![0x00; 32];
+
+    let err = attachment_decrypt(truncated, keys, digest)
+        .expect_err("truncated ciphertext must fail");
+    assert!(
+        matches!(err, SignalError::InvalidArgument { .. }),
+        "ciphertext below 48-byte minimum must produce InvalidArgument, got: {err:?}"
     );
 }

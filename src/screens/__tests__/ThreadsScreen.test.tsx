@@ -22,8 +22,9 @@ jest.mock('../../services/conversationService', () => ({
   markConversationReadEverywhere: jest.fn(),
 }));
 
+let mockBlockedSet = new Set<string>();
 jest.mock('../../hooks/useBlockedSet', () => ({
-  useBlockedSet: () => new Set<string>(),
+  useBlockedSet: () => mockBlockedSet,
 }));
 
 jest.mock('../../hooks/useWebSocketSubscription', () => ({
@@ -49,14 +50,15 @@ jest.mock('../../components/Emoji', () => ({
   Emoji: () => null,
 }));
 
+let mockSearchState = {
+  searchText: '',
+  setSearchText: jest.fn(),
+  resultThreadIds: [] as string[],
+  isSearching: false,
+  clearSearch: jest.fn(),
+};
 jest.mock('../../hooks/useSQLiteSearch', () => ({
-  useSQLiteSearch: () => ({
-    searchText: '',
-    setSearchText: jest.fn(),
-    resultThreadIds: [],
-    isSearching: false,
-    clearSearch: jest.fn(),
-  }),
+  useSQLiteSearch: () => mockSearchState,
 }));
 
 const mockSetViewingConversation = jest.fn();
@@ -194,6 +196,21 @@ function renderThreadsScreen(): ReactTestRenderer {
   });
   return renderer;
 }
+
+// ---------------------------------------------------------------------------
+// Top-level reset for mutable mocks
+// ---------------------------------------------------------------------------
+
+beforeEach(() => {
+  mockBlockedSet = new Set<string>();
+  mockSearchState = {
+    searchText: '',
+    setSearchText: jest.fn(),
+    resultThreadIds: [],
+    isSearching: false,
+    clearSearch: jest.fn(),
+  };
+});
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -407,5 +424,153 @@ describe('getThreadState', () => {
     const thread = makeThread({ createdAt: 30_000, lastReplyAt: null });
     expect(getThreadState(thread, {}, 25_000)).toBe('unread');
     expect(getThreadState(thread, {}, 35_000)).toBe('read');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Block filtering — list mode + search mode
+// ---------------------------------------------------------------------------
+
+describe('ThreadsScreen — block filtering', () => {
+  const now = Date.now();
+
+  const threadByBlocked: Thread = {
+    id: 'thread-blocked',
+    conversationId: 'group-1',
+    authorId: 'u-blocked',
+    authorUsername: 'blockedUser',
+    title: 'Blocked user thread',
+    body: null,
+    contentType: 'text',
+    pinned: false,
+    replyCount: 0,
+    lastReplyAt: null,
+    createdAt: now,
+    updatedAt: now,
+    syncStatus: 'synced',
+  } as Thread;
+
+  const threadByOk: Thread = {
+    id: 'thread-ok',
+    conversationId: 'group-1',
+    authorId: 'u-ok',
+    authorUsername: 'okUser',
+    title: 'Allowed user thread',
+    body: null,
+    contentType: 'text',
+    pinned: false,
+    replyCount: 0,
+    lastReplyAt: null,
+    createdAt: now,
+    updatedAt: now,
+    syncStatus: 'synced',
+  } as Thread;
+
+  beforeEach(() => {
+    const storesMock = jest.requireMock('../../stores') as {
+      useThreads: jest.Mock;
+    };
+    storesMock.useThreads.mockReturnValue({
+      threads: {
+        'thread-blocked': threadByBlocked,
+        'thread-ok': threadByOk,
+      },
+      threadIdsByConversation: {
+        'group-1': ['thread-blocked', 'thread-ok'],
+      },
+      threadLastViewedAt: {},
+      replies: {},
+      replyIdsByThread: {},
+      activeThreadId: null,
+      setThreads: jest.fn(),
+      upsertThread: jest.fn(),
+      removeThread: jest.fn(),
+      setActiveThread: jest.fn(),
+      markThreadViewed: jest.fn(),
+      setReplies: jest.fn(),
+      upsertReply: jest.fn(),
+      addOptimisticThread: jest.fn(),
+      addOptimisticReply: jest.fn(),
+      updateThreadSyncStatus: jest.fn(),
+      updateReplySyncStatus: jest.fn(),
+    });
+  });
+
+  afterEach(() => {
+    const storesMock = jest.requireMock('../../stores') as {
+      useThreads: jest.Mock;
+    };
+    storesMock.useThreads.mockReturnValue({
+      threads: {},
+      threadIdsByConversation: {},
+      threadLastViewedAt: {},
+      replies: {},
+      replyIdsByThread: {},
+      activeThreadId: null,
+      setThreads: jest.fn(),
+      upsertThread: jest.fn(),
+      removeThread: jest.fn(),
+      setActiveThread: jest.fn(),
+      markThreadViewed: jest.fn(),
+      setReplies: jest.fn(),
+      upsertReply: jest.fn(),
+      addOptimisticThread: jest.fn(),
+      addOptimisticReply: jest.fn(),
+      updateThreadSyncStatus: jest.fn(),
+      updateReplySyncStatus: jest.fn(),
+    });
+  });
+
+  it('hides threads authored by blocked users from the thread list', () => {
+    mockBlockedSet = new Set(['u-blocked']);
+    const renderer = renderThreadsScreen();
+
+    const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
+    const blockedTitle = allText.find(
+      (node) =>
+        typeof node.props.children === 'string' &&
+        node.props.children === 'Blocked user thread',
+    );
+    expect(blockedTitle).toBeUndefined();
+  });
+
+  it('renders threads from non-blocked authors when blockedSet is non-empty', () => {
+    mockBlockedSet = new Set(['u-blocked']);
+    const renderer = renderThreadsScreen();
+
+    const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
+    const okTitle = allText.find(
+      (node) =>
+        typeof node.props.children === 'string' &&
+        node.props.children === 'Allowed user thread',
+    );
+    expect(okTitle).toBeDefined();
+  });
+
+  it('excludes blocked authors\' threads from FTS5 search results', () => {
+    mockBlockedSet = new Set(['u-blocked']);
+    mockSearchState = {
+      searchText: 'thread',
+      setSearchText: jest.fn(),
+      resultThreadIds: ['thread-blocked', 'thread-ok'],
+      isSearching: true,
+      clearSearch: jest.fn(),
+    };
+
+    const renderer = renderThreadsScreen();
+
+    const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
+    const blockedTitle = allText.find(
+      (node) =>
+        typeof node.props.children === 'string' &&
+        node.props.children === 'Blocked user thread',
+    );
+    const okTitle = allText.find(
+      (node) =>
+        typeof node.props.children === 'string' &&
+        node.props.children === 'Allowed user thread',
+    );
+    expect(blockedTitle).toBeUndefined();
+    expect(okTitle).toBeDefined();
   });
 });

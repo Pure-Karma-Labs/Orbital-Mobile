@@ -264,6 +264,7 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
       return resultThreadIds
         .map((id) => threads[id])
         .filter((t): t is Thread => t != null)
+        .filter((t) => !blockedSet.has(t.authorId))
         .map((thread) => ({
           type: 'thread' as const,
           thread,
@@ -271,7 +272,7 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
         }));
     }
     return buildListRows(threadList);
-  }, [isSearching, resultThreadIds, threads, threadList]);
+  }, [isSearching, resultThreadIds, threads, threadList, blockedSet]);
 
   // Scroll to top when entering/exiting search mode
   useEffect(() => {

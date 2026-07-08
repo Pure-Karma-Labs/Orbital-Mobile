@@ -9,11 +9,16 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  # dorny/paths-filter queries the PR changed-files API on pull_request events
+  pull-requests: read
+
 jobs:
   lint-typecheck-test:
     name: Lint, Typecheck & Test
     runs-on: [self-hosted, macOS]
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
@@ -42,3 +47,63 @@ jobs:
 
       - name: Jest tests
         run: npm test -- --ci --coverage
+
+      # ---------------------------------------------------------------------
+      # Issue #513: catch native-dependency lockfile drift on PRs.
+      #
+      # build.yml's iOS Debug Build (which runs a real `pod install`) is
+      # gated to main-only pushes because it's expensive. That left a gap:
+      # PRs bumping a native module (e.g. #505, where @sentry/react-native
+      # 8.17.2's RNSentry.podspec pinned an exact Sentry version that
+      # conflicted with the committed ios/Podfile.lock) could merge to main
+      # and only fail there. CocoaPods reported that conflict as a
+      # deployment-target error, not a version-pin error, making it doubly
+      # confusing post-merge.
+      #
+      # A text diff of Podfile.lock can't catch this class of bug -- the
+      # conflict comes from evaluating third-party podspecs (which can
+      # pin/require versions independent of what's committed), not from the
+      # lockfile alone. `pod install --deployment` is the real dependency
+      # resolver in read-only/verify mode: it fails without mutating
+      # Podfile.lock if the Podfile/podspecs and the committed lockfile
+      # disagree. (`pod check` does not exist in modern CocoaPods.)
+      #
+      # Gated to PRs that touch package.json or ios/** so it doesn't run on
+      # every PR -- pod resolution isn't affected by anything else in the
+      # repo.
+      - name: Podfile.lock consistency filter
+        id: pod-filter
+        if: github.event_name == 'pull_request'
+        # SHA-pinned: 7b450fff21473bca461d4b92ce414b9d0420d706 = v4.0.2
+        uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
+        with:
+          filters: |
+            ios-native:
+              - 'package.json'
+              - 'ios/**'
+
+      - name: Cache CocoaPods
+        if: github.event_name == 'pull_request' && steps.pod-filter.outputs.ios-native == 'true'
+        uses: actions/cache@v6
+        with:
+          path: |
+            ios/Pods
+            ~/Library/Caches/CocoaPods
+          key: pods-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock', 'ios/Podfile') }}
+          restore-keys: |
+            pods-${{ runner.os }}-
+
+      # SECURITY (accepted, see follow-up issue linked from #513): `pod
+      # install` evaluates the Podfile and every dependency's podspec as
+      # arbitrary Ruby, so this step executes PR-authored code on the
+      # self-hosted runner before merge/review. This is acceptable ONLY
+      # because Orbital-Mobile is currently a private repo where every PR
+      # author is a trusted collaborator with push access. This must be
+      # re-gated (GitHub-hosted runner, environment approval for
+      # external-fork PRs, or base-branch-only checkout) before the repo
+      # is opened to external contributors -- see the open-source prep
+      # tracker (#479).
+      - name: Podfile.lock consistency check
+        if: github.event_name == 'pull_request' && steps.pod-filter.outputs.ios-native == 'true'
+        working-directory: ios
+        run: pod install --deployment

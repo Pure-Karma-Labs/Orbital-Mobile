@@ -7,6 +7,7 @@ import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'rea
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../../theme';
 import { ChatDetailScreen } from '../ChatDetailScreen';
+import type { Thread } from '../../types/store';
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -30,8 +31,9 @@ jest.mock('../../services/conversationService', () => ({
   markConversationReadEverywhere: jest.fn(),
 }));
 
+let mockBlockedSet = new Set<string>();
 jest.mock('../../hooks/useBlockedSet', () => ({
-  useBlockedSet: () => new Set<string>(),
+  useBlockedSet: () => mockBlockedSet,
 }));
 
 jest.mock('../../hooks/useWebSocketSubscription', () => ({
@@ -81,14 +83,15 @@ jest.mock('../../components/OrbitalSpinner', () => ({
   OrbitalSpinner: () => null,
 }));
 
+let mockSearchState = {
+  searchText: '',
+  setSearchText: jest.fn(),
+  resultThreadIds: [] as string[],
+  isSearching: false,
+  clearSearch: jest.fn(),
+};
 jest.mock('../../hooks/useSQLiteSearch', () => ({
-  useSQLiteSearch: () => ({
-    searchText: '',
-    setSearchText: jest.fn(),
-    resultThreadIds: [],
-    isSearching: false,
-    clearSearch: jest.fn(),
-  }),
+  useSQLiteSearch: () => mockSearchState,
 }));
 
 jest.mock('../../components/Emoji', () => ({
@@ -245,6 +248,14 @@ function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstanc
 beforeEach(() => {
   jest.clearAllMocks();
   mockUseThreads.mockReturnValue(emptyThreadsState);
+  mockBlockedSet = new Set<string>();
+  mockSearchState = {
+    searchText: '',
+    setSearchText: jest.fn(),
+    resultThreadIds: [],
+    isSearching: false,
+    clearSearch: jest.fn(),
+  };
 });
 
 // ---------------------------------------------------------------------------
@@ -368,5 +379,105 @@ describe('ChatDetailScreen — focus lifecycle', () => {
     });
 
     expect(mockSetViewingConversation).toHaveBeenCalledWith(null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Block filtering — list mode + search mode
+// ---------------------------------------------------------------------------
+
+describe('ChatDetailScreen — block filtering', () => {
+  const now = Date.now();
+
+  const threadByBlocked: Thread = {
+    id: 'thread-blocked',
+    conversationId: 'dm-conv-1',
+    authorId: 'u-blocked',
+    authorUsername: 'blockedUser',
+    title: null,
+    body: 'Blocked user message',
+    contentType: 'text',
+    pinned: false,
+    replyCount: 0,
+    lastReplyAt: null,
+    createdAt: now,
+    updatedAt: now,
+    syncStatus: 'synced',
+  } as Thread;
+
+  const threadByOk: Thread = {
+    id: 'thread-ok',
+    conversationId: 'dm-conv-1',
+    authorId: 'u-ok',
+    authorUsername: 'okUser',
+    title: null,
+    body: 'Allowed user message',
+    contentType: 'text',
+    pinned: false,
+    replyCount: 0,
+    lastReplyAt: null,
+    createdAt: now,
+    updatedAt: now,
+    syncStatus: 'synced',
+  } as Thread;
+
+  const blockedThreadsState = {
+    ...emptyThreadsState,
+    threads: {
+      'thread-blocked': threadByBlocked,
+      'thread-ok': threadByOk,
+    },
+    threadIdsByConversation: {
+      'dm-conv-1': ['thread-blocked', 'thread-ok'],
+    },
+  };
+
+  it('hides DM thread rows authored by blocked users', () => {
+    mockUseThreads.mockReturnValue(blockedThreadsState);
+    mockBlockedSet = new Set(['u-blocked']);
+
+    const renderer = renderScreen('Bob');
+
+    const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
+    const blockedBody = allText.find(
+      (node) =>
+        typeof node.props.children === 'string' &&
+        node.props.children === 'Blocked user message',
+    );
+    const okBody = allText.find(
+      (node) =>
+        typeof node.props.children === 'string' &&
+        node.props.children === 'Allowed user message',
+    );
+    expect(blockedBody).toBeUndefined();
+    expect(okBody).toBeDefined();
+  });
+
+  it('excludes blocked authors\' threads from search results in a DM', () => {
+    mockUseThreads.mockReturnValue(blockedThreadsState);
+    mockBlockedSet = new Set(['u-blocked']);
+    mockSearchState = {
+      searchText: 'message',
+      setSearchText: jest.fn(),
+      resultThreadIds: ['thread-blocked', 'thread-ok'],
+      isSearching: true,
+      clearSearch: jest.fn(),
+    };
+
+    const renderer = renderScreen('Bob');
+
+    const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
+    const blockedBody = allText.find(
+      (node) =>
+        typeof node.props.children === 'string' &&
+        node.props.children === 'Blocked user message',
+    );
+    const okBody = allText.find(
+      (node) =>
+        typeof node.props.children === 'string' &&
+        node.props.children === 'Allowed user message',
+    );
+    expect(blockedBody).toBeUndefined();
+    expect(okBody).toBeDefined();
   });
 });

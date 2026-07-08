@@ -17,8 +17,9 @@ jest.mock('react-native-gesture-handler', () => {
   };
 });
 
+let mockBlockedSet = new Set<string>();
 jest.mock('../../hooks/useBlockedSet', () => ({
-  useBlockedSet: () => new Set<string>(),
+  useBlockedSet: () => mockBlockedSet,
 }));
 
 jest.mock('../../stores/useAppStore', () => ({
@@ -44,6 +45,10 @@ jest.mock('../../stores/useAppStore', () => ({
       })),
     },
   ),
+}));
+
+jest.mock('../../database/repositories/mediaRepository', () => ({
+  updateMediaParent: jest.fn(),
 }));
 
 jest.mock('../../components/MediaGallery', () => ({
@@ -284,6 +289,7 @@ async function renderScreen(): Promise<ReactTestRenderer> {
 beforeEach(() => {
   jest.clearAllMocks();
   mockSelectedMedia = [];
+  mockBlockedSet = new Set<string>();
   // Default: loadThread and loadReplies resolve but store stays empty
   // (store is mocked separately)
   mockLoadThread.mockResolvedValue(fakeThread);
@@ -685,5 +691,117 @@ describe('ThreadDetailScreen — media send', () => {
     });
 
     expect(mockClearMedia).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Block filtering — replies
+// ---------------------------------------------------------------------------
+
+describe('ThreadDetailScreen — block filtering', () => {
+  const blockedReply = {
+    id: 'reply-blocked',
+    threadId: 'thread-1',
+    authorId: 'u-blocked',
+    authorUsername: 'blockedUser',
+    body: 'Blocked reply content',
+    parentReplyId: null,
+    depth: 0,
+    createdAt: now - 1800000,
+    updatedAt: now - 1800000,
+    syncStatus: 'synced' as const,
+  };
+
+  const okReply = {
+    id: 'reply-ok',
+    threadId: 'thread-1',
+    authorId: 'u-ok',
+    authorUsername: 'okUser',
+    body: 'Allowed reply content',
+    parentReplyId: null,
+    depth: 0,
+    createdAt: now - 900000,
+    updatedAt: now - 900000,
+    syncStatus: 'synced' as const,
+  };
+
+  beforeEach(() => {
+    const storesMock = jest.requireMock('../../stores') as {
+      useThreads: jest.Mock;
+    };
+    storesMock.useThreads.mockReturnValue({
+      threads: { 'thread-1': fakeThread },
+      threadIdsByConversation: { 'group-1': ['thread-1'] },
+      replies: {
+        'reply-blocked': blockedReply,
+        'reply-ok': okReply,
+      },
+      replyIdsByThread: { 'thread-1': ['reply-blocked', 'reply-ok'] },
+      activeThreadId: 'thread-1',
+      setThreads: jest.fn(),
+      upsertThread: jest.fn(),
+      removeThread: jest.fn(),
+      setActiveThread: mockSetActiveThread,
+      markThreadViewed: jest.fn(),
+      setReplies: jest.fn(),
+      appendReplies: jest.fn(),
+      upsertReply: jest.fn(),
+      addOptimisticThread: jest.fn(),
+      addOptimisticReply: jest.fn(),
+      updateThreadSyncStatus: jest.fn(),
+      updateReplySyncStatus: jest.fn(),
+    });
+  });
+
+  afterEach(() => {
+    const storesMock = jest.requireMock('../../stores') as {
+      useThreads: jest.Mock;
+    };
+    storesMock.useThreads.mockReturnValue({
+      threads: {},
+      threadIdsByConversation: {},
+      replies: {},
+      replyIdsByThread: {},
+      activeThreadId: null,
+      setThreads: jest.fn(),
+      upsertThread: jest.fn(),
+      removeThread: jest.fn(),
+      setActiveThread: mockSetActiveThread,
+      markThreadViewed: jest.fn(),
+      setReplies: jest.fn(),
+      appendReplies: jest.fn(),
+      upsertReply: jest.fn(),
+      addOptimisticThread: jest.fn(),
+      addOptimisticReply: jest.fn(),
+      updateThreadSyncStatus: jest.fn(),
+      updateReplySyncStatus: jest.fn(),
+    });
+  });
+
+  it('hides replies authored by blocked users', async () => {
+    mockBlockedSet = new Set(['u-blocked']);
+    const renderer = await renderScreen();
+
+    const blockedItem = renderer.root.findAll(
+      (node) => node.props.testID === 'reply-item-reply-blocked',
+    );
+    expect(blockedItem.length).toBe(0);
+  });
+
+  it('still renders replies from non-blocked authors alongside the thread header', async () => {
+    mockBlockedSet = new Set(['u-blocked']);
+    const renderer = await renderScreen();
+
+    // The ok reply should be visible
+    const okItem = renderer.root.findAll(
+      (node) => node.props.testID === 'reply-item-reply-ok',
+    );
+    expect(okItem.length).toBeGreaterThan(0);
+
+    // The thread header should also be visible (blocked filter applies to replies, not thread)
+    const header = renderer.root.findAll(
+      (node) => node.props.testID === 'thread-header',
+    );
+    expect(header.length).toBeGreaterThan(0);
   });
 });

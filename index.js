@@ -4,14 +4,13 @@
 
 import 'react-native-get-random-values';
 import 'react-native-gesture-handler';
-import * as Sentry from '@sentry/react-native';
+import './src/sentryInit';
 import { AppRegistry } from 'react-native';
 import { enableScreens } from 'react-native-screens';
 import messaging from '@react-native-firebase/messaging';
 import notifee, { AndroidImportance, EventType } from '@notifee/react-native';
 import App from './src/App';
 import { name as appName } from './app.json';
-import { SENTRY_DSN } from './src/config/env';
 import {
   NOTIFICATION_TITLES,
   ANDROID_CHANNEL_ID,
@@ -19,14 +18,6 @@ import {
   dedupKeyForPayload,
 } from './src/services/notificationConstants';
 import { LRUSet } from './src/services/websocket/lruSet';
-
-if (SENTRY_DSN) {
-  Sentry.init({
-    dsn: SENTRY_DSN,
-    environment: __DEV__ ? 'development' : 'production',
-    sendDefaultPii: false,
-  });
-}
 
 enableScreens();
 

@@ -1808,3 +1808,91 @@ describe('joinOrbit — v2 key delivery (#374)', () => {
     expect(mockDecryptGroupKeyFromInvite).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// fulfillPendingWraps — DM sweep coverage (#528 PR-3)
+// ---------------------------------------------------------------------------
+
+describe('fulfillPendingWraps — sweeps both group and DM conversations', () => {
+  beforeEach(() => {
+    clearConversationServiceState();
+    // Reset mocks fully — mockReturnValue survives jest.clearAllMocks
+    mockGetOrFetchGroupKey.mockReset();
+    mockGetOrFetchGroupKey.mockResolvedValue(new Uint8Array(32));
+    mockGetPendingWraps.mockReset();
+    mockGetPendingWraps.mockResolvedValue([]);
+    mockRefreshAndCompareIdentityKey.mockReset();
+    mockRefreshAndCompareIdentityKey.mockResolvedValue({
+      publicKey: new ArrayBuffer(33),
+      identityChanged: false,
+    });
+  });
+
+  it('sweeps both direct and group conversations (getPendingWraps called for each)', async () => {
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-self-user',
+      activeConversationId: null,
+      conversations: {
+        'dm-1': { id: 'dm-1', type: 'direct', name: 'Bob' },
+        'g1': { id: 'g1', type: 'group', name: 'Family Orbit' },
+      },
+      contacts: {},
+      setConversations: mockSetConversations,
+      setGroupConversations: mockSetConversations,
+      setActiveConversation: mockSetActiveConversation,
+      upsertConversation: mockUpsertConversation,
+      mergeContacts: mockMergeContacts,
+      removeContact: jest.fn(),
+      setContactVerifiedStatus: mockSetContactVerifiedStatus,
+    });
+
+    mockGetPendingWraps.mockResolvedValue([]);
+
+    await fulfillPendingWraps();
+
+    // Both conversations should have been queried for pending wraps
+    expect(mockGetPendingWraps).toHaveBeenCalledTimes(2);
+    const calledIds = mockGetPendingWraps.mock.calls.map((c: unknown[]) => c[0]);
+    expect(calledIds).toContain('dm-1');
+    expect(calledIds).toContain('g1');
+  });
+
+  it('continues to the next conversation when getPendingWraps rejects with FORBIDDEN for a DM', async () => {
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-self-user',
+      activeConversationId: null,
+      conversations: {
+        'dm-pending': { id: 'dm-pending', type: 'direct', name: 'Alice' },
+        'g1': { id: 'g1', type: 'group', name: 'Family Orbit' },
+      },
+      contacts: {},
+      setConversations: mockSetConversations,
+      setGroupConversations: mockSetConversations,
+      setActiveConversation: mockSetActiveConversation,
+      upsertConversation: mockUpsertConversation,
+      mergeContacts: mockMergeContacts,
+      removeContact: jest.fn(),
+      setContactVerifiedStatus: mockSetContactVerifiedStatus,
+    });
+
+    // First conversation (whichever order Object.values returns) rejects
+    // with the FORBIDDEN_PENDING_MEMBER error — the catch should swallow it.
+    const forbiddenError: Error & { statusCode?: number } = new Error('FORBIDDEN_PENDING_MEMBER');
+    forbiddenError.statusCode = 403;
+    mockGetOrFetchGroupKey
+      .mockRejectedValueOnce(forbiddenError) // dm-pending: we're the pending one
+      .mockResolvedValueOnce(new Uint8Array(32)); // g1: normal key holder
+    mockGetPendingWraps.mockResolvedValue([{ userId: 'member-x' }]);
+
+    await fulfillPendingWraps();
+
+    // The sweep must not crash — it should reach the second conversation.
+    // getOrFetchGroupKey was called for both conversations even though the
+    // first one threw (the outer catch caught it and continued).
+    expect(mockGetOrFetchGroupKey).toHaveBeenCalledTimes(2);
+    // getPendingWraps only called for the one that had a key
+    expect(mockGetPendingWraps).toHaveBeenCalledTimes(1);
+    // Wrap + submit happened for the successful conversation's pending member
+    expect(mockSubmitWrappedKey).toHaveBeenCalledTimes(1);
+  });
+});

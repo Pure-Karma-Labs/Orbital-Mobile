@@ -695,11 +695,17 @@ export async function fulfillPendingWraps(): Promise<void> {
   if (!session) return;
 
   const conversations = useAppStore.getState().conversations;
-  const groupIds = Object.values(conversations)
-    .filter(c => c.type === 'group')
+  // Sweep ALL conversation types — DMs (type: 'direct') rely solely on
+  // one-shot WS fan-out with no polling backstop, so they need this periodic
+  // sweep just as much as groups.  The slice(0, 10) cap now spans both
+  // conversation types.  Note: the backstop runs on the KEY-HOLDER's device;
+  // a pending member cannot query its own pending rows — getPendingWraps
+  // returns 403 FORBIDDEN_PENDING_MEMBER for them, which the existing catch
+  // below swallows by design.
+  const conversationIds = Object.values(conversations)
     .map(c => c.id);
 
-  for (const groupId of groupIds.slice(0, 10)) {
+  for (const groupId of conversationIds.slice(0, 10)) {
     if (isSessionStale(session)) return;
     try {
       const groupKey = await getOrFetchGroupKey(groupId);

@@ -15,7 +15,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../theme';
 import { TextInput, Button, ErrorBanner, SuccessBanner, OrbitalLoader, AsciiBanner } from '../components';
 import { loginUser } from '../services/authService';
-import { AuthError, ConflictError, NetworkError, ValidationError } from '../services/api/errors';
+import { AccountSwitchError, AuthError, ConflictError, NetworkError, ValidationError } from '../services/api/errors';
 import type { OnPreAuthNavigate } from '../navigation/preAuthTypes';
 
 export interface LoginScreenProps {
@@ -45,7 +45,9 @@ export function LoginScreen({ onNavigate, successMessage }: LoginScreenProps): R
       await loginUser(email.trim(), password);
       // Auth store update triggers isAuthenticated → App re-renders
     } catch (e) {
-      if (e instanceof AuthError || e instanceof ValidationError || e instanceof ConflictError) {
+      if (e instanceof AccountSwitchError) {
+        setError(e.message);
+      } else if (e instanceof AuthError || e instanceof ValidationError || e instanceof ConflictError) {
         setError('Invalid email or password');
       } else if (e instanceof NetworkError) {
         setError(e.message);

@@ -2,7 +2,7 @@
  * Tests for authService — login, signup, session restore, logout, deleteAccount orchestration.
  */
 
-import { loginUser, signupUser, restoreSession, logout, deleteAccount, acceptCurrentTerms } from '../authService';
+import { loginUser, signupUser, restoreSession, logout, deleteAccount, acceptCurrentTerms, checkAccountSwitch } from '../authService';
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -137,11 +137,14 @@ const mockLoadConversations = jest.fn().mockResolvedValue(undefined);
 const mockLoadDmConversations = jest.fn().mockResolvedValue(undefined);
 const mockFulfillPendingWraps = jest.fn().mockResolvedValue(undefined);
 const mockHydrateContactsFromOrbits = jest.fn().mockResolvedValue(undefined);
+const mockSelfWrapIfNeeded = jest.fn().mockResolvedValue(undefined);
 jest.mock('../conversationService', () => ({
   loadConversations: (...args: unknown[]) => mockLoadConversations(...args),
   loadDmConversations: (...args: unknown[]) => mockLoadDmConversations(...args),
   fulfillPendingWraps: (...args: unknown[]) => mockFulfillPendingWraps(...args),
   hydrateContactsFromOrbits: (...args: unknown[]) => mockHydrateContactsFromOrbits(...args),
+  selfWrapIfNeeded: (...args: unknown[]) => mockSelfWrapIfNeeded(...args),
+  clearConversationServiceState: jest.fn(),
 }));
 
 jest.mock('../../stores/middleware/persistence', () => ({
@@ -204,7 +207,7 @@ jest.mock('../../stores/useAppStore', () => ({
 import * as authApi from '../api/auth';
 import * as usersApi from '../api/users';
 import { tokenManager } from '../api/tokenManager';
-import { ConflictError, NetworkError, AuthError } from '../api/errors';
+import { AccountSwitchError, ConflictError, NetworkError, AuthError } from '../api/errors';
 import { websocketManager } from '../websocket';
 
 const mockLogin = authApi.login as jest.Mock;
@@ -218,12 +221,19 @@ const mockClearTokens = tokenManager.clearTokens as jest.Mock;
 const mockWsConnect = websocketManager.connect as jest.Mock;
 const mockWsDisconnect = websocketManager.disconnect as jest.Mock;
 
+import { isDatabaseInitialized } from '../../database/connection';
+const mockIsDatabaseInitialized = isDatabaseInitialized as jest.Mock;
+
 // ---------------------------------------------------------------------------
 // Test setup
 // ---------------------------------------------------------------------------
 
 beforeEach(() => {
   jest.clearAllMocks();
+  // Restore default mock return values that tests may override —
+  // clearAllMocks only clears tracking (calls/results), NOT mockReturnValue.
+  mockGetItem.mockReturnValue(null);
+  mockIsDatabaseInitialized.mockReturnValue(true);
 });
 
 // ---------------------------------------------------------------------------
@@ -329,7 +339,7 @@ describe('loginUser', () => {
     expect(mockHydrateContactsFromOrbits).toHaveBeenCalledTimes(1);
   });
 
-  it('clears contacts on account switch', async () => {
+  it('throws AccountSwitchError when a different user tries to log in', async () => {
     mockGetItem.mockReturnValue('different-user');
     mockLogin.mockResolvedValue({
       token: 'tok',
@@ -338,9 +348,10 @@ describe('loginUser', () => {
       publicKey: null,
     });
 
-    await loginUser('alice', 'secret');
-
-    expect(mockSetContacts).toHaveBeenCalledWith([]);
+    await expect(loginUser('alice', 'secret')).rejects.toBeInstanceOf(AccountSwitchError);
+    expect(mockSetTokens).not.toHaveBeenCalled();
+    expect(mockSetUser).not.toHaveBeenCalled();
+    expect(mockFullCryptoWipe).not.toHaveBeenCalled();
   });
 
   it('hydrates needsTermsAcceptance=true from login response', async () => {
@@ -990,5 +1001,340 @@ describe('deleteAccount', () => {
     expect(mockCloseDatabase).toHaveBeenCalled();
     // DB file unlink should still happen
     expect(mockUnlink).toHaveBeenCalledWith(`${MOCK_DOC_DIR}/orbital.db`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Account-switch refusal guard
+// ---------------------------------------------------------------------------
+
+describe('checkAccountSwitch', () => {
+  it('passes when DB is not initialized (fresh device)', () => {
+    mockIsDatabaseInitialized.mockReturnValue(false);
+    expect(() => checkAccountSwitch('any-user')).not.toThrow();
+    // Should not attempt to read/write items when DB is uninitialized
+    expect(mockGetItem).not.toHaveBeenCalled();
+    expect(mockSetItem).not.toHaveBeenCalled();
+  });
+
+  it('passes and writes lastUserId when no lastUserId exists (fresh device with DB)', () => {
+    mockIsDatabaseInitialized.mockReturnValue(true);
+    mockGetItem.mockReturnValue(null);
+    expect(() => checkAccountSwitch('user-1')).not.toThrow();
+    expect(mockSetItem).toHaveBeenCalledWith('lastUserId', 'user-1');
+  });
+
+  it('passes when same user logs in', () => {
+    mockIsDatabaseInitialized.mockReturnValue(true);
+    mockGetItem.mockReturnValue('user-1');
+    expect(() => checkAccountSwitch('user-1')).not.toThrow();
+    expect(mockSetItem).toHaveBeenCalledWith('lastUserId', 'user-1');
+  });
+
+  it('throws AccountSwitchError when a different user tries', () => {
+    mockIsDatabaseInitialized.mockReturnValue(true);
+    mockGetItem.mockReturnValue('user-1');
+    expect(() => checkAccountSwitch('user-2')).toThrow(AccountSwitchError);
+    // lastUserId must NOT be overwritten
+    expect(mockSetItem).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Account-switch refusal — loginUser
+// ---------------------------------------------------------------------------
+
+describe('loginUser account-switch refusal', () => {
+  it('same user: login succeeds, tokens stored, store populated', async () => {
+    mockGetItem.mockReturnValue('user-1');
+    mockLogin.mockResolvedValue({
+      token: 'tok',
+      userId: 'user-1',
+      username: 'alice',
+      publicKey: null,
+    });
+
+    await loginUser('alice', 'secret');
+
+    expect(mockSetTokens).toHaveBeenCalledWith('tok', undefined);
+    expect(mockSetUser).toHaveBeenCalled();
+    expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+  });
+
+  it('different user: throws AccountSwitchError, setTokens NOT called, store untouched, lastUserId unchanged', async () => {
+    mockGetItem.mockReturnValue('original-user');
+    mockLogin.mockResolvedValue({
+      token: 'tok',
+      userId: 'intruder',
+      username: 'eve',
+      publicKey: null,
+    });
+
+    await expect(loginUser('eve', 'pass')).rejects.toBeInstanceOf(AccountSwitchError);
+    expect(mockSetTokens).not.toHaveBeenCalled();
+    expect(mockSetUser).not.toHaveBeenCalled();
+    expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+    // lastUserId not overwritten
+    expect(mockSetItem).not.toHaveBeenCalled();
+  });
+
+  it('fresh device (no lastUserId): login succeeds', async () => {
+    mockGetItem.mockReturnValue(null);
+    mockLogin.mockResolvedValue({
+      token: 'tok',
+      userId: 'new-user',
+      username: 'newbie',
+      publicKey: null,
+    });
+
+    await loginUser('newbie', 'pass');
+
+    expect(mockSetTokens).toHaveBeenCalled();
+    expect(mockSetUser).toHaveBeenCalled();
+    expect(mockSetItem).toHaveBeenCalledWith('lastUserId', 'new-user');
+  });
+
+  it('DB uninitialized: login succeeds (no guard)', async () => {
+    mockIsDatabaseInitialized.mockReturnValue(false);
+    mockLogin.mockResolvedValue({
+      token: 'tok',
+      userId: 'any-user',
+      username: 'any',
+      publicKey: null,
+    });
+
+    await loginUser('any', 'pass');
+
+    expect(mockSetTokens).toHaveBeenCalled();
+    expect(mockSetUser).toHaveBeenCalled();
+    expect(mockGetItem).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Account-switch refusal — signupUser
+// ---------------------------------------------------------------------------
+
+describe('signupUser account-switch refusal', () => {
+  it('same user: signup succeeds', async () => {
+    mockGetItem.mockReturnValue('user-1');
+    mockSignup.mockResolvedValue({
+      token: 'tok',
+      userId: 'user-1',
+      username: 'alice',
+      email: 'a@x.com',
+      groupId: null,
+      inviteEncryptedGroupKey: null,
+    });
+
+    await signupUser('alice', 'pass', 'a@x.com', 'CODE');
+
+    expect(mockSetTokens).toHaveBeenCalled();
+    expect(mockSetUser).toHaveBeenCalled();
+    expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+  });
+
+  it('different user: throws AccountSwitchError, setTokens NOT called, store untouched, lastUserId unchanged', async () => {
+    mockGetItem.mockReturnValue('original-user');
+    mockSignup.mockResolvedValue({
+      token: 'tok',
+      userId: 'intruder',
+      username: 'eve',
+      email: 'e@x.com',
+      groupId: null,
+      inviteEncryptedGroupKey: null,
+    });
+
+    await expect(signupUser('eve', 'pass', 'e@x.com', 'CODE')).rejects.toBeInstanceOf(AccountSwitchError);
+    expect(mockSetTokens).not.toHaveBeenCalled();
+    expect(mockSetUser).not.toHaveBeenCalled();
+    expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+    expect(mockSetItem).not.toHaveBeenCalled();
+  });
+
+  it('fresh device (no lastUserId): signup succeeds', async () => {
+    mockGetItem.mockReturnValue(null);
+    mockSignup.mockResolvedValue({
+      token: 'tok',
+      userId: 'new-user',
+      username: 'newbie',
+      email: 'n@x.com',
+      groupId: null,
+      inviteEncryptedGroupKey: null,
+    });
+
+    await signupUser('newbie', 'pass', 'n@x.com', 'CODE');
+
+    expect(mockSetTokens).toHaveBeenCalled();
+    expect(mockSetUser).toHaveBeenCalled();
+    expect(mockSetItem).toHaveBeenCalledWith('lastUserId', 'new-user');
+  });
+
+  it('DB uninitialized: signup succeeds (no guard)', async () => {
+    mockIsDatabaseInitialized.mockReturnValue(false);
+    mockSignup.mockResolvedValue({
+      token: 'tok',
+      userId: 'any-user',
+      username: 'any',
+      email: 'a@x.com',
+      groupId: null,
+      inviteEncryptedGroupKey: null,
+    });
+
+    await signupUser('any', 'pass', 'a@x.com', 'CODE');
+
+    expect(mockSetTokens).toHaveBeenCalled();
+    expect(mockSetUser).toHaveBeenCalled();
+    expect(mockGetItem).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Account-switch refusal — restoreSession
+// ---------------------------------------------------------------------------
+
+describe('restoreSession account-switch refusal', () => {
+  it('same user: restores successfully', async () => {
+    mockGetItem.mockReturnValue('u1');
+    mockGetAccessToken.mockResolvedValue('stored-token');
+    mockVerifyToken.mockResolvedValue({ valid: true, userId: 'u1', username: 'eve' });
+    mockGetMe.mockResolvedValue({
+      id: 'u1',
+      username: 'eve',
+      displayName: 'Eve',
+      avatarUrl: null,
+      createdAt: '2024-01-01',
+    });
+
+    const result = await restoreSession();
+
+    expect(result).toBe(true);
+    expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+  });
+
+  it('different user: clears tokens, returns false, no wipe, store untouched', async () => {
+    mockGetItem.mockReturnValue('original-user');
+    mockGetAccessToken.mockResolvedValue('stored-token');
+    mockVerifyToken.mockResolvedValue({ valid: true, userId: 'u1', username: 'intruder' });
+    mockGetMe.mockResolvedValue({
+      id: 'intruder-id',
+      username: 'intruder',
+      displayName: 'Intruder',
+      avatarUrl: null,
+      createdAt: '2024-01-01',
+    });
+
+    const result = await restoreSession();
+
+    expect(result).toBe(false);
+    expect(mockClearTokens).toHaveBeenCalledTimes(1);
+    expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+    // Store must never be hydrated — setUser triggers isAuthenticated:true
+    expect(mockSetUser).not.toHaveBeenCalled();
+    expect(mockSetNeedsTermsAcceptance).not.toHaveBeenCalled();
+    expect(mockUpdateProfile).not.toHaveBeenCalled();
+    // lastUserId must NOT be overwritten
+    expect(mockSetItem).not.toHaveBeenCalled();
+  });
+
+  it('fresh device (no lastUserId): restores successfully', async () => {
+    mockGetItem.mockReturnValue(null);
+    mockGetAccessToken.mockResolvedValue('stored-token');
+    mockVerifyToken.mockResolvedValue({ valid: true, userId: 'u1', username: 'eve' });
+    mockGetMe.mockResolvedValue({
+      id: 'u1',
+      username: 'eve',
+      displayName: 'Eve',
+      avatarUrl: null,
+      createdAt: '2024-01-01',
+    });
+
+    const result = await restoreSession();
+
+    expect(result).toBe(true);
+    expect(mockSetItem).toHaveBeenCalledWith('lastUserId', 'u1');
+    expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+  });
+
+  it('DB uninitialized: restores successfully (no guard)', async () => {
+    mockIsDatabaseInitialized.mockReturnValue(false);
+    mockGetAccessToken.mockResolvedValue('stored-token');
+    mockVerifyToken.mockResolvedValue({ valid: true, userId: 'u1', username: 'eve' });
+    mockGetMe.mockResolvedValue({
+      id: 'u1',
+      username: 'eve',
+      displayName: 'Eve',
+      avatarUrl: null,
+      createdAt: '2024-01-01',
+    });
+
+    const result = await restoreSession();
+
+    expect(result).toBe(true);
+    expect(mockGetItem).not.toHaveBeenCalled();
+    expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Invariant: fullCryptoWipe is NEVER called from login/signup/restore
+// ---------------------------------------------------------------------------
+
+describe('fullCryptoWipe invariant', () => {
+  it('loginUser never calls fullCryptoWipe (same user)', async () => {
+    mockGetItem.mockReturnValue('user-1');
+    mockLogin.mockResolvedValue({
+      token: 'tok', userId: 'user-1', username: 'a', publicKey: null,
+    });
+    await loginUser('a', 'p');
+    expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+  });
+
+  it('loginUser never calls fullCryptoWipe (different user — throws instead)', async () => {
+    mockGetItem.mockReturnValue('original');
+    mockLogin.mockResolvedValue({
+      token: 'tok', userId: 'other', username: 'b', publicKey: null,
+    });
+    await expect(loginUser('b', 'p')).rejects.toBeInstanceOf(AccountSwitchError);
+    expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+  });
+
+  it('signupUser never calls fullCryptoWipe (same user)', async () => {
+    mockGetItem.mockReturnValue('user-1');
+    mockSignup.mockResolvedValue({
+      token: 'tok', userId: 'user-1', username: 'a', email: 'a@x.com',
+      groupId: null, inviteEncryptedGroupKey: null,
+    });
+    await signupUser('a', 'p', 'a@x.com', 'C');
+    expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+  });
+
+  it('signupUser never calls fullCryptoWipe (different user — throws instead)', async () => {
+    mockGetItem.mockReturnValue('original');
+    mockSignup.mockResolvedValue({
+      token: 'tok', userId: 'other', username: 'b', email: 'b@x.com',
+      groupId: null, inviteEncryptedGroupKey: null,
+    });
+    await expect(signupUser('b', 'p', 'b@x.com', 'C')).rejects.toBeInstanceOf(AccountSwitchError);
+    expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+  });
+
+  it('restoreSession never calls fullCryptoWipe (same user)', async () => {
+    mockGetItem.mockReturnValue('u1');
+    mockGetAccessToken.mockResolvedValue('tok');
+    mockVerifyToken.mockResolvedValue({ valid: true, userId: 'u1' });
+    mockGetMe.mockResolvedValue({ id: 'u1', username: 'a', displayName: 'A', avatarUrl: null });
+    await restoreSession();
+    expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+  });
+
+  it('restoreSession never calls fullCryptoWipe (different user — clears tokens instead)', async () => {
+    mockGetItem.mockReturnValue('original');
+    mockGetAccessToken.mockResolvedValue('tok');
+    mockVerifyToken.mockResolvedValue({ valid: true, userId: 'u1' });
+    mockGetMe.mockResolvedValue({ id: 'other', username: 'b', displayName: 'B', avatarUrl: null });
+    const result = await restoreSession();
+    expect(result).toBe(false);
+    expect(mockFullCryptoWipe).not.toHaveBeenCalled();
   });
 });

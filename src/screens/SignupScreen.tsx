@@ -16,7 +16,7 @@ import { useTheme } from '../theme';
 import { TextInput, Button, ErrorBanner, OrbitalLoader, AsciiBanner } from '../components';
 import { TermsCheckbox } from '../components/TermsCheckbox';
 import { signupUser } from '../services/authService';
-import { AuthError, ConflictError, NetworkError, ValidationError } from '../services/api/errors';
+import { AccountSwitchError, AuthError, ConflictError, NetworkError, ValidationError } from '../services/api/errors';
 import { formatInviteCode, stripInviteCode } from '../services/crypto/inviteCrypto';
 import type { OnPreAuthNavigate } from '../navigation/preAuthTypes';
 
@@ -65,7 +65,9 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
       await signupUser(username.trim(), password, email.trim(), stripInviteCode(inviteCode));
       // Auth store update triggers isAuthenticated → App re-renders
     } catch (e) {
-      if (e instanceof AuthError || e instanceof ValidationError || e instanceof ConflictError) {
+      if (e instanceof AccountSwitchError) {
+        setError(e.message);
+      } else if (e instanceof AuthError || e instanceof ValidationError || e instanceof ConflictError) {
         setError(e.message || 'Signup failed');
       } else if (e instanceof NetworkError) {
         setError(e.message);

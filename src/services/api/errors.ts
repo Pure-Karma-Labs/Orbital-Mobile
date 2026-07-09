@@ -101,6 +101,26 @@ export class NotFoundError extends ApiError {
 }
 
 /**
+ * Client-side account-switch refusal.
+ *
+ * Thrown when a login or signup attempt targets a different user than the one
+ * whose encrypted data resides on this device. This is NOT an HTTP error — it
+ * is raised before any tokens or state are persisted, so rolling back is a
+ * no-op. The user must either log in with the original account or delete that
+ * account (which triggers fullCryptoWipe) to reclaim the device.
+ */
+export class AccountSwitchError extends Error {
+  constructor() {
+    super(
+      'This device holds encrypted data for another account. ' +
+      'Log in with that account, or delete the account to reset this device.',
+    );
+    this.name = 'AccountSwitchError';
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+/**
  * HTTP 409 — conflict. The request cannot be completed due to a conflict
  * with the current state of the resource.
  *

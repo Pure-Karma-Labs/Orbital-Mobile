@@ -9,7 +9,7 @@ import * as auth from './api/auth';
 import * as users from './api/users';
 import { acceptTerms } from './api/terms';
 import { tokenManager } from './api/tokenManager';
-import { ApiError, ConflictError, NetworkError } from './api/errors';
+import { ApiError, AccountSwitchError, ConflictError, NetworkError } from './api/errors';
 import type { BlockingOrbit } from './api/errors';
 import { TERMS_VERSION } from '../config/termsPolicy';
 import { useAppStore } from '../stores/useAppStore';
@@ -58,6 +58,24 @@ function warnCatch(tag: string) {
 }
 
 /**
+ * Account-switch guard — REFUSAL semantics.
+ *
+ * Reads `lastUserId` from the items table (inside a DB-initialized guard so
+ * a fresh device always passes). On mismatch, throws AccountSwitchError.
+ * On pass (same user or fresh device), writes the new userId as `lastUserId`.
+ *
+ * Callers: loginUser, signupUser (throw to UI), restoreSession (catch + clear).
+ */
+export function checkAccountSwitch(newUserId: string): void {
+  if (!isDatabaseInitialized()) return; // fresh device — no data to protect
+  const lastUserId = getItem('lastUserId');
+  if (lastUserId && lastUserId !== newUserId) {
+    throw new AccountSwitchError();
+  }
+  setItem('lastUserId', newUserId);
+}
+
+/**
  * Shared post-authentication bootstrap sequence.
  *
  * Called after login, signup, and session restore to hydrate conversations,
@@ -93,6 +111,12 @@ export async function loginUser(
   password: string,
 ): Promise<void> {
   const response = await auth.login({ email, password });
+
+  // Account-switch guard — BEFORE persisting anything. On mismatch the thrown
+  // AccountSwitchError leaves tokens, store, and lastUserId untouched. The
+  // server-issued JWT is simply discarded (it expires naturally).
+  checkAccountSwitch(response.userId);
+
   await tokenManager.setTokens(response.token, undefined);
   // Hydrate user + terms flag in the same synchronous block (before any await)
   // to avoid a render flash where the main app briefly mounts before the gate.
@@ -106,16 +130,6 @@ export async function loginUser(
   useAppStore.getState().updateProfile({
     avatarDigest: response.avatarDigest ?? null,
   });
-
-  // Account-switch guard: if a different user logs in, wipe all crypto state
-  if (isDatabaseInitialized()) {
-    const lastUserId = getItem('lastUserId');
-    if (lastUserId && lastUserId !== response.userId) {
-      await fullCryptoWipe();
-      useAppStore.getState().setContacts([]);
-    }
-    setItem('lastUserId', response.userId);
-  }
 
   await postAuthBootstrap();
 }
@@ -132,6 +146,10 @@ export async function signupUser(
   inviteCode: string,
 ): Promise<void> {
   const response = await auth.signup({ username, password, email, inviteCode, publicKey: { type: 'placeholder' }, termsVersion: TERMS_VERSION });
+
+  // Account-switch guard — BEFORE persisting anything. See loginUser comment.
+  checkAccountSwitch(response.userId);
+
   await tokenManager.setTokens(response.token, undefined);
   useAppStore.getState().setUser({
     userId: response.userId,
@@ -140,16 +158,6 @@ export async function signupUser(
     avatarPath: null,
   });
   useAppStore.getState().setNeedsTermsAcceptance(response.needsTermsAcceptance ?? false);
-
-  // Account-switch guard: wipe residual crypto if a different user was here before
-  if (isDatabaseInitialized()) {
-    const lastUserId = getItem('lastUserId');
-    if (lastUserId && lastUserId !== response.userId) {
-      await fullCryptoWipe();
-      useAppStore.getState().setContacts([]);
-    }
-    setItem('lastUserId', response.userId);
-  }
 
   try {
     await generateInitialKeys();
@@ -203,14 +211,13 @@ export async function restoreSession(): Promise<boolean> {
       avatarDigest: profile.avatarDigest ?? null,
     });
 
-    // Account-switch guard: if a different user logs in, wipe all crypto state
-    if (isDatabaseInitialized()) {
-      const lastUserId = getItem('lastUserId');
-      if (lastUserId && lastUserId !== profile.id) {
-        await fullCryptoWipe();
-        useAppStore.getState().setContacts([]);
-      }
-      setItem('lastUserId', profile.id);
+    // Account-switch guard: on mismatch, silently clear the stale token and
+    // land the user on the login screen. Never wipe, never throw to the UI.
+    try {
+      checkAccountSwitch(profile.id);
+    } catch {
+      await tokenManager.clearTokens();
+      return false;
     }
 
     await postAuthBootstrap();

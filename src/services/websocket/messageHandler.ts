@@ -15,7 +15,8 @@ import {
   wrapGroupKey,
   evictPendingCache,
 } from '../crypto/contentCrypto';
-import { resolveRemoteIdentityKey } from '../crypto/identityKeyAccess';
+import { refreshAndCompareIdentityKey } from '../crypto/identityKeyAccess';
+import { VerifiedStatus } from '../../types/database';
 import { submitWrappedKey } from '../api/groups';
 import { decryptThreadFields, decryptReplyBody, processMediaMetadata } from '../threadService';
 import { ensureDmConversation, hydrateContactsFromOrbits, refreshContactAvatar, retryPendingNameDecrypt, retryAllPendingNameDecrypts, markConversationReadEverywhere } from '../conversationService';
@@ -580,7 +581,17 @@ async function handleWrapKeyRequest(data: WrapKeyRequestPayload): Promise<void> 
     const groupKey = await getOrFetchGroupKey(data.groupId);
     const currentUserId = useAppStore.getState().userId;
     if (!currentUserId) return;
-    const targetPubKey = await resolveRemoteIdentityKey(data.targetUserId, currentUserId);
+    // Always fetch the current server-registered key for wrap targets.
+    // A stale TOFU cache entry (e.g. after identity reset) would wrap to
+    // the user's destroyed old key, producing unrecoverable ciphertext.
+    const { publicKey: targetPubKey, identityChanged } =
+      await refreshAndCompareIdentityKey(data.targetUserId, currentUserId);
+    if (identityChanged) {
+      useAppStore.getState().setContactVerifiedStatus(
+        data.targetUserId,
+        VerifiedStatus.Unverified,
+      );
+    }
     const wrapped = wrapGroupKey(groupKey, targetPubKey, data.groupId);
     await submitWrappedKey(data.groupId, data.targetUserId, wrapped);
   } catch (e) {

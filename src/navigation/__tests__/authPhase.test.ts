@@ -283,6 +283,7 @@ describe('assertLegalTransition', () => {
     // authenticated →
     ['authenticated', 'unauthenticated'],
     ['authenticated', 'loading'],
+    ['authenticated', 'terms-required'],
     ['authenticated', 'key-conflict'],
     ['authenticated', 'key-recovery'],
     // terms-required →
@@ -291,11 +292,13 @@ describe('assertLegalTransition', () => {
     ['terms-required', 'loading'],
     // key-conflict →
     ['key-conflict', 'key-recovery'],
+    ['key-conflict', 'terms-required'],
     ['key-conflict', 'unauthenticated'],
     ['key-conflict', 'loading'],
     ['key-conflict', 'authenticated'],
     // key-recovery →
     ['key-recovery', 'authenticated'],
+    ['key-recovery', 'terms-required'],
     ['key-recovery', 'unauthenticated'],
     ['key-recovery', 'loading'],
   ];
@@ -314,15 +317,11 @@ describe('assertLegalTransition', () => {
     // unauthenticated cannot jump to key phases
     ['unauthenticated', 'key-conflict'],
     ['unauthenticated', 'key-recovery'],
-    // authenticated cannot jump to terms (terms comes from login hydration, not from authenticated)
-    ['authenticated', 'terms-required'],
     // terms-required cannot jump to key phases
     ['terms-required', 'key-conflict'],
     ['terms-required', 'key-recovery'],
     // key-recovery cannot jump to key-conflict (recovery resolves to authenticated or logout)
     ['key-recovery', 'key-conflict'],
-    // key-recovery cannot jump to terms-required
-    ['key-recovery', 'terms-required'],
   ];
 
   it.each(ILLEGAL_CASES)('illegal: %s → %s warns', (from, to) => {

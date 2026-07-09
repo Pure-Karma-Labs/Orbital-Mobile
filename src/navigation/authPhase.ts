@@ -50,17 +50,37 @@ export function deriveAuthPhase(inputs: DeriveAuthPhaseInputs): AuthPhase {
 /**
  * Legal transitions between auth phases.
  *
- * The table is intentionally conservative — only transitions that make sense
- * from a user-flow perspective are listed. Self-transitions (same→same) are
- * always legal and not listed.
+ * This table must reflect every transition that deriveAuthPhase CAN produce
+ * given any sequence of input changes — not just the "happy-path" UI flows.
+ * A transition is legal here if the store inputs can change in a way that
+ * causes deriveAuthPhase to emit it, even if the scenario is unlikely.
+ *
+ * Self-transitions (same→same) are always legal and not listed.
+ *
+ * Known lower-probability transitions to audit when PR-6 wires real inputs:
+ *
+ *   loading → key-conflict / key-recovery
+ *     Possible under batched hydration: restoreSession sets isAuthenticated
+ *     AND identityKeyConflict/keyRecoveryInProgress in the same store
+ *     flush, so the first non-loading phase could be key-conflict or
+ *     key-recovery directly.
+ *
+ *   key-recovery → terms-required
+ *     Recovery resolves (keyRecoveryInProgress clears) while
+ *     needsTermsAcceptance is still true — deriveAuthPhase falls through
+ *     to terms-required.
+ *
+ *   key-conflict → terms-required
+ *     Conflict resolves (identityKeyConflict clears) while
+ *     needsTermsAcceptance is still true — same fall-through.
  */
 const LEGAL_TRANSITIONS: ReadonlyMap<AuthPhase, ReadonlySet<AuthPhase>> = new Map([
   ['loading', new Set<AuthPhase>(['unauthenticated', 'authenticated', 'terms-required'])],
   ['unauthenticated', new Set<AuthPhase>(['loading', 'authenticated', 'terms-required'])],
-  ['authenticated', new Set<AuthPhase>(['unauthenticated', 'loading', 'key-conflict', 'key-recovery'])],
+  ['authenticated', new Set<AuthPhase>(['unauthenticated', 'loading', 'terms-required', 'key-conflict', 'key-recovery'])],
   ['terms-required', new Set<AuthPhase>(['authenticated', 'unauthenticated', 'loading'])],
-  ['key-conflict', new Set<AuthPhase>(['key-recovery', 'unauthenticated', 'loading', 'authenticated'])],
-  ['key-recovery', new Set<AuthPhase>(['authenticated', 'unauthenticated', 'loading'])],
+  ['key-conflict', new Set<AuthPhase>(['key-recovery', 'terms-required', 'unauthenticated', 'loading', 'authenticated'])],
+  ['key-recovery', new Set<AuthPhase>(['authenticated', 'terms-required', 'unauthenticated', 'loading'])],
 ]);
 
 /**

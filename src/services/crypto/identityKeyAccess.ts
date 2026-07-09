@@ -102,6 +102,55 @@ export interface IdentityKeyRefreshResult {
 }
 
 /**
+ * Compare a supplied identity key against the stored key for a user and
+ * persist the result.  This is the pure compare-and-persist core shared
+ * by both {@link refreshAndCompareIdentityKey} (which fetches first) and
+ * the server-carried-key paths (WS wrap_key_request, fulfillPendingWraps)
+ * that receive the key inline.
+ *
+ * - Stored key exists AND matches → no-op, identityChanged = false
+ * - Stored key exists AND differs → save with Unverified, identityChanged = true
+ * - No stored key (first contact)  → save with Default, identityChanged = false
+ *
+ * This function only writes to `signal_identity_keys`; callers are
+ * responsible for any store-level side-effects (e.g. setContactVerifiedStatus).
+ *
+ * Synchronous: all repository calls are sync (SQLCipher).
+ */
+export function compareAndPersistIdentityKey(
+  userId: string,
+  keyBytes: Uint8Array,
+): IdentityKeyRefreshResult {
+  const stored = getIdentityKey(userId);
+  if (stored) {
+    const storedKey = new Uint8Array(stored.identity_key);
+    if (bytesEqual(storedKey, keyBytes)) {
+      // Key unchanged
+      return { publicKey: toArrayBuffer(keyBytes), identityChanged: false };
+    }
+    // Key changed — save with Unverified status
+    saveIdentityKey({
+      address: userId,
+      identity_key: keyBytes,
+      verified: VerifiedStatus.Unverified,
+      first_use: Math.floor(Date.now() / 1000),
+      nonblocking_approval: 0,
+    });
+    return { publicKey: toArrayBuffer(keyBytes), identityChanged: true };
+  }
+
+  // No prior key — first time seeing this user, save as Default
+  saveIdentityKey({
+    address: userId,
+    identity_key: keyBytes,
+    verified: VerifiedStatus.Default,
+    first_use: Math.floor(Date.now() / 1000),
+    nonblocking_approval: 0,
+  });
+  return { publicKey: toArrayBuffer(keyBytes), identityChanged: false };
+}
+
+/**
  * Separate inflight map for refresh operations.
  * Must NOT share with identityInflight — the cache-first resolve path
  * and the always-fetch refresh path have different semantics.
@@ -130,33 +179,7 @@ export async function refreshAndCompareIdentityKey(
       const decoded = new Uint8Array(base64ToArrayBuffer(bundle.identityKey));
       const keyBytes = normalizeIdentityKey(decoded);
 
-      const stored = getIdentityKey(userId);
-      if (stored) {
-        const storedKey = new Uint8Array(stored.identity_key);
-        if (bytesEqual(storedKey, keyBytes)) {
-          // Key unchanged
-          return { publicKey: toArrayBuffer(keyBytes), identityChanged: false };
-        }
-        // Key changed — save with Unverified status
-        saveIdentityKey({
-          address: userId,
-          identity_key: keyBytes,
-          verified: VerifiedStatus.Unverified,
-          first_use: Math.floor(Date.now() / 1000),
-          nonblocking_approval: 0,
-        });
-        return { publicKey: toArrayBuffer(keyBytes), identityChanged: true };
-      }
-
-      // No prior key — first time seeing this user, save as Default
-      saveIdentityKey({
-        address: userId,
-        identity_key: keyBytes,
-        verified: VerifiedStatus.Default,
-        first_use: Math.floor(Date.now() / 1000),
-        nonblocking_approval: 0,
-      });
-      return { publicKey: toArrayBuffer(keyBytes), identityChanged: false };
+      return compareAndPersistIdentityKey(userId, keyBytes);
     } finally {
       refreshInflight.delete(userId);
     }

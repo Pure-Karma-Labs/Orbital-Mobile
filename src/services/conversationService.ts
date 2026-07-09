@@ -20,9 +20,9 @@ import {
   evictPendingCache,
   PendingWrapError,
 } from './crypto/contentCrypto';
-import { getIdentityKeyPair, resolveRemoteIdentityKey, refreshAndCompareIdentityKey } from './crypto/identityKeyAccess';
+import { getIdentityKeyPair, resolveRemoteIdentityKey, refreshAndCompareIdentityKey, compareAndPersistIdentityKey, normalizeIdentityKey } from './crypto/identityKeyAccess';
 import { VerifiedStatus } from '../types/database';
-import { arrayBufferToBase64, toArrayBuffer } from './crypto/utils';
+import { arrayBufferToBase64, toArrayBuffer, base64ToArrayBuffer } from './crypto/utils';
 import { ApiError } from './api/errors';
 import { generateUUID } from '../utils/uuid';
 import { useAppStore } from '../stores/useAppStore';
@@ -505,8 +505,10 @@ export async function startDm(
   let recipientWrappedGroupKey: string | undefined;
   if (currentUserId) {
     try {
-      // Always fetch current server key — a stale TOFU cache after identity
-      // reset would wrap to the recipient's destroyed old key.
+      // Deliberately always-fetch here: startDm has no server-carried key
+      // channel (the DM doesn't exist yet), so we must hit the pre-key bundle
+      // API.  A stale TOFU cache after identity reset would wrap to the
+      // recipient's destroyed old key.
       const { publicKey: recipientPubKey, identityChanged } =
         await refreshAndCompareIdentityKey(recipientId, currentUserId);
       if (identityChanged) {
@@ -714,10 +716,42 @@ export async function fulfillPendingWraps(): Promise<void> {
 
       for (const member of pending.slice(0, 5)) {
         try {
-          // Always fetch current server key — a stale TOFU cache after
-          // identity reset would wrap to the member's destroyed old key.
-          const { publicKey: targetPubKey, identityChanged } =
-            await refreshAndCompareIdentityKey(member.userId, session.userId);
+          let targetPubKey: ArrayBuffer;
+          let identityChanged: boolean;
+
+          // Prefer the server-carried identity key from the pending-wraps
+          // response (avoids an extra fetchRemoteIdentityKeyBundle round-trip).
+          // The server is already the key directory — both reviewers confirmed
+          // no trust-model delta vs. the old always-fetch path.
+          //
+          // BOUNDED RACE NOTE (crypto plan-review M-4): a pending-wraps row
+          // snapshot taken across a key reset carries the pre-reset key.
+          // This is a bounded race no worse than the old always-fetch path;
+          // wraps produced from it are dead-on-arrival and the recipient's
+          // next reset/pending cycle re-covers all groups.
+          if (
+            typeof member.identityPublicKey === 'string' &&
+            member.identityPublicKey.length > 0
+          ) {
+            try {
+              const decoded = new Uint8Array(base64ToArrayBuffer(member.identityPublicKey));
+              const keyBytes = normalizeIdentityKey(decoded);
+              const result = compareAndPersistIdentityKey(member.userId, keyBytes);
+              targetPubKey = result.publicKey;
+              identityChanged = result.identityChanged;
+            } catch {
+              // Malformed/wrong-length key — fall back to always-fetch
+              const result = await refreshAndCompareIdentityKey(member.userId, session.userId);
+              targetPubKey = result.publicKey;
+              identityChanged = result.identityChanged;
+            }
+          } else {
+            // Field absent or empty — defensive fallback to always-fetch
+            const result = await refreshAndCompareIdentityKey(member.userId, session.userId);
+            targetPubKey = result.publicKey;
+            identityChanged = result.identityChanged;
+          }
+
           if (identityChanged) {
             useAppStore.getState().setContactVerifiedStatus(
               member.userId,

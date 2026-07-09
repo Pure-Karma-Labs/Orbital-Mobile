@@ -19,7 +19,7 @@ jest.mock('../../api/keys', () => ({
   fetchRemoteIdentityKeyBundle: (...args: unknown[]) => mockFetchRemoteIdentityKeyBundle(...args),
 }));
 
-import { resolveRemoteIdentityKey, getIdentityKeyPair } from '../identityKeyAccess';
+import { resolveRemoteIdentityKey, getIdentityKeyPair, compareAndPersistIdentityKey, refreshAndCompareIdentityKey } from '../identityKeyAccess';
 import { arrayBufferToBase64 } from '../utils';
 
 beforeEach(() => {
@@ -127,5 +127,146 @@ describe('getIdentityKeyPair', () => {
     const pair = getIdentityKeyPair();
     expect(pair.privateKey).toBeInstanceOf(ArrayBuffer);
     expect(pair.publicKey).toBeInstanceOf(ArrayBuffer);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// compareAndPersistIdentityKey — pure compare-and-persist core
+// ---------------------------------------------------------------------------
+
+describe('compareAndPersistIdentityKey', () => {
+  it('returns identityChanged=false when stored key matches', () => {
+    const keyBytes = new Uint8Array(33);
+    keyBytes[0] = 0x05;
+    keyBytes.fill(0xaa, 1);
+    mockGetIdentityKey.mockReturnValueOnce({
+      address: 'user-1',
+      identity_key: keyBytes,
+      verified: 0,
+      first_use: 1000,
+      nonblocking_approval: 0,
+    });
+
+    const result = compareAndPersistIdentityKey('user-1', keyBytes);
+
+    expect(result.identityChanged).toBe(false);
+    expect(result.publicKey).toBeInstanceOf(ArrayBuffer);
+    expect(new Uint8Array(result.publicKey)).toEqual(keyBytes);
+    // Should NOT save when unchanged
+    expect(mockSaveIdentityKey).not.toHaveBeenCalled();
+  });
+
+  it('returns identityChanged=true and saves Unverified when stored key differs', () => {
+    const oldKey = new Uint8Array(33);
+    oldKey[0] = 0x05;
+    oldKey.fill(0xaa, 1);
+    mockGetIdentityKey.mockReturnValueOnce({
+      address: 'user-2',
+      identity_key: oldKey,
+      verified: 0,
+      first_use: 1000,
+      nonblocking_approval: 0,
+    });
+
+    const newKey = new Uint8Array(33);
+    newKey[0] = 0x05;
+    newKey.fill(0xbb, 1);
+
+    const result = compareAndPersistIdentityKey('user-2', newKey);
+
+    expect(result.identityChanged).toBe(true);
+    expect(new Uint8Array(result.publicKey)).toEqual(newKey);
+    expect(mockSaveIdentityKey).toHaveBeenCalledWith(
+      expect.objectContaining({
+        address: 'user-2',
+        verified: 2, // VerifiedStatus.Unverified
+      }),
+    );
+  });
+
+  it('returns identityChanged=false and saves Default for first-seen user', () => {
+    mockGetIdentityKey.mockReturnValueOnce(null);
+
+    const keyBytes = new Uint8Array(33);
+    keyBytes[0] = 0x05;
+    keyBytes.fill(0xcc, 1);
+
+    const result = compareAndPersistIdentityKey('new-user', keyBytes);
+
+    expect(result.identityChanged).toBe(false);
+    expect(new Uint8Array(result.publicKey)).toEqual(keyBytes);
+    expect(mockSaveIdentityKey).toHaveBeenCalledWith(
+      expect.objectContaining({
+        address: 'new-user',
+        verified: 0, // VerifiedStatus.Default
+      }),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// refreshAndCompareIdentityKey — delegates to compareAndPersistIdentityKey
+// ---------------------------------------------------------------------------
+
+describe('refreshAndCompareIdentityKey', () => {
+  const selfUserId = 'self-user-id';
+
+  it('returns own key for self with identityChanged=false', async () => {
+    const result = await refreshAndCompareIdentityKey(selfUserId, selfUserId);
+    expect(result.publicKey).toBeInstanceOf(ArrayBuffer);
+    expect(result.identityChanged).toBe(false);
+    expect(mockFetchRemoteIdentityKeyBundle).not.toHaveBeenCalled();
+  });
+
+  it('fetches remote key and delegates to compare logic', async () => {
+    const remoteKey = new Uint8Array(33);
+    remoteKey[0] = 0x05;
+    remoteKey.fill(0xdd, 1);
+    mockFetchRemoteIdentityKeyBundle.mockResolvedValueOnce({
+      identityKey: arrayBufferToBase64(remoteKey.buffer),
+    });
+    // First-seen user
+    mockGetIdentityKey.mockReturnValueOnce(null);
+
+    const result = await refreshAndCompareIdentityKey('remote-user', selfUserId);
+
+    expect(mockFetchRemoteIdentityKeyBundle).toHaveBeenCalledWith('remote-user');
+    expect(result.identityChanged).toBe(false);
+    expect(mockSaveIdentityKey).toHaveBeenCalledWith(
+      expect.objectContaining({
+        address: 'remote-user',
+        verified: 0,
+      }),
+    );
+  });
+
+  it('detects key change via delegated compare logic', async () => {
+    const oldKey = new Uint8Array(33);
+    oldKey[0] = 0x05;
+    oldKey.fill(0xaa, 1);
+    mockGetIdentityKey.mockReturnValueOnce({
+      address: 'changed-user',
+      identity_key: oldKey,
+      verified: 0,
+      first_use: 1000,
+      nonblocking_approval: 0,
+    });
+
+    const newKey = new Uint8Array(33);
+    newKey[0] = 0x05;
+    newKey.fill(0xbb, 1);
+    mockFetchRemoteIdentityKeyBundle.mockResolvedValueOnce({
+      identityKey: arrayBufferToBase64(newKey.buffer),
+    });
+
+    const result = await refreshAndCompareIdentityKey('changed-user', selfUserId);
+
+    expect(result.identityChanged).toBe(true);
+    expect(mockSaveIdentityKey).toHaveBeenCalledWith(
+      expect.objectContaining({
+        address: 'changed-user',
+        verified: 2, // Unverified
+      }),
+    );
   });
 });

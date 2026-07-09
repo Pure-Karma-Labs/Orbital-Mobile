@@ -50,10 +50,28 @@ jest.mock('../../crypto/contentCrypto', () => ({
   evictPendingCache: jest.fn(),
 }));
 
+const mockCompareAndPersistIdentityKey = jest.fn((_userId: string, _keyBytes: Uint8Array) => ({
+  publicKey: new ArrayBuffer(33),
+  identityChanged: false,
+}));
+const mockNormalizeIdentityKey = jest.fn((bytes: Uint8Array) => bytes);
 jest.mock('../../crypto/identityKeyAccess', () => ({
   refreshAndCompareIdentityKey: jest.fn().mockResolvedValue({
     publicKey: new ArrayBuffer(33),
     identityChanged: false,
+  }),
+  compareAndPersistIdentityKey: (a: string, b: Uint8Array) => mockCompareAndPersistIdentityKey(a, b),
+  normalizeIdentityKey: (a: Uint8Array) => mockNormalizeIdentityKey(a),
+}));
+
+jest.mock('../../crypto/utils', () => ({
+  base64ToArrayBuffer: jest.fn((b64: string) => {
+    if (b64 && b64.length > 0) {
+      const buf = new Uint8Array(33);
+      buf[0] = 0x05;
+      return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+    }
+    return new ArrayBuffer(0);
   }),
 }));
 
@@ -131,7 +149,8 @@ import {
   wrapGroupKey,
   evictPendingCache,
 } from '../../crypto/contentCrypto';
-import { refreshAndCompareIdentityKey } from '../../crypto/identityKeyAccess';
+import { refreshAndCompareIdentityKey, compareAndPersistIdentityKey } from '../../crypto/identityKeyAccess';
+import { base64ToArrayBuffer } from '../../crypto/utils';
 import { submitWrappedKey } from '../../api/groups';
 import { decryptThreadFields, decryptReplyBody } from '../../threadService';
 import { useAppStore } from '../../../stores/useAppStore';
@@ -148,6 +167,9 @@ const mockWrapGroupKey = wrapGroupKey as jest.MockedFunction<typeof wrapGroupKey
 const mockEvictPendingCache = evictPendingCache as jest.MockedFunction<typeof evictPendingCache>;
 const mockSubmitWrappedKey = submitWrappedKey as jest.MockedFunction<typeof submitWrappedKey>;
 const mockRefreshAndCompareIdentityKey = refreshAndCompareIdentityKey as jest.MockedFunction<typeof refreshAndCompareIdentityKey>;
+// base64ToArrayBuffer + compareAndPersistIdentityKey: imported so TS resolves the mock
+// wiring; actual mock fns are declared above jest.mock (pre-hoist).
+[base64ToArrayBuffer, compareAndPersistIdentityKey]; // retain imports
 const mockDbSaveThread = dbSaveThread as jest.MockedFunction<typeof dbSaveThread>;
 const mockDbSaveReply = dbSaveReply as jest.MockedFunction<typeof dbSaveReply>;
 const mockIsDatabaseInitialized = isDatabaseInitialized as jest.MockedFunction<typeof isDatabaseInitialized>;
@@ -212,6 +234,16 @@ beforeEach(() => {
   mockGetOrFetchGroupKey.mockResolvedValue(fakeGroupKey);
   mockDecryptThreadFields.mockResolvedValue({ title: 'Decrypted Title', body: 'Decrypted Body' });
   mockDecryptReplyBody.mockResolvedValue('Decrypted Reply');
+  // Reset server-carried-key mocks (mockReturnValue survives clearAllMocks)
+  mockCompareAndPersistIdentityKey.mockReturnValue({
+    publicKey: new ArrayBuffer(33),
+    identityChanged: false,
+  });
+  mockNormalizeIdentityKey.mockImplementation((bytes: Uint8Array) => bytes);
+  mockRefreshAndCompareIdentityKey.mockResolvedValue({
+    publicKey: new ArrayBuffer(33),
+    identityChanged: false,
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1001,11 +1033,13 @@ describe('wrap_key_request', () => {
     });
   });
 
-  it('wraps and submits the group key for the target user', async () => {
+  it('wraps and submits the group key for the target user using payload key (no fetch)', async () => {
     await handleServerMessage(makeWrapKeyRequest());
 
     expect(mockGetOrFetchGroupKey).toHaveBeenCalledWith(testUUID('group-1'));
-    expect(mockRefreshAndCompareIdentityKey).toHaveBeenCalledWith(testUUID('target-user'), testUUID('test-user'));
+    // Server-carried key path: uses compareAndPersistIdentityKey, NOT fetchRemoteIdentityKeyBundle
+    expect(mockCompareAndPersistIdentityKey).toHaveBeenCalledWith(testUUID('target-user'), expect.any(Uint8Array));
+    expect(mockRefreshAndCompareIdentityKey).not.toHaveBeenCalled();
     expect(mockWrapGroupKey).toHaveBeenCalledWith(fakeGroupKey, expect.any(ArrayBuffer), testUUID('group-1'));
     expect(mockSubmitWrappedKey).toHaveBeenCalledWith(testUUID('group-1'), testUUID('target-user'), 'wrapped-key-base64');
   });
@@ -1041,22 +1075,23 @@ describe('wrap_key_request', () => {
     expect(mockSubmitWrappedKey).not.toHaveBeenCalled();
   });
 
-  it('wraps with FRESH server key, not stale TOFU cache, after identity reset', async () => {
+  it('flags contact Unverified when payload key indicates identity change', async () => {
     const freshKey = new ArrayBuffer(33);
     new Uint8Array(freshKey).fill(0xff);
-    mockRefreshAndCompareIdentityKey.mockResolvedValueOnce({
+    mockCompareAndPersistIdentityKey.mockReturnValueOnce({
       publicKey: freshKey,
       identityChanged: true,
     });
 
     await handleServerMessage(makeWrapKeyRequest(testUUID('group-fresh'), testUUID('target-fresh')));
 
-    // Must call refreshAndCompareIdentityKey (always-fetch), not resolveRemoteIdentityKey
-    expect(mockRefreshAndCompareIdentityKey).toHaveBeenCalledWith(
+    // Uses server-carried key path, NOT the fetch path
+    expect(mockCompareAndPersistIdentityKey).toHaveBeenCalledWith(
       testUUID('target-fresh'),
-      TEST_USER_UUID,
+      expect.any(Uint8Array),
     );
-    // Must wrap with the fresh key returned by the refresh call
+    expect(mockRefreshAndCompareIdentityKey).not.toHaveBeenCalled();
+    // Must wrap with the key returned by compareAndPersist
     expect(mockWrapGroupKey).toHaveBeenCalledWith(fakeGroupKey, freshKey, testUUID('group-fresh'));
     expect(mockSubmitWrappedKey).toHaveBeenCalledWith(
       testUUID('group-fresh'),
@@ -1067,8 +1102,8 @@ describe('wrap_key_request', () => {
     expect(mockSetContactVerifiedStatus).toHaveBeenCalledWith(testUUID('target-fresh'), 2);
   });
 
-  it('does NOT flag contact Unverified when identity key is unchanged', async () => {
-    mockRefreshAndCompareIdentityKey.mockResolvedValueOnce({
+  it('does NOT flag contact Unverified when payload key is unchanged', async () => {
+    mockCompareAndPersistIdentityKey.mockReturnValueOnce({
       publicKey: new ArrayBuffer(33),
       identityChanged: false,
     });
@@ -1088,6 +1123,65 @@ describe('wrap_key_request', () => {
     await handleServerMessage(makeWrapKeyRequest(testUUID('group-retry'), testUUID('user-retry')));
 
     expect(mockGetOrFetchGroupKey).toHaveBeenCalledTimes(2);
+    expect(mockSubmitWrappedKey).toHaveBeenCalledTimes(1);
+  });
+
+  // --- Server-carried key tests (PR-4 #528) ---
+
+  it('falls back to refreshAndCompareIdentityKey when targetIdentityPublicKey is absent', async () => {
+    const msg = JSON.stringify({
+      type: 'wrap_key_request',
+      groupId: testUUID('group-no-key'),
+      targetUserId: testUUID('target-no-key'),
+      // targetIdentityPublicKey intentionally omitted
+    });
+
+    await handleServerMessage(msg);
+
+    expect(mockRefreshAndCompareIdentityKey).toHaveBeenCalledWith(
+      testUUID('target-no-key'),
+      TEST_USER_UUID,
+    );
+    expect(mockCompareAndPersistIdentityKey).not.toHaveBeenCalled();
+    expect(mockSubmitWrappedKey).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to refreshAndCompareIdentityKey when targetIdentityPublicKey is empty string', async () => {
+    const msg = JSON.stringify({
+      type: 'wrap_key_request',
+      groupId: testUUID('group-empty-key'),
+      targetUserId: testUUID('target-empty-key'),
+      targetIdentityPublicKey: '',
+    });
+
+    await handleServerMessage(msg);
+
+    expect(mockRefreshAndCompareIdentityKey).toHaveBeenCalledWith(
+      testUUID('target-empty-key'),
+      TEST_USER_UUID,
+    );
+    expect(mockCompareAndPersistIdentityKey).not.toHaveBeenCalled();
+  });
+
+  it('falls back to refreshAndCompareIdentityKey when normalizeIdentityKey throws (wrong length)', async () => {
+    mockNormalizeIdentityKey.mockImplementationOnce(() => {
+      throw new Error('Invalid identity key length');
+    });
+
+    const msg = JSON.stringify({
+      type: 'wrap_key_request',
+      groupId: testUUID('group-bad-len'),
+      targetUserId: testUUID('target-bad-len'),
+      targetIdentityPublicKey: 'garbage-base64-data',
+    });
+
+    await handleServerMessage(msg);
+
+    // normalizeIdentityKey threw, so falls back to fetch path
+    expect(mockRefreshAndCompareIdentityKey).toHaveBeenCalledWith(
+      testUUID('target-bad-len'),
+      TEST_USER_UUID,
+    );
     expect(mockSubmitWrappedKey).toHaveBeenCalledTimes(1);
   });
 });

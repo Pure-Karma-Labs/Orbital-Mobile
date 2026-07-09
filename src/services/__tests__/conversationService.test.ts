@@ -69,6 +69,11 @@ const mockRefreshAndCompareIdentityKey = jest.fn().mockResolvedValue({
   publicKey: new ArrayBuffer(33),
   identityChanged: false,
 });
+const mockCompareAndPersistIdentityKey = jest.fn((_userId: string, _keyBytes: Uint8Array) => ({
+  publicKey: new ArrayBuffer(33),
+  identityChanged: false,
+}));
+const mockNormalizeIdentityKey = jest.fn((bytes: Uint8Array) => bytes);
 jest.mock('../crypto/identityKeyAccess', () => ({
   getIdentityKeyPair: jest.fn(() => ({
     privateKey: new ArrayBuffer(32),
@@ -76,6 +81,8 @@ jest.mock('../crypto/identityKeyAccess', () => ({
   })),
   resolveRemoteIdentityKey: (...args: unknown[]) => mockResolveRemoteIdentityKey(...args),
   refreshAndCompareIdentityKey: (...args: unknown[]) => mockRefreshAndCompareIdentityKey(...args),
+  compareAndPersistIdentityKey: (a: string, b: Uint8Array) => mockCompareAndPersistIdentityKey(a, b),
+  normalizeIdentityKey: (a: Uint8Array) => mockNormalizeIdentityKey(a),
 }));
 
 jest.mock('../crypto/inviteCrypto', () => ({
@@ -87,12 +94,18 @@ jest.mock('../crypto/inviteCrypto', () => ({
 
 // NOTE: arrayBufferToBase64/toArrayBuffer are real (pure byte<->base64 helpers,
 // not a crypto boundary) so joinOrbit's v2 base64 encoding can be asserted against
-// real output. Only base64ToArrayBuffer (unused by conversationService) stays mocked.
+// real output. base64ToArrayBuffer is mocked — fulfillPendingWraps now uses it for
+// server-carried identity keys, so the default returns a 33-byte buffer (valid key length).
+const mockBase64ToArrayBuffer = jest.fn((_b64: string) => {
+  const buf = new Uint8Array(33);
+  buf[0] = 0x05;
+  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+});
 jest.mock('../crypto/utils', () => {
   const actual = jest.requireActual('../crypto/utils');
   return {
     ...actual,
-    base64ToArrayBuffer: jest.fn(() => new ArrayBuffer(32)),
+    base64ToArrayBuffer: (a: string) => mockBase64ToArrayBuffer(a),
   };
 });
 
@@ -150,6 +163,21 @@ const mockSubmitWrappedKey = submitWrappedKey as jest.Mock;
 
 beforeEach(() => {
   jest.clearAllMocks();
+  // Reset mockReturnValue-based mocks (survive clearAllMocks)
+  mockCompareAndPersistIdentityKey.mockReturnValue({
+    publicKey: new ArrayBuffer(33),
+    identityChanged: false,
+  });
+  mockNormalizeIdentityKey.mockImplementation((bytes: Uint8Array) => bytes);
+  mockRefreshAndCompareIdentityKey.mockResolvedValue({
+    publicKey: new ArrayBuffer(33),
+    identityChanged: false,
+  });
+  mockBase64ToArrayBuffer.mockImplementation(() => {
+    const buf = new Uint8Array(33);
+    buf[0] = 0x05;
+    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+  });
   (useAppStore.getState as jest.Mock).mockReturnValue({
     userId: 'test-self-user',
     activeConversationId: null,
@@ -1193,13 +1221,100 @@ describe('session-stale guards', () => {
 // fulfillPendingWraps — fresh identity key for wrap targets (#528)
 // ---------------------------------------------------------------------------
 
-describe('fulfillPendingWraps — always-fetch identity key for wrap targets', () => {
-  beforeEach(() => {
-    // Reset the debounce timer so fulfillPendingWraps actually runs.
-    clearConversationServiceState();
+describe('fulfillPendingWraps — server-carried identity key (#528 PR-4)', () => {
+  const stateWithGroup = () => ({
+    userId: 'test-self-user',
+    activeConversationId: null,
+    conversations: {
+      g1: { id: 'g1', type: 'group', name: 'Test Orbit' },
+    },
+    contacts: {},
+    setConversations: mockSetConversations,
+    setGroupConversations: mockSetConversations,
+    setActiveConversation: mockSetActiveConversation,
+    upsertConversation: mockUpsertConversation,
+    mergeContacts: mockMergeContacts,
+    removeContact: jest.fn(),
+    setContactVerifiedStatus: mockSetContactVerifiedStatus,
   });
 
-  it('wraps with FRESH server key via refreshAndCompareIdentityKey, not stale TOFU cache', async () => {
+  beforeEach(() => {
+    clearConversationServiceState();
+    mockGetOrFetchGroupKey.mockReset();
+    mockGetOrFetchGroupKey.mockResolvedValue(new Uint8Array(32).fill(0xab));
+    mockGetPendingWraps.mockReset();
+    mockGetPendingWraps.mockResolvedValue([]);
+    mockRefreshAndCompareIdentityKey.mockReset();
+    mockRefreshAndCompareIdentityKey.mockResolvedValue({
+      publicKey: new ArrayBuffer(33),
+      identityChanged: false,
+    });
+    mockCompareAndPersistIdentityKey.mockReset();
+    mockCompareAndPersistIdentityKey.mockReturnValue({
+      publicKey: new ArrayBuffer(33),
+      identityChanged: false,
+    });
+  });
+
+  it('uses server-carried identityPublicKey without network fetch', async () => {
+    const carriedKey = new ArrayBuffer(33);
+    new Uint8Array(carriedKey).fill(0xee);
+    mockCompareAndPersistIdentityKey.mockReturnValueOnce({
+      publicKey: carriedKey,
+      identityChanged: false,
+    });
+
+    (useAppStore.getState as jest.Mock).mockReturnValue(stateWithGroup());
+    mockGetPendingWraps.mockResolvedValue([
+      { userId: 'member-with-key', identityPublicKey: 'valid-base64-key' },
+    ]);
+
+    await fulfillPendingWraps();
+
+    // Must use compareAndPersistIdentityKey (payload key), NOT fetchRemoteIdentityKeyBundle
+    expect(mockCompareAndPersistIdentityKey).toHaveBeenCalledWith('member-with-key', expect.any(Uint8Array));
+    expect(mockRefreshAndCompareIdentityKey).not.toHaveBeenCalled();
+    expect(mockWrapGroupKey).toHaveBeenCalledWith(expect.any(Uint8Array), carriedKey, 'g1');
+    expect(mockSubmitWrappedKey).toHaveBeenCalledWith('g1', 'member-with-key', 'ecies-wrapped-base64');
+  });
+
+  it('flags contact Unverified when server-carried key indicates identity change', async () => {
+    const freshKey = new ArrayBuffer(33);
+    new Uint8Array(freshKey).fill(0xdd);
+    mockCompareAndPersistIdentityKey.mockReturnValueOnce({
+      publicKey: freshKey,
+      identityChanged: true,
+    });
+
+    (useAppStore.getState as jest.Mock).mockReturnValue(stateWithGroup());
+    mockGetPendingWraps.mockResolvedValue([
+      { userId: 'reset-member', identityPublicKey: 'reset-key-base64' },
+    ]);
+
+    await fulfillPendingWraps();
+
+    expect(mockCompareAndPersistIdentityKey).toHaveBeenCalledWith('reset-member', expect.any(Uint8Array));
+    expect(mockSetContactVerifiedStatus).toHaveBeenCalledWith('reset-member', 2);
+  });
+
+  it('does NOT flag contact Unverified when server-carried key is unchanged', async () => {
+    mockCompareAndPersistIdentityKey.mockReturnValueOnce({
+      publicKey: new ArrayBuffer(33),
+      identityChanged: false,
+    });
+
+    (useAppStore.getState as jest.Mock).mockReturnValue(stateWithGroup());
+    mockGetPendingWraps.mockResolvedValue([
+      { userId: 'unchanged-member', identityPublicKey: 'unchanged-key-base64' },
+    ]);
+
+    await fulfillPendingWraps();
+
+    expect(mockSetContactVerifiedStatus).not.toHaveBeenCalled();
+    expect(mockSubmitWrappedKey).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to refreshAndCompareIdentityKey when identityPublicKey is absent', async () => {
     const freshKey = new ArrayBuffer(33);
     new Uint8Array(freshKey).fill(0xdd);
     mockRefreshAndCompareIdentityKey.mockResolvedValueOnce({
@@ -1207,69 +1322,31 @@ describe('fulfillPendingWraps — always-fetch identity key for wrap targets', (
       identityChanged: true,
     });
 
-    const stateWithGroup = {
-      ...(() => ({
-        userId: 'test-self-user',
-        activeConversationId: null,
-        conversations: {
-          g1: { id: 'g1', type: 'group', name: 'Test Orbit' },
-        },
-        contacts: {},
-        setConversations: mockSetConversations,
-        setGroupConversations: mockSetConversations,
-        setActiveConversation: mockSetActiveConversation,
-        upsertConversation: mockUpsertConversation,
-        mergeContacts: mockMergeContacts,
-        removeContact: jest.fn(),
-        setContactVerifiedStatus: mockSetContactVerifiedStatus,
-      }))(),
-    };
-    (useAppStore.getState as jest.Mock).mockReturnValue(stateWithGroup);
-
-    mockGetOrFetchGroupKey.mockResolvedValue(new Uint8Array(32).fill(0xab));
-    mockGetPendingWraps.mockResolvedValue([{ userId: 'reset-member' }]);
+    (useAppStore.getState as jest.Mock).mockReturnValue(stateWithGroup());
+    // No identityPublicKey field on the pending member
+    mockGetPendingWraps.mockResolvedValue([{ userId: 'no-key-member' }]);
 
     await fulfillPendingWraps();
 
-    expect(mockRefreshAndCompareIdentityKey).toHaveBeenCalledWith('reset-member', 'test-self-user');
-    expect(mockWrapGroupKey).toHaveBeenCalledWith(
-      expect.any(Uint8Array),
-      freshKey,
-      'g1',
-    );
-    expect(mockSubmitWrappedKey).toHaveBeenCalledWith('g1', 'reset-member', 'ecies-wrapped-base64');
-    expect(mockSetContactVerifiedStatus).toHaveBeenCalledWith('reset-member', 2);
+    expect(mockRefreshAndCompareIdentityKey).toHaveBeenCalledWith('no-key-member', 'test-self-user');
+    expect(mockCompareAndPersistIdentityKey).not.toHaveBeenCalled();
+    expect(mockSetContactVerifiedStatus).toHaveBeenCalledWith('no-key-member', 2);
   });
 
-  it('does NOT flag contact Unverified when identity key is unchanged during pending wraps', async () => {
-    mockRefreshAndCompareIdentityKey.mockResolvedValueOnce({
-      publicKey: new ArrayBuffer(33),
-      identityChanged: false,
+  it('falls back to refreshAndCompareIdentityKey when normalizeIdentityKey throws', async () => {
+    mockNormalizeIdentityKey.mockImplementationOnce(() => {
+      throw new Error('Invalid identity key length');
     });
 
-    const stateWithGroup = {
-      userId: 'test-self-user',
-      activeConversationId: null,
-      conversations: {
-        g1: { id: 'g1', type: 'group', name: 'Test Orbit' },
-      },
-      contacts: {},
-      setConversations: mockSetConversations,
-      setGroupConversations: mockSetConversations,
-      setActiveConversation: mockSetActiveConversation,
-      upsertConversation: mockUpsertConversation,
-      mergeContacts: mockMergeContacts,
-      removeContact: jest.fn(),
-      setContactVerifiedStatus: mockSetContactVerifiedStatus,
-    };
-    (useAppStore.getState as jest.Mock).mockReturnValue(stateWithGroup);
-
-    mockGetOrFetchGroupKey.mockResolvedValue(new Uint8Array(32));
-    mockGetPendingWraps.mockResolvedValue([{ userId: 'unchanged-member' }]);
+    (useAppStore.getState as jest.Mock).mockReturnValue(stateWithGroup());
+    mockGetPendingWraps.mockResolvedValue([
+      { userId: 'bad-key-member', identityPublicKey: 'garbage-data' },
+    ]);
 
     await fulfillPendingWraps();
 
-    expect(mockSetContactVerifiedStatus).not.toHaveBeenCalled();
+    // normalizeIdentityKey threw, so falls back to fetch path
+    expect(mockRefreshAndCompareIdentityKey).toHaveBeenCalledWith('bad-key-member', 'test-self-user');
     expect(mockSubmitWrappedKey).toHaveBeenCalledTimes(1);
   });
 });

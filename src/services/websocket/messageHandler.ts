@@ -15,7 +15,8 @@ import {
   wrapGroupKey,
   evictPendingCache,
 } from '../crypto/contentCrypto';
-import { refreshAndCompareIdentityKey } from '../crypto/identityKeyAccess';
+import { refreshAndCompareIdentityKey, compareAndPersistIdentityKey, normalizeIdentityKey } from '../crypto/identityKeyAccess';
+import { base64ToArrayBuffer } from '../crypto/utils';
 import { VerifiedStatus } from '../../types/database';
 import { submitWrappedKey } from '../api/groups';
 import { decryptThreadFields, decryptReplyBody, processMediaMetadata } from '../threadService';
@@ -581,11 +582,42 @@ async function handleWrapKeyRequest(data: WrapKeyRequestPayload): Promise<void> 
     const groupKey = await getOrFetchGroupKey(data.groupId);
     const currentUserId = useAppStore.getState().userId;
     if (!currentUserId) return;
-    // Always fetch the current server-registered key for wrap targets.
-    // A stale TOFU cache entry (e.g. after identity reset) would wrap to
-    // the user's destroyed old key, producing unrecoverable ciphertext.
-    const { publicKey: targetPubKey, identityChanged } =
-      await refreshAndCompareIdentityKey(data.targetUserId, currentUserId);
+
+    let targetPubKey: ArrayBuffer;
+    let identityChanged: boolean;
+
+    // Prefer the server-carried target identity key (avoids an extra
+    // fetchRemoteIdentityKeyBundle round-trip).  The server is already the
+    // key directory — both reviewers confirmed no trust-model delta.
+    //
+    // BOUNDED RACE NOTE (crypto plan-review M-4): a WS event queued
+    // across a key reset carries the pre-reset key.  This is a bounded
+    // race no worse than the old always-fetch path; wraps produced from
+    // it are dead-on-arrival and the recipient's next reset/pending cycle
+    // re-covers all groups.
+    if (
+      typeof data.targetIdentityPublicKey === 'string' &&
+      data.targetIdentityPublicKey.length > 0
+    ) {
+      try {
+        const decoded = new Uint8Array(base64ToArrayBuffer(data.targetIdentityPublicKey));
+        const keyBytes = normalizeIdentityKey(decoded);
+        const result = compareAndPersistIdentityKey(data.targetUserId, keyBytes);
+        targetPubKey = result.publicKey;
+        identityChanged = result.identityChanged;
+      } catch {
+        // Malformed/wrong-length key — fall back to always-fetch
+        const result = await refreshAndCompareIdentityKey(data.targetUserId, currentUserId);
+        targetPubKey = result.publicKey;
+        identityChanged = result.identityChanged;
+      }
+    } else {
+      // Field absent or empty — defensive fallback to always-fetch
+      const result = await refreshAndCompareIdentityKey(data.targetUserId, currentUserId);
+      targetPubKey = result.publicKey;
+      identityChanged = result.identityChanged;
+    }
+
     if (identityChanged) {
       useAppStore.getState().setContactVerifiedStatus(
         data.targetUserId,

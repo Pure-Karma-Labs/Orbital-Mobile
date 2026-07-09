@@ -198,6 +198,17 @@ export async function restoreSession(): Promise<boolean> {
   try {
     const tokenResult = await auth.verifyToken();
     const profile = await users.getMe();
+
+    // Account-switch guard — BEFORE store hydration. On mismatch, clear the
+    // stale token and return false (login screen). The store is never dirtied,
+    // so clearAuth is unnecessary and isAuthenticated stays false.
+    try {
+      checkAccountSwitch(profile.id);
+    } catch {
+      await tokenManager.clearTokens();
+      return false;
+    }
+
     // Hydrate user + terms flag in the same synchronous block (before any await)
     // to avoid a render flash where the main app briefly mounts before the gate.
     useAppStore.getState().setUser({
@@ -210,15 +221,6 @@ export async function restoreSession(): Promise<boolean> {
     useAppStore.getState().updateProfile({
       avatarDigest: profile.avatarDigest ?? null,
     });
-
-    // Account-switch guard: on mismatch, silently clear the stale token and
-    // land the user on the login screen. Never wipe, never throw to the UI.
-    try {
-      checkAccountSwitch(profile.id);
-    } catch {
-      await tokenManager.clearTokens();
-      return false;
-    }
 
     await postAuthBootstrap();
     return true;

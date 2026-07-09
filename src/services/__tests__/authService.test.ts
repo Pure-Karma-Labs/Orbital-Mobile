@@ -1212,7 +1212,7 @@ describe('restoreSession account-switch refusal', () => {
     expect(mockFullCryptoWipe).not.toHaveBeenCalled();
   });
 
-  it('different user: clears tokens, returns false, no wipe', async () => {
+  it('different user: clears tokens, returns false, no wipe, store untouched', async () => {
     mockGetItem.mockReturnValue('original-user');
     mockGetAccessToken.mockResolvedValue('stored-token');
     mockVerifyToken.mockResolvedValue({ valid: true, userId: 'u1', username: 'intruder' });
@@ -1229,6 +1229,10 @@ describe('restoreSession account-switch refusal', () => {
     expect(result).toBe(false);
     expect(mockClearTokens).toHaveBeenCalledTimes(1);
     expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+    // Store must never be hydrated — setUser triggers isAuthenticated:true
+    expect(mockSetUser).not.toHaveBeenCalled();
+    expect(mockSetNeedsTermsAcceptance).not.toHaveBeenCalled();
+    expect(mockUpdateProfile).not.toHaveBeenCalled();
     // lastUserId must NOT be overwritten
     expect(mockSetItem).not.toHaveBeenCalled();
   });

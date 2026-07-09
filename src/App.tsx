@@ -5,7 +5,7 @@
  * @format
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   StatusBar,
   View,
@@ -26,6 +26,7 @@ import {
   setupNotificationTapHandler,
 } from './services/notificationService';
 import type { PreAuthScreen, PreAuthParams } from './navigation/preAuthTypes';
+import { deriveAuthPhase, assertLegalTransition } from './navigation/authPhase';
 import { LoginScreen } from './screens/LoginScreen';
 import { SignupScreen } from './screens/SignupScreen';
 import { ForgotPasswordScreen } from './screens/ForgotPasswordScreen';
@@ -36,8 +37,6 @@ import { TermsAcceptanceScreen } from './screens/TermsAcceptanceScreen';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import BootSplash from 'react-native-bootsplash';
 import { OrbitalLoader } from './components/OrbitalLoader';
-
-type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated';
 
 function App(): React.JSX.Element {
   const colorScheme = useAppStore((s) => s.colorScheme);
@@ -53,10 +52,29 @@ function App(): React.JSX.Element {
 }
 
 function AppContent(): React.JSX.Element {
-  const [authStatus, setAuthStatus] = useState<AuthStatus>('loading');
+  const [restoreDone, setRestoreDone] = useState(false);
   const [preAuthScreen, setPreAuthScreen] = useState<PreAuthScreen>('login');
   const [preAuthParams, setPreAuthParams] = useState<PreAuthParams>({});
   const { isAuthenticated, userId, needsTermsAcceptance } = useAuth();
+
+  // Derive the current auth phase from boolean inputs.
+  // key-conflict / key-recovery are hard-wired false in this PR — PR-6 supplies real inputs.
+  const phase = deriveAuthPhase({
+    restoreDone,
+    isAuthenticated,
+    needsTermsAcceptance,
+    identityKeyConflict: false,   // PR-6
+    keyRecoveryInProgress: false,  // PR-6
+  });
+
+  // Dev-only: warn on unexpected phase transitions
+  const prevPhaseRef = useRef(phase);
+  useEffect(() => {
+    if (prevPhaseRef.current !== phase) {
+      assertLegalTransition(prevPhaseRef.current, phase);
+      prevPhaseRef.current = phase;
+    }
+  }, [phase]);
 
   function handleNavigate(screen: PreAuthScreen, params?: PreAuthParams): void {
     setPreAuthScreen(screen);
@@ -70,25 +88,25 @@ function AppContent(): React.JSX.Element {
     bootstrap()
       .then(() => restoreSession())
       .then((restored) => {
-        if (!restored) setAuthStatus('unauthenticated');
+        if (!restored) setRestoreDone(true);
       })
       .catch((e: unknown) => {
         Sentry.captureException(e);
-        setAuthStatus('unauthenticated');
+        setRestoreDone(true);
       })
       .finally(() => {
         BootSplash.hide({ fade: true });
       });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // React to store auth changes (login success, logout, 401 clearance)
   useEffect(() => {
     if (isAuthenticated) {
-      setAuthStatus('authenticated');
+      // restoreSession / login set isAuthenticated in the store, which
+      // means restore is done (session was found or login succeeded).
+      setRestoreDone(true);
       Sentry.setUser(userId ? { id: userId } : null);
-    } else if (authStatus !== 'loading') {
-      setAuthStatus('unauthenticated');
+    } else if (restoreDone) {
       Sentry.setUser(null);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -124,34 +142,51 @@ function AppContent(): React.JSX.Element {
     }
   }, [isAuthenticated]);
 
+  // ---- Render based on derived phase ----
+  const renderPhaseContent = (): React.JSX.Element | null => {
+    switch (phase) {
+      case 'loading':
+        return <LoadingView />;
+
+      case 'unauthenticated':
+        switch (preAuthScreen) {
+          case 'login':
+            return <LoginScreen onNavigate={handleNavigate} successMessage={preAuthParams.successMessage} />;
+          case 'signup':
+            return <SignupScreen onNavigate={handleNavigate} />;
+          case 'forgotPassword':
+            return <ForgotPasswordScreen onNavigate={handleNavigate} email={preAuthParams.email} />;
+          case 'resetPassword':
+            return <ResetPasswordScreen onNavigate={handleNavigate} email={preAuthParams.email ?? ''} />;
+        }
+        break; // exhaustive but satisfies TS
+
+      case 'terms-required':
+        return <TermsAcceptanceScreen />;
+
+      case 'authenticated':
+        return (
+          <>
+            <AppNavigator />
+            <ReportContentSheet />
+          </>
+        );
+
+      // Unreachable in PR-2 (inputs hard-wired false). PR-6 replaces these.
+      case 'key-conflict':
+      case 'key-recovery':
+        return null;
+    }
+    return null;
+  };
+
   return (
     <>
       <StatusBar
         barStyle={isDark ? 'light-content' : 'dark-content'}
         backgroundColor={theme.colors.background}
       />
-      {authStatus === 'loading' && <LoadingView />}
-      {authStatus === 'unauthenticated' && preAuthScreen === 'login' && (
-        <LoginScreen onNavigate={handleNavigate} successMessage={preAuthParams.successMessage} />
-      )}
-      {authStatus === 'unauthenticated' && preAuthScreen === 'signup' && (
-        <SignupScreen onNavigate={handleNavigate} />
-      )}
-      {authStatus === 'unauthenticated' && preAuthScreen === 'forgotPassword' && (
-        <ForgotPasswordScreen onNavigate={handleNavigate} email={preAuthParams.email} />
-      )}
-      {authStatus === 'unauthenticated' && preAuthScreen === 'resetPassword' && (
-        <ResetPasswordScreen onNavigate={handleNavigate} email={preAuthParams.email ?? ''} />
-      )}
-      {authStatus === 'authenticated' && needsTermsAcceptance && (
-        <TermsAcceptanceScreen />
-      )}
-      {authStatus === 'authenticated' && !needsTermsAcceptance && (
-        <>
-          <AppNavigator />
-          <ReportContentSheet />
-        </>
-      )}
+      {renderPhaseContent()}
     </>
   );
 }

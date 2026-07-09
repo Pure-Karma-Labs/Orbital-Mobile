@@ -42,6 +42,16 @@ export function normalizeIdentityKey(decoded: Uint8Array): Uint8Array {
 
 const identityInflight = new Map<string, Promise<ArrayBuffer>>();
 
+/**
+ * Cache-first identity key resolution — returns the stored key without
+ * checking the server.  Suitable for READ paths (unwrap, contact
+ * hydration) where a stale key is harmless.
+ *
+ * **Must NOT be used to select a wrap TARGET key.**  After an identity
+ * reset the cached key is the user's destroyed old key; wrapping to it
+ * produces unrecoverable ciphertext.  Use {@link refreshAndCompareIdentityKey}
+ * for any wrap-for-other-user path.
+ */
 export async function resolveRemoteIdentityKey(
   userId: string,
   currentUserId: string,

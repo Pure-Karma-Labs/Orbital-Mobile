@@ -51,7 +51,10 @@ jest.mock('../../crypto/contentCrypto', () => ({
 }));
 
 jest.mock('../../crypto/identityKeyAccess', () => ({
-  resolveRemoteIdentityKey: jest.fn().mockResolvedValue(new ArrayBuffer(33)),
+  refreshAndCompareIdentityKey: jest.fn().mockResolvedValue({
+    publicKey: new ArrayBuffer(33),
+    identityChanged: false,
+  }),
 }));
 
 jest.mock('../../api/groups', () => ({
@@ -88,6 +91,7 @@ const mockSetReconnectAttempt = jest.fn();
 const mockAddTypingUser = jest.fn();
 const mockBumpLastMessageAt = jest.fn();
 const mockIncrementUnreadCount = jest.fn();
+const mockSetContactVerifiedStatus = jest.fn();
 
 const TEST_USER_UUID = '49172bda-0000-4000-a000-000000000000';
 
@@ -107,6 +111,7 @@ jest.mock('../../../stores/useAppStore', () => ({
       addTypingUser: mockAddTypingUser,
       bumpLastMessageAt: mockBumpLastMessageAt,
       incrementUnreadCount: mockIncrementUnreadCount,
+      setContactVerifiedStatus: mockSetContactVerifiedStatus,
       contacts: {},
       conversations: {},
       threads: {},
@@ -126,7 +131,7 @@ import {
   wrapGroupKey,
   evictPendingCache,
 } from '../../crypto/contentCrypto';
-import { resolveRemoteIdentityKey } from '../../crypto/identityKeyAccess';
+import { refreshAndCompareIdentityKey } from '../../crypto/identityKeyAccess';
 import { submitWrappedKey } from '../../api/groups';
 import { decryptThreadFields, decryptReplyBody } from '../../threadService';
 import { useAppStore } from '../../../stores/useAppStore';
@@ -142,7 +147,7 @@ const mockDecryptReplyBody = decryptReplyBody as jest.MockedFunction<typeof decr
 const mockWrapGroupKey = wrapGroupKey as jest.MockedFunction<typeof wrapGroupKey>;
 const mockEvictPendingCache = evictPendingCache as jest.MockedFunction<typeof evictPendingCache>;
 const mockSubmitWrappedKey = submitWrappedKey as jest.MockedFunction<typeof submitWrappedKey>;
-const mockResolveRemoteIdentityKey = resolveRemoteIdentityKey as jest.MockedFunction<typeof resolveRemoteIdentityKey>;
+const mockRefreshAndCompareIdentityKey = refreshAndCompareIdentityKey as jest.MockedFunction<typeof refreshAndCompareIdentityKey>;
 const mockDbSaveThread = dbSaveThread as jest.MockedFunction<typeof dbSaveThread>;
 const mockDbSaveReply = dbSaveReply as jest.MockedFunction<typeof dbSaveReply>;
 const mockIsDatabaseInitialized = isDatabaseInitialized as jest.MockedFunction<typeof isDatabaseInitialized>;
@@ -972,13 +977,35 @@ describe('wrap_key_request', () => {
 
   beforeEach(() => {
     mockGetOrFetchGroupKey.mockResolvedValue(fakeGroupKey);
+    // Reset store mock — earlier tests (owner_changed, avatar_changed) use
+    // mockReturnValue which survives clearAllMocks and would leave
+    // setContactVerifiedStatus undefined, causing a silent TypeError.
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: TEST_USER_UUID,
+      viewingConversationId: null,
+      upsertThread: mockUpsertThread,
+      upsertReply: mockUpsertReply,
+      upsertContact: mockUpsertContact,
+      upsertConversation: mockUpsertConversation,
+      setConnectionStatus: mockSetConnectionStatus,
+      setLastConnectedAt: mockSetLastConnectedAt,
+      setReconnectAttempt: mockSetReconnectAttempt,
+      blockedUserIds: [],
+      addTypingUser: mockAddTypingUser,
+      bumpLastMessageAt: mockBumpLastMessageAt,
+      incrementUnreadCount: mockIncrementUnreadCount,
+      setContactVerifiedStatus: mockSetContactVerifiedStatus,
+      contacts: {},
+      conversations: {},
+      threads: {},
+    });
   });
 
   it('wraps and submits the group key for the target user', async () => {
     await handleServerMessage(makeWrapKeyRequest());
 
     expect(mockGetOrFetchGroupKey).toHaveBeenCalledWith(testUUID('group-1'));
-    expect(mockResolveRemoteIdentityKey).toHaveBeenCalledWith(testUUID('target-user'), testUUID('test-user'));
+    expect(mockRefreshAndCompareIdentityKey).toHaveBeenCalledWith(testUUID('target-user'), testUUID('test-user'));
     expect(mockWrapGroupKey).toHaveBeenCalledWith(fakeGroupKey, expect.any(ArrayBuffer), testUUID('group-1'));
     expect(mockSubmitWrappedKey).toHaveBeenCalledWith(testUUID('group-1'), testUUID('target-user'), 'wrapped-key-base64');
   });
@@ -1004,6 +1031,7 @@ describe('wrap_key_request', () => {
       addTypingUser: mockAddTypingUser,
       bumpLastMessageAt: mockBumpLastMessageAt,
       incrementUnreadCount: mockIncrementUnreadCount,
+      setContactVerifiedStatus: mockSetContactVerifiedStatus,
       contacts: {},
       threads: {},
     });
@@ -1011,6 +1039,44 @@ describe('wrap_key_request', () => {
     await handleServerMessage(makeWrapKeyRequest(testUUID('group-auth'), testUUID('user-auth')));
 
     expect(mockSubmitWrappedKey).not.toHaveBeenCalled();
+  });
+
+  it('wraps with FRESH server key, not stale TOFU cache, after identity reset', async () => {
+    const freshKey = new ArrayBuffer(33);
+    new Uint8Array(freshKey).fill(0xff);
+    mockRefreshAndCompareIdentityKey.mockResolvedValueOnce({
+      publicKey: freshKey,
+      identityChanged: true,
+    });
+
+    await handleServerMessage(makeWrapKeyRequest(testUUID('group-fresh'), testUUID('target-fresh')));
+
+    // Must call refreshAndCompareIdentityKey (always-fetch), not resolveRemoteIdentityKey
+    expect(mockRefreshAndCompareIdentityKey).toHaveBeenCalledWith(
+      testUUID('target-fresh'),
+      TEST_USER_UUID,
+    );
+    // Must wrap with the fresh key returned by the refresh call
+    expect(mockWrapGroupKey).toHaveBeenCalledWith(fakeGroupKey, freshKey, testUUID('group-fresh'));
+    expect(mockSubmitWrappedKey).toHaveBeenCalledWith(
+      testUUID('group-fresh'),
+      testUUID('target-fresh'),
+      'wrapped-key-base64',
+    );
+    // Must flag the contact as Unverified when identity changed
+    expect(mockSetContactVerifiedStatus).toHaveBeenCalledWith(testUUID('target-fresh'), 2);
+  });
+
+  it('does NOT flag contact Unverified when identity key is unchanged', async () => {
+    mockRefreshAndCompareIdentityKey.mockResolvedValueOnce({
+      publicKey: new ArrayBuffer(33),
+      identityChanged: false,
+    });
+
+    await handleServerMessage(makeWrapKeyRequest(testUUID('group-same'), testUUID('target-same')));
+
+    expect(mockSetContactVerifiedStatus).not.toHaveBeenCalled();
+    expect(mockSubmitWrappedKey).toHaveBeenCalledTimes(1);
   });
 
   it('clears dedup entry on error so retry succeeds', async () => {

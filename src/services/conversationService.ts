@@ -20,7 +20,8 @@ import {
   evictPendingCache,
   PendingWrapError,
 } from './crypto/contentCrypto';
-import { getIdentityKeyPair, resolveRemoteIdentityKey } from './crypto/identityKeyAccess';
+import { getIdentityKeyPair, resolveRemoteIdentityKey, refreshAndCompareIdentityKey } from './crypto/identityKeyAccess';
+import { VerifiedStatus } from '../types/database';
 import { arrayBufferToBase64, toArrayBuffer } from './crypto/utils';
 import { ApiError } from './api/errors';
 import { generateUUID } from '../utils/uuid';
@@ -504,7 +505,16 @@ export async function startDm(
   let recipientWrappedGroupKey: string | undefined;
   if (currentUserId) {
     try {
-      const recipientPubKey = await resolveRemoteIdentityKey(recipientId, currentUserId);
+      // Always fetch current server key — a stale TOFU cache after identity
+      // reset would wrap to the recipient's destroyed old key.
+      const { publicKey: recipientPubKey, identityChanged } =
+        await refreshAndCompareIdentityKey(recipientId, currentUserId);
+      if (identityChanged) {
+        useAppStore.getState().setContactVerifiedStatus(
+          recipientId,
+          VerifiedStatus.Unverified,
+        );
+      }
       recipientWrappedGroupKey = wrapGroupKey(key, recipientPubKey, groupId);
     } catch {
       // Recipient key resolution failed — send without recipient wrap
@@ -698,7 +708,16 @@ export async function fulfillPendingWraps(): Promise<void> {
 
       for (const member of pending.slice(0, 5)) {
         try {
-          const targetPubKey = await resolveRemoteIdentityKey(member.userId, session.userId);
+          // Always fetch current server key — a stale TOFU cache after
+          // identity reset would wrap to the member's destroyed old key.
+          const { publicKey: targetPubKey, identityChanged } =
+            await refreshAndCompareIdentityKey(member.userId, session.userId);
+          if (identityChanged) {
+            useAppStore.getState().setContactVerifiedStatus(
+              member.userId,
+              VerifiedStatus.Unverified,
+            );
+          }
           const wrapped = wrapGroupKey(groupKey, targetPubKey, groupId);
           await submitWrappedKey(groupId, member.userId, wrapped);
         } catch {

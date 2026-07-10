@@ -90,7 +90,7 @@ android {
         applicationId "com.orbital.mobile"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 13
+        versionCode 14
         versionName "1.7.1"
     }
     signingConfigs {

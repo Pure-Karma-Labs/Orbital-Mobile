@@ -19,11 +19,19 @@ export const useAuth = () =>
     avatarPath: s.avatarPath,
     avatarDigest: s.avatarDigest,
     needsTermsAcceptance: s.needsTermsAcceptance,
+    identityKeyConflict: s.identityKeyConflict,
+    keyRecoveryInProgress: s.keyRecoveryInProgress,
+    email: s.email,
+    conflictSource: s.conflictSource,
     setUser: s.setUser,
     clearAuth: s.clearAuth,
     setAuthenticated: s.setAuthenticated,
     updateProfile: s.updateProfile,
     setNeedsTermsAcceptance: s.setNeedsTermsAcceptance,
+    setIdentityKeyConflict: s.setIdentityKeyConflict,
+    setKeyRecoveryInProgress: s.setKeyRecoveryInProgress,
+    setEmail: s.setEmail,
+    setConflictSource: s.setConflictSource,
   })));
 
 export const useConversations = () =>

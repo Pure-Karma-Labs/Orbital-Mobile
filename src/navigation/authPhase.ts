@@ -75,12 +75,12 @@ export function deriveAuthPhase(inputs: DeriveAuthPhaseInputs): AuthPhase {
  *     needsTermsAcceptance is still true — same fall-through.
  */
 const LEGAL_TRANSITIONS: ReadonlyMap<AuthPhase, ReadonlySet<AuthPhase>> = new Map([
-  ['loading', new Set<AuthPhase>(['unauthenticated', 'authenticated', 'terms-required'])],
-  ['unauthenticated', new Set<AuthPhase>(['loading', 'authenticated', 'terms-required'])],
+  ['loading', new Set<AuthPhase>(['unauthenticated', 'authenticated', 'terms-required', 'key-conflict', 'key-recovery'])],
+  ['unauthenticated', new Set<AuthPhase>(['loading', 'authenticated', 'terms-required', 'key-conflict'])],
   ['authenticated', new Set<AuthPhase>(['unauthenticated', 'loading', 'terms-required', 'key-conflict', 'key-recovery'])],
   ['terms-required', new Set<AuthPhase>(['authenticated', 'unauthenticated', 'loading'])],
   ['key-conflict', new Set<AuthPhase>(['key-recovery', 'terms-required', 'unauthenticated', 'loading', 'authenticated'])],
-  ['key-recovery', new Set<AuthPhase>(['authenticated', 'terms-required', 'unauthenticated', 'loading'])],
+  ['key-recovery', new Set<AuthPhase>(['authenticated', 'terms-required', 'unauthenticated', 'loading', 'key-conflict'])],
 ]);
 
 /**

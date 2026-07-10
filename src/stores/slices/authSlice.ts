@@ -12,6 +12,10 @@ export const createAuthSlice: StateCreator<AppState, [['zustand/devtools', never
   avatarPath: null,
   avatarDigest: null,
   needsTermsAcceptance: false,
+  identityKeyConflict: false,
+  keyRecoveryInProgress: false,
+  email: null,
+  conflictSource: null,
 
   // Actions
   // NOTE: JWT tokens and encryption keys are intentionally NOT stored here.
@@ -28,6 +32,10 @@ export const createAuthSlice: StateCreator<AppState, [['zustand/devtools', never
         // Explicitly reset — Zustand merges partials, so omitting this would
         // carry a stale `true` across account switches.
         needsTermsAcceptance: false,
+        identityKeyConflict: false,
+        keyRecoveryInProgress: false,
+        email: null,
+        conflictSource: null,
       },
       false,
       'auth/setUser',
@@ -43,6 +51,10 @@ export const createAuthSlice: StateCreator<AppState, [['zustand/devtools', never
         avatarPath: null,
         avatarDigest: null,
         needsTermsAcceptance: false,
+        identityKeyConflict: false,
+        keyRecoveryInProgress: false,
+        email: null,
+        conflictSource: null,
       },
       false,
       'auth/clearAuth',
@@ -64,4 +76,16 @@ export const createAuthSlice: StateCreator<AppState, [['zustand/devtools', never
 
   setNeedsTermsAcceptance: (needs) =>
     set({ needsTermsAcceptance: needs }, false, 'auth/setNeedsTermsAcceptance'),
+
+  setIdentityKeyConflict: (conflict) =>
+    set({ identityKeyConflict: conflict }, false, 'auth/setIdentityKeyConflict'),
+
+  setKeyRecoveryInProgress: (inProgress) =>
+    set({ keyRecoveryInProgress: inProgress }, false, 'auth/setKeyRecoveryInProgress'),
+
+  setEmail: (email) =>
+    set({ email }, false, 'auth/setEmail'),
+
+  setConflictSource: (source) =>
+    set({ conflictSource: source }, false, 'auth/setConflictSource'),
 });

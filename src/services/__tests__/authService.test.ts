@@ -2,7 +2,7 @@
  * Tests for authService — login, signup, session restore, logout, deleteAccount orchestration.
  */
 
-import { loginUser, signupUser, restoreSession, logout, deleteAccount, acceptCurrentTerms, checkAccountSwitch } from '../authService';
+import { loginUser, signupUser, restoreSession, logout, deleteAccount, acceptCurrentTerms, checkAccountSwitch, loginForRecovery } from '../authService';
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -179,6 +179,10 @@ const mockSetContacts = jest.fn();
 const mockSetConnectionStatus = jest.fn();
 const mockClearTypingUsers = jest.fn();
 const mockSetNeedsTermsAcceptance = jest.fn();
+const mockSetIdentityKeyConflict = jest.fn();
+const mockSetKeyRecoveryInProgress = jest.fn();
+const mockSetEmail = jest.fn();
+const mockSetConflictSource = jest.fn();
 const mockResetBlockedUsers = jest.fn();
 const mockSetViewingConversation = jest.fn();
 
@@ -186,6 +190,7 @@ jest.mock('../../stores/useAppStore', () => ({
   useAppStore: {
     getState: jest.fn(() => ({
       userId: 'user-1',
+      email: null,
       setUser: mockSetUser,
       updateProfile: mockUpdateProfile,
       clearAuth: mockClearAuth,
@@ -194,6 +199,10 @@ jest.mock('../../stores/useAppStore', () => ({
       setConnectionStatus: mockSetConnectionStatus,
       clearTypingUsers: mockClearTypingUsers,
       setNeedsTermsAcceptance: mockSetNeedsTermsAcceptance,
+      setIdentityKeyConflict: mockSetIdentityKeyConflict,
+      setKeyRecoveryInProgress: mockSetKeyRecoveryInProgress,
+      setEmail: mockSetEmail,
+      setConflictSource: mockSetConflictSource,
       resetBlockedUsers: mockResetBlockedUsers,
       setViewingConversation: mockSetViewingConversation,
     })),
@@ -234,6 +243,17 @@ beforeEach(() => {
   // clearAllMocks only clears tracking (calls/results), NOT mockReturnValue.
   mockGetItem.mockReturnValue(null);
   mockIsDatabaseInitialized.mockReturnValue(true);
+  // Restore async mock defaults (clearAllMocks removes mockResolvedValue)
+  mockGenerateInitialKeys.mockResolvedValue(undefined);
+  mockUploadInitialPreKeyBundle.mockResolvedValue(undefined);
+  mockEnsureKeysInitialized.mockResolvedValue(undefined);
+  mockFullCryptoWipe.mockResolvedValue(undefined);
+  mockLoadConversations.mockResolvedValue(undefined);
+  mockLoadDmConversations.mockResolvedValue(undefined);
+  mockFulfillPendingWraps.mockResolvedValue(undefined);
+  mockHydrateContactsFromOrbits.mockResolvedValue(undefined);
+  mockSelfWrapIfNeeded.mockResolvedValue(undefined);
+  mockSyncBlockedUsers.mockResolvedValue(undefined);
 });
 
 // ---------------------------------------------------------------------------
@@ -1336,5 +1356,105 @@ describe('fullCryptoWipe invariant', () => {
     const result = await restoreSession();
     expect(result).toBe(false);
     expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ConflictError detection — sets identityKeyConflict flag
+// ---------------------------------------------------------------------------
+
+describe('ConflictError detection', () => {
+  it('postAuthBootstrap sets identityKeyConflict when ensureKeysInitialized throws ConflictError (login path)', async () => {
+    mockEnsureKeysInitialized.mockRejectedValueOnce(new ConflictError());
+    mockLogin.mockResolvedValue({
+      token: 'tok', userId: 'user-1', username: 'alice', publicKey: null,
+    });
+
+    await loginUser('alice@test.com', 'secret');
+
+    expect(mockSetIdentityKeyConflict).toHaveBeenCalledWith(true);
+    expect(mockSetConflictSource).toHaveBeenCalledWith('local');
+  });
+
+  it('signupUser sets identityKeyConflict when key upload throws ConflictError', async () => {
+    mockUploadInitialPreKeyBundle.mockRejectedValueOnce(new ConflictError());
+    mockSignup.mockResolvedValue({
+      token: 'tok', userId: 'user-1', username: 'alice', email: 'a@x.com',
+      groupId: null, inviteEncryptedGroupKey: null,
+    });
+
+    await signupUser('alice', 'pass', 'a@x.com', 'CODE');
+
+    expect(mockSetIdentityKeyConflict).toHaveBeenCalledWith(true);
+    expect(mockSetConflictSource).toHaveBeenCalledWith('local');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Email persistence from INPUT parameter
+// ---------------------------------------------------------------------------
+
+describe('email persistence', () => {
+  it('loginUser persists email from INPUT parameter', async () => {
+    mockLogin.mockResolvedValue({
+      token: 'tok', userId: 'user-1', username: 'alice', publicKey: null,
+    });
+
+    await loginUser('alice@example.com', 'secret');
+
+    expect(mockSetEmail).toHaveBeenCalledWith('alice@example.com');
+  });
+
+  it('signupUser persists email from INPUT parameter', async () => {
+    mockSignup.mockResolvedValue({
+      token: 'tok', userId: 'user-1', username: 'alice', email: 'a@x.com',
+      groupId: null, inviteEncryptedGroupKey: null,
+    });
+
+    await signupUser('alice', 'pass', 'signup@example.com', 'CODE');
+
+    expect(mockSetEmail).toHaveBeenCalledWith('signup@example.com');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loginForRecovery
+// ---------------------------------------------------------------------------
+
+describe('loginForRecovery', () => {
+  it('calls login API, sets tokens, sets user, but does NOT call postAuthBootstrap', async () => {
+    mockLogin.mockResolvedValue({
+      token: 'recovery-tok',
+      userId: 'user-1',
+      username: 'alice',
+      displayName: 'Alice',
+      publicKey: null,
+      needsTermsAcceptance: false,
+    });
+
+    await loginForRecovery('alice@example.com', 'password');
+
+    expect(mockLogin).toHaveBeenCalledWith({ email: 'alice@example.com', password: 'password' });
+    expect(mockSetUser).toHaveBeenCalled();
+    expect(mockSetNeedsTermsAcceptance).toHaveBeenCalledWith(false);
+    expect(mockSetEmail).toHaveBeenCalledWith('alice@example.com');
+    // postAuthBootstrap indicators should NOT have been called
+    expect(mockEnsureKeysInitialized).not.toHaveBeenCalled();
+    expect(mockLoadConversations).not.toHaveBeenCalled();
+  });
+
+  it('propagates needsTermsAcceptance from response (API-M1)', async () => {
+    mockLogin.mockResolvedValue({
+      token: 'tok',
+      userId: 'user-1',
+      username: 'alice',
+      displayName: null,
+      publicKey: null,
+      needsTermsAcceptance: true,
+    });
+
+    await loginForRecovery('alice@example.com', 'password');
+
+    expect(mockSetNeedsTermsAcceptance).toHaveBeenCalledWith(true);
   });
 });

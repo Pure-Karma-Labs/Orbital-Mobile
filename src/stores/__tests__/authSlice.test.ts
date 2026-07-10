@@ -219,6 +219,122 @@ describe('authSlice — setAuthenticated', () => {
   });
 });
 
+describe('authSlice — identityKeyConflict', () => {
+  it('initializes to false', () => {
+    const store = makeStore();
+    expect(store.getState().identityKeyConflict).toBe(false);
+  });
+
+  it('setIdentityKeyConflict sets the flag', () => {
+    const store = makeStore();
+    store.getState().setIdentityKeyConflict(true);
+    expect(store.getState().identityKeyConflict).toBe(true);
+    store.getState().setIdentityKeyConflict(false);
+    expect(store.getState().identityKeyConflict).toBe(false);
+  });
+
+  it('setUser resets identityKeyConflict to false', () => {
+    const store = makeStore();
+    store.getState().setIdentityKeyConflict(true);
+    store.getState().setUser({ userId: 'u1', username: 'a', displayName: null, avatarPath: null });
+    expect(store.getState().identityKeyConflict).toBe(false);
+  });
+
+  it('clearAuth resets identityKeyConflict to false', () => {
+    const store = makeStore();
+    store.getState().setIdentityKeyConflict(true);
+    store.getState().clearAuth();
+    expect(store.getState().identityKeyConflict).toBe(false);
+  });
+});
+
+describe('authSlice — keyRecoveryInProgress', () => {
+  it('initializes to false', () => {
+    const store = makeStore();
+    expect(store.getState().keyRecoveryInProgress).toBe(false);
+  });
+
+  it('setKeyRecoveryInProgress sets the flag', () => {
+    const store = makeStore();
+    store.getState().setKeyRecoveryInProgress(true);
+    expect(store.getState().keyRecoveryInProgress).toBe(true);
+  });
+
+  it('setUser resets keyRecoveryInProgress to false', () => {
+    const store = makeStore();
+    store.getState().setKeyRecoveryInProgress(true);
+    store.getState().setUser({ userId: 'u1', username: 'a', displayName: null, avatarPath: null });
+    expect(store.getState().keyRecoveryInProgress).toBe(false);
+  });
+
+  it('clearAuth resets keyRecoveryInProgress to false', () => {
+    const store = makeStore();
+    store.getState().setKeyRecoveryInProgress(true);
+    store.getState().clearAuth();
+    expect(store.getState().keyRecoveryInProgress).toBe(false);
+  });
+});
+
+describe('authSlice — email (transient PII)', () => {
+  it('initializes to null', () => {
+    const store = makeStore();
+    expect(store.getState().email).toBeNull();
+  });
+
+  it('setEmail sets and clears', () => {
+    const store = makeStore();
+    store.getState().setEmail('test@example.com');
+    expect(store.getState().email).toBe('test@example.com');
+    store.getState().setEmail(null);
+    expect(store.getState().email).toBeNull();
+  });
+
+  it('setUser nulls email (PII cleanup)', () => {
+    const store = makeStore();
+    store.getState().setEmail('test@example.com');
+    store.getState().setUser({ userId: 'u1', username: 'a', displayName: null, avatarPath: null });
+    expect(store.getState().email).toBeNull();
+  });
+
+  it('clearAuth nulls email (PII cleanup)', () => {
+    const store = makeStore();
+    store.getState().setEmail('test@example.com');
+    store.getState().clearAuth();
+    expect(store.getState().email).toBeNull();
+  });
+});
+
+describe('authSlice — conflictSource', () => {
+  it('initializes to null', () => {
+    const store = makeStore();
+    expect(store.getState().conflictSource).toBeNull();
+  });
+
+  it('setConflictSource sets push/local/null', () => {
+    const store = makeStore();
+    store.getState().setConflictSource('push');
+    expect(store.getState().conflictSource).toBe('push');
+    store.getState().setConflictSource('local');
+    expect(store.getState().conflictSource).toBe('local');
+    store.getState().setConflictSource(null);
+    expect(store.getState().conflictSource).toBeNull();
+  });
+
+  it('setUser resets conflictSource to null', () => {
+    const store = makeStore();
+    store.getState().setConflictSource('push');
+    store.getState().setUser({ userId: 'u1', username: 'a', displayName: null, avatarPath: null });
+    expect(store.getState().conflictSource).toBeNull();
+  });
+
+  it('clearAuth resets conflictSource to null', () => {
+    const store = makeStore();
+    store.getState().setConflictSource('local');
+    store.getState().clearAuth();
+    expect(store.getState().conflictSource).toBeNull();
+  });
+});
+
 describe('authSlice — security constraints', () => {
   it('does NOT contain any token or key field', () => {
     const store = makeStore();

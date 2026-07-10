@@ -28,3 +28,24 @@ export function fetchRemoteIdentityKeyBundle(
     path: `/v1/keys/bundle/${encodeURIComponent(serviceId)}`,
   });
 }
+
+/**
+ * Reset the user's identity keys on the server.
+ *
+ * POST /v1/keys/reset — requires password confirmation.
+ * On success: server NULLs the stored identity key + revokes all JWTs
+ * (iat <= password_changed_at). Triggers re-wrap fan-out on next upload.
+ *
+ * 403 → AuthError (incorrect password; no token clearing — same pattern as
+ *        delete-account). Distinguish from 401 via statusCode.
+ * 429 → client auto-retries ~7.5s before RATE_LIMITED surfaces.
+ */
+export function resetIdentityKeys(
+  password: string,
+): Promise<void> {
+  return request<void>({
+    method: 'POST',
+    path: '/v1/keys/reset',
+    body: { password },
+  });
+}

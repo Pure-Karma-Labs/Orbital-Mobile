@@ -34,6 +34,7 @@ import { ResetPasswordScreen } from './screens/ResetPasswordScreen';
 import { AppNavigator } from './navigation';
 import { ReportContentSheet } from './components/ReportContentSheet';
 import { TermsAcceptanceScreen } from './screens/TermsAcceptanceScreen';
+import { KeyConflictScreen } from './screens/KeyConflictScreen';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import BootSplash from 'react-native-bootsplash';
 import { OrbitalLoader } from './components/OrbitalLoader';
@@ -55,16 +56,15 @@ function AppContent(): React.JSX.Element {
   const [restoreDone, setRestoreDone] = useState(false);
   const [preAuthScreen, setPreAuthScreen] = useState<PreAuthScreen>('login');
   const [preAuthParams, setPreAuthParams] = useState<PreAuthParams>({});
-  const { isAuthenticated, userId, needsTermsAcceptance } = useAuth();
+  const { isAuthenticated, userId, needsTermsAcceptance, identityKeyConflict, keyRecoveryInProgress } = useAuth();
 
   // Derive the current auth phase from boolean inputs.
-  // key-conflict / key-recovery are hard-wired false in this PR — PR-6 supplies real inputs.
   const phase = deriveAuthPhase({
     restoreDone,
     isAuthenticated,
     needsTermsAcceptance,
-    identityKeyConflict: false,   // PR-6
-    keyRecoveryInProgress: false,  // PR-6
+    identityKeyConflict,
+    keyRecoveryInProgress,
   });
 
   // Dev-only: warn on unexpected phase transitions
@@ -172,10 +172,11 @@ function AppContent(): React.JSX.Element {
           </>
         );
 
-      // Unreachable in PR-2 (inputs hard-wired false). PR-6 replaces these.
       case 'key-conflict':
+        return <KeyConflictScreen />;
+
       case 'key-recovery':
-        return null;
+        return <LoadingView />;
     }
     return null;
   };

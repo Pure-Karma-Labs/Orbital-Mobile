@@ -24,12 +24,16 @@ jest.mock('../deviceId', () => ({
 
 const mockSetPushPermission = jest.fn();
 const mockSetPushToken = jest.fn();
+const mockSetIdentityKeyConflict = jest.fn();
+const mockSetConflictSource = jest.fn();
 
 jest.mock('../../stores/useAppStore', () => ({
   useAppStore: {
     getState: jest.fn(() => ({
       setPushPermission: mockSetPushPermission,
       setPushToken: mockSetPushToken,
+      setIdentityKeyConflict: mockSetIdentityKeyConflict,
+      setConflictSource: mockSetConflictSource,
     })),
   },
 }));
@@ -38,6 +42,14 @@ jest.mock('../../navigation/navigationRef', () => ({
   navigationRef: { isReady: jest.fn(() => false), navigate: jest.fn() },
   setPendingNotificationPayload: jest.fn(),
   setPayloadConsumer: jest.fn(),
+}));
+
+// #539: recoveryState is a dependency-free module notificationService reads
+// directly (importing keyRecoveryService instead would create an import
+// cycle via authService -> notificationService).
+const mockIsRecoveryInitiator = jest.fn(() => false);
+jest.mock('../recoveryState', () => ({
+  isRecoveryInitiator: () => mockIsRecoveryInitiator(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -112,6 +124,8 @@ beforeEach(() => {
   (getMessagingInstance().getToken as jest.Mock).mockResolvedValue('mock-fcm-token');
   (getMessagingInstance().onTokenRefresh as jest.Mock).mockReturnValue(jest.fn());
   (getMessagingInstance().onNotificationOpenedApp as jest.Mock).mockReturnValue(jest.fn());
+  // mockReturnValue survives clearAllMocks — reset explicitly every test.
+  mockIsRecoveryInitiator.mockReturnValue(false);
 });
 
 afterEach(() => {
@@ -374,6 +388,35 @@ describe('setupForegroundHandler', () => {
 
     expect(unsubscribe).toBe(mockUnsub);
   });
+
+  // -------------------------------------------------------------------------
+  // #539: identity_key_reset — foreground arrival
+  // -------------------------------------------------------------------------
+
+  it('sets identityKeyConflict + conflictSource(push) and still displays the banner when not the recovery initiator', async () => {
+    mockIsRecoveryInitiator.mockReturnValue(false);
+    const cb = getOnMessageCallback();
+    await cb({ data: { t: 'identity_key_reset', v: '1' } });
+
+    expect(mockSetIdentityKeyConflict).toHaveBeenCalledWith(true);
+    expect(mockSetConflictSource).toHaveBeenCalledWith('push');
+    expect(notifee.displayNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Security alert' }),
+    );
+  });
+
+  it('does not set identityKeyConflict when this device is the recovery initiator (self-push suppression)', async () => {
+    mockIsRecoveryInitiator.mockReturnValue(true);
+    const cb = getOnMessageCallback();
+    await cb({ data: { t: 'identity_key_reset', v: '1' } });
+
+    expect(mockSetIdentityKeyConflict).not.toHaveBeenCalled();
+    expect(mockSetConflictSource).not.toHaveBeenCalled();
+    // Banner still displays — push is content-free, no reason to suppress it.
+    expect(notifee.displayNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Security alert' }),
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -570,6 +613,103 @@ describe('setupNotificationTapHandler — onNotificationOpenedApp callback', () 
     });
     expect(navigationRef.navigate).not.toHaveBeenCalled();
   });
+
+  // -------------------------------------------------------------------------
+  // #539: identity_key_reset — background tap (iOS onNotificationOpenedApp)
+  // -------------------------------------------------------------------------
+
+  it('navigates to Settings and sets identityKeyConflict when tapping an identity_key_reset notification (background, not initiator)', () => {
+    (navigationRef.isReady as jest.Mock).mockReturnValue(true);
+    mockIsRecoveryInitiator.mockReturnValue(false);
+    const cb = getOpenedAppCallback();
+
+    cb(remoteMessage({ t: 'identity_key_reset', v: '1' }));
+
+    expect(mockSetIdentityKeyConflict).toHaveBeenCalledWith(true);
+    expect(mockSetConflictSource).toHaveBeenCalledWith('push');
+    expect(navigationRef.navigate).toHaveBeenCalledWith('MainTabs', {
+      screen: 'Settings',
+    });
+  });
+
+  it('navigates to Settings but does not set identityKeyConflict when the recovery initiator taps their own push (background)', () => {
+    (navigationRef.isReady as jest.Mock).mockReturnValue(true);
+    mockIsRecoveryInitiator.mockReturnValue(true);
+    const cb = getOpenedAppCallback();
+
+    cb(remoteMessage({ t: 'identity_key_reset', v: '1' }));
+
+    expect(mockSetIdentityKeyConflict).not.toHaveBeenCalled();
+    expect(mockSetConflictSource).not.toHaveBeenCalled();
+    expect(navigationRef.navigate).toHaveBeenCalledWith('MainTabs', {
+      screen: 'Settings',
+    });
+  });
+
+  it('queuing an identity_key_reset payload alone (nav not ready) does not set identityKeyConflict', () => {
+    (navigationRef.isReady as jest.Mock).mockReturnValue(false);
+    mockIsRecoveryInitiator.mockReturnValue(false);
+    const cb = getOpenedAppCallback();
+
+    cb(remoteMessage({ t: 'identity_key_reset', v: '1' }));
+
+    expect(setPendingNotificationPayload).toHaveBeenCalledWith({
+      t: 'identity_key_reset',
+      v: '1',
+    });
+    expect(mockSetIdentityKeyConflict).not.toHaveBeenCalled();
+    expect(mockSetConflictSource).not.toHaveBeenCalled();
+    expect(navigationRef.navigate).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #539: identity_key_reset — consuming a queued payload
+// (covers both the Android onBackgroundEvent flow, which queues the payload
+// directly via setPendingNotificationPayload in index.js, and the killed-state
+// getInitialNotification flow below — both funnel into the same
+// setPayloadConsumer callback once the nav tree is ready.)
+// ---------------------------------------------------------------------------
+
+describe('setupNotificationTapHandler — consuming a queued identity_key_reset payload', () => {
+  /** Capture the consumer function registered via setPayloadConsumer. */
+  function getPayloadConsumer(): (data: Record<string, string>) => void {
+    const { setPayloadConsumer: mockSetPayloadConsumer } = require('../../navigation/navigationRef');
+    setupNotificationTapHandler();
+    return mockSetPayloadConsumer.mock.calls[0][0];
+  }
+
+  afterEach(() => {
+    (navigationRef.isReady as jest.Mock).mockImplementation(() => false);
+  });
+
+  it('sets identityKeyConflict + conflictSource(push) and navigates to Settings when consuming a queued payload (not initiator)', () => {
+    (navigationRef.isReady as jest.Mock).mockReturnValue(true);
+    mockIsRecoveryInitiator.mockReturnValue(false);
+    const consumer = getPayloadConsumer();
+
+    consumer({ t: 'identity_key_reset', v: '1' });
+
+    expect(mockSetIdentityKeyConflict).toHaveBeenCalledWith(true);
+    expect(mockSetConflictSource).toHaveBeenCalledWith('push');
+    expect(navigationRef.navigate).toHaveBeenCalledWith('MainTabs', {
+      screen: 'Settings',
+    });
+  });
+
+  it('does not set identityKeyConflict when consuming a queued payload as the recovery initiator', () => {
+    (navigationRef.isReady as jest.Mock).mockReturnValue(true);
+    mockIsRecoveryInitiator.mockReturnValue(true);
+    const consumer = getPayloadConsumer();
+
+    consumer({ t: 'identity_key_reset', v: '1' });
+
+    expect(mockSetIdentityKeyConflict).not.toHaveBeenCalled();
+    expect(mockSetConflictSource).not.toHaveBeenCalled();
+    expect(navigationRef.navigate).toHaveBeenCalledWith('MainTabs', {
+      screen: 'Settings',
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -638,6 +778,47 @@ describe('setupNotificationTapHandler — killed-state getInitialNotification', 
     await Promise.resolve();
 
     expect(navigationRef.navigate).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // #539: identity_key_reset — killed-state cold start
+  // -------------------------------------------------------------------------
+
+  it('sets identityKeyConflict and navigates to Settings from a killed-state identity_key_reset notification (not initiator)', async () => {
+    (navigationRef.isReady as jest.Mock).mockReturnValue(true);
+    mockIsRecoveryInitiator.mockReturnValue(false);
+    (getMessagingInstance().getInitialNotification as jest.Mock).mockResolvedValueOnce(
+      remoteMessage({ t: 'identity_key_reset', v: '1' }),
+    );
+
+    setupNotificationTapHandler();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mockSetIdentityKeyConflict).toHaveBeenCalledWith(true);
+    expect(mockSetConflictSource).toHaveBeenCalledWith('push');
+    expect(navigationRef.navigate).toHaveBeenCalledWith('MainTabs', {
+      screen: 'Settings',
+    });
+  });
+
+  it('queues a killed-state identity_key_reset payload without setting identityKeyConflict when the nav tree is not ready yet', async () => {
+    (navigationRef.isReady as jest.Mock).mockReturnValue(false);
+    mockIsRecoveryInitiator.mockReturnValue(false);
+    (getMessagingInstance().getInitialNotification as jest.Mock).mockResolvedValueOnce(
+      remoteMessage({ t: 'identity_key_reset', v: '1' }),
+    );
+
+    setupNotificationTapHandler();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(setPendingNotificationPayload).toHaveBeenCalledWith({
+      t: 'identity_key_reset',
+      v: '1',
+    });
+    expect(mockSetIdentityKeyConflict).not.toHaveBeenCalled();
+    expect(mockSetConflictSource).not.toHaveBeenCalled();
   });
 });
 

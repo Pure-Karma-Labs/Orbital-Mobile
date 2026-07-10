@@ -33,6 +33,7 @@ import {
   dedupKeyForPayload,
 } from './notificationConstants';
 import { LRUSet } from './websocket/lruSet';
+import { isRecoveryInitiator } from './recoveryState';
 
 // ---------------------------------------------------------------------------
 // Dedup
@@ -236,6 +237,17 @@ export function setupForegroundHandler(): () => void {
       const title = NOTIFICATION_TITLES[type];
       if (!title) return;
 
+      // #539: identity_key_reset push arrived while the app is in the
+      // foreground. Flip the key-conflict gate immediately (before display)
+      // unless THIS device initiated the recovery (would be a self-triggered
+      // false positive — see keyRecoveryService's transient initiator flag).
+      // The banner is still shown either way — push is content-free, so a
+      // stale/self push is harmless to display (SEC review: informational).
+      if (type === 'identity_key_reset' && !isRecoveryInitiator()) {
+        useAppStore.getState().setIdentityKeyConflict(true);
+        useAppStore.getState().setConflictSource('push');
+      }
+
       try {
         await notifee.displayNotification({
           title,
@@ -282,8 +294,19 @@ function navigateFromNotification(data: Record<string, string>): void {
   if (!navigationRef.isReady()) {
     // Navigation tree not mounted yet (killed-state cold start).
     // Queue the payload — it will be flushed from NavigationContainer's onReady.
+    // Queuing alone does not mutate state (see below) — only actual consumption does.
     setPendingNotificationPayload(data);
     return;
+  }
+
+  // #539: identity_key_reset push consumed via tap (background tap or a
+  // flushed killed-state/queued payload — this function is the single
+  // consumer registered via setPayloadConsumer for both onBackgroundEvent
+  // and getInitialNotification flows). Flip the key-conflict gate unless
+  // THIS device initiated the recovery.
+  if (data.t === 'identity_key_reset' && !isRecoveryInitiator()) {
+    useAppStore.getState().setIdentityKeyConflict(true);
+    useAppStore.getState().setConflictSource('push');
   }
 
   const anchor = resolveAnchor(data);
@@ -322,6 +345,9 @@ function navigateFromNotification(data: Record<string, string>): void {
       break;
     case 'threadsList':
       navigationRef.navigate('MainTabs', { screen: 'Threads' });
+      break;
+    case 'settings':
+      navigationRef.navigate('MainTabs', { screen: 'Settings' });
       break;
   }
 }

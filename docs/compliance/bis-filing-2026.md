@@ -61,7 +61,7 @@ If encryption functionality **did** change (new algorithms, new products, ECCN c
 
 ## Post-send checklist
 
-- [ ] Save the sent email + any BIS/NSA acknowledgment to a private location (not this repo)
+- [ ] Save the **sent** email to a private location (not this repo). The sent email IS the compliance record — BIS does not acknowledge or respond to self-classification reports (no license number, no registration number; ERNs were eliminated in 2016). Do not wait for a reply.
 - [ ] Tick the checkboxes on issue #276 and close it
 - [ ] Confirm next year's reminder issue exists ("ops: BIS annual self-classification re-filing")
 

@@ -3,7 +3,7 @@ jest.mock('../client', () => ({
 }));
 
 import { request } from '../client';
-import { uploadPreKeyBundle, getPreKeyCount, fetchRemoteIdentityKeyBundle } from '../keys';
+import { uploadPreKeyBundle, getPreKeyCount, fetchRemoteIdentityKeyBundle, resetIdentityKeys } from '../keys';
 import type { UploadPreKeyBundleRequest } from '../../../types/api';
 
 const mockRequest = request as jest.MockedFunction<typeof request>;
@@ -103,5 +103,24 @@ describe('fetchRemoteIdentityKeyBundle', () => {
 
     const result = await fetchRemoteIdentityKeyBundle('user-uuid');
     expect(result).toEqual(mockResponse);
+  });
+});
+
+describe('resetIdentityKeys', () => {
+  it('calls POST /v1/keys/reset with {password} body', async () => {
+    await resetIdentityKeys('my-secret-password');
+
+    expect(mockRequest).toHaveBeenCalledWith({
+      method: 'POST',
+      path: '/v1/keys/reset',
+      body: { password: 'my-secret-password' },
+    });
+  });
+
+  it('returns the response from request()', async () => {
+    mockRequest.mockResolvedValue(undefined);
+
+    const result = await resetIdentityKeys('pw');
+    expect(result).toBeUndefined();
   });
 });

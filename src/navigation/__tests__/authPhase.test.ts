@@ -272,14 +272,17 @@ describe('assertLegalTransition', () => {
   // --- Legal transitions (no warning) ---
 
   const LEGAL_CASES: Array<[AuthPhase, AuthPhase]> = [
-    // loading →
+    // loading → (CRYPTO-H1: key-conflict + key-recovery added)
     ['loading', 'unauthenticated'],
     ['loading', 'authenticated'],
     ['loading', 'terms-required'],
-    // unauthenticated →
+    ['loading', 'key-conflict'],
+    ['loading', 'key-recovery'],
+    // unauthenticated → (CRYPTO-H1: key-conflict added)
     ['unauthenticated', 'loading'],
     ['unauthenticated', 'authenticated'],
     ['unauthenticated', 'terms-required'],
+    ['unauthenticated', 'key-conflict'],
     // authenticated →
     ['authenticated', 'unauthenticated'],
     ['authenticated', 'loading'],
@@ -296,11 +299,12 @@ describe('assertLegalTransition', () => {
     ['key-conflict', 'unauthenticated'],
     ['key-conflict', 'loading'],
     ['key-conflict', 'authenticated'],
-    // key-recovery →
+    // key-recovery → (CRYPTO-H1: key-conflict added — recovery fails post-wipe)
     ['key-recovery', 'authenticated'],
     ['key-recovery', 'terms-required'],
     ['key-recovery', 'unauthenticated'],
     ['key-recovery', 'loading'],
+    ['key-recovery', 'key-conflict'],
   ];
 
   it.each(LEGAL_CASES)('legal: %s → %s does not warn', (from, to) => {
@@ -311,17 +315,11 @@ describe('assertLegalTransition', () => {
   // --- Illegal transitions (should warn) ---
 
   const ILLEGAL_CASES: Array<[AuthPhase, AuthPhase]> = [
-    // loading cannot jump directly to key phases
-    ['loading', 'key-conflict'],
-    ['loading', 'key-recovery'],
-    // unauthenticated cannot jump to key phases
-    ['unauthenticated', 'key-conflict'],
+    // unauthenticated cannot jump to key-recovery
     ['unauthenticated', 'key-recovery'],
     // terms-required cannot jump to key phases
     ['terms-required', 'key-conflict'],
     ['terms-required', 'key-recovery'],
-    // key-recovery cannot jump to key-conflict (recovery resolves to authenticated or logout)
-    ['key-recovery', 'key-conflict'],
   ];
 
   it.each(ILLEGAL_CASES)('illegal: %s → %s warns', (from, to) => {

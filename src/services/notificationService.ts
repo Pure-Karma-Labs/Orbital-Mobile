@@ -33,6 +33,7 @@ import {
   dedupKeyForPayload,
 } from './notificationConstants';
 import { LRUSet } from './websocket/lruSet';
+import { isRecoveryInitiator } from './recoveryState';
 
 // ---------------------------------------------------------------------------
 // Dedup
@@ -214,9 +215,21 @@ export async function deregisterCurrentDevice(): Promise<void> {
 export function setupForegroundHandler(): () => void {
   const unsubscribe = messaging().onMessage(
     async (remoteMessage: FirebaseMessagingTypes.RemoteMessage) => {
-      if (!notifeeAvailable) return;
-
       const data = remoteMessage.data;
+
+      // #539: identity_key_reset is a security tripwire and must run even
+      // when Notifee is unavailable (New Architecture edge case) — only
+      // banner *display* should be gated on notifeeAvailable, not the
+      // conflict-flag dispatch. Flip the key-conflict gate immediately
+      // (before any display attempt) unless THIS device initiated the
+      // recovery (would be a self-triggered false positive — see
+      // keyRecoveryService's transient initiator flag).
+      if (data && data.t === 'identity_key_reset' && !isRecoveryInitiator()) {
+        useAppStore.getState().setIdentityKeyConflict(true);
+        useAppStore.getState().setConflictSource('push');
+      }
+
+      if (!notifeeAvailable) return;
       if (!data) return;
 
       const type = data.t as string | undefined;
@@ -282,8 +295,19 @@ function navigateFromNotification(data: Record<string, string>): void {
   if (!navigationRef.isReady()) {
     // Navigation tree not mounted yet (killed-state cold start).
     // Queue the payload — it will be flushed from NavigationContainer's onReady.
+    // Queuing alone does not mutate state (see below) — only actual consumption does.
     setPendingNotificationPayload(data);
     return;
+  }
+
+  // #539: identity_key_reset push consumed via tap (background tap or a
+  // flushed killed-state/queued payload — this function is the single
+  // consumer registered via setPayloadConsumer for both onBackgroundEvent
+  // and getInitialNotification flows). Flip the key-conflict gate unless
+  // THIS device initiated the recovery.
+  if (data.t === 'identity_key_reset' && !isRecoveryInitiator()) {
+    useAppStore.getState().setIdentityKeyConflict(true);
+    useAppStore.getState().setConflictSource('push');
   }
 
   const anchor = resolveAnchor(data);
@@ -322,6 +346,9 @@ function navigateFromNotification(data: Record<string, string>): void {
       break;
     case 'threadsList':
       navigationRef.navigate('MainTabs', { screen: 'Threads' });
+      break;
+    case 'settings':
+      navigationRef.navigate('MainTabs', { screen: 'Settings' });
       break;
   }
 }

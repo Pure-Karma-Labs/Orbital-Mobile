@@ -66,6 +66,7 @@ import {
   setupForegroundHandler,
   setupNotificationTapHandler,
   deregisterCurrentDevice,
+  initNotifications,
 } from '../notificationService';
 import {
   navigationRef,
@@ -416,6 +417,33 @@ describe('setupForegroundHandler', () => {
     expect(notifee.displayNotification).toHaveBeenCalledWith(
       expect.objectContaining({ title: 'Security alert' }),
     );
+  });
+
+  describe('when Notifee is unavailable', () => {
+    // notifeeAvailable is module-private state shared across every test in
+    // this file (one module instance per test file). Restore it to true
+    // unconditionally in afterEach so a failed assertion above can't leave
+    // notifeeAvailable=false and cascade-fail every later test in the file.
+    afterEach(async () => {
+      restorePlatform();
+      (notifee.getChannels as jest.Mock).mockResolvedValueOnce([]);
+      await initNotifications();
+    });
+
+    it('still sets identityKeyConflict + conflictSource(push) — the security tripwire must not be gated on display capability', async () => {
+      mockPlatform('ios', 17);
+      (notifee.getChannels as jest.Mock).mockRejectedValueOnce(new Error('native bridge unavailable'));
+      await initNotifications(); // sets module-private notifeeAvailable = false
+
+      mockIsRecoveryInitiator.mockReturnValue(false);
+      const cb = getOnMessageCallback();
+      await cb({ data: { t: 'identity_key_reset', v: '1' } });
+
+      expect(mockSetIdentityKeyConflict).toHaveBeenCalledWith(true);
+      expect(mockSetConflictSource).toHaveBeenCalledWith('push');
+      // Display is still gated on Notifee availability — banner is skipped.
+      expect(notifee.displayNotification).not.toHaveBeenCalled();
+    });
   });
 });
 

@@ -215,9 +215,21 @@ export async function deregisterCurrentDevice(): Promise<void> {
 export function setupForegroundHandler(): () => void {
   const unsubscribe = messaging().onMessage(
     async (remoteMessage: FirebaseMessagingTypes.RemoteMessage) => {
-      if (!notifeeAvailable) return;
-
       const data = remoteMessage.data;
+
+      // #539: identity_key_reset is a security tripwire and must run even
+      // when Notifee is unavailable (New Architecture edge case) — only
+      // banner *display* should be gated on notifeeAvailable, not the
+      // conflict-flag dispatch. Flip the key-conflict gate immediately
+      // (before any display attempt) unless THIS device initiated the
+      // recovery (would be a self-triggered false positive — see
+      // keyRecoveryService's transient initiator flag).
+      if (data && data.t === 'identity_key_reset' && !isRecoveryInitiator()) {
+        useAppStore.getState().setIdentityKeyConflict(true);
+        useAppStore.getState().setConflictSource('push');
+      }
+
+      if (!notifeeAvailable) return;
       if (!data) return;
 
       const type = data.t as string | undefined;
@@ -236,17 +248,6 @@ export function setupForegroundHandler(): () => void {
 
       const title = NOTIFICATION_TITLES[type];
       if (!title) return;
-
-      // #539: identity_key_reset push arrived while the app is in the
-      // foreground. Flip the key-conflict gate immediately (before display)
-      // unless THIS device initiated the recovery (would be a self-triggered
-      // false positive — see keyRecoveryService's transient initiator flag).
-      // The banner is still shown either way — push is content-free, so a
-      // stale/self push is harmless to display (SEC review: informational).
-      if (type === 'identity_key_reset' && !isRecoveryInitiator()) {
-        useAppStore.getState().setIdentityKeyConflict(true);
-        useAppStore.getState().setConflictSource('push');
-      }
 
       try {
         await notifee.displayNotification({

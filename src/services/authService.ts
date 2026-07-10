@@ -88,7 +88,16 @@ async function postAuthBootstrap(): Promise<void> {
   await loadDmConversations().catch(warnCatch('[DmSync]'));
   hydrateContactsFromOrbits().catch(warnCatch('[ContactHydration]'));
   fulfillPendingWraps().catch(warnCatch('[PendingWraps]'));
-  ensureKeysInitialized().catch(warnCatch('[KeyMaintenance]'));
+  ensureKeysInitialized().catch((e: unknown) => {
+    if (e instanceof ConflictError) {
+      // 409 on key upload — this device's identity key conflicts with server.
+      // Set the conflict flag so the app gates behind KeyConflictScreen.
+      useAppStore.getState().setIdentityKeyConflict(true);
+      useAppStore.getState().setConflictSource('local');
+    } else {
+      warnCatch('[KeyMaintenance]')(e);
+    }
+  });
   syncBlockedUsers().catch(warnCatch('[BlockedUsersSync]'));
 }
 
@@ -130,6 +139,9 @@ export async function loginUser(
   useAppStore.getState().updateProfile({
     avatarDigest: response.avatarDigest ?? null,
   });
+  // Persist email from the INPUT parameter (LoginResponse has no email field — SEC-L7).
+  // Transient (not MMKV-persisted) — needed by key recovery to re-login.
+  useAppStore.getState().setEmail(email);
 
   await postAuthBootstrap();
 }
@@ -158,12 +170,20 @@ export async function signupUser(
     avatarPath: null,
   });
   useAppStore.getState().setNeedsTermsAcceptance(response.needsTermsAcceptance ?? false);
+  // Persist email from the INPUT parameter. Transient — not MMKV-persisted.
+  useAppStore.getState().setEmail(email);
 
   try {
     await generateInitialKeys();
     await uploadInitialPreKeyBundle();
   } catch (e: unknown) {
-    if (__DEV__) console.warn('[KeyGeneration]', e instanceof Error ? e.message : e);
+    if (e instanceof ConflictError) {
+      // 409 on key upload during signup — identity key conflicts with server.
+      useAppStore.getState().setIdentityKeyConflict(true);
+      useAppStore.getState().setConflictSource('local');
+    } else if (__DEV__) {
+      console.warn('[KeyGeneration]', e instanceof Error ? e.message : e);
+    }
   }
 
   // v2 invite key delivery: decrypt group key from invite blob if present
@@ -505,4 +525,39 @@ export async function resetPassword(
   newPassword: string,
 ): Promise<void> {
   await auth.resetPasswordWithCode(email, code, newPassword);
+}
+
+/**
+ * Lower-level login for the key recovery orchestrator.
+ *
+ * Performs the API call, persists tokens, hydrates user + terms flag,
+ * and writes lastUserId — but does NOT run postAuthBootstrap.
+ * This prevents ensureKeysInitialized from double-firing and its warnCatch
+ * from swallowing a second 409 that the recovery service needs to observe.
+ *
+ * Also propagates needsTermsAcceptance (API-M1) and sets lastUserId via
+ * checkAccountSwitch so that subsequent session restores work correctly.
+ */
+export async function loginForRecovery(
+  email: string,
+  password: string,
+): Promise<void> {
+  const response = await auth.login({ email, password });
+
+  // checkAccountSwitch writes lastUserId — required for session restore.
+  // After fullCryptoWipe the items table is empty, so this always passes.
+  checkAccountSwitch(response.userId);
+
+  await tokenManager.setTokens(response.token, undefined);
+  useAppStore.getState().setUser({
+    userId: response.userId,
+    username: response.username,
+    displayName: response.displayName ?? null,
+    avatarPath: response.avatarUrl ?? null,
+  });
+  useAppStore.getState().setNeedsTermsAcceptance(response.needsTermsAcceptance ?? false);
+  useAppStore.getState().updateProfile({
+    avatarDigest: response.avatarDigest ?? null,
+  });
+  useAppStore.getState().setEmail(email);
 }

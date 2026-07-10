@@ -560,6 +560,8 @@ export interface UserProfile {
   avatarUrl: string | null;
   avatarDigest?: string | null;
   createdAt?: string;
+  /** Present in GET /api/users/me response — used by key recovery for re-login. */
+  email?: string;
 }
 
 export interface UpdateDisplayNameResponse {

@@ -125,6 +125,33 @@ export interface AuthState {
    * NOT persisted — re-derived from the server on each session.
    */
   needsTermsAcceptance: boolean;
+  /**
+   * True when the server returned a 409 on key upload, indicating this device's
+   * identity key conflicts with the server's record. Gates the app behind
+   * KeyConflictScreen until recovery completes.
+   * NOT persisted — transient, reset in setUser/clearAuth.
+   */
+  identityKeyConflict: boolean;
+  /**
+   * True while keyRecoveryService.recoverIdentityKeys() is executing.
+   * Gates the app on a recovery progress screen (outranks key-conflict).
+   * NOT persisted — transient, reset in setUser/clearAuth.
+   */
+  keyRecoveryInProgress: boolean;
+  /**
+   * Transient email captured from the login/signup INPUT parameter.
+   * Used by key recovery to re-login (LoginResponse has no email field).
+   * NOT persisted (PII) — nulled in setUser/clearAuth.
+   */
+  email: string | null;
+  /**
+   * How the identity key conflict was detected:
+   * - 'local': 409 from this device's key upload or settings-row recovery
+   * - 'push': identity_key_reset push from another device
+   * Drives skipServerReset in recovery and KeyConflictScreen copy.
+   * NOT persisted — transient, reset in setUser/clearAuth.
+   */
+  conflictSource: 'push' | 'local' | null;
 }
 
 /** Auth actions — JWT tokens and encryption keys are NOT stored here */
@@ -139,6 +166,10 @@ export interface AuthActions {
   setAuthenticated: (authenticated: boolean) => void;
   updateProfile: (patch: Partial<Pick<AuthState, 'displayName' | 'avatarPath' | 'avatarDigest'>>) => void;
   setNeedsTermsAcceptance: (needs: boolean) => void;
+  setIdentityKeyConflict: (conflict: boolean) => void;
+  setKeyRecoveryInProgress: (inProgress: boolean) => void;
+  setEmail: (email: string | null) => void;
+  setConflictSource: (source: 'push' | 'local' | null) => void;
 }
 
 export type AuthSlice = AuthState & AuthActions;

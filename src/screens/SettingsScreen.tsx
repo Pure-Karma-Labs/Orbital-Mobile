@@ -30,11 +30,13 @@ import { ProfileCard } from './settings/ProfileCard';
 import { SettingsRow } from './settings/SettingsRow';
 import { QuotaBar } from './settings/QuotaBar';
 import { DeletePasswordModal } from './settings/DeletePasswordModal';
+import { PasswordConfirmModal } from './settings/PasswordConfirmModal';
 import { OrbitAdminActions } from './settings/OrbitAdminActions';
 import { OrbitalSpinner } from '../components/OrbitalSpinner';
 import { EmojiText } from '../components/EmojiText';
 import type { GroupQuotaResponse } from '../types/api';
 import type { SettingsStackParamList } from '../navigation/types';
+import { recoverIdentityKeys } from '../services/keyRecoveryService';
 
 type ColorSchemeLabel = 'Light' | 'Dark' | 'System';
 
@@ -88,6 +90,10 @@ export function SettingsScreen(): React.JSX.Element {
   const [deletePasswordError, setDeletePasswordError] = useState<string | null>(null);
   const [blockingOrbits, setBlockingOrbits] = useState<DecryptedGroup[] | null>(null);
   const [loadingBlockingOrbits, setLoadingBlockingOrbits] = useState(false);
+
+  // --- Key recovery state ---
+  const [recoveryModalVisible, setRecoveryModalVisible] = useState(false);
+  const [recoveryPasswordError, setRecoveryPasswordError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!activeConversationId) return;
@@ -243,6 +249,38 @@ export function SettingsScreen(): React.JSX.Element {
     setBlockingOrbits(null);
     setDeletePasswordError(null);
     setDeleteModalVisible(true);
+  }, []);
+
+  // --- Key recovery handlers ---
+
+  const handleRecoverPress = useCallback(() => {
+    setRecoveryPasswordError(null);
+    setRecoveryModalVisible(true);
+  }, []);
+
+  const handleRecoveryPasswordSubmit = useCallback(async (password: string) => {
+    setRecoveryPasswordError(null);
+    // Settings-row recovery: skipServerReset=false (locally-initiated)
+    const result = await recoverIdentityKeys(password, false);
+    switch (result.status) {
+      case 'success':
+        setRecoveryModalVisible(false);
+        break;
+      case 'incorrect_password':
+        setRecoveryPasswordError('Incorrect password');
+        break;
+      case 'rate_limited':
+        setRecoveryPasswordError('Too many attempts — please wait a few minutes');
+        break;
+      case 'error':
+        setRecoveryPasswordError(result.message);
+        break;
+    }
+  }, []);
+
+  const handleRecoveryPasswordCancel = useCallback(() => {
+    setRecoveryModalVisible(false);
+    setRecoveryPasswordError(null);
   }, []);
 
   const containerStyle: ViewStyle = {
@@ -422,6 +460,12 @@ export function SettingsScreen(): React.JSX.Element {
           testID="manage-orbits-row"
         />
         <SettingsRow
+          emojiUnified="1F511"
+          label="Recover Encryption Keys"
+          onPress={handleRecoverPress}
+          testID="recover-keys-row"
+        />
+        <SettingsRow
           emojiUnified="1F6AA"
           label="Log Out"
           destructive
@@ -444,6 +488,17 @@ export function SettingsScreen(): React.JSX.Element {
         onCancel={handleDeletePasswordCancel}
         onSubmit={handleDeletePasswordSubmit}
         errorMessage={deletePasswordError}
+      />
+
+      <PasswordConfirmModal
+        visible={recoveryModalVisible}
+        onCancel={handleRecoveryPasswordCancel}
+        onSubmit={handleRecoveryPasswordSubmit}
+        errorMessage={recoveryPasswordError}
+        title="Recover Encryption Keys"
+        description="Enter your password to reset your encryption keys."
+        submitLabel="Recover"
+        testIDPrefix="settings-recovery-password"
       />
     </SafeAreaView>
   );

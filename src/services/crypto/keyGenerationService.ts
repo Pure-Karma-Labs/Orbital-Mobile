@@ -52,6 +52,8 @@ const DEVICE_ID = 1;
 
 let cachedPrivateKeyHex: string | null = null;
 let initializationPromise: Promise<void> | null = null;
+/** Generation counter for cancel/restart fencing (DEBT-049). */
+let initGeneration = 0;
 
 /**
  * Load the identity private key into the module-scoped cache.
@@ -481,27 +483,64 @@ export async function ensureKeysInitialized(): Promise<void> {
   }
 
   initializationPromise = (async () => {
-    if (getItem(ITEM_KEYS.IDENTITY_KEY_PUBLIC) === null) {
-      await generateInitialKeys();
-    }
+    // Generation capture MUST be the first line inside the IIFE (DEBT-049 / M-2).
+    // Two rapid calls would race without this fence — the finally only nulls
+    // the promise when the generation still matches, preventing a stale clear
+    // after cancelKeyInitialization bumps the counter.
+    const myGeneration = initGeneration;
+    try {
+      if (getItem(ITEM_KEYS.IDENTITY_KEY_PUBLIC) === null) {
+        await generateInitialKeys();
+      }
 
-    if (getItem(ITEM_KEYS.BUNDLE_UPLOADED) === null) {
-      await uploadInitialPreKeyBundle();
-    }
+      if (getItem(ITEM_KEYS.BUNDLE_UPLOADED) === null) {
+        await uploadInitialPreKeyBundle();
+      }
 
-    await checkAndRotateSignedPreKey();
-    await checkAndReplenishPreKeys();
-  })().finally(() => {
-    initializationPromise = null;
-  });
+      await checkAndRotateSignedPreKey();
+      await checkAndReplenishPreKeys();
+    } finally {
+      if (initGeneration === myGeneration) {
+        initializationPromise = null;
+      }
+    }
+  })();
 
   return initializationPromise;
 }
 
 /**
- * Full destructive wipe of all crypto state. Used when a different user
- * logs in on the same device — the old identity keys are irrecoverable for
- * the new user so everything must be regenerated.
+ * Cancel any in-flight key initialization (CRYPTO-H2).
+ *
+ * Captures the current promise, nulls the module ref, bumps the generation
+ * counter (so ensureKeysInitialized's .finally won't re-null a new promise),
+ * then AWAITS the orphaned promise (swallowing errors). This prevents a
+ * concurrent uploadInitialPreKeyBundle from 401-ing after JWT revocation
+ * and triggering token-clear mid-recovery.
+ */
+export async function cancelKeyInitialization(): Promise<void> {
+  const captured = initializationPromise;
+  initializationPromise = null;
+  initGeneration++;
+  if (captured) {
+    await captured.catch(() => {});
+  }
+}
+
+/**
+ * Full destructive wipe of all crypto state. Used by account deletion and
+ * key recovery. Deletes Keychain identity key, in-memory caches, and all
+ * Signal Protocol + items rows.
+ *
+ * The five SQL DELETEs run inside a single BEGIN IMMEDIATE/COMMIT transaction
+ * (CRYPTO-M2) — a partial wipe (e.g. Keychain gone but identityKeyPublic row
+ * surviving) would make the retry predicate re-attempt reset against a revoked
+ * JWT, causing a 401 deadlock.
+ *
+ * NOTE: this wipe deletes ROWS but preserves the live `db` handle and the
+ * Keychain DATABASE_ENCRYPTION_KEY. Cold-start retry re-inits the DB via
+ * bootstrap normally. This is NOT equivalent to localWipe, which also
+ * closes + unlinks the DB file (CRYPTO-M1).
  */
 export async function fullCryptoWipe(): Promise<void> {
   // Remove identity private key from Keychain
@@ -512,15 +551,23 @@ export async function fullCryptoWipe(): Promise<void> {
   clearGroupKeyCache();
   clearContentCryptoInflight();
 
-  // Clear group crypto state and all Signal Protocol tables
+  // Clear group crypto state and all Signal Protocol tables in one transaction
   if (isDatabaseInitialized()) {
-    clearAllGroupCryptoState();
-    execute('DELETE FROM items');
-    execute('DELETE FROM signal_identity_keys');
-    execute('DELETE FROM signal_sessions');
-    execute('DELETE FROM signal_pre_keys');
-    execute('DELETE FROM signal_signed_pre_keys');
-    execute('DELETE FROM signal_kyber_pre_keys');
-    execute('DELETE FROM signal_sender_keys');
+    const db = getDatabase();
+    db.executeSync('BEGIN IMMEDIATE');
+    try {
+      clearAllGroupCryptoState();
+      execute('DELETE FROM items');
+      execute('DELETE FROM signal_identity_keys');
+      execute('DELETE FROM signal_sessions');
+      execute('DELETE FROM signal_pre_keys');
+      execute('DELETE FROM signal_signed_pre_keys');
+      execute('DELETE FROM signal_kyber_pre_keys');
+      execute('DELETE FROM signal_sender_keys');
+      db.executeSync('COMMIT');
+    } catch (err) {
+      db.executeSync('ROLLBACK');
+      throw err;
+    }
   }
 }

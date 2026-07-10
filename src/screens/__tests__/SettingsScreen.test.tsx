@@ -51,6 +51,10 @@ jest.mock('../../services/notificationService', () => ({
   deregisterCurrentDevice: jest.fn().mockResolvedValue(undefined),
 }));
 
+jest.mock('../../services/keyRecoveryService', () => ({
+  recoverIdentityKeys: jest.fn().mockResolvedValue({ status: 'success' }),
+}));
+
 // @notifee/react-native is auto-mocked via __mocks__/@notifee/react-native.ts.
 // Import it here to override getNotificationSettings in per-test setups.
 
@@ -476,5 +480,24 @@ describe('SettingsScreen — push toggle', () => {
     );
     expect(mockRequestPermission).not.toHaveBeenCalled();
     alertSpy.mockRestore();
+  });
+});
+
+describe('SettingsScreen — recover encryption keys row', () => {
+  it('renders the Recover Encryption Keys row', () => {
+    const renderer = renderSettingsScreen();
+    expect(() => findByTestId(renderer.root, 'recover-keys-row')).not.toThrow();
+  });
+
+  it('tapping the row opens the recovery password modal', () => {
+    const renderer = renderSettingsScreen();
+    const row = findByTestId(renderer.root, 'recover-keys-row');
+
+    act(() => {
+      row.props.onPress();
+    });
+
+    const modal = findByTestId(renderer.root, 'settings-recovery-password-modal');
+    expect(modal.props.visible).toBe(true);
   });
 });

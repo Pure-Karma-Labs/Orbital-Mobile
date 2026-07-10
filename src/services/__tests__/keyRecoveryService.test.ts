@@ -224,7 +224,7 @@ jest.mock('../../stores/useAppStore', () => ({
 // ---------------------------------------------------------------------------
 
 import { recoverIdentityKeys, isRecoveryInitiator } from '../keyRecoveryService';
-import { AuthError, ConflictError } from '../api/errors';
+import { ApiError, AuthError, ConflictError } from '../api/errors';
 import { websocketManager } from '../websocket';
 import * as authApi from '../api/auth';
 
@@ -314,13 +314,17 @@ describe('recoverIdentityKeys — orchestration', () => {
 // ---------------------------------------------------------------------------
 
 describe('recoverIdentityKeys — wrong password', () => {
-  it('returns incorrect_password on 403 and does NOT wipe', async () => {
+  it('returns incorrect_password on 403, does NOT wipe, does NOT proceed to login or key-init', async () => {
     mockResetIdentityKeys.mockRejectedValueOnce(new AuthError(403, 'bad password'));
 
     const result = await recoverIdentityKeys('wrong', false);
 
     expect(result).toEqual({ status: 'incorrect_password' });
     expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+    expect(mockLogin).not.toHaveBeenCalled();
+    expect(mockEnsureKeysInitialized).not.toHaveBeenCalled();
+    expect(mockSetIdentityKeyConflict).not.toHaveBeenCalledWith(false);
+    expect(mockSetConflictSource).not.toHaveBeenCalledWith(null);
     expect(mockWsConnect).toHaveBeenCalled(); // WS reconnected
   });
 });
@@ -415,7 +419,10 @@ describe('recoverIdentityKeys — state-aware retry', () => {
 // ---------------------------------------------------------------------------
 
 describe('recoverIdentityKeys — API-M2 401 auto-retry', () => {
-  it('retries login once after 401', async () => {
+  beforeEach(() => { jest.useFakeTimers(); });
+  afterEach(() => { jest.useRealTimers(); });
+
+  it('retries login once after 401 with ~1.5s delay', async () => {
     let loginAttempt = 0;
     mockLogin.mockImplementation(async () => {
       loginAttempt++;
@@ -425,11 +432,25 @@ describe('recoverIdentityKeys — API-M2 401 auto-retry', () => {
       return { token: 'new-tok', userId: 'user-1', username: 'alice', displayName: null, publicKey: null };
     });
 
-    const result = await recoverIdentityKeys('password123', false);
+    const promise = recoverIdentityKeys('password123', false);
+    // Drain microtasks so the code reaches the setTimeout
+    await jest.advanceTimersByTimeAsync(1600);
+    const result = await promise;
 
     expect(result.status).toBe('success');
     expect(loginAttempt).toBe(2);
-  }, 10000);
+  });
+
+  it('returns error when retry also fails with 401', async () => {
+    mockLogin.mockRejectedValue(new AuthError(401, 'jwt revoked'));
+
+    const promise = recoverIdentityKeys('password123', false);
+    await jest.advanceTimersByTimeAsync(1600);
+    const result = await promise;
+
+    expect(result.status).toBe('error');
+    expect(result).toHaveProperty('message');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -474,10 +495,9 @@ describe('isRecoveryInitiator', () => {
 // ---------------------------------------------------------------------------
 
 describe('recoverIdentityKeys — email resolution', () => {
-  it('returns error when email cannot be resolved', async () => {
+  it('returns needs_email when email cannot be resolved automatically', async () => {
     const { useAppStore } = require('../../stores/useAppStore');
     const defaultState = useAppStore.getState();
-    // All getState calls must return email: null to force fallback to getMe
     (useAppStore.getState as jest.Mock).mockReturnValue({
       ...defaultState,
       email: null,
@@ -486,11 +506,60 @@ describe('recoverIdentityKeys — email resolution', () => {
     (usersApi.getMe as jest.Mock).mockRejectedValue(new Error('no jwt'));
 
     const result = await recoverIdentityKeys('password123', false);
-    expect(result.status).toBe('error');
-    expect(result).toHaveProperty('message');
+    expect(result.status).toBe('needs_email');
 
     // Restore default for subsequent tests
     (useAppStore.getState as jest.Mock).mockReturnValue(defaultState);
     (usersApi.getMe as jest.Mock).mockReset();
+  });
+
+  it('uses emailOverride when provided (manual entry fallback)', async () => {
+    const { useAppStore } = require('../../stores/useAppStore');
+    const defaultState = useAppStore.getState();
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      ...defaultState,
+      email: null,
+    });
+
+    const result = await recoverIdentityKeys('password123', false, 'manual@example.com');
+    expect(result.status).toBe('success');
+    // Verify login was called (email was accepted)
+    expect(mockLogin).toHaveBeenCalled();
+
+    (useAppStore.getState as jest.Mock).mockReturnValue(defaultState);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SEC-M1: fullCryptoWipe failure
+// ---------------------------------------------------------------------------
+
+describe('recoverIdentityKeys — fullCryptoWipe failure (SEC-M1)', () => {
+  it('returns error when fullCryptoWipe rejects', async () => {
+    mockFullCryptoWipe.mockRejectedValueOnce(new Error('wipe crashed'));
+
+    const result = await recoverIdentityKeys('password123', false);
+
+    expect(result.status).toBe('error');
+    expect(result).toHaveProperty('message', 'Local wipe failed — please retry');
+    expect(mockLogin).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SEC-L2: 429 rate limit (ApiError, not AuthError)
+// ---------------------------------------------------------------------------
+
+describe('recoverIdentityKeys — rate limit (SEC-L2)', () => {
+  it('returns rate_limited on ApiError 429', async () => {
+    mockResetIdentityKeys.mockRejectedValueOnce(
+      new ApiError('Rate limited — try again shortly', 429, 'RATE_LIMITED', true),
+    );
+
+    const result = await recoverIdentityKeys('password123', false);
+
+    expect(result.status).toBe('rate_limited');
+    expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+    expect(mockWsConnect).toHaveBeenCalled();
   });
 });

@@ -9,12 +9,16 @@
  * Copy is conflictSource-aware (SEC-H2):
  * - 'push': "Your encryption keys were reset from another device..."
  * - 'local': "Enter your password to reset your encryption keys."
+ *
+ * EMAIL RULING tier 3: when the service cannot resolve the email automatically,
+ * the screen shows an editable email field for manual entry.
  */
 
 import React, { useCallback, useState } from 'react';
 import {
   ScrollView,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
   type TextStyle,
@@ -31,12 +35,15 @@ import { useAuth } from '../stores';
 export function KeyConflictScreen(): React.JSX.Element {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
-  const { conflictSource } = useAuth();
+  const { conflictSource, email: sliceEmail } = useAuth();
 
   const [passwordModalVisible, setPasswordModalVisible] = useState(false);
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [logoutLoading, setLogoutLoading] = useState(false);
+  // EMAIL RULING tier 3: editable email field shown when auto-resolution fails
+  const [needsManualEmail, setNeedsManualEmail] = useState(false);
+  const [manualEmail, setManualEmail] = useState(sliceEmail ?? '');
 
   const isPush = conflictSource === 'push';
   const skipServerReset = isPush;
@@ -51,7 +58,8 @@ export function KeyConflictScreen(): React.JSX.Element {
     setPasswordError(null);
     setError(null);
 
-    const result = await recoverIdentityKeys(password, skipServerReset);
+    const emailOverride = needsManualEmail ? manualEmail.trim() : undefined;
+    const result = await recoverIdentityKeys(password, skipServerReset, emailOverride);
 
     switch (result.status) {
       case 'success':
@@ -64,12 +72,17 @@ export function KeyConflictScreen(): React.JSX.Element {
       case 'rate_limited':
         setPasswordError('Too many attempts — please wait a few minutes');
         break;
+      case 'needs_email':
+        // Auto-resolution failed — show editable email field
+        setPasswordModalVisible(false);
+        setNeedsManualEmail(true);
+        break;
       case 'error':
         setPasswordModalVisible(false);
         setError(result.message);
         break;
     }
-  }, [skipServerReset]);
+  }, [skipServerReset, needsManualEmail, manualEmail]);
 
   const handlePasswordCancel = useCallback(() => {
     setPasswordModalVisible(false);
@@ -118,6 +131,18 @@ export function KeyConflictScreen(): React.JSX.Element {
     marginBottom: theme.spacing.base,
   };
 
+  const emailInputStyle: TextStyle = {
+    borderWidth: 1,
+    borderColor: theme.colors.borderSubtle,
+    borderRadius: theme.borderRadius.base,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    fontFamily: theme.typography.fontFamily.body,
+    fontSize: theme.typography.fontSize.base,
+    color: theme.colors.textPrimary,
+    marginBottom: theme.spacing.md,
+  };
+
   const logoutLinkStyle: TextStyle = {
     fontFamily: theme.typography.fontFamily.body,
     fontSize: theme.typography.fontSize.base,
@@ -145,14 +170,29 @@ export function KeyConflictScreen(): React.JSX.Element {
         <Text style={titleStyle}>Orbital</Text>
         <AsciiBanner text="Encryption key conflict" />
 
-        <Text style={bodyStyle}>{description}</Text>
+        <Text style={bodyStyle} testID="key-conflict-description">{description}</Text>
 
         <View>
           <ErrorBanner message={error} />
 
+          {needsManualEmail && (
+            <TextInput
+              style={emailInputStyle}
+              value={manualEmail}
+              onChangeText={setManualEmail}
+              placeholder="Email address"
+              placeholderTextColor={theme.colors.textTertiary}
+              keyboardType="email-address"
+              autoCapitalize="none"
+              autoCorrect={false}
+              testID="key-conflict-email-input"
+            />
+          )}
+
           <Button
             title="Recover my encryption keys"
             onPress={handleRecover}
+            disabled={needsManualEmail && !manualEmail.trim()}
             testID="key-conflict-recover-button"
           />
         </View>

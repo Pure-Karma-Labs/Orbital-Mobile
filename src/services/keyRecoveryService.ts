@@ -14,7 +14,7 @@ import { useAppStore } from '../stores/useAppStore';
 import { loginForRecovery } from './authService';
 import { resetIdentityKeys } from './api/keys';
 import * as users from './api/users';
-import { AuthError, NetworkError } from './api/errors';
+import { ApiError, AuthError, NetworkError } from './api/errors';
 import { ConflictError } from './api/errors';
 import {
   fullCryptoWipe,
@@ -40,6 +40,7 @@ export type KeyRecoveryResult =
   | { status: 'success' }
   | { status: 'incorrect_password' }
   | { status: 'rate_limited' }
+  | { status: 'needs_email'; message: string }
   | { status: 'error'; message: string };
 
 // ---------------------------------------------------------------------------
@@ -138,15 +139,17 @@ async function resolveRecoveryEmail(): Promise<string | null> {
 export async function recoverIdentityKeys(
   password: string,
   skipServerReset: boolean = false,
+  emailOverride?: string,
 ): Promise<KeyRecoveryResult> {
   _isRecoveryInitiator = true;
   useAppStore.getState().setKeyRecoveryInProgress(true);
 
   try {
-    // Step 1: Capture email before any wipe
-    const email = await resolveRecoveryEmail();
+    // Step 1: Capture email before any wipe.
+    // emailOverride is the manual-entry fallback from KeyConflictScreen (EMAIL RULING tier 3).
+    const email = emailOverride || await resolveRecoveryEmail();
     if (!email) {
-      return { status: 'error', message: 'Unable to determine account email for re-login' };
+      return { status: 'needs_email' as const, message: 'Unable to determine account email for re-login' };
     }
 
     // Step 2: Disconnect WS — prevent stale reconnects during reset
@@ -167,8 +170,8 @@ export async function recoverIdentityKeys(
           websocketManager.connect();
           return { status: 'incorrect_password' };
         }
-        // Rate limited — surface friendly message
-        if (e instanceof AuthError && e.statusCode === 429) {
+        // Rate limited — client.ts throws plain ApiError for 429 (not AuthError)
+        if (e instanceof ApiError && e.statusCode === 429) {
           websocketManager.connect();
           return { status: 'rate_limited' };
         }
@@ -184,7 +187,11 @@ export async function recoverIdentityKeys(
     // Step 5: Local crypto wipe (flows through fullCryptoWipe — documented subset
     // of localWipe per DEBT-005; NOT a parallel re-enumeration)
     if (!alreadyWiped) {
-      await fullCryptoWipe();
+      try {
+        await fullCryptoWipe();
+      } catch {
+        return { status: 'error', message: 'Local wipe failed — please retry' };
+      }
 
       // Clear in-flight service state that references now-dead crypto material
       try { clearConversationServiceState(); } catch { /* best-effort */ }

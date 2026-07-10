@@ -81,6 +81,7 @@ import {
   checkAndRotateSignedPreKey,
   ensureKeysInitialized,
   initIdentityKeyCache,
+  cancelKeyInitialization,
 } from '../keyGenerationService';
 
 // ---------------------------------------------------------------------------
@@ -651,5 +652,87 @@ describe('ensureKeysInitialized', () => {
     await ensureKeysInitialized();
 
     expect(getPreKeyCount).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cancelKeyInitialization — generation-fenced cancel-then-restart race
+// ---------------------------------------------------------------------------
+
+describe('cancelKeyInitialization', () => {
+  it('cancel during in-flight init: orphan finally does NOT null the new promise', async () => {
+    // Set up a long-running ensureKeysInitialized that we can control
+    let resolveOrphan!: () => void;
+    const orphanGate = new Promise<void>((resolve) => { resolveOrphan = resolve; });
+
+    (getItem as jest.Mock).mockImplementation((key: string) => {
+      if (key === 'identityKeyPublic') return 'aabbcc';
+      if (key === 'bundleUploaded') return '1';
+      if (key === 'lastSignedPreKeyRotation') return String(Math.floor(Date.now() / 1000));
+      return null;
+    });
+
+    let replenishCallCount = 0;
+    (getPreKeyCount as jest.Mock).mockImplementation(async () => {
+      replenishCallCount++;
+      if (replenishCallCount === 1) {
+        // First call (orphan): block until we release it
+        await orphanGate;
+      }
+      return { count: 50 };
+    });
+
+    // Step 1: Start ensureKeysInitialized — it will block at getPreKeyCount
+    const orphanPromise = ensureKeysInitialized();
+
+    // Step 2: Cancel — bumps generation, nulls initializationPromise, awaits orphan
+    // We need to release the orphan so cancel can complete
+    const cancelPromise = cancelKeyInitialization();
+    resolveOrphan();
+    await cancelPromise;
+
+    // Step 3: Restart — should create a NEW promise
+    const restartPromise = ensureKeysInitialized();
+
+    // The restart promise must NOT be null — the orphan's finally saw a
+    // mismatched generation and did NOT null it
+    expect(restartPromise).toBeDefined();
+
+    await restartPromise;
+    await orphanPromise; // Should already be resolved
+
+    // Both calls ran (orphan + restart)
+    expect(replenishCallCount).toBe(2);
+  });
+
+  it('cancel with no in-flight init resolves immediately', async () => {
+    await expect(cancelKeyInitialization()).resolves.toBeUndefined();
+  });
+
+  it('cancel awaits the orphaned promise (swallowing errors)', async () => {
+    let resolveOrphan!: () => void;
+    const orphanGate = new Promise<void>((resolve) => { resolveOrphan = resolve; });
+
+    (getItem as jest.Mock).mockImplementation((key: string) => {
+      if (key === 'identityKeyPublic') return 'aabbcc';
+      if (key === 'bundleUploaded') return '1';
+      if (key === 'lastSignedPreKeyRotation') return String(Math.floor(Date.now() / 1000));
+      return null;
+    });
+
+    (getPreKeyCount as jest.Mock).mockImplementation(async () => {
+      await orphanGate;
+      throw new Error('Simulated failure');
+    });
+
+    // Start and then cancel
+    const orphanPromise = ensureKeysInitialized();
+    const cancelPromise = cancelKeyInitialization();
+    resolveOrphan();
+
+    // cancel must resolve (not reject) even though the orphan threw
+    await expect(cancelPromise).resolves.toBeUndefined();
+    // The orphan itself rejects but we don't re-throw
+    await expect(orphanPromise).rejects.toThrow('Simulated failure');
   });
 });

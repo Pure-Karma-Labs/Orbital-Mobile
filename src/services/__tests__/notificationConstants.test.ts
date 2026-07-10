@@ -35,6 +35,11 @@ describe('resolveAnchor', () => {
       .toEqual({ type: 'threadsList' });
   });
 
+  it('resolves identity_key_reset to settings', () => {
+    expect(resolveAnchor({ t: 'identity_key_reset', v: '1' }))
+      .toEqual({ type: 'settings' });
+  });
+
   it('returns null for missing type field', () => {
     expect(resolveAnchor({ gid: 'g1' })).toBeNull();
   });
@@ -121,6 +126,10 @@ describe('dedupKeyForPayload', () => {
   it('returns null for unknown type', () => {
     expect(dedupKeyForPayload({ t: 'foobar' })).toBeNull();
   });
+
+  it('returns null for identity_key_reset (no unique event ID)', () => {
+    expect(dedupKeyForPayload({ t: 'identity_key_reset', v: '1' })).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -134,7 +143,8 @@ describe('shared constants', () => {
     expect(NOTIFICATION_TITLES).toHaveProperty('new_dm');
     expect(NOTIFICATION_TITLES).toHaveProperty('orbit_invite');
     expect(NOTIFICATION_TITLES).toHaveProperty('member_joined');
-    expect(Object.keys(NOTIFICATION_TITLES)).toHaveLength(5);
+    expect(NOTIFICATION_TITLES).toHaveProperty('identity_key_reset', 'Security alert');
+    expect(Object.keys(NOTIFICATION_TITLES)).toHaveLength(6);
   });
 
   it('exports Android channel constants', () => {

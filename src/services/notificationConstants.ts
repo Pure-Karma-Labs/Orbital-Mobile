@@ -12,6 +12,9 @@ export const NOTIFICATION_TITLES: Record<string, string> = {
   new_dm: 'New direct message',
   orbit_invite: "You've been invited to an Orbit",
   member_joined: 'A new member joined your Orbit',
+  // #539: fixes the Android background title gap — the server's titleMap is
+  // iOS-only (APNs alert.title); Android relies entirely on this client map.
+  identity_key_reset: 'Security alert',
 };
 
 export const ANDROID_CHANNEL_ID = 'orbital-default';
@@ -26,6 +29,7 @@ export type NotificationAnchor =
   | { type: 'chat'; conversationId: string }
   | { type: 'joinOrbit'; code: string }
   | { type: 'threadsList' }
+  | { type: 'settings' }
   | null;
 
 /**
@@ -60,6 +64,12 @@ export function resolveAnchor(data: Record<string, string>): NotificationAnchor 
         : null;
     case 'member_joined':
       return { type: 'threadsList' };
+    case 'identity_key_reset':
+      // No IDs in the payload ({t, v} only) — tap always lands on Settings.
+      // The conflict-flag state mutation for this type happens in
+      // notificationService (foreground onMessage / navigateFromNotification),
+      // not here — this function stays a pure payload -> anchor mapper.
+      return { type: 'settings' };
     default:
       return null;
   }

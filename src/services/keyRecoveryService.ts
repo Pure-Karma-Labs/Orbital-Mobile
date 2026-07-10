@@ -31,6 +31,7 @@ import { loadEciesLockState } from './crypto/downgradeProtection';
 import { loadConversations, loadDmConversations, fulfillPendingWraps, hydrateContactsFromOrbits } from './conversationService';
 import { syncBlockedUsers } from './blockedUsersSync';
 import { websocketManager } from './websocket';
+import { isRecoveryInitiator, setRecoveryInitiator } from './recoveryState';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -47,13 +48,10 @@ export type KeyRecoveryResult =
 // Transient initiator flag — #539 reads this to suppress self-push
 // ---------------------------------------------------------------------------
 
-let _isRecoveryInitiator = false;
-
-/** True while THIS device is executing a recovery flow. #539 uses this to
- *  suppress the identity_key_reset push handler on the initiating device. */
-export function isRecoveryInitiator(): boolean {
-  return _isRecoveryInitiator;
-}
+// Re-exported for backward compatibility — the flag itself now lives in
+// recoveryState.ts (dependency-free, to avoid an import cycle with
+// notificationService). See recoveryState.ts for details.
+export { isRecoveryInitiator };
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -141,7 +139,7 @@ export async function recoverIdentityKeys(
   skipServerReset: boolean = false,
   emailOverride?: string,
 ): Promise<KeyRecoveryResult> {
-  _isRecoveryInitiator = true;
+  setRecoveryInitiator(true);
   useAppStore.getState().setKeyRecoveryInProgress(true);
 
   try {
@@ -268,7 +266,7 @@ export async function recoverIdentityKeys(
 
     return { status: 'success' };
   } finally {
-    _isRecoveryInitiator = false;
+    setRecoveryInitiator(false);
     useAppStore.getState().setKeyRecoveryInProgress(false);
   }
 }

@@ -65,9 +65,12 @@ rust/
 └── orbital_signal/   # Rust crate wrapping libsignal
 ios/                  # iOS native project
 android/              # Android native project
-fastlane/             # Fastlane automation
 .github/workflows/    # CI/CD pipelines
 ```
+
+## Contributing
+
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for how to get set up and what we look for in a PR. To report a security vulnerability, please follow [SECURITY.md](SECURITY.md) rather than opening a public issue.
 
 ## License
 

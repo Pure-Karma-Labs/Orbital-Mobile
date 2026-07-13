@@ -71,3 +71,13 @@ ios/.xcode.env.local
 # Firebase client config — injected from CI secrets, never commit
 android/app/google-services.json
 ios/OrbitalMobile/GoogleService-Info.plist
+
+# Internal agent tooling config (removed from history at open-source flip)
+.claude/
+
+# Compliance material and store assets — never commit
+# (store-listing.md is deliberately tracked; keep the negation below it)
+project-docs/*
+!project-docs/store-listing.md
+/uploads/
+docs/compliance/BIS Supplement*

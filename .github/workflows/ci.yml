@@ -17,8 +17,8 @@ permissions:
 jobs:
   lint-typecheck-test:
     name: Lint, Typecheck & Test
-    runs-on: [self-hosted, macOS]
-    timeout-minutes: 15
+    runs-on: macos-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -93,16 +93,12 @@ jobs:
           restore-keys: |
             pods-${{ runner.os }}-
 
-      # SECURITY (accepted, see follow-up issue linked from #513): `pod
-      # install` evaluates the Podfile and every dependency's podspec as
-      # arbitrary Ruby, so this step executes PR-authored code on the
-      # self-hosted runner before merge/review. This is acceptable ONLY
-      # because Orbital-Mobile is currently a private repo where every PR
-      # author is a trusted collaborator with push access. This must be
-      # re-gated (GitHub-hosted runner, environment approval for
-      # external-fork PRs, or base-branch-only checkout) before the repo
-      # is opened to external contributors -- see the open-source prep
-      # tracker (#479).
+      # `pod install` evaluates the Podfile and every dependency's podspec as
+      # arbitrary Ruby. On GitHub-hosted ephemeral runners this is safe --
+      # the VM is discarded after the job, so fork PRs cannot exfiltrate
+      # secrets or persist changes to the host machine. (Issue #479 migrated
+      # this job to GitHub-hosted runners specifically to close that attack
+      # surface before the repo goes public.)
       - name: Podfile.lock consistency check
         if: github.event_name == 'pull_request' && steps.pod-filter.outputs.ios-native == 'true'
         working-directory: ios

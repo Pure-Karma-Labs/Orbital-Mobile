@@ -26,6 +26,11 @@ on:
   # verify the hosted-runner migration before it merges to main.
   workflow_dispatch:
 
+# Build jobs only need checkout + cache access; keep the GITHUB_TOKEN
+# read-only like ci.yml and security.yml.
+permissions:
+  contents: read
+
 concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
@@ -65,7 +70,9 @@ jobs:
       # that invokes protoc at Rust compile time to generate protobuf bindings.
       # The self-hosted Mac had protoc pre-installed; hosted runners do not.
       - name: Install protoc
-        run: brew install protobuf
+        run: |
+          brew install protobuf
+          protoc --version
 
       # GitHub-hosted runners have Rust pre-installed (currently 1.96.0) but
       # rust-toolchain.toml pins 1.94.1. rustup reads rust-toolchain.toml on
@@ -166,20 +173,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      # macos-latest (macos-26) defaults to Xcode 26.5. Pinning explicitly
-      # makes the version visible in CI logs and prevents silent drift when the
-      # runner image ships a new default. The Podfile post_install hook patches
-      # fmt/base.h to disable a false-positive consteval error introduced in
-      # Xcode 26's Apple Clang build (see ios/Podfile); the patch targets all
-      # Apple Clang versions and is forward-compatible within the 26.x series.
-      - name: Select Xcode 26.5
-        run: sudo xcode-select -s /Applications/Xcode_26.5.app
+      # Select the newest Xcode 26.x on the image rather than hard-coding a
+      # minor version: runner images periodically drop older minors, and a
+      # hard-coded path would also break when macos-latest rolls to macos-27.
+      # If no 26.x exists at all, fail loudly here rather than mid-build. The
+      # Podfile post_install hook patches fmt/base.h to disable a
+      # false-positive consteval error introduced in Xcode 26's Apple Clang
+      # build (see ios/Podfile); the patch targets all Apple Clang versions
+      # and is forward-compatible within the 26.x series.
+      - name: Select Xcode (newest 26.x)
+        run: |
+          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+          echo "Selected $XCODE_PATH"
+          sudo xcode-select -s "$XCODE_PATH"
+          xcodebuild -version
 
       # libsignal's spqr dependency (SparsePostQuantumRatchet) has a build.rs
       # that invokes protoc at Rust compile time to generate protobuf bindings.
       # The self-hosted Mac had protoc pre-installed; hosted runners do not.
       - name: Install protoc
-        run: brew install protobuf
+        run: |
+          brew install protobuf
+          protoc --version
 
       # GitHub-hosted runners have Rust pre-installed (currently 1.96.0) but
       # rust-toolchain.toml pins 1.94.1. rustup reads rust-toolchain.toml on

@@ -52,6 +52,7 @@ hex-literal = "1.1"
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+overflow-checks = true
 
 [patch.crates-io]
 # Use Signal's fork to avoid duplicate dependency issues

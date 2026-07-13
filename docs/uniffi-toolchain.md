@@ -119,6 +119,48 @@ The uniffi npm and Rust crate versions **must stay in sync**. Both are on the 0.
 
 **"missing field `repository`"** — The library's `package.json` must have a `repository` field (ubrn CLI requires it).
 
+## Build Profiles
+
+By default, `ubrn build` uses cargo's dev profile (unoptimized, debug symbols). For store
+builds, use the `:release` script variants which pass `--release` to ubrn, triggering
+the release profile configured in `Cargo.toml` (thin LTO, codegen-units=1, symbol stripping,
+overflow-checks enabled).
+
+### Commands
+
+| Task | Dev (default) | Release (store builds) |
+|------|--------------|----------------------|
+| iOS only | `npm run build:rust:ios` | `npm run build:rust:ios:release` |
+| Android only | `npm run build:rust:android` | `npm run build:rust:android:release` |
+| Both platforms | `npm run build:rust` | `npm run build:rust:release` |
+| Shell script | `./scripts/build-ios.sh` | `./scripts/build-ios.sh --release` |
+| Shell script | `./scripts/build-android.sh` | `./scripts/build-android.sh --release` |
+
+### Marker Files
+
+Each build script writes a marker file recording the profile used:
+
+| Platform | Marker path | Contents |
+|----------|------------|----------|
+| iOS | `packages/orbital-signal/rust-profile-ios.txt` | `debug` or `release` |
+| Android | `packages/orbital-signal/android/src/main/jniLibs/rust-profile.txt` | `debug` or `release` |
+
+Both markers are gitignored (iOS explicitly, Android via the `jniLibs/` pattern).
+
+### Build Guards
+
+Two guards prevent shipping dev-profile crypto in a store build:
+
+1. **Android (Gradle):** The `checkRustBinaries` task in `android/check-rust-freshness.gradle`
+   inspects the task graph for Release variant tasks. If a Release variant is detected and the
+   marker file does not contain `release`, the build fails immediately. The task also checks
+   source freshness (unchanged from before). Uses `outputs.upToDateWhen { false }` to ensure
+   the profile check always runs, even if Gradle believes inputs are unchanged.
+
+2. **iOS (Xcode):** A `script_phase` in the Podfile named **[Orbital] Verify Rust release profile**
+   runs before compilation. For `CONFIGURATION=Release` builds (including Archive), it reads the
+   marker and fails with a clear error if the profile is not `release`.
+
 ## Cross-Compilation Targets
 
 | Target | Platform | ABI | Build Script |
@@ -131,18 +173,20 @@ The uniffi npm and Rust crate versions **must stay in sync**. Both are on the 0.
 
 ARM32 (`armv7-linux-androideabi`) is intentionally excluded — <5% of modern Android devices, and it doubles build time.
 
-### Binary Sizes (debug, per target)
+### Binary Sizes (per target)
 
-| Target | Static lib (.a) | Notes |
-|--------|----------------|-------|
-| aarch64-apple-ios | ~19 MB | Debug build with libsignal |
-| aarch64-apple-ios-sim | ~19 MB | |
-| x86_64-apple-ios | ~19 MB | |
-| iOS simulator lipo (combined) | ~37 MB | arm64 + x86_64 |
-| Android arm64-v8a | ~19 MB (est.) | .so via cargo-ndk |
-| Android x86_64 | ~19 MB (est.) | |
+| Target | Debug (.a) | Release (.a) | Reduction |
+|--------|-----------|-------------|-----------|
+| Android arm64-v8a | 135 MB | 42 MB | 3.2x |
+| Android x86_64 | 141 MB | 44 MB | 3.2x |
+| aarch64-apple-ios | ~19 MB | TBD | |
+| aarch64-apple-ios-sim | ~19 MB | TBD | |
+| x86_64-apple-ios | ~19 MB | TBD | |
+| iOS simulator lipo (combined) | ~37 MB | TBD | |
 
-Release builds with LTO will be significantly smaller. Exact sizes TBD after release build optimization.
+Release profile: thin LTO, `codegen-units = 1`, `strip = "symbols"`, `overflow-checks = true`.
+Android sizes measured from `ubrn build android --release` (issue #541). iOS release sizes
+to be measured after the first iOS release build.
 
 ### Build Times (CI, self-hosted macOS ARM64)
 

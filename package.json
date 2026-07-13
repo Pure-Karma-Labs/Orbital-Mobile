@@ -17,6 +17,9 @@
     "build:rust:ios": "cd packages/orbital-signal && npm run build:ios && cd ../../ios && pod install",
     "build:rust:android": "cd packages/orbital-signal && npm run build:android",
     "build:rust": "npm run build:rust:ios && npm run build:rust:android",
+    "build:rust:ios:release": "cd packages/orbital-signal && npm run build:ios:release && cd ../../ios && pod install",
+    "build:rust:android:release": "cd packages/orbital-signal && npm run build:android:release",
+    "build:rust:release": "npm run build:rust:ios:release && npm run build:rust:android:release",
     "security:invariants": "node scripts/check-security-invariants.mjs"
   },
   "dependencies": {

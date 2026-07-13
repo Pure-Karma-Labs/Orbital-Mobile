@@ -9,6 +9,11 @@
  * libraries in jniLibs/. When sources are newer than binaries, it either
  * triggers an automatic rebuild (if orbital.autoRebuildRust=true) or fails
  * with a clear error telling the developer to run the build command.
+ *
+ * Additionally, for Release builds (assembleRelease, bundleRelease, etc.)
+ * the task verifies that the Rust binaries were compiled with the release
+ * cargo profile by checking the rust-profile.txt marker file. This prevents
+ * shipping unoptimized debug-profile crypto code in store builds.
  */
 
 def projectRoot = rootProject.projectDir.parentFile
@@ -24,25 +29,42 @@ tasks.register('checkRustBinaries') {
 
     def arm64Lib = file("${projectRoot}/packages/orbital-signal/android/src/main/jniLibs/arm64-v8a/liborbital_signal.a")
     def x86_64Lib = file("${projectRoot}/packages/orbital-signal/android/src/main/jniLibs/x86_64/liborbital_signal.a")
+    def profileMarker = file("${projectRoot}/packages/orbital-signal/android/src/main/jniLibs/rust-profile.txt")
 
     inputs.dir(rustSrcDir)
     inputs.file(cargoToml)
     inputs.file(cargoLock)
     if (rustToolchain.exists()) inputs.file(rustToolchain)
+    if (profileMarker.exists()) inputs.file(profileMarker)
     outputs.files(arm64Lib, x86_64Lib)
 
+    // The profile gate depends on the requested build variant (debug vs release),
+    // which isn't a declared input — even with profileMarker registered above,
+    // never let Gradle skip this task.
+    outputs.upToDateWhen { false }
+
     doLast {
+        // Determine if a Release variant was requested in this build
+        def releaseRequested = gradle.taskGraph.allTasks.any {
+            it.name ==~ /(assemble|bundle|package|install)\w*Release\w*/
+        }
+        def buildScript = releaseRequested ? 'build:rust:android:release' : 'build:rust:android'
+
         // 1. Check if binaries exist at all
         if (!arm64Lib.exists() || !x86_64Lib.exists()) {
             throw new GradleException(
-                "Android Rust binaries not found. Run:  npm run build:rust:android"
+                "Android Rust binaries not found. Run:  npm run ${buildScript}"
             )
         }
 
-        // 2. Find the oldest binary timestamp
+        // 2. Profile gate: Release builds require release-profile Rust binaries
+        def profile = profileMarker.exists() ? profileMarker.text.trim() : 'missing'
+        def profileMismatch = releaseRequested && profile != 'release'
+
+        // 3. Find the oldest binary timestamp
         def oldestBinaryTime = Math.min(arm64Lib.lastModified(), x86_64Lib.lastModified())
 
-        // 3. Collect all input files that are newer than the oldest binary
+        // 4. Collect all input files that are newer than the oldest binary
         def staleFiles = []
 
         fileTree(rustSrcDir).matching { include '**/*.rs' }.each { f ->
@@ -60,19 +82,28 @@ tasks.register('checkRustBinaries') {
             staleFiles.add('rust-toolchain.toml')
         }
 
-        // 4. If stale, either auto-rebuild or fail with guidance
-        if (!staleFiles.isEmpty()) {
+        // 5. If stale or profile mismatch, either auto-rebuild or fail with guidance
+        if (!staleFiles.isEmpty() || profileMismatch) {
             if (project.findProperty('orbital.autoRebuildRust') == 'true') {
-                logger.warn("Rust sources changed (${staleFiles.join(', ')}) — auto-rebuilding Android binaries...")
+                def reason = profileMismatch
+                    ? "Release build requires release-profile Rust binaries (found '${profile}')"
+                    : "Rust sources changed (${staleFiles.join(', ')})"
+                logger.warn("${reason} — auto-rebuilding Android binaries with: npm run ${buildScript}")
                 exec {
-                    commandLine 'npm', 'run', 'build:rust:android'
                     workingDir projectRoot
+                    commandLine 'npm', 'run', buildScript
                 }
             } else {
+                if (profileMismatch) {
+                    throw new GradleException(
+                        "Release build requires release-profile Rust binaries, but found profile '${profile}'.\n" +
+                        "Run:  npm run build:rust:android:release"
+                    )
+                }
                 throw new GradleException(
                     "Rust sources are newer than Android binaries.\n" +
                     "Changed files: ${staleFiles.join(', ')}\n" +
-                    "Run:  npm run build:rust:android"
+                    "Run:  npm run ${buildScript}"
                 )
             }
         }

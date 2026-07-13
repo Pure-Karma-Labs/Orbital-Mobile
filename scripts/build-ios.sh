@@ -14,6 +14,9 @@ set -euo pipefail
 PROFILE_SUFFIX=""
 if [ "${1:-}" = "--release" ]; then
     PROFILE_SUFFIX=":release"
+elif [ $# -gt 0 ]; then
+    echo "Unknown argument: $1. Usage: $0 [--release]" >&2
+    exit 1
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

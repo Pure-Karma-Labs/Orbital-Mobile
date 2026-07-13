@@ -35,10 +35,12 @@ tasks.register('checkRustBinaries') {
     inputs.file(cargoToml)
     inputs.file(cargoLock)
     if (rustToolchain.exists()) inputs.file(rustToolchain)
+    if (profileMarker.exists()) inputs.file(profileMarker)
     outputs.files(arm64Lib, x86_64Lib)
 
     // The profile gate depends on the requested build variant (debug vs release),
-    // which isn't a declared input — never let Gradle skip this task.
+    // which isn't a declared input — even with profileMarker registered above,
+    // never let Gradle skip this task.
     outputs.upToDateWhen { false }
 
     doLast {

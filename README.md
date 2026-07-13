@@ -61,8 +61,8 @@ src/
 ├── theme/            # Design tokens, colors, typography
 ├── types/            # Shared TypeScript types
 └── utils/            # Utility functions
-rust/
-└── orbital_signal/   # Rust crate wrapping libsignal
+packages/
+└── orbital-signal/   # Rust crate wrapping libsignal
 ios/                  # iOS native project
 android/              # Android native project
 .github/workflows/    # CI/CD pipelines

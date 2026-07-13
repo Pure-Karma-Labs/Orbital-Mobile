@@ -707,11 +707,11 @@ export async function fulfillPendingWraps(): Promise<void> {
   const conversationIds = Object.values(conversations)
     .map(c => c.id);
 
-  for (const groupId of conversationIds.slice(0, 10)) {
+  for (const conversationId of conversationIds.slice(0, 10)) {
     if (isSessionStale(session)) return;
     try {
-      const groupKey = await getOrFetchGroupKey(groupId);
-      const pending = await getPendingWraps(groupId);
+      const groupKey = await getOrFetchGroupKey(conversationId);
+      const pending = await getPendingWraps(conversationId);
       if (pending.length === 0) continue;
 
       for (const member of pending.slice(0, 5)) {
@@ -758,14 +758,14 @@ export async function fulfillPendingWraps(): Promise<void> {
               VerifiedStatus.Unverified,
             );
           }
-          const wrapped = wrapGroupKey(groupKey, targetPubKey, groupId);
-          await submitWrappedKey(groupId, member.userId, wrapped);
+          const wrapped = wrapGroupKey(groupKey, targetPubKey, conversationId);
+          await submitWrappedKey(conversationId, member.userId, wrapped);
         } catch {
           // Skip members whose identity key can't be resolved
         }
       }
     } catch {
-      // Skip groups where we don't have a key (we're the pending one)
+      // Skip conversations where we don't have a key (we're the pending one)
     }
   }
 }

@@ -14,8 +14,10 @@
   "source": "./src/index.tsx",
   "main": "./src/index.tsx",
   "scripts": {
-    "build:ios": "ubrn build ios --config ubrn.config.yaml --and-generate",
-    "build:android": "ubrn build android --config ubrn.config.yaml --and-generate"
+    "build:ios": "rm -f rust-profile-ios.txt && ubrn build ios --config ubrn.config.yaml --and-generate && echo debug > rust-profile-ios.txt",
+    "build:ios:release": "rm -f rust-profile-ios.txt && ubrn build ios --config ubrn.config.yaml --release --and-generate && echo release > rust-profile-ios.txt",
+    "build:android": "rm -f android/src/main/jniLibs/rust-profile.txt && ubrn build android --config ubrn.config.yaml --and-generate && echo debug > android/src/main/jniLibs/rust-profile.txt",
+    "build:android:release": "rm -f android/src/main/jniLibs/rust-profile.txt && ubrn build android --config ubrn.config.yaml --release --and-generate && echo release > android/src/main/jniLibs/rust-profile.txt"
   },
   "dependencies": {
     "uniffi-bindgen-react-native": "0.31.0-2"

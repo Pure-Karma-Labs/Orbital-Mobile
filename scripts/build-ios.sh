@@ -2,10 +2,19 @@
 # Build Rust crate for iOS targets and generate bindings.
 # Produces XCFramework + TypeScript/C++ bindings via uniffi-bindgen-react-native.
 #
+# Usage: ./build-ios.sh [--release]
+#   --release  Build with cargo release profile (optimized, stripped, thin LTO)
+#   (default)  Build with cargo dev profile (debug symbols, fast compilation)
+#
 # Prerequisites: Rust toolchain, Xcode (for xcframework), CocoaPods
 # Targets: aarch64-apple-ios, aarch64-apple-ios-sim, x86_64-apple-ios
 
 set -euo pipefail
+
+PROFILE_SUFFIX=""
+if [ "${1:-}" = "--release" ]; then
+    PROFILE_SUFFIX=":release"
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -22,9 +31,9 @@ if ! rustup target list --installed | grep -q aarch64-apple-ios; then
     rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
 fi
 
-echo "==> Building Rust for iOS..."
+echo "==> Building Rust for iOS${PROFILE_SUFFIX:+ (release profile)}..."
 cd "$LIBRARY_DIR"
-npx ubrn build ios --config ubrn.config.yaml --and-generate
+npm run "build:ios${PROFILE_SUFFIX}"
 
 echo "==> Installing CocoaPods..."
 cd "$PROJECT_ROOT/ios"

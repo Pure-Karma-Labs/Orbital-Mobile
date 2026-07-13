@@ -147,6 +147,7 @@
 			buildConfigurationList = 13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "OrbitalMobile" */;
 			buildPhases = (
 				C38B50BA6285516D6DCD4F65 /* [CP] Check Pods Manifest.lock */,
+				E73D15A5E8854559F55B0B51 /* [CP-User] [Orbital] Verify Rust release profile */,
 				13B07F871A680F5B00A75B9A /* Sources */,
 				13B07F8C1A680F5B00A75B9A /* Frameworks */,
 				13B07F8E1A680F5B00A75B9A /* Resources */,
@@ -305,6 +306,17 @@
 			shellPath = /bin/sh;
 			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-OrbitalMobile/Pods-OrbitalMobile-resources.sh\"\n";
 			showEnvVarsInLog = 0;
+		};
+		E73D15A5E8854559F55B0B51 /* [CP-User] [Orbital] Verify Rust release profile */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			name = "[CP-User] [Orbital] Verify Rust release profile";
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "if [ \"${CONFIGURATION}\" = \"Release\" ]; then\n  MARKER=\"${SRCROOT}/../packages/orbital-signal/rust-profile-ios.txt\"\n  PROFILE=$(cat \"$MARKER\" 2>/dev/null || echo missing)\n  if [ \"$PROFILE\" != \"release\" ]; then\n    echo \"error: OrbitalSignal xcframework was built with Rust profile '${PROFILE}', not 'release'. Run: npm run build:rust:ios:release\"\n    exit 1\n  fi\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

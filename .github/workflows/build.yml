@@ -96,6 +96,7 @@ jobs:
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: packages/orbital-signal/rust/orbital_signal
+          # Does not encode Rust profile — split key if a release build step is ever added.
           shared-key: rust-build-android
           # save-if can't reference this same step's own cache-hit output
           # (with: inputs are evaluated before the step runs), hence the
@@ -178,6 +179,7 @@ jobs:
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: packages/orbital-signal/rust/orbital_signal
+          # Does not encode Rust profile — split key if a release build step is ever added.
           shared-key: rust-build-ios
           save-if: ${{ github.ref == 'refs/heads/main' && steps.rust-cache-lookup-ios.outputs.cache-hit != 'true' }}
 

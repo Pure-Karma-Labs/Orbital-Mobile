@@ -61,6 +61,12 @@ jobs:
       - name: Export ANDROID_NDK_HOME
         run: echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.1.12297006" >> "$GITHUB_ENV"
 
+      # libsignal's spqr dependency (SparsePostQuantumRatchet) has a build.rs
+      # that invokes protoc at Rust compile time to generate protobuf bindings.
+      # The self-hosted Mac had protoc pre-installed; hosted runners do not.
+      - name: Install protoc
+        run: brew install protobuf
+
       # GitHub-hosted runners have Rust pre-installed (currently 1.96.0) but
       # rust-toolchain.toml pins 1.94.1. rustup reads rust-toolchain.toml on
       # first cargo invocation and auto-downloads the pinned toolchain. The
@@ -168,6 +174,12 @@ jobs:
       # Apple Clang versions and is forward-compatible within the 26.x series.
       - name: Select Xcode 26.5
         run: sudo xcode-select -s /Applications/Xcode_26.5.app
+
+      # libsignal's spqr dependency (SparsePostQuantumRatchet) has a build.rs
+      # that invokes protoc at Rust compile time to generate protobuf bindings.
+      # The self-hosted Mac had protoc pre-installed; hosted runners do not.
+      - name: Install protoc
+        run: brew install protobuf
 
       # GitHub-hosted runners have Rust pre-installed (currently 1.96.0) but
       # rust-toolchain.toml pins 1.94.1. rustup reads rust-toolchain.toml on

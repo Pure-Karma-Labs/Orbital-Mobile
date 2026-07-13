@@ -2,10 +2,22 @@
 # Build Rust crate for Android targets and generate bindings.
 # Produces .so libraries + TypeScript/C++ bindings via uniffi-bindgen-react-native.
 #
+# Usage: ./build-android.sh [--release]
+#   --release  Build with cargo release profile (optimized, stripped, thin LTO)
+#   (default)  Build with cargo dev profile (debug symbols, fast compilation)
+#
 # Prerequisites: Rust toolchain, Android NDK, cargo-ndk
 # Targets: aarch64-linux-android (arm64-v8a), x86_64-linux-android (x86_64)
 
 set -euo pipefail
+
+PROFILE_SUFFIX=""
+if [ "${1:-}" = "--release" ]; then
+    PROFILE_SUFFIX=":release"
+elif [ $# -gt 0 ]; then
+    echo "Unknown argument: $1. Usage: $0 [--release]" >&2
+    exit 1
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -47,10 +59,10 @@ if [ -z "${ANDROID_NDK_HOME:-}" ]; then
     exit 1
 fi
 
-echo "==> Building Rust for Android..."
+echo "==> Building Rust for Android${PROFILE_SUFFIX:+ (release profile)}..."
 echo "    NDK: $ANDROID_NDK_HOME"
 cd "$LIBRARY_DIR"
-npx ubrn build android --config ubrn.config.yaml --and-generate
+npm run "build:android${PROFILE_SUFFIX}"
 
 echo "==> Android build complete."
 echo "    Targets: arm64-v8a, x86_64"

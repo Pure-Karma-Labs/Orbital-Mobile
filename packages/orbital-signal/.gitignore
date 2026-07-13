@@ -1,3 +1,6 @@
 # Binary artifacts — rebuilt locally and in CI
 OrbitalSignalFramework.xcframework/
 android/src/main/jniLibs/
+
+# Profile marker written by build:ios / build:ios:release (local only)
+rust-profile-ios.txt

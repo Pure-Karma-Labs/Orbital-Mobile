@@ -22,6 +22,14 @@ on:
       - 'package-lock.json'
       - 'rust-toolchain.toml'
       - '.github/workflows/build.yml'
+  # workflow_dispatch lets us manually trigger build jobs on this branch to
+  # verify the hosted-runner migration before it merges to main.
+  workflow_dispatch:
+
+# Build jobs only need checkout + cache access; keep the GITHUB_TOKEN
+# read-only like ci.yml and security.yml.
+permissions:
+  contents: read
 
 concurrency:
   group: build-${{ github.ref }}
@@ -30,32 +38,49 @@ concurrency:
 jobs:
   build-android:
     name: Android Debug Build
-    runs-on: [self-hosted, macOS]
-    timeout-minutes: 60
+    runs-on: macos-latest
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Configure Android SDK
-        run: |
-          for sdk_path in "$HOME/Library/Android/sdk" "/opt/homebrew/share/android-commandlinetools" "/usr/local/share/android-commandlinetools"; do
-            if [ -d "$sdk_path" ]; then
-              echo "ANDROID_HOME=$sdk_path" >> "$GITHUB_ENV"
-              echo "ANDROID_SDK_ROOT=$sdk_path" >> "$GITHUB_ENV"
-              echo "Found Android SDK at $sdk_path"
-              exit 0
-            fi
-          done
-          echo "::error::Android SDK not found. Install Android Studio or set ANDROID_HOME on the runner."
-          exit 1
+      # The hosted macOS runner (macos-latest = macos-26) ships NDK 27.3 as
+      # its default, but android/build.gradle pins ndkVersion to 27.1.12297006
+      # (the version used during initial development). Install the exact minor
+      # version so both the Gradle AGP resolution and the ANDROID_NDK_HOME env
+      # for cargo-ndk point to the same directory. NDK downloads are cached
+      # so only the first cold run incurs the ~1 GB download.
+      # Note: ANDROID_HOME is pre-set by the hosted runner image.
+      - name: Cache Android NDK 27.1.12297006
+        id: ndk-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/Library/Android/sdk/ndk/27.1.12297006
+          key: android-ndk-27.1.12297006-${{ runner.os }}
 
+      - name: Install Android NDK 27.1.12297006
+        if: steps.ndk-cache.outputs.cache-hit != 'true'
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;27.1.12297006"
+
+      - name: Export ANDROID_NDK_HOME
+        run: echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.1.12297006" >> "$GITHUB_ENV"
+
+      # libsignal's spqr dependency (SparsePostQuantumRatchet) has a build.rs
+      # that invokes protoc at Rust compile time to generate protobuf bindings.
+      # The self-hosted Mac had protoc pre-installed; hosted runners do not.
+      - name: Install protoc
+        run: |
+          brew install protobuf
+          protoc --version
+
+      # GitHub-hosted runners have Rust pre-installed (currently 1.96.0) but
+      # rust-toolchain.toml pins 1.94.1. rustup reads rust-toolchain.toml on
+      # first cargo invocation and auto-downloads the pinned toolchain. The
+      # explicit target additions below mirror the toml entries and ensure
+      # targets are available before the first cargo run in the workspace.
       - name: Setup Rust
         run: |
-          if [ ! -f "$HOME/.cargo/bin/cargo" ]; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-          fi
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          export PATH="$HOME/.cargo/bin:$PATH"
           rustup target add aarch64-linux-android x86_64-linux-android
           cargo install cargo-ndk@4.1.2 --locked 2>/dev/null || true
 
@@ -109,7 +134,7 @@ jobs:
           cd packages/orbital-signal
           npm run build:android
         env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.1.12297006
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
 
       - name: Setup Java
         uses: actions/setup-java@v5
@@ -117,9 +142,20 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      # Gradle cache: omitted intentionally. The self-hosted runner persists
-      # ~/.gradle between runs on disk. actions/cache would try to upload
-      # ~6 GB to GitHub's cache service after every build, hanging at 0 MB/s.
+      # Gradle dependency cache: caches downloaded JARs (~300 MB typical for
+      # this project) so they are not re-downloaded on every cold hosted-runner
+      # boot. The full build-output cache (~6 GB with all intermediate
+      # compiled artifacts) is still omitted — that volume causes 0 MB/s stalls
+      # when uploading to GitHub's cache service.
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.gradle/caches/modules-2
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/gradle/wrapper/gradle-wrapper.properties', 'android/build.gradle', 'android/app/build.gradle') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
 
       - name: Build Android Debug
         working-directory: android
@@ -129,21 +165,44 @@ jobs:
 
   build-ios:
     name: iOS Debug Build
-    if: github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, macOS]
-    timeout-minutes: 60
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # Select the newest Xcode 26.x on the image rather than hard-coding a
+      # minor version: runner images periodically drop older minors, and a
+      # hard-coded path would also break when macos-latest rolls to macos-27.
+      # If no 26.x exists at all, fail loudly here rather than mid-build. The
+      # Podfile post_install hook patches fmt/base.h to disable a
+      # false-positive consteval error introduced in Xcode 26's Apple Clang
+      # build (see ios/Podfile); the patch targets all Apple Clang versions
+      # and is forward-compatible within the 26.x series.
+      - name: Select Xcode (newest 26.x)
+        run: |
+          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+          echo "Selected $XCODE_PATH"
+          sudo xcode-select -s "$XCODE_PATH"
+          xcodebuild -version
+
+      # libsignal's spqr dependency (SparsePostQuantumRatchet) has a build.rs
+      # that invokes protoc at Rust compile time to generate protobuf bindings.
+      # The self-hosted Mac had protoc pre-installed; hosted runners do not.
+      - name: Install protoc
+        run: |
+          brew install protobuf
+          protoc --version
+
+      # GitHub-hosted runners have Rust pre-installed (currently 1.96.0) but
+      # rust-toolchain.toml pins 1.94.1. rustup reads rust-toolchain.toml on
+      # first cargo invocation and auto-downloads the pinned toolchain. The
+      # explicit target additions below mirror the toml entries and ensure
+      # targets are available before the first cargo run in the workspace.
       - name: Setup Rust
         run: |
-          if [ ! -f "$HOME/.cargo/bin/cargo" ]; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-          fi
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          export PATH="$HOME/.cargo/bin:$PATH"
           rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
 
       - name: Setup Node.js

@@ -140,25 +140,27 @@ expect_fail_with "A3 (Release+missing→fail)" \
 # on rootProject. Its name matches the release-task regex, so releaseRequested=true
 # inside checkRustBinaries; marker=release → no profile mismatch → gate passes.
 printf 'release' > "${MARKER}"
-{
-  output=$(./gradlew \
-    -I ../scripts/rust-gate-probe.init.gradle \
-    :app:checkRustBinaries assembleCiGateProbeRelease \
-    --console=plain 2>&1)
-  exit_code=$?
-  ok=1
-  [ "${exit_code}" -ne 0 ] && ok=0
-  printf '%s' "${output}" | grep -qF '> Task :app:checkRustBinaries' || ok=0
-  printf '%s' "${output}" | grep -qF 'Release build requires release-profile' && ok=0
-  if [ "${ok}" -eq 1 ]; then
-    echo "PASS A4 (Release+release+probe→pass, gate non-vacuous)"
-    PASS=$((PASS + 1))
-  else
-    echo "FAIL A4: exit=${exit_code}"
-    printf '%s\n' "${output}" | tail -20
-    FAIL=$((FAIL + 1))
-  fi
-}
+# Bracket with set +e like the helpers: an unexpected Gradle failure must land
+# in the FAIL branch with diagnostics, not abort the script at the assignment.
+set +e
+output=$(./gradlew \
+  -I ../scripts/rust-gate-probe.init.gradle \
+  :app:checkRustBinaries assembleCiGateProbeRelease \
+  --console=plain 2>&1)
+exit_code=$?
+set -e
+ok=1
+[ "${exit_code}" -ne 0 ] && ok=0
+printf '%s' "${output}" | grep -qF '> Task :app:checkRustBinaries' || ok=0
+printf '%s' "${output}" | grep -qF 'Release build requires release-profile' && ok=0
+if [ "${ok}" -eq 1 ]; then
+  echo "PASS A4 (Release+release+probe→pass, gate non-vacuous)"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL A4: exit=${exit_code}"
+  printf '%s\n' "${output}" | tail -20
+  FAIL=$((FAIL + 1))
+fi
 
 echo ""
 echo "Android gate results: ${PASS} passed, ${FAIL} failed"

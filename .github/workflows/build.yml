@@ -179,6 +179,10 @@ jobs:
         env:
           SENTRY_DISABLE_AUTO_UPLOAD: 'true'
 
+  # Validates the gate's bash logic (scripts/verify-rust-profile-ios.sh) and
+  # Podfile wiring on every PR. The Xcode -> /bin/sh -> exec bash delegation in
+  # project.pbxproj is deliberately NOT exercised here — that path runs in the
+  # build-ios job on main pushes (PR #556 review: accepted tradeoff).
   test-rust-gate-ios:
     name: iOS Rust Profile Gate Test
     runs-on: ubuntu-latest

@@ -12,6 +12,10 @@ on:
       - 'package-lock.json'
       - 'rust-toolchain.toml'
       - '.github/workflows/build.yml'
+      - 'scripts/verify-rust-profile-ios.sh'
+      - 'scripts/test-rust-profile-gate-ios.sh'
+      - 'scripts/test-rust-profile-gate-android.sh'
+      - 'scripts/rust-gate-probe.init.gradle'
   pull_request:
     paths:
       - 'packages/orbital-signal/**'
@@ -22,6 +26,10 @@ on:
       - 'package-lock.json'
       - 'rust-toolchain.toml'
       - '.github/workflows/build.yml'
+      - 'scripts/verify-rust-profile-ios.sh'
+      - 'scripts/test-rust-profile-gate-ios.sh'
+      - 'scripts/test-rust-profile-gate-android.sh'
+      - 'scripts/rust-gate-probe.init.gradle'
   # workflow_dispatch lets us manually trigger build jobs on this branch to
   # verify the hosted-runner migration before it merges to main.
   workflow_dispatch:
@@ -162,6 +170,24 @@ jobs:
         run: ./gradlew assembleDebug --no-daemon
         env:
           SENTRY_DISABLE_AUTO_UPLOAD: 'true'
+
+      # Must stay after assembleDebug: needs the debug-profile Rust binaries +
+      # marker it produces. The harness starts its own Gradle daemon (scoped to
+      # this step) and stops it via the trap in the script.
+      - name: Test Rust release-profile gate (issue #550)
+        run: bash scripts/test-rust-profile-gate-android.sh
+        env:
+          SENTRY_DISABLE_AUTO_UPLOAD: 'true'
+
+  test-rust-gate-ios:
+    name: iOS Rust Profile Gate Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Test iOS release-profile gate (issue #550)
+        run: bash scripts/test-rust-profile-gate-ios.sh
 
   build-ios:
     name: iOS Debug Build

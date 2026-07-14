@@ -316,7 +316,7 @@
 			name = "[CP-User] [Orbital] Verify Rust release profile";
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "if [ \"${CONFIGURATION}\" = \"Release\" ]; then\n  MARKER=\"${SRCROOT}/../packages/orbital-signal/rust-profile-ios.txt\"\n  PROFILE=$(cat \"$MARKER\" 2>/dev/null || echo missing)\n  if [ \"$PROFILE\" != \"release\" ]; then\n    echo \"error: OrbitalSignal xcframework was built with Rust profile '${PROFILE}', not 'release'. Run: npm run build:rust:ios:release\"\n    exit 1\n  fi\nfi\n";
+			shellScript = "exec bash \"${SRCROOT}/../scripts/verify-rust-profile-ios.sh\"";
 		};
 /* End PBXShellScriptBuildPhase section */
 

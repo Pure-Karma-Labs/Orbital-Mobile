@@ -4,12 +4,12 @@
  */
 const base = require('./jest.config');
 
+// Entries that exist ONLY to exclude worktree/clone checkouts from the main
+// config — strip exactly these; inherit everything else the base adds.
+const WORKTREE_ONLY = ['\\.clone/', '\\.claude/worktrees/'];
+
 module.exports = {
   ...base,
-  testPathIgnorePatterns: ['/node_modules/'],
-  modulePathIgnorePatterns: [],
-  moduleNameMapper: {
-    ...base.moduleNameMapper,
-    '^react-native-config$': '<rootDir>/__mocks__/react-native-config.ts',
-  },
+  testPathIgnorePatterns: (base.testPathIgnorePatterns || []).filter(p => !WORKTREE_ONLY.includes(p)),
+  modulePathIgnorePatterns: (base.modulePathIgnorePatterns || []).filter(p => !WORKTREE_ONLY.includes(p)),
 };

@@ -10,6 +10,23 @@ import { runMigrations } from './database/migrations';
 import { tokenManager } from './services/api/tokenManager';
 import { useAppStore } from './stores/useAppStore';
 import { initIdentityKeyCache } from './services/crypto/keyGenerationService';
+import { isRecoveryInitiator } from './services/recoveryState';
+
+/**
+ * 401 handler for tokenManager.onTokensCleared.
+ *
+ * Suppressed while THIS device is running key recovery — an orphaned in-flight
+ * request 401ing mid-recovery must not flash the login screen; loginForRecovery
+ * restores tokens at step 6 (#543).
+ *
+ * Precision: race-freedom rests on setRecoveryInitiator(true) being set before
+ * any API call and cleared only in `finally` — NOT on listener notification
+ * being synchronous (notifyListeners runs after an `await` in clearTokens).
+ */
+export function handleTokensCleared(): void {
+  if (isRecoveryInitiator()) return;
+  useAppStore.getState().clearAuth();
+}
 
 /**
  * App bootstrap sequence — runs once before any screens mount.
@@ -40,9 +57,8 @@ export async function bootstrap(): Promise<void> {
   tokenManager.configure(new KeychainTokenStorage());
   // Global 401 handler: when tokens are cleared (e.g. on HTTP 401),
   // automatically clear auth state so the app gate shows the login screen.
-  tokenManager.onTokensCleared(() => {
-    useAppStore.getState().clearAuth();
-  });
+  // Suppressed during key recovery — see handleTokensCleared for details.
+  tokenManager.onTokensCleared(handleTokensCleared);
   // Best-effort cleanup of orphaned chunk temp files from interrupted uploads.
   // Lazy import avoids pulling mediaUploadService into the bootstrap import chain.
   import('./services/mediaUploadService').then(({ cleanupOrphanedChunks }) =>

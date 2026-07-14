@@ -81,6 +81,9 @@ export function checkAccountSwitch(newUserId: string): void {
  * Called after login, signup, and session restore to hydrate conversations,
  * contacts, pending wraps, and crypto state. Each step is catch-guarded so
  * a single failure never prevents the remaining bootstrap tasks.
+ *
+ * SYNC:postAuthBootstrap — keyRecoveryService.ts step 8 mirrors these steps.
+ * If you change one, update the other. Grep for this marker to find both.
  */
 async function postAuthBootstrap(): Promise<void> {
   loadEciesLockState();

@@ -17,17 +17,10 @@ end
 target 'OrbitalMobile' do
   # Fail Release builds (incl. Product > Archive) if the vendored Rust
   # xcframework was not built with the release cargo profile. See issue #541.
+  # Logic extracted to scripts/verify-rust-profile-ios.sh; unit-tested by
+  # scripts/test-rust-profile-gate-ios.sh (issue #550).
   script_phase :name => '[Orbital] Verify Rust release profile',
-    :script => <<~'SH',
-      if [ "${CONFIGURATION}" = "Release" ]; then
-        MARKER="${SRCROOT}/../packages/orbital-signal/rust-profile-ios.txt"
-        PROFILE=$(cat "$MARKER" 2>/dev/null || echo missing)
-        if [ "$PROFILE" != "release" ]; then
-          echo "error: OrbitalSignal xcframework was built with Rust profile '${PROFILE}', not 'release'. Run: npm run build:rust:ios:release"
-          exit 1
-        fi
-      fi
-    SH
+    :script => 'exec bash "${SRCROOT}/../scripts/verify-rust-profile-ios.sh"',
     :execution_position => :before_compile,
     :always_out_of_date => '1'
 

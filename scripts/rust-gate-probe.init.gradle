@@ -1,0 +1,9 @@
+// CI-only (issue #550): registers a no-op task whose name full-matches the
+// release-task regex in android/check-rust-freshness.gradle, so the profile
+// gate can be exercised with releaseRequested=true without a real release build.
+rootProject {
+    tasks.register('assembleCiGateProbeRelease') {
+        group = 'verification'
+        doLast { logger.lifecycle('rust-gate release probe executed') }
+    }
+}

@@ -81,6 +81,7 @@ jobs:
             ios-native:
               - 'package.json'
               - 'ios/**'
+              - 'packages/orbital-signal/*.podspec'
 
       - name: Cache CocoaPods
         if: github.event_name == 'pull_request' && steps.pod-filter.outputs.ios-native == 'true'

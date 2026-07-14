@@ -341,7 +341,7 @@
 				CODE_SIGN_ENTITLEMENTS = OrbitalMobile/OrbitalMobile.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 15;
+				CURRENT_PROJECT_VERSION = 16;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = OrbitalMobile/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Orbital Mobile";
@@ -375,7 +375,7 @@
 				CODE_SIGN_ENTITLEMENTS = OrbitalMobile/OrbitalMobile.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 15;
+				CURRENT_PROJECT_VERSION = 16;
 				INFOPLIST_FILE = OrbitalMobile/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Orbital Mobile";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";

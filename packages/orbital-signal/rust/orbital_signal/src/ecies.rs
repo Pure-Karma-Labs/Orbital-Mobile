@@ -13,7 +13,7 @@
 //! \___________________________ unsigned portion (93 bytes) ___________/
 //! ```
 //!
-//! - Version byte: `0x01`
+//! - Version byte: `0x02`
 //! - Ephemeral X25519 public key: 32 bytes (raw Montgomery form)
 //! - Nonce: 12-byte random AES-256-GCM nonce
 //! - Ciphertext: AES-256-GCM(plaintext) with 16-byte auth tag = 32 + 16 = 48 bytes
@@ -528,6 +528,38 @@ mod tests {
         assert!(
             matches!(err, SignalError::InvalidSignature),
             "expected InvalidSignature for tampered unsigned portion, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_tampered_ephemeral_pub() {
+        // The XEdDSA signature covers the unsigned portion [0..93], so ephemeral-pub
+        // tampering (offsets 1..33) must fail at signature verification before any
+        // point parsing. This future-proofs against refactors that introduce
+        // pre-signature parsing of the ephemeral point (e.g. early small-order
+        // rejection).
+        let plaintext = vec![0xEF; 32];
+        let (sender_priv, sender_pub) = generate_signal_keypair();
+        let (recipient_priv, recipient_pub) = generate_signal_keypair();
+
+        let mut sealed = ecies_seal(
+            plaintext,
+            test_gid(),
+            recipient_pub,
+            sender_priv,
+            sender_pub.clone(),
+        )
+        .expect("seal should succeed");
+
+        // Tamper with a byte in the ephemeral-pub region (offsets 1..33).
+        sealed[10] ^= 0xFF;
+
+        let err = ecies_open(sealed, test_gid(), recipient_priv, sender_pub)
+            .expect_err("tampered ephemeral pub must fail");
+
+        assert!(
+            matches!(err, SignalError::InvalidSignature),
+            "expected InvalidSignature for tampered ephemeral pub, got: {err:?}"
         );
     }
 

@@ -77,10 +77,30 @@ jobs:
       # libsignal's spqr dependency (SparsePostQuantumRatchet) has a build.rs
       # that invokes protoc at Rust compile time to generate protobuf bindings.
       # The self-hosted Mac had protoc pre-installed; hosted runners do not.
-      - name: Install protoc
+      - name: Cache protoc 34.1
+        id: protoc-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/protoc-34.1
+          key: protoc-34.1-${{ runner.os }}
+
+      - name: Install protoc 34.1
+        if: steps.protoc-cache.outputs.cache-hit != 'true'
         run: |
-          brew install protobuf
-          protoc --version
+          # Digest: official protocolbuffers/protobuf v34.1 release asset
+          # https://github.com/protocolbuffers/protobuf/releases/download/v34.1/protoc-34.1-osx-universal_binary.zip
+          # (protobuf publishes no SHA256SUMS.) To update on a version bump,
+          # re-derive — do NOT copy the old hash forward:
+          #   curl -fsSL <new-asset-url> -o protoc.zip && shasum -a 256 protoc.zip
+          curl -fsSL "https://github.com/protocolbuffers/protobuf/releases/download/v34.1/protoc-34.1-osx-universal_binary.zip" -o protoc.zip
+          echo "5c6057638aa382542e75f1c5a0802893e2311ad0c8b689e635dd4ac3c9eb8169  protoc.zip" | shasum -a 256 -c -
+          unzip protoc.zip -d ~/protoc-34.1
+          rm protoc.zip
+
+      - name: Add protoc to PATH
+        run: |
+          echo "$HOME/protoc-34.1/bin" >> "$GITHUB_PATH"
+          "$HOME/protoc-34.1/bin/protoc" --version
 
       # GitHub-hosted runners have Rust pre-installed (currently 1.96.0) but
       # rust-toolchain.toml pins 1.94.1. rustup reads rust-toolchain.toml on
@@ -221,10 +241,30 @@ jobs:
       # libsignal's spqr dependency (SparsePostQuantumRatchet) has a build.rs
       # that invokes protoc at Rust compile time to generate protobuf bindings.
       # The self-hosted Mac had protoc pre-installed; hosted runners do not.
-      - name: Install protoc
+      - name: Cache protoc 34.1
+        id: protoc-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/protoc-34.1
+          key: protoc-34.1-${{ runner.os }}
+
+      - name: Install protoc 34.1
+        if: steps.protoc-cache.outputs.cache-hit != 'true'
         run: |
-          brew install protobuf
-          protoc --version
+          # Digest: official protocolbuffers/protobuf v34.1 release asset
+          # https://github.com/protocolbuffers/protobuf/releases/download/v34.1/protoc-34.1-osx-universal_binary.zip
+          # (protobuf publishes no SHA256SUMS.) To update on a version bump,
+          # re-derive — do NOT copy the old hash forward:
+          #   curl -fsSL <new-asset-url> -o protoc.zip && shasum -a 256 protoc.zip
+          curl -fsSL "https://github.com/protocolbuffers/protobuf/releases/download/v34.1/protoc-34.1-osx-universal_binary.zip" -o protoc.zip
+          echo "5c6057638aa382542e75f1c5a0802893e2311ad0c8b689e635dd4ac3c9eb8169  protoc.zip" | shasum -a 256 -c -
+          unzip protoc.zip -d ~/protoc-34.1
+          rm protoc.zip
+
+      - name: Add protoc to PATH
+        run: |
+          echo "$HOME/protoc-34.1/bin" >> "$GITHUB_PATH"
+          "$HOME/protoc-34.1/bin/protoc" --version
 
       # GitHub-hosted runners have Rust pre-installed (currently 1.96.0) but
       # rust-toolchain.toml pins 1.94.1. rustup reads rust-toolchain.toml on

@@ -51,6 +51,7 @@
   },
   "devDependencies": {
     "@babel/core": "^7.29.7",
+    "@babel/plugin-transform-dynamic-import": "^7.29.7",
     "@babel/preset-env": "^7.29.7",
     "@babel/runtime": "^7.25.0",
     "@react-native-community/cli": "20.0.2",

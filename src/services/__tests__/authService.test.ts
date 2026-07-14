@@ -1438,6 +1438,8 @@ describe('loginForRecovery', () => {
     expect(mockSetUser).toHaveBeenCalled();
     expect(mockSetNeedsTermsAcceptance).toHaveBeenCalledWith(false);
     expect(mockSetEmail).toHaveBeenCalledWith('alice@example.com');
+    // checkAccountSwitch writes lastUserId — required for session restore
+    expect(mockSetItem).toHaveBeenCalledWith('lastUserId', 'user-1');
     // postAuthBootstrap indicators should NOT have been called
     expect(mockEnsureKeysInitialized).not.toHaveBeenCalled();
     expect(mockLoadConversations).not.toHaveBeenCalled();

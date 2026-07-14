@@ -226,7 +226,9 @@ jest.mock('../../stores/useAppStore', () => ({
 import { recoverIdentityKeys, isRecoveryInitiator } from '../keyRecoveryService';
 import { ApiError, AuthError, ConflictError } from '../api/errors';
 import { websocketManager } from '../websocket';
+import { useAppStore } from '../../stores/useAppStore';
 import * as authApi from '../api/auth';
+import { loadEciesLockState } from '../crypto/downgradeProtection';
 
 const mockLogin = authApi.login as jest.Mock;
 const mockWsConnect = websocketManager.connect as jest.Mock;
@@ -495,10 +497,23 @@ describe('isRecoveryInitiator', () => {
 // ---------------------------------------------------------------------------
 
 describe('recoverIdentityKeys — email resolution', () => {
+  let defaultState: ReturnType<typeof useAppStore.getState>;
+
+  beforeEach(() => {
+    const { useAppStore: store } = require('../../stores/useAppStore');
+    defaultState = store.getState();
+  });
+
+  afterEach(() => {
+    const { useAppStore: store } = require('../../stores/useAppStore');
+    (store.getState as jest.Mock).mockReturnValue(defaultState);
+    const usersApi = require('../api/users');
+    (usersApi.getMe as jest.Mock).mockReset();
+  });
+
   it('returns needs_email when email cannot be resolved automatically', async () => {
-    const { useAppStore } = require('../../stores/useAppStore');
-    const defaultState = useAppStore.getState();
-    (useAppStore.getState as jest.Mock).mockReturnValue({
+    const { useAppStore: store } = require('../../stores/useAppStore');
+    (store.getState as jest.Mock).mockReturnValue({
       ...defaultState,
       email: null,
     });
@@ -507,16 +522,11 @@ describe('recoverIdentityKeys — email resolution', () => {
 
     const result = await recoverIdentityKeys('password123', false);
     expect(result.status).toBe('needs_email');
-
-    // Restore default for subsequent tests
-    (useAppStore.getState as jest.Mock).mockReturnValue(defaultState);
-    (usersApi.getMe as jest.Mock).mockReset();
   });
 
   it('uses emailOverride when provided (manual entry fallback)', async () => {
-    const { useAppStore } = require('../../stores/useAppStore');
-    const defaultState = useAppStore.getState();
-    (useAppStore.getState as jest.Mock).mockReturnValue({
+    const { useAppStore: store } = require('../../stores/useAppStore');
+    (store.getState as jest.Mock).mockReturnValue({
       ...defaultState,
       email: null,
     });
@@ -525,8 +535,6 @@ describe('recoverIdentityKeys — email resolution', () => {
     expect(result.status).toBe('success');
     // Verify login was called (email was accepted)
     expect(mockLogin).toHaveBeenCalled();
-
-    (useAppStore.getState as jest.Mock).mockReturnValue(defaultState);
   });
 });
 
@@ -561,5 +569,88 @@ describe('recoverIdentityKeys — rate limit (SEC-L2)', () => {
     expect(result.status).toBe('rate_limited');
     expect(mockFullCryptoWipe).not.toHaveBeenCalled();
     expect(mockWsConnect).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reentrancy guard (single-flight coalescing)
+// ---------------------------------------------------------------------------
+
+describe('recoverIdentityKeys — reentrancy guard', () => {
+  it('(a) concurrent calls coalesce — mocks called exactly once', async () => {
+    // Make login hang on a manually-resolved deferred so the first call
+    // stays in-flight when the second call arrives.
+    let resolveLogin!: (value: unknown) => void;
+    const loginDeferred = new Promise((resolve) => { resolveLogin = resolve; });
+    mockLogin.mockImplementation(() => loginDeferred);
+
+    const p1 = recoverIdentityKeys('password123', false);
+    const p2 = recoverIdentityKeys('password123', false);
+
+    // Both promises reference the same in-flight work — resolve it.
+    resolveLogin({
+      token: 'tok', userId: 'user-1', username: 'alice',
+      displayName: null, publicKey: null, needsTermsAcceptance: false,
+    });
+
+    const [r1, r2] = await Promise.all([p1, p2]);
+
+    expect(r1.status).toBe('success');
+    expect(r2.status).toBe('success');
+    // Underlying side-effects ran exactly once, not twice.
+    expect(mockWsDisconnect).toHaveBeenCalledTimes(1);
+    expect(mockLogin).toHaveBeenCalledTimes(1);
+  });
+
+  it('(b) sequential calls are not blocked — each invocation runs independently', async () => {
+    const r1 = await recoverIdentityKeys('password123', false);
+    expect(r1.status).toBe('success');
+
+    jest.clearAllMocks();
+    // Restore item store defaults (first run's wipe removed identityKeyPublic)
+    mockItemStore.identityKeyPublic = 'some-public-key-hex';
+    mockGetCachedIdentityPrivateKeyHex.mockReturnValue('deadbeef');
+    mockLogin.mockResolvedValue({
+      token: 'tok', userId: 'user-1', username: 'alice',
+      displayName: null, publicKey: null, needsTermsAcceptance: false,
+    });
+
+    const r2 = await recoverIdentityKeys('password123', false);
+    expect(r2.status).toBe('success');
+    expect(mockWsDisconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it('(c) error status propagation — both concurrent callers receive the same error result', async () => {
+    // Make an inner step reject unexpectedly (doRecoverIdentityKeys catches
+    // wipe failures and resolves with { status: 'error' } — it never rejects).
+    mockFullCryptoWipe.mockRejectedValueOnce(new Error('disk failure'));
+
+    const p1 = recoverIdentityKeys('password123', false);
+    const p2 = recoverIdentityKeys('password123', false);
+
+    const [r1, r2] = await Promise.all([p1, p2]);
+
+    expect(r1.status).toBe('error');
+    expect(r2.status).toBe('error');
+    expect(r1).toEqual(r2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loadEciesLockState guard (Item 4)
+// ---------------------------------------------------------------------------
+
+describe('recoverIdentityKeys — loadEciesLockState guard', () => {
+  it('recovery succeeds even when loadEciesLockState throws', async () => {
+    (loadEciesLockState as jest.Mock).mockImplementation(() => {
+      throw new Error('corrupt lock state');
+    });
+
+    const result = await recoverIdentityKeys('password123', false);
+
+    expect(result.status).toBe('success');
+    // Subsequent bootstrap mocks still ran
+    expect(mockLoadConversations).toHaveBeenCalled();
+    expect(mockLoadDmConversations).toHaveBeenCalled();
   });
 });

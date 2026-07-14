@@ -106,8 +106,21 @@ async function resolveRecoveryEmail(): Promise<string | null> {
 // Main orchestration
 // ---------------------------------------------------------------------------
 
+// Single-flight coalescing — see exported wrapper below.
+let recoveryInflight: Promise<KeyRecoveryResult> | null = null;
+
 /**
  * Recover identity keys after a 409 conflict or identity_key_reset push.
+ *
+ * **Single-flight semantics:** If a recovery is already in progress, the
+ * second caller receives the same promise (its arguments are silently dropped).
+ * This is safe because current call sites (KeyConflictScreen, SettingsScreen
+ * double-tap) converge on the same end-state (fresh keys + reconnect).
+ *
+ * CAUTION: `skipServerReset` is the argument whose silent drop would be unsafe
+ * for a *future* concurrent caller that disagrees — coalescing a `true` call
+ * into an in-flight `false` run could re-trigger the SEC-H1 feedback loop.
+ * Today no code path does this; document and revisit if that changes.
  *
  * @param password  User's current password for server re-authentication
  * @param skipServerReset
@@ -134,7 +147,21 @@ async function resolveRecoveryEmail(): Promise<string | null> {
  * but step 6+ failed on a prior attempt), skip directly to step 6. This prevents
  * the JWT catch-22 where re-running reset would 401 against a revoked token.
  */
-export async function recoverIdentityKeys(
+export function recoverIdentityKeys(
+  password: string,
+  skipServerReset: boolean = false,
+  emailOverride?: string,
+): Promise<KeyRecoveryResult> {
+  if (recoveryInflight) {
+    if (__DEV__) console.warn('[KeyRecovery] Recovery already in flight — coalescing');
+    return recoveryInflight;
+  }
+  recoveryInflight = doRecoverIdentityKeys(password, skipServerReset, emailOverride)
+    .finally(() => { recoveryInflight = null; });
+  return recoveryInflight;
+}
+
+async function doRecoverIdentityKeys(
   password: string,
   skipServerReset: boolean = false,
   emailOverride?: string,
@@ -255,9 +282,10 @@ export async function recoverIdentityKeys(
 
     websocketManager.connect();
 
-    // Run bootstrap steps that postAuthBootstrap would normally handle.
+    // SYNC:postAuthBootstrap — these mirror authService.ts postAuthBootstrap().
+    // If you change one, update the other. Grep for this marker to find both.
     // Each is catch-guarded so a single failure doesn't abort the rest.
-    loadEciesLockState();
+    try { loadEciesLockState(); } catch (e) { warnCatch('[Recovery:EciesLock]')(e); }
     await loadConversations().catch(warnCatch('[Recovery:ConversationSync]'));
     await loadDmConversations().catch(warnCatch('[Recovery:DmSync]'));
     hydrateContactsFromOrbits().catch(warnCatch('[Recovery:ContactHydration]'));

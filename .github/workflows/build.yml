@@ -89,9 +89,13 @@ jobs:
         run: |
           # Digest: official protocolbuffers/protobuf v34.1 release asset
           # https://github.com/protocolbuffers/protobuf/releases/download/v34.1/protoc-34.1-osx-universal_binary.zip
+          # (protobuf publishes no SHA256SUMS.) To update on a version bump,
+          # re-derive — do NOT copy the old hash forward:
+          #   curl -fsSL <new-asset-url> -o protoc.zip && shasum -a 256 protoc.zip
           curl -fsSL "https://github.com/protocolbuffers/protobuf/releases/download/v34.1/protoc-34.1-osx-universal_binary.zip" -o protoc.zip
           echo "5c6057638aa382542e75f1c5a0802893e2311ad0c8b689e635dd4ac3c9eb8169  protoc.zip" | shasum -a 256 -c -
           unzip protoc.zip -d ~/protoc-34.1
+          rm protoc.zip
 
       - name: Add protoc to PATH
         run: |
@@ -249,9 +253,13 @@ jobs:
         run: |
           # Digest: official protocolbuffers/protobuf v34.1 release asset
           # https://github.com/protocolbuffers/protobuf/releases/download/v34.1/protoc-34.1-osx-universal_binary.zip
+          # (protobuf publishes no SHA256SUMS.) To update on a version bump,
+          # re-derive — do NOT copy the old hash forward:
+          #   curl -fsSL <new-asset-url> -o protoc.zip && shasum -a 256 protoc.zip
           curl -fsSL "https://github.com/protocolbuffers/protobuf/releases/download/v34.1/protoc-34.1-osx-universal_binary.zip" -o protoc.zip
           echo "5c6057638aa382542e75f1c5a0802893e2311ad0c8b689e635dd4ac3c9eb8169  protoc.zip" | shasum -a 256 -c -
           unzip protoc.zip -d ~/protoc-34.1
+          rm protoc.zip
 
       - name: Add protoc to PATH
         run: |

@@ -86,7 +86,11 @@ export function checkAccountSwitch(newUserId: string): void {
  * If you change one, update the other. Grep for this marker to find both.
  */
 async function postAuthBootstrap(): Promise<void> {
-  loadEciesLockState();
+  try {
+    loadEciesLockState();
+  } catch (e) {
+    warnCatch('[EciesLockState]')(e);
+  }
   await loadConversations().catch(warnCatch('[ConversationSync]'));
   await loadDmConversations().catch(warnCatch('[DmSync]'));
   hydrateContactsFromOrbits().catch(warnCatch('[ContactHydration]'));

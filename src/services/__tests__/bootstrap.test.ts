@@ -69,7 +69,7 @@ jest.mock('../../stores/useAppStore', () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
-import { handleTokensCleared } from '../../bootstrap';
+import { bootstrap, handleTokensCleared } from '../../bootstrap';
 import { isRecoveryInitiator, setRecoveryInitiator } from '../recoveryState';
 import { tokenManager } from '../api/tokenManager';
 
@@ -135,5 +135,34 @@ describe('tokenManager.onTokensCleared integration', () => {
     setRecoveryInitiator(true);
     await tokenManager.clearTokens();
     expect(mockClearAuth).not.toHaveBeenCalled();
+  });
+});
+
+describe('bootstrap() wiring', () => {
+  const unsubscribes: Array<() => void> = [];
+
+  afterEach(() => {
+    setRecoveryInitiator(false);
+    // bootstrap() registers on the real tokenManager singleton — unhook every
+    // registration captured via the spy to prevent cross-test contamination.
+    while (unsubscribes.length) {
+      unsubscribes.pop()!();
+    }
+    jest.restoreAllMocks();
+    jest.clearAllMocks();
+  });
+
+  it('bootstrap() registers handleTokensCleared so clearTokens triggers clearAuth', async () => {
+    const spy = jest.spyOn(tokenManager, 'onTokensCleared');
+
+    await bootstrap();
+
+    expect(spy).toHaveBeenCalledWith(handleTokensCleared);
+    for (const result of spy.mock.results) {
+      unsubscribes.push(result.value as () => void);
+    }
+
+    await tokenManager.clearTokens();
+    expect(mockClearAuth).toHaveBeenCalledTimes(1);
   });
 });

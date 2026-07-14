@@ -620,8 +620,9 @@ describe('recoverIdentityKeys — reentrancy guard', () => {
     expect(mockWsDisconnect).toHaveBeenCalledTimes(1);
   });
 
-  it('(c) rejection propagation — both concurrent callers receive the same rejection', async () => {
-    // Make an inner step reject unexpectedly.
+  it('(c) error status propagation — both concurrent callers receive the same error result', async () => {
+    // Make an inner step reject unexpectedly (doRecoverIdentityKeys catches
+    // wipe failures and resolves with { status: 'error' } — it never rejects).
     mockFullCryptoWipe.mockRejectedValueOnce(new Error('disk failure'));
 
     const p1 = recoverIdentityKeys('password123', false);

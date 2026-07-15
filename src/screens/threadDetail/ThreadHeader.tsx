@@ -6,7 +6,7 @@
  */
 
 import React, { useCallback, useMemo, useState } from 'react';
-import { Dimensions, View, Text, TouchableOpacity, type TextStyle, type ViewStyle } from 'react-native';
+import { View, Text, TouchableOpacity, useWindowDimensions, type TextStyle, type ViewStyle } from 'react-native';
 import { useTheme } from '../../theme';
 import { Avatar } from '../../components/Avatar';
 import { useContactAvatar } from '../../hooks/useContactAvatar';
@@ -61,6 +61,7 @@ export const ThreadHeader = React.memo(function ThreadHeader({
   createdAt,
 }: ThreadHeaderProps): React.JSX.Element {
   const theme = useTheme();
+  const { width: windowWidth } = useWindowDimensions();
   const displayName = useDisplayName(authorId, authorUsername);
   const avatarProps = useContactAvatar(authorId, groupId);
   const mediaItems = useMediaForThread(threadId);
@@ -156,7 +157,7 @@ export const ThreadHeader = React.memo(function ThreadHeader({
         <MediaGallery
           mediaItems={mediaItems}
           maxWidth={
-            Dimensions.get('window').width
+            windowWidth
             - theme.spacing.base * 2   // horizontal margin
             - 2                         // border width (1px each side)
             - theme.spacing.md * 2     // padding

@@ -11,7 +11,6 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Dimensions,
   Image,
   InteractionManager,
   Modal,
@@ -21,6 +20,7 @@ import {
   Text,
   TouchableOpacity,
   View,
+  useWindowDimensions,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
   type TextStyle,
@@ -135,7 +135,7 @@ export function MediaLightbox({
     }
   }
 
-  const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
+  const { width: screenWidth, height: screenHeight } = useWindowDimensions();
 
   // Scroll to initialIndex when modal becomes visible
   useEffect(() => {

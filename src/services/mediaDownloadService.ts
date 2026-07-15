@@ -45,6 +45,9 @@ import type { MediaRow } from '../database/repositories/mediaRepository';
 /** Maximum concurrent downloads */
 const MAX_CONCURRENT = 3;
 
+/** Sentinel error message for abort-path rejections */
+export const DOWNLOAD_ABORTED_MESSAGE = 'Download aborted';
+
 /** Media directory path */
 const MEDIA_DIR = `${DocumentDirectoryPath}/media`;
 
@@ -197,7 +200,7 @@ export async function downloadAndDecryptMedia(
       // Abort check post-acquire: if signal was aborted while queued,
       // restore to 'pending' so the item is self-healing on remount.
       if (signal?.aborted) {
-        throw new Error('Download aborted');
+        throw new Error(DOWNLOAD_ABORTED_MESSAGE);
       }
 
       // 5. Update state → 'downloading'
@@ -258,6 +261,13 @@ export async function downloadAndDecryptMedia(
       // Best-effort cleanup of temp file
       if (tmpPath) {
         await unlink(tmpPath).catch(() => {});
+      }
+
+      // Normalize ALL abort-path rejections to the sentinel message so
+      // consumers (useMediaDownload) can reliably detect aborts regardless
+      // of fetch-layer error text (engine-specific NetworkError, etc.).
+      if (signal?.aborted && (!(e instanceof Error) || e.message !== DOWNLOAD_ABORTED_MESSAGE)) {
+        throw new Error(DOWNLOAD_ABORTED_MESSAGE);
       }
 
       throw e;

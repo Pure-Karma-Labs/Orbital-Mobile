@@ -10,10 +10,12 @@ const mockDownloadAndDecryptMedia = jest.fn();
 const mockRetryDownload = jest.fn();
 
 jest.mock('../../services/mediaDownloadService', () => ({
+  // Real constant via requireActual: a sentinel rename must fail these
+  // tests, not silently break the hook's e.message comparison in prod.
+  ...jest.requireActual('../../services/mediaDownloadService'),
   downloadAndDecryptMedia: (...args: unknown[]) =>
     mockDownloadAndDecryptMedia(...args),
   retryDownload: (...args: unknown[]) => mockRetryDownload(...args),
-  DOWNLOAD_ABORTED_MESSAGE: 'Download aborted',
 }));
 
 // Mock Zustand store with selector support

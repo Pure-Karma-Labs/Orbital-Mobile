@@ -181,12 +181,25 @@ export async function downloadAndDecryptMedia(
 
   const promise = (async (): Promise<string> => {
     await mediaSemaphore.acquire();
-    const ext = getExtension(row!);
-    validatePathComponents(mediaId, ext);
-    const tmpPath = `${MEDIA_DIR}/${mediaId}.${ext}.tmp`;
-    const finalPath = `${MEDIA_DIR}/${mediaId}.${ext}`;
+
+    // Paths declared outside try so catch can clean up the temp file.
+    // getExtension/validatePathComponents moved inside try so any throw
+    // releases the semaphore via finally (previously leaked a slot).
+    let tmpPath: string | undefined;
+    let finalPath: string | undefined;
 
     try {
+      const ext = getExtension(row!);
+      validatePathComponents(mediaId, ext);
+      tmpPath = `${MEDIA_DIR}/${mediaId}.${ext}.tmp`;
+      finalPath = `${MEDIA_DIR}/${mediaId}.${ext}`;
+
+      // Abort check post-acquire: if signal was aborted while queued,
+      // restore to 'pending' so the item is self-healing on remount.
+      if (signal?.aborted) {
+        throw new Error('Download aborted');
+      }
+
       // 5. Update state → 'downloading'
       try {
         updateDownloadState(mediaId, 'downloading');
@@ -231,16 +244,21 @@ export async function downloadAndDecryptMedia(
 
       return finalPath;
     } catch (e) {
-      // 10. Error → set 'failed' state, clean up temp file
+      // Aborted downloads restore to 'pending' (self-healing for windowing);
+      // genuine failures land on 'failed' as before.
+      const nextState = signal?.aborted ? 'pending' : 'failed';
+
       try {
-        updateDownloadState(mediaId, 'failed');
+        updateDownloadState(mediaId, nextState);
       } catch {
         // DB may not be initialized
       }
-      useAppStore.getState().updateMediaDownloadState(mediaId, 'failed');
+      useAppStore.getState().updateMediaDownloadState(mediaId, nextState);
 
       // Best-effort cleanup of temp file
-      await unlink(tmpPath).catch(() => {});
+      if (tmpPath) {
+        await unlink(tmpPath).catch(() => {});
+      }
 
       throw e;
     } finally {

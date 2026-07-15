@@ -67,11 +67,14 @@ const LightboxPage = React.memo(function LightboxPage({
   pageWidth,
   pageHeight,
 }: LightboxPageProps): React.JSX.Element {
-  const { downloadState, localPath } = useMediaDownload(mediaId);
+  const { downloadState, localPath } = useMediaDownload(mediaId, {
+    cancelOnUnmount: true,
+  });
 
   if (downloadState === 'downloaded' && localPath) {
     return (
       <View
+        testID={`lightbox-page-${mediaId}`}
         style={{
           width: pageWidth,
           height: pageHeight,
@@ -91,6 +94,7 @@ const LightboxPage = React.memo(function LightboxPage({
   // Not yet downloaded — show spinner
   return (
     <View
+      testID={`lightbox-page-${mediaId}`}
       style={{
         width: pageWidth,
         height: pageHeight,
@@ -118,6 +122,18 @@ export function MediaLightbox({
   const scrollRef = useRef<ScrollView>(null);
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
   const pendingReportRef = useRef<ReportTarget | null>(null);
+
+  // Render-time index reset: MediaLightbox stays mounted across open/close,
+  // so currentIndex is stale on reopen. Reset synchronously during render
+  // (prev-state pattern) so the windowed children mount the correct pages
+  // in the same commit — avoids triggering downloads for wrong pages.
+  const [prevVisible, setPrevVisible] = useState(visible);
+  if (visible !== prevVisible) {
+    setPrevVisible(visible);
+    if (visible) {
+      setCurrentIndex(initialIndex);
+    }
+  }
 
   const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 
@@ -327,14 +343,24 @@ export function MediaLightbox({
           bounces={false}
           style={{ flex: 1 }}
         >
-          {mediaItems.map((item) => (
-            <LightboxPage
-              key={item.id}
-              mediaId={item.id}
-              pageWidth={screenWidth}
-              pageHeight={screenHeight}
-            />
-          ))}
+          {/* Windowed: mount only pages within +/-1 of currentIndex.
+             Placeholders keep content width so paging offset math is unaffected. */}
+          {mediaItems.map((item, index) =>
+            Math.abs(index - currentIndex) <= 1 ? (
+              <LightboxPage
+                key={item.id}
+                mediaId={item.id}
+                pageWidth={screenWidth}
+                pageHeight={screenHeight}
+              />
+            ) : (
+              <View
+                key={item.id}
+                testID={`lightbox-placeholder-${item.id}`}
+                style={{ width: screenWidth, height: screenHeight }}
+              />
+            ),
+          )}
         </ScrollView>
 
         {/* Prev button */}

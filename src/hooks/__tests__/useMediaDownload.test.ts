@@ -267,14 +267,13 @@ describe('useMediaDownload — cancelOnUnmount', () => {
       root.unmount();
     });
 
-    // The cancelOnUnmount effect aborts, but this is acceptable per the plan:
-    // "under React 19 concurrent batching an in-flight abort is possible but
-    // benign (pending-restore + remount self-heal)". The key invariant is that
-    // in normal sequential React, abortRef is nulled at the download effect's
-    // cleanup before the cancel effect can see it. But since both effects run
-    // cleanup on unmount, the cancel effect runs first (declaration order) and
-    // calls abort, which the service handles gracefully (restoring to 'pending').
-    expect(capturedSignal).toBeDefined();
+    // The 'downloading' update re-rendered before unmount, so the download
+    // effect re-ran and its cleanup nulled abortRef (skipping abort because
+    // downloadingRef was true). By unmount, the cancel effect has no
+    // controller left to abort — in-flight downloads are NOT cancelled.
+    // (The queued case, where no re-render intervenes before unmount, is
+    // pinned by the first test in this describe block: abort DOES fire.)
+    expect(capturedSignal!.aborted).toBe(false);
   });
 
   it('re-triggers download after stale-promise rejection (retryAttempt)', async () => {

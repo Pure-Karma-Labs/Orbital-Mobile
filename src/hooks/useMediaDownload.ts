@@ -17,11 +17,16 @@ export interface UseMediaDownloadOptions {
   /**
    * Abort queued downloads on unmount.
    *
-   * Invariant: abortRef is nulled at the pending->downloading transition
-   * (post-acquire), so this only cancels downloads still waiting for a
-   * semaphore slot. Under React 19 concurrent batching an in-flight abort
-   * is theoretically possible but benign (state restores to 'pending' and
-   * the next mount self-heals).
+   * Queued-only by effect lifecycle, not a service guarantee: when the
+   * service flips state to 'downloading' (post-semaphore-acquire),
+   * shouldDownload flips false and the download effect re-runs — its
+   * cleanup skips the abort (downloadingRef is true) and nulls abortRef.
+   * So by the time unmount fires this effect's cleanup, an in-flight
+   * download has no controller left to abort; only downloads still
+   * queued at the semaphore (state never left 'pending') are cancelled.
+   * If unmount lands before the 'downloading' update re-renders, an
+   * in-flight abort can still fire — benign: the service restores
+   * 'pending' and the next mount self-heals.
    *
    * This option must be static for the component instance's lifetime --
    * a runtime true->false toggle would fire a spurious abort via the

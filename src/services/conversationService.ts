@@ -681,6 +681,12 @@ async function _doSelfWrap(groupId: string): Promise<void> {
 let lastPendingWrapsSweep = 0;
 const PENDING_WRAPS_DEBOUNCE_MS = 60_000;
 
+/** Maximum conversations to sweep per fulfillPendingWraps call */
+const MAX_SWEEP_CONVERSATIONS = 10;
+
+/** Maximum pending members to wrap per conversation */
+const MAX_WRAPS_PER_CONVERSATION = 5;
+
 /**
  * Proactively wrap and deliver group keys to members who are still waiting.
  * Debounced to at most once per minute to avoid hammering the API.
@@ -699,22 +705,39 @@ export async function fulfillPendingWraps(): Promise<void> {
   const conversations = useAppStore.getState().conversations;
   // Sweep ALL conversation types — DMs (type: 'direct') rely solely on
   // one-shot WS fan-out with no polling backstop, so they need this periodic
-  // sweep just as much as groups.  The slice(0, 10) cap now spans both
-  // conversation types.  Note: the backstop runs on the KEY-HOLDER's device;
-  // a pending member cannot query its own pending rows — getPendingWraps
-  // returns 403 FORBIDDEN_PENDING_MEMBER for them, which the existing catch
-  // below swallows by design.
-  const conversationIds = Object.values(conversations)
-    .map(c => c.id);
+  // sweep just as much as groups.  The cap (MAX_SWEEP_CONVERSATIONS) spans
+  // both types.  Calls are event-driven (debounced, not periodic), so
+  // ordering must not starve either type — we round-robin interleave DMs
+  // and groups rather than using insertion order.
+  //
+  // Note: the backstop runs on the KEY-HOLDER's device; a pending member
+  // cannot query its own pending rows — getPendingWraps returns 403
+  // FORBIDDEN_PENDING_MEMBER for them, which the existing catch below
+  // swallows by design.
+  const allConversations = Object.values(conversations);
+  const dmIds = allConversations.filter(c => c.type === 'direct').map(c => c.id);
+  const groupIds = allConversations.filter(c => c.type !== 'direct').map(c => c.id);
 
-  for (const conversationId of conversationIds.slice(0, 10)) {
+  // Round-robin interleave: alternate DM/group; when one list runs out, fill
+  // remaining slots from the other.
+  const conversationIds: string[] = [];
+  let di = 0;
+  let gi = 0;
+  while (conversationIds.length < MAX_SWEEP_CONVERSATIONS && (di < dmIds.length || gi < groupIds.length)) {
+    if (di < dmIds.length) conversationIds.push(dmIds[di++]);
+    if (conversationIds.length < MAX_SWEEP_CONVERSATIONS && gi < groupIds.length) {
+      conversationIds.push(groupIds[gi++]);
+    }
+  }
+
+  for (const conversationId of conversationIds) {
     if (isSessionStale(session)) return;
     try {
       const groupKey = await getOrFetchGroupKey(conversationId);
       const pending = await getPendingWraps(conversationId);
       if (pending.length === 0) continue;
 
-      for (const member of pending.slice(0, 5)) {
+      for (const member of pending.slice(0, MAX_WRAPS_PER_CONVERSATION)) {
         try {
           let targetPubKey: ArrayBuffer;
           let identityChanged: boolean;

@@ -1972,4 +1972,75 @@ describe('fulfillPendingWraps — sweeps both group and DM conversations', () =>
     // Wrap + submit happened for the successful conversation's pending member
     expect(mockSubmitWrappedKey).toHaveBeenCalledTimes(1);
   });
+
+  it('round-robin interleave prevents group starvation when DMs dominate insertion order', async () => {
+    // 12 DMs inserted before 3 groups — insertion-order adversarial
+    const conversations: Record<string, { id: string; type: string; name: string }> = {};
+    for (let i = 1; i <= 12; i++) {
+      conversations[`dm-${i}`] = { id: `dm-${i}`, type: 'direct', name: `DM ${i}` };
+    }
+    for (let i = 1; i <= 3; i++) {
+      conversations[`g-${i}`] = { id: `g-${i}`, type: 'group', name: `Group ${i}` };
+    }
+
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-self-user',
+      activeConversationId: null,
+      conversations,
+      contacts: {},
+      setConversations: mockSetConversations,
+      setGroupConversations: mockSetConversations,
+      setActiveConversation: mockSetActiveConversation,
+      upsertConversation: mockUpsertConversation,
+      mergeContacts: mockMergeContacts,
+      removeContact: jest.fn(),
+      setContactVerifiedStatus: mockSetContactVerifiedStatus,
+    });
+
+    mockGetPendingWraps.mockResolvedValue([]);
+
+    await fulfillPendingWraps();
+
+    // All 3 groups must be swept (not starved by 12 DMs)
+    const calledIds = mockGetPendingWraps.mock.calls.map((c: unknown[]) => c[0]);
+    expect(calledIds).toContain('g-1');
+    expect(calledIds).toContain('g-2');
+    expect(calledIds).toContain('g-3');
+
+    // Total swept is capped at MAX_SWEEP_CONVERSATIONS (10)
+    expect(calledIds).toHaveLength(10);
+  });
+
+  it('fills from one type when the other is empty', async () => {
+    // Only groups, no DMs
+    const conversations: Record<string, { id: string; type: string; name: string }> = {};
+    for (let i = 1; i <= 4; i++) {
+      conversations[`g-${i}`] = { id: `g-${i}`, type: 'group', name: `Group ${i}` };
+    }
+
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-self-user',
+      activeConversationId: null,
+      conversations,
+      contacts: {},
+      setConversations: mockSetConversations,
+      setGroupConversations: mockSetConversations,
+      setActiveConversation: mockSetActiveConversation,
+      upsertConversation: mockUpsertConversation,
+      mergeContacts: mockMergeContacts,
+      removeContact: jest.fn(),
+      setContactVerifiedStatus: mockSetContactVerifiedStatus,
+    });
+
+    mockGetPendingWraps.mockResolvedValue([]);
+
+    await fulfillPendingWraps();
+
+    const calledIds = mockGetPendingWraps.mock.calls.map((c: unknown[]) => c[0]);
+    expect(calledIds).toHaveLength(4);
+    // All 4 groups should be swept
+    for (let i = 1; i <= 4; i++) {
+      expect(calledIds).toContain(`g-${i}`);
+    }
+  });
 });

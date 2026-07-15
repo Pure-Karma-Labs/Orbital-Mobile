@@ -17,7 +17,7 @@
  */
 
 import React, { useCallback, useMemo, useState } from 'react';
-import { Dimensions, StyleSheet, Text, TouchableOpacity, View, type TextStyle, type ViewStyle } from 'react-native';
+import { StyleSheet, Text, TouchableOpacity, View, useWindowDimensions, type TextStyle, type ViewStyle } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { useTheme } from '../../theme';
 import { getReplyDepthColors } from '../../theme/colors';
@@ -88,6 +88,7 @@ export const ReplyItem = React.memo(function ReplyItem({
   isHighlighted,
 }: ReplyItemProps): React.JSX.Element {
   const theme = useTheme();
+  const { width: windowWidth } = useWindowDimensions();
   const displayName = useDisplayName(authorId, authorUsername);
   const avatarProps = useContactAvatar(authorId, groupId);
   const parentDisplayName = useDisplayName(parentAuthorId, parentAuthorUsername ?? '');
@@ -222,7 +223,7 @@ export const ReplyItem = React.memo(function ReplyItem({
         <MediaGallery
           mediaItems={mediaItems}
           maxWidth={
-            Dimensions.get('window').width
+            windowWidth
             - theme.spacing.base          // left outer margin
             - leftMargin                   // depth indentation
             - 3                            // left border width

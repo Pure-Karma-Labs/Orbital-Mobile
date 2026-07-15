@@ -55,6 +55,7 @@ import {
   retryDownload,
   isMediaCached,
   cleanupOrphanedMedia,
+  DOWNLOAD_ABORTED_MESSAGE,
 } from '../mediaDownloadService';
 import type { MediaRow } from '../../database/repositories/mediaRepository';
 
@@ -257,13 +258,13 @@ describe('downloadAndDecryptMedia', () => {
 // ---------------------------------------------------------------------------
 
 describe('downloadAndDecryptMedia — abort handling', () => {
-  it('restores to pending state when signal is pre-aborted', async () => {
+  it('restores to pending state when signal is pre-aborted (sentinel message)', async () => {
     const controller = new AbortController();
     controller.abort();
 
     await expect(
       downloadAndDecryptMedia(FAKE_MEDIA_ID, controller.signal),
-    ).rejects.toThrow('Download aborted');
+    ).rejects.toThrow(DOWNLOAD_ABORTED_MESSAGE);
 
     // State should be restored to 'pending' (not 'failed')
     expect(mockUpdateDownloadState).toHaveBeenCalledWith(FAKE_MEDIA_ID, 'pending');
@@ -286,7 +287,7 @@ describe('downloadAndDecryptMedia — abort handling', () => {
 
     await expect(
       downloadAndDecryptMedia(FAKE_MEDIA_ID, controller.signal),
-    ).rejects.toThrow('Download aborted');
+    ).rejects.toThrow(DOWNLOAD_ABORTED_MESSAGE);
 
     // Semaphore should be released — verify by running a subsequent download
     // (if semaphore leaked, this would hang forever with MAX_CONCURRENT=3)
@@ -297,19 +298,20 @@ describe('downloadAndDecryptMedia — abort handling', () => {
     expect(result).toContain(MEDIA_ID_2);
   });
 
-  it('restores to pending on abort mid-fetch', async () => {
+  it('restores to pending on abort mid-fetch and normalizes to sentinel message', async () => {
     const controller = new AbortController();
 
     // Abort INSIDE the download mock to simulate mid-fetch abort.
     // This ensures the abort happens AFTER the post-acquire check.
     mockDownloadMedia.mockImplementation(() => {
       controller.abort();
-      return Promise.reject(new Error('fetch aborted'));
+      return Promise.reject(new Error('NetworkError: fetch aborted'));
     });
 
+    // Mid-flight abort normalizes engine-specific error to the sentinel
     await expect(
       downloadAndDecryptMedia(FAKE_MEDIA_ID, controller.signal),
-    ).rejects.toThrow('fetch aborted');
+    ).rejects.toThrow(DOWNLOAD_ABORTED_MESSAGE);
 
     // State should be restored to 'pending' (signal.aborted is true)
     expect(mockUpdateDownloadState).toHaveBeenCalledWith(FAKE_MEDIA_ID, 'pending');
@@ -338,9 +340,10 @@ describe('downloadAndDecryptMedia — abort handling', () => {
       return Promise.reject(new Error('fetch aborted'));
     });
 
+    // Mid-flight abort normalizes to sentinel message
     await expect(
       downloadAndDecryptMedia(FAKE_MEDIA_ID, controller.signal),
-    ).rejects.toThrow('fetch aborted');
+    ).rejects.toThrow(DOWNLOAD_ABORTED_MESSAGE);
 
     // Temp file should be cleaned up
     expect(rnfs.unlink).toHaveBeenCalledWith(
@@ -355,7 +358,7 @@ describe('downloadAndDecryptMedia — abort handling', () => {
 
     await expect(
       downloadAndDecryptMedia(FAKE_MEDIA_ID, controller1.signal),
-    ).rejects.toThrow('Download aborted');
+    ).rejects.toThrow(DOWNLOAD_ABORTED_MESSAGE);
 
     // After the first call settles, the inflight map should be cleared.
     // A third call should create a fresh download promise (not join the stale one).

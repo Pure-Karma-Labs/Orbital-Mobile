@@ -10,7 +10,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useAppStore } from '../stores/useAppStore';
-import { downloadAndDecryptMedia, retryDownload } from '../services/mediaDownloadService';
+import { downloadAndDecryptMedia, retryDownload, DOWNLOAD_ABORTED_MESSAGE } from '../services/mediaDownloadService';
 import type { MediaItem } from '../types/store';
 
 export interface UseMediaDownloadOptions {
@@ -27,6 +27,14 @@ export interface UseMediaDownloadOptions {
    * If unmount lands before the 'downloading' update re-renders, an
    * in-flight abort can still fire — benign: the service restores
    * 'pending' and the next mount self-heals.
+   *
+   * Re-trigger on abort-sentinel rejection: when ANY consumer joins a
+   * stale inflight promise that rejects with the DOWNLOAD_ABORTED_MESSAGE
+   * sentinel (because another consumer's unmount aborted), the hook
+   * bumps retryAttempt so the download effect re-runs against a clean
+   * inflight map. This applies to all consumers (not just cancelOnUnmount
+   * callers) and is gated by error type to avoid infinite loops from
+   * non-abort rejections.
    *
    * This option must be static for the component instance's lifetime --
    * a runtime true->false toggle would fire a spurious abort via the
@@ -90,23 +98,23 @@ export function useMediaDownload(
     const controller = new AbortController();
     abortRef.current = controller;
 
-    let rejected = false;
+    let rejectedAborted = false;
 
     downloadAndDecryptMedia(mediaId, controller.signal)
-      .catch(() => {
+      .catch((e) => {
         // Errors are handled by the download service (state set to 'failed'
         // or restored to 'pending' for aborted downloads).
-        rejected = true;
+        rejectedAborted = e instanceof Error && e.message === DOWNLOAD_ABORTED_MESSAGE;
       })
       .finally(() => {
         downloadingRef.current = false;
-        // If cancelOnUnmount is active, the promise rejected, and our OWN
+        // If the promise rejected with the abort sentinel and our OWN
         // controller was not the one aborted (we joined someone else's
         // stale inflight entry), bump retryAttempt so the effect re-runs
         // against a now-clean inflight map. Naturally bounded: each re-run
         // creates a fresh controller; if the item is no longer 'pending'
         // the effect no-ops via shouldDownload.
-        if (cancelOnUnmount && rejected && !controller.signal.aborted) {
+        if (rejectedAborted && !controller.signal.aborted) {
           setRetryAttempt((n) => n + 1);
         }
       });
@@ -117,7 +125,7 @@ export function useMediaDownload(
       }
       abortRef.current = null;
     };
-  }, [mediaId, shouldDownload, retryAttempt, cancelOnUnmount]);
+  }, [mediaId, shouldDownload, retryAttempt]);
 
   const retry = useCallback(() => {
     if (!mediaId) return;

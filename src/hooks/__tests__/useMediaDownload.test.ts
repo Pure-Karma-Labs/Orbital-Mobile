@@ -10,6 +10,9 @@ const mockDownloadAndDecryptMedia = jest.fn();
 const mockRetryDownload = jest.fn();
 
 jest.mock('../../services/mediaDownloadService', () => ({
+  // Real constant via requireActual: a sentinel rename must fail these
+  // tests, not silently break the hook's e.message comparison in prod.
+  ...jest.requireActual('../../services/mediaDownloadService'),
   downloadAndDecryptMedia: (...args: unknown[]) =>
     mockDownloadAndDecryptMedia(...args),
   retryDownload: (...args: unknown[]) => mockRetryDownload(...args),
@@ -276,19 +279,16 @@ describe('useMediaDownload — cancelOnUnmount', () => {
     expect(capturedSignal!.aborted).toBe(false);
   });
 
-  it('re-triggers download after stale-promise rejection (retryAttempt)', async () => {
+  it('re-triggers download after abort-sentinel rejection (retryAttempt)', async () => {
     let callCount = 0;
-    const controllers: AbortController[] = [];
 
     mockDownloadAndDecryptMedia.mockImplementation(
       (_id: string, _signal: AbortSignal) => {
         callCount++;
-        const ctrl = new AbortController();
-        controllers.push(ctrl);
 
         if (callCount === 1) {
-          // First call: reject (simulating joining a stale inflight entry)
-          return Promise.reject(new Error('Aborted by another consumer'));
+          // First call: reject with abort sentinel (simulating joining a stale inflight entry)
+          return Promise.reject(new Error('Download aborted'));
         }
         // Second call: succeed
         return Promise.resolve('/path/to/file.jpg');
@@ -313,12 +313,15 @@ describe('useMediaDownload — cancelOnUnmount', () => {
     });
   });
 
-  it('does NOT re-trigger without cancelOnUnmount', async () => {
+  it('re-triggers default consumer on abort-sentinel rejection (no cancelOnUnmount)', async () => {
     let callCount = 0;
 
     mockDownloadAndDecryptMedia.mockImplementation(() => {
       callCount++;
-      return Promise.reject(new Error('Aborted by another consumer'));
+      if (callCount === 1) {
+        return Promise.reject(new Error('Download aborted'));
+      }
+      return Promise.resolve('/path/to/file.jpg');
     });
 
     const root = renderTestHook('media-1'); // no cancelOnUnmount
@@ -329,11 +332,118 @@ describe('useMediaDownload — cancelOnUnmount', () => {
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
     });
 
-    // Without cancelOnUnmount, retryAttempt is not bumped
+    // Default consumer now also re-triggers on abort sentinel
+    expect(callCount).toBe(2);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it('does NOT re-trigger on non-abort rejection (cancelOnUnmount)', async () => {
+    let callCount = 0;
+
+    mockDownloadAndDecryptMedia.mockImplementation(() => {
+      callCount++;
+      return Promise.reject(new Error('No attachment keys available'));
+    });
+
+    const root = renderTestHook('media-1', { cancelOnUnmount: true });
+
+    expect(callCount).toBe(1);
+
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+
+    // Non-abort error: no re-trigger even with cancelOnUnmount
     expect(callCount).toBe(1);
 
     act(() => {
       root.unmount();
+    });
+  });
+
+  it('does NOT re-trigger on non-abort rejection (without cancelOnUnmount)', async () => {
+    let callCount = 0;
+
+    mockDownloadAndDecryptMedia.mockImplementation(() => {
+      callCount++;
+      return Promise.reject(new Error('No attachment keys available'));
+    });
+
+    const root = renderTestHook('media-1'); // no cancelOnUnmount
+
+    expect(callCount).toBe(1);
+
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+
+    // Non-abort error: no re-trigger
+    expect(callCount).toBe(1);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it('two-hook-instance: lightbox consumer aborts, gallery consumer re-invokes', async () => {
+    // Simulates #576: lightbox (cancelOnUnmount) and gallery (default) both
+    // call useMediaDownload for the same mediaId. When the lightbox unmounts
+    // and aborts, the shared inflight promise rejects with the abort sentinel.
+    // The gallery consumer (whose own controller was NOT aborted) re-triggers.
+    //
+    // In the real service, inflight dedup means both hooks share one promise.
+    // Here, each hook instance independently calls the mock. We simulate
+    // both receiving the abort sentinel rejection to test the re-trigger gate.
+    let callCount = 0;
+
+    mockDownloadAndDecryptMedia.mockImplementation(
+      (_id: string, _signal: AbortSignal) => {
+        callCount++;
+        if (callCount <= 2) {
+          // First two calls (one per hook): reject with abort sentinel
+          // (simulates shared inflight promise rejection from another consumer's abort)
+          return Promise.reject(new Error('Download aborted'));
+        }
+        // Subsequent calls: succeed
+        return Promise.resolve('/path/to/file.jpg');
+      },
+    );
+
+    // Lightbox consumer (cancelOnUnmount)
+    const lightboxRoot = renderTestHook('media-1', { cancelOnUnmount: true });
+
+    // Gallery consumer renders separately — share the same mediaId
+    function GalleryComponent() {
+      useMediaDownload('media-1');
+      return null;
+    }
+    let galleryRoot: ReturnType<typeof create>;
+    act(() => {
+      galleryRoot = create(React.createElement(GalleryComponent));
+    });
+
+    // Both hooks called the service (2 calls)
+    expect(callCount).toBe(2);
+
+    // Flush microtasks — both .catch/.finally handlers run
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+
+    // Both hooks saw an abort-sentinel rejection. The lightbox hook's own
+    // controller was not aborted (pre-unmount), so it would also bump —
+    // but the gallery hook's controller was also not aborted, so it bumps too.
+    // At least one re-trigger from the gallery consumer.
+    expect(callCount).toBeGreaterThan(2);
+
+    act(() => {
+      lightboxRoot.unmount();
+    });
+    act(() => {
+      galleryRoot!.unmount();
     });
   });
 });

@@ -57,16 +57,15 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
-    groups:
-      # libsignal-protocol and libsignal-core come from the same monorepo
-      # (signalapp/libsignal) and must share the same git tag. Ungrouped
-      # bumps produce split PRs that fail Rust compilation because two tag
-      # versions of libsignal-core end up in one dependency graph. See the
-      # lockstep comment in Cargo.toml and closed PRs #465/#467.
-      libsignal:
-        patterns:
-          - "libsignal-*"
     ignore:
+      # libsignal-protocol, libsignal-core, libsignal-debug, and signal-crypto
+      # come from the same monorepo (signalapp/libsignal) and must share the
+      # same git tag. Dependabot cannot bump them in lockstep — split or grouped
+      # PRs produce two tag versions of libsignal-core in one dependency graph,
+      # causing E0277/E0308 cascades. Bumps are manual. See the lockstep comment
+      # in Cargo.toml and closed PRs #465/#467/#567.
+      - dependency-name: "libsignal-*"
+      - dependency-name: "signal-crypto"
       # rand 0.10 requires trait renames incompatible with libsignal's
       # rand 0.9 bounds — defer until libsignal supports it (see #399)
       - dependency-name: "rand"

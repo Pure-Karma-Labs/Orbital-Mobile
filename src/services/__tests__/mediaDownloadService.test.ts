@@ -1,5 +1,6 @@
 /**
- * Tests for mediaDownloadService — download, decrypt, cache, and cleanup.
+ * Tests for mediaDownloadService — download, decrypt, cache, cleanup,
+ * and abort-aware cancellation.
  */
 
 jest.mock('@dr.pogodin/react-native-fs');
@@ -247,6 +248,129 @@ describe('downloadAndDecryptMedia', () => {
     expect(r1).toBe(r2);
 
     // But download should only be called once
+    expect(mockDownloadMedia).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Abort-aware cancellation
+// ---------------------------------------------------------------------------
+
+describe('downloadAndDecryptMedia — abort handling', () => {
+  it('restores to pending state when signal is pre-aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      downloadAndDecryptMedia(FAKE_MEDIA_ID, controller.signal),
+    ).rejects.toThrow('Download aborted');
+
+    // State should be restored to 'pending' (not 'failed')
+    expect(mockUpdateDownloadState).toHaveBeenCalledWith(FAKE_MEDIA_ID, 'pending');
+    expect(mockUpdateMediaDownloadState).toHaveBeenCalledWith(FAKE_MEDIA_ID, 'pending');
+
+    // Should never reach 'downloading' state
+    expect(mockUpdateDownloadState).not.toHaveBeenCalledWith(
+      FAKE_MEDIA_ID,
+      'downloading',
+    );
+    expect(mockUpdateMediaDownloadState).not.toHaveBeenCalledWith(
+      FAKE_MEDIA_ID,
+      'downloading',
+    );
+  });
+
+  it('releases semaphore after pre-aborted download', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      downloadAndDecryptMedia(FAKE_MEDIA_ID, controller.signal),
+    ).rejects.toThrow('Download aborted');
+
+    // Semaphore should be released — verify by running a subsequent download
+    // (if semaphore leaked, this would hang forever with MAX_CONCURRENT=3)
+    const MEDIA_ID_2 = 'b2c3d4e5-f6a7-8901-bcde-f12345678901';
+    mockGetMedia.mockReturnValue(makeMediaRow({ id: MEDIA_ID_2 }));
+
+    const result = await downloadAndDecryptMedia(MEDIA_ID_2);
+    expect(result).toContain(MEDIA_ID_2);
+  });
+
+  it('restores to pending on abort mid-fetch', async () => {
+    const controller = new AbortController();
+
+    // Abort INSIDE the download mock to simulate mid-fetch abort.
+    // This ensures the abort happens AFTER the post-acquire check.
+    mockDownloadMedia.mockImplementation(() => {
+      controller.abort();
+      return Promise.reject(new Error('fetch aborted'));
+    });
+
+    await expect(
+      downloadAndDecryptMedia(FAKE_MEDIA_ID, controller.signal),
+    ).rejects.toThrow('fetch aborted');
+
+    // State should be restored to 'pending' (signal.aborted is true)
+    expect(mockUpdateDownloadState).toHaveBeenCalledWith(FAKE_MEDIA_ID, 'pending');
+    expect(mockUpdateMediaDownloadState).toHaveBeenCalledWith(FAKE_MEDIA_ID, 'pending');
+  });
+
+  it('sets failed state on non-abort error (no signal)', async () => {
+    mockDownloadMedia.mockRejectedValue(new Error('Server 500'));
+
+    await expect(downloadAndDecryptMedia(FAKE_MEDIA_ID)).rejects.toThrow(
+      'Server 500',
+    );
+
+    // No signal means signal?.aborted is falsy — state should be 'failed'
+    expect(mockUpdateDownloadState).toHaveBeenCalledWith(FAKE_MEDIA_ID, 'failed');
+    expect(mockUpdateMediaDownloadState).toHaveBeenCalledWith(FAKE_MEDIA_ID, 'failed');
+  });
+
+  it('cleans up temp file on abort', async () => {
+    const rnfs = require('@dr.pogodin/react-native-fs');
+    const controller = new AbortController();
+
+    // Abort inside the download mock to simulate mid-fetch abort
+    mockDownloadMedia.mockImplementation(() => {
+      controller.abort();
+      return Promise.reject(new Error('fetch aborted'));
+    });
+
+    await expect(
+      downloadAndDecryptMedia(FAKE_MEDIA_ID, controller.signal),
+    ).rejects.toThrow('fetch aborted');
+
+    // Temp file should be cleaned up
+    expect(rnfs.unlink).toHaveBeenCalledWith(
+      '/tmp/test-docs/media/a1b2c3d4-e5f6-7890-abcd-ef1234567890.jpg.tmp',
+    );
+  });
+
+  it('clears inflight map entry after abort-then-rejoin', async () => {
+    // First call: abort while queued
+    const controller1 = new AbortController();
+    controller1.abort();
+
+    await expect(
+      downloadAndDecryptMedia(FAKE_MEDIA_ID, controller1.signal),
+    ).rejects.toThrow('Download aborted');
+
+    // After the first call settles, the inflight map should be cleared.
+    // A third call should create a fresh download promise (not join the stale one).
+    mockGetMedia.mockReturnValue(makeMediaRow());
+    mockDownloadMedia.mockResolvedValue({
+      data: fakeCiphertextBuffer,
+      encryptionIv: null,
+      expiresAt: null,
+    });
+
+    const result = await downloadAndDecryptMedia(FAKE_MEDIA_ID);
+    expect(result).toBe(
+      '/tmp/test-docs/media/a1b2c3d4-e5f6-7890-abcd-ef1234567890.jpg',
+    );
+    // Download called once for this fresh attempt
     expect(mockDownloadMedia).toHaveBeenCalledTimes(1);
   });
 });

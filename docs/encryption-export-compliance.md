@@ -21,13 +21,13 @@ Eligibility basis:
 
 | Algorithm | Purpose | Library | Codebase location |
 |---|---|---|---|
-| AES-256-GCM | Content encryption (threads, replies, group names) | `aes-gcm` 0.10 (Rust) | `packages/orbital-signal/rust/orbital_signal/src/content_crypto.rs`, `src/services/crypto/contentCrypto.ts` |
+| AES-256-GCM | Content encryption (threads, replies, group names) | `aes-gcm` 0.11 (Rust) | `packages/orbital-signal/rust/orbital_signal/src/content_crypto.rs`, `src/services/crypto/contentCrypto.ts` |
 | AES-256-CBC + HMAC-SHA256 | Attachment encryption (media, avatars) | `aes` 0.8, `hmac` 0.12 (Rust) | `packages/orbital-signal/rust/orbital_signal/src/attachment_crypto.rs`, `src/services/crypto/attachmentCrypto.ts` |
-| X25519 ECDH | ECIES key agreement for group key wrapping | `x25519-dalek` 2.0 (Rust) | `packages/orbital-signal/rust/orbital_signal/src/ecies.rs` |
+| X25519 ECDH | ECIES key agreement for group key wrapping | `x25519-dalek` 3.0 (Rust) | `packages/orbital-signal/rust/orbital_signal/src/ecies.rs` |
 | XEdDSA (Ed25519) | Sender authentication in ECIES envelopes | `curve25519-dalek` (Rust) | `packages/orbital-signal/rust/orbital_signal/src/ecies.rs` |
 | HKDF-SHA256 | Key derivation with domain separation | `hkdf` 0.12 (Rust) | `packages/orbital-signal/rust/orbital_signal/src/ecies.rs` |
 | SHA-256 | Content digests, integrity verification | `sha2` 0.10 (Rust) | `packages/orbital-signal/rust/orbital_signal/src/attachment_crypto.rs` |
-| Signal Protocol | Double Ratchet, X3DH, Sealed Sender | `libsignal-protocol` v0.95.0 (Rust, via uniffi) | `packages/orbital-signal/` |
+| Signal Protocol | Double Ratchet, X3DH, Sealed Sender | `libsignal-protocol` v0.97.3 (Rust, via uniffi) | `packages/orbital-signal/` |
 | Kyber1024 / ML-KEM-1024 (FIPS 203) | Post-quantum pre-keys + PQ ratchet (256-bit shared secret) | `libcrux-ml-kem` (Cryspen/INRIA HACL*, **non-U.S. origin**) via libsignal → `spqr` | `packages/orbital-signal/rust/orbital_signal/src/keys.rs` (`generateKyberPreKey`) |
 | SQLCipher (AES-256-CBC) | Local database encryption at rest | `op-sqlite` with SQLCipher flag | `src/database/connection.ts` |
 | HTTPS/TLS | Transport encryption | OS-provided (exempt) | N/A |

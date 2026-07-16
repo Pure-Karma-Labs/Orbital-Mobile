@@ -11,7 +11,7 @@ import type { PickedMedia } from '../../hooks/useMediaPicker';
 function makeMedia(index: number): PickedMedia {
   return {
     uri: `file://photo${index}.jpg`,
-    base64: `base64data${index}`,
+
     type: 'image/jpeg',
     fileName: `photo${index}.jpg`,
     fileSize: 1024 * (index + 1),

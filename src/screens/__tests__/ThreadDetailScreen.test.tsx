@@ -581,7 +581,7 @@ describe('ThreadDetailScreen — media send', () => {
     mockSelectedMedia = [
       {
         uri: 'file:///photo1.jpg',
-        base64: 'abc',
+
         type: 'image/jpeg',
         fileName: 'photo1.jpg',
         fileSize: 100,
@@ -628,7 +628,7 @@ describe('ThreadDetailScreen — media send', () => {
     mockSelectedMedia = [
       {
         uri: 'file:///photo1.jpg',
-        base64: 'abc',
+
         type: 'image/jpeg',
         fileName: 'photo1.jpg',
         fileSize: 100,
@@ -663,7 +663,7 @@ describe('ThreadDetailScreen — media send', () => {
     mockSelectedMedia = [
       {
         uri: 'file:///photo1.jpg',
-        base64: 'abc',
+
         type: 'image/jpeg',
         fileName: 'photo1.jpg',
         fileSize: 100,

@@ -11,16 +11,25 @@
 
 const mockAttachmentEncrypt = jest.fn();
 const mockAttachmentDecrypt = jest.fn();
+const mockPush = jest.fn();
+const mockFinalize = jest.fn();
+const mockUniffiDestroy = jest.fn();
 
 jest.mock('orbital-signal', () => ({
   attachmentEncrypt: (...args: unknown[]) => mockAttachmentEncrypt(...args),
   attachmentDecrypt: (...args: unknown[]) => mockAttachmentDecrypt(...args),
+  AttachmentEncryptor: jest.fn().mockImplementation(() => ({
+    push: mockPush,
+    finalize: mockFinalize,
+    uniffiDestroy: mockUniffiDestroy,
+  })),
 }));
 
 import {
   generateAttachmentKeys,
   encryptAttachment,
   decryptAttachment,
+  createAttachmentEncryptor,
 } from '../attachmentCrypto';
 
 beforeEach(() => {
@@ -151,5 +160,70 @@ describe('decryptAttachment', () => {
         new Uint8Array(32),
       ),
     ).toThrow('decryption failed');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createAttachmentEncryptor (streaming wrapper)
+// ---------------------------------------------------------------------------
+
+describe('createAttachmentEncryptor', () => {
+  beforeEach(() => {
+    mockPush.mockReturnValue(new ArrayBuffer(16));
+    mockFinalize.mockReturnValue({
+      tail: new ArrayBuffer(48),
+      digest: new ArrayBuffer(32),
+      plaintextHash: new ArrayBuffer(32),
+    });
+  });
+
+  it('passes keys as ArrayBuffer to the native constructor', () => {
+    const { AttachmentEncryptor } = require('orbital-signal');
+    const keys = new Uint8Array(64).fill(0xAA);
+    createAttachmentEncryptor(keys);
+
+    expect(AttachmentEncryptor).toHaveBeenCalledTimes(1);
+    const arg = AttachmentEncryptor.mock.calls[0][0];
+    expect(arg).toBeInstanceOf(ArrayBuffer);
+    expect(arg.byteLength).toBe(64);
+  });
+
+  it('push() converts Uint8Array to ArrayBuffer and returns Uint8Array', () => {
+    const enc = createAttachmentEncryptor(new Uint8Array(64));
+    const chunk = new Uint8Array([1, 2, 3]);
+    const result = enc.push(chunk);
+
+    expect(mockPush).toHaveBeenCalledTimes(1);
+    const arg = mockPush.mock.calls[0][0];
+    expect(arg).toBeInstanceOf(ArrayBuffer);
+    expect(result).toBeInstanceOf(Uint8Array);
+    expect(result.length).toBe(16);
+  });
+
+  it('finalize() returns tail and digest as Uint8Array, omitting plaintextHash', () => {
+    const enc = createAttachmentEncryptor(new Uint8Array(64));
+    const result = enc.finalize();
+
+    expect(mockFinalize).toHaveBeenCalledTimes(1);
+    expect(result.tail).toBeInstanceOf(Uint8Array);
+    expect(result.tail.length).toBe(48);
+    expect(result.digest).toBeInstanceOf(Uint8Array);
+    expect(result.digest.length).toBe(32);
+    expect(result).not.toHaveProperty('plaintextHash');
+  });
+
+  it('destroy() delegates to uniffiDestroy()', () => {
+    const enc = createAttachmentEncryptor(new Uint8Array(64));
+    enc.destroy();
+
+    expect(mockUniffiDestroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('destroy() is idempotent — second call does not invoke uniffiDestroy again', () => {
+    const enc = createAttachmentEncryptor(new Uint8Array(64));
+    enc.destroy();
+    enc.destroy();
+
+    expect(mockUniffiDestroy).toHaveBeenCalledTimes(1);
   });
 });

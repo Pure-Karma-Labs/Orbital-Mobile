@@ -31,7 +31,6 @@ function renderHook() {
 function makeAsset(overrides: Record<string, unknown> = {}) {
   return {
     uri: 'file://photo.jpg',
-    base64: 'abc123',
     type: 'image/jpeg',
     fileName: 'photo1.jpg',
     fileSize: 1024,
@@ -64,7 +63,6 @@ describe('useMediaPicker', () => {
       expect(hookResult.selectedMedia).toHaveLength(1);
       const m = hookResult.selectedMedia[0];
       expect(m.uri).toBe('file://photo.jpg');
-      expect(m.base64).toBe('abc123');
       expect(m.type).toBe('image/jpeg');
       expect(m.fileName).toBe('photo1.jpg');
       expect(m.fileSize).toBe(1024);
@@ -98,12 +96,11 @@ describe('useMediaPicker', () => {
       expect(hookResult.selectedMedia[0].fileSize).toBe(0);
     });
 
-    it('filters out assets missing required fields', async () => {
+    it('filters out assets missing required fields (uri or type)', async () => {
       mockLaunchImageLibrary.mockResolvedValue({
         assets: [
           makeAsset(),
           makeAsset({ uri: undefined }),
-          makeAsset({ base64: undefined }),
           makeAsset({ type: undefined }),
         ],
       });
@@ -180,7 +177,7 @@ describe('useMediaPicker', () => {
 
     it('skips asset missing required fields', async () => {
       mockLaunchCamera.mockResolvedValue({
-        assets: [makeAsset({ base64: undefined })],
+        assets: [makeAsset({ type: undefined })],
       });
       renderHook();
 

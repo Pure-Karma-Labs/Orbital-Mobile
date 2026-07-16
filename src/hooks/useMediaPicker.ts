@@ -1,11 +1,12 @@
 /**
- * useMediaPicker — reusable hook for picking photos from the library or camera.
+ * useMediaPicker -- reusable hook for picking photos from the library or camera.
  *
- * Returns selected media with base64 data for encryption, plus management
+ * Returns selected media with local URIs for display and upload, plus management
  * functions (remove, clear). Maximum 10 items selected at once.
  *
  * Picker options force re-encoding at 2048px max to strip EXIF/GPS metadata.
- * Uses includeBase64: true so no file system access is needed.
+ * The upload service reads the file from disk via streaming -- no base64 is held
+ * in memory at pick time.
  */
 
 import { useCallback, useState } from 'react';
@@ -16,10 +17,8 @@ import { launchImageLibrary, launchCamera, type Asset } from 'react-native-image
 // ---------------------------------------------------------------------------
 
 export interface PickedMedia {
-  /** Local URI for display (thumbnail) */
+  /** Local URI for display (thumbnail) and upload (file read) */
   uri: string;
-  /** Base64-encoded file data for encryption */
-  base64: string;
   /** MIME type (e.g. 'image/jpeg') */
   type: string;
   /** File name */
@@ -54,17 +53,16 @@ export function useMediaPicker() {
         maxWidth: 2048,
         maxHeight: 2048,
         quality: 0.9,
-        includeBase64: true,
+        includeBase64: false,
         assetRepresentationMode: 'compatible',
       });
 
       if (result.didCancel || !result.assets) return;
 
       const picked: PickedMedia[] = result.assets
-        .filter((a: Asset) => a.uri && a.base64 && a.type)
+        .filter((a: Asset) => a.uri && a.type)
         .map((a: Asset) => ({
           uri: a.uri!,
-          base64: a.base64!,
           type: a.type!,
           fileName: a.fileName ?? 'photo.jpg',
           fileSize: a.fileSize ?? 0,
@@ -74,7 +72,7 @@ export function useMediaPicker() {
 
       setSelectedMedia((prev) => [...prev, ...picked].slice(0, MAX_SELECTION));
     } catch {
-      // Silently fail — picker cancelled or permission denied
+      // Silently fail -- picker cancelled or permission denied
       if (__DEV__) {
         console.warn('[useMediaPicker] pickPhotos failed');
       }
@@ -91,16 +89,15 @@ export function useMediaPicker() {
         maxWidth: 2048,
         maxHeight: 2048,
         quality: 0.9,
-        includeBase64: true,
+        includeBase64: false,
       });
 
       if (result.didCancel || !result.assets) return;
 
       const asset = result.assets[0];
-      if (asset?.uri && asset.base64 && asset.type) {
+      if (asset?.uri && asset.type) {
         const picked: PickedMedia = {
           uri: asset.uri,
-          base64: asset.base64,
           type: asset.type,
           fileName: asset.fileName ?? 'photo.jpg',
           fileSize: asset.fileSize ?? 0,

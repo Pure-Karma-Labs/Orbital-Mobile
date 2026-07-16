@@ -1,5 +1,15 @@
+export const read = jest.fn().mockResolvedValue('');
 export const readFile = jest.fn().mockResolvedValue('');
 export const writeFile = jest.fn().mockResolvedValue(undefined);
+export const appendFile = jest.fn().mockResolvedValue(undefined);
+export const copyFile = jest.fn().mockResolvedValue(undefined);
+export const stat = jest.fn().mockResolvedValue({
+  size: 0,
+  mtime: new Date(),
+  ctime: new Date(),
+  isFile: () => true,
+  isDirectory: () => false,
+});
 export const unlink = jest.fn().mockResolvedValue(undefined);
 export const readDir = jest.fn().mockResolvedValue([]);
 export const exists = jest.fn().mockResolvedValue(false);

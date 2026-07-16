@@ -1,22 +1,24 @@
 /**
- * Media upload service — orchestrates file encryption, chunked upload, and store persistence.
+ * Media upload service -- orchestrates streaming file encryption, chunked upload,
+ * and store persistence.
  *
  * Flow:
- * 1. Validate file size (max 25MB)
- * 2. Decode base64 from picker → Uint8Array plaintext
- * 3. Generate attachment keys and encrypt via attachmentCrypto
- * 4. Build metadata JSON (v, contentType, fileName, width, height, digest, attachmentKey)
- * 5. Extract IV from ciphertext (first 16 bytes)
- * 6. Split ciphertext into 5MB chunks → Blob per chunk
- * 7. Upload chunks sequentially (first chunk includes metadata + IV)
+ * 1. Normalize URI (copy content:// to staging in Caches)
+ * 2. stat() for authoritative file size; reject > 50MB or === 0
+ * 3. Compute ciphertext length: 16 (IV) + padded_data + 32 (HMAC)
+ * 4. PHASE 1 -- stream-encrypt plaintext to a ciphertext file using 1MB reads
+ * 5. Build metadata JSON (v, contentType, fileName, width, height, digest, attachmentKey)
+ * 6. Extract IV from ciphertext file (first 16 bytes)
+ * 7. PHASE 2 -- read 5MB chunks from ciphertext file, upload sequentially
  * 8. Complete upload
- * 9. Persist to local DB and store
+ * 9. Copy plaintext to canonical path; persist to local DB and store
  *
  * SECURITY: Crypto operations delegated to attachmentCrypto (Rust FFI).
+ * SECURITY: Plaintext never held entirely in memory -- streamed in 1MB reads.
  */
 
 import type { PickedMedia } from '../hooks/useMediaPicker';
-import { generateAttachmentKeys, encryptAttachment } from './crypto/attachmentCrypto';
+import { generateAttachmentKeys, createAttachmentEncryptor } from './crypto/attachmentCrypto';
 import { encryptContent, getOrFetchGroupKey } from './crypto/contentCrypto';
 import { arrayBufferToBase64, toArrayBuffer } from './crypto/utils';
 import { uploadChunk, completeUpload } from './api/media';
@@ -25,7 +27,11 @@ import { isDatabaseInitialized } from '../database/connection';
 import { useAppStore } from '../stores/useAppStore';
 import { generateUUID } from '../utils/uuid';
 import {
+  read,
   writeFile,
+  appendFile,
+  copyFile,
+  stat,
   unlink,
   readDir,
   mkdir,
@@ -40,11 +46,20 @@ import type { MediaRow } from '../database/repositories/mediaRepository';
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Maximum file size in bytes (25MB) */
-const MAX_UPLOAD_SIZE_BYTES = 25 * 1024 * 1024;
+/**
+ * Maximum file size in bytes (50MB).
+ *
+ * The ceiling is set by the receiver-side one-shot decrypt, which holds ~3.3x
+ * the file size in transient memory (ciphertext + plaintext + intermediate
+ * buffers). Streaming decrypt (#578) will raise this further.
+ */
+const MAX_UPLOAD_SIZE_BYTES = 50 * 1024 * 1024;
 
-/** Chunk size in bytes (5MB) */
+/** Chunk size in bytes (5MB) for chunked upload to backend */
 const CHUNK_SIZE_BYTES = 5 * 1024 * 1024;
+
+/** Read size for streaming encryption phase (1MB) */
+const ENCRYPT_READ_SIZE_BYTES = 1 * 1024 * 1024;
 
 /** Maximum retry attempts per chunk */
 const MAX_RETRIES = 3;
@@ -57,14 +72,12 @@ const BASE_RETRY_DELAY_MS = 1000;
 // ---------------------------------------------------------------------------
 
 export interface UploadMediaOptions {
-  /** Base64-encoded file data from picker (with includeBase64: true) */
-  fileBase64: string;
+  /** Local file URI (file:// or content://) from picker */
+  fileUri: string;
   /** MIME type (e.g. 'image/jpeg') */
   mimeType: string;
   /** File name */
   fileName: string;
-  /** File size in bytes */
-  fileSize: number;
   /** Image width in pixels */
   width?: number;
   /** Image height in pixels */
@@ -100,19 +113,18 @@ function base64ToUint8Array(base64: string): Uint8Array {
 }
 
 /**
- * Write a Uint8Array chunk to a temporary file for upload.
- * Hermes cannot create Blobs from ArrayBuffer, so we write to a temp
- * file and use the file-URI FormData pattern (same as avatar uploads).
+ * Write a base64-encoded chunk to a temporary file for upload.
+ * Used during Phase 2 (chunk upload) -- reads a slice from the ciphertext file
+ * and writes it to a per-chunk temp file for FormData upload.
  */
 async function writeChunkToTempFile(
-  bytes: Uint8Array,
+  base64Content: string,
   mediaId: string,
   chunkIndex: number,
 ): Promise<string> {
-  const base64 = arrayBufferToBase64(toArrayBuffer(bytes));
   const filePath = `${CachesDirectoryPath}/${mediaId}-chunk-${chunkIndex}.bin`;
   try {
-    await writeFile(filePath, base64, 'base64');
+    await writeFile(filePath, base64Content, 'base64');
   } catch (err) {
     await unlink(filePath).catch(() => {});
     throw err;
@@ -131,23 +143,49 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Resolve a URI to a filesystem path suitable for RNFS operations.
+ *
+ * For content:// URIs (Android), copies to a staging file in Caches and returns
+ * { sourcePath, stagingPath }. For file:// URIs, strips the prefix and returns
+ * the bare path (RNFS normalizeFilePath does this internally, but we strip it
+ * ourselves for consistency in offset-read calls).
+ *
+ * @returns sourcePath for reads, and stagingPath (if staging was needed)
+ */
+async function resolveUri(
+  fileUri: string,
+  mediaId: string,
+): Promise<{ sourcePath: string; stagingPath: string | null }> {
+  if (fileUri.startsWith('content://')) {
+    // Android content:// URI -- copy to staging so we can do offset reads
+    const stagingPath = `${CachesDirectoryPath}/${mediaId}-staging.bin`;
+    await copyFile(fileUri, stagingPath);
+    return { sourcePath: stagingPath, stagingPath };
+  }
+
+  // file:// URI or bare path -- RNFS normalizeFilePath strips file://,
+  // but we do it here too for stat/read consistency
+  const sourcePath = fileUri.startsWith('file://') ? fileUri.slice(7) : fileUri;
+  return { sourcePath, stagingPath: null };
+}
+
 // ---------------------------------------------------------------------------
 // Main upload function
 // ---------------------------------------------------------------------------
 
 /**
- * Upload a media file with encryption and chunked upload.
+ * Upload a media file with streaming encryption and chunked upload.
  *
- * @param options - Upload configuration including file data and metadata.
+ * @param options - Upload configuration including file URI and metadata.
  * @returns The mediaId of the uploaded file.
  * @throws Error if file is too large, encryption fails, or upload fails after retries.
  */
 export async function uploadMedia(options: UploadMediaOptions): Promise<string> {
   const {
-    fileBase64,
+    fileUri,
     mimeType,
     fileName,
-    fileSize,
     width,
     height,
     groupId,
@@ -157,192 +195,257 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<string> 
     signal,
   } = options;
 
-  // 1. Validate file size
-  if (fileSize > MAX_UPLOAD_SIZE_BYTES) {
-    throw new Error(
-      `File too large (${Math.round(fileSize / 1024 / 1024)}MB). Maximum is ${MAX_UPLOAD_SIZE_BYTES / 1024 / 1024}MB.`,
-    );
-  }
-
-  // 2. Decode base64 → Uint8Array plaintext
-  const plaintext = base64ToUint8Array(fileBase64);
-
-  // 3. Generate attachment keys and encrypt
-  const { keys } = generateAttachmentKeys();
-  const { ciphertext, digest } = encryptAttachment(plaintext, keys);
-
-  // 4. Generate media ID
   const mediaId = generateUUID();
 
-  // 5. Build metadata and encrypt with group key (AES-256-GCM)
-  // SECURITY: Metadata (fileName, contentType, dimensions) is encrypted so the
-  // server never sees user filenames or content types (zero-knowledge).
-  const digestBase64 = arrayBufferToBase64(toArrayBuffer(digest));
-  const metadataPlain = JSON.stringify({
-    v: 1,
-    contentType: mimeType,
-    fileName,
-    ...(width != null ? { width } : {}),
-    ...(height != null ? { height } : {}),
-    digest: digestBase64,
-    attachmentKey: arrayBufferToBase64(toArrayBuffer(keys)),
-  });
-  const groupKey = await getOrFetchGroupKey(groupId);
-  const encryptedMeta = encryptContent(metadataPlain, groupKey, groupId);
-  const metadata = JSON.stringify({
-    ciphertext: encryptedMeta.ciphertext,
-    iv: encryptedMeta.iv,
-  });
+  // 0. URI normalization
+  const { sourcePath, stagingPath } = await resolveUri(fileUri, mediaId);
 
-  // 6. Extract IV from ciphertext (first 16 bytes) and base64-encode
-  const iv = ciphertext.slice(0, 16);
-  const ivBase64 = arrayBufferToBase64(toArrayBuffer(iv));
+  // Ciphertext temp file path
+  const ctPath = `${CachesDirectoryPath}/${mediaId}-cipher.bin`;
 
-  // 7. Split ciphertext into chunks
-  const totalChunks = Math.ceil(ciphertext.length / CHUNK_SIZE_BYTES);
-
-  // 8. Upload chunks sequentially
-  for (let i = 0; i < totalChunks; i++) {
-    // Check for cancellation
-    if (signal?.aborted) {
-      throw new Error('Upload cancelled');
-    }
-
-    const start = i * CHUNK_SIZE_BYTES;
-    const end = Math.min(start + CHUNK_SIZE_BYTES, ciphertext.length);
-    const chunkBytes = ciphertext.slice(start, end);
-    const chunkFilePath = await writeChunkToTempFile(chunkBytes, mediaId, i);
-
-    // Retry logic with exponential backoff
-    let lastError: Error | null = null;
-    try {
-      for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-        try {
-          await uploadChunk(
-            {
-              mediaId,
-              groupId,
-              chunkIndex: i,
-              totalChunks,
-              chunkFilePath,
-              // First chunk includes metadata and IV
-              ...(i === 0
-                ? { encryptedMetadata: metadata, encryptionIv: ivBase64 }
-                : {}),
-            },
-            signal,
-          );
-          lastError = null;
-          break;
-        } catch (e) {
-          lastError = e instanceof Error ? e : new Error(String(e));
-
-          // Don't retry auth or validation errors
-          if (lastError.message.includes('401') || lastError.message.includes('403')) {
-            throw lastError;
-          }
-
-          // Don't retry on cancellation
-          if (signal?.aborted) {
-            throw new Error('Upload cancelled');
-          }
-
-          // Exponential backoff before retry
-          if (attempt < MAX_RETRIES - 1) {
-            await sleep(BASE_RETRY_DELAY_MS * Math.pow(2, attempt));
-          }
-        }
-      }
-
-      if (lastError) {
-        if (isDatabaseInitialized()) {
-          try {
-            const failedRow = buildMediaRow(
-              mediaId, threadId ?? null, replyId ?? null, mimeType,
-              fileName, fileSize, width, height, keys, digest,
-              'pending', 'failed',
-            );
-            saveMedia(failedRow);
-          } catch {
-            // Best-effort persistence — don't mask the upload error
-          }
-        }
-        throw new Error('Failed to upload media. Please try again.');
-      }
-    } finally {
-      unlinkChunkFile(chunkFilePath);
-    }
-
-    // Report progress
-    onProgress?.((i + 1) / totalChunks);
-  }
-
-  // 9. Complete the upload
-  await completeUpload(mediaId, groupId);
-
-  // 10. Copy plaintext to canonical path so file survives app restarts
-  //     (picker URIs in /tmp/ are evicted by iOS)
-  const ext = fileName.split('.').pop() ?? 'dat';
-  const mediaDirPath = `${DocumentDirectoryPath}/media`;
-  const canonicalPath = `${mediaDirPath}/${mediaId}.${ext}`;
-  let savedLocalPath: string | null = null;
+  // Track keys/digest for failure-row and metadata
+  let keys: Uint8Array | null = null;
+  let digestBytes: Uint8Array | null = null;
+  let fileSize = 0;
 
   try {
-    const dirExists = await exists(mediaDirPath);
-    if (!dirExists) {
-      // TODO(F2): Per-file NSURLIsExcludedFromBackupKey is not available via RNFS
-      // writeFile/moveFile — only mkdir exposes it. Using directory-level exclusion
-      // as the best available option. Filed as a follow-up for a native bridge.
-      await mkdir(mediaDirPath, { NSURLIsExcludedFromBackupKey: true });
-    }
-    await writeFile(canonicalPath, fileBase64, 'base64');
-    savedLocalPath = canonicalPath;
-  } catch (e) {
-    if (__DEV__) {
-      console.warn('[uploadMedia] Failed to copy plaintext to canonical path:', e instanceof Error ? e.message : e);
-    }
-    // Non-fatal — upload succeeded, file will be re-downloadable
-  }
+    // 1. stat for authoritative file size
+    const st = await stat(sourcePath);
+    fileSize = st.size;
 
-  // 11. Persist to local DB
-  const mediaRow = buildMediaRow(
-    mediaId, threadId ?? null, replyId ?? null, mimeType,
-    fileName, fileSize, width, height, keys, digest,
-    savedLocalPath ? 'downloaded' : 'pending', 'done',
-  );
-  mediaRow.local_path = savedLocalPath;
-  if (isDatabaseInitialized()) {
+    if (fileSize === 0) {
+      throw new Error('Cannot upload empty file.');
+    }
+
+    if (fileSize > MAX_UPLOAD_SIZE_BYTES) {
+      throw new Error(
+        `File too large (${Math.round(fileSize / 1024 / 1024)}MB). Maximum is ${MAX_UPLOAD_SIZE_BYTES / 1024 / 1024}MB.`,
+      );
+    }
+
+    // 2. Compute expected ciphertext length
+    //    AES-256-CBC with PKCS7: IV(16) + ceil((plaintext+1)/16)*16 + HMAC(32)
+    const paddedLen = (fileSize - (fileSize % 16) + 16);
+    const ciphertextLen = 16 + paddedLen + 32;
+    const totalChunks = Math.ceil(ciphertextLen / CHUNK_SIZE_BYTES);
+
+    // 3. Generate attachment keys
+    const generated = generateAttachmentKeys();
+    keys = generated.keys;
+
+    // 4. PHASE 1 -- Stream encrypt plaintext to ciphertext file
+    const enc = createAttachmentEncryptor(keys);
     try {
-      saveMedia(mediaRow);
+      for (let pos = 0; pos < fileSize; pos += ENCRYPT_READ_SIZE_BYTES) {
+        // Abort check
+        if (signal?.aborted) {
+          throw new Error('Upload cancelled');
+        }
+
+        const n = Math.min(ENCRYPT_READ_SIZE_BYTES, fileSize - pos);
+        const b64 = await read(sourcePath, n, pos, 'base64');
+        const bytes = base64ToUint8Array(b64);
+
+        if (bytes.length !== n) {
+          throw new Error('File changed during upload — byte count mismatch.');
+        }
+
+        const ct = enc.push(bytes);
+        if (ct.length > 0) {
+          await appendFile(ctPath, arrayBufferToBase64(toArrayBuffer(ct)), 'base64');
+        }
+      }
+
+      const { tail, digest } = enc.finalize();
+      digestBytes = digest;
+      await appendFile(ctPath, arrayBufferToBase64(toArrayBuffer(tail)), 'base64');
+    } catch (err) {
+      enc.destroy();
+      await unlink(ctPath).catch(() => {});
+      throw err;
+    }
+    enc.destroy();
+
+    // Verify ciphertext size
+    const ctStat = await stat(ctPath);
+    if (ctStat.size !== ciphertextLen) {
+      throw new Error(
+        `Ciphertext size mismatch: expected ${ciphertextLen}, got ${ctStat.size}`,
+      );
+    }
+
+    // 5. Build metadata and encrypt with group key (AES-256-GCM)
+    // SECURITY: Metadata (fileName, contentType, dimensions) is encrypted so the
+    // server never sees user filenames or content types (zero-knowledge).
+    const digestBase64 = arrayBufferToBase64(toArrayBuffer(digestBytes));
+    const metadataPlain = JSON.stringify({
+      v: 1,
+      contentType: mimeType,
+      fileName,
+      ...(width != null ? { width } : {}),
+      ...(height != null ? { height } : {}),
+      digest: digestBase64,
+      attachmentKey: arrayBufferToBase64(toArrayBuffer(keys)),
+    });
+    const groupKey = await getOrFetchGroupKey(groupId);
+    const encryptedMeta = encryptContent(metadataPlain, groupKey, groupId);
+    const metadata = JSON.stringify({
+      ciphertext: encryptedMeta.ciphertext,
+      iv: encryptedMeta.iv,
+    });
+
+    // 6. Extract IV from ciphertext (first 16 bytes)
+    const ivBase64 = await read(ctPath, 16, 0, 'base64');
+
+    // 7. PHASE 2 -- Upload chunks from ciphertext file
+    for (let i = 0; i < totalChunks; i++) {
+      // Check for cancellation
+      if (signal?.aborted) {
+        throw new Error('Upload cancelled');
+      }
+
+      const chunkStart = i * CHUNK_SIZE_BYTES;
+      const chunkLen = Math.min(CHUNK_SIZE_BYTES, ciphertextLen - chunkStart);
+      const sliceB64 = await read(ctPath, chunkLen, chunkStart, 'base64');
+      const chunkFilePath = await writeChunkToTempFile(sliceB64, mediaId, i);
+
+      // Retry logic with exponential backoff
+      let lastError: Error | null = null;
+      try {
+        for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+          try {
+            await uploadChunk(
+              {
+                mediaId,
+                groupId,
+                chunkIndex: i,
+                totalChunks,
+                chunkFilePath,
+                // First chunk includes metadata and IV
+                ...(i === 0
+                  ? { encryptedMetadata: metadata, encryptionIv: ivBase64 }
+                  : {}),
+              },
+              signal,
+            );
+            lastError = null;
+            break;
+          } catch (e) {
+            lastError = e instanceof Error ? e : new Error(String(e));
+
+            // Don't retry auth or validation errors
+            if (lastError.message.includes('401') || lastError.message.includes('403')) {
+              throw lastError;
+            }
+
+            // Don't retry on cancellation
+            if (signal?.aborted) {
+              throw new Error('Upload cancelled');
+            }
+
+            // Exponential backoff before retry
+            if (attempt < MAX_RETRIES - 1) {
+              await sleep(BASE_RETRY_DELAY_MS * Math.pow(2, attempt));
+            }
+          }
+        }
+
+        if (lastError) {
+          if (isDatabaseInitialized()) {
+            try {
+              const failedRow = buildMediaRow(
+                mediaId, threadId ?? null, replyId ?? null, mimeType,
+                fileName, fileSize, width, height, keys, digestBytes,
+                'pending', 'failed',
+              );
+              saveMedia(failedRow);
+            } catch {
+              // Best-effort persistence -- don't mask the upload error
+            }
+          }
+          throw new Error('Failed to upload media. Please try again.');
+        }
+      } finally {
+        unlinkChunkFile(chunkFilePath);
+      }
+
+      // Report progress
+      onProgress?.((i + 1) / totalChunks);
+    }
+
+    // 8. Complete the upload
+    await completeUpload(mediaId, groupId);
+
+    // 9. Copy plaintext to canonical path so file survives app restarts
+    //    (picker URIs in /tmp/ are evicted by iOS)
+    const ext = fileName.split('.').pop() ?? 'dat';
+    const mediaDirPath = `${DocumentDirectoryPath}/media`;
+    const canonicalPath = `${mediaDirPath}/${mediaId}.${ext}`;
+    let savedLocalPath: string | null = null;
+
+    try {
+      const dirExists = await exists(mediaDirPath);
+      if (!dirExists) {
+        // TODO(F2): Per-file NSURLIsExcludedFromBackupKey is not available via RNFS
+        // writeFile/moveFile -- only mkdir exposes it. Using directory-level exclusion
+        // as the best available option. Filed as a follow-up for a native bridge.
+        await mkdir(mediaDirPath, { NSURLIsExcludedFromBackupKey: true });
+      }
+      await copyFile(sourcePath, canonicalPath);
+      savedLocalPath = canonicalPath;
     } catch (e) {
       if (__DEV__) {
-        console.warn('[uploadMedia] saveMedia failed (upload succeeded):', e instanceof Error ? e.message : e);
+        console.warn('[uploadMedia] Failed to copy plaintext to canonical path:', e instanceof Error ? e.message : e);
+      }
+      // Non-fatal -- upload succeeded, file will be re-downloadable
+    }
+
+    // 10. Persist to local DB
+    const mediaRow = buildMediaRow(
+      mediaId, threadId ?? null, replyId ?? null, mimeType,
+      fileName, fileSize, width, height, keys, digestBytes,
+      savedLocalPath ? 'downloaded' : 'pending', 'done',
+    );
+    mediaRow.local_path = savedLocalPath;
+    if (isDatabaseInitialized()) {
+      try {
+        saveMedia(mediaRow);
+      } catch (e) {
+        if (__DEV__) {
+          console.warn('[uploadMedia] saveMedia failed (upload succeeded):', e instanceof Error ? e.message : e);
+        }
       }
     }
+
+    // 11. Update Zustand store
+    const storeItem: MediaItem = {
+      id: mediaId,
+      threadId: threadId ?? null,
+      replyId: replyId ?? null,
+      contentType: mimeType,
+      fileName,
+      fileSize,
+      width: width ?? null,
+      height: height ?? null,
+      duration: null,
+      blurHash: null,
+      localPath: savedLocalPath,
+      thumbnailPath: null,
+      downloadState: savedLocalPath ? 'downloaded' : 'pending',
+      uploadState: 'done',
+      expiresAt: null,
+      hasKeys: true,
+    };
+    useAppStore.getState().upsertMedia(storeItem);
+
+    return mediaId;
+  } finally {
+    // Best-effort cleanup of ciphertext temp file and staging file
+    await unlink(ctPath).catch(() => {});
+    if (stagingPath) {
+      await unlink(stagingPath).catch(() => {});
+    }
   }
-
-  // 12. Update Zustand store
-  const storeItem: MediaItem = {
-    id: mediaId,
-    threadId: threadId ?? null,
-    replyId: replyId ?? null,
-    contentType: mimeType,
-    fileName,
-    fileSize,
-    width: width ?? null,
-    height: height ?? null,
-    duration: null,
-    blurHash: null,
-    localPath: savedLocalPath,
-    thumbnailPath: null,
-    downloadState: savedLocalPath ? 'downloaded' : 'pending',
-    uploadState: 'done',
-    expiresAt: null,
-    hasKeys: true,
-  };
-  useAppStore.getState().upsertMedia(storeItem);
-
-  return mediaId;
 }
 
 // ---------------------------------------------------------------------------
@@ -367,10 +470,9 @@ export async function uploadMediaBatch(
   const ids: string[] = [];
   for (const media of items) {
     const id = await uploadMedia({
-      fileBase64: media.base64,
+      fileUri: media.uri,
       mimeType: media.type,
       fileName: media.fileName,
-      fileSize: media.fileSize,
       width: media.width,
       height: media.height,
       groupId,
@@ -428,15 +530,18 @@ function buildMediaRow(
 // ---------------------------------------------------------------------------
 
 /**
- * Clean up orphaned chunk temp files from interrupted uploads.
- * Call during app bootstrap (best-effort, fire-and-forget).
+ * Clean up orphaned chunk, cipher, and staging temp files from interrupted
+ * uploads. Call during app bootstrap (best-effort, fire-and-forget).
  */
 export async function cleanupOrphanedChunks(): Promise<void> {
   try {
     const files = await readDir(CachesDirectoryPath);
     const now = Date.now();
     for (const file of files) {
-      if (file.name.includes('-chunk-') && file.name.endsWith('.bin')) {
+      const isChunk = file.name.includes('-chunk-') && file.name.endsWith('.bin');
+      const isCipher = file.name.endsWith('-cipher.bin');
+      const isStaging = file.name.endsWith('-staging.bin');
+      if (isChunk || isCipher || isStaging) {
         const mtime = file.mtime ? new Date(file.mtime).getTime() : 0;
         const age = now - mtime;
         if (age > 3600_000) {
@@ -445,6 +550,6 @@ export async function cleanupOrphanedChunks(): Promise<void> {
       }
     }
   } catch {
-    // Best-effort — failures are silently ignored
+    // Best-effort -- failures are silently ignored
   }
 }

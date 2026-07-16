@@ -15,7 +15,7 @@
  * SECURITY: plaintext_hash must never be sent to the server — content fingerprint breaks zero-knowledge.
  */
 
-import { attachmentEncrypt, attachmentDecrypt } from 'orbital-signal';
+import { attachmentEncrypt, attachmentDecrypt, AttachmentEncryptor } from 'orbital-signal';
 import type { AttachmentCryptoResult } from 'orbital-signal';
 import { arrayBufferToBase64, toArrayBuffer } from './utils';
 
@@ -46,7 +46,61 @@ export function generateAttachmentKeys(): {
 }
 
 // ---------------------------------------------------------------------------
-// Encryption
+// Streaming encryption
+// ---------------------------------------------------------------------------
+
+/**
+ * A streaming attachment encryptor that wraps the native AttachmentEncryptor.
+ *
+ * Accepts plaintext chunks as Uint8Array, returns ciphertext Uint8Array.
+ * Call destroy() when done or on error to release native resources.
+ */
+export interface StreamingAttachmentEncryptor {
+  /** Feed a plaintext chunk; returns whole encrypted 16-byte blocks (may be empty). */
+  push(chunk: Uint8Array): Uint8Array;
+  /** Finalize encryption — returns trailing ciphertext (padding + HMAC) and digest. */
+  finalize(): { tail: Uint8Array; digest: Uint8Array };
+  /** Release native resources. Idempotent — safe to call multiple times. */
+  destroy(): void;
+}
+
+/**
+ * Create a streaming attachment encryptor backed by the Rust AttachmentEncryptor.
+ *
+ * The caller MUST call destroy() in a finally block (or after finalize) to release
+ * the native FFI object. Failure to do so leaks native memory.
+ *
+ * @param keys - 64-byte key (32 AES + 32 HMAC), typically from generateAttachmentKeys().
+ */
+export function createAttachmentEncryptor(keys: Uint8Array): StreamingAttachmentEncryptor {
+  const inner = new AttachmentEncryptor(toArrayBuffer(keys));
+  let destroyed = false;
+
+  return {
+    push(chunk: Uint8Array): Uint8Array {
+      const result = inner.push(toArrayBuffer(chunk));
+      return new Uint8Array(result);
+    },
+
+    finalize(): { tail: Uint8Array; digest: Uint8Array } {
+      const result = inner.finalize();
+      return {
+        tail: new Uint8Array(result.tail),
+        digest: new Uint8Array(result.digest),
+      };
+    },
+
+    destroy(): void {
+      if (!destroyed) {
+        destroyed = true;
+        inner.uniffiDestroy();
+      }
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// One-shot encryption
 // ---------------------------------------------------------------------------
 
 export interface EncryptAttachmentResult {

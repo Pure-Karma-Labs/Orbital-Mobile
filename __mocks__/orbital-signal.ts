@@ -15,6 +15,35 @@
 
 const noopBuffer = () => new ArrayBuffer(0);
 
+/**
+ * Stub AttachmentEncryptor class for Jest.
+ *
+ * push() returns an empty ArrayBuffer (no whole blocks); finalize() returns
+ * zero-filled tail/digest/plaintextHash buffers. Tests that need specific
+ * behavior should mock the class per-file.
+ */
+class AttachmentEncryptor {
+  constructor(_keys: ArrayBuffer) {
+    // no-op — native binary unavailable in Jest
+  }
+
+  push(_plaintext: ArrayBuffer): ArrayBuffer {
+    return new ArrayBuffer(0);
+  }
+
+  finalize(): { tail: ArrayBuffer; digest: ArrayBuffer; plaintextHash: ArrayBuffer } {
+    return {
+      tail: new ArrayBuffer(0),
+      digest: new ArrayBuffer(32),
+      plaintextHash: new ArrayBuffer(32),
+    };
+  }
+
+  uniffiDestroy(): void {
+    // no-op
+  }
+}
+
 module.exports = {
   aesGcmEncrypt: () => ({ ciphertext: '', iv: '' }),
   aesGcmDecrypt: noopBuffer,
@@ -22,6 +51,7 @@ module.exports = {
   eciesOpen: noopBuffer,
   attachmentEncrypt: () => ({ ciphertext: new ArrayBuffer(0), digest: new ArrayBuffer(0) }),
   attachmentDecrypt: noopBuffer,
+  AttachmentEncryptor,
   generateIdentityKeyPair: () => ({ publicKey: new ArrayBuffer(32), privateKey: new ArrayBuffer(32) }),
   generatePreKey: () => ({ id: 1, record: new ArrayBuffer(0) }),
   generateSignedPreKey: () => ({ id: 1, record: new ArrayBuffer(0), signature: new ArrayBuffer(0) }),

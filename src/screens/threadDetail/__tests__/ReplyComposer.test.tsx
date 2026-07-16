@@ -42,7 +42,7 @@ import type { PickedMedia } from '../../../hooks/useMediaPicker';
 const fakeMedia: PickedMedia[] = [
   {
     uri: 'file:///photo1.jpg',
-    base64: 'abc123',
+
     type: 'image/jpeg',
     fileName: 'photo1.jpg',
     fileSize: 1024,

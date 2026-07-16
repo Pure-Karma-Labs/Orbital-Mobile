@@ -27,6 +27,27 @@ interface NativeModuleInterface {
     buffer: Uint8Array,
     uniffi_out_err: UniffiRustCallStatus,
   ): string;
+  ubrn_uniffi_orbital_signal_fn_clone_attachmentencryptor(
+    handle: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): bigint;
+  ubrn_uniffi_orbital_signal_fn_free_attachmentencryptor(
+    handle: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): void;
+  ubrn_uniffi_orbital_signal_fn_constructor_attachmentencryptor_new(
+    keys: Uint8Array,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): bigint;
+  ubrn_uniffi_orbital_signal_fn_method_attachmentencryptor_finalize(
+    ptr: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array;
+  ubrn_uniffi_orbital_signal_fn_method_attachmentencryptor_push(
+    ptr: bigint,
+    plaintext: Uint8Array,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array;
   ubrn_uniffi_orbital_signal_fn_init_callback_vtable_orbitalidentitykeystore(
     vtable: UniffiVTableCallbackInterfaceOrbitalIdentityKeyStore,
   ): void;
@@ -341,6 +362,9 @@ interface NativeModuleInterface {
   ubrn_uniffi_orbital_signal_checksum_func_get_pre_key_public(): number;
   ubrn_uniffi_orbital_signal_checksum_func_get_signed_pre_key_public(): number;
   ubrn_uniffi_orbital_signal_checksum_func_parse_prekey_message_ids(): number;
+  ubrn_uniffi_orbital_signal_checksum_method_attachmentencryptor_finalize(): number;
+  ubrn_uniffi_orbital_signal_checksum_method_attachmentencryptor_push(): number;
+  ubrn_uniffi_orbital_signal_checksum_constructor_attachmentencryptor_new(): number;
   ubrn_uniffi_orbital_signal_checksum_method_orbitalidentitykeystore_get_identity_key_pair(): number;
   ubrn_uniffi_orbital_signal_checksum_method_orbitalidentitykeystore_get_local_registration_id(): number;
   ubrn_uniffi_orbital_signal_checksum_method_orbitalidentitykeystore_save_identity(): number;
@@ -359,6 +383,10 @@ interface NativeModuleInterface {
   ubrn_uniffi_orbital_signal_checksum_method_orbitalsignedprekeystore_load_signed_pre_key(): number;
   ubrn_uniffi_orbital_signal_checksum_method_orbitalsignedprekeystore_store_signed_pre_key(): number;
   ubrn_ffi_orbital_signal_uniffi_contract_version(): number;
+  ubrn_uniffi_internal_fn_method_attachmentencryptor_ffi__bless_pointer(
+    pointer: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): UniffiGcObject;
 }
 
 // Casting globalThis to any allows us to look for `NativeOrbitalSignal`

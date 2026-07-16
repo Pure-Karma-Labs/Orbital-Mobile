@@ -40,8 +40,11 @@ import nativeModule, {
   type UniffiVTableCallbackInterfaceOrbitalSignedPreKeyStore,
 } from './orbital_signal-ffi';
 import {
+  type FfiConverter,
   type UniffiByteArray,
+  type UniffiGcObject,
   type UniffiHandle,
+  type UniffiObjectFactory,
   type UniffiReferenceHolder,
   type UniffiRustCallStatus,
   AbstractFfiConverterByteArray,
@@ -49,14 +52,18 @@ import {
   FfiConverterBool,
   FfiConverterCallback,
   FfiConverterInt32,
+  FfiConverterObject,
   FfiConverterOptional,
   FfiConverterUInt32,
   FfiConverterUInt64,
   RustBuffer,
+  UniffiAbstractObject,
   UniffiError,
   UniffiInternalError,
   UniffiResult,
   UniffiRustCaller,
+  destructorGuardSymbol,
+  pointerLiteralSymbol,
   uniffiCreateFfiConverterString,
   uniffiCreateRecord,
   uniffiRustCallAsync,
@@ -1443,6 +1450,65 @@ const FfiConverterTypeAttachmentCryptoResult = (() => {
     allocationSize(value: TypeName): number {
       return (
         FfiConverterArrayBuffer.allocationSize(value.ciphertext) +
+        FfiConverterArrayBuffer.allocationSize(value.digest) +
+        FfiConverterArrayBuffer.allocationSize(value.plaintextHash)
+      );
+    }
+  }
+  return new FFIConverter();
+})();
+
+/**
+ * Result from finalizing a streaming attachment encryption.
+ */
+export type AttachmentEncryptorResult = {
+  /**
+   * Final padded CBC block(s) concatenated with the HMAC-SHA256 tag (32 bytes).
+   */
+  tail: ArrayBuffer;
+  /**
+   * SHA-256 digest over IV || ciphertext || HMAC.
+   */
+  digest: ArrayBuffer;
+  /**
+   * SHA-256 hash of the original plaintext (local integrity only).
+   */
+  plaintextHash: ArrayBuffer;
+};
+
+/**
+ * Generated factory for {@link AttachmentEncryptorResult} record objects.
+ */
+export const AttachmentEncryptorResult = (() => {
+  const defaults = () => ({});
+  const create = (() => {
+    return uniffiCreateRecord<AttachmentEncryptorResult, ReturnType<typeof defaults>>(defaults);
+  })();
+  return Object.freeze({
+    create,
+    new: create,
+    defaults: () => Object.freeze(defaults()) as Partial<AttachmentEncryptorResult>,
+  });
+})();
+
+const FfiConverterTypeAttachmentEncryptorResult = (() => {
+  type TypeName = AttachmentEncryptorResult;
+  class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+    read(from: RustBuffer): TypeName {
+      return {
+        tail: FfiConverterArrayBuffer.read(from),
+        digest: FfiConverterArrayBuffer.read(from),
+        plaintextHash: FfiConverterArrayBuffer.read(from),
+      };
+    }
+    write(value: TypeName, into: RustBuffer): void {
+      FfiConverterArrayBuffer.write(value.tail, into);
+      FfiConverterArrayBuffer.write(value.digest, into);
+      FfiConverterArrayBuffer.write(value.plaintextHash, into);
+    }
+    allocationSize(value: TypeName): number {
+      return (
+        FfiConverterArrayBuffer.allocationSize(value.tail) +
         FfiConverterArrayBuffer.allocationSize(value.digest) +
         FfiConverterArrayBuffer.allocationSize(value.plaintextHash)
       );
@@ -3522,6 +3588,228 @@ const FfiConverterTypeSignalError = (() => {
   return new FFIConverter();
 })();
 
+/**
+ * Streaming attachment encryptor using Signal Protocol format
+ * (AES-256-CBC + HMAC-SHA256).
+ *
+ * Wire format: IV(16) || AES-256-CBC/PKCS7 ciphertext || HMAC-SHA256(32)
+ *
+ * Usage: construct with `new(keys)`, call `push(chunk)` zero or more times,
+ * then call `finalize()` to get the trailing bytes and digests.
+ */
+export interface AttachmentEncryptorLike {
+  /**
+   * Finalize the encryption, consuming the encryptor state.
+   *
+   * Applies PKCS7 padding to any remaining bytes, encrypts the final block(s),
+   * computes the HMAC tag, and produces the digest.
+   *
+   * Returns `AttachmentEncryptorResult` with `tail` (final ciphertext blocks + HMAC),
+   * `digest` (SHA-256 of IV || ciphertext || HMAC), and `plaintext_hash`.
+   *
+   * # Errors
+   *
+   * - `InvalidArgument` if already finalized.
+   */
+  finalize() /*throws*/ : AttachmentEncryptorResult;
+  /**
+   * Feed plaintext into the encryptor.
+   *
+   * Returns whole encrypted 16-byte blocks. Sub-block remainders are
+   * carried internally until the next `push()` or `finalize()`.
+   *
+   * The FIRST call that produces output will prepend the 16-byte IV.
+   *
+   * # Errors
+   *
+   * - `InvalidArgument` if called after `finalize()`.
+   */
+  push(plaintext: ArrayBuffer) /*throws*/ : ArrayBuffer;
+}
+/**
+ * @deprecated Use `AttachmentEncryptorLike` instead.
+ */
+export type AttachmentEncryptorInterface = AttachmentEncryptorLike;
+
+/**
+ * Streaming attachment encryptor using Signal Protocol format
+ * (AES-256-CBC + HMAC-SHA256).
+ *
+ * Wire format: IV(16) || AES-256-CBC/PKCS7 ciphertext || HMAC-SHA256(32)
+ *
+ * Usage: construct with `new(keys)`, call `push(chunk)` zero or more times,
+ * then call `finalize()` to get the trailing bytes and digests.
+ */
+export class AttachmentEncryptor extends UniffiAbstractObject implements AttachmentEncryptorLike {
+  readonly [uniffiTypeNameSymbol] = 'AttachmentEncryptor';
+  readonly [destructorGuardSymbol]: UniffiGcObject;
+  readonly [pointerLiteralSymbol]: UniffiHandle;
+  /**
+   * Create a new streaming encryptor.
+   *
+   * `keys` must be exactly 64 bytes: first 32 = AES-256 key, last 32 = HMAC-SHA256 key.
+   * A fresh 16-byte IV is generated via CSPRNG.
+   *
+   * # Errors
+   *
+   * - `InvalidKey` if `keys` is not exactly 64 bytes.
+   */
+  constructor(keys: ArrayBuffer) /*throws*/ {
+    super();
+    const pointer = uniffiCaller.rustCallWithError(
+      /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_constructor_attachmentencryptor_new(
+          FfiConverterArrayBuffer.lower(keys),
+          callStatus,
+        );
+      },
+      /*liftString:*/ FfiConverterString.lift,
+    );
+    this[pointerLiteralSymbol] = pointer;
+    this[destructorGuardSymbol] = uniffiTypeAttachmentEncryptorObjectFactory.bless(pointer);
+  }
+
+  /**
+   * Finalize the encryption, consuming the encryptor state.
+   *
+   * Applies PKCS7 padding to any remaining bytes, encrypts the final block(s),
+   * computes the HMAC tag, and produces the digest.
+   *
+   * Returns `AttachmentEncryptorResult` with `tail` (final ciphertext blocks + HMAC),
+   * `digest` (SHA-256 of IV || ciphertext || HMAC), and `plaintext_hash`.
+   *
+   * # Errors
+   *
+   * - `InvalidArgument` if already finalized.
+   */
+  finalize(): AttachmentEncryptorResult /*throws*/ {
+    return FfiConverterTypeAttachmentEncryptorResult.lift(
+      uniffiCaller.rustCallWithError(
+        /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+        /*caller:*/ (callStatus) => {
+          return nativeModule().ubrn_uniffi_orbital_signal_fn_method_attachmentencryptor_finalize(
+            uniffiTypeAttachmentEncryptorObjectFactory.clonePointer(this),
+            callStatus,
+          );
+        },
+        /*liftString:*/ FfiConverterString.lift,
+      ),
+    );
+  }
+
+  /**
+   * Feed plaintext into the encryptor.
+   *
+   * Returns whole encrypted 16-byte blocks. Sub-block remainders are
+   * carried internally until the next `push()` or `finalize()`.
+   *
+   * The FIRST call that produces output will prepend the 16-byte IV.
+   *
+   * # Errors
+   *
+   * - `InvalidArgument` if called after `finalize()`.
+   */
+  push(plaintext: ArrayBuffer): ArrayBuffer /*throws*/ {
+    return FfiConverterArrayBuffer.lift(
+      uniffiCaller.rustCallWithError(
+        /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+        /*caller:*/ (callStatus) => {
+          return nativeModule().ubrn_uniffi_orbital_signal_fn_method_attachmentencryptor_push(
+            uniffiTypeAttachmentEncryptorObjectFactory.clonePointer(this),
+            FfiConverterArrayBuffer.lower(plaintext),
+            callStatus,
+          );
+        },
+        /*liftString:*/ FfiConverterString.lift,
+      ),
+    );
+  }
+
+  /**
+   * {@inheritDoc uniffi-bindgen-react-native#UniffiAbstractObject.uniffiDestroy}
+   */
+  uniffiDestroy(): void {
+    const ptr = (this as any)[destructorGuardSymbol];
+    if (ptr !== undefined) {
+      const pointer = uniffiTypeAttachmentEncryptorObjectFactory.pointer(this);
+      uniffiTypeAttachmentEncryptorObjectFactory.freePointer(pointer);
+      uniffiTypeAttachmentEncryptorObjectFactory.unbless(ptr);
+      delete (this as any)[destructorGuardSymbol];
+    }
+  }
+
+  static instanceOf(obj: any): obj is AttachmentEncryptor {
+    return uniffiTypeAttachmentEncryptorObjectFactory.isConcreteType(obj);
+  }
+}
+
+const uniffiTypeAttachmentEncryptorObjectFactory: UniffiObjectFactory<AttachmentEncryptorLike> =
+  (() => {
+    return {
+      create(pointer: UniffiHandle): AttachmentEncryptorLike {
+        const instance = Object.create(AttachmentEncryptor.prototype);
+        instance[pointerLiteralSymbol] = pointer;
+        instance[destructorGuardSymbol] = this.bless(pointer);
+        instance[uniffiTypeNameSymbol] = 'AttachmentEncryptor';
+        return instance;
+      },
+
+      bless(p: UniffiHandle): UniffiGcObject {
+        return uniffiCaller.rustCall(
+          /*caller:*/ (status) =>
+            nativeModule().ubrn_uniffi_internal_fn_method_attachmentencryptor_ffi__bless_pointer(
+              p,
+              status,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        );
+      },
+
+      unbless(ptr: UniffiGcObject) {
+        ptr.markDestroyed();
+      },
+
+      pointer(obj: AttachmentEncryptorLike): UniffiHandle {
+        if ((obj as any)[destructorGuardSymbol] === undefined) {
+          throw new UniffiInternalError.UnexpectedNullPointer();
+        }
+        return (obj as any)[pointerLiteralSymbol];
+      },
+
+      clonePointer(obj: AttachmentEncryptorLike): UniffiHandle {
+        const pointer = this.pointer(obj);
+        return uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().ubrn_uniffi_orbital_signal_fn_clone_attachmentencryptor(
+              pointer,
+              callStatus,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        );
+      },
+
+      freePointer(pointer: UniffiHandle): void {
+        uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().ubrn_uniffi_orbital_signal_fn_free_attachmentencryptor(
+              pointer,
+              callStatus,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        );
+      },
+
+      isConcreteType(obj: any): obj is AttachmentEncryptorLike {
+        return obj[destructorGuardSymbol] && obj[uniffiTypeNameSymbol] === 'AttachmentEncryptor';
+      },
+    };
+  })();
+// FfiConverter for AttachmentEncryptorLike
+const FfiConverterTypeAttachmentEncryptor = new FfiConverterObject(
+  uniffiTypeAttachmentEncryptorObjectFactory,
+);
+
 // FfiConverter for ArrayBuffer | undefined
 const FfiConverterOptionalArrayBuffer = new FfiConverterOptional(FfiConverterArrayBuffer);
 
@@ -3705,6 +3993,29 @@ function uniffiEnsureInitialized() {
     );
   }
   if (
+    nativeModule().ubrn_uniffi_orbital_signal_checksum_method_attachmentencryptor_finalize() !==
+    19430
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_method_attachmentencryptor_finalize',
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_orbital_signal_checksum_method_attachmentencryptor_push() !== 35978
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_method_attachmentencryptor_push',
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_orbital_signal_checksum_constructor_attachmentencryptor_new() !==
+    57732
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_constructor_attachmentencryptor_new',
+    );
+  }
+  if (
     nativeModule().ubrn_uniffi_orbital_signal_checksum_method_orbitalidentitykeystore_get_identity_key_pair() !==
     18595
   ) {
@@ -3853,6 +4164,8 @@ export default Object.freeze({
   initialize: uniffiEnsureInitialized,
   converters: {
     FfiConverterTypeAttachmentCryptoResult,
+    FfiConverterTypeAttachmentEncryptor,
+    FfiConverterTypeAttachmentEncryptorResult,
     FfiConverterTypeCiphertextMessageData,
     FfiConverterTypeCiphertextMessageType,
     FfiConverterTypeContentCryptoResult,

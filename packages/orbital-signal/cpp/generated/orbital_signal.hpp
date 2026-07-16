@@ -21,6 +21,11 @@ class NativeOrbitalSignal : public jsi::HostObject {
     jsi::Value cpp_uniffi_internal_fn_func_ffi__string_to_byte_length(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_internal_fn_func_ffi__string_to_arraybuffer(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_internal_fn_func_ffi__arraybuffer_to_string(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_orbital_signal_fn_clone_attachmentencryptor(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_orbital_signal_fn_free_attachmentencryptor(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_orbital_signal_fn_constructor_attachmentencryptor_new(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_orbital_signal_fn_method_attachmentencryptor_finalize(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_orbital_signal_fn_method_attachmentencryptor_push(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_fn_init_callback_vtable_orbitalidentitykeystore(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_fn_init_callback_vtable_orbitalkyberprekeystore(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_fn_init_callback_vtable_orbitalprekeystore(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
@@ -131,6 +136,9 @@ class NativeOrbitalSignal : public jsi::HostObject {
     jsi::Value cpp_uniffi_orbital_signal_checksum_func_get_pre_key_public(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_checksum_func_get_signed_pre_key_public(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_checksum_func_parse_prekey_message_ids(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_orbital_signal_checksum_method_attachmentencryptor_finalize(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_orbital_signal_checksum_method_attachmentencryptor_push(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_orbital_signal_checksum_constructor_attachmentencryptor_new(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_checksum_method_orbitalidentitykeystore_get_identity_key_pair(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_checksum_method_orbitalidentitykeystore_get_local_registration_id(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_checksum_method_orbitalidentitykeystore_save_identity(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
@@ -149,6 +157,7 @@ class NativeOrbitalSignal : public jsi::HostObject {
     jsi::Value cpp_uniffi_orbital_signal_checksum_method_orbitalsignedprekeystore_load_signed_pre_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_orbital_signal_checksum_method_orbitalsignedprekeystore_store_signed_pre_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_ffi_orbital_signal_uniffi_contract_version(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_internal_fn_method_attachmentencryptor_ffi__bless_pointer(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
 
   public:
     NativeOrbitalSignal(jsi::Runtime &rt, std::shared_ptr<uniffi_runtime::UniffiCallInvoker> callInvoker);

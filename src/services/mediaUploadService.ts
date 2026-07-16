@@ -530,8 +530,8 @@ function buildMediaRow(
 // ---------------------------------------------------------------------------
 
 /**
- * Clean up orphaned chunk and cipher temp files from interrupted uploads.
- * Call during app bootstrap (best-effort, fire-and-forget).
+ * Clean up orphaned chunk, cipher, and staging temp files from interrupted
+ * uploads. Call during app bootstrap (best-effort, fire-and-forget).
  */
 export async function cleanupOrphanedChunks(): Promise<void> {
   try {
@@ -540,7 +540,8 @@ export async function cleanupOrphanedChunks(): Promise<void> {
     for (const file of files) {
       const isChunk = file.name.includes('-chunk-') && file.name.endsWith('.bin');
       const isCipher = file.name.endsWith('-cipher.bin');
-      if (isChunk || isCipher) {
+      const isStaging = file.name.endsWith('-staging.bin');
+      if (isChunk || isCipher || isStaging) {
         const mtime = file.mtime ? new Date(file.mtime).getTime() : 0;
         const age = now - mtime;
         if (age > 3600_000) {

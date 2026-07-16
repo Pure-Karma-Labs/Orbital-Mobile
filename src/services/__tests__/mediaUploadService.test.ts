@@ -420,6 +420,26 @@ describe('uploadMedia', () => {
     expect(mockUploadChunk).toHaveBeenCalledTimes(1);
   });
 
+  it('cleans up encryptor and cipher file when source file changes mid-read', async () => {
+    const rnfs = require('@dr.pogodin/react-native-fs');
+    // Short read: return fewer bytes than requested for the source file
+    rnfs.read.mockImplementation((path: string, length: number) =>
+      Promise.resolve(
+        path.includes('-cipher.bin')
+          ? makeFakeBase64(length)
+          : makeFakeBase64(length - 1),
+      ),
+    );
+
+    await expect(uploadMedia(baseOptions)).rejects.toThrow('File changed');
+
+    expect(mockEncDestroy).toHaveBeenCalledTimes(1);
+    expect(rnfs.unlink).toHaveBeenCalledWith(
+      expect.stringContaining('-cipher.bin'),
+    );
+    expect(mockUploadChunk).not.toHaveBeenCalled();
+  });
+
   it('respects abort signal before phase 1 encryption', async () => {
     const rnfs = require('@dr.pogodin/react-native-fs');
     const controller = new AbortController();
@@ -587,5 +607,18 @@ describe('cleanupOrphanedChunks', () => {
 
     expect(rnfs.unlink).toHaveBeenCalledWith('/tmp/test-cache/abc-cipher.bin');
     expect(rnfs.unlink).not.toHaveBeenCalledWith('/tmp/test-cache/recent-cipher.bin');
+  });
+
+  it('removes stale staging temp files older than 1 hour', async () => {
+    const rnfs = require('@dr.pogodin/react-native-fs');
+    rnfs.readDir.mockResolvedValueOnce([
+      { name: 'abc-staging.bin', path: '/tmp/test-cache/abc-staging.bin', mtime: new Date(Date.now() - 7200_000) },
+      { name: 'recent-staging.bin', path: '/tmp/test-cache/recent-staging.bin', mtime: new Date() },
+    ]);
+
+    await cleanupOrphanedChunks();
+
+    expect(rnfs.unlink).toHaveBeenCalledWith('/tmp/test-cache/abc-staging.bin');
+    expect(rnfs.unlink).not.toHaveBeenCalledWith('/tmp/test-cache/recent-staging.bin');
   });
 });

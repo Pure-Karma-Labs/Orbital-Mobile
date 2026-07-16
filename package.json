@@ -9,7 +9,9 @@
   },
   "scripts": {
     "android": "react-native run-android",
+    "android:smoke": "ENVFILE=.env.smoke.android react-native run-android",
     "ios": "react-native run-ios",
+    "ios:smoke": "rm -f /tmp/envfile && ENVFILE=.env.smoke.ios react-native run-ios",
     "lint": "eslint .",
     "start": "react-native start",
     "test": "jest",

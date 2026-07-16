@@ -414,7 +414,7 @@ impl AttachmentEncryptor {
         let hmac_tag = hmac.finalize().into_bytes();
 
         // (4) Feed HMAC tag into digest
-        digest_hasher.update(&hmac_tag);
+        digest_hasher.update(hmac_tag);
 
         // Append HMAC to tail
         tail.extend_from_slice(&hmac_tag);
@@ -437,7 +437,9 @@ impl AttachmentEncryptor {
 ///
 /// **MUST NOT be `#[uniffi::export]`** — a deterministic-IV function
 /// exposed via FFI would allow IV reuse, breaking CBC confidentiality.
+/// `#[cfg(test)]` keeps it out of production binaries entirely.
 impl AttachmentEncryptor {
+    #[cfg(test)]
     pub(crate) fn new_with_iv(keys: &[u8], iv: [u8; 16]) -> Result<Arc<Self>, SignalError> {
         let keys = Zeroizing::new(keys.to_vec());
         Self::new_with_iv_inner(&keys, iv)

@@ -293,11 +293,14 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
           });
           thumbnailSizeBytes = thumbStat.size;
           thumbnailLocalPath = videoResult.thumbnailPath;
-          // TODO: extract thumbnail dimensions from metadata; for now use reasonable defaults
-          thumbnailWidth = Math.min(videoResult.width, 640);
-          thumbnailHeight = Math.round(
-            (Math.min(videoResult.width, 640) / videoResult.width) * videoResult.height,
-          );
+          // Approximate thumbnail dimensions by scaling the video dimensions to a
+          // 640px cap. Guard against a 0-width metadata read (0/0 = NaN, which would
+          // serialize to null in the envelope and store a confusing 0x0 dimension).
+          if (videoResult.width > 0 && videoResult.height > 0) {
+            const scale = Math.min(videoResult.width, 640) / videoResult.width;
+            thumbnailWidth = Math.round(videoResult.width * scale);
+            thumbnailHeight = Math.round(videoResult.height * scale);
+          }
         } catch (e) {
           // Thumbnail upload failure -- degrade to duration-only
           if (__DEV__) {
@@ -580,13 +583,18 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
       digest: digestBytes,
     };
   } finally {
-    // Best-effort cleanup of ciphertext temp file and staging file
+    // Best-effort cleanup of ciphertext temp file and staging file.
+    // The canonical copy happens before this finally block, so unconditionally
+    // unlinking the staging paths is always safe. Unconditional cleanup matters
+    // for content:// uploads, where resolveUri returns sourcePath === stagingPath
+    // and the sanitized image is written back into the staging file in place —
+    // a conditional (stagingPath !== sourcePath) check would leak it.
     await unlink(ctPath).catch(() => {});
-    if (stagingPath && stagingPath !== sourcePath) {
+    if (stagingPath) {
       await unlink(stagingPath).catch(() => {});
     }
-    // Clean up sanitized staging if it was created and is different from sourcePath
-    if (!stagingPath && sourcePath === sanitizedStagingPath) {
+    // Clean up sanitized staging (file:// image path, where no content:// staging existed)
+    if (sourcePath === sanitizedStagingPath && sanitizedStagingPath !== stagingPath) {
       await unlink(sanitizedStagingPath).catch(() => {});
     }
     // Clean up video staging paths

@@ -17,6 +17,13 @@ export const getVideoMetaData = jest.fn().mockResolvedValue({
   size: 5000000,
 });
 
-export const createVideoThumbnail = jest.fn().mockResolvedValue('/tmp/thumbnail.jpg');
+// Real API returns an object, not a bare path string.
+export const createVideoThumbnail = jest.fn().mockResolvedValue({
+  path: '/tmp/thumbnail.jpg',
+  size: 24576,
+  mime: 'image/jpeg',
+  width: 640,
+  height: 360,
+});
 
 export const clearCache = jest.fn().mockResolvedValue('cleared');

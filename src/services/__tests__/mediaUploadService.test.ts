@@ -525,6 +525,13 @@ describe('uploadMedia', () => {
     const firstCopy = rnfs.copyFile.mock.calls[0];
     expect(firstCopy[0]).toBe('content://media/external/images/123');
     expect(firstCopy[1]).toContain('-staging.bin');
+
+    // Regression guard: the content:// staging file must be cleaned up in finally.
+    // For content:// URIs resolveUri returns sourcePath === stagingPath, and the
+    // sanitized image is written back into the staging path in place, so cleanup
+    // must be unconditional (see mediaUploadService finally block).
+    const stagingPath = firstCopy[1];
+    expect(rnfs.unlink.mock.calls.some((c: string[]) => c[0] === stagingPath)).toBe(true);
   });
 
   it('encrypted metadata contains ciphertext and iv, not plaintext fields', async () => {

@@ -158,9 +158,6 @@ export function clearProcessedMediaIds(): void {
  * child, marked with is_thumbnail=1 so library queries exclude it.
  *
  * @param parsed - Decrypted envelope fields
- * @param parentRef - Parent thread/reply reference (used for context only; thumbnail rows are unassociated)
- * @param groupKey - Group key (unused here but kept for signature consistency)
- * @param groupId - Group ID (unused here but kept for signature consistency)
  * @param expiresAt - Parent's expires_at timestamp (thumbnails share parent TTL)
  * @returns The created MediaItem, or null if validation fails or ID already seen
  */

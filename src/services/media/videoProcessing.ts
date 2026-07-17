@@ -140,7 +140,9 @@ export async function prepareVideoForUpload(
     // 8. Create thumbnail (~1s frame)
     let thumbnailPath: string | null = null;
     try {
-      const thumbResult = await createVideoThumbnail(stagingPath);
+      // file:// scheme required: the Android impl treats schemeless paths as
+      // remote URLs (URLUtil.isFileUrl branch) and fails with EINVAL.
+      const thumbResult = await createVideoThumbnail(`file://${stagingPath}`);
       rawThumbPath = await Image.compress(
         thumbResult.path,
         {

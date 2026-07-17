@@ -211,7 +211,7 @@ export const ReplyComposer = React.memo(function ReplyComposer({
             onPress={onPickMedia}
             disabled={sending}
             accessibilityRole="button"
-            accessibilityLabel="Attach photos"
+            accessibilityLabel="Attach media"
             testID="media-picker-button"
           >
             <Emoji unified="1F4F7" size={22} />

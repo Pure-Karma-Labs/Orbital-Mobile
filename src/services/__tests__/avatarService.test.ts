@@ -64,6 +64,10 @@ jest.mock('../../database/repositories/itemRepository', () => ({
   getItem: (...args: unknown[]) => mockGetItem(...args),
 }));
 
+jest.mock('../media/imageSanitizer', () => ({
+  sanitizeStillImage: jest.fn().mockResolvedValue(undefined),
+}));
+
 const mockUpdateProfile = jest.fn();
 
 jest.mock('../../stores/useAppStore', () => ({

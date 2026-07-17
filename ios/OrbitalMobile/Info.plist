@@ -50,10 +50,8 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
-	<key>NSCameraUsageDescription</key>
-	<string>Orbital needs access to your camera to take photos for conversations.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Orbital needs access to your photo library to share photos in conversations.</string>
+	<string>Orbital needs access to your photo library to share photos and videos in conversations.</string>
 	<key>RCTNewArchEnabled</key>
 	<true/>
 	<key>UIAppFonts</key>

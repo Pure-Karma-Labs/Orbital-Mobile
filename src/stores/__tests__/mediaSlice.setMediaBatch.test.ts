@@ -159,6 +159,8 @@ function makeMediaItem(overrides: Partial<MediaItem> = {}): MediaItem {
     uploadState: 'done',
     expiresAt: null,
     hasKeys: false,
+    thumbnailMediaId: null,
+    isThumbnail: false,
     ...overrides,
   };
 }

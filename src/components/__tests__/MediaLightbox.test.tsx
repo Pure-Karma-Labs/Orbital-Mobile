@@ -65,6 +65,8 @@ const MEDIA_ITEMS = [
     uploadState: 'done' as const,
     expiresAt: null,
     hasKeys: true,
+    thumbnailMediaId: null,
+    isThumbnail: false,
   },
 ];
 
@@ -86,6 +88,8 @@ function makeMediaItems(count: number) {
     uploadState: 'done' as const,
     expiresAt: null,
     hasKeys: true,
+    thumbnailMediaId: null,
+    isThumbnail: false,
   }));
 }
 

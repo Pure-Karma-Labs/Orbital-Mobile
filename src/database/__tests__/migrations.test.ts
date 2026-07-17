@@ -61,7 +61,7 @@ describe('runMigrations', () => {
   it('skips migration that has already been applied', () => {
     const executeSync = jest.fn((sql: string) => {
       if (sql === 'PRAGMA user_version') {
-        return { rows: [{ user_version: 5 }], rowsAffected: 0 };
+        return { rows: [{ user_version: 6 }], rowsAffected: 0 };
       }
       return { rows: [], rowsAffected: 0 };
     });

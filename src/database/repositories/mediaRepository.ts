@@ -27,6 +27,10 @@ export interface MediaRow {
   download_state: string;
   upload_state: string;
   created_at: number;
+  /** Media ID of the thumbnail child row (for video parent rows) */
+  thumbnail_media_id?: string | null;
+  /** 1 = this row is a thumbnail child; 0 = normal media (default) */
+  is_thumbnail?: number;
 }
 
 // ============================================================
@@ -38,8 +42,8 @@ export function saveMedia(row: MediaRow): void {
        (id, thread_id, reply_id, message_id, content_type, file_name, file_size,
         width, height, duration, attachment_key, attachment_digest, cdn_number,
         cdn_key, local_path, thumbnail_path, blur_hash, expires_at,
-        download_state, upload_state, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+        download_state, upload_state, created_at, thumbnail_media_id, is_thumbnail)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
   const params = [
     row.id,
@@ -63,6 +67,8 @@ export function saveMedia(row: MediaRow): void {
     row.download_state,
     row.upload_state,
     row.created_at,
+    row.thumbnail_media_id ?? null,
+    row.is_thumbnail ?? 0,
   ];
 
   execute(sql, params);
@@ -185,6 +191,7 @@ function buildMediaFilterClause(options: GetAllMediaOptions): {
   const conditions: string[] = [
     "m.attachment_key IS NOT NULL",
     "m.upload_state = 'done'",
+    "COALESCE(m.is_thumbnail, 0) = 0",
   ];
   const params: (string | number)[] = [];
 
@@ -292,6 +299,7 @@ export function getMediaConversationIds(): string[] {
      LEFT JOIN orbital_replies r ON m.reply_id = r.id
      LEFT JOIN orbital_threads rt ON r.thread_id = rt.id
      WHERE m.attachment_key IS NOT NULL AND m.upload_state = 'done'
+       AND COALESCE(m.is_thumbnail, 0) = 0
        AND COALESCE(t.conversation_id, rt.conversation_id) IS NOT NULL`,
   );
 

@@ -118,6 +118,13 @@ async function decryptMediaMetadataEnvelope(
   height?: number;
   digest?: string;
   attachmentKey?: string;
+  duration?: number;
+  thumbnailMediaId?: string;
+  thumbnailKey?: string;
+  thumbnailDigest?: string;
+  thumbnailWidth?: number;
+  thumbnailHeight?: number;
+  thumbnailSizeBytes?: number;
 } | null> {
   // The metadata envelope is a JSON string with { ciphertext, iv }
   let envelope: { ciphertext: string; iv: string };
@@ -132,6 +139,185 @@ async function decryptMediaMetadataEnvelope(
   return JSON.parse(plainJson);
 }
 
+const processedMediaIds = new Set<string>();
+
+/** Clear the session-level dedup set. Call on logout to prevent stale entries. */
+export function clearProcessedMediaIds(): void {
+  processedMediaIds.clear();
+}
+
+/**
+ * Materialize a thumbnail child row from the parent envelope's thumbnail fields.
+ *
+ * Validates thumbnailKey (base64 -> 64 bytes) and thumbnailDigest (base64 -> 32 bytes)
+ * strictly. On any validation failure, logs a warning and returns null -- the parent
+ * is still processed; a malformed key must never persist to a row where it permanently
+ * blocks decrypt.
+ *
+ * When valid and the ID is unseen: creates a DB row + store item for the thumbnail
+ * child, marked with is_thumbnail=1 so library queries exclude it.
+ *
+ * @param parsed - Decrypted envelope fields
+ * @param parentRef - Parent thread/reply reference (used for context only; thumbnail rows are unassociated)
+ * @param groupKey - Group key (unused here but kept for signature consistency)
+ * @param groupId - Group ID (unused here but kept for signature consistency)
+ * @param expiresAt - Parent's expires_at timestamp (thumbnails share parent TTL)
+ * @returns The created MediaItem, or null if validation fails or ID already seen
+ */
+function materializeThumbnailRow(
+  parsed: {
+    thumbnailMediaId?: string;
+    thumbnailKey?: string;
+    thumbnailDigest?: string;
+    thumbnailWidth?: number;
+    thumbnailHeight?: number;
+    thumbnailSizeBytes?: number;
+  },
+  expiresAt: number | null,
+): MediaItem | null {
+  const {
+    thumbnailMediaId,
+    thumbnailKey,
+    thumbnailDigest,
+    thumbnailWidth,
+    thumbnailHeight,
+    thumbnailSizeBytes,
+  } = parsed;
+
+  // All three required fields must be present
+  if (
+    typeof thumbnailMediaId !== 'string' ||
+    typeof thumbnailKey !== 'string' ||
+    typeof thumbnailDigest !== 'string'
+  ) {
+    return null;
+  }
+
+  // Already processed this session
+  if (processedMediaIds.has(thumbnailMediaId)) {
+    return null;
+  }
+
+  // Validate key length: base64 -> must decode to exactly 64 bytes
+  let keyBytes: Uint8Array;
+  try {
+    keyBytes = new Uint8Array(base64ToArrayBuffer(thumbnailKey));
+    if (keyBytes.byteLength !== 64) {
+      if (__DEV__) {
+        console.warn('[materializeThumbnailRow] invalid thumbnailKey length:', keyBytes.byteLength);
+      }
+      return null;
+    }
+  } catch {
+    if (__DEV__) {
+      console.warn('[materializeThumbnailRow] thumbnailKey decode failed');
+    }
+    return null;
+  }
+
+  // Validate digest length: base64 -> must decode to exactly 32 bytes
+  let digestBytes: Uint8Array;
+  try {
+    digestBytes = new Uint8Array(base64ToArrayBuffer(thumbnailDigest));
+    if (digestBytes.byteLength !== 32) {
+      if (__DEV__) {
+        console.warn('[materializeThumbnailRow] invalid thumbnailDigest length:', digestBytes.byteLength);
+      }
+      return null;
+    }
+  } catch {
+    if (__DEV__) {
+      console.warn('[materializeThumbnailRow] thumbnailDigest decode failed');
+    }
+    return null;
+  }
+
+  // Check store and DB first (store-first / no-clobber)
+  const store = getStoreActions();
+  const existingStoreItem = (store.media ?? {})[thumbnailMediaId];
+  if (existingStoreItem) {
+    processedMediaIds.add(thumbnailMediaId);
+    return existingStoreItem;
+  }
+
+  const dbReady = isDatabaseInitialized();
+  if (dbReady) {
+    try {
+      const existingRow = getMedia(thumbnailMediaId);
+      if (existingRow) {
+        const item = mediaRowToItem(existingRow);
+        processedMediaIds.add(thumbnailMediaId);
+        return item;
+      }
+    } catch {
+      // DB query failed — proceed to create
+    }
+  }
+
+  // Build and persist the thumbnail child row
+  const row: MediaRow = {
+    id: thumbnailMediaId,
+    thread_id: null,
+    reply_id: null,
+    message_id: null,
+    content_type: 'image/jpeg',
+    file_name: null,
+    file_size: thumbnailSizeBytes ?? 0,
+    width: typeof thumbnailWidth === 'number' ? thumbnailWidth : null,
+    height: typeof thumbnailHeight === 'number' ? thumbnailHeight : null,
+    duration: null,
+    attachment_key: keyBytes,
+    attachment_digest: digestBytes,
+    cdn_number: null,
+    cdn_key: null,
+    local_path: null,
+    thumbnail_path: null,
+    blur_hash: null,
+    expires_at: expiresAt,
+    download_state: 'pending',
+    upload_state: 'done',
+    created_at: Date.now(),
+    thumbnail_media_id: null,
+    is_thumbnail: 1,
+  };
+
+  if (dbReady) {
+    try {
+      saveMedia(row);
+    } catch (e) {
+      if (__DEV__) {
+        console.warn('[materializeThumbnailRow] saveMedia failed:', e instanceof Error ? e.message : e);
+      }
+    }
+  }
+
+  const item: MediaItem = {
+    id: thumbnailMediaId,
+    threadId: null,
+    replyId: null,
+    contentType: 'image/jpeg',
+    fileName: null,
+    fileSize: thumbnailSizeBytes ?? 0,
+    width: typeof thumbnailWidth === 'number' ? thumbnailWidth : null,
+    height: typeof thumbnailHeight === 'number' ? thumbnailHeight : null,
+    duration: null,
+    blurHash: null,
+    localPath: null,
+    thumbnailPath: null,
+    downloadState: 'pending',
+    uploadState: 'done',
+    expiresAt,
+    hasKeys: true,
+    thumbnailMediaId: null,
+    isThumbnail: true,
+  };
+
+  store.upsertMedia(item);
+  processedMediaIds.add(thumbnailMediaId);
+
+  return item;
+}
+
 /**
  * Process a batch of MediaMetadata items received from the API or WebSocket.
  *
@@ -144,12 +330,6 @@ async function decryptMediaMetadataEnvelope(
  * @param groupId     - Group identifier (AAD for AES-GCM).
  * @param parentRef   - { threadId } or { replyId } to index the media.
  */
-const processedMediaIds = new Set<string>();
-
-/** Clear the session-level dedup set. Call on logout to prevent stale entries. */
-export function clearProcessedMediaIds(): void {
-  processedMediaIds.clear();
-}
 
 export async function processMediaMetadata(
   mediaList: MediaMetadata[],
@@ -231,6 +411,14 @@ export async function processMediaMetadata(
               const decoded = new Uint8Array(base64ToArrayBuffer(parsed.attachmentKey));
               if (decoded.byteLength === 64) {
                 const updatedRow: MediaRow = { ...existingRow, attachment_key: decoded };
+                // Backfill thumbnail if present
+                if (parsed.thumbnailMediaId) {
+                  const envelopeExpiresAt = meta.expiresAt ? new Date(meta.expiresAt).getTime() : null;
+                  const thumbItem = materializeThumbnailRow(parsed, envelopeExpiresAt);
+                  if (thumbItem) {
+                    updatedRow.thumbnail_media_id = parsed.thumbnailMediaId;
+                  }
+                }
                 if (dbReady) {
                   try {
                     saveMedia(updatedRow);
@@ -267,6 +455,10 @@ export async function processMediaMetadata(
       let digest: string | null = null;
       let attachmentKey: Uint8Array | null = null;
 
+      // Duration and thumbnail fields from envelope (additive, backward-compatible)
+      let durationMs: number | null = null;
+      let thumbnailMediaId: string | null = null;
+
       if (meta.encryptedMetadata) {
         // Try to decrypt metadata — no key retry to avoid API call cascade
         // (multiple call sites fire processMediaMetadata for the same media)
@@ -283,6 +475,11 @@ export async function processMediaMetadata(
           height = parsed.height ?? height;
           digest = parsed.digest ?? null;
 
+          // Duration: seconds (float) on the wire -> milliseconds in DB
+          if (typeof parsed.duration === 'number') {
+            durationMs = Math.round(parsed.duration * 1000);
+          }
+
           // Extract attachment key from v1+ metadata envelope
           if (typeof parsed.attachmentKey === 'string') {
             try {
@@ -290,6 +487,15 @@ export async function processMediaMetadata(
               attachmentKey = decoded.byteLength === 64 ? decoded : null;
             } catch {
               attachmentKey = null;
+            }
+          }
+
+          // Materialize thumbnail child row (strict validation, skip on failure)
+          if (parsed.thumbnailMediaId) {
+            const envelopeExpiresAt = meta.expiresAt ? new Date(meta.expiresAt).getTime() : null;
+            const thumbItem = materializeThumbnailRow(parsed, envelopeExpiresAt);
+            if (thumbItem) {
+              thumbnailMediaId = parsed.thumbnailMediaId;
             }
           }
         }
@@ -306,7 +512,7 @@ export async function processMediaMetadata(
         file_size: meta.sizeBytes,
         width,
         height,
-        duration: meta.duration ?? null,
+        duration: durationMs ?? (meta.duration ?? null),
         attachment_key: attachmentKey,
         attachment_digest: digest ? new Uint8Array(base64ToArrayBuffer(digest)) : null,
         cdn_number: null,
@@ -320,6 +526,8 @@ export async function processMediaMetadata(
         created_at: meta.uploadedAt
           ? new Date(meta.uploadedAt).getTime()
           : Date.now(),
+        thumbnail_media_id: thumbnailMediaId,
+        is_thumbnail: 0,
       };
 
       if (dbReady) {
@@ -341,7 +549,7 @@ export async function processMediaMetadata(
         fileSize: meta.sizeBytes,
         width,
         height,
-        duration: meta.duration ?? null,
+        duration: durationMs ?? (meta.duration ?? null),
         blurHash: meta.blurHash ?? null,
         localPath: null,
         thumbnailPath: null,
@@ -349,6 +557,8 @@ export async function processMediaMetadata(
         uploadState: 'done',
         expiresAt: meta.expiresAt ? new Date(meta.expiresAt).getTime() : null,
         hasKeys: attachmentKey != null,
+        thumbnailMediaId,
+        isThumbnail: false,
       };
 
       items.push(item);

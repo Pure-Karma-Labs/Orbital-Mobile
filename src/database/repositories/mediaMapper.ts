@@ -41,5 +41,7 @@ export function mediaRowToItem(row: MediaRow): MediaItem {
     uploadState: (row.upload_state as MediaItem['uploadState']) ?? 'pending',
     expiresAt: row.expires_at,
     hasKeys: normalizeAttachmentKey(row.attachment_key),
+    thumbnailMediaId: row.thumbnail_media_id ?? null,
+    isThumbnail: (row.is_thumbnail ?? 0) === 1,
   };
 }

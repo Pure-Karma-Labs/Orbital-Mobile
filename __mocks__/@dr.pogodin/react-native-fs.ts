@@ -10,6 +10,7 @@ export const stat = jest.fn().mockResolvedValue({
   isFile: () => true,
   isDirectory: () => false,
 });
+export const write = jest.fn().mockResolvedValue(undefined);
 export const unlink = jest.fn().mockResolvedValue(undefined);
 export const readDir = jest.fn().mockResolvedValue([]);
 export const exists = jest.fn().mockResolvedValue(false);

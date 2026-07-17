@@ -178,7 +178,7 @@ export const MediaItemView = React.memo(function MediaItemView({
           disabled={!onPress}
           accessibilityRole="image"
           accessibilityLabel="Video"
-          testID={`media-item-${mediaId}-video-loading`}
+          testID={`media-item-${mediaId}-video-downloading`}
           style={placeholderStyle}
         >
           <OrbitalSpinner size={24} />
@@ -197,7 +197,7 @@ export const MediaItemView = React.memo(function MediaItemView({
           disabled={!onPress}
           accessibilityRole="image"
           accessibilityLabel="Video"
-          testID={`media-item-${mediaId}-video-loading`}
+          testID={`media-item-${mediaId}-video-pending`}
           style={placeholderStyle}
         >
           <PlayIconOverlay />

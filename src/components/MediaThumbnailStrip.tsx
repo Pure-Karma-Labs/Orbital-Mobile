@@ -158,6 +158,9 @@ export function MediaThumbnailStrip({
             <View key={item.uri} style={thumbnailWrapperStyle}>
               {isVideo ? (
                 <View style={videoTileStyle}>
+                  {/* Raw glyph, not PlayIconOverlay: the strip tile stacks
+                      glyph + duration in flow layout; the overlay primitive
+                      is absolute-centered and would cover the duration. */}
                   <Text style={videoLabelStyle}>{'▶'}</Text>
                   {item.duration != null && (
                     <Text style={videoDurationStyle}>

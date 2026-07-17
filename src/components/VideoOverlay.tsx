@@ -21,8 +21,6 @@ import { formatDurationMs } from '../utils/formatDuration';
 export interface PlayIconOverlayProps {
   /** Diameter of the play circle. Default 48 for gallery cells. */
   size?: number;
-  /** When true, renders the glyph without the circle background (strip variant). */
-  minimal?: boolean;
 }
 
 /**
@@ -33,7 +31,6 @@ export interface PlayIconOverlayProps {
  */
 export function PlayIconOverlay({
   size = 48,
-  minimal = false,
 }: PlayIconOverlayProps): React.JSX.Element {
   const glyphSize = Math.round(size * 0.45);
 
@@ -43,16 +40,14 @@ export function PlayIconOverlay({
     justifyContent: 'center',
   };
 
-  const circleStyle: ViewStyle = minimal
-    ? {}
-    : {
-        width: size,
-        height: size,
-        borderRadius: size / 2,
-        backgroundColor: 'rgba(0, 0, 0, 0.5)',
-        alignItems: 'center',
-        justifyContent: 'center',
-      };
+  const circleStyle: ViewStyle = {
+    width: size,
+    height: size,
+    borderRadius: size / 2,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  };
 
   const textStyle: TextStyle = {
     fontSize: glyphSize,

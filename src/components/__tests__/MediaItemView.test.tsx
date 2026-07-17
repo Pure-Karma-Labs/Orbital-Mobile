@@ -284,7 +284,7 @@ describe('MediaItemView — video display', () => {
       thumbnailMediaId: 'thumb-1',
     });
 
-    findByTestId(renderer.root, 'media-item-media-1-video-loading');
+    findByTestId(renderer.root, 'media-item-media-1-video-downloading');
     expect(renderer.root.findAllByType(Image)).toHaveLength(0);
     expect(findAllByTestId(renderer.root, 'play-icon-overlay')).toHaveLength(1);
   });

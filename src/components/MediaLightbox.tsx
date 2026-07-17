@@ -80,7 +80,18 @@ const LightboxPage = React.memo(function LightboxPage({
     isVideo,
     thumbState,
     thumbLocalPath,
+    retryThumb,
   } = useVideoThumbnail(contentType, thumbnailMediaId);
+
+  // One recovery attempt if the thumbnail file is corrupt/evicted; a second
+  // error gives up (play overlay + badge remain visible as siblings).
+  const thumbErrorRetried = useRef(false);
+  const handleThumbImageError = useCallback(() => {
+    if (!thumbErrorRetried.current) {
+      thumbErrorRetried.current = true;
+      retryThumb();
+    }
+  }, [retryThumb]);
 
   // SUPPRESSION: for video pages, pass null to prevent auto-downloading
   // the full video file — the thumbnail child is the display payload.
@@ -117,6 +128,7 @@ const LightboxPage = React.memo(function LightboxPage({
             source={{ uri: `file://${thumbLocalPath}` }}
             style={{ width: pageWidth, height: pageHeight }}
             resizeMode="contain"
+            onError={handleThumbImageError}
           />
           <PlayIconOverlay size={64} />
           <Text style={hintTextStyle}>{'Video — playback coming soon'}</Text>

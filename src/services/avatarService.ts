@@ -44,6 +44,7 @@ import {
   unlink,
   CachesDirectoryPath,
 } from '@dr.pogodin/react-native-fs';
+import { sanitizeStillImage } from './media/imageSanitizer';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -102,9 +103,19 @@ export async function uploadEncryptedAvatar(
     throw new Error('Not authenticated');
   }
 
-  // 1. Read image bytes from URI via RNFS (handles content:// URIs on Android)
-  const imageBase64 = await readFile(imageUri, 'base64');
-  const imageBytes = new Uint8Array(base64ToArrayBuffer(imageBase64));
+  // 1. Sanitize image (strip EXIF/GPS metadata, fail-closed verify)
+  // SECURITY: The picker's resize re-encode is NOT a reliable strip.
+  // sanitizeStillImage is the authoritative strip for all still images.
+  const sanitizedPath = `${CachesDirectoryPath}/avatar-sanitized-${Date.now()}.jpg`;
+  let imageBytes: Uint8Array;
+  try {
+    const sourcePath = imageUri.startsWith('file://') ? imageUri.slice(7) : imageUri;
+    await sanitizeStillImage(sourcePath, _mimeType || 'image/jpeg', sanitizedPath);
+    const imageBase64 = await readFile(sanitizedPath, 'base64');
+    imageBytes = new Uint8Array(base64ToArrayBuffer(imageBase64));
+  } finally {
+    await unlink(sanitizedPath).catch(() => {});
+  }
 
   // 2. Generate fresh attachment keys
   const { keys, keysBase64 } = generateAttachmentKeys();

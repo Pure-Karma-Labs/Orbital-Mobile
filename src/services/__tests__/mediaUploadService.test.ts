@@ -4,6 +4,14 @@
 
 jest.mock('@dr.pogodin/react-native-fs');
 
+jest.mock('../media/imageSanitizer', () => ({
+  sanitizeStillImage: jest.fn().mockResolvedValue(undefined),
+}));
+
+jest.mock('../media/videoProcessing', () => ({
+  prepareVideoForUpload: jest.fn(),
+}));
+
 jest.mock('../../database/connection', () => ({
   isDatabaseInitialized: () => true,
 }));
@@ -234,7 +242,8 @@ describe('uploadMedia', () => {
     setupRnfsMocks(size);
     setupMockEncryptor(computeCtSize(size));
 
-    await expect(uploadMedia(baseOptions)).resolves.toBe('test-media-id');
+    const result = await uploadMedia(baseOptions);
+    expect(result.mediaId).toBe('test-media-id');
   });
 
   it('rejects zero-byte files', async () => {
@@ -388,9 +397,11 @@ describe('uploadMedia', () => {
     expect(storeItem.hasKeys).toBe(true);
   });
 
-  it('returns the media ID', async () => {
-    const id = await uploadMedia(baseOptions);
-    expect(id).toBe('test-media-id');
+  it('returns the media ID in result', async () => {
+    const result = await uploadMedia(baseOptions);
+    expect(result.mediaId).toBe('test-media-id');
+    expect(result.attachmentKey).toBeInstanceOf(Uint8Array);
+    expect(result.digest).toBeInstanceOf(Uint8Array);
   });
 
   it('retries on transient upload failure', async () => {
@@ -488,7 +499,7 @@ describe('uploadMedia', () => {
     expect(cipherUnlink).toBeDefined();
   });
 
-  it('copies plaintext to canonical path via copyFile', async () => {
+  it('copies sanitized plaintext to canonical path via copyFile', async () => {
     const rnfs = require('@dr.pogodin/react-native-fs');
 
     await uploadMedia(baseOptions);
@@ -498,7 +509,8 @@ describe('uploadMedia', () => {
       (c: unknown[]) => (c[1] as string).includes('/media/test-media-id.jpg'),
     );
     expect(canonicalCopy).toBeDefined();
-    expect(canonicalCopy![0]).toBe('/tmp/photo.jpg'); // file:// prefix stripped
+    // Source is now the sanitized staging path (image goes through sanitizeStillImage)
+    expect(canonicalCopy![0]).toContain('-staging.bin');
   });
 
   it('handles content:// URIs by staging to cache', async () => {
@@ -514,10 +526,12 @@ describe('uploadMedia', () => {
     expect(firstCopy[0]).toBe('content://media/external/images/123');
     expect(firstCopy[1]).toContain('-staging.bin');
 
-    // Staging file cleaned up in finally
-    const unlinkCalls = rnfs.unlink.mock.calls.map((c: unknown[]) => c[0] as string);
-    const stagingUnlink = unlinkCalls.find((p: string) => p.includes('-staging.bin'));
-    expect(stagingUnlink).toBeDefined();
+    // Regression guard: the content:// staging file must be cleaned up in finally.
+    // For content:// URIs resolveUri returns sourcePath === stagingPath, and the
+    // sanitized image is written back into the staging path in place, so cleanup
+    // must be unconditional (see mediaUploadService finally block).
+    const stagingPath = firstCopy[1];
+    expect(rnfs.unlink.mock.calls.some((c: string[]) => c[0] === stagingPath)).toBe(true);
   });
 
   it('encrypted metadata contains ciphertext and iv, not plaintext fields', async () => {

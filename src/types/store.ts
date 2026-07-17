@@ -335,6 +335,10 @@ export interface MediaItem {
   expiresAt: number | null;
   /** Whether current user has attachment keys (own-media-only for v1) */
   hasKeys: boolean;
+  /** Media ID of the thumbnail child (for video parent items) */
+  thumbnailMediaId: string | null;
+  /** True if this item is a thumbnail child row (excluded from library views) */
+  isThumbnail: boolean;
 }
 
 export interface MediaState {

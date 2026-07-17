@@ -76,8 +76,9 @@ export function EditProfileScreen({ navigation }: Props): React.JSX.Element {
 
   const handleChoosePhoto = useCallback(async () => {
     try {
-      // maxWidth/maxHeight/quality force re-encoding which strips EXIF/GPS metadata (SEC-01).
-      // This is an implicit side effect of the re-encode path — not an explicit EXIF strip.
+      // NOTE: maxWidth/maxHeight/quality do NOT reliably strip EXIF/GPS metadata --
+      // Android's react-native-image-picker skips the re-encode for images <= 2048px.
+      // The authoritative EXIF/GPS strip is in avatarService via sanitizeStillImage.
       const result = await launchImageLibrary({
         mediaType: 'photo',
         maxWidth: 800,

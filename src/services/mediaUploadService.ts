@@ -1,20 +1,29 @@
 /**
  * Media upload service -- orchestrates streaming file encryption, chunked upload,
- * and store persistence.
+ * and store persistence for images and videos.
  *
- * Flow:
+ * Flow (images):
  * 1. Normalize URI (copy content:// to staging in Caches)
- * 2. stat() for authoritative file size; reject > 50MB or === 0
- * 3. Compute ciphertext length: 16 (IV) + padded_data + 32 (HMAC)
- * 4. PHASE 1 -- stream-encrypt plaintext to a ciphertext file using 1MB reads
- * 5. Build metadata JSON (v, contentType, fileName, width, height, digest, attachmentKey)
- * 6. Extract IV from ciphertext file (first 16 bytes)
- * 7. PHASE 2 -- read 5MB chunks from ciphertext file, upload sequentially
- * 8. Complete upload
- * 9. Copy plaintext to canonical path; persist to local DB and store
+ * 2. sanitizeStillImage (strip EXIF/GPS metadata, fail-closed verify)
+ * 3. stat() for authoritative file size; reject > 50MB or === 0
+ * 4. Compute ciphertext length: 16 (IV) + padded_data + 32 (HMAC)
+ * 5. PHASE 1 -- stream-encrypt plaintext to a ciphertext file using 1MB reads
+ * 6. Build metadata JSON (v, contentType, fileName, width, height, digest, attachmentKey)
+ * 7. Extract IV from ciphertext file (first 16 bytes)
+ * 8. PHASE 2 -- read 5MB chunks from ciphertext file, upload sequentially
+ * 9. Complete upload
+ * 10. Copy plaintext to canonical path; persist to local DB and store
+ *
+ * Flow (videos):
+ * 1. Normalize URI
+ * 2. prepareVideoForUpload (compress, GPS strip, metadata, thumbnail)
+ * 3. Upload thumbnail as separate encrypted media (recursive uploadMedia)
+ * 4. Same phases 3-10 as images, with duration + thumbnail* envelope fields
  *
  * SECURITY: Crypto operations delegated to attachmentCrypto (Rust FFI).
  * SECURITY: Plaintext never held entirely in memory -- streamed in 1MB reads.
+ * SECURITY: Image EXIF/GPS stripped by imageSanitizer (not by picker re-encode).
+ * SECURITY: Video GPS stripped by mp4GpsSanitizer (not by react-native-compressor).
  */
 
 import type { PickedMedia } from '../hooks/useMediaPicker';
@@ -26,6 +35,8 @@ import { saveMedia } from '../database/repositories/mediaRepository';
 import { isDatabaseInitialized } from '../database/connection';
 import { useAppStore } from '../stores/useAppStore';
 import { generateUUID } from '../utils/uuid';
+import { sanitizeStillImage } from './media/imageSanitizer';
+import { prepareVideoForUpload } from './media/videoProcessing';
 import {
   read,
   writeFile,
@@ -82,6 +93,8 @@ export interface UploadMediaOptions {
   width?: number;
   /** Image height in pixels */
   height?: number;
+  /** Video duration in seconds (float) */
+  duration?: number;
   /** Group to upload into */
   groupId: string;
   /** Thread to associate with (if uploading for a thread) */
@@ -90,8 +103,22 @@ export interface UploadMediaOptions {
   replyId?: string;
   /** Progress callback (0-1) */
   onProgress?: (progress: number) => void;
+  /** Phase progress callback */
+  onPhase?: (phase: 'compressing' | 'encrypting' | 'uploading') => void;
   /** AbortSignal for cancellation */
   signal?: AbortSignal;
+  /** Internal: marks this upload as a thumbnail child (no thread/reply association) */
+  _isThumbnail?: boolean;
+}
+
+/** Result from uploadMedia -- includes key/digest for envelope building */
+export interface UploadMediaResult {
+  /** Server-assigned media ID */
+  mediaId: string;
+  /** 64-byte attachment key (32 AES + 32 HMAC) */
+  attachmentKey: Uint8Array;
+  /** SHA-256 digest of the ciphertext */
+  digest: Uint8Array;
 }
 
 // ---------------------------------------------------------------------------
@@ -170,6 +197,13 @@ async function resolveUri(
   return { sourcePath, stagingPath: null };
 }
 
+/**
+ * Check if a MIME type is a video type.
+ */
+function isVideoMime(mimeType: string): boolean {
+  return mimeType.startsWith('video/');
+}
+
 // ---------------------------------------------------------------------------
 // Main upload function
 // ---------------------------------------------------------------------------
@@ -178,37 +212,119 @@ async function resolveUri(
  * Upload a media file with streaming encryption and chunked upload.
  *
  * @param options - Upload configuration including file URI and metadata.
- * @returns The mediaId of the uploaded file.
+ * @returns UploadMediaResult with mediaId, attachmentKey, and digest.
  * @throws Error if file is too large, encryption fails, or upload fails after retries.
  */
-export async function uploadMedia(options: UploadMediaOptions): Promise<string> {
+export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMediaResult> {
   const {
     fileUri,
-    mimeType,
-    fileName,
-    width,
-    height,
     groupId,
     threadId,
     replyId,
     onProgress,
+    onPhase,
     signal,
+    _isThumbnail,
   } = options;
+
+  let { mimeType, fileName, width, height, duration } = options;
 
   const mediaId = generateUUID();
 
   // 0. URI normalization
-  const { sourcePath, stagingPath } = await resolveUri(fileUri, mediaId);
+  const { sourcePath: resolvedPath, stagingPath } = await resolveUri(fileUri, mediaId);
+  let sourcePath = resolvedPath;
 
   // Ciphertext temp file path
   const ctPath = `${CachesDirectoryPath}/${mediaId}-cipher.bin`;
+
+  // Temp paths for sanitized images
+  const sanitizedStagingPath = `${CachesDirectoryPath}/${mediaId}-staging.bin`;
 
   // Track keys/digest for failure-row and metadata
   let keys: Uint8Array | null = null;
   let digestBytes: Uint8Array | null = null;
   let fileSize = 0;
 
+  // Thumbnail upload result (video only)
+  let thumbnailResult: UploadMediaResult | null = null;
+  let thumbnailLocalPath: string | null = null;
+  let thumbnailWidth: number | null = null;
+  let thumbnailHeight: number | null = null;
+  let thumbnailSizeBytes: number | null = null;
+  let videoStagingPath: string | null = null;
+  let thumbStagingPath: string | null = null;
+
   try {
+    // -----------------------------------------------------------------------
+    // Video branch
+    // -----------------------------------------------------------------------
+    if (isVideoMime(mimeType) && !_isThumbnail) {
+      onPhase?.('compressing');
+
+      const videoResult = await prepareVideoForUpload(sourcePath, mediaId, {
+        signal,
+        onProgress: (p) => onProgress?.(p * 0.3), // First 30% for compression
+      });
+
+      // Switch source to compressed + sanitized video
+      sourcePath = videoResult.videoPath;
+      videoStagingPath = videoResult.videoPath;
+      mimeType = videoResult.mimeType;
+      fileName = videoResult.fileName;
+      width = videoResult.width;
+      height = videoResult.height;
+      duration = videoResult.duration;
+      fileSize = videoResult.fileSize;
+
+      // Upload thumbnail as separate encrypted media (best-effort)
+      if (videoResult.thumbnailPath) {
+        thumbStagingPath = videoResult.thumbnailPath;
+        try {
+          const thumbStat = await stat(videoResult.thumbnailPath);
+          thumbnailResult = await uploadMedia({
+            fileUri: `file://${videoResult.thumbnailPath}`,
+            mimeType: 'image/jpeg',
+            fileName: `${mediaId}-thumb.jpg`,
+            groupId,
+            // No threadId/replyId -- thumbnails are not associated with threads/replies
+            _isThumbnail: true,
+            signal,
+          });
+          thumbnailSizeBytes = thumbStat.size;
+          thumbnailLocalPath = videoResult.thumbnailPath;
+          // Approximate thumbnail dimensions by scaling the video dimensions to a
+          // 640px cap. Guard against a 0-width metadata read (0/0 = NaN, which would
+          // serialize to null in the envelope and store a confusing 0x0 dimension).
+          if (videoResult.width > 0 && videoResult.height > 0) {
+            const scale = Math.min(videoResult.width, 640) / videoResult.width;
+            thumbnailWidth = Math.round(videoResult.width * scale);
+            thumbnailHeight = Math.round(videoResult.height * scale);
+          }
+        } catch (e) {
+          // Thumbnail upload failure -- degrade to duration-only
+          if (__DEV__) {
+            console.warn('[uploadMedia] thumbnail upload failed, degrading:', e instanceof Error ? e.message : e);
+          }
+          thumbnailResult = null;
+        }
+      }
+    }
+    // -----------------------------------------------------------------------
+    // Image branch (non-thumbnail)
+    // -----------------------------------------------------------------------
+    else if (!isVideoMime(mimeType) && !_isThumbnail) {
+      // Sanitize still image (strip EXIF/GPS metadata, fail-closed verify)
+      const targetPath = stagingPath ? stagingPath : sanitizedStagingPath;
+      await sanitizeStillImage(sourcePath, mimeType, targetPath);
+      sourcePath = targetPath;
+    }
+    // -----------------------------------------------------------------------
+    // Thumbnail branch (_isThumbnail) -- already sanitized by videoProcessing
+    // -----------------------------------------------------------------------
+
+    onPhase?.('encrypting');
+
     // 1. stat for authoritative file size
     const st = await stat(sourcePath);
     fileSize = st.size;
@@ -278,7 +394,7 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<string> 
     // SECURITY: Metadata (fileName, contentType, dimensions) is encrypted so the
     // server never sees user filenames or content types (zero-knowledge).
     const digestBase64 = arrayBufferToBase64(toArrayBuffer(digestBytes));
-    const metadataPlain = JSON.stringify({
+    const metadataObj: Record<string, unknown> = {
       v: 1,
       contentType: mimeType,
       fileName,
@@ -286,7 +402,22 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<string> 
       ...(height != null ? { height } : {}),
       digest: digestBase64,
       attachmentKey: arrayBufferToBase64(toArrayBuffer(keys)),
-    });
+    };
+
+    // Video-specific envelope fields
+    if (duration != null) {
+      metadataObj.duration = duration; // seconds (float)
+    }
+    if (thumbnailResult) {
+      metadataObj.thumbnailMediaId = thumbnailResult.mediaId;
+      metadataObj.thumbnailKey = arrayBufferToBase64(toArrayBuffer(thumbnailResult.attachmentKey));
+      metadataObj.thumbnailDigest = arrayBufferToBase64(toArrayBuffer(thumbnailResult.digest));
+      if (thumbnailWidth != null) metadataObj.thumbnailWidth = thumbnailWidth;
+      if (thumbnailHeight != null) metadataObj.thumbnailHeight = thumbnailHeight;
+      if (thumbnailSizeBytes != null) metadataObj.thumbnailSizeBytes = thumbnailSizeBytes;
+    }
+
+    const metadataPlain = JSON.stringify(metadataObj);
     const groupKey = await getOrFetchGroupKey(groupId);
     const encryptedMeta = encryptContent(metadataPlain, groupKey, groupId);
     const metadata = JSON.stringify({
@@ -296,6 +427,8 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<string> 
 
     // 6. Extract IV from ciphertext (first 16 bytes)
     const ivBase64 = await read(ctPath, 16, 0, 'base64');
+
+    onPhase?.('uploading');
 
     // 7. PHASE 2 -- Upload chunks from ciphertext file
     for (let i = 0; i < totalChunks; i++) {
@@ -369,8 +502,10 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<string> 
         unlinkChunkFile(chunkFilePath);
       }
 
-      // Report progress
-      onProgress?.((i + 1) / totalChunks);
+      // Report progress (for videos: 30-100% is upload; for images: 0-100%)
+      const baseProgress = isVideoMime(mimeType) ? 0.3 : 0;
+      const uploadRange = 1 - baseProgress;
+      onProgress?.(baseProgress + ((i + 1) / totalChunks) * uploadRange);
     }
 
     // 8. Complete the upload
@@ -386,9 +521,6 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<string> 
     try {
       const dirExists = await exists(mediaDirPath);
       if (!dirExists) {
-        // TODO(F2): Per-file NSURLIsExcludedFromBackupKey is not available via RNFS
-        // writeFile/moveFile -- only mkdir exposes it. Using directory-level exclusion
-        // as the best available option. Filed as a follow-up for a native bridge.
         await mkdir(mediaDirPath, { NSURLIsExcludedFromBackupKey: true });
       }
       await copyFile(sourcePath, canonicalPath);
@@ -405,6 +537,11 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<string> 
       mediaId, threadId ?? null, replyId ?? null, mimeType,
       fileName, fileSize, width, height, keys, digestBytes,
       savedLocalPath ? 'downloaded' : 'pending', 'done',
+      {
+        duration: duration != null ? Math.round(duration * 1000) : null,
+        thumbnail_media_id: thumbnailResult?.mediaId ?? null,
+        is_thumbnail: _isThumbnail ? 1 : 0,
+      },
     );
     mediaRow.local_path = savedLocalPath;
     if (isDatabaseInitialized()) {
@@ -427,23 +564,45 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<string> 
       fileSize,
       width: width ?? null,
       height: height ?? null,
-      duration: null,
+      duration: duration != null ? Math.round(duration * 1000) : null,
       blurHash: null,
       localPath: savedLocalPath,
-      thumbnailPath: null,
+      thumbnailPath: thumbnailLocalPath,
       downloadState: savedLocalPath ? 'downloaded' : 'pending',
       uploadState: 'done',
       expiresAt: null,
       hasKeys: true,
+      thumbnailMediaId: thumbnailResult?.mediaId ?? null,
+      isThumbnail: _isThumbnail ?? false,
     };
     useAppStore.getState().upsertMedia(storeItem);
 
-    return mediaId;
+    return {
+      mediaId,
+      attachmentKey: keys,
+      digest: digestBytes,
+    };
   } finally {
-    // Best-effort cleanup of ciphertext temp file and staging file
+    // Best-effort cleanup of ciphertext temp file and staging file.
+    // The canonical copy happens before this finally block, so unconditionally
+    // unlinking the staging paths is always safe. Unconditional cleanup matters
+    // for content:// uploads, where resolveUri returns sourcePath === stagingPath
+    // and the sanitized image is written back into the staging file in place —
+    // a conditional (stagingPath !== sourcePath) check would leak it.
     await unlink(ctPath).catch(() => {});
     if (stagingPath) {
       await unlink(stagingPath).catch(() => {});
+    }
+    // Clean up sanitized staging (file:// image path, where no content:// staging existed)
+    if (sourcePath === sanitizedStagingPath && sanitizedStagingPath !== stagingPath) {
+      await unlink(sanitizedStagingPath).catch(() => {});
+    }
+    // Clean up video staging paths
+    if (videoStagingPath) {
+      await unlink(videoStagingPath).catch(() => {});
+    }
+    if (thumbStagingPath) {
+      await unlink(thumbStagingPath).catch(() => {});
     }
   }
 }
@@ -461,23 +620,27 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<string> 
  *
  * @param items - Array of PickedMedia from useMediaPicker.
  * @param groupId - The group to upload into.
+ * @param opts - Optional parameters (onPhase callback).
  * @returns Array of mediaIds in the same order as the input items.
  */
 export async function uploadMediaBatch(
   items: PickedMedia[],
   groupId: string,
+  opts?: { onPhase?: (phase: 'compressing' | 'encrypting' | 'uploading') => void },
 ): Promise<string[]> {
   const ids: string[] = [];
   for (const media of items) {
-    const id = await uploadMedia({
+    const result = await uploadMedia({
       fileUri: media.uri,
       mimeType: media.type,
       fileName: media.fileName,
       width: media.width,
       height: media.height,
+      duration: media.duration,
       groupId,
+      onPhase: opts?.onPhase,
     });
-    ids.push(id);
+    ids.push(result.mediaId);
   }
   return ids;
 }
@@ -499,6 +662,11 @@ function buildMediaRow(
   attachmentDigest: Uint8Array,
   downloadState: string,
   uploadState: string,
+  extras?: {
+    duration?: number | null;
+    thumbnail_media_id?: string | null;
+    is_thumbnail?: number;
+  },
 ): MediaRow {
   return {
     id,
@@ -510,7 +678,7 @@ function buildMediaRow(
     file_size: fileSize,
     width: width ?? null,
     height: height ?? null,
-    duration: null,
+    duration: extras?.duration ?? null,
     attachment_key: attachmentKey,
     attachment_digest: attachmentDigest,
     cdn_number: null,
@@ -522,6 +690,8 @@ function buildMediaRow(
     download_state: downloadState,
     upload_state: uploadState,
     created_at: Date.now(),
+    thumbnail_media_id: extras?.thumbnail_media_id ?? null,
+    is_thumbnail: extras?.is_thumbnail ?? 0,
   };
 }
 

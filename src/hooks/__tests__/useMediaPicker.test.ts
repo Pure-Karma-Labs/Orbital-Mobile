@@ -1,16 +1,16 @@
 import React from 'react';
+import { Alert } from 'react-native';
 import { act, create } from 'react-test-renderer';
 
 jest.mock('react-native-image-picker');
 
 import { useMediaPicker } from '../useMediaPicker';
-import { launchImageLibrary, launchCamera } from 'react-native-image-picker';
+import { launchImageLibrary } from 'react-native-image-picker';
 
 const mockLaunchImageLibrary = launchImageLibrary as jest.Mock;
-const mockLaunchCamera = launchCamera as jest.Mock;
 
 // ---------------------------------------------------------------------------
-// Test harness — exposes hook state via a ref-like extraction
+// Test harness -- exposes hook state via a ref-like extraction
 // ---------------------------------------------------------------------------
 
 let hookResult: ReturnType<typeof useMediaPicker>;
@@ -46,41 +46,66 @@ function makeAsset(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  jest.spyOn(Alert, 'alert').mockImplementation(() => {});
 });
 
 describe('useMediaPicker', () => {
-  describe('pickPhotos', () => {
-    it('maps assets to PickedMedia fields', async () => {
+  describe('pickMedia', () => {
+    it('launches picker with mediaType mixed', async () => {
       mockLaunchImageLibrary.mockResolvedValue({
         assets: [makeAsset()],
       });
       renderHook();
 
       await act(async () => {
-        await hookResult.pickPhotos();
+        await hookResult.pickMedia();
+      });
+
+      expect(mockLaunchImageLibrary).toHaveBeenCalledWith(
+        expect.objectContaining({ mediaType: 'mixed' }),
+      );
+    });
+
+    it('maps assets to PickedMedia fields including duration', async () => {
+      mockLaunchImageLibrary.mockResolvedValue({
+        assets: [makeAsset({ type: 'video/mp4', duration: 15.5, fileName: 'clip.mp4' })],
+      });
+      renderHook();
+
+      await act(async () => {
+        await hookResult.pickMedia();
       });
 
       expect(hookResult.selectedMedia).toHaveLength(1);
       const m = hookResult.selectedMedia[0];
-      expect(m.uri).toBe('file://photo.jpg');
-      expect(m.type).toBe('image/jpeg');
-      expect(m.fileName).toBe('photo1.jpg');
-      expect(m.fileSize).toBe(1024);
-      expect(m.width).toBe(800);
-      expect(m.height).toBe(600);
+      expect(m.type).toBe('video/mp4');
+      expect(m.duration).toBe(15.5);
     });
 
-    it('defaults fileName to photo.jpg when null', async () => {
+    it('defaults fileName to photo.jpg for images when null', async () => {
       mockLaunchImageLibrary.mockResolvedValue({
         assets: [makeAsset({ fileName: undefined })],
       });
       renderHook();
 
       await act(async () => {
-        await hookResult.pickPhotos();
+        await hookResult.pickMedia();
       });
 
       expect(hookResult.selectedMedia[0].fileName).toBe('photo.jpg');
+    });
+
+    it('defaults fileName to video.mp4 for videos when null', async () => {
+      mockLaunchImageLibrary.mockResolvedValue({
+        assets: [makeAsset({ type: 'video/mp4', fileName: undefined })],
+      });
+      renderHook();
+
+      await act(async () => {
+        await hookResult.pickMedia();
+      });
+
+      expect(hookResult.selectedMedia[0].fileName).toBe('video.mp4');
     });
 
     it('defaults fileSize to 0 when null', async () => {
@@ -90,7 +115,7 @@ describe('useMediaPicker', () => {
       renderHook();
 
       await act(async () => {
-        await hookResult.pickPhotos();
+        await hookResult.pickMedia();
       });
 
       expect(hookResult.selectedMedia[0].fileSize).toBe(0);
@@ -107,10 +132,62 @@ describe('useMediaPicker', () => {
       renderHook();
 
       await act(async () => {
-        await hookResult.pickPhotos();
+        await hookResult.pickMedia();
       });
 
       expect(hookResult.selectedMedia).toHaveLength(1);
+    });
+
+    it('filters unsupported video MIME types with Alert', async () => {
+      mockLaunchImageLibrary.mockResolvedValue({
+        assets: [
+          makeAsset({ type: 'video/webm', uri: 'file://bad.webm' }),
+        ],
+      });
+      renderHook();
+
+      await act(async () => {
+        await hookResult.pickMedia();
+      });
+
+      expect(hookResult.selectedMedia).toHaveLength(0);
+      expect(Alert.alert).toHaveBeenCalledWith(
+        'Unsupported Media',
+        expect.any(String),
+      );
+    });
+
+    it('filters oversize files (>500MB) with Alert', async () => {
+      mockLaunchImageLibrary.mockResolvedValue({
+        assets: [
+          makeAsset({ fileSize: 600 * 1024 * 1024 }),
+        ],
+      });
+      renderHook();
+
+      await act(async () => {
+        await hookResult.pickMedia();
+      });
+
+      expect(hookResult.selectedMedia).toHaveLength(0);
+      expect(Alert.alert).toHaveBeenCalled();
+    });
+
+    it('allows mp4, quicktime, and x-m4v video types', async () => {
+      mockLaunchImageLibrary.mockResolvedValue({
+        assets: [
+          makeAsset({ type: 'video/mp4', uri: 'file://a.mp4' }),
+          makeAsset({ type: 'video/quicktime', uri: 'file://b.mov' }),
+          makeAsset({ type: 'video/x-m4v', uri: 'file://c.m4v' }),
+        ],
+      });
+      renderHook();
+
+      await act(async () => {
+        await hookResult.pickMedia();
+      });
+
+      expect(hookResult.selectedMedia).toHaveLength(3);
     });
 
     it('enforces MAX_SELECTION=10 cap', async () => {
@@ -125,13 +202,13 @@ describe('useMediaPicker', () => {
       renderHook();
 
       await act(async () => {
-        await hookResult.pickPhotos();
+        await hookResult.pickMedia();
       });
       expect(hookResult.selectedMedia).toHaveLength(7);
 
       mockLaunchImageLibrary.mockResolvedValueOnce({ assets: fiveAssets });
       await act(async () => {
-        await hookResult.pickPhotos();
+        await hookResult.pickMedia();
       });
       expect(hookResult.selectedMedia).toHaveLength(10);
     });
@@ -141,7 +218,7 @@ describe('useMediaPicker', () => {
       renderHook();
 
       await act(async () => {
-        await hookResult.pickPhotos();
+        await hookResult.pickMedia();
       });
 
       expect(hookResult.selectedMedia).toHaveLength(0);
@@ -152,48 +229,7 @@ describe('useMediaPicker', () => {
       renderHook();
 
       await act(async () => {
-        await hookResult.pickPhotos();
-      });
-
-      expect(hookResult.selectedMedia).toHaveLength(0);
-    });
-  });
-
-  describe('takePhoto', () => {
-    it('maps single captured asset to PickedMedia', async () => {
-      mockLaunchCamera.mockResolvedValue({
-        assets: [makeAsset({ uri: 'file://camera.jpg', fileName: 'cam.jpg' })],
-      });
-      renderHook();
-
-      await act(async () => {
-        await hookResult.takePhoto();
-      });
-
-      expect(hookResult.selectedMedia).toHaveLength(1);
-      expect(hookResult.selectedMedia[0].uri).toBe('file://camera.jpg');
-      expect(hookResult.selectedMedia[0].fileName).toBe('cam.jpg');
-    });
-
-    it('skips asset missing required fields', async () => {
-      mockLaunchCamera.mockResolvedValue({
-        assets: [makeAsset({ type: undefined })],
-      });
-      renderHook();
-
-      await act(async () => {
-        await hookResult.takePhoto();
-      });
-
-      expect(hookResult.selectedMedia).toHaveLength(0);
-    });
-
-    it('is a no-op on cancel', async () => {
-      mockLaunchCamera.mockResolvedValue({ didCancel: true });
-      renderHook();
-
-      await act(async () => {
-        await hookResult.takePhoto();
+        await hookResult.pickMedia();
       });
 
       expect(hookResult.selectedMedia).toHaveLength(0);
@@ -211,7 +247,7 @@ describe('useMediaPicker', () => {
       renderHook();
 
       await act(async () => {
-        await hookResult.pickPhotos();
+        await hookResult.pickMedia();
       });
       expect(hookResult.selectedMedia).toHaveLength(3);
 
@@ -233,7 +269,7 @@ describe('useMediaPicker', () => {
       renderHook();
 
       await act(async () => {
-        await hookResult.pickPhotos();
+        await hookResult.pickMedia();
       });
       expect(hookResult.selectedMedia).toHaveLength(1);
 

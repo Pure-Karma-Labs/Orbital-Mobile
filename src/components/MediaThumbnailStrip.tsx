@@ -1,7 +1,8 @@
 /**
- * MediaThumbnailStrip — horizontal scrollable strip of media thumbnails.
+ * MediaThumbnailStrip -- horizontal scrollable strip of media thumbnails.
  *
  * Each thumbnail is a 72x72 rounded Image with an X remove button overlay.
+ * Video items show a dark tile with a duration label instead of an Image.
  * Optional upload progress overlay per thumbnail (circular indicator).
  *
  * Used in ComposeThreadScreen and ReplyComposer for showing selected media
@@ -40,6 +41,19 @@ export interface MediaThumbnailStripProps {
 
 const THUMBNAIL_SIZE = 72;
 const REMOVE_BUTTON_SIZE = 22;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Format a duration in seconds to a human-readable string (MM:SS).
+ */
+function formatDuration(seconds: number): string {
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
+}
 
 // ---------------------------------------------------------------------------
 // Component
@@ -114,6 +128,27 @@ export function MediaThumbnailStrip({
     fontFamily: theme.typography.fontFamily.mono,
   };
 
+  const videoTileStyle: ViewStyle = {
+    width: THUMBNAIL_SIZE,
+    height: THUMBNAIL_SIZE,
+    backgroundColor: theme.colors.surfaceElevated,
+    alignItems: 'center',
+    justifyContent: 'center',
+  };
+
+  const videoDurationStyle: TextStyle = {
+    color: theme.colors.textSecondary,
+    fontSize: theme.typography.fontSize.xs,
+    fontFamily: theme.typography.fontFamily.mono,
+    marginTop: 4,
+  };
+
+  const videoLabelStyle: TextStyle = {
+    color: theme.colors.textTertiary,
+    fontSize: theme.typography.fontSize.xs,
+    fontFamily: theme.typography.fontFamily.body,
+  };
+
   return (
     <View style={containerStyle} testID="media-thumbnail-strip">
       <ScrollView
@@ -125,14 +160,26 @@ export function MediaThumbnailStrip({
         {media.map((item, index) => {
           const progress = uploadProgress?.[index];
           const isUploading = progress != null && progress < 1;
+          const isVideo = item.type.startsWith('video/');
 
           return (
             <View key={item.uri} style={thumbnailWrapperStyle}>
-              <Image
-                source={{ uri: item.uri }}
-                style={imageStyle}
-                accessibilityLabel={`Selected media ${index + 1}`}
-              />
+              {isVideo ? (
+                <View style={videoTileStyle}>
+                  <Text style={videoLabelStyle}>Video</Text>
+                  {item.duration != null && (
+                    <Text style={videoDurationStyle}>
+                      {formatDuration(item.duration)}
+                    </Text>
+                  )}
+                </View>
+              ) : (
+                <Image
+                  source={{ uri: item.uri }}
+                  style={imageStyle}
+                  accessibilityLabel={`Selected media ${index + 1}`}
+                />
+              )}
               {isUploading && (
                 <View style={progressOverlayStyle}>
                   <Text style={progressTextStyle}>

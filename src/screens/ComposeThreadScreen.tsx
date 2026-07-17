@@ -49,7 +49,7 @@ export function ComposeThreadScreen({
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { selectedMedia, pickPhotos, removeMedia } = useMediaPicker();
+  const { selectedMedia, pickMedia, removeMedia } = useMediaPicker();
 
   const busy = loading || uploading;
   const canSubmit = isDm
@@ -241,10 +241,10 @@ export function ComposeThreadScreen({
           <MediaThumbnailStrip media={selectedMedia} onRemove={removeMedia} />
 
           <TouchableOpacity
-            onPress={pickPhotos}
+            onPress={pickMedia}
             disabled={busy}
             accessibilityRole="button"
-            accessibilityLabel="Attach photos"
+            accessibilityLabel="Attach media"
             style={{
               flexDirection: 'row',
               alignItems: 'center',
@@ -258,7 +258,7 @@ export function ComposeThreadScreen({
               fontSize: theme.typography.fontSize.sm,
               color: busy ? theme.colors.textTertiary : theme.colors.blue,
             }}>
-              + Add Photos
+              + Add Media
             </Text>
           </TouchableOpacity>
 

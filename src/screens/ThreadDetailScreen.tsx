@@ -157,7 +157,7 @@ export function ThreadDetailScreen({
   const [error, setError] = useState<string | null>(null);
   const [replyTarget, setReplyTarget] = useState<ReplyTarget | null>(null);
   const [sending, setSending] = useState(false);
-  const { selectedMedia, pickPhotos, removeMedia, clearMedia } = useMediaPicker();
+  const { selectedMedia, pickMedia, removeMedia, clearMedia } = useMediaPicker();
   const [uploading, setUploading] = useState(false);
 
   // Composer text — lifted here so EmojiPicker can insert into it
@@ -653,7 +653,7 @@ export function ThreadDetailScreen({
           text={composerText}
           onChangeText={setComposerText}
           media={selectedMedia}
-          onPickMedia={pickPhotos}
+          onPickMedia={pickMedia}
           onRemoveMedia={removeMedia}
           showEmojiPicker={showEmojiPicker}
           onToggleEmojiPicker={handleToggleEmojiPicker}

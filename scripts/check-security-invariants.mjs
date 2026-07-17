@@ -52,6 +52,7 @@ const URL_SKIP_PATTERNS = [
   '.test.tsx',
   'src/config/env.ts',
   'src/components/EmojiText.tsx',
+  'src/services/media/imageSanitizer.ts',
 ];
 
 for (const file of allFiles) {
@@ -143,6 +144,74 @@ for (const file of allFiles) {
     const block = lines.slice(i, Math.min(i + 5, lines.length)).join('\n');
     if (!ENCRYPTION_KEY_RE.test(block)) {
       report(file, i + 1, 'mmkv-no-encryptionKey', lines[i].trim());
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 5. launchCamera must not appear in src/ (camera path removed)
+// ---------------------------------------------------------------------------
+
+const LAUNCH_CAMERA_RE = /launchCamera/;
+
+for (const file of allFiles) {
+  const rel = relative('.', file);
+  if (rel.includes('__tests__/') || rel.includes('.test.ts') || rel.includes('.test.tsx')) continue;
+
+  const lines = readFileSync(file, 'utf8').split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (LAUNCH_CAMERA_RE.test(lines[i])) {
+      report(file, i + 1, 'camera-import-banned', lines[i].trim());
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 6. Sanitizer presence and picker import restriction
+// ---------------------------------------------------------------------------
+
+// mediaUploadService.ts must contain sanitizeStillImage( and verifyNoGpsAtoms(
+const UPLOAD_SERVICE = join(SRC, 'services', 'mediaUploadService.ts');
+const AVATAR_SERVICE = join(SRC, 'services', 'avatarService.ts');
+
+try {
+  const uploadContent = readFileSync(UPLOAD_SERVICE, 'utf8');
+  if (!uploadContent.includes('sanitizeStillImage(')) {
+    violations.push(`  ${relative('.', UPLOAD_SERVICE)}:0  [sanitizer-missing]  mediaUploadService must call sanitizeStillImage`);
+  }
+  if (!uploadContent.includes('verifyNoGpsAtoms(') && !uploadContent.includes('prepareVideoForUpload(')) {
+    violations.push(`  ${relative('.', UPLOAD_SERVICE)}:0  [sanitizer-missing]  mediaUploadService must call verifyNoGpsAtoms or prepareVideoForUpload`);
+  }
+} catch {
+  violations.push(`  ${relative('.', UPLOAD_SERVICE)}:0  [file-missing]  mediaUploadService.ts not found`);
+}
+
+try {
+  const avatarContent = readFileSync(AVATAR_SERVICE, 'utf8');
+  if (!avatarContent.includes('sanitizeStillImage(')) {
+    violations.push(`  ${relative('.', AVATAR_SERVICE)}:0  [sanitizer-missing]  avatarService must call sanitizeStillImage`);
+  }
+} catch {
+  violations.push(`  ${relative('.', AVATAR_SERVICE)}:0  [file-missing]  avatarService.ts not found`);
+}
+
+// react-native-image-picker imports restricted to useMediaPicker.ts + EditProfileScreen.tsx
+const ALLOWED_PICKER_FILES = new Set([
+  join(SRC, 'hooks', 'useMediaPicker.ts'),
+  join(SRC, 'screens', 'EditProfileScreen.tsx'),
+]);
+
+const PICKER_IMPORT_RE = /from\s+['"]react-native-image-picker['"]/;
+
+for (const file of allFiles) {
+  const rel = relative('.', file);
+  if (rel.includes('__tests__/') || rel.includes('.test.ts') || rel.includes('.test.tsx')) continue;
+  if (ALLOWED_PICKER_FILES.has(file)) continue;
+
+  const lines = readFileSync(file, 'utf8').split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (PICKER_IMPORT_RE.test(lines[i])) {
+      report(file, i + 1, 'picker-import-restricted', `react-native-image-picker import outside allowed files`);
     }
   }
 }

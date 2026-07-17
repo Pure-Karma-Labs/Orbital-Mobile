@@ -60,7 +60,7 @@ describe('mediaRepository', () => {
   });
 
   describe('saveMedia', () => {
-    it('executes INSERT OR REPLACE with all 21 columns', () => {
+    it('executes INSERT OR REPLACE with all 23 columns', () => {
       const executeSync = jest.fn(() => ({ rows: [], rowsAffected: 1 }));
       makeDb(executeSync);
       saveMedia(sampleMedia);
@@ -88,6 +88,8 @@ describe('mediaRepository', () => {
           'pending',
           'done',
           1700000000000,
+          null,
+          0,
         ],
       );
     });

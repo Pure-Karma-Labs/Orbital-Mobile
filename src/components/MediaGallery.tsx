@@ -157,6 +157,9 @@ export const MediaGallery = React.memo(function MediaGallery({
             width={layout.rows[0][0].width}
             height={layout.rows[0][0].height}
             onPress={() => onItemPress(0)}
+            contentType={mediaItems[0].contentType}
+            durationMs={mediaItems[0].duration}
+            thumbnailMediaId={mediaItems[0].thumbnailMediaId}
           />
           <View style={{ width: gap }} />
           {/* Right column — 2 stacked */}
@@ -166,6 +169,9 @@ export const MediaGallery = React.memo(function MediaGallery({
               width={layout.rows[1][0].width}
               height={layout.rows[1][0].height}
               onPress={() => onItemPress(1)}
+              contentType={mediaItems[1].contentType}
+              durationMs={mediaItems[1].duration}
+              thumbnailMediaId={mediaItems[1].thumbnailMediaId}
             />
             <View style={{ height: gap }} />
             <MediaItemView
@@ -173,6 +179,9 @@ export const MediaGallery = React.memo(function MediaGallery({
               width={layout.rows[1][1].width}
               height={layout.rows[1][1].height}
               onPress={() => onItemPress(2)}
+              contentType={mediaItems[2].contentType}
+              durationMs={mediaItems[2].duration}
+              thumbnailMediaId={mediaItems[2].thumbnailMediaId}
             />
           </View>
         </View>
@@ -213,6 +222,9 @@ export const MediaGallery = React.memo(function MediaGallery({
                   width={cell.width}
                   height={cell.height}
                   onPress={() => onItemPress(itemIndex)}
+                  contentType={mediaItems[itemIndex].contentType}
+                  durationMs={mediaItems[itemIndex].duration}
+                  thumbnailMediaId={mediaItems[itemIndex].thumbnailMediaId}
                 />
                 {showOverlay && (
                   <OverlayCount

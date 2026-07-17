@@ -29,7 +29,9 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../theme';
 import { useMediaDownload } from '../hooks/useMediaDownload';
+import { useVideoThumbnail } from '../hooks/useVideoThumbnail';
 import { OrbitalSpinner } from './OrbitalSpinner';
+import { PlayIconOverlay, DurationBadge } from './VideoOverlay';
 import { useAppStore } from '../stores/useAppStore';
 import type { MediaItem } from '../types/store';
 import type { ReportTarget } from '../types/store';
@@ -60,28 +62,85 @@ interface LightboxPageProps {
   mediaId: string;
   pageWidth: number;
   pageHeight: number;
+  contentType?: string;
+  thumbnailMediaId?: string | null;
+  durationMs?: number | null;
 }
 
 const LightboxPage = React.memo(function LightboxPage({
   mediaId,
   pageWidth,
   pageHeight,
+  contentType,
+  thumbnailMediaId,
+  durationMs,
 }: LightboxPageProps): React.JSX.Element {
-  const { downloadState, localPath } = useMediaDownload(mediaId, {
-    cancelOnUnmount: true,
-  });
+  const theme = useTheme();
+  const {
+    isVideo,
+    thumbState,
+    thumbLocalPath,
+  } = useVideoThumbnail(contentType, thumbnailMediaId);
 
+  // SUPPRESSION: for video pages, pass null to prevent auto-downloading
+  // the full video file — the thumbnail child is the display payload.
+  const { downloadState, localPath } = useMediaDownload(
+    isVideo ? null : mediaId,
+    { cancelOnUnmount: true },
+  );
+
+  const pageStyle: ViewStyle = {
+    width: pageWidth,
+    height: pageHeight,
+    alignItems: 'center',
+    justifyContent: 'center',
+  };
+
+  const hintTextStyle: TextStyle = {
+    fontFamily: theme.typography.fontFamily.body,
+    fontSize: theme.typography.fontSize.sm,
+    color: 'rgba(255, 255, 255, 0.6)',
+    marginTop: theme.spacing.base,
+  };
+
+  // ---------------------------------------------------------------------------
+  // Video page
+  // ---------------------------------------------------------------------------
+  if (isVideo) {
+    const hasDuration = durationMs != null;
+
+    // Thumbnail available — show it with play overlay
+    if (thumbState === 'downloaded' && thumbLocalPath) {
+      return (
+        <View testID={`lightbox-page-${mediaId}`} style={pageStyle}>
+          <Image
+            source={{ uri: `file://${thumbLocalPath}` }}
+            style={{ width: pageWidth, height: pageHeight }}
+            resizeMode="contain"
+          />
+          <PlayIconOverlay size={64} />
+          <Text style={hintTextStyle}>{'Video — playback coming soon'}</Text>
+          {hasDuration && <DurationBadge durationMs={durationMs} />}
+        </View>
+      );
+    }
+
+    // Thumbnail unavailable — dark page with play icon
+    return (
+      <View testID={`lightbox-page-${mediaId}`} style={pageStyle}>
+        <PlayIconOverlay size={64} />
+        <Text style={hintTextStyle}>{'Video — playback coming soon'}</Text>
+        {hasDuration && <DurationBadge durationMs={durationMs} />}
+      </View>
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Image page — existing logic
+  // ---------------------------------------------------------------------------
   if (downloadState === 'downloaded' && localPath) {
     return (
-      <View
-        testID={`lightbox-page-${mediaId}`}
-        style={{
-          width: pageWidth,
-          height: pageHeight,
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}
-      >
+      <View testID={`lightbox-page-${mediaId}`} style={pageStyle}>
         <Image
           source={{ uri: `file://${localPath}` }}
           style={{ width: pageWidth, height: pageHeight }}
@@ -93,15 +152,7 @@ const LightboxPage = React.memo(function LightboxPage({
 
   // Not yet downloaded — show spinner
   return (
-    <View
-      testID={`lightbox-page-${mediaId}`}
-      style={{
-        width: pageWidth,
-        height: pageHeight,
-        alignItems: 'center',
-        justifyContent: 'center',
-      }}
-    >
+    <View testID={`lightbox-page-${mediaId}`} style={pageStyle}>
       <OrbitalSpinner size={32} />
     </View>
   );
@@ -274,6 +325,7 @@ export function MediaLightbox({
 
   const showNav = mediaItems.length > 1;
   const navVerticalCenter = screenHeight / 2 - NAV_BUTTON_SIZE / 2;
+  const currentIsVideo = mediaItems[currentIndex]?.contentType?.startsWith('video/') ?? false;
 
   return (
     <Modal
@@ -304,7 +356,7 @@ export function MediaLightbox({
           onPress={handleReport}
           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           accessibilityRole="button"
-          accessibilityLabel="Report photo"
+          accessibilityLabel={currentIsVideo ? 'Report video' : 'Report photo'}
           testID="media-lightbox-report-button"
         >
           <Text style={closeTextStyle}>{'⚑'}</Text>
@@ -352,6 +404,9 @@ export function MediaLightbox({
                 mediaId={item.id}
                 pageWidth={screenWidth}
                 pageHeight={screenHeight}
+                contentType={item.contentType}
+                thumbnailMediaId={item.thumbnailMediaId}
+                durationMs={item.duration}
               />
             ) : (
               <View
@@ -373,7 +428,7 @@ export function MediaLightbox({
             onPress={goToPrev}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             accessibilityRole="button"
-            accessibilityLabel="Previous image"
+            accessibilityLabel={currentIsVideo ? 'Previous media' : 'Previous image'}
             testID="lightbox-prev"
           >
             <Text style={navTextStyle}>{'<'}</Text>
@@ -390,7 +445,7 @@ export function MediaLightbox({
             onPress={goToNext}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             accessibilityRole="button"
-            accessibilityLabel="Next image"
+            accessibilityLabel={currentIsVideo ? 'Next media' : 'Next image'}
             testID="lightbox-next"
           >
             <Text style={navTextStyle}>{'>'}</Text>

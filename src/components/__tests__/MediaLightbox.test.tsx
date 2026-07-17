@@ -34,6 +34,17 @@ jest.mock('../../hooks/useMediaDownload', () => ({
   useMediaDownload: (...args: unknown[]) => mockUseMediaDownload(...args),
 }));
 
+const mockUseVideoThumbnail = jest.fn().mockReturnValue({
+  isVideo: false,
+  thumbState: 'unavailable' as const,
+  thumbLocalPath: null,
+  retryThumb: jest.fn(),
+});
+
+jest.mock('../../hooks/useVideoThumbnail', () => ({
+  useVideoThumbnail: (...args: unknown[]) => mockUseVideoThumbnail(...args),
+}));
+
 const mockOpenReportSheet = jest.fn();
 jest.mock('../../stores/useAppStore', () => ({
   useAppStore: {
@@ -144,6 +155,12 @@ beforeEach(() => {
   mockUseMediaDownload.mockReturnValue({
     downloadState: 'pending',
     localPath: null,
+  });
+  mockUseVideoThumbnail.mockReturnValue({
+    isVideo: false,
+    thumbState: 'unavailable' as const,
+    thumbLocalPath: null,
+    retryThumb: jest.fn(),
   });
 });
 
@@ -417,5 +434,186 @@ describe('MediaLightbox — windowed rendering', () => {
     mockUseMediaDownload.mock.calls.forEach((call: unknown[]) => {
       expect(call[1]).toEqual({ cancelOnUnmount: true });
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Video page rendering
+// ---------------------------------------------------------------------------
+
+describe('MediaLightbox — video page', () => {
+  function makeVideoItem() {
+    return {
+      id: 'video-1',
+      threadId: 't-1',
+      replyId: null,
+      contentType: 'video/mp4',
+      fileName: 'clip.mp4',
+      fileSize: 50000,
+      width: 1920,
+      height: 1080,
+      duration: 42_000,
+      blurHash: null,
+      localPath: null,
+      thumbnailPath: null,
+      downloadState: 'pending' as const,
+      uploadState: 'done' as const,
+      expiresAt: null,
+      hasKeys: true,
+      thumbnailMediaId: 'thumb-v1',
+      isThumbnail: false,
+    };
+  }
+
+  it('video page renders thumb Image + play icon + hint text, no video-file Image', () => {
+    // When LightboxPage renders a video, useVideoThumbnail returns thumb state
+    mockUseVideoThumbnail.mockReturnValue({
+      isVideo: true,
+      thumbState: 'downloaded' as const,
+      thumbLocalPath: '/cache/thumb-v1.jpg',
+      retryThumb: jest.fn(),
+    });
+
+    const videoItem = makeVideoItem();
+    const renderer = renderLightbox({
+      mediaItems: [videoItem],
+      initialIndex: 0,
+    });
+
+    // LightboxPage should exist for the video
+    findByTestId(renderer.root, 'lightbox-page-video-1');
+
+    // Play icon overlay present
+    const playIcons = renderer.root.findAll(
+      (n) => n.props.testID === 'play-icon-overlay',
+    );
+    expect(playIcons.length).toBeGreaterThan(0);
+
+    // Hint text present
+    const hintText = renderer.root.findAll(
+      (n) =>
+        typeof n.children?.[0] === 'string' &&
+        n.children[0].includes('playback coming soon'),
+    );
+    expect(hintText.length).toBeGreaterThan(0);
+
+    // useMediaDownload called with null for the video (suppression)
+    const downloadCalls = mockUseMediaDownload.mock.calls;
+    const videoDownloadCalls = downloadCalls.filter(
+      (call: unknown[]) => call[0] === null,
+    );
+    expect(videoDownloadCalls.length).toBeGreaterThan(0);
+  });
+
+  it('video page with unavailable thumb shows play icon + hint, no Image', () => {
+    mockUseVideoThumbnail.mockReturnValue({
+      isVideo: true,
+      thumbState: 'unavailable' as const,
+      thumbLocalPath: null,
+      retryThumb: jest.fn(),
+    });
+
+    const videoItem = makeVideoItem();
+    const renderer = renderLightbox({
+      mediaItems: [videoItem],
+      initialIndex: 0,
+    });
+
+    findByTestId(renderer.root, 'lightbox-page-video-1');
+
+    // Play icon present
+    const playIcons = renderer.root.findAll(
+      (n) => n.props.testID === 'play-icon-overlay',
+    );
+    expect(playIcons.length).toBeGreaterThan(0);
+  });
+
+  it('image pages render unchanged when mixed with video', () => {
+    // First item is image, second is video
+    mockUseVideoThumbnail.mockImplementation(
+      (contentType: string | undefined) => {
+        if (contentType?.startsWith('video/')) {
+          return {
+            isVideo: true,
+            thumbState: 'unavailable' as const,
+            thumbLocalPath: null,
+            retryThumb: jest.fn(),
+          };
+        }
+        return {
+          isVideo: false,
+          thumbState: 'unavailable' as const,
+          thumbLocalPath: null,
+          retryThumb: jest.fn(),
+        };
+      },
+    );
+
+    mockUseMediaDownload.mockReturnValue({
+      downloadState: 'downloaded',
+      localPath: '/cache/image.jpg',
+    });
+
+    const imageItem = {
+      ...MEDIA_ITEMS[0],
+      id: 'img-1',
+      contentType: 'image/jpeg',
+    };
+    const videoItem = makeVideoItem();
+
+    const renderer = renderLightbox({
+      mediaItems: [imageItem, videoItem],
+      initialIndex: 0,
+    });
+
+    // Both pages should be mounted (index 0 and 1, within +-1 window)
+    findByTestId(renderer.root, 'lightbox-page-img-1');
+    findByTestId(renderer.root, 'lightbox-page-video-1');
+  });
+
+  it('report button says "Report video" when current item is video', () => {
+    mockUseVideoThumbnail.mockReturnValue({
+      isVideo: true,
+      thumbState: 'unavailable' as const,
+      thumbLocalPath: null,
+      retryThumb: jest.fn(),
+    });
+
+    const videoItem = makeVideoItem();
+    const renderer = renderLightbox({
+      mediaItems: [videoItem],
+      initialIndex: 0,
+    });
+
+    const reportBtn = findByTestId(renderer.root, 'media-lightbox-report-button');
+    expect(reportBtn.props.accessibilityLabel).toBe('Report video');
+  });
+
+  it('nav buttons say "media" when current item is video', () => {
+    mockUseVideoThumbnail.mockImplementation(
+      (contentType: string | undefined) => ({
+        isVideo: !!contentType?.startsWith('video/'),
+        thumbState: 'unavailable' as const,
+        thumbLocalPath: null,
+        retryThumb: jest.fn(),
+      }),
+    );
+
+    const items = [
+      { ...MEDIA_ITEMS[0], id: 'img-0' },
+      { ...makeVideoItem(), id: 'vid-1' },
+      { ...MEDIA_ITEMS[0], id: 'img-2' },
+    ];
+
+    const renderer = renderLightbox({
+      mediaItems: items,
+      initialIndex: 1,
+    });
+
+    // At index 1 (video), nav labels should use "media"
+    const prevBtn = findByTestId(renderer.root, 'lightbox-prev');
+    const nextBtn = findByTestId(renderer.root, 'lightbox-next');
+    expect(prevBtn.props.accessibilityLabel).toBe('Previous media');
+    expect(nextBtn.props.accessibilityLabel).toBe('Next media');
   });
 });

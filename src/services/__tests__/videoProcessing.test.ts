@@ -255,6 +255,19 @@ describe('prepareVideoForUpload', () => {
   // Allowlist sync
   // -------------------------------------------------------------------------
 
+  it('reports invalid compressor output when an oversize source passes through', async () => {
+    // Source 60MB (over the 50MB cap), transcode 70MB (inflated -> guard trips)
+    mockStatSizes({
+      '/tmp/compressed.mp4': 70_000_000,
+      '/gallery/big.mov': 60_000_000,
+      [`${CachesDirectoryPath}/media-123-staging.bin`]: 60_000_000,
+    });
+
+    await expect(
+      prepareVideoForUpload('/gallery/big.mov', 'video/quicktime', 'media-123'),
+    ).rejects.toThrow(/compressor output was invalid/);
+  });
+
   it('VIDEO_MIME_EXT covers every ALLOWED_VIDEO_MIMES entry', () => {
     // Lazy import to avoid pulling in React hooks at module level
     // eslint-disable-next-line @typescript-eslint/no-var-requires

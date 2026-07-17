@@ -187,8 +187,13 @@ export async function prepareVideoForUpload(
     // 6. Check post-compression file size
     const st = await stat(stagingPath);
     if (st.size > MAX_UPLOAD_SIZE_BYTES) {
+      const mb = Math.round(st.size / 1024 / 1024);
+      // On pass-through, "after compression" would be misleading -- the
+      // transcode ran but its output was discarded as invalid.
       throw new Error(
-        `Video is still too large after compression (${Math.round(st.size / 1024 / 1024)}MB). Maximum is 50MB.`,
+        passThrough
+          ? `Video could not be compressed (compressor output was invalid) and the original is too large to upload directly (${mb}MB). Maximum is 50MB.`
+          : `Video is still too large after compression (${mb}MB). Maximum is 50MB.`,
       );
     }
 

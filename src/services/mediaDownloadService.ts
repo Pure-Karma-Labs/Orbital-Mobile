@@ -105,6 +105,7 @@ function getExtension(row: MediaRow): string {
   if (ct.startsWith('image/webp')) return 'webp';
   if (ct.startsWith('video/mp4')) return 'mp4';
   if (ct.startsWith('video/quicktime')) return 'mov';
+  if (ct.startsWith('video/x-m4v')) return 'm4v';
   return 'dat';
 }
 

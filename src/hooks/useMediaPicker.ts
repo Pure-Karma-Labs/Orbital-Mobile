@@ -42,7 +42,7 @@ const MAX_SELECTION = 10;
 const MAX_SOURCE_SIZE_BYTES = 500 * 1024 * 1024;
 
 /** Allowed video MIME types */
-const ALLOWED_VIDEO_MIMES = new Set([
+export const ALLOWED_VIDEO_MIMES = new Set([
   'video/mp4',
   'video/quicktime',
   'video/x-m4v',

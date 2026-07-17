@@ -262,7 +262,7 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
     if (isVideoMime(mimeType) && !_isThumbnail) {
       onPhase?.('compressing');
 
-      const videoResult = await prepareVideoForUpload(sourcePath, mediaId, {
+      const videoResult = await prepareVideoForUpload(sourcePath, mimeType, mediaId, {
         signal,
         onProgress: (p) => onProgress?.(p * 0.3), // First 30% for compression
       });

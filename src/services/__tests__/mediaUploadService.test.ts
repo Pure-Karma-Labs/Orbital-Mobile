@@ -548,6 +548,77 @@ describe('uploadMedia', () => {
 });
 
 // ---------------------------------------------------------------------------
+// uploadMedia — video branch (pass-through mime/fileName)
+// ---------------------------------------------------------------------------
+
+describe('uploadMedia — video branch', () => {
+  const { prepareVideoForUpload } = require('../media/videoProcessing') as {
+    prepareVideoForUpload: jest.Mock;
+  };
+
+  beforeEach(() => {
+    prepareVideoForUpload.mockResolvedValue({
+      videoPath: '/tmp/test-cache/test-media-id-staging.bin',
+      mimeType: 'video/quicktime',
+      fileName: 'test-media-id.mov',
+      width: 720,
+      height: 1280,
+      duration: 12.3,
+      fileSize: SMALL_PLAINTEXT_SIZE,
+      thumbnailPath: null,
+    });
+  });
+
+  const videoOptions = {
+    fileUri: 'file:///tmp/clip.mov',
+    mimeType: 'video/quicktime',
+    fileName: 'IMG_0001.MOV',
+    groupId: 'group-1',
+  };
+
+  it('passes sourceMimeType as 2nd arg to prepareVideoForUpload', async () => {
+    await uploadMedia(videoOptions);
+
+    expect(prepareVideoForUpload).toHaveBeenCalledWith(
+      '/tmp/clip.mov',
+      'video/quicktime',
+      'test-media-id',
+      expect.objectContaining({ signal: undefined }),
+    );
+  });
+
+  it('encrypts metadata envelope with pass-through contentType and fileName', async () => {
+    await uploadMedia(videoOptions);
+
+    const [metadataJson] = mockEncryptContent.mock.calls[0];
+    const parsed = JSON.parse(metadataJson as string);
+    expect(parsed.contentType).toBe('video/quicktime');
+    expect(parsed.fileName).toBe('test-media-id.mov');
+    expect(parsed.duration).toBe(12.3);
+  });
+
+  it('saves media row with pass-through content_type', async () => {
+    await uploadMedia(videoOptions);
+
+    expect(mockSaveMedia).toHaveBeenCalledTimes(1);
+    const row = mockSaveMedia.mock.calls[0][0];
+    expect(row.content_type).toBe('video/quicktime');
+  });
+
+  it('copies plaintext to canonical path with pass-through extension', async () => {
+    const rnfs = require('@dr.pogodin/react-native-fs');
+
+    await uploadMedia(videoOptions);
+
+    const copyFileCalls = rnfs.copyFile.mock.calls;
+    const canonicalCopy = copyFileCalls.find(
+      (c: unknown[]) => (c[1] as string).includes('/media/test-media-id.mov'),
+    );
+    expect(canonicalCopy).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // uploadMediaBatch
 // ---------------------------------------------------------------------------
 

@@ -4,14 +4,17 @@
  *
  * Flow:
  * 1. Video.compress (720p H.264 mp4, ~2Mbps)
- * 2. Move output to {mediaId}-staging.bin (GC-covered temp suffix)
- * 3. sanitizeMp4Gps (strip GPS atoms)
- * 4. verifyNoGpsAtoms (independent fail-closed check)
- * 5. getVideoMetaData (authoritative w/h/duration)
- * 6. createVideoThumbnail (~1s frame)
- * 7. Move thumbnail to {mediaId}-thumb-staging.bin (GC-covered)
- * 8. sanitizeStillImage (strip EXIF/GPS from thumbnail)
- * 9. clearCache (clean up compressor temp files)
+ * 2. Transcode integrity guard: if transcode size >= source size, discard
+ *    the transcode and upload the GPS-sanitized source instead (pass-through).
+ *    Guards against corrupt MediaCodec output (upstream #268).
+ * 3. Move/copy output to {mediaId}-staging.bin (GC-covered temp suffix)
+ * 4. sanitizeMp4Gps (strip GPS atoms)
+ * 5. verifyNoGpsAtoms (independent fail-closed check)
+ * 6. getVideoMetaData (authoritative w/h/duration)
+ * 7. createVideoThumbnail (~1s frame)
+ * 8. Move thumbnail to {mediaId}-thumb-staging.bin (GC-covered)
+ * 9. sanitizeStillImage (strip EXIF/GPS from thumbnail)
+ * 10. clearCache (clean up compressor temp files)
  *
  * Abort supported via cancelCompression.
  */
@@ -25,6 +28,7 @@ import {
 } from 'react-native-compressor';
 import {
   moveFile,
+  copyFile,
   stat,
   unlink,
   CachesDirectoryPath,
@@ -39,9 +43,9 @@ import { sanitizeStillImage } from './imageSanitizer';
 export interface VideoProcessingResult {
   /** Path to the compressed + sanitized video staging file */
   videoPath: string;
-  /** MIME type (always video/mp4 after compression) */
+  /** MIME type (video/mp4 after compression, or source MIME on pass-through) */
   mimeType: string;
-  /** File name (always .mp4) */
+  /** File name ({mediaId}.mp4 after compression, or {mediaId}.{ext} on pass-through) */
   fileName: string;
   /** Video width in pixels */
   width: number;
@@ -68,6 +72,16 @@ export interface VideoProcessingOptions {
 
 const MAX_UPLOAD_SIZE_BYTES = 50 * 1024 * 1024;
 
+/**
+ * Video MIME → file extension mapping for pass-through uploads.
+ * Must stay in sync with ALLOWED_VIDEO_MIMES in src/hooks/useMediaPicker.ts.
+ */
+export const VIDEO_MIME_EXT: Record<string, string> = {
+  'video/mp4': 'mp4',
+  'video/quicktime': 'mov',
+  'video/x-m4v': 'm4v',
+};
+
 // ---------------------------------------------------------------------------
 // Main function
 // ---------------------------------------------------------------------------
@@ -75,7 +89,12 @@ const MAX_UPLOAD_SIZE_BYTES = 50 * 1024 * 1024;
 /**
  * Prepare a video for upload: compress, strip GPS, extract metadata, create thumbnail.
  *
+ * If the transcode output is >= the source size (corrupt/inflated MediaCodec output),
+ * the transcode is discarded and the GPS-sanitized source is uploaded instead.
+ *
  * @param sourcePath Absolute path to the source video file
+ * @param sourceMimeType MIME type of the source (e.g. 'video/quicktime'); used for
+ *   pass-through result so the envelope carries the real content type.
  * @param mediaId UUID for this upload (used for temp file naming)
  * @param options Abort signal and progress callback
  * @returns Processing result with paths and metadata
@@ -83,6 +102,7 @@ const MAX_UPLOAD_SIZE_BYTES = 50 * 1024 * 1024;
  */
 export async function prepareVideoForUpload(
   sourcePath: string,
+  sourceMimeType: string,
   mediaId: string,
   options?: VideoProcessingOptions,
 ): Promise<VideoProcessingResult> {
@@ -113,9 +133,50 @@ export async function prepareVideoForUpload(
       throw new Error('Upload cancelled');
     }
 
-    // 3. Move compressed output to staging path (GC-covered suffix)
-    await moveFile(compressedPath, stagingPath);
-    compressedPath = null; // Moved, no longer at original location
+    // 3. Transcode integrity guard: if transcode >= source, discard and pass through.
+    //    Guards against corrupt MediaCodec output (YUV color-format mismatch;
+    //    upstream numandev1/react-native-compressor#268).
+    let passThrough = false;
+    {
+      const transcodeSize = (await stat(compressedPath)).size;
+      let sourceSize: number | null = null;
+      try {
+        sourceSize = (await stat(sourcePath)).size;
+      } catch (e) {
+        if (__DEV__) {
+          console.warn(
+            '[prepareVideoForUpload] source stat failed, keeping transcode:',
+            e instanceof Error ? e.message : e,
+          );
+        }
+      }
+
+      passThrough = sourceSize !== null && transcodeSize >= sourceSize;
+
+      if (passThrough) {
+        if (__DEV__) {
+          console.warn(
+            `[prepareVideoForUpload] transcode integrity guard tripped (source=${sourceSize}B, transcode=${transcodeSize}B); uploading sanitized source`,
+          );
+        }
+        await unlink(compressedPath).catch(() => {});
+        compressedPath = null;
+        // Android content:// sources are pre-staged by resolveUri
+        // (mediaUploadService.ts) at the identical ${mediaId}-staging.bin path;
+        // a self-copy is undefined behavior on some platforms.
+        if (sourcePath !== stagingPath) {
+          await copyFile(sourcePath, stagingPath);
+        }
+      } else {
+        await moveFile(compressedPath, stagingPath);
+        compressedPath = null;
+      }
+    }
+
+    // Abort check after guard
+    if (options?.signal?.aborted) {
+      throw new Error('Upload cancelled');
+    }
 
     // 4. Sanitize GPS atoms
     await sanitizeMp4Gps(stagingPath);
@@ -126,8 +187,13 @@ export async function prepareVideoForUpload(
     // 6. Check post-compression file size
     const st = await stat(stagingPath);
     if (st.size > MAX_UPLOAD_SIZE_BYTES) {
+      const mb = Math.round(st.size / 1024 / 1024);
+      // On pass-through, "after compression" would be misleading -- the
+      // transcode ran but its output was discarded as invalid.
       throw new Error(
-        `Video is still too large after compression (${Math.round(st.size / 1024 / 1024)}MB). Maximum is 50MB.`,
+        passThrough
+          ? `Video could not be compressed (compressor output was invalid) and the original is too large to upload directly (${mb}MB). Maximum is 50MB.`
+          : `Video is still too large after compression (${mb}MB). Maximum is 50MB.`,
       );
     }
 
@@ -174,10 +240,14 @@ export async function prepareVideoForUpload(
     // 10. Clear compressor cache
     await clearCache().catch(() => {});
 
+    const ext = passThrough
+      ? (VIDEO_MIME_EXT[sourceMimeType] ?? 'mp4')
+      : 'mp4';
+
     return {
       videoPath: stagingPath,
-      mimeType: 'video/mp4',
-      fileName: `${mediaId}.mp4`,
+      mimeType: passThrough ? sourceMimeType : 'video/mp4',
+      fileName: `${mediaId}.${ext}`,
       width,
       height,
       duration,

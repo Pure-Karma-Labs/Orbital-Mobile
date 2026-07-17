@@ -57,6 +57,7 @@ import {
   cleanupOrphanedMedia,
   DOWNLOAD_ABORTED_MESSAGE,
 } from '../mediaDownloadService';
+import { VIDEO_MIME_EXT } from '../media/videoProcessing';
 import type { MediaRow } from '../../database/repositories/mediaRepository';
 
 // ---------------------------------------------------------------------------
@@ -237,6 +238,42 @@ describe('downloadAndDecryptMedia', () => {
 
     expect(result).toBe('/tmp/test-docs/media/a1b2c3d4-e5f6-7890-abcd-ef1234567890.png');
   });
+
+  it('derives .mov extension from video/quicktime content type', async () => {
+    mockGetMedia.mockReturnValue(
+      makeMediaRow({ file_name: null, content_type: 'video/quicktime' }),
+    );
+
+    const result = await downloadAndDecryptMedia(FAKE_MEDIA_ID);
+
+    expect(result).toBe('/tmp/test-docs/media/a1b2c3d4-e5f6-7890-abcd-ef1234567890.mov');
+  });
+
+  it('derives .m4v extension from video/x-m4v content type', async () => {
+    mockGetMedia.mockReturnValue(
+      makeMediaRow({ file_name: null, content_type: 'video/x-m4v' }),
+    );
+
+    const result = await downloadAndDecryptMedia(FAKE_MEDIA_ID);
+
+    expect(result).toBe('/tmp/test-docs/media/a1b2c3d4-e5f6-7890-abcd-ef1234567890.m4v');
+  });
+
+  // Structural sync guard: every upload-side pass-through MIME (VIDEO_MIME_EXT,
+  // videoProcessing.ts) must resolve to its extension here too -- a MIME added
+  // upstream but missed in getExtension would fall back to '.dat'.
+  it.each(Object.entries(VIDEO_MIME_EXT))(
+    'getExtension stays in sync with VIDEO_MIME_EXT: %s -> .%s',
+    async (mime, ext) => {
+      mockGetMedia.mockReturnValue(
+        makeMediaRow({ file_name: null, content_type: mime }),
+      );
+
+      const result = await downloadAndDecryptMedia(FAKE_MEDIA_ID);
+
+      expect(result).toBe(`/tmp/test-docs/media/${FAKE_MEDIA_ID}.${ext}`);
+    },
+  );
 
   it('deduplicates concurrent downloads for the same media ID', async () => {
     // Start two downloads concurrently

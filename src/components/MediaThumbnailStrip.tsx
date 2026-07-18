@@ -21,6 +21,7 @@ import {
 } from 'react-native';
 import { useTheme } from '../theme';
 import type { PickedMedia } from '../hooks/useMediaPicker';
+import { formatDurationSeconds } from '../utils/formatDuration';
 
 // ---------------------------------------------------------------------------
 // Props
@@ -45,15 +46,6 @@ const REMOVE_BUTTON_SIZE = 22;
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Format a duration in seconds to a human-readable string (MM:SS).
- */
-function formatDuration(seconds: number): string {
-  const mins = Math.floor(seconds / 60);
-  const secs = Math.floor(seconds % 60);
-  return `${mins}:${secs.toString().padStart(2, '0')}`;
-}
 
 // ---------------------------------------------------------------------------
 // Component
@@ -166,10 +158,13 @@ export function MediaThumbnailStrip({
             <View key={item.uri} style={thumbnailWrapperStyle}>
               {isVideo ? (
                 <View style={videoTileStyle}>
-                  <Text style={videoLabelStyle}>Video</Text>
+                  {/* Raw glyph, not PlayIconOverlay: the strip tile stacks
+                      glyph + duration in flow layout; the overlay primitive
+                      is absolute-centered and would cover the duration. */}
+                  <Text style={videoLabelStyle}>{'▶'}</Text>
                   {item.duration != null && (
                     <Text style={videoDurationStyle}>
-                      {formatDuration(item.duration)}
+                      {formatDurationSeconds(item.duration)}
                     </Text>
                   )}
                 </View>

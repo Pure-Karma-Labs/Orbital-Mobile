@@ -160,4 +160,52 @@ describe('MediaThumbnailStrip', () => {
     expect(removeBtn.props.accessibilityRole).toBe('button');
     expect(removeBtn.props.accessibilityLabel).toBe('Remove media 1');
   });
+
+  it('video tile shows play glyph and formatted duration, no "Video" label', () => {
+    const videoMedia: PickedMedia = {
+      uri: 'file://video.mp4',
+      type: 'video/mp4',
+      fileName: 'video.mp4',
+      fileSize: 50000,
+      width: 1920,
+      height: 1080,
+      duration: 90,
+    };
+    const renderer = renderStrip({ media: [videoMedia] });
+
+    // Play glyph present
+    expect(findTextWithContent(renderer.root, '▶')).toBeDefined();
+
+    // Duration formatted as "1:30"
+    expect(findTextWithContent(renderer.root, '1:30')).toBeDefined();
+
+    // "Video" label should NOT appear
+    // Search for exact "Video" text (not the play glyph)
+    const videoLabels = renderer.root.findAll(
+      (node) =>
+        isHost(node) &&
+        node.children.length === 1 &&
+        node.children[0] === 'Video',
+    );
+    expect(videoLabels).toHaveLength(0);
+  });
+
+  it('image tiles render unchanged alongside video tiles', () => {
+    const imageMedia = makeMedia(0);
+    const videoMedia: PickedMedia = {
+      uri: 'file://video.mp4',
+      type: 'video/mp4',
+      fileName: 'video.mp4',
+      fileSize: 50000,
+      duration: 60,
+    };
+    const renderer = renderStrip({ media: [imageMedia, videoMedia] });
+
+    // Image tile has accessibility label
+    expect(findByAccessibilityLabel(renderer.root, 'Selected media 1')).toBeDefined();
+
+    // Both remove buttons present
+    expect(findAllByTestId(renderer.root, 'remove-media-0')).toHaveLength(1);
+    expect(findAllByTestId(renderer.root, 'remove-media-1')).toHaveLength(1);
+  });
 });

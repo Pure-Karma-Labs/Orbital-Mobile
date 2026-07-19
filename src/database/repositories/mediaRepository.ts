@@ -140,6 +140,44 @@ export function updateUploadState(id: string, state: string): void {
   );
 }
 
+/**
+ * Fetch all non-thumbnail media rows attached to replies under a given thread.
+ * Used by hydrateMediaFromLocal to seed per-reply media indexes on cold start.
+ *
+ * Returns empty array if database is not initialized.
+ */
+export function getMediaForThreadReplies(threadId: string): MediaRow[] {
+  if (!isDatabaseInitialized()) return [];
+  return queryMany<MediaRow>(
+    `SELECT m.* FROM orbital_media m
+     JOIN orbital_replies r ON m.reply_id = r.id
+     WHERE r.thread_id = ? AND COALESCE(m.is_thumbnail, 0) = 0
+     ORDER BY m.created_at ASC`,
+    [threadId],
+  );
+}
+
+/**
+ * Fetch pending downloads that have both attachment_key and attachment_digest.
+ * Orders images before videos, oldest first. Excludes failed/unavailable/downloaded.
+ *
+ * Returns empty array if database is not initialized.
+ */
+export function getPendingDownloadsWithKeys(limit: number): MediaRow[] {
+  if (!isDatabaseInitialized()) return [];
+  return queryMany<MediaRow>(
+    `SELECT * FROM orbital_media
+     WHERE download_state = 'pending'
+       AND attachment_key IS NOT NULL
+       AND attachment_digest IS NOT NULL
+     ORDER BY
+       (CASE WHEN content_type LIKE 'video/%' THEN 1 ELSE 0 END) ASC,
+       created_at ASC
+     LIMIT ?`,
+    [limit],
+  );
+}
+
 export function getPendingDownloads(): MediaRow[] {
   return queryMany<MediaRow>(
     "SELECT * FROM orbital_media WHERE download_state = 'pending' ORDER BY created_at ASC",

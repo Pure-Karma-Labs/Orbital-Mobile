@@ -48,7 +48,6 @@ import {
   mkdir,
   exists,
   CachesDirectoryPath,
-  DocumentDirectoryPath,
 } from '@dr.pogodin/react-native-fs';
 import type { MediaItem } from '../types/store';
 import type { MediaRow } from '../database/repositories/mediaRepository';
@@ -514,7 +513,7 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
     // 9. Copy plaintext to canonical path so file survives app restarts
     //    (picker URIs in /tmp/ are evicted by iOS)
     const ext = fileName.split('.').pop() ?? 'dat';
-    const mediaDirPath = `${DocumentDirectoryPath}/media`;
+    const { MEDIA_DIR: mediaDirPath, toStoredMediaPath } = await import('./media/mediaPaths');
     const canonicalPath = `${mediaDirPath}/${mediaId}.${ext}`;
     let savedLocalPath: string | null = null;
 
@@ -532,7 +531,7 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
       // Non-fatal -- upload succeeded, file will be re-downloadable
     }
 
-    // 10. Persist to local DB
+    // 10. Persist to local DB (DB stores relative path, store keeps absolute)
     const mediaRow = buildMediaRow(
       mediaId, threadId ?? null, replyId ?? null, mimeType,
       fileName, fileSize, width, height, keys, digestBytes,
@@ -543,7 +542,7 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
         is_thumbnail: _isThumbnail ? 1 : 0,
       },
     );
-    mediaRow.local_path = savedLocalPath;
+    mediaRow.local_path = savedLocalPath ? toStoredMediaPath(savedLocalPath) : null;
     if (isDatabaseInitialized()) {
       try {
         saveMedia(mediaRow);

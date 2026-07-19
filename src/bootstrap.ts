@@ -7,6 +7,7 @@ import {
 import { initMMKV } from './stores/middleware/persistence';
 import { initDatabase } from './database';
 import { runMigrations } from './database/migrations';
+import { normalizeLegacyMediaPaths } from './database/migrations/normalizeMediaPaths';
 import { tokenManager } from './services/api/tokenManager';
 import { useAppStore } from './stores/useAppStore';
 import { initIdentityKeyCache } from './services/crypto/keyGenerationService';
@@ -48,6 +49,9 @@ export async function bootstrap(): Promise<void> {
   const dbKey = await getOrCreateDatabaseKey();
   initDatabase(dbKey);
   runMigrations();
+  // Idempotent JS normalization: convert legacy absolute media paths to relative form.
+  // Must run after migrations (schema exists) but before any media reads.
+  normalizeLegacyMediaPaths();
   await initIdentityKeyCache();
   // Sync identity key verification status into the contacts store.
   // Lazy import avoids pulling verificationService into bootstrap import chain.
@@ -69,4 +73,10 @@ export async function bootstrap(): Promise<void> {
   import('./services/mediaDownloadService').then(({ cleanupOrphanedMedia }) =>
     cleanupOrphanedMedia(),
   );
+  // Register foreground-drain listener + schedule initial drain for pending media.
+  // Lazy import avoids pulling mediaPrefetchService into the bootstrap import chain.
+  import('./services/mediaPrefetchService').then(({ registerForegroundDrain, schedulePendingMediaDrain }) => {
+    registerForegroundDrain();
+    schedulePendingMediaDrain();
+  });
 }

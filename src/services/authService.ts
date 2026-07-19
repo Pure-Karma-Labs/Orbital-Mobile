@@ -372,7 +372,7 @@ export async function localWipe({ preserveIdentity }: { preserveIdentity: boolea
     }
 
     // 2. Delete decrypted media directory
-    const mediaDirPath = `${DocumentDirectoryPath}/media`;
+    const { MEDIA_DIR: mediaDirPath } = await import('./media/mediaPaths');
     try {
       const mediaExists = await exists(mediaDirPath);
       if (mediaExists) {

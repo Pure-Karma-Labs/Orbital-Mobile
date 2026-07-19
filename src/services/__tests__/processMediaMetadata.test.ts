@@ -49,8 +49,8 @@ jest.mock('../crypto/utils', () => ({
   base64ToArrayBuffer: (input: string) => mockBase64ToArrayBuffer(input),
 }));
 
-const mockSetMediaForThread = jest.fn();
-const mockSetMediaForReply = jest.fn();
+const mockMergeMediaForThread = jest.fn();
+const mockMergeMediaForReply = jest.fn();
 
 let mockStoreMedia: Record<string, unknown> = {};
 
@@ -58,8 +58,8 @@ jest.mock('../../stores/useAppStore', () => ({
   useAppStore: {
     getState: jest.fn(() => ({
       media: mockStoreMedia,
-      setMediaForThread: mockSetMediaForThread,
-      setMediaForReply: mockSetMediaForReply,
+      mergeMediaForThread: mockMergeMediaForThread,
+      mergeMediaForReply: mockMergeMediaForReply,
       upsertThread: jest.fn(),
       setReplies: jest.fn(),
       appendReplies: jest.fn(),
@@ -153,8 +153,8 @@ describe('processMediaMetadata — empty input', () => {
     await processMediaMetadata([], fakeGroupKey, fakeGroupId, { threadId: 'thread-1' });
 
     expect(mockGetMedia).not.toHaveBeenCalled();
-    expect(mockSetMediaForThread).not.toHaveBeenCalled();
-    expect(mockSetMediaForReply).not.toHaveBeenCalled();
+    expect(mockMergeMediaForThread).not.toHaveBeenCalled();
+    expect(mockMergeMediaForReply).not.toHaveBeenCalled();
   });
 });
 
@@ -193,9 +193,9 @@ describe('processMediaMetadata — existing item in store', () => {
 
     expect(mockGetMedia).not.toHaveBeenCalled();
     expect(mockSaveMedia).not.toHaveBeenCalled();
-    expect(mockSetMediaForReply).toHaveBeenCalledTimes(1);
+    expect(mockMergeMediaForReply).toHaveBeenCalledTimes(1);
 
-    const items = mockSetMediaForReply.mock.calls[0][1];
+    const items = mockMergeMediaForReply.mock.calls[0][1];
     expect(items).toHaveLength(1);
     expect(items[0]).toBe(existing); // Same object reference
     expect(items[0].hasKeys).toBe(true);
@@ -220,9 +220,9 @@ describe('processMediaMetadata — existing row in DB', () => {
     );
 
     expect(mockSaveMedia).not.toHaveBeenCalled();
-    expect(mockSetMediaForThread).toHaveBeenCalledTimes(1);
+    expect(mockMergeMediaForThread).toHaveBeenCalledTimes(1);
 
-    const items = mockSetMediaForThread.mock.calls[0][1];
+    const items = mockMergeMediaForThread.mock.calls[0][1];
     expect(items).toHaveLength(1);
     // hasKeys derived from attachment_key presence
     expect(items[0].hasKeys).toBe(true);
@@ -253,7 +253,7 @@ describe('processMediaMetadata — existing row in DB', () => {
       { threadId: 'thread-1' },
     );
 
-    const items = mockSetMediaForThread.mock.calls[0][1];
+    const items = mockMergeMediaForThread.mock.calls[0][1];
     const item = items[0];
     expect(item.contentType).toBe('video/mp4');
     expect(item.fileName).toBe('clip.mp4');
@@ -261,8 +261,9 @@ describe('processMediaMetadata — existing row in DB', () => {
     expect(item.width).toBe(1920);
     expect(item.height).toBe(1080);
     expect(item.duration).toBe(30);
-    expect(item.localPath).toBe('/cache/clip.mp4');
-    expect(item.thumbnailPath).toBe('/cache/clip-thumb.jpg');
+    // Paths resolved through resolveMediaPath (legacy absolute → current MEDIA_DIR)
+    expect(item.localPath).toBe('/mock/documents/media/clip.mp4');
+    expect(item.thumbnailPath).toBe('/mock/documents/media/clip-thumb.jpg');
     expect(item.downloadState).toBe('downloaded');
     expect(item.hasKeys).toBe(false);
   });
@@ -291,8 +292,8 @@ describe('processMediaMetadata — new item without encryptedMetadata', () => {
     expect(savedRow.download_state).toBe('pending');
     expect(savedRow.upload_state).toBe('done');
 
-    expect(mockSetMediaForThread).toHaveBeenCalledTimes(1);
-    const items = mockSetMediaForThread.mock.calls[0][1];
+    expect(mockMergeMediaForThread).toHaveBeenCalledTimes(1);
+    const items = mockMergeMediaForThread.mock.calls[0][1];
     expect(items).toHaveLength(1);
     expect(items[0].id).toBe('media-uuid-2');
     expect(items[0].hasKeys).toBe(false);
@@ -324,7 +325,7 @@ describe('processMediaMetadata — new item without encryptedMetadata', () => {
 
     await processMediaMetadata([meta], fakeGroupKey, fakeGroupId, { threadId: 'thread-1' });
 
-    const items = mockSetMediaForThread.mock.calls[0][1];
+    const items = mockMergeMediaForThread.mock.calls[0][1];
     expect(items[0].expiresAt).toBe(new Date('2026-05-01T10:00:00Z').getTime());
   });
 
@@ -333,7 +334,7 @@ describe('processMediaMetadata — new item without encryptedMetadata', () => {
 
     await processMediaMetadata([meta], fakeGroupKey, fakeGroupId, { threadId: 'thread-1' });
 
-    const items = mockSetMediaForThread.mock.calls[0][1];
+    const items = mockMergeMediaForThread.mock.calls[0][1];
     expect(items[0].expiresAt).toBeNull();
   });
 });
@@ -365,7 +366,7 @@ describe('processMediaMetadata — new item with encryptedMetadata (happy path)'
 
     expect(mockDecryptContent).toHaveBeenCalledWith('enc-ct', 'enc-iv', fakeGroupKey, fakeGroupId);
 
-    const items = mockSetMediaForThread.mock.calls[0][1];
+    const items = mockMergeMediaForThread.mock.calls[0][1];
     const item = items[0];
     expect(item.contentType).toBe('image/webp');
     expect(item.fileName).toBe('decrypted.webp');
@@ -401,7 +402,7 @@ describe('processMediaMetadata — encryptedMetadata decryption failure', () => 
     expect(mockInvalidateGroupKey).not.toHaveBeenCalled();
 
     // Item produced with fallback API fields
-    const items = mockSetMediaForThread.mock.calls[0][1];
+    const items = mockMergeMediaForThread.mock.calls[0][1];
     expect(items).toHaveLength(1);
     expect(items[0].contentType).toBe('image/bmp');
     expect(items[0].fileName).toBe('fallback.bmp');
@@ -419,7 +420,7 @@ describe('processMediaMetadata — encryptedMetadata decryption failure', () => 
     // decryptContent should never be called since envelope parsing fails first
     expect(mockDecryptContent).not.toHaveBeenCalled();
     // Item still produced with fallback API fields
-    const items = mockSetMediaForThread.mock.calls[0][1];
+    const items = mockMergeMediaForThread.mock.calls[0][1];
     expect(items).toHaveLength(1);
   });
 
@@ -434,7 +435,7 @@ describe('processMediaMetadata — encryptedMetadata decryption failure', () => 
     await processMediaMetadata([meta], fakeGroupKey, fakeGroupId, { threadId: 'thread-1' });
 
     expect(mockDecryptContent).not.toHaveBeenCalled();
-    const items = mockSetMediaForThread.mock.calls[0][1];
+    const items = mockMergeMediaForThread.mock.calls[0][1];
     expect(items).toHaveLength(1);
   });
 });
@@ -444,22 +445,22 @@ describe('processMediaMetadata — encryptedMetadata decryption failure', () => 
 // ---------------------------------------------------------------------------
 
 describe('processMediaMetadata — parentRef routing', () => {
-  it('calls setMediaForThread when parentRef has threadId', async () => {
+  it('calls mergeMediaForThread when parentRef has threadId', async () => {
     const meta = makeMediaMetadata({ mediaId: 'media-uuid-11' });
 
     await processMediaMetadata([meta], fakeGroupKey, fakeGroupId, { threadId: 'thread-abc' });
 
-    expect(mockSetMediaForThread).toHaveBeenCalledWith('thread-abc', expect.any(Array));
-    expect(mockSetMediaForReply).not.toHaveBeenCalled();
+    expect(mockMergeMediaForThread).toHaveBeenCalledWith('thread-abc', expect.any(Array));
+    expect(mockMergeMediaForReply).not.toHaveBeenCalled();
   });
 
-  it('calls setMediaForReply when parentRef has replyId', async () => {
+  it('calls mergeMediaForReply when parentRef has replyId', async () => {
     const meta = makeMediaMetadata({ mediaId: 'media-uuid-12' });
 
     await processMediaMetadata([meta], fakeGroupKey, fakeGroupId, { replyId: 'reply-xyz' });
 
-    expect(mockSetMediaForReply).toHaveBeenCalledWith('reply-xyz', expect.any(Array));
-    expect(mockSetMediaForThread).not.toHaveBeenCalled();
+    expect(mockMergeMediaForReply).toHaveBeenCalledWith('reply-xyz', expect.any(Array));
+    expect(mockMergeMediaForThread).not.toHaveBeenCalled();
 
     const savedRow = mockSaveMedia.mock.calls[0][0];
     expect(savedRow.thread_id).toBeNull();
@@ -483,7 +484,7 @@ describe('processMediaMetadata — per-item resilience', () => {
     await processMediaMetadata([meta1, meta2], fakeGroupKey, fakeGroupId, { threadId: 'thread-1' });
 
     // The second item should still be processed
-    const items = mockSetMediaForThread.mock.calls[0][1];
+    const items = mockMergeMediaForThread.mock.calls[0][1];
     expect(items.some((i: { id: string }) => i.id === 'media-good-2')).toBe(true);
   });
 
@@ -499,7 +500,7 @@ describe('processMediaMetadata — per-item resilience', () => {
     await processMediaMetadata([meta], fakeGroupKey, fakeGroupId, { threadId: 'thread-1' });
 
     // Outer catch swallowed the error — no items produced, store not called
-    expect(mockSetMediaForThread).not.toHaveBeenCalled();
+    expect(mockMergeMediaForThread).not.toHaveBeenCalled();
   });
 });
 
@@ -514,7 +515,7 @@ describe('processMediaMetadata — blurHash', () => {
 
     await processMediaMetadata([meta], fakeGroupKey, fakeGroupId, { threadId: 'thread-1' });
 
-    const items = mockSetMediaForThread.mock.calls[0][1];
+    const items = mockMergeMediaForThread.mock.calls[0][1];
     expect(items[0].blurHash).toBe(hash);
   });
 });
@@ -555,7 +556,7 @@ describe('processMediaMetadata — attachmentKey in envelope (new item)', () => 
     expect(savedRow.attachment_key.byteLength).toBe(64);
 
     // Store item should have hasKeys=true
-    const items = mockSetMediaForThread.mock.calls[0][1];
+    const items = mockMergeMediaForThread.mock.calls[0][1];
     expect(items[0].hasKeys).toBe(true);
   });
 
@@ -584,7 +585,7 @@ describe('processMediaMetadata — attachmentKey in envelope (new item)', () => 
     const savedRow = mockSaveMedia.mock.calls[0][0];
     expect(savedRow.attachment_key).toBeNull();
 
-    const items = mockSetMediaForThread.mock.calls[0][1];
+    const items = mockMergeMediaForThread.mock.calls[0][1];
     expect(items[0].hasKeys).toBe(false);
   });
 
@@ -607,7 +608,7 @@ describe('processMediaMetadata — attachmentKey in envelope (new item)', () => 
     const savedRow = mockSaveMedia.mock.calls[0][0];
     expect(savedRow.attachment_key).toBeNull();
 
-    const items = mockSetMediaForThread.mock.calls[0][1];
+    const items = mockMergeMediaForThread.mock.calls[0][1];
     expect(items[0].hasKeys).toBe(false);
   });
 });
@@ -652,7 +653,7 @@ describe('processMediaMetadata — existing row key recovery', () => {
     // Should preserve existing row fields
     expect(savedRow.id).toBe('media-recover-1');
 
-    const items = mockSetMediaForThread.mock.calls[0][1];
+    const items = mockMergeMediaForThread.mock.calls[0][1];
     expect(items[0].hasKeys).toBe(true);
   });
 
@@ -675,7 +676,7 @@ describe('processMediaMetadata — existing row key recovery', () => {
     expect(mockSaveMedia).not.toHaveBeenCalled();
     expect(mockDecryptContent).not.toHaveBeenCalled();
 
-    const items = mockSetMediaForThread.mock.calls[0][1];
+    const items = mockMergeMediaForThread.mock.calls[0][1];
     expect(items[0].hasKeys).toBe(true);
   });
 
@@ -698,7 +699,7 @@ describe('processMediaMetadata — existing row key recovery', () => {
     // Falls back to existing row — no saveMedia called
     expect(mockSaveMedia).not.toHaveBeenCalled();
 
-    const items = mockSetMediaForThread.mock.calls[0][1];
+    const items = mockMergeMediaForThread.mock.calls[0][1];
     expect(items[0].hasKeys).toBe(false);
     expect(items[0].id).toBe('media-recover-fail-1');
   });
@@ -721,7 +722,7 @@ describe('processMediaMetadata — existing row key recovery', () => {
     expect(mockDecryptContent).not.toHaveBeenCalled();
     expect(mockSaveMedia).not.toHaveBeenCalled();
 
-    const items = mockSetMediaForThread.mock.calls[0][1];
+    const items = mockMergeMediaForThread.mock.calls[0][1];
     expect(items[0].hasKeys).toBe(false);
   });
 });
@@ -780,11 +781,11 @@ describe('processMediaMetadata — stale local_path recovery', () => {
 
     await processMediaMetadata([meta], fakeGroupKey, fakeGroupId, { threadId: 'thread-1' });
 
-    // exists() should have been called with the stale local_path
-    expect(exists).toHaveBeenCalledWith('/cache/deleted-file.jpg');
+    // exists() should have been called with the resolved path (legacy absolute → current MEDIA_DIR)
+    expect(exists).toHaveBeenCalledWith('/mock/documents/media/deleted-file.jpg');
 
     // The resulting MediaItem should have download_state reset to pending
-    const items = mockSetMediaForThread.mock.calls[0][1];
+    const items = mockMergeMediaForThread.mock.calls[0][1];
     expect(items).toHaveLength(1);
     expect(items[0].downloadState).toBe('pending');
     expect(items[0].localPath).toBeNull();
@@ -808,8 +809,9 @@ describe('processMediaMetadata — stale local_path recovery', () => {
 
     await processMediaMetadata([meta], fakeGroupKey, fakeGroupId, { threadId: 'thread-1' });
 
-    const items = mockSetMediaForThread.mock.calls[0][1];
+    const items = mockMergeMediaForThread.mock.calls[0][1];
     expect(items[0].downloadState).toBe('downloaded');
-    expect(items[0].localPath).toBe('/cache/existing-file.jpg');
+    // localPath is now resolved through resolveMediaPath (legacy absolute → current MEDIA_DIR)
+    expect(items[0].localPath).toBe('/mock/documents/media/existing-file.jpg');
   });
 });

@@ -7,6 +7,7 @@
 
 import type { MediaRow } from './mediaRepository';
 import type { MediaItem } from '../../types/store';
+import { resolveMediaPath } from '../../services/media/mediaPaths';
 
 /**
  * Normalize attachment_key from DB to a boolean indicating presence.
@@ -35,8 +36,8 @@ export function mediaRowToItem(row: MediaRow): MediaItem {
     height: row.height,
     duration: row.duration,
     blurHash: row.blur_hash,
-    localPath: row.local_path,
-    thumbnailPath: row.thumbnail_path,
+    localPath: resolveMediaPath(row.local_path),
+    thumbnailPath: resolveMediaPath(row.thumbnail_path),
     downloadState: (row.download_state as MediaItem['downloadState']) ?? 'pending',
     uploadState: (row.upload_state as MediaItem['uploadState']) ?? 'pending',
     expiresAt: row.expires_at,

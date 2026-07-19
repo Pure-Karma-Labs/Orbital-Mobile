@@ -21,11 +21,12 @@ import {
 import { useAppStore } from '../stores/useAppStore';
 import { generateUUID } from '../utils/uuid';
 import { base64ToArrayBuffer } from './crypto/utils';
-import { getMedia, saveMedia } from '../database/repositories/mediaRepository';
+import { getMedia, saveMedia, getMediaForThread as repoGetMediaForThread, getMediaForThreadReplies } from '../database/repositories/mediaRepository';
 import { saveThread as dbSaveThread, saveThreadBatch, getThreadsForConversation } from '../database/repositories/threadRepository';
 import { saveReply as dbSaveReply, saveReplyBatch, getRepliesForThread } from '../database/repositories/replyRepository';
 import { mediaRowToItem } from '../database/repositories/mediaMapper';
 import { isDatabaseInitialized } from '../database/connection';
+import { resolveMediaPath } from './media/mediaPaths';
 import type { Thread, Reply, MediaItem } from '../types/store';
 import type { MediaRow } from '../database/repositories/mediaRepository';
 import type { ThreadResponse, ThreadListItem, ReplyResponse, MediaMetadata } from '../types/api';
@@ -348,9 +349,9 @@ export async function processMediaMetadata(
       .filter(Boolean) as MediaItem[];
     if (existingItems.length > 0) {
       if ('threadId' in parentRef) {
-        store.setMediaForThread(parentRef.threadId, existingItems);
+        store.mergeMediaForThread(parentRef.threadId, existingItems);
       } else {
-        store.setMediaForReply(parentRef.replyId, existingItems);
+        store.mergeMediaForReply(parentRef.replyId, existingItems);
       }
     }
     return;
@@ -383,7 +384,8 @@ export async function processMediaMetadata(
         // If DB says downloaded but the file is gone (simulator switch, cache clear),
         // reset to pending so the download re-triggers.
         if (existingRow.download_state === 'downloaded' && existingRow.local_path) {
-          const fileExists = await exists(existingRow.local_path).catch(() => false);
+          const resolvedPath = resolveMediaPath(existingRow.local_path);
+          const fileExists = resolvedPath ? await exists(resolvedPath).catch(() => false) : false;
           if (!fileExists) {
             existingRow = { ...existingRow, download_state: 'pending', local_path: null };
             if (dbReady) {
@@ -579,10 +581,15 @@ export async function processMediaMetadata(
 
   // Populate the store index maps
   if ('threadId' in parentRef) {
-    store.setMediaForThread(parentRef.threadId, items);
+    store.mergeMediaForThread(parentRef.threadId, items);
   } else {
-    store.setMediaForReply(parentRef.replyId, items);
+    store.mergeMediaForReply(parentRef.replyId, items);
   }
+
+  // Trigger lazy prefetch drain — covers all 7 call sites (D7)
+  import('./mediaPrefetchService').then(({ schedulePendingMediaDrain }) =>
+    schedulePendingMediaDrain(),
+  ).catch(() => {});
 }
 
 /**
@@ -1078,5 +1085,54 @@ export function hydrateRepliesFromLocal(threadId: string): void {
     }
   } catch (e) {
     if (__DEV__) console.warn('[hydrateRepliesFromLocal] failed:', e instanceof Error ? e.message : e);
+  }
+  // Seed media indexes from local DB so orphaned/expired-server media still renders
+  hydrateMediaFromLocal(threadId);
+}
+
+/**
+ * Hydrate media indexes from the local database for a thread and its replies.
+ * Seeds the Zustand mediaIdsByThread / mediaIdsByReply indexes so that media
+ * items already cached on disk render immediately, even if the server has
+ * purged the media and the API response no longer includes them.
+ *
+ * Thumbnails are excluded (useVideoThumbnail does its own cold-start probe).
+ * Uses mergeMediaBatch for a single set() call across all per-reply indexes.
+ */
+export function hydrateMediaFromLocal(threadId: string): void {
+  if (!isDatabaseInitialized()) return;
+  try {
+    const batchMap = new Map<string, { type: 'thread' | 'reply'; items: MediaItem[] }>();
+
+    // Thread-level media
+    const threadRows = repoGetMediaForThread(threadId);
+    const threadItems = threadRows
+      .filter((r) => (r.is_thumbnail ?? 0) === 0)
+      .map(mediaRowToItem);
+    if (threadItems.length > 0) {
+      batchMap.set(threadId, { type: 'thread', items: threadItems });
+    }
+
+    // Per-reply media (batched join)
+    const replyRows = getMediaForThreadReplies(threadId);
+    const byReply = new Map<string, MediaItem[]>();
+    for (const row of replyRows) {
+      if (!row.reply_id) continue;
+      let arr = byReply.get(row.reply_id);
+      if (!arr) {
+        arr = [];
+        byReply.set(row.reply_id, arr);
+      }
+      arr.push(mediaRowToItem(row));
+    }
+    for (const [replyId, items] of byReply) {
+      batchMap.set(replyId, { type: 'reply', items });
+    }
+
+    if (batchMap.size > 0) {
+      useAppStore.getState().mergeMediaBatch(batchMap);
+    }
+  } catch (e) {
+    if (__DEV__) console.warn('[hydrateMediaFromLocal] failed:', e instanceof Error ? e.message : e);
   }
 }

@@ -330,7 +330,7 @@ export interface MediaItem {
   blurHash: string | null;
   localPath: string | null;
   thumbnailPath: string | null;
-  downloadState: 'pending' | 'downloading' | 'downloaded' | 'failed';
+  downloadState: 'pending' | 'downloading' | 'downloaded' | 'failed' | 'unavailable';
   uploadState: 'pending' | 'uploading' | 'done' | 'failed';
   expiresAt: number | null;
   /** Whether current user has attachment keys (own-media-only for v1) */
@@ -348,8 +348,10 @@ export interface MediaState {
 }
 
 export interface MediaActions {
-  setMediaForThread: (threadId: string, items: MediaItem[]) => void;
-  setMediaForReply: (replyId: string, items: MediaItem[]) => void;
+  mergeMediaForThread: (threadId: string, items: MediaItem[]) => void;
+  mergeMediaForReply: (replyId: string, items: MediaItem[]) => void;
+  /** Batch merge media + indexes in a single set() call (local hydration). */
+  mergeMediaBatch: (byParent: Map<string, { type: 'thread' | 'reply'; items: MediaItem[] }>) => void;
   upsertMedia: (item: MediaItem) => void;
   /** Batch-hydrate media into the store. Skips items currently in 'downloading' state. */
   setMediaBatch: (items: MediaItem[]) => void;

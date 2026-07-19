@@ -169,7 +169,7 @@ export interface OrbitalReplyRow {
   updated_at: number;
 }
 
-export type DownloadState = 'pending' | 'downloading' | 'downloaded' | 'failed';
+export type DownloadState = 'pending' | 'downloading' | 'downloaded' | 'failed' | 'unavailable';
 export type UploadState = 'pending' | 'uploading' | 'done' | 'failed';
 
 /**

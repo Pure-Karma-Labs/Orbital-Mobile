@@ -162,6 +162,15 @@ const LightboxPage = React.memo(function LightboxPage({
     );
   }
 
+  // Unavailable — server purged, no local copy
+  if (downloadState === 'unavailable' && !localPath) {
+    return (
+      <View testID={`lightbox-page-${mediaId}`} style={pageStyle}>
+        <Text style={hintTextStyle}>{'No longer available'}</Text>
+      </View>
+    );
+  }
+
   // Not yet downloaded — show spinner
   return (
     <View testID={`lightbox-page-${mediaId}`} style={pageStyle}>

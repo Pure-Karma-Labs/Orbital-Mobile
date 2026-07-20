@@ -18,8 +18,8 @@ rules:
     pattern: Math.random()
     paths:
       include:
-        - src/services/crypto/
-        - src/services/secure-storage/
+        - '**/src/services/crypto/'
+        - '**/src/services/secure-storage/'
       exclude:
         - "*__tests__*"
     message: Math.random() is not cryptographically secure. Use crypto.getRandomValues().
@@ -36,9 +36,9 @@ rules:
       - pattern: console.trace(...)
     paths:
       include:
-        - src/services/crypto/
-        - src/services/secure-storage/
-        - src/database/
+        - '**/src/database/'
+        - '**/src/services/crypto/'
+        - '**/src/services/secure-storage/'
       exclude:
         - "*__tests__*"
     message: Console output in crypto/security paths risks leaking key material.

@@ -11,20 +11,10 @@ import {
   searchEmoji,
   findEmojiInText,
   emojiData,
-  SHEET_COLUMNS,
-  CELL_SIZE_32,
-  CELL_SIZE_64,
 } from '../data';
+import { emojiAssetMap } from '../assetMap';
 
 describe('emoji/data', () => {
-  describe('constants', () => {
-    it('has correct sprite sheet constants', () => {
-      expect(SHEET_COLUMNS).toBe(62);
-      expect(CELL_SIZE_32).toBe(34);
-      expect(CELL_SIZE_64).toBe(66);
-    });
-  });
-
   describe('emojiData', () => {
     it('loads the full emoji dataset', () => {
       expect(emojiData.length).toBeGreaterThan(1000);
@@ -33,10 +23,20 @@ describe('emoji/data', () => {
     it('each entry has required fields', () => {
       const first = emojiData[0];
       expect(first).toHaveProperty('unified');
-      expect(first).toHaveProperty('sheet_x');
-      expect(first).toHaveProperty('sheet_y');
       expect(first).toHaveProperty('short_name');
       expect(first).toHaveProperty('category');
+    });
+  });
+
+  describe('asset map coverage', () => {
+    it('every entry in emojiData has a corresponding asset in emojiAssetMap', () => {
+      const missing: string[] = [];
+      for (const entry of emojiData) {
+        if (emojiAssetMap[entry.unified] === undefined) {
+          missing.push(entry.unified);
+        }
+      }
+      expect(missing).toEqual([]);
     });
   });
 
@@ -298,7 +298,7 @@ describe('emoji/data', () => {
     it('strips RTL Override from URL segment', () => {
       const text = 'visit https://evil.com‮moc.elgoog';
       const result = findEmojiInText(text);
-      const link = result.find(s => s.type === 'link');
+      const link = result.find((s) => s.type === 'link');
       expect(link).toBeDefined();
       expect(link!.url).not.toContain('‮');
       expect(link!.value).not.toContain('‮');
@@ -307,7 +307,7 @@ describe('emoji/data', () => {
     it('strips zero-width space from URL', () => {
       const text = 'https://example​.com/path';
       const result = findEmojiInText(text);
-      const link = result.find(s => s.type === 'link');
+      const link = result.find((s) => s.type === 'link');
       expect(link).toBeDefined();
       expect(link!.url).toBe('https://example.com/path');
     });
@@ -315,14 +315,14 @@ describe('emoji/data', () => {
     it('strips multiple format chars from URL', () => {
       const text = 'https://‏example‪.com⁦';
       const result = findEmojiInText(text);
-      const link = result.find(s => s.type === 'link');
+      const link = result.find((s) => s.type === 'link');
       expect(link).toBeDefined();
       expect(link!.url).toBe('https://example.com');
     });
 
     it('leaves clean URLs unchanged', () => {
       const result = findEmojiInText('https://example.com/path?q=1');
-      const link = result.find(s => s.type === 'link');
+      const link = result.find((s) => s.type === 'link');
       expect(link!.url).toBe('https://example.com/path?q=1');
     });
   });
@@ -331,7 +331,7 @@ describe('emoji/data', () => {
     it('caps trimming at 10 iterations on adversarial trailing dots', () => {
       const adversarial = 'https://example.com' + '.'.repeat(1000);
       const result = findEmojiInText(adversarial);
-      const link = result.find(s => s.type === 'link');
+      const link = result.find((s) => s.type === 'link');
       expect(link).toBeDefined();
       expect(link!.url).toBe('https://example.com' + '.'.repeat(990));
     });
@@ -339,14 +339,14 @@ describe('emoji/data', () => {
     it('caps trimming on adversarial trailing parens (O(n^2) branch)', () => {
       const adversarial = 'https://example.com/path' + ')'.repeat(500);
       const result = findEmojiInText(adversarial);
-      const link = result.find(s => s.type === 'link');
+      const link = result.find((s) => s.type === 'link');
       expect(link).toBeDefined();
       expect(link!.url).toBe('https://example.com/path' + ')'.repeat(490));
     });
 
     it('fully trims normal trailing punctuation within cap', () => {
       const result = findEmojiInText('https://example.com/path.)');
-      const link = result.find(s => s.type === 'link');
+      const link = result.find((s) => s.type === 'link');
       expect(link).toBeDefined();
       expect(link!.url).toBe('https://example.com/path');
     });

@@ -24,10 +24,11 @@ function renderEmoji(
 }
 
 describe('Emoji', () => {
-  it('renders a valid emoji', () => {
+  it('renders a single Image for a valid unified code', () => {
     const renderer = renderEmoji({ unified: '1F600' });
-    const json = renderer.toJSON();
-    expect(json).not.toBeNull();
+    const root = renderer.root;
+    const images = root.findAllByType('Image' as unknown as React.ComponentType);
+    expect(images.length).toBe(1);
   });
 
   it('returns null for unknown unified code', () => {
@@ -39,46 +40,72 @@ describe('Emoji', () => {
   it('renders with default size of 20', () => {
     const renderer = renderEmoji({ unified: '1F600' });
     const root = renderer.root;
-    // The outermost View should have width/height of 20 (default)
-    const outerView = root.findAll(
-      (node) =>
-        (node.type as string) === 'View' &&
-        node.props.style?.width === 20 &&
-        node.props.style?.height === 20,
-    );
-    expect(outerView.length).toBeGreaterThan(0);
+    const images = root.findAllByType('Image' as unknown as React.ComponentType);
+    expect(images.length).toBe(1);
+    const style = images[0].props.style;
+    expect(style.width).toBe(20);
+    expect(style.height).toBe(20);
   });
 
-  it('renders with custom size', () => {
+  it('renders with custom size 32', () => {
     const renderer = renderEmoji({ unified: '1F600', size: 32 });
-    const root = renderer.root;
-    const outerView = root.findAll(
-      (node) =>
-        (node.type as string) === 'View' &&
-        node.props.style?.width === 32 &&
-        node.props.style?.height === 32,
-    );
-    expect(outerView.length).toBeGreaterThan(0);
-  });
-
-  it('renders with overflow hidden', () => {
-    const renderer = renderEmoji({ unified: '1F600' });
-    const root = renderer.root;
-    const clippedView = root.findAll(
-      (node) =>
-        (node.type as string) === 'View' && node.props.style?.overflow === 'hidden',
-    );
-    expect(clippedView.length).toBeGreaterThan(0);
-  });
-
-  it('contains an Image element for the sprite sheet', () => {
-    const renderer = renderEmoji({ unified: '1F600' });
     const root = renderer.root;
     const images = root.findAllByType('Image' as unknown as React.ComponentType);
     expect(images.length).toBe(1);
+    const style = images[0].props.style;
+    expect(style.width).toBe(32);
+    expect(style.height).toBe(32);
   });
 
-  it('passes testID to the container', () => {
+  it('renders with custom size 48', () => {
+    const renderer = renderEmoji({ unified: '1F600', size: 48 });
+    const root = renderer.root;
+    const images = root.findAllByType('Image' as unknown as React.ComponentType);
+    expect(images.length).toBe(1);
+    const style = images[0].props.style;
+    expect(style.width).toBe(48);
+    expect(style.height).toBe(48);
+  });
+
+  it('has a defined source for valid emoji', () => {
+    const renderer = renderEmoji({ unified: '1F600' });
+    const root = renderer.root;
+    const images = root.findAllByType('Image' as unknown as React.ComponentType);
+    expect(images[0].props.source).toBeDefined();
+  });
+
+  it('source is reference-stable across re-renders of the same unified', () => {
+    const renderer = renderEmoji({ unified: '1F600' });
+    const root = renderer.root;
+    const images1 = root.findAllByType('Image' as unknown as React.ComponentType);
+    const source1 = images1[0].props.source;
+
+    // Re-render with same props
+    act(() => {
+      renderer.update(
+        React.createElement(
+          ThemeProvider,
+          { colorSchemeOverride: 'light' },
+          React.createElement(Emoji, { unified: '1F600' }),
+        ),
+      );
+    });
+
+    const images2 = renderer.root.findAllByType('Image' as unknown as React.ComponentType);
+    const source2 = images2[0].props.source;
+    expect(source1).toBe(source2);
+  });
+
+  it('resolves non-qualified code (e.g. 2764) and renders', () => {
+    // 2764 is the non-qualified form of 2764-FE0F (red heart)
+    const renderer = renderEmoji({ unified: '2764' });
+    const root = renderer.root;
+    const images = root.findAllByType('Image' as unknown as React.ComponentType);
+    expect(images.length).toBe(1);
+    expect(images[0].props.source).toBeDefined();
+  });
+
+  it('passes testID to the Image', () => {
     const renderer = renderEmoji({
       unified: '1F600',
       testID: 'emoji-grinning',
@@ -87,24 +114,10 @@ describe('Emoji', () => {
       (node) => node.props.testID === 'emoji-grinning',
     );
     expect(found.length).toBeGreaterThan(0);
-  });
-
-  it('uses the 32px sheet for sizes <= 32', () => {
-    const renderer = renderEmoji({ unified: '1F600', size: 20 });
-    const root = renderer.root;
-    const images = root.findAllByType('Image' as unknown as React.ComponentType);
-    expect(images.length).toBe(1);
-    // The image source should reference the 32.webp sheet
-    const source = images[0].props.source;
-    expect(source).toBeDefined();
-  });
-
-  it('uses the 64px sheet for sizes > 32', () => {
-    const renderer = renderEmoji({ unified: '1F600', size: 48 });
-    const root = renderer.root;
-    const images = root.findAllByType('Image' as unknown as React.ComponentType);
-    expect(images.length).toBe(1);
-    const source = images[0].props.source;
-    expect(source).toBeDefined();
+    // Verify it's on the Image element
+    const image = found.find(
+      (node) => (node.type as string) === 'Image',
+    );
+    expect(image).toBeDefined();
   });
 });

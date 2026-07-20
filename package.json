@@ -23,6 +23,7 @@
     "build:rust:android:release": "cd packages/orbital-signal && npm run build:android:release",
     "build:rust:release": "npm run build:rust:ios:release && npm run build:rust:android:release",
     "security:invariants": "node scripts/check-security-invariants.mjs",
+    "generate:emoji": "node scripts/generate-emoji-assets.mjs",
     "test:rust-gate:android": "bash scripts/test-rust-profile-gate-android.sh",
     "test:rust-gate:ios": "bash scripts/test-rust-profile-gate-ios.sh"
   },
@@ -36,7 +37,7 @@
     "@react-navigation/native": "^7.2.2",
     "@react-navigation/native-stack": "^7.17.10",
     "@sentry/react-native": "^8.17.2",
-    "emoji-datasource-openmoji": "^1.0.0",
+    "emoji-datasource": "^16.0.0",
     "fuse.js": "^7.4.2",
     "orbital-signal": "file:./packages/orbital-signal",
     "react": "19.1.1",
@@ -74,6 +75,7 @@
     "jest": "^29.6.3",
     "prettier": "3.9.5",
     "react-test-renderer": "19.1.1",
+    "openmoji": "^16.0.0",
     "sharp": "^0.35.3",
     "typescript": "^6.0.3"
   },

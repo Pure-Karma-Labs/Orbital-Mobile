@@ -2,6 +2,7 @@
  * EmojiPicker — categorized OpenMoji emoji grid with search and recents.
  *
  * Replaces the system keyboard emoji tab so users see OpenMoji consistently.
+ * Each emoji is rendered from its own pre-generated 128px WebP asset.
  * Uses a single FlatList with mixed item types (headers + rows) since
  * SectionList does not support numColumns.
  *

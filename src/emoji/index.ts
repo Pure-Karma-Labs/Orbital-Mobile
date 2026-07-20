@@ -1,8 +1,8 @@
 /**
  * Emoji module barrel export.
  *
- * Provides the emoji data layer (lookup maps, parsing, search) and
- * sprite sheet constants for the OpenMoji rendering system.
+ * Provides the emoji data layer (lookup maps, parsing, search) for the
+ * OpenMoji per-emoji-asset rendering system.
  */
 
 export {
@@ -12,10 +12,6 @@ export {
   type TextSegment,
   type LinkSegment,
   type RichTextSegment,
-  // Constants
-  SHEET_COLUMNS,
-  CELL_SIZE_32,
-  CELL_SIZE_64,
   // Utilities
   unifiedToNative,
   getEmojiData,

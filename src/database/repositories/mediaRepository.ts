@@ -171,7 +171,12 @@ export function getMediaForThreadReplies(threadId: string): MediaRow[] {
 
 /**
  * Fetch pending downloads that have both attachment_key and attachment_digest.
- * Orders images before videos, oldest first. Excludes failed/unavailable/downloaded.
+ * Oldest first. Excludes failed/unavailable/downloaded rows.
+ *
+ * Video **parent** rows (content_type LIKE 'video/%' AND is_thumbnail = 0) are
+ * excluded — they stay `pending` by design until #458 PR 3's player owns the
+ * full-video download path. Video **thumbnails** are unaffected (image/* rows
+ * with is_thumbnail=1).
  *
  * Returns empty array if database is not initialized.
  */
@@ -182,9 +187,8 @@ export function getPendingDownloadsWithKeys(limit: number): MediaRow[] {
      WHERE download_state = 'pending'
        AND attachment_key IS NOT NULL
        AND attachment_digest IS NOT NULL
-     ORDER BY
-       (CASE WHEN content_type LIKE 'video/%' THEN 1 ELSE 0 END) ASC,
-       created_at ASC
+       AND NOT (content_type LIKE 'video/%' AND COALESCE(is_thumbnail, 0) = 0)
+     ORDER BY created_at ASC
      LIMIT ?`,
     [limit],
   );

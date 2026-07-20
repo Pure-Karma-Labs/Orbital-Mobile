@@ -127,3 +127,26 @@ export function unregisterForegroundDrain(): void {
     appStateSubscription = null;
   }
 }
+
+/**
+ * Reset all module-level prefetch state. Called from `localWipe()` on logout.
+ *
+ * Clears flags (`draining`, `rerunRequested`), cancels the debounce timer,
+ * and removes the AppState foreground-drain subscription.
+ *
+ * **Mid-flight drain semantics:** If a `drainPendingMediaDownloads()` batch is
+ * already executing when this is called, the in-flight `Promise.all` will still
+ * complete (the network requests are already dispatched). However, because
+ * `draining` is reset to `false`, the completion handler will skip the rerun
+ * branch. At worst, one overlapping drain could start post-login, bounded by
+ * the `isDatabaseInitialized()` guard.
+ */
+export function clearPrefetchState(): void {
+  draining = false;
+  rerunRequested = false;
+  if (debounceTimer !== null) {
+    clearTimeout(debounceTimer);
+    debounceTimer = null;
+  }
+  unregisterForegroundDrain();
+}

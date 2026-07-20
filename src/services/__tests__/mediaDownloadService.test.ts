@@ -535,4 +535,35 @@ describe('cleanupOrphanedMedia', () => {
     // Should not throw
     await expect(cleanupOrphanedMedia()).resolves.toBeUndefined();
   });
+
+  it('auto-promotes unavailable row with file on disk to downloaded (D10)', async () => {
+    const rnfs = require('@dr.pogodin/react-native-fs');
+    rnfs.exists.mockResolvedValue(true);
+    rnfs.readDir.mockResolvedValue([
+      {
+        name: `${FAKE_MEDIA_ID}.jpg`,
+        path: `/tmp/test-docs/media/${FAKE_MEDIA_ID}.jpg`,
+        mtime: new Date(),
+        isDirectory: () => false,
+      },
+    ]);
+    mockGetMedia.mockReturnValue(
+      makeMediaRow({ download_state: 'unavailable' }),
+    );
+
+    await cleanupOrphanedMedia();
+
+    // DB should be updated to 'downloaded' with stored relative path
+    expect(mockUpdateDownloadState).toHaveBeenCalledWith(
+      FAKE_MEDIA_ID,
+      'downloaded',
+      `media/${FAKE_MEDIA_ID}.jpg`,
+    );
+    // Store should be updated with absolute path
+    expect(mockUpdateMediaDownloadState).toHaveBeenCalledWith(
+      FAKE_MEDIA_ID,
+      'downloaded',
+      `/tmp/test-docs/media/${FAKE_MEDIA_ID}.jpg`,
+    );
+  });
 });

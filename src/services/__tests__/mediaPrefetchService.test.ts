@@ -1,9 +1,22 @@
 /**
- * Tests for mediaPrefetchService — drain logic, filtering, single-flight, debounce.
+ * Tests for mediaPrefetchService — drain logic, filtering, single-flight, debounce,
+ * and clearPrefetchState teardown.
  */
 
 jest.mock('@dr.pogodin/react-native-fs', () => ({
   DocumentDirectoryPath: '/tmp/test-docs',
+}));
+
+const mockRemoveSubscription = jest.fn();
+const mockAddEventListener = jest.fn(
+  (_type: string, _handler: (...a: unknown[]) => void) => ({ remove: mockRemoveSubscription }),
+);
+jest.mock('react-native', () => ({
+  AppState: {
+    addEventListener: (type: string, handler: (...a: unknown[]) => void) =>
+      mockAddEventListener(type, handler),
+    currentState: 'active',
+  },
 }));
 
 const mockIsDatabaseInitialized = jest.fn(() => true);
@@ -21,9 +34,16 @@ jest.mock('../mediaDownloadService', () => ({
   downloadAndDecryptMedia: (...args: unknown[]) => mockDownloadAndDecryptMedia(...args),
 }));
 
-import { drainPendingMediaDownloads, schedulePendingMediaDrain } from '../mediaPrefetchService';
+import {
+  drainPendingMediaDownloads,
+  schedulePendingMediaDrain,
+  registerForegroundDrain,
+  clearPrefetchState,
+} from '../mediaPrefetchService';
 
 beforeEach(() => {
+  // Reset module-level state FIRST (review finding — prevents order-dependent tests)
+  clearPrefetchState();
   jest.clearAllMocks();
   jest.useFakeTimers();
   mockIsDatabaseInitialized.mockReturnValue(true);
@@ -95,5 +115,58 @@ describe('schedulePendingMediaDrain', () => {
 
     // Now it should have been called once
     expect(mockGetPendingDownloadsWithKeys).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// clearPrefetchState
+// ---------------------------------------------------------------------------
+
+describe('clearPrefetchState', () => {
+  it('cancels a scheduled drain so it never fires', () => {
+    // Schedule a drain (sets the debounce timer)
+    schedulePendingMediaDrain();
+
+    // Clear state before debounce fires
+    clearPrefetchState();
+
+    // Advance well past the debounce window
+    jest.advanceTimersByTime(5_000);
+
+    // The drain should never have been called
+    expect(mockGetPendingDownloadsWithKeys).not.toHaveBeenCalled();
+  });
+
+  it('removes the AppState subscription and is idempotent on double-clear', () => {
+    // Register the foreground drain (creates subscription)
+    registerForegroundDrain();
+    expect(mockAddEventListener).toHaveBeenCalledWith('change', expect.any(Function));
+
+    // Clear should remove the subscription
+    clearPrefetchState();
+    expect(mockRemoveSubscription).toHaveBeenCalledTimes(1);
+
+    // Double-clear should not throw and should not call remove again
+    mockRemoveSubscription.mockClear();
+    clearPrefetchState();
+    expect(mockRemoveSubscription).not.toHaveBeenCalled();
+  });
+
+  it('resets flags so a new drain works normally after clear', async () => {
+    // Run an initial drain to populate internal state
+    mockGetPendingDownloadsWithKeys.mockReturnValue([{ id: 'before' }]);
+    await drainPendingMediaDownloads();
+    expect(mockDownloadAndDecryptMedia).toHaveBeenCalledWith('before');
+
+    // Clear all state
+    clearPrefetchState();
+    jest.clearAllMocks();
+    mockIsDatabaseInitialized.mockReturnValue(true);
+    mockDownloadAndDecryptMedia.mockResolvedValue('/some/path');
+
+    // A new drain should work normally
+    mockGetPendingDownloadsWithKeys.mockReturnValue([{ id: 'after' }]);
+    await drainPendingMediaDownloads();
+    expect(mockDownloadAndDecryptMedia).toHaveBeenCalledWith('after');
   });
 });

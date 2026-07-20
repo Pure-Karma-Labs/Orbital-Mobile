@@ -49,6 +49,9 @@ export function normalizeLegacyMediaPaths(): void {
       );
     } catch (e) {
       if (__DEV__) {
+        // nosemgrep: github.semgrep-rules.no-console-in-crypto -- __DEV__-only
+        // diagnostic stripped from release builds; logs row id + error message
+        // only, no key material (panel-mandated per-row resilience, PR #593)
         console.warn(
           '[normalizeLegacyMediaPaths] row failed:',
           row.id,

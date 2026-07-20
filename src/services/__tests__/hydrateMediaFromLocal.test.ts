@@ -172,18 +172,46 @@ describe('hydrateMediaFromLocal', () => {
     expect(mockMergeMediaBatch).not.toHaveBeenCalled();
   });
 
-  it('thread-level seeding excludes reply-attached rows (uses getThreadLevelMedia)', () => {
-    // getThreadLevelMedia is called (reply_id IS NULL filter), NOT getMediaForThread
+  it('thread aggregate includes OP items first then reply items (#601)', () => {
     const opMedia = makeRow({ id: 'op-img', thread_id: 'thread-1', reply_id: null });
     mockGetThreadLevelMedia.mockReturnValue([opMedia]);
+    mockGetThreadLevelMediaReplies.mockReturnValue([
+      makeRow({ id: 'r1-img', thread_id: 'thread-1', reply_id: 'reply-1' }),
+    ]);
 
     hydrateMediaFromLocal('thread-1');
 
-    // Verify getThreadLevelMedia was called (not getMediaForThread which has no reply filter)
     expect(mockGetThreadLevelMedia).toHaveBeenCalledWith('thread-1');
     const batchArg: Map<string, { type: string; items: Array<{ id: string }> }> = mockMergeMediaBatch.mock.calls[0][0];
     const threadItems = batchArg.get('thread-1')?.items ?? [];
-    expect(threadItems).toHaveLength(1);
+    // OP item first, then reply item — both in the thread aggregate
+    expect(threadItems).toHaveLength(2);
     expect(threadItems[0].id).toBe('op-img');
+    expect(threadItems[1].id).toBe('r1-img');
+    // Reply also gets its own per-reply entry
+    expect(batchArg.get('reply-1')?.type).toBe('reply');
+  });
+
+  it('mixed state: OP + multiple reply items all appear in thread aggregate (#601)', () => {
+    mockGetThreadLevelMedia.mockReturnValue([
+      makeRow({ id: 'op-1', thread_id: 'thread-1', reply_id: null }),
+    ]);
+    mockGetThreadLevelMediaReplies.mockReturnValue([
+      makeRow({ id: 'r1-img', thread_id: 'thread-1', reply_id: 'reply-1' }),
+      makeRow({ id: 'r2-img', thread_id: 'thread-1', reply_id: 'reply-2' }),
+    ]);
+
+    hydrateMediaFromLocal('thread-1');
+
+    const batchArg: Map<string, { type: string; items: Array<{ id: string }> }> = mockMergeMediaBatch.mock.calls[0][0];
+    const threadItems = batchArg.get('thread-1')?.items ?? [];
+    // All three: OP first, then replies in insertion order
+    expect(threadItems).toHaveLength(3);
+    expect(threadItems[0].id).toBe('op-1');
+    expect(threadItems[1].id).toBe('r1-img');
+    expect(threadItems[2].id).toBe('r2-img');
+    // Per-reply entries still present
+    expect(batchArg.get('reply-1')?.items).toHaveLength(1);
+    expect(batchArg.get('reply-2')?.items).toHaveLength(1);
   });
 });

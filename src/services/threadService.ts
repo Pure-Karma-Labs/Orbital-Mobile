@@ -1137,29 +1137,37 @@ export function hydrateMediaFromLocal(threadId: string): void {
   try {
     const batchMap = new Map<string, { type: 'thread' | 'reply'; items: MediaItem[] }>();
 
-    // Thread-level media (OP only — excludes reply-attached rows)
+    // Thread-level media (OP-attached); reply media is folded in below (#601)
     const threadRows = getThreadLevelMedia(threadId);
     const threadItems = threadRows
       .filter((r) => (r.is_thumbnail ?? 0) === 0)
       .map(mediaRowToItem);
-    if (threadItems.length > 0) {
-      batchMap.set(threadId, { type: 'thread', items: threadItems });
-    }
 
     // Per-reply media (batched join)
     const replyRows = getMediaForThreadReplies(threadId);
     const byReply = new Map<string, MediaItem[]>();
+    const allReplyItems: MediaItem[] = [];
     for (const row of replyRows) {
       if (!row.reply_id) continue;
+      const item = mediaRowToItem(row);
+      allReplyItems.push(item);
       let arr = byReply.get(row.reply_id);
       if (!arr) {
         arr = [];
         byReply.set(row.reply_id, arr);
       }
-      arr.push(mediaRowToItem(row));
+      arr.push(item);
     }
     for (const [replyId, items] of byReply) {
       batchMap.set(replyId, { type: 'reply', items });
+    }
+
+    // Thread aggregate: OP items first, then reply items — matches the
+    // server-path aggregation design ratified for #601. mergeMediaBatch
+    // is Set-deduped so the later server merge stays idempotent.
+    const combinedThreadItems = [...threadItems, ...allReplyItems];
+    if (combinedThreadItems.length > 0) {
+      batchMap.set(threadId, { type: 'thread', items: combinedThreadItems });
     }
 
     if (batchMap.size > 0) {

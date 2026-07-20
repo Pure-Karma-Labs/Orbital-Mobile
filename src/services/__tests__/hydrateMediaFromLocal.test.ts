@@ -14,15 +14,16 @@ jest.mock('../../database/connection', () => ({
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const mockGetMediaForThread = jest.fn<any[], [string]>(() => []);
+const mockGetThreadLevelMedia = jest.fn<any[], [string]>(() => []);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const mockGetMediaForThreadReplies = jest.fn<any[], [string]>(() => []);
+const mockGetThreadLevelMediaReplies = jest.fn<any[], [string]>(() => []);
 
 jest.mock('../../database/repositories/mediaRepository', () => ({
   getMedia: jest.fn(),
   saveMedia: jest.fn(),
-  getMediaForThread: (id: string) => mockGetMediaForThread(id),
-  getMediaForThreadReplies: (id: string) => mockGetMediaForThreadReplies(id),
+  getThreadLevelMedia: (id: string) => mockGetThreadLevelMedia(id),
+  getMediaForThreadReplies: (id: string) => mockGetThreadLevelMediaReplies(id),
+  updateMediaParent: jest.fn(),
 }));
 
 jest.mock('../../database/repositories/threadRepository', () => ({
@@ -107,14 +108,14 @@ function makeRow(overrides: Partial<MediaRow> = {}): MediaRow {
 beforeEach(() => {
   jest.clearAllMocks();
   mockIsDatabaseInitialized.mockReturnValue(true);
-  mockGetMediaForThread.mockReturnValue([]);
-  mockGetMediaForThreadReplies.mockReturnValue([]);
+  mockGetThreadLevelMedia.mockReturnValue([]);
+  mockGetThreadLevelMediaReplies.mockReturnValue([]);
   mockMergeMediaBatch.mockClear();
 });
 
 describe('hydrateMediaFromLocal', () => {
   it('seeds thread-level media into mergeMediaBatch', () => {
-    mockGetMediaForThread.mockReturnValue([makeRow({ id: 'img-1' })]);
+    mockGetThreadLevelMedia.mockReturnValue([makeRow({ id: 'img-1' })]);
 
     hydrateMediaFromLocal('thread-1');
 
@@ -125,7 +126,7 @@ describe('hydrateMediaFromLocal', () => {
   });
 
   it('seeds per-reply media grouped by reply_id', () => {
-    mockGetMediaForThreadReplies.mockReturnValue([
+    mockGetThreadLevelMediaReplies.mockReturnValue([
       makeRow({ id: 'r1-img', reply_id: 'reply-1' }),
       makeRow({ id: 'r2-img', reply_id: 'reply-2' }),
     ]);
@@ -140,7 +141,7 @@ describe('hydrateMediaFromLocal', () => {
   });
 
   it('skips thumbnails', () => {
-    mockGetMediaForThread.mockReturnValue([
+    mockGetThreadLevelMedia.mockReturnValue([
       makeRow({ id: 'thumb', is_thumbnail: 1 }),
       makeRow({ id: 'normal', is_thumbnail: 0 }),
     ]);
@@ -156,12 +157,12 @@ describe('hydrateMediaFromLocal', () => {
   it('no-op when DB is not initialized', () => {
     mockIsDatabaseInitialized.mockReturnValue(false);
     hydrateMediaFromLocal('thread-1');
-    expect(mockGetMediaForThread).not.toHaveBeenCalled();
+    expect(mockGetThreadLevelMedia).not.toHaveBeenCalled();
     expect(mockMergeMediaBatch).not.toHaveBeenCalled();
   });
 
   it('swallows repo throw without propagating', () => {
-    mockGetMediaForThread.mockImplementation(() => { throw new Error('DB busy'); });
+    mockGetThreadLevelMedia.mockImplementation(() => { throw new Error('DB busy'); });
     // Should not throw
     expect(() => hydrateMediaFromLocal('thread-1')).not.toThrow();
   });
@@ -169,5 +170,20 @@ describe('hydrateMediaFromLocal', () => {
   it('no-op (no mergeMediaBatch call) when no media found', () => {
     hydrateMediaFromLocal('thread-1');
     expect(mockMergeMediaBatch).not.toHaveBeenCalled();
+  });
+
+  it('thread-level seeding excludes reply-attached rows (uses getThreadLevelMedia)', () => {
+    // getThreadLevelMedia is called (reply_id IS NULL filter), NOT getMediaForThread
+    const opMedia = makeRow({ id: 'op-img', thread_id: 'thread-1', reply_id: null });
+    mockGetThreadLevelMedia.mockReturnValue([opMedia]);
+
+    hydrateMediaFromLocal('thread-1');
+
+    // Verify getThreadLevelMedia was called (not getMediaForThread which has no reply filter)
+    expect(mockGetThreadLevelMedia).toHaveBeenCalledWith('thread-1');
+    const batchArg: Map<string, { type: string; items: Array<{ id: string }> }> = mockMergeMediaBatch.mock.calls[0][0];
+    const threadItems = batchArg.get('thread-1')?.items ?? [];
+    expect(threadItems).toHaveLength(1);
+    expect(threadItems[0].id).toBe('op-img');
   });
 });

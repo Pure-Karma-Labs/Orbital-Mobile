@@ -21,7 +21,7 @@ import {
 import { useAppStore } from '../stores/useAppStore';
 import { generateUUID } from '../utils/uuid';
 import { base64ToArrayBuffer } from './crypto/utils';
-import { getMedia, saveMedia, getMediaForThread as repoGetMediaForThread, getMediaForThreadReplies } from '../database/repositories/mediaRepository';
+import { getMedia, saveMedia, getThreadLevelMedia, getMediaForThreadReplies, updateMediaParent } from '../database/repositories/mediaRepository';
 import { saveThread as dbSaveThread, saveThreadBatch, getThreadsForConversation } from '../database/repositories/threadRepository';
 import { saveReply as dbSaveReply, saveReplyBatch, getRepliesForThread } from '../database/repositories/replyRepository';
 import { mediaRowToItem } from '../database/repositories/mediaMapper';
@@ -352,6 +352,22 @@ export async function processMediaMetadata(
         store.mergeMediaForThread(parentRef.threadId, existingItems);
       } else {
         store.mergeMediaForReply(parentRef.replyId, existingItems);
+        // Backfill reply_id on DB rows that were first created with thread-only context.
+        // loadThread processes ALL thread media (including reply-attached) with {threadId},
+        // so saveMedia writes reply_id=NULL. When loadReplies later processes the same IDs
+        // with {replyId}, the dedup path fires and the DB association is never persisted
+        // unless we backfill here.
+        if (dbReady) {
+          for (const item of existingItems) {
+            if (item.replyId == null) {
+              try {
+                updateMediaParent(item.id, item.threadId ?? '', parentRef.replyId);
+              } catch {
+                // Best-effort backfill
+              }
+            }
+          }
+        }
       }
     }
     return;
@@ -366,6 +382,14 @@ export async function processMediaMetadata(
       // and avoids overwriting hasKeys/localPath from a successful upload
       const storeItem = (store.media ?? {})[meta.mediaId];
       if (storeItem) {
+        // Backfill reply_id if this call provides a more specific context
+        if ('replyId' in parentRef && storeItem.replyId == null && dbReady) {
+          try {
+            updateMediaParent(storeItem.id, storeItem.threadId ?? '', parentRef.replyId);
+          } catch {
+            // Best-effort backfill
+          }
+        }
         items.push(storeItem);
         continue;
       }
@@ -438,6 +462,15 @@ export async function processMediaMetadata(
           }
         }
         // Row exists with key, or key recovery failed — don't clobber
+        // Backfill reply_id if this call provides a more specific context
+        if ('replyId' in parentRef && existingRow.reply_id == null && dbReady) {
+          try {
+            updateMediaParent(existingRow.id, existingRow.thread_id ?? '', parentRef.replyId);
+            existingRow = { ...existingRow, reply_id: parentRef.replyId };
+          } catch {
+            // Best-effort backfill
+          }
+        }
         items.push(mediaRowToItem(existingRow));
         continue;
       }
@@ -1104,8 +1137,8 @@ export function hydrateMediaFromLocal(threadId: string): void {
   try {
     const batchMap = new Map<string, { type: 'thread' | 'reply'; items: MediaItem[] }>();
 
-    // Thread-level media
-    const threadRows = repoGetMediaForThread(threadId);
+    // Thread-level media (OP only — excludes reply-attached rows)
+    const threadRows = getThreadLevelMedia(threadId);
     const threadItems = threadRows
       .filter((r) => (r.is_thumbnail ?? 0) === 0)
       .map(mediaRowToItem);

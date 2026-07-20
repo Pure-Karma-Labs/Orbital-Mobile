@@ -108,6 +108,19 @@ export function getMediaForThread(threadId: string): MediaRow[] {
   );
 }
 
+/**
+ * Fetch media attached directly to the thread OP (not to any reply).
+ * Used by hydrateMediaFromLocal to seed only the thread-level index —
+ * reply-attached rows carry both thread_id and reply_id and must not
+ * flood the thread gallery.
+ */
+export function getThreadLevelMedia(threadId: string): MediaRow[] {
+  return queryMany<MediaRow>(
+    'SELECT * FROM orbital_media WHERE thread_id = ? AND reply_id IS NULL ORDER BY created_at ASC',
+    [threadId],
+  );
+}
+
 export function getMediaForReply(replyId: string): MediaRow[] {
   return queryMany<MediaRow>(
     'SELECT * FROM orbital_media WHERE reply_id = ? ORDER BY created_at ASC',

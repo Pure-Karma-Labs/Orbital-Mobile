@@ -12,10 +12,12 @@
 
 const mockGetMedia = jest.fn();
 const mockSaveMedia = jest.fn();
+const mockUpdateMediaParent = jest.fn();
 
 jest.mock('../../database/repositories/mediaRepository', () => ({
   getMedia: (...args: unknown[]) => mockGetMedia(...args),
   saveMedia: (...args: unknown[]) => mockSaveMedia(...args),
+  updateMediaParent: (...args: unknown[]) => mockUpdateMediaParent(...args),
 }));
 
 jest.mock('@dr.pogodin/react-native-fs', () => ({
@@ -813,5 +815,136 @@ describe('processMediaMetadata — stale local_path recovery', () => {
     expect(items[0].downloadState).toBe('downloaded');
     // localPath is now resolved through resolveMediaPath (legacy absolute → current MEDIA_DIR)
     expect(items[0].localPath).toBe('/mock/documents/media/existing-file.jpg');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// reply_id backfill — two-pass thread-then-reply processing
+// ---------------------------------------------------------------------------
+
+describe('processMediaMetadata — reply_id backfill', () => {
+  it('backfills reply_id via updateMediaParent in the dedup path', async () => {
+    // First pass: thread context — creates item with replyId=null
+    const meta = makeMediaMetadata({ mediaId: 'media-shared-1' });
+    await processMediaMetadata([meta], fakeGroupKey, fakeGroupId, { threadId: 'thread-1' });
+
+    // Item is now in processedMediaIds and store
+    expect(mockMergeMediaForThread).toHaveBeenCalledTimes(1);
+
+    // Simulate the store having the item after the first pass
+    const firstPassItem = mockMergeMediaForThread.mock.calls[0][1][0];
+    mockStoreMedia = { 'media-shared-1': firstPassItem };
+
+    // Second pass: reply context — same media ID, more specific context
+    // The dedup path fires (all items already processed)
+    await processMediaMetadata([meta], fakeGroupKey, fakeGroupId, { replyId: 'reply-1' });
+
+    // Should merge into reply index
+    expect(mockMergeMediaForReply).toHaveBeenCalledTimes(1);
+    expect(mockMergeMediaForReply).toHaveBeenCalledWith('reply-1', expect.any(Array));
+
+    // Should backfill reply_id in DB via updateMediaParent
+    expect(mockUpdateMediaParent).toHaveBeenCalledWith(
+      'media-shared-1',
+      'thread-1',  // threadId from the existing store item
+      'reply-1',   // replyId from the new context
+    );
+  });
+
+  it('backfills reply_id on store-first path for unprocessed items', async () => {
+    // Pre-seed store with an item that has replyId=null
+    const existingItem = {
+      id: 'media-store-1',
+      threadId: 'thread-1',
+      replyId: null,
+      contentType: 'image/jpeg',
+      fileName: 'photo.jpg',
+      fileSize: 1000,
+      width: 640, height: 480,
+      duration: null, blurHash: null,
+      localPath: null, thumbnailPath: null,
+      downloadState: 'pending' as const,
+      uploadState: 'done' as const,
+      expiresAt: null,
+      hasKeys: true,
+      thumbnailMediaId: null,
+      isThumbnail: false,
+    };
+    mockStoreMedia = { 'media-store-1': existingItem };
+
+    // Process with reply context — store-first path finds the item
+    const meta = makeMediaMetadata({ mediaId: 'media-store-1' });
+    await processMediaMetadata([meta], fakeGroupKey, fakeGroupId, { replyId: 'reply-2' });
+
+    // Should backfill reply_id in DB
+    expect(mockUpdateMediaParent).toHaveBeenCalledWith(
+      'media-store-1',
+      'thread-1',
+      'reply-2',
+    );
+  });
+
+  it('backfills reply_id on existing-DB-row path', async () => {
+    // DB row has reply_id=null (created by thread-context first pass)
+    const row = makeMediaRow({
+      id: 'media-db-1',
+      thread_id: 'thread-1',
+      reply_id: null,
+      attachment_key: new Uint8Array(64).fill(0xBB),
+    });
+    mockGetMedia.mockReturnValue(row);
+
+    const meta = makeMediaMetadata({ mediaId: 'media-db-1' });
+    await processMediaMetadata([meta], fakeGroupKey, fakeGroupId, { replyId: 'reply-3' });
+
+    // Should backfill reply_id in DB
+    expect(mockUpdateMediaParent).toHaveBeenCalledWith(
+      'media-db-1',
+      'thread-1',
+      'reply-3',
+    );
+
+    // The merged item should reflect the backfilled reply_id
+    const items = mockMergeMediaForReply.mock.calls[0][1];
+    expect(items[0].replyId).toBe('reply-3');
+  });
+
+  it('does NOT backfill when context is thread-only', async () => {
+    const row = makeMediaRow({
+      id: 'media-thread-only',
+      thread_id: 'thread-1',
+      reply_id: null,
+      attachment_key: new Uint8Array(64).fill(0xAA),
+    });
+    mockGetMedia.mockReturnValue(row);
+
+    const meta = makeMediaMetadata({ mediaId: 'media-thread-only' });
+    await processMediaMetadata([meta], fakeGroupKey, fakeGroupId, { threadId: 'thread-1' });
+
+    // Should NOT call updateMediaParent — context is thread, not reply
+    expect(mockUpdateMediaParent).not.toHaveBeenCalled();
+  });
+
+  it('two-pass thread-then-reply ends with correct placement in both indexes', async () => {
+    const meta = makeMediaMetadata({ mediaId: 'media-two-pass' });
+
+    // Pass 1: thread context
+    await processMediaMetadata([meta], fakeGroupKey, fakeGroupId, { threadId: 'thread-1' });
+    expect(mockMergeMediaForThread).toHaveBeenCalledWith('thread-1', expect.any(Array));
+
+    // Simulate store having the item after pass 1
+    const firstPassItem = mockMergeMediaForThread.mock.calls[0][1][0];
+    mockStoreMedia = { 'media-two-pass': firstPassItem };
+
+    // Pass 2: reply context
+    await processMediaMetadata([meta], fakeGroupKey, fakeGroupId, { replyId: 'reply-4' });
+    expect(mockMergeMediaForReply).toHaveBeenCalledWith('reply-4', expect.any(Array));
+
+    // Both indexes populated
+    expect(mockMergeMediaForThread).toHaveBeenCalledTimes(1);
+    expect(mockMergeMediaForReply).toHaveBeenCalledTimes(1);
+
+    // DB backfill happened
+    expect(mockUpdateMediaParent).toHaveBeenCalledWith('media-two-pass', 'thread-1', 'reply-4');
   });
 });

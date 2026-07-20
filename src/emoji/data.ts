@@ -3,7 +3,7 @@
  *
  * Loads emoji-datasource/emoji.json and builds lookup maps for efficient
  * emoji rendering and text parsing. Used by the Emoji and EmojiText components
- * to resolve Unicode emoji to OpenMoji sprite sheet positions.
+ * to resolve Unicode emoji to per-emoji assets via the generated assetMap.
  */
 
 import { URL_PATTERN_SOURCE, stripFormatChars } from '../utils/urlPattern';
@@ -20,8 +20,6 @@ export interface EmojiDataEntry {
   unified: string;
   non_qualified: string | null;
   image: string;
-  sheet_x: number;
-  sheet_y: number;
   short_name: string;
   short_names: string[];
   text: string | null;
@@ -40,19 +38,6 @@ export type TextSegment = { type: 'text'; value: string };
 export type EmojiSegment = { type: 'emoji'; value: string; unified: string };
 export type LinkSegment = { type: 'link'; value: string; url: string };
 export type RichTextSegment = TextSegment | EmojiSegment | LinkSegment;
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/** Number of columns in the sprite sheet grid */
-export const SHEET_COLUMNS = 62;
-
-/** Cell size for the 32px sprite sheet (32px emoji + 2px margin = 34px) */
-export const CELL_SIZE_32 = 34;
-
-/** Cell size for the 64px sprite sheet (64px emoji + 2px margin = 66px) */
-export const CELL_SIZE_64 = 66;
 
 // ---------------------------------------------------------------------------
 // Lookup Maps (built once at module load)

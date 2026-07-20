@@ -2,7 +2,7 @@
  * EmojiText component — renders text with inline OpenMoji emoji and tappable URLs.
  *
  * Parses the children string for Unicode emoji characters and URLs, replaces emoji
- * with inline <Emoji> components rendered from the OpenMoji sprite sheet, and
+ * with inline <Emoji> components rendered from per-emoji WebP assets, and
  * renders URLs as tappable blue underlined links.
  *
  * Uses <View> inside <Text> for inline emoji rendering. The Emoji views

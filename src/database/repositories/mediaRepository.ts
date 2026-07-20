@@ -109,10 +109,9 @@ export function getMediaForThread(threadId: string): MediaRow[] {
 }
 
 /**
- * Fetch media attached directly to the thread OP (not to any reply).
- * Used by hydrateMediaFromLocal to seed only the thread-level index —
- * reply-attached rows carry both thread_id and reply_id and must not
- * flood the thread gallery.
+ * Fetch OP-attached media only; hydrateMediaFromLocal supplements this
+ * with reply media via getMediaForThreadReplies to match the server-path
+ * aggregation.
  */
 export function getThreadLevelMedia(threadId: string): MediaRow[] {
   return queryMany<MediaRow>(

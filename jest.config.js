@@ -15,6 +15,7 @@ module.exports = {
     '!src/types/**',
     '!src/**/index.ts',
     '!src/navigation/types.ts',
+    '!src/emoji/assetMap.ts',
   ],
   coverageThreshold: {
     global: {

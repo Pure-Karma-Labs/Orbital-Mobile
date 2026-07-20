@@ -63,7 +63,26 @@ jobs:
       #   (a) the codegen'd TypeScript map changes (wrong keys, wrong paths)
       #   (b) a different number of assets is produced (missing/extra emoji)
       # Both are caught without touching binary content.
+      # Gated to changes that can actually cause drift (generator, emoji
+      # data/map, deps, or the assets themselves) so unrelated PRs don't pay
+      # the ~1min sharp rasterization cost. Mirrors the pod-filter pattern
+      # below. Push builds on main always run it (event gate on the filter).
+      - name: Emoji drift filter
+        id: emoji-filter
+        if: github.event_name == 'pull_request'
+        # SHA-pinned: 7b450fff21473bca461d4b92ce414b9d0420d706 = v4.0.2
+        uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
+        with:
+          filters: |
+            emoji:
+              - 'scripts/generate-emoji-assets.mjs'
+              - 'src/emoji/**'
+              - 'assets/emoji/**'
+              - 'package.json'
+              - 'package-lock.json'
+
       - name: Emoji asset drift check
+        if: github.event_name != 'pull_request' || steps.emoji-filter.outputs.emoji == 'true'
         run: |
           npm run generate:emoji
           # (a) Map text must be unchanged — catches codegen/key-naming drift

@@ -9,7 +9,7 @@
  * Drain logic:
  * - Queries DB for pending downloads WITH keys+digest (excludes keyless, digestless,
  *   failed, unavailable, downloaded)
- * - Images first, then videos, oldest first
+ * - Excludes video parent rows until #458 PR 3 (thumbnails still drain); oldest first
  * - Batch limit ~25
  * - Fires downloadAndDecryptMedia per item — service semaphore (max 3) + inflight
  *   dedup throttle; 404s self-classify to 'unavailable' via W4 and drop out of

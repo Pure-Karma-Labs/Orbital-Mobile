@@ -179,35 +179,35 @@ describe('mediaSlice — initial state', () => {
 });
 
 // ---------------------------------------------------------------------------
-// setMediaForThread
+// mergeMediaForThread
 // ---------------------------------------------------------------------------
 
-describe('mediaSlice — setMediaForThread', () => {
+describe('mediaSlice — mergeMediaForThread', () => {
   it('populates media map and thread index', () => {
     const store = makeStore();
     const item = makeMediaItem({ id: 'media-1' });
-    store.getState().setMediaForThread('thread-1', [item]);
+    store.getState().mergeMediaForThread('thread-1', [item]);
 
     const state = store.getState();
     expect(state.media['media-1']).toEqual(item);
     expect(state.mediaIdsByThread['thread-1']).toEqual(['media-1']);
   });
 
-  it('replaces existing thread index with new list', () => {
+  it('unions new items into existing thread index (not replace)', () => {
     const store = makeStore();
     const item1 = makeMediaItem({ id: 'media-1' });
     const item2 = makeMediaItem({ id: 'media-2' });
-    store.getState().setMediaForThread('thread-1', [item1]);
-    store.getState().setMediaForThread('thread-1', [item2]);
+    store.getState().mergeMediaForThread('thread-1', [item1]);
+    store.getState().mergeMediaForThread('thread-1', [item2]);
 
-    expect(store.getState().mediaIdsByThread['thread-1']).toEqual(['media-2']);
+    expect(store.getState().mediaIdsByThread['thread-1']).toEqual(['media-1', 'media-2']);
   });
 
   it('handles multiple items in one call', () => {
     const store = makeStore();
     const item1 = makeMediaItem({ id: 'media-1' });
     const item2 = makeMediaItem({ id: 'media-2' });
-    store.getState().setMediaForThread('thread-1', [item1, item2]);
+    store.getState().mergeMediaForThread('thread-1', [item1, item2]);
 
     const state = store.getState();
     expect(state.mediaIdsByThread['thread-1']).toEqual(['media-1', 'media-2']);
@@ -219,8 +219,8 @@ describe('mediaSlice — setMediaForThread', () => {
     const store = makeStore();
     const item1 = makeMediaItem({ id: 'media-1' });
     const item2 = makeMediaItem({ id: 'media-2' });
-    store.getState().setMediaForThread('thread-1', [item1]);
-    store.getState().setMediaForThread('thread-2', [item2]);
+    store.getState().mergeMediaForThread('thread-1', [item1]);
+    store.getState().mergeMediaForThread('thread-2', [item2]);
 
     expect(store.getState().mediaIdsByThread['thread-1']).toEqual(['media-1']);
     expect(store.getState().mediaIdsByThread['thread-2']).toEqual(['media-2']);
@@ -228,35 +228,35 @@ describe('mediaSlice — setMediaForThread', () => {
 });
 
 // ---------------------------------------------------------------------------
-// setMediaForReply
+// mergeMediaForReply
 // ---------------------------------------------------------------------------
 
-describe('mediaSlice — setMediaForReply', () => {
+describe('mediaSlice — mergeMediaForReply', () => {
   it('populates media map and reply index', () => {
     const store = makeStore();
     const item = makeMediaItem({ id: 'media-1', threadId: null, replyId: 'reply-1' });
-    store.getState().setMediaForReply('reply-1', [item]);
+    store.getState().mergeMediaForReply('reply-1', [item]);
 
     const state = store.getState();
     expect(state.media['media-1']).toEqual(item);
     expect(state.mediaIdsByReply['reply-1']).toEqual(['media-1']);
   });
 
-  it('replaces existing reply index with new list', () => {
+  it('unions new items into existing reply index (not replace)', () => {
     const store = makeStore();
     const item1 = makeMediaItem({ id: 'media-1', threadId: null, replyId: 'reply-1' });
     const item2 = makeMediaItem({ id: 'media-2', threadId: null, replyId: 'reply-1' });
-    store.getState().setMediaForReply('reply-1', [item1]);
-    store.getState().setMediaForReply('reply-1', [item2]);
+    store.getState().mergeMediaForReply('reply-1', [item1]);
+    store.getState().mergeMediaForReply('reply-1', [item2]);
 
-    expect(store.getState().mediaIdsByReply['reply-1']).toEqual(['media-2']);
+    expect(store.getState().mediaIdsByReply['reply-1']).toEqual(['media-1', 'media-2']);
   });
 
   it('handles multiple items in one call', () => {
     const store = makeStore();
     const item1 = makeMediaItem({ id: 'media-1', threadId: null, replyId: 'reply-1' });
     const item2 = makeMediaItem({ id: 'media-2', threadId: null, replyId: 'reply-1' });
-    store.getState().setMediaForReply('reply-1', [item1, item2]);
+    store.getState().mergeMediaForReply('reply-1', [item1, item2]);
 
     expect(store.getState().mediaIdsByReply['reply-1']).toEqual(['media-1', 'media-2']);
   });
@@ -417,7 +417,7 @@ describe('mediaSlice — removeMedia', () => {
   it('removes item from media map and thread index', () => {
     const store = makeStore();
     const item = makeMediaItem({ id: 'media-1', threadId: 'thread-1', replyId: null });
-    store.getState().setMediaForThread('thread-1', [item]);
+    store.getState().mergeMediaForThread('thread-1', [item]);
 
     store.getState().removeMedia('media-1');
 
@@ -429,7 +429,7 @@ describe('mediaSlice — removeMedia', () => {
   it('removes item from media map and reply index', () => {
     const store = makeStore();
     const item = makeMediaItem({ id: 'media-1', threadId: null, replyId: 'reply-1' });
-    store.getState().setMediaForReply('reply-1', [item]);
+    store.getState().mergeMediaForReply('reply-1', [item]);
 
     store.getState().removeMedia('media-1');
 
@@ -464,7 +464,7 @@ describe('mediaSlice — removeMedia', () => {
     const store = makeStore();
     const item1 = makeMediaItem({ id: 'media-1', threadId: 'thread-1', replyId: null });
     const item2 = makeMediaItem({ id: 'media-2', threadId: 'thread-1', replyId: null });
-    store.getState().setMediaForThread('thread-1', [item1, item2]);
+    store.getState().mergeMediaForThread('thread-1', [item1, item2]);
 
     store.getState().removeMedia('media-1');
 

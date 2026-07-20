@@ -172,12 +172,14 @@ describe('downloadAndDecryptMedia', () => {
 
     // Verify state updates
     expect(mockUpdateDownloadState).toHaveBeenCalledWith(FAKE_MEDIA_ID, 'downloading');
+    // DB gets relative path
     expect(mockUpdateDownloadState).toHaveBeenCalledWith(
       FAKE_MEDIA_ID,
       'downloaded',
-      '/tmp/test-docs/media/a1b2c3d4-e5f6-7890-abcd-ef1234567890.jpg',
+      'media/a1b2c3d4-e5f6-7890-abcd-ef1234567890.jpg',
     );
     expect(mockUpdateMediaDownloadState).toHaveBeenCalledWith(FAKE_MEDIA_ID, 'downloading');
+    // Store gets absolute path
     expect(mockUpdateMediaDownloadState).toHaveBeenCalledWith(
       FAKE_MEDIA_ID,
       'downloaded',

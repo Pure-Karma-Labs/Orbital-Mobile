@@ -260,6 +260,20 @@ export const MediaItemView = React.memo(function MediaItemView({
     );
   }
 
+  // Unavailable — server purged, no local copy (D10: local copy always wins)
+  if (downloadState === 'unavailable' && !localPath) {
+    return (
+      <View
+        style={placeholderStyle}
+        testID={`media-item-${mediaId}-unavailable`}
+      >
+        <Text style={placeholderTextStyle}>
+          {'No longer available\n— ask the poster to re-share'}
+        </Text>
+      </View>
+    );
+  }
+
   // Failed — tap to retry
   if (downloadState === 'failed') {
     return (

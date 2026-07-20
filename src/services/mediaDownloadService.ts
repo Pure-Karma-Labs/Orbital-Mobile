@@ -34,8 +34,9 @@ import {
   moveFile,
   unlink,
   readDir,
-  DocumentDirectoryPath,
 } from '@dr.pogodin/react-native-fs';
+import { NotFoundError } from './api/errors';
+import { MEDIA_DIR, toStoredMediaPath, resolveMediaPath } from './media/mediaPaths';
 import type { MediaRow } from '../database/repositories/mediaRepository';
 
 // ---------------------------------------------------------------------------
@@ -47,9 +48,6 @@ const MAX_CONCURRENT = 3;
 
 /** Sentinel error message for abort-path rejections */
 export const DOWNLOAD_ABORTED_MESSAGE = 'Download aborted';
-
-/** Media directory path */
-const MEDIA_DIR = `${DocumentDirectoryPath}/media`;
 
 // ---------------------------------------------------------------------------
 // Semaphore — limits concurrent downloads to MAX_CONCURRENT
@@ -131,7 +129,8 @@ export async function recoverStalePaths(
     try {
       const fileExists = await exists(expectedPath);
       if (fileExists) {
-        updateDownloadState(row.id, 'downloaded', expectedPath);
+        // DB stores relative; store keeps absolute
+        updateDownloadState(row.id, 'downloaded', toStoredMediaPath(expectedPath) ?? undefined);
         useAppStore
           .getState()
           .updateMediaDownloadState(row.id, 'downloaded', expectedPath);
@@ -169,8 +168,11 @@ export async function downloadAndDecryptMedia(
   }
 
   if (row?.local_path) {
-    const fileExists = await exists(row.local_path);
-    if (fileExists) return row.local_path;
+    const resolvedPath = resolveMediaPath(row.local_path);
+    if (resolvedPath) {
+      const fileExists = await exists(resolvedPath);
+      if (fileExists) return resolvedPath;
+    }
     // File missing — reset state and re-download
   }
 
@@ -238,19 +240,31 @@ export async function downloadAndDecryptMedia(
       await unlink(finalPath).catch(() => {});
       await moveFile(tmpPath, finalPath);
 
-      // 9. Persist → 'downloaded' + localPath
+      // 9. Persist → 'downloaded' + localPath (DB relative, store absolute)
       try {
-        updateDownloadState(mediaId, 'downloaded', finalPath);
-      } catch {
-        // DB may not be initialized
+        updateDownloadState(mediaId, 'downloaded', toStoredMediaPath(finalPath) ?? undefined);
+      } catch (dbErr) {
+        // DB write retry-once + warn (D11)
+        try {
+          updateDownloadState(mediaId, 'downloaded', toStoredMediaPath(finalPath) ?? undefined);
+        } catch {
+          if (__DEV__) {
+            console.warn('[downloadAndDecryptMedia] DB write failed after retry:', dbErr instanceof Error ? dbErr.message : dbErr);
+          }
+        }
       }
       useAppStore.getState().updateMediaDownloadState(mediaId, 'downloaded', finalPath);
 
       return finalPath;
     } catch (e) {
       // Aborted downloads restore to 'pending' (self-healing for windowing);
+      // NotFoundError (404) → 'unavailable' (server purged, no retry);
       // genuine failures land on 'failed' as before.
-      const nextState = signal?.aborted ? 'pending' : 'failed';
+      const nextState: 'pending' | 'failed' | 'unavailable' = signal?.aborted
+        ? 'pending'
+        : e instanceof NotFoundError
+          ? 'unavailable'
+          : 'failed';
 
       try {
         updateDownloadState(mediaId, nextState);
@@ -319,7 +333,9 @@ export async function isMediaCached(mediaId: string): Promise<boolean> {
     return false;
   }
   if (!row?.local_path) return false;
-  return exists(row.local_path);
+  const resolved = resolveMediaPath(row.local_path);
+  if (!resolved) return false;
+  return exists(resolved);
 }
 
 // ---------------------------------------------------------------------------
@@ -379,12 +395,13 @@ export async function cleanupOrphanedMedia(): Promise<void> {
 
         // 1b. Row exists, file on disk, but DB state is stale (failed/pending) —
         // recover by updating DB to 'downloaded' with the actual file path.
+        // Also auto-promotes unavailable+file-on-disk → downloaded (D10).
         if (
           row.download_state !== 'downloaded' &&
           row.download_state !== 'downloading'
         ) {
           try {
-            updateDownloadState(row.id, 'downloaded', file.path);
+            updateDownloadState(row.id, 'downloaded', toStoredMediaPath(file.path) ?? undefined);
             useAppStore
               .getState()
               .updateMediaDownloadState(row.id, 'downloaded', file.path);
@@ -411,7 +428,12 @@ export async function cleanupOrphanedMedia(): Promise<void> {
     for (const row of rows) {
       try {
         if (row.local_path) {
-          const fileExists = await exists(row.local_path);
+          const resolved = resolveMediaPath(row.local_path);
+          if (!resolved) {
+            updateDownloadState(row.id, 'pending');
+            continue;
+          }
+          const fileExists = await exists(resolved);
           if (!fileExists) {
             updateDownloadState(row.id, 'pending');
           }

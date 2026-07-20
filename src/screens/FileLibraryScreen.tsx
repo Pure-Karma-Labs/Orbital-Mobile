@@ -41,7 +41,7 @@ import {
 } from '../database/repositories/mediaRepository';
 import { isDatabaseInitialized } from '../database/connection';
 import { downloadAndDecryptMedia, recoverStalePaths } from '../services/mediaDownloadService';
-import { DocumentDirectoryPath } from '@dr.pogodin/react-native-fs';
+import { MEDIA_DIR, resolveMediaPath } from '../services/media/mediaPaths';
 import { getGroupQuota } from '../services/api/groups';
 import type { GroupQuotaResponse } from '../types/api';
 import type { SettingsStackParamList } from '../navigation/types';
@@ -90,12 +90,13 @@ const FileLibraryCell = React.memo(function FileLibraryCell({
   const theme = useTheme();
   const storeItem = useAppStore((s) => s.media[row.id]);
   const downloadState = storeItem?.downloadState ?? row.download_state;
-  const localPath = storeItem?.localPath ?? row.local_path;
+  const localPath = storeItem?.localPath ?? resolveMediaPath(row.local_path);
 
   const isImage = row.content_type.startsWith('image/');
   const isVideo = row.content_type.startsWith('video/');
   const isDownloaded = downloadState === 'downloaded' && localPath;
   const isDownloading = downloadState === 'downloading';
+  const isUnavailable = downloadState === 'unavailable';
 
   const handlePress = useCallback(() => {
     onPress(row);
@@ -164,6 +165,15 @@ const FileLibraryCell = React.memo(function FileLibraryCell({
           <Text style={iconTextStyle}>{ext}</Text>
         </View>
       </Pressable>
+    );
+  }
+
+  // [panel M2] Unavailable — non-pressable "No longer available" tile
+  if (isUnavailable && !localPath) {
+    return (
+      <View style={overlayStyle} testID={`file-cell-${row.id}-unavailable`}>
+        <Text style={iconTextStyle}>{'No longer available'}</Text>
+      </View>
     );
   }
 
@@ -260,7 +270,7 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
           prev.map((r) => {
             if (!recoveredIds.includes(r.id)) return r;
             const ext = r.file_name?.split('.').pop() ?? 'dat';
-            return { ...r, download_state: 'downloaded', local_path: `${DocumentDirectoryPath}/media/${r.id}.${ext}` };
+            return { ...r, download_state: 'downloaded', local_path: `${MEDIA_DIR}/${r.id}.${ext}` };
           }),
         );
       });
@@ -344,8 +354,8 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
         return;
       }
 
-      if (dlState === 'downloading') {
-        // Already in progress — do nothing
+      if (dlState === 'downloading' || dlState === 'unavailable') {
+        // Already in progress or unavailable — do nothing
         return;
       }
 

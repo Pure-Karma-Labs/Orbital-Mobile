@@ -14,56 +14,111 @@ export const createMediaSlice: StateCreator<
 
   // Actions
 
-  setMediaForThread: (threadId, items) => {
-    const { media } = get();
+  mergeMediaForThread: (threadId, items) => {
+    const { media, mediaIdsByThread } = get();
     const updated = { ...media };
-    const ids: string[] = [];
+    const existingIds = mediaIdsByThread[threadId] ?? [];
+    const seen = new Set<string>(existingIds);
+    const mergedIds = [...existingIds];
     for (const item of items) {
       const existing = updated[item.id];
       if (existing?.downloadState === 'downloading') {
-        ids.push(item.id);
+        if (!seen.has(item.id)) {
+          mergedIds.push(item.id);
+          seen.add(item.id);
+        }
         continue;
       }
       updated[item.id] = item;
-      ids.push(item.id);
+      if (!seen.has(item.id)) {
+        mergedIds.push(item.id);
+        seen.add(item.id);
+      }
     }
     set(
       {
         media: updated,
         mediaIdsByThread: {
           ...get().mediaIdsByThread,
-          [threadId]: ids,
+          [threadId]: mergedIds,
         },
       },
       false,
-      'media/setMediaForThread',
+      'media/mergeMediaForThread',
     );
   },
 
-  setMediaForReply: (replyId, items) => {
-    const { media } = get();
+  mergeMediaForReply: (replyId, items) => {
+    const { media, mediaIdsByReply } = get();
     const updated = { ...media };
-    const ids: string[] = [];
+    const existingIds = mediaIdsByReply[replyId] ?? [];
+    const seen = new Set<string>(existingIds);
+    const mergedIds = [...existingIds];
     for (const item of items) {
       const existing = updated[item.id];
       if (existing?.downloadState === 'downloading') {
-        ids.push(item.id);
+        if (!seen.has(item.id)) {
+          mergedIds.push(item.id);
+          seen.add(item.id);
+        }
         continue;
       }
       updated[item.id] = item;
-      ids.push(item.id);
+      if (!seen.has(item.id)) {
+        mergedIds.push(item.id);
+        seen.add(item.id);
+      }
     }
     set(
       {
         media: updated,
         mediaIdsByReply: {
           ...get().mediaIdsByReply,
-          [replyId]: ids,
+          [replyId]: mergedIds,
         },
       },
       false,
-      'media/setMediaForReply',
+      'media/mergeMediaForReply',
     );
+  },
+
+  mergeMediaBatch: (byParent) => {
+    set((state) => {
+      const updatedMedia = { ...state.media };
+      const updatedThreadIndex = { ...state.mediaIdsByThread };
+      const updatedReplyIndex = { ...state.mediaIdsByReply };
+
+      for (const [parentId, { type, items }] of byParent) {
+        const indexMap = type === 'thread' ? updatedThreadIndex : updatedReplyIndex;
+        const existingIds = indexMap[parentId] ?? [];
+        const seen = new Set<string>(existingIds);
+        const mergedIds = [...existingIds];
+
+        for (const item of items) {
+          const existing = updatedMedia[item.id];
+          if (existing?.downloadState === 'downloading') {
+            if (!seen.has(item.id)) {
+              mergedIds.push(item.id);
+              seen.add(item.id);
+            }
+            continue;
+          }
+          updatedMedia[item.id] = item;
+          if (!seen.has(item.id)) {
+            mergedIds.push(item.id);
+            seen.add(item.id);
+          }
+        }
+
+        indexMap[parentId] = mergedIds;
+      }
+
+      return {
+        media: updatedMedia,
+        mediaIdsByThread: updatedThreadIndex,
+        mediaIdsByReply: updatedReplyIndex,
+      };
+    }, false, 'media/mergeMediaBatch');
   },
 
   setMediaBatch: (items) => {

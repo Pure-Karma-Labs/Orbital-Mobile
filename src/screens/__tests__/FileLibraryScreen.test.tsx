@@ -401,6 +401,45 @@ describe('FileLibraryScreen — cell press interactions', () => {
   });
 });
 
+describe('FileLibraryScreen — unavailable tile states', () => {
+  it('renders non-pressable "No longer available" tile when unavailable + no localPath', () => {
+    mockMedia['media-1'] = { downloadState: 'unavailable', localPath: null };
+
+    const renderer = renderScreen();
+
+    // The unavailable tile should be present
+    expect(() => findByTestId(renderer.root, 'file-cell-media-1-unavailable')).not.toThrow();
+    const tile = findByTestId(renderer.root, 'file-cell-media-1-unavailable');
+
+    // Should contain 'No longer available' text
+    const texts = tile.findAllByType('Text' as unknown as React.ComponentType);
+    const textContent = texts.map(t => {
+      const children = t.props.children;
+      return typeof children === 'string' ? children : '';
+    }).join(' ');
+    expect(textContent).toContain('No longer available');
+
+    delete mockMedia['media-1'];
+  });
+
+  it('renders download-prompt tile (not unavailable) when unavailable + localPath present', () => {
+    mockMedia['media-1'] = { downloadState: 'unavailable', localPath: '/some/local/file.jpg' };
+
+    const renderer = renderScreen();
+
+    // The unavailable tile should NOT be present (localPath exists -> falls through)
+    const unavailableTiles = findAllByTestId(renderer.root, 'file-cell-media-1-unavailable');
+    expect(unavailableTiles.length).toBe(0);
+
+    // The pressable download-prompt tile should be present
+    // (isDownloaded requires downloadState === 'downloaded', so this falls through
+    //  past the unavailable guard to the download-prompt branch)
+    expect(() => findByTestId(renderer.root, 'file-cell-media-1')).not.toThrow();
+
+    delete mockMedia['media-1'];
+  });
+});
+
 describe('FileLibraryScreen — empty state', () => {
   it('shows empty state when no media is available', () => {
     const { getAllMedia } = require('../../database/repositories/mediaRepository');

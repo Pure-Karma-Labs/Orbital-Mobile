@@ -46,6 +46,7 @@ import {
 } from '@dr.pogodin/react-native-fs';
 import { clearAll as clearSecureStorage } from './secure-storage';
 import { syncBlockedUsers } from './blockedUsersSync';
+import { clearPrefetchState } from './mediaPrefetchService';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -340,6 +341,9 @@ export async function localWipe({ preserveIdentity }: { preserveIdentity: boolea
   }
   try { clearAvatarServiceState(); } catch {
     if (__DEV__) console.warn('[LocalWipe] clearAvatarServiceState failed');
+  }
+  try { clearPrefetchState(); } catch {
+    if (__DEV__) console.warn('[LocalWipe] clearPrefetchState failed');
   }
   try { clearAllThreads(); } catch {
     if (__DEV__) console.warn('[LocalWipe] clearAllThreads failed');

@@ -9,7 +9,7 @@
  * Drain logic:
  * - Queries DB for pending downloads WITH keys+digest (excludes keyless, digestless,
  *   failed, unavailable, downloaded)
- * - Images first, then videos, oldest first
+ * - Excludes video parent rows until #458 PR 3 (thumbnails still drain); oldest first
  * - Batch limit ~25
  * - Fires downloadAndDecryptMedia per item — service semaphore (max 3) + inflight
  *   dedup throttle; 404s self-classify to 'unavailable' via W4 and drop out of
@@ -126,4 +126,27 @@ export function unregisterForegroundDrain(): void {
     appStateSubscription.remove();
     appStateSubscription = null;
   }
+}
+
+/**
+ * Reset all module-level prefetch state. Called from `localWipe()` on logout.
+ *
+ * Clears flags (`draining`, `rerunRequested`), cancels the debounce timer,
+ * and removes the AppState foreground-drain subscription.
+ *
+ * **Mid-flight drain semantics:** If a `drainPendingMediaDownloads()` batch is
+ * already executing when this is called, the in-flight `Promise.all` will still
+ * complete (the network requests are already dispatched). However, because
+ * `draining` is reset to `false`, the completion handler will skip the rerun
+ * branch. At worst, one overlapping drain could start post-login, bounded by
+ * the `isDatabaseInitialized()` guard.
+ */
+export function clearPrefetchState(): void {
+  draining = false;
+  rerunRequested = false;
+  if (debounceTimer !== null) {
+    clearTimeout(debounceTimer);
+    debounceTimer = null;
+  }
+  unregisterForegroundDrain();
 }

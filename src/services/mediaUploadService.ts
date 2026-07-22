@@ -546,6 +546,7 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
         duration: duration != null ? Math.round(duration * 1000) : null,
         thumbnail_media_id: thumbnailResult?.mediaId ?? null,
         is_thumbnail: _isThumbnail ? 1 : 0,
+        archive_confirmed: 1,
       },
     );
     mediaRow.local_path = savedLocalPath ? toStoredMediaPath(savedLocalPath) : null;
@@ -671,6 +672,7 @@ function buildMediaRow(
     duration?: number | null;
     thumbnail_media_id?: string | null;
     is_thumbnail?: number;
+    archive_confirmed?: number;
   },
 ): MediaRow {
   return {
@@ -697,6 +699,7 @@ function buildMediaRow(
     created_at: Date.now(),
     thumbnail_media_id: extras?.thumbnail_media_id ?? null,
     is_thumbnail: extras?.is_thumbnail ?? 0,
+    archive_confirmed: extras?.archive_confirmed ?? 0,
   };
 }
 

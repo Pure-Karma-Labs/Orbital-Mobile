@@ -10,6 +10,9 @@ import {
   updateUploadState,
   getPendingDownloads,
   deleteMedia,
+  getUnconfirmedDownloadedMedia,
+  setArchiveConfirmed,
+  clearAllArchiveConfirmations,
 } from '../../repositories/mediaRepository';
 import type { MediaRow } from '../../repositories/mediaRepository';
 
@@ -60,7 +63,7 @@ describe('mediaRepository', () => {
   });
 
   describe('saveMedia', () => {
-    it('executes INSERT OR REPLACE with all 23 columns', () => {
+    it('executes INSERT OR REPLACE with all 24 columns', () => {
       const executeSync = jest.fn(() => ({ rows: [], rowsAffected: 1 }));
       makeDb(executeSync);
       saveMedia(sampleMedia);
@@ -90,8 +93,34 @@ describe('mediaRepository', () => {
           1700000000000,
           null,
           0,
+          0,
         ],
       );
+    });
+
+    it('defaults archive_confirmed to 0 when not provided', () => {
+      const executeSync = jest.fn((_sql: string, _params?: unknown[]) => ({ rows: [], rowsAffected: 1 }));
+      makeDb(executeSync);
+      saveMedia(sampleMedia);
+      const insertCall = executeSync.mock.calls.find(
+        (c) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT'),
+      ) as unknown as [string, unknown[]];
+      expect(insertCall).toBeDefined();
+      const params = insertCall[1];
+      // archive_confirmed is the last param
+      expect(params[params.length - 1]).toBe(0);
+    });
+
+    it('passes archive_confirmed value when provided', () => {
+      const executeSync = jest.fn((_sql: string, _params?: unknown[]) => ({ rows: [], rowsAffected: 1 }));
+      makeDb(executeSync);
+      saveMedia({ ...sampleMedia, archive_confirmed: 1 });
+      const insertCall = executeSync.mock.calls.find(
+        (c) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT'),
+      ) as unknown as [string, unknown[]];
+      expect(insertCall).toBeDefined();
+      const params = insertCall[1];
+      expect(params[params.length - 1]).toBe(1);
     });
   });
 
@@ -258,6 +287,66 @@ describe('mediaRepository', () => {
       expect(params[1]).toBe(sampleMedia.thread_id);
       expect(params[2]).toBe(sampleMedia.reply_id);
       expect(params[3]).toBe(sampleMedia.message_id);
+    });
+  });
+
+  // =========================================================================
+  // Archive-confirm helpers
+  // =========================================================================
+
+  describe('getUnconfirmedDownloadedMedia', () => {
+    it('queries for downloaded + archive_confirmed=0 with COALESCE, oldest first, limit', () => {
+      const executeSync = jest.fn((_sql: string, _params?: unknown[]) => ({ rows: [], rowsAffected: 0 }));
+      makeDb(executeSync);
+      getUnconfirmedDownloadedMedia(50);
+      const selectCall = executeSync.mock.calls.find(
+        (c) => typeof c[0] === 'string' && (c[0] as string).includes('SELECT'),
+      ) as unknown as [string, unknown[]];
+      expect(selectCall).toBeDefined();
+      expect(selectCall[0]).toContain("download_state = 'downloaded'");
+      expect(selectCall[0]).toContain('COALESCE(archive_confirmed, 0) = 0');
+      expect(selectCall[0]).toContain('ORDER BY created_at ASC');
+      expect(selectCall[0]).toContain('LIMIT ?');
+      expect(selectCall[1]).toEqual([50]);
+    });
+
+    it('returns matching rows including is_thumbnail=1', () => {
+      const thumbRow = { ...sampleMedia, id: 'thumb-1', download_state: 'downloaded', is_thumbnail: 1 };
+      makeDb(jest.fn(() => ({ rows: [thumbRow], rowsAffected: 0 })));
+      const result = getUnconfirmedDownloadedMedia(10);
+      expect(result).toHaveLength(1);
+      expect(result[0].is_thumbnail).toBe(1);
+    });
+
+    it('returns empty array when database is not initialized', () => {
+      // Not calling makeDb → isDatabaseInitialized() returns false
+      closeDatabase();
+      const result = getUnconfirmedDownloadedMedia(10);
+      expect(result).toEqual([]);
+    });
+  });
+
+  describe('setArchiveConfirmed', () => {
+    it('updates archive_confirmed to 1 for given id', () => {
+      const executeSync = jest.fn(() => ({ rows: [], rowsAffected: 1 }));
+      makeDb(executeSync);
+      setArchiveConfirmed('media-1');
+      expect(executeSync).toHaveBeenCalledWith(
+        'UPDATE orbital_media SET archive_confirmed = 1 WHERE id = ?',
+        ['media-1'],
+      );
+    });
+  });
+
+  describe('clearAllArchiveConfirmations', () => {
+    it('resets all archive_confirmed flags to 0', () => {
+      const executeSync = jest.fn(() => ({ rows: [], rowsAffected: 5 }));
+      makeDb(executeSync);
+      clearAllArchiveConfirmations();
+      expect(executeSync).toHaveBeenCalledWith(
+        'UPDATE orbital_media SET archive_confirmed = 0',
+        undefined,
+      );
     });
   });
 });

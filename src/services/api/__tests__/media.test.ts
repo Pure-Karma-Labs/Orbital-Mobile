@@ -12,7 +12,7 @@ jest.mock('../tokenManager', () => ({
   },
 }));
 
-import { uploadChunk, completeUpload, downloadMedia } from '../media';
+import { uploadChunk, completeUpload, downloadMedia, archiveConfirm } from '../media';
 import type { UploadChunkParams } from '../media';
 
 // ---------------------------------------------------------------------------
@@ -238,5 +238,54 @@ describe('downloadMedia', () => {
     mockFetchError(404, 'not found');
 
     await expect(downloadMedia('missing-media')).rejects.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// archiveConfirm
+// ---------------------------------------------------------------------------
+
+describe('archiveConfirm', () => {
+  it('sends POST to /api/media/:id/archive-confirm with no body', async () => {
+    mockFetchOk({
+      media_id: 'media-123',
+      confirmed_at: '2026-07-21T00:00:00Z',
+      status: 'available',
+    });
+
+    const result = await archiveConfirm('media-123');
+
+    const fetchMock = (globalThis as Record<string, unknown>).fetch as jest.Mock;
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain('/api/media/media-123/archive-confirm');
+    expect(init.method).toBe('POST');
+    // No body for archive-confirm
+    expect(init.body).toBeUndefined();
+
+    // Response is parsed and transformed (snake_case -> camelCase)
+    expect(result.mediaId).toBe('media-123');
+    expect(result.confirmedAt).toBe('2026-07-21T00:00:00Z');
+    expect(result.status).toBe('available');
+  });
+
+  it('encodes mediaId in the URL path', async () => {
+    mockFetchOk({
+      media_id: 'special-id',
+      confirmed_at: '2026-07-21T00:00:00Z',
+      status: 'available',
+    });
+
+    await archiveConfirm('special/id');
+
+    const fetchMock = (globalThis as Record<string, unknown>).fetch as jest.Mock;
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain(encodeURIComponent('special/id'));
+    expect(url).not.toContain('special/id');
+  });
+
+  it('propagates error on non-ok response', async () => {
+    mockFetchError(404, 'not found');
+
+    await expect(archiveConfirm('missing')).rejects.toThrow();
   });
 });

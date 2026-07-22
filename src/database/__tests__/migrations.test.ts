@@ -61,7 +61,7 @@ describe('runMigrations', () => {
   it('skips migration that has already been applied', () => {
     const executeSync = jest.fn((sql: string) => {
       if (sql === 'PRAGMA user_version') {
-        return { rows: [{ user_version: 6 }], rowsAffected: 0 };
+        return { rows: [{ user_version: 7 }], rowsAffected: 0 };
       }
       return { rows: [], rowsAffected: 0 };
     });
@@ -73,6 +73,33 @@ describe('runMigrations', () => {
     );
     expect(sqls).not.toContain('BEGIN TRANSACTION');
     expect(sqls).not.toContain('COMMIT');
+  });
+
+  it('runs v7 migration adding archive_confirmed column', () => {
+    const executeSync = jest.fn((sql: string) => {
+      if (sql === 'PRAGMA user_version') {
+        return { rows: [{ user_version: 6 }], rowsAffected: 0 };
+      }
+      return { rows: [], rowsAffected: 0 };
+    });
+    makeDb(executeSync);
+    runMigrations();
+
+    const sqls = (executeSync.mock.calls as unknown as [string][]).map(
+      ([sql]) => sql,
+    );
+    // V7 SQL runs and contains the archive_confirmed column
+    const v7Sql = sqls.find((s) => s.includes('archive_confirmed'));
+    expect(v7Sql).toBeDefined();
+    expect(v7Sql).toContain('ALTER TABLE orbital_media ADD COLUMN archive_confirmed');
+    expect(v7Sql).toContain('INTEGER NOT NULL DEFAULT 0');
+    // user_version set to 7
+    expect(sqls).toContain('PRAGMA user_version = 7');
+    // V7 does NOT disable foreign keys (no disableForeignKeys flag)
+    // Only one FK disable pair for the already-applied v4 migration is possible,
+    // but since v6 was already applied, no FK disable should occur
+    const fkOffCount = sqls.filter((s) => s === 'PRAGMA foreign_keys = OFF').length;
+    expect(fkOffCount).toBe(0);
   });
 
   it('disables foreign keys around V3 migration (table rebuild)', () => {

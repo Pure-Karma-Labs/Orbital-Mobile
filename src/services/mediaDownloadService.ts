@@ -255,6 +255,11 @@ export async function downloadAndDecryptMedia(
       }
       useAppStore.getState().updateMediaDownloadState(mediaId, 'downloaded', finalPath);
 
+      // Fire-and-forget archive-confirm — never blocks or rolls back the download
+      import('./mediaArchiveConfirmService')
+        .then(({ confirmArchived }) => { confirmArchived(mediaId).catch(() => {}); })
+        .catch(() => {});
+
       return finalPath;
     } catch (e) {
       // Aborted downloads restore to 'pending' (self-healing for windowing);

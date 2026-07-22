@@ -79,4 +79,10 @@ export async function bootstrap(): Promise<void> {
     registerForegroundDrain();
     schedulePendingMediaDrain();
   });
+  // Register foreground-drain listener + schedule initial drain for archive confirms.
+  // Lazy import avoids pulling mediaArchiveConfirmService into the bootstrap import chain.
+  import('./services/mediaArchiveConfirmService').then(({ registerForegroundConfirmDrain, scheduleArchiveConfirmDrain }) => {
+    registerForegroundConfirmDrain();
+    scheduleArchiveConfirmDrain();
+  });
 }

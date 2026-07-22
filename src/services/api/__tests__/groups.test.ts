@@ -155,6 +155,38 @@ describe('getGroupMembers', () => {
       }),
     );
   });
+
+  it('exposes lastActiveAt and isDormant from snake_case response (Backend #210 PR 2)', async () => {
+    const members = [
+      {
+        userId: 'user-1',
+        username: 'alice',
+        displayName: 'Alice',
+        publicKey: 'dGVzdC1wdWJsaWMta2V5',
+        avatarUrl: null,
+        joinedAt: '2026-05-01T00:00:00Z',
+        lastActiveAt: '2026-07-20T12:00:00Z',
+        isDormant: false,
+      },
+      {
+        userId: 'user-2',
+        username: 'bob',
+        displayName: 'Bob',
+        publicKey: 'dGVzdC1wdWJsaWMta2V5',
+        avatarUrl: null,
+        joinedAt: '2026-05-02T00:00:00Z',
+        lastActiveAt: null,
+        isDormant: true,
+      },
+    ];
+    mockRequest.mockResolvedValue({ members });
+    const result = await getGroupMembers('group-1');
+
+    expect(result[0].lastActiveAt).toBe('2026-07-20T12:00:00Z');
+    expect(result[0].isDormant).toBe(false);
+    expect(result[1].lastActiveAt).toBeNull();
+    expect(result[1].isDormant).toBe(true);
+  });
 });
 
 describe('generateInviteCode', () => {

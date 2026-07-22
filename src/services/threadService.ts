@@ -663,7 +663,7 @@ async function mapThreadResponse(
     authorUsername: response.authorUsername,
     title,
     body,
-    contentType: 'text',
+    contentType: response.media && response.media.length > 0 ? 'media' : 'text',
     pinned: false,
     replyCount: response.replyCount,
     lastReplyAt: null,
@@ -740,7 +740,7 @@ async function mapThreadListItem(
     authorUsername: item.authorUsername,
     title,
     body,
-    contentType: 'text',
+    contentType: item.mediaCount > 0 ? 'media' : 'text',
     pinned: false,
     replyCount: item.replyCount,
     lastReplyAt: item.lastReplyAt ? Date.parse(item.lastReplyAt) : null,
@@ -1041,6 +1041,7 @@ export async function createNewThread(
       id: response.threadId,
       createdAt: new Date(response.createdAt).getTime(),
       updatedAt: new Date(response.createdAt).getTime(),
+      contentType: response.media && response.media.length > 0 ? 'media' : 'text',
       syncStatus: 'synced',
     };
 

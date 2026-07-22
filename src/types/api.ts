@@ -213,6 +213,14 @@ export interface GroupMember {
   avatarKeyIv?: string | null;
   /** SHA-256 digest of encrypted avatar blob (base64) */
   avatarDigest?: string | null;
+  /**
+   * Creator-only fields — present only when the requester is the orbit owner.
+   * lastActiveAt: member-read signal (ISO timestamp or null if never active).
+   * isDormant: additionally incorporates the app-global device-token signal.
+   * Backend #210 PR 2.
+   */
+  lastActiveAt?: string | null;
+  isDormant?: boolean;
 }
 
 export interface GroupMembersResponse {
@@ -278,6 +286,20 @@ export interface GroupQuotaResponse {
     percentage: number;
     warning: boolean;
   };
+}
+
+/**
+ * details.quota of a 413 QUOTA_EXCEEDED response (wire: snake_case; mapped by
+ * the 413 error class — see ConflictError precedent in errors.ts).
+ */
+export interface QuotaUsage {
+  storageBytes: number;
+  maxBytes: number;
+  fileCount: number;
+  maxFiles: number;
+  storagePercent: number;
+  filesPercent: number;
+  evictableBytes: number;
 }
 
 /**
@@ -390,6 +412,7 @@ export interface ThreadResponse {
   bodyIv: string | null;
   replyCount: number;
   createdAt: string;
+  /** Includes tombstoned (evicted/expired) media; detail views show unavailable tiles. */
   media: MediaMetadata[];
 }
 
@@ -397,6 +420,8 @@ export interface ThreadResponse {
  * Thread item in the GET /api/groups/:groupId/threads list response.
  *
  * Note: list items include media_count (not the full media array).
+ * media_count includes tombstoned (evicted/expired) media — detail views
+ * render those as unavailable tiles.
  */
 export interface ThreadListItem {
   threadId: string;
@@ -413,6 +438,7 @@ export interface ThreadListItem {
   titleIv: string | null;
   bodyIv: string | null;
   replyCount: number;
+  /** Includes tombstoned (evicted/expired) media; detail views show unavailable tiles. */
   mediaCount: number;
   createdAt: string;
   /** ISO timestamp of the most recent reply (null if no replies) */

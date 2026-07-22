@@ -95,7 +95,7 @@ import {
   encryptContent,
   getOrFetchGroupKey,
 } from '../crypto/contentCrypto';
-import type { ThreadResponse, ReplyResponse, ListRepliesResponse, CreateReplyResponse, ListThreadsResponse, ThreadListItem } from '../../types/api';
+import type { ThreadResponse, ReplyResponse, ListRepliesResponse, CreateReplyResponse, CreateThreadResponse, ListThreadsResponse, ThreadListItem } from '../../types/api';
 
 const mockGetThread = getThread as jest.MockedFunction<typeof getThread>;
 const mockGetGroupThreads = getGroupThreads as jest.MockedFunction<typeof getGroupThreads>;
@@ -517,6 +517,76 @@ describe('postReply', () => {
 });
 
 // ---------------------------------------------------------------------------
+// contentType derivation (camera-icon fix)
+// ---------------------------------------------------------------------------
+
+describe('contentType derivation', () => {
+  it('mapThreadListItem: mediaCount > 0 yields contentType "media"', async () => {
+    const listResponse: ListThreadsResponse = {
+      threads: [makeThreadListItem({ threadId: 'thread-media', mediaCount: 2 })],
+      totalCount: 1,
+      hasMore: false,
+    };
+    mockGetGroupThreads.mockResolvedValue(listResponse);
+
+    const threads = await loadThreadsForGroup('group-1');
+
+    expect(threads[0].contentType).toBe('media');
+  });
+
+  it('mapThreadListItem: mediaCount 0 yields contentType "text"', async () => {
+    const listResponse: ListThreadsResponse = {
+      threads: [makeThreadListItem({ threadId: 'thread-text', mediaCount: 0 })],
+      totalCount: 1,
+      hasMore: false,
+    };
+    mockGetGroupThreads.mockResolvedValue(listResponse);
+
+    const threads = await loadThreadsForGroup('group-1');
+
+    expect(threads[0].contentType).toBe('text');
+  });
+
+  it('mapThreadResponse/loadThread: non-empty media array yields contentType "media"', async () => {
+    const apiResponse = makeThreadResponse({
+      threadId: 'thread-with-media',
+      media: [
+        {
+          mediaId: 'media-1',
+          encryptedMetadata: null,
+          sizeBytes: 1024,
+          uploadedAt: '2026-04-01T10:00:00Z',
+          expiresAt: null,
+          contentType: 'image/jpeg',
+          fileName: 'photo.jpg',
+          blurHash: undefined,
+          width: 100,
+          height: 100,
+          duration: undefined,
+        },
+      ],
+    });
+    mockGetThread.mockResolvedValue(apiResponse);
+
+    const result = await loadThread('thread-with-media');
+
+    expect(result.contentType).toBe('media');
+  });
+
+  it('mapThreadResponse/loadThread: empty media array yields contentType "text"', async () => {
+    const apiResponse = makeThreadResponse({
+      threadId: 'thread-no-media',
+      media: [],
+    });
+    mockGetThread.mockResolvedValue(apiResponse);
+
+    const result = await loadThread('thread-no-media');
+
+    expect(result.contentType).toBe('text');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // persistence write-through
 // ---------------------------------------------------------------------------
 
@@ -671,6 +741,28 @@ describe('persistence write-through', () => {
     expect(savedThread.conversationId).toBe('group-1');
     expect(result.id).toBe('server-thread-id');
     expect(result.syncStatus).toBe('synced');
+  });
+
+  it('createNewThread persists contentType "media" when the server response carries media', async () => {
+    const createResponse = {
+      threadId: 'server-thread-media',
+      groupId: 'group-1',
+      createdAt: '2026-04-01T10:00:00Z',
+      media: [{ mediaId: 'media-1' }],
+    } as unknown as CreateThreadResponse;
+    mockCreateThread.mockResolvedValue(createResponse);
+
+    const result = await createNewThread(
+      'group-1',
+      'Media Thread',
+      'body',
+      { authorId: 'user-1', authorUsername: 'alice' },
+      { mediaIds: ['media-1'] },
+    );
+
+    expect(result.contentType).toBe('media');
+    const savedThread = mockDbSaveThread.mock.calls[0][0];
+    expect(savedThread.contentType).toBe('media');
   });
 });
 

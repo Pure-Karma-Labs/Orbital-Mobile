@@ -180,7 +180,7 @@ const mockIsDatabaseInitialized = isDatabaseInitialized as jest.MockedFunction<t
 
 const fakeGroupKey = new Uint8Array(32).fill(0xab);
 
-function makeNewThreadMessage(): string {
+function makeNewThreadMessage(dataOverrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
     type: 'new_message',
     conversationId: testUUID('group-1'),
@@ -197,6 +197,7 @@ function makeNewThreadMessage(): string {
       bodyIv: 'body-iv',
       createdAt: '2026-04-01T10:00:00Z',
       media: [],
+      ...dataOverrides,
     },
   });
 }
@@ -276,6 +277,15 @@ describe('connection_ack', () => {
 // ---------------------------------------------------------------------------
 
 describe('new_thread broadcast', () => {
+  it('derives contentType "media" when the payload carries media', async () => {
+    await handleServerMessage(
+      makeNewThreadMessage({ media: [{ mediaId: testUUID('media-1') }] }),
+    );
+
+    expect(mockUpsertThread).toHaveBeenCalledTimes(1);
+    expect(mockUpsertThread.mock.calls[0][0].contentType).toBe('media');
+  });
+
   it('decrypts and upserts a thread', async () => {
     await handleServerMessage(makeNewThreadMessage());
 

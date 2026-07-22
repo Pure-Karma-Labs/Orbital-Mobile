@@ -132,6 +132,11 @@ jest.mock('../../database/connection', () => ({
   closeDatabase: jest.fn(),
 }));
 
+const mockClearAllArchiveConfirmations = jest.fn();
+jest.mock('../../database/repositories/mediaRepository', () => ({
+  clearAllArchiveConfirmations: () => mockClearAllArchiveConfirmations(),
+}));
+
 const mockLoadConversations = jest.fn().mockResolvedValue(undefined);
 const mockLoadDmConversations = jest.fn().mockResolvedValue(undefined);
 const mockFulfillPendingWraps = jest.fn().mockResolvedValue(undefined);
@@ -652,5 +657,47 @@ describe('recoverIdentityKeys — loadEciesLockState guard', () => {
     // Subsequent bootstrap mocks still ran
     expect(mockLoadConversations).toHaveBeenCalled();
     expect(mockLoadDmConversations).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// clearAllArchiveConfirmations — called unconditionally for all recovery shapes
+// ---------------------------------------------------------------------------
+
+describe('recoverIdentityKeys — clearAllArchiveConfirmations', () => {
+  it('calls clearAllArchiveConfirmations on success with skipServerReset=false', async () => {
+    const result = await recoverIdentityKeys('password123', false);
+
+    expect(result.status).toBe('success');
+    expect(mockClearAllArchiveConfirmations).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls clearAllArchiveConfirmations on success with skipServerReset=true', async () => {
+    const result = await recoverIdentityKeys('password123', true);
+
+    expect(result.status).toBe('success');
+    expect(mockClearAllArchiveConfirmations).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls clearAllArchiveConfirmations even on the alreadyWiped path', async () => {
+    // Simulate already-wiped state: identityKeyPublic absent
+    delete mockItemStore.identityKeyPublic;
+
+    const result = await recoverIdentityKeys('password123', true);
+
+    expect(result.status).toBe('success');
+    // clearAllArchiveConfirmations is OUTSIDE the if(!alreadyWiped) guard
+    expect(mockClearAllArchiveConfirmations).toHaveBeenCalledTimes(1);
+  });
+
+  it('is best-effort — recovery succeeds even if clearAllArchiveConfirmations throws', async () => {
+    mockClearAllArchiveConfirmations.mockImplementation(() => {
+      throw new Error('DB error');
+    });
+
+    const result = await recoverIdentityKeys('password123', false);
+
+    expect(result.status).toBe('success');
+    expect(mockClearAllArchiveConfirmations).toHaveBeenCalledTimes(1);
   });
 });

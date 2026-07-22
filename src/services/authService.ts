@@ -47,6 +47,7 @@ import {
 import { clearAll as clearSecureStorage } from './secure-storage';
 import { syncBlockedUsers } from './blockedUsersSync';
 import { clearPrefetchState } from './mediaPrefetchService';
+import { clearArchiveConfirmState } from './mediaArchiveConfirmService';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -344,6 +345,9 @@ export async function localWipe({ preserveIdentity }: { preserveIdentity: boolea
   }
   try { clearPrefetchState(); } catch {
     if (__DEV__) console.warn('[LocalWipe] clearPrefetchState failed');
+  }
+  try { clearArchiveConfirmState(); } catch {
+    if (__DEV__) console.warn('[LocalWipe] clearArchiveConfirmState failed');
   }
   try { clearAllThreads(); } catch {
     if (__DEV__) console.warn('[LocalWipe] clearAllThreads failed');

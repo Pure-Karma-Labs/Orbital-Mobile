@@ -91,6 +91,28 @@ export function completeUpload(
 }
 
 // ============================================================
+// Archive confirm
+// ============================================================
+
+export interface ArchiveConfirmResponse {
+  mediaId: string;
+  confirmedAt: string;
+  status: 'available' | 'expired' | 'evicted';
+}
+
+/**
+ * Confirm that a downloaded media file has been durably archived on this device.
+ *
+ * POST /api/media/:id/archive-confirm — JSON response.
+ */
+export function archiveConfirm(mediaId: string): Promise<ArchiveConfirmResponse> {
+  return request<ArchiveConfirmResponse>({
+    method: 'POST',
+    path: `/api/media/${encodeURIComponent(mediaId)}/archive-confirm`,
+  });
+}
+
+// ============================================================
 // Download
 // ============================================================
 

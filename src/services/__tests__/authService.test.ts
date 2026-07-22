@@ -170,6 +170,16 @@ jest.mock('../websocket', () => ({
   },
 }));
 
+const mockClearPrefetchState = jest.fn();
+jest.mock('../mediaPrefetchService', () => ({
+  clearPrefetchState: (...args: unknown[]) => mockClearPrefetchState(...args),
+}));
+
+const mockClearArchiveConfirmState = jest.fn();
+jest.mock('../mediaArchiveConfirmService', () => ({
+  clearArchiveConfirmState: (...args: unknown[]) => mockClearArchiveConfirmState(...args),
+}));
+
 // Mock the whole store module — we just want to verify action calls
 const mockSetUser = jest.fn();
 const mockUpdateProfile = jest.fn();
@@ -857,6 +867,13 @@ describe('logout', () => {
     expect(mockUnlink).not.toHaveBeenCalled();
     expect(mockClearSecureStorage).not.toHaveBeenCalled();
     expect(mockCloseDatabase).not.toHaveBeenCalled();
+  });
+
+  it('clears prefetch and archive-confirm state on logout (localWipe)', async () => {
+    await logout();
+
+    expect(mockClearPrefetchState).toHaveBeenCalledTimes(1);
+    expect(mockClearArchiveConfirmState).toHaveBeenCalledTimes(1);
   });
 });
 

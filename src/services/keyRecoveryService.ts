@@ -23,6 +23,7 @@ import {
   getCachedIdentityPrivateKeyHex,
 } from './crypto/keyGenerationService';
 import { getItem, removeItem } from '../database/repositories/itemRepository';
+import { clearAllArchiveConfirmations } from '../database/repositories/mediaRepository';
 import { isDatabaseInitialized } from '../database/connection';
 import { clearConversationServiceState } from './conversationService';
 import { clearIdentityInflightState } from './crypto/identityKeyAccess';
@@ -231,6 +232,11 @@ async function doRecoverIdentityKeys(
         try { removeItem('bundleUploaded'); } catch { /* may already be gone */ }
       }
     }
+
+    // Server deleted all archive confirmations on key reset (all three recovery
+    // shapes) — clear local flags so the sweep re-confirms; over-clearing is
+    // idempotent, under-clearing silently defeats the wiped-phone eviction guard.
+    try { clearAllArchiveConfirmations(); } catch { /* best-effort */ }
 
     // Step 6: Re-login (loginForRecovery — no postAuthBootstrap)
     // API-M2: same-second JWT revocation race — backend revokes JWTs with

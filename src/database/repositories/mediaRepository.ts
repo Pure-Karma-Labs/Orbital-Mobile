@@ -31,6 +31,8 @@ export interface MediaRow {
   thumbnail_media_id?: string | null;
   /** 1 = this row is a thumbnail child; 0 = normal media (default) */
   is_thumbnail?: number;
+  /** 1 = no further archive-confirm attempt needed (confirmed / own upload / terminal) */
+  archive_confirmed?: number;
 }
 
 // ============================================================
@@ -42,8 +44,9 @@ export function saveMedia(row: MediaRow): void {
        (id, thread_id, reply_id, message_id, content_type, file_name, file_size,
         width, height, duration, attachment_key, attachment_digest, cdn_number,
         cdn_key, local_path, thumbnail_path, blur_hash, expires_at,
-        download_state, upload_state, created_at, thumbnail_media_id, is_thumbnail)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+        download_state, upload_state, created_at, thumbnail_media_id, is_thumbnail,
+        archive_confirmed)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
   const params = [
     row.id,
@@ -69,6 +72,7 @@ export function saveMedia(row: MediaRow): void {
     row.created_at,
     row.thumbnail_media_id ?? null,
     row.is_thumbnail ?? 0,
+    row.archive_confirmed ?? 0,
   ];
 
   execute(sql, params);
@@ -202,6 +206,48 @@ export function getPendingDownloads(): MediaRow[] {
 
 export function deleteMedia(id: string): void {
   execute('DELETE FROM orbital_media WHERE id = ?', [id]);
+}
+
+// ============================================================
+// Archive-confirm helpers
+// ============================================================
+
+/**
+ * Fetch downloaded media rows that have not yet been archive-confirmed.
+ * Oldest first. Returns empty array if database is not initialized.
+ */
+export function getUnconfirmedDownloadedMedia(limit: number): MediaRow[] {
+  if (!isDatabaseInitialized()) return [];
+  return queryMany<MediaRow>(
+    `SELECT * FROM orbital_media
+     WHERE download_state = 'downloaded'
+       AND COALESCE(archive_confirmed, 0) = 0
+     ORDER BY created_at ASC
+     LIMIT ?`,
+    [limit],
+  );
+}
+
+/**
+ * Mark a single media row as archive-confirmed (no further confirm attempts needed).
+ * No-op if database is not initialized.
+ */
+export function setArchiveConfirmed(id: string): void {
+  if (!isDatabaseInitialized()) return;
+  execute(
+    'UPDATE orbital_media SET archive_confirmed = 1 WHERE id = ?',
+    [id],
+  );
+}
+
+/**
+ * Reset all archive_confirmed flags to 0.
+ * Used after key recovery when the server has wiped all confirmations.
+ * No-op if database is not initialized.
+ */
+export function clearAllArchiveConfirmations(): void {
+  if (!isDatabaseInitialized()) return;
+  execute('UPDATE orbital_media SET archive_confirmed = 0');
 }
 
 // ============================================================

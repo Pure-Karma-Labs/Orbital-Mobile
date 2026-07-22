@@ -53,6 +53,20 @@ jest.mock('../mediaDownloadService', () => ({
   cleanupOrphanedMedia: jest.fn().mockResolvedValue(undefined),
 }));
 
+const mockRegisterForegroundDrain = jest.fn();
+const mockSchedulePendingMediaDrain = jest.fn();
+jest.mock('../mediaPrefetchService', () => ({
+  registerForegroundDrain: (...args: unknown[]) => mockRegisterForegroundDrain(...args),
+  schedulePendingMediaDrain: (...args: unknown[]) => mockSchedulePendingMediaDrain(...args),
+}));
+
+const mockRegisterForegroundConfirmDrain = jest.fn();
+const mockScheduleArchiveConfirmDrain = jest.fn();
+jest.mock('../mediaArchiveConfirmService', () => ({
+  registerForegroundConfirmDrain: (...args: unknown[]) => mockRegisterForegroundConfirmDrain(...args),
+  scheduleArchiveConfirmDrain: (...args: unknown[]) => mockScheduleArchiveConfirmDrain(...args),
+}));
+
 const mockClearAuth = jest.fn();
 jest.mock('../../stores/useAppStore', () => ({
   useAppStore: {
@@ -164,5 +178,25 @@ describe('bootstrap() wiring', () => {
 
     await tokenManager.clearTokens();
     expect(mockClearAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it('bootstrap() registers foreground prefetch drain and schedules initial drain', async () => {
+    await bootstrap();
+
+    // Flush lazy import microtasks
+    await new Promise((r) => setImmediate(r));
+
+    expect(mockRegisterForegroundDrain).toHaveBeenCalledTimes(1);
+    expect(mockSchedulePendingMediaDrain).toHaveBeenCalledTimes(1);
+  });
+
+  it('bootstrap() registers foreground archive-confirm drain and schedules initial drain', async () => {
+    await bootstrap();
+
+    // Flush lazy import microtasks
+    await new Promise((r) => setImmediate(r));
+
+    expect(mockRegisterForegroundConfirmDrain).toHaveBeenCalledTimes(1);
+    expect(mockScheduleArchiveConfirmDrain).toHaveBeenCalledTimes(1);
   });
 });

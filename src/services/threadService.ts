@@ -411,7 +411,7 @@ export async function processMediaMetadata(
           const resolvedPath = resolveMediaPath(existingRow.local_path);
           const fileExists = resolvedPath ? await exists(resolvedPath).catch(() => false) : false;
           if (!fileExists) {
-            existingRow = { ...existingRow, download_state: 'pending', local_path: null };
+            existingRow = { ...existingRow, download_state: 'pending', local_path: null, archive_confirmed: 0 };
             if (dbReady) {
               try {
                 saveMedia(existingRow);

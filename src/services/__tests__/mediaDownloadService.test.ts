@@ -50,6 +50,12 @@ jest.mock('../../database/queryHelpers', () => ({
   queryMany: jest.fn(() => []),
 }));
 
+const mockConfirmArchived = jest.fn().mockResolvedValue('confirmed');
+
+jest.mock('../mediaArchiveConfirmService', () => ({
+  confirmArchived: (...args: unknown[]) => mockConfirmArchived(...args),
+}));
+
 import {
   downloadAndDecryptMedia,
   retryDownload,
@@ -187,6 +193,44 @@ describe('downloadAndDecryptMedia', () => {
     );
 
     expect(result).toBe('/tmp/test-docs/media/a1b2c3d4-e5f6-7890-abcd-ef1234567890.jpg');
+  });
+
+  it('fires confirmArchived after successful download (fire-and-forget)', async () => {
+    await downloadAndDecryptMedia(FAKE_MEDIA_ID);
+
+    // Flush microtask queue for the dynamic import().then() chain
+    await new Promise((r) => setImmediate(r));
+
+    // confirmArchived should have been called with the media ID
+    expect(mockConfirmArchived).toHaveBeenCalledWith(FAKE_MEDIA_ID);
+
+    // Must fire AFTER the downloaded state was persisted
+    const downloadedStateCall = mockUpdateMediaDownloadState.mock.invocationCallOrder.find(
+      (_order, idx) => mockUpdateMediaDownloadState.mock.calls[idx][1] === 'downloaded',
+    );
+    expect(downloadedStateCall).toBeDefined();
+  });
+
+  it('does NOT fire confirmArchived on download failure', async () => {
+    mockDownloadMedia.mockRejectedValue(new Error('Network error'));
+
+    await expect(downloadAndDecryptMedia(FAKE_MEDIA_ID)).rejects.toThrow('Network error');
+    await new Promise((r) => setImmediate(r));
+
+    expect(mockConfirmArchived).not.toHaveBeenCalled();
+  });
+
+  it('does NOT fire confirmArchived on cache-hit early return', async () => {
+    const rnfs = require('@dr.pogodin/react-native-fs');
+    mockGetMedia.mockReturnValue(
+      makeMediaRow({ local_path: '/tmp/test-docs/media/a1b2c3d4-e5f6-7890-abcd-ef1234567890.jpg' }),
+    );
+    rnfs.exists.mockResolvedValue(true);
+
+    await downloadAndDecryptMedia(FAKE_MEDIA_ID);
+    await new Promise((r) => setImmediate(r));
+
+    expect(mockConfirmArchived).not.toHaveBeenCalled();
   });
 
   it('sets failed state and cleans up temp file on download error', async () => {

@@ -398,6 +398,24 @@ describe('uploadMedia', () => {
     expect(storeItem.hasKeys).toBe(true);
   });
 
+  it('saves media row with archive_confirmed=1 on success (own upload auto-confirmed)', async () => {
+    await uploadMedia(baseOptions);
+
+    expect(mockSaveMedia).toHaveBeenCalledTimes(1);
+    const row = mockSaveMedia.mock.calls[0][0];
+    expect(row.archive_confirmed).toBe(1);
+  });
+
+  it('saves failed row with archive_confirmed=0 (or absent) on failure', async () => {
+    mockUploadChunk.mockRejectedValue(new Error('Network error'));
+
+    await expect(uploadMedia(baseOptions)).rejects.toThrow('Failed to upload media');
+    expect(mockSaveMedia).toHaveBeenCalledTimes(1);
+    const failedRow = mockSaveMedia.mock.calls[0][0];
+    // Failed rows default to 0
+    expect(failedRow.archive_confirmed ?? 0).toBe(0);
+  });
+
   it('returns the media ID in result', async () => {
     const result = await uploadMedia(baseOptions);
     expect(result.mediaId).toBe('test-media-id');

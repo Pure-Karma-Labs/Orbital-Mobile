@@ -6,6 +6,7 @@ import { VERSION as V4, SQL as SQL_V4 } from './004_thread_reply_persistence';
 import { VERSION as V5, SQL as SQL_V5 } from './005_fts5_search';
 import { VERSION as V6, SQL as SQL_V6 } from './006_media_thumbnail_ref';
 import { VERSION as V7, SQL as SQL_V7 } from './007_media_archive_confirmed';
+import { VERSION as V8, SQL as SQL_V8 } from './008_drop_media_sync_tables';
 
 interface Migration {
   version: number;
@@ -21,6 +22,7 @@ const migrations: Migration[] = [
   { version: V5, sql: SQL_V5 },
   { version: V6, sql: SQL_V6 },
   { version: V7, sql: SQL_V7 },
+  { version: V8, sql: SQL_V8 },
 ];
 
 /**

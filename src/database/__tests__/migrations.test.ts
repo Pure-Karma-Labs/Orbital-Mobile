@@ -61,7 +61,7 @@ describe('runMigrations', () => {
   it('skips migration that has already been applied', () => {
     const executeSync = jest.fn((sql: string) => {
       if (sql === 'PRAGMA user_version') {
-        return { rows: [{ user_version: 7 }], rowsAffected: 0 };
+        return { rows: [{ user_version: 8 }], rowsAffected: 0 };
       }
       return { rows: [], rowsAffected: 0 };
     });
@@ -98,6 +98,31 @@ describe('runMigrations', () => {
     // V7 does NOT disable foreign keys (no disableForeignKeys flag)
     // Only one FK disable pair for the already-applied v4 migration is possible,
     // but since v6 was already applied, no FK disable should occur
+    const fkOffCount = sqls.filter((s) => s === 'PRAGMA foreign_keys = OFF').length;
+    expect(fkOffCount).toBe(0);
+  });
+
+  it('runs v8 migration dropping dead media sync tables', () => {
+    const executeSync = jest.fn((sql: string) => {
+      if (sql === 'PRAGMA user_version') {
+        return { rows: [{ user_version: 7 }], rowsAffected: 0 };
+      }
+      return { rows: [], rowsAffected: 0 };
+    });
+    makeDb(executeSync);
+    runMigrations();
+
+    const sqls = (executeSync.mock.calls as unknown as [string][]).map(
+      ([sql]) => sql,
+    );
+    // V8 SQL drops both media sync tables
+    const v8Sql = sqls.find((s) => s.includes('orbital_media_sync_requests'));
+    expect(v8Sql).toBeDefined();
+    expect(v8Sql).toContain('DROP TABLE IF EXISTS orbital_media_sync_requests');
+    expect(v8Sql).toContain('DROP TABLE IF EXISTS orbital_media_sync_pending_uploads');
+    // user_version set to 8
+    expect(sqls).toContain('PRAGMA user_version = 8');
+    // V8 does NOT disable foreign keys (no disableForeignKeys flag)
     const fkOffCount = sqls.filter((s) => s === 'PRAGMA foreign_keys = OFF').length;
     expect(fkOffCount).toBe(0);
   });

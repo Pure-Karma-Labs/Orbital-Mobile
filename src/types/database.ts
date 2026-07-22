@@ -207,36 +207,6 @@ export interface OrbitalMediaRow {
   created_at: number;
 }
 
-export type MediaSyncStatus =
-  | 'pending'
-  | 'in_progress'
-  | 'completed'
-  | 'failed';
-
-export interface OrbitalMediaSyncRequestRow {
-  id: string;
-  media_id: string;
-  status: MediaSyncStatus;
-  attempts: number;
-  /** Unix epoch seconds */
-  last_attempt_at: number | null;
-  error: string | null;
-  /** Unix epoch seconds */
-  created_at: number;
-}
-
-export interface OrbitalMediaSyncPendingUploadRow {
-  id: string;
-  media_id: string;
-  upload_url: string;
-  /** JSON headers for upload (ephemeral, not key material) */
-  upload_headers: string | null;
-  /** Unix epoch seconds */
-  expires_at: number;
-  /** Unix epoch seconds */
-  created_at: number;
-}
-
 // ============================================================
 // Messaging Table Rows (2)
 // ============================================================

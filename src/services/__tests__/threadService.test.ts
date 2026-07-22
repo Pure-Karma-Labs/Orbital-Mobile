@@ -95,7 +95,7 @@ import {
   encryptContent,
   getOrFetchGroupKey,
 } from '../crypto/contentCrypto';
-import type { ThreadResponse, ReplyResponse, ListRepliesResponse, CreateReplyResponse, ListThreadsResponse, ThreadListItem } from '../../types/api';
+import type { ThreadResponse, ReplyResponse, ListRepliesResponse, CreateReplyResponse, CreateThreadResponse, ListThreadsResponse, ThreadListItem } from '../../types/api';
 
 const mockGetThread = getThread as jest.MockedFunction<typeof getThread>;
 const mockGetGroupThreads = getGroupThreads as jest.MockedFunction<typeof getGroupThreads>;
@@ -741,6 +741,28 @@ describe('persistence write-through', () => {
     expect(savedThread.conversationId).toBe('group-1');
     expect(result.id).toBe('server-thread-id');
     expect(result.syncStatus).toBe('synced');
+  });
+
+  it('createNewThread persists contentType "media" when the server response carries media', async () => {
+    const createResponse = {
+      threadId: 'server-thread-media',
+      groupId: 'group-1',
+      createdAt: '2026-04-01T10:00:00Z',
+      media: [{ mediaId: 'media-1' }],
+    } as unknown as CreateThreadResponse;
+    mockCreateThread.mockResolvedValue(createResponse);
+
+    const result = await createNewThread(
+      'group-1',
+      'Media Thread',
+      'body',
+      { authorId: 'user-1', authorUsername: 'alice' },
+      { mediaIds: ['media-1'] },
+    );
+
+    expect(result.contentType).toBe('media');
+    const savedThread = mockDbSaveThread.mock.calls[0][0];
+    expect(savedThread.contentType).toBe('media');
   });
 });
 

@@ -1041,6 +1041,7 @@ export async function createNewThread(
       id: response.threadId,
       createdAt: new Date(response.createdAt).getTime(),
       updatedAt: new Date(response.createdAt).getTime(),
+      contentType: response.media && response.media.length > 0 ? 'media' : 'text',
       syncStatus: 'synced',
     };
 

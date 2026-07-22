@@ -1,5 +1,5 @@
 /**
- * TypeScript interfaces for all 17 Orbital-Mobile database tables.
+ * TypeScript interfaces for all 15 Orbital-Mobile database tables.
  *
  * Conventions:
  * - `Uint8Array` for BLOB columns (key material, encrypted content, protobuf records)
@@ -102,7 +102,7 @@ export interface SignalSenderKeyRow {
 }
 
 // ============================================================
-// Orbital App Table Rows (6)
+// Orbital App Table Rows (4)
 // ============================================================
 
 export type ConversationType = 'group' | 'direct';

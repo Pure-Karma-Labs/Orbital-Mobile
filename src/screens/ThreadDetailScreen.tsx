@@ -25,6 +25,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as Sentry from '@sentry/react-native';
 import {
+  Alert,
   Animated,
   FlatList,
   Keyboard,
@@ -43,6 +44,7 @@ import { useAuth, useThreads } from '../stores';
 import { useAppStore } from '../stores/useAppStore';
 import { loadThread, loadReplies, postReply, hydrateRepliesFromLocal } from '../services/threadService';
 import { uploadMediaBatch } from '../services/mediaUploadService';
+import { QuotaExceededError } from '../services/api/errors';
 import { updateMediaParent } from '../database/repositories/mediaRepository';
 import { useMediaPicker } from '../hooks/useMediaPicker';
 import { Header } from '../components/Header';
@@ -499,6 +501,9 @@ export function ThreadDetailScreen({
           }
         }
       } catch (e) {
+        if (e instanceof QuotaExceededError) {
+          Alert.alert('Upload Failed', e.message);
+        }
         if (__DEV__) console.warn('[Reply] failed:', e instanceof Error ? e.message : e);
       } finally {
         if (mountedRef.current) setSending(false);

@@ -278,7 +278,7 @@ async function handleNewThread(data: NewThreadPayload): Promise<void> {
       authorUsername: data.authorName,
       title,
       body,
-      contentType: 'text',
+      contentType: data.media && data.media.length > 0 ? 'media' : 'text',
       pinned: false,
       replyCount: 0,
       lastReplyAt: null,

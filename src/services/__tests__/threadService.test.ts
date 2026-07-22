@@ -517,6 +517,76 @@ describe('postReply', () => {
 });
 
 // ---------------------------------------------------------------------------
+// contentType derivation (camera-icon fix)
+// ---------------------------------------------------------------------------
+
+describe('contentType derivation', () => {
+  it('mapThreadListItem: mediaCount > 0 yields contentType "media"', async () => {
+    const listResponse: ListThreadsResponse = {
+      threads: [makeThreadListItem({ threadId: 'thread-media', mediaCount: 2 })],
+      totalCount: 1,
+      hasMore: false,
+    };
+    mockGetGroupThreads.mockResolvedValue(listResponse);
+
+    const threads = await loadThreadsForGroup('group-1');
+
+    expect(threads[0].contentType).toBe('media');
+  });
+
+  it('mapThreadListItem: mediaCount 0 yields contentType "text"', async () => {
+    const listResponse: ListThreadsResponse = {
+      threads: [makeThreadListItem({ threadId: 'thread-text', mediaCount: 0 })],
+      totalCount: 1,
+      hasMore: false,
+    };
+    mockGetGroupThreads.mockResolvedValue(listResponse);
+
+    const threads = await loadThreadsForGroup('group-1');
+
+    expect(threads[0].contentType).toBe('text');
+  });
+
+  it('mapThreadResponse/loadThread: non-empty media array yields contentType "media"', async () => {
+    const apiResponse = makeThreadResponse({
+      threadId: 'thread-with-media',
+      media: [
+        {
+          mediaId: 'media-1',
+          encryptedMetadata: null,
+          sizeBytes: 1024,
+          uploadedAt: '2026-04-01T10:00:00Z',
+          expiresAt: null,
+          contentType: 'image/jpeg',
+          fileName: 'photo.jpg',
+          blurHash: undefined,
+          width: 100,
+          height: 100,
+          duration: undefined,
+        },
+      ],
+    });
+    mockGetThread.mockResolvedValue(apiResponse);
+
+    const result = await loadThread('thread-with-media');
+
+    expect(result.contentType).toBe('media');
+  });
+
+  it('mapThreadResponse/loadThread: empty media array yields contentType "text"', async () => {
+    const apiResponse = makeThreadResponse({
+      threadId: 'thread-no-media',
+      media: [],
+    });
+    mockGetThread.mockResolvedValue(apiResponse);
+
+    const result = await loadThread('thread-no-media');
+
+    expect(result.contentType).toBe('text');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // persistence write-through
 // ---------------------------------------------------------------------------
 

@@ -36,6 +36,12 @@ updates:
         versions: [">= 19.1.2", "< 19.2.0"]
       - dependency-name: "react-test-renderer"
         versions: [">= 19.1.2", "< 19.2.0"]
+      # react-native-screens 4.26.x breaks Android codegen on our RN version
+      # ("The first argument of method setToolbarMenuElementOptions must be of
+      # type React.ElementRef<>", see closed PR #619). Lift once upstream ships
+      # a release whose codegen schema parses again.
+      - dependency-name: "react-native-screens"
+        versions: ["> 4.25.2"]
       # Babel 8 and ESLint 10 require RN ecosystem support — tracked in #311
       - dependency-name: "@babel/core"
         update-types: ["version-update:semver-major"]

@@ -3,7 +3,7 @@
 **Date:** 2026-04-07
 **Author:** Rust / Native Module Engineer
 **Status:** Decision-enabling analysis
-**Context:** Orbital-Mobile needs to call ~15-20 libsignal-client (v0.83.0) functions from React Native on iOS and Android. The mobile app spec prescribes uniffi-bindgen-react-native as the primary approach.
+**Context:** Orbital-Mobile needs to call ~15-20 libsignal-client (v0.83.0 at time of writing; current pin: v0.97.4) functions from React Native on iOS and Android. The mobile app spec prescribes uniffi-bindgen-react-native as the primary approach.
 
 ---
 
@@ -158,7 +158,7 @@ uniffi-bindgen-react-native is not a Mozilla-maintained project. It is community
 
 ### 5.3 libsignal Version Coupling
 
-libsignal v0.83.0 uses internal UniFFI annotations for its own Swift/Kotlin bindings. Our wrapper crate sits on top and re-exports through our own UniFFI interface. If libsignal changes internal types between versions, our wrapper must adapt. Mitigation: pin to v0.83.0, upgrade deliberately.
+libsignal uses internal UniFFI annotations for its own Swift/Kotlin bindings (v0.83.0 at time of writing; current pin: v0.97.4). Our wrapper crate sits on top and re-exports through our own UniFFI interface. If libsignal changes internal types between versions, our wrapper must adapt. Mitigation: pin to a specific version, upgrade deliberately.
 
 ### 5.4 Build Complexity
 
@@ -237,7 +237,7 @@ Rationale:
 ### Concrete next steps
 
 1. Add `uniffi-bindgen-react-native` to `package.json` devDependencies
-2. Initialize the Rust crate at `rust/orbital_signal/` with `Cargo.toml` depending on `libsignal-protocol` v0.83.0
+2. Initialize the Rust crate at `rust/orbital_signal/` with `Cargo.toml` depending on `libsignal-protocol` (v0.83.0 at time of writing; current pin: v0.97.4)
 3. Implement one function end-to-end as PoC: `IdentityKeyPair.generate()` (no store callbacks needed, pure function, returns bytes)
 4. Validate the generated TypeScript binding works on both iOS simulator and Android emulator
 5. If PoC succeeds, proceed with the full 15-20 function surface

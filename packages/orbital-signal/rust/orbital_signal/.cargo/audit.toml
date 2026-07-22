@@ -6,4 +6,17 @@
 # libsignal git tag). Remove entries as soon as the blocking upgrade lands.
 
 [advisories]
-ignore = []
+ignore = [
+    # RUSTSEC-2026-0212: libcrux-secrets 0.0.5 (HIGH) — non-constant-time swap/select
+    # on aarch64. Transitive via libsignal-protocol -> libcrux-ml-kem; no independent
+    # bump possible. Tracked in #623.
+    "RUSTSEC-2026-0212",
+
+    # RUSTSEC-2026-0207: libcrux-sha3 0.0.8 (HIGH) — incorrect incremental SHAKE
+    # output. Transitive via libsignal-protocol -> libcrux-ml-kem. Tracked in #623.
+    "RUSTSEC-2026-0207",
+
+    # RUSTSEC-2026-0208: libcrux-sha3 0.0.8 (HIGH) — potential panic in AVX2
+    # SHAKE-256. Transitive via libsignal-protocol -> libcrux-ml-kem. Tracked in #623.
+    "RUSTSEC-2026-0208",
+]

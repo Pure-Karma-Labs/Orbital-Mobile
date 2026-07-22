@@ -577,6 +577,31 @@ describe('QuotaExceededError', () => {
     expect(err.message).toContain('Delete old photos or videos');
   });
 
+  it('treats negative evictable_bytes (server bug) as zero, not the generic fallback', async () => {
+    const negativeEvictableBody = JSON.stringify({
+      error: 'QUOTA_EXCEEDED',
+      details: {
+        quota: {
+          storage_bytes: 500 * 1024 * 1024,
+          max_bytes: 500 * 1024 * 1024,
+          file_count: 42,
+          max_files: 1000,
+          storage_percent: 100,
+          files_percent: 4.2,
+          evictable_bytes: -1,
+        },
+      },
+    });
+    mockFetchError(413, negativeEvictableBody);
+
+    const err = await request({ method: 'POST', path: '/api/test' }).catch(
+      (e: unknown) => e,
+    ) as QuotaExceededError;
+
+    expect(err.message).toContain('Delete old photos or videos');
+    expect(err.quota?.evictableBytes).toBe(-1);
+  });
+
   it('quota is undefined and message is fallback on malformed body', async () => {
     mockFetchError(413, 'not json at all');
 

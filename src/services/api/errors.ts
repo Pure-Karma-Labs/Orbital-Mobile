@@ -207,7 +207,8 @@ function quotaMessage(quota: QuotaUsage | undefined): string {
   if (quota && quota.evictableBytes > 0) {
     return `Orbit storage is full. About ${formatMB(quota.evictableBytes)} will free up automatically as members archive older threads — try again later.`;
   }
-  if (quota && quota.evictableBytes === 0) {
+  if (quota) {
+    // <= 0: nothing evictable (negative would be a server bug — treat as zero)
     return 'Orbit storage is full. Delete old photos or videos to make room.';
   }
   return 'Upload too large or storage is full.';

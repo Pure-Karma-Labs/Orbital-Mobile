@@ -1,7 +1,7 @@
 # libsignal API Surface Specification
 
 **Version:** 1.0
-**libsignal version:** v0.97.3 (pinned)
+**libsignal version:** v0.97.4 (pinned)
 **Author:** Signal Crypto Specialist
 **Status:** Draft
 **Blocks:** Issues #5 (Rust crate), #6 (uniffi-bindgen toolchain), #7-#11 (crypto pipeline)
@@ -53,7 +53,7 @@ orbital_signal (thin Rust crate)
     |
     | re-exports with UniFFI proc macros
     v
-libsignal-protocol v0.97.3 (Rust)
+libsignal-protocol v0.97.4 (Rust)
 ```
 
 ---

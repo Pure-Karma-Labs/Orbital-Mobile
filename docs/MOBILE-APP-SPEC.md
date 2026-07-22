@@ -120,7 +120,7 @@ This is more manual work but avoids the uniffi toolchain dependency.
 
 ### Key Risk: libsignal is not a stable public API
 
-Signal does not publish libsignal-ffi as a versioned, stable API. Breaking changes can occur between releases. **Mitigation:** Pin to a specific libsignal version (currently v0.83.0 on desktop) and only upgrade deliberately.
+Signal does not publish libsignal-ffi as a versioned, stable API. Breaking changes can occur between releases. **Mitigation:** Pin to a specific libsignal version (v0.83.0 at time of writing; current pin: v0.97.4) and only upgrade deliberately.
 
 ---
 
@@ -402,7 +402,7 @@ Based on desktop component analysis (`ts/components/orbital/`), the mobile app n
 ### Phase 1: Foundation (Weeks 1-4)
 - [ ] Initialize React Native project (RN 0.82+, New Architecture)
 - [ ] Set up uniffi-bindgen-react-native toolchain
-- [ ] Create thin Rust crate wrapping libsignal v0.83.0 (pin version)
+- [ ] Create thin Rust crate wrapping libsignal v0.97.4 (pin version)
 - [ ] Implement ~15-20 libsignal function bindings
 - [ ] Implement SignalProtocolStore (SQLite-backed, ~6 store interfaces)
 - [ ] Build auth flow (login, signup, JWT storage)
@@ -495,7 +495,7 @@ These files in the desktop codebase serve as the authoritative reference:
 | Risk | Severity | Mitigation |
 |------|----------|------------|
 | uniffi-bindgen-react-native not yet 1.0 | Medium | Mozilla backs it; matrix-rust-sdk uses it in production. Fallback: manual Turbo Modules for ~15 functions |
-| libsignal has no stable public FFI API | High | Pin to v0.83.0, wrap minimal surface, upgrade deliberately |
+| libsignal has no stable public FFI API | High | Pin to v0.97.4, wrap minimal surface, upgrade deliberately |
 | No one has wrapped libsignal via uniffi before | Medium | We only need ~15-20 functions, not all 302. Proof-of-concept in Phase 1 |
 | React Native crypto performance | Low | JSI provides synchronous native calls; crypto runs in native Rust, not JS |
 | Media upload/download on cellular | Medium | Chunked uploads (5MB), resume support, WiFi-only option |

@@ -81,9 +81,11 @@ jest.mock('../../components/Emoji', () => {
 });
 
 import React from 'react';
+import { Alert } from 'react-native';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { ThemeProvider } from '../../theme';
 import { ThreadDetailScreen } from '../ThreadDetailScreen';
+import { QuotaExceededError } from '../../services/api/errors';
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -803,5 +805,123 @@ describe('ThreadDetailScreen — block filtering', () => {
       (node) => node.props.testID === 'thread-header',
     );
     expect(header.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// QuotaExceededError — Alert.alert on upload failure
+// ---------------------------------------------------------------------------
+
+describe('ThreadDetailScreen — quota error', () => {
+  beforeEach(() => {
+    const storesMock = jest.requireMock('../../stores') as {
+      useThreads: jest.Mock;
+    };
+    storesMock.useThreads.mockReturnValue({
+      threads: { 'thread-1': fakeThread },
+      threadIdsByConversation: { 'group-1': ['thread-1'] },
+      replies: {},
+      replyIdsByThread: {},
+      activeThreadId: 'thread-1',
+      setThreads: jest.fn(),
+      upsertThread: jest.fn(),
+      removeThread: jest.fn(),
+      setActiveThread: mockSetActiveThread,
+      markThreadViewed: jest.fn(),
+      setReplies: jest.fn(),
+      appendReplies: jest.fn(),
+      upsertReply: jest.fn(),
+      addOptimisticThread: jest.fn(),
+      addOptimisticReply: jest.fn(),
+      updateThreadSyncStatus: jest.fn(),
+      updateReplySyncStatus: jest.fn(),
+    });
+  });
+
+  afterEach(() => {
+    const storesMock = jest.requireMock('../../stores') as {
+      useThreads: jest.Mock;
+    };
+    storesMock.useThreads.mockReturnValue({
+      threads: {},
+      threadIdsByConversation: {},
+      replies: {},
+      replyIdsByThread: {},
+      activeThreadId: null,
+      setThreads: jest.fn(),
+      upsertThread: jest.fn(),
+      removeThread: jest.fn(),
+      setActiveThread: mockSetActiveThread,
+      markThreadViewed: jest.fn(),
+      setReplies: jest.fn(),
+      appendReplies: jest.fn(),
+      upsertReply: jest.fn(),
+      addOptimisticThread: jest.fn(),
+      addOptimisticReply: jest.fn(),
+      updateThreadSyncStatus: jest.fn(),
+      updateReplySyncStatus: jest.fn(),
+    });
+    mockSelectedMedia = [];
+  });
+
+  it('shows Alert.alert with quota message on QuotaExceededError during send', async () => {
+    const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+    const quotaBody = JSON.stringify({
+      error: 'QUOTA_EXCEEDED',
+      details: {
+        quota: {
+          storage_bytes: 500 * 1024 * 1024,
+          max_bytes: 500 * 1024 * 1024,
+          file_count: 42,
+          max_files: 1000,
+          storage_percent: 100,
+          files_percent: 4.2,
+          evictable_bytes: 0,
+        },
+      },
+    });
+
+    mockSelectedMedia = [
+      {
+        uri: 'file:///photo1.jpg',
+        type: 'image/jpeg',
+        fileName: 'photo1.jpg',
+        fileSize: 100,
+        width: 50,
+        height: 50,
+      },
+    ];
+    mockUploadMediaBatch.mockRejectedValue(new QuotaExceededError(quotaBody));
+
+    const renderer = await renderScreen();
+
+    // Type text into the composer
+    const input = renderer.root.findAll(
+      (node) => node.props.testID === 'reply-input',
+    );
+    expect(input.length).toBeGreaterThan(0);
+    await act(async () => {
+      input[0].props.onChangeText('hello with media');
+    });
+
+    // Press send
+    const sendBtn = renderer.root.findAll(
+      (node) => node.props.testID === 'send-button',
+    );
+    await act(async () => {
+      sendBtn[0].props.onPress();
+    });
+
+    // Wait for async send
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(alertSpy).toHaveBeenCalledWith(
+      'Upload Failed',
+      'Orbit storage is full. Delete old photos or videos to make room.',
+    );
+
+    alertSpy.mockRestore();
   });
 });

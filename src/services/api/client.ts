@@ -12,6 +12,7 @@ import {
   ConflictError,
   NetworkError,
   NotFoundError,
+  QuotaExceededError,
   ServerError,
   ValidationError,
 } from './errors';
@@ -285,6 +286,13 @@ async function _executeRequest(options: RequestOptions): Promise<Response> {
 
     if (status === 409) {
       throw new ConflictError(rawBody);
+    }
+
+    // 413 = quota denial on upload routes (QUOTA_EXCEEDED). Express body-parser can
+    // also 413 JSON bodies >10MB (PAYLOAD_TOO_LARGE) but upload routes are multipart,
+    // so that case can't occur here; both are non-retryable regardless.
+    if (status === 413) {
+      throw new QuotaExceededError(rawBody);
     }
 
     if (status === 400 || status === 422) {

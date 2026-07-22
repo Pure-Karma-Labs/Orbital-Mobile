@@ -21,6 +21,7 @@ import { useAuth, useContactForConversation } from '../stores';
 import { VerifiedStatus } from '../types/database';
 import { createNewThread } from '../services/threadService';
 import { uploadMediaBatch } from '../services/mediaUploadService';
+import { QuotaExceededError } from '../services/api/errors';
 import { updateMediaParent } from '../database/repositories/mediaRepository';
 import { useMediaPicker } from '../hooks/useMediaPicker';
 import { Header } from '../components/Header';
@@ -109,7 +110,8 @@ export function ComposeThreadScreen({
       if (__DEV__) {
         console.warn('[Compose] error:', e instanceof Error ? e.message : e);
       }
-      setError('Failed to create thread. Please try again.');
+      // instanceof applies to the upload path; createNewThread is JSON-only and never 413s
+      setError(e instanceof QuotaExceededError ? e.message : 'Failed to create thread. Please try again.');
     } finally {
       setLoading(false);
     }

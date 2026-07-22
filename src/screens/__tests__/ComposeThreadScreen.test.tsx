@@ -25,13 +25,19 @@ jest.mock('../../services/threadService', () => ({
   createNewThread: jest.fn(),
 }));
 
+const mockUploadMediaBatch = jest.fn();
+
 jest.mock('../../services/mediaUploadService', () => ({
   uploadMedia: jest.fn(),
+  uploadMediaBatch: (...args: unknown[]) => mockUploadMediaBatch(...args),
 }));
+
+let mockSelectedMedia: unknown[] = [];
 
 jest.mock('../../hooks/useMediaPicker', () => ({
   useMediaPicker: () => ({
-    selectedMedia: [],
+    selectedMedia: mockSelectedMedia,
+    pickMedia: jest.fn(),
     pickPhotos: jest.fn(),
     takePhoto: jest.fn(),
     removeMedia: jest.fn(),
@@ -51,6 +57,7 @@ jest.mock('../../stores', () => ({
 }));
 
 import { createNewThread } from '../../services/threadService';
+import { QuotaExceededError } from '../../services/api/errors';
 const mockCreateNewThread = createNewThread as jest.Mock;
 
 // ---------------------------------------------------------------------------
@@ -130,6 +137,8 @@ function findPostButton(root: ReactTestInstance): ReactTestInstance {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockSelectedMedia = [];
+  mockUploadMediaBatch.mockResolvedValue(['media-id-1']);
 });
 
 // ---------------------------------------------------------------------------
@@ -295,5 +304,65 @@ describe('ComposeThreadScreen — loading state', () => {
 
     expect(mockCreateNewThread).toHaveBeenCalledTimes(1);
     expect(mockNavigation.replace).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// QuotaExceededError handling
+// ---------------------------------------------------------------------------
+
+describe('ComposeThreadScreen — quota error', () => {
+  it('shows quota message instead of generic error on QuotaExceededError', async () => {
+    mockSelectedMedia = [
+      {
+        uri: 'file:///photo1.jpg',
+        type: 'image/jpeg',
+        fileName: 'photo1.jpg',
+        fileSize: 100,
+        width: 50,
+        height: 50,
+      },
+    ];
+    const quotaBody = JSON.stringify({
+      error: 'QUOTA_EXCEEDED',
+      details: {
+        quota: {
+          storage_bytes: 500 * 1024 * 1024,
+          max_bytes: 500 * 1024 * 1024,
+          file_count: 42,
+          max_files: 1000,
+          storage_percent: 100,
+          files_percent: 4.2,
+          evictable_bytes: 0,
+        },
+      },
+    });
+    mockUploadMediaBatch.mockRejectedValue(new QuotaExceededError(quotaBody));
+    const renderer = renderScreen();
+
+    act(() => {
+      findByTestId(renderer.root, 'compose-title-input').props.onChangeText('My Title');
+      findByTestId(renderer.root, 'compose-body-input').props.onChangeText('Some body text');
+    });
+
+    await act(async () => {
+      findPostButton(renderer.root).props.onPress();
+    });
+
+    const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
+    const quotaText = allText.find(
+      (node) =>
+        typeof node.props.children === 'string' &&
+        node.props.children.includes('Delete old photos or videos'),
+    );
+    expect(quotaText).toBeDefined();
+
+    // The generic "Failed to create thread" should NOT appear
+    const genericText = allText.find(
+      (node) =>
+        typeof node.props.children === 'string' &&
+        node.props.children === 'Failed to create thread. Please try again.',
+    );
+    expect(genericText).toBeUndefined();
   });
 });

@@ -6,6 +6,9 @@
  * in __DEV__ mode to prevent leaking server internals to production.
  */
 
+import type { QuotaUsage } from '../../types/api';
+import { formatMB } from '../../utils/formatBytes';
+
 export class ApiError extends Error {
   readonly statusCode: number;
   readonly code: string;
@@ -159,6 +162,72 @@ export class ConflictError extends ApiError {
     }
     this.blockingOrbits = orbits;
 
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 413 QUOTA_EXCEEDED — orbit storage quota denial
+// ---------------------------------------------------------------------------
+
+/** Parse the quota object from a 413 response body (snake_case from server). */
+function parseQuota(rawBody?: string): QuotaUsage | undefined {
+  if (!rawBody) return undefined;
+  try {
+    const parsed = JSON.parse(rawBody);
+    const q = parsed?.details?.quota;
+    if (
+      q &&
+      typeof q.storage_bytes === 'number' &&
+      typeof q.max_bytes === 'number' &&
+      typeof q.file_count === 'number' &&
+      typeof q.max_files === 'number' &&
+      typeof q.storage_percent === 'number' &&
+      typeof q.files_percent === 'number' &&
+      typeof q.evictable_bytes === 'number'
+    ) {
+      return {
+        storageBytes: q.storage_bytes,
+        maxBytes: q.max_bytes,
+        fileCount: q.file_count,
+        maxFiles: q.max_files,
+        storagePercent: q.storage_percent,
+        filesPercent: q.files_percent,
+        evictableBytes: q.evictable_bytes,
+      };
+    }
+  } catch {
+    // Parse failure — fall through to undefined
+  }
+  return undefined;
+}
+
+/** Build a user-facing quota message from parsed quota data. */
+function quotaMessage(quota: QuotaUsage | undefined): string {
+  if (quota && quota.evictableBytes > 0) {
+    return `Orbit storage is full. About ${formatMB(quota.evictableBytes)} will free up automatically as members archive older threads — try again later.`;
+  }
+  if (quota && quota.evictableBytes === 0) {
+    return 'Orbit storage is full. Delete old photos or videos to make room.';
+  }
+  return 'Upload too large or storage is full.';
+}
+
+/**
+ * HTTP 413 — quota exceeded on upload routes.
+ *
+ * The quota field is prod-retained (not __DEV__-gated) because it contains
+ * only the user's own usage numbers, not server internals.
+ */
+export class QuotaExceededError extends ApiError {
+  /** Parsed quota usage from the 413 response — always available (prod-retained). */
+  readonly quota: QuotaUsage | undefined;
+
+  constructor(rawBody?: string) {
+    const quota = parseQuota(rawBody);
+    super(quotaMessage(quota), 413, 'QUOTA_EXCEEDED', false, rawBody);
+    this.name = 'QuotaExceededError';
+    this.quota = quota;
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }

@@ -19,6 +19,7 @@ import {
   ConflictError,
   NetworkError,
   NotFoundError,
+  QuotaExceededError,
   ServerError,
   ValidationError,
 } from '../errors';
@@ -487,5 +488,115 @@ describe('ConflictError', () => {
 
     expect(err).toBeInstanceOf(ConflictError);
     expect(err.blockingOrbits).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// QuotaExceededError (413) — mapping and parsing
+// ---------------------------------------------------------------------------
+
+describe('QuotaExceededError', () => {
+  const fullQuotaBody = JSON.stringify({
+    error: 'QUOTA_EXCEEDED',
+    details: {
+      quota: {
+        storage_bytes: 500 * 1024 * 1024,
+        max_bytes: 500 * 1024 * 1024,
+        file_count: 42,
+        max_files: 1000,
+        storage_percent: 100,
+        files_percent: 4.2,
+        evictable_bytes: 50 * 1024 * 1024,
+      },
+    },
+  });
+
+  it('maps 413 to QuotaExceededError with correct fields', async () => {
+    mockFetchError(413, fullQuotaBody);
+
+    const err = await request({ method: 'POST', path: '/api/test' }).catch(
+      (e: unknown) => e,
+    ) as QuotaExceededError;
+
+    expect(err).toBeInstanceOf(QuotaExceededError);
+    expect(err.statusCode).toBe(413);
+    expect(err.code).toBe('QUOTA_EXCEEDED');
+    expect(err.isRetryable).toBe(false);
+  });
+
+  it('parses full snake_case quota to camelCase fields', async () => {
+    mockFetchError(413, fullQuotaBody);
+
+    const err = await request({ method: 'POST', path: '/api/test' }).catch(
+      (e: unknown) => e,
+    ) as QuotaExceededError;
+
+    expect(err.quota).toEqual({
+      storageBytes: 500 * 1024 * 1024,
+      maxBytes: 500 * 1024 * 1024,
+      fileCount: 42,
+      maxFiles: 1000,
+      storagePercent: 100,
+      filesPercent: 4.2,
+      evictableBytes: 50 * 1024 * 1024,
+    });
+  });
+
+  it('message contains "will free up automatically" and formatted MB when evictable > 0', async () => {
+    mockFetchError(413, fullQuotaBody);
+
+    const err = await request({ method: 'POST', path: '/api/test' }).catch(
+      (e: unknown) => e,
+    ) as QuotaExceededError;
+
+    expect(err.message).toContain('will free up automatically');
+    expect(err.message).toContain('50 MB');
+  });
+
+  it('message contains "Delete old photos or videos" when evictable is 0', async () => {
+    const zeroEvictableBody = JSON.stringify({
+      error: 'QUOTA_EXCEEDED',
+      details: {
+        quota: {
+          storage_bytes: 500 * 1024 * 1024,
+          max_bytes: 500 * 1024 * 1024,
+          file_count: 42,
+          max_files: 1000,
+          storage_percent: 100,
+          files_percent: 4.2,
+          evictable_bytes: 0,
+        },
+      },
+    });
+    mockFetchError(413, zeroEvictableBody);
+
+    const err = await request({ method: 'POST', path: '/api/test' }).catch(
+      (e: unknown) => e,
+    ) as QuotaExceededError;
+
+    expect(err.message).toContain('Delete old photos or videos');
+  });
+
+  it('quota is undefined and message is fallback on malformed body', async () => {
+    mockFetchError(413, 'not json at all');
+
+    const err = await request({ method: 'POST', path: '/api/test' }).catch(
+      (e: unknown) => e,
+    ) as QuotaExceededError;
+
+    expect(err).toBeInstanceOf(QuotaExceededError);
+    expect(err.quota).toBeUndefined();
+    expect(err.message).toBe('Upload too large or storage is full.');
+  });
+
+  it('quota is undefined when details.quota is missing', async () => {
+    mockFetchError(413, JSON.stringify({ error: 'QUOTA_EXCEEDED', details: {} }));
+
+    const err = await request({ method: 'POST', path: '/api/test' }).catch(
+      (e: unknown) => e,
+    ) as QuotaExceededError;
+
+    expect(err).toBeInstanceOf(QuotaExceededError);
+    expect(err.quota).toBeUndefined();
   });
 });

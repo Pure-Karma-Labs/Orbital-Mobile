@@ -83,6 +83,7 @@ jest.mock('../../utils/uuid', () => ({
 }));
 
 import { uploadMedia, uploadMediaBatch, cleanupOrphanedChunks } from '../mediaUploadService';
+import { QuotaExceededError, AuthError } from '../api/errors';
 import type { PickedMedia } from '../../hooks/useMediaPicker';
 
 // ---------------------------------------------------------------------------
@@ -428,6 +429,36 @@ describe('uploadMedia', () => {
     mockUploadChunk.mockRejectedValue(new Error('401 Unauthorized'));
 
     await expect(uploadMedia(baseOptions)).rejects.toThrow('401');
+    expect(mockUploadChunk).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry on quota error', async () => {
+    const quotaBody = JSON.stringify({
+      error: 'QUOTA_EXCEEDED',
+      details: {
+        quota: {
+          storage_bytes: 500 * 1024 * 1024,
+          max_bytes: 500 * 1024 * 1024,
+          file_count: 42,
+          max_files: 1000,
+          storage_percent: 100,
+          files_percent: 4.2,
+          evictable_bytes: 0,
+        },
+      },
+    });
+    mockUploadChunk.mockRejectedValue(new QuotaExceededError(quotaBody));
+
+    await expect(uploadMedia(baseOptions)).rejects.toBeInstanceOf(QuotaExceededError);
+    expect(mockUploadChunk).toHaveBeenCalledTimes(1);
+    // No failed-row saveMedia call on typed error short-circuit
+    expect(mockSaveMedia).not.toHaveBeenCalled();
+  });
+
+  it('does not retry on typed AuthError', async () => {
+    mockUploadChunk.mockRejectedValue(new AuthError(401, 'token expired'));
+
+    await expect(uploadMedia(baseOptions)).rejects.toBeInstanceOf(AuthError);
     expect(mockUploadChunk).toHaveBeenCalledTimes(1);
   });
 

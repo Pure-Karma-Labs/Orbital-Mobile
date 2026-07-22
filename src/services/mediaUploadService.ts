@@ -31,6 +31,7 @@ import { generateAttachmentKeys, createAttachmentEncryptor } from './crypto/atta
 import { encryptContent, getOrFetchGroupKey } from './crypto/contentCrypto';
 import { arrayBufferToBase64, toArrayBuffer } from './crypto/utils';
 import { uploadChunk, completeUpload } from './api/media';
+import { QuotaExceededError, AuthError } from './api/errors';
 import { saveMedia } from '../database/repositories/mediaRepository';
 import { isDatabaseInitialized } from '../database/connection';
 import { useAppStore } from '../stores/useAppStore';
@@ -464,6 +465,11 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
             break;
           } catch (e) {
             lastError = e instanceof Error ? e : new Error(String(e));
+
+            // Quota and auth failures can never succeed on retry — fail fast with the typed error
+            if (lastError instanceof QuotaExceededError || lastError instanceof AuthError) {
+              throw lastError;
+            }
 
             // Don't retry auth or validation errors
             if (lastError.message.includes('401') || lastError.message.includes('403')) {

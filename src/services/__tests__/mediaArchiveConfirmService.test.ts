@@ -368,6 +368,36 @@ describe('foreground drain listener', () => {
 // ---------------------------------------------------------------------------
 
 describe('clearArchiveConfirmState', () => {
+  it('is safe when called while a drain is suspended mid-flight', async () => {
+    let resolveFirst!: () => void;
+    const firstDrain = new Promise<void>((r) => { resolveFirst = r; });
+
+    mockGetUnconfirmedDownloadedMedia.mockReturnValueOnce([{ id: 'a' }]);
+    mockArchiveConfirm.mockImplementationOnce(async () => {
+      await firstDrain;
+      return { mediaId: 'a', confirmedAt: 'now', status: 'available' };
+    });
+
+    const p1 = drainPendingArchiveConfirms();
+
+    // Logout mid-flight: clearState resets draining without awaiting p1
+    clearArchiveConfirmState();
+
+    // A fresh drain after clearState is not blocked by the orphaned one
+    mockGetUnconfirmedDownloadedMedia.mockReturnValueOnce([{ id: 'b' }]);
+    mockArchiveConfirm.mockResolvedValueOnce({
+      mediaId: 'b', confirmedAt: 'now', status: 'available',
+    });
+    const p2 = drainPendingArchiveConfirms();
+
+    resolveFirst();
+    await p1;
+    await p2;
+
+    expect(mockSetArchiveConfirmed).toHaveBeenCalledWith('a');
+    expect(mockSetArchiveConfirmed).toHaveBeenCalledWith('b');
+  });
+
   it('cancels pending timer', () => {
     scheduleArchiveConfirmDrain();
     clearArchiveConfirmState();

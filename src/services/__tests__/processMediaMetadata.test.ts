@@ -773,6 +773,7 @@ describe('processMediaMetadata — stale local_path recovery', () => {
       download_state: 'downloaded',
       local_path: '/cache/deleted-file.jpg',
       attachment_key: new Uint8Array(64).fill(0xCC),
+      archive_confirmed: 1,
     });
     mockGetMedia.mockReturnValue(row);
 
@@ -793,6 +794,12 @@ describe('processMediaMetadata — stale local_path recovery', () => {
     expect(items[0].localPath).toBeNull();
     // hasKeys should still be true since the row had an attachment_key
     expect(items[0].hasKeys).toBe(true);
+
+    // The re-saved row must reset archive_confirmed — a vanished file means
+    // "durable copy" no longer holds; re-download idempotently re-confirms (#608)
+    expect(mockSaveMedia).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'media-stale-1', archive_confirmed: 0 }),
+    );
   });
 
   it('preserves downloaded state when file exists on disk', async () => {

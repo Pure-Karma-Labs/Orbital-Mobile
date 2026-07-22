@@ -194,6 +194,10 @@ export function unregisterForegroundConfirmDrain(): void {
  * Reset all module-level archive-confirm state. Called from `localWipe()` on logout.
  *
  * Clears flags, cancels the debounce timer, and removes the AppState subscription.
+ *
+ * Mid-flight safety: this resets `draining` without awaiting an in-flight drain.
+ * That is safe only because the logout path never restarts the drain after
+ * cleanup — an orphaned drain fails 'transient' once auth is cleared and stops.
  */
 export function clearArchiveConfirmState(): void {
   draining = false;

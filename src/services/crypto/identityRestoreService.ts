@@ -61,6 +61,7 @@ import {
   toArrayBuffer,
   base64ToArrayBuffer,
   encodeUTF8,
+  getSecureRandom,
 } from './utils';
 import { normalizeIdentityKey } from './identityKeyAccess';
 import { useAppStore } from '../../stores/useAppStore';
@@ -104,12 +105,7 @@ function verifyPrivateKeyMatchesPublic(
   const contextBytes = toArrayBuffer(encodeUTF8(VERIFY_PROBE_CONTEXT));
 
   // Generate 32-byte random plaintext for the proof
-  const plaintext = new Uint8Array(32);
-  const cryptoGlobal = (
-    globalThis as unknown as { crypto: { getRandomValues: (a: Uint8Array) => void } }
-  ).crypto;
-  cryptoGlobal.getRandomValues(plaintext);
-  const plaintextBuf = toArrayBuffer(plaintext);
+  const plaintextBuf = toArrayBuffer(getSecureRandom(32));
 
   // Seal: encrypt to self (recipient = own public key)
   const sealed = eciesSeal(

@@ -23,6 +23,7 @@ import {
   arrayBufferToBase64,
   base64ToArrayBuffer,
   toArrayBuffer,
+  getSecureRandom,
 } from './utils';
 import { normalizeIdentityKey } from './identityKeyAccess';
 import type {
@@ -98,11 +99,7 @@ type KeyDataRow = { key_data: Uint8Array };
  * Generate a random registrationId in the range [1, 0x3fffffff].
  */
 function generateRegistrationId(): number {
-  const buf = new Uint8Array(4);
-  const cryptoGlobal = (
-    globalThis as unknown as { crypto: { getRandomValues: (a: Uint8Array) => void } }
-  ).crypto;
-  cryptoGlobal.getRandomValues(buf);
+  const buf = getSecureRandom(4);
   return (
     (((buf[0] | (buf[1] << 8) | (buf[2] << 16) | ((buf[3] & 0x3f) << 24)) >>> 0) %
       0x3fffffff) +

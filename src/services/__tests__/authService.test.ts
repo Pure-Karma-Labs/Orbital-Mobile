@@ -1423,6 +1423,38 @@ describe('ConflictError detection', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Identity restore integration (PR #633 review — step-0 restore hook)
+// ---------------------------------------------------------------------------
+
+describe('identity restore integration', () => {
+  it("postAuthBootstrap 'deferred' sets identityRestoreDeferred and skips key init", async () => {
+    mockAttemptKeychainIdentityRestore.mockResolvedValueOnce('deferred');
+    mockLogin.mockResolvedValue({
+      token: 'tok', userId: 'user-1', username: 'alice', publicKey: null,
+    });
+
+    await loginUser('alice@test.com', 'secret');
+
+    expect(mockSetIdentityRestoreDeferred).toHaveBeenCalledWith(true);
+    expect(mockEnsureKeysInitialized).not.toHaveBeenCalled();
+  });
+
+  it('signupUser clears stale keychain identity BEFORE generating keys', async () => {
+    mockSignup.mockResolvedValue({
+      token: 'tok', userId: 'user-1', username: 'alice', email: 'a@x.com',
+      groupId: null, inviteEncryptedGroupKey: null,
+    });
+
+    await signupUser('alice', 'pass', 'a@x.com', 'CODE');
+
+    expect(mockClearStaleKeychainIdentity).toHaveBeenCalled();
+    const clearOrder = mockClearStaleKeychainIdentity.mock.invocationCallOrder[0];
+    const generateOrder = mockGenerateInitialKeys.mock.invocationCallOrder[0];
+    expect(clearOrder).toBeLessThan(generateOrder);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Email persistence from INPUT parameter
 // ---------------------------------------------------------------------------
 

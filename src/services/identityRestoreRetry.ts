@@ -43,8 +43,13 @@ export async function retryIdentityRestore(): Promise<void> {
         });
         useAppStore.getState().setIdentityKeyConflict(true);
         useAppStore.getState().setConflictSource('local');
-      } else if (__DEV__) {
-        console.warn('[DeferredRestore:KeyMaintenance]', e instanceof Error ? e.message : e);
+      } else {
+        // Keys are still uninitialized after a successful restore — must be
+        // visible in production, not just dev logs.
+        if (__DEV__) console.warn('[DeferredRestore:KeyMaintenance]', e instanceof Error ? e.message : e);
+        Sentry.captureException(e instanceof Error ? e : new Error(String(e)), {
+          tags: { feature: 'key-recovery', outcome: 'retry-key-init-failed' },
+        });
       }
     });
   } catch (e) {

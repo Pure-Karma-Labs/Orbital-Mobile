@@ -60,3 +60,13 @@ export function base64ToArrayBuffer(base64: string): ArrayBuffer {
   }
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
+
+/**
+ * Fill a fresh Uint8Array of `size` bytes with cryptographically secure
+ * randomness from the Hermes-polyfilled global crypto object.
+ */
+export function getSecureRandom(size: number): Uint8Array {
+  const buf = new Uint8Array(size);
+  (globalThis as unknown as { crypto: { getRandomValues: (a: Uint8Array) => void } }).crypto.getRandomValues(buf);
+  return buf;
+}

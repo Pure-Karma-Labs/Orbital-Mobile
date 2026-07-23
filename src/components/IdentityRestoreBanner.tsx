@@ -18,34 +18,36 @@ export function IdentityRestoreBanner(): React.JSX.Element | null {
   const { identityRestoreDeferred } = useAuth();
   const [retrying, setRetrying] = useState(false);
   const appStateRef = useRef(RNAppState.currentState);
+  // Synchronous re-entrancy guard: `retrying` state is captured by value in
+  // closures, so a foreground event landing between setRetrying(true) and the
+  // next render could double-invoke. The ref is set before any await.
+  const retryInFlightRef = useRef(false);
 
   const handleRetry = useCallback(async () => {
-    if (retrying) return;
+    if (retryInFlightRef.current) return;
+    retryInFlightRef.current = true;
     setRetrying(true);
     try {
       await retryIdentityRestore();
     } finally {
+      retryInFlightRef.current = false;
       setRetrying(false);
     }
-  }, [retrying]);
+  }, []);
 
   // Auto-retry on app-foreground transition
   useEffect(() => {
     if (!identityRestoreDeferred) return;
 
     const subscription = RNAppState.addEventListener('change', (nextState) => {
-      if (
-        appStateRef.current.match(/inactive|background/) &&
-        nextState === 'active' &&
-        !retrying
-      ) {
+      if (appStateRef.current.match(/inactive|background/) && nextState === 'active') {
         handleRetry();
       }
       appStateRef.current = nextState;
     });
 
     return () => subscription.remove();
-  }, [identityRestoreDeferred, handleRetry, retrying]);
+  }, [identityRestoreDeferred, handleRetry]);
 
   if (!identityRestoreDeferred) return null;
 

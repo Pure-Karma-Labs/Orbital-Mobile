@@ -497,6 +497,7 @@ describe('recoverIdentityKeys — state-aware retry', () => {
     // THIS is the loop-breaker: reset is called despite local wipe
     // Two calls: step 4 (initial probe=present) + step 6b (post-login re-probe=present)
     expect(mockResetIdentityKeys).toHaveBeenCalledWith('password123');
+    expect(mockResetIdentityKeys).toHaveBeenCalledTimes(2);
     expect(mockFullCryptoWipe).not.toHaveBeenCalled(); // already wiped
     expect(mockLogin).toHaveBeenCalled();
   });
@@ -1252,6 +1253,47 @@ describe('recoverIdentityKeys — post-login re-probe', () => {
       expect.any(Error),
       expect.objectContaining({ extra: { step: 'post-login-reset' } }),
     );
+    // Failed reset did NOT revoke the JWT — no extra re-login (#632 panel item 1)
+    expect(mockLogin).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-probe=unauthorized proceeds to key-init without second reset', async () => {
+    mockFetchRemoteIdentityKeyBundle.mockReset();
+    mockFetchRemoteIdentityKeyBundle
+      .mockResolvedValueOnce({ identityKey: 'key' }) // step 4: present
+      .mockRejectedValueOnce(new AuthError(401, 'revoked')); // step 6b: unauthorized
+    const result = await recoverIdentityKeys('pw', false);
+    expect(result.status).toBe('success');
+    expect(mockResetIdentityKeys).toHaveBeenCalledTimes(1);
+    expect(mockLogin).toHaveBeenCalledTimes(1);
+    expect(mockEnsureKeysInitialized).toHaveBeenCalled();
+  });
+
+  it('re-probe=unreachable proceeds to key-init without second reset', async () => {
+    mockFetchRemoteIdentityKeyBundle.mockReset();
+    mockFetchRemoteIdentityKeyBundle
+      .mockResolvedValueOnce({ identityKey: 'key' }) // step 4: present
+      .mockRejectedValueOnce(new NetworkError('offline')); // step 6b: unreachable
+    const result = await recoverIdentityKeys('pw', false);
+    expect(result.status).toBe('success');
+    expect(mockResetIdentityKeys).toHaveBeenCalledTimes(1);
+    expect(mockLogin).toHaveBeenCalledTimes(1);
+    expect(mockEnsureKeysInitialized).toHaveBeenCalled();
+  });
+
+  it('null userId skips probe AND reset entirely, still wipes + logs in', async () => {
+    const { useAppStore: store } = require('../../stores/useAppStore');
+    const defaultState = store.getState();
+    (store.getState as jest.Mock).mockReturnValue({ ...defaultState, userId: null });
+
+    const result = await recoverIdentityKeys('pw', false);
+    expect(result.status).toBe('success');
+    expect(mockFetchRemoteIdentityKeyBundle).not.toHaveBeenCalled();
+    expect(mockResetIdentityKeys).not.toHaveBeenCalled();
+    expect(mockFullCryptoWipe).toHaveBeenCalled();
+    expect(mockLogin).toHaveBeenCalled();
+
+    (store.getState as jest.Mock).mockReturnValue(defaultState);
   });
 
   it('second-409 "Key conflict persists" branch still reachable after re-probe', async () => {

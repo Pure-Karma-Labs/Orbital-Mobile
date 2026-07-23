@@ -30,7 +30,12 @@ import { clearConversationServiceState } from './conversationService';
 import { clearIdentityInflightState } from './crypto/identityKeyAccess';
 import { clearMessageHandlerState } from './websocket/messageHandler';
 import { loadEciesLockState } from './crypto/downgradeProtection';
-import { loadConversations, loadDmConversations, fulfillPendingWraps, hydrateContactsFromOrbits } from './conversationService';
+import {
+  loadConversations,
+  loadDmConversations,
+  fulfillPendingWraps,
+  hydrateContactsFromOrbits,
+} from './conversationService';
 import { syncBlockedUsers } from './blockedUsersSync';
 import { websocketManager } from './websocket';
 import { isRecoveryInitiator, setRecoveryInitiator } from './recoveryState';
@@ -120,6 +125,12 @@ export async function probeServerIdentityKey(userId: string): Promise<ServerProb
       });
       return 'unauthorized';
     }
+    // Capture the ORIGINAL exception here so its class and stack survive
+    // (DNS vs TLS vs unexpected error are indistinguishable from a wrapper).
+    Sentry.captureException(e instanceof Error ? e : new Error(String(e)), {
+      tags: { feature: 'key-recovery' },
+      extra: { step: 'server-probe-unreachable', userId },
+    });
     Sentry.addBreadcrumb({
       category: 'key-recovery',
       message: 'server-probe: unreachable',
@@ -138,10 +149,7 @@ export async function probeServerIdentityKey(userId: string): Promise<ServerProb
  * Attempt loginForRecovery with one auto-retry on 401 (API-M2: same-second
  * JWT revocation race). Non-401 errors propagate to the caller.
  */
-export async function loginForRecoveryWithRetry(
-  email: string,
-  password: string,
-): Promise<void> {
+export async function loginForRecoveryWithRetry(email: string, password: string): Promise<void> {
   try {
     await loginForRecovery(email, password);
   } catch (e: unknown) {
@@ -260,15 +268,19 @@ export function recoverIdentityKeys(
     .then((result) => {
       // Hoist non-success result to the store so the (re)mounted UI can display it.
       if (result.status !== 'success') {
-        useAppStore.getState().setKeyRecoveryError(
-          result.status === 'incorrect_password' || result.status === 'rate_limited'
-            ? { status: result.status }
-            : { status: result.status, message: (result as { message?: string }).message },
-        );
+        useAppStore
+          .getState()
+          .setKeyRecoveryError(
+            result.status === 'incorrect_password' || result.status === 'rate_limited'
+              ? { status: result.status }
+              : { status: result.status, message: (result as { message?: string }).message },
+          );
       }
       return result;
     })
-    .finally(() => { recoveryInflight = null; });
+    .finally(() => {
+      recoveryInflight = null;
+    });
   return recoveryInflight;
 }
 
@@ -283,22 +295,37 @@ async function doRecoverIdentityKeys(
   try {
     // Step 1: Capture email before any wipe.
     // emailOverride is the manual-entry fallback from KeyConflictScreen (EMAIL RULING tier 3).
-    Sentry.addBreadcrumb({ category: 'key-recovery', message: 'step-1: resolving email', level: 'info' });
-    const email = emailOverride || await resolveRecoveryEmail();
+    Sentry.addBreadcrumb({
+      category: 'key-recovery',
+      message: 'step-1: resolving email',
+      level: 'info',
+    });
+    const email = emailOverride || (await resolveRecoveryEmail());
     if (!email) {
       Sentry.captureMessage('Key recovery: email unresolvable (needs_email)', {
         level: 'warning',
         tags: { feature: 'key-recovery' },
       });
-      return { status: 'needs_email' as const, message: 'Unable to determine account email for re-login' };
+      return {
+        status: 'needs_email' as const,
+        message: 'Unable to determine account email for re-login',
+      };
     }
 
     // Step 2: Disconnect WS — prevent stale reconnects during reset
-    Sentry.addBreadcrumb({ category: 'key-recovery', message: 'step-2: disconnecting WS', level: 'info' });
+    Sentry.addBreadcrumb({
+      category: 'key-recovery',
+      message: 'step-2: disconnecting WS',
+      level: 'info',
+    });
     websocketManager.disconnect();
 
     // Step 3: Cancel in-flight key initialization (CRYPTO-H2)
-    Sentry.addBreadcrumb({ category: 'key-recovery', message: 'step-3: cancelling key init', level: 'info' });
+    Sentry.addBreadcrumb({
+      category: 'key-recovery',
+      message: 'step-3: cancelling key init',
+      level: 'info',
+    });
     await cancelKeyInitialization();
 
     const locallyWiped = isLocalCryptoWiped();
@@ -316,11 +343,8 @@ async function doRecoverIdentityKeys(
       });
 
       if (probeResult === 'unreachable') {
-        // No destructive action on network failure — safe bail.
-        Sentry.captureException(new Error('Server probe unreachable during key recovery'), {
-          tags: { feature: 'key-recovery' },
-          extra: { step: 'server-probe-unreachable' },
-        });
+        // No destructive action on network failure — safe bail. The original
+        // exception was already captured inside probeServerIdentityKey.
         websocketManager.connect();
         return { status: 'error', message: 'Network error — please check your connection' };
       }
@@ -331,7 +355,11 @@ async function doRecoverIdentityKeys(
         // never sent a reset because a prior local wipe made isAlreadyWiped true.
         try {
           await resetIdentityKeys(password);
-          Sentry.addBreadcrumb({ category: 'key-recovery', message: 'step-4: server reset succeeded', level: 'info' });
+          Sentry.addBreadcrumb({
+            category: 'key-recovery',
+            message: 'step-4: server reset succeeded',
+            level: 'info',
+          });
         } catch (e: unknown) {
           // 403 → incorrect password — nothing was wiped, safe to abort
           if (e instanceof AuthError && e.statusCode === 403) {
@@ -388,7 +416,12 @@ async function doRecoverIdentityKeys(
     }
 
     // Step 5: Local crypto wipe — gated ONLY by local state (isLocalCryptoWiped)
-    Sentry.addBreadcrumb({ category: 'key-recovery', message: 'step-5: local wipe', level: 'info', data: { locallyWiped } });
+    Sentry.addBreadcrumb({
+      category: 'key-recovery',
+      message: 'step-5: local wipe',
+      level: 'info',
+      data: { locallyWiped },
+    });
     if (!locallyWiped) {
       try {
         await fullCryptoWipe();
@@ -401,23 +434,47 @@ async function doRecoverIdentityKeys(
       }
 
       // Clear in-flight service state that references now-dead crypto material
-      try { clearConversationServiceState(); } catch { /* best-effort */ }
-      try { clearIdentityInflightState(); } catch { /* best-effort */ }
-      try { clearMessageHandlerState(); } catch { /* best-effort */ }
+      try {
+        clearConversationServiceState();
+      } catch {
+        /* best-effort */
+      }
+      try {
+        clearIdentityInflightState();
+      } catch {
+        /* best-effort */
+      }
+      try {
+        clearMessageHandlerState();
+      } catch {
+        /* best-effort */
+      }
 
       // Defense-in-depth: explicitly remove load-bearing items that fullCryptoWipe
       // already deleted via DELETE FROM items. These explicit calls ensure the
       // dependency survives any future narrowing of fullCryptoWipe's scope.
       if (isDatabaseInitialized()) {
-        try { removeItem('lastUserId'); } catch { /* may already be gone */ }
-        try { removeItem('bundleUploaded'); } catch { /* may already be gone */ }
+        try {
+          removeItem('lastUserId');
+        } catch {
+          /* may already be gone */
+        }
+        try {
+          removeItem('bundleUploaded');
+        } catch {
+          /* may already be gone */
+        }
       }
     }
 
     // Server deleted all archive confirmations on key reset (all three recovery
     // shapes) — clear local flags so the sweep re-confirms; over-clearing is
     // idempotent, under-clearing silently defeats the wiped-phone eviction guard.
-    try { clearAllArchiveConfirmations(); } catch { /* best-effort */ }
+    try {
+      clearAllArchiveConfirmations();
+    } catch {
+      /* best-effort */
+    }
 
     // Step 6: Re-login (loginForRecoveryWithRetry — extracted 401 auto-retry)
     Sentry.addBreadcrumb({ category: 'key-recovery', message: 'step-6: re-login', level: 'info' });
@@ -426,7 +483,12 @@ async function doRecoverIdentityKeys(
     } catch (e: unknown) {
       Sentry.captureException(e instanceof Error ? e : new Error(String(e)), {
         tags: { feature: 'key-recovery' },
-        extra: { step: e instanceof AuthError && e.statusCode === 401 ? 're-login-retry-exhausted' : 're-login' },
+        extra: {
+          step:
+            e instanceof AuthError && e.statusCode === 401
+              ? 're-login-retry-exhausted'
+              : 're-login',
+        },
       });
       return {
         status: 'error',
@@ -447,37 +509,55 @@ async function doRecoverIdentityKeys(
       });
 
       if (postLoginProbe === 'present') {
+        let postLoginResetSucceeded = false;
         try {
           await resetIdentityKeys(password);
-          Sentry.addBreadcrumb({ category: 'key-recovery', message: 'step-6b: post-login reset succeeded', level: 'info' });
+          postLoginResetSucceeded = true;
+          Sentry.addBreadcrumb({
+            category: 'key-recovery',
+            message: 'step-6b: post-login reset succeeded',
+            level: 'info',
+          });
         } catch (e: unknown) {
-          // Non-fatal — proceed; the second-409 branch below will catch it
+          // Non-fatal — proceed on the still-valid JWT; the second-409 branch
+          // below catches a still-present server key.
           Sentry.captureException(e instanceof Error ? e : new Error(String(e)), {
             tags: { feature: 'key-recovery' },
             extra: { step: 'post-login-reset' },
           });
         }
 
-        // Reset revoked the fresh JWT — re-login again
-        Sentry.addBreadcrumb({ category: 'key-recovery', message: 'step-6b: re-login after post-login reset', level: 'info' });
-        try {
-          await loginForRecoveryWithRetry(email, password);
-        } catch (e: unknown) {
-          Sentry.captureException(e instanceof Error ? e : new Error(String(e)), {
-            tags: { feature: 'key-recovery' },
-            extra: { step: 'post-login-re-login' },
+        // Only a SUCCESSFUL reset revokes the fresh JWT; skip the extra
+        // re-login when the reset failed (current token is still valid).
+        if (postLoginResetSucceeded) {
+          Sentry.addBreadcrumb({
+            category: 'key-recovery',
+            message: 'step-6b: re-login after post-login reset',
+            level: 'info',
           });
-          return {
-            status: 'error',
-            message: e instanceof Error ? e.message : 'Re-login failed after post-login reset',
-          };
+          try {
+            await loginForRecoveryWithRetry(email, password);
+          } catch (e: unknown) {
+            Sentry.captureException(e instanceof Error ? e : new Error(String(e)), {
+              tags: { feature: 'key-recovery' },
+              extra: { step: 'post-login-re-login' },
+            });
+            return {
+              status: 'error',
+              message: e instanceof Error ? e.message : 'Re-login failed after post-login reset',
+            };
+          }
         }
       }
     }
 
     // Step 7: Generate + upload new keys (un-swallowed — a second 409 must
     // LEAVE the conflict flag true so the user doesn't land in a broken app)
-    Sentry.addBreadcrumb({ category: 'key-recovery', message: 'step-7: key re-generation', level: 'info' });
+    Sentry.addBreadcrumb({
+      category: 'key-recovery',
+      message: 'step-7: key re-generation',
+      level: 'info',
+    });
     try {
       await ensureKeysInitialized();
     } catch (e: unknown) {
@@ -489,7 +569,10 @@ async function doRecoverIdentityKeys(
         });
         useAppStore.getState().setIdentityKeyConflict(true);
         useAppStore.getState().setConflictSource('local');
-        return { status: 'error', message: 'Key conflict persists after recovery — please try again' };
+        return {
+          status: 'error',
+          message: 'Key conflict persists after recovery — please try again',
+        };
       }
       Sentry.captureException(e instanceof Error ? e : new Error(String(e)), {
         tags: { feature: 'key-recovery' },
@@ -502,7 +585,11 @@ async function doRecoverIdentityKeys(
     }
 
     // Step 8: Clear flags, reconnect, run remaining bootstrap steps
-    Sentry.addBreadcrumb({ category: 'key-recovery', message: 'step-8: post-recovery bootstrap', level: 'info' });
+    Sentry.addBreadcrumb({
+      category: 'key-recovery',
+      message: 'step-8: post-recovery bootstrap',
+      level: 'info',
+    });
     useAppStore.getState().setIdentityKeyConflict(false);
     useAppStore.getState().setConflictSource(null);
 
@@ -514,7 +601,11 @@ async function doRecoverIdentityKeys(
     // warnAndCapture (not warnCatch): post-recovery sync failures must be
     // visible in Sentry — a successful recovery with a failed sync is a
     // production-silent data inconsistency (panel finding).
-    try { loadEciesLockState(); } catch (e) { warnAndCapture('[Recovery:EciesLock]')(e); }
+    try {
+      loadEciesLockState();
+    } catch (e) {
+      warnAndCapture('[Recovery:EciesLock]')(e);
+    }
     await loadConversations().catch(warnAndCapture('[Recovery:ConversationSync]'));
     await loadDmConversations().catch(warnAndCapture('[Recovery:DmSync]'));
     hydrateContactsFromOrbits().catch(warnAndCapture('[Recovery:ContactHydration]'));

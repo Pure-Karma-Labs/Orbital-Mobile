@@ -21,8 +21,10 @@ import {
   hexToUint8Array,
   uint8ArrayToHex,
   arrayBufferToBase64,
+  base64ToArrayBuffer,
   toArrayBuffer,
 } from './utils';
+import { normalizeIdentityKey } from './identityKeyAccess';
 import type {
   UploadPreKeyBundleRequest,
   PreKeyPublicUpload,
@@ -92,20 +94,36 @@ export function clearIdentityKeyCache(): void {
 
 type KeyDataRow = { key_data: Uint8Array };
 
-export async function generateInitialKeys(): Promise<void> {
-  if (getItem(ITEM_KEYS.IDENTITY_KEY_PUBLIC) !== null) {
-    return;
-  }
-
+/**
+ * Generate a random registrationId in the range [1, 0x3fffffff].
+ */
+function generateRegistrationId(): number {
   const buf = new Uint8Array(4);
-  const cryptoGlobal = (globalThis as unknown as { crypto: { getRandomValues: (a: Uint8Array) => void } }).crypto;
+  const cryptoGlobal = (
+    globalThis as unknown as { crypto: { getRandomValues: (a: Uint8Array) => void } }
+  ).crypto;
   cryptoGlobal.getRandomValues(buf);
-  const registrationId =
+  return (
     (((buf[0] | (buf[1] << 8) | (buf[2] << 16) | ((buf[3] & 0x3f) << 24)) >>> 0) %
       0x3fffffff) +
-    1;
+    1
+  );
+}
 
-  const identityKeyPair = generateIdentityKeyPair();
+/**
+ * Provision pre-keys, signed pre-keys, and Kyber pre-keys for an identity pair,
+ * storing everything in the database within a BEGIN IMMEDIATE transaction.
+ *
+ * Shared by both generateInitialKeys (fresh identity) and restoreIdentityKeys
+ * (surviving Keychain identity). The Keychain write and cachedPrivateKeyHex
+ * assignment are NOT performed here — they stay in the respective callers.
+ *
+ * DOES NOT set BUNDLE_UPLOADED — callers manage that independently.
+ */
+async function provisionKeysForIdentity(
+  identityKeyPair: { publicKey: ArrayBuffer; privateKey: ArrayBuffer },
+  registrationId: number,
+): Promise<void> {
   const nowBigInt = BigInt(Date.now());
   const nowSeconds = Math.floor(Date.now() / 1000);
 
@@ -134,10 +152,6 @@ export async function generateInitialKeys(): Promise<void> {
     true,
   );
   kyberPreKeyRecords.push({ id: lastResortKyberId, record: lastResortResult.record, isLastResort: true });
-
-  const privateHex = uint8ArrayToHex(new Uint8Array(identityKeyPair.privateKey));
-  await setSecureItem(SecureKeys.IDENTITY_KEY_PRIVATE, privateHex);
-  cachedPrivateKeyHex = privateHex;
 
   const db = getDatabase();
   db.executeSync('BEGIN IMMEDIATE');
@@ -176,6 +190,70 @@ export async function generateInitialKeys(): Promise<void> {
     db.executeSync('ROLLBACK');
     throw err;
   }
+}
+
+export async function generateInitialKeys(): Promise<void> {
+  if (getItem(ITEM_KEYS.IDENTITY_KEY_PUBLIC) !== null) {
+    return;
+  }
+
+  // Defense-in-depth: refuse to overwrite a surviving cached private key.
+  // All legitimate callers reach here only after restore/clear ran (restore
+  // handled the reinstall case) or fullCryptoWipe cleared cache+Keychain
+  // (recovery step 7). This is the hard stop on the original data-loss bug.
+  if (cachedPrivateKeyHex !== null) {
+    throw new Error('REFUSING_TO_OVERWRITE_IDENTITY_KEY');
+  }
+
+  const registrationId = generateRegistrationId();
+  const identityKeyPair = generateIdentityKeyPair();
+
+  const privateHex = uint8ArrayToHex(new Uint8Array(identityKeyPair.privateKey));
+  await setSecureItem(SecureKeys.IDENTITY_KEY_PRIVATE, privateHex);
+  cachedPrivateKeyHex = privateHex;
+
+  await provisionKeysForIdentity(identityKeyPair, registrationId);
+}
+
+/**
+ * Restore identity keys from a surviving Keychain private key + server public key.
+ *
+ * Called by attemptKeychainIdentityRestore() after the ECIES round-trip proof
+ * confirms the cached private key matches the server's registered public key.
+ *
+ * Identity pair = surviving cached private (already in cachedPrivateKeyHex) +
+ * base64-decoded server public. Stores identityKeyPublic hex byte-identical so
+ * uploadInitialPreKeyBundle re-encodes the exact same base64 -> server 200 idempotent.
+ *
+ * registrationId: regenerated randomly. Safe under the ECIES-group model —
+ * server prekey storage is a stub (GET /v1/keys/count constant); DMs/groups
+ * use ECIES group wrapping, not Signal sessions; all local session state died
+ * with the DB. REVISIT if Signal sessions are ever activated.
+ *
+ * Does NOT call setSecureItem — the private key is already in Keychain.
+ * Does NOT set BUNDLE_UPLOADED — after restore, ensureKeysInitialized will
+ * upload the bundle, getting a server 200 (idempotent for same identity key).
+ *
+ * @param serverKeyB64 - base64-encoded identity public key from server
+ */
+export async function restoreIdentityKeys(serverKeyB64: string): Promise<void> {
+  const privHex = getCachedIdentityPrivateKeyHex();
+  if (privHex === null) {
+    throw new Error('Cannot restore identity keys — no cached private key');
+  }
+
+  // Decode server public key and normalize to 33-byte Signal format (0x05 prefix)
+  const serverKeyDecoded = new Uint8Array(base64ToArrayBuffer(serverKeyB64));
+  const normalizedPub = normalizeIdentityKey(serverKeyDecoded);
+
+  const identityKeyPair = {
+    publicKey: toArrayBuffer(normalizedPub),
+    privateKey: toArrayBuffer(hexToUint8Array(privHex)),
+  };
+
+  const registrationId = generateRegistrationId();
+
+  await provisionKeysForIdentity(identityKeyPair, registrationId);
 }
 
 export async function uploadInitialPreKeyBundle(): Promise<void> {

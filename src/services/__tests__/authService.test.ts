@@ -121,6 +121,13 @@ jest.mock('../crypto/utils', () => ({
   toArrayBuffer: jest.fn((u8: Uint8Array) => u8.buffer),
 }));
 
+const mockAttemptKeychainIdentityRestore = jest.fn().mockResolvedValue('none');
+const mockClearStaleKeychainIdentity = jest.fn().mockResolvedValue(undefined);
+jest.mock('../crypto/identityRestoreService', () => ({
+  attemptKeychainIdentityRestore: (...args: unknown[]) => mockAttemptKeychainIdentityRestore(...args),
+  clearStaleKeychainIdentity: (...args: unknown[]) => mockClearStaleKeychainIdentity(...args),
+}));
+
 const mockGetItem = jest.fn().mockReturnValue(null);
 const mockSetItem = jest.fn();
 jest.mock('../../database/repositories/itemRepository', () => ({
@@ -201,6 +208,7 @@ const mockSetEmail = jest.fn();
 const mockSetConflictSource = jest.fn();
 const mockResetBlockedUsers = jest.fn();
 const mockSetViewingConversation = jest.fn();
+const mockSetIdentityRestoreDeferred = jest.fn();
 
 jest.mock('../../stores/useAppStore', () => ({
   useAppStore: {
@@ -221,6 +229,7 @@ jest.mock('../../stores/useAppStore', () => ({
       setConflictSource: mockSetConflictSource,
       resetBlockedUsers: mockResetBlockedUsers,
       setViewingConversation: mockSetViewingConversation,
+      setIdentityRestoreDeferred: mockSetIdentityRestoreDeferred,
     })),
   },
 }));

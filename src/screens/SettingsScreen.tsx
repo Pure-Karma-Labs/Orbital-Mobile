@@ -78,7 +78,7 @@ function SectionHeader({ label }: { label: string }): React.JSX.Element {
 export function SettingsScreen(): React.JSX.Element {
   const theme = useTheme();
   const navigation = useNavigation<NativeStackNavigationProp<SettingsStackParamList>>();
-  const { displayName, username, avatarPath, userId, avatarDigest } = useAuth();
+  const { displayName, username, avatarPath, userId, avatarDigest, keyRecoveryError } = useAuth();
   const { colorScheme, setColorScheme, soundEnabled, setSoundEnabled } = useUI();
   const { activeConversationId, conversations } = useConversations();
   const { pushPermissionGranted } = useNotifications();
@@ -94,6 +94,27 @@ export function SettingsScreen(): React.JSX.Element {
   // --- Key recovery state ---
   const [recoveryModalVisible, setRecoveryModalVisible] = useState(false);
   const [recoveryPasswordError, setRecoveryPasswordError] = useState<string | null>(null);
+
+  // Seed recovery error from the store on mount — handles the case where the
+  // screen was unmounted during recovery (LoadingView) and remounts with a
+  // stale error result.
+  useEffect(() => {
+    if (!keyRecoveryError) return;
+    switch (keyRecoveryError.status) {
+      case 'incorrect_password':
+        setRecoveryPasswordError('Incorrect password — please try again');
+        break;
+      case 'rate_limited':
+        setRecoveryPasswordError('Too many attempts — please wait about 15 minutes and try again');
+        break;
+      case 'needs_email':
+        setRecoveryPasswordError('Unable to determine account email — please use the key conflict screen');
+        break;
+      case 'error':
+        setRecoveryPasswordError(keyRecoveryError.message ?? 'Recovery failed');
+        break;
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- mount-only seed
 
   useEffect(() => {
     if (!activeConversationId) return;
@@ -267,10 +288,14 @@ export function SettingsScreen(): React.JSX.Element {
         setRecoveryModalVisible(false);
         break;
       case 'incorrect_password':
-        setRecoveryPasswordError('Incorrect password');
+        setRecoveryPasswordError('Incorrect password — please try again');
         break;
       case 'rate_limited':
-        setRecoveryPasswordError('Too many attempts — please wait a few minutes');
+        setRecoveryPasswordError('Too many attempts — please wait about 15 minutes and try again');
+        break;
+      case 'needs_email':
+        // Settings row doesn't have an email input — surface as modal error
+        setRecoveryPasswordError('Unable to determine account email — please use the key conflict screen');
         break;
       case 'error':
         setRecoveryPasswordError(result.message);

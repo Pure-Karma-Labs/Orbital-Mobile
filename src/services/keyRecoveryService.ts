@@ -10,6 +10,7 @@
  * this module imports from both but neither imports from here).
  */
 
+import * as Sentry from '@sentry/react-native';
 import { useAppStore } from '../stores/useAppStore';
 import { loginForRecovery } from './authService';
 import { resetIdentityKeys } from './api/keys';
@@ -58,9 +59,18 @@ export { isRecoveryInitiator };
 // Helpers
 // ---------------------------------------------------------------------------
 
-function warnCatch(tag: string) {
+/**
+ * Like warnCatch (authService.ts), but also captures to Sentry so post-recovery sync failures
+ * are visible in production (panel finding: successful recovery + failed sync
+ * must not be silent).
+ */
+function warnAndCapture(tag: string) {
   return (e: unknown) => {
     if (__DEV__) console.warn(tag, e instanceof Error ? e.message : e);
+    Sentry.captureException(e instanceof Error ? e : new Error(String(e)), {
+      tags: { feature: 'key-recovery' },
+      extra: { step: tag },
+    });
   };
 }
 
@@ -157,7 +167,22 @@ export function recoverIdentityKeys(
     if (__DEV__) console.warn('[KeyRecovery] Recovery already in flight — coalescing');
     return recoveryInflight;
   }
+
+  // Clear any stale error from a previous attempt so the UI starts fresh.
+  useAppStore.getState().setKeyRecoveryError(null);
+
   recoveryInflight = doRecoverIdentityKeys(password, skipServerReset, emailOverride)
+    .then((result) => {
+      // Hoist non-success result to the store so the (re)mounted UI can display it.
+      if (result.status !== 'success') {
+        useAppStore.getState().setKeyRecoveryError(
+          result.status === 'incorrect_password' || result.status === 'rate_limited'
+            ? { status: result.status }
+            : { status: result.status, message: (result as { message?: string }).message },
+        );
+      }
+      return result;
+    })
     .finally(() => { recoveryInflight = null; });
   return recoveryInflight;
 }
@@ -173,38 +198,68 @@ async function doRecoverIdentityKeys(
   try {
     // Step 1: Capture email before any wipe.
     // emailOverride is the manual-entry fallback from KeyConflictScreen (EMAIL RULING tier 3).
+    Sentry.addBreadcrumb({ category: 'key-recovery', message: 'step-1: resolving email', level: 'info' });
     const email = emailOverride || await resolveRecoveryEmail();
     if (!email) {
+      Sentry.captureMessage('Key recovery: email unresolvable (needs_email)', {
+        level: 'warning',
+        tags: { feature: 'key-recovery' },
+      });
       return { status: 'needs_email' as const, message: 'Unable to determine account email for re-login' };
     }
 
     // Step 2: Disconnect WS — prevent stale reconnects during reset
+    Sentry.addBreadcrumb({ category: 'key-recovery', message: 'step-2: disconnecting WS', level: 'info' });
     websocketManager.disconnect();
 
     // Step 3: Cancel in-flight key initialization (CRYPTO-H2)
+    Sentry.addBreadcrumb({ category: 'key-recovery', message: 'step-3: cancelling key init', level: 'info' });
     await cancelKeyInitialization();
 
     const alreadyWiped = isAlreadyWiped();
+    Sentry.addBreadcrumb({
+      category: 'key-recovery',
+      message: 'step-4: pre-reset state',
+      level: 'info',
+      data: { skipServerReset, alreadyWiped },
+    });
 
     // Step 4: Server reset (if applicable)
     if (!skipServerReset && !alreadyWiped) {
       try {
         await resetIdentityKeys(password);
+        Sentry.addBreadcrumb({ category: 'key-recovery', message: 'step-4: server reset succeeded', level: 'info' });
       } catch (e: unknown) {
         // 403 → incorrect password — nothing was wiped, safe to abort
         if (e instanceof AuthError && e.statusCode === 403) {
+          Sentry.captureMessage('Key recovery: incorrect password (403)', {
+            level: 'warning',
+            tags: { feature: 'key-recovery' },
+          });
           websocketManager.connect();
           return { status: 'incorrect_password' };
         }
         // Rate limited — client.ts throws plain ApiError for 429 (not AuthError)
         if (e instanceof ApiError && e.statusCode === 429) {
+          Sentry.captureMessage('Key recovery: rate limited (429)', {
+            level: 'warning',
+            tags: { feature: 'key-recovery' },
+          });
           websocketManager.connect();
           return { status: 'rate_limited' };
         }
         if (e instanceof NetworkError) {
+          Sentry.captureException(e, {
+            tags: { feature: 'key-recovery' },
+            extra: { step: 'server-reset' },
+          });
           websocketManager.connect();
           return { status: 'error', message: 'Network error — please check your connection' };
         }
+        Sentry.captureException(e instanceof Error ? e : new Error(String(e)), {
+          tags: { feature: 'key-recovery' },
+          extra: { step: 'server-reset' },
+        });
         websocketManager.connect();
         return { status: 'error', message: e instanceof Error ? e.message : 'Reset failed' };
       }
@@ -212,10 +267,15 @@ async function doRecoverIdentityKeys(
 
     // Step 5: Local crypto wipe (flows through fullCryptoWipe — documented subset
     // of localWipe per DEBT-005; NOT a parallel re-enumeration)
+    Sentry.addBreadcrumb({ category: 'key-recovery', message: 'step-5: local wipe', level: 'info', data: { alreadyWiped } });
     if (!alreadyWiped) {
       try {
         await fullCryptoWipe();
-      } catch {
+      } catch (e: unknown) {
+        Sentry.captureException(e instanceof Error ? e : new Error(String(e)), {
+          tags: { feature: 'key-recovery' },
+          extra: { step: 'local-wipe' },
+        });
         return { status: 'error', message: 'Local wipe failed — please retry' };
       }
 
@@ -243,21 +303,31 @@ async function doRecoverIdentityKeys(
     // iat <= password_changed_at at SECOND granularity. If reset(step4) and
     // login(step6) complete within the same second (~30-50%), the new JWT's
     // iat matches the revocation threshold. Auto-retry once after ~1.5s.
+    Sentry.addBreadcrumb({ category: 'key-recovery', message: 'step-6: re-login', level: 'info' });
     try {
       await loginForRecovery(email, password);
     } catch (e: unknown) {
       if (e instanceof AuthError && e.statusCode === 401) {
+        Sentry.addBreadcrumb({ category: 'key-recovery', message: 'step-6: 401 auto-retry (API-M2)', level: 'warning' });
         // Auto-retry once after 1.5s delay (API-M2)
         await new Promise<void>((resolve) => setTimeout(resolve, 1500));
         try {
           await loginForRecovery(email, password);
         } catch (retryErr: unknown) {
+          Sentry.captureException(retryErr instanceof Error ? retryErr : new Error(String(retryErr)), {
+            tags: { feature: 'key-recovery' },
+            extra: { step: 're-login-retry-exhausted' },
+          });
           return {
             status: 'error',
             message: retryErr instanceof Error ? retryErr.message : 'Re-login failed after retry',
           };
         }
       } else {
+        Sentry.captureException(e instanceof Error ? e : new Error(String(e)), {
+          tags: { feature: 'key-recovery' },
+          extra: { step: 're-login' },
+        });
         return {
           status: 'error',
           message: e instanceof Error ? e.message : 'Re-login failed',
@@ -267,15 +337,24 @@ async function doRecoverIdentityKeys(
 
     // Step 7: Generate + upload new keys (un-swallowed — a second 409 must
     // LEAVE the conflict flag true so the user doesn't land in a broken app)
+    Sentry.addBreadcrumb({ category: 'key-recovery', message: 'step-7: key re-generation', level: 'info' });
     try {
       await ensureKeysInitialized();
     } catch (e: unknown) {
       if (e instanceof ConflictError) {
         // Second 409 — leave conflict flag true, abort recovery
+        Sentry.captureException(e, {
+          tags: { feature: 'key-recovery' },
+          extra: { step: 'second-409-conflict-persists' },
+        });
         useAppStore.getState().setIdentityKeyConflict(true);
         useAppStore.getState().setConflictSource('local');
         return { status: 'error', message: 'Key conflict persists after recovery — please try again' };
       }
+      Sentry.captureException(e instanceof Error ? e : new Error(String(e)), {
+        tags: { feature: 'key-recovery' },
+        extra: { step: 'key-init' },
+      });
       return {
         status: 'error',
         message: e instanceof Error ? e.message : 'Key initialization failed',
@@ -283,6 +362,7 @@ async function doRecoverIdentityKeys(
     }
 
     // Step 8: Clear flags, reconnect, run remaining bootstrap steps
+    Sentry.addBreadcrumb({ category: 'key-recovery', message: 'step-8: post-recovery bootstrap', level: 'info' });
     useAppStore.getState().setIdentityKeyConflict(false);
     useAppStore.getState().setConflictSource(null);
 
@@ -291,12 +371,15 @@ async function doRecoverIdentityKeys(
     // SYNC:postAuthBootstrap — these mirror authService.ts postAuthBootstrap().
     // If you change one, update the other. Grep for this marker to find both.
     // Each is catch-guarded so a single failure doesn't abort the rest.
-    try { loadEciesLockState(); } catch (e) { warnCatch('[Recovery:EciesLock]')(e); }
-    await loadConversations().catch(warnCatch('[Recovery:ConversationSync]'));
-    await loadDmConversations().catch(warnCatch('[Recovery:DmSync]'));
-    hydrateContactsFromOrbits().catch(warnCatch('[Recovery:ContactHydration]'));
-    fulfillPendingWraps().catch(warnCatch('[Recovery:PendingWraps]'));
-    syncBlockedUsers().catch(warnCatch('[Recovery:BlockedUsersSync]'));
+    // warnAndCapture (not warnCatch): post-recovery sync failures must be
+    // visible in Sentry — a successful recovery with a failed sync is a
+    // production-silent data inconsistency (panel finding).
+    try { loadEciesLockState(); } catch (e) { warnAndCapture('[Recovery:EciesLock]')(e); }
+    await loadConversations().catch(warnAndCapture('[Recovery:ConversationSync]'));
+    await loadDmConversations().catch(warnAndCapture('[Recovery:DmSync]'));
+    hydrateContactsFromOrbits().catch(warnAndCapture('[Recovery:ContactHydration]'));
+    fulfillPendingWraps().catch(warnAndCapture('[Recovery:PendingWraps]'));
+    syncBlockedUsers().catch(warnAndCapture('[Recovery:BlockedUsersSync]'));
 
     return { status: 'success' };
   } finally {

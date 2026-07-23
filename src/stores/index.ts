@@ -23,6 +23,7 @@ export const useAuth = () =>
     keyRecoveryInProgress: s.keyRecoveryInProgress,
     email: s.email,
     conflictSource: s.conflictSource,
+    keyRecoveryError: s.keyRecoveryError,
     setUser: s.setUser,
     clearAuth: s.clearAuth,
     setAuthenticated: s.setAuthenticated,
@@ -32,6 +33,7 @@ export const useAuth = () =>
     setKeyRecoveryInProgress: s.setKeyRecoveryInProgress,
     setEmail: s.setEmail,
     setConflictSource: s.setConflictSource,
+    setKeyRecoveryError: s.setKeyRecoveryError,
   })));
 
 export const useConversations = () =>

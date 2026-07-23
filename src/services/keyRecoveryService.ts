@@ -13,9 +13,9 @@
 import * as Sentry from '@sentry/react-native';
 import { useAppStore } from '../stores/useAppStore';
 import { loginForRecovery } from './authService';
-import { resetIdentityKeys } from './api/keys';
+import { resetIdentityKeys, fetchRemoteIdentityKeyBundle } from './api/keys';
 import * as users from './api/users';
-import { ApiError, AuthError, NetworkError } from './api/errors';
+import { ApiError, AuthError, NetworkError, NotFoundError } from './api/errors';
 import { ConflictError } from './api/errors';
 import {
   fullCryptoWipe,
@@ -74,16 +74,101 @@ function warnAndCapture(tag: string) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Server-truth probe (Fix 2c — loop-breaker)
+// ---------------------------------------------------------------------------
+
+export type ServerProbeOutcome = 'present' | 'absent' | 'unauthorized' | 'unreachable';
+
 /**
- * Detect whether a prior recovery attempt already completed the server reset
- * and local wipe but failed before re-login finished. In that state, calling
- * POST /v1/keys/reset would 401 (JWT revoked) — so we skip directly to re-login.
+ * Probe whether the server still holds an identity key for the given user.
+ *
+ * Uses `fetchRemoteIdentityKeyBundle` (GET /v1/keys/bundle/:userId):
+ * - 200 → 'present'   (key exists; reset should be issued)
+ * - 404 → 'absent'    (prior reset already landed)
+ * - 401 → 'unauthorized' (prior reset revoked the JWT; skip to re-login)
+ * - network/other → 'unreachable' (no destructive action)
+ *
+ * A Sentry breadcrumb is emitted with the outcome.
+ */
+export async function probeServerIdentityKey(userId: string): Promise<ServerProbeOutcome> {
+  try {
+    await fetchRemoteIdentityKeyBundle(userId);
+    Sentry.addBreadcrumb({
+      category: 'key-recovery',
+      message: 'server-probe: present',
+      level: 'info',
+      data: { userId },
+    });
+    return 'present';
+  } catch (e: unknown) {
+    if (e instanceof NotFoundError || (e instanceof ApiError && e.statusCode === 404)) {
+      Sentry.addBreadcrumb({
+        category: 'key-recovery',
+        message: 'server-probe: absent (404)',
+        level: 'info',
+        data: { userId },
+      });
+      return 'absent';
+    }
+    if (e instanceof AuthError && e.statusCode === 401) {
+      Sentry.addBreadcrumb({
+        category: 'key-recovery',
+        message: 'server-probe: unauthorized (401)',
+        level: 'warning',
+        data: { userId },
+      });
+      return 'unauthorized';
+    }
+    Sentry.addBreadcrumb({
+      category: 'key-recovery',
+      message: 'server-probe: unreachable',
+      level: 'error',
+      data: { userId, error: e instanceof Error ? e.message : String(e) },
+    });
+    return 'unreachable';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Login helper with 401 auto-retry (extracted from step 6)
+// ---------------------------------------------------------------------------
+
+/**
+ * Attempt loginForRecovery with one auto-retry on 401 (API-M2: same-second
+ * JWT revocation race). Non-401 errors propagate to the caller.
+ */
+export async function loginForRecoveryWithRetry(
+  email: string,
+  password: string,
+): Promise<void> {
+  try {
+    await loginForRecovery(email, password);
+  } catch (e: unknown) {
+    if (e instanceof AuthError && e.statusCode === 401) {
+      Sentry.addBreadcrumb({
+        category: 'key-recovery',
+        message: 'login-retry: 401 auto-retry (API-M2)',
+        level: 'warning',
+      });
+      await new Promise<void>((resolve) => setTimeout(resolve, 1500));
+      await loginForRecovery(email, password);
+      return;
+    }
+    throw e;
+  }
+}
+
+/**
+ * Detect whether a prior recovery attempt already completed the local wipe.
+ * Used to gate ONLY the local wipe (step 5) — server reset decisions now use
+ * `probeServerIdentityKey` instead of this local-only check.
  *
  * Primary indicator: identityKeyPublic item absent (fullCryptoWipe DELETEs items).
  * Secondary: Keychain identity private key absent (first wipe op — most durable
  * under partial failure per CRYPTO-M2).
  */
-function isAlreadyWiped(): boolean {
+function isLocalCryptoWiped(): boolean {
   if (!isDatabaseInitialized()) return true;
   const pubKey = getItem('identityKeyPublic');
   if (pubKey === null) return true;
@@ -144,19 +229,19 @@ let recoveryInflight: Promise<KeyRecoveryResult> | null = null;
  *   1. Capture email for re-login
  *   2. Disconnect WebSocket
  *   3. Cancel any in-flight key initialization (CRYPTO-H2: await orphaned promise)
- *   4. If !skipServerReset && !alreadyWiped: POST /v1/keys/reset
- *   5. fullCryptoWipe + clear inflight state + explicit removeItem (defense-in-depth)
- *      NOTE: fullCryptoWipe deletes rows but preserves the live db handle and the
+ *   4. If !skipServerReset: probe server for identity key (Fix 2c loop-breaker).
+ *      'present' → call resetIdentityKeys REGARDLESS of local wipe state.
+ *      'absent' → skip (reset already landed). 'unauthorized' → skip (prior
+ *      reset revoked JWT). 'unreachable' → return error, no destructive action.
+ *   5. Local crypto wipe — gated by isLocalCryptoWiped() (local-only check).
+ *      fullCryptoWipe deletes rows but preserves the live db handle and the
  *      Keychain DATABASE_ENCRYPTION_KEY — cold-start retry re-inits via bootstrap
  *      normally. This is NOT localWipe which closes + unlinks the DB file (CRYPTO-M1).
- *   6. Re-login (loginForRecovery — no postAuthBootstrap)
- *      On 401: auto-retry once after ~1.5s (API-M2 — same-second JWT revocation race)
+ *   6. Re-login via loginForRecoveryWithRetry (auto-retry on 401, API-M2).
+ *   6b. Post-re-login safety net: re-probe with fresh JWT; if still 'present'
+ *       and !skipServerReset, reset + re-login again.
  *   7. ensureKeysInitialized (un-swallowed — a second 409 leaves conflict flag true)
  *   8. Clear flags, reconnect WS, run remaining bootstrap steps
- *
- * State-aware retry: if local identity key is already absent (steps 4-5 committed
- * but step 6+ failed on a prior attempt), skip directly to step 6. This prevents
- * the JWT catch-22 where re-running reset would 401 against a revoked token.
  */
 export function recoverIdentityKeys(
   password: string,
@@ -216,59 +301,95 @@ async function doRecoverIdentityKeys(
     Sentry.addBreadcrumb({ category: 'key-recovery', message: 'step-3: cancelling key init', level: 'info' });
     await cancelKeyInitialization();
 
-    const alreadyWiped = isAlreadyWiped();
-    Sentry.addBreadcrumb({
-      category: 'key-recovery',
-      message: 'step-4: pre-reset state',
-      level: 'info',
-      data: { skipServerReset, alreadyWiped },
-    });
+    const locallyWiped = isLocalCryptoWiped();
+    const ownUserId = useAppStore.getState().userId;
 
-    // Step 4: Server reset (if applicable)
-    if (!skipServerReset && !alreadyWiped) {
-      try {
-        await resetIdentityKeys(password);
-        Sentry.addBreadcrumb({ category: 'key-recovery', message: 'step-4: server reset succeeded', level: 'info' });
-      } catch (e: unknown) {
-        // 403 → incorrect password — nothing was wiped, safe to abort
-        if (e instanceof AuthError && e.statusCode === 403) {
-          Sentry.captureMessage('Key recovery: incorrect password (403)', {
-            level: 'warning',
-            tags: { feature: 'key-recovery' },
-          });
-          websocketManager.connect();
-          return { status: 'incorrect_password' };
-        }
-        // Rate limited — client.ts throws plain ApiError for 429 (not AuthError)
-        if (e instanceof ApiError && e.statusCode === 429) {
-          Sentry.captureMessage('Key recovery: rate limited (429)', {
-            level: 'warning',
-            tags: { feature: 'key-recovery' },
-          });
-          websocketManager.connect();
-          return { status: 'rate_limited' };
-        }
-        if (e instanceof NetworkError) {
-          Sentry.captureException(e, {
+    // Step 4: Server reset — now driven by server-truth probe (Fix 2c)
+    // instead of the local-only isAlreadyWiped check that caused the stuck loop.
+    if (!skipServerReset && ownUserId) {
+      const probeResult = await probeServerIdentityKey(ownUserId);
+      Sentry.addBreadcrumb({
+        category: 'key-recovery',
+        message: 'step-4: pre-reset state',
+        level: 'info',
+        data: { skipServerReset, locallyWiped, probeResult },
+      });
+
+      if (probeResult === 'unreachable') {
+        // No destructive action on network failure — safe bail.
+        Sentry.captureException(new Error('Server probe unreachable during key recovery'), {
+          tags: { feature: 'key-recovery' },
+          extra: { step: 'server-probe-unreachable' },
+        });
+        websocketManager.connect();
+        return { status: 'error', message: 'Network error — please check your connection' };
+      }
+
+      if (probeResult === 'present') {
+        // Key still on server — reset REGARDLESS of local wipe state.
+        // This is the loop-breaker: prod logs show the stuck tester's device
+        // never sent a reset because a prior local wipe made isAlreadyWiped true.
+        try {
+          await resetIdentityKeys(password);
+          Sentry.addBreadcrumb({ category: 'key-recovery', message: 'step-4: server reset succeeded', level: 'info' });
+        } catch (e: unknown) {
+          // 403 → incorrect password — nothing was wiped, safe to abort
+          if (e instanceof AuthError && e.statusCode === 403) {
+            Sentry.captureMessage('Key recovery: incorrect password (403)', {
+              level: 'warning',
+              tags: { feature: 'key-recovery' },
+            });
+            websocketManager.connect();
+            return { status: 'incorrect_password' };
+          }
+          // Rate limited — client.ts throws plain ApiError for 429 (not AuthError)
+          if (e instanceof ApiError && e.statusCode === 429) {
+            Sentry.captureMessage('Key recovery: rate limited (429)', {
+              level: 'warning',
+              tags: { feature: 'key-recovery' },
+            });
+            websocketManager.connect();
+            return { status: 'rate_limited' };
+          }
+          if (e instanceof NetworkError) {
+            Sentry.captureException(e, {
+              tags: { feature: 'key-recovery' },
+              extra: { step: 'server-reset' },
+            });
+            websocketManager.connect();
+            return { status: 'error', message: 'Network error — please check your connection' };
+          }
+          Sentry.captureException(e instanceof Error ? e : new Error(String(e)), {
             tags: { feature: 'key-recovery' },
             extra: { step: 'server-reset' },
           });
           websocketManager.connect();
-          return { status: 'error', message: 'Network error — please check your connection' };
+          return { status: 'error', message: e instanceof Error ? e.message : 'Reset failed' };
         }
-        Sentry.captureException(e instanceof Error ? e : new Error(String(e)), {
-          tags: { feature: 'key-recovery' },
-          extra: { step: 'server-reset' },
-        });
-        websocketManager.connect();
-        return { status: 'error', message: e instanceof Error ? e.message : 'Reset failed' };
       }
+      // 'absent' → reset already landed, skip
+      // 'unauthorized' → prior reset revoked JWT, skip to re-login
+    } else if (!skipServerReset) {
+      // No userId available — cannot probe; fall through to re-login
+      Sentry.addBreadcrumb({
+        category: 'key-recovery',
+        message: 'step-4: skipped probe (no userId)',
+        level: 'warning',
+        data: { skipServerReset, locallyWiped },
+      });
+    } else {
+      // skipServerReset === true (SEC-H1 push path) — never reset
+      Sentry.addBreadcrumb({
+        category: 'key-recovery',
+        message: 'step-4: skipped (SEC-H1 skipServerReset)',
+        level: 'info',
+        data: { skipServerReset, locallyWiped },
+      });
     }
 
-    // Step 5: Local crypto wipe (flows through fullCryptoWipe — documented subset
-    // of localWipe per DEBT-005; NOT a parallel re-enumeration)
-    Sentry.addBreadcrumb({ category: 'key-recovery', message: 'step-5: local wipe', level: 'info', data: { alreadyWiped } });
-    if (!alreadyWiped) {
+    // Step 5: Local crypto wipe — gated ONLY by local state (isLocalCryptoWiped)
+    Sentry.addBreadcrumb({ category: 'key-recovery', message: 'step-5: local wipe', level: 'info', data: { locallyWiped } });
+    if (!locallyWiped) {
       try {
         await fullCryptoWipe();
       } catch (e: unknown) {
@@ -298,40 +419,59 @@ async function doRecoverIdentityKeys(
     // idempotent, under-clearing silently defeats the wiped-phone eviction guard.
     try { clearAllArchiveConfirmations(); } catch { /* best-effort */ }
 
-    // Step 6: Re-login (loginForRecovery — no postAuthBootstrap)
-    // API-M2: same-second JWT revocation race — backend revokes JWTs with
-    // iat <= password_changed_at at SECOND granularity. If reset(step4) and
-    // login(step6) complete within the same second (~30-50%), the new JWT's
-    // iat matches the revocation threshold. Auto-retry once after ~1.5s.
+    // Step 6: Re-login (loginForRecoveryWithRetry — extracted 401 auto-retry)
     Sentry.addBreadcrumb({ category: 'key-recovery', message: 'step-6: re-login', level: 'info' });
     try {
-      await loginForRecovery(email, password);
+      await loginForRecoveryWithRetry(email, password);
     } catch (e: unknown) {
-      if (e instanceof AuthError && e.statusCode === 401) {
-        Sentry.addBreadcrumb({ category: 'key-recovery', message: 'step-6: 401 auto-retry (API-M2)', level: 'warning' });
-        // Auto-retry once after 1.5s delay (API-M2)
-        await new Promise<void>((resolve) => setTimeout(resolve, 1500));
+      Sentry.captureException(e instanceof Error ? e : new Error(String(e)), {
+        tags: { feature: 'key-recovery' },
+        extra: { step: e instanceof AuthError && e.statusCode === 401 ? 're-login-retry-exhausted' : 're-login' },
+      });
+      return {
+        status: 'error',
+        message: e instanceof Error ? e.message : 'Re-login failed',
+      };
+    }
+
+    // Step 6b: Post-re-login safety net (Fix 2c)
+    // Re-probe with the fresh JWT; if the key is still 'present' and we're
+    // allowed to reset, do so — then re-login again (reset revokes the fresh JWT).
+    if (!skipServerReset && ownUserId) {
+      const postLoginProbe = await probeServerIdentityKey(ownUserId);
+      Sentry.addBreadcrumb({
+        category: 'key-recovery',
+        message: 'step-6b: post-login re-probe',
+        level: 'info',
+        data: { postLoginProbe },
+      });
+
+      if (postLoginProbe === 'present') {
         try {
-          await loginForRecovery(email, password);
-        } catch (retryErr: unknown) {
-          Sentry.captureException(retryErr instanceof Error ? retryErr : new Error(String(retryErr)), {
+          await resetIdentityKeys(password);
+          Sentry.addBreadcrumb({ category: 'key-recovery', message: 'step-6b: post-login reset succeeded', level: 'info' });
+        } catch (e: unknown) {
+          // Non-fatal — proceed; the second-409 branch below will catch it
+          Sentry.captureException(e instanceof Error ? e : new Error(String(e)), {
             tags: { feature: 'key-recovery' },
-            extra: { step: 're-login-retry-exhausted' },
+            extra: { step: 'post-login-reset' },
+          });
+        }
+
+        // Reset revoked the fresh JWT — re-login again
+        Sentry.addBreadcrumb({ category: 'key-recovery', message: 'step-6b: re-login after post-login reset', level: 'info' });
+        try {
+          await loginForRecoveryWithRetry(email, password);
+        } catch (e: unknown) {
+          Sentry.captureException(e instanceof Error ? e : new Error(String(e)), {
+            tags: { feature: 'key-recovery' },
+            extra: { step: 'post-login-re-login' },
           });
           return {
             status: 'error',
-            message: retryErr instanceof Error ? retryErr.message : 'Re-login failed after retry',
+            message: e instanceof Error ? e.message : 'Re-login failed after post-login reset',
           };
         }
-      } else {
-        Sentry.captureException(e instanceof Error ? e : new Error(String(e)), {
-          tags: { feature: 'key-recovery' },
-          extra: { step: 're-login' },
-        });
-        return {
-          status: 'error',
-          message: e instanceof Error ? e.message : 'Re-login failed',
-        };
       }
     }
 

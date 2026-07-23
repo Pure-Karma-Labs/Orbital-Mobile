@@ -89,10 +89,10 @@ export function KeyConflictScreen(): React.JSX.Element {
         setPasswordModalVisible(false);
         break;
       case 'incorrect_password':
-        setPasswordError('Incorrect password');
+        setPasswordError('Incorrect password — please try again');
         break;
       case 'rate_limited':
-        setPasswordError('Too many attempts — please wait a few minutes');
+        setPasswordError('Too many attempts — please wait about 15 minutes and try again');
         break;
       case 'needs_email':
         // Auto-resolution failed — show editable email field

@@ -119,7 +119,7 @@ export function SettingsScreen(): React.JSX.Element {
     // later, unrelated visit to Settings.
     setRecoveryModalVisible(true);
     setKeyRecoveryError(null);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps — mount-only seed
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- mount-only seed
 
   useEffect(() => {
     if (!activeConversationId) return;

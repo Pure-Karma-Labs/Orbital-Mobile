@@ -161,6 +161,13 @@ export interface AuthState {
     status: 'incorrect_password' | 'rate_limited' | 'needs_email' | 'error';
     message?: string;
   } | null;
+  /**
+   * True when identity restore was deferred due to a transient network failure.
+   * Drives a non-blocking retry banner in the UI. Cleared on successful retry
+   * or on setUser/clearAuth.
+   * NOT persisted — transient, reset in setUser/clearAuth.
+   */
+  identityRestoreDeferred: boolean;
 }
 
 /** Auth actions — JWT tokens and encryption keys are NOT stored here */
@@ -180,6 +187,7 @@ export interface AuthActions {
   setEmail: (email: string | null) => void;
   setConflictSource: (source: 'push' | 'local' | null) => void;
   setKeyRecoveryError: (error: AuthState['keyRecoveryError']) => void;
+  setIdentityRestoreDeferred: (deferred: boolean) => void;
 }
 
 export type AuthSlice = AuthState & AuthActions;

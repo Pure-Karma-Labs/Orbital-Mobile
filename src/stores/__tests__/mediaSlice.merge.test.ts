@@ -25,10 +25,12 @@ function makeStore() {
         avatarPath: null, avatarDigest: null, needsTermsAcceptance: false,
         identityKeyConflict: false, keyRecoveryInProgress: false, email: null,
         conflictSource: null, keyRecoveryError: null,
+    identityRestoreDeferred: false,
         setUser: jest.fn(), clearAuth: jest.fn(), setAuthenticated: jest.fn(),
         updateProfile: jest.fn(), setNeedsTermsAcceptance: jest.fn(),
         setIdentityKeyConflict: jest.fn(), setKeyRecoveryInProgress: jest.fn(),
         setEmail: jest.fn(), setConflictSource: jest.fn(), setKeyRecoveryError: jest.fn(),
+    setIdentityRestoreDeferred: jest.fn(),
         // Conversations stubs
         conversations: {}, conversationIds: [], activeConversationId: null,
         viewingConversationId: null,

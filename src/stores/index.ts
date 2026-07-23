@@ -34,6 +34,8 @@ export const useAuth = () =>
     setEmail: s.setEmail,
     setConflictSource: s.setConflictSource,
     setKeyRecoveryError: s.setKeyRecoveryError,
+    identityRestoreDeferred: s.identityRestoreDeferred,
+    setIdentityRestoreDeferred: s.setIdentityRestoreDeferred,
   })));
 
 export const useConversations = () =>

@@ -49,6 +49,7 @@ import { clearAll as clearSecureStorage } from './secure-storage';
 import { syncBlockedUsers } from './blockedUsersSync';
 import { clearPrefetchState } from './mediaPrefetchService';
 import { clearArchiveConfirmState } from './mediaArchiveConfirmService';
+import { attemptKeychainIdentityRestore, clearStaleKeychainIdentity } from './crypto/identityRestoreService';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -85,10 +86,45 @@ export function checkAccountSwitch(newUserId: string): void {
  * contacts, pending wraps, and crypto state. Each step is catch-guarded so
  * a single failure never prevents the remaining bootstrap tasks.
  *
+ * FIRST step: attemptKeychainIdentityRestore() — on iOS reinstall the Keychain
+ * survives but the DB is gone. The restore service probes the server, proves
+ * key-match via ECIES round-trip, and writes identityKeyPublic to the DB so
+ * ensureKeysInitialized can upload the (idempotent) bundle without a 409.
+ *
+ * If restore returns 'deferred' (network flaky), we skip ensureKeysInitialized
+ * this round and set a store flag so the UI can show a retry banner.
+ *
  * SYNC:postAuthBootstrap — keyRecoveryService.ts step 8 mirrors these steps.
  * If you change one, update the other. Grep for this marker to find both.
  */
 async function postAuthBootstrap(): Promise<void> {
+  // --- Step 0: Keychain identity restore (must run FIRST) ---
+  let restoreDeferred = false;
+  try {
+    const restoreResult = await attemptKeychainIdentityRestore();
+    if (restoreResult === 'deferred') {
+      restoreDeferred = true;
+      useAppStore.getState().setIdentityRestoreDeferred(true);
+      Sentry.captureMessage('Identity restore deferred (transient failure)', {
+        level: 'warning',
+        tags: { feature: 'key-recovery', outcome: 'deferred' },
+      });
+    } else if (restoreResult !== 'none') {
+      // 'restored' or 'cleared' — log the outcome (never log key material)
+      Sentry.captureMessage(`Identity restore: ${restoreResult}`, {
+        level: restoreResult === 'restored' ? 'info' : 'warning',
+        tags: { feature: 'key-recovery', outcome: restoreResult },
+      });
+    }
+  } catch (e) {
+    // Treat any unexpected error as deferred — never block bootstrap
+    restoreDeferred = true;
+    useAppStore.getState().setIdentityRestoreDeferred(true);
+    Sentry.captureException(e, {
+      tags: { feature: 'key-recovery', outcome: 'deferred-exception' },
+    });
+  }
+
   try {
     loadEciesLockState();
   } catch (e) {
@@ -98,20 +134,27 @@ async function postAuthBootstrap(): Promise<void> {
   await loadDmConversations().catch(warnCatch('[DmSync]'));
   hydrateContactsFromOrbits().catch(warnCatch('[ContactHydration]'));
   fulfillPendingWraps().catch(warnCatch('[PendingWraps]'));
-  ensureKeysInitialized().catch((e: unknown) => {
-    if (e instanceof ConflictError) {
-      // 409 on key upload — this device's identity key conflicts with server.
-      // Set the conflict flag so the app gates behind KeyConflictScreen.
-      Sentry.captureMessage('Identity key conflict detected at postAuthBootstrap (409)', {
-        level: 'warning',
-        tags: { feature: 'key-recovery', source: 'login' },
-      });
-      useAppStore.getState().setIdentityKeyConflict(true);
-      useAppStore.getState().setConflictSource('local');
-    } else {
-      warnCatch('[KeyMaintenance]')(e);
-    }
-  });
+
+  // Skip key initialization if restore was deferred — surviving key must not
+  // be overwritten on a flaky network. Retry via deferred-state banner or
+  // app-foreground listener.
+  if (!restoreDeferred) {
+    ensureKeysInitialized().catch((e: unknown) => {
+      if (e instanceof ConflictError) {
+        // 409 on key upload — this device's identity key conflicts with server.
+        // Set the conflict flag so the app gates behind KeyConflictScreen.
+        Sentry.captureMessage('Identity key conflict detected at postAuthBootstrap (409)', {
+          level: 'warning',
+          tags: { feature: 'key-recovery', source: 'login' },
+        });
+        useAppStore.getState().setIdentityKeyConflict(true);
+        useAppStore.getState().setConflictSource('local');
+      } else {
+        warnCatch('[KeyMaintenance]')(e);
+      }
+    });
+  }
+
   syncBlockedUsers().catch(warnCatch('[BlockedUsersSync]'));
 }
 
@@ -186,6 +229,12 @@ export async function signupUser(
   useAppStore.getState().setNeedsTermsAcceptance(response.needsTermsAcceptance ?? false);
   // Persist email from the INPUT parameter. Transient — not MMKV-persisted.
   useAppStore.getState().setEmail(email);
+
+  // Clear any stale Keychain identity key from a previous install/account.
+  // New-account signup can never restore — the previous key has no value here.
+  // Must clear BOTH Keychain AND in-memory cache to avoid tripping the
+  // defense-in-depth invariant in generateInitialKeys.
+  await clearStaleKeychainIdentity();
 
   try {
     await generateInitialKeys();

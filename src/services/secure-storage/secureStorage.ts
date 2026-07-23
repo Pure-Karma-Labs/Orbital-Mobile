@@ -47,9 +47,22 @@ export async function clearAll(): Promise<void> {
 }
 
 /**
- * On iOS, Keychain survives app uninstall. This function detects a fresh
- * install by checking for a Keychain sentinel key — Keychain entries from
- * a previous install are cleared if the sentinel is absent.
+ * Fresh-install detection via Keychain sentinel.
+ *
+ * On iOS, Keychain entries survive app uninstall (AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY).
+ * This is now an INTENTIONAL identity-continuity feature:
+ *
+ * - IDENTITY_KEY_PRIVATE surviving means attemptKeychainIdentityRestore() can
+ *   seamlessly restore the user's cryptographic identity after reinstall.
+ * - DATABASE_ENCRYPTION_KEY / MMKV_ENCRYPTION_KEY surviving just encrypt fresh
+ *   files (the SQLCipher DB itself is deleted on uninstall).
+ * - ACCESS_TOKEN surviving enables restoreSession() to skip the login screen,
+ *   completing the ideal reinstall UX (Keychain possession = device possession;
+ *   AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY ensures the device is unlocked).
+ *
+ * This function checks a sentinel key and clears all Keychain entries ONLY on
+ * a true fresh install (no sentinel). After the first run it sets the sentinel,
+ * so subsequent launches (and reinstalls preserving Keychain) skip the clear.
  *
  * Using Keychain (rather than NSUserDefaults/Settings) for the sentinel
  * prevents a Metro Fast Refresh race where Settings.set hadn't persisted

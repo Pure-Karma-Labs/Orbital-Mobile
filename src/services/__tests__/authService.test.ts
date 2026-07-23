@@ -121,6 +121,13 @@ jest.mock('../crypto/utils', () => ({
   toArrayBuffer: jest.fn((u8: Uint8Array) => u8.buffer),
 }));
 
+const mockAttemptKeychainIdentityRestore = jest.fn().mockResolvedValue('none');
+const mockClearStaleKeychainIdentity = jest.fn().mockResolvedValue(undefined);
+jest.mock('../crypto/identityRestoreService', () => ({
+  attemptKeychainIdentityRestore: (...args: unknown[]) => mockAttemptKeychainIdentityRestore(...args),
+  clearStaleKeychainIdentity: (...args: unknown[]) => mockClearStaleKeychainIdentity(...args),
+}));
+
 const mockGetItem = jest.fn().mockReturnValue(null);
 const mockSetItem = jest.fn();
 jest.mock('../../database/repositories/itemRepository', () => ({
@@ -201,6 +208,7 @@ const mockSetEmail = jest.fn();
 const mockSetConflictSource = jest.fn();
 const mockResetBlockedUsers = jest.fn();
 const mockSetViewingConversation = jest.fn();
+const mockSetIdentityRestoreDeferred = jest.fn();
 
 jest.mock('../../stores/useAppStore', () => ({
   useAppStore: {
@@ -221,6 +229,7 @@ jest.mock('../../stores/useAppStore', () => ({
       setConflictSource: mockSetConflictSource,
       resetBlockedUsers: mockResetBlockedUsers,
       setViewingConversation: mockSetViewingConversation,
+      setIdentityRestoreDeferred: mockSetIdentityRestoreDeferred,
     })),
   },
 }));
@@ -1410,6 +1419,38 @@ describe('ConflictError detection', () => {
 
     expect(mockSetIdentityKeyConflict).toHaveBeenCalledWith(true);
     expect(mockSetConflictSource).toHaveBeenCalledWith('local');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Identity restore integration (PR #633 review — step-0 restore hook)
+// ---------------------------------------------------------------------------
+
+describe('identity restore integration', () => {
+  it("postAuthBootstrap 'deferred' sets identityRestoreDeferred and skips key init", async () => {
+    mockAttemptKeychainIdentityRestore.mockResolvedValueOnce('deferred');
+    mockLogin.mockResolvedValue({
+      token: 'tok', userId: 'user-1', username: 'alice', publicKey: null,
+    });
+
+    await loginUser('alice@test.com', 'secret');
+
+    expect(mockSetIdentityRestoreDeferred).toHaveBeenCalledWith(true);
+    expect(mockEnsureKeysInitialized).not.toHaveBeenCalled();
+  });
+
+  it('signupUser clears stale keychain identity BEFORE generating keys', async () => {
+    mockSignup.mockResolvedValue({
+      token: 'tok', userId: 'user-1', username: 'alice', email: 'a@x.com',
+      groupId: null, inviteEncryptedGroupKey: null,
+    });
+
+    await signupUser('alice', 'pass', 'a@x.com', 'CODE');
+
+    expect(mockClearStaleKeychainIdentity).toHaveBeenCalled();
+    const clearOrder = mockClearStaleKeychainIdentity.mock.invocationCallOrder[0];
+    const generateOrder = mockGenerateInitialKeys.mock.invocationCallOrder[0];
+    expect(clearOrder).toBeLessThan(generateOrder);
   });
 });
 

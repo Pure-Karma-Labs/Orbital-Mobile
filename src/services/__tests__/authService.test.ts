@@ -8,6 +8,12 @@ import { loginUser, signupUser, restoreSession, logout, deleteAccount, acceptCur
 // Module mocks
 // ---------------------------------------------------------------------------
 
+jest.mock('@sentry/react-native', () => ({
+  captureMessage: jest.fn(),
+  captureException: jest.fn(),
+  addBreadcrumb: jest.fn(),
+}));
+
 // Mocks needed by imports added for deleteAccount/localWipe
 jest.mock('../notificationService', () => ({
   deregisterCurrentDevice: jest.fn().mockResolvedValue(undefined),

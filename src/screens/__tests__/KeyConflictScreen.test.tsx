@@ -31,10 +31,12 @@ jest.mock('../../components/OrbitalLoader', () => ({
 
 let mockConflictSource: 'push' | 'local' | null = 'local';
 let mockSliceEmail: string | null = 'alice@test.com';
+let mockKeyRecoveryError: { status: string; message?: string } | null = null;
 jest.mock('../../stores', () => ({
   useAuth: () => ({
     conflictSource: mockConflictSource,
     email: mockSliceEmail,
+    keyRecoveryError: mockKeyRecoveryError,
   }),
 }));
 
@@ -74,6 +76,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockConflictSource = 'local';
   mockSliceEmail = 'alice@test.com';
+  mockKeyRecoveryError = null;
   mockRecoverIdentityKeys.mockResolvedValue({ status: 'success' });
 });
 
@@ -192,5 +195,42 @@ describe('KeyConflictScreen — needs_email manual entry (EMAIL RULING tier 3)',
 
     // Now email input should be visible (TextInput renders host + composite nodes)
     expect(findAllByTestId(renderer.root, 'key-conflict-email-input').length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('KeyConflictScreen — store-seeded error on mount', () => {
+  it('shows incorrect_password banner from store on mount', () => {
+    mockKeyRecoveryError = { status: 'incorrect_password' };
+    const renderer = renderScreen();
+    const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
+    const texts = allText.map((n) => n.props.children).filter((c) => typeof c === 'string');
+    expect(texts.some((t: string) => t.includes('Incorrect password'))).toBe(true);
+  });
+
+  it('shows rate_limited banner from store on mount', () => {
+    mockKeyRecoveryError = { status: 'rate_limited' };
+    const renderer = renderScreen();
+    const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
+    const texts = allText.map((n) => n.props.children).filter((c) => typeof c === 'string');
+    expect(texts.some((t: string) => t.includes('15 minutes'))).toBe(true);
+  });
+
+  it('shows error message verbatim from store on mount', () => {
+    mockKeyRecoveryError = { status: 'error', message: 'Something broke' };
+    const renderer = renderScreen();
+    const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
+    const texts = allText.map((n) => n.props.children).filter((c) => typeof c === 'string');
+    expect(texts.some((t: string) => t.includes('Something broke'))).toBe(true);
+  });
+
+  it('needs_email from store initializes manual email input on mount', () => {
+    mockKeyRecoveryError = { status: 'needs_email', message: 'no email' };
+    const renderer = renderScreen();
+    // Email input should be visible immediately on mount
+    expect(findAllByTestId(renderer.root, 'key-conflict-email-input').length).toBeGreaterThanOrEqual(1);
+    // Error banner should also show
+    const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
+    const texts = allText.map((n) => n.props.children).filter((c) => typeof c === 'string');
+    expect(texts.some((t: string) => t.includes('no email') || t.includes('Unable to determine'))).toBe(true);
   });
 });

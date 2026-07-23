@@ -14,7 +14,7 @@
  * the screen shows an editable email field for manual entry.
  */
 
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   ScrollView,
   Text,
@@ -35,7 +35,7 @@ import { useAuth } from '../stores';
 export function KeyConflictScreen(): React.JSX.Element {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
-  const { conflictSource, email: sliceEmail } = useAuth();
+  const { conflictSource, email: sliceEmail, keyRecoveryError } = useAuth();
 
   const [passwordModalVisible, setPasswordModalVisible] = useState(false);
   const [passwordError, setPasswordError] = useState<string | null>(null);
@@ -44,6 +44,28 @@ export function KeyConflictScreen(): React.JSX.Element {
   // EMAIL RULING tier 3: editable email field shown when auto-resolution fails
   const [needsManualEmail, setNeedsManualEmail] = useState(false);
   const [manualEmail, setManualEmail] = useState(sliceEmail ?? '');
+
+  // Seed error UI from the store on mount — handles the case where the screen
+  // was unmounted during recovery (LoadingView) and remounts with a stale error.
+  useEffect(() => {
+    if (!keyRecoveryError) return;
+    switch (keyRecoveryError.status) {
+      case 'incorrect_password':
+        setError('Incorrect password — please try again');
+        break;
+      case 'rate_limited':
+        setError('Too many attempts — please wait about 15 minutes and try again');
+        break;
+      case 'needs_email':
+        // Panel amendment: also initialize needsManualEmail so the TextInput renders.
+        setNeedsManualEmail(true);
+        setError(keyRecoveryError.message ?? 'Unable to determine account email for re-login');
+        break;
+      case 'error':
+        setError(keyRecoveryError.message ?? 'Recovery failed');
+        break;
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps — mount-only seed
 
   const isPush = conflictSource === 'push';
   const skipServerReset = isPush;

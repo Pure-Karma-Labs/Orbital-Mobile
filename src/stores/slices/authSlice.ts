@@ -16,6 +16,7 @@ export const createAuthSlice: StateCreator<AppState, [['zustand/devtools', never
   keyRecoveryInProgress: false,
   email: null,
   conflictSource: null,
+  keyRecoveryError: null,
 
   // Actions
   // NOTE: JWT tokens and encryption keys are intentionally NOT stored here.
@@ -36,6 +37,7 @@ export const createAuthSlice: StateCreator<AppState, [['zustand/devtools', never
         keyRecoveryInProgress: false,
         email: null,
         conflictSource: null,
+        keyRecoveryError: null,
       },
       false,
       'auth/setUser',
@@ -55,6 +57,7 @@ export const createAuthSlice: StateCreator<AppState, [['zustand/devtools', never
         keyRecoveryInProgress: false,
         email: null,
         conflictSource: null,
+        keyRecoveryError: null,
       },
       false,
       'auth/clearAuth',
@@ -88,4 +91,7 @@ export const createAuthSlice: StateCreator<AppState, [['zustand/devtools', never
 
   setConflictSource: (source) =>
     set({ conflictSource: source }, false, 'auth/setConflictSource'),
+
+  setKeyRecoveryError: (error) =>
+    set({ keyRecoveryError: error }, false, 'auth/setKeyRecoveryError'),
 });

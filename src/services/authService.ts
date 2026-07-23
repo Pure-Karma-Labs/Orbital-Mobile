@@ -5,6 +5,7 @@
  * Components call these functions instead of touching the API or store directly.
  */
 
+import * as Sentry from '@sentry/react-native';
 import * as auth from './api/auth';
 import * as users from './api/users';
 import { acceptTerms } from './api/terms';
@@ -101,6 +102,10 @@ async function postAuthBootstrap(): Promise<void> {
     if (e instanceof ConflictError) {
       // 409 on key upload — this device's identity key conflicts with server.
       // Set the conflict flag so the app gates behind KeyConflictScreen.
+      Sentry.captureMessage('Identity key conflict detected at postAuthBootstrap (409)', {
+        level: 'warning',
+        tags: { feature: 'key-recovery', source: 'login' },
+      });
       useAppStore.getState().setIdentityKeyConflict(true);
       useAppStore.getState().setConflictSource('local');
     } else {
@@ -188,6 +193,10 @@ export async function signupUser(
   } catch (e: unknown) {
     if (e instanceof ConflictError) {
       // 409 on key upload during signup — identity key conflicts with server.
+      Sentry.captureMessage('Identity key conflict detected at signup (409)', {
+        level: 'warning',
+        tags: { feature: 'key-recovery', source: 'signup' },
+      });
       useAppStore.getState().setIdentityKeyConflict(true);
       useAppStore.getState().setConflictSource('local');
     } else if (__DEV__) {

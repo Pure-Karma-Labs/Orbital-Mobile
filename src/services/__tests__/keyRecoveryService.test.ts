@@ -8,6 +8,15 @@
 // Module mocks — MUST be before imports
 // ---------------------------------------------------------------------------
 
+const mockSentryCaptureMessage = jest.fn();
+const mockSentryCaptureException = jest.fn();
+const mockSentryAddBreadcrumb = jest.fn();
+jest.mock('@sentry/react-native', () => ({
+  captureMessage: (...args: unknown[]) => mockSentryCaptureMessage(...args),
+  captureException: (...args: unknown[]) => mockSentryCaptureException(...args),
+  addBreadcrumb: (...args: unknown[]) => mockSentryAddBreadcrumb(...args),
+}));
+
 jest.mock('../notificationService', () => ({
   deregisterCurrentDevice: jest.fn().mockResolvedValue(undefined),
 }));
@@ -198,6 +207,7 @@ const mockSetIdentityKeyConflict = jest.fn();
 const mockSetKeyRecoveryInProgress = jest.fn();
 const mockSetEmail = jest.fn();
 const mockSetConflictSource = jest.fn();
+const mockSetKeyRecoveryError = jest.fn();
 const mockResetBlockedUsers = jest.fn();
 const mockSetViewingConversation = jest.fn();
 
@@ -218,6 +228,7 @@ jest.mock('../../stores/useAppStore', () => ({
       setKeyRecoveryInProgress: mockSetKeyRecoveryInProgress,
       setEmail: mockSetEmail,
       setConflictSource: mockSetConflictSource,
+      setKeyRecoveryError: mockSetKeyRecoveryError,
       resetBlockedUsers: mockResetBlockedUsers,
       setViewingConversation: mockSetViewingConversation,
     })),
@@ -699,5 +710,159 @@ describe('recoverIdentityKeys — clearAllArchiveConfirmations', () => {
 
     expect(result.status).toBe('success');
     expect(mockClearAllArchiveConfirmations).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Store-hoisted keyRecoveryError (Fix 2a)
+// ---------------------------------------------------------------------------
+
+describe('recoverIdentityKeys — store-hoisted keyRecoveryError', () => {
+  it('clears keyRecoveryError on start', async () => {
+    await recoverIdentityKeys('password123', false);
+    // First call to setKeyRecoveryError should be null (clear on start)
+    expect(mockSetKeyRecoveryError.mock.calls[0][0]).toBeNull();
+  });
+
+  it('writes incorrect_password to store on 403', async () => {
+    mockResetIdentityKeys.mockRejectedValueOnce(new AuthError(403, 'bad password'));
+    await recoverIdentityKeys('wrong', false);
+    expect(mockSetKeyRecoveryError).toHaveBeenCalledWith({ status: 'incorrect_password' });
+  });
+
+  it('writes rate_limited to store on 429', async () => {
+    mockResetIdentityKeys.mockRejectedValueOnce(
+      new ApiError('Rate limited', 429, 'RATE_LIMITED', true),
+    );
+    await recoverIdentityKeys('pw', false);
+    expect(mockSetKeyRecoveryError).toHaveBeenCalledWith({ status: 'rate_limited' });
+  });
+
+  it('writes needs_email to store when email unresolvable', async () => {
+    const { useAppStore: store } = require('../../stores/useAppStore');
+    const defaultState = store.getState();
+    (store.getState as jest.Mock).mockReturnValue({ ...defaultState, email: null });
+    const usersApi = require('../api/users');
+    (usersApi.getMe as jest.Mock).mockRejectedValue(new Error('no jwt'));
+
+    await recoverIdentityKeys('pw', false);
+    expect(mockSetKeyRecoveryError).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'needs_email' }),
+    );
+
+    // Restore
+    (store.getState as jest.Mock).mockReturnValue(defaultState);
+    (usersApi.getMe as jest.Mock).mockReset();
+  });
+
+  it('writes error with message to store on wipe failure', async () => {
+    mockFullCryptoWipe.mockRejectedValueOnce(new Error('wipe crashed'));
+    await recoverIdentityKeys('pw', false);
+    expect(mockSetKeyRecoveryError).toHaveBeenCalledWith({
+      status: 'error',
+      message: 'Local wipe failed — please retry',
+    });
+  });
+
+  it('writes error to store on second 409', async () => {
+    mockEnsureKeysInitialized.mockRejectedValueOnce(new ConflictError());
+    await recoverIdentityKeys('pw', false);
+    expect(mockSetKeyRecoveryError).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'error', message: expect.stringContaining('conflict persists') }),
+    );
+  });
+
+  it('does NOT write to store on success', async () => {
+    await recoverIdentityKeys('pw', false);
+    // Only the initial clear (null) — no error written
+    const errorCalls = mockSetKeyRecoveryError.mock.calls.filter(
+      (c: unknown[]) => c[0] !== null,
+    );
+    expect(errorCalls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Sentry telemetry (Fix 2b)
+// ---------------------------------------------------------------------------
+
+describe('recoverIdentityKeys — Sentry telemetry', () => {
+  it('adds breadcrumbs during successful recovery', async () => {
+    await recoverIdentityKeys('pw', false);
+    // At minimum: step-1 through step-8 breadcrumbs
+    expect(mockSentryAddBreadcrumb).toHaveBeenCalled();
+    const categories = mockSentryAddBreadcrumb.mock.calls.map(
+      (c: unknown[]) => (c[0] as { category: string }).category,
+    );
+    expect(categories.every((c: string) => c === 'key-recovery')).toBe(true);
+  });
+
+  it('captureMessage(warning) on incorrect_password (403)', async () => {
+    mockResetIdentityKeys.mockRejectedValueOnce(new AuthError(403, 'bad'));
+    await recoverIdentityKeys('bad', false);
+    expect(mockSentryCaptureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('incorrect password'),
+      expect.objectContaining({ level: 'warning', tags: { feature: 'key-recovery' } }),
+    );
+  });
+
+  it('captureMessage(warning) on rate_limited (429)', async () => {
+    mockResetIdentityKeys.mockRejectedValueOnce(
+      new ApiError('Rate limited', 429, 'RATE_LIMITED', true),
+    );
+    await recoverIdentityKeys('pw', false);
+    expect(mockSentryCaptureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('rate limited'),
+      expect.objectContaining({ level: 'warning', tags: { feature: 'key-recovery' } }),
+    );
+  });
+
+  it('captureException on local wipe failure', async () => {
+    mockFullCryptoWipe.mockRejectedValueOnce(new Error('disk error'));
+    await recoverIdentityKeys('pw', false);
+    expect(mockSentryCaptureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({ tags: { feature: 'key-recovery' } }),
+    );
+  });
+
+  it('captureException on second 409 (conflict persists)', async () => {
+    mockEnsureKeysInitialized.mockRejectedValueOnce(new ConflictError());
+    await recoverIdentityKeys('pw', false);
+    expect(mockSentryCaptureException).toHaveBeenCalledWith(
+      expect.any(ConflictError),
+      expect.objectContaining({
+        tags: { feature: 'key-recovery' },
+        extra: { step: 'second-409-conflict-persists' },
+      }),
+    );
+  });
+
+  it('captureException on re-login retry exhaustion', async () => {
+    jest.useFakeTimers();
+    mockLogin.mockRejectedValue(new AuthError(401, 'revoked'));
+    const promise = recoverIdentityKeys('pw', false);
+    await jest.advanceTimersByTimeAsync(1600);
+    await promise;
+    expect(mockSentryCaptureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({
+        tags: { feature: 'key-recovery' },
+        extra: { step: 're-login-retry-exhausted' },
+      }),
+    );
+    jest.useRealTimers();
+  });
+
+  it('warnAndCapture captures post-recovery sync failures to Sentry', async () => {
+    mockLoadConversations.mockRejectedValueOnce(new Error('sync fail'));
+    await recoverIdentityKeys('pw', false);
+    expect(mockSentryCaptureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({
+        tags: { feature: 'key-recovery' },
+        extra: { step: '[Recovery:ConversationSync]' },
+      }),
+    );
   });
 });

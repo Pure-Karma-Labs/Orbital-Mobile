@@ -336,6 +336,46 @@ describe('authSlice — conflictSource', () => {
   });
 });
 
+describe('authSlice — keyRecoveryError', () => {
+  it('initializes to null', () => {
+    const store = makeStore();
+    expect(store.getState().keyRecoveryError).toBeNull();
+  });
+
+  it('setKeyRecoveryError sets a structured error', () => {
+    const store = makeStore();
+    store.getState().setKeyRecoveryError({ status: 'incorrect_password' });
+    expect(store.getState().keyRecoveryError).toEqual({ status: 'incorrect_password' });
+  });
+
+  it('setKeyRecoveryError sets error with message', () => {
+    const store = makeStore();
+    store.getState().setKeyRecoveryError({ status: 'error', message: 'something broke' });
+    expect(store.getState().keyRecoveryError).toEqual({ status: 'error', message: 'something broke' });
+  });
+
+  it('setKeyRecoveryError clears with null', () => {
+    const store = makeStore();
+    store.getState().setKeyRecoveryError({ status: 'rate_limited' });
+    store.getState().setKeyRecoveryError(null);
+    expect(store.getState().keyRecoveryError).toBeNull();
+  });
+
+  it('setUser resets keyRecoveryError to null', () => {
+    const store = makeStore();
+    store.getState().setKeyRecoveryError({ status: 'incorrect_password' });
+    store.getState().setUser({ userId: 'u1', username: 'a', displayName: null, avatarPath: null });
+    expect(store.getState().keyRecoveryError).toBeNull();
+  });
+
+  it('clearAuth resets keyRecoveryError to null', () => {
+    const store = makeStore();
+    store.getState().setKeyRecoveryError({ status: 'error', message: 'fail' });
+    store.getState().clearAuth();
+    expect(store.getState().keyRecoveryError).toBeNull();
+  });
+});
+
 describe('authSlice — security constraints', () => {
   it('does NOT contain any token or key field', () => {
     const store = makeStore();

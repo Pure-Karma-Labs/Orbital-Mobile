@@ -26,6 +26,7 @@ function makeStore() {
     keyRecoveryInProgress: false,
     email: null,
     conflictSource: null,
+    keyRecoveryError: null,
     setUser: jest.fn(),
     clearAuth: jest.fn(),
     setAuthenticated: jest.fn(),
@@ -35,6 +36,7 @@ function makeStore() {
     setKeyRecoveryInProgress: jest.fn(),
     setEmail: jest.fn(),
     setConflictSource: jest.fn(),
+    setKeyRecoveryError: jest.fn(),
 
     conversations: {},
     conversationIds: [],

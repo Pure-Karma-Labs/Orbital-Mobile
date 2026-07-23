@@ -78,7 +78,7 @@ function SectionHeader({ label }: { label: string }): React.JSX.Element {
 export function SettingsScreen(): React.JSX.Element {
   const theme = useTheme();
   const navigation = useNavigation<NativeStackNavigationProp<SettingsStackParamList>>();
-  const { displayName, username, avatarPath, userId, avatarDigest, keyRecoveryError } = useAuth();
+  const { displayName, username, avatarPath, userId, avatarDigest, keyRecoveryError, setKeyRecoveryError } = useAuth();
   const { colorScheme, setColorScheme, soundEnabled, setSoundEnabled } = useUI();
   const { activeConversationId, conversations } = useConversations();
   const { pushPermissionGranted } = useNotifications();
@@ -114,6 +114,11 @@ export function SettingsScreen(): React.JSX.Element {
         setRecoveryPasswordError(keyRecoveryError.message ?? 'Recovery failed');
         break;
     }
+    // The error is only visible inside the recovery modal — open it, and
+    // consume the store field so a stale error can't re-trigger this on a
+    // later, unrelated visit to Settings.
+    setRecoveryModalVisible(true);
+    setKeyRecoveryError(null);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps -- mount-only seed
 
   useEffect(() => {

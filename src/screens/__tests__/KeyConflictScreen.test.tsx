@@ -154,7 +154,7 @@ describe('KeyConflictScreen — result status branches', () => {
     });
 
     const errorEl = findByTestId(renderer.root, 'key-recovery-password-error');
-    expect(errorEl.props.children).toBe('Incorrect password');
+    expect(errorEl.props.children).toBe('Incorrect password — please try again');
   });
 
   it('shows rate_limited inline error', async () => {

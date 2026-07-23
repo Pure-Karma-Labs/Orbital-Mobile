@@ -72,10 +72,11 @@ jest.mock('../api/tokenManager', () => ({
 }));
 
 const mockResetIdentityKeys = jest.fn().mockResolvedValue(undefined);
+const mockFetchRemoteIdentityKeyBundle = jest.fn().mockResolvedValue({ identityKey: 'base64-key' });
 jest.mock('../api/keys', () => ({
   uploadPreKeyBundle: jest.fn().mockResolvedValue(undefined),
   getPreKeyCount: jest.fn().mockResolvedValue({ count: 100 }),
-  fetchRemoteIdentityKeyBundle: jest.fn(),
+  fetchRemoteIdentityKeyBundle: (...args: unknown[]) => mockFetchRemoteIdentityKeyBundle(...args),
   resetIdentityKeys: (...args: unknown[]) => mockResetIdentityKeys(...args),
 }));
 
@@ -239,8 +240,8 @@ jest.mock('../../stores/useAppStore', () => ({
 // Import mocked modules
 // ---------------------------------------------------------------------------
 
-import { recoverIdentityKeys, isRecoveryInitiator } from '../keyRecoveryService';
-import { ApiError, AuthError, ConflictError } from '../api/errors';
+import { recoverIdentityKeys, isRecoveryInitiator, probeServerIdentityKey, loginForRecoveryWithRetry } from '../keyRecoveryService';
+import { ApiError, AuthError, ConflictError, NetworkError, NotFoundError } from '../api/errors';
 import { websocketManager } from '../websocket';
 import { useAppStore } from '../../stores/useAppStore';
 import * as authApi from '../api/auth';
@@ -260,6 +261,16 @@ beforeEach(() => {
   Object.keys(mockItemStore).forEach((k) => delete mockItemStore[k]);
   mockItemStore.identityKeyPublic = 'some-public-key-hex';
   mockGetCachedIdentityPrivateKeyHex.mockReturnValue('deadbeef');
+  // mockReset (not just clearAllMocks which only calls mockClear) to clear the
+  // once queue — clearAllMocks leaves specificReturnValues/specificMockImpls intact,
+  // causing stale values to accumulate across tests.
+  mockFetchRemoteIdentityKeyBundle.mockReset();
+  // Default: probe returns 'present' initially (step 4 triggers reset), then
+  // 'absent' on post-login re-probe (step 6b skips extra reset cycle).
+  // Tests that need different probe behavior call mockReset() first.
+  mockFetchRemoteIdentityKeyBundle
+    .mockResolvedValueOnce({ identityKey: 'base64-key' })
+    .mockRejectedValueOnce(new NotFoundError());
   mockLogin.mockResolvedValue({
     token: 'new-jwt',
     userId: 'user-1',
@@ -275,10 +286,19 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('recoverIdentityKeys — orchestration', () => {
-  it('executes steps in correct order: WS disconnect → cancel → reset → wipe → login → keys → WS connect', async () => {
+  it('executes steps in correct order: WS disconnect → cancel → probe → reset → wipe → login → re-probe → keys → WS connect', async () => {
     const callOrder: string[] = [];
     mockWsDisconnect.mockImplementation(() => { callOrder.push('ws-disconnect'); });
     mockCancelKeyInitialization.mockImplementation(async () => { callOrder.push('cancel'); });
+    // First probe: present (triggers reset); second probe (post-login): absent (no extra reset)
+    let probeCallCount = 0;
+    mockFetchRemoteIdentityKeyBundle.mockReset();
+    mockFetchRemoteIdentityKeyBundle.mockImplementation(async () => {
+      probeCallCount++;
+      callOrder.push('probe');
+      if (probeCallCount === 1) return { identityKey: 'base64-key' };
+      throw new NotFoundError(); // post-login: absent
+    });
     mockResetIdentityKeys.mockImplementation(async () => { callOrder.push('reset'); });
     mockFullCryptoWipe.mockImplementation(async () => { callOrder.push('wipe'); });
     mockLogin.mockImplementation(async () => {
@@ -294,11 +314,13 @@ describe('recoverIdentityKeys — orchestration', () => {
     expect(callOrder).toEqual([
       'ws-disconnect',
       'cancel',
-      'reset',
-      'wipe',
-      'login',
-      'keys-init',
-      'ws-connect',
+      'probe',      // step 4: probe server
+      'reset',      // step 4: reset (probe=present)
+      'wipe',       // step 5: local wipe
+      'login',      // step 6: re-login
+      'probe',      // step 6b: post-login re-probe
+      'keys-init',  // step 7: key re-generation
+      'ws-connect', // step 8: reconnect
     ]);
   });
 
@@ -360,7 +382,12 @@ describe('recoverIdentityKeys — SEC-H1 skipServerReset', () => {
     expect(mockFullCryptoWipe).toHaveBeenCalled();
   });
 
-  it('(b) skip=false → exactly one reset-API invocation', async () => {
+  it('(b) skip=false + post-login probe=absent → exactly one reset-API invocation', async () => {
+    // First probe: present (triggers reset); post-login probe: absent (no extra reset)
+    mockFetchRemoteIdentityKeyBundle
+      .mockResolvedValueOnce({ identityKey: 'base64-key' })
+      .mockRejectedValueOnce(new NotFoundError());
+
     const result = await recoverIdentityKeys('password123', false);
 
     expect(result.status).toBe('success');
@@ -380,9 +407,26 @@ describe('recoverIdentityKeys — SEC-H1 skipServerReset', () => {
     expect(mockLogin).toHaveBeenCalled();
   });
 
-  it('(d) skip=false + already-wiped → skip reset, straight to loginForRecovery', async () => {
-    // Simulate already-wiped state
+  it('(d) skip=false + locally-wiped + probe=present → STILL resets (loop-breaker)', async () => {
+    // Simulate locally-wiped state: identityKeyPublic absent
     delete mockItemStore.identityKeyPublic;
+    // Probe returns 'present' — server still has the key
+    mockFetchRemoteIdentityKeyBundle.mockResolvedValue({ identityKey: 'base64-key' });
+
+    const result = await recoverIdentityKeys('password123', false);
+
+    expect(result.status).toBe('success');
+    // This is the FIX: reset is called even though local state is wiped
+    expect(mockResetIdentityKeys).toHaveBeenCalledTimes(1);
+    // Local wipe skipped (already wiped)
+    expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+    expect(mockLogin).toHaveBeenCalled();
+  });
+
+  it('(e) skip=false + locally-wiped + probe=absent → skip reset (already landed on server)', async () => {
+    delete mockItemStore.identityKeyPublic;
+    mockFetchRemoteIdentityKeyBundle.mockReset();
+    mockFetchRemoteIdentityKeyBundle.mockRejectedValue(new NotFoundError());
 
     const result = await recoverIdentityKeys('password123', false);
 
@@ -398,18 +442,13 @@ describe('recoverIdentityKeys — SEC-H1 skipServerReset', () => {
 // ---------------------------------------------------------------------------
 
 describe('recoverIdentityKeys — state-aware retry', () => {
-  it('reset ok + wipe ok + login failed → retry calls login without calling reset', async () => {
+  it('reset ok + wipe ok + login failed → retry with probe=absent skips reset', async () => {
     // First attempt: reset succeeds, wipe succeeds, login fails
-    let loginCallCount = 0;
     mockLogin.mockImplementation(async () => {
-      loginCallCount++;
-      if (loginCallCount === 1) {
-        throw new Error('network glitch');
-      }
-      return { token: 'tok', userId: 'user-1', username: 'alice', displayName: null, publicKey: null };
+      throw new Error('network glitch');
     });
 
-    // First call fails at login
+    // First call fails at login (probe=present from beforeEach → reset fires)
     const result1 = await recoverIdentityKeys('password123', false);
     expect(result1.status).toBe('error');
     expect(mockResetIdentityKeys).toHaveBeenCalledTimes(1);
@@ -419,15 +458,46 @@ describe('recoverIdentityKeys — state-aware retry', () => {
     jest.clearAllMocks();
     delete mockItemStore.identityKeyPublic; // gone after wipe
     mockGetCachedIdentityPrivateKeyHex.mockReturnValue(null);
+    // Server key is now absent (prior reset landed)
+    mockFetchRemoteIdentityKeyBundle.mockReset();
+    mockFetchRemoteIdentityKeyBundle.mockRejectedValue(new NotFoundError());
     mockLogin.mockResolvedValue({
       token: 'tok', userId: 'user-1', username: 'alice', displayName: null, publicKey: null,
     });
 
-    // Retry: should skip reset and wipe, go straight to login
+    // Retry: probe=absent → skip reset; locally wiped → skip wipe; straight to login
     const result2 = await recoverIdentityKeys('password123', false);
     expect(result2.status).toBe('success');
     expect(mockResetIdentityKeys).not.toHaveBeenCalled();
     expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+    expect(mockLogin).toHaveBeenCalled();
+  });
+
+  it('reset ok + wipe ok + login failed → retry with probe=present DOES reset (loop-breaker)', async () => {
+    // First attempt: reset succeeds, wipe succeeds, login fails
+    mockLogin.mockRejectedValueOnce(new Error('network glitch'));
+
+    const result1 = await recoverIdentityKeys('password123', false);
+    expect(result1.status).toBe('error');
+    expect(mockResetIdentityKeys).toHaveBeenCalledTimes(1);
+
+    // Retry: locally wiped, but server still has key (edge case the old code couldn't handle)
+    jest.clearAllMocks();
+    delete mockItemStore.identityKeyPublic;
+    mockGetCachedIdentityPrivateKeyHex.mockReturnValue(null);
+    // Server STILL has the key (reset didn't propagate, or race)
+    mockFetchRemoteIdentityKeyBundle.mockReset();
+    mockFetchRemoteIdentityKeyBundle.mockResolvedValue({ identityKey: 'base64-key' });
+    mockLogin.mockResolvedValue({
+      token: 'tok', userId: 'user-1', username: 'alice', displayName: null, publicKey: null,
+    });
+
+    const result2 = await recoverIdentityKeys('password123', false);
+    expect(result2.status).toBe('success');
+    // THIS is the loop-breaker: reset is called despite local wipe
+    // Two calls: step 4 (initial probe=present) + step 6b (post-login re-probe=present)
+    expect(mockResetIdentityKeys).toHaveBeenCalledWith('password123');
+    expect(mockFullCryptoWipe).not.toHaveBeenCalled(); // already wiped
     expect(mockLogin).toHaveBeenCalled();
   });
 });
@@ -463,7 +533,7 @@ describe('recoverIdentityKeys — API-M2 401 auto-retry', () => {
     mockLogin.mockRejectedValue(new AuthError(401, 'jwt revoked'));
 
     const promise = recoverIdentityKeys('password123', false);
-    await jest.advanceTimersByTimeAsync(1600);
+    await jest.advanceTimersByTimeAsync(3200); // enough for both login retries
     const result = await promise;
 
     expect(result.status).toBe('error');
@@ -626,6 +696,10 @@ describe('recoverIdentityKeys — reentrancy guard', () => {
     // Restore item store defaults (first run's wipe removed identityKeyPublic)
     mockItemStore.identityKeyPublic = 'some-public-key-hex';
     mockGetCachedIdentityPrivateKeyHex.mockReturnValue('deadbeef');
+    // Re-setup probe mock (clearAllMocks resets it)
+    mockFetchRemoteIdentityKeyBundle
+      .mockResolvedValueOnce({ identityKey: 'base64-key' })
+      .mockRejectedValueOnce(new NotFoundError());
     mockLogin.mockResolvedValue({
       token: 'tok', userId: 'user-1', username: 'alice',
       displayName: null, publicKey: null, needsTermsAcceptance: false,
@@ -690,14 +764,14 @@ describe('recoverIdentityKeys — clearAllArchiveConfirmations', () => {
     expect(mockClearAllArchiveConfirmations).toHaveBeenCalledTimes(1);
   });
 
-  it('calls clearAllArchiveConfirmations even on the alreadyWiped path', async () => {
-    // Simulate already-wiped state: identityKeyPublic absent
+  it('calls clearAllArchiveConfirmations even on the locallyWiped path', async () => {
+    // Simulate locally-wiped state: identityKeyPublic absent
     delete mockItemStore.identityKeyPublic;
 
     const result = await recoverIdentityKeys('password123', true);
 
     expect(result.status).toBe('success');
-    // clearAllArchiveConfirmations is OUTSIDE the if(!alreadyWiped) guard
+    // clearAllArchiveConfirmations is OUTSIDE the if(!locallyWiped) guard
     expect(mockClearAllArchiveConfirmations).toHaveBeenCalledTimes(1);
   });
 
@@ -797,6 +871,21 @@ describe('recoverIdentityKeys — Sentry telemetry', () => {
     expect(categories.every((c: string) => c === 'key-recovery')).toBe(true);
   });
 
+  it('captureMessage(warning) on needs_email (email unresolvable)', async () => {
+    const { useAppStore: store } = require('../../stores/useAppStore');
+    const defaultState = store.getState();
+    (store.getState as jest.Mock).mockReturnValue({ ...defaultState, email: null });
+    const usersApi = require('../api/users');
+    (usersApi.getMe as jest.Mock).mockRejectedValue(new Error('no jwt'));
+
+    await recoverIdentityKeys('pw', false);
+    expect(mockSentryCaptureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('needs_email'),
+      expect.objectContaining({ level: 'warning', tags: { feature: 'key-recovery' } }),
+    );
+    (store.getState as jest.Mock).mockReturnValue(defaultState);
+  });
+
   it('captureMessage(warning) on incorrect_password (403)', async () => {
     mockResetIdentityKeys.mockRejectedValueOnce(new AuthError(403, 'bad'));
     await recoverIdentityKeys('bad', false);
@@ -864,5 +953,316 @@ describe('recoverIdentityKeys — Sentry telemetry', () => {
         extra: { step: '[Recovery:ConversationSync]' },
       }),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// probeServerIdentityKey — unit tests (Fix 2c)
+// ---------------------------------------------------------------------------
+
+describe('probeServerIdentityKey', () => {
+  beforeEach(() => {
+    mockFetchRemoteIdentityKeyBundle.mockReset();
+  });
+
+  it('returns "present" when fetchRemoteIdentityKeyBundle resolves (200)', async () => {
+    mockFetchRemoteIdentityKeyBundle.mockResolvedValueOnce({ identityKey: 'key' });
+    const result = await probeServerIdentityKey('user-1');
+    expect(result).toBe('present');
+    expect(mockSentryAddBreadcrumb).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'server-probe: present' }),
+    );
+  });
+
+  it('returns "absent" on NotFoundError (404)', async () => {
+    mockFetchRemoteIdentityKeyBundle.mockRejectedValueOnce(new NotFoundError());
+    const result = await probeServerIdentityKey('user-1');
+    expect(result).toBe('absent');
+    expect(mockSentryAddBreadcrumb).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'server-probe: absent (404)' }),
+    );
+  });
+
+  it('returns "absent" on generic ApiError with statusCode 404', async () => {
+    mockFetchRemoteIdentityKeyBundle.mockRejectedValueOnce(
+      new ApiError('Not found', 404, 'NOT_FOUND', false),
+    );
+    const result = await probeServerIdentityKey('user-1');
+    expect(result).toBe('absent');
+  });
+
+  it('returns "unauthorized" on AuthError 401', async () => {
+    mockFetchRemoteIdentityKeyBundle.mockRejectedValueOnce(new AuthError(401, 'revoked'));
+    const result = await probeServerIdentityKey('user-1');
+    expect(result).toBe('unauthorized');
+    expect(mockSentryAddBreadcrumb).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'server-probe: unauthorized (401)' }),
+    );
+  });
+
+  it('returns "unreachable" on NetworkError', async () => {
+    mockFetchRemoteIdentityKeyBundle.mockRejectedValueOnce(new NetworkError('timeout'));
+    const result = await probeServerIdentityKey('user-1');
+    expect(result).toBe('unreachable');
+    expect(mockSentryAddBreadcrumb).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'server-probe: unreachable' }),
+    );
+  });
+
+  it('returns "unreachable" on unexpected errors', async () => {
+    mockFetchRemoteIdentityKeyBundle.mockRejectedValueOnce(new Error('something weird'));
+    const result = await probeServerIdentityKey('user-1');
+    expect(result).toBe('unreachable');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loginForRecoveryWithRetry — unit tests
+// ---------------------------------------------------------------------------
+
+describe('loginForRecoveryWithRetry', () => {
+  beforeEach(() => { jest.useFakeTimers(); });
+  afterEach(() => { jest.useRealTimers(); });
+
+  it('succeeds on first attempt without retry', async () => {
+    mockLogin.mockResolvedValueOnce({
+      token: 'tok', userId: 'user-1', username: 'alice',
+      displayName: null, publicKey: null, needsTermsAcceptance: false,
+    });
+
+    const promise = loginForRecoveryWithRetry('alice@example.com', 'pw');
+    await jest.advanceTimersByTimeAsync(0);
+    await expect(promise).resolves.toBeUndefined();
+    expect(mockLogin).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries once on 401, succeeds on second attempt', async () => {
+    mockLogin
+      .mockRejectedValueOnce(new AuthError(401, 'revoked'))
+      .mockResolvedValueOnce({
+        token: 'tok', userId: 'user-1', username: 'alice',
+        displayName: null, publicKey: null, needsTermsAcceptance: false,
+      });
+
+    const promise = loginForRecoveryWithRetry('alice@example.com', 'pw');
+    await jest.advanceTimersByTimeAsync(1600);
+    await expect(promise).resolves.toBeUndefined();
+    expect(mockLogin).toHaveBeenCalledTimes(2);
+  });
+
+  it('throws on 401 retry failure (both attempts 401)', async () => {
+    mockLogin.mockRejectedValue(new AuthError(401, 'revoked'));
+
+    const promise = loginForRecoveryWithRetry('alice@example.com', 'pw');
+    // Attach the rejection assertion BEFORE advancing timers to prevent
+    // the unhandled-rejection race (fake timers flush microtasks during advance).
+    const assertion = expect(promise).rejects.toBeInstanceOf(AuthError);
+    await jest.advanceTimersByTimeAsync(1600);
+    await assertion;
+    expect(mockLogin).toHaveBeenCalledTimes(2);
+  });
+
+  it('throws immediately on non-401 errors (no retry)', async () => {
+    mockLogin.mockRejectedValueOnce(new AuthError(403, 'forbidden'));
+
+    const promise = loginForRecoveryWithRetry('alice@example.com', 'pw');
+    // No timer involved (non-401 re-throws immediately), but assertion
+    // must still attach before any await to prevent unhandled rejection.
+    await expect(promise).rejects.toBeInstanceOf(AuthError);
+    expect(mockLogin).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Server-truth probe matrix (Fix 2c) — comprehensive integration tests
+// ---------------------------------------------------------------------------
+
+describe('recoverIdentityKeys — probe matrix', () => {
+  // Matrix: (present|absent|unauthorized|unreachable) x (locally-wiped|not) x skipServerReset
+
+  // --- skipServerReset=false, NOT locally wiped ---
+
+  it('probe=present + not-wiped + skip=false → resets + wipes + succeeds', async () => {
+    mockFetchRemoteIdentityKeyBundle
+      .mockResolvedValueOnce({ identityKey: 'key' })   // step 4 probe
+      .mockRejectedValueOnce(new NotFoundError());      // step 6b re-probe
+    const result = await recoverIdentityKeys('pw', false);
+    expect(result.status).toBe('success');
+    expect(mockResetIdentityKeys).toHaveBeenCalledTimes(1);
+    expect(mockFullCryptoWipe).toHaveBeenCalledTimes(1);
+  });
+
+  it('probe=absent + not-wiped + skip=false → skips reset, still wipes', async () => {
+    mockFetchRemoteIdentityKeyBundle.mockReset();
+    mockFetchRemoteIdentityKeyBundle
+      .mockRejectedValueOnce(new NotFoundError())       // step 4: absent
+      .mockRejectedValueOnce(new NotFoundError());      // step 6b: still absent
+    const result = await recoverIdentityKeys('pw', false);
+    expect(result.status).toBe('success');
+    expect(mockResetIdentityKeys).not.toHaveBeenCalled();
+    expect(mockFullCryptoWipe).toHaveBeenCalledTimes(1);
+  });
+
+  it('probe=unauthorized + not-wiped + skip=false → skips reset, still wipes', async () => {
+    mockFetchRemoteIdentityKeyBundle.mockReset();
+    mockFetchRemoteIdentityKeyBundle
+      .mockRejectedValueOnce(new AuthError(401, 'revoked'))  // step 4: unauthorized
+      .mockRejectedValueOnce(new NotFoundError());           // step 6b re-probe
+    const result = await recoverIdentityKeys('pw', false);
+    expect(result.status).toBe('success');
+    expect(mockResetIdentityKeys).not.toHaveBeenCalled();
+    expect(mockFullCryptoWipe).toHaveBeenCalledTimes(1);
+  });
+
+  it('probe=unreachable + not-wiped + skip=false → returns error, NO destructive action', async () => {
+    mockFetchRemoteIdentityKeyBundle.mockReset();
+    mockFetchRemoteIdentityKeyBundle.mockRejectedValueOnce(new NetworkError('timeout'));
+    const result = await recoverIdentityKeys('pw', false);
+    expect(result.status).toBe('error');
+    expect(result).toHaveProperty('message', 'Network error — please check your connection');
+    expect(mockResetIdentityKeys).not.toHaveBeenCalled();
+    expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+    expect(mockLogin).not.toHaveBeenCalled();
+    expect(mockEnsureKeysInitialized).not.toHaveBeenCalled();
+  });
+
+  // --- skipServerReset=false, LOCALLY wiped ---
+
+  it('probe=present + locally-wiped + skip=false → resets (loop-breaker), skips wipe', async () => {
+    delete mockItemStore.identityKeyPublic;
+    mockGetCachedIdentityPrivateKeyHex.mockReturnValue(null);
+    mockFetchRemoteIdentityKeyBundle.mockReset();
+    mockFetchRemoteIdentityKeyBundle
+      .mockResolvedValueOnce({ identityKey: 'key' })
+      .mockRejectedValueOnce(new NotFoundError());
+    const result = await recoverIdentityKeys('pw', false);
+    expect(result.status).toBe('success');
+    expect(mockResetIdentityKeys).toHaveBeenCalledTimes(1);
+    expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+  });
+
+  it('probe=absent + locally-wiped + skip=false → skips reset + wipe', async () => {
+    delete mockItemStore.identityKeyPublic;
+    mockGetCachedIdentityPrivateKeyHex.mockReturnValue(null);
+    mockFetchRemoteIdentityKeyBundle.mockReset();
+    mockFetchRemoteIdentityKeyBundle
+      .mockRejectedValueOnce(new NotFoundError())
+      .mockRejectedValueOnce(new NotFoundError());
+    const result = await recoverIdentityKeys('pw', false);
+    expect(result.status).toBe('success');
+    expect(mockResetIdentityKeys).not.toHaveBeenCalled();
+    expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+  });
+
+  it('probe=unauthorized + locally-wiped + skip=false → skips reset + wipe', async () => {
+    delete mockItemStore.identityKeyPublic;
+    mockGetCachedIdentityPrivateKeyHex.mockReturnValue(null);
+    mockFetchRemoteIdentityKeyBundle.mockReset();
+    mockFetchRemoteIdentityKeyBundle
+      .mockRejectedValueOnce(new AuthError(401, 'revoked'))
+      .mockRejectedValueOnce(new NotFoundError());
+    const result = await recoverIdentityKeys('pw', false);
+    expect(result.status).toBe('success');
+    expect(mockResetIdentityKeys).not.toHaveBeenCalled();
+    expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+  });
+
+  it('probe=unreachable + locally-wiped + skip=false → returns error, NO destructive action', async () => {
+    delete mockItemStore.identityKeyPublic;
+    mockGetCachedIdentityPrivateKeyHex.mockReturnValue(null);
+    mockFetchRemoteIdentityKeyBundle.mockReset();
+    mockFetchRemoteIdentityKeyBundle.mockRejectedValueOnce(new NetworkError('timeout'));
+    const result = await recoverIdentityKeys('pw', false);
+    expect(result.status).toBe('error');
+    expect(mockResetIdentityKeys).not.toHaveBeenCalled();
+    expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+    expect(mockLogin).not.toHaveBeenCalled();
+  });
+
+  // --- skipServerReset=true (SEC-H1 push path) ---
+
+  it('skip=true + not-wiped → never probes, never resets, wipes + succeeds', async () => {
+    const result = await recoverIdentityKeys('pw', true);
+    expect(result.status).toBe('success');
+    expect(mockFetchRemoteIdentityKeyBundle).not.toHaveBeenCalled();
+    expect(mockResetIdentityKeys).not.toHaveBeenCalled();
+    expect(mockFullCryptoWipe).toHaveBeenCalledTimes(1);
+  });
+
+  it('skip=true + locally-wiped → never probes, never resets, skips wipe', async () => {
+    delete mockItemStore.identityKeyPublic;
+    mockGetCachedIdentityPrivateKeyHex.mockReturnValue(null);
+    const result = await recoverIdentityKeys('pw', true);
+    expect(result.status).toBe('success');
+    expect(mockFetchRemoteIdentityKeyBundle).not.toHaveBeenCalled();
+    expect(mockResetIdentityKeys).not.toHaveBeenCalled();
+    expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Post-login re-probe safety net (Fix 2c step 6b)
+// ---------------------------------------------------------------------------
+
+describe('recoverIdentityKeys — post-login re-probe', () => {
+  it('re-probe=present triggers reset + re-login after initial login', async () => {
+    // Initial probe: present → reset. Post-login probe: ALSO present → second reset + re-login
+    mockFetchRemoteIdentityKeyBundle.mockReset();
+    mockFetchRemoteIdentityKeyBundle
+      .mockResolvedValueOnce({ identityKey: 'key' })   // step 4: present
+      .mockResolvedValueOnce({ identityKey: 'key' });  // step 6b: still present
+    const result = await recoverIdentityKeys('pw', false);
+    expect(result.status).toBe('success');
+    // Two resets: step 4 + step 6b
+    expect(mockResetIdentityKeys).toHaveBeenCalledTimes(2);
+    // Two login attempts: step 6 + step 6b re-login
+    expect(mockLogin).toHaveBeenCalledTimes(2);
+  });
+
+  it('re-probe=absent does NOT trigger second reset or re-login', async () => {
+    mockFetchRemoteIdentityKeyBundle.mockReset();
+    mockFetchRemoteIdentityKeyBundle
+      .mockResolvedValueOnce({ identityKey: 'key' })  // step 4: present
+      .mockRejectedValueOnce(new NotFoundError());    // step 6b: absent
+    const result = await recoverIdentityKeys('pw', false);
+    expect(result.status).toBe('success');
+    expect(mockResetIdentityKeys).toHaveBeenCalledTimes(1);
+    expect(mockLogin).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-probe is skipped when skipServerReset=true', async () => {
+    const result = await recoverIdentityKeys('pw', true);
+    expect(result.status).toBe('success');
+    // No probes at all
+    expect(mockFetchRemoteIdentityKeyBundle).not.toHaveBeenCalled();
+  });
+
+  it('post-login reset failure is non-fatal — proceeds to key-init', async () => {
+    mockFetchRemoteIdentityKeyBundle.mockReset();
+    mockFetchRemoteIdentityKeyBundle
+      .mockResolvedValueOnce({ identityKey: 'key' })
+      .mockResolvedValueOnce({ identityKey: 'key' });
+    // First reset succeeds (step 4), second reset fails (step 6b)
+    mockResetIdentityKeys
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('server hiccup'));
+    const result = await recoverIdentityKeys('pw', false);
+    expect(result.status).toBe('success');
+    expect(mockSentryCaptureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({ extra: { step: 'post-login-reset' } }),
+    );
+  });
+
+  it('second-409 "Key conflict persists" branch still reachable after re-probe', async () => {
+    mockFetchRemoteIdentityKeyBundle
+      .mockResolvedValueOnce({ identityKey: 'key' })
+      .mockRejectedValueOnce(new NotFoundError());
+    mockEnsureKeysInitialized.mockRejectedValueOnce(new ConflictError());
+
+    const result = await recoverIdentityKeys('pw', false);
+    expect(result.status).toBe('error');
+    expect(result).toHaveProperty('message', expect.stringContaining('conflict persists'));
+    expect(mockSetIdentityKeyConflict).toHaveBeenCalledWith(true);
   });
 });

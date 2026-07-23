@@ -65,7 +65,7 @@ export function KeyConflictScreen(): React.JSX.Element {
         setError(keyRecoveryError.message ?? 'Recovery failed');
         break;
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps — mount-only seed
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- mount-only seed
 
   const isPush = conflictSource === 'push';
   const skipServerReset = isPush;

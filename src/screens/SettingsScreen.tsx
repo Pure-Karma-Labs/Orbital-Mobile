@@ -114,7 +114,7 @@ export function SettingsScreen(): React.JSX.Element {
         setRecoveryPasswordError(keyRecoveryError.message ?? 'Recovery failed');
         break;
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps — mount-only seed
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- mount-only seed
 
   useEffect(() => {
     if (!activeConversationId) return;

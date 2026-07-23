@@ -133,7 +133,7 @@ jest.mock('../../stores/useAppStore', () => ({
   },
 }));
 
-import { loadConversations, loadDmConversations, startDm, joinOrbit, fetchCreatorOrbitsDecrypted, hydrateContactsFromOrbits, ensureDmConversation, fulfillPendingWraps, clearConversationServiceState, refreshContactAvatar, markConversationReadEverywhere, createInviteCode } from '../conversationService';
+import { loadConversations, loadDmConversations, startDm, joinOrbit, fetchCreatorOrbitsDecrypted, hydrateContactsFromOrbits, ensureDmConversation, fulfillPendingWraps, wrapKeyForMember, getPendingWrapsForGroup, clearConversationServiceState, refreshContactAvatar, markConversationReadEverywhere, createInviteCode } from '../conversationService';
 import { listGroups, listDms, createDm, joinGroup, getGroupMembers, getPendingWraps, submitWrappedKey, markGroupRead, generateInviteCode as generateInviteCodeApi, selfWrapGroupKey } from '../api/groups';
 import * as inviteCrypto from '../crypto/inviteCrypto';
 import { useAppStore } from '../../stores/useAppStore';
@@ -1934,7 +1934,7 @@ describe('fulfillPendingWraps — sweeps both group and DM conversations', () =>
     expect(calledIds).toContain('g1');
   });
 
-  it('continues to the next conversation when getPendingWraps rejects with FORBIDDEN for a DM', async () => {
+  it('continues to the next conversation when getOrFetchGroupKey rejects with FORBIDDEN for a DM', async () => {
     (useAppStore.getState as jest.Mock).mockReturnValue({
       userId: 'test-self-user',
       activeConversationId: null,
@@ -1953,7 +1953,8 @@ describe('fulfillPendingWraps — sweeps both group and DM conversations', () =>
     });
 
     // First conversation (whichever order Object.values returns) rejects
-    // with the FORBIDDEN_PENDING_MEMBER error — the catch should swallow it.
+    // with the FORBIDDEN_PENDING_MEMBER error — wrapKeyForMember throws,
+    // the per-member catch swallows it, and the sweep continues.
     const forbiddenError: Error & { statusCode?: number } = new Error('FORBIDDEN_PENDING_MEMBER');
     forbiddenError.statusCode = 403;
     mockGetOrFetchGroupKey
@@ -1964,11 +1965,12 @@ describe('fulfillPendingWraps — sweeps both group and DM conversations', () =>
     await fulfillPendingWraps();
 
     // The sweep must not crash — it should reach the second conversation.
-    // getOrFetchGroupKey was called for both conversations even though the
-    // first one threw (the outer catch caught it and continued).
+    // getOrFetchGroupKey was called inside wrapKeyForMember for each
+    // conversation's pending member — once rejected, once resolved.
     expect(mockGetOrFetchGroupKey).toHaveBeenCalledTimes(2);
-    // getPendingWraps only called for the one that had a key
-    expect(mockGetPendingWraps).toHaveBeenCalledTimes(1);
+    // getPendingWraps called for both conversations (key check is inside
+    // wrapKeyForMember, not before getPendingWraps)
+    expect(mockGetPendingWraps).toHaveBeenCalledTimes(2);
     // Wrap + submit happened for the successful conversation's pending member
     expect(mockSubmitWrappedKey).toHaveBeenCalledTimes(1);
   });
@@ -2042,5 +2044,197 @@ describe('fulfillPendingWraps — sweeps both group and DM conversations', () =>
     for (let i = 1; i <= 4; i++) {
       expect(calledIds).toContain(`g-${i}`);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// wrapKeyForMember — extracted per-member wrap logic (#629 M4)
+// ---------------------------------------------------------------------------
+
+describe('wrapKeyForMember', () => {
+  beforeEach(() => {
+    clearConversationServiceState();
+    mockGetOrFetchGroupKey.mockReset();
+    mockGetOrFetchGroupKey.mockResolvedValue(new Uint8Array(32).fill(0xab));
+    mockRefreshAndCompareIdentityKey.mockReset();
+    mockRefreshAndCompareIdentityKey.mockResolvedValue({
+      publicKey: new ArrayBuffer(33),
+      identityChanged: false,
+    });
+    mockCompareAndPersistIdentityKey.mockReset();
+    mockCompareAndPersistIdentityKey.mockReturnValue({
+      publicKey: new ArrayBuffer(33),
+      identityChanged: false,
+    });
+    mockSubmitWrappedKey.mockReset();
+    mockSubmitWrappedKey.mockResolvedValue({ success: true });
+    mockWrapGroupKey.mockReturnValue('ecies-wrapped-base64');
+  });
+
+  it('happy path: wraps and submits the group key for a member with server-carried identity key', async () => {
+    const carriedKey = new ArrayBuffer(33);
+    new Uint8Array(carriedKey).fill(0xcc);
+    mockCompareAndPersistIdentityKey.mockReturnValueOnce({
+      publicKey: carriedKey,
+      identityChanged: false,
+    });
+
+    await wrapKeyForMember('conv-1', {
+      userId: 'member-1',
+      identityPublicKey: 'valid-base64-key',
+    });
+
+    expect(mockGetOrFetchGroupKey).toHaveBeenCalledWith('conv-1');
+    expect(mockCompareAndPersistIdentityKey).toHaveBeenCalledWith('member-1', expect.any(Uint8Array));
+    expect(mockRefreshAndCompareIdentityKey).not.toHaveBeenCalled();
+    expect(mockWrapGroupKey).toHaveBeenCalledWith(expect.any(Uint8Array), carriedKey, 'conv-1');
+    expect(mockSubmitWrappedKey).toHaveBeenCalledWith('conv-1', 'member-1', 'ecies-wrapped-base64');
+  });
+
+  it('happy path: falls back to refreshAndCompareIdentityKey when identityPublicKey is absent', async () => {
+    const freshKey = new ArrayBuffer(33);
+    new Uint8Array(freshKey).fill(0xdd);
+    mockRefreshAndCompareIdentityKey.mockResolvedValueOnce({
+      publicKey: freshKey,
+      identityChanged: false,
+    });
+
+    await wrapKeyForMember('conv-2', { userId: 'member-2' });
+
+    expect(mockRefreshAndCompareIdentityKey).toHaveBeenCalledWith('member-2', 'test-self-user');
+    expect(mockCompareAndPersistIdentityKey).not.toHaveBeenCalled();
+    expect(mockWrapGroupKey).toHaveBeenCalledWith(expect.any(Uint8Array), freshKey, 'conv-2');
+    expect(mockSubmitWrappedKey).toHaveBeenCalledWith('conv-2', 'member-2', 'ecies-wrapped-base64');
+  });
+
+  it('calls setContactVerifiedStatus(Unverified) when identity key changed', async () => {
+    const newKey = new ArrayBuffer(33);
+    new Uint8Array(newKey).fill(0xee);
+    mockCompareAndPersistIdentityKey.mockReturnValueOnce({
+      publicKey: newKey,
+      identityChanged: true,
+    });
+
+    await wrapKeyForMember('conv-3', {
+      userId: 'changed-member',
+      identityPublicKey: 'changed-key-base64',
+    });
+
+    expect(mockSetContactVerifiedStatus).toHaveBeenCalledWith('changed-member', 2); // VerifiedStatus.Unverified
+    expect(mockSubmitWrappedKey).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT call setContactVerifiedStatus when identity key is unchanged', async () => {
+    mockCompareAndPersistIdentityKey.mockReturnValueOnce({
+      publicKey: new ArrayBuffer(33),
+      identityChanged: false,
+    });
+
+    await wrapKeyForMember('conv-4', {
+      userId: 'stable-member',
+      identityPublicKey: 'stable-key-base64',
+    });
+
+    expect(mockSetContactVerifiedStatus).not.toHaveBeenCalled();
+    expect(mockSubmitWrappedKey).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws when getOrFetchGroupKey fails (no error swallow)', async () => {
+    mockGetOrFetchGroupKey.mockRejectedValueOnce(new Error('no group key'));
+
+    await expect(
+      wrapKeyForMember('conv-5', { userId: 'member-5' }),
+    ).rejects.toThrow('no group key');
+
+    expect(mockSubmitWrappedKey).not.toHaveBeenCalled();
+  });
+
+  it('throws when submitWrappedKey fails (no error swallow)', async () => {
+    mockSubmitWrappedKey.mockRejectedValueOnce(new Error('submit failed'));
+
+    await expect(
+      wrapKeyForMember('conv-6', { userId: 'member-6' }),
+    ).rejects.toThrow('submit failed');
+  });
+
+  it('throws when refreshAndCompareIdentityKey fails (no error swallow)', async () => {
+    mockRefreshAndCompareIdentityKey.mockRejectedValueOnce(new Error('identity key fetch failed'));
+
+    await expect(
+      wrapKeyForMember('conv-7', { userId: 'member-7' }),
+    ).rejects.toThrow('identity key fetch failed');
+
+    expect(mockSubmitWrappedKey).not.toHaveBeenCalled();
+  });
+
+  it('throws when no active session', async () => {
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      ...((useAppStore.getState as jest.Mock)()),
+      userId: null,
+    });
+
+    await expect(
+      wrapKeyForMember('conv-8', { userId: 'member-8' }),
+    ).rejects.toThrow('No active session');
+  });
+
+  it('falls back to refreshAndCompareIdentityKey when normalizeIdentityKey throws', async () => {
+    mockNormalizeIdentityKey.mockImplementationOnce(() => {
+      throw new Error('Invalid identity key length');
+    });
+    const fallbackKey = new ArrayBuffer(33);
+    new Uint8Array(fallbackKey).fill(0xaa);
+    mockRefreshAndCompareIdentityKey.mockResolvedValueOnce({
+      publicKey: fallbackKey,
+      identityChanged: false,
+    });
+
+    await wrapKeyForMember('conv-9', {
+      userId: 'bad-key-member',
+      identityPublicKey: 'garbage-data',
+    });
+
+    expect(mockRefreshAndCompareIdentityKey).toHaveBeenCalledWith('bad-key-member', 'test-self-user');
+    expect(mockWrapGroupKey).toHaveBeenCalledWith(expect.any(Uint8Array), fallbackKey, 'conv-9');
+    expect(mockSubmitWrappedKey).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to refreshAndCompareIdentityKey when identityPublicKey is empty string', async () => {
+    const freshKey = new ArrayBuffer(33);
+    new Uint8Array(freshKey).fill(0xbb);
+    mockRefreshAndCompareIdentityKey.mockResolvedValueOnce({
+      publicKey: freshKey,
+      identityChanged: false,
+    });
+
+    await wrapKeyForMember('conv-10', {
+      userId: 'empty-key-member',
+      identityPublicKey: '',
+    });
+
+    expect(mockRefreshAndCompareIdentityKey).toHaveBeenCalledWith('empty-key-member', 'test-self-user');
+    expect(mockCompareAndPersistIdentityKey).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getPendingWrapsForGroup — thin re-export (#629 M4)
+// ---------------------------------------------------------------------------
+
+describe('getPendingWrapsForGroup', () => {
+  it('delegates to the API-layer getPendingWraps and returns its result', async () => {
+    const pending = [{ userId: 'u1', identityPublicKey: 'key1' }];
+    mockGetPendingWraps.mockResolvedValueOnce(pending);
+
+    const result = await getPendingWrapsForGroup('group-42');
+
+    expect(mockGetPendingWraps).toHaveBeenCalledWith('group-42');
+    expect(result).toBe(pending);
+  });
+
+  it('propagates API errors to the caller', async () => {
+    mockGetPendingWraps.mockRejectedValueOnce(new Error('forbidden'));
+
+    await expect(getPendingWrapsForGroup('group-99')).rejects.toThrow('forbidden');
   });
 });

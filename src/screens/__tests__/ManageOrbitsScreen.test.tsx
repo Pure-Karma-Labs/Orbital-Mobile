@@ -23,6 +23,8 @@ jest.mock('../../services/conversationService', () => ({
   fetchCreatorOrbitsDecrypted: jest.fn(),
   loadConversations: jest.fn().mockResolvedValue(undefined),
   createInviteCode: jest.fn(),
+  wrapKeyForMember: jest.fn().mockResolvedValue(undefined),
+  getPendingWrapsForGroup: jest.fn().mockResolvedValue([]),
 }));
 
 jest.mock('../../services/api/groups', () => ({
@@ -70,6 +72,8 @@ import {
   fetchCreatorOrbitsDecrypted,
   loadConversations,
   createInviteCode,
+  wrapKeyForMember,
+  getPendingWrapsForGroup,
 } from '../../services/conversationService';
 import {
   getGroupMembers,
@@ -82,6 +86,8 @@ const mockFetchGroups = fetchCreatorOrbitsDecrypted as jest.Mock;
 const mockLoadConversations = loadConversations as jest.Mock;
 const mockGetMembers = getGroupMembers as jest.Mock;
 const mockListInvites = listInviteHistory as jest.Mock;
+const mockWrapKeyForMember = wrapKeyForMember as jest.Mock;
+const mockGetPendingWraps = getPendingWrapsForGroup as jest.Mock;
 const mockCreateInviteCode = createInviteCode as jest.Mock;
 const mockTransfer = transferOrbitOwner as jest.Mock;
 const mockDissolve = dissolveOrbit as jest.Mock;
@@ -798,5 +804,207 @@ describe('ManageOrbitsScreen — admin actions', () => {
     expect(findAllByTestId(renderer.root, 'orbit-row-g-1')).toHaveLength(0);
 
     alertSpy.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rewrap key tests
+// ---------------------------------------------------------------------------
+
+describe('ManageOrbitsScreen — rewrap key', () => {
+  const testGroup = {
+    groupId: 'g-1',
+    name: 'Family Orbit',
+    memberCount: 3,
+    isCreator: true,
+  };
+
+  const pendingWrapsResponse = [
+    { userId: 'user-2', identityPublicKey: 'aWRlbnRpdHlLZXkyBase64==' },
+  ];
+
+  async function renderAndExpand() {
+    const element = React.createElement(
+      SafeAreaProvider,
+      { initialMetrics: safeAreaMetrics },
+      React.createElement(
+        ThemeProvider,
+        { colorSchemeOverride: 'light' },
+        React.createElement(ManageOrbitsScreen, {
+          navigation: mockNavigation as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['navigation'],
+          route: mockRoute as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['route'],
+        }),
+      ),
+    );
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(element);
+    });
+    await act(async () => {
+      findByTestId(renderer.root, 'orbit-header-g-1').props.onPress();
+    });
+    return renderer;
+  }
+
+  it('renders rewrap button only for pending members (not self, not non-pending)', async () => {
+    mockFetchGroups.mockResolvedValue([testGroup]);
+    mockGetMembers.mockResolvedValue(testMembers);
+    mockGetPendingWraps.mockResolvedValue(pendingWrapsResponse);
+
+    const renderer = await renderAndExpand();
+
+    // user-2 is pending — rewrap button should exist
+    expect(findAllByTestId(renderer.root, 'rewrap-member-user-2').filter(
+      (n) => typeof n.type === 'string',
+    ).length).toBeGreaterThanOrEqual(1);
+
+    // current-user-id is not pending and is self — no rewrap button
+    expect(findAllByTestId(renderer.root, 'rewrap-member-current-user-id')).toHaveLength(0);
+  });
+
+  it('does not render rewrap button for non-pending members', async () => {
+    mockFetchGroups.mockResolvedValue([testGroup]);
+    mockGetMembers.mockResolvedValue([
+      ...testMembers,
+      {
+        userId: 'user-3',
+        username: 'bob',
+        displayName: 'Bob',
+        publicKey: 'pk3',
+        avatarUrl: null,
+        joinedAt: '2026-01-03T00:00:00Z',
+      },
+    ]);
+    // Only user-2 is pending, not user-3
+    mockGetPendingWraps.mockResolvedValue(pendingWrapsResponse);
+
+    const renderer = await renderAndExpand();
+
+    // user-3 not pending — no rewrap button
+    expect(findAllByTestId(renderer.root, 'rewrap-member-user-3')).toHaveLength(0);
+    // user-2 is pending — rewrap button present
+    expect(findAllByTestId(renderer.root, 'rewrap-member-user-2').filter(
+      (n) => typeof n.type === 'string',
+    ).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('shows busy label while rewrapping', async () => {
+    mockFetchGroups.mockResolvedValue([testGroup]);
+    mockGetMembers.mockResolvedValue(testMembers);
+    mockGetPendingWraps.mockResolvedValue(pendingWrapsResponse);
+
+    // Make wrapKeyForMember hang so we can observe busy state
+    let resolveWrap!: () => void;
+    mockWrapKeyForMember.mockImplementation(
+      () => new Promise<void>((resolve) => { resolveWrap = resolve; }),
+    );
+
+    const renderer = await renderAndExpand();
+
+    // Press rewrap — should enter busy state
+    await act(async () => {
+      findByTestId(renderer.root, 'rewrap-member-user-2').props.onPress();
+    });
+
+    // Find the text within the rewrap button — should show busy label
+    const rewrapBtn = findByTestId(renderer.root, 'rewrap-member-user-2');
+    const textNodes = rewrapBtn.findAllByType('Text' as unknown as React.ComponentType);
+    const busyLabel = textNodes.find(
+      (t) => typeof t.props.children === 'string' && t.props.children.includes('Rewrapping'),
+    );
+    expect(busyLabel).toBeDefined();
+
+    // Resolve to clean up
+    await act(async () => {
+      resolveWrap();
+    });
+  });
+
+  it('removes rewrap button on success', async () => {
+    mockFetchGroups.mockResolvedValue([testGroup]);
+    mockGetMembers.mockResolvedValue(testMembers);
+    mockGetPendingWraps.mockResolvedValue(pendingWrapsResponse);
+    mockWrapKeyForMember.mockResolvedValue(undefined);
+
+    const renderer = await renderAndExpand();
+
+    // Rewrap button should be present before action
+    expect(findAllByTestId(renderer.root, 'rewrap-member-user-2').filter(
+      (n) => typeof n.type === 'string',
+    ).length).toBeGreaterThanOrEqual(1);
+
+    // Press rewrap
+    await act(async () => {
+      findByTestId(renderer.root, 'rewrap-member-user-2').props.onPress();
+    });
+
+    // After success, rewrap button should be gone
+    expect(findAllByTestId(renderer.root, 'rewrap-member-user-2')).toHaveLength(0);
+
+    expect(mockWrapKeyForMember).toHaveBeenCalledWith('g-1', {
+      userId: 'user-2',
+      identityPublicKey: 'aWRlbnRpdHlLZXkyBase64==',
+    });
+  });
+
+  it('treats 409 ALREADY_WRAPPED as resolved (removes button)', async () => {
+    mockFetchGroups.mockResolvedValue([testGroup]);
+    mockGetMembers.mockResolvedValue(testMembers);
+    mockGetPendingWraps.mockResolvedValue(pendingWrapsResponse);
+
+    const conflictError = new Error('ALREADY_WRAPPED');
+    mockWrapKeyForMember.mockRejectedValue(conflictError);
+
+    const renderer = await renderAndExpand();
+
+    await act(async () => {
+      findByTestId(renderer.root, 'rewrap-member-user-2').props.onPress();
+    });
+
+    // 409 treated as resolved — button should be gone
+    expect(findAllByTestId(renderer.root, 'rewrap-member-user-2')).toHaveLength(0);
+  });
+
+  it('keeps button and alerts on non-409 failure', async () => {
+    const alertSpy = jest.spyOn(Alert, 'alert');
+
+    mockFetchGroups.mockResolvedValue([testGroup]);
+    mockGetMembers.mockResolvedValue(testMembers);
+    mockGetPendingWraps.mockResolvedValue(pendingWrapsResponse);
+
+    const networkError = new Error('Network request failed');
+    mockWrapKeyForMember.mockRejectedValue(networkError);
+
+    const renderer = await renderAndExpand();
+
+    await act(async () => {
+      findByTestId(renderer.root, 'rewrap-member-user-2').props.onPress();
+    });
+
+    // Button should still be present
+    expect(findAllByTestId(renderer.root, 'rewrap-member-user-2').filter(
+      (n) => typeof n.type === 'string',
+    ).length).toBeGreaterThanOrEqual(1);
+
+    // Alert should have been called with the error message
+    expect(alertSpy).toHaveBeenCalledWith(
+      'Rewrap Failed',
+      'Network request failed',
+    );
+
+    alertSpy.mockRestore();
+  });
+
+  it('hides all rewrap buttons when pending-wraps fetch fails', async () => {
+    mockFetchGroups.mockResolvedValue([testGroup]);
+    mockGetMembers.mockResolvedValue(testMembers);
+    // Simulate 403 / non-key-holder
+    mockGetPendingWraps.mockRejectedValue(new Error('403 Forbidden'));
+
+    const renderer = await renderAndExpand();
+
+    // No rewrap buttons should exist for any user
+    expect(findAllByTestId(renderer.root, 'rewrap-member-user-2')).toHaveLength(0);
+    expect(findAllByTestId(renderer.root, 'rewrap-member-current-user-id')).toHaveLength(0);
   });
 });

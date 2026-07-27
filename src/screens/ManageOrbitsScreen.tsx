@@ -15,6 +15,7 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  useWindowDimensions,
   type ListRenderItemInfo,
   type TextStyle,
   type ViewStyle,
@@ -27,15 +28,23 @@ import { OrbitalSpinner } from '../components/OrbitalSpinner';
 import { ErrorBanner } from '../components/ErrorBanner';
 import { EmojiText } from '../components/EmojiText';
 import { Emoji } from '../components/Emoji';
-import { fetchCreatorOrbitsDecrypted, createInviteCode } from '../services/conversationService';
+import {
+  fetchCreatorOrbitsDecrypted,
+  createInviteCode,
+  loadConversations,
+  wrapKeyForMember,
+  getPendingWrapsForGroup,
+} from '../services/conversationService';
 import type { DecryptedGroup } from '../services/conversationService';
 import { getGroupMembers, listInviteHistory, removeMember, cancelInvite } from '../services/api/groups';
-import { loadConversations } from '../services/conversationService';
 import { formatInviteCode } from '../services/crypto/inviteCrypto';
 import { useAuth, useConversations } from '../stores';
 import type { GroupMember, InviteListItem } from '../types/api';
 import type { SettingsStackParamList } from '../navigation/types';
 import { OrbitAdminActions } from './settings/OrbitAdminActions';
+
+/** Narrow-screen breakpoint (SE-class devices, 320pt logical width). */
+const NARROW_BREAKPOINT = 360;
 
 type Props = NativeStackScreenProps<SettingsStackParamList, 'ManageOrbits'>;
 
@@ -57,6 +66,10 @@ export function ManageOrbitsScreen({ navigation }: Props): React.JSX.Element {
   const [invitesByGroupId, setInvitesByGroupId] = useState<Record<string, InviteListItem[]>>({});
   const [loadingInvites, setLoadingInvites] = useState<Record<string, boolean>>({});
   const [generatedCode, setGeneratedCode] = useState<string | null>(null);
+  const [pendingWrapsByGroupId, setPendingWrapsByGroupId] = useState<
+    Record<string, Array<{ userId: string; identityPublicKey: string }>>
+  >({});
+  const [rewrapBusyUserIds, setRewrapBusyUserIds] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -86,32 +99,51 @@ export function ManageOrbitsScreen({ navigation }: Props): React.JSX.Element {
     setExpandedOrbitId(newExpanded);
 
     if (newExpanded) {
-      // Lazy-load members on first expand
-      if (!membersByGroupId[newExpanded] && !loadingMembers[newExpanded]) {
-        setLoadingMembers((prev) => ({ ...prev, [newExpanded]: true }));
-        try {
-          const members = await getGroupMembers(newExpanded);
-          setMembersByGroupId((prev) => ({ ...prev, [newExpanded]: members }));
-        } catch {
-          // Silently fail — members section will show empty
-        } finally {
-          setLoadingMembers((prev) => ({ ...prev, [newExpanded]: false }));
-        }
-      }
+      // Lazy-load members + pending wraps on first expand (parallel)
+      const membersPromise =
+        !membersByGroupId[newExpanded] && !loadingMembers[newExpanded]
+          ? (async () => {
+              setLoadingMembers((prev) => ({ ...prev, [newExpanded]: true }));
+              try {
+                const members = await getGroupMembers(newExpanded);
+                setMembersByGroupId((prev) => ({ ...prev, [newExpanded]: members }));
+              } catch {
+                // Silently fail — members section will show empty
+              } finally {
+                setLoadingMembers((prev) => ({ ...prev, [newExpanded]: false }));
+              }
+            })()
+          : Promise.resolve();
+
+      // Pending wraps: 403/non-key-holder → no buttons (catch hides all)
+      const wrapsPromise = getPendingWrapsForGroup(newExpanded)
+        .then((wraps) => {
+          setPendingWrapsByGroupId((prev) => ({ ...prev, [newExpanded]: wraps }));
+        })
+        .catch(() => {
+          // 403 or non-key-holder — hide all rewrap buttons
+          setPendingWrapsByGroupId((prev) => ({ ...prev, [newExpanded]: [] }));
+        });
 
       // Lazy-load invite history on first expand
-      if (!invitesByGroupId[newExpanded] && !loadingInvites[newExpanded]) {
-        setLoadingInvites((prev) => ({ ...prev, [newExpanded]: true }));
-        try {
-          const invites = await listInviteHistory(newExpanded);
-          setInvitesByGroupId((prev) => ({ ...prev, [newExpanded]: invites }));
-        } catch {
-          // Silently fail — treat as empty list (includes 403 for non-creator)
-          setInvitesByGroupId((prev) => ({ ...prev, [newExpanded]: [] }));
-        } finally {
-          setLoadingInvites((prev) => ({ ...prev, [newExpanded]: false }));
-        }
-      }
+      const invitesPromise =
+        !invitesByGroupId[newExpanded] && !loadingInvites[newExpanded]
+          ? (async () => {
+              setLoadingInvites((prev) => ({ ...prev, [newExpanded]: true }));
+              try {
+                const invites = await listInviteHistory(newExpanded);
+                setInvitesByGroupId((prev) => ({ ...prev, [newExpanded]: invites }));
+              } catch {
+                // Silently fail — treat as empty list (includes 403 for non-creator)
+                setInvitesByGroupId((prev) => ({ ...prev, [newExpanded]: [] }));
+              } finally {
+                setLoadingInvites((prev) => ({ ...prev, [newExpanded]: false }));
+              }
+            })()
+          : Promise.resolve();
+
+      // Run all three in parallel — each handles its own errors
+      await Promise.all([membersPromise, wrapsPromise, invitesPromise]);
     }
   }, [expandedOrbitId, membersByGroupId, loadingMembers, invitesByGroupId, loadingInvites]);
 
@@ -148,6 +180,44 @@ export function ManageOrbitsScreen({ navigation }: Props): React.JSX.Element {
       ],
     );
   }, []);
+
+  const handleRewrapMember = useCallback(async (groupId: string, member: GroupMember) => {
+    const pendingEntry = (pendingWrapsByGroupId[groupId] ?? []).find(
+      (p) => p.userId === member.userId,
+    );
+    setRewrapBusyUserIds((prev) => ({ ...prev, [member.userId]: true }));
+    try {
+      await wrapKeyForMember(groupId, {
+        userId: member.userId,
+        identityPublicKey: pendingEntry?.identityPublicKey,
+      });
+      // Success: remove from pending list
+      setPendingWrapsByGroupId((prev) => ({
+        ...prev,
+        [groupId]: (prev[groupId] ?? []).filter((p) => p.userId !== member.userId),
+      }));
+    } catch (e: unknown) {
+      // 409 ALREADY_WRAPPED — someone beat us, treat as resolved
+      const isConflict =
+        e instanceof Error &&
+        (e.message.includes('ALREADY_WRAPPED') ||
+          e.message.includes('409') ||
+          (e as { status?: number }).status === 409);
+      if (isConflict) {
+        setPendingWrapsByGroupId((prev) => ({
+          ...prev,
+          [groupId]: (prev[groupId] ?? []).filter((p) => p.userId !== member.userId),
+        }));
+      } else {
+        Alert.alert(
+          'Rewrap Failed',
+          e instanceof Error ? e.message : 'Failed to rewrap key. Please try again.',
+        );
+      }
+    } finally {
+      setRewrapBusyUserIds((prev) => ({ ...prev, [member.userId]: false }));
+    }
+  }, [pendingWrapsByGroupId]);
 
   const handleCancelInvite = useCallback((groupId: string, inviteId: string, targetEmail: string) => {
     Alert.alert(
@@ -285,14 +355,17 @@ export function ManageOrbitsScreen({ navigation }: Props): React.JSX.Element {
         invites={invitesByGroupId[item.groupId] ?? null}
         loadingInvites={loadingInvites[item.groupId] ?? false}
         currentUserId={userId ?? ''}
+        pendingWraps={pendingWrapsByGroupId[item.groupId] ?? []}
+        rewrapBusyUserIds={rewrapBusyUserIds}
         onToggleExpand={handleToggleExpand}
         onRemoveMember={handleRemoveMember}
+        onRewrapMember={handleRewrapMember}
         onNewCode={handleOpenEmailModal}
         onCancelInvite={handleCancelInvite}
         onAdminAction={handleAdminAction}
       />
     ),
-    [expandedOrbitId, membersByGroupId, loadingMembers, invitesByGroupId, loadingInvites, userId, handleToggleExpand, handleRemoveMember, handleOpenEmailModal, handleCancelInvite, handleAdminAction],
+    [expandedOrbitId, membersByGroupId, loadingMembers, invitesByGroupId, loadingInvites, userId, pendingWrapsByGroupId, rewrapBusyUserIds, handleToggleExpand, handleRemoveMember, handleRewrapMember, handleOpenEmailModal, handleCancelInvite, handleAdminAction],
   );
 
   const keyExtractor = useCallback((item: DecryptedGroup) => item.groupId, []);
@@ -522,8 +595,11 @@ interface OrbitRowProps {
   invites: InviteListItem[] | null;
   loadingInvites: boolean;
   currentUserId: string;
+  pendingWraps: Array<{ userId: string; identityPublicKey: string }>;
+  rewrapBusyUserIds: Record<string, boolean>;
   onToggleExpand: (groupId: string) => void;
   onRemoveMember: (groupId: string, member: GroupMember) => void;
+  onRewrapMember: (groupId: string, member: GroupMember) => void;
   onNewCode: (groupId: string) => void;
   onCancelInvite: (groupId: string, inviteId: string, targetEmail: string) => void;
   onAdminAction: (action: 'transfer' | 'dissolve', groupId: string) => void;
@@ -537,13 +613,20 @@ const OrbitRow = React.memo(function OrbitRow({
   invites,
   loadingInvites,
   currentUserId,
+  pendingWraps,
+  rewrapBusyUserIds,
   onToggleExpand,
   onRemoveMember,
+  onRewrapMember,
   onNewCode,
   onCancelInvite,
   onAdminAction,
 }: OrbitRowProps): React.JSX.Element {
   const theme = useTheme();
+  const { width: windowWidth } = useWindowDimensions();
+  const isNarrow = windowWidth < NARROW_BREAKPOINT;
+
+  const pendingUserIds = new Set(pendingWraps.map((p) => p.userId));
 
   const rowStyle: ViewStyle = {
     borderBottomWidth: 1,
@@ -609,11 +692,17 @@ const OrbitRow = React.memo(function OrbitRow({
     marginTop: theme.spacing.sm,
   };
 
-  const memberRowStyle: ViewStyle = {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: theme.spacing.xs,
-  };
+  const memberRowStyle: ViewStyle = isNarrow
+    ? {
+        flexDirection: 'column',
+        alignItems: 'flex-start',
+        paddingVertical: theme.spacing.xs,
+      }
+    : {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingVertical: theme.spacing.xs,
+      };
 
   const memberInfoStyle: ViewStyle = {
     flex: 1,
@@ -631,15 +720,40 @@ const OrbitRow = React.memo(function OrbitRow({
     color: theme.colors.textTertiary,
   };
 
+  const memberActionsStyle: ViewStyle = isNarrow
+    ? {
+        flexDirection: 'row',
+        marginTop: theme.spacing.xs,
+        paddingLeft: 0,
+      }
+    : {
+        flexDirection: 'row',
+        alignItems: 'center',
+      };
+
   const removeButtonStyle: ViewStyle = {
-    paddingHorizontal: theme.spacing.sm,
-    paddingVertical: theme.spacing.xs,
+    paddingHorizontal: theme.spacing.md,
+    minHeight: 44,
+    justifyContent: 'center',
   };
 
   const removeTextStyle: TextStyle = {
     fontFamily: theme.typography.fontFamily.body,
     fontSize: theme.typography.fontSize.sm,
     color: theme.colors.error,
+  };
+
+  const rewrapButtonStyle: ViewStyle = {
+    paddingHorizontal: theme.spacing.md,
+    minHeight: 44,
+    justifyContent: 'center',
+    marginRight: theme.spacing.xs,
+  };
+
+  const rewrapTextStyle: TextStyle = {
+    fontFamily: theme.typography.fontFamily.body,
+    fontSize: theme.typography.fontSize.sm,
+    color: theme.colors.blue,
   };
 
   const newCodeButtonStyle: ViewStyle = {
@@ -686,23 +800,42 @@ const OrbitRow = React.memo(function OrbitRow({
           {loadingMembers ? (
             <OrbitalSpinner size={20} />
           ) : (
-            (members ?? []).map((member) => (
-              <View key={member.userId} style={memberRowStyle} testID={`member-${member.userId}`}>
-                <View style={memberInfoStyle}>
-                  <EmojiText style={memberNameStyle}>{member.displayName}</EmojiText>
-                  <Text style={memberHandleStyle}>@{member.username}</Text>
+            (members ?? []).map((member) => {
+              const isPending = pendingUserIds.has(member.userId);
+              const isBusy = rewrapBusyUserIds[member.userId] ?? false;
+              const showActions = member.userId !== currentUserId;
+              return (
+                <View key={member.userId} style={memberRowStyle} testID={`member-${member.userId}`}>
+                  <View style={memberInfoStyle}>
+                    <EmojiText style={memberNameStyle}>{member.displayName}</EmojiText>
+                    <Text style={memberHandleStyle}>@{member.username}</Text>
+                  </View>
+                  {showActions && (
+                    <View style={memberActionsStyle}>
+                      {isPending && (
+                        <TouchableOpacity
+                          style={rewrapButtonStyle}
+                          onPress={() => onRewrapMember(group.groupId, member)}
+                          disabled={isBusy}
+                          testID={`rewrap-member-${member.userId}`}
+                        >
+                          <Text style={[rewrapTextStyle, isBusy && { opacity: 0.5 }]}>
+                            {isBusy ? 'Rewrapping…' : 'Rewrap key'}
+                          </Text>
+                        </TouchableOpacity>
+                      )}
+                      <TouchableOpacity
+                        style={removeButtonStyle}
+                        onPress={() => onRemoveMember(group.groupId, member)}
+                        testID={`remove-member-${member.userId}`}
+                      >
+                        <Text style={removeTextStyle}>Remove</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
                 </View>
-                {member.userId !== currentUserId && (
-                  <TouchableOpacity
-                    style={removeButtonStyle}
-                    onPress={() => onRemoveMember(group.groupId, member)}
-                    testID={`remove-member-${member.userId}`}
-                  >
-                    <Text style={removeTextStyle}>Remove</Text>
-                  </TouchableOpacity>
-                )}
-              </View>
-            ))
+              );
+            })
           )}
 
           {/* Invites section */}

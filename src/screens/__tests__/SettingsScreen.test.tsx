@@ -500,4 +500,46 @@ describe('SettingsScreen — recover encryption keys row', () => {
     const modal = findByTestId(renderer.root, 'settings-recovery-password-modal');
     expect(modal.props.visible).toBe(true);
   });
+
+  it('seeds the recovery error from store keyRecoveryError on mount, opens the modal, and consumes the store field', () => {
+    const mockSetKeyRecoveryError = jest.fn();
+    mockUseAuth.mockReturnValue({
+      isAuthenticated: true,
+      userId: 'user-1',
+      username: 'alice',
+      displayName: 'Alice',
+      avatarPath: null,
+      keyRecoveryError: { status: 'needs_email' },
+      setKeyRecoveryError: mockSetKeyRecoveryError,
+    });
+    const renderer = renderSettingsScreen();
+
+    const modal = findByTestId(renderer.root, 'settings-recovery-password-modal');
+    expect(modal.props.visible).toBe(true);
+    const errorText = findByTestId(renderer.root, 'settings-recovery-password-error');
+    expect(errorText.props.children).toContain('key conflict screen');
+    expect(mockSetKeyRecoveryError).toHaveBeenCalledWith(null);
+  });
+
+  it('shows key-conflict-screen guidance when recovery resolves needs_email', async () => {
+    const { recoverIdentityKeys } = require('../../services/keyRecoveryService');
+    (recoverIdentityKeys as jest.Mock).mockResolvedValueOnce({ status: 'needs_email' });
+
+    const renderer = renderSettingsScreen();
+    const row = findByTestId(renderer.root, 'recover-keys-row');
+    act(() => { row.props.onPress(); });
+
+    const input = findByTestId(renderer.root, 'settings-recovery-password-input');
+    act(() => { input.props.onChangeText('my-password'); });
+
+    const submitBtn = findByTestId(renderer.root, 'settings-recovery-password-submit');
+    await act(async () => {
+      await submitBtn.props.onPress();
+    });
+
+    const errorText = findByTestId(renderer.root, 'settings-recovery-password-error');
+    expect(errorText.props.children).toContain('key conflict screen');
+    const modalAfter = findByTestId(renderer.root, 'settings-recovery-password-modal');
+    expect(modalAfter.props.visible).toBe(true);
+  });
 });

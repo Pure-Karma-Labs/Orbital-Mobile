@@ -38,6 +38,7 @@ import { KeyConflictScreen } from './screens/KeyConflictScreen';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import BootSplash from 'react-native-bootsplash';
 import { OrbitalLoader } from './components/OrbitalLoader';
+import { IdentityRestoreBanner } from './components/IdentityRestoreBanner';
 
 function App(): React.JSX.Element {
   const colorScheme = useAppStore((s) => s.colorScheme);
@@ -167,6 +168,7 @@ function AppContent(): React.JSX.Element {
       case 'authenticated':
         return (
           <>
+            <IdentityRestoreBanner />
             <AppNavigator />
             <ReportContentSheet />
           </>

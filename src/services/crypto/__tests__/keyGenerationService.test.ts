@@ -82,6 +82,7 @@ import {
   ensureKeysInitialized,
   initIdentityKeyCache,
   cancelKeyInitialization,
+  clearIdentityKeyCache,
 } from '../keyGenerationService';
 
 // ---------------------------------------------------------------------------
@@ -151,6 +152,9 @@ const PRIVATE_KEY_HEX = '0202020202020202020202020202020202020202020202020202020
 
 beforeEach(() => {
   jest.resetAllMocks();
+  // Reset module-scoped private key cache (not cleared by resetAllMocks).
+  // Required since M3 added the REFUSING_TO_OVERWRITE_IDENTITY_KEY invariant.
+  clearIdentityKeyCache();
 
   (isDatabaseInitialized as jest.Mock).mockReturnValue(true);
   setupDbMock();

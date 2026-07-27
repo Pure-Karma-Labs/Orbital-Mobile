@@ -152,6 +152,22 @@ export interface AuthState {
    * NOT persisted — transient, reset in setUser/clearAuth.
    */
   conflictSource: 'push' | 'local' | null;
+  /**
+   * Last non-success result from key recovery, hoisted to the store so the
+   * UI can display it even after the screen unmounts/remounts during recovery.
+   * NOT persisted — transient, reset in setUser/clearAuth.
+   */
+  keyRecoveryError: {
+    status: 'incorrect_password' | 'rate_limited' | 'needs_email' | 'error';
+    message?: string;
+  } | null;
+  /**
+   * True when identity restore was deferred due to a transient network failure.
+   * Drives a non-blocking retry banner in the UI. Cleared on successful retry
+   * or on setUser/clearAuth.
+   * NOT persisted — transient, reset in setUser/clearAuth.
+   */
+  identityRestoreDeferred: boolean;
 }
 
 /** Auth actions — JWT tokens and encryption keys are NOT stored here */
@@ -170,6 +186,8 @@ export interface AuthActions {
   setKeyRecoveryInProgress: (inProgress: boolean) => void;
   setEmail: (email: string | null) => void;
   setConflictSource: (source: 'push' | 'local' | null) => void;
+  setKeyRecoveryError: (error: AuthState['keyRecoveryError']) => void;
+  setIdentityRestoreDeferred: (deferred: boolean) => void;
 }
 
 export type AuthSlice = AuthState & AuthActions;

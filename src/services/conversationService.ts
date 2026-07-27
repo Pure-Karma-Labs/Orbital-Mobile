@@ -688,6 +688,85 @@ const MAX_SWEEP_CONVERSATIONS = 10;
 const MAX_WRAPS_PER_CONVERSATION = 5;
 
 /**
+ * Wrap and deliver the group key for a single pending member.
+ *
+ * Resolves the target's identity key — preferring the server-carried key from
+ * the pending-wraps response to avoid a round-trip, with an always-fetch
+ * fallback — then ECIES-wraps the group key and submits it.
+ *
+ * Throws on failure (network, missing key, submit error). Callers decide
+ * whether to swallow or surface the error.
+ *
+ * @param conversationId - The group/DM whose key is being wrapped.
+ * @param target - The member to wrap for. `identityPublicKey` is the base64-
+ *   encoded identity key from the pending-wraps response (optional fast path).
+ */
+export async function wrapKeyForMember(
+  conversationId: string,
+  target: { userId: string; identityPublicKey?: string },
+): Promise<void> {
+  const session = captureSession();
+  if (!session) throw new Error('No active session');
+
+  const groupKey = await getOrFetchGroupKey(conversationId);
+
+  let targetPubKey: ArrayBuffer;
+  let identityChanged: boolean;
+
+  // Prefer the server-carried identity key from the pending-wraps
+  // response (avoids an extra fetchRemoteIdentityKeyBundle round-trip).
+  // The server is already the key directory — both reviewers confirmed
+  // no trust-model delta vs. the old always-fetch path.
+  //
+  // BOUNDED RACE NOTE (crypto plan-review M-4): a pending-wraps row
+  // snapshot taken across a key reset carries the pre-reset key.
+  // This is a bounded race no worse than the old always-fetch path;
+  // wraps produced from it are dead-on-arrival and the recipient's
+  // next reset/pending cycle re-covers all groups.
+  if (
+    typeof target.identityPublicKey === 'string' &&
+    target.identityPublicKey.length > 0
+  ) {
+    try {
+      const decoded = new Uint8Array(base64ToArrayBuffer(target.identityPublicKey));
+      const keyBytes = normalizeIdentityKey(decoded);
+      const result = compareAndPersistIdentityKey(target.userId, keyBytes);
+      targetPubKey = result.publicKey;
+      identityChanged = result.identityChanged;
+    } catch {
+      // Malformed/wrong-length key — fall back to always-fetch
+      const result = await refreshAndCompareIdentityKey(target.userId, session.userId);
+      targetPubKey = result.publicKey;
+      identityChanged = result.identityChanged;
+    }
+  } else {
+    // Field absent or empty — defensive fallback to always-fetch
+    const result = await refreshAndCompareIdentityKey(target.userId, session.userId);
+    targetPubKey = result.publicKey;
+    identityChanged = result.identityChanged;
+  }
+
+  if (identityChanged) {
+    useAppStore.getState().setContactVerifiedStatus(
+      target.userId,
+      VerifiedStatus.Unverified,
+    );
+  }
+  const wrapped = wrapGroupKey(groupKey, targetPubKey, conversationId);
+  await submitWrappedKey(conversationId, target.userId, wrapped);
+}
+
+/**
+ * Thin wrapper re-exporting the API-layer `getPendingWraps` so screens
+ * consume service-layer functions only (never import from `services/api/`).
+ */
+export function getPendingWrapsForGroup(
+  groupId: string,
+): Promise<Array<{ userId: string; identityPublicKey: string }>> {
+  return getPendingWraps(groupId);
+}
+
+/**
  * Proactively wrap and deliver group keys to members who are still waiting.
  * Debounced to at most once per minute to avoid hammering the API.
  *
@@ -733,56 +812,12 @@ export async function fulfillPendingWraps(): Promise<void> {
   for (const conversationId of conversationIds) {
     if (isSessionStale(session)) return;
     try {
-      const groupKey = await getOrFetchGroupKey(conversationId);
       const pending = await getPendingWraps(conversationId);
       if (pending.length === 0) continue;
 
       for (const member of pending.slice(0, MAX_WRAPS_PER_CONVERSATION)) {
         try {
-          let targetPubKey: ArrayBuffer;
-          let identityChanged: boolean;
-
-          // Prefer the server-carried identity key from the pending-wraps
-          // response (avoids an extra fetchRemoteIdentityKeyBundle round-trip).
-          // The server is already the key directory — both reviewers confirmed
-          // no trust-model delta vs. the old always-fetch path.
-          //
-          // BOUNDED RACE NOTE (crypto plan-review M-4): a pending-wraps row
-          // snapshot taken across a key reset carries the pre-reset key.
-          // This is a bounded race no worse than the old always-fetch path;
-          // wraps produced from it are dead-on-arrival and the recipient's
-          // next reset/pending cycle re-covers all groups.
-          if (
-            typeof member.identityPublicKey === 'string' &&
-            member.identityPublicKey.length > 0
-          ) {
-            try {
-              const decoded = new Uint8Array(base64ToArrayBuffer(member.identityPublicKey));
-              const keyBytes = normalizeIdentityKey(decoded);
-              const result = compareAndPersistIdentityKey(member.userId, keyBytes);
-              targetPubKey = result.publicKey;
-              identityChanged = result.identityChanged;
-            } catch {
-              // Malformed/wrong-length key — fall back to always-fetch
-              const result = await refreshAndCompareIdentityKey(member.userId, session.userId);
-              targetPubKey = result.publicKey;
-              identityChanged = result.identityChanged;
-            }
-          } else {
-            // Field absent or empty — defensive fallback to always-fetch
-            const result = await refreshAndCompareIdentityKey(member.userId, session.userId);
-            targetPubKey = result.publicKey;
-            identityChanged = result.identityChanged;
-          }
-
-          if (identityChanged) {
-            useAppStore.getState().setContactVerifiedStatus(
-              member.userId,
-              VerifiedStatus.Unverified,
-            );
-          }
-          const wrapped = wrapGroupKey(groupKey, targetPubKey, conversationId);
-          await submitWrappedKey(conversationId, member.userId, wrapped);
+          await wrapKeyForMember(conversationId, member);
         } catch {
           // Skip members whose identity key can't be resolved
         }

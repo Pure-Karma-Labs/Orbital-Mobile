@@ -280,6 +280,100 @@ fn golden_ecies_open() {
     );
 }
 
+/// Golden fixture 2b (E-8): ECIES envelope sealed under **stock**
+/// curve25519-dalek 5.0.0 — the forward-compatibility direction.
+///
+/// # Why this exists, and why it is different from `golden_ecies_open`
+///
+/// Every other fixture in this file was sealed by an *older* build and is
+/// opened by the current one: **old signs → new verifies**. That direction is
+/// the safe one. It cannot catch the failure that actually breaks users in the
+/// field, which is the reverse: a *newer* build sealing an envelope that an
+/// *already-installed older* build must verify.
+///
+/// That reverse direction is live production code. `startDm` wraps the group
+/// key for the recipient (`conversationService.ts:520/:755`), and
+/// `wrap_key_request` → `submitWrappedKey` does the same on demand
+/// (`websocket/messageHandler.ts:627`). When #634 moved XEdDSA signing from
+/// Signal's curve25519-dalek 4.1.3 fork to stock 5.0.0, a signature-encoding
+/// divergence would have meant every 1.7.5 client silently handing out group
+/// keys that the ~live 1.7.4 install base could not open.
+///
+/// # Provenance
+///
+/// | Field | Value |
+/// |---|---|
+/// | Sealed by | libsignal **v0.99.1**, stock `curve25519-dalek 5.0.0` (no `[patch.crates-io]`) |
+/// | Captured on | 2026-07-27, PR #636 (issue #634) |
+/// | Verified against | pre-bump tree: libsignal v0.97.4 with the `[patch.crates-io]` `signal-curve25519-4.1.3` fork active. `Cargo.lock` and `src/ecies.rs` both byte-identical to `main@4322b4c`; that lock resolves **2** `curve25519-dalek` packages, so the fork was genuinely linked |
+/// | Result | **PASS** — these exact bytes opened on the fork build; the three corruption negatives still failed correctly |
+///
+/// # Cross-version procedure (repeat this on every libsignal bump)
+///
+/// The in-repo assertion below only proves the current tree opens its own
+/// envelope. The cross-version half cannot live in one repo state — but the
+/// *bytes* can, which is the point of committing them:
+///
+/// 1. Check out the PREVIOUS pinned libsignal tag, restoring any
+///    `[patch.crates-io]` section it shipped with, so the checkout faithfully
+///    reproduces what the last released build actually compiled.
+/// 2. Copy this fixture's constants into that tree's `golden_ecies_open`.
+/// 3. Require PASS, and require the corruption negatives to still fail.
+///
+/// A failure here is a **hard stop**, not a fixture to regenerate. Regenerating
+/// it to get green would erase the only evidence that shipped clients can still
+/// read what the new build produces.
+#[test]
+fn golden_ecies_open_sealed_under_stock_dalek() {
+    // TEST VECTOR — synthetic sender public key, never used outside this test
+    let sender_public_key: Vec<u8> = hex!(
+        "05b157b5 785f9541 7b6b04c2 f696c654 756562ee ed89018a"
+        "b8d4493f ba8ef6ee 58"
+    )
+    .to_vec();
+
+    // TEST VECTOR — synthetic recipient private key, never used outside this test
+    let recipient_private_key: Vec<u8> = hex!(
+        "a8c89482 0d52efe2 725a6d4f ebb595f0 f891ba7c e51ca7c4"
+        "71b18d74 bde3d37f"
+    )
+    .to_vec();
+
+    // Synthetic 32-byte "group key"
+    let expected_plaintext: Vec<u8> =
+        hex!("42424242 42424242 42424242 42424242 42424242 42424242 42424242 42424242")
+            .to_vec();
+
+    // "golden-ecies-group-id"
+    let group_id: Vec<u8> = hex!(
+        "676f6c64 656e2d65 636965732d67726f 75702d69 64"
+    )
+    .to_vec();
+
+    // 190-byte envelope sealed under stock curve25519-dalek 5.0.0
+    let sealed: Vec<u8> = hex!(
+        "02610ba4 8f73d15d cebaf67e 8582d512 8c578c88 40aa5c85"
+        "78e7bf6c eb9b6e2e 7a8c9428 dee88157 94167a08 e53c24fe"
+        "6fe85a7b 28f04614 f963fb66 35bcbd42 e300ccb6 6169078b"
+        "5c9b736b e7412800 5832ea85 e0528728 7efcfb2e f905b157"
+        "b5785f95 417b6b04 c2f696c6 54756562 eeed8901 8ab8d449"
+        "3fba8ef6 ee58e4b9 b5538ba4 340fb50f 9f43f8db 6eb5dc0e"
+        "175edf82 6ccb45cf ae1bcef6 2eaafa6d 68ded94e 1a627ae4"
+        "fe487098 c43844c3 afa2c4b8 441f497a a70bb4e9 288a"
+    )
+    .to_vec();
+
+    assert_eq!(sealed.len(), 190, "sealed envelope must be exactly 190 bytes");
+
+    let decrypted = ecies_open(sealed, group_id, recipient_private_key, sender_public_key)
+        .expect("stock-dalek ECIES fixture must open successfully");
+
+    assert_eq!(
+        decrypted, expected_plaintext,
+        "stock-dalek ECIES: decrypted group key does not match fixture"
+    );
+}
+
 /// Golden fixture 3: invite-link encryption.
 ///
 /// Verifies that the current invite crypto (HKDF-SHA256 key derivation +

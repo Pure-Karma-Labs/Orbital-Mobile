@@ -151,9 +151,17 @@ jobs:
           # Only save from main to avoid cache thrash across PR branches.
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Cross-compile aarch64-apple-ios (device)
+      # --release on the device slice deliberately. The dev profile is NOT the
+      # codegen path that ships: [profile.release] sets lto = "thin",
+      # codegen-units = 1, strip = "symbols" and overflow-checks = true, and
+      # since #634 that profile compiles stock curve25519-dalek 5.0.0's
+      # Edwards/XEdDSA arithmetic under LTO for the first time. A dev-only
+      # cross-compile would not link-test any of that. The sim slice stays on
+      # dev to keep the job fast — it exists to catch target-specific
+      # (SIMD/intrinsic) breakage, which the dev profile surfaces fine.
+      - name: Cross-compile aarch64-apple-ios (device, release profile)
         working-directory: packages/orbital-signal/rust/orbital_signal
-        run: cargo build --target aarch64-apple-ios
+        run: cargo build --release --target aarch64-apple-ios
 
       - name: Cross-compile aarch64-apple-ios-sim (Apple Silicon simulator)
         working-directory: packages/orbital-signal/rust/orbital_signal

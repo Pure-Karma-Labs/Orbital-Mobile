@@ -257,6 +257,51 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # Standing guard added in #634. Removing the [patch.crates-io]
+      # curve25519-dalek override consolidated the release binary onto ONE curve
+      # implementation (stock 5.0.0). Nothing else defends that: an unused patch
+      # is a cargo *warning*, `clippy -D warnings` sets a rustc lint level and
+      # never sees it, and `cargo audit` is blind to git-sourced crates. So a
+      # re-added fork would reintroduce two curve25519 implementations behind
+      # green CI. Re-add the patch only alongside a libsignal-net / snow
+      # dependency, and update this guard in the same commit.
+      - name: Guard against curve25519-dalek fork regression
+        run: |
+          set -euo pipefail
+          CRATE=packages/orbital-signal/rust/orbital_signal
+          COUNT=$(grep -c '^name = "curve25519-dalek"$' "$CRATE/Cargo.lock" || true)
+          if [ "$COUNT" -ne 1 ]; then
+            echo "::error::Cargo.lock resolves $COUNT curve25519-dalek packages (expected exactly 1)."
+            grep -n -A2 '^name = "curve25519-dalek"$' "$CRATE/Cargo.lock" || true
+            exit 1
+          fi
+          if grep -qi 'signalapp/curve25519-dalek' "$CRATE/Cargo.lock" "$CRATE/Cargo.toml"; then
+            echo "::error::Signal's curve25519-dalek fork is back in the graph. See #634."
+            grep -ni 'signalapp/curve25519-dalek' "$CRATE/Cargo.lock" "$CRATE/Cargo.toml" || true
+            exit 1
+          fi
+          # Pin provenance, not just the one fork URL. Matching on
+          # "signalapp/curve25519-dalek" alone is bypassed by ANY other
+          # substitution — a different git fork, a [replace] entry, or a local
+          # path override all keep COUNT at 1 and contain no "signalapp"
+          # substring, so the checks above would pass green while the binary
+          # carries a substituted curve implementation. Assert the resolved
+          # package actually comes from crates.io.
+          SRC=$(grep -A3 '^name = "curve25519-dalek"$' "$CRATE/Cargo.lock" \
+                | grep '^source = ' | head -1 | cut -d'"' -f2 || true)
+          if [ "$SRC" != "registry+https://github.com/rust-lang/crates.io-index" ]; then
+            echo "::error::curve25519-dalek is not crates.io-sourced (got: '${SRC:-<none>}'). See #634."
+            grep -n -A3 '^name = "curve25519-dalek"$' "$CRATE/Cargo.lock" || true
+            exit 1
+          fi
+          # A [patch.crates-io] section can redirect a registry-sourced name
+          # without changing the source line, so reject its reappearance too.
+          if grep -q '^\[patch\.crates-io\]' "$CRATE/Cargo.toml"; then
+            echo "::error::[patch.crates-io] reappeared in orbital_signal/Cargo.toml. See #634."
+            exit 1
+          fi
+          echo "OK: exactly one curve25519-dalek, crates.io-sourced, no fork, no patch section."
+
       - name: Install protoc
         # libsignal's spqr dependency (SparsePostQuantumRatchet) compiles
         # protobufs in its build script and requires protoc on the host

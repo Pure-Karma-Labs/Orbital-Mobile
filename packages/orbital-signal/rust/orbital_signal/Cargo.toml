@@ -19,17 +19,50 @@ rand = "0.9"
 uuid = { version = "1.5", features = ["v4"] }
 
 # libsignal-protocol from Signal's repo (keep both tags in lockstep)
-libsignal-protocol = { git = "https://github.com/signalapp/libsignal", tag = "v0.97.4" }
-libsignal-core = { git = "https://github.com/signalapp/libsignal", tag = "v0.97.4" }
+#
+# v0.99.1 moved libsignal's workspace to stock crates.io curve25519-dalek 5.0 /
+# x25519-dalek 3.0 / ed25519-dalek 3.0. (ed25519-dalek does NOT reach our lock:
+# its only v0.99.1 consumer is libsignal-keytrans, which we do not depend on.)
+# The [patch.crates-io] curve25519-dalek override
+# (signal-curve25519-4.1.3) was removed in #634: upstream still patches it, but
+# the only remaining 4.x consumer there is `snow` (Noise), which is reachable
+# only through libsignal-net — a crate we do not depend on. Re-add the patch if
+# and only if this crate ever takes a dependency on libsignal-net / snow.
+# boring/boring-sys patches were removed earlier, in v0.96.0.
+#
+# Our crate and libsignal now resolve two RustCrypto generations side by side
+# (ours: aes 0.8 / cbc 0.1 / hmac 0.12 / sha2 0.10 / hkdf 0.12; libsignal's:
+# aes 0.9 / cbc 0.2 / hmac 0.13 / sha2 0.11 / hkdf 0.13). Collapsing them is the
+# RustCrypto-modernization follow-up #635 — see that issue for
+# the migration surface (attachment_crypto.rs, ecies.rs, 4 golden fixtures).
+libsignal-protocol = { git = "https://github.com/signalapp/libsignal", tag = "v0.99.1" }
+libsignal-core = { git = "https://github.com/signalapp/libsignal", tag = "v0.99.1" }
 
 # AES-256-GCM for content encryption (threads, replies — per-field with AAD)
 aes-gcm = { version = "0.11", features = ["zeroize"] }
 
 # AES-256-CBC + HMAC-SHA256 for attachment encryption (Signal Protocol format)
 aes = { version = "0.8", features = ["zeroize"] }
-cbc = { version = "0.1", features = ["zeroize"] }
+# `alloc` supplies encrypt_padded_vec_mut/decrypt_padded_vec_mut (cipher 0.4 gates
+# them behind it), used by attachment_crypto.rs:77/:197. Until #634 we inherited
+# this feature from libsignal's signal-crypto, which declared cbc 0.1 with `std`
+# on the same instance. v0.99.1 moves upstream to cbc 0.2.1, so the unification
+# is gone and we must declare it ourselves.
+cbc = { version = "0.1", features = ["alloc", "zeroize"] }
 hmac = { version = "0.12", features = ["reset"] }
-sha2 = "0.10"
+# `asm` selects sha2's aarch64 / x86 accelerated compression backend. On aarch64
+# — both shipped device targets — sha2 0.10 gates that backend behind `asm`
+# alone (`cfg(all(feature = "asm", target_arch = "aarch64"))`); without it every
+# SHA-256 falls back to the portable soft implementation. That matters most in
+# attachment_crypto.rs, which runs three SHA-256 passes over the full attachment
+# body (plaintext hash, HMAC-SHA256, ciphertext digest).
+#
+# Until #634 we inherited this feature from spqr 1.5.1, which declared sha2 0.10
+# with `asm`. spqr 1.5.3 moved to libcrux-sha2, so the unification disappeared —
+# the same silently-lost-feature failure mode as `cbc`'s `alloc` above, except
+# this one degrades quietly instead of failing to compile. Declared explicitly
+# so it can no longer be lost by an upstream dependency change.
+sha2 = { version = "0.10", features = ["asm"] }
 
 # ECIES: X25519 ECDH, HKDF-SHA256, and EphemeralSecret RNG
 x25519-dalek = { version = "3", features = ["static_secrets", "getrandom"] }
@@ -48,13 +81,16 @@ async-trait = "0.1"
 [dev-dependencies]
 hex-literal = "1.1"
 
+# DELIBERATE DIVERGENCE FROM libsignal's OWN RELEASE PROFILE — do not "fix" by
+# copying theirs. libsignal's workspace sets `overflow-checks = false` for
+# curve25519-dalek, sha2 and hmac in release. We are our own workspace root, so
+# those overrides do not apply here and every dependency — including dalek's
+# Edwards/XEdDSA arithmetic, which since #634 runs under stock curve25519-dalek
+# 5.0 — is compiled WITH overflow checks. That is the hardening we want; the
+# cost is that an arithmetic overflow surfaces as a release-build panic in the
+# group-key wrap path rather than a silent wraparound.
 [profile.release]
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
 overflow-checks = true
-
-[patch.crates-io]
-# Use Signal's fork to avoid duplicate dependency issues
-curve25519-dalek = { git = "https://github.com/signalapp/curve25519-dalek", tag = "signal-curve25519-4.1.3" }
-# Note: boring/boring-sys patches removed in v0.96.0 — no longer in the dependency graph

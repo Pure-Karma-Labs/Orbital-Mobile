@@ -6,17 +6,9 @@
 # libsignal git tag). Remove entries as soon as the blocking upgrade lands.
 
 [advisories]
-ignore = [
-    # RUSTSEC-2026-0212: libcrux-secrets 0.0.5 (HIGH) — non-constant-time swap/select
-    # on aarch64. Transitive via libsignal-protocol -> libcrux-ml-kem; no independent
-    # bump possible. Tracked in #623.
-    "RUSTSEC-2026-0212",
-
-    # RUSTSEC-2026-0207: libcrux-sha3 0.0.8 (HIGH) — incorrect incremental SHAKE
-    # output. Transitive via libsignal-protocol -> libcrux-ml-kem. Tracked in #623.
-    "RUSTSEC-2026-0207",
-
-    # RUSTSEC-2026-0208: libcrux-sha3 0.0.8 (HIGH) — potential panic in AVX2
-    # SHAKE-256. Transitive via libsignal-protocol -> libcrux-ml-kem. Tracked in #623.
-    "RUSTSEC-2026-0208",
-]
+# Empty as of #634 (2026-07-27): libsignal v0.99.1 pulls libcrux-ml-kem 0.0.10 /
+# libcrux-secrets 0.0.6 / libcrux-sha3 0.0.10, which carry the upstream fixes for
+# RUSTSEC-2026-0212, -0207 and -0208. Verified against THIS crate's Cargo.lock,
+# not libsignal's — orbital_signal is its own workspace root and resolves
+# independently. Closes #623.
+ignore = []

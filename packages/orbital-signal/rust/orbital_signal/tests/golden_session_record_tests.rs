@@ -25,6 +25,29 @@
 //! * `golden_session_record_truncated_state_rejected` — the fixtures have teeth:
 //!   a truncated session record is rejected rather than silently accepted.
 //!
+//! ## Fixture provenance (record this on every regeneration)
+//!
+//! | Field | Value |
+//! |---|---|
+//! | Captured from | `main` @ `4322b4c` (pre-bump working tree) |
+//! | libsignal tag | **v0.97.4** (pre-bump) |
+//! | spqr version  | **1.5.1** (pre-bump) |
+//! | `[patch.crates-io]` | present — `signal-curve25519-4.1.3` fork active |
+//! | Captured on | 2026-07-27, before the v0.99.1 bump in this same PR (#634) |
+//!
+//! Provenance is recorded here because it cannot be recovered from the diff:
+//! these constants were committed in the SAME commit as the v0.99.1 bump, and
+//! the generator draws fresh random keys on every run, so there is no second
+//! artifact to compare against.
+//!
+//! Note explicitly what "these fixtures pass on both trees" does and does NOT
+//! prove. spqr 1.5.3 only *tightens* `ChainEpochDirection::from_pb` (it rejects
+//! a `next` field that is non-empty and not exactly 32 bytes). A tightening is
+//! backward-compatible on well-formed input, so a fixture captured POST-bump
+//! would also pass against 1.5.1 — passing on both trees therefore cannot
+//! discriminate pre- from post-bump capture. The table above is the only
+//! evidence of capture order; keep it accurate.
+//!
 //! ## How to regenerate
 //!
 //! ```sh

@@ -8,6 +8,23 @@ require Pod::Executable.execute_command('node', ['-p',
 platform :ios, min_ios_version_supported
 prepare_react_native_project!
 
+# Keep RNSentry on the source-built `Sentry` CocoaPod rather than the prebuilt
+# Sentry.xcframework that @sentry/react-native 8.19.0 made the default.
+#
+# The xcframework path bakes the pod-install-time ABSOLUTE cache path
+# (~/Library/Caches/sentry-react-native/...) into the pod's
+# FRAMEWORK_SEARCH_PATHS. CocoaPods checksums a development pod by SHA1'ing the
+# evaluated `Pods/Local Podspecs/RNSentry.podspec.json`, so that absolute path
+# lands in SPEC CHECKSUMS — making the RNSentry checksum a function of $HOME.
+# A lock generated on a dev Mac then never matches the one CI computes, and
+# `pod install --deployment` fails for whoever didn't generate it.
+#
+# Opting out keeps `Sentry (9.19.1)` pinned in Podfile.lock (visible to
+# dependency review) and keeps the lock reproducible across machines. Costs a
+# source build of sentry-cocoa, which is what we did before 8.19.0 anyway.
+# Override to '1' only for a local experiment — do not commit the lock it makes.
+ENV['SENTRY_USE_XCFRAMEWORK'] ||= '0'
+
 linkage = ENV['USE_FRAMEWORKS']
 if linkage != nil
   Pod::UI.puts "Configuring Pod with #{linkage}ally linked Frameworks".green

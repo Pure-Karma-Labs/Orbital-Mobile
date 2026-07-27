@@ -257,6 +257,31 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # Standing guard added in #634. Removing the [patch.crates-io]
+      # curve25519-dalek override consolidated the release binary onto ONE curve
+      # implementation (stock 5.0.0). Nothing else defends that: an unused patch
+      # is a cargo *warning*, `clippy -D warnings` sets a rustc lint level and
+      # never sees it, and `cargo audit` is blind to git-sourced crates. So a
+      # re-added fork would reintroduce two curve25519 implementations behind
+      # green CI. Re-add the patch only alongside a libsignal-net / snow
+      # dependency, and update this guard in the same commit.
+      - name: Guard against curve25519-dalek fork regression
+        run: |
+          set -euo pipefail
+          CRATE=packages/orbital-signal/rust/orbital_signal
+          COUNT=$(grep -c '^name = "curve25519-dalek"$' "$CRATE/Cargo.lock" || true)
+          if [ "$COUNT" -ne 1 ]; then
+            echo "::error::Cargo.lock resolves $COUNT curve25519-dalek packages (expected exactly 1)."
+            grep -n -A2 '^name = "curve25519-dalek"$' "$CRATE/Cargo.lock" || true
+            exit 1
+          fi
+          if grep -qi 'signalapp/curve25519-dalek' "$CRATE/Cargo.lock" "$CRATE/Cargo.toml"; then
+            echo "::error::Signal's curve25519-dalek fork is back in the graph. See #634."
+            grep -ni 'signalapp/curve25519-dalek' "$CRATE/Cargo.lock" "$CRATE/Cargo.toml" || true
+            exit 1
+          fi
+          echo "OK: exactly one curve25519-dalek, no signalapp fork."
+
       - name: Install protoc
         # libsignal's spqr dependency (SparsePostQuantumRatchet) compiles
         # protobufs in its build script and requires protoc on the host

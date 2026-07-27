@@ -38,12 +38,127 @@ on:
 # read-only like ci.yml and security.yml.
 permissions:
   contents: read
+  # dorny/paths-filter queries the PR changed-files API on pull_request events
+  pull-requests: read
 
 concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # Gate job: detect changes to the Rust surface (used by rust-apple-targets).
+  # The workflow-level `paths:` filter is deliberately broader than the Rust
+  # crate (it also covers android/, ios/, package.json), so a second, narrower
+  # filter keeps the macOS-minute cost of rust-apple-targets off PRs that only
+  # touch the app.
+  # ---------------------------------------------------------------------------
+  changes:
+    name: Detect Rust Changes
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Paths filter
+        id: filter
+        # SHA-pinned: 7b450fff21473bca461d4b92ce414b9d0420d706 = v4.0.2
+        uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
+        with:
+          filters: |
+            rust:
+              - 'packages/orbital-signal/rust/**'
+              - 'packages/orbital-signal/ubrn.config.yaml'
+              - 'rust-toolchain.toml'
+              - '.github/workflows/build.yml'
+
+  # ---------------------------------------------------------------------------
+  # Apple-target Rust cross-compile gate (issue #634, DEBT-160).
+  #
+  # Why this exists: build-ios below is main/dispatch-only, and ci.yml's
+  # Podfile.lock check only fires on package.json / ios/** / *.podspec. Before
+  # this job, a Rust-only PR compiled the crate for NO Apple target anywhere in
+  # PR CI — security.yml's rust-test is x86_64-unknown-linux-gnu on ubuntu, which
+  # cannot catch an aarch64-apple-ios link failure or an Apple-specific SIMD
+  # backend problem in libcrux. That hole recurred on every libsignal bump
+  # (#309, #624, #634).
+  #
+  # Deliberately NOT a full Xcode/xcframework build — that is build-ios's job.
+  # This catches Rust link failures and target-specific codegen problems at a
+  # fraction of the cost. x86_64-apple-ios stays local-only (V-13); it is the
+  # simulator-on-Intel slice and shares its backend selection with
+  # x86_64-linux-android, which build-android already compiles on every PR.
+  # ---------------------------------------------------------------------------
+  rust-apple-targets:
+    name: Rust Apple Targets (cross-compile)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    needs: changes
+    # always() is required: without it, a FAILED changes job makes GitHub skip
+    # this job without evaluating the if-expression at all — the Apple-target
+    # gate would silently disappear while the workflow stays green.
+    if: >
+      always() &&
+      (github.event_name == 'workflow_dispatch' ||
+       needs.changes.outputs.rust == 'true')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # libsignal's spqr dependency has a build.rs that invokes protoc.
+      # Same pinned version + digest as build-android / build-ios below.
+      - name: Cache protoc 34.1
+        id: protoc-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/protoc-34.1
+          key: protoc-34.1-${{ runner.os }}
+
+      - name: Install protoc 34.1
+        if: steps.protoc-cache.outputs.cache-hit != 'true'
+        run: |
+          # Digest: official protocolbuffers/protobuf v34.1 release asset
+          # https://github.com/protocolbuffers/protobuf/releases/download/v34.1/protoc-34.1-osx-universal_binary.zip
+          # (protobuf publishes no SHA256SUMS.) To update on a version bump,
+          # re-derive — do NOT copy the old hash forward:
+          #   curl -fsSL <new-asset-url> -o protoc.zip && shasum -a 256 protoc.zip
+          curl -fsSL "https://github.com/protocolbuffers/protobuf/releases/download/v34.1/protoc-34.1-osx-universal_binary.zip" -o protoc.zip
+          echo "5c6057638aa382542e75f1c5a0802893e2311ad0c8b689e635dd4ac3c9eb8169  protoc.zip" | shasum -a 256 -c -
+          unzip protoc.zip -d ~/protoc-34.1
+          rm protoc.zip
+
+      - name: Add protoc to PATH
+        run: |
+          echo "$HOME/protoc-34.1/bin" >> "$GITHUB_PATH"
+          "$HOME/protoc-34.1/bin/protoc" --version
+
+      # rustup reads rust-toolchain.toml on the first cargo invocation and
+      # auto-downloads the pinned toolchain; adding the targets up front makes
+      # them available before that first run.
+      - name: Setup Rust
+        run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+
+      # Distinct shared-key: this job builds different targets than
+      # rust-build-ios (no xcframework, no x86_64 slice), so sharing that cache
+      # would thrash it.
+      - name: Rust cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: packages/orbital-signal/rust/orbital_signal
+          shared-key: rust-pr-apple
+          # Only save from main to avoid cache thrash across PR branches.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Cross-compile aarch64-apple-ios (device)
+        working-directory: packages/orbital-signal/rust/orbital_signal
+        run: cargo build --target aarch64-apple-ios
+
+      - name: Cross-compile aarch64-apple-ios-sim (Apple Silicon simulator)
+        working-directory: packages/orbital-signal/rust/orbital_signal
+        run: cargo build --target aarch64-apple-ios-sim
+
   build-android:
     name: Android Debug Build
     runs-on: macos-latest

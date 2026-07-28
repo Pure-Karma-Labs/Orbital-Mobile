@@ -19,6 +19,29 @@ static const NSTimeInterval kOMTProgressMinInterval = 0.5;
 static const double kOMTProgressMinDelta = 0.01;
 static const int kOMTAudioBitrate = 128000;
 
+// AVFoundation infers container format from the path EXTENSION, not content;
+// the pipeline's staging files are extension-less (`<id>-staging.bin`), which
+// yields zero tracks on read. A hardlink alias with a movie extension makes
+// the same inode readable without copying. The alias suffix `-staging.mp4`
+// keeps it under the orphan GC if a crash strands it.
+static NSString *_Nullable OMTMovieAliasIfNeeded(NSString *path)
+{
+  static NSSet<NSString *> *known;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    known = [NSSet setWithArray:@[ @"mp4", @"mov", @"m4v" ]];
+  });
+  if ([known containsObject:path.pathExtension.lowercaseString]) {
+    return nil;
+  }
+  NSString *alias = [path stringByAppendingString:@"-alias-staging.mp4"];
+  [[NSFileManager defaultManager] removeItemAtPath:alias error:nil];
+  if (link(path.fileSystemRepresentation, alias.fileSystemRepresentation) != 0) {
+    return nil; // fall through to the original path; the caller surfaces the error
+  }
+  return alias;
+}
+
 /** Per-job state. Created, mutated, and destroyed only on the module queue. */
 @interface OrbitalTranscodeJob : NSObject
 @property (nonatomic, copy) NSString *destPath;
@@ -498,12 +521,20 @@ RCT_EXPORT_MODULE()
     reject(kOMTErrNotFound, @"source unavailable", nil);
     return;
   }
-  AVURLAsset *asset = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:sourcePath] options:nil];
+  NSString *alias = OMTMovieAliasIfNeeded(sourcePath);
+  AVURLAsset *asset =
+      [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:alias ?: sourcePath] options:nil];
+  void (^cleanupAlias)(void) = ^{
+    if (alias != nil) {
+      [[NSFileManager defaultManager] removeItemAtPath:alias error:nil];
+    }
+  };
   [asset loadTracksWithMediaType:AVMediaTypeVideo
                completionHandler:^(NSArray<AVAssetTrack *> *_Nullable tracks,
                                    NSError *_Nullable error) {
                  AVAssetTrack *track = tracks.firstObject;
                  if (error != nil || track == nil) {
+                   cleanupAlias();
                    reject(kOMTErrMetadata, @"metadata unavailable", nil);
                    return;
                  }
@@ -518,6 +549,7 @@ RCT_EXPORT_MODULE()
                  if (isnan(seconds) || seconds < 0) {
                    seconds = 0;
                  }
+                 cleanupAlias();
                  resolve(@{
                    @"width" : @(round(fabs(display.width))),
                    @"height" : @(round(fabs(display.height))),
@@ -540,11 +572,19 @@ RCT_EXPORT_MODULE()
     reject(kOMTErrNotFound, @"source unavailable", nil);
     return;
   }
-  AVURLAsset *asset = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:sourcePath] options:nil];
+  NSString *alias = OMTMovieAliasIfNeeded(sourcePath);
+  AVURLAsset *asset =
+      [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:alias ?: sourcePath] options:nil];
+  void (^cleanupAlias)(void) = ^{
+    if (alias != nil) {
+      [[NSFileManager defaultManager] removeItemAtPath:alias error:nil];
+    }
+  };
   [asset loadTracksWithMediaType:AVMediaTypeVideo
                completionHandler:^(NSArray<AVAssetTrack *> *_Nullable tracks,
                                    NSError *_Nullable error) {
                  if (error != nil || tracks.count == 0) {
+                   cleanupAlias();
                    reject(kOMTErrThumbnail, @"no decodable video track", nil);
                    return;
                  }
@@ -569,6 +609,7 @@ RCT_EXPORT_MODULE()
                                                      actualTime:NULL
                                                           error:&frameError];
                  if (image == NULL) {
+                   cleanupAlias();
                    reject(kOMTErrThumbnail, @"no decodable frame", nil);
                    return;
                  }
@@ -577,6 +618,7 @@ RCT_EXPORT_MODULE()
                                             type:UTTypeJPEG
                                          quality:@(quality)];
                  CGImageRelease(image);
+                 cleanupAlias();
                  if (!written) {
                    [self removeFileAtPath:destPath];
                    reject(kOMTErrThumbnail, @"thumbnail encode failed", nil);

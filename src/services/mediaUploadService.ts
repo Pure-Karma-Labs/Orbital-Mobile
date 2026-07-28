@@ -16,14 +16,14 @@
  *
  * Flow (videos):
  * 1. Normalize URI
- * 2. prepareVideoForUpload (compress, GPS strip, metadata, thumbnail)
+ * 2. prepareVideoForUpload (transcode, GPS strip, metadata, thumbnail)
  * 3. Upload thumbnail as separate encrypted media (recursive uploadMedia)
  * 4. Same phases 3-10 as images, with duration + thumbnail* envelope fields
  *
  * SECURITY: Crypto operations delegated to attachmentCrypto (Rust FFI).
  * SECURITY: Plaintext never held entirely in memory -- streamed in 1MB reads.
  * SECURITY: Image EXIF/GPS stripped by imageSanitizer (not by picker re-encode).
- * SECURITY: Video GPS stripped by mp4GpsSanitizer (not by react-native-compressor).
+ * SECURITY: Video GPS stripped by mp4GpsSanitizer (not by the native transcoder).
  */
 
 import type { PickedMedia } from '../hooks/useMediaPicker';
@@ -712,13 +712,28 @@ function buildMediaRow(
  * uploads. Call during app bootstrap (best-effort, fire-and-forget).
  */
 export async function cleanupOrphanedChunks(): Promise<void> {
+  // One-shot legacy sweep: the outgoing compressor kept plaintext frame JPEGs
+  // in Caches/thumbnails and reaped them via its own clearCache(). Nothing
+  // deletes them on devices upgraded from 1.7.x, so sweep the directory once.
+  try {
+    const legacyThumbnailDir = `${CachesDirectoryPath}/thumbnails`;
+    if (await exists(legacyThumbnailDir)) {
+      await unlink(legacyThumbnailDir).catch(() => {});
+    }
+  } catch {
+    // Best-effort -- failures are silently ignored
+  }
+
   try {
     const files = await readDir(CachesDirectoryPath);
     const now = Date.now();
     for (const file of files) {
       const isChunk = file.name.includes('-chunk-') && file.name.endsWith('.bin');
       const isCipher = file.name.endsWith('-cipher.bin');
-      const isStaging = file.name.endsWith('-staging.bin');
+      // -staging.mp4 covers the video transcode staging file, which must carry
+      // an .mp4 extension for AVAssetWriter.
+      const isStaging =
+        file.name.endsWith('-staging.bin') || file.name.endsWith('-staging.mp4');
       if (isChunk || isCipher || isStaging) {
         const mtime = file.mtime ? new Date(file.mtime).getTime() : 0;
         const age = now - mtime;

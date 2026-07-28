@@ -9,7 +9,7 @@
  * Supported formats:
  * - JPEG: drops APP1 (Exif/XMP) + APP13 segments; keeps JFIF/ICC/Adobe + scan data
  * - PNG: drops eXIf/tEXt/zTXt/iTXt/tIME chunks
- * - WebP/HEIC/unknown: re-encodes to JPEG via Image.compress first, then strips
+ * - WebP/HEIC/unknown: re-encodes to JPEG via reencodeImage first, then strips
  *
  * Always ends with verifyNoImageMetadata re-scan; THROWS if metadata persists (fail-closed).
  *
@@ -17,12 +17,13 @@
  * separately for fixture-based Jest tests.
  */
 
-import { Image } from 'react-native-compressor';
+import { reencodeImage } from 'orbital-media-transcoder';
 import {
   readFile,
   writeFile,
   stat,
   unlink,
+  CachesDirectoryPath,
 } from '@dr.pogodin/react-native-fs';
 
 // ---------------------------------------------------------------------------
@@ -346,9 +347,13 @@ function uint8ArrayToBase64(bytes: Uint8Array): string {
  *
  * For JPEG: byte-level strip of APP1/APP13 segments (no recompression).
  * For PNG: byte-level strip of eXIf/tEXt/zTXt/iTXt/tIME chunks.
- * For WebP/HEIC/other: re-encode to JPEG via Image.compress, then strip.
+ * For WebP/HEIC/other: re-encode via reencodeImage, then strip.
  *
- * Files >8MB are pre-compressed via Image.compress before stripping (memory bound).
+ * Files >8MB are pre-encoded via reencodeImage before stripping (memory bound).
+ *
+ * The pre-encode temp file is this function's own property: it always lives in
+ * Caches with a `-staging.bin` suffix so the orphan GC covers it, regardless of
+ * where the caller's outPath points (avatarService passes a non-Caches path).
  *
  * Always verifies the output is clean; throws if metadata persists (fail-closed).
  *
@@ -368,32 +373,32 @@ export async function sanitizeStillImage(
 
   let workPath = sourcePath;
   let tempCompressPath: string | null = null;
+  const preencodePath = `${CachesDirectoryPath}/${basename(outPath)}.pre-staging.bin`;
 
   try {
-    // For non-JPEG/PNG formats, or large files, pre-compress to JPEG
+    // For non-JPEG/PNG formats, or large files, pre-encode.
+    // DEFENSE IN DEPTH: the native re-encode drops metadata by construction,
+    // but the byte-level strip below plus verifyNoImageMetadata remain the
+    // authoritative, fail-closed layer. Never treat reencodeImage as the strip.
     if (!isDirectlyStrippable) {
-      // Re-encode to JPEG via Image.compress (format normalization only)
-      // NOTE: Image.compress copies EXIF through -- it is never the strip
-      tempCompressPath = await Image.compress(sourcePath, {
-        compressionMethod: 'auto',
-        maxWidth: 2048,
-        maxHeight: 2048,
+      await reencodeImage(sourcePath, preencodePath, {
+        maxDimension: 2048,
         quality: 0.9,
-        output: 'jpg',
+        format: 'jpeg',
       });
-      workPath = tempCompressPath;
+      tempCompressPath = preencodePath;
+      workPath = preencodePath;
     } else {
       // Check if file is too large for in-memory strip
       const st = await stat(sourcePath);
       if (st.size > MAX_STRIP_SIZE_BYTES) {
-        tempCompressPath = await Image.compress(sourcePath, {
-          compressionMethod: 'auto',
-          maxWidth: 2048,
-          maxHeight: 2048,
+        await reencodeImage(sourcePath, preencodePath, {
+          maxDimension: 2048,
           quality: 0.9,
-          output: isJpeg ? 'jpg' : 'png',
+          format: isJpeg ? 'jpeg' : 'png',
         });
-        workPath = tempCompressPath;
+        tempCompressPath = preencodePath;
+        workPath = preencodePath;
       }
     }
 
@@ -410,7 +415,7 @@ export async function sanitizeStillImage(
       // PNG
       stripped = stripPngMetadata(data);
     } else {
-      // After Image.compress re-encode, should be JPEG
+      // After the native re-encode this should be JPEG.
       // Try JPEG strip as last resort
       stripped = stripJpegMetadata(data);
     }
@@ -448,6 +453,12 @@ export async function verifyNoImageMetadata(filePath: string): Promise<void> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** Last path segment of an absolute path (no node:path in RN). */
+function basename(filePath: string): string {
+  const slash = filePath.lastIndexOf('/');
+  return slash === -1 ? filePath : filePath.slice(slash + 1);
+}
 
 function isPngSignature(data: Uint8Array): boolean {
   for (let i = 0; i < 8; i++) {

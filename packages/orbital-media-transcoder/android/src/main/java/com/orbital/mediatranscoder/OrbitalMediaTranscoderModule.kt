@@ -52,7 +52,7 @@ import kotlin.math.roundToInt
  */
 // The bare Kotlin @OptIn does NOT suppress lint's UnsafeOptInUsageError for
 // media3's @UnstableApi surface; the androidx annotation is required.
-@androidx.annotation.OptIn(markerClass = UnstableApi::class)
+@androidx.annotation.OptIn(UnstableApi::class)
 class OrbitalMediaTranscoderModule(reactContext: ReactApplicationContext) :
   NativeOrbitalMediaTranscoderSpec(reactContext) {
 

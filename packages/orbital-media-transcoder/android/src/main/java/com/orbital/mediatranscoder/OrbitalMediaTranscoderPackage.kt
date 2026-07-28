@@ -8,7 +8,7 @@ import com.facebook.react.module.model.ReactModuleInfoProvider
 
 class OrbitalMediaTranscoderPackage : BaseReactPackage() {
   override fun getModule(name: String, reactContext: ReactApplicationContext): NativeModule? =
-    if (name == OrbitalMediaTranscoderModule.NAME) {
+    if (name == NativeOrbitalMediaTranscoderSpec.NAME) {
       OrbitalMediaTranscoderModule(reactContext)
     } else {
       null
@@ -16,10 +16,10 @@ class OrbitalMediaTranscoderPackage : BaseReactPackage() {
 
   override fun getReactModuleInfoProvider(): ReactModuleInfoProvider = ReactModuleInfoProvider {
     mapOf(
-      OrbitalMediaTranscoderModule.NAME to
+      NativeOrbitalMediaTranscoderSpec.NAME to
         ReactModuleInfo(
-          OrbitalMediaTranscoderModule.NAME,
-          OrbitalMediaTranscoderModule.NAME,
+          NativeOrbitalMediaTranscoderSpec.NAME,
+          NativeOrbitalMediaTranscoderSpec.NAME,
           false, // canOverrideExistingModule
           false, // needsEagerInit
           false, // isCxxModule

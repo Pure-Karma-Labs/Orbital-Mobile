@@ -85,6 +85,17 @@ updates:
       - dependency-name: "uniffi"
         versions: [">= 0.32.0"]
 
+  # Gradle dependencies (orbital-media-transcoder Android module)
+  # media3 is a media-parsing stack with a real CVE history and is pinned
+  # exactly, so advisories need a route into the PR queue. The transformer,
+  # effect, and common artifacts share a release train and must be bumped
+  # together — review grouped/split PRs accordingly.
+  - package-ecosystem: gradle
+    directory: /packages/orbital-media-transcoder/android
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
   # GitHub Actions (workflow files)
   - package-ecosystem: github-actions
     directory: /

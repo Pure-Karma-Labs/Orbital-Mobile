@@ -130,6 +130,9 @@ jobs:
               - 'package.json'
               - 'ios/**'
               - 'packages/orbital-signal/*.podspec'
+              - 'packages/orbital-media-transcoder/*.podspec'
+              - 'packages/orbital-media-transcoder/ios/**'
+              - 'packages/orbital-media-transcoder/src/Native*.ts'
 
       - name: Cache CocoaPods
         if: github.event_name == 'pull_request' && steps.pod-filter.outputs.ios-native == 'true'
@@ -152,3 +155,21 @@ jobs:
         if: github.event_name == 'pull_request' && steps.pod-filter.outputs.ios-native == 'true'
         working-directory: ios
         run: pod install --deployment
+
+      # Issue #586: build.yml's full iOS build is main-only, so hand-written
+      # native module code (and the generated Spec it must match) had no
+      # PR-time compile at all -- the hole class behind #513/#634. Compiling
+      # just the OrbitalMediaTranscoder pod target is cheap and catches
+      # codegen/protocol drift on every PR that touches the module, including
+      # future iOS-only changes to it.
+      - name: Compile OrbitalMediaTranscoder (PR-time iOS gate)
+        if: github.event_name == 'pull_request' && steps.pod-filter.outputs.ios-native == 'true'
+        working-directory: ios
+        run: |
+          xcodebuild \
+            -project Pods/Pods.xcodeproj \
+            -target OrbitalMediaTranscoder \
+            -sdk iphonesimulator \
+            -configuration Debug \
+            build \
+            CODE_SIGNING_ALLOWED=NO

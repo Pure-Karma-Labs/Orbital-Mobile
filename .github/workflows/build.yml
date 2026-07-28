@@ -5,6 +5,9 @@ on:
     branches: [main]
     paths:
       - 'packages/orbital-signal/**'
+      - 'packages/orbital-media-transcoder/android/**'
+      - 'packages/orbital-media-transcoder/package.json'
+      - 'packages/orbital-media-transcoder/src/NativeOrbitalMediaTranscoder.ts'
       - 'android/**'
       - 'ios/**'
       - 'src/config/**'
@@ -19,6 +22,9 @@ on:
   pull_request:
     paths:
       - 'packages/orbital-signal/**'
+      - 'packages/orbital-media-transcoder/android/**'
+      - 'packages/orbital-media-transcoder/package.json'
+      - 'packages/orbital-media-transcoder/src/NativeOrbitalMediaTranscoder.ts'
       - 'android/**'
       - 'ios/**'
       - 'src/config/**'
@@ -304,7 +310,7 @@ jobs:
           path: |
             ~/.gradle/caches/modules-2
             ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('android/gradle/wrapper/gradle-wrapper.properties', 'android/build.gradle', 'android/app/build.gradle') }}
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/gradle/wrapper/gradle-wrapper.properties', 'android/build.gradle', 'android/app/build.gradle', 'packages/orbital-media-transcoder/android/build.gradle') }}
           restore-keys: |
             gradle-${{ runner.os }}-
 

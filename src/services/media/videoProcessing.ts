@@ -1,31 +1,33 @@
 /**
- * Video processing pipeline -- compress, sanitize GPS, extract metadata,
+ * Video processing pipeline -- transcode, sanitize GPS, extract metadata,
  * and create thumbnail for video uploads.
  *
  * Flow:
- * 1. Video.compress (720p H.264 mp4, ~2Mbps)
- * 2. Transcode integrity guard: if transcode size >= source size, discard
- *    the transcode and upload the GPS-sanitized source instead (pass-through).
- *    Guards against corrupt MediaCodec output (upstream #268).
+ * 1. transcodeVideo -> {mediaId}-transcode-staging.mp4 (720p H.264 @ 2Mbps).
+ *    The .mp4 extension is load-bearing: AVAssetWriter derives the container
+ *    type from it.
+ * 2. Transcode guard: on transcode failure, or if the transcode is >= the
+ *    source size, discard the transcode and upload the GPS-sanitized source
+ *    instead (pass-through). Cancellation is the one fatal failure.
  * 3. Move/copy output to {mediaId}-staging.bin (GC-covered temp suffix)
  * 4. sanitizeMp4Gps (strip GPS atoms)
  * 5. verifyNoGpsAtoms (independent fail-closed check)
- * 6. getVideoMetaData (authoritative w/h/duration)
- * 7. createVideoThumbnail (~1s frame)
- * 8. Move thumbnail to {mediaId}-thumb-staging.bin (GC-covered)
- * 9. sanitizeStillImage (strip EXIF/GPS from thumbnail)
- * 10. clearCache (clean up compressor temp files)
+ * 6. getVideoMetadata (authoritative w/h/duration, rotation-corrected)
+ * 7. extractThumbnail (~1s frame)
+ * 8. sanitizeStillImage (strip EXIF/GPS from thumbnail)
  *
- * Abort supported via cancelCompression.
+ * Abort is plumbed through cancelTranscode(mediaId); native cancellation
+ * rejects with ECANCELLED and deletes the partial output.
  */
 
 import {
-  Video,
-  Image,
-  getVideoMetaData,
-  createVideoThumbnail,
-  clearCache,
-} from 'react-native-compressor';
+  transcodeVideo,
+  cancelTranscode,
+  getVideoMetadata,
+  extractThumbnail,
+  subscribeTranscodeProgress,
+  isCancellation,
+} from 'orbital-media-transcoder';
 import {
   moveFile,
   copyFile,
@@ -41,11 +43,11 @@ import { sanitizeStillImage } from './imageSanitizer';
 // ---------------------------------------------------------------------------
 
 export interface VideoProcessingResult {
-  /** Path to the compressed + sanitized video staging file */
+  /** Path to the transcoded + sanitized video staging file */
   videoPath: string;
-  /** MIME type (video/mp4 after compression, or source MIME on pass-through) */
+  /** MIME type (video/mp4 after transcode, or source MIME on pass-through) */
   mimeType: string;
-  /** File name ({mediaId}.mp4 after compression, or {mediaId}.{ext} on pass-through) */
+  /** File name ({mediaId}.mp4 after transcode, or {mediaId}.{ext} on pass-through) */
   fileName: string;
   /** Video width in pixels */
   width: number;
@@ -53,7 +55,7 @@ export interface VideoProcessingResult {
   height: number;
   /** Duration in seconds (float) */
   duration: number;
-  /** File size in bytes (post-compression) */
+  /** File size in bytes (post-transcode) */
   fileSize: number;
   /** Path to the sanitized thumbnail staging file, or null if thumbnail creation failed */
   thumbnailPath: string | null;
@@ -62,7 +64,7 @@ export interface VideoProcessingResult {
 export interface VideoProcessingOptions {
   /** AbortSignal for cancellation */
   signal?: AbortSignal;
-  /** Progress callback for compression phase (0-1) */
+  /** Progress callback for the transcode phase (0-1) */
   onProgress?: (progress: number) => void;
 }
 
@@ -71,6 +73,10 @@ export interface VideoProcessingOptions {
 // ---------------------------------------------------------------------------
 
 const MAX_UPLOAD_SIZE_BYTES = 50 * 1024 * 1024;
+
+/** Long-side cap: 1280 yields 720p for 16:9 sources. */
+const MAX_VIDEO_DIMENSION = 1280;
+const TARGET_VIDEO_BITRATE = 2_000_000;
 
 /**
  * Video MIME → file extension mapping for pass-through uploads.
@@ -87,18 +93,20 @@ export const VIDEO_MIME_EXT: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 /**
- * Prepare a video for upload: compress, strip GPS, extract metadata, create thumbnail.
+ * Prepare a video for upload: transcode, strip GPS, extract metadata, create thumbnail.
  *
- * If the transcode output is >= the source size (corrupt/inflated MediaCodec output),
- * the transcode is discarded and the GPS-sanitized source is uploaded instead.
+ * If the transcode fails on a device-specific encoder path, or its output is
+ * >= the source size, the transcode is discarded and the GPS-sanitized source
+ * is uploaded instead. Cancellation is never swallowed.
  *
  * @param sourcePath Absolute path to the source video file
  * @param sourceMimeType MIME type of the source (e.g. 'video/quicktime'); used for
  *   pass-through result so the envelope carries the real content type.
- * @param mediaId UUID for this upload (used for temp file naming)
+ * @param mediaId UUID for this upload (used for temp file naming and as the
+ *   native transcode job id)
  * @param options Abort signal and progress callback
  * @returns Processing result with paths and metadata
- * @throws Error if compression fails, GPS can't be stripped, or file too large
+ * @throws Error if the upload was cancelled, GPS can't be stripped, or the file is too large
  */
 export async function prepareVideoForUpload(
   sourcePath: string,
@@ -108,37 +116,60 @@ export async function prepareVideoForUpload(
 ): Promise<VideoProcessingResult> {
   const stagingPath = `${CachesDirectoryPath}/${mediaId}-staging.bin`;
   const thumbStagingPath = `${CachesDirectoryPath}/${mediaId}-thumb-staging.bin`;
+  // AVFoundation requires the extension to match the container type, so this
+  // one staging file cannot use the usual .bin suffix.
+  const transcodePath = `${CachesDirectoryPath}/${mediaId}-transcode-staging.mp4`;
 
-  let compressedPath: string | null = null;
+  let transcodeWritten = false;
   let rawThumbPath: string | null = null;
 
+  const progressSubscription = subscribeTranscodeProgress(mediaId, (progress) => {
+    options?.onProgress?.(progress);
+  });
+  const onAbort = () => {
+    cancelTranscode(mediaId);
+  };
+  options?.signal?.addEventListener('abort', onAbort);
+
   try {
-    // 1. Check abort before starting compression
+    // 1. Check abort before starting the transcode
     if (options?.signal?.aborted) {
       throw new Error('Upload cancelled');
     }
 
-    // 2. Compress video to 720p H.264
-    compressedPath = await Video.compress(sourcePath, {
-      compressionMethod: 'manual',
-      maxSize: 1280,
-      bitrate: 2_000_000,
-      minimumFileSizeForCompress: 0,
-    }, (progress) => {
-      options?.onProgress?.(progress);
-    });
+    // 2. Transcode to 720p H.264. A device-specific encoder failure is not
+    //    fatal -- it falls through to the pass-through branch below, which
+    //    still enforces the GPS sanitizers and the 50MB cap. Only cancellation
+    //    aborts the upload.
+    let transcodeFailed = false;
+    try {
+      await transcodeVideo(mediaId, sourcePath, transcodePath, {
+        maxDimension: MAX_VIDEO_DIMENSION,
+        bitrate: TARGET_VIDEO_BITRATE,
+      });
+      transcodeWritten = true;
+    } catch (e) {
+      if (isCancellation(e) || options?.signal?.aborted) {
+        throw e;
+      }
+      transcodeFailed = true;
+      if (__DEV__) {
+        console.warn(
+          '[prepareVideoForUpload] transcode failed, uploading sanitized source:',
+          e instanceof Error ? e.message : e,
+        );
+      }
+    }
 
-    // Check abort after compression
+    // Check abort after the transcode
     if (options?.signal?.aborted) {
       throw new Error('Upload cancelled');
     }
 
-    // 3. Transcode integrity guard: if transcode >= source, discard and pass through.
-    //    Guards against corrupt MediaCodec output (YUV color-format mismatch;
-    //    upstream numandev1/react-native-compressor#268).
-    let passThrough = false;
+    // 3. Transcode integrity guard: if the transcode failed, or came out
+    //    >= the source, discard it and pass the source through.
+    let passThrough = transcodeFailed;
     {
-      const transcodeSize = (await stat(compressedPath)).size;
       let sourceSize: number | null = null;
       try {
         sourceSize = (await stat(sourcePath)).size;
@@ -151,16 +182,22 @@ export async function prepareVideoForUpload(
         }
       }
 
-      passThrough = sourceSize !== null && transcodeSize >= sourceSize;
+      if (!transcodeFailed) {
+        const transcodeSize = (await stat(transcodePath)).size;
+        passThrough = sourceSize !== null && transcodeSize >= sourceSize;
 
-      if (passThrough) {
-        if (__DEV__) {
+        if (passThrough && __DEV__) {
           console.warn(
             `[prepareVideoForUpload] transcode integrity guard tripped (source=${sourceSize}B, transcode=${transcodeSize}B); uploading sanitized source`,
           );
         }
-        await unlink(compressedPath).catch(() => {});
-        compressedPath = null;
+      }
+
+      if (passThrough) {
+        if (transcodeWritten) {
+          await unlink(transcodePath).catch(() => {});
+          transcodeWritten = false;
+        }
         // Android content:// sources are pre-staged by resolveUri
         // (mediaUploadService.ts) at the identical ${mediaId}-staging.bin path;
         // a self-copy is undefined behavior on some platforms.
@@ -168,8 +205,8 @@ export async function prepareVideoForUpload(
           await copyFile(sourcePath, stagingPath);
         }
       } else {
-        await moveFile(compressedPath, stagingPath);
-        compressedPath = null;
+        await moveFile(transcodePath, stagingPath);
+        transcodeWritten = false;
       }
     }
 
@@ -184,23 +221,22 @@ export async function prepareVideoForUpload(
     // 5. Verify no GPS atoms remain (independent pass, fail-closed)
     await verifyNoGpsAtoms(stagingPath);
 
-    // 6. Check post-compression file size
+    // 6. Check post-transcode file size
     const st = await stat(stagingPath);
     if (st.size > MAX_UPLOAD_SIZE_BYTES) {
       const mb = Math.round(st.size / 1024 / 1024);
-      // On pass-through, "after compression" would be misleading -- the
-      // transcode ran but its output was discarded as invalid.
+      // On pass-through, "after re-encoding" would be misleading -- the
+      // transcode either failed or produced output we discarded as invalid.
       throw new Error(
         passThrough
-          ? `Video could not be compressed (compressor output was invalid) and the original is too large to upload directly (${mb}MB). Maximum is 50MB.`
-          : `Video is still too large after compression (${mb}MB). Maximum is 50MB.`,
+          ? `Video could not be re-encoded and the original is too large to upload directly (${mb}MB). Maximum is 50MB.`
+          : `Video is still too large after re-encoding (${mb}MB). Maximum is 50MB.`,
       );
     }
 
-    // 7. Get authoritative metadata from compressed video. Unlike
-    // createVideoThumbnail below, the Android impl normalizes the path via
-    // Uri.parse().path, so a schemeless path is safe here.
-    const metadata = await getVideoMetaData(stagingPath);
+    // 7. Get authoritative metadata from the staged video. Paths are plain
+    //    (schemeless) on both platforms -- the wrapper normalizes.
+    const metadata = await getVideoMetadata(stagingPath);
     const width = metadata.width ?? 0;
     const height = metadata.height ?? 0;
     const duration = metadata.duration ?? 0;
@@ -208,19 +244,9 @@ export async function prepareVideoForUpload(
     // 8. Create thumbnail (~1s frame)
     let thumbnailPath: string | null = null;
     try {
-      // file:// scheme required: the Android impl treats schemeless paths as
-      // remote URLs (URLUtil.isFileUrl branch) and fails with EINVAL.
-      const thumbResult = await createVideoThumbnail(`file://${stagingPath}`);
-      rawThumbPath = await Image.compress(
-        thumbResult.path,
-        {
-          compressionMethod: 'auto',
-          maxWidth: 640,
-          maxHeight: 640,
-          quality: 0.8,
-          output: 'jpg',
-        },
-      );
+      rawThumbPath = `${CachesDirectoryPath}/${mediaId}-thumbraw-staging.bin`;
+      // The JPEG encoder ignores the extension; only AVAssetWriter cares.
+      await extractThumbnail(stagingPath, 1000, rawThumbPath, 640, 0.8);
 
       // 9. Sanitize thumbnail (strip EXIF/GPS)
       await sanitizeStillImage(rawThumbPath, 'image/jpeg', thumbStagingPath);
@@ -236,9 +262,6 @@ export async function prepareVideoForUpload(
         rawThumbPath = null;
       }
     }
-
-    // 10. Clear compressor cache
-    await clearCache().catch(() => {});
 
     const ext = passThrough
       ? (VIDEO_MIME_EXT[sourceMimeType] ?? 'mp4')
@@ -258,21 +281,23 @@ export async function prepareVideoForUpload(
     // Clean up on failure
     await unlink(stagingPath).catch(() => {});
     await unlink(thumbStagingPath).catch(() => {});
+    await unlink(transcodePath).catch(() => {});
 
-    // Try to cancel compression if it's still running
+    // Stop the native job if it is still running
     try {
-      await Video.cancelCompression('');
+      cancelTranscode(mediaId);
     } catch {
       // Best effort
     }
 
-    await clearCache().catch(() => {});
-
     throw e;
   } finally {
+    progressSubscription.remove();
+    options?.signal?.removeEventListener('abort', onAbort);
+
     // Clean up raw paths that might remain
-    if (compressedPath) {
-      await unlink(compressedPath).catch(() => {});
+    if (transcodeWritten) {
+      await unlink(transcodePath).catch(() => {});
     }
     if (rawThumbPath) {
       await unlink(rawThumbPath).catch(() => {});

@@ -1,0 +1,68 @@
+// Written from scratch (NOT derived from packages/orbital-signal, whose
+// build.gradle is uniffi-generated and carries an AGP 7.2.1 buildscript pin,
+// a `package=` manifest attribute AGP 8 rejects, and conditional new-arch
+// wiring this module does not need).
+
+apply plugin: "com.android.library"
+apply plugin: "org.jetbrains.kotlin.android"
+apply plugin: "com.facebook.react"
+
+def getExtOrDefault(name, fallback) {
+  return rootProject.ext.has(name) ? rootProject.ext.get(name) : fallback
+}
+
+// Exact pins: media3 is a media-parsing stack with a real CVE history, and
+// the Transformer/effect/common artifacts must move together. Dependabot's
+// gradle ecosystem entry (.github/dependabot.yml) routes advisories here.
+def media3Version = "1.8.1"
+
+android {
+  namespace "com.orbital.mediatranscoder"
+
+  compileSdk getExtOrDefault("compileSdkVersion", 36)
+
+  defaultConfig {
+    minSdk getExtOrDefault("minSdkVersion", 24)
+    consumerProguardFiles "proguard-rules.pro"
+  }
+
+  buildTypes {
+    release {
+      minifyEnabled false
+    }
+  }
+
+  // Explicit 17 on both halves: inheriting the AGP default (1.8) fails to
+  // link against recent androidx bytecode under the CI Java 17 toolchain.
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_17
+    targetCompatibility JavaVersion.VERSION_17
+  }
+
+  kotlinOptions {
+    jvmTarget = "17"
+  }
+}
+
+react {
+  jsRootDir = file("../src/")
+  libraryName = "OrbitalMediaTranscoder"
+  codegenJavaPackageName = "com.orbital.mediatranscoder"
+}
+
+repositories {
+  google()
+  mavenCentral()
+}
+
+dependencies {
+  implementation "com.facebook.react:react-android"
+
+  implementation "androidx.media3:media3-transformer:$media3Version"
+  implementation "androidx.media3:media3-effect:$media3Version"
+  implementation "androidx.media3:media3-common:$media3Version"
+
+  // Orientation for EVERY decoded source on API 24-27; the framework
+  // ExifInterface is JPEG-only on those levels.
+  implementation "androidx.exifinterface:exifinterface:1.3.7"
+}

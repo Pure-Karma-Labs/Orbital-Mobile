@@ -217,6 +217,35 @@ for (const file of allFiles) {
 }
 
 // ---------------------------------------------------------------------------
+// 7. orbital-media-transcoder imports restricted to the two sanitizer callers
+// ---------------------------------------------------------------------------
+
+// reencodeImage() drops metadata as a side effect of re-encoding, which makes
+// it look like a sanitizer. It is not: imageSanitizer's byte-level strip plus
+// verifyNoImageMetadata are the authoritative fail-closed layer. Restricting
+// the import keeps a future caller from reaching for the native module
+// directly and skipping that layer.
+const ALLOWED_TRANSCODER_FILES = new Set([
+  join(SRC, 'services', 'media', 'imageSanitizer.ts'),
+  join(SRC, 'services', 'media', 'videoProcessing.ts'),
+]);
+
+const TRANSCODER_IMPORT_RE = /from\s+['"]orbital-media-transcoder['"]/;
+
+for (const file of allFiles) {
+  const rel = relative('.', file);
+  if (rel.includes('__tests__/') || rel.includes('.test.ts') || rel.includes('.test.tsx')) continue;
+  if (ALLOWED_TRANSCODER_FILES.has(file)) continue;
+
+  const lines = readFileSync(file, 'utf8').split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (TRANSCODER_IMPORT_RE.test(lines[i])) {
+      report(file, i + 1, 'transcoder-import-restricted', 'orbital-media-transcoder import outside allowed files');
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------
 

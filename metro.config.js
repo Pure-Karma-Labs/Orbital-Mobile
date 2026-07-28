@@ -10,6 +10,7 @@ const { getDefaultConfig, mergeConfig } = require('@react-native/metro-config');
 const config = {
   watchFolders: [
     path.resolve(__dirname, 'packages/orbital-signal'),
+    path.resolve(__dirname, 'packages/orbital-media-transcoder'),
   ],
   resolver: {
     // Prefer CJS — fuse.js v7 ships .mjs referencing @babel/runtime helpers

@@ -755,4 +755,39 @@ describe('cleanupOrphanedChunks', () => {
     expect(rnfs.unlink).toHaveBeenCalledWith('/tmp/test-cache/abc-staging.bin');
     expect(rnfs.unlink).not.toHaveBeenCalledWith('/tmp/test-cache/recent-staging.bin');
   });
+
+  it('removes stale .mp4 transcode staging files older than 1 hour', async () => {
+    // The video transcode staging file cannot use the .bin suffix -- AVAssetWriter
+    // derives the container type from the extension.
+    const rnfs = require('@dr.pogodin/react-native-fs');
+    rnfs.readDir.mockResolvedValueOnce([
+      { name: 'abc-transcode-staging.mp4', path: '/tmp/test-cache/abc-transcode-staging.mp4', mtime: new Date(Date.now() - 7200_000) },
+      { name: 'recent-transcode-staging.mp4', path: '/tmp/test-cache/recent-transcode-staging.mp4', mtime: new Date() },
+    ]);
+
+    await cleanupOrphanedChunks();
+
+    expect(rnfs.unlink).toHaveBeenCalledWith('/tmp/test-cache/abc-transcode-staging.mp4');
+    expect(rnfs.unlink).not.toHaveBeenCalledWith('/tmp/test-cache/recent-transcode-staging.mp4');
+  });
+
+  it('sweeps the legacy compressor thumbnails directory when present', async () => {
+    const rnfs = require('@dr.pogodin/react-native-fs');
+    rnfs.exists.mockResolvedValueOnce(true);
+    rnfs.readDir.mockResolvedValueOnce([]);
+
+    await cleanupOrphanedChunks();
+
+    expect(rnfs.unlink).toHaveBeenCalledWith('/tmp/test-cache/thumbnails');
+  });
+
+  it('does not touch the legacy thumbnails directory when it is absent', async () => {
+    const rnfs = require('@dr.pogodin/react-native-fs');
+    rnfs.exists.mockResolvedValueOnce(false);
+    rnfs.readDir.mockResolvedValueOnce([]);
+
+    await cleanupOrphanedChunks();
+
+    expect(rnfs.unlink).not.toHaveBeenCalledWith('/tmp/test-cache/thumbnails');
+  });
 });

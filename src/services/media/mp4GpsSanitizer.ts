@@ -1,8 +1,8 @@
 /**
  * MP4 GPS metadata sanitizer -- strips location atoms from MP4/MOV files.
  *
- * SECURITY: react-native-compressor actively preserves and re-injects GPS
- * metadata. This sanitizer is the authoritative strip for video files.
+ * SECURITY: muxers routinely copy location atoms from the source into the
+ * output moov/udta. This sanitizer is the authoritative strip for video files.
  *
  * Strategy: Parse top-level boxes to find `moov`, read `moov` fully (reject if
  * >16MB), recursively neutralize location-bearing atoms:

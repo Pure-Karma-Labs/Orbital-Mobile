@@ -1,0 +1,28 @@
+{
+  "name": "orbital-media-transcoder",
+  "version": "0.0.1",
+  "private": true,
+  "description": "First-party media transcoder (video 720p H.264 @ 2Mbps, thumbnails, image re-encode) for Orbital-Mobile",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Pure-Karma-Labs/Orbital-Mobile.git",
+    "directory": "packages/orbital-media-transcoder"
+  },
+  "author": "Pure Karma Labs",
+  "license": "UNLICENSED",
+  "homepage": "https://github.com/Pure-Karma-Labs/Orbital-Mobile#readme",
+  "source": "./src/index.tsx",
+  "main": "./src/index.tsx",
+  "peerDependencies": {
+    "react": "*",
+    "react-native": "*"
+  },
+  "codegenConfig": {
+    "name": "OrbitalMediaTranscoderSpec",
+    "type": "modules",
+    "jsSrcsDir": "src",
+    "android": {
+      "javaPackageName": "com.orbital.mediatranscoder"
+    }
+  }
+}

@@ -159,10 +159,19 @@ RCT_EXPORT_MODULE()
                                 completionHandler:^(NSArray<AVAssetTrack *> *_Nullable audioTracks,
                                                     NSError *_Nullable audioError) {
                                   dispatch_async(self->_queue, ^{
+                                    if (audioError != nil) {
+                                      // An audio-track load ERROR must fail the transcode (routes to the
+                                      // TS pass-through branch); only a genuinely audio-free asset may
+                                      // proceed video-only.
+                                      [self failJob:jobId
+                                               code:kOMTErrTranscode
+                                             reason:@"audio track load failed"];
+                                      return;
+                                    }
                                     [self runTranscode:jobId
                                                  asset:asset
                                             videoTrack:videoTracks.firstObject
-                                            audioTrack:audioError == nil ? audioTracks.firstObject : nil
+                                            audioTrack:audioTracks.firstObject
                                           maxDimension:maxDimension
                                                bitrate:bitrate];
                                   });
@@ -301,9 +310,10 @@ RCT_EXPORT_MODULE()
       [reader addOutput:audioOutput];
       [writer addInput:audioInput];
     } else {
-      // Video-only output is preferable to failing the whole transcode.
-      audioOutput = nil;
-      audioInput = nil;
+      // Silently dropping audio would be permanent loss in an E2EE archive;
+      // failing routes to the TS pass-through branch (original + audio intact).
+      [self failJob:jobId code:kOMTErrTranscode reason:@"audio pipeline rejected"];
+      return;
     }
   }
 

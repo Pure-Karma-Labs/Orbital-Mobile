@@ -8,7 +8,10 @@
 //! ratcheted.
 //!
 //! The Signal 1:1 session API is currently exported but has no production callers
-//! (Issue #17), so no `SessionRecord` is ever persisted on a real device and a
+//! (Issue #200, closed 2026-05-28 as a deliberate deferral — DMs reuse the
+//! ECIES + AES-GCM group architecture; `signalSessionRepository.saveSession()`
+//! exists but has no caller outside its own test file), so no `SessionRecord`
+//! is ever persisted on a real device and a
 //! device-level test of this path would exercise nothing.  These fixtures replace
 //! that unperformable step with a deterministic, byte-level artifact: session
 //! records and a ciphertext captured from the PRE-bump build, replayed against the

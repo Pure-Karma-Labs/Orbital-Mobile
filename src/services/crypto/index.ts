@@ -1,5 +1,7 @@
 /**
- * NOTE for the future 1:1 session service (Issue #17): since libsignal v0.95,
+ * NOTE for the future 1:1 session service (Issue #200 — "Restore Signal session
+ * pipeline for 1:1 DMs", closed 2026-05-28 as a deliberate deferral; DMs reuse
+ * the ECIES + AES-GCM group architecture instead): since libsignal v0.95,
  * the session FFI functions (processPreKeyBundle, signalEncrypt, signalDecrypt,
  * signalDecryptPreKey) require a `localAddress` alongside the remote address.
  * Convention: `localAddress = { name: <own userId from auth state>, deviceId: 1 }`.

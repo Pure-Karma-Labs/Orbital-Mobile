@@ -160,7 +160,8 @@ describe('downloadAndDecryptMedia', () => {
     const result = await downloadAndDecryptMedia(FAKE_MEDIA_ID);
 
     // Verify download was called
-    expect(mockDownloadMedia).toHaveBeenCalledWith(FAKE_MEDIA_ID, undefined);
+    // file_size is forwarded so the transfer deadline scales with the payload
+    expect(mockDownloadMedia).toHaveBeenCalledWith(FAKE_MEDIA_ID, undefined, 1000);
 
     // Verify decryption was called
     expect(mockDecryptAttachment).toHaveBeenCalledTimes(1);

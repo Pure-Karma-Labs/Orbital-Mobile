@@ -13,7 +13,15 @@ jest.mock('../tokenManager', () => ({
   },
 }));
 
-import { request, requestBinary, snakeToCamel, camelToSnake } from '../client';
+import {
+  request,
+  requestBinary,
+  snakeToCamel,
+  camelToSnake,
+  mediaTransferTimeoutMs,
+  MEDIA_TRANSFER_BASE_TIMEOUT_MS,
+  MEDIA_TRANSFER_MAX_TIMEOUT_MS,
+} from '../client';
 import {
   AuthError,
   ConflictError,
@@ -623,5 +631,36 @@ describe('QuotaExceededError', () => {
 
     expect(err).toBeInstanceOf(QuotaExceededError);
     expect(err.quota).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// mediaTransferTimeoutMs — size-derived body deadline for media GETs
+// ---------------------------------------------------------------------------
+
+describe('mediaTransferTimeoutMs', () => {
+  it('falls back to the base allowance for unknown or empty sizes', () => {
+    expect(mediaTransferTimeoutMs(undefined)).toBe(MEDIA_TRANSFER_BASE_TIMEOUT_MS);
+    expect(mediaTransferTimeoutMs(null)).toBe(MEDIA_TRANSFER_BASE_TIMEOUT_MS);
+    expect(mediaTransferTimeoutMs(0)).toBe(MEDIA_TRANSFER_BASE_TIMEOUT_MS);
+    expect(mediaTransferTimeoutMs(-1)).toBe(MEDIA_TRANSFER_BASE_TIMEOUT_MS);
+    expect(mediaTransferTimeoutMs(Number.NaN)).toBe(MEDIA_TRANSFER_BASE_TIMEOUT_MS);
+  });
+
+  it('adds 2s per megabyte, rounding partial megabytes up', () => {
+    // 1 byte still counts as a whole megabyte of allowance
+    expect(mediaTransferTimeoutMs(1)).toBe(MEDIA_TRANSFER_BASE_TIMEOUT_MS + 2_000);
+    expect(mediaTransferTimeoutMs(10 * 1024 * 1024)).toBe(
+      MEDIA_TRANSFER_BASE_TIMEOUT_MS + 20_000,
+    );
+    // A near-cap 45MB clip gets 150s instead of the old flat 60s
+    expect(mediaTransferTimeoutMs(45 * 1024 * 1024)).toBe(150_000);
+  });
+
+  it('caps at ten minutes so a stalled transfer still fails', () => {
+    expect(mediaTransferTimeoutMs(5 * 1024 * 1024 * 1024)).toBe(
+      MEDIA_TRANSFER_MAX_TIMEOUT_MS,
+    );
+    expect(MEDIA_TRANSFER_MAX_TIMEOUT_MS).toBe(600_000);
   });
 });

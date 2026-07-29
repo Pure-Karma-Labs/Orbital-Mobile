@@ -5,7 +5,7 @@
  * Download uses requestBinary() to return raw ArrayBuffer + response headers.
  */
 
-import { request, requestBinary } from './client';
+import { request, requestBinary, mediaTransferTimeoutMs } from './client';
 import type { UploadChunkResponse } from '../../types/api';
 
 // ============================================================
@@ -127,15 +127,20 @@ export interface DownloadMediaResult {
  *
  * GET /api/media/:id/download — returns raw binary via requestBinary().
  * Custom headers X-Encryption-IV and X-Expires-At are extracted from the response.
+ *
+ * @param fileSizeBytes - Ciphertext size, when known. The timeout is an
+ *   end-to-end body deadline in RN, so it scales with size — see
+ *   mediaTransferTimeoutMs(). Omit it and the flat base allowance applies.
  */
 export async function downloadMedia(
   mediaId: string,
   signal?: AbortSignal,
+  fileSizeBytes?: number | null,
 ): Promise<DownloadMediaResult> {
   const { data, headers } = await requestBinary({
     method: 'GET',
     path: `/api/media/${encodeURIComponent(mediaId)}/download`,
-    timeout: 60_000,
+    timeout: mediaTransferTimeoutMs(fileSizeBytes),
     signal,
   });
   return {

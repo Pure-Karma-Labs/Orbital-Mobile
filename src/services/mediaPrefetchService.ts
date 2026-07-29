@@ -9,7 +9,10 @@
  * Drain logic:
  * - Queries DB for pending downloads WITH keys+digest (excludes keyless, digestless,
  *   failed, unavailable, downloaded)
- * - Excludes video parent rows until #458 PR 3 (thumbnails still drain); oldest first
+ * - Excludes video parent rows (thumbnails still drain); oldest first. The
+ *   MediaLightbox owns on-demand full-video download for the page being
+ *   viewed (#458 PR 3), so video parents stay permanently out of this
+ *   bulk/prefetch path. Streaming decrypt and eviction remain deferred to #578.
  * - Batch limit ~25
  * - Fires downloadAndDecryptMedia per item — service semaphore (max 3) + inflight
  *   dedup throttle; 404s self-classify to 'unavailable' via W4 and drop out of

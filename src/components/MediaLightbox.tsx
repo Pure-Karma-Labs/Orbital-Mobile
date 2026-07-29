@@ -7,6 +7,10 @@
  *
  * Uses React Native Modal with fade animation. Status bar is hidden when
  * the lightbox is visible.
+ *
+ * Video pages are delegated to LightboxVideoPage, which mounts the native
+ * player ONLY for the active page. The lightbox is the sole trigger for
+ * full-video downloads (thumbnails download everywhere else).
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -29,12 +33,36 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../theme';
 import { useMediaDownload } from '../hooks/useMediaDownload';
-import { useVideoThumbnail } from '../hooks/useVideoThumbnail';
 import { OrbitalSpinner } from './OrbitalSpinner';
-import { PlayIconOverlay, DurationBadge } from './VideoOverlay';
+import { LightboxVideoPage } from './LightboxVideoPage';
 import { useAppStore } from '../stores/useAppStore';
 import type { MediaItem } from '../types/store';
 import type { ReportTarget } from '../types/store';
+
+// ---------------------------------------------------------------------------
+// Scrubber vs paging (plan §3e)
+// ---------------------------------------------------------------------------
+
+/**
+ * How the paging ScrollView yields horizontal drags to the player's scrubber.
+ *
+ * 'canCancelContentTouches' (SHIPPED): iOS-only ScrollView prop — once a touch
+ * lands on a child that handles it, the ScrollView never steals it back, so a
+ * scrubber drag seeks instead of paging. Swipe paging is untouched everywhere,
+ * including on poster pages. Android needs nothing: media3's DefaultTimeBar
+ * already calls requestDisallowInterceptTouchEvent.
+ *
+ * 'scrollEnabled' (FALLBACK, one-line switch): iOS-gated hard disable of paging
+ * while the active page has a mounted player. Derived here in the parent from
+ * (contentType, downloadState) rather than reported up by the child — the
+ * child-written boolean had no clear-on-unmount and could permanently freeze
+ * paging for every later gallery, including all-image ones. Derivation also
+ * means there is no latch to reset. Coarser than "is actually playing": it
+ * kills paging for a downloaded-but-paused video too, which is why it is the
+ * fallback and not the default.
+ */
+const SCRUBBER_FIX: 'canCancelContentTouches' | 'scrollEnabled' =
+  'canCancelContentTouches';
 
 // ---------------------------------------------------------------------------
 // Props
@@ -55,50 +83,27 @@ const CLOSE_BUTTON_SIZE = 40;
 const NAV_BUTTON_SIZE = 44;
 
 // ---------------------------------------------------------------------------
-// Single page component — isolates useMediaDownload per item
+// Single image page component — isolates useMediaDownload per item.
+// Video pages go through LightboxVideoPage instead (chosen at the map site by
+// contentType, so neither component pays for the other's hooks).
 // ---------------------------------------------------------------------------
 
 interface LightboxPageProps {
   mediaId: string;
   pageWidth: number;
   pageHeight: number;
-  contentType?: string;
-  thumbnailMediaId?: string | null;
-  durationMs?: number | null;
 }
 
 const LightboxPage = React.memo(function LightboxPage({
   mediaId,
   pageWidth,
   pageHeight,
-  contentType,
-  thumbnailMediaId,
-  durationMs,
 }: LightboxPageProps): React.JSX.Element {
   const theme = useTheme();
-  const {
-    isVideo,
-    thumbState,
-    thumbLocalPath,
-    retryThumb,
-  } = useVideoThumbnail(contentType, thumbnailMediaId);
 
-  // One recovery attempt if the thumbnail file is corrupt/evicted; a second
-  // error gives up (play overlay + badge remain visible as siblings).
-  const thumbErrorRetried = useRef(false);
-  const handleThumbImageError = useCallback(() => {
-    if (!thumbErrorRetried.current) {
-      thumbErrorRetried.current = true;
-      retryThumb();
-    }
-  }, [retryThumb]);
-
-  // SUPPRESSION: for video pages, pass null to prevent auto-downloading
-  // the full video file — the thumbnail child is the display payload.
-  const { downloadState, localPath } = useMediaDownload(
-    isVideo ? null : mediaId,
-    { cancelOnUnmount: true },
-  );
+  const { downloadState, localPath } = useMediaDownload(mediaId, {
+    cancelOnUnmount: true,
+  });
 
   const pageStyle: ViewStyle = {
     width: pageWidth,
@@ -114,42 +119,6 @@ const LightboxPage = React.memo(function LightboxPage({
     marginTop: theme.spacing.base,
   };
 
-  // ---------------------------------------------------------------------------
-  // Video page
-  // ---------------------------------------------------------------------------
-  if (isVideo) {
-    const hasDuration = durationMs != null;
-
-    // Thumbnail available — show it with play overlay
-    if (thumbState === 'downloaded' && thumbLocalPath) {
-      return (
-        <View testID={`lightbox-page-${mediaId}`} style={pageStyle}>
-          <Image
-            source={{ uri: `file://${thumbLocalPath}` }}
-            style={{ width: pageWidth, height: pageHeight }}
-            resizeMode="contain"
-            onError={handleThumbImageError}
-          />
-          <PlayIconOverlay size={64} />
-          <Text style={hintTextStyle}>{'Video — playback coming soon'}</Text>
-          {hasDuration && <DurationBadge durationMs={durationMs} />}
-        </View>
-      );
-    }
-
-    // Thumbnail unavailable — dark page with play icon
-    return (
-      <View testID={`lightbox-page-${mediaId}`} style={pageStyle}>
-        <PlayIconOverlay size={64} />
-        <Text style={hintTextStyle}>{'Video — playback coming soon'}</Text>
-        {hasDuration && <DurationBadge durationMs={durationMs} />}
-      </View>
-    );
-  }
-
-  // ---------------------------------------------------------------------------
-  // Image page — existing logic
-  // ---------------------------------------------------------------------------
   if (downloadState === 'downloaded' && localPath) {
     return (
       <View testID={`lightbox-page-${mediaId}`} style={pageStyle}>
@@ -347,6 +316,19 @@ export function MediaLightbox({
   const showNav = mediaItems.length > 1;
   const navVerticalCenter = screenHeight / 2 - NAV_BUTTON_SIZE / 2;
   const currentIsVideo = mediaItems[currentIndex]?.contentType?.startsWith('video/') ?? false;
+  const currentMediaId = mediaItems[currentIndex]?.id;
+
+  // Parent-derived input for the SCRUBBER_FIX fallback. Returns a primitive so
+  // the selector reference is stable, and short-circuits to false under the
+  // shipped variant (no store reads, no extra renders).
+  const activePlayerMounted = useAppStore((state) =>
+    SCRUBBER_FIX === 'scrollEnabled' &&
+    visible &&
+    currentIsVideo &&
+    currentMediaId != null
+      ? state.media[currentMediaId]?.downloadState === 'downloaded'
+      : false,
+  );
 
   return (
     <Modal
@@ -415,28 +397,61 @@ export function MediaLightbox({
           onMomentumScrollEnd={handleMomentumScrollEnd}
           bounces={false}
           style={{ flex: 1 }}
+          // See SCRUBBER_FIX. Both props are iOS-only concerns; Android's
+          // DefaultTimeBar already claims the gesture itself.
+          canCancelContentTouches={
+            SCRUBBER_FIX === 'canCancelContentTouches' && Platform.OS === 'ios'
+              ? false
+              : undefined
+          }
+          scrollEnabled={
+            SCRUBBER_FIX === 'scrollEnabled' &&
+            Platform.OS === 'ios' &&
+            activePlayerMounted
+              ? false
+              : undefined
+          }
         >
           {/* Windowed: mount only pages within +/-1 of currentIndex.
              Placeholders keep content width so paging offset math is unaffected. */}
-          {mediaItems.map((item, index) =>
-            Math.abs(index - currentIndex) <= 1 ? (
+          {mediaItems.map((item, index) => {
+            if (Math.abs(index - currentIndex) > 1) {
+              return (
+                <View
+                  key={item.id}
+                  testID={`lightbox-placeholder-${item.id}`}
+                  style={{ width: screenWidth, height: screenHeight }}
+                />
+              );
+            }
+
+            if (item.contentType?.startsWith('video/')) {
+              return (
+                <LightboxVideoPage
+                  key={item.id}
+                  mediaId={item.id}
+                  pageWidth={screenWidth}
+                  pageHeight={screenHeight}
+                  contentType={item.contentType}
+                  thumbnailMediaId={item.thumbnailMediaId}
+                  durationMs={item.duration}
+                  // The `visible &&` term is what unmounts the player on the
+                  // close commit — iOS Modal keeps children mounted until
+                  // onDismiss, which would otherwise leave audio playing.
+                  isActive={visible && index === currentIndex}
+                />
+              );
+            }
+
+            return (
               <LightboxPage
                 key={item.id}
                 mediaId={item.id}
                 pageWidth={screenWidth}
                 pageHeight={screenHeight}
-                contentType={item.contentType}
-                thumbnailMediaId={item.thumbnailMediaId}
-                durationMs={item.duration}
               />
-            ) : (
-              <View
-                key={item.id}
-                testID={`lightbox-placeholder-${item.id}`}
-                style={{ width: screenWidth, height: screenHeight }}
-              />
-            ),
-          )}
+            );
+          })}
         </ScrollView>
 
         {/* Prev button */}

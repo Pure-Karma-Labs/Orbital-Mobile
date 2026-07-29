@@ -217,8 +217,15 @@ export async function downloadAndDecryptMedia(
       // Ensure media directory exists
       await ensureMediaDir();
 
-      // 6. Download ciphertext from server
-      const { data: ciphertextBuffer } = await downloadMedia(mediaId, signal);
+      // 6. Download ciphertext from server.
+      // file_size is passed so the transfer deadline scales with the payload —
+      // a near-cap video cannot complete inside the flat base allowance on a
+      // slow connection, and a timeout here restarts from byte 0 (#578).
+      const { data: ciphertextBuffer } = await downloadMedia(
+        mediaId,
+        signal,
+        row!.file_size,
+      );
 
       // 7. Decrypt — attachment_key and digest are stored as raw BLOB (Uint8Array)
       const keys = row!.attachment_key!;

@@ -357,7 +357,7 @@ jobs:
       - name: Install cargo-audit
         # SHA-pinned: fd2f5e3d644b484055ebf4268f474c565f148f25 = v2.81.9
         # (older install-action releases can't parse current tool manifests)
-        uses: taiki-e/install-action@c44f6b046f1c29ae5918b1e0bfdbb2f1813836fd # v2.84.1
+        uses: taiki-e/install-action@18b1216eba7f8039b0f8d131d5473787f0edce68 # v2.85.3
         with:
           tool: cargo-audit
 

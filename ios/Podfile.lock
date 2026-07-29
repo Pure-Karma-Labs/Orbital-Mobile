@@ -115,7 +115,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
-  - NitroModules (0.36.1):
+  - NitroModules (0.36.3):
     - boost
     - DoubleConversion
     - fast_float
@@ -144,7 +144,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
-  - op-sqlite (17.1.2):
+  - op-sqlite (17.1.3):
     - boost
     - DoubleConversion
     - fast_float
@@ -2954,7 +2954,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
-  - RNSentry (8.19.0):
+  - RNSentry (8.20.0):
     - boost
     - DoubleConversion
     - fast_float
@@ -3317,8 +3317,8 @@ SPEC CHECKSUMS:
   MMKVCore: 3d16ce9f7d411e135020915fde98a056859a1efa
   nanopb: fad817b59e0457d11a5dfbde799381cd727c1275
   NitroMmkv: 975be1948fd74280e6febcda06671d7bf604a4cd
-  NitroModules: 8d376059cb66130ebac6a84982c068d69012b567
-  op-sqlite: b477307db1da1465e28cd6659f0cbdc147eab610
+  NitroModules: 56e5a1760aa0d6d2b5d90854205e8278e54c4968
+  op-sqlite: 74e34ba00d8613a80fa77cb584649a4f46124a37
   OpenSSL-Universal: ecee7b138fa75a74ecf00d7ffd248fb584739b9e
   OrbitalMediaTranscoder: 1107c3517186c7ab5d887046f38fac3f2611d0cf
   OrbitalSignal: 39d2010fd67eacb834e2b4ec67dc4c2095d1cbff
@@ -3400,7 +3400,7 @@ SPEC CHECKSUMS:
   RNKeychain: a2c134ab796272c3d605e035ab727591000b30f3
   RNNotifee: 5e3b271e8ea7456a36eec994085543c9adca9168
   RNScreens: 9269ab4971b2bd24917be84295d2c2ae7d06e9be
-  RNSentry: 2cf4f25948641c31fef03bb2300f6a8982f20945
+  RNSentry: cbee957726820bf82ebc0d37ed15a9bfa37c9c45
   Sentry: e4588d62ac3fd3c82652bb7c8a215ec8c3de776b
   SocketRocket: d4aabe649be1e368d1318fdf28a022d714d65748
   uniffi-bindgen-react-native: 205a15613d97a49fe17d5bda57f7fa46a7bbafd0

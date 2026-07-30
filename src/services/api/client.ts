@@ -25,6 +25,50 @@ export { API_BASE_URL };
 const DEFAULT_TIMEOUT_MS = 15_000;
 
 // ============================================================
+// Media transfer deadline
+// ============================================================
+
+/**
+ * Base allowance for a media body transfer, before any size term.
+ *
+ * React Native's fetch resolves only after the FULL response body has been
+ * read, so `timeout` on a media GET is an end-to-end transfer deadline, not a
+ * time-to-first-byte one. A flat 60s therefore silently caps throughput: a
+ * ~45MB clip needs a sustained ~6 Mbps or it fails deterministically, and the
+ * retry restarts from byte 0 (ranged/resumable downloads are #578).
+ */
+export const MEDIA_TRANSFER_BASE_TIMEOUT_MS = 60_000;
+
+/** Extra allowance per megabyte — tolerates sustained throughput down to ~4 Mbps. */
+export const MEDIA_TRANSFER_MS_PER_MB = 2_000;
+
+/** Hard ceiling. Beyond this a stalled transfer should fail, not hang. */
+export const MEDIA_TRANSFER_MAX_TIMEOUT_MS = 600_000;
+
+/**
+ * Size-derived deadline for a media body transfer: base + 2s per MB, capped.
+ *
+ * Deliberately scoped to media GETs (see api/media.ts) — the 15s default stays
+ * in force for every JSON endpoint, where a slow response is a real failure.
+ *
+ * Unknown/zero/invalid sizes fall back to the base allowance.
+ */
+export function mediaTransferTimeoutMs(fileSizeBytes?: number | null): number {
+  if (
+    fileSizeBytes == null ||
+    !Number.isFinite(fileSizeBytes) ||
+    fileSizeBytes <= 0
+  ) {
+    return MEDIA_TRANSFER_BASE_TIMEOUT_MS;
+  }
+  const megabytes = Math.ceil(fileSizeBytes / (1024 * 1024));
+  return Math.min(
+    MEDIA_TRANSFER_BASE_TIMEOUT_MS + megabytes * MEDIA_TRANSFER_MS_PER_MB,
+    MEDIA_TRANSFER_MAX_TIMEOUT_MS,
+  );
+}
+
+// ============================================================
 // Case transformation utilities
 // ============================================================
 

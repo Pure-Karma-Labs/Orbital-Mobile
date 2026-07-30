@@ -6,6 +6,33 @@ buildscript {
         targetSdkVersion = 36
         ndkVersion = "27.1.12297006"
         kotlinVersion = "2.1.20"
+
+        // --- react-native-video (media3/ExoPlayer) --------------------------
+        // media3 version consumed by react-native-video via its safeExtGet()
+        // rootProject.ext lookup (node_modules/react-native-video/android/build.gradle).
+        // LOCKSTEP with packages/orbital-media-transcoder/android/build.gradle
+        // (`def media3Version = "1.8.1"`). Bump BOTH together (deferred #639).
+        // Enforced by scripts/check-security-invariants.mjs (media3-lockstep).
+        media3Version = "1.8.1"
+
+        // Local file:// MP4 playback only — the network manifest/segment parsers
+        // (DASH/HLS/SmoothStreaming/RTSP: real CVE history) are compiled out and
+        // their media3 artifacts never enter the dependency graph.
+        //
+        // These are NOT redundant: react-native-video's own
+        // android/gradle.properties defaults SmoothStreaming/DASH/HLS to TRUE,
+        // so without these root-ext overrides the parsers WOULD ship.
+        //
+        // Key names and coercion verified against
+        // node_modules/react-native-video/android/build.gradle: each flag is read
+        // as `safeExtGet(property)?.toBoolean() ?: false`, and Groovy's
+        // String.toBoolean() returns true only for "true" — so the "false"
+        // strings below coerce to boolean false (NOT to a truthy non-empty string).
+        useExoplayerSmoothStreaming = "false"
+        useExoplayerDash = "false"
+        useExoplayerHls = "false"
+        useExoplayerRtsp = "false"
+        useExoplayerIMA = "false"
     }
     repositories {
         google()

@@ -4,11 +4,15 @@
  * Verifies:
  * - Android: tapping report calls openReportSheet directly (via InteractionManager)
  * - iOS: tapping report stashes pending target; onDismiss triggers openReportSheet
- * - Windowing: only pages within +/-1 of currentIndex are mounted as LightboxPage
+ * - Windowing: only pages within +/-1 of currentIndex are mounted (LightboxPage for
+ *   images, LightboxVideoPage for videos)
  * - onMomentumScrollEnd shifts the window
  * - Arrow press shifts the window
  * - Reopen at new initialIndex mounts the correct window in the same commit
  * - useMediaDownload is only invoked for windowed mediaIds
+ * - Video pages: LightboxPage is image-only; video items render LightboxVideoPage,
+ *   which mounts ActiveVideoPage (real download, no suppression) when active and
+ *   VideoPoster (thumbnail only) when not
  */
 
 import React from 'react';
@@ -25,33 +29,94 @@ jest.mock('react-native-safe-area-context', () => ({
   useSafeAreaInsets: () => ({ top: 47, right: 0, bottom: 34, left: 0 }),
 }));
 
-const mockUseMediaDownload = jest.fn().mockReturnValue({
-  downloadState: 'pending',
-  localPath: null,
-});
+// react-native-video is auto-mocked via __mocks__/react-native-video.ts (root
+// __mocks__ for a node_module is auto-resolved by Jest — no jest.mock call).
+
+type DownloadState = 'pending' | 'downloading' | 'downloaded' | 'failed' | 'unavailable';
+
+interface MockDownloadResult {
+  downloadState: DownloadState;
+  localPath: string | null;
+  hasKeys: boolean;
+  retry: jest.Mock;
+}
+
+function defaultDownloadResult(): MockDownloadResult {
+  return {
+    downloadState: 'pending',
+    localPath: null,
+    hasKeys: true,
+    retry: jest.fn(),
+  };
+}
+
+const mockUseMediaDownload = jest.fn();
 
 jest.mock('../../hooks/useMediaDownload', () => ({
   useMediaDownload: (...args: unknown[]) => mockUseMediaDownload(...args),
 }));
 
-const mockUseVideoThumbnail = jest.fn().mockReturnValue({
-  isVideo: false,
-  thumbState: 'unavailable' as const,
-  thumbLocalPath: null,
-  retryThumb: jest.fn(),
-});
+/** Arg-keyed override, keyed on mediaId (first arg) — lets one render serve
+ * different items different download states. */
+function setDownloadResult(overrides: Record<string, Partial<MockDownloadResult>>): void {
+  mockUseMediaDownload.mockImplementation((mediaId: string | null) => ({
+    ...defaultDownloadResult(),
+    ...(mediaId ? overrides[mediaId] : undefined),
+  }));
+}
+
+interface MockThumbResult {
+  isVideo: boolean;
+  thumbState: DownloadState;
+  thumbLocalPath: string | null;
+  retryThumb: jest.Mock;
+}
+
+function defaultThumbResult(contentType: string | undefined): MockThumbResult {
+  return {
+    isVideo: !!contentType?.startsWith('video/'),
+    thumbState: 'unavailable',
+    thumbLocalPath: null,
+    retryThumb: jest.fn(),
+  };
+}
+
+const mockUseVideoThumbnail = jest.fn();
 
 jest.mock('../../hooks/useVideoThumbnail', () => ({
   useVideoThumbnail: (...args: unknown[]) => mockUseVideoThumbnail(...args),
 }));
 
+/** Arg-keyed override, keyed on contentType (first arg). */
+function setThumbResult(overrides: Record<string, Partial<MockThumbResult>>): void {
+  mockUseVideoThumbnail.mockImplementation((contentType: string | undefined) => ({
+    ...defaultThumbResult(contentType),
+    ...(contentType && overrides[contentType] ? overrides[contentType] : undefined),
+  }));
+}
+
 const mockOpenReportSheet = jest.fn();
+
+// useAppStore is used both as a reactive hook (MediaLightbox, ActiveVideoPage
+// call useAppStore(selector)) and imperatively (useAppStore.getState()), so the
+// mock must be callable AND expose getState. mockState is declared with the
+// "mock" prefix required by babel-plugin-jest-hoist's out-of-scope-reference
+// allowlist; both closures below only read it lazily (on selector/getState
+// invocation, i.e. at test-render time), long after this module has finished
+// initializing, so the mock-hoisting-above-const ordering is not a problem.
+const mockState: {
+  media: Record<string, { fileSize?: number | null } | undefined>;
+  openReportSheet: jest.Mock;
+} = {
+  media: {},
+  openReportSheet: mockOpenReportSheet,
+};
+
 jest.mock('../../stores/useAppStore', () => ({
-  useAppStore: {
-    getState: () => ({
-      openReportSheet: mockOpenReportSheet,
-    }),
-  },
+  useAppStore: Object.assign(
+    (selector: (s: typeof mockState) => unknown) => selector(mockState),
+    { getState: () => mockState },
+  ),
 }));
 
 // ---------------------------------------------------------------------------
@@ -104,6 +169,29 @@ function makeMediaItems(count: number) {
   }));
 }
 
+function makeVideoItem() {
+  return {
+    id: 'video-1',
+    threadId: 't-1',
+    replyId: null,
+    contentType: 'video/mp4',
+    fileName: 'clip.mp4',
+    fileSize: 50000,
+    width: 1920,
+    height: 1080,
+    duration: 42_000,
+    blurHash: null,
+    localPath: null,
+    thumbnailPath: null,
+    downloadState: 'pending' as const,
+    uploadState: 'done' as const,
+    expiresAt: null,
+    hasKeys: true,
+    thumbnailMediaId: 'thumb-v1',
+    isThumbnail: false,
+  };
+}
+
 function renderLightbox(
   props: Partial<React.ComponentProps<typeof MediaLightbox>> = {},
 ): ReactTestRenderer {
@@ -152,16 +240,11 @@ const SCREEN_WIDTH = Dimensions.get('window').width;
 
 beforeEach(() => {
   jest.clearAllMocks();
-  mockUseMediaDownload.mockReturnValue({
-    downloadState: 'pending',
-    localPath: null,
-  });
-  mockUseVideoThumbnail.mockReturnValue({
-    isVideo: false,
-    thumbState: 'unavailable' as const,
-    thumbLocalPath: null,
-    retryThumb: jest.fn(),
-  });
+  mockState.media = {};
+  mockUseMediaDownload.mockImplementation(() => defaultDownloadResult());
+  mockUseVideoThumbnail.mockImplementation((contentType: string | undefined) =>
+    defaultThumbResult(contentType),
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -439,119 +522,105 @@ describe('MediaLightbox — windowed rendering', () => {
 
 // ---------------------------------------------------------------------------
 // Video page rendering
+//
+// LightboxPage (rendered for image items) no longer touches videos at all.
+// Video items are routed to LightboxVideoPage, which always renders the outer
+// `lightbox-page-${mediaId}` wrapper (so the windowing assertions above keep
+// working unchanged for mixed galleries) and mounts either:
+//   - ActiveVideoPage (isActive: visible && index === currentIndex) — the sole
+//     trigger for the real video download, using the real mediaId
+//   - VideoPoster (not active) — thumbnail-only, never downloads the video
 // ---------------------------------------------------------------------------
 
 describe('MediaLightbox — video page', () => {
-  function makeVideoItem() {
-    return {
-      id: 'video-1',
-      threadId: 't-1',
-      replyId: null,
-      contentType: 'video/mp4',
-      fileName: 'clip.mp4',
-      fileSize: 50000,
-      width: 1920,
-      height: 1080,
-      duration: 42_000,
-      blurHash: null,
-      localPath: null,
-      thumbnailPath: null,
-      downloadState: 'pending' as const,
-      uploadState: 'done' as const,
-      expiresAt: null,
-      hasKeys: true,
-      thumbnailMediaId: 'thumb-v1',
-      isThumbnail: false,
-    };
-  }
-
-  it('video page renders thumb Image + play icon + hint text, no video-file Image', () => {
-    // When LightboxPage renders a video, useVideoThumbnail returns thumb state
-    mockUseVideoThumbnail.mockReturnValue({
-      isVideo: true,
-      thumbState: 'downloaded' as const,
-      thumbLocalPath: '/cache/thumb-v1.jpg',
-      retryThumb: jest.fn(),
-    });
-
+  it('active video page calls useMediaDownload with the real media id (no suppression)', () => {
     const videoItem = makeVideoItem();
+    mockState.media['video-1'] = { fileSize: 50000 };
+
     const renderer = renderLightbox({
       mediaItems: [videoItem],
       initialIndex: 0,
     });
 
-    // LightboxPage should exist for the video
+    // Outer lightbox-page wrapper exists regardless of active/inactive branch.
     findByTestId(renderer.root, 'lightbox-page-video-1');
 
-    // Play icon overlay present
-    const playIcons = renderer.root.findAll(
-      (n) => n.props.testID === 'play-icon-overlay',
-    );
-    expect(playIcons.length).toBeGreaterThan(0);
-
-    // Hint text present
-    const hintText = renderer.root.findAll(
-      (n) =>
-        typeof n.children?.[0] === 'string' &&
-        n.children[0].includes('playback coming soon'),
-    );
-    expect(hintText.length).toBeGreaterThan(0);
-
-    // useMediaDownload called with null for the video (suppression)
+    // The active page is ActiveVideoPage, which calls useMediaDownload with the
+    // REAL video id — the old LightboxPage suppression (useMediaDownload(null)
+    // for videos) no longer applies to the lightbox's active page.
     const downloadCalls = mockUseMediaDownload.mock.calls;
-    const videoDownloadCalls = downloadCalls.filter(
-      (call: unknown[]) => call[0] === null,
-    );
-    expect(videoDownloadCalls.length).toBeGreaterThan(0);
+    const activeCall = downloadCalls.find((call: unknown[]) => call[0] === 'video-1');
+    expect(activeCall).toBeDefined();
+    expect(activeCall?.[1]).toEqual({ cancelOnUnmount: true });
+    expect(downloadCalls.some((call: unknown[]) => call[0] === null)).toBe(false);
+
+    // Default download state is 'pending' with hasKeys true, so ActiveVideoPage
+    // falls through to its poster/downloading branch — no native player mounted.
+    findByTestId(renderer.root, 'lightbox-video-downloading-video-1');
+    expect(
+      renderer.root.findAll((n) => n.props.testID === 'lightbox-video-video-1').length,
+    ).toBe(0);
   });
 
-  it('video page with unavailable thumb shows play icon + hint, no Image', () => {
-    mockUseVideoThumbnail.mockReturnValue({
-      isVideo: true,
-      thumbState: 'unavailable' as const,
-      thumbLocalPath: null,
-      retryThumb: jest.fn(),
+  it('active video page mounts the native player once downloaded', () => {
+    const videoItem = makeVideoItem();
+    mockState.media['video-1'] = { fileSize: 50000 };
+    setDownloadResult({
+      'video-1': { downloadState: 'downloaded', localPath: '/cache/video-1.mp4' },
     });
 
-    const videoItem = makeVideoItem();
     const renderer = renderLightbox({
       mediaItems: [videoItem],
       initialIndex: 0,
     });
 
+    const video = findByTestId(renderer.root, 'lightbox-video-video-1');
+    expect(video.props.source).toEqual({ uri: 'file:///cache/video-1.mp4' });
+    expect(video.props.paused).toBe(true);
+  });
+
+  it('non-active video page renders VideoPoster with a play icon, never downloads', () => {
+    setThumbResult({
+      'video/mp4': {
+        isVideo: true,
+        thumbState: 'unavailable',
+        thumbLocalPath: null,
+      },
+    });
+
+    const imageItem = { ...MEDIA_ITEMS[0], id: 'img-0' };
+    const videoItem = makeVideoItem();
+
+    // initialIndex 0 (image) keeps the video (index 1) windowed but NOT active.
+    const renderer = renderLightbox({
+      mediaItems: [imageItem, videoItem],
+      initialIndex: 0,
+    });
+
+    // Outer wrapper exists for the non-active video page too.
     findByTestId(renderer.root, 'lightbox-page-video-1');
 
-    // Play icon present
+    // Non-active branch renders VideoPoster directly (its default testID).
+    findByTestId(renderer.root, 'lightbox-video-poster-video-1');
+
     const playIcons = renderer.root.findAll(
       (n) => n.props.testID === 'play-icon-overlay',
     );
     expect(playIcons.length).toBeGreaterThan(0);
+
+    // VideoPoster never triggers the full-video download — only the active
+    // page's ActiveVideoPage does.
+    const downloadCalls = mockUseMediaDownload.mock.calls;
+    expect(downloadCalls.some((call: unknown[]) => call[0] === 'video-1')).toBe(false);
   });
 
   it('image pages render unchanged when mixed with video', () => {
     // First item is image, second is video
-    mockUseVideoThumbnail.mockImplementation(
-      (contentType: string | undefined) => {
-        if (contentType?.startsWith('video/')) {
-          return {
-            isVideo: true,
-            thumbState: 'unavailable' as const,
-            thumbLocalPath: null,
-            retryThumb: jest.fn(),
-          };
-        }
-        return {
-          isVideo: false,
-          thumbState: 'unavailable' as const,
-          thumbLocalPath: null,
-          retryThumb: jest.fn(),
-        };
-      },
-    );
-
-    mockUseMediaDownload.mockReturnValue({
-      downloadState: 'downloaded',
-      localPath: '/cache/image.jpg',
+    setThumbResult({
+      'video/mp4': { isVideo: true, thumbState: 'unavailable', thumbLocalPath: null },
+    });
+    setDownloadResult({
+      'img-1': { downloadState: 'downloaded', localPath: '/cache/image.jpg' },
     });
 
     const imageItem = {
@@ -572,13 +641,6 @@ describe('MediaLightbox — video page', () => {
   });
 
   it('report button says "Report video" when current item is video', () => {
-    mockUseVideoThumbnail.mockReturnValue({
-      isVideo: true,
-      thumbState: 'unavailable' as const,
-      thumbLocalPath: null,
-      retryThumb: jest.fn(),
-    });
-
     const videoItem = makeVideoItem();
     const renderer = renderLightbox({
       mediaItems: [videoItem],
@@ -590,15 +652,6 @@ describe('MediaLightbox — video page', () => {
   });
 
   it('nav buttons say "media" when current item is video', () => {
-    mockUseVideoThumbnail.mockImplementation(
-      (contentType: string | undefined) => ({
-        isVideo: !!contentType?.startsWith('video/'),
-        thumbState: 'unavailable' as const,
-        thumbLocalPath: null,
-        retryThumb: jest.fn(),
-      }),
-    );
-
     const items = [
       { ...MEDIA_ITEMS[0], id: 'img-0' },
       { ...makeVideoItem(), id: 'vid-1' },

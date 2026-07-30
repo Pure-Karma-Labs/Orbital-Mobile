@@ -178,9 +178,12 @@ export function getMediaForThreadReplies(threadId: string): MediaRow[] {
  * Oldest first. Excludes failed/unavailable/downloaded rows.
  *
  * Video **parent** rows (content_type LIKE 'video/%' AND is_thumbnail = 0) are
- * excluded — they stay `pending` by design until #458 PR 3's player owns the
- * full-video download path. Video **thumbnails** are unaffected (image/* rows
- * with is_thumbnail=1).
+ * excluded — they stay `pending` by design. The MediaLightbox player is the
+ * sole trigger for full-video download, one video at a time, only while its
+ * page is on screen (#458 PR 3); this exclusion from the bulk/prefetch path
+ * is permanent, not a stepping stone. Video **thumbnails** are unaffected
+ * (image/* rows with is_thumbnail=1). Streaming decrypt and eviction of
+ * downloaded video bytes remain deferred to #578.
  *
  * Returns empty array if database is not initialized.
  */

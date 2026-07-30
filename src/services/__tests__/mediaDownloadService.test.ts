@@ -123,8 +123,53 @@ beforeEach(() => {
   rnfs.exists.mockResolvedValue(false);
   rnfs.mkdir.mockResolvedValue(undefined);
   rnfs.writeFile.mockResolvedValue(undefined);
+  rnfs.appendFile.mockResolvedValue(undefined);
   rnfs.moveFile.mockResolvedValue(undefined);
   rnfs.unlink.mockResolvedValue(undefined);
+});
+
+// ---------------------------------------------------------------------------
+// Chunked base64 write (PR #652 review: bound peak memory to O(chunk))
+// ---------------------------------------------------------------------------
+
+describe('downloadAndDecryptMedia — chunked base64 write', () => {
+  const CHUNK = 768 * 1024;
+
+  it('splits a multi-chunk plaintext into 3-byte-aligned appendFile calls covering every byte', async () => {
+    const bigPlaintext = new Uint8Array(2 * 1024 * 1024 + 5); // 2MB+5 → 3 chunks
+    mockDecryptAttachment.mockReturnValue(bigPlaintext);
+    const utils = require('../crypto/utils');
+
+    const { downloadAndDecryptMedia } = require('../mediaDownloadService');
+    await downloadAndDecryptMedia(FAKE_MEDIA_ID);
+
+    const rnfs = require('@dr.pogodin/react-native-fs');
+    const expectedCalls = Math.ceil(bigPlaintext.length / CHUNK);
+    expect(rnfs.appendFile).toHaveBeenCalledTimes(expectedCalls);
+
+    // Every encode input is chunk-sized (3-byte multiple) except the tail,
+    // and the slices tile the payload exactly.
+    const encodeInputs = (utils.arrayBufferToBase64 as jest.Mock).mock.calls.map(
+      (c: [ArrayBuffer]) => c[0].byteLength,
+    );
+    expect(encodeInputs.slice(0, -1)).toEqual(Array(expectedCalls - 1).fill(CHUNK));
+    expect(encodeInputs.reduce((a: number, b: number) => a + b, 0)).toBe(bigPlaintext.length);
+  });
+
+  it('chunked encode concatenation is byte-identical to whole-buffer encode (real util)', () => {
+    const { arrayBufferToBase64: realEncode, toArrayBuffer: realToAB } =
+      jest.requireActual('../crypto/utils');
+    // Odd length: exercises tail-chunk padding at the very end only
+    const payload = new Uint8Array(1601).map((_, i) => (i * 31) % 256);
+    const smallChunk = 768; // 3-byte multiple, forces 3 chunks
+    let chunked = '';
+    for (let off = 0; off < payload.length; off += smallChunk) {
+      chunked += realEncode(
+        realToAB(payload.subarray(off, Math.min(off + smallChunk, payload.length))),
+      );
+    }
+    expect(chunked).toBe(realEncode(realToAB(payload)));
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -160,13 +205,19 @@ describe('downloadAndDecryptMedia', () => {
     const result = await downloadAndDecryptMedia(FAKE_MEDIA_ID);
 
     // Verify download was called
-    expect(mockDownloadMedia).toHaveBeenCalledWith(FAKE_MEDIA_ID, undefined);
+    // file_size is forwarded so the transfer deadline scales with the payload
+    expect(mockDownloadMedia).toHaveBeenCalledWith(FAKE_MEDIA_ID, undefined, 1000);
 
     // Verify decryption was called
     expect(mockDecryptAttachment).toHaveBeenCalledTimes(1);
 
-    // Verify atomic write: writeFile to .tmp, then moveFile
+    // Verify atomic chunked write: truncate .tmp, append base64 chunk(s), then moveFile
     expect(rnfs.writeFile).toHaveBeenCalledWith(
+      '/tmp/test-docs/media/a1b2c3d4-e5f6-7890-abcd-ef1234567890.jpg.tmp',
+      '',
+      'base64',
+    );
+    expect(rnfs.appendFile).toHaveBeenCalledWith(
       '/tmp/test-docs/media/a1b2c3d4-e5f6-7890-abcd-ef1234567890.jpg.tmp',
       'mock-plaintext-base64',
       'base64',

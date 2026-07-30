@@ -222,6 +222,31 @@ describe('downloadMedia', () => {
     expect(result.expiresAt).toBeNull();
   });
 
+  // RN's fetch resolves only after the whole body is read, so this timeout is
+  // an end-to-end transfer deadline: it has to scale with the payload or a
+  // near-cap video fails deterministically on a slow link.
+  it('scales the transfer deadline with the known ciphertext size', async () => {
+    mockFetchBinary(new ArrayBuffer(16), {});
+    const setTimeoutSpy = jest.spyOn(globalThis, 'setTimeout');
+
+    await downloadMedia('media-789', undefined, 45 * 1024 * 1024);
+
+    const delays = setTimeoutSpy.mock.calls.map((call) => call[1]);
+    expect(delays).toContain(150_000);
+    setTimeoutSpy.mockRestore();
+  });
+
+  it('uses the flat base deadline when the size is unknown', async () => {
+    mockFetchBinary(new ArrayBuffer(16), {});
+    const setTimeoutSpy = jest.spyOn(globalThis, 'setTimeout');
+
+    await downloadMedia('media-789');
+
+    const delays = setTimeoutSpy.mock.calls.map((call) => call[1]);
+    expect(delays).toContain(60_000);
+    setTimeoutSpy.mockRestore();
+  });
+
   it('encodes mediaId in the URL path', async () => {
     const buffer = new ArrayBuffer(128);
     mockFetchBinary(buffer, {});

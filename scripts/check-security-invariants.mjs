@@ -246,6 +246,127 @@ for (const file of allFiles) {
 }
 
 // ---------------------------------------------------------------------------
+// 8. media3 version lockstep + ExoPlayer streaming-parser opt-outs
+// ---------------------------------------------------------------------------
+
+// Two independent Gradle files consume media3 (ExoPlayer): react-native-video
+// resolves `rootProject.ext.media3Version`, and the transcoder module declares
+// its own `def media3Version`. A skew between them puts two media3 versions in
+// one dependency graph — a media-parsing stack with real CVE history, so the
+// resolved version must be the one that was actually reviewed.
+//
+// Both anchors are REQUIRED to exist: a missing declaration is a violation, not
+// a vacuous pass (that is the failure mode this check exists to prevent).
+const APP_GRADLE = join('android', 'build.gradle');
+const TRANSCODER_GRADLE = join(
+  'packages',
+  'orbital-media-transcoder',
+  'android',
+  'build.gradle',
+);
+
+function readMedia3Version(path, re) {
+  let content;
+  try {
+    content = readFileSync(path, 'utf8');
+  } catch {
+    violations.push(`  ${path}:0  [media3-lockstep]  file not found — cannot verify media3 pin`);
+    return null;
+  }
+  const m = content.match(re);
+  if (m === null) {
+    violations.push(`  ${path}:0  [media3-lockstep]  no media3Version declaration found (anchor missing)`);
+    return null;
+  }
+  return m[1];
+}
+
+const appMedia3 = readMedia3Version(APP_GRADLE, /^\s*media3Version\s*=\s*"([^"]+)"/m);
+const transcoderMedia3 = readMedia3Version(
+  TRANSCODER_GRADLE,
+  /^\s*def\s+media3Version\s*=\s*"([^"]+)"/m,
+);
+
+if (appMedia3 !== null && transcoderMedia3 !== null && appMedia3 !== transcoderMedia3) {
+  violations.push(
+    `  ${APP_GRADLE}:0  [media3-lockstep]  media3Version ${appMedia3} != ${TRANSCODER_GRADLE} ${transcoderMedia3} — bump both together (#639)`,
+  );
+}
+
+// react-native-video's own android/gradle.properties DEFAULTS
+// SmoothStreaming/DASH/HLS to true, so these root-ext overrides are what keep
+// the network manifest/segment parsers out of the build. Playback is local
+// file:// MP4 only; deleting a line here silently ships a parser.
+const PARSER_OPT_OUT_FLAGS = [
+  'useExoplayerSmoothStreaming',
+  'useExoplayerDash',
+  'useExoplayerHls',
+  'useExoplayerRtsp',
+  'useExoplayerIMA',
+];
+
+try {
+  const appGradle = readFileSync(APP_GRADLE, 'utf8');
+  for (const flag of PARSER_OPT_OUT_FLAGS) {
+    // Groovy: safeExtGet(flag)?.toBoolean() — only the exact string "false"
+    // (or "FALSE"/"False") coerces to false. Anything else is a violation.
+    const m = appGradle.match(new RegExp(`^\\s*${flag}\\s*=\\s*(.+)$`, 'm'));
+    if (m === null) {
+      violations.push(
+        `  ${APP_GRADLE}:0  [media3-parser-optout]  ${flag} is not declared — react-native-video defaults it ON`,
+      );
+      continue;
+    }
+    if (!/^"false"$/i.test(m[1].trim())) {
+      violations.push(
+        `  ${APP_GRADLE}:0  [media3-parser-optout]  ${flag} must be the string "false", found: ${m[1].trim()}`,
+      );
+    }
+  }
+} catch {
+  // The file-not-found case is already reported by readMedia3Version above.
+}
+
+// ---------------------------------------------------------------------------
+// 9. react-native-video imports confined to ActiveVideoPage.tsx
+// ---------------------------------------------------------------------------
+
+// The player is the first place peer-authored bytes reach a native demuxer.
+// Keeping the import in exactly one file keeps that surface reviewable and
+// stops a future caller from mounting a player outside the active-page gate
+// (which is what bounds the download and guarantees teardown).
+const RNV_ALLOWED_FILE = join(SRC, 'components', 'ActiveVideoPage.tsx');
+const RNV_IMPORT_RE = /from\s+['"]react-native-video['"]/;
+
+for (const file of allFiles) {
+  const rel = relative('.', file);
+  if (rel.includes('__tests__/') || rel.includes('.test.ts') || rel.includes('.test.tsx')) continue;
+  if (file === RNV_ALLOWED_FILE) continue;
+
+  const lines = readFileSync(file, 'utf8').split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (RNV_IMPORT_RE.test(lines[i])) {
+      report(file, i + 1, 'rnv-import-restricted', 'react-native-video import outside ActiveVideoPage.tsx');
+    }
+  }
+}
+
+// Non-vacuity: if the allowlisted file stops importing react-native-video (or
+// is renamed away), the rule above would pass trivially. Assert the anchor.
+try {
+  const allowed = readFileSync(RNV_ALLOWED_FILE, 'utf8');
+  if (!RNV_IMPORT_RE.test(allowed)) {
+    violations.push(
+      `  ${relative('.', RNV_ALLOWED_FILE)}:0  [rnv-import-restricted]  allowlisted file no longer imports react-native-video — update the allowlist instead of leaving a vacuous rule`,
+    );
+  }
+} catch {
+  violations.push(
+    `  ${relative('.', RNV_ALLOWED_FILE)}:0  [rnv-import-restricted]  allowlisted file not found — the confinement rule would pass vacuously`,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------
 

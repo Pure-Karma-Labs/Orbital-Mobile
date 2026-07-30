@@ -10,6 +10,10 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
     groups:
+      # react-native-video (added #458 PR 3) rides this group like any other
+      # production npm dep — no special-casing needed. Its native media3
+      # dependency is NOT covered here; see the gradle section below for the
+      # media3 lockstep note.
       production-dependencies:
         dependency-type: production
       development-dependencies:
@@ -90,6 +94,15 @@ updates:
   # exactly, so advisories need a route into the PR queue. The transformer,
   # effect, and common artifacts share a release train and must be bumped
   # together — review grouped/split PRs accordingly.
+  #
+  # media3 is ALSO pinned (as `media3Version`) in this module's build.gradle
+  # AND in the app's root android/build.gradle ext block, for the
+  # react-native-video player (#458 PR 3). Dependabot only sees this module's
+  # pin, so a bump here must be mirrored by hand into android/build.gradle's
+  # `media3Version` — the two must stay in lockstep (deferred issue #639,
+  # enforced by scripts/check-security-invariants.mjs). After updating both
+  # spots, re-run the `./gradlew :app:dependencies` graph check as part of
+  # the #639 bump checklist before merging.
   - package-ecosystem: gradle
     directory: /packages/orbital-media-transcoder/android
     schedule:

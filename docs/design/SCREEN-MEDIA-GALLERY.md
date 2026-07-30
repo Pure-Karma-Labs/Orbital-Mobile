@@ -165,8 +165,10 @@ Opened by tapping any photo/video in a message grid.
 | Property | Value |
 |---|---|
 | Player | Native video player (AVPlayer on iOS, ExoPlayer on Android) |
-| Controls | Native platform controls (play/pause, scrubber, fullscreen) |
-| Autoplay | No — user taps play button |
+| Controls | Native platform controls only (play/pause, scrubber) — no custom overlay controls. The fullscreen affordance is suppressed on Android; iOS exposes no prop to hide it, so it remains present there |
+| Autoplay | No — the player mounts paused; user taps play |
+| Player mount | Active lightbox page only — one player instance exists at a time, for whichever page is currently on screen |
+| Swipe away | Unmounts the player (a real React unmount, not a pause). Swiping back re-mounts fresh: playback restarts at 0:00 — there is no seek-position memory by design |
 | Background | Black (#000000) |
 
 ---
@@ -194,6 +196,16 @@ Opened by tapping any photo/video in a message grid.
 | Indicator | Circular progress over blurred thumbnail |
 | Color | White ring on black 40% backdrop |
 | Size | 48 × 48pt |
+
+### Download Progress (Video, Lightbox)
+
+Full-video download (triggered only by the lightbox mounting its active page's player) does not yet have the byte-level progress needed to drive the ring above. The shipped interim treatment is simpler:
+
+| Property | Value |
+|---|---|
+| Indicator | Poster thumbnail (from the thumbnail child, never a blur placeholder) with a centered spinner |
+| Label | Static size line under the spinner, e.g. "Downloading · 24 MB" — no percentage or progress bar |
+| Progress ring | Deferred to #578, which adds the byte-level download progress this treatment needs |
 
 ---
 

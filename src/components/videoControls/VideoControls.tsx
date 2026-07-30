@@ -176,24 +176,34 @@ export function VideoControls({
       .failOffsetY([-10, 10])
       .runOnJS(true)
       .onBegin((e) => {
+        // Seed the committed value but do NOT render a preview yet: onBegin
+        // fires on touch-down, before activation, so rendering here would snap
+        // the thumb under a finger that has not dragged (and may never
+        // activate). scrubStart still fires, to hold the auto-hide off.
+        previewRef.current = offsetToSeconds(e.x, trackWidth, duration);
+        onInteraction('scrubStart');
+      })
+      .onStart((e) => {
+        activatedRef.current = true;
         const seconds = offsetToSeconds(e.x, trackWidth, duration);
         previewRef.current = seconds;
         setPreviewSeconds(seconds);
-        onInteraction('scrubStart');
-      })
-      .onStart(() => {
-        activatedRef.current = true;
       })
       .onUpdate((e) => {
         const seconds = offsetToSeconds(e.x, trackWidth, duration);
         previewRef.current = seconds;
         setPreviewSeconds(seconds);
       })
-      .onFinalize(() => {
+      .onFinalize((_e, success) => {
         // ONE seek per drag, on release. Seeking on every onUpdate would spam
         // the player with 60 commands/second and thrash the buffering dip that
         // ActiveVideoPage's isSeeking guard exists to absorb.
-        if (activatedRef.current) {
+        //
+        // `success` is load-bearing: RNGH calls onFinalize for END, FAILED and
+        // CANCELLED alike. A pan cancelled by ScrollView arbitration must not
+        // commit a seek to wherever the finger happened to be when the paging
+        // gesture won.
+        if (activatedRef.current && success) {
           onSeek(previewRef.current);
         }
         activatedRef.current = false;

@@ -18,6 +18,7 @@ import {
   PROGRESS_INTERVAL_MS,
   shouldArmAutoHide,
   type VisibilityEvent,
+  type VisibilityState,
 } from '../scrubberLogic';
 import { useControlsVisibility } from '../useControlsVisibility';
 
@@ -139,23 +140,59 @@ describe('fractionOfDuration', () => {
 // ---------------------------------------------------------------------------
 
 describe('nextVisibility', () => {
-  const shown = { visible: true, epoch: 3 };
-  const hidden = { visible: false, epoch: 3 };
+  const shown: VisibilityState = { visible: true, epoch: 3, scrubbing: false };
+  const hidden: VisibilityState = { visible: false, epoch: 3, scrubbing: false };
 
-  it('starts visible', () => {
-    expect(INITIAL_VISIBILITY).toEqual({ visible: true, epoch: 0 });
+  it('starts visible and not scrubbing', () => {
+    expect(INITIAL_VISIBILITY).toEqual({
+      visible: true,
+      epoch: 0,
+      scrubbing: false,
+    });
   });
 
   it.each<VisibilityEvent>(['play', 'pause', 'scrubStart', 'scrubEnd', 'ended'])(
     '%s always resolves to visible with a re-armed countdown',
     (event) => {
-      expect(nextVisibility(hidden, event)).toEqual({ visible: true, epoch: 4 });
-      expect(nextVisibility(shown, event)).toEqual({ visible: true, epoch: 4 });
+      expect(nextVisibility(hidden, event)).toMatchObject({
+        visible: true,
+        epoch: 4,
+      });
+      expect(nextVisibility(shown, event)).toMatchObject({
+        visible: true,
+        epoch: 4,
+      });
     },
   );
 
+  it('scrubStart raises the scrubbing flag and scrubEnd lowers it', () => {
+    const dragging = nextVisibility(shown, 'scrubStart');
+    expect(dragging.scrubbing).toBe(true);
+    expect(nextVisibility(dragging, 'scrubEnd').scrubbing).toBe(false);
+  });
+
+  it('carries the scrubbing flag through unrelated events', () => {
+    // A drag can outlive a timerFired that was already in flight; losing the
+    // flag there would let the next epoch bump re-arm mid-drag.
+    const dragging: VisibilityState = { visible: true, epoch: 3, scrubbing: true };
+    expect(nextVisibility(dragging, 'timerFired').scrubbing).toBe(true);
+    expect(nextVisibility(dragging, 'play').scrubbing).toBe(true);
+    expect(nextVisibility(dragging, 'pause').scrubbing).toBe(true);
+    expect(nextVisibility(dragging, 'ended').scrubbing).toBe(true);
+
+    const hiddenDragging: VisibilityState = {
+      visible: false,
+      epoch: 3,
+      scrubbing: true,
+    };
+    expect(nextVisibility(hiddenDragging, 'tap').scrubbing).toBe(true);
+  });
+
   it('tap only transitions hidden -> visible', () => {
-    expect(nextVisibility(hidden, 'tap')).toEqual({ visible: true, epoch: 4 });
+    expect(nextVisibility(hidden, 'tap')).toMatchObject({
+      visible: true,
+      epoch: 4,
+    });
   });
 
   it('tap while visible is a no-op — there is no tap-to-hide', () => {
@@ -166,7 +203,7 @@ describe('nextVisibility', () => {
   });
 
   it('timerFired hides, and is idempotent once hidden', () => {
-    expect(nextVisibility(shown, 'timerFired')).toEqual({
+    expect(nextVisibility(shown, 'timerFired')).toMatchObject({
       visible: false,
       epoch: 3,
     });
@@ -316,6 +353,37 @@ describe('useControlsVisibility', () => {
 
     act(() => {
       jest.advanceTimersByTime(AUTO_HIDE_MS);
+    });
+    expect(probe.read().visible).toBe(false);
+  });
+
+  it('never hides mid-drag, however long the drag lasts', () => {
+    const probe = makeProbe();
+    act(() => {
+      renderer = create(probe.render(true));
+    });
+
+    act(() => {
+      probe.read().notify('scrubStart');
+    });
+
+    // A deliberate, slow scrub through a long video — far past AUTO_HIDE_MS.
+    act(() => {
+      jest.advanceTimersByTime(AUTO_HIDE_MS * 4);
+    });
+    expect(probe.read().visible).toBe(true);
+
+    // Release re-arms from the release, not from the start of the drag.
+    act(() => {
+      probe.read().notify('scrubEnd');
+    });
+    act(() => {
+      jest.advanceTimersByTime(AUTO_HIDE_MS - 1);
+    });
+    expect(probe.read().visible).toBe(true);
+
+    act(() => {
+      jest.advanceTimersByTime(1);
     });
     expect(probe.read().visible).toBe(false);
   });

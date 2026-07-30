@@ -98,9 +98,21 @@ export interface VisibilityState {
    * expressible without the reducer owning a timer.
    */
   epoch: number;
+  /**
+   * True for the duration of a scrubber drag. A drag longer than AUTO_HIDE_MS
+   * would otherwise fade the chrome out from under the user's finger — the
+   * epoch only re-arms at scrubStart, and onUpdate deliberately does not
+   * dispatch (10s of reducer traffic per drag). Suppressing the countdown
+   * outright is cheaper and exact.
+   */
+  scrubbing: boolean;
 }
 
-export const INITIAL_VISIBILITY: VisibilityState = { visible: true, epoch: 0 };
+export const INITIAL_VISIBILITY: VisibilityState = {
+  visible: true,
+  epoch: 0,
+  scrubbing: false,
+};
 
 /**
  * Reducer for chrome visibility.
@@ -124,19 +136,32 @@ export function nextVisibility(
   switch (event) {
     case 'tap':
       // Hidden -> visible only. A tap while visible is a no-op by design.
-      return state.visible ? state : { visible: true, epoch: state.epoch + 1 };
+      return state.visible
+        ? state
+        : { visible: true, epoch: state.epoch + 1, scrubbing: state.scrubbing };
 
     case 'play':
     case 'pause':
-    case 'scrubStart':
-    case 'scrubEnd':
     case 'ended':
       // Always show and restart the countdown. `pause`/`ended` also disarm it
       // via shouldArmAutoHide (not playing), so the chrome stays up.
-      return { visible: true, epoch: state.epoch + 1 };
+      return {
+        visible: true,
+        epoch: state.epoch + 1,
+        scrubbing: state.scrubbing,
+      };
+
+    case 'scrubStart':
+      return { visible: true, epoch: state.epoch + 1, scrubbing: true };
+
+    case 'scrubEnd':
+      // Re-arm from release, not from the start of a long drag.
+      return { visible: true, epoch: state.epoch + 1, scrubbing: false };
 
     case 'timerFired':
-      return state.visible ? { visible: false, epoch: state.epoch } : state;
+      return state.visible
+        ? { visible: false, epoch: state.epoch, scrubbing: state.scrubbing }
+        : state;
 
     default:
       return state;
@@ -147,6 +172,9 @@ export function nextVisibility(
  * Timer-arming predicate: the countdown runs only while the chrome is up AND
  * the video is actually playing. Paused, ended, or already-hidden states leave
  * no timer pending — that is what keeps a paused player's controls on screen.
+ *
+ * Callers pass `playing && !scrubbing`: a drag in progress must hold the
+ * chrome open however long it lasts.
  */
 export function shouldArmAutoHide(visible: boolean, playing: boolean): boolean {
   return visible && playing;

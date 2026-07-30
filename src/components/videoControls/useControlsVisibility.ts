@@ -35,14 +35,16 @@ export function useControlsVisibility(playing: boolean): UseControlsVisibilityRe
   }, []);
 
   useEffect(() => {
-    if (!shouldArmAutoHide(state.visible, playing)) {
+    // `!state.scrubbing`: a drag longer than AUTO_HIDE_MS must not fade the
+    // chrome out from under the finger holding it.
+    if (!shouldArmAutoHide(state.visible, playing && !state.scrubbing)) {
       return;
     }
     const id = setTimeout(() => dispatch('timerFired'), AUTO_HIDE_MS);
     return () => clearTimeout(id);
     // `epoch` is the re-arm signal: an interaction bumps it without changing
     // `visible`, which must still restart the countdown from zero.
-  }, [state.visible, state.epoch, playing]);
+  }, [state.visible, state.epoch, state.scrubbing, playing]);
 
   return { visible: state.visible, notify };
 }

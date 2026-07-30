@@ -26,6 +26,10 @@ import { mockSeek } from '../../../__mocks__/react-native-video';
 import { ThemeProvider } from '../../theme';
 import { MediaLightbox } from '../MediaLightbox';
 import { LightboxVideoPage } from '../LightboxVideoPage';
+import {
+  PLAY_INTENT_TIMEOUT_MS,
+  TRANSIENT_PAUSE_GRACE_MS,
+} from '../ActiveVideoPage';
 import { VideoControls } from '../videoControls/VideoControls';
 import type { MediaItem } from '../../types/store';
 
@@ -447,7 +451,10 @@ describe('player props', () => {
     const video = videoNodes(renderer.root)[0];
     expect(video.props.source).toEqual({ uri: 'file:///media/video-1.mp4' });
     // Native chrome removed — replaced by the VideoControls sibling (#662).
-    expect(video.props.controls).toBeUndefined();
+    // Pinned explicitly, not left to the library default: the native
+    // controller is what drove #663's layout collapse, and a default cannot
+    // be enforced by the rnv-content-escape-pins invariant.
+    expect(video.props.controls).toBe(false);
     expect(video.props.controlsStyles).toBeUndefined();
     // Autoplay — mounting an active page IS the play intent.
     expect(video.props.paused).toBe(false);
@@ -458,12 +465,14 @@ describe('player props', () => {
     expect(video.props.playInBackground).toBe(false);
     expect(video.props.playWhenInactive).toBe(false);
     expect(video.props.showNotificationControls).toBe(false);
+    // PiP is the one escape that would outlive the lightbox entirely.
+    expect(video.props.enterPictureInPictureOnLeave).toBe(false);
     expect(video.props.ignoreSilentSwitch).toBe('ignore');
     expect(video.props.mixWithOthers).toBe('duck');
     expect(video.props.testID).toBe('lightbox-video-video-1');
   });
 
-  it('mirrors native transport state into paused', () => {
+  it('mirrors a native resume into paused immediately', () => {
     const renderer = renderLightbox({
       mediaItems: [videoItem('video-1')],
       initialIndex: 0,
@@ -478,7 +487,24 @@ describe('player props', () => {
       });
     });
     expect(videoNodes(renderer.root)[0].props.paused).toBe(false);
+  });
 
+  it('latches a user-intent pause with no grace period', () => {
+    const renderer = renderLightbox({
+      mediaItems: [videoItem('video-1')],
+      initialIndex: 0,
+    });
+
+    act(() => {
+      videoNodes(renderer.root)[0].props.onReadyForDisplay();
+    });
+    act(() => {
+      pressableByTestId(renderer.root, 'video-controls-toggle-play').props.onPress();
+    });
+    expect(videoNodes(renderer.root)[0].props.paused).toBe(true);
+
+    // The native isPlaying:false that follows the user's own pause is
+    // confirmation, not a dip — it must not be deferred.
     act(() => {
       videoNodes(renderer.root)[0].props.onPlaybackStateChanged({
         isPlaying: false,
@@ -677,7 +703,132 @@ describe('custom overlay controls', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 4. State machine
+// 4. Audio-focus handling — watchdog + transient-dip tolerance
+//
+// Both mechanisms exist because `paused` is a CONTROLLED prop: whatever this
+// component writes, the player cannot override. Getting it wrong in either
+// direction is a dead video (a play glyph over silence, or a latch ExoPlayer
+// can never resume from).
+// ---------------------------------------------------------------------------
+
+describe('audio focus', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    mockStoreMedia = { 'video-1': videoItem('video-1') };
+    downloadByMediaId = {
+      'video-1': { downloadState: 'downloaded', localPath: '/media/video-1.mp4' },
+    };
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  function renderReady(): ReactTestRenderer {
+    const renderer = renderLightbox({
+      mediaItems: [videoItem('video-1')],
+      initialIndex: 0,
+    });
+    act(() => {
+      videoNodes(renderer.root)[0].props.onReadyForDisplay();
+    });
+    return renderer;
+  }
+
+  function video(renderer: ReactTestRenderer): ReactTestInstance {
+    return videoNodes(renderer.root)[0];
+  }
+
+  it('forces pause when play intent produces no progress (focus denied)', () => {
+    const renderer = renderReady();
+    expect(video(renderer).props.paused).toBe(false);
+
+    act(() => {
+      jest.advanceTimersByTime(PLAY_INTENT_TIMEOUT_MS - 1);
+    });
+    expect(video(renderer).props.paused).toBe(false);
+
+    act(() => {
+      jest.advanceTimersByTime(1);
+    });
+    // Android refused the audio-focus request, so setPlayWhenReady never took
+    // effect. Better a play glyph than a pause glyph over a dead player.
+    expect(video(renderer).props.paused).toBe(true);
+  });
+
+  it('disarms the watchdog as soon as progress arrives', () => {
+    const renderer = renderReady();
+
+    act(() => {
+      video(renderer).props.onProgress({ currentTime: 0.3, seekableDuration: 42 });
+    });
+    act(() => {
+      jest.advanceTimersByTime(PLAY_INTENT_TIMEOUT_MS * 5);
+    });
+
+    expect(video(renderer).props.paused).toBe(false);
+  });
+
+  it('rides out a transient focus dip without latching paused', () => {
+    // A notification sound steals focus for a moment. ExoPlayer restores
+    // playWhenReady itself when focus returns — but only if we have not
+    // written paused=true in the meantime, because it cannot override a
+    // controlled prop.
+    const renderer = renderReady();
+    act(() => {
+      video(renderer).props.onProgress({ currentTime: 1, seekableDuration: 42 });
+    });
+
+    act(() => {
+      video(renderer).props.onPlaybackStateChanged({
+        isPlaying: false,
+        isSeeking: false,
+      });
+    });
+    // Not latched yet — the dip is still inside the grace window.
+    expect(video(renderer).props.paused).toBe(false);
+
+    act(() => {
+      jest.advanceTimersByTime(TRANSIENT_PAUSE_GRACE_MS - 100);
+    });
+    act(() => {
+      video(renderer).props.onPlaybackStateChanged({
+        isPlaying: true,
+        isSeeking: false,
+      });
+    });
+
+    act(() => {
+      jest.advanceTimersByTime(TRANSIENT_PAUSE_GRACE_MS * 3);
+    });
+    expect(video(renderer).props.paused).toBe(false);
+  });
+
+  it('latches a no-intent pause that outlasts the grace window', () => {
+    // Headphone unplug, or another app taking focus for real. The mirror must
+    // still work — just deferred.
+    const renderer = renderReady();
+    act(() => {
+      video(renderer).props.onProgress({ currentTime: 1, seekableDuration: 42 });
+    });
+
+    act(() => {
+      video(renderer).props.onPlaybackStateChanged({
+        isPlaying: false,
+        isSeeking: false,
+      });
+    });
+    expect(video(renderer).props.paused).toBe(false);
+
+    act(() => {
+      jest.advanceTimersByTime(TRANSIENT_PAUSE_GRACE_MS);
+    });
+    expect(video(renderer).props.paused).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 5. State machine
 // ---------------------------------------------------------------------------
 
 describe('ActiveVideoPage state machine', () => {

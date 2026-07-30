@@ -76,8 +76,26 @@ import { clampSeconds, PROGRESS_INTERVAL_MS } from './videoControls/scrubberLogi
  * refusing the audio-focus request (`requestAudioFocus()` gates
  * `setPlayWhenReady`, ReactExoplayerView.java:1326-1339). Force `paused` back
  * on so the overlay never shows a pause glyph over a dead player.
+ *
+ * Exported for the tests that drive it with fake timers.
  */
-const PLAY_INTENT_TIMEOUT_MS = 1000;
+export const PLAY_INTENT_TIMEOUT_MS = 1000;
+
+/**
+ * Grace period before a native `isPlaying: false` that carries NO user intent
+ * is mirrored into the controlled `paused` prop.
+ *
+ * With autoplay plus Android's exclusive audio focus, a notification sound is
+ * enough to make ExoPlayer emit a transient isPlaying=false. Mirroring that
+ * immediately round-trips to setPlayWhenReady(false), which is a LATCH:
+ * ExoPlayer restores playWhenReady itself when focus returns, but it cannot
+ * override a controlled prop, so the video would stay dead for good. Waiting
+ * out the dip lets the self-resume happen; a genuine external pause (headphone
+ * unplug, another app taking focus for real) still lands, just this much later.
+ *
+ * Exported for the tests that drive it with fake timers.
+ */
+export const TRANSIENT_PAUSE_GRACE_MS = 2000;
 
 /** __DEV__ only, once per app run — see the ref-API note in the header. */
 let videoManagerAsserted = false;
@@ -146,6 +164,22 @@ export function ActiveVideoPage({
   const videoRef = useRef<VideoRef>(null);
   /** Flipped by onProgress; read by the focus-denial watchdog. */
   const progressSinceIntentRef = useRef(false);
+  /**
+   * True when the user (or onEnd) asked for the pause currently in effect.
+   * Distinguishes intentional stops from transient audio-focus dips — see
+   * TRANSIENT_PAUSE_GRACE_MS.
+   */
+  const userPausedRef = useRef(false);
+  const transientPauseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearTransientPauseTimer = useCallback(() => {
+    if (transientPauseTimerRef.current !== null) {
+      clearTimeout(transientPauseTimerRef.current);
+      transientPauseTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => clearTransientPauseTimer, [clearTransientPauseTimer]);
 
   useEffect(() => {
     if (!__DEV__ || videoManagerAsserted) return;
@@ -184,27 +218,60 @@ export function ActiveVideoPage({
     }
   }, []);
 
+  /**
+   * Mirrors native transport state into the controlled `paused` prop — with
+   * two guards, because this prop is a latch the player cannot override.
+   *
+   *  - `isSeeking`: media3 drops isPlaying during the STATE_BUFFERING pass that
+   *    every scrubber seek triggers. A seek transition is not pause intent.
+   *    (iOS never emits the dip.)
+   *  - No user intent + isPlaying false: treated as POSSIBLY transient (audio
+   *    focus stolen by a notification sound). Deferred by
+   *    TRANSIENT_PAUSE_GRACE_MS; an isPlaying=true inside the window cancels
+   *    it, so ExoPlayer's own resume-on-focus-regain survives.
+   *
+   * Resumes are mirrored immediately, and a pause the user asked for latches
+   * with no delay.
+   */
   const handlePlaybackStateChanged = useCallback(
     (e: OnPlaybackStateChangedData) => {
-      // media3 drops isPlaying during the STATE_BUFFERING pass that every
-      // scrubber seek triggers. Echoing that dip into the controlled `paused`
-      // prop round-trips to setPlayWhenReady(false) and latches playback off
-      // after every Android scrub. A seek transition is not user pause intent
-      // — ignore it. (iOS never emits the dip.)
       if (e.isSeeking) {
         return;
       }
-      setPaused(!e.isPlaying);
+
+      if (e.isPlaying) {
+        clearTransientPauseTimer();
+        setPaused(false);
+        return;
+      }
+
+      if (userPausedRef.current) {
+        clearTransientPauseTimer();
+        setPaused(true);
+        return;
+      }
+
+      // Already waiting out a dip — do not restart the clock.
+      if (transientPauseTimerRef.current !== null) {
+        return;
+      }
+      transientPauseTimerRef.current = setTimeout(() => {
+        transientPauseTimerRef.current = null;
+        setPaused(true);
+      }, TRANSIENT_PAUSE_GRACE_MS);
     },
-    [],
+    [clearTransientPauseTimer],
   );
 
   const handleEnd = useCallback(() => {
+    // Reaching the end IS intent to stop — latch immediately, no grace period.
+    userPausedRef.current = true;
+    clearTransientPauseTimer();
     setPaused(true);
     setEnded(true);
     // Force the chrome back up so the replay affordance is reachable.
     notifyControls('ended');
-  }, [notifyControls]);
+  }, [notifyControls, clearTransientPauseTimer]);
 
   const handleTogglePlay = useCallback(() => {
     if (paused) {
@@ -214,13 +281,17 @@ export function ActiveVideoPage({
         setCurrentTime(0);
         setEnded(false);
       }
+      userPausedRef.current = false;
+      clearTransientPauseTimer();
       setPaused(false);
       notifyControls('play');
     } else {
+      userPausedRef.current = true;
+      clearTransientPauseTimer();
       setPaused(true);
       notifyControls('pause');
     }
-  }, [paused, ended, notifyControls]);
+  }, [paused, ended, notifyControls, clearTransientPauseTimer]);
 
   const handleSeek = useCallback(
     (seconds: number) => {
@@ -388,18 +459,23 @@ export function ActiveVideoPage({
           style={{ width: pageWidth, height: pageHeight }}
           // Explicit: iOS defaults to cover.
           resizeMode="contain"
-          // NO `controls` / `controlsStyles`. The native chrome is replaced by
-          // the VideoControls sibling below — it never received touches through
-          // the Android interop seam, and its show/hide requestLayout storm
-          // drove the portrait->landscape collapse (#663).
           paused={paused}
           // Content-escape surface pinned off — decrypted family video must not
-          // reach AirPlay/external displays, the lock screen, or background
-          // audio. Enforced by the `rnv-content-escape-pins` invariant.
+          // reach AirPlay/external displays, the lock screen, background audio,
+          // or a floating PiP window that outlives this lightbox. Enforced by
+          // the `rnv-content-escape-pins` invariant, which reads the props of
+          // this element specifically.
           allowsExternalPlayback={false}
           playInBackground={false}
           playWhenInactive={false}
           showNotificationControls={false}
+          enterPictureInPictureOnLeave={false}
+          // Native chrome OFF — replaced by the VideoControls sibling below.
+          // It never received touches through the Android interop seam, and its
+          // show/hide requestLayout storm drove the portrait/landscape collapse
+          // (#663). Pinned explicitly rather than left to default so the
+          // invariant can enforce it.
+          controls={false}
           // Deliberate audio policy — see the module header.
           ignoreSilentSwitch="ignore"
           mixWithOthers="duck"

@@ -417,23 +417,44 @@ try {
 
 // Decrypted family video must not leave the device's screen. With #662 the
 // native player chrome is gone, which also removed the visible AirPlay button
-// that the smoke runbook used to eyeball — so these four props are now the only
+// that the smoke runbook used to eyeball — so these props are now the only
 // thing standing between a decrypted clip and an external display, the lock
-// screen, or background audio. Enforce them statically.
+// screen, background audio, or a floating PiP window that outlives the
+// lightbox. `controls` is pinned too: the native controller is what drove
+// #663's layout collapse and re-exposed an AirPlay route, and leaving it at
+// the library default made it unenforceable.
+//
+// The match is scoped to the props of the <Video ... /> element with comment
+// lines stripped. Whole-file matching was satisfiable by a prop merely NAMED
+// in a comment, which is exactly the vacuity this rule exists to prevent.
 const ESCAPE_PINS = [
   'allowsExternalPlayback',
   'playInBackground',
   'playWhenInactive',
   'showNotificationControls',
+  'enterPictureInPictureOnLeave',
+  'controls',
 ];
 
 try {
   const activePage = readFileSync(RNV_ALLOWED_FILE, 'utf8');
-  for (const prop of ESCAPE_PINS) {
-    if (!new RegExp(`${prop}=\\{false\\}`).test(activePage)) {
-      violations.push(
-        `  ${relative('.', RNV_ALLOWED_FILE)}:0  [rnv-content-escape-pins]  ${prop}={false} missing on the <Video> element`,
-      );
+  const elementMatch = activePage.match(/<Video\b[\s\S]*?\n\s*\/>/);
+  if (elementMatch === null) {
+    violations.push(
+      `  ${relative('.', RNV_ALLOWED_FILE)}:0  [rnv-content-escape-pins]  no <Video ... /> element found — the content-escape rule would pass vacuously`,
+    );
+  } else {
+    const videoProps = elementMatch[0]
+      .split('\n')
+      .filter((line) => !/^\s*(\/\/|\/\*|\*)/.test(line))
+      .join('\n');
+    for (const prop of ESCAPE_PINS) {
+      // \b prevents `controls` from being satisfied by `controlsStyles`.
+      if (!new RegExp(`\\b${prop}=\\{false\\}`).test(videoProps)) {
+        violations.push(
+          `  ${relative('.', RNV_ALLOWED_FILE)}:0  [rnv-content-escape-pins]  ${prop}={false} missing on the <Video> element`,
+        );
+      }
     }
   }
 } catch {

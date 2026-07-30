@@ -28,36 +28,69 @@ jest.mock('react-native-safe-area-context', () => ({
 }));
 
 /**
- * Chainable gesture stubs — every builder method returns the same object, so
- * the real call chains in VideoControls type- and run-through unchanged. The
- * callbacks are captured but never invoked by RNGH here; tests that need to
- * exercise them call them directly.
+ * Chainable gesture stubs that also CAPTURE the callbacks they are handed.
+ *
+ * RNGH never runs a real gesture under Jest, so the only way to exercise the
+ * scrubber's onBegin/onStart/onUpdate/onFinalize contract — including the
+ * `success` flag that separates a released drag from a cancelled one — is to
+ * invoke the registered callback directly. Pan and Tap are singletons: a
+ * re-render re-registers on the same object, so `handlers` is always the
+ * latest render's closure.
  */
 jest.mock('react-native-gesture-handler', () => {
+  const METHODS = [
+    'onEnd',
+    'onBegin',
+    'onStart',
+    'onUpdate',
+    'onFinalize',
+    'runOnJS',
+    'activeOffsetX',
+    'failOffsetY',
+    'blocksExternalGesture',
+    'simultaneousWithExternalGesture',
+  ];
+
   const makeStub = () => {
-    const stub: Record<string, unknown> = {};
-    const methods = [
-      'onEnd',
-      'onBegin',
-      'onStart',
-      'onUpdate',
-      'onFinalize',
-      'runOnJS',
-      'activeOffsetX',
-      'failOffsetY',
-      'blocksExternalGesture',
-      'simultaneousWithExternalGesture',
-    ];
-    for (const m of methods) {
-      stub[m] = jest.fn(() => stub);
+    const handlers: Record<string, (...args: unknown[]) => void> = {};
+    const stub: Record<string, unknown> = { handlers };
+    for (const method of METHODS) {
+      stub[method] = (cb: unknown) => {
+        if (typeof cb === 'function') {
+          handlers[method] = cb as (...args: unknown[]) => void;
+        }
+        return stub;
+      };
     }
     return stub;
   };
+
+  const panStub = makeStub();
+  const tapStub = makeStub();
+
   return {
-    Gesture: { Tap: () => makeStub(), Pan: () => makeStub(), Native: () => makeStub() },
+    Gesture: {
+      Tap: () => tapStub,
+      Pan: () => panStub,
+      Native: () => makeStub(),
+    },
     GestureDetector: ({ children }: { children: React.ReactNode }) => children,
+    __panStub: panStub,
+    __tapStub: tapStub,
   };
 });
+
+interface GestureStub {
+  handlers: Record<string, (...args: unknown[]) => void>;
+}
+
+function panHandlers(): Record<string, (...args: unknown[]) => void> {
+  return (
+    jest.requireMock('react-native-gesture-handler') as {
+      __panStub: GestureStub;
+    }
+  ).__panStub.handlers;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -254,7 +287,129 @@ describe('scrubber track', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 4. Hidden state
+// 4. Scrubber drag contract
+// ---------------------------------------------------------------------------
+
+describe('scrubber drag', () => {
+  /** 200pt track, 40s clip — 1pt == 0.2s. */
+  function renderLaidOut(
+    overrides: Partial<VideoControlsProps> = {},
+  ): ReactTestRenderer {
+    const renderer = render({ currentTime: 10, duration: 40, ...overrides });
+    act(() => {
+      byTestId(renderer.root, 'video-controls-track')[0].props.onLayout({
+        nativeEvent: { layout: { width: 200, height: 28, x: 0, y: 0 } },
+      });
+    });
+    return renderer;
+  }
+
+  it('does not move the thumb on a bare touch-down', () => {
+    // onBegin fires before activation. Rendering a preview there would snap
+    // the thumb under a finger that has not dragged — and may never activate.
+    const renderer = renderLaidOut();
+    expect(textOf(renderer.root, 'video-controls-current-time')).toBe('0:10');
+
+    act(() => {
+      panHandlers().onBegin({ x: 200 });
+    });
+
+    expect(textOf(renderer.root, 'video-controls-current-time')).toBe('0:10');
+  });
+
+  it('still suppresses auto-hide from onBegin', () => {
+    const onInteraction = jest.fn();
+    const renderer = renderLaidOut({ onInteraction });
+    expect(renderer).toBeDefined();
+
+    act(() => {
+      panHandlers().onBegin({ x: 100 });
+    });
+
+    expect(onInteraction).toHaveBeenCalledWith('scrubStart');
+  });
+
+  it('renders the preview once the pan activates and tracks the finger', () => {
+    const renderer = renderLaidOut();
+
+    act(() => {
+      panHandlers().onBegin({ x: 100 });
+      panHandlers().onStart({ x: 100 });
+    });
+    expect(textOf(renderer.root, 'video-controls-current-time')).toBe('0:20');
+
+    act(() => {
+      panHandlers().onUpdate({ x: 150 });
+    });
+    expect(textOf(renderer.root, 'video-controls-current-time')).toBe('0:30');
+  });
+
+  it('commits exactly one seek when the drag is released', () => {
+    const onSeek = jest.fn();
+    renderLaidOut({ onSeek });
+
+    act(() => {
+      panHandlers().onBegin({ x: 0 });
+      panHandlers().onStart({ x: 0 });
+      panHandlers().onUpdate({ x: 150 });
+      panHandlers().onFinalize({}, true);
+    });
+
+    expect(onSeek).toHaveBeenCalledTimes(1);
+    expect(onSeek).toHaveBeenCalledWith(30);
+  });
+
+  it('commits NO seek when the pan is cancelled by gesture arbitration', () => {
+    // RNGH calls onFinalize for END, FAILED and CANCELLED alike. Without the
+    // `success` flag a pan the paging ScrollView won would still seek to
+    // wherever the finger happened to be.
+    const onSeek = jest.fn();
+    const onInteraction = jest.fn();
+    renderLaidOut({ onSeek, onInteraction });
+
+    act(() => {
+      panHandlers().onBegin({ x: 0 });
+      panHandlers().onStart({ x: 0 });
+      panHandlers().onUpdate({ x: 150 });
+      panHandlers().onFinalize({}, false);
+    });
+
+    expect(onSeek).not.toHaveBeenCalled();
+    // The chrome must still be released back to the auto-hide timer.
+    expect(onInteraction).toHaveBeenCalledWith('scrubEnd');
+  });
+
+  it('commits no seek for a touch that never activated', () => {
+    const onSeek = jest.fn();
+    renderLaidOut({ onSeek });
+
+    act(() => {
+      panHandlers().onBegin({ x: 120 });
+      panHandlers().onFinalize({}, false);
+    });
+
+    expect(onSeek).not.toHaveBeenCalled();
+  });
+
+  it('drops the preview after release so onProgress drives the bar again', () => {
+    const renderer = renderLaidOut();
+
+    act(() => {
+      panHandlers().onBegin({ x: 0 });
+      panHandlers().onStart({ x: 0 });
+      panHandlers().onUpdate({ x: 200 });
+    });
+    expect(textOf(renderer.root, 'video-controls-current-time')).toBe('0:40');
+
+    act(() => {
+      panHandlers().onFinalize({}, true);
+    });
+    expect(textOf(renderer.root, 'video-controls-current-time')).toBe('0:10');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 5. Hidden state
 // ---------------------------------------------------------------------------
 
 describe('hidden state', () => {

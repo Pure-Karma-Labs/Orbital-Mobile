@@ -244,7 +244,7 @@ Toast: "Allow photo access in Settings" with link to app settings.
 - **Tap "+N" overlay** → Open lightbox at first hidden photo
 - **Pinch in lightbox** → Zoom in (max 3×)
 - **Swipe down in lightbox** → Dismiss (with drag-to-dismiss animation)
-- **Tap video thumbnail** → Open native video player
+- **Tap video thumbnail** → Open lightbox at that video; playback starts automatically with the custom overlay controls
 - **Long press photo** → Context menu: Save, Share, Copy
 
 ## Light + Dark Mode

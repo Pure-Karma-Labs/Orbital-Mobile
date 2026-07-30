@@ -410,6 +410,34 @@ describe('player props', () => {
     expect(videoNodes(renderer.root)[0].props.paused).toBe(true);
   });
 
+  it('ignores seek transitions — the Android buffering dip must not latch paused (PR #652 review)', () => {
+    const renderer = renderLightbox({
+      mediaItems: [videoItem('video-1')],
+      initialIndex: 0,
+    });
+
+    // Start playback via native controls
+    act(() => {
+      videoNodes(renderer.root)[0].props.onPlaybackStateChanged({
+        isPlaying: true,
+        isSeeking: false,
+      });
+    });
+    expect(videoNodes(renderer.root)[0].props.paused).toBe(false);
+
+    // media3 emits {isPlaying:false, isSeeking:true} during the
+    // STATE_BUFFERING pass of every native-scrubber seek. Echoing it into
+    // the controlled `paused` prop would setPlayWhenReady(false) and stop
+    // playback after every Android scrub.
+    act(() => {
+      videoNodes(renderer.root)[0].props.onPlaybackStateChanged({
+        isPlaying: false,
+        isSeeking: true,
+      });
+    });
+    expect(videoNodes(renderer.root)[0].props.paused).toBe(false);
+  });
+
   it('drops the poster overlay once the first frame is ready', () => {
     const renderer = renderLightbox({
       mediaItems: [videoItem('video-1')],

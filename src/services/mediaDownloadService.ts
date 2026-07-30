@@ -29,6 +29,7 @@ import { useAppStore } from '../stores/useAppStore';
 import { createSemaphore } from '../utils/semaphore';
 import {
   writeFile,
+  appendFile,
   exists,
   mkdir,
   moveFile,
@@ -48,6 +49,28 @@ const MAX_CONCURRENT = 3;
 
 /** Sentinel error message for abort-path rejections */
 export const DOWNLOAD_ABORTED_MESSAGE = 'Download aborted';
+
+/**
+ * Chunk size for chunked base64 file writes. MUST be a multiple of 3:
+ * base64 encodes 3 input bytes to 4 output chars, so 3-byte-aligned chunks
+ * never emit internal padding and their concatenation is byte-identical to
+ * encoding the whole buffer at once.
+ */
+const BASE64_WRITE_CHUNK_BYTES = 768 * 1024;
+
+/**
+ * Write bytes to a file as base64 in bounded chunks. Peak transient memory
+ * is O(chunk) instead of O(payload) — a near-cap video through the
+ * whole-buffer path measured multi-second JS stalls and >1GB transient RSS.
+ * Streaming decrypt proper is #578; this bounds the write half.
+ */
+async function writeFileChunkedBase64(path: string, bytes: Uint8Array): Promise<void> {
+  await writeFile(path, '', 'base64');
+  for (let offset = 0; offset < bytes.length; offset += BASE64_WRITE_CHUNK_BYTES) {
+    const slice = bytes.subarray(offset, Math.min(offset + BASE64_WRITE_CHUNK_BYTES, bytes.length));
+    await appendFile(path, arrayBufferToBase64(toArrayBuffer(slice)), 'base64');
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Semaphore — limits concurrent downloads to MAX_CONCURRENT
@@ -241,9 +264,14 @@ export async function downloadAndDecryptMedia(
         plaintext = decryptAttachment(ciphertextBytes, keys, digest);
       }
 
-      // 8. Atomic write — .tmp + moveFile (F1)
-      const plaintextBase64 = arrayBufferToBase64(toArrayBuffer(plaintext));
-      await writeFile(tmpPath, plaintextBase64, 'base64');
+      // 8. Atomic write — .tmp + moveFile (F1). Chunked: a single
+      // whole-buffer base64 pass over a near-cap video (~45MB) costs a
+      // multi-second JS-thread stall and a transient allocation an order of
+      // magnitude above the payload (one giant binary string + one giant
+      // base64 string + a full bridge copy). Fixed 3-byte-multiple slices
+      // keep every chunk's base64 free of padding, so concatenated chunk
+      // encodes are byte-identical to a whole-buffer encode.
+      await writeFileChunkedBase64(tmpPath, plaintext);
       await unlink(finalPath).catch(() => {});
       await moveFile(tmpPath, finalPath);
 

@@ -87,7 +87,17 @@ export function ActiveVideoPage({
   const handleReadyForDisplay = useCallback(() => setReady(true), []);
   const handleLoad = useCallback((_e: OnLoadData) => setReady(true), []);
   const handlePlaybackStateChanged = useCallback(
-    (e: OnPlaybackStateChangedData) => setPaused(!e.isPlaying),
+    (e: OnPlaybackStateChangedData) => {
+      // media3 drops isPlaying during the STATE_BUFFERING pass that every
+      // native-scrubber seek triggers. Echoing that dip into the controlled
+      // `paused` prop round-trips to setPlayWhenReady(false) and latches
+      // playback off after every Android scrub. A seek transition is not
+      // user pause intent — ignore it. (iOS never emits the dip.)
+      if (e.isSeeking) {
+        return;
+      }
+      setPaused(!e.isPlaying);
+    },
     [],
   );
 

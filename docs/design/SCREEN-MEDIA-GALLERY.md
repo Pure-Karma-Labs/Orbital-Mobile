@@ -165,8 +165,10 @@ Opened by tapping any photo/video in a message grid.
 | Property | Value |
 |---|---|
 | Player | Native video player (AVPlayer on iOS, ExoPlayer on Android) |
-| Controls | Native platform controls only (play/pause, scrubber) — no custom overlay controls. The fullscreen affordance is suppressed on Android; iOS exposes no prop to hide it, so it remains present there |
-| Autoplay | No — the player mounts paused; user taps play |
+| Controls | Custom JS overlay (native chrome fully off, `controls={false}`): centred play/pause button; bottom bar with elapsed time · scrubber track · duration, monospace, white (`#FFFFFF`) on a black at 50% opacity (`rgba(0, 0, 0, 0.5)`) surface. Auto-hides 3s after playback starts; tap anywhere brings the chrome back. Turning off native chrome also removed the duplicate ✕ button and the iOS fullscreen affordance |
+| Autoplay | Yes — any active lightbox page starts playing on mount. Opening the lightbox on a video, or swiping onto one, IS the play intent. There is no seek-position memory: unmount is the pause, and swiping back restarts at 0:00 |
+| Audio | Full sound on autoplay (deliberate policy). `ignoreSilentSwitch="ignore"` is retained, so a silenced iPhone still plays audio; on Android the exclusive audio-focus request stops background music (`mixWithOthers="duck"` is iOS-only — Android cannot duck). The volume rocker is the mute control |
+| Scrubbing | Drag the track to preview the position; a single seek commits on release, never per-frame |
 | Player mount | Active lightbox page only — one player instance exists at a time, for whichever page is currently on screen |
 | Swipe away | Unmounts the player (a real React unmount, not a pause). Swiping back re-mounts fresh: playback restarts at 0:00 — there is no seek-position memory by design |
 | Background | Black (#000000) |
@@ -242,7 +244,7 @@ Toast: "Allow photo access in Settings" with link to app settings.
 - **Tap "+N" overlay** → Open lightbox at first hidden photo
 - **Pinch in lightbox** → Zoom in (max 3×)
 - **Swipe down in lightbox** → Dismiss (with drag-to-dismiss animation)
-- **Tap video thumbnail** → Open native video player
+- **Tap video thumbnail** → Open lightbox at that video; playback starts automatically with the custom overlay controls
 - **Long press photo** → Context menu: Save, Share, Copy
 
 ## Light + Dark Mode

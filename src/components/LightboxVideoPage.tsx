@@ -18,6 +18,7 @@
 
 import React from 'react';
 import { View, type ViewStyle } from 'react-native';
+import type { GestureType } from 'react-native-gesture-handler';
 import { ActiveVideoPage } from './ActiveVideoPage';
 import { VideoPoster } from './VideoPoster';
 
@@ -34,6 +35,11 @@ export interface LightboxVideoPageProps {
   durationMs?: number | null;
   /** visible && index === currentIndex — see module header. */
   isActive: boolean;
+  /**
+   * Pass-through only: MediaLightbox -> ActiveVideoPage -> VideoControls.
+   * See VideoControlsProps.scrollGesture (A4 tier (iii), unwired today).
+   */
+  scrollGesture?: GestureType;
 }
 
 // ---------------------------------------------------------------------------
@@ -48,6 +54,7 @@ export const LightboxVideoPage = React.memo(function LightboxVideoPage({
   thumbnailMediaId,
   durationMs,
   isActive,
+  scrollGesture,
 }: LightboxVideoPageProps): React.JSX.Element {
   const pageStyle: ViewStyle = {
     width: pageWidth,
@@ -66,6 +73,7 @@ export const LightboxVideoPage = React.memo(function LightboxVideoPage({
           contentType={contentType}
           thumbnailMediaId={thumbnailMediaId}
           durationMs={durationMs}
+          scrollGesture={scrollGesture}
         />
       ) : (
         <VideoPoster

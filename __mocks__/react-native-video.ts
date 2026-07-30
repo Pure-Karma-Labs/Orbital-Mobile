@@ -5,21 +5,34 @@
  * (root-level __mocks__ for a node_module needs no explicit jest.mock call).
  *
  * Renders a host component named 'Video' forwarding ALL props, so tests can
- * assert on props (source.uri, controls, paused, allowsExternalPlayback, ...)
- * and invoke callbacks (onLoad / onError / onEnd / onReadyForDisplay /
- * onPlaybackStateChanged) from inside act().
+ * assert on props (source.uri, paused, progressUpdateInterval,
+ * allowsExternalPlayback, ...) and invoke callbacks (onLoad / onProgress /
+ * onEnd / onError / onReadyForDisplay / onPlaybackStateChanged) from inside
+ * act().
  *
  * NOTE: react-native-video 6.x has no Fabric component (its
  * lib/specs/VideoNativeComponent.js is `requireNativeComponent('RCTVideo')`),
- * so the real module renders through RN's legacy ViewManager interop layer.
- * The imperative ref API is deliberately NOT mocked — it must never be used
- * (it silently no-ops through interop).
+ * so the real module renders through RN's legacy ViewManager interop layer,
+ * where Fabric ref methods silently no-op. `seek()` is the ONE documented
+ * exception: it is a JS closure over the legacy bridge NativeModule
+ * `VideoManager.seekCmd` (src/Video.tsx:390-416) and works on both platforms,
+ * so it IS mocked here — ActiveVideoPage's custom scrubber depends on it
+ * (#662). Nothing else on the ref is exposed, deliberately.
  */
 
 import React from 'react';
 
-const Video = (props: Record<string, unknown>): React.JSX.Element =>
-  React.createElement('Video', props);
+export const mockSeek = jest.fn();
+
+const Video = React.forwardRef<
+  { seek: (time: number, tolerance?: number) => void },
+  Record<string, unknown>
+>((props, ref) => {
+  React.useImperativeHandle(ref, () => ({ seek: mockSeek }), []);
+  return React.createElement('Video', props);
+});
+
+Video.displayName = 'Video';
 
 export default Video;
 

@@ -29,6 +29,59 @@ jest.mock('react-native-safe-area-context', () => ({
   useSafeAreaInsets: () => ({ top: 47, right: 0, bottom: 34, left: 0 }),
 }));
 
+/**
+ * MediaLightbox mounts a GestureHandlerRootView inside the Modal (#662 — an
+ * Android Modal is a separate window, so App.tsx's root does not reach in), and
+ * the video overlay it hosts builds Pan/Tap gestures. The real module's native
+ * spec throws under Jest, so stub the surface: chainable builders that return
+ * themselves, and a root view that forwards its style (it IS the backdrop).
+ */
+jest.mock('react-native-gesture-handler', () => {
+  const ReactActual = require('react');
+  const { View } = require('react-native');
+
+  const makeChainable = (methods: string[]): Record<string, () => unknown> => {
+    const stub: Record<string, () => unknown> = {};
+    for (const method of methods) {
+      stub[method] = () => stub;
+    }
+    return stub;
+  };
+
+  const panChainable = makeChainable([
+    'activeOffsetX',
+    'failOffsetY',
+    'runOnJS',
+    'onBegin',
+    'onStart',
+    'onUpdate',
+    'onFinalize',
+    'blocksExternalGesture',
+  ]);
+  const tapChainable = makeChainable(['onEnd', 'runOnJS']);
+
+  return {
+    Gesture: {
+      Pan: () => panChainable,
+      Tap: () => tapChainable,
+      Native: () => makeChainable([]),
+    },
+    GestureDetector: ({ children }: { children: React.ReactNode }) => children,
+    GestureHandlerRootView: ({
+      children,
+      style,
+    }: {
+      children?: React.ReactNode;
+      style?: unknown;
+    }) =>
+      ReactActual.createElement(
+        View,
+        { style, testID: 'lightbox-gesture-root' },
+        children,
+      ),
+  };
+});
+
 // react-native-video is auto-mocked via __mocks__/react-native-video.ts (root
 // __mocks__ for a node_module is auto-resolved by Jest — no jest.mock call).
 
@@ -576,7 +629,8 @@ describe('MediaLightbox — video page', () => {
 
     const video = findByTestId(renderer.root, 'lightbox-video-video-1');
     expect(video.props.source).toEqual({ uri: 'file:///cache/video-1.mp4' });
-    expect(video.props.paused).toBe(true);
+    // Autoplay (#662): mounting the active page IS the play intent.
+    expect(video.props.paused).toBe(false);
   });
 
   it('non-active video page renders VideoPoster with a play icon, never downloads', () => {

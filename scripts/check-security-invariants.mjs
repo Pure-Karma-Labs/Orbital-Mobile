@@ -367,6 +367,103 @@ try {
 }
 
 // ---------------------------------------------------------------------------
+// 10. New Architecture required while react-native-video is a dependency
+// ---------------------------------------------------------------------------
+
+// react-native-video 6.x has no Fabric component, so it renders through RN's
+// legacy ViewManager interop. Its imperative commands (seek included) are
+// dispatched by VideoManagerModule via UIManagerHelper with
+// UIManagerType.FABRIC, which is selected from the app's `newArchEnabled`
+// gradle property. Turning that off does not fall back to a paper path — it
+// resolves no view and every player command silently no-ops, so the custom
+// scrubber (#662) would render and do nothing.
+//
+// Anchored on the dependency: if react-native-video is ever removed, this rule
+// must be deleted rather than left to pass vacuously.
+const PKG_JSON = 'package.json';
+const GRADLE_PROPS = join('android', 'gradle.properties');
+
+try {
+  const pkg = JSON.parse(readFileSync(PKG_JSON, 'utf8'));
+  if (pkg.dependencies?.['react-native-video'] === undefined) {
+    violations.push(
+      `  ${PKG_JSON}:0  [rnv-newarch-required]  react-native-video is no longer a dependency — delete this rule instead of leaving a vacuous check`,
+    );
+  } else {
+    let gradleProps;
+    try {
+      gradleProps = readFileSync(GRADLE_PROPS, 'utf8');
+    } catch {
+      gradleProps = null;
+      violations.push(
+        `  ${GRADLE_PROPS}:0  [rnv-newarch-required]  file not found — cannot verify newArchEnabled`,
+      );
+    }
+    if (gradleProps !== null && !/^\s*newArchEnabled\s*=\s*true\s*$/m.test(gradleProps)) {
+      violations.push(
+        `  ${GRADLE_PROPS}:0  [rnv-newarch-required]  newArchEnabled=true is required while react-native-video ships — without it every player command (seek) silently no-ops`,
+      );
+    }
+  }
+} catch {
+  violations.push(
+    `  ${PKG_JSON}:0  [rnv-newarch-required]  package.json unreadable — cannot verify the react-native-video anchor`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 11. Player content-escape props pinned off
+// ---------------------------------------------------------------------------
+
+// Decrypted family video must not leave the device's screen. With #662 the
+// native player chrome is gone, which also removed the visible AirPlay button
+// that the smoke runbook used to eyeball — so these props are now the only
+// thing standing between a decrypted clip and an external display, the lock
+// screen, background audio, or a floating PiP window that outlives the
+// lightbox. `controls` is pinned too: the native controller is what drove
+// #663's layout collapse and re-exposed an AirPlay route, and leaving it at
+// the library default made it unenforceable.
+//
+// The match is scoped to the props of the <Video ... /> element with comment
+// lines stripped. Whole-file matching was satisfiable by a prop merely NAMED
+// in a comment, which is exactly the vacuity this rule exists to prevent.
+const ESCAPE_PINS = [
+  'allowsExternalPlayback',
+  'playInBackground',
+  'playWhenInactive',
+  'showNotificationControls',
+  'enterPictureInPictureOnLeave',
+  'controls',
+];
+
+try {
+  const activePage = readFileSync(RNV_ALLOWED_FILE, 'utf8');
+  const elementMatch = activePage.match(/<Video\b[\s\S]*?\n\s*\/>/);
+  if (elementMatch === null) {
+    violations.push(
+      `  ${relative('.', RNV_ALLOWED_FILE)}:0  [rnv-content-escape-pins]  no <Video ... /> element found — the content-escape rule would pass vacuously`,
+    );
+  } else {
+    const videoProps = elementMatch[0]
+      .split('\n')
+      .filter((line) => !/^\s*(\/\/|\/\*|\*)/.test(line))
+      .join('\n');
+    for (const prop of ESCAPE_PINS) {
+      // \b prevents `controls` from being satisfied by `controlsStyles`.
+      if (!new RegExp(`\\b${prop}=\\{false\\}`).test(videoProps)) {
+        violations.push(
+          `  ${relative('.', RNV_ALLOWED_FILE)}:0  [rnv-content-escape-pins]  ${prop}={false} missing on the <Video> element`,
+        );
+      }
+    }
+  }
+} catch {
+  violations.push(
+    `  ${relative('.', RNV_ALLOWED_FILE)}:0  [rnv-content-escape-pins]  player file not found — the content-escape rule would pass vacuously`,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------
 

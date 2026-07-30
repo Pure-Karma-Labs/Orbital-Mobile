@@ -188,18 +188,25 @@ describe('nextVisibility', () => {
     expect(nextVisibility(hiddenDragging, 'tap').scrubbing).toBe(true);
   });
 
-  it('tap only transitions hidden -> visible', () => {
+  it('tap shows the chrome and arms the countdown when hidden', () => {
     expect(nextVisibility(hidden, 'tap')).toMatchObject({
       visible: true,
       epoch: 4,
     });
   });
 
-  it('tap while visible is a no-op — there is no tap-to-hide', () => {
-    // The full-page detector is unmounted while the chrome is up, so this
-    // branch only exists to guarantee the button can never be hidden by the
-    // ancestor tap that a press might also satisfy (#518).
-    expect(nextVisibility(shown, 'tap')).toBe(shown);
+  it('tap dismisses the chrome when visible (tap-anywhere-to-dismiss)', () => {
+    // Deciding that this tap was NOT a press on a control happens upstream in
+    // VideoControls; the reducer just toggles.
+    expect(nextVisibility(shown, 'tap')).toMatchObject({
+      visible: false,
+      epoch: 3,
+    });
+  });
+
+  it('round-trips through a tap pair', () => {
+    const dismissed = nextVisibility(shown, 'tap');
+    expect(nextVisibility(dismissed, 'tap').visible).toBe(true);
   });
 
   it('timerFired hides, and is idempotent once hidden', () => {
@@ -212,8 +219,7 @@ describe('nextVisibility', () => {
 
   it('returns the same object reference on no-op transitions', () => {
     // Identity is the useReducer bail-out signal — a fresh object would
-    // re-render the overlay on every swallowed tap.
-    expect(nextVisibility(shown, 'tap')).toBe(shown);
+    // re-render the overlay for nothing.
     expect(nextVisibility(hidden, 'timerFired')).toBe(hidden);
   });
 
@@ -334,6 +340,20 @@ describe('useControlsVisibility', () => {
       jest.advanceTimersByTime(100);
     });
     expect(probe.read().visible).toBe(false);
+  });
+
+  it('dismisses on tap while visible, with no timer left pending', () => {
+    const probe = makeProbe();
+    act(() => {
+      renderer = create(probe.render(true));
+    });
+    expect(probe.read().visible).toBe(true);
+
+    act(() => {
+      probe.read().notify('tap');
+    });
+    expect(probe.read().visible).toBe(false);
+    expect(jest.getTimerCount()).toBe(0);
   });
 
   it('brings the chrome back on tap and hides it again after 3s', () => {

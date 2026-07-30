@@ -121,10 +121,12 @@ export const INITIAL_VISIBILITY: VisibilityState = {
  *
  *  1. `play` and `pause` ALWAYS resolve to visible-plus-rearmed — pressing the
  *     button can never hide the button you just pressed, whatever order the
- *     tap layer and the touchable resolve in.
- *  2. `tap` only ever transitions hidden -> visible. There is no tap-to-hide,
- *     because the full-page tap detector is unmounted while the chrome is
- *     visible; dismissal is the timer's job alone.
+ *     tap layer and the touchable resolve in. This is the reducer half of the
+ *     defence; VideoControls' suppression window is the other half.
+ *  2. `tap` TOGGLES in both directions (tap-anywhere-to-dismiss, Alex
+ *     2026-07-30). Distinguishing a tap on empty space from a press on a
+ *     control is VideoControls' job, not the reducer's — by the time an event
+ *     reaches here it has already been judged.
  *
  * Returns the SAME object when nothing changes, so useReducer bails out of the
  * re-render.
@@ -135,9 +137,10 @@ export function nextVisibility(
 ): VisibilityState {
   switch (event) {
     case 'tap':
-      // Hidden -> visible only. A tap while visible is a no-op by design.
+      // Showing arms the countdown; dismissing has nothing to count down, so
+      // the epoch stays put (same reasoning as timerFired).
       return state.visible
-        ? state
+        ? { visible: false, epoch: state.epoch, scrubbing: state.scrubbing }
         : { visible: true, epoch: state.epoch + 1, scrubbing: state.scrubbing };
 
     case 'play':

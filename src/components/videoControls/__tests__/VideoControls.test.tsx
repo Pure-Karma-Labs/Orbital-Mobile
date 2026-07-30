@@ -17,7 +17,11 @@ import {
   type ReactTestRenderer,
 } from 'react-test-renderer';
 import { ThemeProvider } from '../../../theme';
-import { VideoControls, type VideoControlsProps } from '../VideoControls';
+import {
+  CONTROL_SUPPRESSION_MS,
+  VideoControls,
+  type VideoControlsProps,
+} from '../VideoControls';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -90,6 +94,14 @@ function panHandlers(): Record<string, (...args: unknown[]) => void> {
       __panStub: GestureStub;
     }
   ).__panStub.handlers;
+}
+
+function tapHandlers(): Record<string, (...args: unknown[]) => void> {
+  return (
+    jest.requireMock('react-native-gesture-handler') as {
+      __tapStub: GestureStub;
+    }
+  ).__tapStub.handlers;
 }
 
 // ---------------------------------------------------------------------------
@@ -178,14 +190,28 @@ describe('play/pause button', () => {
     expect(byTestId(renderer.root, 'video-controls-toggle-play')[0]).toBeDefined();
     const glyphs = textContents(renderer.root);
     expect(glyphs).toContain('❚❚');
-    expect(glyphs).not.toContain('▶');
+    expect(glyphs.some((g) => typeof g === 'string' && g.includes('▶'))).toBe(
+      false,
+    );
   });
 
   it('shows the play glyph while paused', () => {
     const renderer = render({ paused: true });
     const glyphs = textContents(renderer.root);
-    expect(glyphs).toContain('▶');
+    expect(glyphs).toContain('▶︎');
     expect(glyphs).not.toContain('❚❚');
+  });
+
+  it('forces TEXT presentation on the play triangle', () => {
+    // U+25B6 is emoji-eligible and iOS defaults it to emoji presentation — it
+    // shipped as a grey rounded emoji button on device while Android drew the
+    // plain triangle. U+FE0E VARIATION SELECTOR-15 pins text presentation.
+    const renderer = render({ paused: true });
+    const play = textContents(renderer.root).find(
+      (g): g is string => typeof g === 'string' && g.includes('▶'),
+    );
+    expect(play).toBeDefined();
+    expect(play).toContain('︎');
   });
 
   it('calls onTogglePlay exactly once per press', () => {
@@ -409,25 +435,118 @@ describe('scrubber drag', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 5. Hidden state
+// 5. Tap-anywhere toggle + control suppression
+//
+// The full-page Tap is live in BOTH visibility states now, sitting directly
+// under the play button and the scrubber. RNGH's native handlers do not take
+// part in the JS responder system, so a press on a control can ALSO satisfy
+// the page Tap — which would dismiss the chrome the user just reached for.
+// CONTROL_SUPPRESSION_MS is what separates the two.
+// ---------------------------------------------------------------------------
+
+describe('tap-anywhere toggle', () => {
+  function tapPage(): void {
+    act(() => {
+      tapHandlers().onEnd({}, true);
+    });
+  }
+
+  it('toggles on a tap over empty space', () => {
+    const onInteraction = jest.fn();
+    render({ visible: true, onInteraction });
+
+    tapPage();
+
+    expect(onInteraction).toHaveBeenCalledWith('tap');
+  });
+
+  it('does NOT toggle when the play button was just pressed', () => {
+    // The exact #518 shape: button press and page tap both resolve, in
+    // platform-dependent order. Without suppression the chrome would vanish
+    // the instant the user pressed play.
+    const onInteraction = jest.fn();
+    const onTogglePlay = jest.fn();
+    const renderer = render({ visible: true, onInteraction, onTogglePlay });
+
+    act(() => {
+      pressableByTestId(renderer.root, 'video-controls-toggle-play').props.onPress();
+    });
+    tapPage();
+
+    expect(onTogglePlay).toHaveBeenCalledTimes(1);
+    expect(onInteraction).not.toHaveBeenCalledWith('tap');
+  });
+
+  it('does NOT toggle when a scrubber drag just finished', () => {
+    const onInteraction = jest.fn();
+    const renderer = render({ visible: true, currentTime: 10, duration: 40, onInteraction });
+    act(() => {
+      byTestId(renderer.root, 'video-controls-track')[0].props.onLayout({
+        nativeEvent: { layout: { width: 200, height: 28, x: 0, y: 0 } },
+      });
+    });
+
+    act(() => {
+      panHandlers().onBegin({ x: 50 });
+      panHandlers().onStart({ x: 50 });
+      panHandlers().onFinalize({}, true);
+    });
+    onInteraction.mockClear();
+    tapPage();
+
+    expect(onInteraction).not.toHaveBeenCalledWith('tap');
+  });
+
+  it('resumes toggling once the suppression window has elapsed', () => {
+    const nowSpy = jest.spyOn(Date, 'now');
+    try {
+      nowSpy.mockReturnValue(1_000_000);
+      const onInteraction = jest.fn();
+      const renderer = render({ visible: true, onInteraction });
+
+      act(() => {
+        pressableByTestId(renderer.root, 'video-controls-toggle-play').props.onPress();
+      });
+
+      // One millisecond short — still suppressed.
+      nowSpy.mockReturnValue(1_000_000 + CONTROL_SUPPRESSION_MS - 1);
+      tapPage();
+      expect(onInteraction).not.toHaveBeenCalledWith('tap');
+
+      nowSpy.mockReturnValue(1_000_000 + CONTROL_SUPPRESSION_MS);
+      tapPage();
+      expect(onInteraction).toHaveBeenCalledWith('tap');
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6. Hidden state
 // ---------------------------------------------------------------------------
 
 describe('hidden state', () => {
-  it('renders no full-page tap layer while the chrome is visible', () => {
-    // #518: an ancestor tap competing with the button is the bug this avoids.
-    const renderer = render({ visible: true });
-    expect(byTestId(renderer.root, 'video-controls-tap-layer').length).toBe(0);
-    expect(byTestId(renderer.root, 'video-controls-chrome')[0].props.pointerEvents).toBe(
-      'box-none',
-    );
-  });
+  it('keeps the tap layer mounted in both states — tap now toggles', () => {
+    const visibleRenderer = render({ visible: true });
+    expect(byTestId(visibleRenderer.root, 'video-controls-tap-layer').length).toBe(1);
+    expect(
+      byTestId(visibleRenderer.root, 'video-controls-chrome')[0].props.pointerEvents,
+    ).toBe('box-none');
 
-  it('mounts the tap layer and stops the chrome taking touches while hidden', () => {
-    const renderer = render({ visible: false });
-    expect(byTestId(renderer.root, 'video-controls-tap-layer').length).toBe(1);
-    expect(byTestId(renderer.root, 'video-controls-chrome')[0].props.pointerEvents).toBe(
-      'none',
-    );
+    act(() => {
+      visibleRenderer.update(
+        React.createElement(
+          ThemeProvider,
+          { colorSchemeOverride: 'light' },
+          React.createElement(VideoControls, { ...BASE_PROPS, visible: false }),
+        ),
+      );
+    });
+    expect(byTestId(visibleRenderer.root, 'video-controls-tap-layer').length).toBe(1);
+    expect(
+      byTestId(visibleRenderer.root, 'video-controls-chrome')[0].props.pointerEvents,
+    ).toBe('none');
   });
 
   it('animates opacity toward 0 when hidden and 1 when shown', () => {

@@ -50,7 +50,27 @@ import {
 // Constants
 // ---------------------------------------------------------------------------
 
+/**
+ * Transport glyphs.
+ *
+ * PLAY carries U+FE0E VARIATION SELECTOR-15. U+25B6 BLACK RIGHT-POINTING
+ * TRIANGLE is emoji-eligible, and iOS defaults it to emoji presentation — it
+ * rendered as a grey rounded emoji button on device while Android showed the
+ * plain text triangle. VS-15 forces text presentation on both.
+ *
+ * PAUSE (U+275A HEAVY VERTICAL BAR) is text-default everywhere and needs no
+ * selector. Add VS-15 to any new glyph that appears in Unicode's emoji data.
+ */
+const PLAY_GLYPH = '▶︎';
+const PAUSE_GLYPH = '❚❚';
+
 const TOGGLE_BUTTON_SIZE = 64;
+/**
+ * How long a control interaction suppresses the full-page tap toggle.
+ *
+ * Exported for the tests that drive the boundary with a mocked clock.
+ */
+export const CONTROL_SUPPRESSION_MS = 400;
 const TRACK_HEIGHT = 3;
 const TRACK_HIT_HEIGHT = 28;
 const THUMB_SIZE = 12;
@@ -149,21 +169,53 @@ export function VideoControls({
     setTrackWidth(e.nativeEvent.layout.width);
   }, []);
 
+  /**
+   * Timestamp of the last interaction with a real control. The full-page tap
+   * detector ignores toggles within CONTROL_SUPPRESSION_MS of it.
+   *
+   * This replaces the earlier "only mount the detector while hidden" approach.
+   * That worked because there was nothing to conflict with — but tap-anywhere
+   * must now DISMISS as well as show, so the detector has to stay live while
+   * the chrome is up, right underneath the play button and the scrubber.
+   * RNGH's native handlers do not take part in the JS responder system, so a
+   * press on a control can also satisfy the full-page Tap, in
+   * platform-dependent order (#518). A short suppression window is the
+   * mechanism the review panel proposed for exactly this: it needs no gesture
+   * relations, no ref plumbing into the touchable, and it fails safe — the
+   * worst case is one ignored tap, not a dead control.
+   */
+  const lastControlInteractionRef = useRef(0);
+
+  const stampControlInteraction = useCallback(() => {
+    lastControlInteractionRef.current = Date.now();
+  }, []);
+
   const handleTogglePlay = useCallback(() => {
+    stampControlInteraction();
     onTogglePlay();
-  }, [onTogglePlay]);
+  }, [onTogglePlay, stampControlInteraction]);
+
+  /** Every scrubber boundary stamps, so a drag can never toggle the chrome. */
+  const handleInteraction = useCallback(
+    (event: VisibilityEvent) => {
+      stampControlInteraction();
+      onInteraction(event);
+    },
+    [onInteraction, stampControlInteraction],
+  );
 
   /**
-   * Full-page tap detector. Mounted ONLY while the chrome is hidden, so it can
-   * never race the play/pause touchable: RNGH's native handlers do not take
-   * part in the JS responder system, and an ancestor Tap that survives a
-   * nested press resolves in platform-dependent order (#518). Not rendering it
-   * is the fix, not gesture relations.
+   * Full-page tap: shows the chrome when hidden, dismisses it when visible.
+   * Deliberately calls `onInteraction` raw — a toggle must not stamp itself,
+   * or a quick second tap would be swallowed.
    */
-  const showTapGesture = useMemo(
+  const toggleTapGesture = useMemo(
     () =>
       Gesture.Tap()
         .onEnd(() => {
+          if (Date.now() - lastControlInteractionRef.current < CONTROL_SUPPRESSION_MS) {
+            return;
+          }
           onInteraction('tap');
         })
         .runOnJS(true),
@@ -181,7 +233,7 @@ export function VideoControls({
         // the thumb under a finger that has not dragged (and may never
         // activate). scrubStart still fires, to hold the auto-hide off.
         previewRef.current = offsetToSeconds(e.x, trackWidth, duration);
-        onInteraction('scrubStart');
+        handleInteraction('scrubStart');
       })
       .onStart((e) => {
         activatedRef.current = true;
@@ -208,12 +260,12 @@ export function VideoControls({
         }
         activatedRef.current = false;
         setPreviewSeconds(null);
-        onInteraction('scrubEnd');
+        handleInteraction('scrubEnd');
       });
 
     // See VideoControlsProps.scrollGesture — A4 tier (iii), unwired by default.
     return scrollGesture ? gesture.blocksExternalGesture(scrollGesture) : gesture;
-  }, [trackWidth, duration, onSeek, onInteraction, scrollGesture]);
+  }, [trackWidth, duration, onSeek, handleInteraction, scrollGesture]);
 
   // -------------------------------------------------------------------------
   // Derived display values
@@ -311,11 +363,13 @@ export function VideoControls({
 
   return (
     <View style={fillStyle} pointerEvents="box-none" testID="video-controls">
-      {!visible && (
-        <GestureDetector gesture={showTapGesture}>
-          <View style={fillStyle} testID="video-controls-tap-layer" />
-        </GestureDetector>
-      )}
+      {/* Always mounted — tap toggles in BOTH directions now. It sits BELOW
+          the chrome in paint order, so a press still lands on the button or
+          the track; the suppression window covers the case where RNGH lets
+          the full-page Tap fire as well. */}
+      <GestureDetector gesture={toggleTapGesture}>
+        <View style={fillStyle} testID="video-controls-tap-layer" />
+      </GestureDetector>
 
       <Animated.View
         style={[fillStyle, { opacity }]}
@@ -333,7 +387,9 @@ export function VideoControls({
             accessibilityLabel={paused ? 'Play video' : 'Pause video'}
             testID="video-controls-toggle-play"
           >
-            <Text style={toggleGlyphStyle}>{paused ? '▶' : '❚❚'}</Text>
+            <Text style={toggleGlyphStyle}>
+              {paused ? PLAY_GLYPH : PAUSE_GLYPH}
+            </Text>
           </TouchableOpacity>
         </View>
 

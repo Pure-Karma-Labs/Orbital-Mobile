@@ -10,16 +10,23 @@
  */
 
 import React from 'react';
-import { Platform, Dimensions } from 'react-native';
+import { Dimensions } from 'react-native';
 import {
   act,
   create,
   type ReactTestRenderer,
   type ReactTestInstance,
 } from 'react-test-renderer';
+// Imported by relative path, not the bare specifier: react-native-video's own
+// .d.ts (what tsc typechecks against) does not export `mockSeek` — only the
+// manual mock does. Jest resolves the bare 'react-native-video' import inside
+// the component tree to this exact file too (root-level __mocks__ convention),
+// so both paths share the same singleton jest.fn().
+import { mockSeek } from '../../../__mocks__/react-native-video';
 import { ThemeProvider } from '../../theme';
 import { MediaLightbox } from '../MediaLightbox';
 import { LightboxVideoPage } from '../LightboxVideoPage';
+import { VideoControls } from '../videoControls/VideoControls';
 import type { MediaItem } from '../../types/store';
 
 // ---------------------------------------------------------------------------
@@ -29,6 +36,63 @@ import type { MediaItem } from '../../types/store';
 jest.mock('react-native-safe-area-context', () => ({
   useSafeAreaInsets: () => ({ top: 47, right: 0, bottom: 34, left: 0 }),
 }));
+
+/**
+ * House pattern (see ChatMessageItem/ReplyItem tests) extended with a
+ * chainable Pan stub — VideoControls' scrubber declares
+ * `.activeOffsetX().failOffsetY().runOnJS().onBegin().onStart().onUpdate()
+ * .onFinalize()` (plus an optional `.blocksExternalGesture()`), and every
+ * link in that chain must return the same stub object. The mock swallows
+ * real gestures entirely, which is why the seek-commit test below invokes
+ * VideoControls' `onSeek` prop directly instead of simulating a drag.
+ *
+ * GestureHandlerRootView forwards `style` (MediaLightbox's backdrop style
+ * lives on it) and carries a fixed testID so `scrubber vs paging` can assert
+ * the Modal-local root is actually mounted.
+ */
+jest.mock('react-native-gesture-handler', () => {
+  const ReactActual = require('react');
+  const { View } = require('react-native');
+
+  const panChainable: Record<string, () => unknown> = {};
+  [
+    'activeOffsetX',
+    'failOffsetY',
+    'runOnJS',
+    'onBegin',
+    'onStart',
+    'onUpdate',
+    'onFinalize',
+    'blocksExternalGesture',
+  ].forEach((method) => {
+    panChainable[method] = () => panChainable;
+  });
+
+  const tapChainable: Record<string, () => unknown> = {};
+  ['onEnd', 'runOnJS'].forEach((method) => {
+    tapChainable[method] = () => tapChainable;
+  });
+
+  return {
+    Gesture: {
+      Pan: () => panChainable,
+      Tap: () => tapChainable,
+    },
+    GestureDetector: ({ children }: { children: React.ReactNode }) => children,
+    GestureHandlerRootView: ({
+      children,
+      style,
+    }: {
+      children?: React.ReactNode;
+      style?: unknown;
+    }) =>
+      ReactActual.createElement(
+        View,
+        { style, testID: 'lightbox-gesture-root' },
+        children,
+      ),
+  };
+});
 
 const mockRetry = jest.fn();
 
@@ -218,6 +282,15 @@ function scrollView(root: ReactTestInstance): ReactTestInstance {
   return root.findAll((n) => n.props.onMomentumScrollEnd != null)[0];
 }
 
+/** Text content of the (single) host node carrying this testID. */
+function textContentByTestId(
+  root: ReactTestInstance,
+  testID: string,
+): string | undefined {
+  const node = byTestId(root, testID)[0];
+  return node?.children?.[0] as string | undefined;
+}
+
 const SCREEN_WIDTH = Dimensions.get('window').width;
 
 beforeEach(() => {
@@ -365,7 +438,7 @@ describe('player props', () => {
     };
   });
 
-  it('plays the local file with native controls, paused, no content escape', () => {
+  it('plays the local file with the native chrome removed, autoplaying, no content escape', () => {
     const renderer = renderLightbox({
       mediaItems: [videoItem('video-1')],
       initialIndex: 0,
@@ -373,10 +446,13 @@ describe('player props', () => {
 
     const video = videoNodes(renderer.root)[0];
     expect(video.props.source).toEqual({ uri: 'file:///media/video-1.mp4' });
-    expect(video.props.controls).toBe(true);
-    // No autoplay.
-    expect(video.props.paused).toBe(true);
+    // Native chrome removed — replaced by the VideoControls sibling (#662).
+    expect(video.props.controls).toBeUndefined();
+    expect(video.props.controlsStyles).toBeUndefined();
+    // Autoplay — mounting an active page IS the play intent.
+    expect(video.props.paused).toBe(false);
     expect(video.props.resizeMode).toBe('contain');
+    expect(video.props.progressUpdateInterval).toBe(100);
     // Content-escape surface pinned off.
     expect(video.props.allowsExternalPlayback).toBe(false);
     expect(video.props.playInBackground).toBe(false);
@@ -393,6 +469,8 @@ describe('player props', () => {
       initialIndex: 0,
     });
 
+    // Autoplay already starts `paused` false; the isPlaying:true transition
+    // below is a no-op on the assertion but still exercises the mirror path.
     act(() => {
       videoNodes(renderer.root)[0].props.onPlaybackStateChanged({
         isPlaying: true,
@@ -416,7 +494,7 @@ describe('player props', () => {
       initialIndex: 0,
     });
 
-    // Start playback via native controls
+    // Confirm playing (autoplay already started it).
     act(() => {
       videoNodes(renderer.root)[0].props.onPlaybackStateChanged({
         isPlaying: true,
@@ -459,7 +537,147 @@ describe('player props', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3. State machine
+// 3. Custom overlay controls (#662)
+// ---------------------------------------------------------------------------
+
+describe('custom overlay controls', () => {
+  beforeEach(() => {
+    mockStoreMedia = { 'video-1': videoItem('video-1') };
+    downloadByMediaId = {
+      'video-1': { downloadState: 'downloaded', localPath: '/media/video-1.mp4' },
+    };
+  });
+
+  function video(renderer: ReactTestRenderer): ReactTestInstance {
+    return videoNodes(renderer.root)[0];
+  }
+
+  it('mounts the overlay only once the player is ready for display', () => {
+    const renderer = renderLightbox({
+      mediaItems: [videoItem('video-1')],
+      initialIndex: 0,
+    });
+
+    expect(byTestId(renderer.root, 'video-controls-toggle-play').length).toBe(0);
+
+    act(() => {
+      video(renderer).props.onReadyForDisplay();
+    });
+
+    expect(byTestId(renderer.root, 'video-controls-toggle-play').length).toBe(1);
+  });
+
+  it('renders formatted current time and duration from onLoad/onProgress', () => {
+    const renderer = renderLightbox({
+      mediaItems: [videoItem('video-1')],
+      initialIndex: 0,
+    });
+
+    act(() => {
+      video(renderer).props.onReadyForDisplay();
+    });
+    act(() => {
+      video(renderer).props.onLoad({ duration: 42 });
+    });
+    act(() => {
+      video(renderer).props.onProgress({ currentTime: 5, seekableDuration: 42 });
+    });
+
+    expect(textContentByTestId(renderer.root, 'video-controls-current-time')).toBe(
+      '0:05',
+    );
+    expect(textContentByTestId(renderer.root, 'video-controls-duration')).toBe(
+      '0:42',
+    );
+  });
+
+  it('pauses on end', () => {
+    const renderer = renderLightbox({
+      mediaItems: [videoItem('video-1')],
+      initialIndex: 0,
+    });
+
+    act(() => {
+      video(renderer).props.onReadyForDisplay();
+    });
+    act(() => {
+      video(renderer).props.onEnd();
+    });
+
+    expect(video(renderer).props.paused).toBe(true);
+  });
+
+  it('replays from zero when the toggle-play button is pressed after end', () => {
+    const renderer = renderLightbox({
+      mediaItems: [videoItem('video-1')],
+      initialIndex: 0,
+    });
+
+    act(() => {
+      video(renderer).props.onReadyForDisplay();
+    });
+    act(() => {
+      video(renderer).props.onEnd();
+    });
+    expect(video(renderer).props.paused).toBe(true);
+
+    const toggle = pressableByTestId(renderer.root, 'video-controls-toggle-play');
+    act(() => {
+      toggle.props.onPress();
+    });
+
+    expect(mockSeek).toHaveBeenCalledWith(0);
+    expect(video(renderer).props.paused).toBe(false);
+  });
+
+  it('commits exactly one seek per VideoControls onSeek call', () => {
+    const renderer = renderLightbox({
+      mediaItems: [videoItem('video-1')],
+      initialIndex: 0,
+    });
+
+    act(() => {
+      video(renderer).props.onReadyForDisplay();
+    });
+    // clampSeconds treats an unknown (zero) duration as "no valid target",
+    // so a duration must be known before a mid-range seek can commit as-is.
+    act(() => {
+      video(renderer).props.onLoad({ duration: 42 });
+    });
+
+    const controls = renderer.root.findByType(VideoControls);
+    act(() => {
+      controls.props.onSeek(12);
+    });
+
+    expect(mockSeek).toHaveBeenCalledTimes(1);
+    expect(mockSeek).toHaveBeenCalledWith(12);
+  });
+
+  it('clamps a seek target past the known duration', () => {
+    const renderer = renderLightbox({
+      mediaItems: [videoItem('video-1')],
+      initialIndex: 0,
+    });
+
+    act(() => {
+      video(renderer).props.onReadyForDisplay();
+    });
+    act(() => {
+      video(renderer).props.onLoad({ duration: 42 });
+    });
+
+    const controls = renderer.root.findByType(VideoControls);
+    act(() => {
+      controls.props.onSeek(999);
+    });
+
+    expect(mockSeek).toHaveBeenCalledWith(42);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4. State machine
 // ---------------------------------------------------------------------------
 
 describe('ActiveVideoPage state machine', () => {
@@ -568,32 +786,19 @@ describe('ActiveVideoPage state machine', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 4. Scrubber vs paging — shipped variant
+// 5. Scrubber vs paging — shipped variant
+//
+// Arbitration is now plain RNGH (A4 tier (i)): the scrubber's Gesture.Pan
+// calls requestDisallowInterceptTouchEvent on Android, and on iOS RNGH
+// arbitrates through recognizer delegates rather than the ScrollView's UIKit
+// touch tracking. Neither `canCancelContentTouches` nor `scrollEnabled` is
+// set on the paging ScrollView on either platform — see MediaLightbox.tsx's
+// comment above the ScrollView for the pre-designed (ii)/(iii) escalations
+// if a device ever needs them.
 // ---------------------------------------------------------------------------
 
 describe('scrubber vs paging', () => {
-  const originalOS = Platform.OS;
-  afterEach(() => {
-    (Platform as { OS: string }).OS = originalOS;
-  });
-
-  it('stops the iOS paging ScrollView from stealing scrubber drags', () => {
-    (Platform as { OS: string }).OS = 'ios';
-    mockStoreMedia = { 'video-1': videoItem('video-1') };
-    downloadByMediaId = {
-      'video-1': { downloadState: 'downloaded', localPath: '/media/video-1.mp4' },
-    };
-
-    const renderer = renderLightbox({
-      mediaItems: [videoItem('video-1'), imageItem('img-2')],
-      initialIndex: 0,
-    });
-
-    expect(scrollView(renderer.root).props.canCancelContentTouches).toBe(false);
-  });
-
-  it('leaves the Android ScrollView untouched (DefaultTimeBar claims the gesture)', () => {
-    (Platform as { OS: string }).OS = 'android';
+  it('never sets canCancelContentTouches or scrollEnabled on the paging ScrollView', () => {
     mockStoreMedia = { 'video-1': videoItem('video-1') };
     downloadByMediaId = {
       'video-1': { downloadState: 'downloaded', localPath: '/media/video-1.mp4' },
@@ -605,10 +810,24 @@ describe('scrubber vs paging', () => {
     });
 
     expect(scrollView(renderer.root).props.canCancelContentTouches).toBeUndefined();
+    expect(scrollView(renderer.root).props.scrollEnabled).toBeUndefined();
+  });
+
+  it('mounts a GestureHandlerRootView backdrop inside the Modal', () => {
+    mockStoreMedia = { 'video-1': videoItem('video-1') };
+    downloadByMediaId = {
+      'video-1': { downloadState: 'downloaded', localPath: '/media/video-1.mp4' },
+    };
+
+    const renderer = renderLightbox({
+      mediaItems: [videoItem('video-1')],
+      initialIndex: 0,
+    });
+
+    expect(byTestId(renderer.root, 'lightbox-gesture-root').length).toBe(1);
   });
 
   it('never disables paging — including the round-2 stale-latch scenarios', () => {
-    (Platform as { OS: string }).OS = 'ios';
     mockStoreMedia = { 'video-1': videoItem('video-1') };
     downloadByMediaId = {
       'video-1': { downloadState: 'downloaded', localPath: '/media/video-1.mp4' },

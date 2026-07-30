@@ -10,7 +10,13 @@
  *
  * Video pages are delegated to LightboxVideoPage, which mounts the native
  * player ONLY for the active page. The lightbox is the sole trigger for
- * full-video downloads (thumbnails download everywhere else).
+ * full-video downloads (thumbnails download everywhere else). Video transport
+ * chrome is the custom JS overlay in components/videoControls — the native
+ * player controls were removed in #662.
+ *
+ * GestureHandlerRootView is mounted INSIDE the Modal: on Android a Modal is a
+ * separate window, and the app-root GestureHandlerRootView in App.tsx does not
+ * reach into it, so the scrubber pan and the tap-to-show layer would be dead.
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -30,6 +36,7 @@ import {
   type TextStyle,
   type ViewStyle,
 } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../theme';
 import { useMediaDownload } from '../hooks/useMediaDownload';
@@ -38,31 +45,6 @@ import { LightboxVideoPage } from './LightboxVideoPage';
 import { useAppStore } from '../stores/useAppStore';
 import type { MediaItem } from '../types/store';
 import type { ReportTarget } from '../types/store';
-
-// ---------------------------------------------------------------------------
-// Scrubber vs paging (plan §3e)
-// ---------------------------------------------------------------------------
-
-/**
- * How the paging ScrollView yields horizontal drags to the player's scrubber.
- *
- * 'canCancelContentTouches' (SHIPPED): iOS-only ScrollView prop — once a touch
- * lands on a child that handles it, the ScrollView never steals it back, so a
- * scrubber drag seeks instead of paging. Swipe paging is untouched everywhere,
- * including on poster pages. Android needs nothing: media3's DefaultTimeBar
- * already calls requestDisallowInterceptTouchEvent.
- *
- * 'scrollEnabled' (FALLBACK, one-line switch): iOS-gated hard disable of paging
- * while the active page has a mounted player. Derived here in the parent from
- * (contentType, downloadState) rather than reported up by the child — the
- * child-written boolean had no clear-on-unmount and could permanently freeze
- * paging for every later gallery, including all-image ones. Derivation also
- * means there is no latch to reset. Coarser than "is actually playing": it
- * kills paging for a downloaded-but-paused video too, which is why it is the
- * fallback and not the default.
- */
-const SCRUBBER_FIX: 'canCancelContentTouches' | 'scrollEnabled' =
-  'canCancelContentTouches';
 
 // ---------------------------------------------------------------------------
 // Props
@@ -316,19 +298,6 @@ export function MediaLightbox({
   const showNav = mediaItems.length > 1;
   const navVerticalCenter = screenHeight / 2 - NAV_BUTTON_SIZE / 2;
   const currentIsVideo = mediaItems[currentIndex]?.contentType?.startsWith('video/') ?? false;
-  const currentMediaId = mediaItems[currentIndex]?.id;
-
-  // Parent-derived input for the SCRUBBER_FIX fallback. Returns a primitive so
-  // the selector reference is stable, and short-circuits to false under the
-  // shipped variant (no store reads, no extra renders).
-  const activePlayerMounted = useAppStore((state) =>
-    SCRUBBER_FIX === 'scrollEnabled' &&
-    visible &&
-    currentIsVideo &&
-    currentMediaId != null
-      ? state.media[currentMediaId]?.downloadState === 'downloaded'
-      : false,
-  );
 
   return (
     <Modal
@@ -341,7 +310,10 @@ export function MediaLightbox({
       statusBarTranslucent
     >
       <StatusBar hidden={visible} />
-      <View style={backdropStyle}>
+      {/* Doubles as the backdrop. Android Modals are separate windows, so
+          App.tsx's root GestureHandlerRootView does not reach in here and the
+          video overlay's gestures would be dead without this one. */}
+      <GestureHandlerRootView style={backdropStyle}>
         {/* Report button */}
         <TouchableOpacity
           style={{
@@ -397,20 +369,16 @@ export function MediaLightbox({
           onMomentumScrollEnd={handleMomentumScrollEnd}
           bounces={false}
           style={{ flex: 1 }}
-          // See SCRUBBER_FIX. Both props are iOS-only concerns; Android's
-          // DefaultTimeBar already claims the gesture itself.
-          canCancelContentTouches={
-            SCRUBBER_FIX === 'canCancelContentTouches' && Platform.OS === 'ios'
-              ? false
-              : undefined
-          }
-          scrollEnabled={
-            SCRUBBER_FIX === 'scrollEnabled' &&
-            Platform.OS === 'ios' &&
-            activePlayerMounted
-              ? false
-              : undefined
-          }
+          // Scrubber vs paging is now plain RNGH arbitration (A4 tier (i)):
+          // the scrubber's Gesture.Pan calls requestDisallowInterceptTouchEvent
+          // on Android, and on iOS RNGH arbitrates through recognizer delegates
+          // rather than the ScrollView's UIKit touch tracking — which is why
+          // the old canCancelContentTouches prop was never the lever it looked
+          // like. Two pre-designed escalations if a device says otherwise:
+          //   (ii) add `delaysContentTouches={false}` here;
+          //   (iii) wrap this ScrollView in <GestureDetector gesture={native}>
+          //         with `const native = Gesture.Native()` and pass `native` to
+          //         LightboxVideoPage's scrollGesture prop (already threaded).
         >
           {/* Windowed: mount only pages within +/-1 of currentIndex.
              Placeholders keep content width so paging offset math is unaffected. */}
@@ -487,7 +455,7 @@ export function MediaLightbox({
             <Text style={navTextStyle}>{'>'}</Text>
           </TouchableOpacity>
         )}
-      </View>
+      </GestureHandlerRootView>
     </Modal>
   );
 }

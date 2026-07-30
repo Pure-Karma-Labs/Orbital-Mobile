@@ -16,13 +16,32 @@
  * Unmount-on-inactive is also the pause: there is no seek-position memory by
  * design — swiping back restarts at 0:00.
  *
- * PROPS ONLY, NEVER THE REF API: react-native-video 6.x ships no Fabric
- * component (`requireNativeComponent('RCTVideo')`), so it renders through RN's
- * legacy ViewManager interop layer where imperative ref calls silently no-op.
+ * AUTOPLAY: mounting an active page starts playback (`paused` initialises
+ * false). Opening the lightbox on a video, or swiping onto one, IS the play
+ * intent — #662 replaced the old three-taps-to-play flow.
+ *
+ * AUDIO POLICY (Alex, 2026-07-30, deliberate): full sound on autoplay.
+ * `ignoreSilentSwitch="ignore"` is retained, so a silenced iPhone still plays
+ * audio, and on Android the exclusive AUDIOFOCUS_GAIN request stops whatever
+ * music was playing (`mixWithOthers="duck"` is iOS-only; Android cannot duck).
+ * Both consequences are accepted: tapping a video thumbnail means you want to
+ * watch it with sound, and the volume rocker is the mute control.
+ *
+ * PROPS ONLY, WITH ONE DOCUMENTED EXCEPTION: react-native-video 6.x ships no
+ * Fabric component (`requireNativeComponent('RCTVideo')`), so it renders
+ * through RN's legacy ViewManager interop layer where Fabric ref methods
+ * silently no-op. `seek()` is NOT one of them — src/Video.tsx:390-416 shows it
+ * is a plain JS closure over the legacy bridge NativeModule
+ * `VideoManager.seekCmd` (iOS unwraps the interop wrapper via RCTBridgeProxy;
+ * Android dispatches through UIManagerHelper with UIManagerType.FABRIC, gated
+ * on the app's `newArchEnabled` gradle property — enforced by the
+ * `rnv-newarch-required` security invariant). Scrubbing therefore uses the ref;
+ * play/pause stays on the controlled `paused` prop.
  */
 
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  NativeModules,
   Text,
   TouchableOpacity,
   View,
@@ -32,14 +51,36 @@ import {
 import Video, {
   type OnLoadData,
   type OnPlaybackStateChangedData,
+  type OnProgressData,
   type OnVideoErrorData,
+  type VideoRef,
 } from 'react-native-video';
+import type { GestureType } from 'react-native-gesture-handler';
 import { useTheme } from '../theme';
 import { useAppStore } from '../stores/useAppStore';
 import { useMediaDownload } from '../hooks/useMediaDownload';
 import { formatMB } from '../utils/formatBytes';
 import { OrbitalSpinner } from './OrbitalSpinner';
 import { VideoPoster } from './VideoPoster';
+import { VideoControls } from './videoControls/VideoControls';
+import { useControlsVisibility } from './videoControls/useControlsVisibility';
+import { clampSeconds, PROGRESS_INTERVAL_MS } from './videoControls/scrubberLogic';
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/**
+ * Focus-denial watchdog window. If play intent is set and no onProgress lands
+ * within this, the player is not actually running — the usual cause is Android
+ * refusing the audio-focus request (`requestAudioFocus()` gates
+ * `setPlayWhenReady`, ReactExoplayerView.java:1326-1339). Force `paused` back
+ * on so the overlay never shows a pause glyph over a dead player.
+ */
+const PLAY_INTENT_TIMEOUT_MS = 1000;
+
+/** __DEV__ only, once per app run — see the ref-API note in the header. */
+let videoManagerAsserted = false;
 
 // ---------------------------------------------------------------------------
 // Props
@@ -52,6 +93,11 @@ export interface ActiveVideoPageProps {
   contentType?: string;
   thumbnailMediaId?: string | null;
   durationMs?: number | null;
+  /**
+   * Pre-designed A4 tier (iii) escape hatch, forwarded verbatim to
+   * VideoControls — see VideoControlsProps.scrollGesture. Undefined today.
+   */
+  scrollGesture?: GestureType;
 }
 
 // ---------------------------------------------------------------------------
@@ -65,6 +111,7 @@ export function ActiveVideoPage({
   contentType,
   thumbnailMediaId,
   durationMs,
+  scrollGesture,
 }: ActiveVideoPageProps): React.JSX.Element {
   const theme = useTheme();
 
@@ -79,20 +126,71 @@ export function ActiveVideoPage({
     cancelOnUnmount: true,
   });
 
-  // Native player state. `paused` starts true — no autoplay, ever.
-  const [paused, setPaused] = useState(true);
+  // Native player state. `paused` starts FALSE — mounting an active page is
+  // the play intent (#662 autoplay; see the header's audio-policy note).
+  const [paused, setPaused] = useState(false);
   const [ready, setReady] = useState(false);
   const [playerFailed, setPlayerFailed] = useState(false);
 
+  // Overlay-controls state.
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  /** True between onEnd and the next play/seek — the next play replays from 0. */
+  const [ended, setEnded] = useState(false);
+
+  // `ready &&` matters: the overlay only mounts once the first frame is up, so
+  // the 3s countdown must not run down during a slow download/load.
+  const { visible: controlsVisible, notify: notifyControls } =
+    useControlsVisibility(ready && !paused);
+
+  const videoRef = useRef<VideoRef>(null);
+  /** Flipped by onProgress; read by the focus-denial watchdog. */
+  const progressSinceIntentRef = useRef(false);
+
+  useEffect(() => {
+    if (!__DEV__ || videoManagerAsserted) return;
+    videoManagerAsserted = true;
+    if (NativeModules.VideoManager == null) {
+      // console.warn, not error: Jest --ci fails a test on console.error.
+      console.warn(
+        '[ActiveVideoPage] NativeModules.VideoManager is missing — seek() is a no-op. ' +
+          'Check newArchEnabled / the react-native-video native build.',
+      );
+    }
+  }, []);
+
   const handleReadyForDisplay = useCallback(() => setReady(true), []);
-  const handleLoad = useCallback((_e: OnLoadData) => setReady(true), []);
+
+  const handleLoad = useCallback((e: OnLoadData) => {
+    setReady(true);
+    if (Number.isFinite(e?.duration) && e.duration > 0) {
+      setDuration(e.duration);
+    }
+  }, []);
+
+  /**
+   * Scrubber position comes from onProgress, NEVER from onSeek: Android does
+   * not reliably emit onSeek while paused, so a seek-driven bar would freeze.
+   */
+  const handleProgress = useCallback((e: OnProgressData) => {
+    progressSinceIntentRef.current = true;
+    if (Number.isFinite(e?.currentTime)) {
+      setCurrentTime(e.currentTime);
+    }
+    // onLoad occasionally lands with duration 0 on Android; onProgress carries
+    // seekableDuration and is the reliable late source.
+    if (Number.isFinite(e?.seekableDuration) && e.seekableDuration > 0) {
+      setDuration((prev) => (prev > 0 ? prev : e.seekableDuration));
+    }
+  }, []);
+
   const handlePlaybackStateChanged = useCallback(
     (e: OnPlaybackStateChangedData) => {
       // media3 drops isPlaying during the STATE_BUFFERING pass that every
-      // native-scrubber seek triggers. Echoing that dip into the controlled
-      // `paused` prop round-trips to setPlayWhenReady(false) and latches
-      // playback off after every Android scrub. A seek transition is not
-      // user pause intent — ignore it. (iOS never emits the dip.)
+      // scrubber seek triggers. Echoing that dip into the controlled `paused`
+      // prop round-trips to setPlayWhenReady(false) and latches playback off
+      // after every Android scrub. A seek transition is not user pause intent
+      // — ignore it. (iOS never emits the dip.)
       if (e.isSeeking) {
         return;
       }
@@ -100,6 +198,66 @@ export function ActiveVideoPage({
     },
     [],
   );
+
+  const handleEnd = useCallback(() => {
+    setPaused(true);
+    setEnded(true);
+    // Force the chrome back up so the replay affordance is reachable.
+    notifyControls('ended');
+  }, [notifyControls]);
+
+  const handleTogglePlay = useCallback(() => {
+    if (paused) {
+      if (ended) {
+        // Replay: rewind first, then release the transport.
+        videoRef.current?.seek(0);
+        setCurrentTime(0);
+        setEnded(false);
+      }
+      setPaused(false);
+      notifyControls('play');
+    } else {
+      setPaused(true);
+      notifyControls('pause');
+    }
+  }, [paused, ended, notifyControls]);
+
+  const handleSeek = useCallback(
+    (seconds: number) => {
+      const target = clampSeconds(seconds, duration);
+      videoRef.current?.seek(target);
+      // Optimistic: the bar must not snap backwards while the player buffers.
+      setCurrentTime(target);
+      if (duration > 0 && target < duration) {
+        setEnded(false);
+      }
+    },
+    [duration],
+  );
+
+  /**
+   * Focus-denial watchdog (spike A2 acceptance criterion). Armed on every
+   * transition into play intent; disarmed the moment `paused` flips back.
+   *
+   * `ready` gates it: before onLoad there is no player to make progress (the
+   * file may still be downloading), and arming then would pause the autoplay
+   * we are about to start.
+   */
+  useEffect(() => {
+    if (paused || !ready) return;
+    progressSinceIntentRef.current = false;
+    const timer = setTimeout(() => {
+      if (progressSinceIntentRef.current) return;
+      if (__DEV__) {
+        console.warn(
+          '[ActiveVideoPage] no playback progress within 1s of play intent — ' +
+            'forcing pause (audio focus denied?)',
+        );
+      }
+      setPaused(true);
+    }, PLAY_INTENT_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [paused, ready]);
 
   /**
    * Terminal on the FIRST error — no retry.
@@ -222,31 +380,49 @@ export function ActiveVideoPage({
     return (
       <View style={pageStyle}>
         <Video
+          ref={videoRef}
           testID={`lightbox-video-${mediaId}`}
           // The mp4/mov/m4v extension is load-bearing on iOS: AVFoundation
           // infers the container from it (PR #644).
           source={{ uri: `file://${localPath}` }}
           style={{ width: pageWidth, height: pageHeight }}
+          // Explicit: iOS defaults to cover.
           resizeMode="contain"
-          controls
+          // NO `controls` / `controlsStyles`. The native chrome is replaced by
+          // the VideoControls sibling below — it never received touches through
+          // the Android interop seam, and its show/hide requestLayout storm
+          // drove the portrait->landscape collapse (#663).
           paused={paused}
           // Content-escape surface pinned off — decrypted family video must not
-          // reach AirPlay/external displays, the lock screen, or background audio.
+          // reach AirPlay/external displays, the lock screen, or background
+          // audio. Enforced by the `rnv-content-escape-pins` invariant.
           allowsExternalPlayback={false}
           playInBackground={false}
           playWhenInactive={false}
           showNotificationControls={false}
-          // Tapping play is an explicit intent to hear it.
+          // Deliberate audio policy — see the module header.
           ignoreSilentSwitch="ignore"
           mixWithOthers="duck"
-          // Android honours this; iOS's native fullscreen button is not
-          // suppressible via props (open smoke item).
-          controlsStyles={{ hideFullscreen: true }}
+          progressUpdateInterval={PROGRESS_INTERVAL_MS}
           onLoad={handleLoad}
+          onProgress={handleProgress}
+          onEnd={handleEnd}
           onReadyForDisplay={handleReadyForDisplay}
           onPlaybackStateChanged={handlePlaybackStateChanged}
           onError={handleError}
         />
+        {ready && (
+          <VideoControls
+            paused={paused}
+            currentTime={currentTime}
+            duration={duration}
+            visible={controlsVisible}
+            onTogglePlay={handleTogglePlay}
+            onSeek={handleSeek}
+            onInteraction={notifyControls}
+            scrollGesture={scrollGesture}
+          />
+        )}
         {!ready && (
           <View
             style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}

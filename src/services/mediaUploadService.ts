@@ -29,7 +29,8 @@
 import type { PickedMedia } from '../hooks/useMediaPicker';
 import { generateAttachmentKeys, createAttachmentEncryptor } from './crypto/attachmentCrypto';
 import { encryptContent, getOrFetchGroupKey } from './crypto/contentCrypto';
-import { arrayBufferToBase64, toArrayBuffer } from './crypto/utils';
+import { arrayBufferToBase64, base64ToUint8Array, toArrayBuffer } from './crypto/utils';
+import { MAX_UPLOAD_SIZE_BYTES, STREAM_READ_SIZE_BYTES } from './media/mediaLimits';
 import { uploadChunk, completeUpload } from './api/media';
 import { QuotaExceededError, AuthError } from './api/errors';
 import { saveMedia } from '../database/repositories/mediaRepository';
@@ -57,20 +58,11 @@ import type { MediaRow } from '../database/repositories/mediaRepository';
 // Constants
 // ---------------------------------------------------------------------------
 
-/**
- * Maximum file size in bytes (50MB).
- *
- * The ceiling is set by the receiver-side one-shot decrypt, which holds ~3.3x
- * the file size in transient memory (ciphertext + plaintext + intermediate
- * buffers). Streaming decrypt (#578) will raise this further.
- */
-const MAX_UPLOAD_SIZE_BYTES = 50 * 1024 * 1024;
-
 /** Chunk size in bytes (5MB) for chunked upload to backend */
 const CHUNK_SIZE_BYTES = 5 * 1024 * 1024;
 
-/** Read size for streaming encryption phase (1MB) */
-const ENCRYPT_READ_SIZE_BYTES = 1 * 1024 * 1024;
+/** Read size for streaming encryption phase (1MB) — shared with the download passes */
+const ENCRYPT_READ_SIZE_BYTES = STREAM_READ_SIZE_BYTES;
 
 /** Maximum retry attempts per chunk */
 const MAX_RETRIES = 3;
@@ -124,20 +116,6 @@ export interface UploadMediaResult {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Decode a base64 string to Uint8Array.
- * Uses atob which is available in Hermes via react-native polyfills.
- */
-function base64ToUint8Array(base64: string): Uint8Array {
-  const g = globalThis as unknown as { atob: (s: string) => string };
-  const binary = g.atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
-}
 
 /**
  * Write a base64-encoded chunk to a temporary file for upload.
@@ -729,6 +707,8 @@ export async function cleanupOrphanedChunks(): Promise<void> {
     const now = Date.now();
     for (const file of files) {
       const isChunk = file.name.includes('-chunk-') && file.name.endsWith('.bin');
+      // Intentionally covers BOTH ciphertext staging suffixes: the upload's
+      // `{id}-cipher.bin` and the download's `{id}-dl-cipher.bin` (#578).
       const isCipher = file.name.endsWith('-cipher.bin');
       // -staging.mp4 covers the video transcode staging file, which must carry
       // an .mp4 extension for AVAssetWriter.

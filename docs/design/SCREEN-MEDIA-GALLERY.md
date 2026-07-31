@@ -207,7 +207,7 @@ Full-video download (triggered only by the lightbox mounting its active page's p
 |---|---|
 | Indicator | Poster thumbnail (from the thumbnail child, never a blur placeholder) with a centered spinner |
 | Label | Static size line under the spinner, e.g. "Downloading · 24 MB" — no percentage or progress bar |
-| Progress ring | Deferred to #578, which adds the byte-level download progress this treatment needs |
+| Progress ring | #578 PR 2 exposes byte-level progress (`onProgress` on `downloadMediaToFile`) but only at the transport layer — it is deliberately not threaded into `mediaDownloadService`, so this treatment stays until a follow-up wires it to an actual consumer |
 
 ---
 

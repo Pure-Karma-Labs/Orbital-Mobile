@@ -1,5 +1,6 @@
 /**
- * Tests for media API functions — uploadChunk, completeUpload, downloadMedia.
+ * Tests for media API functions — uploadChunk, completeUpload, downloadMediaToFile,
+ * archiveConfirm.
  */
 
 jest.mock('../tokenManager', () => ({
@@ -12,8 +13,13 @@ jest.mock('../tokenManager', () => ({
   },
 }));
 
-import { uploadChunk, completeUpload, downloadMedia, archiveConfirm } from '../media';
+jest.mock('@dr.pogodin/react-native-fs');
+
+import { downloadFile } from '@dr.pogodin/react-native-fs';
+import { uploadChunk, completeUpload, downloadMediaToFile, archiveConfirm } from '../media';
 import type { UploadChunkParams } from '../media';
+import { tokenManager } from '../tokenManager';
+import { AuthError, NotFoundError } from '../errors';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -38,21 +44,6 @@ function mockFetchOk(
     text: jest.fn().mockResolvedValue(JSON.stringify(body)),
     arrayBuffer: jest.fn().mockResolvedValue(new ArrayBuffer(1024)),
     headers,
-  });
-}
-
-function mockFetchBinary(
-  buffer: ArrayBuffer,
-  headers: Record<string, string> = {},
-): void {
-  const h = mockHeaders(headers);
-  (globalThis as Record<string, unknown>).fetch = jest.fn().mockResolvedValue({
-    ok: true,
-    status: 200,
-    json: jest.fn().mockRejectedValue(new Error('not json')),
-    text: jest.fn().mockResolvedValue(''),
-    arrayBuffer: jest.fn().mockResolvedValue(buffer),
-    headers: h,
   });
 }
 
@@ -189,80 +180,86 @@ describe('completeUpload', () => {
 });
 
 // ---------------------------------------------------------------------------
-// downloadMedia
+// downloadMediaToFile
 // ---------------------------------------------------------------------------
+//
+// The RNFS transport (retry loop, stall/backstop timers, byte ceiling, abort
+// races) is covered separately by the parent agent. These tests only pin the
+// basic request-shape contract.
 
-describe('downloadMedia', () => {
-  it('sends GET to /api/media/:id/download and returns ArrayBuffer + headers', async () => {
-    const buffer = new ArrayBuffer(2048);
-    mockFetchBinary(buffer, {
-      'x-encryption-iv': 'base64iv==',
-      'x-expires-at': '2026-04-01T00:00:00Z',
+function mockDownloadFile(
+  statusCode: number,
+  bytesWritten: number,
+  body?: string,
+): void {
+  (downloadFile as jest.Mock).mockReturnValue({
+    jobId: 1,
+    promise: Promise.resolve({ jobId: 1, statusCode, bytesWritten, body }),
+  });
+}
+
+describe('downloadMediaToFile', () => {
+  it('builds the URL as /api/media/:id/download and passes it to downloadFile as fromUrl', async () => {
+    mockDownloadFile(200, 1024);
+
+    await downloadMediaToFile({ mediaId: 'media-123', toFile: '/tmp/staging.bin' });
+
+    expect(downloadFile).toHaveBeenCalledTimes(1);
+    const call = (downloadFile as jest.Mock).mock.calls[0][0] as { fromUrl: string };
+    expect(call.fromUrl).toContain('/api/media/media-123/download');
+  });
+
+  it('attaches the Authorization: Bearer <token> header', async () => {
+    mockDownloadFile(200, 1024);
+
+    await downloadMediaToFile({ mediaId: 'media-123', toFile: '/tmp/staging.bin' });
+
+    const call = (downloadFile as jest.Mock).mock.calls[0][0] as {
+      headers: Record<string, string>;
+    };
+    expect(call.headers.Authorization).toBe('Bearer test-token');
+  });
+
+  it('throws AuthError when tokenManager.getAccessToken() resolves null, without calling downloadFile', async () => {
+    (tokenManager.getAccessToken as jest.Mock).mockResolvedValueOnce(null);
+
+    await expect(
+      downloadMediaToFile({ mediaId: 'media-123', toFile: '/tmp/staging.bin' }),
+    ).rejects.toThrow(AuthError);
+
+    expect(downloadFile).not.toHaveBeenCalled();
+  });
+
+  it('percent-encodes the mediaId in the URL path', async () => {
+    mockDownloadFile(200, 1024);
+
+    await downloadMediaToFile({
+      mediaId: 'media with spaces/slashes',
+      toFile: '/tmp/staging.bin',
     });
 
-    const result = await downloadMedia('media-123');
-
-    const fetchMock = (globalThis as Record<string, unknown>).fetch as jest.Mock;
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toContain('/api/media/media-123/download');
-    expect(init.method).toBe('GET');
-
-    expect(result.data).toBeInstanceOf(ArrayBuffer);
-    expect(result.encryptionIv).toBe('base64iv==');
-    expect(result.expiresAt).toBe('2026-04-01T00:00:00Z');
+    const call = (downloadFile as jest.Mock).mock.calls[0][0] as { fromUrl: string };
+    expect(call.fromUrl).toContain(encodeURIComponent('media with spaces/slashes'));
+    expect(call.fromUrl).not.toContain('media with spaces');
   });
 
-  it('returns null for missing headers', async () => {
-    const buffer = new ArrayBuffer(512);
-    mockFetchBinary(buffer, {});
+  it('maps a non-200 statusCode to NotFoundError', async () => {
+    mockDownloadFile(404, 0, 'not found');
 
-    const result = await downloadMedia('media-456');
-
-    expect(result.encryptionIv).toBeNull();
-    expect(result.expiresAt).toBeNull();
+    await expect(
+      downloadMediaToFile({ mediaId: 'missing-media', toFile: '/tmp/staging.bin' }),
+    ).rejects.toThrow(NotFoundError);
   });
 
-  // RN's fetch resolves only after the whole body is read, so this timeout is
-  // an end-to-end transfer deadline: it has to scale with the payload or a
-  // near-cap video fails deterministically on a slow link.
-  it('scales the transfer deadline with the known ciphertext size', async () => {
-    mockFetchBinary(new ArrayBuffer(16), {});
-    const setTimeoutSpy = jest.spyOn(globalThis, 'setTimeout');
+  it('returns { bytesWritten } on statusCode 200', async () => {
+    mockDownloadFile(200, 2048);
 
-    await downloadMedia('media-789', undefined, 45 * 1024 * 1024);
+    const result = await downloadMediaToFile({
+      mediaId: 'media-123',
+      toFile: '/tmp/staging.bin',
+    });
 
-    const delays = setTimeoutSpy.mock.calls.map((call) => call[1]);
-    expect(delays).toContain(150_000);
-    setTimeoutSpy.mockRestore();
-  });
-
-  it('uses the flat base deadline when the size is unknown', async () => {
-    mockFetchBinary(new ArrayBuffer(16), {});
-    const setTimeoutSpy = jest.spyOn(globalThis, 'setTimeout');
-
-    await downloadMedia('media-789');
-
-    const delays = setTimeoutSpy.mock.calls.map((call) => call[1]);
-    expect(delays).toContain(60_000);
-    setTimeoutSpy.mockRestore();
-  });
-
-  it('encodes mediaId in the URL path', async () => {
-    const buffer = new ArrayBuffer(128);
-    mockFetchBinary(buffer, {});
-
-    await downloadMedia('media with spaces/slashes');
-
-    const fetchMock = (globalThis as Record<string, unknown>).fetch as jest.Mock;
-    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toContain(encodeURIComponent('media with spaces/slashes'));
-    expect(url).not.toContain('media with spaces');
-  });
-
-  it('propagates error on non-ok response', async () => {
-    mockFetchError(404, 'not found');
-
-    await expect(downloadMedia('missing-media')).rejects.toThrow();
+    expect(result).toEqual({ bytesWritten: 2048 });
   });
 });
 

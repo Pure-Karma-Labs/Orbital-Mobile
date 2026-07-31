@@ -50,6 +50,14 @@ jest.mock('../crypto/utils', () => ({
   toArrayBuffer: jest.fn((u8: Uint8Array) =>
     u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength),
   ),
+  // Promoted out of mediaUploadService into crypto/utils (#578) so the
+  // download read loop can share one decode implementation.
+  base64ToUint8Array: jest.fn((b64: string) => {
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  }),
 }));
 
 const mockUploadChunk = jest.fn();
@@ -741,6 +749,22 @@ describe('cleanupOrphanedChunks', () => {
 
     expect(rnfs.unlink).toHaveBeenCalledWith('/tmp/test-cache/abc-cipher.bin');
     expect(rnfs.unlink).not.toHaveBeenCalledWith('/tmp/test-cache/recent-cipher.bin');
+  });
+
+  // The download path stages ciphertext as `{id}-dl-cipher.bin` (#578). The
+  // `endsWith('-cipher.bin')` predicate already covers it — this pins that so a
+  // future narrowing of the predicate can't silently orphan download staging.
+  it('removes stale DOWNLOAD cipher staging files older than 1 hour', async () => {
+    const rnfs = require('@dr.pogodin/react-native-fs');
+    rnfs.readDir.mockResolvedValueOnce([
+      { name: 'abc-dl-cipher.bin', path: '/tmp/test-cache/abc-dl-cipher.bin', mtime: new Date(Date.now() - 7200_000) },
+      { name: 'recent-dl-cipher.bin', path: '/tmp/test-cache/recent-dl-cipher.bin', mtime: new Date() },
+    ]);
+
+    await cleanupOrphanedChunks();
+
+    expect(rnfs.unlink).toHaveBeenCalledWith('/tmp/test-cache/abc-dl-cipher.bin');
+    expect(rnfs.unlink).not.toHaveBeenCalledWith('/tmp/test-cache/recent-dl-cipher.bin');
   });
 
   it('removes stale staging temp files older than 1 hour', async () => {

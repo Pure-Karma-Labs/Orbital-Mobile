@@ -250,6 +250,11 @@ describe('createAttachmentEncryptor', () => {
 
 describe('createAttachmentDecryptor', () => {
   beforeEach(() => {
+    // clearAllMocks() does not clear mockImplementation — the throwing
+    // implementations from the error-propagation tests below would leak
+    // into later tests without these resets.
+    mockVerifyPush.mockImplementation(() => undefined);
+    mockVerifyFinalize.mockImplementation(() => undefined);
     mockDecryptPush.mockReturnValue('');
     mockDecryptFinalize.mockReturnValue('');
   });

@@ -526,6 +526,12 @@ fn decryptor_misuse_error(reason: &str) -> SignalError {
 
 /// Decode a base64 chunk from the FFI boundary.
 ///
+/// **Chunk-alignment contract:** each chunk must be an independently,
+/// canonically padded base64 encoding of its own byte range — exactly what
+/// RNFS `read(path, len, pos, 'base64')` produces. Slicing one large base64
+/// string at arbitrary offsets, or concatenating padded chunk encodings into
+/// a single push, is NOT valid input and fails with the opaque error below.
+///
 /// **Forgiving about ASCII whitespace only.** iOS RNFS `read()` returns
 /// line-broken base64, so newlines/spaces/tabs/CRs are stripped before decoding.
 /// Every other malformed input (bad alphabet byte, bad length, non-canonical
@@ -533,8 +539,8 @@ fn decryptor_misuse_error(reason: &str) -> SignalError {
 /// indistinguishable from ciphertext corruption, and both must look the same.
 fn decode_chunk_base64(input: &str) -> Result<Vec<u8>, SignalError> {
     let bytes = input.as_bytes();
-    // Fast path: no whitespace, decode in place with no intermediate copy.
     if bytes.iter().any(u8::is_ascii_whitespace) {
+        // Slow path: strip whitespace into a filtered copy first.
         let filtered: Vec<u8> = bytes
             .iter()
             .copied()
@@ -542,6 +548,7 @@ fn decode_chunk_base64(input: &str) -> Result<Vec<u8>, SignalError> {
             .collect();
         B64.decode(&filtered)
     } else {
+        // Fast path: no whitespace, decode directly with no intermediate copy.
         B64.decode(bytes)
     }
     .map_err(|_| decryptor_opaque_error())
@@ -2074,6 +2081,54 @@ mod tests {
             .expect_err("malformed base64 must fail");
         assert_opaque(&err, "decrypt_push malformed base64");
         assert_poisoned(&dec, "after malformed base64 in decrypt_push");
+    }
+
+    /// Chunk-alignment contract: slicing one big base64 string at a non-group
+    /// boundary is invalid input — opaque failure + poison, never a panic or a
+    /// distinguishable error. (Valid chunks are what RNFS `read()` produces:
+    /// each one an independently padded encoding of its own byte range.)
+    #[test]
+    fn test_streaming_decrypt_rejects_text_split_base64_chunk() {
+        let keys = test_keys();
+        let iv: [u8; 16] = hex!("5151515151515151626262626262626f");
+        let blob = oneshot_encrypt(b"text-split chunk contract vector", &keys, &iv);
+
+        let dec = AttachmentDecryptor::new(keys, blob.digest.clone())
+            .expect("construction should succeed");
+        let full = b64(&blob.ciphertext);
+        // Split mid-4-char group: neither half is an independently padded encoding.
+        let (head, _tail) = full.split_at(6);
+        let err = dec
+            .verify_push(head.to_string())
+            .expect_err("text-split base64 chunk must fail");
+        assert_opaque(&err, "verify_push text-split base64 chunk");
+        assert_poisoned(&dec, "after text-split base64 chunk");
+    }
+
+    /// Chunk-alignment contract: concatenating two independently padded chunk
+    /// encodings into a single push is invalid input (embedded padding) —
+    /// opaque failure + poison.
+    #[test]
+    fn test_streaming_decrypt_rejects_concatenated_padded_chunks() {
+        let keys = test_keys();
+        let iv: [u8; 16] = hex!("7373737373737373848484848484848f");
+        let blob = oneshot_encrypt(b"concatenated chunk contract vector", &keys, &iv);
+
+        let dec = AttachmentDecryptor::new(keys, blob.digest.clone())
+            .expect("construction should succeed");
+        // 50 % 3 != 0, so the first encoding carries '=' padding; concatenating
+        // the second after it embeds that padding mid-string.
+        let first = b64(&blob.ciphertext[..50]);
+        let second = b64(&blob.ciphertext[50..]);
+        assert!(
+            first.ends_with('='),
+            "test requires the first chunk encoding to carry padding"
+        );
+        let err = dec
+            .verify_push(format!("{first}{second}"))
+            .expect_err("concatenated padded chunk encodings must fail");
+        assert_opaque(&err, "verify_push concatenated padded chunks");
+        assert_poisoned(&dec, "after concatenated padded chunks");
     }
 
     /// Tampered ciphertext body → opaque failure at verify_finalize + poison.

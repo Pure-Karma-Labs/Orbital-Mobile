@@ -122,6 +122,12 @@ export function createAttachmentEncryptor(keys: Uint8Array): StreamingAttachment
  * transcode — the Hermes-side loops measured 45-120 ms/MB of JS-thread blocking
  * (issue #578, PR-0 benchmark).
  *
+ * **Chunk-alignment contract:** each chunk must be an independently, canonically
+ * padded base64 encoding of its own byte range — exactly what
+ * `read(path, len, pos, 'base64')` produces. Slicing one big base64 string at
+ * arbitrary offsets, or concatenating chunk encodings into one push, fails with
+ * the opaque "decryption failed" error and poisons the decryptor.
+ *
  * **The phase machine lives in Rust.** Calling out of order throws, and ANY
  * error poisons the decryptor permanently — it can never be resumed.
  *

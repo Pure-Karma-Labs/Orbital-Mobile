@@ -15,7 +15,12 @@
  * SECURITY: plaintext_hash must never be sent to the server — content fingerprint breaks zero-knowledge.
  */
 
-import { attachmentEncrypt, attachmentDecrypt, AttachmentEncryptor } from 'orbital-signal';
+import {
+  attachmentEncrypt,
+  attachmentDecrypt,
+  AttachmentEncryptor,
+  AttachmentDecryptor,
+} from 'orbital-signal';
 import type { AttachmentCryptoResult } from 'orbital-signal';
 import { arrayBufferToBase64, toArrayBuffer } from './utils';
 
@@ -88,6 +93,91 @@ export function createAttachmentEncryptor(keys: Uint8Array): StreamingAttachment
         tail: new Uint8Array(result.tail),
         digest: new Uint8Array(result.digest),
       };
+    },
+
+    destroy(): void {
+      if (!destroyed) {
+        destroyed = true;
+        inner.uniffiDestroy();
+      }
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Streaming decryption (issue #578)
+// ---------------------------------------------------------------------------
+
+/**
+ * A streaming attachment decryptor that wraps the native AttachmentDecryptor.
+ *
+ * **Two passes over the same on-disk ciphertext blob, in this order:**
+ * 1. `verifyPush(...)` for every chunk, then `verifyFinalize()` — HMAC and
+ *    SHA-256 digest are verified before any plaintext exists.
+ * 2. `decryptPush(...)` for every chunk (same blob, chunking may differ), then
+ *    `decryptFinalize()` — plaintext streams out.
+ *
+ * **The boundary is base64 strings, not bytes.** RNFS hands us base64 and takes
+ * base64 back, so the chunks pass through untouched and Rust owns the
+ * transcode — the Hermes-side loops measured 45-120 ms/MB of JS-thread blocking
+ * (issue #578, PR-0 benchmark).
+ *
+ * **The phase machine lives in Rust.** Calling out of order throws, and ANY
+ * error poisons the decryptor permanently — it can never be resumed.
+ *
+ * **Caller obligation (TOCTOU):** the plaintext file MUST NOT be promoted before
+ * `decryptFinalize()` returns, MUST be unlinked on every failure path, and MUST
+ * NEVER be treated as a resumable artifact. A blob modified between the two
+ * passes can emit attacker-influenced plaintext before finalize rejects it.
+ */
+export interface StreamingAttachmentDecryptor {
+  /** Pass 1: feed the next base64 ciphertext chunk (whitespace/newlines are fine). */
+  verifyPush(chunkBase64: string): void;
+  /** Pass 1 completion. Throws (opaquely) if structure, HMAC, or digest fails. */
+  verifyFinalize(): void;
+  /** Pass 2: feed the next base64 chunk; returns base64 plaintext (often empty). */
+  decryptPush(chunkBase64: string): string;
+  /** Pass 2 completion: returns the base64 plaintext tail. Throws on divergence. */
+  decryptFinalize(): string;
+  /** Release native resources. Idempotent — safe to call multiple times. */
+  destroy(): void;
+}
+
+/**
+ * Create a streaming attachment decryptor backed by the Rust AttachmentDecryptor.
+ *
+ * The caller MUST call destroy() in a finally block to release the native FFI
+ * object. Failure to do so leaks native memory.
+ *
+ * @param keys           - 64-byte key (32 AES + 32 HMAC) from the media metadata envelope.
+ * @param expectedDigest - SHA-256 digest of the ciphertext blob. Bound at
+ *                         construction so the digest check cannot be skipped.
+ */
+export function createAttachmentDecryptor(
+  keys: Uint8Array,
+  expectedDigest: Uint8Array,
+): StreamingAttachmentDecryptor {
+  const inner = new AttachmentDecryptor(
+    toArrayBuffer(keys),
+    toArrayBuffer(expectedDigest),
+  );
+  let destroyed = false;
+
+  return {
+    verifyPush(chunkBase64: string): void {
+      inner.verifyPush(chunkBase64);
+    },
+
+    verifyFinalize(): void {
+      inner.verifyFinalize();
+    },
+
+    decryptPush(chunkBase64: string): string {
+      return inner.decryptPush(chunkBase64);
+    },
+
+    decryptFinalize(): string {
+      return inner.decryptFinalize();
     },
 
     destroy(): void {

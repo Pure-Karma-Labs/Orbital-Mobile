@@ -64,6 +64,14 @@ hmac = { version = "0.12", features = ["reset"] }
 # so it can no longer be lost by an upstream dependency change.
 sha2 = { version = "0.10", features = ["asm"] }
 
+# base64 for the streaming attachment decryptor's FFI boundary. Chunks cross as
+# base64 Strings (not Vec<u8>) because RNFS hands JS base64 and the Hermes-side
+# transcode measured 45-120 ms/MB on the JS thread (issue #578, PR 0 benchmark) —
+# Rust does the transcode instead. `std` (which implies `alloc`) is declared
+# explicitly rather than inherited via default features so an upstream change to
+# base64's defaults cannot silently drop the Engine::decode/encode helpers.
+base64 = { version = "0.22", default-features = false, features = ["std"] }
+
 # ECIES: X25519 ECDH, HKDF-SHA256, and EphemeralSecret RNG
 x25519-dalek = { version = "3", features = ["static_secrets", "getrandom"] }
 hkdf = "0.12"

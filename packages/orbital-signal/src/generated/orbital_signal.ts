@@ -3589,6 +3589,357 @@ const FfiConverterTypeSignalError = (() => {
 })();
 
 /**
+ * Streaming attachment decryptor using Signal Protocol format
+ * (AES-256-CBC + HMAC-SHA256), issue #578.
+ *
+ * Wire format: IV(16) || AES-256-CBC/PKCS7 ciphertext || HMAC-SHA256(32)
+ *
+ * **Two passes over the same on-disk blob, in this order:**
+ * 1. `verify_push(chunk_b64)` … `verify_finalize()` — HMAC + SHA-256 digest are
+ * verified before any plaintext exists.
+ * 2. `decrypt_push(chunk_b64) -> base64` … `decrypt_finalize() -> base64` — the
+ * plaintext is streamed out.
+ *
+ * **Why one object rather than a verifier + a decryptor:** a JS-held "verified"
+ * token would be forgeable, and uniffi Objects cannot be passed as constructor
+ * arguments (see lib.rs). The only route to plaintext is a phase transition
+ * gated inside Rust.
+ *
+ * **Poison-on-every-error:** ANY `Err` from ANY method takes the state, so a
+ * failed decryptor can never be resumed or coaxed into emitting plaintext.
+ *
+ * **TOCTOU caveat — containment, not prefix authenticity.** Pass 2 recomputes
+ * the HMAC and `decrypt_finalize` requires it to equal pass 1's MAC at exactly
+ * the same length, but under CBC malleability a blob modified BETWEEN the two
+ * passes can emit attacker-influenced plaintext before finalize detects it.
+ * Safety is therefore procedural and belongs to the caller: the plaintext
+ * `.tmp` file MUST NOT be promoted before `decrypt_finalize` returns `Ok`, MUST
+ * be unlinked on every failure path, and MUST NEVER be treated as a resumable
+ * artifact.
+ *
+ * **FFI boundary is base64 `String`, not `Vec<u8>`** — RNFS hands JS base64 and
+ * hands base64 back; transcoding in Hermes measured 45-120 ms/MB of JS-thread
+ * blocking (issue #578 PR-0 benchmark), so Rust owns the transcode.
+ */
+export interface AttachmentDecryptorLike {
+  /**
+   * Pass 2 completion: length + MAC re-check, PKCS7 strip, terminal state.
+   *
+   * Returns the base64 plaintext tail (the unpadded final block, possibly
+   * empty). The decryptor is consumed either way.
+   *
+   * # Errors
+   *
+   * - `InvalidMessage` (opaque) if pass 2 did not consume exactly `ct_len`
+   * bytes, if the pass-2 HMAC diverges from pass 1's, or if PKCS7 padding
+   * is invalid.
+   * - `InvalidArgument` if the decryptor is not in the decrypting phase.
+   */
+  decryptFinalize() /*throws*/ : string;
+  /**
+   * Pass 2: feed the next base64 chunk of the SAME blob, receive base64
+   * plaintext.
+   *
+   * Output lags the input: the final decrypted block is always held back
+   * because it carries the PKCS7 padding, and sub-block remainders wait for
+   * the next chunk. An empty base64 string is a valid (empty) result.
+   *
+   * # Errors
+   *
+   * - `InvalidMessage` (opaque) on malformed base64 or bytes past `ct_len`.
+   * - `InvalidArgument` if the decryptor is not in the decrypting phase.
+   */
+  decryptPush(chunkB64: string) /*throws*/ : string;
+  /**
+   * Pass 1 completion: structural validation, then HMAC, then digest.
+   *
+   * On success the decryptor transitions to the decrypting phase. On any
+   * failure the decryptor is poisoned and can never emit plaintext.
+   *
+   * # Errors
+   *
+   * - `InvalidMessage` (opaque) on structural, MAC, or digest failure.
+   * - `InvalidArgument` if the decryptor is not in the verifying phase.
+   */
+  verifyFinalize() /*throws*/ : void;
+  /**
+   * Pass 1: feed the next base64 chunk of the ciphertext blob.
+   *
+   * Every byte feeds the digest hasher; only bytes known not to be part of
+   * the trailing 32-byte MAC feed the HMAC.
+   *
+   * # Errors
+   *
+   * - `InvalidMessage` (opaque) if the chunk is not valid base64.
+   * - `InvalidArgument` if the decryptor is not in the verifying phase.
+   */
+  verifyPush(chunkB64: string) /*throws*/ : void;
+}
+/**
+ * @deprecated Use `AttachmentDecryptorLike` instead.
+ */
+export type AttachmentDecryptorInterface = AttachmentDecryptorLike;
+
+/**
+ * Streaming attachment decryptor using Signal Protocol format
+ * (AES-256-CBC + HMAC-SHA256), issue #578.
+ *
+ * Wire format: IV(16) || AES-256-CBC/PKCS7 ciphertext || HMAC-SHA256(32)
+ *
+ * **Two passes over the same on-disk blob, in this order:**
+ * 1. `verify_push(chunk_b64)` … `verify_finalize()` — HMAC + SHA-256 digest are
+ * verified before any plaintext exists.
+ * 2. `decrypt_push(chunk_b64) -> base64` … `decrypt_finalize() -> base64` — the
+ * plaintext is streamed out.
+ *
+ * **Why one object rather than a verifier + a decryptor:** a JS-held "verified"
+ * token would be forgeable, and uniffi Objects cannot be passed as constructor
+ * arguments (see lib.rs). The only route to plaintext is a phase transition
+ * gated inside Rust.
+ *
+ * **Poison-on-every-error:** ANY `Err` from ANY method takes the state, so a
+ * failed decryptor can never be resumed or coaxed into emitting plaintext.
+ *
+ * **TOCTOU caveat — containment, not prefix authenticity.** Pass 2 recomputes
+ * the HMAC and `decrypt_finalize` requires it to equal pass 1's MAC at exactly
+ * the same length, but under CBC malleability a blob modified BETWEEN the two
+ * passes can emit attacker-influenced plaintext before finalize detects it.
+ * Safety is therefore procedural and belongs to the caller: the plaintext
+ * `.tmp` file MUST NOT be promoted before `decrypt_finalize` returns `Ok`, MUST
+ * be unlinked on every failure path, and MUST NEVER be treated as a resumable
+ * artifact.
+ *
+ * **FFI boundary is base64 `String`, not `Vec<u8>`** — RNFS hands JS base64 and
+ * hands base64 back; transcoding in Hermes measured 45-120 ms/MB of JS-thread
+ * blocking (issue #578 PR-0 benchmark), so Rust owns the transcode.
+ */
+export class AttachmentDecryptor extends UniffiAbstractObject implements AttachmentDecryptorLike {
+  readonly [uniffiTypeNameSymbol] = 'AttachmentDecryptor';
+  readonly [destructorGuardSymbol]: UniffiGcObject;
+  readonly [pointerLiteralSymbol]: UniffiHandle;
+  /**
+   * Create a streaming decryptor bound to a key and an expected digest.
+   *
+   * `keys` must be exactly 64 bytes: first 32 = AES-256 key, last 32 = HMAC key.
+   * `expected_digest` is the SHA-256 digest of the entire ciphertext blob; it
+   * is bound here so the JS caller cannot skip the digest check.
+   *
+   * A wrong-length `expected_digest` is deliberately NOT rejected here — it
+   * fails opaquely in `verify_finalize`, exactly as the one-shot
+   * `attachment_decrypt` does, so the two paths stay indistinguishable.
+   *
+   * # Errors
+   *
+   * - `InvalidKey` if `keys` is not exactly 64 bytes.
+   */
+  constructor(keys: ArrayBuffer, expectedDigest: ArrayBuffer) /*throws*/ {
+    super();
+    const pointer = uniffiCaller.rustCallWithError(
+      /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_constructor_attachmentdecryptor_new(
+          FfiConverterArrayBuffer.lower(keys),
+          FfiConverterArrayBuffer.lower(expectedDigest),
+          callStatus,
+        );
+      },
+      /*liftString:*/ FfiConverterString.lift,
+    );
+    this[pointerLiteralSymbol] = pointer;
+    this[destructorGuardSymbol] = uniffiTypeAttachmentDecryptorObjectFactory.bless(pointer);
+  }
+
+  /**
+   * Pass 2 completion: length + MAC re-check, PKCS7 strip, terminal state.
+   *
+   * Returns the base64 plaintext tail (the unpadded final block, possibly
+   * empty). The decryptor is consumed either way.
+   *
+   * # Errors
+   *
+   * - `InvalidMessage` (opaque) if pass 2 did not consume exactly `ct_len`
+   * bytes, if the pass-2 HMAC diverges from pass 1's, or if PKCS7 padding
+   * is invalid.
+   * - `InvalidArgument` if the decryptor is not in the decrypting phase.
+   */
+  decryptFinalize(): string /*throws*/ {
+    return FfiConverterString.lift(
+      uniffiCaller.rustCallWithError(
+        /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+        /*caller:*/ (callStatus) => {
+          return nativeModule().ubrn_uniffi_orbital_signal_fn_method_attachmentdecryptor_decrypt_finalize(
+            uniffiTypeAttachmentDecryptorObjectFactory.clonePointer(this),
+            callStatus,
+          );
+        },
+        /*liftString:*/ FfiConverterString.lift,
+      ),
+    );
+  }
+
+  /**
+   * Pass 2: feed the next base64 chunk of the SAME blob, receive base64
+   * plaintext.
+   *
+   * Output lags the input: the final decrypted block is always held back
+   * because it carries the PKCS7 padding, and sub-block remainders wait for
+   * the next chunk. An empty base64 string is a valid (empty) result.
+   *
+   * # Errors
+   *
+   * - `InvalidMessage` (opaque) on malformed base64 or bytes past `ct_len`.
+   * - `InvalidArgument` if the decryptor is not in the decrypting phase.
+   */
+  decryptPush(chunkB64: string): string /*throws*/ {
+    return FfiConverterString.lift(
+      uniffiCaller.rustCallWithError(
+        /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+        /*caller:*/ (callStatus) => {
+          return nativeModule().ubrn_uniffi_orbital_signal_fn_method_attachmentdecryptor_decrypt_push(
+            uniffiTypeAttachmentDecryptorObjectFactory.clonePointer(this),
+            FfiConverterString.lower(chunkB64),
+            callStatus,
+          );
+        },
+        /*liftString:*/ FfiConverterString.lift,
+      ),
+    );
+  }
+
+  /**
+   * Pass 1 completion: structural validation, then HMAC, then digest.
+   *
+   * On success the decryptor transitions to the decrypting phase. On any
+   * failure the decryptor is poisoned and can never emit plaintext.
+   *
+   * # Errors
+   *
+   * - `InvalidMessage` (opaque) on structural, MAC, or digest failure.
+   * - `InvalidArgument` if the decryptor is not in the verifying phase.
+   */
+  verifyFinalize(): void /*throws*/ {
+    uniffiCaller.rustCallWithError(
+      /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+      /*caller:*/ (callStatus) => {
+        nativeModule().ubrn_uniffi_orbital_signal_fn_method_attachmentdecryptor_verify_finalize(
+          uniffiTypeAttachmentDecryptorObjectFactory.clonePointer(this),
+          callStatus,
+        );
+      },
+      /*liftString:*/ FfiConverterString.lift,
+    );
+  }
+
+  /**
+   * Pass 1: feed the next base64 chunk of the ciphertext blob.
+   *
+   * Every byte feeds the digest hasher; only bytes known not to be part of
+   * the trailing 32-byte MAC feed the HMAC.
+   *
+   * # Errors
+   *
+   * - `InvalidMessage` (opaque) if the chunk is not valid base64.
+   * - `InvalidArgument` if the decryptor is not in the verifying phase.
+   */
+  verifyPush(chunkB64: string): void /*throws*/ {
+    uniffiCaller.rustCallWithError(
+      /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+      /*caller:*/ (callStatus) => {
+        nativeModule().ubrn_uniffi_orbital_signal_fn_method_attachmentdecryptor_verify_push(
+          uniffiTypeAttachmentDecryptorObjectFactory.clonePointer(this),
+          FfiConverterString.lower(chunkB64),
+          callStatus,
+        );
+      },
+      /*liftString:*/ FfiConverterString.lift,
+    );
+  }
+
+  /**
+   * {@inheritDoc uniffi-bindgen-react-native#UniffiAbstractObject.uniffiDestroy}
+   */
+  uniffiDestroy(): void {
+    const ptr = (this as any)[destructorGuardSymbol];
+    if (ptr !== undefined) {
+      const pointer = uniffiTypeAttachmentDecryptorObjectFactory.pointer(this);
+      uniffiTypeAttachmentDecryptorObjectFactory.freePointer(pointer);
+      uniffiTypeAttachmentDecryptorObjectFactory.unbless(ptr);
+      delete (this as any)[destructorGuardSymbol];
+    }
+  }
+
+  static instanceOf(obj: any): obj is AttachmentDecryptor {
+    return uniffiTypeAttachmentDecryptorObjectFactory.isConcreteType(obj);
+  }
+}
+
+const uniffiTypeAttachmentDecryptorObjectFactory: UniffiObjectFactory<AttachmentDecryptorLike> =
+  (() => {
+    return {
+      create(pointer: UniffiHandle): AttachmentDecryptorLike {
+        const instance = Object.create(AttachmentDecryptor.prototype);
+        instance[pointerLiteralSymbol] = pointer;
+        instance[destructorGuardSymbol] = this.bless(pointer);
+        instance[uniffiTypeNameSymbol] = 'AttachmentDecryptor';
+        return instance;
+      },
+
+      bless(p: UniffiHandle): UniffiGcObject {
+        return uniffiCaller.rustCall(
+          /*caller:*/ (status) =>
+            nativeModule().ubrn_uniffi_internal_fn_method_attachmentdecryptor_ffi__bless_pointer(
+              p,
+              status,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        );
+      },
+
+      unbless(ptr: UniffiGcObject) {
+        ptr.markDestroyed();
+      },
+
+      pointer(obj: AttachmentDecryptorLike): UniffiHandle {
+        if ((obj as any)[destructorGuardSymbol] === undefined) {
+          throw new UniffiInternalError.UnexpectedNullPointer();
+        }
+        return (obj as any)[pointerLiteralSymbol];
+      },
+
+      clonePointer(obj: AttachmentDecryptorLike): UniffiHandle {
+        const pointer = this.pointer(obj);
+        return uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().ubrn_uniffi_orbital_signal_fn_clone_attachmentdecryptor(
+              pointer,
+              callStatus,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        );
+      },
+
+      freePointer(pointer: UniffiHandle): void {
+        uniffiCaller.rustCall(
+          /*caller:*/ (callStatus) =>
+            nativeModule().ubrn_uniffi_orbital_signal_fn_free_attachmentdecryptor(
+              pointer,
+              callStatus,
+            ),
+          /*liftString:*/ FfiConverterString.lift,
+        );
+      },
+
+      isConcreteType(obj: any): obj is AttachmentDecryptorLike {
+        return obj[destructorGuardSymbol] && obj[uniffiTypeNameSymbol] === 'AttachmentDecryptor';
+      },
+    };
+  })();
+// FfiConverter for AttachmentDecryptorLike
+const FfiConverterTypeAttachmentDecryptor = new FfiConverterObject(
+  uniffiTypeAttachmentDecryptorObjectFactory,
+);
+
+/**
  * Streaming attachment encryptor using Signal Protocol format
  * (AES-256-CBC + HMAC-SHA256).
  *
@@ -3993,6 +4344,38 @@ function uniffiEnsureInitialized() {
     );
   }
   if (
+    nativeModule().ubrn_uniffi_orbital_signal_checksum_method_attachmentdecryptor_decrypt_finalize() !==
+    24882
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_method_attachmentdecryptor_decrypt_finalize',
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_orbital_signal_checksum_method_attachmentdecryptor_decrypt_push() !==
+    44441
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_method_attachmentdecryptor_decrypt_push',
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_orbital_signal_checksum_method_attachmentdecryptor_verify_finalize() !==
+    15116
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_method_attachmentdecryptor_verify_finalize',
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_orbital_signal_checksum_method_attachmentdecryptor_verify_push() !==
+    49022
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_method_attachmentdecryptor_verify_push',
+    );
+  }
+  if (
     nativeModule().ubrn_uniffi_orbital_signal_checksum_method_attachmentencryptor_finalize() !==
     19430
   ) {
@@ -4005,6 +4388,14 @@ function uniffiEnsureInitialized() {
   ) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_orbital_signal_checksum_method_attachmentencryptor_push',
+    );
+  }
+  if (
+    nativeModule().ubrn_uniffi_orbital_signal_checksum_constructor_attachmentdecryptor_new() !==
+    54298
+  ) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_constructor_attachmentdecryptor_new',
     );
   }
   if (
@@ -4164,6 +4555,7 @@ export default Object.freeze({
   initialize: uniffiEnsureInitialized,
   converters: {
     FfiConverterTypeAttachmentCryptoResult,
+    FfiConverterTypeAttachmentDecryptor,
     FfiConverterTypeAttachmentEncryptor,
     FfiConverterTypeAttachmentEncryptorResult,
     FfiConverterTypeCiphertextMessageData,

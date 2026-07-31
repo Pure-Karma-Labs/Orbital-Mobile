@@ -274,6 +274,37 @@ extern "C" {
         UniffiCallbackInterfaceOrbitalSignedPreKeyStoreMethod0 load_signed_pre_key;
         UniffiCallbackInterfaceOrbitalSignedPreKeyStoreMethod1 store_signed_pre_key;
     } UniffiVTableCallbackInterfaceOrbitalSignedPreKeyStore;
+    /*handle*/ uint64_t uniffi_orbital_signal_fn_clone_attachmentdecryptor(
+        /*handle*/ uint64_t handle, 
+        RustCallStatus *uniffi_out_err
+    );
+    void uniffi_orbital_signal_fn_free_attachmentdecryptor(
+        /*handle*/ uint64_t handle, 
+        RustCallStatus *uniffi_out_err
+    );
+    /*handle*/ uint64_t uniffi_orbital_signal_fn_constructor_attachmentdecryptor_new(
+        RustBuffer keys, 
+        RustBuffer expected_digest, 
+        RustCallStatus *uniffi_out_err
+    );
+    RustBuffer uniffi_orbital_signal_fn_method_attachmentdecryptor_decrypt_finalize(
+        /*handle*/ uint64_t ptr, 
+        RustCallStatus *uniffi_out_err
+    );
+    RustBuffer uniffi_orbital_signal_fn_method_attachmentdecryptor_decrypt_push(
+        /*handle*/ uint64_t ptr, 
+        RustBuffer chunk_b64, 
+        RustCallStatus *uniffi_out_err
+    );
+    void uniffi_orbital_signal_fn_method_attachmentdecryptor_verify_finalize(
+        /*handle*/ uint64_t ptr, 
+        RustCallStatus *uniffi_out_err
+    );
+    void uniffi_orbital_signal_fn_method_attachmentdecryptor_verify_push(
+        /*handle*/ uint64_t ptr, 
+        RustBuffer chunk_b64, 
+        RustCallStatus *uniffi_out_err
+    );
     /*handle*/ uint64_t uniffi_orbital_signal_fn_clone_attachmentencryptor(
         /*handle*/ uint64_t handle, 
         RustCallStatus *uniffi_out_err
@@ -701,9 +732,19 @@ extern "C" {
     );
     uint16_t uniffi_orbital_signal_checksum_func_parse_prekey_message_ids(
     );
+    uint16_t uniffi_orbital_signal_checksum_method_attachmentdecryptor_decrypt_finalize(
+    );
+    uint16_t uniffi_orbital_signal_checksum_method_attachmentdecryptor_decrypt_push(
+    );
+    uint16_t uniffi_orbital_signal_checksum_method_attachmentdecryptor_verify_finalize(
+    );
+    uint16_t uniffi_orbital_signal_checksum_method_attachmentdecryptor_verify_push(
+    );
     uint16_t uniffi_orbital_signal_checksum_method_attachmentencryptor_finalize(
     );
     uint16_t uniffi_orbital_signal_checksum_method_attachmentencryptor_push(
+    );
+    uint16_t uniffi_orbital_signal_checksum_constructor_attachmentdecryptor_new(
     );
     uint16_t uniffi_orbital_signal_checksum_constructor_attachmentencryptor_new(
     );
@@ -6215,6 +6256,62 @@ NativeOrbitalSignal::NativeOrbitalSignal(
             return this->cpp_uniffi_internal_fn_func_ffi__arraybuffer_to_string(rt, thisVal, args, count);
         }
     );
+    props["ubrn_uniffi_orbital_signal_fn_clone_attachmentdecryptor"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_orbital_signal_fn_clone_attachmentdecryptor"),
+        1,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_orbital_signal_fn_clone_attachmentdecryptor(rt, thisVal, args, count);
+        }
+    );
+    props["ubrn_uniffi_orbital_signal_fn_free_attachmentdecryptor"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_orbital_signal_fn_free_attachmentdecryptor"),
+        1,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_orbital_signal_fn_free_attachmentdecryptor(rt, thisVal, args, count);
+        }
+    );
+    props["ubrn_uniffi_orbital_signal_fn_constructor_attachmentdecryptor_new"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_orbital_signal_fn_constructor_attachmentdecryptor_new"),
+        2,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_orbital_signal_fn_constructor_attachmentdecryptor_new(rt, thisVal, args, count);
+        }
+    );
+    props["ubrn_uniffi_orbital_signal_fn_method_attachmentdecryptor_decrypt_finalize"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_orbital_signal_fn_method_attachmentdecryptor_decrypt_finalize"),
+        1,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_orbital_signal_fn_method_attachmentdecryptor_decrypt_finalize(rt, thisVal, args, count);
+        }
+    );
+    props["ubrn_uniffi_orbital_signal_fn_method_attachmentdecryptor_decrypt_push"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_orbital_signal_fn_method_attachmentdecryptor_decrypt_push"),
+        2,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_orbital_signal_fn_method_attachmentdecryptor_decrypt_push(rt, thisVal, args, count);
+        }
+    );
+    props["ubrn_uniffi_orbital_signal_fn_method_attachmentdecryptor_verify_finalize"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_orbital_signal_fn_method_attachmentdecryptor_verify_finalize"),
+        1,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_orbital_signal_fn_method_attachmentdecryptor_verify_finalize(rt, thisVal, args, count);
+        }
+    );
+    props["ubrn_uniffi_orbital_signal_fn_method_attachmentdecryptor_verify_push"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_orbital_signal_fn_method_attachmentdecryptor_verify_push"),
+        2,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_orbital_signal_fn_method_attachmentdecryptor_verify_push(rt, thisVal, args, count);
+        }
+    );
     props["ubrn_uniffi_orbital_signal_fn_clone_attachmentencryptor"] = jsi::Function::createFromHostFunction(
         rt,
         jsi::PropNameID::forAscii(rt, "ubrn_uniffi_orbital_signal_fn_clone_attachmentencryptor"),
@@ -7135,6 +7232,38 @@ NativeOrbitalSignal::NativeOrbitalSignal(
             return this->cpp_uniffi_orbital_signal_checksum_func_parse_prekey_message_ids(rt, thisVal, args, count);
         }
     );
+    props["ubrn_uniffi_orbital_signal_checksum_method_attachmentdecryptor_decrypt_finalize"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_orbital_signal_checksum_method_attachmentdecryptor_decrypt_finalize"),
+        0,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_orbital_signal_checksum_method_attachmentdecryptor_decrypt_finalize(rt, thisVal, args, count);
+        }
+    );
+    props["ubrn_uniffi_orbital_signal_checksum_method_attachmentdecryptor_decrypt_push"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_orbital_signal_checksum_method_attachmentdecryptor_decrypt_push"),
+        0,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_orbital_signal_checksum_method_attachmentdecryptor_decrypt_push(rt, thisVal, args, count);
+        }
+    );
+    props["ubrn_uniffi_orbital_signal_checksum_method_attachmentdecryptor_verify_finalize"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_orbital_signal_checksum_method_attachmentdecryptor_verify_finalize"),
+        0,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_orbital_signal_checksum_method_attachmentdecryptor_verify_finalize(rt, thisVal, args, count);
+        }
+    );
+    props["ubrn_uniffi_orbital_signal_checksum_method_attachmentdecryptor_verify_push"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_orbital_signal_checksum_method_attachmentdecryptor_verify_push"),
+        0,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_orbital_signal_checksum_method_attachmentdecryptor_verify_push(rt, thisVal, args, count);
+        }
+    );
     props["ubrn_uniffi_orbital_signal_checksum_method_attachmentencryptor_finalize"] = jsi::Function::createFromHostFunction(
         rt,
         jsi::PropNameID::forAscii(rt, "ubrn_uniffi_orbital_signal_checksum_method_attachmentencryptor_finalize"),
@@ -7149,6 +7278,14 @@ NativeOrbitalSignal::NativeOrbitalSignal(
         0,
         [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
             return this->cpp_uniffi_orbital_signal_checksum_method_attachmentencryptor_push(rt, thisVal, args, count);
+        }
+    );
+    props["ubrn_uniffi_orbital_signal_checksum_constructor_attachmentdecryptor_new"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_orbital_signal_checksum_constructor_attachmentdecryptor_new"),
+        0,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_orbital_signal_checksum_constructor_attachmentdecryptor_new(rt, thisVal, args, count);
         }
     );
     props["ubrn_uniffi_orbital_signal_checksum_constructor_attachmentencryptor_new"] = jsi::Function::createFromHostFunction(
@@ -7303,6 +7440,14 @@ NativeOrbitalSignal::NativeOrbitalSignal(
             return this->cpp_ffi_orbital_signal_uniffi_contract_version(rt, thisVal, args, count);
         }
     );
+    props["ubrn_uniffi_internal_fn_method_attachmentdecryptor_ffi__bless_pointer"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_internal_fn_method_attachmentdecryptor_ffi__bless_pointer"),
+        1,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_internal_fn_method_attachmentdecryptor_ffi__bless_pointer(rt, thisVal, args, count);
+        }
+    );
     props["ubrn_uniffi_internal_fn_method_attachmentencryptor_ffi__bless_pointer"] = jsi::Function::createFromHostFunction(
         rt,
         jsi::PropNameID::forAscii(rt, "ubrn_uniffi_internal_fn_method_attachmentencryptor_ffi__bless_pointer"),
@@ -7388,6 +7533,15 @@ jsi::Value NativeOrbitalSignal::cpp_uniffi_internal_fn_func_ffi__string_to_array
 
 jsi::Value NativeOrbitalSignal::cpp_uniffi_internal_fn_func_ffi__arraybuffer_to_string(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
     return uniffi_jsi::Bridging<std::string>::arraybuffer_to_string(rt, args[0]);
+}jsi::Value NativeOrbitalSignal::cpp_uniffi_internal_fn_method_attachmentdecryptor_ffi__bless_pointer(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+    auto pointer = uniffi_jsi::Bridging<uint64_t>::fromJs(rt, callInvoker, args[0]);
+    auto static destructor = [](uint64_t p) {
+        RustCallStatus status = {0};
+        uniffi_orbital_signal_fn_free_attachmentdecryptor(p, &status);
+    };
+    auto ptrObj = std::make_shared<uniffi_jsi::DestructibleObject>(pointer, destructor);
+    auto obj = jsi::Object::createFromHostObject(rt, ptrObj);
+    return jsi::Value(rt, obj);
 }jsi::Value NativeOrbitalSignal::cpp_uniffi_internal_fn_method_attachmentencryptor_ffi__bless_pointer(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
     auto pointer = uniffi_jsi::Bridging<uint64_t>::fromJs(rt, callInvoker, args[0]);
     auto static destructor = [](uint64_t p) {
@@ -7400,6 +7554,76 @@ jsi::Value NativeOrbitalSignal::cpp_uniffi_internal_fn_func_ffi__arraybuffer_to_
 }
 
 // Methods calling directly into the uniffi generated C API of the Rust crate.
+jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_fn_clone_attachmentdecryptor(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        RustCallStatus status = uniffi::orbital_signal::Bridging<RustCallStatus>::rustSuccess(rt);
+        auto value = uniffi_orbital_signal_fn_clone_attachmentdecryptor(uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker, args[0]), 
+            &status
+        );
+        uniffi::orbital_signal::Bridging<RustCallStatus>::copyIntoJs(rt, callInvoker, status, args[count - 1]);
+
+        
+        return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_fn_free_attachmentdecryptor(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        RustCallStatus status = uniffi::orbital_signal::Bridging<RustCallStatus>::rustSuccess(rt);
+        uniffi_orbital_signal_fn_free_attachmentdecryptor(uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker, args[0]), 
+            &status
+        );
+        uniffi::orbital_signal::Bridging<RustCallStatus>::copyIntoJs(rt, callInvoker, status, args[count - 1]);
+
+        
+        return jsi::Value::undefined();
+}
+jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_fn_constructor_attachmentdecryptor_new(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        RustCallStatus status = uniffi::orbital_signal::Bridging<RustCallStatus>::rustSuccess(rt);
+        auto value = uniffi_orbital_signal_fn_constructor_attachmentdecryptor_new(uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[0]), uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[1]), 
+            &status
+        );
+        uniffi::orbital_signal::Bridging<RustCallStatus>::copyIntoJs(rt, callInvoker, status, args[count - 1]);
+
+        
+        return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_fn_method_attachmentdecryptor_decrypt_finalize(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        RustCallStatus status = uniffi::orbital_signal::Bridging<RustCallStatus>::rustSuccess(rt);
+        auto value = uniffi_orbital_signal_fn_method_attachmentdecryptor_decrypt_finalize(uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker, args[0]), 
+            &status
+        );
+        uniffi::orbital_signal::Bridging<RustCallStatus>::copyIntoJs(rt, callInvoker, status, args[count - 1]);
+
+        
+        return uniffi::orbital_signal::Bridging<RustBuffer>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_fn_method_attachmentdecryptor_decrypt_push(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        RustCallStatus status = uniffi::orbital_signal::Bridging<RustCallStatus>::rustSuccess(rt);
+        auto value = uniffi_orbital_signal_fn_method_attachmentdecryptor_decrypt_push(uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker, args[0]), uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[1]), 
+            &status
+        );
+        uniffi::orbital_signal::Bridging<RustCallStatus>::copyIntoJs(rt, callInvoker, status, args[count - 1]);
+
+        
+        return uniffi::orbital_signal::Bridging<RustBuffer>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_fn_method_attachmentdecryptor_verify_finalize(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        RustCallStatus status = uniffi::orbital_signal::Bridging<RustCallStatus>::rustSuccess(rt);
+        uniffi_orbital_signal_fn_method_attachmentdecryptor_verify_finalize(uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker, args[0]), 
+            &status
+        );
+        uniffi::orbital_signal::Bridging<RustCallStatus>::copyIntoJs(rt, callInvoker, status, args[count - 1]);
+
+        
+        return jsi::Value::undefined();
+}
+jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_fn_method_attachmentdecryptor_verify_push(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        RustCallStatus status = uniffi::orbital_signal::Bridging<RustCallStatus>::rustSuccess(rt);
+        uniffi_orbital_signal_fn_method_attachmentdecryptor_verify_push(uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker, args[0]), uniffi::orbital_signal::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[1]), 
+            &status
+        );
+        uniffi::orbital_signal::Bridging<RustCallStatus>::copyIntoJs(rt, callInvoker, status, args[count - 1]);
+
+        
+        return jsi::Value::undefined();
+}
 jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_fn_clone_attachmentencryptor(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
         RustCallStatus status = uniffi::orbital_signal::Bridging<RustCallStatus>::rustSuccess(rt);
         auto value = uniffi_orbital_signal_fn_clone_attachmentencryptor(uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker, args[0]), 
@@ -8390,6 +8614,34 @@ jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_checksum_func_parse_pr
         
         return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
 }
+jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_checksum_method_attachmentdecryptor_decrypt_finalize(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        auto value = uniffi_orbital_signal_checksum_method_attachmentdecryptor_decrypt_finalize(
+        );
+
+        
+        return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_checksum_method_attachmentdecryptor_decrypt_push(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        auto value = uniffi_orbital_signal_checksum_method_attachmentdecryptor_decrypt_push(
+        );
+
+        
+        return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_checksum_method_attachmentdecryptor_verify_finalize(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        auto value = uniffi_orbital_signal_checksum_method_attachmentdecryptor_verify_finalize(
+        );
+
+        
+        return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_checksum_method_attachmentdecryptor_verify_push(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        auto value = uniffi_orbital_signal_checksum_method_attachmentdecryptor_verify_push(
+        );
+
+        
+        return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
 jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_checksum_method_attachmentencryptor_finalize(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
         auto value = uniffi_orbital_signal_checksum_method_attachmentencryptor_finalize(
         );
@@ -8399,6 +8651,13 @@ jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_checksum_method_attach
 }
 jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_checksum_method_attachmentencryptor_push(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
         auto value = uniffi_orbital_signal_checksum_method_attachmentencryptor_push(
+        );
+
+        
+        return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativeOrbitalSignal::cpp_uniffi_orbital_signal_checksum_constructor_attachmentdecryptor_new(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        auto value = uniffi_orbital_signal_checksum_constructor_attachmentdecryptor_new(
         );
 
         

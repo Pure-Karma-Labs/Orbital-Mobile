@@ -7,6 +7,9 @@
  * - encryptAttachment calls the Rust FFI with correct ArrayBuffer conversions
  * - decryptAttachment calls the Rust FFI with correct ArrayBuffer conversions
  * - Return values are properly converted from ArrayBuffer to Uint8Array
+ * - createAttachmentEncryptor (streaming) forwards ArrayBuffer/Uint8Array conversions correctly
+ * - createAttachmentDecryptor (streaming, issue #578) forwards base64 strings unchanged and
+ *   propagates native errors without transcoding
  */
 
 const mockAttachmentEncrypt = jest.fn();
@@ -14,6 +17,11 @@ const mockAttachmentDecrypt = jest.fn();
 const mockPush = jest.fn();
 const mockFinalize = jest.fn();
 const mockUniffiDestroy = jest.fn();
+const mockVerifyPush = jest.fn();
+const mockVerifyFinalize = jest.fn();
+const mockDecryptPush = jest.fn();
+const mockDecryptFinalize = jest.fn();
+const mockDecryptorDestroy = jest.fn();
 
 jest.mock('orbital-signal', () => ({
   attachmentEncrypt: (...args: unknown[]) => mockAttachmentEncrypt(...args),
@@ -23,6 +31,13 @@ jest.mock('orbital-signal', () => ({
     finalize: mockFinalize,
     uniffiDestroy: mockUniffiDestroy,
   })),
+  AttachmentDecryptor: jest.fn().mockImplementation(() => ({
+    verifyPush: mockVerifyPush,
+    verifyFinalize: mockVerifyFinalize,
+    decryptPush: mockDecryptPush,
+    decryptFinalize: mockDecryptFinalize,
+    uniffiDestroy: mockDecryptorDestroy,
+  })),
 }));
 
 import {
@@ -30,6 +45,7 @@ import {
   encryptAttachment,
   decryptAttachment,
   createAttachmentEncryptor,
+  createAttachmentDecryptor,
 } from '../attachmentCrypto';
 
 beforeEach(() => {
@@ -225,5 +241,122 @@ describe('createAttachmentEncryptor', () => {
     enc.destroy();
 
     expect(mockUniffiDestroy).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createAttachmentDecryptor (streaming wrapper, issue #578)
+// ---------------------------------------------------------------------------
+
+describe('createAttachmentDecryptor', () => {
+  beforeEach(() => {
+    // clearAllMocks() does not clear mockImplementation — the throwing
+    // implementations from the error-propagation tests below would leak
+    // into later tests without these resets.
+    mockVerifyPush.mockImplementation(() => undefined);
+    mockVerifyFinalize.mockImplementation(() => undefined);
+    mockDecryptPush.mockReturnValue('');
+    mockDecryptFinalize.mockReturnValue('');
+  });
+
+  it('passes keys and expectedDigest as ArrayBuffer to the native constructor', () => {
+    const { AttachmentDecryptor } = require('orbital-signal');
+    const keys = new Uint8Array(64).fill(0xaa);
+    const expectedDigest = new Uint8Array(32).fill(0xbb);
+    createAttachmentDecryptor(keys, expectedDigest);
+
+    expect(AttachmentDecryptor).toHaveBeenCalledTimes(1);
+    const [keysArg, digestArg] = AttachmentDecryptor.mock.calls[0];
+    expect(keysArg).toBeInstanceOf(ArrayBuffer);
+    expect(keysArg.byteLength).toBe(64);
+    expect(digestArg).toBeInstanceOf(ArrayBuffer);
+    expect(digestArg.byteLength).toBe(32);
+  });
+
+  it('verifyPush() forwards the base64 string unchanged', () => {
+    const dec = createAttachmentDecryptor(new Uint8Array(64), new Uint8Array(32));
+    dec.verifyPush('abc');
+
+    expect(mockVerifyPush).toHaveBeenCalledTimes(1);
+    const arg = mockVerifyPush.mock.calls[0][0];
+    expect(arg).toBe('abc');
+  });
+
+  it('verifyFinalize() delegates to the native call', () => {
+    const dec = createAttachmentDecryptor(new Uint8Array(64), new Uint8Array(32));
+    dec.verifyFinalize();
+
+    expect(mockVerifyFinalize).toHaveBeenCalledTimes(1);
+  });
+
+  it('decryptPush() forwards the base64 string unchanged and returns the native string verbatim', () => {
+    mockDecryptPush.mockReturnValue('cGxhaW50ZXh0');
+    const dec = createAttachmentDecryptor(new Uint8Array(64), new Uint8Array(32));
+    const result = dec.decryptPush('xyz');
+
+    expect(mockDecryptPush).toHaveBeenCalledTimes(1);
+    const arg = mockDecryptPush.mock.calls[0][0];
+    expect(arg).toBe('xyz');
+    expect(result).toBe('cGxhaW50ZXh0');
+  });
+
+  it('decryptFinalize() returns the native string verbatim', () => {
+    mockDecryptFinalize.mockReturnValue('dGFpbA==');
+    const dec = createAttachmentDecryptor(new Uint8Array(64), new Uint8Array(32));
+    const result = dec.decryptFinalize();
+
+    expect(mockDecryptFinalize).toHaveBeenCalledTimes(1);
+    expect(result).toBe('dGFpbA==');
+  });
+
+  it('propagates errors thrown by verifyPush', () => {
+    mockVerifyPush.mockImplementation(() => {
+      throw new Error('verifyPush failed');
+    });
+    const dec = createAttachmentDecryptor(new Uint8Array(64), new Uint8Array(32));
+
+    expect(() => dec.verifyPush('abc')).toThrow('verifyPush failed');
+  });
+
+  it('propagates errors thrown by verifyFinalize', () => {
+    mockVerifyFinalize.mockImplementation(() => {
+      throw new Error('verifyFinalize failed');
+    });
+    const dec = createAttachmentDecryptor(new Uint8Array(64), new Uint8Array(32));
+
+    expect(() => dec.verifyFinalize()).toThrow('verifyFinalize failed');
+  });
+
+  it('propagates errors thrown by decryptPush', () => {
+    mockDecryptPush.mockImplementation(() => {
+      throw new Error('decryptPush failed');
+    });
+    const dec = createAttachmentDecryptor(new Uint8Array(64), new Uint8Array(32));
+
+    expect(() => dec.decryptPush('xyz')).toThrow('decryptPush failed');
+  });
+
+  it('propagates errors thrown by decryptFinalize', () => {
+    mockDecryptFinalize.mockImplementation(() => {
+      throw new Error('decryptFinalize failed');
+    });
+    const dec = createAttachmentDecryptor(new Uint8Array(64), new Uint8Array(32));
+
+    expect(() => dec.decryptFinalize()).toThrow('decryptFinalize failed');
+  });
+
+  it('destroy() delegates to uniffiDestroy()', () => {
+    const dec = createAttachmentDecryptor(new Uint8Array(64), new Uint8Array(32));
+    dec.destroy();
+
+    expect(mockDecryptorDestroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('destroy() is idempotent — second call does not invoke uniffiDestroy again', () => {
+    const dec = createAttachmentDecryptor(new Uint8Array(64), new Uint8Array(32));
+    dec.destroy();
+    dec.destroy();
+
+    expect(mockDecryptorDestroy).toHaveBeenCalledTimes(1);
   });
 });

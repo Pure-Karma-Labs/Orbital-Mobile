@@ -27,6 +27,37 @@ interface NativeModuleInterface {
     buffer: Uint8Array,
     uniffi_out_err: UniffiRustCallStatus,
   ): string;
+  ubrn_uniffi_orbital_signal_fn_clone_attachmentdecryptor(
+    handle: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): bigint;
+  ubrn_uniffi_orbital_signal_fn_free_attachmentdecryptor(
+    handle: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): void;
+  ubrn_uniffi_orbital_signal_fn_constructor_attachmentdecryptor_new(
+    keys: Uint8Array,
+    expectedDigest: Uint8Array,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): bigint;
+  ubrn_uniffi_orbital_signal_fn_method_attachmentdecryptor_decrypt_finalize(
+    ptr: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array;
+  ubrn_uniffi_orbital_signal_fn_method_attachmentdecryptor_decrypt_push(
+    ptr: bigint,
+    chunkB64: Uint8Array,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): Uint8Array;
+  ubrn_uniffi_orbital_signal_fn_method_attachmentdecryptor_verify_finalize(
+    ptr: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): void;
+  ubrn_uniffi_orbital_signal_fn_method_attachmentdecryptor_verify_push(
+    ptr: bigint,
+    chunkB64: Uint8Array,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): void;
   ubrn_uniffi_orbital_signal_fn_clone_attachmentencryptor(
     handle: bigint,
     uniffi_out_err: UniffiRustCallStatus,
@@ -362,8 +393,13 @@ interface NativeModuleInterface {
   ubrn_uniffi_orbital_signal_checksum_func_get_pre_key_public(): number;
   ubrn_uniffi_orbital_signal_checksum_func_get_signed_pre_key_public(): number;
   ubrn_uniffi_orbital_signal_checksum_func_parse_prekey_message_ids(): number;
+  ubrn_uniffi_orbital_signal_checksum_method_attachmentdecryptor_decrypt_finalize(): number;
+  ubrn_uniffi_orbital_signal_checksum_method_attachmentdecryptor_decrypt_push(): number;
+  ubrn_uniffi_orbital_signal_checksum_method_attachmentdecryptor_verify_finalize(): number;
+  ubrn_uniffi_orbital_signal_checksum_method_attachmentdecryptor_verify_push(): number;
   ubrn_uniffi_orbital_signal_checksum_method_attachmentencryptor_finalize(): number;
   ubrn_uniffi_orbital_signal_checksum_method_attachmentencryptor_push(): number;
+  ubrn_uniffi_orbital_signal_checksum_constructor_attachmentdecryptor_new(): number;
   ubrn_uniffi_orbital_signal_checksum_constructor_attachmentencryptor_new(): number;
   ubrn_uniffi_orbital_signal_checksum_method_orbitalidentitykeystore_get_identity_key_pair(): number;
   ubrn_uniffi_orbital_signal_checksum_method_orbitalidentitykeystore_get_local_registration_id(): number;
@@ -383,6 +419,10 @@ interface NativeModuleInterface {
   ubrn_uniffi_orbital_signal_checksum_method_orbitalsignedprekeystore_load_signed_pre_key(): number;
   ubrn_uniffi_orbital_signal_checksum_method_orbitalsignedprekeystore_store_signed_pre_key(): number;
   ubrn_ffi_orbital_signal_uniffi_contract_version(): number;
+  ubrn_uniffi_internal_fn_method_attachmentdecryptor_ffi__bless_pointer(
+    pointer: bigint,
+    uniffi_out_err: UniffiRustCallStatus,
+  ): UniffiGcObject;
   ubrn_uniffi_internal_fn_method_attachmentencryptor_ffi__bless_pointer(
     pointer: bigint,
     uniffi_out_err: UniffiRustCallStatus,

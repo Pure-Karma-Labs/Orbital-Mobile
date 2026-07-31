@@ -13,7 +13,10 @@
  */
 
 // `require` (not `import`): the stub is untyped CommonJS, and the real
-// package's types do not describe the injectable failure hooks.
+// package's types do not describe the injectable failure hooks. The bare
+// `export {}` makes this file a module so its top-level bindings don't
+// collide with the script-scoped mock's own `AttachmentDecryptor` class.
+export {};
 const { AttachmentDecryptor } = require('orbital-signal');
 
 const KEYS = new ArrayBuffer(64);

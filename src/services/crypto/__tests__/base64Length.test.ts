@@ -32,9 +32,10 @@ describe('base64DecodedLength', () => {
     expect(base64DecodedLength(b64)).toBe(base64ToUint8Array(b64).length);
   });
 
-  // iOS RNFS read() returns line-broken base64; atob tolerates it, so the
-  // length helper has to agree with atob rather than with the raw string length.
-  it('ignores embedded ASCII whitespace (iOS line-broken base64)', () => {
+  // Defensive: some base64 encoders wrap their output (RNFS 2.39.2 does not);
+  // atob tolerates the whitespace, so the length helper has to agree with atob
+  // rather than with the raw string length.
+  it('ignores embedded ASCII whitespace (wrapped base64)', () => {
     const bytes = new Uint8Array(300).map((_v, i) => i % 256);
     const b64 = arrayBufferToBase64(toArrayBuffer(bytes));
     const wrapped = (b64.match(/.{1,64}/g) ?? []).join('\n') + '\r\n';

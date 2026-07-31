@@ -61,9 +61,6 @@ import type { MediaRow } from '../database/repositories/mediaRepository';
 /** Chunk size in bytes (5MB) for chunked upload to backend */
 const CHUNK_SIZE_BYTES = 5 * 1024 * 1024;
 
-/** Read size for streaming encryption phase (1MB) — shared with the download passes */
-const ENCRYPT_READ_SIZE_BYTES = STREAM_READ_SIZE_BYTES;
-
 /** Maximum retry attempts per chunk */
 const MAX_RETRIES = 3;
 
@@ -330,13 +327,13 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
     // 4. PHASE 1 -- Stream encrypt plaintext to ciphertext file
     const enc = createAttachmentEncryptor(keys);
     try {
-      for (let pos = 0; pos < fileSize; pos += ENCRYPT_READ_SIZE_BYTES) {
+      for (let pos = 0; pos < fileSize; pos += STREAM_READ_SIZE_BYTES) {
         // Abort check
         if (signal?.aborted) {
           throw new Error('Upload cancelled');
         }
 
-        const n = Math.min(ENCRYPT_READ_SIZE_BYTES, fileSize - pos);
+        const n = Math.min(STREAM_READ_SIZE_BYTES, fileSize - pos);
         const b64 = await read(sourcePath, n, pos, 'base64');
         const bytes = base64ToUint8Array(b64);
 
@@ -718,6 +715,19 @@ export async function cleanupOrphanedChunks(): Promise<void> {
         const mtime = file.mtime ? new Date(file.mtime).getTime() : 0;
         const age = now - mtime;
         if (age > 3600_000) {
+          // The readDir snapshot is a point-in-time listing, and this loop can
+          // take a while. A concurrent download or upload may have recreated
+          // this exact deterministic path in the meantime -- deleting it would
+          // silently truncate a live transfer's staging file. Re-stat and skip
+          // anything that is young NOW. A stat failure is also a skip: if we
+          // cannot confirm the file is stale, we do not delete it.
+          try {
+            const fresh = await stat(file.path);
+            const freshMtime = fresh.mtime ? new Date(fresh.mtime).getTime() : 0;
+            if (Date.now() - freshMtime <= 3600_000) continue;
+          } catch {
+            continue;
+          }
           await unlink(file.path).catch(() => {});
         }
       }

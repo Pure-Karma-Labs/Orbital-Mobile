@@ -239,6 +239,14 @@ export function mapHttpErrorToApiError(status: number, rawBody?: string): ApiErr
 /** Maximum 429 retries before giving up (shared by all transports). */
 export const MAX_429_RETRIES = 3;
 
+/**
+ * Message for the pre-flight "not authenticated" AuthError, shared by every
+ * transport (the fetch path here and the RNFS download path in `media.ts`) so
+ * they cannot drift apart.
+ */
+export const NO_ACCESS_TOKEN_MESSAGE =
+  'No access token available — user is not authenticated';
+
 /** Cap retry delay at 10s — a mobile user won't wait minutes. */
 const MAX_RETRY_DELAY_MS = 10_000;
 
@@ -334,7 +342,7 @@ async function _executeRequest(options: RequestOptions): Promise<Response> {
   if (!skipAuth) {
     const token = await tokenManager.getAccessToken();
     if (token === null) {
-      throw new AuthError(401, 'No access token available — user is not authenticated');
+      throw new AuthError(401, NO_ACCESS_TOKEN_MESSAGE);
     }
     headers.Authorization = `Bearer ${token}`;
   }

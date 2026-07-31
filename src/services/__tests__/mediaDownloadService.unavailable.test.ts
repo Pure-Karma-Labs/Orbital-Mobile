@@ -6,10 +6,11 @@
 jest.mock('@dr.pogodin/react-native-fs');
 
 const mockDownloadMediaToFile = jest.fn();
+// `ciphertextByteCeiling` moved to the never-mocked `media/mediaLimits` policy
+// module, so no stub is needed (and a flat 500MB stub would have hidden the
+// per-row size bound entirely).
 jest.mock('../api/media', () => ({
   downloadMediaToFile: (...args: unknown[]) => mockDownloadMediaToFile(...args),
-  // Simple stub — the real ceiling math is exercised by api/media's own tests.
-  ciphertextByteCeiling: (_expectedBytes?: number | null) => 500 * 1024 * 1024,
 }));
 
 const mockVerifyPush = jest.fn();
@@ -96,11 +97,20 @@ function statResult(size: number): {
   return { size, mtime: new Date(), ctime: new Date(), isFile: () => true, isDirectory: () => false };
 }
 
+/**
+ * Plaintext bytes the decryptor stub emits. Must be > 0: a decrypt that emits
+ * nothing is refused before promotion (an empty file would otherwise be cached
+ * AND archive-confirmed).
+ */
+const PLAINTEXT_BYTES = 16;
+
 beforeEach(() => {
   jest.clearAllMocks();
   mockGetMedia.mockReturnValue(makeRow());
   mockDecryptPush.mockReturnValue('');
-  mockDecryptFinalize.mockReturnValue('');
+  mockDecryptFinalize.mockReturnValue(
+    arrayBufferToBase64(new ArrayBuffer(PLAINTEXT_BYTES)),
+  );
 
   const rnfs = require('@dr.pogodin/react-native-fs');
   rnfs.exists.mockResolvedValue(false);
@@ -109,11 +119,11 @@ beforeEach(() => {
   rnfs.moveFile.mockResolvedValue(undefined);
   rnfs.unlink.mockResolvedValue(undefined);
 
-  // Ciphertext staging blob reads as non-empty; the decrypt-emit stub below
-  // produces zero plaintext bytes, so the plaintext `.tmp` must stat as 0 to
-  // stay consistent with `emittedBytes`.
+  // Ciphertext staging blob reads as 1024 bytes (within row size 1000's
+  // ceiling of 1064); the plaintext `.tmp` must stat as exactly what the
+  // decryptor stub emitted or the pre-promotion size assert trips.
   rnfs.stat.mockImplementation((path: string) =>
-    Promise.resolve(statResult(path.endsWith('.tmp') ? 0 : 1024)),
+    Promise.resolve(statResult(path.endsWith('.tmp') ? PLAINTEXT_BYTES : 1024)),
   );
 
   // Each read returns a validly-padded base64 string decoding to exactly the

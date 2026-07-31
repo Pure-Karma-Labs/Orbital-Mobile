@@ -184,7 +184,7 @@ describe('completeUpload', () => {
 // ---------------------------------------------------------------------------
 //
 // The RNFS transport (retry loop, stall/backstop timers, byte ceiling, abort
-// races) is covered separately by the parent agent. These tests only pin the
+// races) is covered by downloadMediaToFile.test.ts. These tests only pin the
 // basic request-shape contract.
 
 function mockDownloadFile(

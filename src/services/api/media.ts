@@ -22,16 +22,13 @@ import {
   delayForRateLimit,
   handleUnauthorized,
   mapHttpErrorToApiError,
-  mediaTransferTimeoutMs,
   request,
   MAX_429_RETRIES,
+  NO_ACCESS_TOKEN_MESSAGE,
 } from './client';
 import { AuthError, NetworkError } from './errors';
 import { tokenManager } from './tokenManager';
-import {
-  MAX_CIPHERTEXT_BYTES,
-  MAX_CIPHERTEXT_OVERHEAD_BYTES,
-} from '../media/mediaLimits';
+import { ciphertextByteCeiling } from '../media/mediaLimits';
 import type { UploadChunkResponse } from '../../types/api';
 
 // ============================================================
@@ -153,13 +150,25 @@ export function archiveConfirm(mediaId: string): Promise<ArchiveConfirmResponse>
 export const MEDIA_DOWNLOAD_STALL_TIMEOUT_MS = 30_000;
 
 /**
- * Absolute backstop floor. The end-to-end deadline is retained ONLY as a
- * last-resort liveness guarantee for the case where neither the native
- * promise nor the stall timeout ever fires (the vendored fork's iOS
- * `Downloader.mm` can fail to invoke any callback), so it is deliberately
- * generous rather than throughput-derived.
+ * JS-side stall watchdog window — twice the native `readTimeout`.
+ *
+ * The native stall guard is not trustworthy on its own: iOS routes a
+ * `readTimeout` expiry that carries resume data to a path that invokes NO
+ * callback, so the native promise can simply never settle and the stall goes
+ * undetected. This timer is armed per attempt and reset on every `begin` and
+ * `progress` tick, so it only fires when the transfer has genuinely gone quiet
+ * for longer than the native guard should have taken to notice.
  */
-export const MEDIA_DOWNLOAD_BACKSTOP_FLOOR_MS = 30 * 60_000;
+const JS_STALL_WATCHDOG_MS = 2 * MEDIA_DOWNLOAD_STALL_TIMEOUT_MS;
+
+/**
+ * Absolute backstop for one download attempt. The end-to-end deadline is
+ * retained ONLY as a last-resort liveness guarantee for the case where neither
+ * the native promise, the stall watchdog, nor any callback ever fires, so it is
+ * deliberately generous and flat rather than throughput-derived — a slow but
+ * honestly-progressing 200MB transfer must never trip it.
+ */
+export const MEDIA_DOWNLOAD_BACKSTOP_MS = 30 * 60_000;
 
 /** Progress callback cadence (ms). */
 const PROGRESS_INTERVAL_MS = 250;
@@ -180,7 +189,7 @@ export interface DownloadMediaToFileOptions {
   toFile: string;
   /**
    * Size of the blob from the media row, when known. Drives the byte ceiling
-   * and the absolute backstop — never a throughput deadline.
+   * ONLY — never a deadline of any kind. Both timers here are flat.
    *
    * NOTE: this is server truth (ciphertext length) for received media, but the
    * uploader's own row records the PLAINTEXT length, so the ceiling adds the
@@ -204,33 +213,8 @@ export interface DownloadMediaToFileResult {
 /** Message used for abort-path rejections from this transport. */
 const ABORTED_MESSAGE = 'Media download aborted';
 
-/**
- * Upper bound on bytes we will accept onto disk for one download (#661).
- *
- * `expectedBytes` may be plaintext-basis (see above), so the maximum
- * wire-format overhead is added before the global clamp.
- */
-export function ciphertextByteCeiling(expectedBytes?: number | null): number {
-  if (
-    expectedBytes == null ||
-    !Number.isFinite(expectedBytes) ||
-    expectedBytes <= 0
-  ) {
-    return MAX_CIPHERTEXT_BYTES;
-  }
-  return Math.min(
-    expectedBytes + MAX_CIPHERTEXT_OVERHEAD_BYTES,
-    MAX_CIPHERTEXT_BYTES,
-  );
-}
-
-/** Generous absolute backstop for a single download attempt. */
-export function mediaDownloadBackstopMs(expectedBytes?: number | null): number {
-  return Math.max(
-    MEDIA_DOWNLOAD_BACKSTOP_FLOOR_MS,
-    mediaTransferTimeoutMs(expectedBytes),
-  );
-}
+/** Message used for every byte-ceiling rejection (begin, progress, result). */
+const OVERSIZE_MESSAGE = 'Media download exceeds the maximum allowed size';
 
 function toNetworkError(err: unknown): NetworkError {
   return new NetworkError(
@@ -294,6 +278,18 @@ async function runDownloadAttempt(
     failRace(new NetworkError('Media download exceeded the maximum transfer time'));
   }, deadlineMs);
 
+  // JS-owned stall detection. `readTimeout` is the native guard, but iOS can
+  // swallow its expiry entirely (no callback, promise never settles), so JS
+  // must own the stall too. Armed now and reset by every begin/progress tick.
+  let stallTimer: ReturnType<typeof setTimeout> | null = null;
+  const armStallWatchdog = (): void => {
+    if (stallTimer !== null) clearTimeout(stallTimer);
+    stallTimer = setTimeout(() => {
+      failRace(new NetworkError('Media download stalled'));
+    }, JS_STALL_WATCHDOG_MS);
+  };
+  armStallWatchdog();
+
   const onAbort = (): void => {
     failRace(new NetworkError(ABORTED_MESSAGE));
   };
@@ -321,16 +317,32 @@ async function runDownloadAttempt(
       readTimeout: MEDIA_DOWNLOAD_STALL_TIMEOUT_MS,
       progressInterval: PROGRESS_INTERVAL_MS,
       begin: (res: DownloadBeginCallbackResultT) => {
+        armStallWatchdog();
+        // A 2xx that is not exactly 200 must be refused here rather than at the
+        // result: iOS gates its progress callbacks on `statusCode === 200`, so a
+        // chunked 206/202 body would stream to disk with the byte ceiling never
+        // being evaluated even once.
+        if (
+          res.statusCode >= 200 &&
+          res.statusCode < 300 &&
+          res.statusCode !== 200
+        ) {
+          failRace(
+            new NetworkError('Media download returned an unsupported success status'),
+          );
+          return;
+        }
         if (res.contentLength > ceiling && !ceilingTripped) {
           ceilingTripped = true;
-          failRace(new NetworkError('Media download exceeds the maximum allowed size'));
+          failRace(new NetworkError(OVERSIZE_MESSAGE));
         }
       },
       progress: (res: DownloadProgressCallbackResultT) => {
+        armStallWatchdog();
         onProgress?.(res.bytesWritten, res.contentLength);
         if (res.bytesWritten > ceiling && !ceilingTripped) {
           ceilingTripped = true;
-          failRace(new NetworkError('Media download exceeds the maximum allowed size'));
+          failRace(new NetworkError(OVERSIZE_MESSAGE));
         }
       },
     });
@@ -349,6 +361,7 @@ async function runDownloadAttempt(
     ]);
   } finally {
     clearTimeout(deadlineTimer);
+    if (stallTimer !== null) clearTimeout(stallTimer);
     signal?.removeEventListener('abort', onAbort);
   }
 }
@@ -377,12 +390,12 @@ export async function downloadMediaToFile(
 
   const token = await tokenManager.getAccessToken();
   if (token === null) {
-    throw new AuthError(401, 'No access token available — user is not authenticated');
+    throw new AuthError(401, NO_ACCESS_TOKEN_MESSAGE);
   }
 
   const url = `${API_BASE_URL}/api/media/${encodeURIComponent(mediaId)}/download`;
   const ceiling = ciphertextByteCeiling(expectedBytes);
-  const deadlineMs = mediaDownloadBackstopMs(expectedBytes);
+  const deadlineMs = MEDIA_DOWNLOAD_BACKSTOP_MS;
   const tracker: { native: Promise<unknown> | null } = { native: null };
 
   /**
@@ -440,7 +453,7 @@ export async function downloadMediaToFile(
         throw new NetworkError('Media download produced an empty file');
       }
       if (result.bytesWritten > ceiling) {
-        throw new NetworkError('Media download exceeds the maximum allowed size');
+        throw new NetworkError(OVERSIZE_MESSAGE);
       }
 
       return { bytesWritten: result.bytesWritten };

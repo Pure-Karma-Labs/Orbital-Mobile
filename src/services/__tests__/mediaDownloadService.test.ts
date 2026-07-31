@@ -16,14 +16,12 @@ jest.mock('@dr.pogodin/react-native-fs');
 
 const mockDownloadMediaToFile = jest.fn();
 
+// `ciphertextByteCeiling` is NOT stubbed here: it lives in the never-mocked
+// `media/mediaLimits` policy module, so the service's per-row size bound is
+// checked against the real formula rather than a re-implementation that can
+// drift away from it.
 jest.mock('../api/media', () => ({
   downloadMediaToFile: (...args: unknown[]) => mockDownloadMediaToFile(...args),
-  // Mirrors the real formula (see api/media.ts); its own behaviour is covered
-  // by downloadMediaToFile.test.ts.
-  ciphertextByteCeiling: (n?: number | null) =>
-    n != null && n > 0
-      ? Math.min(n + 64, 50 * 1024 * 1024 + 64)
-      : 50 * 1024 * 1024 + 64,
 }));
 
 const mockGetMedia = jest.fn();
@@ -366,6 +364,53 @@ describe('downloadAndDecryptMedia — streaming happy path', () => {
     expect(fsFiles.has(FINAL_PATH)).toBe(false);
   });
 
+  // A zero-byte emit is the one mismatch the tmpSize comparison cannot catch
+  // (0 === 0), and promotion would cache an empty file AND confirm the archive,
+  // letting the server evict the only real copy.
+  it('refuses to promote when the decrypt emits no plaintext at all', async () => {
+    const rnfs = require('@dr.pogodin/react-native-fs');
+    AttachmentDecryptor.decryptPushOutput = () => '';
+    AttachmentDecryptor.decryptFinalizeOutput = () => '';
+
+    await expect(downloadAndDecryptMedia(FAKE_MEDIA_ID)).rejects.toThrow(
+      /no plaintext/,
+    );
+
+    expect(rnfs.moveFile).not.toHaveBeenCalled();
+    expect(fsFiles.has(FINAL_PATH)).toBe(false);
+    expect(fsFiles.has(TMP_PATH)).toBe(false);
+    expect(mockUpdateDownloadState).not.toHaveBeenCalledWith(
+      FAKE_MEDIA_ID,
+      'downloaded',
+      expect.anything(),
+    );
+
+    await new Promise((r) => setImmediate(r));
+    expect(mockConfirmArchived).not.toHaveBeenCalled();
+  });
+
+  // Without a per-row bound, a 1KB row could stage 50MB of attacker bytes and
+  // be fed through two full Rust passes before the HMAC rejected it.
+  it('rejects a staged blob over THIS row\'s ceiling even when under the global cap', async () => {
+    const SMALL_ROW_BYTES = 1000;
+    mockGetMedia.mockReturnValue(makeMediaRow({ file_size: SMALL_ROW_BYTES }));
+    // Way over 1000 + 64, but far below MAX_CIPHERTEXT_BYTES.
+    transportWritesCiphertext(4 * 1024 * 1024);
+
+    await expect(downloadAndDecryptMedia(FAKE_MEDIA_ID)).rejects.toThrow(
+      /longer than the expected length/,
+    );
+    expect(mockUpdateDownloadState).toHaveBeenCalledWith(FAKE_MEDIA_ID, 'failed');
+  });
+
+  it('accepts a staged blob exactly at this row\'s ceiling', async () => {
+    const ROW_BYTES = 4096;
+    mockGetMedia.mockReturnValue(makeMediaRow({ file_size: ROW_BYTES }));
+    transportWritesCiphertext(ROW_BYTES + 64);
+
+    await expect(downloadAndDecryptMedia(FAKE_MEDIA_ID)).resolves.toBe(FINAL_PATH);
+  });
+
   it('rejects a staged blob shorter than the expected ciphertext length', async () => {
     transportWritesCiphertext(CT_LEN - 100);
 
@@ -567,6 +612,42 @@ describe('downloadAndDecryptMedia — disk preflight', () => {
     await expect(first).resolves.toBe(FINAL_PATH);
   });
 
+  // Reserving the global 50MB cap for a row with no usable size made a small
+  // download fail on a device with ample room for it. The real size stays
+  // bounded by the transport ceiling and the staged-size assert.
+  it('reserves a modest floor, not the global cap, when the row size is unknown', async () => {
+    const rnfs = require('@dr.pogodin/react-native-fs');
+    // Comfortably above 2 x 8MB + 64MB headroom, far below 2 x 50MB + 64MB.
+    rnfs.getFSInfo.mockResolvedValue({
+      totalSpace: 0,
+      totalSpaceEx: 0,
+      freeSpace: 64 * 1024 * 1024 + 24 * 1024 * 1024,
+      freeSpaceEx: 0,
+    });
+    // 0 is the "unknown size" value on MediaRow (file_size is non-nullable).
+    mockGetMedia.mockReturnValue(makeMediaRow({ file_size: 0 }));
+
+    await expect(downloadAndDecryptMedia(FAKE_MEDIA_ID)).resolves.toBe(FINAL_PATH);
+  });
+
+  // Out of disk is a property of the device right now, not of the media.
+  // 'failed' would strand the item behind a manual retry after cleanup.
+  it('maps an out-of-space failure to pending, not failed', async () => {
+    const rnfs = require('@dr.pogodin/react-native-fs');
+    rnfs.getFSInfo.mockResolvedValue({
+      totalSpace: 0,
+      totalSpaceEx: 0,
+      freeSpace: 1024,
+      freeSpaceEx: 1024,
+    });
+
+    await expect(downloadAndDecryptMedia(FAKE_MEDIA_ID)).rejects.toThrow(/free space/);
+
+    expect(mockUpdateDownloadState).toHaveBeenCalledWith(FAKE_MEDIA_ID, 'pending');
+    expect(mockUpdateMediaDownloadState).toHaveBeenCalledWith(FAKE_MEDIA_ID, 'pending');
+    expect(mockUpdateDownloadState).not.toHaveBeenCalledWith(FAKE_MEDIA_ID, 'failed');
+  });
+
   it('releases the reservation so a later download fits again', async () => {
     const rnfs = require('@dr.pogodin/react-native-fs');
     rnfs.getFSInfo.mockResolvedValue({
@@ -636,6 +717,30 @@ describe('downloadAndDecryptMedia — cache and metadata', () => {
 
     expect(await downloadAndDecryptMedia(FAKE_MEDIA_ID)).toBe(
       `${MEDIA_DIR}/${FAKE_MEDIA_ID}.${ext}`,
+    );
+  });
+
+  // SECURITY: `.tmp` is the reaper's predicate and the in-flight plaintext
+  // suffix. A peer-chosen `x.tmp` file name must never produce a promoted file
+  // that cleanupOrphanedMedia would delete an hour later.
+  it('never derives a .tmp extension from a peer-supplied file name', async () => {
+    mockGetMedia.mockReturnValue(
+      makeMediaRow({ file_name: 'x.tmp', content_type: 'image/jpeg' }),
+    );
+
+    const result = await downloadAndDecryptMedia(FAKE_MEDIA_ID);
+
+    expect(result).toBe(FINAL_PATH);
+    expect(result.endsWith('.tmp')).toBe(false);
+  });
+
+  it('refuses an uppercase .TMP file name too', async () => {
+    mockGetMedia.mockReturnValue(
+      makeMediaRow({ file_name: 'x.TMP', content_type: 'image/png' }),
+    );
+
+    expect(await downloadAndDecryptMedia(FAKE_MEDIA_ID)).toBe(
+      `${MEDIA_DIR}/${FAKE_MEDIA_ID}.png`,
     );
   });
 

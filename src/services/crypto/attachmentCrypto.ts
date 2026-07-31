@@ -97,8 +97,16 @@ export function createAttachmentEncryptor(keys: Uint8Array): StreamingAttachment
 
     destroy(): void {
       if (!destroyed) {
+        // Marked destroyed regardless of outcome: a failed release is not a
+        // reason to hand the caller a second attempt at the same handle.
         destroyed = true;
-        inner.uniffiDestroy();
+        try {
+          inner.uniffiDestroy();
+        } catch {
+          // Callers invoke destroy() from a `finally`, so a throw here would
+          // replace the real crypto error with an opaque native one. Releasing
+          // the handle is best-effort; the error the caller is carrying is not.
+        }
       }
     },
   };
@@ -137,7 +145,7 @@ export function createAttachmentEncryptor(keys: Uint8Array): StreamingAttachment
  * passes can emit attacker-influenced plaintext before finalize rejects it.
  */
 export interface StreamingAttachmentDecryptor {
-  /** Pass 1: feed the next base64 ciphertext chunk (whitespace/newlines are fine). */
+  /** Pass 1: feed the next base64 ciphertext chunk (embedded whitespace is tolerated). */
   verifyPush(chunkBase64: string): void;
   /** Pass 1 completion. Throws (opaquely) if structure, HMAC, or digest fails. */
   verifyFinalize(): void;
@@ -188,8 +196,17 @@ export function createAttachmentDecryptor(
 
     destroy(): void {
       if (!destroyed) {
+        // Marked destroyed regardless of outcome: a failed release is not a
+        // reason to hand the caller a second attempt at the same handle.
         destroyed = true;
-        inner.uniffiDestroy();
+        try {
+          inner.uniffiDestroy();
+        } catch {
+          // The download path calls destroy() from a `finally` wrapping both
+          // decrypt passes. A throw here would mask the pending HMAC/digest
+          // failure with an opaque native error, turning a precise containment
+          // failure into an unexplained one.
+        }
       }
     },
   };

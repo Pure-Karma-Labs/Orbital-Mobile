@@ -30,12 +30,14 @@ import {
 
 import {
   downloadMediaToFile,
-  ciphertextByteCeiling,
-  mediaDownloadBackstopMs,
+  MEDIA_DOWNLOAD_BACKSTOP_MS,
   MEDIA_DOWNLOAD_STALL_TIMEOUT_MS,
 } from '../media';
 import { AuthError, NetworkError, NotFoundError } from '../errors';
-import { MAX_CIPHERTEXT_BYTES } from '../../media/mediaLimits';
+import {
+  ciphertextByteCeiling,
+  MAX_CIPHERTEXT_BYTES,
+} from '../../media/mediaLimits';
 
 // ---------------------------------------------------------------------------
 // Harness — one controllable "attempt" per downloadFile() call
@@ -326,20 +328,123 @@ describe('downloadMediaToFile — byte ceiling', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Settlement contract — the JS arms own rejection
+// JS stall watchdog
 // ---------------------------------------------------------------------------
 
-describe('downloadMediaToFile — settlement contract', () => {
-  it('rejects via the deadline arm when the native promise NEVER settles', async () => {
+describe('downloadMediaToFile — JS stall watchdog', () => {
+  it('rejects when progress stops, counting from the LAST tick', async () => {
     jest.useFakeTimers();
     try {
       installDownloadHarness({ neverSettles: true });
 
       const promise = downloadMediaToFile({ mediaId: MEDIA_ID, toFile: STAGING });
-      const rejection = expectNetworkFailure(promise, /maximum transfer time/);
+      const rejection = expectNetworkFailure(promise, /stalled/);
+
+      const attempt = await nextAttempt(0);
+
+      // One tick, most of a window in. The watchdog must RESET here — if it
+      // did not, the arming-time window would already have expired below.
+      await jest.advanceTimersByTimeAsync(MEDIA_DOWNLOAD_STALL_TIMEOUT_MS);
+      attempt.options.progress?.({
+        jobId: attempt.jobId,
+        contentLength: -1,
+        bytesWritten: 2048,
+      });
+
+      // Not yet: only one stall window has passed since the tick.
+      await jest.advanceTimersByTimeAsync(MEDIA_DOWNLOAD_STALL_TIMEOUT_MS);
+      expect(stopDownload).not.toHaveBeenCalled();
+
+      // Past 2x the window since the last tick — now it fires.
+      await jest.advanceTimersByTimeAsync(MEDIA_DOWNLOAD_STALL_TIMEOUT_MS + 1000);
+      await jest.advanceTimersByTimeAsync(1000);
+
+      await rejection;
+      expect(stopDownload).toHaveBeenCalledWith(attempt.jobId);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2xx-but-not-200 begin gate
+// ---------------------------------------------------------------------------
+
+describe('downloadMediaToFile — begin status gate', () => {
+  // iOS only emits progress callbacks when statusCode === 200, so a chunked
+  // 206/202 body would stream to disk with the byte ceiling never evaluated.
+  it.each([206, 202, 203])(
+    'stops the job and rejects on a %i begin status',
+    async (statusCode) => {
+      const promise = downloadMediaToFile({ mediaId: MEDIA_ID, toFile: STAGING });
+      const attempt = await nextAttempt(0);
+
+      attempt.options.begin?.({
+        jobId: attempt.jobId,
+        statusCode,
+        contentLength: -1,
+        headers: {},
+      });
+
+      await expectNetworkFailure(promise, /unsupported success status/);
+      expect(stopDownload).toHaveBeenCalledWith(attempt.jobId);
+    },
+  );
+
+  it('lets a 200 begin through untouched', async () => {
+    const promise = downloadMediaToFile({ mediaId: MEDIA_ID, toFile: STAGING });
+    const attempt = await nextAttempt(0);
+
+    attempt.options.begin?.({
+      jobId: attempt.jobId,
+      statusCode: 200,
+      contentLength: 4096,
+      headers: {},
+    });
+    expect(stopDownload).not.toHaveBeenCalled();
+
+    attempt.settle({ statusCode: 200, bytesWritten: 4096 });
+    await expect(promise).resolves.toEqual({ bytesWritten: 4096 });
+  });
+
+  // Non-2xx must keep flowing to the shared mapper so MEDIA_EVICTED/EXPIRED
+  // discrimination and the 401 handler still work off the result body.
+  it('does NOT short-circuit a non-2xx begin — it flows to the error mapper', async () => {
+    const promise = downloadMediaToFile({ mediaId: MEDIA_ID, toFile: STAGING });
+    const attempt = await nextAttempt(0);
+
+    attempt.options.begin?.({
+      jobId: attempt.jobId,
+      statusCode: 404,
+      contentLength: -1,
+      headers: {},
+    });
+    expect(stopDownload).not.toHaveBeenCalled();
+
+    attempt.settle({ statusCode: 404, bytesWritten: 0, body: '{"error":"MEDIA_EVICTED"}' });
+    await expect(promise).rejects.toBeInstanceOf(NotFoundError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Settlement contract — the JS arms own rejection
+// ---------------------------------------------------------------------------
+
+describe('downloadMediaToFile — settlement contract', () => {
+  // iOS routes a readTimeout expiry that carries resume data to a path that
+  // invokes NO callback, so the native stall guard can be swallowed entirely
+  // and the promise never settles. JS must own the stall.
+  it('rejects via the JS stall arm when no callback fires and the promise NEVER settles', async () => {
+    jest.useFakeTimers();
+    try {
+      installDownloadHarness({ neverSettles: true });
+
+      const promise = downloadMediaToFile({ mediaId: MEDIA_ID, toFile: STAGING });
+      const rejection = expectNetworkFailure(promise, /stalled/);
 
       await nextAttempt(0);
-      await jest.advanceTimersByTimeAsync(mediaDownloadBackstopMs(null) + 1000);
+      await jest.advanceTimersByTimeAsync(2 * MEDIA_DOWNLOAD_STALL_TIMEOUT_MS + 1000);
       // Flush the bounded native-settle grace in the cleanup path — cleanup
       // must complete even though the native promise never settles.
       await jest.advanceTimersByTimeAsync(1000);
@@ -353,10 +458,41 @@ describe('downloadMediaToFile — settlement contract', () => {
     }
   });
 
-  it('uses a generous absolute backstop, never a throughput-derived deadline', () => {
-    // mediaTransferTimeoutMs caps at 10 minutes; the backstop floor is 30.
-    expect(mediaDownloadBackstopMs(null)).toBe(30 * 60_000);
-    expect(mediaDownloadBackstopMs(200 * 1024 * 1024)).toBe(30 * 60_000);
+  // The stall watchdog resets on every tick, so a slow-but-honest transfer can
+  // outlive it indefinitely. The flat backstop is the last-resort arm.
+  it('a progressing transfer survives the stall window and only trips the backstop', async () => {
+    jest.useFakeTimers();
+    try {
+      installDownloadHarness({ neverSettles: true });
+
+      const promise = downloadMediaToFile({ mediaId: MEDIA_ID, toFile: STAGING });
+      const rejection = expectNetworkFailure(promise, /maximum transfer time/);
+
+      const attempt = await nextAttempt(0);
+      const TICK_MS = 40_000; // < the 60s stall window, so it keeps resetting
+      let elapsed = 0;
+      let bytes = 0;
+      while (elapsed < MEDIA_DOWNLOAD_BACKSTOP_MS + TICK_MS) {
+        bytes += 1024;
+        attempt.options.progress?.({
+          jobId: attempt.jobId,
+          contentLength: -1,
+          bytesWritten: bytes,
+        });
+        await jest.advanceTimersByTimeAsync(TICK_MS);
+        elapsed += TICK_MS;
+      }
+      await jest.advanceTimersByTimeAsync(1000);
+
+      await rejection;
+      expect(stopDownload).toHaveBeenCalledWith(attempt.jobId);
+    } finally {
+      jest.useRealTimers();
+    }
+  }, 30_000);
+
+  it('uses a generous, flat absolute backstop — never throughput-derived', () => {
+    expect(MEDIA_DOWNLOAD_BACKSTOP_MS).toBe(30 * 60_000);
   });
 
   it('rejects via the abort arm and stops the active job', async () => {

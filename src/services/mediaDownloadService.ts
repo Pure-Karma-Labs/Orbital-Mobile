@@ -60,8 +60,9 @@ import {
   CachesDirectoryPath,
 } from '@dr.pogodin/react-native-fs';
 import { NotFoundError } from './api/errors';
-import { ciphertextByteCeiling } from './api/media';
 import {
+  ciphertextByteCeiling,
+  DISK_HEADROOM_BYTES,
   MAX_CIPHERTEXT_BYTES,
   STREAM_READ_SIZE_BYTES,
 } from './media/mediaLimits';
@@ -79,10 +80,15 @@ const MAX_CONCURRENT = 3;
 export const DOWNLOAD_ABORTED_MESSAGE = 'Download aborted';
 
 /**
- * Free-space margin required beyond the download itself. Filling the last byte
- * of a device is worse than failing the download.
+ * Reservation basis used when the row carries no usable `file_size`.
+ *
+ * Reserving the global 50MB cap for an unknown-size row makes a small download
+ * fail on a device that has ample room for it. The real size stays bounded by
+ * the transport's `begin` contentLength ceiling and by the staged-size assert
+ * after the transfer, so a modest floor here is safe: over-running the
+ * reservation is a bookkeeping inaccuracy, not a disk-full crash.
  */
-const DISK_HEADROOM_BYTES = 64 * 1024 * 1024;
+const UNKNOWN_SIZE_RESERVATION_BASIS_BYTES = 8 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // Semaphore — limits concurrent downloads to MAX_CONCURRENT
@@ -142,6 +148,21 @@ async function reserveDiskSpace(ciphertextBytes: number): Promise<number> {
   return needed;
 }
 
+/**
+ * Per-download reservation basis: the row's ciphertext ceiling when the size is
+ * known, a modest floor when it is not.
+ */
+function reservationBasisFor(expectedBytes: number | null): number {
+  if (
+    expectedBytes == null ||
+    !Number.isFinite(expectedBytes) ||
+    expectedBytes <= 0
+  ) {
+    return UNKNOWN_SIZE_RESERVATION_BASIS_BYTES;
+  }
+  return ciphertextByteCeiling(expectedBytes);
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -170,11 +191,23 @@ async function ensureMediaDir(): Promise<void> {
   }
 }
 
-/** Derive file extension from content type or file name. */
+/**
+ * Derive file extension from content type or file name.
+ *
+ * SECURITY: `tmp` is refused from the peer-controlled file name. `.tmp` is the
+ * predicate cleanupOrphanedMedia() reaps on, and the in-flight plaintext lives
+ * at `{id}.{ext}.tmp` — a peer-named `x.tmp` would otherwise promote to
+ * `{id}.tmp`, a real downloaded file that the reaper deletes as garbage an hour
+ * later. Falling through to the content-type branch keeps the two namespaces
+ * disjoint.
+ */
 function getExtension(row: MediaRow): string {
   if (row.file_name) {
     const parts = row.file_name.split('.');
-    if (parts.length > 1) return parts.pop()!;
+    if (parts.length > 1) {
+      const named = parts.pop()!;
+      if (named.toLowerCase() !== 'tmp') return named;
+    }
   }
   // Fallback: derive from content type
   const ct = row.content_type;
@@ -201,8 +234,12 @@ function stagingPathFor(mediaId: string): string {
  * a legitimately re-downloaded self-upload is 49-64 bytes LONGER than
  * `expectedBytes`. A shorter blob, by contrast, can only be truncation, which
  * is exactly what this check exists to catch cheaply (HMAC + digest would
- * reject it a full pass later). An over-long blob is bounded by the transport
- * ceiling and pinned exactly by pass 1.
+ * reject it a full pass later).
+ *
+ * Over-long is bounded twice: by the global cap, and by this row's OWN ceiling
+ * (`expectedBytes` + max wire overhead). Without the per-row bound a 1KB row
+ * could stage 50MB of attacker-supplied bytes and be fed through two full Rust
+ * passes before the HMAC rejected it.
  */
 function assertStagedCiphertextSize(
   stagedSize: number,
@@ -214,6 +251,9 @@ function assertStagedCiphertextSize(
   if (stagedSize > MAX_CIPHERTEXT_BYTES) {
     throw new Error('Downloaded ciphertext exceeds the maximum allowed size');
   }
+  if (expectedBytes != null && stagedSize > ciphertextByteCeiling(expectedBytes)) {
+    throw new Error('Downloaded ciphertext is longer than the expected length');
+  }
   if (expectedBytes != null && expectedBytes > 0 && stagedSize < expectedBytes) {
     throw new Error('Downloaded ciphertext is shorter than the expected length');
   }
@@ -222,9 +262,11 @@ function assertStagedCiphertextSize(
 /**
  * Read the next base64 chunk and return it with its decoded byte length.
  *
- * RNFS `read()` returns *up to* n bytes on Android and line-broken base64 on
- * iOS, and JS never decodes the chunk — so the decoded length is derived from
- * the string and the read position advances by THAT, not by n.
+ * RNFS `read()` returns *up to* n bytes on Android, and JS never decodes the
+ * chunk — so the decoded length is derived from the string and the read
+ * position advances by THAT, not by n. The length helper also tolerates
+ * embedded whitespace (defensive: some base64 encoders wrap their output;
+ * RNFS 2.39.2 does not).
  */
 async function readChunk(
   path: string,
@@ -444,7 +486,7 @@ export async function downloadAndDecryptMedia(
 
       // 7. Disk preflight with reservation
       const expectedBytes = row!.file_size;
-      reservedBytes = await reserveDiskSpace(ciphertextByteCeiling(expectedBytes));
+      reservedBytes = await reserveDiskSpace(reservationBasisFor(expectedBytes));
 
       // 8. Stream ciphertext to disk — the body never crosses the bridge.
       await downloadMediaToFile({
@@ -476,6 +518,16 @@ export async function downloadAndDecryptMedia(
 
       // 11. Size assert before promotion — mirrors the upload ctStat guard.
       // Catches a failed clean-start unlink or a partially-written append.
+      //
+      // Zero emitted bytes is checked FIRST and separately: an empty plaintext
+      // is never legitimate (the wire format's minimum is one padded block), and
+      // it is the one case the tmpSize comparison cannot catch — 0 === 0 passes,
+      // promoting an empty file and then confirming the archive, which lets the
+      // server evict the only real copy.
+      if (emittedBytes <= 0) {
+        throw new Error('Decrypt produced no plaintext');
+      }
+
       const tmpSize = (await stat(tmpPath)).size;
       if (tmpSize !== emittedBytes) {
         throw new Error(
@@ -510,13 +562,17 @@ export async function downloadAndDecryptMedia(
       return finalPath;
     } catch (e) {
       // Aborted downloads restore to 'pending' (self-healing for windowing);
+      // out-of-disk → 'pending' too, because free space is a property of the
+      // device right now, not a permanent property of the media — 'failed'
+      // would strand the item behind a manual retry after the user frees space;
       // NotFoundError (404) → 'unavailable' (server purged, no retry);
       // genuine failures land on 'failed' as before.
-      const nextState: 'pending' | 'failed' | 'unavailable' = signal?.aborted
-        ? 'pending'
-        : e instanceof NotFoundError
-          ? 'unavailable'
-          : 'failed';
+      const nextState: 'pending' | 'failed' | 'unavailable' =
+        signal?.aborted || e instanceof InsufficientSpaceError
+          ? 'pending'
+          : e instanceof NotFoundError
+            ? 'unavailable'
+            : 'failed';
 
       try {
         updateDownloadState(mediaId, nextState);

@@ -37,6 +37,7 @@ import {
 } from '@dr.pogodin/react-native-fs';
 import { sanitizeMp4Gps, verifyNoGpsAtoms } from './mp4GpsSanitizer';
 import { sanitizeStillImage } from './imageSanitizer';
+import { MAX_UPLOAD_SIZE_BYTES } from './mediaLimits';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -71,8 +72,6 @@ export interface VideoProcessingOptions {
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-const MAX_UPLOAD_SIZE_BYTES = 50 * 1024 * 1024;
 
 /** Long-side cap: 1280 yields 720p for 16:9 sources. */
 const MAX_VIDEO_DIMENSION = 1280;
@@ -229,8 +228,8 @@ export async function prepareVideoForUpload(
       // transcode either failed or produced output we discarded as invalid.
       throw new Error(
         passThrough
-          ? `Video could not be re-encoded and the original is too large to upload directly (${mb}MB). Maximum is 50MB.`
-          : `Video is still too large after re-encoding (${mb}MB). Maximum is 50MB.`,
+          ? `Video could not be re-encoded and the original is too large to upload directly (${mb}MB). Maximum is ${MAX_UPLOAD_SIZE_BYTES / 1024 / 1024}MB.`
+          : `Video is still too large after re-encoding (${mb}MB). Maximum is ${MAX_UPLOAD_SIZE_BYTES / 1024 / 1024}MB.`,
       );
     }
 

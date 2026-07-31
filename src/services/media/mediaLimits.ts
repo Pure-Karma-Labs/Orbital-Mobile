@@ -40,3 +40,40 @@ export const MAX_CIPHERTEXT_BYTES =
  * is exactly one chunk constant for FFI-bound file reads.
  */
 export const STREAM_READ_SIZE_BYTES = 1 * 1024 * 1024;
+
+/**
+ * Free-space margin required beyond the download itself. Filling the last byte
+ * of a device is worse than failing the download.
+ *
+ * The download preflight formula is:
+ *   freeSpace - alreadyReserved > 2 * ciphertextByteCeiling(size) + this
+ * The 2x is because the ciphertext staging file and the plaintext `.tmp`
+ * coexist for the whole of decrypt pass 2.
+ */
+export const DISK_HEADROOM_BYTES = 64 * 1024 * 1024;
+
+/**
+ * Upper bound on bytes we will accept onto disk for one download (#661).
+ *
+ * `expectedBytes` is server truth (ciphertext length) for received media, but
+ * the uploader's OWN row records the PLAINTEXT length — so the maximum
+ * wire-format overhead is added before the global clamp, or a legitimately
+ * at-cap self-upload would be rejected on re-download.
+ *
+ * Pure policy: this module imports nothing, so both the transport
+ * (`api/media.ts`) and the service (`mediaDownloadService.ts`) can share one
+ * definition without an import cycle.
+ */
+export function ciphertextByteCeiling(expectedBytes?: number | null): number {
+  if (
+    expectedBytes == null ||
+    !Number.isFinite(expectedBytes) ||
+    expectedBytes <= 0
+  ) {
+    return MAX_CIPHERTEXT_BYTES;
+  }
+  return Math.min(
+    expectedBytes + MAX_CIPHERTEXT_OVERHEAD_BYTES,
+    MAX_CIPHERTEXT_BYTES,
+  );
+}

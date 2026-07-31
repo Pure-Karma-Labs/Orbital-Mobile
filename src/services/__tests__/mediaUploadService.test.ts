@@ -723,9 +723,51 @@ describe('uploadMediaBatch', () => {
 // ---------------------------------------------------------------------------
 
 describe('cleanupOrphanedChunks', () => {
+  interface CacheEntry {
+    name: string;
+    path: string;
+    mtime: Date;
+  }
+
+  /** Entries the fake Caches listing currently reports. */
+  let cacheEntries: CacheEntry[] = [];
+  /** Fresh mtimes returned by a re-stat, overriding the listing per path. */
+  let restatMtimes: Map<string, Date>;
+
+  /**
+   * Install one directory listing AND the matching per-file stat results.
+   *
+   * The reaper re-stats every candidate immediately before unlinking, so the
+   * fixture has to model both: `readDir` is the (possibly stale) snapshot,
+   * `stat` is the truth at delete time. They agree unless a test overrides a
+   * path in `restatMtimes` to simulate a concurrent recreate.
+   */
+  function listCache(entries: CacheEntry[]): void {
+    const rnfs = require('@dr.pogodin/react-native-fs');
+    cacheEntries = entries;
+    rnfs.readDir.mockResolvedValueOnce(entries);
+    rnfs.stat.mockImplementation((p: string) => {
+      const entry = cacheEntries.find((e) => e.path === p);
+      if (!entry) return Promise.reject(new Error(`ENOENT: ${p}`));
+      const mtime = restatMtimes.get(p) ?? entry.mtime;
+      return Promise.resolve({
+        size: 1024,
+        mtime,
+        ctime: mtime,
+        isFile: () => true,
+        isDirectory: () => false,
+      });
+    });
+  }
+
+  beforeEach(() => {
+    cacheEntries = [];
+    restatMtimes = new Map();
+  });
+
   it('removes stale chunk files older than 1 hour', async () => {
     const rnfs = require('@dr.pogodin/react-native-fs');
-    rnfs.readDir.mockResolvedValueOnce([
+    listCache([
       { name: 'abc-chunk-0.bin', path: '/tmp/test-cache/abc-chunk-0.bin', mtime: new Date(Date.now() - 7200_000) },
       { name: 'recent-chunk-0.bin', path: '/tmp/test-cache/recent-chunk-0.bin', mtime: new Date() },
       { name: 'unrelated.txt', path: '/tmp/test-cache/unrelated.txt', mtime: new Date(Date.now() - 7200_000) },
@@ -740,7 +782,7 @@ describe('cleanupOrphanedChunks', () => {
 
   it('removes stale cipher temp files older than 1 hour', async () => {
     const rnfs = require('@dr.pogodin/react-native-fs');
-    rnfs.readDir.mockResolvedValueOnce([
+    listCache([
       { name: 'abc-cipher.bin', path: '/tmp/test-cache/abc-cipher.bin', mtime: new Date(Date.now() - 7200_000) },
       { name: 'recent-cipher.bin', path: '/tmp/test-cache/recent-cipher.bin', mtime: new Date() },
     ]);
@@ -756,7 +798,7 @@ describe('cleanupOrphanedChunks', () => {
   // future narrowing of the predicate can't silently orphan download staging.
   it('removes stale DOWNLOAD cipher staging files older than 1 hour', async () => {
     const rnfs = require('@dr.pogodin/react-native-fs');
-    rnfs.readDir.mockResolvedValueOnce([
+    listCache([
       { name: 'abc-dl-cipher.bin', path: '/tmp/test-cache/abc-dl-cipher.bin', mtime: new Date(Date.now() - 7200_000) },
       { name: 'recent-dl-cipher.bin', path: '/tmp/test-cache/recent-dl-cipher.bin', mtime: new Date() },
     ]);
@@ -769,7 +811,7 @@ describe('cleanupOrphanedChunks', () => {
 
   it('removes stale staging temp files older than 1 hour', async () => {
     const rnfs = require('@dr.pogodin/react-native-fs');
-    rnfs.readDir.mockResolvedValueOnce([
+    listCache([
       { name: 'abc-staging.bin', path: '/tmp/test-cache/abc-staging.bin', mtime: new Date(Date.now() - 7200_000) },
       { name: 'recent-staging.bin', path: '/tmp/test-cache/recent-staging.bin', mtime: new Date() },
     ]);
@@ -780,11 +822,44 @@ describe('cleanupOrphanedChunks', () => {
     expect(rnfs.unlink).not.toHaveBeenCalledWith('/tmp/test-cache/recent-staging.bin');
   });
 
+  // The readDir snapshot can be stale by the time the loop reaches an entry: a
+  // download that just started may have recreated that exact deterministic path.
+  // Deleting it would silently truncate a live transfer.
+  it('skips a candidate that a concurrent transfer recreated since the listing', async () => {
+    const rnfs = require('@dr.pogodin/react-native-fs');
+    const LIVE = '/tmp/test-cache/live-dl-cipher.bin';
+    const DEAD = '/tmp/test-cache/dead-dl-cipher.bin';
+    listCache([
+      { name: 'live-dl-cipher.bin', path: LIVE, mtime: new Date(Date.now() - 7200_000) },
+      { name: 'dead-dl-cipher.bin', path: DEAD, mtime: new Date(Date.now() - 7200_000) },
+    ]);
+    // LIVE was recreated after the listing — its fresh mtime is now.
+    restatMtimes.set(LIVE, new Date());
+
+    await cleanupOrphanedChunks();
+
+    expect(rnfs.unlink).not.toHaveBeenCalledWith(LIVE);
+    expect(rnfs.unlink).toHaveBeenCalledWith(DEAD);
+  });
+
+  // If we cannot confirm staleness we do not delete.
+  it('skips a candidate whose re-stat fails', async () => {
+    const rnfs = require('@dr.pogodin/react-native-fs');
+    listCache([
+      { name: 'abc-cipher.bin', path: '/tmp/test-cache/abc-cipher.bin', mtime: new Date(Date.now() - 7200_000) },
+    ]);
+    rnfs.stat.mockRejectedValue(new Error('ENOENT'));
+
+    await cleanupOrphanedChunks();
+
+    expect(rnfs.unlink).not.toHaveBeenCalledWith('/tmp/test-cache/abc-cipher.bin');
+  });
+
   it('removes stale .mp4 transcode staging files older than 1 hour', async () => {
     // The video transcode staging file cannot use the .bin suffix -- AVAssetWriter
     // derives the container type from the extension.
     const rnfs = require('@dr.pogodin/react-native-fs');
-    rnfs.readDir.mockResolvedValueOnce([
+    listCache([
       { name: 'abc-transcode-staging.mp4', path: '/tmp/test-cache/abc-transcode-staging.mp4', mtime: new Date(Date.now() - 7200_000) },
       { name: 'recent-transcode-staging.mp4', path: '/tmp/test-cache/recent-transcode-staging.mp4', mtime: new Date() },
     ]);

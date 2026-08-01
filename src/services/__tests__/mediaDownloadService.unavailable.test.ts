@@ -5,23 +5,33 @@
 
 jest.mock('@dr.pogodin/react-native-fs');
 
-const mockDownloadMedia = jest.fn();
+const mockDownloadMediaToFile = jest.fn();
+// `ciphertextByteCeiling` moved to the never-mocked `media/mediaLimits` policy
+// module, so no stub is needed (and a flat 500MB stub would have hidden the
+// per-row size bound entirely).
 jest.mock('../api/media', () => ({
-  downloadMedia: (...args: unknown[]) => mockDownloadMedia(...args),
+  downloadMediaToFile: (...args: unknown[]) => mockDownloadMediaToFile(...args),
 }));
 
-const mockDecryptAttachment = jest.fn();
+const mockVerifyPush = jest.fn();
+const mockVerifyFinalize = jest.fn();
+const mockDecryptPush = jest.fn().mockReturnValue('');
+const mockDecryptFinalize = jest.fn().mockReturnValue('');
+const mockDestroy = jest.fn();
+const mockCreateAttachmentDecryptor = jest.fn();
+mockCreateAttachmentDecryptor.mockReturnValue({
+  verifyPush: mockVerifyPush,
+  verifyFinalize: mockVerifyFinalize,
+  decryptPush: mockDecryptPush,
+  decryptFinalize: mockDecryptFinalize,
+  destroy: mockDestroy,
+});
 jest.mock('../crypto/attachmentCrypto', () => ({
-  decryptAttachment: (...args: unknown[]) => mockDecryptAttachment(...args),
+  createAttachmentDecryptor: (...args: unknown[]) => mockCreateAttachmentDecryptor(...args),
 }));
 
-jest.mock('../crypto/utils', () => ({
-  base64ToArrayBuffer: jest.fn(() => new ArrayBuffer(64)),
-  arrayBufferToBase64: jest.fn(() => 'mock-base64'),
-  toArrayBuffer: jest.fn((u8: Uint8Array) =>
-    u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength),
-  ),
-}));
+// '../crypto/utils' is NOT mocked — the real base64 codec runs so the
+// streaming read/verify/decrypt loops see consistent chunk lengths.
 
 const mockGetMedia = jest.fn();
 const mockUpdateDownloadState = jest.fn();
@@ -46,6 +56,7 @@ jest.mock('../../database/queryHelpers', () => ({
 import { downloadAndDecryptMedia, isMediaCached } from '../mediaDownloadService';
 import { NotFoundError } from '../api/errors';
 import { ServerError } from '../api/errors';
+import { arrayBufferToBase64 } from '../crypto/utils';
 import type { MediaRow } from '../../database/repositories/mediaRepository';
 
 const fakeKeys = new Uint8Array(64).fill(0xEE);
@@ -75,20 +86,57 @@ function makeRow(overrides: Partial<MediaRow> = {}): MediaRow {
   };
 }
 
+/** A stat() result shape matching RNFS's StatResult. */
+function statResult(size: number): {
+  size: number;
+  mtime: Date;
+  ctime: Date;
+  isFile: () => boolean;
+  isDirectory: () => boolean;
+} {
+  return { size, mtime: new Date(), ctime: new Date(), isFile: () => true, isDirectory: () => false };
+}
+
+/**
+ * Plaintext bytes the decryptor stub emits. Must be > 0: a decrypt that emits
+ * nothing is refused before promotion (an empty file would otherwise be cached
+ * AND archive-confirmed).
+ */
+const PLAINTEXT_BYTES = 16;
+
 beforeEach(() => {
   jest.clearAllMocks();
   mockGetMedia.mockReturnValue(makeRow());
+  mockDecryptPush.mockReturnValue('');
+  mockDecryptFinalize.mockReturnValue(
+    arrayBufferToBase64(new ArrayBuffer(PLAINTEXT_BYTES)),
+  );
+
   const rnfs = require('@dr.pogodin/react-native-fs');
   rnfs.exists.mockResolvedValue(false);
   rnfs.mkdir.mockResolvedValue(undefined);
   rnfs.writeFile.mockResolvedValue(undefined);
   rnfs.moveFile.mockResolvedValue(undefined);
   rnfs.unlink.mockResolvedValue(undefined);
+
+  // Ciphertext staging blob reads as 1024 bytes (within row size 1000's
+  // ceiling of 1064); the plaintext `.tmp` must stat as exactly what the
+  // decryptor stub emitted or the pre-promotion size assert trips.
+  rnfs.stat.mockImplementation((path: string) =>
+    Promise.resolve(statResult(path.endsWith('.tmp') ? PLAINTEXT_BYTES : 1024)),
+  );
+
+  // Each read returns a validly-padded base64 string decoding to exactly the
+  // requested byte count — content is irrelevant since the decryptor above is
+  // a stub, only the length bookkeeping in the read loops matters.
+  rnfs.read.mockImplementation((_path: string, requested: number) =>
+    Promise.resolve(arrayBufferToBase64(new ArrayBuffer(requested))),
+  );
 });
 
 describe('NotFoundError -> unavailable', () => {
   it('sets unavailable state on NotFoundError from server', async () => {
-    mockDownloadMedia.mockRejectedValue(new NotFoundError('Gone'));
+    mockDownloadMediaToFile.mockRejectedValue(new NotFoundError('Gone'));
 
     await expect(downloadAndDecryptMedia(FAKE_MEDIA_ID)).rejects.toThrow();
 
@@ -99,7 +147,7 @@ describe('NotFoundError -> unavailable', () => {
   });
 
   it('sets failed state on ServerError (not NotFoundError)', async () => {
-    mockDownloadMedia.mockRejectedValue(new ServerError(500, 'Internal'));
+    mockDownloadMediaToFile.mockRejectedValue(new ServerError(500, 'Internal'));
 
     await expect(downloadAndDecryptMedia(FAKE_MEDIA_ID)).rejects.toThrow();
 
@@ -122,8 +170,7 @@ describe('NotFoundError -> unavailable', () => {
 
 describe('DB write relative + store absolute', () => {
   it('writes relative path to DB and absolute to store on success', async () => {
-    mockDecryptAttachment.mockReturnValue(new Uint8Array(80).fill(0xAA));
-    mockDownloadMedia.mockResolvedValue({ data: new ArrayBuffer(100) });
+    mockDownloadMediaToFile.mockResolvedValue({ bytesWritten: 1024 });
 
     await downloadAndDecryptMedia(FAKE_MEDIA_ID);
 
@@ -156,7 +203,7 @@ describe('cache-check resolves legacy rows', () => {
     // Should resolve through mediaPaths to current MEDIA_DIR
     expect(result).toBe('/tmp/test-docs/media/a1b2c3d4-e5f6-7890-abcd-ef1234567890.jpg');
     // Should NOT download
-    expect(mockDownloadMedia).not.toHaveBeenCalled();
+    expect(mockDownloadMediaToFile).not.toHaveBeenCalled();
   });
 
   it('isMediaCached resolves legacy absolute paths', async () => {

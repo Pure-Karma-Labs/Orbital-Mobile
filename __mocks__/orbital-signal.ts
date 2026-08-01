@@ -64,13 +64,19 @@ type DecryptorPhase = 'verifying' | 'decrypting' | 'terminated';
  * throws "decryptor is no longer usable".
  *
  * decryptPush()/decryptFinalize() return '' (this is a stub, not a real
- * decryptor) unless a test overrides the class entirely.
+ * decryptor) unless a test installs an output hook.
  *
  * Failure injection: set the static hooks below to force a failure at a
  * specific step without replacing the class, e.g.
  *   AttachmentDecryptor.failVerifyFinalize = true;
  * Forced failures throw and poison the instance exactly like a real
- * Rust-side failure. These statics leak across tests within a file — call
+ * Rust-side failure.
+ *
+ * Output injection: set decryptPushOutput / decryptFinalizeOutput to make the
+ * stub emit real base64 so callers' byte bookkeeping can be asserted. These
+ * run AFTER the phase check, so the phase machine still holds.
+ *
+ * All statics leak across tests within a file — call
  * AttachmentDecryptor.reset() in beforeEach.
  */
 class AttachmentDecryptor {
@@ -78,12 +84,16 @@ class AttachmentDecryptor {
   static failVerifyFinalize = false;
   static failDecryptPush = false;
   static failDecryptFinalize = false;
+  static decryptPushOutput: ((chunkB64: string) => string) | null = null;
+  static decryptFinalizeOutput: (() => string) | null = null;
 
   static reset(): void {
     AttachmentDecryptor.failVerifyPush = false;
     AttachmentDecryptor.failVerifyFinalize = false;
     AttachmentDecryptor.failDecryptPush = false;
     AttachmentDecryptor.failDecryptFinalize = false;
+    AttachmentDecryptor.decryptPushOutput = null;
+    AttachmentDecryptor.decryptFinalizeOutput = null;
   }
 
   private phase: DecryptorPhase = 'verifying';
@@ -116,14 +126,14 @@ class AttachmentDecryptor {
     this.phase = 'decrypting';
   }
 
-  decryptPush(_chunkB64: string): string {
+  decryptPush(chunkB64: string): string {
     if (this.phase !== 'decrypting') {
       this.fail('AttachmentDecryptor: decryptor is no longer usable');
     }
     if (AttachmentDecryptor.failDecryptPush) {
       this.fail('AttachmentDecryptor: forced decryptPush failure');
     }
-    return '';
+    return AttachmentDecryptor.decryptPushOutput?.(chunkB64) ?? '';
   }
 
   decryptFinalize(): string {
@@ -134,7 +144,7 @@ class AttachmentDecryptor {
       this.fail('AttachmentDecryptor: forced decryptFinalize failure');
     }
     this.phase = 'terminated';
-    return '';
+    return AttachmentDecryptor.decryptFinalizeOutput?.() ?? '';
   }
 
   uniffiDestroy(): void {

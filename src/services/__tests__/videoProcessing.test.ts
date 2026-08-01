@@ -21,6 +21,7 @@ import {
   CachesDirectoryPath,
 } from '@dr.pogodin/react-native-fs';
 import { prepareVideoForUpload, VIDEO_MIME_EXT } from '../media/videoProcessing';
+import { MAX_UPLOAD_SIZE_BYTES } from '../media/mediaLimits';
 import { sanitizeMp4Gps, verifyNoGpsAtoms } from '../media/mp4GpsSanitizer';
 import { sanitizeStillImage } from '../media/imageSanitizer';
 
@@ -296,7 +297,7 @@ describe('prepareVideoForUpload', () => {
     // Source copied through, transcode output never stat'ed
     expect(copyFile).toHaveBeenCalledWith('/gallery/source.mov', STAGING_PATH);
     expect(moveFile).not.toHaveBeenCalledWith(TRANSCODE_PATH, STAGING_PATH);
-    // Sanitizers still run — the 50MB cap and GPS strip are not bypassed
+    // Sanitizers still run — the upload size cap and GPS strip are not bypassed
     expect(sanitizeMp4Gps).toHaveBeenCalledWith(STAGING_PATH);
     expect(verifyNoGpsAtoms).toHaveBeenCalledWith(STAGING_PATH);
     expect(sanitizeStillImage).toHaveBeenCalled();
@@ -387,11 +388,11 @@ describe('prepareVideoForUpload', () => {
   // -------------------------------------------------------------------------
 
   it('reports the pass-through variant of the size-cap error', async () => {
-    // Source 60MB (over the 50MB cap), transcode 70MB (inflated -> guard trips)
+    // Source over the upload cap, transcode larger still (inflated -> guard trips)
     mockStatSizes({
-      [TRANSCODE_PATH]: 70_000_000,
-      '/gallery/big.mov': 60_000_000,
-      [STAGING_PATH]: 60_000_000,
+      [TRANSCODE_PATH]: MAX_UPLOAD_SIZE_BYTES * 2,
+      '/gallery/big.mov': MAX_UPLOAD_SIZE_BYTES + 1,
+      [STAGING_PATH]: MAX_UPLOAD_SIZE_BYTES + 1,
     });
 
     await expect(
@@ -402,9 +403,9 @@ describe('prepareVideoForUpload', () => {
   it('reports the normal variant of the size-cap error', async () => {
     // Transcode succeeded and is smaller than source, but still over the cap
     mockStatSizes({
-      [TRANSCODE_PATH]: 60_000_000,
-      '/gallery/big.mp4': 90_000_000,
-      [STAGING_PATH]: 60_000_000,
+      [TRANSCODE_PATH]: MAX_UPLOAD_SIZE_BYTES + 1,
+      '/gallery/big.mp4': MAX_UPLOAD_SIZE_BYTES * 2,
+      [STAGING_PATH]: MAX_UPLOAD_SIZE_BYTES + 1,
     });
 
     await expect(

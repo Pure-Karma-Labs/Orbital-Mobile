@@ -1,26 +1,45 @@
 /**
- * Media download service — orchestrates download, decrypt, and cache operations.
+ * Media download service — orchestrates streaming download, two-pass streaming
+ * decrypt, and cache operations.
  *
  * Flow:
  * 1. Cache check — if local_path is set in DB and file exists on disk, return immediately
- * 2. Key check — if attachment_key is null, throw (caller shows "no keys" placeholder)
+ * 2. Key check — if attachment_key or attachment_digest is null, throw
  * 3. Inflight dedup — Map<string, Promise<string>> prevents duplicate concurrent downloads
  * 4. Acquire semaphore slot — wait if 3 downloads already in flight
  * 5. Update state → 'downloading' in both DB and store
- * 6. Download — downloadMedia() from api/media → { data: ArrayBuffer }
- * 7. Decrypt — decryptAttachment(ciphertext, keys, digest)
- * 8. Atomic write to disk — .tmp + moveFile → final path
- * 9. Persist — 'downloaded' + localPath in both DB and store
- * 10. Error → set 'failed' state, clean up temp file, release semaphore slot
+ * 6. Clean start — unlink the plaintext .tmp AND the ciphertext staging file
+ * 7. Disk preflight — reserve 2x the ciphertext ceiling (both files coexist in pass 2)
+ * 8. Download — downloadMediaToFile() streams ciphertext to Caches staging
+ * 9. PASS 1 — verifyPush/verifyFinalize over the staged blob: HMAC + SHA-256
+ *    digest are checked BEFORE any plaintext exists
+ * 10. PASS 2 — decryptPush/decryptFinalize, appending base64 plaintext to .tmp
+ * 11. Size assert, unlink staging, atomic moveFile .tmp → final path
+ * 12. Persist — 'downloaded' + localPath in both DB and store
+ * 13. Error → set state, unlink .tmp AND staging, release reservation + slot
  *
- * SECURITY: Ciphertext ArrayBuffer is released before base64 encoding (F5/T2).
- * SECURITY: Atomic write prevents partial plaintext files on crash (F1).
- * SECURITY: Inflight dedup map clears in finally block (F6).
+ * SECURITY (F1): atomic write prevents partial plaintext files on crash.
+ * SECURITY (F6): inflight dedup map clears in a finally block.
+ * SECURITY: nothing is decrypted before pass 1 verifies HMAC + digest in Rust.
+ * SECURITY (TOCTOU): pass 2 re-derives the HMAC and decryptFinalize() requires
+ *   it to match pass 1's. A blob modified BETWEEN the passes can still emit
+ *   attacker-influenced plaintext into .tmp before finalize rejects — safety is
+ *   procedural: `.tmp` is never promoted before decryptFinalize() returns Ok, is
+ *   unlinked on every failure path, and is NEVER a resumable artifact.
+ * SECURITY: the ciphertext staging file is always unlinked, on both paths.
+ * SECURITY: destroy() is called on the decryptor on both success and failure.
+ * SECURITY: content is never logged — only lengths and states.
+ *
+ * RETIRED (#578): F5/T2 ("ciphertext ArrayBuffer released before base64
+ * encoding") no longer apply — neither the ciphertext nor the plaintext is ever
+ * held in a JS buffer. Base64 passes straight from RNFS to Rust and from Rust to
+ * appendFile, so the whole-buffer path those invariants guarded is gone.
  */
 
-import { downloadMedia } from './api/media';
-import { decryptAttachment } from './crypto/attachmentCrypto';
-import { arrayBufferToBase64, toArrayBuffer } from './crypto/utils';
+import { downloadMediaToFile } from './api/media';
+import { createAttachmentDecryptor } from './crypto/attachmentCrypto';
+import type { StreamingAttachmentDecryptor } from './crypto/attachmentCrypto';
+import { base64DecodedLength } from './crypto/utils';
 import {
   getMedia,
   updateDownloadState,
@@ -28,15 +47,25 @@ import {
 import { useAppStore } from '../stores/useAppStore';
 import { createSemaphore } from '../utils/semaphore';
 import {
+  read,
   writeFile,
   appendFile,
   exists,
+  getFSInfo,
   mkdir,
   moveFile,
+  stat,
   unlink,
   readDir,
+  CachesDirectoryPath,
 } from '@dr.pogodin/react-native-fs';
 import { NotFoundError } from './api/errors';
+import {
+  ciphertextByteCeiling,
+  DISK_HEADROOM_BYTES,
+  MAX_CIPHERTEXT_BYTES,
+  STREAM_READ_SIZE_BYTES,
+} from './media/mediaLimits';
 import { MEDIA_DIR, toStoredMediaPath, resolveMediaPath } from './media/mediaPaths';
 import type { MediaRow } from '../database/repositories/mediaRepository';
 
@@ -51,26 +80,15 @@ const MAX_CONCURRENT = 3;
 export const DOWNLOAD_ABORTED_MESSAGE = 'Download aborted';
 
 /**
- * Chunk size for chunked base64 file writes. MUST be a multiple of 3:
- * base64 encodes 3 input bytes to 4 output chars, so 3-byte-aligned chunks
- * never emit internal padding and their concatenation is byte-identical to
- * encoding the whole buffer at once.
+ * Reservation basis used when the row carries no usable `file_size`.
+ *
+ * Reserving the global 50MB cap for an unknown-size row makes a small download
+ * fail on a device that has ample room for it. The real size stays bounded by
+ * the transport's `begin` contentLength ceiling and by the staged-size assert
+ * after the transfer, so a modest floor here is safe: over-running the
+ * reservation is a bookkeeping inaccuracy, not a disk-full crash.
  */
-const BASE64_WRITE_CHUNK_BYTES = 768 * 1024;
-
-/**
- * Write bytes to a file as base64 in bounded chunks. Peak transient memory
- * is O(chunk) instead of O(payload) — a near-cap video through the
- * whole-buffer path measured multi-second JS stalls and >1GB transient RSS.
- * Streaming decrypt proper is #578; this bounds the write half.
- */
-async function writeFileChunkedBase64(path: string, bytes: Uint8Array): Promise<void> {
-  await writeFile(path, '', 'base64');
-  for (let offset = 0; offset < bytes.length; offset += BASE64_WRITE_CHUNK_BYTES) {
-    const slice = bytes.subarray(offset, Math.min(offset + BASE64_WRITE_CHUNK_BYTES, bytes.length));
-    await appendFile(path, arrayBufferToBase64(toArrayBuffer(slice)), 'base64');
-  }
-}
+const UNKNOWN_SIZE_RESERVATION_BASIS_BYTES = 8 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // Semaphore — limits concurrent downloads to MAX_CONCURRENT
@@ -83,6 +101,67 @@ const mediaSemaphore = createSemaphore(MAX_CONCURRENT);
 // ---------------------------------------------------------------------------
 
 const inflight = new Map<string, Promise<string>>();
+
+// ---------------------------------------------------------------------------
+// Disk reservation
+// ---------------------------------------------------------------------------
+
+/**
+ * Bytes promised to in-flight downloads but not yet written.
+ *
+ * Without this, N concurrent preflights all see the same free space and all
+ * pass, then collectively overrun it. Incremented at preflight, released in the
+ * same finally block as the semaphore slot.
+ */
+let reservedDiskBytes = 0;
+
+class InsufficientSpaceError extends Error {
+  constructor() {
+    super('Not enough free space to download this file.');
+    this.name = 'InsufficientSpaceError';
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+/**
+ * Reserve disk space for one download. Returns the reserved amount so the
+ * caller can release exactly what it took.
+ *
+ * The ciphertext staging file and the plaintext .tmp coexist during pass 2,
+ * hence 2x. A getFSInfo() failure is not fatal — we still reserve, so the
+ * bookkeeping across concurrent downloads stays conservative.
+ */
+async function reserveDiskSpace(ciphertextBytes: number): Promise<number> {
+  const needed = 2 * ciphertextBytes;
+
+  try {
+    const { freeSpace } = await getFSInfo();
+    if (freeSpace - reservedDiskBytes <= needed + DISK_HEADROOM_BYTES) {
+      throw new InsufficientSpaceError();
+    }
+  } catch (e) {
+    if (e instanceof InsufficientSpaceError) throw e;
+    // Space is unknowable on this platform/state — proceed, but still reserve.
+  }
+
+  reservedDiskBytes += needed;
+  return needed;
+}
+
+/**
+ * Per-download reservation basis: the row's ciphertext ceiling when the size is
+ * known, a modest floor when it is not.
+ */
+function reservationBasisFor(expectedBytes: number | null): number {
+  if (
+    expectedBytes == null ||
+    !Number.isFinite(expectedBytes) ||
+    expectedBytes <= 0
+  ) {
+    return UNKNOWN_SIZE_RESERVATION_BASIS_BYTES;
+  }
+  return ciphertextByteCeiling(expectedBytes);
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -112,11 +191,23 @@ async function ensureMediaDir(): Promise<void> {
   }
 }
 
-/** Derive file extension from content type or file name. */
+/**
+ * Derive file extension from content type or file name.
+ *
+ * SECURITY: `tmp` is refused from the peer-controlled file name. `.tmp` is the
+ * predicate cleanupOrphanedMedia() reaps on, and the in-flight plaintext lives
+ * at `{id}.{ext}.tmp` — a peer-named `x.tmp` would otherwise promote to
+ * `{id}.tmp`, a real downloaded file that the reaper deletes as garbage an hour
+ * later. Falling through to the content-type branch keeps the two namespaces
+ * disjoint.
+ */
 function getExtension(row: MediaRow): string {
   if (row.file_name) {
     const parts = row.file_name.split('.');
-    if (parts.length > 1) return parts.pop()!;
+    if (parts.length > 1) {
+      const named = parts.pop()!;
+      if (named.toLowerCase() !== 'tmp') return named;
+    }
   }
   // Fallback: derive from content type
   const ct = row.content_type;
@@ -128,6 +219,140 @@ function getExtension(row: MediaRow): string {
   if (ct.startsWith('video/quicktime')) return 'mov';
   if (ct.startsWith('video/x-m4v')) return 'm4v';
   return 'dat';
+}
+
+/** Path of the ciphertext staging file for a media id. */
+function stagingPathFor(mediaId: string): string {
+  return `${CachesDirectoryPath}/${mediaId}-dl-cipher.bin`;
+}
+
+/**
+ * Sanity-check the staged ciphertext length before feeding it to Rust.
+ *
+ * Asymmetric on purpose. `file_size` is server truth (ciphertext length) for
+ * received media, but the uploader's OWN row records the plaintext length — so
+ * a legitimately re-downloaded self-upload is 49-64 bytes LONGER than
+ * `expectedBytes`. A shorter blob, by contrast, can only be truncation, which
+ * is exactly what this check exists to catch cheaply (HMAC + digest would
+ * reject it a full pass later).
+ *
+ * Over-long is bounded twice: by the global cap, and by this row's OWN ceiling
+ * (`expectedBytes` + max wire overhead). Without the per-row bound a 1KB row
+ * could stage 50MB of attacker-supplied bytes and be fed through two full Rust
+ * passes before the HMAC rejected it.
+ */
+function assertStagedCiphertextSize(
+  stagedSize: number,
+  expectedBytes: number | null,
+): void {
+  if (stagedSize <= 0) {
+    throw new Error('Downloaded ciphertext is empty');
+  }
+  if (stagedSize > MAX_CIPHERTEXT_BYTES) {
+    throw new Error('Downloaded ciphertext exceeds the maximum allowed size');
+  }
+  if (expectedBytes != null && stagedSize > ciphertextByteCeiling(expectedBytes)) {
+    throw new Error('Downloaded ciphertext is longer than the expected length');
+  }
+  if (expectedBytes != null && expectedBytes > 0 && stagedSize < expectedBytes) {
+    throw new Error('Downloaded ciphertext is shorter than the expected length');
+  }
+}
+
+/**
+ * Read the next base64 chunk and return it with its decoded byte length.
+ *
+ * RNFS `read()` returns *up to* n bytes on Android, and JS never decodes the
+ * chunk — so the decoded length is derived from the string and the read
+ * position advances by THAT, not by n. The length helper also tolerates
+ * embedded whitespace (defensive: some base64 encoders wrap their output;
+ * RNFS 2.39.2 does not).
+ */
+async function readChunk(
+  path: string,
+  requested: number,
+  pos: number,
+): Promise<{ base64: string; decodedLength: number }> {
+  const base64 = await read(path, requested, pos, 'base64');
+  const decodedLength = base64DecodedLength(base64);
+  if (decodedLength === 0) {
+    throw new Error('Ciphertext read returned no bytes before the expected end');
+  }
+  if (decodedLength > requested) {
+    throw new Error('Ciphertext read overran the requested range');
+  }
+  return { base64, decodedLength };
+}
+
+/**
+ * PASS 1 — stream the staged ciphertext through the decryptor's verifier.
+ *
+ * No plaintext exists yet and none can: `decryptPush` is rejected by the Rust
+ * phase machine until `verifyFinalize()` has succeeded.
+ */
+async function verifyCiphertextFromDisk(
+  decryptor: StreamingAttachmentDecryptor,
+  ciphertextPath: string,
+  ciphertextLength: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  let pos = 0;
+  while (pos < ciphertextLength) {
+    if (signal?.aborted) {
+      throw new Error(DOWNLOAD_ABORTED_MESSAGE);
+    }
+    const requested = Math.min(STREAM_READ_SIZE_BYTES, ciphertextLength - pos);
+    const { base64, decodedLength } = await readChunk(ciphertextPath, requested, pos);
+    decryptor.verifyPush(base64);
+    pos += decodedLength;
+  }
+  decryptor.verifyFinalize();
+}
+
+/**
+ * PASS 2 — stream the same blob through the decryptor, appending base64
+ * plaintext to `tmpPath`. Returns the number of plaintext bytes emitted.
+ *
+ * Each append is an independently padded encoding of its own byte range, which
+ * is exactly what RNFS produces and what `appendFile(..., 'base64')` decodes —
+ * base64 text is never sliced or concatenated.
+ */
+async function streamDecryptToFile(
+  decryptor: StreamingAttachmentDecryptor,
+  ciphertextPath: string,
+  ciphertextLength: number,
+  tmpPath: string,
+  signal?: AbortSignal,
+): Promise<number> {
+  // Truncate (and create) the destination. The attempt already unlinked it;
+  // this also guarantees the file exists when a payload emits zero bytes.
+  await writeFile(tmpPath, '', 'base64');
+
+  let pos = 0;
+  let emittedBytes = 0;
+
+  while (pos < ciphertextLength) {
+    if (signal?.aborted) {
+      throw new Error(DOWNLOAD_ABORTED_MESSAGE);
+    }
+    const requested = Math.min(STREAM_READ_SIZE_BYTES, ciphertextLength - pos);
+    const { base64, decodedLength } = await readChunk(ciphertextPath, requested, pos);
+
+    const plaintextB64 = decryptor.decryptPush(base64);
+    if (plaintextB64.length > 0) {
+      await appendFile(tmpPath, plaintextB64, 'base64');
+      emittedBytes += base64DecodedLength(plaintextB64);
+    }
+    pos += decodedLength;
+  }
+
+  const tailB64 = decryptor.decryptFinalize();
+  if (tailB64.length > 0) {
+    await appendFile(tmpPath, tailB64, 'base64');
+    emittedBytes += base64DecodedLength(tailB64);
+  }
+
+  return emittedBytes;
 }
 
 // ---------------------------------------------------------------------------
@@ -211,23 +436,35 @@ export async function downloadAndDecryptMedia(
   const promise = (async (): Promise<string> => {
     await mediaSemaphore.acquire();
 
-    // Paths declared outside try so catch can clean up the temp file.
-    // getExtension/validatePathComponents moved inside try so any throw
-    // releases the semaphore via finally (previously leaked a slot).
+    // Paths declared outside try so catch can clean up the temp files.
+    // getExtension/validatePathComponents stay inside try so any throw
+    // releases the semaphore via finally.
     let tmpPath: string | undefined;
     let finalPath: string | undefined;
+    let stagingPath: string | undefined;
+    let reservedBytes = 0;
 
     try {
       const ext = getExtension(row!);
       validatePathComponents(mediaId, ext);
       tmpPath = `${MEDIA_DIR}/${mediaId}.${ext}.tmp`;
       finalPath = `${MEDIA_DIR}/${mediaId}.${ext}`;
+      stagingPath = stagingPathFor(mediaId);
 
       // Abort check post-acquire: if signal was aborted while queued,
       // restore to 'pending' so the item is self-healing on remount.
       if (signal?.aborted) {
         throw new Error(DOWNLOAD_ABORTED_MESSAGE);
       }
+
+      // attachment_key and attachment_digest are raw BLOBs (Uint8Array).
+      // The digest is bound into the decryptor at construction, so a missing
+      // one has to fail here rather than silently skipping verification.
+      const keys = row!.attachment_key!;
+      if (!row!.attachment_digest) {
+        throw new Error('No attachment digest available — cannot verify ciphertext integrity');
+      }
+      const digest = row!.attachment_digest;
 
       // 5. Update state → 'downloading'
       try {
@@ -240,42 +477,69 @@ export async function downloadAndDecryptMedia(
       // Ensure media directory exists
       await ensureMediaDir();
 
-      // 6. Download ciphertext from server.
-      // file_size is passed so the transfer deadline scales with the payload —
-      // a near-cap video cannot complete inside the flat base allowance on a
-      // slow connection, and a timeout here restarts from byte 0 (#578).
-      const { data: ciphertextBuffer } = await downloadMedia(
+      // 6. Clean start. Both destinations are deterministic paths, so a crashed
+      // prior attempt would otherwise leave a stale prefix that HMAC and digest
+      // cannot catch (they only ever see what we feed them) — the file would be
+      // promoted and confirmArchived would then evict the server copy.
+      await unlink(tmpPath).catch(() => {});
+      await unlink(stagingPath).catch(() => {});
+
+      // 7. Disk preflight with reservation
+      const expectedBytes = row!.file_size;
+      reservedBytes = await reserveDiskSpace(reservationBasisFor(expectedBytes));
+
+      // 8. Stream ciphertext to disk — the body never crosses the bridge.
+      await downloadMediaToFile({
         mediaId,
+        toFile: stagingPath,
+        expectedBytes,
         signal,
-        row!.file_size,
-      );
+      });
 
-      // 7. Decrypt — attachment_key and digest are stored as raw BLOB (Uint8Array)
-      const keys = row!.attachment_key!;
-      if (!row!.attachment_digest) {
-        throw new Error('No attachment digest available — cannot verify ciphertext integrity');
+      const stagedSize = (await stat(stagingPath)).size;
+      assertStagedCiphertextSize(stagedSize, expectedBytes);
+
+      // 9/10. Two-pass streaming decrypt. ANY error poisons the decryptor
+      // permanently, so there is no resume path — destroy() on both outcomes.
+      const decryptor = createAttachmentDecryptor(keys, digest);
+      let emittedBytes: number;
+      try {
+        await verifyCiphertextFromDisk(decryptor, stagingPath, stagedSize, signal);
+        emittedBytes = await streamDecryptToFile(
+          decryptor,
+          stagingPath,
+          stagedSize,
+          tmpPath,
+          signal,
+        );
+      } finally {
+        decryptor.destroy();
       }
-      const digest = row!.attachment_digest;
 
-      // Scope ciphertext so it can be GC'd before base64 encoding
-      let plaintext: Uint8Array;
-      {
-        const ciphertextBytes = new Uint8Array(ciphertextBuffer);
-        plaintext = decryptAttachment(ciphertextBytes, keys, digest);
+      // 11. Size assert before promotion — mirrors the upload ctStat guard.
+      // Catches a failed clean-start unlink or a partially-written append.
+      //
+      // Zero emitted bytes is checked FIRST and separately: an empty plaintext
+      // is never legitimate (the wire format's minimum is one padded block), and
+      // it is the one case the tmpSize comparison cannot catch — 0 === 0 passes,
+      // promoting an empty file and then confirming the archive, which lets the
+      // server evict the only real copy.
+      if (emittedBytes <= 0) {
+        throw new Error('Decrypt produced no plaintext');
       }
 
-      // 8. Atomic write — .tmp + moveFile (F1). Chunked: a single
-      // whole-buffer base64 pass over a near-cap video (~45MB) costs a
-      // multi-second JS-thread stall and a transient allocation an order of
-      // magnitude above the payload (one giant binary string + one giant
-      // base64 string + a full bridge copy). Fixed 3-byte-multiple slices
-      // keep every chunk's base64 free of padding, so concatenated chunk
-      // encodes are byte-identical to a whole-buffer encode.
-      await writeFileChunkedBase64(tmpPath, plaintext);
+      const tmpSize = (await stat(tmpPath)).size;
+      if (tmpSize !== emittedBytes) {
+        throw new Error(
+          `Plaintext size mismatch: expected ${emittedBytes}, got ${tmpSize}`,
+        );
+      }
+
+      await unlink(stagingPath).catch(() => {});
       await unlink(finalPath).catch(() => {});
       await moveFile(tmpPath, finalPath);
 
-      // 9. Persist → 'downloaded' + localPath (DB relative, store absolute)
+      // 12. Persist → 'downloaded' + localPath (DB relative, store absolute)
       try {
         updateDownloadState(mediaId, 'downloaded', toStoredMediaPath(finalPath) ?? undefined);
       } catch (dbErr) {
@@ -298,13 +562,17 @@ export async function downloadAndDecryptMedia(
       return finalPath;
     } catch (e) {
       // Aborted downloads restore to 'pending' (self-healing for windowing);
+      // out-of-disk → 'pending' too, because free space is a property of the
+      // device right now, not a permanent property of the media — 'failed'
+      // would strand the item behind a manual retry after the user frees space;
       // NotFoundError (404) → 'unavailable' (server purged, no retry);
       // genuine failures land on 'failed' as before.
-      const nextState: 'pending' | 'failed' | 'unavailable' = signal?.aborted
-        ? 'pending'
-        : e instanceof NotFoundError
-          ? 'unavailable'
-          : 'failed';
+      const nextState: 'pending' | 'failed' | 'unavailable' =
+        signal?.aborted || e instanceof InsufficientSpaceError
+          ? 'pending'
+          : e instanceof NotFoundError
+            ? 'unavailable'
+            : 'failed';
 
       try {
         updateDownloadState(mediaId, nextState);
@@ -313,20 +581,25 @@ export async function downloadAndDecryptMedia(
       }
       useAppStore.getState().updateMediaDownloadState(mediaId, nextState);
 
-      // Best-effort cleanup of temp file
+      // Containment: the partially-decrypted plaintext must never survive a
+      // failure, and the ciphertext staging file must never accumulate.
       if (tmpPath) {
         await unlink(tmpPath).catch(() => {});
+      }
+      if (stagingPath) {
+        await unlink(stagingPath).catch(() => {});
       }
 
       // Normalize ALL abort-path rejections to the sentinel message so
       // consumers (useMediaDownload) can reliably detect aborts regardless
-      // of fetch-layer error text (engine-specific NetworkError, etc.).
+      // of transport-layer error text.
       if (signal?.aborted && (!(e instanceof Error) || e.message !== DOWNLOAD_ABORTED_MESSAGE)) {
         throw new Error(DOWNLOAD_ABORTED_MESSAGE);
       }
 
       throw e;
     } finally {
+      reservedDiskBytes -= reservedBytes;
       mediaSemaphore.release();
     }
   })();
@@ -389,6 +662,9 @@ export async function isMediaCached(mediaId: string): Promise<boolean> {
  * 1. Sweep ${DocumentDirectoryPath}/media/ for files with no matching DB row → delete
  * 2. Sweep DB rows where local_path is set but file does not exist → reset to 'pending', clear local_path
  * 3. Sweep .tmp files older than 1 hour → delete
+ *
+ * The ciphertext staging file lives in Caches, not here — it is swept by
+ * cleanupOrphanedChunks() in mediaUploadService.
  *
  * Called from bootstrap.ts (mirrors cleanupOrphanedChunks pattern).
  */

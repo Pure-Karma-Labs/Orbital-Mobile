@@ -32,10 +32,16 @@ const DEFAULT_TIMEOUT_MS = 15_000;
  * Base allowance for a media body transfer, before any size term.
  *
  * React Native's fetch resolves only after the FULL response body has been
- * read, so `timeout` on a media GET is an end-to-end transfer deadline, not a
- * time-to-first-byte one. A flat 60s therefore silently caps throughput: a
- * ~45MB clip needs a sustained ~6 Mbps or it fails deterministically, and the
- * retry restarts from byte 0 (ranged/resumable downloads are #578).
+ * read, so `timeout` on a fetch-based media GET is an end-to-end transfer
+ * deadline, not a time-to-first-byte one. A flat 60s therefore silently caps
+ * throughput: a ~45MB clip needs a sustained ~6 Mbps or it fails
+ * deterministically, and the retry restarts from byte 0.
+ *
+ * NOTE (#578): media DOWNLOADS no longer go through fetch at all — they stream
+ * to disk via `downloadMediaToFile` (api/media.ts), whose primary guard is a
+ * 30s stall timeout, with this function only supplying the basis for a generous
+ * absolute backstop. The end-to-end premise above still holds for the remaining
+ * fetch-based media transfers (chunk uploads, avatars).
  */
 export const MEDIA_TRANSFER_BASE_TIMEOUT_MS = 60_000;
 
@@ -160,6 +166,128 @@ export function buildQueryString(
 
 let isHandling401 = false;
 
+/**
+ * Clear tokens on an authentication failure, deduplicated across concurrent
+ * requests.
+ *
+ * Shared by every transport (fetch-based `_executeRequest` and the RNFS
+ * `downloadFile` transport in api/media.ts) so a 401 has exactly one meaning
+ * and one side effect regardless of which one saw it.
+ *
+ * 403 is deliberately NOT included — it means "authenticated but not
+ * authorized" (e.g. removed from a group) and must not clear the session.
+ *
+ * The dedup flag is best-effort: concurrent 401s that arrive while a clear is
+ * already in flight are dropped, which is the intent (one clear, not N).
+ */
+export async function handleUnauthorized(status: number): Promise<void> {
+  if (status !== 401) return;
+  if (isHandling401) return;
+  isHandling401 = true;
+  try {
+    await tokenManager.clearTokens();
+  } finally {
+    isHandling401 = false;
+  }
+}
+
+// ============================================================
+// Shared HTTP error mapping
+// ============================================================
+
+/**
+ * Map an HTTP status + raw error body to the typed error hierarchy.
+ *
+ * Returns the error rather than throwing so callers can decide (throw, wrap,
+ * or inspect). Shared by all transports — the RNFS download transport gets the
+ * same MEDIA_EVICTED/EXPIRED discrimination from `rawBody` that fetch does,
+ * because RNFS surfaces non-2xx bodies in `result.body` rather than writing
+ * them to `toFile`.
+ */
+export function mapHttpErrorToApiError(status: number, rawBody?: string): ApiError {
+  if (status === 401 || status === 403) {
+    return new AuthError(status as 401 | 403, rawBody);
+  }
+  if (status === 404) {
+    return new NotFoundError(rawBody);
+  }
+  if (status === 409) {
+    return new ConflictError(rawBody);
+  }
+  // 413 = quota denial on upload routes (QUOTA_EXCEEDED). Express body-parser can
+  // also 413 JSON bodies >10MB (PAYLOAD_TOO_LARGE) but upload routes are multipart,
+  // so that case can't occur here; both are non-retryable regardless.
+  if (status === 413) {
+    return new QuotaExceededError(rawBody);
+  }
+  if (status === 400 || status === 422) {
+    return new ValidationError(status as 400 | 422, rawBody);
+  }
+  if (status === 429) {
+    return new ApiError('Rate limited — try again shortly', 429, 'RATE_LIMITED', true, rawBody);
+  }
+  if (status >= 500) {
+    return new ServerError(status, rawBody);
+  }
+  return new ApiError('Unexpected server response', status, 'UNKNOWN_ERROR', false, rawBody);
+}
+
+// ============================================================
+// Shared 429 backoff
+// ============================================================
+
+/** Maximum 429 retries before giving up (shared by all transports). */
+export const MAX_429_RETRIES = 3;
+
+/**
+ * Message for the pre-flight "not authenticated" AuthError, shared by every
+ * transport (the fetch path here and the RNFS download path in `media.ts`) so
+ * they cannot drift apart.
+ */
+export const NO_ACCESS_TOKEN_MESSAGE =
+  'No access token available — user is not authenticated';
+
+/** Cap retry delay at 10s — a mobile user won't wait minutes. */
+const MAX_RETRY_DELAY_MS = 10_000;
+
+/**
+ * Wait out a 429 with exponential backoff + jitter, abortable.
+ *
+ * Rejects immediately if the caller's signal is already aborted (arming a
+ * timer we know we'll throw away just delays the failure), and removes the
+ * abort listener in `finally` — the previous inline version leaked one
+ * listener per retry onto a long-lived caller signal.
+ *
+ * @param attempt - Zero-based retry attempt number.
+ */
+export async function delayForRateLimit(
+  attempt: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (signal?.aborted) {
+    throw new NetworkError('Request aborted during rate-limit backoff');
+  }
+
+  const backoffMs = 1000 * Math.pow(2, attempt) + Math.random() * 500;
+  const delayMs = Math.min(backoffMs, MAX_RETRY_DELAY_MS);
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      timer = setTimeout(resolve, delayMs);
+      onAbort = () => {
+        clearTimeout(timer);
+        reject(new NetworkError('Request aborted during rate-limit backoff'));
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+    });
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    if (onAbort !== undefined) signal?.removeEventListener('abort', onAbort);
+  }
+}
+
 // ============================================================
 // Request interface
 // ============================================================
@@ -204,7 +332,6 @@ async function _executeRequest(options: RequestOptions): Promise<Response> {
     signal: callerSignal,
   } = options;
 
-  const MAX_429_RETRIES = 3;
   const url = `${API_BASE_URL}${path}`;
 
   // Build headers
@@ -215,7 +342,7 @@ async function _executeRequest(options: RequestOptions): Promise<Response> {
   if (!skipAuth) {
     const token = await tokenManager.getAccessToken();
     if (token === null) {
-      throw new AuthError(401, 'No access token available — user is not authenticated');
+      throw new AuthError(401, NO_ACCESS_TOKEN_MESSAGE);
     }
     headers.Authorization = `Bearer ${token}`;
   }
@@ -273,22 +400,11 @@ async function _executeRequest(options: RequestOptions): Promise<Response> {
 
     // 429 retry with exponential backoff
     if (response.status === 429 && attempt < MAX_429_RETRIES) {
-      // Cap retry delay at 10s — a mobile user won't wait minutes
-      const MAX_RETRY_DELAY_MS = 10_000;
-      const backoffMs = 1000 * Math.pow(2, attempt) + Math.random() * 500;
-      const delayMs = Math.min(backoffMs, MAX_RETRY_DELAY_MS);
-
       if (__DEV__) {
-        console.warn(`[API] 429 on ${method} ${path} — retry ${attempt + 1}/${MAX_429_RETRIES} in ${Math.round(delayMs)}ms`);
+        console.warn(`[API] 429 on ${method} ${path} — retry ${attempt + 1}/${MAX_429_RETRIES}`);
       }
 
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(resolve, delayMs);
-        callerSignal?.addEventListener('abort', () => {
-          clearTimeout(timer);
-          reject(new NetworkError('Request aborted during rate-limit backoff'));
-        }, { once: true });
-      });
+      await delayForRateLimit(attempt, callerSignal);
 
       continue;
     }
@@ -306,65 +422,10 @@ async function _executeRequest(options: RequestOptions): Promise<Response> {
 
     const status = response.status;
 
-    if (status === 401) {
-      // Clear tokens on authentication failure (expired/invalid JWT).
-      // 403 is NOT included — it means "authenticated but not authorized"
-      // (e.g., removed from a group) and should not clear the session.
-      if (!isHandling401) {
-        isHandling401 = true;
-        try {
-          await tokenManager.clearTokens();
-        } finally {
-          isHandling401 = false;
-        }
-      }
-    }
+    // Clear tokens on authentication failure (expired/invalid JWT), deduped.
+    await handleUnauthorized(status);
 
-    if (status === 401 || status === 403) {
-      throw new AuthError(status as 401 | 403, rawBody);
-    }
-
-    if (status === 404) {
-      throw new NotFoundError(rawBody);
-    }
-
-    if (status === 409) {
-      throw new ConflictError(rawBody);
-    }
-
-    // 413 = quota denial on upload routes (QUOTA_EXCEEDED). Express body-parser can
-    // also 413 JSON bodies >10MB (PAYLOAD_TOO_LARGE) but upload routes are multipart,
-    // so that case can't occur here; both are non-retryable regardless.
-    if (status === 413) {
-      throw new QuotaExceededError(rawBody);
-    }
-
-    if (status === 400 || status === 422) {
-      throw new ValidationError(status as 400 | 422, rawBody);
-    }
-
-    if (status >= 500) {
-      throw new ServerError(status, rawBody);
-    }
-
-    if (status === 429) {
-      throw new ApiError(
-        'Rate limited — try again shortly',
-        429,
-        'RATE_LIMITED',
-        true,
-        rawBody,
-      );
-    }
-
-    // Unexpected status
-    throw new ApiError(
-      'Unexpected server response',
-      status,
-      'UNKNOWN_ERROR',
-      false,
-      rawBody,
-    );
+    throw mapHttpErrorToApiError(status, rawBody);
   }
 
   // Should not be reachable, but TypeScript requires a return

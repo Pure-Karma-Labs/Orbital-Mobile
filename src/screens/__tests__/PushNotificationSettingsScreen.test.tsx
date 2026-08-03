@@ -21,6 +21,7 @@ jest.mock('@react-navigation/native', () => ({
 jest.mock('../../services/notificationService', () => ({
   requestPermissionAndRegister: jest.fn().mockResolvedValue(jest.fn()),
   deregisterCurrentDevice: jest.fn().mockResolvedValue(undefined),
+  teardownPushRegistration: jest.fn(),
 }));
 
 jest.mock('../../services/api/notificationSettings', () => ({
@@ -61,6 +62,7 @@ import { useAppStore } from '../../stores/useAppStore';
 import {
   requestPermissionAndRegister,
   deregisterCurrentDevice,
+  teardownPushRegistration,
 } from '../../services/notificationService';
 import { updateNotificationPrefs } from '../../services/api/notificationSettings';
 import { NetworkError } from '../../services/api/errors';
@@ -68,6 +70,7 @@ import notifee from '@notifee/react-native';
 
 const mockRequestPermission = requestPermissionAndRegister as jest.Mock;
 const mockDeregister = deregisterCurrentDevice as jest.Mock;
+const mockTeardown = teardownPushRegistration as jest.Mock;
 const mockUpdatePrefs = updateNotificationPrefs as jest.Mock;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test-local handle on the mock store
@@ -191,9 +194,30 @@ describe('PushNotificationSettingsScreen — master push toggle', () => {
     });
 
     expect(mockDeregister).toHaveBeenCalledTimes(1);
+    expect(mockTeardown).toHaveBeenCalledTimes(1);
     expect(store.getState().pushPermissionGranted).toBe(false);
     expect(store.getState().pushToken).toBeNull();
     expect(mockRequestPermission).not.toHaveBeenCalled();
+  });
+
+  it('unmounting the screen never tears down push registration (#677 blocking finding)', async () => {
+    // Enable push on this screen, then navigate Back. The token-refresh
+    // listener and any registration retry must survive the unmount — the
+    // service owns that lifetime, not this screen.
+    const listenerHandle = jest.fn();
+    mockRequestPermission.mockResolvedValueOnce(listenerHandle);
+    act(() => { store.setState({ pushPermissionGranted: false }); });
+    const renderer = renderScreen();
+
+    await act(async () => {
+      await findByTestId(renderer.root, 'push-row').props.onPress();
+    });
+    expect(mockRequestPermission).toHaveBeenCalledTimes(1);
+
+    act(() => { renderer.unmount(); });
+
+    expect(listenerHandle).not.toHaveBeenCalled();
+    expect(mockTeardown).not.toHaveBeenCalled();
   });
 
   it('shows the settings Alert when OS permission is denied', async () => {

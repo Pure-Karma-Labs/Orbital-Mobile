@@ -87,6 +87,7 @@ import {
   setupNotificationTapHandler,
   deregisterCurrentDevice,
   initNotifications,
+  teardownPushRegistration,
 } from '../notificationService';
 import {
   navigationRef,
@@ -249,6 +250,49 @@ describe('requestPermissionAndRegister', () => {
 
     cleanup();
     expect(mockUnsub).toHaveBeenCalled();
+  });
+
+  it('re-registration replaces the previous token-refresh listener (module ownership)', async () => {
+    const firstUnsub = jest.fn();
+    const secondUnsub = jest.fn();
+    (getMessagingInstance().onTokenRefresh as jest.Mock)
+      .mockReturnValueOnce(firstUnsub)
+      .mockReturnValueOnce(secondUnsub);
+
+    await requestPermissionAndRegister();
+    expect(firstUnsub).not.toHaveBeenCalled();
+
+    // Second registration must tear down the first listener itself —
+    // no screen ever owns this lifetime (PR #677 review finding).
+    await requestPermissionAndRegister();
+    expect(firstUnsub).toHaveBeenCalledTimes(1);
+    expect(secondUnsub).not.toHaveBeenCalled();
+  });
+
+  it('teardownPushRegistration unsubscribes the current listener and is idempotent', async () => {
+    const mockUnsub = jest.fn();
+    (getMessagingInstance().onTokenRefresh as jest.Mock).mockReturnValueOnce(mockUnsub);
+
+    await requestPermissionAndRegister();
+    teardownPushRegistration();
+    expect(mockUnsub).toHaveBeenCalledTimes(1);
+    teardownPushRegistration();
+    expect(mockUnsub).toHaveBeenCalledTimes(1);
+  });
+
+  it('a stale cleanup handle tears down the CURRENT listener, never a replaced one twice', async () => {
+    const firstUnsub = jest.fn();
+    const secondUnsub = jest.fn();
+    (getMessagingInstance().onTokenRefresh as jest.Mock)
+      .mockReturnValueOnce(firstUnsub)
+      .mockReturnValueOnce(secondUnsub);
+
+    const staleCleanup = await requestPermissionAndRegister();
+    await requestPermissionAndRegister(); // replaces; firstUnsub called once here
+
+    staleCleanup(); // logout path holding an old handle
+    expect(secondUnsub).toHaveBeenCalledTimes(1);
+    expect(firstUnsub).toHaveBeenCalledTimes(1); // not called again
   });
 });
 

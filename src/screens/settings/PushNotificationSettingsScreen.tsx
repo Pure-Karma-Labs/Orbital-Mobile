@@ -18,7 +18,7 @@
  * toggle here — hence the caption.
  */
 
-import React, { useCallback, useEffect, useRef } from 'react';
+import React, { useCallback, useRef } from 'react';
 import {
   Alert,
   Linking,
@@ -36,6 +36,7 @@ import { useAppStore } from '../../stores/useAppStore';
 import {
   requestPermissionAndRegister,
   deregisterCurrentDevice,
+  teardownPushRegistration,
 } from '../../services/notificationService';
 import { setPref } from '../../services/notificationSettingsSync';
 import { Header } from '../../components/Header';
@@ -70,19 +71,19 @@ export function PushNotificationSettingsScreen(): React.JSX.Element {
   const pushPermissionGranted = useAppStore((s) => s.pushPermissionGranted);
   const prefs = useAppStore((s) => s.notificationPrefs);
 
-  // --- Master push toggle (moved verbatim from SettingsScreen) ---
-  const unsubRef = useRef<(() => void) | null>(null);
+  // --- Master push toggle (moved from SettingsScreen) ---
+  // This screen must NOT own the token-refresh listener: it unmounts on Back,
+  // and tearing the listener down here kills push delivery for the session
+  // (PR #677 review finding). notificationService owns the listener at module
+  // scope; this screen only triggers register/teardown transitions.
   const togglingRef = useRef(false);
-
-  useEffect(() => () => { unsubRef.current?.(); }, []);
 
   const handleTogglePush = useCallback(async () => {
     if (togglingRef.current) return;
     togglingRef.current = true;
     try {
       if (pushPermissionGranted) {
-        unsubRef.current?.();
-        unsubRef.current = null;
+        teardownPushRegistration();
         await deregisterCurrentDevice();
         useAppStore.getState().setPushPermission(false);
         useAppStore.getState().setPushToken(null);
@@ -99,9 +100,10 @@ export function PushNotificationSettingsScreen(): React.JSX.Element {
           );
           return;
         }
-        unsubRef.current?.();
-        const unsub = await requestPermissionAndRegister();
-        unsubRef.current = unsub;
+        // Service replaces any previous listener internally; the returned
+        // teardown handle is deliberately discarded — logout (App.tsx) and
+        // the OFF branch above are the only legitimate teardown sites.
+        await requestPermissionAndRegister();
       }
     } finally {
       togglingRef.current = false;

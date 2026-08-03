@@ -137,6 +137,7 @@ Banner at top if settings fail to load/save.
 ## Interactions
 
 - **Tap list item** → Push to sub-settings screen (notifications detail, privacy detail, etc.)
+- **Push Notifications sub-screen** (#449): the Notifications section's "Push Notifications" row shows the master state (`On`/`Off`) and chevrons into a sub-screen containing the master push toggle plus four per-type rows (New threads, Replies, Direct messages, Member joined). Per-type rows are dimmed and non-pressable while master push is off. Caption: "Security alerts are always delivered." The sub-screen never owns the push token-refresh listener — that lifetime belongs to the auth session (see notificationService).
 - **Tap profile card** → Push to profile edit screen
 - **Tap theme** → Opens theme picker (bottom sheet)
 - **Tap log out** → Confirmation dialog

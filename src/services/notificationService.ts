@@ -48,6 +48,29 @@ const pushDedupSet = new LRUSet(200);
 /** Pending registration retry timer — cleared on logout cleanup. */
 let retryTimerId: ReturnType<typeof setTimeout> | undefined;
 
+// Module-scope owner of the single token-refresh listener. Re-registration
+// replaces the previous listener; screens must never own this lifetime —
+// a pushed settings screen unmounts on Back, and tearing the listener down
+// there silently kills push delivery for the rest of the session (PR #677
+// review finding). Teardown belongs to logout (App.tsx auth effect) and
+// explicit push-disable only.
+let activeTokenRefreshUnsub: (() => void) | undefined;
+
+/**
+ * Tear down push registration side-effects: the token-refresh listener and
+ * any pending registration retry. Idempotent. Called on logout (via the
+ * closure returned by requestPermissionAndRegister) and when the user turns
+ * push off.
+ */
+export function teardownPushRegistration(): void {
+  activeTokenRefreshUnsub?.();
+  activeTokenRefreshUnsub = undefined;
+  if (retryTimerId != null) {
+    clearTimeout(retryTimerId);
+    retryTimerId = undefined;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Notifee availability check
 // ---------------------------------------------------------------------------
@@ -164,9 +187,13 @@ export async function requestPermissionAndRegister(): Promise<() => void> {
     }, 5000);
   }
 
-  // Listen for token refresh and re-register.
-  // Returns unsubscribe so the caller can tear down on logout.
-  const unsubTokenRefresh = messaging().onTokenRefresh(async (newToken: string) => {
+  // Listen for token refresh and re-register. The module owns the listener:
+  // registering again replaces the previous one, and the returned closure is
+  // just the module-level teardown (safe for App.tsx to call on logout even
+  // if registration ran more than once — it always tears down the CURRENT
+  // listener, never a stale one).
+  activeTokenRefreshUnsub?.();
+  activeTokenRefreshUnsub = messaging().onTokenRefresh(async (newToken: string) => {
     useAppStore.getState().setPushToken(newToken);
     try {
       await registerDevice({ platform, pushToken: newToken, deviceId });
@@ -175,13 +202,7 @@ export async function requestPermissionAndRegister(): Promise<() => void> {
     }
   });
 
-  return () => {
-    unsubTokenRefresh();
-    if (retryTimerId != null) {
-      clearTimeout(retryTimerId);
-      retryTimerId = undefined;
-    }
-  };
+  return teardownPushRegistration;
 }
 
 /**

@@ -4,7 +4,14 @@
  * Used by both the foreground notification service and the background
  * message handler in index.js. Extracting these avoids duplicating the
  * titles map and channel config across two entry points.
+ *
+ * IMPORTANT: this module is imported by index.js at bundle load — BEFORE
+ * bootstrap, before encrypted MMKV is open. It must stay free of store,
+ * MMKV, database, and API imports, and every export must be a constant or a
+ * pure function of its arguments. Type-only imports are fine (erased).
  */
+
+import type { NotificationPrefs } from '../types/api';
 
 export const NOTIFICATION_TITLES: Record<string, string> = {
   new_thread: 'New thread in an Orbit',
@@ -19,6 +26,83 @@ export const NOTIFICATION_TITLES: Record<string, string> = {
 
 export const ANDROID_CHANNEL_ID = 'orbital-default';
 export const ANDROID_CHANNEL_NAME = 'Orbital';
+
+// ---------------------------------------------------------------------------
+// Suppressible-type registry (#449, plan D0)
+// ---------------------------------------------------------------------------
+
+/**
+ * Push types that per-type preferences and per-target mutes may suppress.
+ *
+ * Mirrors the backend registry in src/config/notificationTypes.js. Two types
+ * are deliberately absent:
+ * - `identity_key_reset` — a security tripwire; never suppressible. The
+ *   carve-out is structural twice over: it routes via the backend's sendPush
+ *   path (which never filters) AND is not in this allowlist, so even a future
+ *   variant carrying a gid could not be muted.
+ * - `orbit_invite` — dead type, no producer.
+ */
+export const SUPPRESSIBLE_TYPES = [
+  'new_thread',
+  'new_reply',
+  'new_dm',
+  'member_joined',
+] as const;
+
+export type SuppressibleType = (typeof SUPPRESSIBLE_TYPES)[number];
+
+/** Narrowing guard for arbitrary payload `t` values. */
+export function isSuppressibleType(type: string | undefined): type is SuppressibleType {
+  return (SUPPRESSIBLE_TYPES as readonly string[]).includes(type as string);
+}
+
+/**
+ * Push type -> the preference key that gates it.
+ *
+ * NOTE: this is the *nominal* mapping. DM conversations in this app are groups
+ * with group_type='dm' whose traffic fires `new_thread`/`new_reply`, so the
+ * effective key for a payload whose gid resolves to a direct conversation is
+ * `newDm` regardless of `t` (plan D5). notificationService applies that
+ * override; this map stays a pure type->key table so it can live here beside
+ * the background handler's imports.
+ */
+export const PREF_KEY_BY_TYPE: Record<SuppressibleType, keyof NotificationPrefs> = {
+  new_thread: 'newThread',
+  new_reply: 'newReply',
+  new_dm: 'newDm',
+  member_joined: 'memberJoined',
+};
+
+// ---------------------------------------------------------------------------
+// Collapse key (#449, plan D9)
+// ---------------------------------------------------------------------------
+
+/**
+ * Notification collapse key for a push payload, or null when the notification
+ * must NOT collapse.
+ *
+ * Replies to one thread replace each other in the tray instead of stacking:
+ * thread-scoped types collapse on `tid`, conversation-scoped types on `gid`.
+ * `identity_key_reset` returns null — security alerts must stack.
+ *
+ * Pure function of the payload, so it is safe in the pre-bootstrap background
+ * handler. On Android this becomes notifee's `id`; on iOS the backend sets
+ * `apns-collapse-id` from the same derivation.
+ */
+export function collapseKeyForPayload(data: Record<string, string>): string | null {
+  const { t, tid, gid } = data;
+  switch (t) {
+    case 'new_reply':
+    case 'new_thread':
+      return tid && tid.length > 0 && tid.length <= 255 ? tid : null;
+    case 'new_dm':
+    case 'member_joined':
+      return gid && gid.length > 0 && gid.length <= 255 ? gid : null;
+    default:
+      // identity_key_reset (must stack), orbit_invite, unknown types.
+      return null;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Notification anchor — type-safe destination from push payload

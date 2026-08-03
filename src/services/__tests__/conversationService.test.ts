@@ -266,13 +266,12 @@ describe('loadConversations', () => {
     expect(conversation.createdAt).toBe(new Date('2026-01-01T00:00:00.000Z').getTime());
   });
 
-  it('defaults muteUntil, lastMessageAt, unreadCount', async () => {
+  it('defaults lastMessageAt, unreadCount', async () => {
     mockListGroups.mockResolvedValue([GROUP_RESPONSE]);
 
     await loadConversations();
 
     const conversation = mockSetConversations.mock.calls[0][0][0];
-    expect(conversation.muteUntil).toBeNull();
     expect(conversation.lastMessageAt).toBeNull();
     expect(conversation.unreadCount).toBe(0);
   });

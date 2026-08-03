@@ -1,6 +1,7 @@
 export * as auth from './auth';
 export * as devices from './devices';
 export * as groups from './groups';
+export * as notificationSettings from './notificationSettings';
 export * as threads from './threads';
 export * as users from './users';
 export * as keys from './keys';

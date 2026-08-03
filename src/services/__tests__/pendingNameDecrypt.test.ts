@@ -201,7 +201,6 @@ describe('retryPendingNameDecrypt', () => {
       name: null,
       memberCount: 2,
       active: true,
-      muteUntil: null,
       lastMessageAt: null,
       unreadCount: 3,
       createdAt: 1000,
@@ -524,8 +523,8 @@ describe('retryAllPendingNameDecrypts (#327)', () => {
     (useAppStore.getState as jest.Mock).mockReturnValue({
       userId: 'test-self-user',
       conversations: {
-        'orbit-a': { id: 'orbit-a', type: 'group', name: null, memberCount: 2, active: true, muteUntil: null, lastMessageAt: null, unreadCount: 0, createdAt: 1, updatedAt: 1 },
-        'orbit-b': { id: 'orbit-b', type: 'group', name: null, memberCount: 3, active: true, muteUntil: null, lastMessageAt: null, unreadCount: 0, createdAt: 1, updatedAt: 1 },
+        'orbit-a': { id: 'orbit-a', type: 'group', name: null, memberCount: 2, active: true, lastMessageAt: null, unreadCount: 0, createdAt: 1, updatedAt: 1 },
+        'orbit-b': { id: 'orbit-b', type: 'group', name: null, memberCount: 3, active: true, lastMessageAt: null, unreadCount: 0, createdAt: 1, updatedAt: 1 },
       },
       upsertConversation: mockUpsertConversation,
     });
@@ -574,8 +573,8 @@ describe('retryAllPendingNameDecrypts (#327)', () => {
     (useAppStore.getState as jest.Mock).mockReturnValue({
       userId: 'test-self-user',
       conversations: {
-        'orbit-ok': { id: 'orbit-ok', type: 'group', name: null, memberCount: 2, active: true, muteUntil: null, lastMessageAt: null, unreadCount: 0, createdAt: 1, updatedAt: 1 },
-        'orbit-fail': { id: 'orbit-fail', type: 'group', name: null, memberCount: 2, active: true, muteUntil: null, lastMessageAt: null, unreadCount: 0, createdAt: 1, updatedAt: 1 },
+        'orbit-ok': { id: 'orbit-ok', type: 'group', name: null, memberCount: 2, active: true, lastMessageAt: null, unreadCount: 0, createdAt: 1, updatedAt: 1 },
+        'orbit-fail': { id: 'orbit-fail', type: 'group', name: null, memberCount: 2, active: true, lastMessageAt: null, unreadCount: 0, createdAt: 1, updatedAt: 1 },
       },
       upsertConversation: mockUpsertConversation,
     });
@@ -647,7 +646,7 @@ describe('fail-then-succeed: WS retry fails, loadConversations retries and succe
       userId: 'test-self-user',
       activeConversationId: 'orbit-heal',
       conversations: {
-        'orbit-heal': { id: 'orbit-heal', type: 'group', name: null, memberCount: 2, active: true, muteUntil: null, lastMessageAt: null, unreadCount: 0, lastReadAt: null, createdAt: 1, updatedAt: 1 },
+        'orbit-heal': { id: 'orbit-heal', type: 'group', name: null, memberCount: 2, active: true, lastMessageAt: null, unreadCount: 0, lastReadAt: null, createdAt: 1, updatedAt: 1 },
       },
       viewingConversationId: null,
       setConversations: mockSetConversations,

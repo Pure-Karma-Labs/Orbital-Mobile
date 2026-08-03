@@ -105,8 +105,15 @@ function makeStore() {
 
     pushPermissionGranted: false,
     pushToken: null,
+    notificationPrefs: { newThread: true, newReply: true, newDm: true, memberJoined: true },
+    mutedTargets: {},
     setPushPermission: jest.fn(),
     setPushToken: jest.fn(),
+    setNotificationPrefs: jest.fn(),
+    setMutedTargets: jest.fn(),
+    addMutedTarget: jest.fn(),
+    removeMutedTarget: jest.fn(),
+    resetNotificationSettings: jest.fn(),
 
     blockedUserIds: [],
     blockedUserProfiles: {},
@@ -132,7 +139,6 @@ function makeConversation(overrides: Partial<Conversation> = {}): Conversation {
     name: 'Family Chat',
     memberCount: 4,
     active: true,
-    muteUntil: null,
     lastMessageAt: 1000,
     unreadCount: 0,
     lastReadAt: null,

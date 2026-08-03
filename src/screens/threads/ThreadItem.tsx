@@ -7,12 +7,13 @@
  *   unread: purple border + purpleTintLight background
  */
 
-import React, { useCallback } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import {
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
+  type AccessibilityActionEvent,
   type TextStyle,
   type ViewStyle,
 } from 'react-native';
@@ -23,6 +24,7 @@ import { EmojiText } from '../../components/EmojiText';
 import { Avatar } from '../../components/Avatar';
 import { useContactAvatar } from '../../hooks/useContactAvatar';
 import { useDisplayName } from '../../hooks/useDisplayName';
+import { useIsMuted } from '../../hooks/useIsMuted';
 
 export type ThreadItemState = 'read' | 'active' | 'unread';
 
@@ -38,6 +40,12 @@ export interface ThreadItemProps {
   state?: ThreadItemState;
   unreadCount?: number;
   onPress: (threadId: string) => void;
+  /**
+   * Long press opens the mute/unmute menu (#449). Must be a stable reference —
+   * this component is memoized and an unstable handler would re-render every
+   * visible row on each parent render.
+   */
+  onLongPress?: (threadId: string) => void;
 }
 
 export const ThreadItem = React.memo(function ThreadItem({
@@ -52,14 +60,36 @@ export const ThreadItem = React.memo(function ThreadItem({
   state = 'read',
   unreadCount = 0,
   onPress,
+  onLongPress,
 }: ThreadItemProps): React.JSX.Element {
   const theme = useTheme();
   const displayName = useDisplayName(authorId, author);
   const avatarProps = useContactAvatar(authorId, groupId);
+  const isMuted = useIsMuted(threadId);
 
   const handlePress = useCallback(() => {
     onPress(threadId);
   }, [onPress, threadId]);
+
+  const handleLongPress = useCallback(() => {
+    onLongPress?.(threadId);
+  }, [onLongPress, threadId]);
+
+  // Screen readers can't long-press: expose the same action explicitly.
+  const accessibilityActions = useMemo(
+    () =>
+      onLongPress
+        ? [{ name: 'mute', label: isMuted ? 'Unmute notifications' : 'Mute notifications' }]
+        : undefined,
+    [onLongPress, isMuted],
+  );
+
+  const handleAccessibilityAction = useCallback(
+    (event: AccessibilityActionEvent) => {
+      if (event.nativeEvent.actionName === 'mute') onLongPress?.(threadId);
+    },
+    [onLongPress, threadId],
+  );
 
   // Derive left border color and background based on state
   let borderColor: string;
@@ -116,9 +146,13 @@ export const ThreadItem = React.memo(function ThreadItem({
     <TouchableOpacity
       style={containerStyle}
       onPress={handlePress}
+      onLongPress={onLongPress ? handleLongPress : undefined}
       activeOpacity={0.7}
       accessibilityRole="button"
-      accessibilityLabel={`Thread: ${title}`}
+      accessibilityLabel={`Thread: ${title}${isMuted ? ', muted' : ''}`}
+      accessibilityHint={onLongPress ? 'Long press for notification options' : undefined}
+      accessibilityActions={accessibilityActions}
+      onAccessibilityAction={onLongPress ? handleAccessibilityAction : undefined}
     >
       <Avatar name={displayName} size={32} {...avatarProps} />
       <View style={mainStyle}>
@@ -135,6 +169,14 @@ export const ThreadItem = React.memo(function ThreadItem({
               {' '}
               <View style={{ width: emojiSize, height: emojiSize }}>
                 <Emoji unified="1F4F7" size={emojiSize} />
+              </View>
+            </>
+          ) : null}
+          {isMuted ? (
+            <>
+              {' '}
+              <View style={{ width: emojiSize, height: emojiSize }} testID="thread-muted-indicator">
+                <Emoji unified="1F515" size={emojiSize} />
               </View>
             </>
           ) : null}

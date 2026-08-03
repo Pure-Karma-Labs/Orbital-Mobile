@@ -103,7 +103,6 @@ describe('ensureDmConversation', () => {
       name: 'bob',
       memberCount: 2,
       active: true,
-      muteUntil: null,
       lastMessageAt: null,
       unreadCount: 0,
       createdAt: 1000,

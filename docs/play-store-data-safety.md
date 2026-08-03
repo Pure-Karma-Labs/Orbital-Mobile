@@ -22,6 +22,7 @@ Exact answers for the Google Play Console Data Safety questionnaire. Fill in the
 | FCM push token | Device or other IDs | Yes | No | No | Yes | App functionality |
 | Device UUID | Device or other IDs | Yes | No | No | Yes | App functionality |
 | Crash logs | App info and performance > Crash logs | Yes | No | No | No | Analytics |
+| Notification preferences (per-type toggles, muted thread/conversation IDs) | App activity > App interactions | Yes | No | No | No | App functionality |
 
 ### Not Collected (E2EE)
 
@@ -68,6 +69,14 @@ These data types are encrypted client-side before upload. The server stores only
 - **Is this data required for your app, or can users choose whether it's collected?** Collected automatically
 - **Why is this user data collected?** Analytics (app stability monitoring)
 - **Is this data shared with any third parties?** No (Sentry acts as a service provider / data processor on behalf of the developer — not considered "sharing" per Google's Data Safety policy)
+
+### App interactions (notification preferences)
+- **Is this data collected, shared, or both?** Collected
+- **Is this data processed ephemerally?** No
+- **Is this data required for your app, or can users choose whether it's collected?** Optional (only stored when the user changes a notification toggle or mutes a thread/conversation; defaults produce no stored rows)
+- **Why is this user data collected?** App functionality (server-side push suppression: the server must know which notification types are disabled and which thread/conversation IDs are muted so it never dispatches those pushes — iOS displays pushes before the app can filter them)
+- **Is this data shared with any third parties?** No
+- **Decision record (2026-08-03, issue #449):** stored as bare IDs and booleans only — no content, titles, or names; deleted via user-account CASCADE; declared because muted-conversation IDs are server-readable behavioural metadata.
 
 ## Security Practices
 

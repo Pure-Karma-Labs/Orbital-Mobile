@@ -181,3 +181,150 @@ describe('notificationSlice — setPushToken', () => {
     expect(store.getState().pushToken).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// #449: notification preferences + per-target mutes
+// ---------------------------------------------------------------------------
+
+describe('notificationSlice — notification settings defaults (#449)', () => {
+  it('defaults every per-type preference to true', () => {
+    const store = makeStore();
+    expect(store.getState().notificationPrefs).toEqual({
+      newThread: true,
+      newReply: true,
+      newDm: true,
+      memberJoined: true,
+    });
+  });
+
+  it('starts with no muted targets', () => {
+    const store = makeStore();
+    expect(store.getState().mutedTargets).toEqual({});
+  });
+});
+
+describe('notificationSlice — setNotificationPrefs', () => {
+  it('merges a partial patch, leaving other keys untouched', () => {
+    const store = makeStore();
+    store.getState().setNotificationPrefs({ newReply: false });
+
+    expect(store.getState().notificationPrefs).toEqual({
+      newThread: true,
+      newReply: false,
+      newDm: true,
+      memberJoined: true,
+    });
+  });
+
+  it('applies a full overwrite (sync path)', () => {
+    const store = makeStore();
+    store.getState().setNotificationPrefs({
+      newThread: false,
+      newReply: false,
+      newDm: false,
+      memberJoined: false,
+    });
+
+    expect(Object.values(store.getState().notificationPrefs)).toEqual([
+      false,
+      false,
+      false,
+      false,
+    ]);
+  });
+
+  it('does not mutate the previous prefs object', () => {
+    const store = makeStore();
+    const before = store.getState().notificationPrefs;
+    store.getState().setNotificationPrefs({ newDm: false });
+
+    expect(before.newDm).toBe(true);
+    expect(store.getState().notificationPrefs).not.toBe(before);
+  });
+});
+
+describe('notificationSlice — muted targets', () => {
+  it('adds a thread mute', () => {
+    const store = makeStore();
+    store.getState().addMutedTarget('thread-1', 'thread');
+
+    expect(store.getState().mutedTargets).toEqual({ 'thread-1': 'thread' });
+  });
+
+  it('adds a group mute alongside an existing thread mute', () => {
+    const store = makeStore();
+    store.getState().addMutedTarget('thread-1', 'thread');
+    store.getState().addMutedTarget('group-9', 'group');
+
+    expect(store.getState().mutedTargets).toEqual({
+      'thread-1': 'thread',
+      'group-9': 'group',
+    });
+  });
+
+  it('removes a mute', () => {
+    const store = makeStore();
+    store.getState().addMutedTarget('thread-1', 'thread');
+    store.getState().addMutedTarget('group-9', 'group');
+    store.getState().removeMutedTarget('thread-1');
+
+    expect(store.getState().mutedTargets).toEqual({ 'group-9': 'group' });
+  });
+
+  it('removing an unknown target is a no-op', () => {
+    const store = makeStore();
+    store.getState().addMutedTarget('group-9', 'group');
+    const before = store.getState().mutedTargets;
+
+    store.getState().removeMutedTarget('nope');
+
+    expect(store.getState().mutedTargets).toEqual({ 'group-9': 'group' });
+    expect(store.getState().mutedTargets).toBe(before);
+  });
+
+  it('setMutedTargets replaces the whole map (server-authoritative overwrite)', () => {
+    const store = makeStore();
+    store.getState().addMutedTarget('stale', 'thread');
+    store.getState().setMutedTargets({ 'group-9': 'group' });
+
+    expect(store.getState().mutedTargets).toEqual({ 'group-9': 'group' });
+  });
+
+  it('setMutedTargets copies the input (later external mutation does not leak in)', () => {
+    const store = makeStore();
+    const input: Record<string, 'thread' | 'group'> = { 'thread-1': 'thread' };
+    store.getState().setMutedTargets(input);
+    input['thread-2'] = 'thread';
+
+    expect(store.getState().mutedTargets).toEqual({ 'thread-1': 'thread' });
+  });
+});
+
+describe('notificationSlice — resetNotificationSettings', () => {
+  it('restores all-true prefs and clears mutes', () => {
+    const store = makeStore();
+    store.getState().setNotificationPrefs({ newReply: false, newDm: false });
+    store.getState().addMutedTarget('thread-1', 'thread');
+
+    store.getState().resetNotificationSettings();
+
+    expect(store.getState().notificationPrefs).toEqual({
+      newThread: true,
+      newReply: true,
+      newDm: true,
+      memberJoined: true,
+    });
+    expect(store.getState().mutedTargets).toEqual({});
+  });
+
+  it('leaves push permission/token state alone (device-scoped, not account-scoped)', () => {
+    const store = makeStore();
+    store.getState().setPushPermission(true);
+    store.getState().setPushToken('fcm-token-abc');
+
+    store.getState().resetNotificationSettings();
+
+    expect(store.getState().pushPermissionGranted).toBe(true);
+    expect(store.getState().pushToken).toBe('fcm-token-abc');
+  });
+});

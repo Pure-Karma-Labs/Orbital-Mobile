@@ -1,4 +1,14 @@
-import { resolveAnchor, dedupKeyForPayload, NOTIFICATION_TITLES, ANDROID_CHANNEL_ID, ANDROID_CHANNEL_NAME } from '../notificationConstants';
+import {
+  resolveAnchor,
+  dedupKeyForPayload,
+  collapseKeyForPayload,
+  isSuppressibleType,
+  NOTIFICATION_TITLES,
+  ANDROID_CHANNEL_ID,
+  ANDROID_CHANNEL_NAME,
+  SUPPRESSIBLE_TYPES,
+  PREF_KEY_BY_TYPE,
+} from '../notificationConstants';
 
 // ---------------------------------------------------------------------------
 // resolveAnchor
@@ -150,5 +160,92 @@ describe('shared constants', () => {
   it('exports Android channel constants', () => {
     expect(ANDROID_CHANNEL_ID).toBe('orbital-default');
     expect(ANDROID_CHANNEL_NAME).toBe('Orbital');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// collapseKeyForPayload (#449 D9)
+// ---------------------------------------------------------------------------
+
+describe('collapseKeyForPayload', () => {
+  it('collapses new_reply on tid', () => {
+    expect(collapseKeyForPayload({ t: 'new_reply', gid: 'g1', tid: 't1', rid: 'r1' })).toBe('t1');
+  });
+
+  it('collapses new_thread on tid', () => {
+    expect(collapseKeyForPayload({ t: 'new_thread', gid: 'g1', tid: 't1' })).toBe('t1');
+  });
+
+  it('collapses new_dm on gid', () => {
+    expect(collapseKeyForPayload({ t: 'new_dm', gid: 'g1' })).toBe('g1');
+  });
+
+  it('collapses member_joined on gid', () => {
+    expect(collapseKeyForPayload({ t: 'member_joined', gid: 'g1' })).toBe('g1');
+  });
+
+  it('returns null for identity_key_reset — security alerts must stack', () => {
+    expect(collapseKeyForPayload({ t: 'identity_key_reset', v: '1' })).toBeNull();
+    // Even a hypothetical batched variant carrying ids must not collapse.
+    expect(collapseKeyForPayload({ t: 'identity_key_reset', gid: 'g1', tid: 't1' })).toBeNull();
+  });
+
+  it('returns null for orbit_invite and unknown types', () => {
+    expect(collapseKeyForPayload({ t: 'orbit_invite', code: 'abc' })).toBeNull();
+    expect(collapseKeyForPayload({ t: 'foobar', tid: 't1', gid: 'g1' })).toBeNull();
+  });
+
+  it('returns null when the required id is missing', () => {
+    expect(collapseKeyForPayload({ t: 'new_reply', gid: 'g1' })).toBeNull();
+    expect(collapseKeyForPayload({ t: 'new_dm' })).toBeNull();
+  });
+
+  it('returns null for suspiciously long ids (>255 chars)', () => {
+    expect(collapseKeyForPayload({ t: 'new_thread', tid: 'x'.repeat(256) })).toBeNull();
+  });
+
+  it('does not fall back to gid for thread-scoped types', () => {
+    // A thread-scoped push without a tid must not collapse onto the whole orbit.
+    expect(collapseKeyForPayload({ t: 'new_thread', gid: 'g1' })).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Suppressible-type registry (#449 D0)
+// ---------------------------------------------------------------------------
+
+describe('suppressible-type registry', () => {
+  it('PREF_KEY_BY_TYPE key set equals SUPPRESSIBLE_TYPES exactly', () => {
+    expect(new Set(Object.keys(PREF_KEY_BY_TYPE))).toEqual(new Set(SUPPRESSIBLE_TYPES));
+    expect(Object.keys(PREF_KEY_BY_TYPE)).toHaveLength(SUPPRESSIBLE_TYPES.length);
+  });
+
+  it('every suppressible type has a NOTIFICATION_TITLES entry', () => {
+    for (const type of SUPPRESSIBLE_TYPES) {
+      expect(NOTIFICATION_TITLES).toHaveProperty(type);
+    }
+  });
+
+  it('maps each type to its camelCase pref key', () => {
+    expect(PREF_KEY_BY_TYPE).toEqual({
+      new_thread: 'newThread',
+      new_reply: 'newReply',
+      new_dm: 'newDm',
+      member_joined: 'memberJoined',
+    });
+  });
+
+  it('excludes identity_key_reset and orbit_invite from the allowlist', () => {
+    expect(isSuppressibleType('identity_key_reset')).toBe(false);
+    expect(isSuppressibleType('orbit_invite')).toBe(false);
+    expect(NOTIFICATION_TITLES).toHaveProperty('identity_key_reset');
+  });
+
+  it('isSuppressibleType accepts every registry member and rejects junk', () => {
+    for (const type of SUPPRESSIBLE_TYPES) {
+      expect(isSuppressibleType(type)).toBe(true);
+    }
+    expect(isSuppressibleType('foobar')).toBe(false);
+    expect(isSuppressibleType(undefined)).toBe(false);
   });
 });

@@ -619,6 +619,57 @@ export interface RegisterDeviceResponse {
 }
 
 // ============================================================
+// Notification settings (#449)
+// ============================================================
+
+/**
+ * Per-type push notification preferences.
+ *
+ * Wire format is snake_case (`new_thread`, `new_reply`, `new_dm`,
+ * `member_joined`) — client.ts converts in both directions. A user with no
+ * server row gets all-true defaults (the backend has no backfill).
+ *
+ * `identity_key_reset` is deliberately absent: security alerts are never
+ * suppressible (see notificationConstants.SUPPRESSIBLE_TYPES).
+ */
+export interface NotificationPrefs {
+  newThread: boolean;
+  newReply: boolean;
+  newDm: boolean;
+  memberJoined: boolean;
+}
+
+/** GET /api/users/me/notification-prefs — always returns the full key set. */
+export type NotificationPrefsResponse = NotificationPrefs;
+
+/**
+ * PUT /api/users/me/notification-prefs — partial update.
+ * Omitted keys are left unchanged server-side (COALESCE upsert).
+ */
+export type UpdateNotificationPrefsRequest = Partial<NotificationPrefs>;
+
+/** Mute rows are polymorphic over threads and groups (orbits + DM conversations). */
+export type MuteTargetType = 'thread' | 'group';
+
+/** One muted target. Wire: `{ target_id, target_type, created_at }`. */
+export interface NotificationMute {
+  targetId: string;
+  targetType: MuteTargetType;
+  /** ISO-8601 timestamp from the server. */
+  createdAt: string;
+}
+
+/** GET /api/users/me/notification-mutes. */
+export interface NotificationMutesResponse {
+  mutes: NotificationMute[];
+}
+
+/** PUT /api/users/me/notification-mutes/:targetId — body carries the target type. */
+export interface AddNotificationMuteRequest {
+  targetType: MuteTargetType;
+}
+
+// ============================================================
 // Signal Keys
 // ============================================================
 

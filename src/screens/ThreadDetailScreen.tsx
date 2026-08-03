@@ -32,6 +32,7 @@ import {
   Platform,
   RefreshControl,
   Text,
+  TouchableOpacity,
   View,
   type ListRenderItemInfo,
   type TextStyle,
@@ -57,6 +58,9 @@ import { EmojiPicker } from '../components/EmojiPicker';
 import type { Reply, Thread } from '../types/store';
 import type { ThreadsStackParamList } from '../navigation/types';
 import { useBlockedSet } from '../hooks/useBlockedSet';
+import { useIsMuted } from '../hooks/useIsMuted';
+import { useMuteActions } from '../hooks/useMuteActions';
+import { Emoji } from '../components/Emoji';
 import { OrbitalSpinner } from '../components/OrbitalSpinner';
 import { PullToRefreshOverlay } from '../components/PullToRefreshOverlay';
 import { usePullToRefresh } from '../hooks/usePullToRefresh';
@@ -127,6 +131,14 @@ export function ThreadDetailScreen({
 
   // Subscribe to real-time updates for this thread's conversation
   useWebSocketSubscription(thread?.conversationId ?? null);
+
+  // Per-thread mute (#449) — header bell. Muting only stops PUSH; the thread
+  // keeps receiving replies over WebSocket/sync.
+  const isMuted = useIsMuted(threadId);
+  const { toggleMuteFor } = useMuteActions();
+  const handleToggleMute = useCallback(() => {
+    toggleMuteFor(threadId, 'thread');
+  }, [toggleMuteFor, threadId]);
 
   const blockedSet = useBlockedSet();
 
@@ -604,6 +616,18 @@ export function ThreadDetailScreen({
         <Header
           title={thread?.title || threadTitle || 'Thread'}
           onBack={() => navigation.goBack()}
+          right={
+            <TouchableOpacity
+              onPress={handleToggleMute}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityRole="button"
+              accessibilityLabel={isMuted ? 'Unmute this thread' : 'Mute this thread'}
+              accessibilityState={{ selected: isMuted }}
+              testID="thread-mute-bell"
+            >
+              <Emoji unified={isMuted ? '1F515' : '1F514'} size={20} />
+            </TouchableOpacity>
+          }
         />
       </SafeAreaView>
 

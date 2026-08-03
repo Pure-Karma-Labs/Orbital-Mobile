@@ -95,6 +95,19 @@ All REST API endpoints defined in the Mobile App Spec (`docs/MOBILE-APP-SPEC.md`
 |--------|------|--------------|-------|
 | POST | `/api/devices/register` | Yes | Registers APNs (iOS) or FCM (Android) push token |
 
+### Notification Settings (`src/services/api/notificationSettings.ts`)
+
+| Method | Path | Auth Required | Notes |
+|--------|------|--------------|-------|
+| GET | `/api/users/me/notification-prefs` | Yes | full per-type boolean set; no server row = all-on defaults |
+| PUT | `/api/users/me/notification-prefs` | Yes | partial patch; omitted keys unchanged; returns the full post-update set |
+| GET | `/api/users/me/notification-mutes` | Yes | `{ mutes: [{ targetId, targetType, createdAt }] }` |
+| PUT | `/api/users/me/notification-mutes/:targetId` | Yes | body `{ targetType: 'thread' \| 'group' }`; idempotent; 404 when target missing or caller not a member |
+| DELETE | `/api/users/me/notification-mutes/:targetId` | Yes | idempotent; 204 for any valid UUID, hit or miss |
+
+The wire format is snake_case in both directions (`new_thread`, `target_id`, …); `client.ts` converts request bodies and responses, so this module is camelCase throughout.
+These rows carry IDs only — never content — so the E2EE posture is unchanged.
+
 ### Version (`src/services/api/version.ts`)
 
 | Method | Path | Auth Required | Notes |
@@ -168,7 +181,7 @@ The API layer itself has no offline awareness — it makes live HTTP calls. The 
 
 ## Test Coverage
 
-All 12 API service modules have corresponding test suites under `src/services/api/__tests__/`:
+All 13 API service modules have corresponding test suites under `src/services/api/__tests__/`:
 
 | Module | Test File | Tests |
 |--------|-----------|-------|
@@ -183,6 +196,7 @@ All 12 API service modules have corresponding test suites under `src/services/ap
 | `media.ts` | `media.test.ts` | 7 |
 | `invites.ts` | `invites.test.ts` | 6 |
 | `devices.ts` | `devices.test.ts` | 2 |
+| `notificationSettings.ts` | `notificationSettings.test.ts` | 8 |
 | `version.ts` | `version.test.ts` | 3 |
 
 Each test verifies that the module function calls `request()` with the correct `method`, `path`, `body`, and any special flags (`skipAuth`, `timeout`, `rawResponse`, `signal`).

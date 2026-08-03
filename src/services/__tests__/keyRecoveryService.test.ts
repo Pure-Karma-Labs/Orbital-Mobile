@@ -170,6 +170,10 @@ jest.mock('../blockedUsersSync', () => ({
   syncBlockedUsers: jest.fn().mockResolvedValue(undefined),
 }));
 
+jest.mock('../notificationSettingsSync', () => ({
+  syncNotificationSettings: jest.fn().mockResolvedValue(undefined),
+}));
+
 jest.mock('../websocket/messageHandler', () => ({
   clearMessageHandlerState: jest.fn(),
   handleServerMessage: jest.fn(),

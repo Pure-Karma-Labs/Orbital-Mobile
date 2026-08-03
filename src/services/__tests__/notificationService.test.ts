@@ -27,6 +27,22 @@ const mockSetPushToken = jest.fn();
 const mockSetIdentityKeyConflict = jest.fn();
 const mockSetConflictSource = jest.fn();
 
+/**
+ * Mutable store double for the #449 suppression check. Reset in beforeEach;
+ * individual tests mutate the halves they care about.
+ */
+const mockStoreState: {
+  viewingConversationId: string | null;
+  conversations: Record<string, { id: string; type: 'group' | 'direct' }>;
+  notificationPrefs: Record<string, boolean>;
+  mutedTargets: Record<string, string>;
+} = {
+  viewingConversationId: null,
+  conversations: {},
+  notificationPrefs: { newThread: true, newReply: true, newDm: true, memberJoined: true },
+  mutedTargets: {},
+};
+
 jest.mock('../../stores/useAppStore', () => ({
   useAppStore: {
     getState: jest.fn(() => ({
@@ -34,6 +50,10 @@ jest.mock('../../stores/useAppStore', () => ({
       setPushToken: mockSetPushToken,
       setIdentityKeyConflict: mockSetIdentityKeyConflict,
       setConflictSource: mockSetConflictSource,
+      viewingConversationId: mockStoreState.viewingConversationId,
+      conversations: mockStoreState.conversations,
+      notificationPrefs: mockStoreState.notificationPrefs,
+      mutedTargets: mockStoreState.mutedTargets,
     })),
   },
 }));
@@ -127,6 +147,16 @@ beforeEach(() => {
   (getMessagingInstance().onNotificationOpenedApp as jest.Mock).mockReturnValue(jest.fn());
   // mockReturnValue survives clearAllMocks — reset explicitly every test.
   mockIsRecoveryInitiator.mockReturnValue(false);
+  // #449: reset the store double — prefs all on, nothing muted.
+  mockStoreState.viewingConversationId = null;
+  mockStoreState.conversations = {};
+  mockStoreState.notificationPrefs = {
+    newThread: true,
+    newReply: true,
+    newDm: true,
+    memberJoined: true,
+  };
+  mockStoreState.mutedTargets = {};
 });
 
 afterEach(() => {
@@ -866,5 +896,290 @@ describe('deregisterCurrentDevice', () => {
 
     // Should not throw
     await expect(deregisterCurrentDevice()).resolves.toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #449: foreground suppression (D5) + per-thread collapse (D9)
+//
+// NOTE: pushDedupSet is module-private and shared by every test in this file,
+// so each case below uses unique tid/rid values unless it is deliberately
+// exercising dedup.
+// ---------------------------------------------------------------------------
+
+describe('setupForegroundHandler — #449 preference suppression', () => {
+  function getOnMessageCallback(): (msg: { data?: Record<string, string> }) => Promise<void> {
+    setupForegroundHandler();
+    return (getMessagingInstance().onMessage as jest.Mock).mock.calls[0][0];
+  }
+
+  const PREF_OFF_CASES: [string, string, Record<string, string>][] = [
+    ['new_thread', 'newThread', { t: 'new_thread', gid: 'g-pref-1', tid: 'tp-1' }],
+    ['new_reply', 'newReply', { t: 'new_reply', gid: 'g-pref-2', tid: 'tp-2', rid: 'rp-2' }],
+    ['new_dm', 'newDm', { t: 'new_dm', gid: 'g-pref-3' }],
+    ['member_joined', 'memberJoined', { t: 'member_joined', gid: 'g-pref-4' }],
+  ];
+
+  const PREF_ON_CASES: [string, Record<string, string>][] = [
+    ['new_thread', { t: 'new_thread', gid: 'g-on-1', tid: 'to-1' }],
+    ['new_reply', { t: 'new_reply', gid: 'g-on-2', tid: 'to-2', rid: 'ro-2' }],
+    ['new_dm', { t: 'new_dm', gid: 'g-on-3' }],
+    ['member_joined', { t: 'member_joined', gid: 'g-on-4' }],
+  ];
+
+  it.each(PREF_OFF_CASES)('suppresses %s when its pref is off', async (_type, prefKey, payload) => {
+    mockStoreState.notificationPrefs[prefKey] = false;
+    const cb = getOnMessageCallback();
+
+    await cb({ data: payload });
+
+    expect(notifee.displayNotification).not.toHaveBeenCalled();
+  });
+
+  it.each(PREF_ON_CASES)('displays %s when all prefs are on', async (_type, payload) => {
+    const cb = getOnMessageCallback();
+
+    await cb({ data: payload });
+
+    expect(notifee.displayNotification).toHaveBeenCalledTimes(1);
+  });
+
+  it('turning one pref off does not suppress the other types', async () => {
+    mockStoreState.notificationPrefs.newThread = false;
+    const cb = getOnMessageCallback();
+
+    await cb({ data: { t: 'new_reply', gid: 'g-mix', tid: 'tm-1', rid: 'rm-1' } });
+
+    expect(notifee.displayNotification).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails open when the pref value is missing (no explicit false)', async () => {
+    mockStoreState.notificationPrefs = {};
+    const cb = getOnMessageCallback();
+
+    await cb({ data: { t: 'new_reply', gid: 'g-open', tid: 'tf-1', rid: 'rf-1' } });
+
+    expect(notifee.displayNotification).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('setupForegroundHandler — #449 DM group-type pref mapping', () => {
+  function getOnMessageCallback(): (msg: { data?: Record<string, string> }) => Promise<void> {
+    setupForegroundHandler();
+    return (getMessagingInstance().onMessage as jest.Mock).mock.calls[0][0];
+  }
+
+  beforeEach(() => {
+    // DMs are groups with a 'direct' conversation type whose traffic arrives
+    // as new_thread/new_reply pushes.
+    mockStoreState.conversations = {
+      'dm-1': { id: 'dm-1', type: 'direct' },
+      'orbit-1': { id: 'orbit-1', type: 'group' },
+    };
+  });
+
+  it('gates a new_reply in a DM by newDm, not newReply', async () => {
+    mockStoreState.notificationPrefs.newDm = false;
+    mockStoreState.notificationPrefs.newReply = true;
+    const cb = getOnMessageCallback();
+
+    await cb({ data: { t: 'new_reply', gid: 'dm-1', tid: 'tdm-1', rid: 'rdm-1' } });
+
+    expect(notifee.displayNotification).not.toHaveBeenCalled();
+  });
+
+  it('still displays a DM reply when newReply is off but newDm is on', async () => {
+    mockStoreState.notificationPrefs.newReply = false;
+    mockStoreState.notificationPrefs.newDm = true;
+    const cb = getOnMessageCallback();
+
+    await cb({ data: { t: 'new_reply', gid: 'dm-1', tid: 'tdm-2', rid: 'rdm-2' } });
+
+    expect(notifee.displayNotification).toHaveBeenCalledTimes(1);
+  });
+
+  it('gates an orbit reply by newReply, not newDm (inverse case)', async () => {
+    mockStoreState.notificationPrefs.newDm = false;
+    mockStoreState.notificationPrefs.newReply = true;
+    const cb = getOnMessageCallback();
+
+    await cb({ data: { t: 'new_reply', gid: 'orbit-1', tid: 'torb-1', rid: 'rorb-1' } });
+
+    expect(notifee.displayNotification).toHaveBeenCalledTimes(1);
+  });
+
+  it('gates a new_thread in a DM by newDm', async () => {
+    mockStoreState.notificationPrefs.newDm = false;
+    const cb = getOnMessageCallback();
+
+    await cb({ data: { t: 'new_thread', gid: 'dm-1', tid: 'tdm-3' } });
+
+    expect(notifee.displayNotification).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the nominal pref key when the gid is not in the store', async () => {
+    mockStoreState.notificationPrefs.newThread = false;
+    const cb = getOnMessageCallback();
+
+    await cb({ data: { t: 'new_thread', gid: 'unknown-group', tid: 'tunk-1' } });
+
+    expect(notifee.displayNotification).not.toHaveBeenCalled();
+  });
+});
+
+describe('setupForegroundHandler — #449 mute suppression', () => {
+  function getOnMessageCallback(): (msg: { data?: Record<string, string> }) => Promise<void> {
+    setupForegroundHandler();
+    return (getMessagingInstance().onMessage as jest.Mock).mock.calls[0][0];
+  }
+
+  it('suppresses a new_reply carrying a muted tid', async () => {
+    mockStoreState.mutedTargets = { 'tmute-1': 'thread' };
+    const cb = getOnMessageCallback();
+
+    await cb({ data: { t: 'new_reply', gid: 'g-mute-1', tid: 'tmute-1', rid: 'rmute-1' } });
+
+    expect(notifee.displayNotification).not.toHaveBeenCalled();
+  });
+
+  const GROUP_MUTE_CASES: [string, Record<string, string>][] = [
+    ['new_thread', { t: 'new_thread', gid: 'gmute-1', tid: 'tg-1' }],
+    ['new_reply', { t: 'new_reply', gid: 'gmute-1', tid: 'tg-2', rid: 'rg-2' }],
+    ['member_joined', { t: 'member_joined', gid: 'gmute-1' }],
+  ];
+
+  it.each(GROUP_MUTE_CASES)('a group mute suppresses %s for that gid', async (_type, payload) => {
+    mockStoreState.mutedTargets = { 'gmute-1': 'group' };
+    const cb = getOnMessageCallback();
+
+    await cb({ data: payload });
+
+    expect(notifee.displayNotification).not.toHaveBeenCalled();
+  });
+
+  it('does not suppress pushes for a different, unmuted gid', async () => {
+    mockStoreState.mutedTargets = { 'gmute-other': 'group' };
+    const cb = getOnMessageCallback();
+
+    await cb({ data: { t: 'new_thread', gid: 'g-clear-1', tid: 'tc-1' } });
+
+    expect(notifee.displayNotification).toHaveBeenCalledTimes(1);
+  });
+
+  it('a thread mute never matches a gid-only payload (negative case)', async () => {
+    // Thread mutes are keyed on tid; a new_dm payload carries no tid, so it
+    // can never be suppressed by one — by design (plan D7).
+    mockStoreState.mutedTargets = { 'tonly-1': 'thread' };
+    const cb = getOnMessageCallback();
+
+    await cb({ data: { t: 'new_dm', gid: 'gonly-1' } });
+
+    expect(notifee.displayNotification).toHaveBeenCalledTimes(1);
+  });
+
+  it('suppressed pushes do NOT consume the dedup key', async () => {
+    mockStoreState.mutedTargets = { 'tdedup-1': 'thread' };
+    const cb = getOnMessageCallback();
+    const payload = { t: 'new_reply', gid: 'g-dedup', tid: 'tdedup-1', rid: 'rdedup-1' };
+
+    await cb({ data: payload });
+    expect(notifee.displayNotification).not.toHaveBeenCalled();
+
+    // Unmute and replay the same event — it must still be displayable.
+    mockStoreState.mutedTargets = {};
+    await cb({ data: payload });
+
+    expect(notifee.displayNotification).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('setupForegroundHandler — #449 identity_key_reset is never suppressible', () => {
+  function getOnMessageCallback(): (msg: { data?: Record<string, string> }) => Promise<void> {
+    setupForegroundHandler();
+    return (getMessagingInstance().onMessage as jest.Mock).mock.calls[0][0];
+  }
+
+  it('dispatches the conflict flag and displays with every pref off and everything muted', async () => {
+    mockStoreState.notificationPrefs = {
+      newThread: false,
+      newReply: false,
+      newDm: false,
+      memberJoined: false,
+    };
+    mockStoreState.mutedTargets = { 'g-sec': 'group', 't-sec': 'thread' };
+    mockIsRecoveryInitiator.mockReturnValue(false);
+    const cb = getOnMessageCallback();
+
+    await cb({ data: { t: 'identity_key_reset', v: '1' } });
+
+    expect(mockSetIdentityKeyConflict).toHaveBeenCalledWith(true);
+    expect(notifee.displayNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Security alert' }),
+    );
+  });
+
+  it('displays even when a hypothetical payload carries a muted gid/tid (allowlist carve-out)', async () => {
+    mockStoreState.mutedTargets = { 'g-sec': 'group', 't-sec': 'thread' };
+    const cb = getOnMessageCallback();
+
+    await cb({ data: { t: 'identity_key_reset', v: '1', gid: 'g-sec', tid: 't-sec' } });
+
+    expect(notifee.displayNotification).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('setupForegroundHandler — #449 collapse key on display (D9)', () => {
+  function getOnMessageCallback(): (msg: { data?: Record<string, string> }) => Promise<void> {
+    setupForegroundHandler();
+    return (getMessagingInstance().onMessage as jest.Mock).mock.calls[0][0];
+  }
+
+  function lastDisplayArg(): Record<string, unknown> {
+    const calls = (notifee.displayNotification as jest.Mock).mock.calls;
+    return calls[calls.length - 1][0] as Record<string, unknown>;
+  }
+
+  it('passes the tid as the notification id for new_reply and sets onlyAlertOnce', async () => {
+    const cb = getOnMessageCallback();
+
+    await cb({ data: { t: 'new_reply', gid: 'g-col-1', tid: 'tcol-1', rid: 'rcol-1' } });
+
+    const arg = lastDisplayArg();
+    expect(arg.id).toBe('tcol-1');
+    expect((arg.android as Record<string, unknown>).onlyAlertOnce).toBe(true);
+  });
+
+  it('passes the tid for new_thread', async () => {
+    const cb = getOnMessageCallback();
+
+    await cb({ data: { t: 'new_thread', gid: 'g-col-2', tid: 'tcol-2' } });
+
+    expect(lastDisplayArg().id).toBe('tcol-2');
+  });
+
+  it('passes the gid for new_dm and member_joined', async () => {
+    const cb = getOnMessageCallback();
+
+    await cb({ data: { t: 'new_dm', gid: 'gcol-3' } });
+    expect(lastDisplayArg().id).toBe('gcol-3');
+
+    await cb({ data: { t: 'member_joined', gid: 'gcol-4' } });
+    expect(lastDisplayArg().id).toBe('gcol-4');
+  });
+
+  it('omits the id for identity_key_reset — security alerts must stack', async () => {
+    const cb = getOnMessageCallback();
+
+    await cb({ data: { t: 'identity_key_reset', v: '1' } });
+
+    expect('id' in lastDisplayArg()).toBe(false);
+  });
+
+  it('omits the id when the collapse key cannot be derived', async () => {
+    const cb = getOnMessageCallback();
+
+    await cb({ data: { t: 'new_thread', gid: 'g-col-5' } });
+
+    expect('id' in lastDisplayArg()).toBe(false);
   });
 });

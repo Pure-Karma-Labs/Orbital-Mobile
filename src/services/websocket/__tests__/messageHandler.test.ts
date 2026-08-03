@@ -623,7 +623,6 @@ describe('owner_changed broadcast', () => {
     name: 'My Orbit',
     memberCount: 5,
     active: true,
-    muteUntil: null,
     lastMessageAt: 1700000000000,
     unreadCount: 0,
     lastReadAt: null,

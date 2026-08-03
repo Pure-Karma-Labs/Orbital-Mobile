@@ -17,10 +17,50 @@ import type { AppState } from '../types/store';
  * Shape of the persisted (fast-start) subset of app state.
  * Only this data survives app restarts without a server round-trip.
  */
-type PersistedState = Pick<
+export type PersistedState = Pick<
   AppState,
-  'conversations' | 'conversationIds' | 'contacts' | 'colorScheme' | 'activeTab' | 'soundEnabled' | 'blockedUserIds' | 'blockedUserProfiles' | 'threadLastViewedAt'
+  'conversations' | 'conversationIds' | 'contacts' | 'colorScheme' | 'activeTab' | 'soundEnabled' | 'blockedUserIds' | 'blockedUserProfiles' | 'threadLastViewedAt' | 'notificationPrefs' | 'mutedTargets'
 >;
+
+/**
+ * Select the persisted (fast-start) subset of app state.
+ *
+ * Exported so persistence.test.ts asserts against the REAL selector rather
+ * than a copy that can silently drift from this file.
+ *
+ * Only persist fast-start data — data that should survive app restarts without
+ * a round-trip to the server.
+ *
+ * Explicitly excluded from persistence:
+ * - auth state (isAuthenticated, userId, etc.) — JWT tokens live in
+ *   Keychain/Keystore; auth state is re-derived on startup
+ * - threads, replies, messages — fetched fresh from SQLite/SQLCipher on load
+ * - activeConversationId, activeThreadId — transient navigation state
+ * - isComposerOpen — transient UI state
+ * - syncOverallStatus — re-computed from pending sync queue on startup
+ * - pushPermissionGranted, pushToken — device/OS-derived, re-read at launch;
+ *   the FCM token must never sit in persisted state
+ *
+ * notificationPrefs/mutedTargets (#449) ARE persisted so the UI renders correct
+ * toggles and mute glyphs before the login-time sync lands. They are
+ * server-authoritative — syncNotificationSettings() overwrites them — and
+ * cleared on localWipe via resetNotificationSettings().
+ */
+export function partializeAppState(state: AppState): PersistedState {
+  return {
+    conversations: state.conversations,
+    conversationIds: state.conversationIds,
+    contacts: state.contacts,
+    colorScheme: state.colorScheme,
+    activeTab: state.activeTab,
+    soundEnabled: state.soundEnabled,
+    blockedUserIds: state.blockedUserIds,
+    blockedUserProfiles: state.blockedUserProfiles,
+    threadLastViewedAt: state.threadLastViewedAt,
+    notificationPrefs: state.notificationPrefs,
+    mutedTargets: state.mutedTargets,
+  };
+}
 
 export const useAppStore = create<AppState>()(
   devtools(
@@ -40,29 +80,7 @@ export const useAppStore = create<AppState>()(
       {
         name: 'orbital-app-store',
         storage: createMMKVStorage<PersistedState>(),
-        /**
-         * Only persist fast-start data — data that should survive app restarts
-         * without a round-trip to the server.
-         *
-         * Explicitly excluded from persistence:
-         * - auth state (isAuthenticated, userId, etc.) — JWT tokens live in
-         *   Keychain/Keystore; auth state is re-derived on startup
-         * - threads, replies, messages — fetched fresh from SQLite/SQLCipher on load
-         * - activeConversationId, activeThreadId — transient navigation state
-         * - isComposerOpen — transient UI state
-         * - syncOverallStatus — re-computed from pending sync queue on startup
-         */
-        partialize: (state): PersistedState => ({
-          conversations: state.conversations,
-          conversationIds: state.conversationIds,
-          contacts: state.contacts,
-          colorScheme: state.colorScheme,
-          activeTab: state.activeTab,
-          soundEnabled: state.soundEnabled,
-          blockedUserIds: state.blockedUserIds,
-          blockedUserProfiles: state.blockedUserProfiles,
-          threadLastViewedAt: state.threadLastViewedAt,
-        }),
+        partialize: partializeAppState,
       },
     ),
     { name: 'OrbitalStore', enabled: __DEV__ },

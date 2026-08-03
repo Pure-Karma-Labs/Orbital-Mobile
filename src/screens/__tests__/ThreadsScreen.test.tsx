@@ -3,6 +3,7 @@
  */
 
 import React from 'react';
+import { Alert } from 'react-native';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { ThemeProvider } from '../../theme';
 import { ThreadsScreen } from '../ThreadsScreen';
@@ -64,6 +65,13 @@ jest.mock('../../hooks/useSQLiteSearch', () => ({
 const mockSetViewingConversation = jest.fn();
 const mockMarkConversationRead = jest.fn();
 
+// Mutable so a test can render a muted row (#449).
+let mockMutedTargets: Record<string, string> = {};
+
+jest.mock('../../services/notificationSettingsSync', () => ({
+  toggleMute: jest.fn().mockResolvedValue(true),
+}));
+
 jest.mock('../../stores', () => {
   const getState = () => ({
     setViewingConversation: mockSetViewingConversation,
@@ -72,6 +80,7 @@ jest.mock('../../stores', () => {
     userId: null,
     displayName: null,
     contacts: {},
+    mutedTargets: mockMutedTargets,
   });
   const useAppStore = Object.assign(
     (selector: (s: ReturnType<typeof getState>) => unknown) => selector(getState()),
@@ -113,7 +122,6 @@ jest.mock('../../stores', () => {
         name: 'Family Orbit',
         memberCount: 3,
         active: true,
-        muteUntil: null,
         lastMessageAt: null,
         unreadCount: 0,
         createdAt: 1700000000000,
@@ -140,6 +148,9 @@ jest.mock('../../stores', () => {
     clearTypingUsers: jest.fn(),
   }),
 };});
+
+import { toggleMute } from '../../services/notificationSettingsSync';
+const mockToggleMute = toggleMute as jest.Mock;
 
 // Mock @react-navigation/native-stack for navigation prop
 jest.mock('@react-navigation/native-stack', () => ({
@@ -202,7 +213,9 @@ function renderThreadsScreen(): ReactTestRenderer {
 // ---------------------------------------------------------------------------
 
 beforeEach(() => {
+  jest.clearAllMocks();
   mockBlockedSet = new Set<string>();
+  mockMutedTargets = {};
   mockSearchState = {
     searchText: '',
     setSearchText: jest.fn(),
@@ -345,6 +358,122 @@ describe('ThreadsScreen — with thread data', () => {
         node.props.children === '─── Today ───',
     );
     expect(dayNode).toBeDefined();
+  });
+
+  // -------------------------------------------------------------------------
+  // Per-thread muting (#449)
+  // -------------------------------------------------------------------------
+
+  /** The thread row's pressable — identified by its mute a11y hint. */
+  function threadRow(renderer: ReactTestRenderer) {
+    const rows = renderer.root.findAll(
+      (n) => n.props.accessibilityHint === 'Long press for notification options',
+    );
+    expect(rows.length).toBeGreaterThan(0);
+    return rows[0];
+  }
+
+  it('long-pressing a thread row opens the mute Alert with the thread title', () => {
+    const alertSpy = jest.spyOn(Alert, 'alert');
+    const renderer = renderThreadsScreen();
+
+    act(() => {
+      threadRow(renderer).props.onLongPress();
+    });
+
+    expect(alertSpy).toHaveBeenCalledWith(
+      "Farmer's market on Saturday?",
+      expect.any(String),
+      expect.arrayContaining([
+        expect.objectContaining({ text: 'Mute notifications' }),
+        expect.objectContaining({ text: 'Cancel', style: 'cancel' }),
+      ]),
+    );
+    alertSpy.mockRestore();
+  });
+
+  it('choosing "Mute notifications" calls toggleMute with the thread target', () => {
+    const alertSpy = jest.spyOn(Alert, 'alert');
+    const renderer = renderThreadsScreen();
+
+    act(() => {
+      threadRow(renderer).props.onLongPress();
+    });
+    const buttons = alertSpy.mock.calls[0][2] as Array<{ text: string; onPress?: () => void }>;
+    act(() => {
+      buttons.find((b) => b.text === 'Mute notifications')!.onPress!();
+    });
+
+    expect(mockToggleMute).toHaveBeenCalledWith('thread-1', 'thread');
+    alertSpy.mockRestore();
+  });
+
+  it('offers Unmute (not Mute) when the thread is already muted', () => {
+    mockMutedTargets = { 'thread-1': 'thread' };
+    const alertSpy = jest.spyOn(Alert, 'alert');
+    const renderer = renderThreadsScreen();
+
+    act(() => {
+      threadRow(renderer).props.onLongPress();
+    });
+
+    const buttons = alertSpy.mock.calls[0][2] as Array<{ text: string }>;
+    expect(buttons.map((b) => b.text)).toContain('Unmute notifications');
+    expect(buttons.map((b) => b.text)).not.toContain('Mute notifications');
+    alertSpy.mockRestore();
+  });
+
+  it('renders the muted indicator only when the thread is in mutedTargets', () => {
+    const unmuted = renderThreadsScreen();
+    expect(
+      unmuted.root.findAll((n) => n.props.testID === 'thread-muted-indicator'),
+    ).toHaveLength(0);
+
+    mockMutedTargets = { 'thread-1': 'thread' };
+    const muted = renderThreadsScreen();
+    expect(
+      muted.root.findAll((n) => n.props.testID === 'thread-muted-indicator').length,
+    ).toBeGreaterThan(0);
+  });
+
+  it('exposes a mute accessibilityAction that fires the same menu', () => {
+    const alertSpy = jest.spyOn(Alert, 'alert');
+    const renderer = renderThreadsScreen();
+    const row = threadRow(renderer);
+
+    expect(row.props.accessibilityActions).toEqual([
+      { name: 'mute', label: 'Mute notifications' },
+    ]);
+
+    act(() => {
+      row.props.onAccessibilityAction({ nativeEvent: { actionName: 'mute' } });
+    });
+
+    expect(alertSpy).toHaveBeenCalled();
+    alertSpy.mockRestore();
+  });
+
+  it('labels the accessibilityAction "Unmute notifications" when muted', () => {
+    mockMutedTargets = { 'thread-1': 'thread' };
+    const renderer = renderThreadsScreen();
+
+    expect(threadRow(renderer).props.accessibilityActions).toEqual([
+      { name: 'mute', label: 'Unmute notifications' },
+    ]);
+  });
+
+  it('ignores unrelated accessibility actions', () => {
+    const alertSpy = jest.spyOn(Alert, 'alert');
+    const renderer = renderThreadsScreen();
+
+    act(() => {
+      threadRow(renderer).props.onAccessibilityAction({
+        nativeEvent: { actionName: 'magicTap' },
+      });
+    });
+
+    expect(alertSpy).not.toHaveBeenCalled();
+    alertSpy.mockRestore();
   });
 });
 

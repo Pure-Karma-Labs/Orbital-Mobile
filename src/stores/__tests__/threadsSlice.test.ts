@@ -100,8 +100,15 @@ function makeStore() {
 
     pushPermissionGranted: false,
     pushToken: null,
+    notificationPrefs: { newThread: true, newReply: true, newDm: true, memberJoined: true },
+    mutedTargets: {},
     setPushPermission: jest.fn(),
     setPushToken: jest.fn(),
+    setNotificationPrefs: jest.fn(),
+    setMutedTargets: jest.fn(),
+    addMutedTarget: jest.fn(),
+    removeMutedTarget: jest.fn(),
+    resetNotificationSettings: jest.fn(),
 
     blockedUserIds: [],
     blockedUserProfiles: {},

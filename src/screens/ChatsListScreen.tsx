@@ -33,6 +33,7 @@ import { loadDmConversations, hydrateContactsFromOrbits } from '../services/conv
 import { PullToRefreshOverlay } from '../components/PullToRefreshOverlay';
 import { usePullToRefresh } from '../hooks/usePullToRefresh';
 import { useFuseSearch } from '../hooks/useFuseSearch';
+import { useMuteActions } from '../hooks/useMuteActions';
 
 // ---------------------------------------------------------------------------
 // Fuse search options — module-level constant for stable WeakMap cache key
@@ -187,6 +188,23 @@ export function ChatsListScreen({ navigation }: ChatsListScreenProps): React.JSX
     navigation.navigate('NewChat');
   }, [navigation]);
 
+  // Long-press → mute menu (#449). Stable identity: ChatItem is memoized, and
+  // the conversation name is read from a latest-ref at press time.
+  const { showMuteMenu } = useMuteActions();
+  const conversationsRef = useRef(conversations);
+  conversationsRef.current = conversations;
+
+  const handleChatLongPress = useCallback(
+    (conversationId: string) => {
+      showMuteMenu(
+        conversationId,
+        'group',
+        conversationsRef.current[conversationId]?.name ?? 'Chat',
+      );
+    },
+    [showMuteMenu],
+  );
+
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<Conversation>) => {
       const contact = contactByConversation[item.id];
@@ -198,6 +216,7 @@ export function ChatsListScreen({ navigation }: ChatsListScreenProps): React.JSX
           avatarUrl={contact ? getAvatarUrl(contact.avatarPath) : null}
           unreadCount={item.unreadCount}
           onPress={handleChatPress}
+          onLongPress={handleChatLongPress}
           userId={contact?.id}
           groupId={item.id}
           encryptedAvatarKey={contact?.avatarEncryptedKey}
@@ -206,7 +225,7 @@ export function ChatsListScreen({ navigation }: ChatsListScreenProps): React.JSX
         />
       );
     },
-    [handleChatPress, contactByConversation],
+    [handleChatPress, handleChatLongPress, contactByConversation],
   );
 
   const keyExtractor = useCallback((item: Conversation) => item.id, []);

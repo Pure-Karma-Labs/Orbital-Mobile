@@ -55,9 +55,6 @@ jest.mock('../../services/keyRecoveryService', () => ({
   recoverIdentityKeys: jest.fn().mockResolvedValue({ status: 'success' }),
 }));
 
-// @notifee/react-native is auto-mocked via __mocks__/@notifee/react-native.ts.
-// Import it here to override getNotificationSettings in per-test setups.
-
 const mockSetPushPermission = jest.fn();
 const mockSetPushToken = jest.fn();
 jest.mock('../../stores/useAppStore', () => ({
@@ -80,7 +77,6 @@ import { useAuth, useUI, useConversations, useNotifications } from '../../stores
 import { logout, deleteAccount } from '../../services/authService';
 import { fetchCreatorOrbitsDecrypted } from '../../services/conversationService';
 import { requestPermissionAndRegister, deregisterCurrentDevice } from '../../services/notificationService';
-import notifee from '@notifee/react-native';
 
 const mockRequestPermission = requestPermissionAndRegister as jest.Mock;
 const mockDeregister = deregisterCurrentDevice as jest.Mock;
@@ -419,67 +415,45 @@ describe('SettingsScreen — delete account', () => {
   });
 });
 
-describe('SettingsScreen — push toggle', () => {
-  it('push row is interactive (not disabled)', () => {
+// The master push toggle itself moved to PushNotificationSettingsScreen (#449);
+// Settings now only owns the chevron entry point. The toggle behaviour tests
+// moved with it — see PushNotificationSettingsScreen.test.tsx.
+describe('SettingsScreen — Push Notifications entry row', () => {
+  it('renders a chevron row instead of an inline toggle', () => {
     const renderer = renderSettingsScreen();
-    const pushRow = findByTestId(renderer.root, 'push-row');
-    expect(pushRow.props.disabled).toBeFalsy();
-    expect(pushRow.props.onPress).toBeDefined();
+    const row = findByTestId(renderer.root, 'push-notifications-row');
+    expect(row.props.disabled).toBeFalsy();
+    expect(row.props.onPress).toBeDefined();
+    // No On/Off value row remains — the old inline toggle is gone
+    expect(renderer.root.findAll((n) => n.props.testID === 'push-row')).toHaveLength(0);
   });
 
-  it('tapping push row when OFF calls requestPermissionAndRegister', async () => {
-    mockUseNotifications.mockReturnValue({ pushPermissionGranted: false, pushToken: null });
+  it('tapping the row navigates to PushNotificationSettings', () => {
     const renderer = renderSettingsScreen();
-    const pushRow = findByTestId(renderer.root, 'push-row');
+    const row = findByTestId(renderer.root, 'push-notifications-row');
 
-    await act(async () => {
-      await pushRow.props.onPress();
+    act(() => {
+      row.props.onPress();
     });
 
-    expect(mockRequestPermission).toHaveBeenCalledTimes(1);
+    expect(mockNavigate).toHaveBeenCalledWith('PushNotificationSettings');
+  });
+
+  it('does not register or deregister push from this screen', () => {
+    const renderer = renderSettingsScreen();
+    const row = findByTestId(renderer.root, 'push-notifications-row');
+
+    act(() => {
+      row.props.onPress();
+    });
+
+    expect(mockRequestPermission).not.toHaveBeenCalled();
     expect(mockDeregister).not.toHaveBeenCalled();
   });
 
-  it('tapping push row when ON calls deregisterCurrentDevice and clears store', async () => {
-    mockUseNotifications.mockReturnValue({ pushPermissionGranted: true, pushToken: 'tok' });
+  it('keeps the Sounds row on this screen', () => {
     const renderer = renderSettingsScreen();
-    const pushRow = findByTestId(renderer.root, 'push-row');
-
-    await act(async () => {
-      await pushRow.props.onPress();
-    });
-
-    expect(mockDeregister).toHaveBeenCalledTimes(1);
-    expect(mockSetPushPermission).toHaveBeenCalledWith(false);
-    expect(mockSetPushToken).toHaveBeenCalledWith(null);
-    expect(mockRequestPermission).not.toHaveBeenCalled();
-  });
-
-  it('shows alert when OS permission is denied', async () => {
-    mockUseNotifications.mockReturnValue({ pushPermissionGranted: false, pushToken: null });
-    (notifee.getNotificationSettings as jest.Mock).mockResolvedValueOnce({
-      authorizationStatus: 0, // DENIED
-      android: {},
-      ios: {},
-    });
-    const alertSpy = jest.spyOn(Alert, 'alert');
-    const renderer = renderSettingsScreen();
-    const pushRow = findByTestId(renderer.root, 'push-row');
-
-    await act(async () => {
-      await pushRow.props.onPress();
-    });
-
-    expect(alertSpy).toHaveBeenCalledWith(
-      'Notifications Disabled',
-      'Push notifications were previously denied. Enable them in Settings.',
-      expect.arrayContaining([
-        expect.objectContaining({ text: 'Cancel' }),
-        expect.objectContaining({ text: 'Open Settings' }),
-      ]),
-    );
-    expect(mockRequestPermission).not.toHaveBeenCalled();
-    alertSpy.mockRestore();
+    expect(() => findByTestId(renderer.root, 'sounds-row')).not.toThrow();
   });
 });
 

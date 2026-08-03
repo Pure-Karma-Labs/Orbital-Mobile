@@ -47,6 +47,7 @@ import {
 } from '@dr.pogodin/react-native-fs';
 import { clearAll as clearSecureStorage } from './secure-storage';
 import { syncBlockedUsers } from './blockedUsersSync';
+import { syncNotificationSettings } from './notificationSettingsSync';
 import { clearPrefetchState } from './mediaPrefetchService';
 import { clearArchiveConfirmState } from './mediaArchiveConfirmService';
 import { attemptKeychainIdentityRestore, clearStaleKeychainIdentity } from './crypto/identityRestoreService';
@@ -156,6 +157,7 @@ async function postAuthBootstrap(): Promise<void> {
   }
 
   syncBlockedUsers().catch(warnCatch('[BlockedUsersSync]'));
+  syncNotificationSettings().catch(warnCatch('[NotificationSettingsSync]'));
 }
 
 // ---------------------------------------------------------------------------
@@ -415,6 +417,12 @@ export async function localWipe({ preserveIdentity }: { preserveIdentity: boolea
   }
   try { useAppStore.getState().resetBlockedUsers(); } catch {
     if (__DEV__) console.warn('[LocalWipe] resetBlockedUsers failed');
+  }
+  // #449: in-memory Zustand state survives MMKV clearAll() and re-persists,
+  // so notification prefs/mutes must be explicitly reset or they leak into
+  // the next account on this device.
+  try { useAppStore.getState().resetNotificationSettings(); } catch {
+    if (__DEV__) console.warn('[LocalWipe] resetNotificationSettings failed');
   }
 
   if (preserveIdentity) {

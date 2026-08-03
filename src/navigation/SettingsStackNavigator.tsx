@@ -7,6 +7,7 @@ import EditProfileScreen from '../screens/EditProfileScreen';
 import ManageOrbitsScreen from '../screens/ManageOrbitsScreen';
 import { FileLibraryScreen } from '../screens/FileLibraryScreen';
 import BlockedUsersScreen from '../screens/settings/BlockedUsersScreen';
+import PushNotificationSettingsScreen from '../screens/settings/PushNotificationSettingsScreen';
 
 const Stack = createNativeStackNavigator<SettingsStackParamList>();
 
@@ -26,6 +27,10 @@ export function SettingsStackNavigator(): React.JSX.Element {
       <Stack.Screen name="ManageOrbits" component={ManageOrbitsScreen} />
       <Stack.Screen name="FileLibrary" component={FileLibraryScreen} />
       <Stack.Screen name="BlockedUsers" component={BlockedUsersScreen} />
+      <Stack.Screen
+        name="PushNotificationSettings"
+        component={PushNotificationSettingsScreen}
+      />
     </Stack.Navigator>
   );
 }

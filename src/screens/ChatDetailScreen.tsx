@@ -42,6 +42,9 @@ import { usePullToRefresh } from '../hooks/usePullToRefresh';
 import { useSQLiteSearch } from '../hooks/useSQLiteSearch';
 import { useWebSocketSubscription } from '../hooks/useWebSocketSubscription';
 import { useBlockedSet } from '../hooks/useBlockedSet';
+import { useIsMuted } from '../hooks/useIsMuted';
+import { useMuteActions } from '../hooks/useMuteActions';
+import { Emoji } from '../components/Emoji';
 
 export type ChatDetailScreenProps = NativeStackScreenProps<
   ChatsStackParamList,
@@ -161,6 +164,15 @@ export function ChatDetailScreen({
 
   // Subscribe to real-time updates for this DM conversation
   useWebSocketSubscription(conversationId);
+
+  // Conversation-level mute (#449). A DM is a group server-side, so the mute
+  // row is ('group', conversationId) — it suppresses every push carrying this
+  // gid, including the thread traffic inside the DM.
+  const isMuted = useIsMuted(conversationId);
+  const { toggleMuteFor } = useMuteActions();
+  const handleToggleMute = useCallback(() => {
+    toggleMuteFor(conversationId, 'group');
+  }, [toggleMuteFor, conversationId]);
 
   // Snapshot lastReadAt on focus — held for the entire focus session.
   // Do NOT read conversation.lastReadAt live in render: the debounced
@@ -302,6 +314,15 @@ export function ChatDetailScreen({
     color: theme.colors.blue,
   };
 
+  const headerActionsStyle: ViewStyle = {
+    flexDirection: 'row',
+    alignItems: 'center',
+  };
+
+  const muteBellStyle: ViewStyle = {
+    marginRight: theme.spacing.md,
+  };
+
   const containerStyle: ViewStyle = {
     flex: 1,
     backgroundColor: theme.colors.background,
@@ -313,14 +334,28 @@ export function ChatDetailScreen({
         title={recipientName ?? 'Chat'}
         onBack={() => navigation.goBack()}
         right={
-          <TouchableOpacity
-            onPress={handleCompose}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            accessibilityRole="button"
-            accessibilityLabel="New thread"
-          >
-            <Text style={composeBtnStyle}>+</Text>
-          </TouchableOpacity>
+          <View style={headerActionsStyle}>
+            <TouchableOpacity
+              onPress={handleToggleMute}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityRole="button"
+              accessibilityLabel={isMuted ? 'Unmute this chat' : 'Mute this chat'}
+              accessibilityState={{ selected: isMuted }}
+              testID="chat-mute-bell"
+              style={muteBellStyle}
+            >
+              <Emoji unified={isMuted ? '1F515' : '1F514'} size={20} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={handleCompose}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityRole="button"
+              accessibilityLabel="New thread"
+              testID="chat-compose-button"
+            >
+              <Text style={composeBtnStyle}>+</Text>
+            </TouchableOpacity>
+          </View>
         }
       />
 

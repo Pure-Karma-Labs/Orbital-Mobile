@@ -33,6 +33,7 @@ export type SettingsStackParamList = {
   ManageOrbits: undefined;
   FileLibrary: undefined;
   BlockedUsers: undefined;
+  PushNotificationSettings: undefined;
 };
 
 export type RootStackParamList = {

@@ -167,6 +167,10 @@ jest.mock('../../stores/middleware/persistence', () => ({
 jest.mock('../avatarService');
 
 const mockSyncBlockedUsers = jest.fn().mockResolvedValue(undefined);
+const mockSyncNotificationSettings = jest.fn().mockResolvedValue(undefined);
+jest.mock('../notificationSettingsSync', () => ({
+  syncNotificationSettings: (...args: unknown[]) => mockSyncNotificationSettings(...args),
+}));
 jest.mock('../blockedUsersSync', () => ({
   syncBlockedUsers: (...args: unknown[]) => mockSyncBlockedUsers(...args),
 }));
@@ -207,6 +211,7 @@ const mockSetKeyRecoveryInProgress = jest.fn();
 const mockSetEmail = jest.fn();
 const mockSetConflictSource = jest.fn();
 const mockResetBlockedUsers = jest.fn();
+const mockResetNotificationSettings = jest.fn();
 const mockSetViewingConversation = jest.fn();
 const mockSetIdentityRestoreDeferred = jest.fn();
 
@@ -228,6 +233,7 @@ jest.mock('../../stores/useAppStore', () => ({
       setEmail: mockSetEmail,
       setConflictSource: mockSetConflictSource,
       resetBlockedUsers: mockResetBlockedUsers,
+      resetNotificationSettings: mockResetNotificationSettings,
       setViewingConversation: mockSetViewingConversation,
       setIdentityRestoreDeferred: mockSetIdentityRestoreDeferred,
     })),
@@ -279,6 +285,7 @@ beforeEach(() => {
   mockHydrateContactsFromOrbits.mockResolvedValue(undefined);
   mockSelfWrapIfNeeded.mockResolvedValue(undefined);
   mockSyncBlockedUsers.mockResolvedValue(undefined);
+  mockSyncNotificationSettings.mockResolvedValue(undefined);
 });
 
 // ---------------------------------------------------------------------------
@@ -889,6 +896,14 @@ describe('logout', () => {
 
     expect(mockClearPrefetchState).toHaveBeenCalledTimes(1);
     expect(mockClearArchiveConfirmState).toHaveBeenCalledTimes(1);
+  });
+
+  // #449: in-memory Zustand state survives MMKV clearAll() and re-persists,
+  // so notification prefs/mutes leak into the next account without this reset.
+  it('resets notification settings on logout (localWipe)', async () => {
+    await logout();
+
+    expect(mockResetNotificationSettings).toHaveBeenCalledTimes(1);
   });
 });
 

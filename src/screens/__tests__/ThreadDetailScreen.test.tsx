@@ -22,6 +22,13 @@ jest.mock('../../hooks/useBlockedSet', () => ({
   useBlockedSet: () => mockBlockedSet,
 }));
 
+// Mutable so a test can render the muted bell (#449).
+let mockMutedTargets: Record<string, string> = {};
+
+jest.mock('../../services/notificationSettingsSync', () => ({
+  toggleMute: jest.fn().mockResolvedValue(true),
+}));
+
 jest.mock('../../stores/useAppStore', () => ({
   useAppStore: Object.assign(
     jest.fn((selector: (s: Record<string, unknown>) => unknown) =>
@@ -31,6 +38,7 @@ jest.mock('../../stores/useAppStore', () => ({
         contacts: {},
         blockedUserIds: [],
         blockUser: jest.fn(),
+        mutedTargets: mockMutedTargets,
       }),
     ),
     {
@@ -42,6 +50,7 @@ jest.mock('../../stores/useAppStore', () => ({
         blockUser: jest.fn(),
         viewingConversationId: null,
         setViewingConversation: jest.fn(),
+        mutedTargets: mockMutedTargets,
       })),
     },
   ),
@@ -82,10 +91,13 @@ jest.mock('../../components/Emoji', () => {
 
 import React from 'react';
 import { Alert } from 'react-native';
-import { act, create, type ReactTestRenderer } from 'react-test-renderer';
+import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import { ThemeProvider } from '../../theme';
 import { ThreadDetailScreen } from '../ThreadDetailScreen';
 import { QuotaExceededError } from '../../services/api/errors';
+import { toggleMute } from '../../services/notificationSettingsSync';
+
+const mockToggleMute = toggleMute as jest.Mock;
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -129,17 +141,18 @@ jest.mock('../../hooks/useWebSocketSubscription', () => ({
 const mockSetActiveThread = jest.fn();
 
 jest.mock('../../stores', () => {
-  const state = {
+  const getState = () => ({
     userId: 'user-1',
     displayName: 'Alice',
     contacts: {},
     blockedUserIds: [],
     blockUser: jest.fn(),
-  };
+    mutedTargets: mockMutedTargets,
+  });
   return {
   useAppStore: Object.assign(
-    (selector: (s: typeof state) => unknown) => selector(state),
-    { getState: jest.fn(() => state) },
+    (selector: (s: ReturnType<typeof getState>) => unknown) => selector(getState()),
+    { getState: jest.fn(getState) },
   ),
   useAuth: () => ({
     isAuthenticated: true,
@@ -292,6 +305,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockSelectedMedia = [];
   mockBlockedSet = new Set<string>();
+  mockMutedTargets = {};
   // Default: loadThread and loadReplies resolve but store stays empty
   // (store is mocked separately)
   mockLoadThread.mockResolvedValue(fakeThread);
@@ -923,5 +937,55 @@ describe('ThreadDetailScreen — quota error', () => {
     );
 
     alertSpy.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Header mute bell (#449)
+// ---------------------------------------------------------------------------
+
+describe('ThreadDetailScreen — header mute bell', () => {
+  function bell(renderer: ReactTestRenderer): ReactTestInstance {
+    const found = renderer.root.findAll((n) => n.props.testID === 'thread-mute-bell');
+    expect(found.length).toBeGreaterThan(0);
+    return found[0];
+  }
+
+  it('renders the bell in the header with an unmuted label', async () => {
+    const renderer = await renderScreen();
+    const button = bell(renderer);
+
+    expect(button.props.accessibilityLabel).toBe('Mute this thread');
+    expect(button.props.accessibilityState).toEqual({ selected: false });
+  });
+
+  it('reflects the muted state in label, a11y state, and glyph', async () => {
+    mockMutedTargets = { 'thread-1': 'thread' };
+    const renderer = await renderScreen();
+    const button = bell(renderer);
+
+    expect(button.props.accessibilityLabel).toBe('Unmute this thread');
+    expect(button.props.accessibilityState).toEqual({ selected: true });
+
+    const glyphs = renderer.root.findAll(
+      (n) => n.props.unified === '1F515' || n.props.unified === '1F514',
+    );
+    expect(glyphs.some((g) => g.props.unified === '1F515')).toBe(true);
+  });
+
+  it('renders the unmuted glyph when the thread is not muted', async () => {
+    const renderer = await renderScreen();
+    const glyphs = renderer.root.findAll((n) => n.props.unified === '1F514');
+    expect(glyphs.length).toBeGreaterThan(0);
+  });
+
+  it('tapping the bell toggles the thread mute', async () => {
+    const renderer = await renderScreen();
+
+    await act(async () => {
+      bell(renderer).props.onPress();
+    });
+
+    expect(mockToggleMute).toHaveBeenCalledWith('thread-1', 'thread');
   });
 });

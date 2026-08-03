@@ -13,6 +13,7 @@ import type {
   ThreadContentType,
   DraftContextType,
 } from './database';
+import type { NotificationPrefs, MuteTargetType } from './api';
 import { VerifiedStatus } from './database';
 
 // ============================================================
@@ -32,7 +33,10 @@ export interface Conversation {
   memberCount: number;
   /** Converted from 0|1 integer in database */
   active: boolean;
-  muteUntil: number | null;
+  // NOTE (#449): the dead `muteUntil` field was removed here — it was always
+  // hardcoded null and never read. Per-target muting lives in
+  // NotificationState.mutedTargets (server-authoritative). The SQLite
+  // `conversations.mute_until` column is retained untouched.
   lastMessageAt: number | null;
   unreadCount: number;
   /** Epoch ms snapshot from server load — when the user last read this conversation */
@@ -387,11 +391,27 @@ export type MediaSlice = MediaState & MediaActions;
 export interface NotificationState {
   pushPermissionGranted: boolean;
   pushToken: string | null;
+  /** Per-type push preferences (#449). Defaults all-true; persisted. */
+  notificationPrefs: NotificationPrefs;
+  /**
+   * Muted targets keyed by target id (thread id or group id) (#449).
+   * Presence of a key means "muted"; the value records what kind of target
+   * it is so the UI can render the right affordance. Persisted.
+   */
+  mutedTargets: Record<string, MuteTargetType>;
 }
 
 export interface NotificationActions {
   setPushPermission: (granted: boolean) => void;
   setPushToken: (token: string | null) => void;
+  /** Merge a partial pref patch into the current prefs (pure — no API call). */
+  setNotificationPrefs: (prefs: Partial<NotificationPrefs>) => void;
+  /** Replace the whole muted-target map (server-authoritative sync). */
+  setMutedTargets: (targets: Record<string, MuteTargetType>) => void;
+  addMutedTarget: (targetId: string, targetType: MuteTargetType) => void;
+  removeMutedTarget: (targetId: string) => void;
+  /** Reset prefs to all-true and clear mutes — called from localWipe. */
+  resetNotificationSettings: () => void;
 }
 
 export type NotificationSlice = NotificationState & NotificationActions;

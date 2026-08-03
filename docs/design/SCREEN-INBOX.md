@@ -139,7 +139,7 @@ Native `RefreshControl` with `colors.blue` spinner. Haptic on complete.
 - **Tap thread item** → Push to Thread Detail screen
 - **Tap orbit selector** → Open orbit selector bottom sheet
 - **Tap "+"** → Open composer modal (new thread)
-- **Swipe left on thread** → Reveal mute/archive actions
+- **Long-press thread item** → Mute/unmute notifications for that thread (native Alert action list). Owner decision 2026-08-03: long-press replaces the swipe-to-reveal actions described in earlier drafts. Muted threads show 🔕 in the meta line.
 - **Pull down** → Refresh thread list
 - **Scroll** → Day separators sticky at top (optional, explore in Figma)
 

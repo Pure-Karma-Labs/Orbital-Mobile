@@ -3,6 +3,7 @@
  */
 
 import React from 'react';
+import { Alert } from 'react-native';
 import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'react-test-renderer';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../../theme';
@@ -39,10 +40,24 @@ jest.mock('../../components/Emoji', () => ({
 const mockUseConversations = jest.fn();
 const mockUseContacts = jest.fn();
 
-jest.mock('../../stores', () => ({
-  useConversations: (...args: unknown[]) => mockUseConversations(...args),
-  useContacts: (...args: unknown[]) => mockUseContacts(...args),
+// Mutable so a test can render a muted row (#449).
+let mockMutedTargets: Record<string, string> = {};
+
+jest.mock('../../services/notificationSettingsSync', () => ({
+  toggleMute: jest.fn().mockResolvedValue(true),
 }));
+
+jest.mock('../../stores', () => {
+  const getState = () => ({ mutedTargets: mockMutedTargets });
+  return {
+    useConversations: (...args: unknown[]) => mockUseConversations(...args),
+    useContacts: (...args: unknown[]) => mockUseContacts(...args),
+    useAppStore: Object.assign(
+      (selector: (s: ReturnType<typeof getState>) => unknown) => selector(getState()),
+      { getState },
+    ),
+  };
+});
 
 jest.mock('../../utils/avatarUrl', () => ({
   getAvatarUrl: jest.fn(() => null),
@@ -50,6 +65,9 @@ jest.mock('../../utils/avatarUrl', () => ({
 
 import { loadDmConversations } from '../../services/conversationService';
 const mockLoadDmConversations = loadDmConversations as jest.Mock;
+
+import { toggleMute } from '../../services/notificationSettingsSync';
+const mockToggleMute = toggleMute as jest.Mock;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -78,7 +96,6 @@ const dmConversationsState = {
       name: 'Bob',
       memberCount: 2,
       active: true,
-      muteUntil: null,
       lastMessageAt: now - 3600000,
       unreadCount: 0,
       createdAt: now - 7200000,
@@ -90,7 +107,6 @@ const dmConversationsState = {
       name: 'Charlie',
       memberCount: 2,
       active: true,
-      muteUntil: null,
       lastMessageAt: now - 1800000,
       unreadCount: 1,
       createdAt: now - 5000000,
@@ -168,6 +184,7 @@ function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstanc
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockMutedTargets = {};
   mockUseConversations.mockReturnValue(emptyConversationsState);
   mockUseContacts.mockReturnValue({ contacts: {} });
 });
@@ -260,5 +277,111 @@ describe('ChatsListScreen — navigation', () => {
     });
 
     expect(mockNavigation.navigate).toHaveBeenCalledWith('NewChat');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-conversation muting (#449)
+// ---------------------------------------------------------------------------
+
+describe('ChatsListScreen — mute', () => {
+  /**
+   * A chat row's pressable, addressed by recipient name — rows are sorted by
+   * lastMessageAt, so index 0 is Charlie, not Bob.
+   */
+  function chatRow(renderer: ReactTestRenderer, name = 'Bob'): ReactTestInstance {
+    const rows = renderer.root.findAll(
+      (n) =>
+        n.props.accessibilityHint === 'Long press for notification options' &&
+        typeof n.props.accessibilityLabel === 'string' &&
+        n.props.accessibilityLabel.startsWith(`Chat with ${name}`),
+    );
+    expect(rows.length).toBeGreaterThan(0);
+    return rows[0];
+  }
+
+  /** Host-only node count — findAll matches both the composite and its host. */
+  function countMutedIndicators(renderer: ReactTestRenderer): number {
+    return renderer.root.findAll(
+      (n) => n.props.testID === 'chat-muted-indicator' && typeof n.type === 'string',
+    ).length;
+  }
+
+  beforeEach(() => {
+    mockUseConversations.mockReturnValue(dmConversationsState);
+  });
+
+  it('long-pressing a chat row opens the mute Alert with the conversation name', () => {
+    const alertSpy = jest.spyOn(Alert, 'alert');
+    const renderer = renderScreen();
+
+    act(() => {
+      chatRow(renderer).props.onLongPress();
+    });
+
+    expect(alertSpy).toHaveBeenCalledWith(
+      'Bob',
+      expect.any(String),
+      expect.arrayContaining([
+        expect.objectContaining({ text: 'Mute notifications' }),
+        expect.objectContaining({ text: 'Cancel', style: 'cancel' }),
+      ]),
+    );
+    alertSpy.mockRestore();
+  });
+
+  it('mutes the conversation as a GROUP target (DMs are groups server-side)', () => {
+    const alertSpy = jest.spyOn(Alert, 'alert');
+    const renderer = renderScreen();
+
+    act(() => {
+      chatRow(renderer).props.onLongPress();
+    });
+    const buttons = alertSpy.mock.calls[0][2] as Array<{ text: string; onPress?: () => void }>;
+    act(() => {
+      buttons.find((b) => b.text === 'Mute notifications')!.onPress!();
+    });
+
+    expect(mockToggleMute).toHaveBeenCalledWith('dm-1', 'group');
+    alertSpy.mockRestore();
+  });
+
+  it('offers Unmute when the conversation is already muted', () => {
+    mockMutedTargets = { 'dm-1': 'group' };
+    const alertSpy = jest.spyOn(Alert, 'alert');
+    const renderer = renderScreen();
+
+    act(() => {
+      chatRow(renderer).props.onLongPress();
+    });
+
+    const buttons = alertSpy.mock.calls[0][2] as Array<{ text: string }>;
+    expect(buttons.map((b) => b.text)).toContain('Unmute notifications');
+    alertSpy.mockRestore();
+  });
+
+  it('renders the muted indicator only for muted conversations', () => {
+    expect(countMutedIndicators(renderScreen())).toBe(0);
+
+    // dm-1 muted, dm-2 not → exactly one indicator across the two rows
+    mockMutedTargets = { 'dm-1': 'group' };
+    expect(countMutedIndicators(renderScreen())).toBe(1);
+  });
+
+  it('exposes a mute accessibilityAction that fires the same menu', () => {
+    const alertSpy = jest.spyOn(Alert, 'alert');
+    const renderer = renderScreen();
+    const row = chatRow(renderer);
+
+    expect(row.props.accessibilityActions).toEqual([
+      { name: 'mute', label: 'Mute notifications' },
+    ]);
+
+    act(() => {
+      row.props.onAccessibilityAction({ nativeEvent: { actionName: 'mute' } });
+    });
+
+    expect(alertSpy).toHaveBeenCalled();
+    alertSpy.mockRestore();
   });
 });

@@ -35,6 +35,7 @@ import { usePullToRefresh } from '../hooks/usePullToRefresh';
 import { useSQLiteSearch } from '../hooks/useSQLiteSearch';
 import { useWebSocketSubscription } from '../hooks/useWebSocketSubscription';
 import { useBlockedSet } from '../hooks/useBlockedSet';
+import { useMuteActions } from '../hooks/useMuteActions';
 import { getThreadState } from '../utils/threadState';
 
 // ---------------------------------------------------------------------------
@@ -300,6 +301,21 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
     [navigation, threads],
   );
 
+  // Long-press → mute menu (#449). The handler must be STABLE: it is a prop on
+  // the memoized ThreadItem, so a new identity per render would re-render every
+  // visible row. The title is therefore read from a latest-ref at press time
+  // rather than closed over from the (frequently replaced) threads map.
+  const { showMuteMenu } = useMuteActions();
+  const threadsRef = useRef(threads);
+  threadsRef.current = threads;
+
+  const handleThreadLongPress = useCallback(
+    (threadId: string) => {
+      showMuteMenu(threadId, 'thread', threadsRef.current[threadId]?.title ?? 'Thread');
+    },
+    [showMuteMenu],
+  );
+
   const handleRefresh = useCallback(async () => {
     if (!activeConversationId) return;
     setRefreshing(true);
@@ -348,12 +364,13 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
               state={getThreadState(t, threadLastViewedAt, lastReadAtSnapshot)}
               unreadCount={0}
               onPress={handleThreadPress}
+              onLongPress={handleThreadLongPress}
             />
           );
         }
       }
     },
-    [handleThreadPress, activeConversationId, threadLastViewedAt, lastReadAtSnapshot],
+    [handleThreadPress, handleThreadLongPress, activeConversationId, threadLastViewedAt, lastReadAtSnapshot],
   );
 
   const keyExtractor = useCallback((item: ListRow) => item.key, []);

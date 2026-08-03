@@ -29,6 +29,8 @@ import {
   getMMKVInstance,
   resetMMKVForTesting,
 } from '../middleware/persistence';
+import { partializeAppState } from '../useAppStore';
+import type { AppState } from '../../types/store';
 
 // Helper to get the underlying mock instance created by the module
 const getMockInstance = () => {
@@ -132,15 +134,28 @@ describe('getMMKVInstance', () => {
 
 describe('persistence partialize', () => {
   /**
-   * Define the expected persisted keys — these match the partialize config
-   * in useAppStore.ts.
+   * The REAL selector from useAppStore.ts — asserting against a local copy
+   * let the copy drift (it silently missed soundEnabled, blockedUserIds, and
+   * threadLastViewedAt for several releases).
    */
+  const partialize = (state: Record<string, unknown>) =>
+    partializeAppState(state as unknown as AppState) as unknown as Record<string, unknown>;
+
+  /** Keys the app is expected to persist. */
   const EXPECTED_PERSISTED_KEYS = new Set([
     'conversations',
     'conversationIds',
     'contacts',
     'colorScheme',
     'activeTab',
+    'soundEnabled',
+    'blockedUserIds',
+    'blockedUserProfiles',
+    'threadLastViewedAt',
+    // #449 — notification settings survive restart so the UI is correct before
+    // the login-time server sync lands.
+    'notificationPrefs',
+    'mutedTargets',
   ]);
 
   /**
@@ -164,6 +179,10 @@ describe('persistence partialize', () => {
     'signalingKey',
     'encryptionKey',
     'registrationId',
+    // Push device state — OS-derived, re-read at launch. The FCM token is a
+    // routable device identifier and must not sit at rest in the store.
+    'pushToken',
+    'pushPermissionGranted',
     // Transient UI state
     'activeConversationId',
     'activeThreadId',
@@ -175,21 +194,6 @@ describe('persistence partialize', () => {
     'replies',
     'replyIdsByThread',
   ];
-
-  /**
-   * Build a fake AppState that mirrors the shape useAppStore would produce,
-   * then run it through a partialize function identical to the one in
-   * useAppStore.ts to verify which keys survive.
-   */
-  function partialize(state: Record<string, unknown>) {
-    return {
-      conversations: state.conversations,
-      conversationIds: state.conversationIds,
-      contacts: state.contacts,
-      colorScheme: state.colorScheme,
-      activeTab: state.activeTab,
-    };
-  }
 
   const fullState: Record<string, unknown> = {
     // Auth
@@ -208,6 +212,7 @@ describe('persistence partialize', () => {
     replies: {},
     replyIdsByThread: {},
     activeThreadId: null,
+    threadLastViewedAt: { 'thread-1': 123 },
     // Contacts
     contacts: { 'c-1': { id: 'c-1' } },
     // UI
@@ -216,6 +221,15 @@ describe('persistence partialize', () => {
     composerDraft: null,
     isComposerOpen: false,
     syncOverallStatus: 'synced',
+    soundEnabled: true,
+    // Blocked users
+    blockedUserIds: ['blocked-1'],
+    blockedUserProfiles: { 'blocked-1': 'mallory' },
+    // Notifications (#449)
+    pushPermissionGranted: true,
+    pushToken: 'fcm-token-secret',
+    notificationPrefs: { newThread: true, newReply: false, newDm: true, memberJoined: true },
+    mutedTargets: { 'thread-1': 'thread' },
   };
 
   it('includes exactly the expected keys', () => {
@@ -246,5 +260,17 @@ describe('persistence partialize', () => {
     const persisted = partialize(fullState);
     expect(persisted.colorScheme).toBe('dark');
     expect(persisted.activeTab).toBe('chats');
+  });
+
+  it('persists notification settings but never the push token (#449)', () => {
+    const persisted = partialize(fullState);
+    expect(persisted.notificationPrefs).toEqual({
+      newThread: true,
+      newReply: false,
+      newDm: true,
+      memberJoined: true,
+    });
+    expect(persisted.mutedTargets).toEqual({ 'thread-1': 'thread' });
+    expect('pushToken' in persisted).toBe(false);
   });
 });

@@ -181,7 +181,6 @@ async function mapGroupResponse(response: GroupResponse): Promise<Conversation> 
     name,
     memberCount: response.memberCount,
     active: true,
-    muteUntil: null,
     lastMessageAt: response.lastMessageAt
       ? new Date(response.lastMessageAt).getTime()
       : null,
@@ -300,7 +299,6 @@ export async function createOrbit(name: string): Promise<{ groupId: string }> {
     name,
     memberCount: 1,
     active: true,
-    muteUntil: null,
     lastMessageAt: null,
     unreadCount: 0,
     lastReadAt: now,
@@ -340,7 +338,6 @@ function mapDmResponse(response: DmResponse): Conversation {
     name: response.recipient.username,
     memberCount: 2,
     active: true,
-    muteUntil: null,
     lastMessageAt: response.lastMessageAt
       ? new Date(response.lastMessageAt).getTime()
       : null,
@@ -548,7 +545,6 @@ export async function startDm(
     name: response.recipient.username,
     memberCount: 2,
     active: true,
-    muteUntil: null,
     lastMessageAt: null,
     unreadCount: 0,
     lastReadAt: now,
@@ -612,7 +608,6 @@ export async function joinOrbit(
     name: decryptedName,
     memberCount: response.memberCount,
     active: true,
-    muteUntil: null,
     lastMessageAt: null,
     unreadCount: 0,
     lastReadAt: now,

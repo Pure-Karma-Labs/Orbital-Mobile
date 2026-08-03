@@ -31,6 +31,9 @@ import {
   ANDROID_CHANNEL_NAME,
   resolveAnchor,
   dedupKeyForPayload,
+  collapseKeyForPayload,
+  isSuppressibleType,
+  PREF_KEY_BY_TYPE,
 } from './notificationConstants';
 import { LRUSet } from './websocket/lruSet';
 import { isRecoveryInitiator } from './recoveryState';
@@ -44,6 +47,29 @@ const pushDedupSet = new LRUSet(200);
 
 /** Pending registration retry timer — cleared on logout cleanup. */
 let retryTimerId: ReturnType<typeof setTimeout> | undefined;
+
+// Module-scope owner of the single token-refresh listener. Re-registration
+// replaces the previous listener; screens must never own this lifetime —
+// a pushed settings screen unmounts on Back, and tearing the listener down
+// there silently kills push delivery for the rest of the session (PR #677
+// review finding). Teardown belongs to logout (App.tsx auth effect) and
+// explicit push-disable only.
+let activeTokenRefreshUnsub: (() => void) | undefined;
+
+/**
+ * Tear down push registration side-effects: the token-refresh listener and
+ * any pending registration retry. Idempotent. Called on logout (via the
+ * closure returned by requestPermissionAndRegister) and when the user turns
+ * push off.
+ */
+export function teardownPushRegistration(): void {
+  activeTokenRefreshUnsub?.();
+  activeTokenRefreshUnsub = undefined;
+  if (retryTimerId != null) {
+    clearTimeout(retryTimerId);
+    retryTimerId = undefined;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Notifee availability check
@@ -161,9 +187,13 @@ export async function requestPermissionAndRegister(): Promise<() => void> {
     }, 5000);
   }
 
-  // Listen for token refresh and re-register.
-  // Returns unsubscribe so the caller can tear down on logout.
-  const unsubTokenRefresh = messaging().onTokenRefresh(async (newToken: string) => {
+  // Listen for token refresh and re-register. The module owns the listener:
+  // registering again replaces the previous one, and the returned closure is
+  // just the module-level teardown (safe for App.tsx to call on logout even
+  // if registration ran more than once — it always tears down the CURRENT
+  // listener, never a stale one).
+  activeTokenRefreshUnsub?.();
+  activeTokenRefreshUnsub = messaging().onTokenRefresh(async (newToken: string) => {
     useAppStore.getState().setPushToken(newToken);
     try {
       await registerDevice({ platform, pushToken: newToken, deviceId });
@@ -172,13 +202,7 @@ export async function requestPermissionAndRegister(): Promise<() => void> {
     }
   });
 
-  return () => {
-    unsubTokenRefresh();
-    if (retryTimerId != null) {
-      clearTimeout(retryTimerId);
-      retryTimerId = undefined;
-    }
-  };
+  return teardownPushRegistration;
 }
 
 /**
@@ -241,6 +265,29 @@ export function setupForegroundHandler(): () => void {
         return;
       }
 
+      // #449 (D5): per-type preference + per-target mute suppression.
+      // Runs BEFORE dedup so a suppressed push does not consume the dedup key
+      // (otherwise a later legitimate display of the same event is swallowed).
+      // Only types in the allowlist are filterable — identity_key_reset is
+      // structurally exempt (not in SUPPRESSIBLE_TYPES, and server-side it
+      // routes through the unfiltered sendPush path).
+      if (isSuppressibleType(type)) {
+        // Firebase types `data` values as `string | object`; push payloads are
+        // always flat strings (see the push payload allowlist server-side).
+        const { gid, tid } = data as Record<string, string>;
+        const state = useAppStore.getState();
+        // DM conversations are groups whose traffic arrives as
+        // new_thread/new_reply, so the effective pref key is resolved from the
+        // target conversation's type, not from `t` alone (plan D5).
+        const conversation = gid ? state.conversations?.[gid] : undefined;
+        const prefKey =
+          conversation?.type === 'direct' ? 'newDm' : PREF_KEY_BY_TYPE[type];
+        // Fail-open: only an explicit `false` suppresses.
+        if (state.notificationPrefs?.[prefKey] === false) return;
+        if (tid && state.mutedTargets?.[tid] !== undefined) return;
+        if (gid && state.mutedTargets?.[gid] !== undefined) return;
+      }
+
       // Push dedup — skip if we already displayed this event
       const dedupKey = dedupKeyForPayload(data as Record<string, string>);
       if (dedupKey && pushDedupSet.has(dedupKey)) return;
@@ -249,16 +296,24 @@ export function setupForegroundHandler(): () => void {
       const title = NOTIFICATION_TITLES[type];
       if (!title) return;
 
+      // #449 (D9): collapse replies to one thread/conversation into a single
+      // tray entry. Reusing the notification id makes each new push REPLACE
+      // the previous one; onlyAlertOnce keeps the replacement quiet.
+      // identity_key_reset has no collapse key — security alerts must stack.
+      const collapseKey = collapseKeyForPayload(data as Record<string, string>);
+
       try {
         await notifee.displayNotification({
           title,
           body: 'Tap to view',
           data: data as Record<string, string>,
+          ...(collapseKey ? { id: collapseKey } : {}),
           android: {
             channelId: ANDROID_CHANNEL_ID,
             smallIcon: 'ic_notification',
             importance: AndroidImportance.HIGH,
             pressAction: { id: 'default' },
+            onlyAlertOnce: true,
           },
         });
         if (__DEV__) console.warn(`[Push] Foreground notification displayed: ${type}`);

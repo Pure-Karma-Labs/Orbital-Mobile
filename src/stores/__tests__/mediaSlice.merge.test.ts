@@ -66,7 +66,12 @@ function makeStore() {
         removeTypingUser: jest.fn(), clearTypingUsers: jest.fn(),
         // Notification stubs
         pushPermissionGranted: false, pushToken: null,
+        notificationPrefs: { newThread: true, newReply: true, newDm: true, memberJoined: true },
+        mutedTargets: {},
         setPushPermission: jest.fn(), setPushToken: jest.fn(),
+        setNotificationPrefs: jest.fn(), setMutedTargets: jest.fn(),
+        addMutedTarget: jest.fn(), removeMutedTarget: jest.fn(),
+        resetNotificationSettings: jest.fn(),
         // BlockedUsers stubs
         blockedUserIds: [], blockedUserProfiles: {},
         blockUser: jest.fn(), unblockUser: jest.fn(),

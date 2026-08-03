@@ -103,13 +103,23 @@ Default iOS edge swipe for back navigation. No custom override.
 | Haptic | Light impact at trigger threshold |
 | Result | Opens reply composer with "Replying to [Author]" context |
 
-### Swipe Actions on Thread Items (Inbox)
+---
+
+## Long-Press Actions
+
+### Long-Press to Mute (Inbox + Chats)
+
+Owner decision (2026-08-03): per-target notification muting is a **long-press** affordance, not a swipe action. Swipe-to-reveal was specified in an earlier draft of this document and was never implemented — a long press keeps the row's tap target undivided, avoids a gesture collision with selectable text, and maps cleanly onto an `accessibilityActions` entry for VoiceOver/TalkBack.
 
 | Property | Value |
 |---|---|
-| Direction | Swipe left on a thread item |
-| Reveal | Mute / Archive actions |
-| Colors | Mute: `colors.textSecondary` bg, Archive: `colors.warning` bg |
+| Trigger | Long press on a thread row (Inbox) or a chat row (Chats) |
+| Presentation | Native `Alert.alert` action list — the same idiom as the author block/report menu |
+| Options | "Mute notifications" / "Unmute notifications" (whichever the current state allows), plus "Cancel" |
+| Muted indicator | OpenMoji `1F515` (🔕) in the row's meta line |
+| Accessibility | `accessibilityActions` exposes the same mute/unmute action; `accessibilityHint` announces that a long press opens notification options |
+| Detail-screen equivalent | Bell glyph in the navigation header right slot — `1F514` (🔔) unmuted, `1F515` (🔕) muted, 8pt `hitSlop` |
+| Not available on | Individual messages inside a DM (long press there collides with selectable text) — mute the thread from its detail header instead |
 
 ---
 

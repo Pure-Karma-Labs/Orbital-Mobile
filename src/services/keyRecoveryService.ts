@@ -37,6 +37,7 @@ import {
   hydrateContactsFromOrbits,
 } from './conversationService';
 import { syncBlockedUsers } from './blockedUsersSync';
+import { syncNotificationSettings } from './notificationSettingsSync';
 import { websocketManager } from './websocket';
 import { isRecoveryInitiator, setRecoveryInitiator } from './recoveryState';
 
@@ -611,6 +612,7 @@ async function doRecoverIdentityKeys(
     hydrateContactsFromOrbits().catch(warnAndCapture('[Recovery:ContactHydration]'));
     fulfillPendingWraps().catch(warnAndCapture('[Recovery:PendingWraps]'));
     syncBlockedUsers().catch(warnAndCapture('[Recovery:BlockedUsersSync]'));
+    syncNotificationSettings().catch(warnAndCapture('[Recovery:NotificationSettingsSync]'));
 
     return { status: 'success' };
   } finally {

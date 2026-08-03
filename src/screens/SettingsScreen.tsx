@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
   FlatList,
@@ -22,12 +22,10 @@ import type { BlockingOrbit } from '../services/api/errors';
 import { getGroupQuota } from '../services/api/groups';
 import { fetchCreatorOrbitsDecrypted } from '../services/conversationService';
 import type { DecryptedGroup } from '../services/conversationService';
-import { requestPermissionAndRegister, deregisterCurrentDevice } from '../services/notificationService';
-import { useAppStore } from '../stores/useAppStore';
-import notifee, { AuthorizationStatus } from '@notifee/react-native';
 import { Header } from '../components/Header';
 import { ProfileCard } from './settings/ProfileCard';
 import { SettingsRow } from './settings/SettingsRow';
+import { SectionHeader } from './settings/SectionHeader';
 import { QuotaBar } from './settings/QuotaBar';
 import { DeletePasswordModal } from './settings/DeletePasswordModal';
 import { PasswordConfirmModal } from './settings/PasswordConfirmModal';
@@ -52,36 +50,13 @@ const SCHEME_EMOJI: Record<string, string> = {
   system: '1F504',
 };
 
-function SectionHeader({ label }: { label: string }): React.JSX.Element {
-  const theme = useTheme();
-
-  const containerStyle: ViewStyle = {
-    paddingTop: theme.spacing.base,
-    paddingBottom: theme.spacing.sm,
-    paddingHorizontal: theme.spacing.base,
-  };
-
-  const textStyle: TextStyle = {
-    fontFamily: theme.typography.fontFamily.mono,
-    fontSize: theme.typography.fontSize.sm,
-    color: theme.colors.textTertiary,
-    textAlign: 'center',
-  };
-
-  return (
-    <View style={containerStyle}>
-      <Text style={textStyle}>{`─── ${label} ───`}</Text>
-    </View>
-  );
-}
-
 export function SettingsScreen(): React.JSX.Element {
   const theme = useTheme();
   const navigation = useNavigation<NativeStackNavigationProp<SettingsStackParamList>>();
   const { displayName, username, avatarPath, userId, avatarDigest, keyRecoveryError, setKeyRecoveryError } = useAuth();
   const { colorScheme, setColorScheme, soundEnabled, setSoundEnabled } = useUI();
-  const { activeConversationId, conversations } = useConversations();
   const { pushPermissionGranted } = useNotifications();
+  const { activeConversationId, conversations } = useConversations();
 
   const [quota, setQuota] = useState<GroupQuotaResponse | null>(null);
 
@@ -155,42 +130,11 @@ export function SettingsScreen(): React.JSX.Element {
     setSoundEnabled(!soundEnabled);
   }, [soundEnabled, setSoundEnabled]);
 
-  const unsubRef = useRef<(() => void) | null>(null);
-  const togglingRef = useRef(false);
-
-  useEffect(() => () => { unsubRef.current?.(); }, []);
-
-  const handleTogglePush = useCallback(async () => {
-    if (togglingRef.current) return;
-    togglingRef.current = true;
-    try {
-      if (pushPermissionGranted) {
-        unsubRef.current?.();
-        unsubRef.current = null;
-        await deregisterCurrentDevice();
-        useAppStore.getState().setPushPermission(false);
-        useAppStore.getState().setPushToken(null);
-      } else {
-        const settings = await notifee.getNotificationSettings();
-        if (settings.authorizationStatus === AuthorizationStatus.DENIED) {
-          Alert.alert(
-            'Notifications Disabled',
-            'Push notifications were previously denied. Enable them in Settings.',
-            [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Open Settings', onPress: () => Linking.openSettings() },
-            ],
-          );
-          return;
-        }
-        unsubRef.current?.();
-        const unsub = await requestPermissionAndRegister();
-        unsubRef.current = unsub;
-      }
-    } finally {
-      togglingRef.current = false;
-    }
-  }, [pushPermissionGranted]);
+  // The master push toggle and the per-type preference toggles both live in
+  // PushNotificationSettingsScreen (#449) — this row is only the entry point.
+  const handlePushNotifications = useCallback(() => {
+    navigation.navigate('PushNotificationSettings');
+  }, [navigation]);
 
   const handleManageOrbits = useCallback(() => {
     navigation.navigate('ManageOrbits');
@@ -418,10 +362,11 @@ export function SettingsScreen(): React.JSX.Element {
         <SectionHeader label="Notifications" />
         <SettingsRow
           emojiUnified="1F514"
-          label="Push"
+          label="Push Notifications"
           value={pushPermissionGranted ? 'On' : 'Off'}
-          onPress={handleTogglePush}
-          testID="push-row"
+          chevron
+          onPress={handlePushNotifications}
+          testID="push-notifications-row"
         />
         <SettingsRow
           emojiUnified="1F4F3"

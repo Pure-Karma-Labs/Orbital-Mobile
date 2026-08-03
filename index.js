@@ -16,6 +16,7 @@ import {
   ANDROID_CHANNEL_ID,
   ANDROID_CHANNEL_NAME,
   dedupKeyForPayload,
+  collapseKeyForPayload,
 } from './src/services/notificationConstants';
 import { LRUSet } from './src/services/websocket/lruSet';
 
@@ -49,15 +50,24 @@ messaging().setBackgroundMessageHandler(async (remoteMessage) => {
 
   const title = NOTIFICATION_TITLES[data.t] || 'Orbital';
 
+  // #449 (D9): collapse per thread/conversation so replies replace rather than
+  // stack. Pure payload derivation — this handler runs before bootstrap, so it
+  // still reads no store, MMKV, or database state. Suppression by preference or
+  // mute is server-side only for background pushes (a plaintext mirror of the
+  // muted-target ids would leak them at rest).
+  const collapseKey = collapseKeyForPayload(data);
+
   await notifee.displayNotification({
     title,
     body: 'Tap to view',
     data,
+    ...(collapseKey ? { id: collapseKey } : {}),
     android: {
       channelId: ANDROID_CHANNEL_ID,
       smallIcon: 'ic_notification',
       importance: AndroidImportance.HIGH,
       pressAction: { id: 'default' },
+      onlyAlertOnce: true,
     },
   });
 });

@@ -5,19 +5,22 @@
  * Left 3px border matches the ThreadItem pattern.
  */
 
-import React, { useCallback } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import {
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
+  type AccessibilityActionEvent,
   type TextStyle,
   type ViewStyle,
 } from 'react-native';
 import { useTheme } from '../../theme';
 import { Avatar } from '../../components/Avatar';
 import { Badge } from '../../components/Badge';
+import { Emoji } from '../../components/Emoji';
 import { EmojiText } from '../../components/EmojiText';
+import { useIsMuted } from '../../hooks/useIsMuted';
 
 export interface ChatItemProps {
   conversationId: string;
@@ -26,6 +29,11 @@ export interface ChatItemProps {
   avatarUrl?: string | null;
   unreadCount?: number;
   onPress: (conversationId: string) => void;
+  /**
+   * Long press opens the mute/unmute menu (#449). Must be a stable reference —
+   * this component is memoized.
+   */
+  onLongPress?: (conversationId: string) => void;
   /** User ID — required for encrypted avatar resolution */
   userId?: string | null;
   /** Group ID for group key lookup */
@@ -68,6 +76,7 @@ export const ChatItem = React.memo(function ChatItem({
   avatarUrl,
   unreadCount,
   onPress,
+  onLongPress,
   userId,
   groupId,
   encryptedAvatarKey,
@@ -75,10 +84,31 @@ export const ChatItem = React.memo(function ChatItem({
   avatarDigest,
 }: ChatItemProps): React.JSX.Element {
   const theme = useTheme();
+  const isMuted = useIsMuted(conversationId);
 
   const handlePress = useCallback(() => {
     onPress(conversationId);
   }, [onPress, conversationId]);
+
+  const handleLongPress = useCallback(() => {
+    onLongPress?.(conversationId);
+  }, [onLongPress, conversationId]);
+
+  // Screen readers can't long-press: expose the same action explicitly.
+  const accessibilityActions = useMemo(
+    () =>
+      onLongPress
+        ? [{ name: 'mute', label: isMuted ? 'Unmute notifications' : 'Mute notifications' }]
+        : undefined,
+    [onLongPress, isMuted],
+  );
+
+  const handleAccessibilityAction = useCallback(
+    (event: AccessibilityActionEvent) => {
+      if (event.nativeEvent.actionName === 'mute') onLongPress?.(conversationId);
+    },
+    [onLongPress, conversationId],
+  );
 
   const containerStyle: ViewStyle = {
     flexDirection: 'row',
@@ -103,7 +133,20 @@ export const ChatItem = React.memo(function ChatItem({
     fontFamily: theme.typography.fontFamily.bodyBold,
     fontSize: theme.typography.fontSize.base,
     color: theme.colors.textPrimary,
+    // Shrink rather than push the muted glyph out of the row.
+    flexShrink: 1,
   };
+
+  const nameRowStyle: ViewStyle = {
+    flexDirection: 'row',
+    alignItems: 'center',
+  };
+
+  const mutedIconStyle: ViewStyle = {
+    marginLeft: theme.spacing.xs,
+  };
+
+  const emojiSize = Math.round(theme.typography.fontSize.sm * 1.15);
 
   const timeStyle: TextStyle = {
     fontFamily: theme.typography.fontFamily.body,
@@ -115,9 +158,13 @@ export const ChatItem = React.memo(function ChatItem({
     <TouchableOpacity
       style={containerStyle}
       onPress={handlePress}
+      onLongPress={onLongPress ? handleLongPress : undefined}
       activeOpacity={0.7}
       accessibilityRole="button"
-      accessibilityLabel={`Chat with ${recipientName}`}
+      accessibilityLabel={`Chat with ${recipientName}${isMuted ? ', muted' : ''}`}
+      accessibilityHint={onLongPress ? 'Long press for notification options' : undefined}
+      accessibilityActions={accessibilityActions}
+      onAccessibilityAction={onLongPress ? handleAccessibilityAction : undefined}
     >
       <Avatar
         name={recipientName}
@@ -130,9 +177,16 @@ export const ChatItem = React.memo(function ChatItem({
         avatarDigest={avatarDigest}
       />
       <View style={mainStyle}>
-        <EmojiText style={nameStyle} numberOfLines={1}>
-          {recipientName}
-        </EmojiText>
+        <View style={nameRowStyle}>
+          <EmojiText style={nameStyle} numberOfLines={1}>
+            {recipientName}
+          </EmojiText>
+          {isMuted && (
+            <View style={mutedIconStyle} testID="chat-muted-indicator">
+              <Emoji unified="1F515" size={emojiSize} />
+            </View>
+          )}
+        </View>
       </View>
       {lastMessageAt != null && (
         <Text style={timeStyle}>{formatTime(lastMessageAt)}</Text>

@@ -51,6 +51,13 @@ jest.mock('@react-navigation/native', () => ({
 const mockSetViewingConversation = jest.fn();
 const mockMarkConversationRead = jest.fn();
 
+// Mutable so a test can render the muted bell (#449).
+let mockMutedTargets: Record<string, string> = {};
+
+jest.mock('../../services/notificationSettingsSync', () => ({
+  toggleMute: jest.fn().mockResolvedValue(true),
+}));
+
 jest.mock('../../stores/useAppStore', () => {
   const state = {
     setViewingConversation: mockSetViewingConversation,
@@ -100,34 +107,32 @@ jest.mock('../../components/Emoji', () => ({
 
 const mockUseThreads = jest.fn();
 
-jest.mock('../../stores', () => ({
-  useThreads: (...args: unknown[]) => mockUseThreads(...args),
-  useAuth: () => ({ userId: 'test-user-id', username: 'testuser' }),
-  useContactForConversation: () => null,
-  useAppStore: Object.assign(
-    (selector: (s: Record<string, unknown>) => unknown) => selector({
-      setViewingConversation: mockSetViewingConversation,
-      markConversationRead: mockMarkConversationRead,
-      conversations: {},
-      userId: null,
-      displayName: null,
-      contacts: {},
-    }),
-    {
-      getState: jest.fn(() => ({
-        setViewingConversation: mockSetViewingConversation,
-        markConversationRead: mockMarkConversationRead,
-        conversations: {},
-        userId: null,
-        displayName: null,
-        contacts: {},
-      })),
-    },
-  ),
-}));
+jest.mock('../../stores', () => {
+  const getState = () => ({
+    setViewingConversation: mockSetViewingConversation,
+    markConversationRead: mockMarkConversationRead,
+    conversations: {},
+    userId: null,
+    displayName: null,
+    contacts: {},
+    mutedTargets: mockMutedTargets,
+  });
+  return {
+    useThreads: (...args: unknown[]) => mockUseThreads(...args),
+    useAuth: () => ({ userId: 'test-user-id', username: 'testuser' }),
+    useContactForConversation: () => null,
+    useAppStore: Object.assign(
+      (selector: (s: ReturnType<typeof getState>) => unknown) => selector(getState()),
+      { getState: jest.fn(getState) },
+    ),
+  };
+});
 
 import { loadThreadsForGroup } from '../../services/threadService';
 const mockLoadThreadsForGroup = loadThreadsForGroup as jest.Mock;
+
+import { toggleMute } from '../../services/notificationSettingsSync';
+const mockToggleMute = toggleMute as jest.Mock;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -249,6 +254,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockUseThreads.mockReturnValue(emptyThreadsState);
   mockBlockedSet = new Set<string>();
+  mockMutedTargets = {};
   mockSearchState = {
     searchText: '',
     setSearchText: jest.fn(),
@@ -479,5 +485,62 @@ describe('ChatDetailScreen — block filtering', () => {
     );
     expect(blockedBody).toBeUndefined();
     expect(okBody).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Header actions: mute bell beside the compose "+" (#449)
+// ---------------------------------------------------------------------------
+
+describe('ChatDetailScreen — header mute bell', () => {
+  it('renders BOTH the mute bell and the compose "+" in the header', () => {
+    const renderer = renderScreen('Bob');
+
+    expect(() => findByTestId(renderer.root, 'chat-mute-bell')).not.toThrow();
+    const compose = findByTestId(renderer.root, 'chat-compose-button');
+    expect(compose.props.accessibilityLabel).toBe('New thread');
+  });
+
+  it('the compose "+" still navigates to the composer', () => {
+    const renderer = renderScreen('Bob');
+
+    act(() => {
+      findByTestId(renderer.root, 'chat-compose-button').props.onPress();
+    });
+
+    expect(mockNavigation.navigate).toHaveBeenCalledWith('ComposeChatThread', {
+      groupId: 'dm-conv-1',
+      isDm: true,
+    });
+  });
+
+  it('the bell reflects the unmuted state', () => {
+    const renderer = renderScreen('Bob');
+    const bell = findByTestId(renderer.root, 'chat-mute-bell');
+
+    expect(bell.props.accessibilityLabel).toBe('Mute this chat');
+    expect(bell.props.accessibilityState).toEqual({ selected: false });
+  });
+
+  it('the bell reflects the muted state and swaps the glyph', () => {
+    mockMutedTargets = { 'dm-conv-1': 'group' };
+    const renderer = renderScreen('Bob');
+    const bell = findByTestId(renderer.root, 'chat-mute-bell');
+
+    expect(bell.props.accessibilityLabel).toBe('Unmute this chat');
+    expect(bell.props.accessibilityState).toEqual({ selected: true });
+    expect(
+      renderer.root.findAll((n) => n.props.unified === '1F515').length,
+    ).toBeGreaterThan(0);
+  });
+
+  it('tapping the bell mutes the conversation as a group target', () => {
+    const renderer = renderScreen('Bob');
+
+    act(() => {
+      findByTestId(renderer.root, 'chat-mute-bell').props.onPress();
+    });
+
+    expect(mockToggleMute).toHaveBeenCalledWith('dm-conv-1', 'group');
   });
 });

@@ -4,6 +4,7 @@
  * - getMMKVInstance() throws before initMMKV() is called
  * - partialize only includes expected keys
  * - Sensitive data (auth tokens, keys) is NOT in persisted state
+ * - the persist merge floors notificationPrefs at hydration (#679)
  */
 
 // Mock react-native-mmkv before any imports that use it
@@ -29,7 +30,7 @@ import {
   getMMKVInstance,
   resetMMKVForTesting,
 } from '../middleware/persistence';
-import { partializeAppState } from '../useAppStore';
+import { mergePersistedAppState, partializeAppState, useAppStore } from '../useAppStore';
 import type { AppState } from '../../types/store';
 
 // Helper to get the underlying mock instance created by the module
@@ -286,5 +287,129 @@ describe('persistence partialize', () => {
     expect(persisted.pendingMuteOps).toEqual({
       'thread-1': { targetType: 'thread', muted: true, ownerUserId: 'user-1', attempts: 0 },
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// persist merge — hydration (#679)
+//
+// Placed LAST on purpose: these cases rehydrate the real shared store, and the
+// restore routes through persist's wrapped setState (which writes to the shared
+// MMKV mock). Keeping them after the partialize describes stops that bleeding
+// into assertions above.
+// ---------------------------------------------------------------------------
+
+describe('persist merge — hydration floors notificationPrefs', () => {
+  /**
+   * The MMKV instance setup above is scoped to the mmkvStateStorage describe,
+   * so without resetMMKVForTesting here mmkvStateStorage.getItem returns null
+   * regardless of what getString is mocked to return.
+   *
+   * Never assert on MMKV writes as evidence of the floor: hydrate() applies its
+   * result through the unwrapped set and does not write back.
+   */
+  let snapshot: AppState;
+
+  beforeEach(() => {
+    resetMMKVForTesting();
+    jest.clearAllMocks();
+    snapshot = useAppStore.getState();
+  });
+
+  afterEach(() => {
+    useAppStore.setState(snapshot, true);
+    jest.clearAllMocks();
+  });
+
+  /** A blob from a build that predated three of today's four pref keys. */
+  const PERSISTED_BLOB = JSON.stringify({
+    state: { notificationPrefs: { newDm: false }, colorScheme: 'dark' },
+    version: 0,
+  });
+
+  it('floors pref keys absent from the persisted blob instead of hydrating undefined', async () => {
+    getMockInstance().getString.mockReturnValue(PERSISTED_BLOB);
+
+    await useAppStore.persist.rehydrate();
+
+    // Without merge, zustand's default top-level spread REPLACES the whole
+    // object: the three absent keys hydrate as `undefined` for the session, so
+    // the settings screen renders toggles with no value while pushes fire.
+    expect(useAppStore.getState().notificationPrefs).toEqual({
+      newThread: true,
+      newReply: true,
+      newDm: false,
+      memberJoined: true,
+    });
+  });
+
+  it('keeps default top-level semantics and every action (replace-mode guard)', async () => {
+    getMockInstance().getString.mockReturnValue(PERSISTED_BLOB);
+
+    await useAppStore.persist.rehydrate();
+
+    expect(useAppStore.getState().colorScheme).toBe('dark');
+    // The merge result is applied with set(state, true) — replace mode. A merge
+    // that stops spreading `current` strips every action and bricks launch.
+    expect(typeof useAppStore.getState().setNotificationPrefs).toBe('function');
+  });
+
+  it('is non-destructive when storage is empty', async () => {
+    useAppStore.getState().setNotificationPrefs({ newReply: false });
+    getMockInstance().getString.mockReturnValue(undefined);
+
+    await useAppStore.persist.rehydrate();
+
+    // getItem returns null whenever the MMKV singleton was reset (the known
+    // Metro Fast Refresh mode), and zustand still calls merge(undefined, current).
+    // Flooring from DEFAULT_NOTIFICATION_PREFS would silently reset server truth
+    // to all-on here; flooring from `current` cannot.
+    expect(useAppStore.getState().notificationPrefs.newReply).toBe(false);
+  });
+
+  it('rejects a non-object blob, including an array', () => {
+    const current = useAppStore.getState();
+
+    const fromString = mergePersistedAppState('garbage', current);
+    expect(fromString.notificationPrefs).toEqual(current.notificationPrefs);
+    expect(typeof fromString.setNotificationPrefs).toBe('function');
+
+    // Spreading an array would splatter index keys ('0', '1') into state.
+    const fromArray = mergePersistedAppState(['a', 'b'], current);
+    expect(fromArray.notificationPrefs).toEqual(current.notificationPrefs);
+    expect('0' in fromArray).toBe(false);
+  });
+
+  it('rejects a non-object notificationPrefs', () => {
+    const current = useAppStore.getState();
+
+    const merged = mergePersistedAppState({ notificationPrefs: 'garbage' }, current);
+
+    expect(merged.notificationPrefs).toEqual(current.notificationPrefs);
+    expect(typeof merged.setNotificationPrefs).toBe('function');
+  });
+
+  it('floors a non-boolean pref value and clamps a key the app no longer has', () => {
+    const current = useAppStore.getState();
+
+    const merged = mergePersistedAppState(
+      { notificationPrefs: { newDm: 'false', bogus: true } },
+      current,
+    );
+
+    expect(merged.notificationPrefs.newDm).toBe(current.notificationPrefs.newDm);
+    expect('bogus' in merged.notificationPrefs).toBe(false);
+  });
+
+  it('never resurrects a key partialize excludes (the allowlist governs reads too)', () => {
+    const current = useAppStore.getState();
+
+    const merged = mergePersistedAppState(
+      { pushToken: 'evil-token', isAuthenticated: true },
+      current,
+    );
+
+    expect(merged.pushToken).toBe(current.pushToken);
+    expect(merged.isAuthenticated).toBe(current.isAuthenticated);
   });
 });

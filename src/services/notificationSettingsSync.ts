@@ -29,6 +29,7 @@
 import { Alert, AppState as RNAppState } from 'react-native';
 import * as Sentry from '@sentry/react-native';
 import { useAppStore } from '../stores/useAppStore';
+import { DEFAULT_NOTIFICATION_PREFS } from '../stores/slices/notificationSlice';
 import {
   getNotificationMutes,
   getNotificationPrefs,
@@ -48,12 +49,28 @@ import type { PendingMuteOp } from '../types/store';
 // Constants
 // ---------------------------------------------------------------------------
 
-const PREF_KEYS: (keyof NotificationPrefs)[] = [
-  'newThread',
-  'newReply',
-  'newDm',
-  'memberJoined',
-];
+/**
+ * The pref-key universe, derived — never hand-listed.
+ *
+ * DEFAULT_NOTIFICATION_PREFS is explicitly typed `NotificationPrefs`, so adding
+ * a key to that interface is a compile error at notificationSlice.ts until the
+ * default is supplied. Deriving from it transfers that exhaustiveness here: an
+ * under-enumerated list is no longer expressible. The cast only re-narrows
+ * Object.keys' string[] — it asserts nothing about completeness.
+ *
+ * Under-enumeration was silent AND per-key: drivePref uses sanitizePrefs as its
+ * confirmation anchor (a missing key makes the client confirm itself), and the
+ * GET apply drops the key while setNotificationPrefs merges, freezing the stale
+ * local value.
+ *
+ * Where the compiler stops helping: the two remaining hand-maintained lists are
+ * PREF_KEY_BY_TYPE's values (notificationConstants.ts — not derivable, it is a
+ * push-type→pref-key mapping), covered by a subset test in
+ * notificationSlice.test.ts, and PREF_ROWS (PushNotificationSettingsScreen.tsx
+ * — carries labels/emoji/testIDs), covered by a compile-time `satisfies`
+ * assertion in that file.
+ */
+const PREF_KEYS = Object.keys(DEFAULT_NOTIFICATION_PREFS) as (keyof NotificationPrefs)[];
 
 const MUTE_TARGET_TYPES: MuteTargetType[] = ['thread', 'group'];
 
@@ -522,7 +539,10 @@ export async function syncNotificationSettings(): Promise<void> {
   const store = useAppStore.getState();
 
   if (prefsResult.status === 'fulfilled') {
-    // The GET always returns the full key set, so a merge is an overwrite.
+    // The GET returns the full key set, so this merge behaves as an overwrite.
+    // That is a property of the response, not of the apply: if the server ever
+    // omits a key (or sends a non-boolean for it), setNotificationPrefs merges
+    // per key and the local value survives by design — see the omitted-key test.
     const prefs = sanitizePrefs(prefsResult.value);
     // Unconfirmed intents win: a sync landing between an optimistic flip and
     // its confirmation must not visibly revert the flip.

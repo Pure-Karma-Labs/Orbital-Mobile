@@ -507,12 +507,17 @@ export async function drainPendingMuteOps(): Promise<void> {
  * that suspenders, covering anything still queued when the GETs return.
  */
 export async function syncNotificationSettings(): Promise<void> {
+  const startEpoch = epoch;
   await drainPendingMuteOps();
 
   const [prefsResult, mutesResult] = await Promise.allSettled([
     getNotificationPrefs(),
     getNotificationMutes(),
   ]);
+
+  // A wipe landed while the GETs were in flight: the responses belong to the
+  // previous account and must never repopulate the freshly cleared store.
+  if (epoch !== startEpoch) return;
 
   const store = useAppStore.getState();
 

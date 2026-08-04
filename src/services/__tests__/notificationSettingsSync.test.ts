@@ -1041,6 +1041,28 @@ describe('clearNotificationSyncState', () => {
 
     expect(mockSetNotificationPrefs).not.toHaveBeenCalled();
   });
+
+  it('drops a sync snapshot that lands after the wipe', async () => {
+    const prefsGet = deferred<Record<string, boolean>>();
+    const mutesGet = deferred<{ mutes: unknown[] }>();
+    mockGetNotificationPrefs.mockReturnValue(prefsGet.promise);
+    mockGetNotificationMutes.mockReturnValue(mutesGet.promise);
+    const sync = syncNotificationSettings();
+    await flush();
+
+    clearNotificationSyncState();
+    mockSetNotificationPrefs.mockClear();
+    mockSetMutedTargets.mockClear();
+    mockClearPendingMuteOps.mockClear();
+
+    prefsGet.resolve({ newThread: false, newReply: true, newDm: true, memberJoined: true });
+    mutesGet.resolve({ mutes: [{ targetId: 'thread-1', targetType: 'thread' }] });
+    await sync;
+
+    expect(mockSetNotificationPrefs).not.toHaveBeenCalled();
+    expect(mockSetMutedTargets).not.toHaveBeenCalled();
+    expect(mockClearPendingMuteOps).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------

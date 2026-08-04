@@ -4,8 +4,8 @@
 
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
-import { createNotificationSlice } from '../slices/notificationSlice';
-import type { AppState } from '../../types/store';
+import { createNotificationSlice, MAX_PENDING_MUTE_OPS } from '../slices/notificationSlice';
+import type { AppState, PendingMuteOp } from '../../types/store';
 
 // ---------------------------------------------------------------------------
 // Minimal store factory
@@ -300,11 +300,151 @@ describe('notificationSlice — muted targets', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// #678: write-ahead queue of unconfirmed mute intents
+// ---------------------------------------------------------------------------
+
+describe('notificationSlice — applyMuteIntent / pending mute queue (#678)', () => {
+  const op = (overrides: Partial<PendingMuteOp> = {}): PendingMuteOp => ({
+    targetType: 'thread',
+    muted: true,
+    ownerUserId: 'user-1',
+    attempts: 0,
+    ...overrides,
+  });
+
+  it('muted: true sets mutedTargets and writes the queue entry in one call', () => {
+    const store = makeStore();
+    store.getState().applyMuteIntent('thread-1', op());
+
+    expect(store.getState().mutedTargets).toEqual({ 'thread-1': 'thread' });
+    expect(store.getState().pendingMuteOps).toEqual({ 'thread-1': op() });
+  });
+
+  it('muted: false deletes mutedTargets and writes the queue entry', () => {
+    const store = makeStore();
+    store.getState().addMutedTarget('thread-1', 'thread');
+
+    store.getState().applyMuteIntent('thread-1', op({ muted: false }));
+
+    expect(store.getState().mutedTargets).toEqual({});
+    expect(store.getState().pendingMuteOps).toEqual({ 'thread-1': op({ muted: false }) });
+  });
+
+  it('a second call for the same target replaces the intent (last-intent-wins, not appended)', () => {
+    const store = makeStore();
+    store.getState().applyMuteIntent('thread-1', op({ attempts: 0 }));
+    store.getState().applyMuteIntent('thread-1', op({ muted: false, attempts: 3 }));
+
+    expect(store.getState().pendingMuteOps).toEqual({
+      'thread-1': op({ muted: false, attempts: 3 }),
+    });
+    expect(Object.keys(store.getState().pendingMuteOps)).toHaveLength(1);
+  });
+
+  it('clearPendingMuteOp removes one entry', () => {
+    const store = makeStore();
+    store.getState().applyMuteIntent('thread-1', op());
+    store.getState().applyMuteIntent('group-9', op({ targetType: 'group' }));
+
+    store.getState().clearPendingMuteOp('thread-1');
+
+    expect(store.getState().pendingMuteOps).toEqual({ 'group-9': op({ targetType: 'group' }) });
+  });
+
+  it('clearPendingMuteOp on an absent key is an identity-preserving no-op', () => {
+    const store = makeStore();
+    store.getState().applyMuteIntent('group-9', op({ targetType: 'group' }));
+    const before = store.getState().pendingMuteOps;
+
+    store.getState().clearPendingMuteOp('nope');
+
+    expect(store.getState().pendingMuteOps).toEqual({ 'group-9': op({ targetType: 'group' }) });
+    expect(store.getState().pendingMuteOps).toBe(before);
+  });
+
+  it('clearPendingMuteOps removes several entries in one call', () => {
+    const store = makeStore();
+    store.getState().applyMuteIntent('thread-1', op());
+    store.getState().applyMuteIntent('group-9', op({ targetType: 'group' }));
+    store.getState().applyMuteIntent('thread-2', op());
+
+    store.getState().clearPendingMuteOps(['thread-1', 'group-9']);
+
+    expect(store.getState().pendingMuteOps).toEqual({ 'thread-2': op() });
+  });
+
+  it('clearPendingMuteOps is an identity-preserving no-op when nothing matches', () => {
+    const store = makeStore();
+    store.getState().applyMuteIntent('thread-1', op());
+    const before = store.getState().pendingMuteOps;
+
+    store.getState().clearPendingMuteOps(['nope', 'also-nope']);
+
+    expect(store.getState().pendingMuteOps).toBe(before);
+  });
+
+  it('bumpPendingMuteAttempts increments the attempts counter', () => {
+    const store = makeStore();
+    store.getState().applyMuteIntent('thread-1', op({ attempts: 0 }));
+
+    store.getState().bumpPendingMuteAttempts('thread-1');
+    store.getState().bumpPendingMuteAttempts('thread-1');
+
+    expect(store.getState().pendingMuteOps['thread-1']).toEqual(op({ attempts: 2 }));
+  });
+
+  it('bumpPendingMuteAttempts is an identity-preserving no-op when absent', () => {
+    const store = makeStore();
+    store.getState().applyMuteIntent('thread-1', op());
+    const before = store.getState().pendingMuteOps;
+
+    store.getState().bumpPendingMuteAttempts('nope');
+
+    expect(store.getState().pendingMuteOps).toBe(before);
+  });
+
+  describe('MAX_PENDING_MUTE_OPS cap', () => {
+    it('flips mutedTargets for a new target at cap but does not enqueue it', () => {
+      const store = makeStore();
+      for (let i = 0; i < MAX_PENDING_MUTE_OPS; i++) {
+        store.getState().applyMuteIntent(`thread-${i}`, op());
+      }
+      expect(Object.keys(store.getState().pendingMuteOps)).toHaveLength(MAX_PENDING_MUTE_OPS);
+
+      store.getState().applyMuteIntent('overflow', op());
+
+      expect(store.getState().mutedTargets.overflow).toBe('thread');
+      expect(store.getState().pendingMuteOps.overflow).toBeUndefined();
+      expect(Object.keys(store.getState().pendingMuteOps)).toHaveLength(MAX_PENDING_MUTE_OPS);
+    });
+
+    it('still updates an already-queued target when the queue is at cap', () => {
+      const store = makeStore();
+      for (let i = 0; i < MAX_PENDING_MUTE_OPS; i++) {
+        store.getState().applyMuteIntent(`thread-${i}`, op());
+      }
+
+      store.getState().applyMuteIntent('thread-0', op({ muted: false, attempts: 1 }));
+
+      expect(store.getState().mutedTargets['thread-0']).toBeUndefined();
+      expect(store.getState().pendingMuteOps['thread-0']).toEqual(op({ muted: false, attempts: 1 }));
+      expect(Object.keys(store.getState().pendingMuteOps)).toHaveLength(MAX_PENDING_MUTE_OPS);
+    });
+  });
+});
+
 describe('notificationSlice — resetNotificationSettings', () => {
-  it('restores all-true prefs and clears mutes', () => {
+  it('restores all-true prefs and clears mutes and the pending queue', () => {
     const store = makeStore();
     store.getState().setNotificationPrefs({ newReply: false, newDm: false });
     store.getState().addMutedTarget('thread-1', 'thread');
+    store.getState().applyMuteIntent('group-9', {
+      targetType: 'group',
+      muted: true,
+      ownerUserId: 'user-1',
+      attempts: 0,
+    });
 
     store.getState().resetNotificationSettings();
 
@@ -315,6 +455,7 @@ describe('notificationSlice — resetNotificationSettings', () => {
       memberJoined: true,
     });
     expect(store.getState().mutedTargets).toEqual({});
+    expect(store.getState().pendingMuteOps).toEqual({});
   });
 
   it('leaves push permission/token state alone (device-scoped, not account-scoped)', () => {

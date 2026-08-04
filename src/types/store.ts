@@ -388,6 +388,23 @@ export type MediaSlice = MediaState & MediaActions;
 // Notification slice state (push notifications)
 // ============================================================
 
+/**
+ * A queued mute intent awaiting server confirmation (#678).
+ *
+ * Ids and a type discriminator only — never content, titles, or key material.
+ * `ownerUserId` binds the entry to the account that created it: a queue that
+ * outlives its account (interrupted key recovery deletes `lastUserId` without
+ * running localWipe) must be discarded, never replayed under another user's
+ * JWT. `attempts` counts failed drains so a permanently failing entry cannot
+ * pin the sync overlay over server truth forever.
+ */
+export interface PendingMuteOp {
+  targetType: MuteTargetType;
+  muted: boolean;
+  ownerUserId: string;
+  attempts: number;
+}
+
 export interface NotificationState {
   pushPermissionGranted: boolean;
   pushToken: string | null;
@@ -399,6 +416,12 @@ export interface NotificationState {
    * it is so the UI can render the right affordance. Persisted.
    */
   mutedTargets: Record<string, MuteTargetType>;
+  /**
+   * Write-ahead queue of unconfirmed mute intents, keyed by target id (#678).
+   * Persisted, so a toggle made offline survives a restart; drained before the
+   * next sync and overlaid on the server snapshot until it converges.
+   */
+  pendingMuteOps: Record<string, PendingMuteOp>;
 }
 
 export interface NotificationActions {
@@ -410,7 +433,26 @@ export interface NotificationActions {
   setMutedTargets: (targets: Record<string, MuteTargetType>) => void;
   addMutedTarget: (targetId: string, targetType: MuteTargetType) => void;
   removeMutedTarget: (targetId: string) => void;
-  /** Reset prefs to all-true and clear mutes — called from localWipe. */
+  /**
+   * Record a mute intent in ONE set(): flips `mutedTargets` and writes the
+   * queue entry together (#678). Two persisted keys in one write — every set()
+   * on a persisted key re-serializes the whole partialized blob into MMKV.
+   *
+   * At MAX_PENDING_MUTE_OPS a *new* target is flipped but not enqueued; the
+   * caller's runner is seeded with its own intent, so the request still goes
+   * out once — only the survive-a-restart guarantee is dropped.
+   */
+  applyMuteIntent: (targetId: string, op: PendingMuteOp) => void;
+  /** Drop one queue entry; identity-preserving no-op when absent. */
+  clearPendingMuteOp: (targetId: string) => void;
+  /** Drop many queue entries in one set() — the drain's batched clear. */
+  clearPendingMuteOps: (targetIds: string[]) => void;
+  /** Increment a queue entry's failed-drain counter; no-op when absent. */
+  bumpPendingMuteAttempts: (targetId: string) => void;
+  /**
+   * Reset prefs to all-true and clear mutes and the pending queue — called
+   * from localWipe.
+   */
   resetNotificationSettings: () => void;
 }
 

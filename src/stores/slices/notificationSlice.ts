@@ -16,6 +16,16 @@ export const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = {
 };
 
 /**
+ * Defensive backstop on the persisted replay queue (#678).
+ *
+ * Per-target coalescing already bounds the queue by distinct targets; this caps
+ * the pathological case. Lives here, not in notificationSettingsSync, because
+ * the cap is enforced by `applyMuteIntent` — the slice must not import the
+ * network module, and one definition cannot drift from the code that applies it.
+ */
+export const MAX_PENDING_MUTE_OPS = 200;
+
+/**
  * Notification slice.
  *
  * Every action here is a PURE store mutation. Network calls live exclusively in
@@ -33,6 +43,7 @@ export const createNotificationSlice: StateCreator<
   pushToken: null,
   notificationPrefs: { ...DEFAULT_NOTIFICATION_PREFS },
   mutedTargets: {},
+  pendingMuteOps: {},
 
   // Actions
   setPushPermission: (granted) =>
@@ -70,9 +81,77 @@ export const createNotificationSlice: StateCreator<
       'notification/removeMutedTarget',
     ),
 
+  applyMuteIntent: (targetId, op) =>
+    set(
+      (state) => {
+        const mutedTargets = { ...state.mutedTargets };
+        if (op.muted) mutedTargets[targetId] = op.targetType;
+        else delete mutedTargets[targetId];
+
+        // At cap, a target the queue has never seen is flipped but not
+        // enqueued — the caller's seeded runner still issues the request.
+        const known = state.pendingMuteOps[targetId] !== undefined;
+        if (!known && Object.keys(state.pendingMuteOps).length >= MAX_PENDING_MUTE_OPS) {
+          return { mutedTargets };
+        }
+
+        return {
+          mutedTargets,
+          pendingMuteOps: { ...state.pendingMuteOps, [targetId]: op },
+        };
+      },
+      false,
+      'notification/applyMuteIntent',
+    ),
+
+  clearPendingMuteOp: (targetId) =>
+    set(
+      (state) => {
+        if (state.pendingMuteOps[targetId] === undefined) return {};
+        const next = { ...state.pendingMuteOps };
+        delete next[targetId];
+        return { pendingMuteOps: next };
+      },
+      false,
+      'notification/clearPendingMuteOp',
+    ),
+
+  clearPendingMuteOps: (targetIds) =>
+    set(
+      (state) => {
+        const present = targetIds.filter((id) => state.pendingMuteOps[id] !== undefined);
+        if (present.length === 0) return {};
+        const next = { ...state.pendingMuteOps };
+        for (const id of present) delete next[id];
+        return { pendingMuteOps: next };
+      },
+      false,
+      'notification/clearPendingMuteOps',
+    ),
+
+  bumpPendingMuteAttempts: (targetId) =>
+    set(
+      (state) => {
+        const op = state.pendingMuteOps[targetId];
+        if (op === undefined) return {};
+        return {
+          pendingMuteOps: {
+            ...state.pendingMuteOps,
+            [targetId]: { ...op, attempts: op.attempts + 1 },
+          },
+        };
+      },
+      false,
+      'notification/bumpPendingMuteAttempts',
+    ),
+
   resetNotificationSettings: () =>
     set(
-      { notificationPrefs: { ...DEFAULT_NOTIFICATION_PREFS }, mutedTargets: {} },
+      {
+        notificationPrefs: { ...DEFAULT_NOTIFICATION_PREFS },
+        mutedTargets: {},
+        pendingMuteOps: {},
+      },
       false,
       'notification/resetNotificationSettings',
     ),

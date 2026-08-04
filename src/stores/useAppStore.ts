@@ -19,7 +19,7 @@ import type { AppState } from '../types/store';
  */
 export type PersistedState = Pick<
   AppState,
-  'conversations' | 'conversationIds' | 'contacts' | 'colorScheme' | 'activeTab' | 'soundEnabled' | 'blockedUserIds' | 'blockedUserProfiles' | 'threadLastViewedAt' | 'notificationPrefs' | 'mutedTargets'
+  'conversations' | 'conversationIds' | 'contacts' | 'colorScheme' | 'activeTab' | 'soundEnabled' | 'blockedUserIds' | 'blockedUserProfiles' | 'threadLastViewedAt' | 'notificationPrefs' | 'mutedTargets' | 'pendingMuteOps'
 >;
 
 /**
@@ -45,6 +45,13 @@ export type PersistedState = Pick<
  * toggles and mute glyphs before the login-time sync lands. They are
  * server-authoritative — syncNotificationSettings() overwrites them — and
  * cleared on localWipe via resetNotificationSettings().
+ *
+ * pendingMuteOps (#678) is persisted so a mute toggled with no connectivity
+ * survives a restart: syncNotificationSettings() drains the queue before it
+ * trusts the server snapshot, and overlays whatever is still queued on top of
+ * it. Entries carry ids only (no content) plus the ownerUserId that scopes them
+ * to one account; the queue is cleared on localWipe via
+ * resetNotificationSettings().
  */
 export function partializeAppState(state: AppState): PersistedState {
   return {
@@ -59,6 +66,7 @@ export function partializeAppState(state: AppState): PersistedState {
     threadLastViewedAt: state.threadLastViewedAt,
     notificationPrefs: state.notificationPrefs,
     mutedTargets: state.mutedTargets,
+    pendingMuteOps: state.pendingMuteOps,
   };
 }
 

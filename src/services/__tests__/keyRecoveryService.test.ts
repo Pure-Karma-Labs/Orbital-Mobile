@@ -170,8 +170,11 @@ jest.mock('../blockedUsersSync', () => ({
   syncBlockedUsers: jest.fn().mockResolvedValue(undefined),
 }));
 
+const mockClearNotificationSyncState = jest.fn();
+
 jest.mock('../notificationSettingsSync', () => ({
   syncNotificationSettings: jest.fn().mockResolvedValue(undefined),
+  clearNotificationSyncState: () => mockClearNotificationSyncState(),
 }));
 
 jest.mock('../websocket/messageHandler', () => ({
@@ -215,6 +218,8 @@ const mockSetConflictSource = jest.fn();
 const mockSetKeyRecoveryError = jest.fn();
 const mockResetBlockedUsers = jest.fn();
 const mockSetViewingConversation = jest.fn();
+const mockClearPendingMuteOps = jest.fn();
+let mockPendingMuteOps: Record<string, unknown> = {};
 
 jest.mock('../../stores/useAppStore', () => ({
   useAppStore: {
@@ -236,6 +241,8 @@ jest.mock('../../stores/useAppStore', () => ({
       setKeyRecoveryError: mockSetKeyRecoveryError,
       resetBlockedUsers: mockResetBlockedUsers,
       setViewingConversation: mockSetViewingConversation,
+      pendingMuteOps: mockPendingMuteOps,
+      clearPendingMuteOps: mockClearPendingMuteOps,
     })),
   },
 }));
@@ -789,6 +796,67 @@ describe('recoverIdentityKeys — clearAllArchiveConfirmations', () => {
 
     expect(result.status).toBe('success');
     expect(mockClearAllArchiveConfirmations).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 5 local wipe — pending mute queue (#678)
+//
+// This path deletes lastUserId (disabling checkAccountSwitch) but never runs
+// localWipe, so a surviving queue would be the cross-account replay carrier.
+// ---------------------------------------------------------------------------
+
+describe('recoverIdentityKeys — pendingMuteOps wipe (#678)', () => {
+  let previousState: ReturnType<typeof useAppStore.getState>;
+
+  beforeEach(() => {
+    const { useAppStore: store } = require('../../stores/useAppStore');
+    // An earlier describe pins getState to a snapshot via mockReturnValue, so
+    // mutating the backing object is not enough — re-pin it with a queue.
+    previousState = store.getState();
+    mockPendingMuteOps = {
+      'thread-1': { targetType: 'thread', muted: true, ownerUserId: 'user-1', attempts: 0 },
+      'group-9': { targetType: 'group', muted: false, ownerUserId: 'user-1', attempts: 2 },
+    };
+    (store.getState as jest.Mock).mockReturnValue({
+      ...previousState,
+      pendingMuteOps: mockPendingMuteOps,
+      clearPendingMuteOps: mockClearPendingMuteOps,
+    });
+  });
+
+  afterEach(() => {
+    const { useAppStore: store } = require('../../stores/useAppStore');
+    (store.getState as jest.Mock).mockReturnValue(previousState);
+  });
+
+  it('bumps the sync epoch and clears every queued mute intent', async () => {
+    const result = await recoverIdentityKeys('password123', false);
+
+    expect(result.status).toBe('success');
+    expect(mockClearNotificationSyncState).toHaveBeenCalledTimes(1);
+    expect(mockClearPendingMuteOps).toHaveBeenCalledWith(['thread-1', 'group-9']);
+  });
+
+  it('does not run on the already-locally-wiped path', async () => {
+    // The queue clear lives inside the if(!locallyWiped) guard, unlike
+    // clearAllArchiveConfirmations.
+    delete mockItemStore.identityKeyPublic;
+
+    const result = await recoverIdentityKeys('password123', true);
+
+    expect(result.status).toBe('success');
+    expect(mockClearPendingMuteOps).not.toHaveBeenCalled();
+  });
+
+  it('is best-effort — recovery succeeds even if the queue clear throws', async () => {
+    mockClearPendingMuteOps.mockImplementation(() => {
+      throw new Error('store error');
+    });
+
+    const result = await recoverIdentityKeys('password123', false);
+
+    expect(result.status).toBe('success');
   });
 });
 

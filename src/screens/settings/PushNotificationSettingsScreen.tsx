@@ -56,12 +56,27 @@ interface PrefRowSpec {
  * `orbit_invite` is deliberately absent (dead push type) and
  * `identity_key_reset` is never suppressible — see plan D0.
  */
-const PREF_ROWS: PrefRowSpec[] = [
+const PREF_ROWS = [
   { key: 'newThread', emojiUnified: '1F4AC', label: 'New threads', testID: 'pref-new-thread-row' },
   { key: 'newReply', emojiUnified: '21A9-FE0F', label: 'Replies', testID: 'pref-new-reply-row' },
   { key: 'newDm', emojiUnified: '2709-FE0F', label: 'Direct messages', testID: 'pref-new-dm-row' },
   { key: 'memberJoined', emojiUnified: '1F44B', label: 'Member joined', testID: 'pref-member-joined-row' },
-];
+] as const satisfies readonly PrefRowSpec[];
+
+/**
+ * Exhaustiveness (#679): every NotificationPrefs key must have a row, or a new
+ * pref key silently ships with no UI. A missing row makes this alias `never`
+ * and the assertion below a compile error. The reverse direction (a row for a
+ * key that no longer exists) is already caught by `key: keyof NotificationPrefs`
+ * on PrefRowSpec.
+ *
+ * Written as a bare `satisfies` statement rather than a typed const because
+ * tsconfig sets noUnusedLocals — a const nothing reads is itself an error.
+ */
+type RowsCoverAllPrefKeys = keyof NotificationPrefs extends (typeof PREF_ROWS)[number]['key']
+  ? true
+  : never;
+true satisfies RowsCoverAllPrefKeys;
 
 export function PushNotificationSettingsScreen(): React.JSX.Element {
   const theme = useTheme();

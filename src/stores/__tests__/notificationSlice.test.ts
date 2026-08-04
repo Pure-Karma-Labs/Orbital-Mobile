@@ -4,7 +4,12 @@
 
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
-import { createNotificationSlice, MAX_PENDING_MUTE_OPS } from '../slices/notificationSlice';
+import {
+  createNotificationSlice,
+  DEFAULT_NOTIFICATION_PREFS,
+  MAX_PENDING_MUTE_OPS,
+} from '../slices/notificationSlice';
+import { PREF_KEY_BY_TYPE } from '../../services/notificationConstants';
 import type { AppState, PendingMuteOp } from '../../types/store';
 
 // ---------------------------------------------------------------------------
@@ -200,6 +205,22 @@ describe('notificationSlice — notification settings defaults (#449)', () => {
   it('starts with no muted targets', () => {
     const store = makeStore();
     expect(store.getState().mutedTargets).toEqual({});
+  });
+
+  /**
+   * Registry cross-check (#679). PREF_KEY_BY_TYPE is not derivable — it is a
+   * push-type -> pref-key mapping — so the compiler only checks its keys
+   * (Record<SuppressibleType, ...>) and its value TYPE, never that a value
+   * names a pref the app actually has. The check lives here rather than in
+   * notificationConstants.ts, whose header constraint forbids importing the
+   * store: that module is loaded by index.js before MMKV is open.
+   */
+  it('every PREF_KEY_BY_TYPE value is a real pref key', () => {
+    // Subset, not equality: values(PREF_KEY_BY_TYPE) ⊆ keys(DEFAULT_NOTIFICATION_PREFS)
+    // is the structural invariant. Full equality holds today only by coincidence —
+    // a future pref key with no suppressible push type would fail it spuriously.
+    const prefKeys = new Set(Object.keys(DEFAULT_NOTIFICATION_PREFS));
+    for (const key of Object.values(PREF_KEY_BY_TYPE)) expect(prefKeys.has(key)).toBe(true);
   });
 });
 

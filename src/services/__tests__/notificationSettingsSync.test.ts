@@ -361,6 +361,28 @@ describe('syncNotificationSettings', () => {
     });
     expect(storeState.mutedTargets).toEqual({ 'group-1': 'group' });
   });
+
+  it('a pref key missing from the GET leaves the local value untouched (#679)', async () => {
+    // The apply is a per-key merge, so "the GET is an overwrite" holds only
+    // while the server returns the full key set. A key it omits — or that an
+    // under-enumerated PREF_KEYS filtered out — keeps its stale local value
+    // forever, which is exactly the silent freeze #679 removes the room for.
+    storeState.notificationPrefs.newDm = false;
+    mockGetNotificationPrefs.mockResolvedValue({
+      newThread: true,
+      newReply: true,
+      memberJoined: true,
+    });
+
+    await syncNotificationSettings();
+
+    expect(storeState.notificationPrefs.newDm).toBe(false);
+    expect(mockSetNotificationPrefs).toHaveBeenCalledWith({
+      newThread: true,
+      newReply: true,
+      memberJoined: true,
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -447,6 +469,36 @@ describe('syncNotificationSettings — drain-first + overlay', () => {
 
     await syncNotificationSettings();
 
+    expect(storeState.notificationPrefs.newReply).toBe(false);
+
+    put.resolve(undefined);
+    await pref;
+  });
+
+  it('overlays a pending intent for a key the GET omits entirely (#679)', async () => {
+    // Asymmetry worth pinning rather than discovering: the GET apply is gated
+    // by PREF_KEYS (sanitizePrefs drops an omitted key), but the overlay loop
+    // writes straight into the patch and bypasses that gate. The intent
+    // therefore survives a response that never mentions the key.
+    const put = deferred();
+    mockUpdateNotificationPrefs.mockReturnValue(put.promise);
+    const pref = setPref('newReply', false);
+    await flush();
+
+    mockGetNotificationPrefs.mockResolvedValue({
+      newThread: true,
+      newDm: true,
+      memberJoined: true,
+    });
+
+    await syncNotificationSettings();
+
+    expect(mockSetNotificationPrefs).toHaveBeenCalledWith({
+      newThread: true,
+      newDm: true,
+      memberJoined: true,
+      newReply: false,
+    });
     expect(storeState.notificationPrefs.newReply).toBe(false);
 
     put.resolve(undefined);
@@ -903,6 +955,42 @@ describe('setPref', () => {
 
     expect(mockUpdateNotificationPrefs).not.toHaveBeenCalled();
     expect(mockSetNotificationPrefs).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The confirmation anchor (#679). sanitizePrefs is what drivePref believes
+   * the server said, so a key it cannot see falls back to the intent — the
+   * client confirming itself. That is correct for a genuinely omitted key, but
+   * an under-enumerated PREF_KEYS would make this fallback the ONLY path for a
+   * real key: `believed` would collapse to `intent` forever and the client
+   * could never observe the server disagreeing.
+   */
+  it('falls back to the intent when the response omits the toggled key', async () => {
+    mockUpdateNotificationPrefs.mockResolvedValue({
+      newThread: true,
+      newDm: true,
+      memberJoined: true,
+    });
+
+    await setPref('newReply', false);
+
+    expect(storeState.notificationPrefs.newReply).toBe(false);
+    // No spin: the loop turns on the intent moving, never on the server's answer.
+    expect(mockUpdateNotificationPrefs).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the intent when the response carries a non-boolean for the toggled key', async () => {
+    mockUpdateNotificationPrefs.mockResolvedValue({
+      newThread: true,
+      newReply: 'false',
+      newDm: true,
+      memberJoined: true,
+    });
+
+    await setPref('newReply', false);
+
+    expect(storeState.notificationPrefs.newReply).toBe(false);
+    expect(mockUpdateNotificationPrefs).toHaveBeenCalledTimes(1);
   });
 });
 

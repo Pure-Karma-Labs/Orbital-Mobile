@@ -12,6 +12,7 @@ import { createNotificationSlice } from './slices/notificationSlice';
 import { createBlockedUsersSlice } from './slices/blockedUsersSlice';
 import { createReportSlice } from './slices/reportSlice';
 import type { AppState } from '../types/store';
+import type { NotificationPrefs } from '../types/api';
 
 /**
  * Shape of the persisted (fast-start) subset of app state.
@@ -70,6 +71,69 @@ export function partializeAppState(state: AppState): PersistedState {
   };
 }
 
+/**
+ * Hydration merge: zustand's default top-level spread, plus a per-key floor on
+ * notificationPrefs.
+ *
+ * The default merge REPLACES notificationPrefs wholesale with the persisted
+ * object, so a blob written by a build that predates a pref key hydrates that
+ * key as `undefined` for the whole session (until a sync GET lands). Suppression
+ * reads fail open, so nothing is silently muted — but the settings screen would
+ * render a toggle with no value while pushes fire.
+ *
+ * Only notificationPrefs is floored: it is the one persisted value with a fixed
+ * key shape where per-key absence is representable. mutedTargets, pendingMuteOps,
+ * threadLastViewedAt and the collections are open maps whose empty default is
+ * already the correct base, and the scalars fall back to current state via the
+ * top-level spread.
+ *
+ * Exported for the same reason as partializeAppState: persistence.test.ts must
+ * assert the shipped function, never a copy that can drift.
+ *
+ * The guards exist because zustand calls merge(undefined, current) when storage
+ * is empty and passes whatever JSON deserialized to when the blob is corrupt
+ * (spreading a string or an array would splatter index keys into state). The
+ * floor source is CURRENT prefs, not DEFAULT_NOTIFICATION_PREFS: an empty or
+ * unreadable read must be non-destructive, and flooring from the constant would
+ * reset every pref to all-on whenever getItem returns null after server truth
+ * had already landed.
+ *
+ * NOT version/migrate: there is no schema change to migrate. migrate only runs
+ * on a version mismatch, which means it depends on someone remembering to bump
+ * the version — the exact discipline this issue exists to remove. merge runs
+ * unconditionally and is additive-key tolerant with no bookkeeping.
+ *
+ * Must return a COMPLETE AppState: zustand applies the merge result with
+ * set(state, true) (replace mode), so failing to spread `current` wipes every
+ * action.
+ */
+export function mergePersistedAppState(persisted: unknown, current: AppState): AppState {
+  const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+    v !== null && typeof v === 'object' && !Array.isArray(v);
+  const rawSaved = isPlainObject(persisted) ? persisted : {};
+  // The persist allowlist governs read as well as write — a stale or tampered
+  // blob cannot resurrect keys partialize excludes (pushToken, auth).
+  const allowed = new Set(Object.keys(partializeAppState(current)));
+  const saved: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(rawSaved)) {
+    if (allowed.has(k)) saved[k] = v;
+  }
+  const savedPrefs = isPlainObject(saved.notificationPrefs) ? saved.notificationPrefs : {};
+  // Per-key boolean floor, mirroring sanitizePrefs' discipline on network input
+  // — presence AND type validated, unknown keys clamped out.
+  // current.notificationPrefs is provably complete at every rehydrate (initial
+  // state is {...DEFAULT}, setNotificationPrefs merges, reset writes the full
+  // default).
+  const flooredPrefs: Partial<NotificationPrefs> = {};
+  for (const k of Object.keys(current.notificationPrefs) as (keyof NotificationPrefs)[]) {
+    const savedValue = savedPrefs[k];
+    flooredPrefs[k] = typeof savedValue === 'boolean' ? savedValue : current.notificationPrefs[k];
+  }
+  // The cast only re-narrows Partial — every key of the complete current set
+  // was just assigned above; it asserts nothing the loop did not establish.
+  return { ...current, ...saved, notificationPrefs: flooredPrefs as NotificationPrefs };
+}
+
 export const useAppStore = create<AppState>()(
   devtools(
     persist(
@@ -89,6 +153,7 @@ export const useAppStore = create<AppState>()(
         name: 'orbital-app-store',
         storage: createMMKVStorage<PersistedState>(),
         partialize: partializeAppState,
+        merge: mergePersistedAppState,
       },
     ),
     { name: 'OrbitalStore', enabled: __DEV__ },

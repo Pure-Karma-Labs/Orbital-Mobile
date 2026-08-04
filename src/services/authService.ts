@@ -47,7 +47,7 @@ import {
 } from '@dr.pogodin/react-native-fs';
 import { clearAll as clearSecureStorage } from './secure-storage';
 import { syncBlockedUsers } from './blockedUsersSync';
-import { syncNotificationSettings } from './notificationSettingsSync';
+import { clearNotificationSyncState, syncNotificationSettings } from './notificationSettingsSync';
 import { clearPrefetchState } from './mediaPrefetchService';
 import { clearArchiveConfirmState } from './mediaArchiveConfirmService';
 import { attemptKeychainIdentityRestore, clearStaleKeychainIdentity } from './crypto/identityRestoreService';
@@ -417,6 +417,12 @@ export async function localWipe({ preserveIdentity }: { preserveIdentity: boolea
   }
   try { useAppStore.getState().resetBlockedUsers(); } catch {
     if (__DEV__) console.warn('[LocalWipe] resetBlockedUsers failed');
+  }
+  // #678: bump the sync epoch BEFORE the store reset below, so an in-flight
+  // mute runner or replay drain aborts instead of writing this account's target
+  // ids back into the freshly cleared store.
+  try { clearNotificationSyncState(); } catch {
+    if (__DEV__) console.warn('[LocalWipe] clearNotificationSyncState failed');
   }
   // #449: in-memory Zustand state survives MMKV clearAll() and re-persists,
   // so notification prefs/mutes must be explicitly reset or they leak into

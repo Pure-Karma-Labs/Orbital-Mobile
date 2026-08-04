@@ -168,8 +168,10 @@ jest.mock('../avatarService');
 
 const mockSyncBlockedUsers = jest.fn().mockResolvedValue(undefined);
 const mockSyncNotificationSettings = jest.fn().mockResolvedValue(undefined);
+const mockClearNotificationSyncState = jest.fn();
 jest.mock('../notificationSettingsSync', () => ({
   syncNotificationSettings: (...args: unknown[]) => mockSyncNotificationSettings(...args),
+  clearNotificationSyncState: (...args: unknown[]) => mockClearNotificationSyncState(...args),
 }));
 jest.mock('../blockedUsersSync', () => ({
   syncBlockedUsers: (...args: unknown[]) => mockSyncBlockedUsers(...args),
@@ -904,6 +906,17 @@ describe('logout', () => {
     await logout();
 
     expect(mockResetNotificationSettings).toHaveBeenCalledTimes(1);
+  });
+
+  // #678: the epoch must bump BEFORE the store reset, or an in-flight mute
+  // runner's rollback writes this account's target ids into the cleared store.
+  it('bumps the notification sync epoch before resetting the store (localWipe)', async () => {
+    await logout();
+
+    expect(mockClearNotificationSyncState).toHaveBeenCalledTimes(1);
+    expect(mockClearNotificationSyncState.mock.invocationCallOrder[0]).toBeLessThan(
+      mockResetNotificationSettings.mock.invocationCallOrder[0],
+    );
   });
 });
 

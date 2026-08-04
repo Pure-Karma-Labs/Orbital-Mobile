@@ -85,4 +85,13 @@ export async function bootstrap(): Promise<void> {
     registerForegroundConfirmDrain();
     scheduleArchiveConfirmDrain();
   });
+  // Register the foreground notification-settings sync (#678). Deliberately no
+  // initial schedule here — login and key recovery already sync, and the
+  // scheduled callback early-returns while unauthenticated anyway.
+  // The lazy dynamic import is for startup import cost, matching the four
+  // registrations above; it is not import-graph protection (index.js imports
+  // notificationConstants, not this module, and MMKV is already initialized).
+  import('./services/notificationSettingsSync').then(({ registerForegroundNotificationSettingsSync }) =>
+    registerForegroundNotificationSettingsSync(),
+  );
 }

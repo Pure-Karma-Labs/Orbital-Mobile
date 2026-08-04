@@ -37,7 +37,10 @@ import {
   hydrateContactsFromOrbits,
 } from './conversationService';
 import { syncBlockedUsers } from './blockedUsersSync';
-import { syncNotificationSettings } from './notificationSettingsSync';
+import {
+  clearNotificationSyncState,
+  syncNotificationSettings,
+} from './notificationSettingsSync';
 import { websocketManager } from './websocket';
 import { isRecoveryInitiator, setRecoveryInitiator } from './recoveryState';
 
@@ -447,6 +450,19 @@ async function doRecoverIdentityKeys(
       }
       try {
         clearMessageHandlerState();
+      } catch {
+        /* best-effort */
+      }
+      // #678: this path deletes lastUserId (disabling checkAccountSwitch) but
+      // never runs localWipe, so the persisted mute replay queue would survive
+      // an aborted recovery. Clearing it here makes the wipe independent of the
+      // ownerUserId binding — either mechanism alone closes cross-account
+      // replay. Only the queue is cleared: prefs/mutes are re-synced at step 7
+      // and resetting them would flash the UI unmuted in the meantime.
+      try {
+        clearNotificationSyncState();
+        const store = useAppStore.getState();
+        store.clearPendingMuteOps(Object.keys(store.pendingMuteOps));
       } catch {
         /* best-effort */
       }

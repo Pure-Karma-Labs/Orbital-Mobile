@@ -11,6 +11,14 @@
 // Module mocks — MUST be before imports
 // ---------------------------------------------------------------------------
 
+// @sentry/react-native ships ESM that jest does not transform; bootstrap now
+// reaches it transitively via notificationSettingsSync (#678).
+jest.mock('@sentry/react-native', () => ({
+  addBreadcrumb: jest.fn(),
+  captureException: jest.fn(),
+  captureMessage: jest.fn(),
+}));
+
 jest.mock('../secure-storage', () => ({
   clearKeychainIfFreshInstall: jest.fn().mockResolvedValue(undefined),
   getOrCreateMMKVKey: jest.fn().mockResolvedValue('mock-mmkv-key'),

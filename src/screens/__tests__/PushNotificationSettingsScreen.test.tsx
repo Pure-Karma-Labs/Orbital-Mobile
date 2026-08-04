@@ -13,6 +13,14 @@ import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'rea
 import { ThemeProvider } from '../../theme';
 import { PushNotificationSettingsScreen } from '../settings/PushNotificationSettingsScreen';
 
+// @sentry/react-native ships ESM that jest does not transform; the screen now
+// reaches it transitively via notificationSettingsSync (#678).
+jest.mock('@sentry/react-native', () => ({
+  addBreadcrumb: jest.fn(),
+  captureException: jest.fn(),
+  captureMessage: jest.fn(),
+}));
+
 const mockGoBack = jest.fn();
 jest.mock('@react-navigation/native', () => ({
   useNavigation: () => ({ navigate: jest.fn(), goBack: mockGoBack }),

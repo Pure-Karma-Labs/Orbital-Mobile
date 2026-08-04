@@ -156,6 +156,9 @@ describe('persistence partialize', () => {
     // the login-time server sync lands.
     'notificationPrefs',
     'mutedTargets',
+    // #678 — the mute-intent write-ahead queue survives restart so an offline
+    // toggle is still drained on the next sync.
+    'pendingMuteOps',
   ]);
 
   /**
@@ -230,6 +233,10 @@ describe('persistence partialize', () => {
     pushToken: 'fcm-token-secret',
     notificationPrefs: { newThread: true, newReply: false, newDm: true, memberJoined: true },
     mutedTargets: { 'thread-1': 'thread' },
+    // Notifications (#678)
+    pendingMuteOps: {
+      'thread-1': { targetType: 'thread', muted: true, ownerUserId: 'user-1', attempts: 0 },
+    },
   };
 
   it('includes exactly the expected keys', () => {
@@ -272,5 +279,12 @@ describe('persistence partialize', () => {
     });
     expect(persisted.mutedTargets).toEqual({ 'thread-1': 'thread' });
     expect('pushToken' in persisted).toBe(false);
+  });
+
+  it('persists the pending mute-op queue (#678)', () => {
+    const persisted = partialize(fullState);
+    expect(persisted.pendingMuteOps).toEqual({
+      'thread-1': { targetType: 'thread', muted: true, ownerUserId: 'user-1', attempts: 0 },
+    });
   });
 });

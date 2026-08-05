@@ -239,8 +239,10 @@ export async function deregisterCurrentDevice(): Promise<void> {
  *   RECONCILE. This is deliberately not a no-op: the DELETE issued when the
  *   user turned push off can fail (offline, 5xx), which would otherwise leave a
  *   live token server-side forever while the UI reads Off. The backend DELETE
- *   is idempotent and un-rate-limited, so retrying it every launch is safe, and
- *   `deregisterCurrentDevice` already swallows its own errors.
+ *   is a user-scoped soft delete: 204 on repeat while the row exists, 404 once
+ *   it is gone (swallowed below), and covered by the IP-keyed 500/15min general
+ *   limiter — safe at launch cadence; re-assess before any higher-frequency
+ *   retry. `deregisterCurrentDevice` already swallows its own errors.
  * - not opted out → the internal `requestPermissionAndRegister()`.
  *
  * HYDRATION DEPENDENCY: this reads persisted state, so it is only correct if

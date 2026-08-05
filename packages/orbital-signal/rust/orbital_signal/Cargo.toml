@@ -70,7 +70,7 @@ sha2 = { version = "0.10", features = ["asm"] }
 # Rust does the transcode instead. `std` (which implies `alloc`) is declared
 # explicitly rather than inherited via default features so an upstream change to
 # base64's defaults cannot silently drop the Engine::decode/encode helpers.
-base64 = { version = "0.22", default-features = false, features = ["std"] }
+base64 = { version = "0.23", default-features = false, features = ["std"] }
 
 # ECIES: X25519 ECDH, HKDF-SHA256, and EphemeralSecret RNG
 x25519-dalek = { version = "3", features = ["static_secrets", "getrandom"] }

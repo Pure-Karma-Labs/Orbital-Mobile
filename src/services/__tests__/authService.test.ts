@@ -928,6 +928,21 @@ describe('logout', () => {
     expect(mockClearAvatarCache).not.toHaveBeenCalled();
   });
 
+  it('deletes the legacy Caches/thumbnails dir when present, skips it when absent (#646)', async () => {
+    // Once-only for the same leak reason as the residue fixture above.
+    mockExists.mockImplementationOnce(
+      async (path: string) => path === '/mock/caches/thumbnails',
+    );
+
+    await logout();
+    expect(mockUnlink).toHaveBeenCalledWith('/mock/caches/thumbnails');
+
+    // Absent case: mockExists defaults to false — the guard must skip the unlink.
+    mockUnlink.mockClear();
+    await logout();
+    expect(mockUnlink).not.toHaveBeenCalledWith('/mock/caches/thumbnails');
+  });
+
   it('clears prefetch and archive-confirm state on logout (localWipe)', async () => {
     await logout();
 

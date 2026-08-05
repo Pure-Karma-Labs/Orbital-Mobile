@@ -20,11 +20,15 @@
  *
  * DELIBERATELY EXCLUDED (each tracked separately, not an oversight):
  *   - `rn_image_picker_lib_temp_*` — Android picker temps: third-party naming,
- *     pre-sanitizer originals (follow-up issue).
+ *     pre-sanitizer originals (#700).
  *   - `avatar-sanitized-*.jpg` / `avatar-upload-*.enc` — avatar staging temps
- *     have a separate lifecycle (follow-up issue).
+ *     have a separate lifecycle (#700).
  *   - the `avatars/` subdirectory — wiped at directory level by
  *     `clearAvatarCache`, not by suffix matching.
+ *
+ * Mechanical writer-to-predicate binding (incl. the native `-alias-staging.mp4`
+ * writer in OrbitalMediaTranscoder.mm) is tracked as #702; the identity-reset
+ * wipe path as #701.
  */
 export function isStagingResidueName(name: string): boolean {
   const isChunk = name.includes('-chunk-') && name.endsWith('.bin');

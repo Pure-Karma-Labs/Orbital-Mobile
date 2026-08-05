@@ -21,6 +21,10 @@ export function ChatsStackNavigator(): React.JSX.Element {
 
   return (
     <Stack.Navigator
+      // Explicit, not declaration-order (#486): this literal is typed against
+      // ChatsStackParamList, and TAB_INITIAL_SCREENS.Chats must agree with it or
+      // the tab-reset behaviour in MainTabNavigator silently diverges.
+      initialRouteName="ChatsList"
       screenOptions={{
         headerShown: false,
         contentStyle: { backgroundColor: theme.colors.background },

@@ -208,14 +208,33 @@ describe('notificationSlice — notification settings defaults (#449)', () => {
   });
 
   /**
-   * Registry cross-check (#679). PREF_KEY_BY_TYPE is not derivable — it is a
-   * push-type -> pref-key mapping — so the compiler only checks its keys
-   * (Record<SuppressibleType, ...>) and its value TYPE, never that a value
-   * names a pref the app actually has. The check lives here rather than in
-   * notificationConstants.ts, whose header constraint forbids importing the
-   * store: that module is loaded by index.js before MMKV is open.
+   * Registry cross-check (#679, retargeted in #692).
+   *
+   * The load-bearing job is the RUNTIME KEY SET of DEFAULT_NOTIFICATION_PREFS:
+   * PREF_KEYS (notificationSettingsSync.ts) and the hydration floor in
+   * mergePersistedAppState both derive their universe from Object.keys() of that
+   * constant, so a key silently added or dropped there changes what the app
+   * syncs and what it floors at rehydrate. Pinning it here makes that a test
+   * failure and not a behaviour change.
+   *
+   * The PREF_KEY_BY_TYPE half is deliberately only a subset check. Its
+   * `Record<SuppressibleType, keyof NotificationPrefs>` annotation
+   * (notificationConstants.ts) ALREADY rejects both a wrong key set and a value
+   * naming a pref that does not exist — the compiler covers what an equality
+   * assertion here would. What it cannot cover is drift between that compile-time
+   * union and the runtime object above, which is what the pin catches. The check
+   * lives here rather than in notificationConstants.ts, whose header constraint
+   * forbids importing the store: that module is loaded by index.js before MMKV is
+   * open.
    */
-  it('every PREF_KEY_BY_TYPE value is a real pref key', () => {
+  it('pins the runtime pref-key set, and every PREF_KEY_BY_TYPE value is one of them', () => {
+    expect(Object.keys(DEFAULT_NOTIFICATION_PREFS).sort()).toEqual([
+      'memberJoined',
+      'newDm',
+      'newReply',
+      'newThread',
+    ]);
+
     // Subset, not equality: values(PREF_KEY_BY_TYPE) ⊆ keys(DEFAULT_NOTIFICATION_PREFS)
     // is the structural invariant. Full equality holds today only by coincidence —
     // a future pref key with no suppressible push type would fail it spuriously.

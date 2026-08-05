@@ -32,6 +32,7 @@ import {
 } from '../middleware/persistence';
 import { mergePersistedAppState, partializeAppState, useAppStore } from '../useAppStore';
 import type { AppState } from '../../types/store';
+import type { NotificationPrefs } from '../../types/api';
 
 // Helper to get the underlying mock instance created by the module
 const getMockInstance = () => {
@@ -299,7 +300,7 @@ describe('persistence partialize', () => {
 // into assertions above.
 // ---------------------------------------------------------------------------
 
-describe('persist merge — hydration floors notificationPrefs', () => {
+describe('persist merge — hydration guards', () => {
   /**
    * The MMKV instance setup above is scoped to the mmkvStateStorage describe,
    * so without resetMMKVForTesting here mmkvStateStorage.getItem returns null
@@ -362,8 +363,10 @@ describe('persist merge — hydration floors notificationPrefs', () => {
 
     // getItem returns null whenever the MMKV singleton was reset (the known
     // Metro Fast Refresh mode), and zustand still calls merge(undefined, current).
-    // Flooring from DEFAULT_NOTIFICATION_PREFS would silently reset server truth
-    // to all-on here; flooring from `current` cannot.
+    // This is the regression guard on the floor's `??` ORDER: `current` is
+    // consulted before DEFAULT_NOTIFICATION_PREFS, so an empty read is
+    // non-destructive. Inverting the operands resets server truth to all-on
+    // here — if this assertion ever fails, the merge is wrong, not the test.
     expect(useAppStore.getState().notificationPrefs.newReply).toBe(false);
   });
 
@@ -399,6 +402,66 @@ describe('persist merge — hydration floors notificationPrefs', () => {
 
     expect(merged.notificationPrefs.newDm).toBe(current.notificationPrefs.newDm);
     expect('bogus' in merged.notificationPrefs).toBe(false);
+  });
+
+  it('falls back to current mutedTargets when the persisted value is null', () => {
+    const current = useAppStore.getState();
+
+    const merged = mergePersistedAppState({ mutedTargets: null }, current);
+
+    expect(merged.mutedTargets).toEqual(current.mutedTargets);
+    // Replace-mode guard: the fallback must not cost the actions.
+    expect(typeof merged.addMutedTarget).toBe('function');
+  });
+
+  it('falls back to current pendingMuteOps when the persisted value is a string', () => {
+    const current = useAppStore.getState();
+
+    const merged = mergePersistedAppState({ pendingMuteOps: 'garbage' }, current);
+
+    expect(merged.pendingMuteOps).toEqual(current.pendingMuteOps);
+    // Without the guard the string rides the spread and Object.entries() splatters
+    // per-character entries ('0' -> 'g', ...) whose op.ownerUserId is undefined —
+    // notificationSettingsSync reads every one as a stale-owner entry to delete.
+    expect('0' in merged.pendingMuteOps).toBe(false);
+  });
+
+  it('rejects an array for either collection key (isPlainObject excludes arrays)', () => {
+    const current = useAppStore.getState();
+
+    const fromMuted = mergePersistedAppState({ mutedTargets: ['t1', 't2'] }, current);
+    expect(fromMuted.mutedTargets).toEqual(current.mutedTargets);
+    expect('0' in fromMuted.mutedTargets).toBe(false);
+
+    const fromPending = mergePersistedAppState({ pendingMuteOps: [] }, current);
+    expect(fromPending.pendingMuteOps).toEqual(current.pendingMuteOps);
+  });
+
+  it('still hydrates a well-formed collection through the guard', () => {
+    const current = useAppStore.getState();
+
+    const merged = mergePersistedAppState({ mutedTargets: { t1: 'thread' } }, current);
+
+    expect(merged.mutedTargets).toEqual({ t1: 'thread' });
+  });
+
+  it('floors from DEFAULT keys a pref key that current itself lacks', () => {
+    const current = useAppStore.getState();
+
+    // The per-key hole the old current-keyed loop could not express: it iterated
+    // `current`'s keys, so a key missing from BOTH the blob and current was
+    // invisible. The key set now comes from DEFAULT_NOTIFICATION_PREFS.
+    const merged = mergePersistedAppState(
+      {},
+      { ...current, notificationPrefs: { newDm: false } as NotificationPrefs },
+    );
+
+    expect(merged.notificationPrefs).toEqual({
+      newThread: true,
+      newReply: true,
+      newDm: false,
+      memberJoined: true,
+    });
   });
 
   it('never resurrects a key partialize excludes (the allowlist governs reads too)', () => {

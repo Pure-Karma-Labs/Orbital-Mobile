@@ -31,6 +31,7 @@ import { generateAttachmentKeys, createAttachmentEncryptor } from './crypto/atta
 import { encryptContent, getOrFetchGroupKey } from './crypto/contentCrypto';
 import { arrayBufferToBase64, base64ToUint8Array, toArrayBuffer } from './crypto/utils';
 import { MAX_UPLOAD_SIZE_BYTES, STREAM_READ_SIZE_BYTES } from './media/mediaLimits';
+import { isStagingResidueName } from './media/stagingResidue';
 import { uploadChunk, completeUpload } from './api/media';
 import { QuotaExceededError, AuthError } from './api/errors';
 import { saveMedia } from '../database/repositories/mediaRepository';
@@ -703,15 +704,7 @@ export async function cleanupOrphanedChunks(): Promise<void> {
     const files = await readDir(CachesDirectoryPath);
     const now = Date.now();
     for (const file of files) {
-      const isChunk = file.name.includes('-chunk-') && file.name.endsWith('.bin');
-      // Intentionally covers BOTH ciphertext staging suffixes: the upload's
-      // `{id}-cipher.bin` and the download's `{id}-dl-cipher.bin` (#578).
-      const isCipher = file.name.endsWith('-cipher.bin');
-      // -staging.mp4 covers the video transcode staging file, which must carry
-      // an .mp4 extension for AVAssetWriter.
-      const isStaging =
-        file.name.endsWith('-staging.bin') || file.name.endsWith('-staging.mp4');
-      if (isChunk || isCipher || isStaging) {
+      if (isStagingResidueName(file.name)) {
         const mtime = file.mtime ? new Date(file.mtime).getTime() : 0;
         const age = now - mtime;
         if (age > 3600_000) {

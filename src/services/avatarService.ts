@@ -421,7 +421,11 @@ export async function invalidateAvatarCache(userId: string): Promise<void> {
 }
 
 /**
- * Clear all avatar caches. Called on logout.
+ * Clear all avatar caches.
+ *
+ * Called from `localWipe` on the account-deletion path only (#646). On logout
+ * the cached avatars are archive-like and re-derivable, so they are kept; the
+ * privacy-critical case is deletion.
  */
 export async function clearAvatarCache(): Promise<void> {
   try {

@@ -3,6 +3,7 @@
  */
 
 import { loginUser, signupUser, restoreSession, logout, deleteAccount, acceptCurrentTerms, checkAccountSwitch, loginForRecovery } from '../authService';
+import { clearAvatarCache } from '../avatarService';
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -165,6 +166,22 @@ jest.mock('../../stores/middleware/persistence', () => ({
 }));
 
 jest.mock('../avatarService');
+const mockClearAvatarCache = jest.mocked(clearAvatarCache);
+
+// One file per Caches staging-residue class (#646) plus one non-matching file
+// that must survive the sweep.
+const CACHE_RESIDUE_NAMES = [
+  'abc-chunk-0.bin',
+  'abc-cipher.bin',
+  'abc-dl-cipher.bin',
+  'abc-staging.bin',
+  'abc-thumb-staging.bin',
+  'abc-transcode-staging.mp4',
+];
+const CACHE_RESIDUE_FIXTURE = [...CACHE_RESIDUE_NAMES, 'photo.jpg'].map((name) => ({
+  path: `/mock/caches/${name}`,
+  name,
+}));
 
 const mockSyncBlockedUsers = jest.fn().mockResolvedValue(undefined);
 const mockSyncNotificationSettings = jest.fn().mockResolvedValue(undefined);
@@ -893,6 +910,24 @@ describe('logout', () => {
     expect(mockCloseDatabase).not.toHaveBeenCalled();
   });
 
+  it('sweeps Caches staging residue on logout too, sparing unrelated files (#646)', async () => {
+    // Once-only: jest.clearAllMocks() clears calls but NOT implementations,
+    // so a persistent mockImplementation here would leak into later suites.
+    mockReadDir.mockImplementationOnce(async (path: string) =>
+      path === '/mock/caches' ? CACHE_RESIDUE_FIXTURE : [],
+    );
+
+    await logout();
+
+    for (const name of CACHE_RESIDUE_NAMES) {
+      expect(mockUnlink).toHaveBeenCalledWith(`/mock/caches/${name}`);
+    }
+    expect(mockUnlink).not.toHaveBeenCalledWith('/mock/caches/photo.jpg');
+    // Archived media and the avatar cache survive a logout
+    expect(mockUnlink).not.toHaveBeenCalledWith(`${MOCK_DOC_DIR}/media`);
+    expect(mockClearAvatarCache).not.toHaveBeenCalled();
+  });
+
   it('clears prefetch and archive-confirm state on logout (localWipe)', async () => {
     await logout();
 
@@ -1043,7 +1078,7 @@ describe('deleteAccount', () => {
     expect(mockClearAuth).toHaveBeenCalled();
   });
 
-  it('on success: media files and chunk cache files are unlinked', async () => {
+  it('on success: media files and every class of Caches staging residue are unlinked', async () => {
     // Set up FS mocks so media dir exists with files
     mockExists.mockImplementation(async (path: string) => {
       if (path === `${MOCK_DOC_DIR}/media`) return true;
@@ -1053,9 +1088,9 @@ describe('deleteAccount', () => {
       if (path === `${MOCK_DOC_DIR}/media`) {
         return [{ path: `${MOCK_DOC_DIR}/media/photo.jpg`, name: 'photo.jpg' }];
       }
-      // CachesDirectoryPath readDir
+      // CachesDirectoryPath readDir — one file per residue class (#646)
       if (path === '/mock/caches') {
-        return [{ path: '/mock/caches/abc-chunk-0.bin', name: 'abc-chunk-0.bin' }];
+        return CACHE_RESIDUE_FIXTURE;
       }
       return [];
     });
@@ -1065,8 +1100,19 @@ describe('deleteAccount', () => {
     expect(result).toEqual({ status: 'success' });
     // Media file should be unlinked
     expect(mockUnlink).toHaveBeenCalledWith(`${MOCK_DOC_DIR}/media/photo.jpg`);
-    // Chunk cache file should be unlinked
-    expect(mockUnlink).toHaveBeenCalledWith('/mock/caches/abc-chunk-0.bin');
+    // Every staging residue class must be unlinked (#646)
+    for (const name of CACHE_RESIDUE_NAMES) {
+      expect(mockUnlink).toHaveBeenCalledWith(`/mock/caches/${name}`);
+    }
+    // ...and the unrelated cached file must survive
+    expect(mockUnlink).not.toHaveBeenCalledWith('/mock/caches/photo.jpg');
+  });
+
+  it('on success: clears the avatar cache directory (#646)', async () => {
+    const result = await deleteAccount('pw');
+
+    expect(result).toEqual({ status: 'success' });
+    expect(mockClearAvatarCache).toHaveBeenCalledTimes(1);
   });
 
   it('mid-wipe failure (fullCryptoWipe rejects): still returns success and runs clearTokens + closeDatabase + DB unlink', async () => {

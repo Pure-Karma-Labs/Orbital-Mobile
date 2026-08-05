@@ -408,6 +408,18 @@ export interface PendingMuteOp {
 export interface NotificationState {
   pushPermissionGranted: boolean;
   pushToken: string | null;
+  /**
+   * Explicit user opt-out from push, i.e. the master Push toggle read as Off by
+   * deliberate choice (#683). Distinct from `pushPermissionGranted`, which is
+   * OS-derived and re-read every launch: intent must survive a restart, OS state
+   * must not.
+   *
+   * PERSISTED (partialize allowlist), and ACCOUNT-scoped: it is reset to `false`
+   * by `resetNotificationSettings()` on localWipe, so an opt-out survives a
+   * restart but NOT a logout — a fresh login registers by default rather than
+   * inheriting the previous account's intent.
+   */
+  pushOptOut: boolean;
   /** Per-type push preferences (#449). Defaults all-true; persisted. */
   notificationPrefs: NotificationPrefs;
   /**
@@ -427,6 +439,11 @@ export interface NotificationState {
 export interface NotificationActions {
   setPushPermission: (granted: boolean) => void;
   setPushToken: (token: string | null) => void;
+  /**
+   * Record the user's master-push intent (#683). Written only by
+   * notificationService's `setPushEnabled` — pure store mutation, no network.
+   */
+  setPushOptOut: (value: boolean) => void;
   /** Merge a partial pref patch into the current prefs (pure — no API call). */
   setNotificationPrefs: (prefs: Partial<NotificationPrefs>) => void;
   /** Replace the whole muted-target map (server-authoritative sync). */
@@ -452,6 +469,11 @@ export interface NotificationActions {
   /**
    * Reset prefs to all-true and clear mutes and the pending queue — called
    * from localWipe.
+   *
+   * Also clears `pushOptOut` (#683): master-push intent is ACCOUNT-scoped, so
+   * it must not be inherited across a logout. `pushPermissionGranted`/
+   * `pushToken` are deliberately left alone — they are DEVICE-scoped OS state,
+   * re-derived at the next registration attempt.
    */
   resetNotificationSettings: () => void;
 }

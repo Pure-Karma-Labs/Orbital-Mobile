@@ -45,6 +45,9 @@ export async function bootstrap(): Promise<void> {
   await clearKeychainIfFreshInstall();
   const mmkvKey = await getOrCreateMMKVKey();
   initMMKV(mmkvKey);
+  // Synchronous (MMKV) and must stay ahead of App.tsx's auth effect:
+  // notificationService's registerIfEnabled() reads the persisted pushOptOut
+  // intent, and an un-hydrated read defaults to false and re-registers (#683).
   useAppStore.persist.rehydrate();
   const dbKey = await getOrCreateDatabaseKey();
   initDatabase(dbKey);

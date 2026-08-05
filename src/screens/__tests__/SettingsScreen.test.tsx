@@ -47,7 +47,7 @@ jest.mock('../../services/api/groups', () => ({
 }));
 
 jest.mock('../../services/notificationService', () => ({
-  requestPermissionAndRegister: jest.fn().mockResolvedValue(jest.fn()),
+  setPushEnabled: jest.fn().mockResolvedValue(undefined),
   deregisterCurrentDevice: jest.fn().mockResolvedValue(undefined),
 }));
 
@@ -76,9 +76,9 @@ jest.mock('../../stores', () => ({
 import { useAuth, useUI, useConversations, useNotifications } from '../../stores';
 import { logout, deleteAccount } from '../../services/authService';
 import { fetchCreatorOrbitsDecrypted } from '../../services/conversationService';
-import { requestPermissionAndRegister, deregisterCurrentDevice } from '../../services/notificationService';
+import { setPushEnabled, deregisterCurrentDevice } from '../../services/notificationService';
 
-const mockRequestPermission = requestPermissionAndRegister as jest.Mock;
+const mockSetPushEnabled = setPushEnabled as jest.Mock;
 const mockDeregister = deregisterCurrentDevice as jest.Mock;
 
 const mockUseAuth = useAuth as jest.Mock;
@@ -132,6 +132,9 @@ beforeEach(() => {
   mockUseNotifications.mockReturnValue({
     pushPermissionGranted: false,
     pushToken: null,
+    pushOptOut: false,
+    // #683: the entry row renders the derived predicate, not the raw OS flag.
+    pushEnabled: false,
   });
   mockLogout.mockResolvedValue(undefined);
   mockDeleteAccount.mockResolvedValue({ status: 'success' });
@@ -447,8 +450,26 @@ describe('SettingsScreen — Push Notifications entry row', () => {
       row.props.onPress();
     });
 
-    expect(mockRequestPermission).not.toHaveBeenCalled();
+    expect(mockSetPushEnabled).not.toHaveBeenCalled();
     expect(mockDeregister).not.toHaveBeenCalled();
+  });
+
+  it('renders Off for a restart-restored opt-out even while OS permission is granted (#683)', () => {
+    mockUseNotifications.mockReturnValue({
+      pushPermissionGranted: true,
+      pushToken: null,
+      pushOptOut: true,
+      pushEnabled: false,
+    });
+    const renderer = renderSettingsScreen();
+
+    const row = findByTestId(renderer.root, 'push-notifications-row');
+    const values = row
+      .findAllByType('Text' as unknown as React.ComponentType)
+      .map((t) => t.props.children)
+      .filter((c: unknown): c is string => typeof c === 'string');
+    expect(values).toContain('Off');
+    expect(values).not.toContain('On');
   });
 
   it('keeps the Sounds row on this screen', () => {

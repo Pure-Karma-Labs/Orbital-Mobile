@@ -21,9 +21,10 @@ import { restoreSession } from './services/authService';
 import { websocketManager } from './services/websocket';
 import {
   initNotifications,
-  requestPermissionAndRegister,
+  registerIfEnabled,
   setupForegroundHandler,
   setupNotificationTapHandler,
+  teardownPushRegistration,
 } from './services/notificationService';
 import type { PreAuthScreen, PreAuthParams } from './navigation/preAuthTypes';
 import { deriveAuthPhase, assertLegalTransition } from './navigation/authPhase';
@@ -118,13 +119,13 @@ function AppContent(): React.JSX.Element {
     if (isAuthenticated) {
       websocketManager.connect();
 
-      // Initialize push notifications and request permission.
-      // Capture unsubscribe for the token-refresh listener to prevent leak
-      // on login/logout cycles.
-      let unsubTokenRefresh: (() => void) | undefined;
+      // Initialize push notifications, then register ONLY if the user has not
+      // explicitly opted out (#683) — registerIfEnabled reads the persisted
+      // intent (hydrated in bootstrap) and reconciles a failed deregistration
+      // when opted out. No handle is captured: teardown is module-owned and the
+      // cleanup below calls it unconditionally.
       initNotifications()
-        .then(() => requestPermissionAndRegister())
-        .then((unsub) => { unsubTokenRefresh = unsub; })
+        .then(() => registerIfEnabled())
         .catch((e: unknown) => {
           if (__DEV__) console.warn('[Push]', e instanceof Error ? e.message : e);
         });
@@ -135,7 +136,9 @@ function AppContent(): React.JSX.Element {
         websocketManager.disconnect();
         unsubForeground();
         unsubTapHandler();
-        unsubTokenRefresh?.();
+        // Idempotent and module-owned: tears down the CURRENT listener whether
+        // it was installed at launch or later from the settings screen.
+        teardownPushRegistration();
       };
     } else {
       websocketManager.disconnect();

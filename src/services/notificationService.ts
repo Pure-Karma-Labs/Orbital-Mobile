@@ -12,7 +12,7 @@
  * appear in catch blocks (review finding #7).
  */
 
-import { AppState as RNAppState, PermissionsAndroid, Platform } from 'react-native';
+import { Alert, AppState as RNAppState, Linking, PermissionsAndroid, Platform } from 'react-native';
 import messaging, {
   type FirebaseMessagingTypes,
 } from '@react-native-firebase/messaging';
@@ -58,9 +58,14 @@ let activeTokenRefreshUnsub: (() => void) | undefined;
 
 /**
  * Tear down push registration side-effects: the token-refresh listener and
- * any pending registration retry. Idempotent. Called on logout (via the
- * closure returned by requestPermissionAndRegister) and when the user turns
- * push off.
+ * any pending registration retry. Idempotent. Called on logout (directly, from
+ * App.tsx's auth-effect cleanup) and when the user turns push off (via
+ * `setPushEnabled(false)`).
+ *
+ * App.tsx calls this unconditionally rather than through a handle captured at
+ * registration time (#683): an opted-out launch registers nothing and would
+ * capture no handle, so a later in-screen ON would leave the listener installed
+ * past logout.
  */
 export function teardownPushRegistration(): void {
   activeTokenRefreshUnsub?.();
@@ -127,6 +132,11 @@ export async function initNotifications(): Promise<void> {
 /**
  * Request push notification permission and register the device with the backend.
  *
+ * MODULE-INTERNAL (#683): registration is only ever reached through a gate that
+ * consults `pushOptOut` — `registerIfEnabled()` (launch) or `setPushEnabled()`
+ * (screen). Exporting this would reintroduce an ungated entry point that
+ * silently overrides an explicit opt-out, which is the bug this issue fixes.
+ *
  * Flow:
  * 1. Request permission via Firebase Messaging
  * 2. Get FCM token
@@ -137,7 +147,7 @@ export async function initNotifications(): Promise<void> {
  *
  * @returns Unsubscribe function for the token refresh listener.
  */
-export async function requestPermissionAndRegister(): Promise<() => void> {
+async function requestPermissionAndRegister(): Promise<() => void> {
   // Android 13+ (API 33) requires explicit runtime permission request
   // for POST_NOTIFICATIONS. Firebase's requestPermission() handles iOS
   // but may not trigger the Android system dialog.
@@ -218,6 +228,75 @@ export async function deregisterCurrentDevice(): Promise<void> {
     // The backend will deactivate stale tokens via Firebase error callbacks.
     if (__DEV__) console.warn('[Push] Device deregistration failed');
   }
+}
+
+/**
+ * Launch-path push gate (#683).
+ *
+ * The ONLY registration entry point on the auth effect. Reads the persisted
+ * `pushOptOut` intent:
+ * - opted out → does NOT register, and awaits `deregisterCurrentDevice()` to
+ *   RECONCILE. This is deliberately not a no-op: the DELETE issued when the
+ *   user turned push off can fail (offline, 5xx), which would otherwise leave a
+ *   live token server-side forever while the UI reads Off. The backend DELETE
+ *   is idempotent and un-rate-limited, so retrying it every launch is safe, and
+ *   `deregisterCurrentDevice` already swallows its own errors.
+ * - not opted out → the internal `requestPermissionAndRegister()`.
+ *
+ * HYDRATION DEPENDENCY: this reads persisted state, so it is only correct if
+ * `useAppStore.persist.rehydrate()` (bootstrap.ts) has already run. That call
+ * is synchronous MMKV and precedes App.tsx's auth effect; keep it that way, or
+ * an opted-out launch reads the default `false` and re-registers.
+ */
+export async function registerIfEnabled(): Promise<void> {
+  if (useAppStore.getState().pushOptOut) {
+    if (__DEV__) console.warn('[Push] Opted out — reconciling deregistration');
+    await deregisterCurrentDevice();
+    return;
+  }
+  await requestPermissionAndRegister();
+}
+
+/**
+ * Apply a master-push transition (#683). Owns BOTH directions so the intent
+ * write and the side-effects that enforce it cannot drift apart across callers.
+ *
+ * ON: writes intent FIRST (`setPushOptOut(false)`), then checks OS permission.
+ * A tap is intent even when the OS has already denied us — the user who later
+ * grants permission in Settings then converges at the next launch instead of
+ * being silently held at opted-out. The DENIED branch alerts and returns
+ * without registering; the flag stays `false`.
+ *
+ * OFF: intent → teardown listener/retry → deregister device → clear the
+ * OS-derived state. Deregistration is awaited but never throws (best-effort);
+ * a failure here reconciles at the next launch via `registerIfEnabled`.
+ */
+export async function setPushEnabled(enabled: boolean): Promise<void> {
+  if (enabled) {
+    useAppStore.getState().setPushOptOut(false);
+
+    const settings = await notifee.getNotificationSettings();
+    if (settings.authorizationStatus === AuthorizationStatus.DENIED) {
+      Alert.alert(
+        'Notifications Disabled',
+        'Push notifications were previously denied. Enable them in Settings.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Open Settings', onPress: () => Linking.openSettings() },
+        ],
+      );
+      return;
+    }
+
+    await requestPermissionAndRegister();
+    return;
+  }
+
+  useAppStore.getState().setPushOptOut(true);
+  teardownPushRegistration();
+  await deregisterCurrentDevice();
+  useAppStore.getState().setPushPermission(false);
+  useAppStore.getState().setPushToken(null);
 }
 
 /**

@@ -154,6 +154,36 @@ describe('notificationSlice — initial state', () => {
     const state = store.getState();
     expect(state.pushPermissionGranted).toBe(false);
     expect(state.pushToken).toBeNull();
+    // #683: default is "not opted out" — a fresh install registers for push.
+    expect(state.pushOptOut).toBe(false);
+  });
+});
+
+describe('notificationSlice — setPushOptOut (#683)', () => {
+  it('records an explicit opt-out', () => {
+    const store = makeStore();
+    store.getState().setPushOptOut(true);
+    expect(store.getState().pushOptOut).toBe(true);
+  });
+
+  it('clears the opt-out when push is turned back on', () => {
+    const store = makeStore();
+    store.getState().setPushOptOut(true);
+    store.getState().setPushOptOut(false);
+    expect(store.getState().pushOptOut).toBe(false);
+  });
+
+  it('does not touch the OS-derived push state', () => {
+    const store = makeStore();
+    store.getState().setPushPermission(true);
+    store.getState().setPushToken('fcm-token-abc');
+
+    store.getState().setPushOptOut(true);
+
+    // Intent and OS permission are separate axes: the toggle writes intent,
+    // the register/deregister side-effects write the rest.
+    expect(store.getState().pushPermissionGranted).toBe(true);
+    expect(store.getState().pushToken).toBe('fcm-token-abc');
   });
 });
 
@@ -496,6 +526,17 @@ describe('notificationSlice — resetNotificationSettings', () => {
     });
     expect(store.getState().mutedTargets).toEqual({});
     expect(store.getState().pendingMuteOps).toEqual({});
+  });
+
+  it('clears the master-push opt-out (account-scoped intent, #683)', () => {
+    const store = makeStore();
+    store.getState().setPushOptOut(true);
+
+    store.getState().resetNotificationSettings();
+
+    // Opt-out survives a restart but not a logout — the next account must not
+    // inherit the previous user's master-push intent.
+    expect(store.getState().pushOptOut).toBe(false);
   });
 
   it('leaves push permission/token state alone (device-scoped, not account-scoped)', () => {

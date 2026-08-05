@@ -108,6 +108,15 @@ export const useNotifications = () =>
   useAppStore(useShallow((s) => ({
     pushPermissionGranted: s.pushPermissionGranted,
     pushToken: s.pushToken,
+    pushOptOut: s.pushOptOut,
+    /**
+     * Single derived master-push predicate (#683): push is on only when the OS
+     * granted permission AND the user has not opted out. Defined once here so
+     * the settings entry row, the master row, the per-type rows' disabled state
+     * and the toggle's own branch cannot disagree — a restart-restored opt-out
+     * with OS permission still granted reads Off everywhere.
+     */
+    pushEnabled: !s.pushOptOut && s.pushPermissionGranted,
     setPushPermission: s.setPushPermission,
     setPushToken: s.setPushToken,
   })));

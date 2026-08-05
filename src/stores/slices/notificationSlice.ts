@@ -48,6 +48,7 @@ export const createNotificationSlice: StateCreator<
   // Initial state
   pushPermissionGranted: false,
   pushToken: null,
+  pushOptOut: false,
   notificationPrefs: { ...DEFAULT_NOTIFICATION_PREFS },
   mutedTargets: {},
   pendingMuteOps: {},
@@ -58,6 +59,9 @@ export const createNotificationSlice: StateCreator<
 
   setPushToken: (token) =>
     set({ pushToken: token }, false, 'notification/setPushToken'),
+
+  setPushOptOut: (value) =>
+    set({ pushOptOut: value }, false, 'notification/setPushOptOut'),
 
   setNotificationPrefs: (prefs) =>
     set(
@@ -158,6 +162,10 @@ export const createNotificationSlice: StateCreator<
         notificationPrefs: { ...DEFAULT_NOTIFICATION_PREFS },
         mutedTargets: {},
         pendingMuteOps: {},
+        // Account-scoped intent (#683) — cleared with the rest of the account's
+        // notification state so a fresh login registers by default. Device-scoped
+        // pushPermissionGranted/pushToken stay untouched.
+        pushOptOut: false,
       },
       false,
       'notification/resetNotificationSettings',

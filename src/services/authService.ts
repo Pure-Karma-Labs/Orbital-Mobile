@@ -30,7 +30,8 @@ import { clearAllThreads } from '../database/repositories/threadRepository';
 import { clearAllReplies } from '../database/repositories/replyRepository';
 import { clearLinkPreviewCache } from '../hooks/useLinkPreview';
 import { clearIdentityInflightState } from './crypto/identityKeyAccess';
-import { clearAvatarServiceState } from './avatarService';
+import { clearAvatarServiceState, clearAvatarCache } from './avatarService';
+import { isStagingResidueName } from './media/stagingResidue';
 import { clearMessageHandlerState } from './websocket/messageHandler';
 import { execute } from '../database/queryHelpers';
 import { isDatabaseInitialized, closeDatabase } from '../database/connection';
@@ -343,8 +344,16 @@ export async function acceptCurrentTerms(): Promise<void> {
  * @param preserveIdentity
  *   - `true` (logout): clears sessions/sender-keys but preserves identity keys,
  *     pre-keys, items, and the DB file — the same user can re-login.
- *   - `false` (delete): full crypto wipe, deletes decrypted media, temp chunks,
- *     the DB file, and all secure storage. The device is left pristine.
+ *   - `false` (delete): full crypto wipe, deletes decrypted media, the avatar
+ *     cache, the DB file, and all secure storage. The device is left pristine.
+ *
+ * MEDIA STAGING RESIDUE (#646): the Caches sweep runs unconditionally on BOTH
+ * paths and is the LAST step of this function. It has no age guard by design —
+ * unlike the 1h bootstrap reaper (`cleanupOrphanedChunks`), a wipe deletes
+ * every matching file now. Membership is defined by `isStagingResidueName`.
+ * Archived media under `MEDIA_DIR` is deliberately left untouched on logout
+ * (the same user re-opens it on re-login) and deleted only on the deletion
+ * path, and the avatar cache directory is likewise wiped on deletion only.
  *
  * ORDERING (critical for preserveIdentity=false):
  *   1. fullCryptoWipe (while DB is open — clears signal_* tables + Keychain identity key)
@@ -467,16 +476,13 @@ export async function localWipe({ preserveIdentity }: { preserveIdentity: boolea
       if (__DEV__) console.warn('[LocalWipe] Failed to delete media dir');
     }
 
-    // 3. Delete temp upload chunks from CachesDirectory
+    // 3. Delete the cached avatar directory (deletion-only: on logout, cached
+    //    avatars are archive-like and re-derivable; the privacy-critical case
+    //    is account deletion).
     try {
-      const cacheFiles = await readDir(CachesDirectoryPath);
-      for (const file of cacheFiles) {
-        if (file.name.includes('-chunk-') && file.name.endsWith('.bin')) {
-          await unlink(file.path).catch(() => {});
-        }
-      }
+      await clearAvatarCache();
     } catch {
-      if (__DEV__) console.warn('[LocalWipe] Failed to clean temp chunks');
+      if (__DEV__) console.warn('[LocalWipe] clearAvatarCache failed');
     }
 
     // 4. Close DB connection then unlink the file
@@ -517,6 +523,37 @@ export async function localWipe({ preserveIdentity }: { preserveIdentity: boolea
     getMMKVInstance().clearAll();
   } catch {
     // MMKV may not be initialized in tests or if bootstrap hasn't run
+  }
+
+  // --- Plaintext-adjacent media staging residue in Caches (both paths) ---
+  // Runs LAST, after every state-clearing step above, so the window in which
+  // an in-flight transfer can recreate a staging file is as small as possible.
+  // Residue recreated by a transfer we could not abort still falls back to
+  // that transfer's own finally-unlink and, failing that, the 1h bootstrap
+  // reaper (`cleanupOrphanedChunks`).
+  //
+  // Legacy 1.7.x plaintext frame JPEGs lived in Caches/thumbnails; mirror the
+  // bootstrap reaper's one-shot directory sweep so a wiped device does not
+  // carry them until the next launch.
+  try {
+    const legacyThumbnailDir = `${CachesDirectoryPath}/thumbnails`;
+    if (await exists(legacyThumbnailDir)) {
+      await unlink(legacyThumbnailDir).catch(() => {});
+    }
+  } catch {
+    if (__DEV__) console.warn('[LocalWipe] Failed to delete legacy thumbnail dir');
+  }
+  try {
+    const cacheFiles = await readDir(CachesDirectoryPath);
+    for (const file of cacheFiles) {
+      // No age guard and no re-stat, unlike the bootstrap reaper: wipe
+      // semantics delete everything matching, now.
+      if (isStagingResidueName(file.name)) {
+        await unlink(file.path).catch(() => {});
+      }
+    }
+  } catch {
+    if (__DEV__) console.warn('[LocalWipe] Failed to clean media staging residue');
   }
 }
 

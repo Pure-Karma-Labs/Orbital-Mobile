@@ -13,6 +13,7 @@ import { StackActions } from '@react-navigation/routers';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
+import type { NavigatorScreenParams } from '@react-navigation/native';
 import type { MainTabParamList } from './types';
 import { useTheme } from '../theme';
 import { useAppStore } from '../stores/useAppStore';
@@ -21,24 +22,58 @@ import { ChatsStackNavigator } from './ChatsStackNavigator';
 import { SettingsStackNavigator } from './SettingsStackNavigator';
 import { Emoji } from '../components/Emoji';
 
-const TAB_EMOJI: Record<string, string> = {
+// `satisfies`, not an annotation: coverage of MainTabParamList is enforced (a
+// fourth tab is a compile error here) without widening the keys back to `string`.
+const TAB_EMOJI = {
   Threads: '1F4AC',
   Chats: '1F4E8',
   Settings: '2699-FE0F',
+} satisfies Record<keyof MainTabParamList, string>;
+
+/**
+ * Each tab name mapped to the initial (root) screen of ITS OWN nested stack.
+ *
+ * The mapped type is derived from MainTabParamList by the same inference React
+ * Navigation's own PathConfigMap uses, so both directions are checked (#486): a
+ * fourth tab added to MainTabParamList fails `satisfies` here for the missing
+ * key, AND each value is checked against that tab's stack keys only. A
+ * union-valued `Record<keyof MainTabParamList, ...>` would accept
+ * `Threads: 'ChatDetail'` — several screen names exist in more than one stack.
+ */
+type TabInitialScreens = {
+  [K in keyof MainTabParamList]: NonNullable<MainTabParamList[K]> extends NavigatorScreenParams<
+    infer P extends {}
+  >
+    ? keyof P
+    : never;
 };
 
 /**
- * Maps each tab name to the initial (root) screen of its nested stack navigator.
  * Used by the tab press handler to reset nested navigation state when switching
  * tabs or re-pressing the active tab, matching the default BottomTabBar behavior
  * that the custom tab bar was missing. See #470.
+ *
+ * `satisfies` rather than an annotation so the values keep their literal types
+ * for the CommonActions.reset call below.
  * @internal Exported for testing only.
  */
-export const TAB_INITIAL_SCREENS: Record<string, string> = {
+export const TAB_INITIAL_SCREENS = {
   Threads: 'ThreadsList',
   Chats: 'ChatsList',
   Settings: 'SettingsMain',
-};
+} satisfies TabInitialScreens;
+
+/**
+ * Look a tab name up in one of the tables above.
+ *
+ * The tables are keyed by the three literal tab names, but `route.name` is
+ * `string` (ParamListBase), so indexing them directly no longer type-checks.
+ * hasOwnProperty, not `in`: `in` resolves inherited keys, so `'toString'` would
+ * report as present and hand back a function.
+ */
+function lookupTab<T extends Record<string, string>>(table: T, name: string): T[keyof T] | undefined {
+  return Object.prototype.hasOwnProperty.call(table, name) ? table[name as keyof T] : undefined;
+}
 
 const Tab = createBottomTabNavigator<MainTabParamList>();
 
@@ -87,7 +122,7 @@ export function CustomTabBar({ state, descriptors, navigation }: BottomTabBarPro
         const onPress = () => {
           const event = navigation.emit({ type: 'tabPress', target: route.key, canPreventDefault: true });
           if (!event.defaultPrevented) {
-            const initialScreen = TAB_INITIAL_SCREENS[route.name];
+            const initialScreen = lookupTab(TAB_INITIAL_SCREENS, route.name);
             if (!initialScreen) {
               navigation.navigate(route.name);
               return;
@@ -168,7 +203,7 @@ export function CustomTabBar({ state, descriptors, navigation }: BottomTabBarPro
             accessibilityState={{ selected: isFocused }}
             accessibilityLabel={options.tabBarAccessibilityLabel ?? route.name}
           >
-            <Emoji unified={TAB_EMOJI[route.name] ?? '2753'} size={20} />
+            <Emoji unified={lookupTab(TAB_EMOJI, route.name) ?? '2753'} size={20} />
             <Text style={labelStyle}>{route.name}</Text>
           </TouchableOpacity>
         );

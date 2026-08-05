@@ -21,6 +21,10 @@ export function ThreadsStackNavigator(): React.JSX.Element {
 
   return (
     <Stack.Navigator
+      // Explicit, not declaration-order (#486): this literal is typed against
+      // ThreadsStackParamList, and TAB_INITIAL_SCREENS.Threads must agree with it
+      // or the tab-reset behaviour in MainTabNavigator silently diverges.
+      initialRouteName="ThreadsList"
       screenOptions={{
         headerShown: false,
         contentStyle: { backgroundColor: theme.colors.background },

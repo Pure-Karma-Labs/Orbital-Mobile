@@ -52,11 +52,13 @@ import type { PendingMuteOp } from '../types/store';
 /**
  * The pref-key universe, derived — never hand-listed.
  *
- * DEFAULT_NOTIFICATION_PREFS is explicitly typed `NotificationPrefs`, so adding
- * a key to that interface is a compile error at notificationSlice.ts until the
- * default is supplied. Deriving from it transfers that exhaustiveness here: an
- * under-enumerated list is no longer expressible. The cast only re-narrows
- * Object.keys' string[] — it asserts nothing about completeness.
+ * DEFAULT_NOTIFICATION_PREFS is explicitly typed `Required<NotificationPrefs>`,
+ * so adding a key to that interface is a compile error at notificationSlice.ts
+ * until the default is supplied — and `Required<>` keeps that true even for a
+ * key that lands OPTIONAL on the interface (#692). Deriving from it transfers
+ * that exhaustiveness here: an under-enumerated list is no longer expressible.
+ * The cast only re-narrows Object.keys' string[] — it asserts nothing about
+ * completeness.
  *
  * Under-enumeration was silent AND per-key: drivePref uses sanitizePrefs as its
  * confirmation anchor (a missing key makes the client confirm itself), and the

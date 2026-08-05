@@ -8,7 +8,7 @@ import { createThreadsSlice } from './slices/threadsSlice';
 import { createUISlice } from './slices/uiSlice';
 import { createConnectionSlice } from './slices/connectionSlice';
 import { createMediaSlice } from './slices/mediaSlice';
-import { createNotificationSlice } from './slices/notificationSlice';
+import { createNotificationSlice, DEFAULT_NOTIFICATION_PREFS } from './slices/notificationSlice';
 import { createBlockedUsersSlice } from './slices/blockedUsersSlice';
 import { createReportSlice } from './slices/reportSlice';
 import type { AppState } from '../types/store';
@@ -81,22 +81,42 @@ export function partializeAppState(state: AppState): PersistedState {
  * reads fail open, so nothing is silently muted — but the settings screen would
  * render a toggle with no value while pushes fire.
  *
- * Only notificationPrefs is floored: it is the one persisted value with a fixed
- * key shape where per-key absence is representable. mutedTargets, pendingMuteOps,
- * threadLastViewedAt and the collections are open maps whose empty default is
- * already the correct base, and the scalars fall back to current state via the
- * top-level spread.
+ * Only notificationPrefs is floored PER KEY: it is the one persisted value with
+ * a fixed key shape where per-key absence is representable. mutedTargets,
+ * pendingMuteOps, threadLastViewedAt and the collections are open maps whose
+ * empty default is already the correct base, and the scalars fall back to
+ * current state via the top-level spread.
  *
  * Exported for the same reason as partializeAppState: persistence.test.ts must
  * assert the shipped function, never a copy that can drift.
  *
  * The guards exist because zustand calls merge(undefined, current) when storage
  * is empty and passes whatever JSON deserialized to when the blob is corrupt
- * (spreading a string or an array would splatter index keys into state). The
- * floor source is CURRENT prefs, not DEFAULT_NOTIFICATION_PREFS: an empty or
- * unreadable read must be non-destructive, and flooring from the constant would
- * reset every pref to all-on whenever getItem returns null after server truth
- * had already landed.
+ * (spreading a string or an array would splatter index keys into state).
+ *
+ * What is validated here, precisely (#692):
+ * - notificationPrefs — per key: presence AND boolean type; unknown keys clamped
+ *   out; the key set comes from DEFAULT_NOTIFICATION_PREFS.
+ * - mutedTargets / pendingMuteOps — CONTAINER SHAPE ONLY (plain object; arrays,
+ *   strings, null rejected — a string reached notificationSettingsSync's
+ *   Object.keys/Object.entries reads before this guard). Entry VALUES are NOT
+ *   validated: `{ pendingMuteOps: { t1: null } }` passes and still reaches the
+ *   unguarded op.ownerUserId deref in that module. That residue is fail-open
+ *   (worst case: nothing muted) and belongs to #687's input-validation cluster,
+ *   deliberately NOT fixed in this store-layer merge.
+ * - everything else — NOT validated. colorScheme/activeTab/soundEnabled,
+ *   threadLastViewedAt, conversations/conversationIds, contacts and
+ *   blockedUserIds/blockedUserProfiles ride the raw top-level spread. The
+ *   allowlist above governs only WHICH keys are admitted, never their shape.
+ *
+ * The notificationPrefs floor is a two-stage fallback behind the saved value:
+ * a saved BOOLEAN wins; else CURRENT wins — an empty or unreadable read must be
+ * non-destructive (the property the "is non-destructive when storage is empty"
+ * case guards; flooring straight from the constant would reset every pref to
+ * all-on whenever getItem returns null after server truth had already landed);
+ * else DEFAULT_NOTIFICATION_PREFS fills the key. That last stage is reachable
+ * ONLY via a per-key hole — a key `current` itself lacks — never on a
+ * whole-object empty read, which stage two already absorbs.
  *
  * NOT version/migrate: there is no schema change to migrate. migrate only runs
  * on a version mismatch, which means it depends on someone remembering to bump
@@ -121,17 +141,42 @@ export function mergePersistedAppState(persisted: unknown, current: AppState): A
   const savedPrefs = isPlainObject(saved.notificationPrefs) ? saved.notificationPrefs : {};
   // Per-key boolean floor, mirroring sanitizePrefs' discipline on network input
   // — presence AND type validated, unknown keys clamped out.
-  // current.notificationPrefs is provably complete at every rehydrate (initial
-  // state is {...DEFAULT}, setNotificationPrefs merges, reset writes the full
-  // default).
+  //
+  // The key set comes from DEFAULT_NOTIFICATION_PREFS, the same constant that
+  // feeds PREF_KEYS (notificationSettingsSync.ts), not from a runtime object
+  // whose completeness this loop would have to ASSUME. The `??` keeps the
+  // ordering that makes an empty read non-destructive: `current` still wins
+  // whenever it has a value, and the constant is reached only for a key
+  // `current` itself lacks — the per-key hole the old current-keyed loop could
+  // not even represent, because it iterated `current`'s own keys.
   const flooredPrefs: Partial<NotificationPrefs> = {};
-  for (const k of Object.keys(current.notificationPrefs) as (keyof NotificationPrefs)[]) {
+  for (const k of Object.keys(DEFAULT_NOTIFICATION_PREFS) as (keyof NotificationPrefs)[]) {
     const savedValue = savedPrefs[k];
-    flooredPrefs[k] = typeof savedValue === 'boolean' ? savedValue : current.notificationPrefs[k];
+    flooredPrefs[k] =
+      typeof savedValue === 'boolean'
+        ? savedValue
+        : (current.notificationPrefs[k] ?? DEFAULT_NOTIFICATION_PREFS[k]);
   }
-  // The cast only re-narrows Partial — every key of the complete current set
-  // was just assigned above; it asserts nothing the loop did not establish.
-  return { ...current, ...saved, notificationPrefs: flooredPrefs as NotificationPrefs };
+  // Container-shape guard for the two open maps (#692). The allowlist admits
+  // them; nothing checked they were objects, so a corrupt blob's string or array
+  // reached state through the spread below — `Object.entries('abc')` yields
+  // per-character entries whose ownerUserId is undefined, and every one of them
+  // reads as a stale-owner queue entry to be deleted. Fallback target is
+  // `current`, the same discipline as the prefs floor.
+  //
+  // Shape only: entry VALUES are not validated (see the docstring).
+  const savedMutedTargets = isPlainObject(saved.mutedTargets) ? saved.mutedTargets : current.mutedTargets;
+  const savedPendingMuteOps = isPlainObject(saved.pendingMuteOps) ? saved.pendingMuteOps : current.pendingMuteOps;
+  // The casts only re-narrow: flooredPrefs got every key of the typed constant
+  // assigned above, and the two maps are either `current`'s own already-typed
+  // value or an object whose shape (not entry types) was just checked.
+  return {
+    ...current,
+    ...saved,
+    notificationPrefs: flooredPrefs as NotificationPrefs,
+    mutedTargets: savedMutedTargets as AppState['mutedTargets'],
+    pendingMuteOps: savedPendingMuteOps as AppState['pendingMuteOps'],
+  };
 }
 
 export const useAppStore = create<AppState>()(

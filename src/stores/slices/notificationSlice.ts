@@ -7,8 +7,15 @@ import type { NotificationPrefs } from '../../types/api';
  *
  * Mirrors the backend, where a missing notification_prefs row means "all on"
  * (no backfill — see plan D1).
+ *
+ * Typed `Required<NotificationPrefs>`, not `NotificationPrefs` (#692): every key
+ * is required today, so this is a no-op at HEAD — it is forward-facing. This
+ * constant is the pref-key universe (PREF_KEYS in notificationSettingsSync.ts
+ * and the hydration floor in useAppStore.ts both derive their key set from it),
+ * so a future key that lands OPTIONAL on the interface must still be listed
+ * here; `Required<>` makes omitting it a compile error instead of a silent hole.
  */
-export const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = {
+export const DEFAULT_NOTIFICATION_PREFS: Required<NotificationPrefs> = {
   newThread: true,
   newReply: true,
   newDm: true,

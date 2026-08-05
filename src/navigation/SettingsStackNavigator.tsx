@@ -16,6 +16,10 @@ export function SettingsStackNavigator(): React.JSX.Element {
 
   return (
     <Stack.Navigator
+      // Explicit, not declaration-order (#486): this literal is typed against
+      // SettingsStackParamList, and TAB_INITIAL_SCREENS.Settings must agree with
+      // it or the tab-reset behaviour in MainTabNavigator silently diverges.
+      initialRouteName="SettingsMain"
       screenOptions={{
         headerShown: false,
         contentStyle: { backgroundColor: theme.colors.background },

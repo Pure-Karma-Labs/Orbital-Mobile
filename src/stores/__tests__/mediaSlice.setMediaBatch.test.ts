@@ -121,11 +121,13 @@ function makeStore() {
         // Notification slice stubs
         pushPermissionGranted: false,
         pushToken: null,
+        pushOptOut: false,
         notificationPrefs: { newThread: true, newReply: true, newDm: true, memberJoined: true },
         mutedTargets: {},
         pendingMuteOps: {},
         setPushPermission: jest.fn(),
         setPushToken: jest.fn(),
+        setPushOptOut: jest.fn(),
         setNotificationPrefs: jest.fn(),
         setMutedTargets: jest.fn(),
         addMutedTarget: jest.fn(),

@@ -14,14 +14,13 @@
  * local filters. `setPref` owns that: optimistic store write, rollback on
  * rejection, no Alert for plain connectivity failures.
  *
- * Security alerts (identity key reset) are structurally exempt from every
- * toggle here — hence the caption.
+ * Security alerts (identity key reset) are structurally exempt from the
+ * per-type toggles, but not from the master toggle — master off deregisters the
+ * device, so nothing arrives. The caption states whichever is true (#683).
  */
 
 import React, { useCallback, useRef } from 'react';
 import {
-  Alert,
-  Linking,
   ScrollView,
   Text,
   View,
@@ -30,14 +29,10 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
-import notifee, { AuthorizationStatus } from '@notifee/react-native';
 import { useTheme } from '../../theme';
 import { useAppStore } from '../../stores/useAppStore';
-import {
-  requestPermissionAndRegister,
-  deregisterCurrentDevice,
-  teardownPushRegistration,
-} from '../../services/notificationService';
+import { useNotifications } from '../../stores';
+import { setPushEnabled } from '../../services/notificationService';
 import { setPref } from '../../services/notificationSettingsSync';
 import { Header } from '../../components/Header';
 import { SettingsRow } from './SettingsRow';
@@ -83,47 +78,30 @@ export function PushNotificationSettingsScreen(): React.JSX.Element {
   const navigation = useNavigation();
 
   // Primitive + stable-object selectors: never select a freshly built object.
-  const pushPermissionGranted = useAppStore((s) => s.pushPermissionGranted);
+  // pushEnabled is the single derived master-push predicate (#683) — display
+  // and branch both read it, so a persisted opt-out with OS permission still
+  // granted can never render On while behaving as Off.
+  const { pushEnabled } = useNotifications();
   const prefs = useAppStore((s) => s.notificationPrefs);
 
   // --- Master push toggle (moved from SettingsScreen) ---
   // This screen must NOT own the token-refresh listener: it unmounts on Back,
   // and tearing the listener down here kills push delivery for the session
   // (PR #677 review finding). notificationService owns the listener at module
-  // scope; this screen only triggers register/teardown transitions.
+  // scope AND owns both transitions (setPushEnabled) — intent, teardown,
+  // deregistration and the OS-denied alert all live next to the state they
+  // order. This screen only guards against a double-tap.
   const togglingRef = useRef(false);
 
   const handleTogglePush = useCallback(async () => {
     if (togglingRef.current) return;
     togglingRef.current = true;
     try {
-      if (pushPermissionGranted) {
-        teardownPushRegistration();
-        await deregisterCurrentDevice();
-        useAppStore.getState().setPushPermission(false);
-        useAppStore.getState().setPushToken(null);
-      } else {
-        const settings = await notifee.getNotificationSettings();
-        if (settings.authorizationStatus === AuthorizationStatus.DENIED) {
-          Alert.alert(
-            'Notifications Disabled',
-            'Push notifications were previously denied. Enable them in Settings.',
-            [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Open Settings', onPress: () => Linking.openSettings() },
-            ],
-          );
-          return;
-        }
-        // Service replaces any previous listener internally; the returned
-        // teardown handle is deliberately discarded — logout (App.tsx) and
-        // the OFF branch above are the only legitimate teardown sites.
-        await requestPermissionAndRegister();
-      }
+      await setPushEnabled(!pushEnabled);
     } finally {
       togglingRef.current = false;
     }
-  }, [pushPermissionGranted]);
+  }, [pushEnabled]);
 
   // --- Per-type toggles ---
   const handleTogglePref = useCallback(
@@ -156,7 +134,7 @@ export function PushNotificationSettingsScreen(): React.JSX.Element {
         <SettingsRow
           emojiUnified="1F514"
           label="Push"
-          value={pushPermissionGranted ? 'On' : 'Off'}
+          value={pushEnabled ? 'On' : 'Off'}
           onPress={handleTogglePush}
           testID="push-row"
         />
@@ -167,12 +145,22 @@ export function PushNotificationSettingsScreen(): React.JSX.Element {
             key={row.key}
             spec={row}
             enabled={prefs[row.key]}
-            disabled={!pushPermissionGranted}
+            disabled={!pushEnabled}
             onToggle={handleTogglePref}
           />
         ))}
 
-        <Text style={captionStyle}>Security alerts are always delivered.</Text>
+        {/*
+          Security alerts are exempt from the per-type toggles above, but NOT
+          from the master toggle — master off means the device is deregistered,
+          so nothing is delivered at all. The caption is scoped accordingly
+          (#683) rather than promising delivery the app cannot make.
+        */}
+        <Text style={captionStyle}>
+          {pushEnabled
+            ? 'When push is on, security alerts are always delivered.'
+            : 'Push is off, so security alerts are not delivered either. Turn push on to receive them.'}
+        </Text>
 
         <View style={{ height: theme.spacing.xl }} />
       </ScrollView>

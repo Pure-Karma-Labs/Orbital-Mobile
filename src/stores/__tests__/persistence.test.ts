@@ -161,6 +161,9 @@ describe('persistence partialize', () => {
     // #678 — the mute-intent write-ahead queue survives restart so an offline
     // toggle is still drained on the next sync.
     'pendingMuteOps',
+    // #683 — explicit master-push opt-out. Intent, not OS state: an opt-out
+    // that evaporates on restart is not an opt-out.
+    'pushOptOut',
   ]);
 
   /**
@@ -239,6 +242,8 @@ describe('persistence partialize', () => {
     pendingMuteOps: {
       'thread-1': { targetType: 'thread', muted: true, ownerUserId: 'user-1', attempts: 0 },
     },
+    // Notifications (#683)
+    pushOptOut: true,
   };
 
   it('includes exactly the expected keys', () => {
@@ -280,6 +285,14 @@ describe('persistence partialize', () => {
       memberJoined: true,
     });
     expect(persisted.mutedTargets).toEqual({ 'thread-1': 'thread' });
+    expect('pushToken' in persisted).toBe(false);
+  });
+
+  it('persists the master-push opt-out but neither OS-derived push field (#683)', () => {
+    const persisted = partialize(fullState);
+    expect(persisted.pushOptOut).toBe(true);
+    // Intent is persisted; OS permission and the routable FCM token are not.
+    expect('pushPermissionGranted' in persisted).toBe(false);
     expect('pushToken' in persisted).toBe(false);
   });
 
@@ -474,5 +487,70 @@ describe('persist merge — hydration guards', () => {
 
     expect(merged.pushToken).toBe(current.pushToken);
     expect(merged.isAuthenticated).toBe(current.isAuthenticated);
+  });
+
+  // -------------------------------------------------------------------------
+  // #683 — master-push opt-out
+  // -------------------------------------------------------------------------
+
+  it('hydrates a persisted opt-out', async () => {
+    getMockInstance().getString.mockReturnValue(
+      JSON.stringify({ state: { pushOptOut: true }, version: 0 }),
+    );
+
+    await useAppStore.persist.rehydrate();
+
+    expect(useAppStore.getState().pushOptOut).toBe(true);
+  });
+
+  it('makes the persisted opt-out visible to getState() as soon as rehydrate resolves', async () => {
+    // Hydration-ordering pin: registerIfEnabled reads pushOptOut through
+    // useAppStore.getState() on the auth effect, with bootstrap's
+    // (synchronous, MMKV-backed) rehydrate() as its only ordering guarantee.
+    // If hydration ever became visible later than this, an opted-out launch
+    // would read the default `false` and re-register — issue #683 verbatim.
+    getMockInstance().getString.mockReturnValue(
+      JSON.stringify({ state: { pushOptOut: true, colorScheme: 'dark' }, version: 0 }),
+    );
+
+    await useAppStore.persist.rehydrate();
+    const readByLaunchGate = useAppStore.getState().pushOptOut;
+
+    expect(readByLaunchGate).toBe(true);
+  });
+
+  it('falls back to current when the persisted pushOptOut is not a boolean', () => {
+    const current = { ...useAppStore.getState(), pushOptOut: true };
+
+    // The `...saved` spread alone would hand a truthy string to the launch
+    // gate; an explicit boolean-typed key with a `current` fallback is what
+    // keeps a corrupt blob from silently flipping push either way.
+    const fromString = mergePersistedAppState({ pushOptOut: 'false' }, current);
+    expect(fromString.pushOptOut).toBe(true);
+
+    const fromNull = mergePersistedAppState({ pushOptOut: null }, current);
+    expect(fromNull.pushOptOut).toBe(true);
+
+    const fromAbsent = mergePersistedAppState({}, current);
+    expect(fromAbsent.pushOptOut).toBe(true);
+
+    // ...and a well-formed value still hydrates through the guard.
+    const fromBoolean = mergePersistedAppState({ pushOptOut: false }, current);
+    expect(fromBoolean.pushOptOut).toBe(false);
+  });
+
+  it('never persists or resurrects the OS-derived push fields alongside the opt-out', async () => {
+    getMockInstance().getString.mockReturnValue(
+      JSON.stringify({
+        state: { pushOptOut: true, pushPermissionGranted: true, pushToken: 'evil-token' },
+        version: 0,
+      }),
+    );
+
+    await useAppStore.persist.rehydrate();
+
+    expect(useAppStore.getState().pushOptOut).toBe(true);
+    expect(useAppStore.getState().pushToken).toBeNull();
+    expect(useAppStore.getState().pushPermissionGranted).toBe(false);
   });
 });

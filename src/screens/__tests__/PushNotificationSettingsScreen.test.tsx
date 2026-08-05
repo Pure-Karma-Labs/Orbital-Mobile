@@ -26,8 +26,12 @@ jest.mock('@react-navigation/native', () => ({
   useNavigation: () => ({ navigate: jest.fn(), goBack: mockGoBack }),
 }));
 
+// The screen only calls setPushEnabled (#683) — both master transitions and the
+// OS-denied alert live in the service now. deregisterCurrentDevice and
+// teardownPushRegistration stay mocked so the tests below can prove the screen
+// never reaches for them directly (the #677 listener-ownership invariant).
 jest.mock('../../services/notificationService', () => ({
-  requestPermissionAndRegister: jest.fn().mockResolvedValue(jest.fn()),
+  setPushEnabled: jest.fn().mockResolvedValue(undefined),
   deregisterCurrentDevice: jest.fn().mockResolvedValue(undefined),
   teardownPushRegistration: jest.fn(),
 }));
@@ -47,19 +51,23 @@ jest.mock('../../stores/useAppStore', () => {
   interface MockState {
     pushPermissionGranted: boolean;
     pushToken: string | null;
+    pushOptOut: boolean;
     notificationPrefs: Record<string, boolean>;
     mutedTargets: Record<string, string>;
     setPushPermission: (granted: boolean) => void;
     setPushToken: (token: string | null) => void;
+    setPushOptOut: (value: boolean) => void;
     setNotificationPrefs: (prefs: Record<string, boolean>) => void;
   }
   const store = createStore((set: (fn: unknown) => void) => ({
     pushPermissionGranted: true,
     pushToken: null,
+    pushOptOut: false,
     notificationPrefs: { newThread: true, newReply: true, newDm: true, memberJoined: true },
     mutedTargets: {},
     setPushPermission: (granted: boolean) => set({ pushPermissionGranted: granted }),
     setPushToken: (token: string | null) => set({ pushToken: token }),
+    setPushOptOut: (value: boolean) => set({ pushOptOut: value }),
     setNotificationPrefs: (prefs: Record<string, boolean>) =>
       set((s: MockState) => ({ notificationPrefs: { ...s.notificationPrefs, ...prefs } })),
   }));
@@ -68,15 +76,14 @@ jest.mock('../../stores/useAppStore', () => {
 
 import { useAppStore } from '../../stores/useAppStore';
 import {
-  requestPermissionAndRegister,
+  setPushEnabled,
   deregisterCurrentDevice,
   teardownPushRegistration,
 } from '../../services/notificationService';
 import { updateNotificationPrefs } from '../../services/api/notificationSettings';
 import { NetworkError } from '../../services/api/errors';
-import notifee from '@notifee/react-native';
 
-const mockRequestPermission = requestPermissionAndRegister as jest.Mock;
+const mockSetPushEnabled = setPushEnabled as jest.Mock;
 const mockDeregister = deregisterCurrentDevice as jest.Mock;
 const mockTeardown = teardownPushRegistration as jest.Mock;
 const mockUpdatePrefs = updateNotificationPrefs as jest.Mock;
@@ -119,6 +126,14 @@ function rowTouchable(root: ReactTestInstance, testID: string): ReactTestInstanc
   return found[0];
 }
 
+/** The security-alerts caption — the only free-standing sentence on the screen. */
+function captionText(root: ReactTestInstance): string | undefined {
+  const texts = root.findAllByType('Text' as unknown as React.ComponentType);
+  return texts
+    .map((t) => t.props.children)
+    .find((c): c is string => typeof c === 'string' && c.includes('security alerts'));
+}
+
 /** SettingsRow renders its `value` as the second-to-last Text child. */
 function rowValue(root: ReactTestInstance, testID: string): string | undefined {
   const row = findByTestId(root, testID);
@@ -134,6 +149,7 @@ beforeEach(() => {
   store.setState({
     pushPermissionGranted: true,
     pushToken: null,
+    pushOptOut: false,
     notificationPrefs: { newThread: true, newReply: true, newDm: true, memberJoined: true },
     mutedTargets: {},
   });
@@ -160,11 +176,23 @@ describe('PushNotificationSettingsScreen — rendering', () => {
     }
   });
 
-  it('renders the security-alert caption', () => {
+  it('renders the push-on security-alert caption', () => {
     const renderer = renderScreen();
-    const texts = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
-    const contents = texts.map((t) => t.props.children).filter((c) => typeof c === 'string');
-    expect(contents).toContain('Security alerts are always delivered.');
+    expect(captionText(renderer.root)).toBe(
+      'When push is on, security alerts are always delivered.',
+    );
+  });
+
+  it('renders the opted-out caption variant when the master row reads Off (#683)', () => {
+    act(() => { store.setState({ pushOptOut: true }); });
+    const renderer = renderScreen();
+
+    // Master off deregisters the device, so security alerts stop too — the
+    // caption must not keep promising delivery the app cannot make.
+    const caption = captionText(renderer.root);
+    expect(caption).toContain('security alerts');
+    expect(caption).not.toBe('When push is on, security alerts are always delivered.');
+    expect(caption).toMatch(/not delivered|off/i);
   });
 
   it('reflects stored preference values as On/Off', () => {
@@ -181,8 +209,13 @@ describe('PushNotificationSettingsScreen — rendering', () => {
   });
 });
 
+// The screen is now a pure intent surface (#683): every master transition —
+// including the OS-denied alert — is owned by notificationService.setPushEnabled
+// and pinned in notificationService.test.ts. What is pinned HERE is which
+// direction the tap asks for, which is decided by the derived pushEnabled
+// predicate the row also renders from.
 describe('PushNotificationSettingsScreen — master push toggle', () => {
-  it('tapping push row when OFF calls requestPermissionAndRegister', async () => {
+  it('tapping push row when OFF asks the service to turn push ON', async () => {
     act(() => { store.setState({ pushPermissionGranted: false }); });
     const renderer = renderScreen();
 
@@ -190,68 +223,65 @@ describe('PushNotificationSettingsScreen — master push toggle', () => {
       await findByTestId(renderer.root, 'push-row').props.onPress();
     });
 
-    expect(mockRequestPermission).toHaveBeenCalledTimes(1);
-    expect(mockDeregister).not.toHaveBeenCalled();
+    expect(mockSetPushEnabled).toHaveBeenCalledTimes(1);
+    expect(mockSetPushEnabled).toHaveBeenCalledWith(true);
   });
 
-  it('tapping push row when ON calls deregisterCurrentDevice and clears store', async () => {
+  it('tapping push row when ON asks the service to turn push OFF', async () => {
     const renderer = renderScreen();
 
     await act(async () => {
       await findByTestId(renderer.root, 'push-row').props.onPress();
     });
 
-    expect(mockDeregister).toHaveBeenCalledTimes(1);
-    expect(mockTeardown).toHaveBeenCalledTimes(1);
-    expect(store.getState().pushPermissionGranted).toBe(false);
-    expect(store.getState().pushToken).toBeNull();
-    expect(mockRequestPermission).not.toHaveBeenCalled();
+    expect(mockSetPushEnabled).toHaveBeenCalledTimes(1);
+    expect(mockSetPushEnabled).toHaveBeenCalledWith(false);
+    // Transition mechanics belong to the service, never to this screen.
+    expect(mockDeregister).not.toHaveBeenCalled();
+    expect(mockTeardown).not.toHaveBeenCalled();
+  });
+
+  it('renders Off and runs the ON branch after a restart-restored opt-out (#683)', async () => {
+    // The restart state the issue is about: OS permission is still granted
+    // (it is re-derived at launch) but the user opted out. Display and branch
+    // both read the derived predicate, so they cannot disagree.
+    act(() => { store.setState({ pushOptOut: true, pushPermissionGranted: true }); });
+    const renderer = renderScreen();
+
+    expect(rowValue(renderer.root, 'push-row')).toBe('Off');
+
+    await act(async () => {
+      await findByTestId(renderer.root, 'push-row').props.onPress();
+    });
+
+    expect(mockSetPushEnabled).toHaveBeenCalledWith(true);
+  });
+
+  it('dims the per-type rows for a restart-restored opt-out, not just for a permission denial', () => {
+    act(() => { store.setState({ pushOptOut: true, pushPermissionGranted: true }); });
+    const renderer = renderScreen();
+
+    for (const id of ['pref-new-thread-row', 'pref-new-dm-row']) {
+      expect(findByTestId(renderer.root, id).props.disabled).toBe(true);
+    }
   });
 
   it('unmounting the screen never tears down push registration (#677 blocking finding)', async () => {
     // Enable push on this screen, then navigate Back. The token-refresh
     // listener and any registration retry must survive the unmount — the
     // service owns that lifetime, not this screen.
-    const listenerHandle = jest.fn();
-    mockRequestPermission.mockResolvedValueOnce(listenerHandle);
     act(() => { store.setState({ pushPermissionGranted: false }); });
     const renderer = renderScreen();
 
     await act(async () => {
       await findByTestId(renderer.root, 'push-row').props.onPress();
     });
-    expect(mockRequestPermission).toHaveBeenCalledTimes(1);
+    expect(mockSetPushEnabled).toHaveBeenCalledTimes(1);
 
     act(() => { renderer.unmount(); });
 
-    expect(listenerHandle).not.toHaveBeenCalled();
     expect(mockTeardown).not.toHaveBeenCalled();
-  });
-
-  it('shows the settings Alert when OS permission is denied', async () => {
-    act(() => { store.setState({ pushPermissionGranted: false }); });
-    (notifee.getNotificationSettings as jest.Mock).mockResolvedValueOnce({
-      authorizationStatus: 0, // DENIED
-      android: {},
-      ios: {},
-    });
-    const alertSpy = jest.spyOn(Alert, 'alert');
-    const renderer = renderScreen();
-
-    await act(async () => {
-      await findByTestId(renderer.root, 'push-row').props.onPress();
-    });
-
-    expect(alertSpy).toHaveBeenCalledWith(
-      'Notifications Disabled',
-      'Push notifications were previously denied. Enable them in Settings.',
-      expect.arrayContaining([
-        expect.objectContaining({ text: 'Cancel' }),
-        expect.objectContaining({ text: 'Open Settings' }),
-      ]),
-    );
-    expect(mockRequestPermission).not.toHaveBeenCalled();
-    alertSpy.mockRestore();
+    expect(mockDeregister).not.toHaveBeenCalled();
   });
 });
 

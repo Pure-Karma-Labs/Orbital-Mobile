@@ -55,7 +55,9 @@ export function SettingsScreen(): React.JSX.Element {
   const navigation = useNavigation<NativeStackNavigationProp<SettingsStackParamList>>();
   const { displayName, username, avatarPath, userId, avatarDigest, keyRecoveryError, setKeyRecoveryError } = useAuth();
   const { colorScheme, setColorScheme, soundEnabled, setSoundEnabled } = useUI();
-  const { pushPermissionGranted } = useNotifications();
+  // Derived master-push state (#683) — never pushPermissionGranted alone, or a
+  // restart-restored opt-out would read On here and Off inside the sub-screen.
+  const { pushEnabled } = useNotifications();
   const { activeConversationId, conversations } = useConversations();
 
   const [quota, setQuota] = useState<GroupQuotaResponse | null>(null);
@@ -363,7 +365,7 @@ export function SettingsScreen(): React.JSX.Element {
         <SettingsRow
           emojiUnified="1F514"
           label="Push Notifications"
-          value={pushPermissionGranted ? 'On' : 'Off'}
+          value={pushEnabled ? 'On' : 'Off'}
           chevron
           onPress={handlePushNotifications}
           testID="push-notifications-row"

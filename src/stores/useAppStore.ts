@@ -20,7 +20,7 @@ import type { NotificationPrefs } from '../types/api';
  */
 export type PersistedState = Pick<
   AppState,
-  'conversations' | 'conversationIds' | 'contacts' | 'colorScheme' | 'activeTab' | 'soundEnabled' | 'blockedUserIds' | 'blockedUserProfiles' | 'threadLastViewedAt' | 'notificationPrefs' | 'mutedTargets' | 'pendingMuteOps'
+  'conversations' | 'conversationIds' | 'contacts' | 'colorScheme' | 'activeTab' | 'soundEnabled' | 'blockedUserIds' | 'blockedUserProfiles' | 'threadLastViewedAt' | 'notificationPrefs' | 'mutedTargets' | 'pendingMuteOps' | 'pushOptOut'
 >;
 
 /**
@@ -40,7 +40,9 @@ export type PersistedState = Pick<
  * - isComposerOpen — transient UI state
  * - syncOverallStatus — re-computed from pending sync queue on startup
  * - pushPermissionGranted, pushToken — device/OS-derived, re-read at launch;
- *   the FCM token must never sit in persisted state
+ *   the FCM token must never sit in persisted state. Their opposite is
+ *   pushOptOut (#683), which IS persisted: it records user INTENT, not OS
+ *   state, and an intent that evaporates on restart is not an opt-out.
  *
  * notificationPrefs/mutedTargets (#449) ARE persisted so the UI renders correct
  * toggles and mute glyphs before the login-time sync lands. They are
@@ -68,6 +70,7 @@ export function partializeAppState(state: AppState): PersistedState {
     notificationPrefs: state.notificationPrefs,
     mutedTargets: state.mutedTargets,
     pendingMuteOps: state.pendingMuteOps,
+    pushOptOut: state.pushOptOut,
   };
 }
 
@@ -104,6 +107,10 @@ export function partializeAppState(state: AppState): PersistedState {
  *   unguarded op.ownerUserId deref in that module. That residue is fail-open
  *   (worst case: nothing muted) and belongs to #687's input-validation cluster,
  *   deliberately NOT fixed in this store-layer merge.
+ * - pushOptOut (#683) — TYPE validated (boolean), falling back to `current`.
+ *   It gates push registration at launch, so a corrupt blob must not be able to
+ *   hand `registerIfEnabled` a truthy non-boolean (silently killing push) or a
+ *   falsy one (silently undoing an opt-out).
  * - everything else — NOT validated. colorScheme/activeTab/soundEnabled,
  *   threadLastViewedAt, conversations/conversationIds, contacts and
  *   blockedUserIds/blockedUserProfiles ride the raw top-level spread. The
@@ -170,12 +177,17 @@ export function mergePersistedAppState(persisted: unknown, current: AppState): A
   // The casts only re-narrow: flooredPrefs got every key of the typed constant
   // assigned above, and the two maps are either `current`'s own already-typed
   // value or an object whose shape (not entry types) was just checked.
+  // Explicit key, not left to the `...saved` spread (#683): the spread would
+  // hand a corrupt blob's non-boolean straight into the launch gate. Fallback
+  // target is `current`, the same discipline as the prefs floor and the two
+  // container guards — never the literal default.
   return {
     ...current,
     ...saved,
     notificationPrefs: flooredPrefs as NotificationPrefs,
     mutedTargets: savedMutedTargets as AppState['mutedTargets'],
     pendingMuteOps: savedPendingMuteOps as AppState['pendingMuteOps'],
+    pushOptOut: typeof saved.pushOptOut === 'boolean' ? saved.pushOptOut : current.pushOptOut,
   };
 }
 

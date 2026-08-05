@@ -2,8 +2,8 @@
  * Tests for notificationService — push notification permission, foreground
  * display, tap handling, and device deregistration.
  *
- * Covers: requestPermissionAndRegister, setupForegroundHandler,
- * setupNotificationTapHandler, deregisterCurrentDevice.
+ * Covers: registerIfEnabled (incl. the #683 opt-out gate), setPushEnabled,
+ * setupForegroundHandler, setupNotificationTapHandler, deregisterCurrentDevice.
  */
 
 // ---------------------------------------------------------------------------
@@ -26,6 +26,7 @@ const mockSetPushPermission = jest.fn();
 const mockSetPushToken = jest.fn();
 const mockSetIdentityKeyConflict = jest.fn();
 const mockSetConflictSource = jest.fn();
+const mockSetPushOptOut = jest.fn();
 
 /**
  * Mutable store double for the #449 suppression check. Reset in beforeEach;
@@ -36,11 +37,13 @@ const mockStoreState: {
   conversations: Record<string, { id: string; type: 'group' | 'direct' }>;
   notificationPrefs: Record<string, boolean>;
   mutedTargets: Record<string, string>;
+  pushOptOut: boolean;
 } = {
   viewingConversationId: null,
   conversations: {},
   notificationPrefs: { newThread: true, newReply: true, newDm: true, memberJoined: true },
   mutedTargets: {},
+  pushOptOut: false,
 };
 
 jest.mock('../../stores/useAppStore', () => ({
@@ -54,6 +57,8 @@ jest.mock('../../stores/useAppStore', () => ({
       conversations: mockStoreState.conversations,
       notificationPrefs: mockStoreState.notificationPrefs,
       mutedTargets: mockStoreState.mutedTargets,
+      pushOptOut: mockStoreState.pushOptOut,
+      setPushOptOut: mockSetPushOptOut,
     })),
   },
 }));
@@ -76,13 +81,14 @@ jest.mock('../recoveryState', () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
-import { PermissionsAndroid, Platform } from 'react-native';
+import { Alert, PermissionsAndroid, Platform } from 'react-native';
 import messaging, {
   type FirebaseMessagingTypes,
 } from '@react-native-firebase/messaging';
 import notifee, { EventType } from '@notifee/react-native';
 import {
-  requestPermissionAndRegister,
+  registerIfEnabled,
+  setPushEnabled,
   setupForegroundHandler,
   setupNotificationTapHandler,
   deregisterCurrentDevice,
@@ -158,6 +164,7 @@ beforeEach(() => {
     memberJoined: true,
   };
   mockStoreState.mutedTargets = {};
+  mockStoreState.pushOptOut = false;
 });
 
 afterEach(() => {
@@ -165,25 +172,24 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// requestPermissionAndRegister
+// registerIfEnabled — registration path
 // ---------------------------------------------------------------------------
 
-describe('requestPermissionAndRegister', () => {
+describe('registerIfEnabled — registration path', () => {
   it('sets pushPermission(false) and returns early when permission is denied', async () => {
     (notifee.requestPermission as jest.Mock).mockResolvedValueOnce({
       authorizationStatus: 0, // DENIED
     });
 
-    const unsubscribe = await requestPermissionAndRegister();
+    await registerIfEnabled();
 
     expect(mockSetPushPermission).toHaveBeenCalledWith(false);
     expect(getMessagingInstance().getToken).not.toHaveBeenCalled();
     expect(mockRegisterDevice).not.toHaveBeenCalled();
-    expect(typeof unsubscribe).toBe('function');
   });
 
   it('gets token and registers device when permission is granted', async () => {
-    const unsubscribe = await requestPermissionAndRegister();
+    await registerIfEnabled();
 
     expect(mockSetPushPermission).toHaveBeenCalledWith(true);
     expect(getMessagingInstance().getToken).toHaveBeenCalled();
@@ -193,7 +199,6 @@ describe('requestPermissionAndRegister', () => {
       pushToken: 'mock-fcm-token',
       deviceId: 'mock-device-id',
     });
-    expect(typeof unsubscribe).toBe('function');
   });
 
   it('sets pushPermission(true) when provisional permission is granted', async () => {
@@ -201,7 +206,7 @@ describe('requestPermissionAndRegister', () => {
       authorizationStatus: 2, // PROVISIONAL
     });
 
-    await requestPermissionAndRegister();
+    await registerIfEnabled();
 
     expect(mockSetPushPermission).toHaveBeenCalledWith(true);
     expect(mockRegisterDevice).toHaveBeenCalled();
@@ -212,7 +217,7 @@ describe('requestPermissionAndRegister', () => {
       .mockRejectedValueOnce(new Error('Network error'))
       .mockResolvedValueOnce({ success: true });
 
-    await requestPermissionAndRegister();
+    await registerIfEnabled();
 
     expect(mockSetPushPermission).toHaveBeenCalledWith(true);
     // First call failed
@@ -232,7 +237,7 @@ describe('requestPermissionAndRegister', () => {
       .mockRejectedValueOnce(new Error('Still failing'));
 
     // Should not throw
-    await requestPermissionAndRegister();
+    await registerIfEnabled();
 
     jest.advanceTimersByTime(5000);
     await Promise.resolve();
@@ -241,14 +246,13 @@ describe('requestPermissionAndRegister', () => {
     expect(mockRegisterDevice).toHaveBeenCalledTimes(2);
   });
 
-  it('returns a cleanup function that calls onTokenRefresh unsubscribe', async () => {
+  it('teardownPushRegistration unsubscribes the listener installed by registerIfEnabled', async () => {
     const mockUnsub = jest.fn();
     (getMessagingInstance().onTokenRefresh as jest.Mock).mockReturnValueOnce(mockUnsub);
 
-    const cleanup = await requestPermissionAndRegister();
-    expect(typeof cleanup).toBe('function');
+    await registerIfEnabled();
 
-    cleanup();
+    teardownPushRegistration();
     expect(mockUnsub).toHaveBeenCalled();
   });
 
@@ -259,12 +263,12 @@ describe('requestPermissionAndRegister', () => {
       .mockReturnValueOnce(firstUnsub)
       .mockReturnValueOnce(secondUnsub);
 
-    await requestPermissionAndRegister();
+    await registerIfEnabled();
     expect(firstUnsub).not.toHaveBeenCalled();
 
     // Second registration must tear down the first listener itself —
     // no screen ever owns this lifetime (PR #677 review finding).
-    await requestPermissionAndRegister();
+    await registerIfEnabled();
     expect(firstUnsub).toHaveBeenCalledTimes(1);
     expect(secondUnsub).not.toHaveBeenCalled();
   });
@@ -273,34 +277,35 @@ describe('requestPermissionAndRegister', () => {
     const mockUnsub = jest.fn();
     (getMessagingInstance().onTokenRefresh as jest.Mock).mockReturnValueOnce(mockUnsub);
 
-    await requestPermissionAndRegister();
+    await registerIfEnabled();
     teardownPushRegistration();
     expect(mockUnsub).toHaveBeenCalledTimes(1);
     teardownPushRegistration();
     expect(mockUnsub).toHaveBeenCalledTimes(1);
   });
 
-  it('a stale cleanup handle tears down the CURRENT listener, never a replaced one twice', async () => {
+  it('a second registration replaces the listener; teardown then tears down only the current one', async () => {
     const firstUnsub = jest.fn();
     const secondUnsub = jest.fn();
     (getMessagingInstance().onTokenRefresh as jest.Mock)
       .mockReturnValueOnce(firstUnsub)
       .mockReturnValueOnce(secondUnsub);
 
-    const staleCleanup = await requestPermissionAndRegister();
-    await requestPermissionAndRegister(); // replaces; firstUnsub called once here
+    await registerIfEnabled();
+    await registerIfEnabled(); // replaces; firstUnsub called once here
+    expect(firstUnsub).toHaveBeenCalledTimes(1);
 
-    staleCleanup(); // logout path holding an old handle
+    teardownPushRegistration(); // logout path — tears down only the current listener
     expect(secondUnsub).toHaveBeenCalledTimes(1);
     expect(firstUnsub).toHaveBeenCalledTimes(1); // not called again
   });
 });
 
 // ---------------------------------------------------------------------------
-// requestPermissionAndRegister — Android 13+ POST_NOTIFICATIONS permission
+// registerIfEnabled — Android 13+ POST_NOTIFICATIONS permission
 // ---------------------------------------------------------------------------
 
-describe('requestPermissionAndRegister — Android 13+ POST_NOTIFICATIONS permission', () => {
+describe('registerIfEnabled — Android 13+ POST_NOTIFICATIONS permission', () => {
   let requestSpy: jest.SpyInstance;
 
   afterEach(() => {
@@ -314,7 +319,7 @@ describe('requestPermissionAndRegister — Android 13+ POST_NOTIFICATIONS permis
       .spyOn(PermissionsAndroid, 'request')
       .mockResolvedValue(PermissionsAndroid.RESULTS.GRANTED);
 
-    await requestPermissionAndRegister();
+    await registerIfEnabled();
 
     expect(requestSpy).toHaveBeenCalledWith(
       PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
@@ -330,7 +335,7 @@ describe('requestPermissionAndRegister — Android 13+ POST_NOTIFICATIONS permis
       .spyOn(PermissionsAndroid, 'request')
       .mockResolvedValue(PermissionsAndroid.RESULTS.DENIED);
 
-    const unsubscribe = await requestPermissionAndRegister();
+    await registerIfEnabled();
 
     expect(requestSpy).toHaveBeenCalledWith(
       PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
@@ -340,14 +345,13 @@ describe('requestPermissionAndRegister — Android 13+ POST_NOTIFICATIONS permis
     expect(notifee.requestPermission).not.toHaveBeenCalled();
     expect(getMessagingInstance().getToken).not.toHaveBeenCalled();
     expect(mockRegisterDevice).not.toHaveBeenCalled();
-    expect(typeof unsubscribe).toBe('function');
   });
 
   it('skips the POST_NOTIFICATIONS check entirely below API 33', async () => {
     mockPlatform('android', 32);
     requestSpy = jest.spyOn(PermissionsAndroid, 'request');
 
-    await requestPermissionAndRegister();
+    await registerIfEnabled();
 
     expect(requestSpy).not.toHaveBeenCalled();
     // Falls through directly to the Notifee/Firebase flow.
@@ -359,10 +363,138 @@ describe('requestPermissionAndRegister — Android 13+ POST_NOTIFICATIONS permis
     mockPlatform('ios', 33);
     requestSpy = jest.spyOn(PermissionsAndroid, 'request');
 
-    await requestPermissionAndRegister();
+    await registerIfEnabled();
 
     expect(requestSpy).not.toHaveBeenCalled();
     expect(notifee.requestPermission).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// registerIfEnabled — the opt-out gate (#683)
+// ---------------------------------------------------------------------------
+
+describe('registerIfEnabled — opt-out gate (#683)', () => {
+  it('never registers when the user has opted out', async () => {
+    mockStoreState.pushOptOut = true;
+
+    await registerIfEnabled();
+
+    // The bug this issue fixes: the launch path used to re-register
+    // unconditionally, silently undoing an explicit master-push Off.
+    expect(notifee.requestPermission).not.toHaveBeenCalled();
+    expect(getMessagingInstance().getToken).not.toHaveBeenCalled();
+    expect(mockRegisterDevice).not.toHaveBeenCalled();
+    expect(getMessagingInstance().onTokenRefresh).not.toHaveBeenCalled();
+  });
+
+  it('RECONCILES by deregistering the device on every opted-out launch', async () => {
+    mockStoreState.pushOptOut = true;
+
+    await registerIfEnabled();
+
+    // Deliberately NOT a no-op: the DELETE issued at toggle time can fail
+    // (offline, 5xx), which would leave a live token server-side forever while
+    // the UI reads Off. The backend DELETE is idempotent and un-rate-limited.
+    expect(mockDeregisterDevice).toHaveBeenCalledTimes(1);
+    expect(mockDeregisterDevice).toHaveBeenCalledWith('mock-device-id');
+  });
+
+  it('does not throw when the reconciling deregistration fails', async () => {
+    mockStoreState.pushOptOut = true;
+    mockDeregisterDevice.mockRejectedValueOnce(new Error('offline'));
+
+    await expect(registerIfEnabled()).resolves.toBeUndefined();
+  });
+
+  it('registers and does not deregister when the user has not opted out', async () => {
+    mockStoreState.pushOptOut = false;
+
+    await registerIfEnabled();
+
+    expect(mockRegisterDevice).toHaveBeenCalledTimes(1);
+    expect(mockDeregisterDevice).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// setPushEnabled — master toggle transitions (#683)
+// ---------------------------------------------------------------------------
+
+describe('setPushEnabled(false) — turning push off', () => {
+  it('writes intent, tears down the listener, deregisters, then clears OS state — in that order', async () => {
+    const mockUnsub = jest.fn();
+    (getMessagingInstance().onTokenRefresh as jest.Mock).mockReturnValueOnce(mockUnsub);
+    // Install a listener first so teardown has something observable to do.
+    await registerIfEnabled();
+    mockSetPushPermission.mockClear();
+    mockSetPushToken.mockClear();
+
+    await setPushEnabled(false);
+
+    expect(mockSetPushOptOut).toHaveBeenCalledWith(true);
+    expect(mockUnsub).toHaveBeenCalledTimes(1);
+    expect(mockDeregisterDevice).toHaveBeenCalledTimes(1);
+    expect(mockSetPushPermission).toHaveBeenCalledWith(false);
+    expect(mockSetPushToken).toHaveBeenCalledWith(null);
+
+    // Ordering matters: intent is persisted BEFORE the network call, so a
+    // deregistration that fails mid-flight still leaves an opt-out to reconcile
+    // at the next launch.
+    const intentAt = mockSetPushOptOut.mock.invocationCallOrder[0];
+    const teardownAt = mockUnsub.mock.invocationCallOrder[0];
+    const deregisterAt = mockDeregisterDevice.mock.invocationCallOrder[0];
+    const clearPermissionAt = mockSetPushPermission.mock.invocationCallOrder[0];
+    expect(intentAt).toBeLessThan(teardownAt);
+    expect(teardownAt).toBeLessThan(deregisterAt);
+    expect(deregisterAt).toBeLessThan(clearPermissionAt);
+  });
+
+  it('still clears OS state when the deregistration fails', async () => {
+    mockDeregisterDevice.mockRejectedValueOnce(new Error('offline'));
+
+    await setPushEnabled(false);
+
+    expect(mockSetPushOptOut).toHaveBeenCalledWith(true);
+    expect(mockSetPushPermission).toHaveBeenCalledWith(false);
+    expect(mockSetPushToken).toHaveBeenCalledWith(null);
+  });
+});
+
+describe('setPushEnabled(true) — turning push on', () => {
+  it('clears the opt-out and registers', async () => {
+    await setPushEnabled(true);
+
+    expect(mockSetPushOptOut).toHaveBeenCalledWith(false);
+    expect(mockRegisterDevice).toHaveBeenCalledTimes(1);
+  });
+
+  it('records the intent but does not register when the OS has denied notifications', async () => {
+    (notifee.getNotificationSettings as jest.Mock).mockResolvedValueOnce({
+      authorizationStatus: 0, // DENIED
+      android: {},
+      ios: {},
+    });
+    const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+
+    await setPushEnabled(true);
+
+    // A tap IS intent: the flag is cleared even though the OS refuses, so a
+    // user who later grants permission in Settings converges at next launch
+    // instead of being silently held at opted-out.
+    expect(mockSetPushOptOut).toHaveBeenCalledWith(false);
+    expect(mockSetPushOptOut).not.toHaveBeenCalledWith(true);
+    expect(alertSpy).toHaveBeenCalledWith(
+      'Notifications Disabled',
+      'Push notifications were previously denied. Enable them in Settings.',
+      expect.arrayContaining([
+        expect.objectContaining({ text: 'Cancel' }),
+        expect.objectContaining({ text: 'Open Settings' }),
+      ]),
+    );
+    expect(notifee.requestPermission).not.toHaveBeenCalled();
+    expect(mockRegisterDevice).not.toHaveBeenCalled();
+    alertSpy.mockRestore();
   });
 });
 

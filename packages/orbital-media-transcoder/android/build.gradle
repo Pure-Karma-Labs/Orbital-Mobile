@@ -14,7 +14,7 @@ def getExtOrDefault(name, fallback) {
 // Exact pins: media3 is a media-parsing stack with a real CVE history, and
 // the Transformer/effect/common artifacts must move together. Dependabot's
 // gradle ecosystem entry (.github/dependabot.yml) routes advisories here.
-def media3Version = "1.8.1"
+def media3Version = "1.11.0"
 
 android {
   namespace "com.orbital.mediatranscoder"

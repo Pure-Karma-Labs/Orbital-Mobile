@@ -150,7 +150,7 @@ jobs:
       # rust-build-ios (no xcframework, no x86_64 slice), so sharing that cache
       # would thrash it.
       - name: Rust cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: packages/orbital-signal/rust/orbital_signal
           shared-key: rust-pr-apple
@@ -268,14 +268,14 @@ jobs:
       # real restore step below skips its save when that lookup hits.
       - name: Rust cache lookup (android)
         id: rust-cache-lookup-android
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: packages/orbital-signal/rust/orbital_signal
           shared-key: rust-build-android
           lookup-only: true
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: packages/orbital-signal/rust/orbital_signal
           # Does not encode Rust profile — split key if a release build step is ever added.
@@ -427,14 +427,14 @@ jobs:
       # android/ios caches never clobber each other.
       - name: Rust cache lookup (ios)
         id: rust-cache-lookup-ios
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: packages/orbital-signal/rust/orbital_signal
           shared-key: rust-build-ios
           lookup-only: true
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: packages/orbital-signal/rust/orbital_signal
           # Does not encode Rust profile — split key if a release build step is ever added.

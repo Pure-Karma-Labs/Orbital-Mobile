@@ -23,6 +23,7 @@ import androidx.media3.transformer.EditedMediaItemSequence
 import androidx.media3.transformer.Effects
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
+import androidx.media3.transformer.FrameworkMuxer
 import androidx.media3.transformer.ProgressHolder
 import androidx.media3.transformer.Transformer
 import androidx.media3.transformer.VideoEncoderSettings
@@ -168,6 +169,12 @@ class OrbitalMediaTranscoderModule(reactContext: ReactApplicationContext) :
     val transformer =
       try {
         Transformer.Builder(reactApplicationContext)
+          // Pin the platform MediaMuxer explicitly: media3 1.9+ defaults to its
+          // own InAppMp4Muxer, which changes output bytes (size profile, box
+          // layout) that the transcode-integrity guard (videoProcessing.ts) and
+          // moov GPS sanitizer (mp4GpsSanitizer.ts) assert against. Migrating
+          // to InAppMp4Muxer needs its own PR with a device pass.
+          .setMuxerFactory(FrameworkMuxer.Factory())
           .setVideoMimeType(MimeTypes.VIDEO_H264)
           .setAudioMimeType(MimeTypes.AUDIO_AAC)
           .setEncoderFactory(

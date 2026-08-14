@@ -28,6 +28,15 @@ buildscript {
         // as `safeExtGet(property)?.toBoolean() ?: false`, and Groovy's
         // String.toBoolean() returns true only for "true" — so the "false"
         // strings below coerce to boolean false (NOT to a truthy non-empty string).
+        //
+        // media3-bump tripwire: with these flags false, react-native-video
+        // compiles its own local STUB classes for dash/hls/smoothstreaming/rtsp
+        // (node_modules/react-native-video/android/src/main/java/androidx/media3/...),
+        // which implement MediaSource.Factory by hand-overriding its four
+        // abstract methods. Any media3 release that adds a new ABSTRACT method
+        // to MediaSource.Factory breaks OUR build specifically (users who ship
+        // the parsers never compile the stubs). Check that interface on every
+        // media3 bump.
         useExoplayerSmoothStreaming = "false"
         useExoplayerDash = "false"
         useExoplayerHls = "false"

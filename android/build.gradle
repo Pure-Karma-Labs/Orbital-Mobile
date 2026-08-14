@@ -11,9 +11,9 @@ buildscript {
         // media3 version consumed by react-native-video via its safeExtGet()
         // rootProject.ext lookup (node_modules/react-native-video/android/build.gradle).
         // LOCKSTEP with packages/orbital-media-transcoder/android/build.gradle
-        // (`def media3Version = "1.8.1"`). Bump BOTH together (deferred #639).
+        // (`def media3Version = "1.11.0"`). Bump BOTH together (deferred #639).
         // Enforced by scripts/check-security-invariants.mjs (media3-lockstep).
-        media3Version = "1.8.1"
+        media3Version = "1.11.0"
 
         // Local file:// MP4 playback only — the network manifest/segment parsers
         // (DASH/HLS/SmoothStreaming/RTSP: real CVE history) are compiled out and

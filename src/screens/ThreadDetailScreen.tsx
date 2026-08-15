@@ -44,10 +44,11 @@ import { useTheme } from '../theme';
 import { useAuth, useThreads } from '../stores';
 import { useAppStore } from '../stores/useAppStore';
 import { loadThread, loadReplies, postReply, hydrateRepliesFromLocal } from '../services/threadService';
-import { uploadMediaBatch } from '../services/mediaUploadService';
+import { isUploadCancellation } from '../services/mediaUploadService';
 import { QuotaExceededError } from '../services/api/errors';
 import { updateMediaParent } from '../database/repositories/mediaRepository';
 import { useMediaPicker } from '../hooks/useMediaPicker';
+import { useMediaUploadProgress } from '../hooks/useMediaUploadProgress';
 import { Header } from '../components/Header';
 import { OrbitalKeyboardAvoidingView } from '../components/OrbitalKeyboardAvoidingView';
 import { AsciiSection } from '../components/AsciiSeparator';
@@ -172,7 +173,16 @@ export function ThreadDetailScreen({
   const [replyTarget, setReplyTarget] = useState<ReplyTarget | null>(null);
   const [sending, setSending] = useState(false);
   const { selectedMedia, pickMedia, removeMedia, clearMedia } = useMediaPicker();
-  const [uploading, setUploading] = useState(false);
+  const { progress: uploadProgress, cancel: cancelUpload, uploadBatch } = useMediaUploadProgress();
+  const uploading = uploadProgress != null;
+
+  // Live view of the selection for the hook's post-batch id filter — the batch
+  // holds the array captured at call time, so an item removed mid-upload must
+  // not end up attached to the reply.
+  const selectedMediaRef = useRef(selectedMedia);
+  useEffect(() => {
+    selectedMediaRef.current = selectedMedia;
+  }, [selectedMedia]);
 
   // Composer text — lifted here so EmojiPicker can insert into it
   const [composerText, setComposerText] = useState('');
@@ -476,12 +486,11 @@ export function ThreadDetailScreen({
       try {
         let mediaIds: string[] | undefined;
         if (selectedMedia.length > 0) {
-          setUploading(true);
-          try {
-            mediaIds = await uploadMediaBatch(selectedMedia, thread.conversationId);
-          } finally {
-            if (mountedRef.current) setUploading(false);
-          }
+          mediaIds = await uploadBatch(
+            selectedMedia,
+            thread.conversationId,
+            () => selectedMediaRef.current,
+          );
         }
         const parentReplyId = replyTarget?.replyId ?? null;
         const depth = replyTarget ? replyTarget.depth + 1 : 0;
@@ -513,15 +522,22 @@ export function ThreadDetailScreen({
           }
         }
       } catch (e) {
-        if (e instanceof QuotaExceededError) {
-          Alert.alert('Upload Failed', e.message);
+        // A self-cancel raises no Alert. The composer text, the selected media
+        // and the reply target are all left untouched (the reset block above
+        // runs on the success path only), so the user can just send again.
+        if (isUploadCancellation(e)) {
+          if (__DEV__) console.warn('[Reply] upload cancelled by user');
+        } else {
+          if (e instanceof QuotaExceededError) {
+            Alert.alert('Upload Failed', e.message);
+          }
+          if (__DEV__) console.warn('[Reply] failed:', e instanceof Error ? e.message : e);
         }
-        if (__DEV__) console.warn('[Reply] failed:', e instanceof Error ? e.message : e);
       } finally {
         if (mountedRef.current) setSending(false);
       }
     },
-    [thread, threadId, userId, username, replyTarget, selectedMedia, clearMedia],
+    [thread, threadId, userId, username, replyTarget, selectedMedia, clearMedia, uploadBatch],
   );
 
   // ---------------------------------------------------------------------------
@@ -687,6 +703,8 @@ export function ThreadDetailScreen({
           showEmojiPicker={showEmojiPicker}
           onToggleEmojiPicker={handleToggleEmojiPicker}
           onInputFocus={handleInputFocus}
+          uploadProgress={uploadProgress}
+          onCancelUpload={cancelUpload}
         />
         <EmojiPicker
           visible={showEmojiPicker}

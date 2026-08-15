@@ -3,10 +3,13 @@
  *
  * Each thumbnail is a 72x72 rounded Image with an X remove button overlay.
  * Video items show a dark tile with a duration label instead of an Image.
- * Optional upload progress overlay per thumbnail (circular indicator).
  *
  * Used in ComposeThreadScreen and ReplyComposer for showing selected media
- * before posting.
+ * before posting. `disabled` hides the remove buttons while an upload is in
+ * flight -- the batch captured the item array by reference at call time, so a
+ * removal mid-upload would still upload AND attach the item the user just
+ * pulled back. (The composer additionally filters the returned ids against the
+ * still-selected items; this gate is the UI half of that invariant.)
  */
 
 import React from 'react';
@@ -30,8 +33,8 @@ import { formatDurationSeconds } from '../utils/formatDuration';
 export interface MediaThumbnailStripProps {
   /** Array of selected media to display */
   media: PickedMedia[];
-  /** Upload progress per media index (0-1). When present, shows progress overlay. */
-  uploadProgress?: Record<number, number>;
+  /** When true, the remove buttons are hidden (e.g. an upload is in flight) */
+  disabled?: boolean;
   /** Called when the user taps the X button on a thumbnail */
   onRemove: (index: number) => void;
 }
@@ -53,7 +56,7 @@ const REMOVE_BUTTON_SIZE = 22;
 
 export function MediaThumbnailStrip({
   media,
-  uploadProgress,
+  disabled = false,
   onRemove,
 }: MediaThumbnailStripProps): React.JSX.Element | null {
   const theme = useTheme();
@@ -104,22 +107,6 @@ export function MediaThumbnailStrip({
     textAlign: 'center',
   };
 
-  const progressOverlayStyle: ViewStyle = {
-    ...thumbnailWrapperStyle,
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.4)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  };
-
-  const progressTextStyle: TextStyle = {
-    color: '#FFFFFF',
-    fontSize: theme.typography.fontSize.xs,
-    fontFamily: theme.typography.fontFamily.mono,
-  };
-
   const videoTileStyle: ViewStyle = {
     width: THUMBNAIL_SIZE,
     height: THUMBNAIL_SIZE,
@@ -150,8 +137,6 @@ export function MediaThumbnailStrip({
         keyboardShouldPersistTaps="handled"
       >
         {media.map((item, index) => {
-          const progress = uploadProgress?.[index];
-          const isUploading = progress != null && progress < 1;
           const isVideo = item.type.startsWith('video/');
 
           return (
@@ -175,14 +160,7 @@ export function MediaThumbnailStrip({
                   accessibilityLabel={`Selected media ${index + 1}`}
                 />
               )}
-              {isUploading && (
-                <View style={progressOverlayStyle}>
-                  <Text style={progressTextStyle}>
-                    {Math.round(progress * 100)}%
-                  </Text>
-                </View>
-              )}
-              {!isUploading && (
+              {!disabled && (
                 <TouchableOpacity
                   style={removeButtonStyle}
                   onPress={() => onRemove(index)}

@@ -638,6 +638,60 @@ describe('QuotaExceededError', () => {
 // mediaTransferTimeoutMs — size-derived body deadline for media GETs
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// AbortSignal.any fallback bridge (Hermes runtime path — RN 0.82's abort-controller
+// polyfill has no static `.any`, so _executeRequest falls back to bridging the
+// caller's signal onto the timeout controller).
+// ---------------------------------------------------------------------------
+
+describe('_executeRequest — AbortSignal.any fallback bridge', () => {
+  let originalAbortSignalAny: ((signals: AbortSignal[]) => AbortSignal) | undefined;
+
+  beforeEach(() => {
+    originalAbortSignalAny = (AbortSignal as unknown as { any?: (signals: AbortSignal[]) => AbortSignal }).any;
+    (AbortSignal as unknown as { any?: unknown }).any = undefined;
+  });
+
+  afterEach(() => {
+    (AbortSignal as unknown as { any?: unknown }).any = originalAbortSignalAny;
+  });
+
+  it('aborting the caller signal aborts the signal handed to fetch, on the no-AbortSignal.any branch', async () => {
+    let rejectFetch: (e: unknown) => void = () => {};
+    const fetchPromise = new Promise((_resolve, reject) => {
+      rejectFetch = reject;
+    });
+    (globalThis as Record<string, unknown>).fetch = jest.fn().mockReturnValue(fetchPromise);
+
+    const callerController = new AbortController();
+    const reqPromise = request({
+      method: 'GET',
+      path: '/api/test',
+      signal: callerController.signal,
+    }).catch((e: unknown) => e);
+
+    // Flush the microtask queue past tokenManager.getAccessToken() (a resolved
+    // promise) so execution reaches the fetch() call.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const fetchMock = (globalThis as Record<string, unknown>).fetch as jest.Mock;
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const passedSignal = fetchMock.mock.calls[0][1].signal as AbortSignal;
+    expect(passedSignal.aborted).toBe(false);
+
+    callerController.abort();
+
+    // The caller's signal is bridged onto the timeout controller — the signal
+    // fetch was actually given must reflect the abort, not just callerSignal itself.
+    expect(passedSignal.aborted).toBe(true);
+
+    rejectFetch(Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }));
+    const result = await reqPromise;
+    expect(result).toBeInstanceOf(NetworkError);
+  });
+});
+
 describe('mediaTransferTimeoutMs', () => {
   it('falls back to the base allowance for unknown or empty sizes', () => {
     expect(mediaTransferTimeoutMs(undefined)).toBe(MEDIA_TRANSFER_BASE_TIMEOUT_MS);

@@ -104,10 +104,18 @@ Each button: 44 × 44pt touch target, `colors.textSecondary`.
 
 | Property | Value |
 |---|---|
-| Position | Below attachment previews |
-| Track | `colors.borderSubtle`, 3px height, full width |
+| Position | Top edge of the composer — under the header in ComposeThread, first child of the ReplyComposer container |
+| Track | `colors.borderSubtle`, 3px height, full width (no animation) |
 | Fill | `colors.blue`, `borderRadius.full` |
-| Label | "65%" in `fontSize.xs` (10), `colors.textSecondary`, right-aligned |
+| Label | "14 MB / 32 MB" in `fontSize.xs` (10), `colors.textSecondary`, right-aligned on its own row under the bar |
+| Label (other phases) | "Preparing video…" (transcode), "Encrypting…", "Cancelling…" |
+| Batch prefix | "(2/3) " before the MB pair when more than one item is selected |
+| Cancel | "X" to the right of the label; 44pt target, `hitSlop` 8; never gated on the composer's busy state |
+
+The bar is batch-overall; the MB readout is per item (a cross-item byte total
+would jump, since ciphertext length is only known per item). Cancelling is
+non-destructive — draft text, selected media and the reply target all survive —
+so it is deliberately not confirmation-gated.
 
 ## Quota Warning
 

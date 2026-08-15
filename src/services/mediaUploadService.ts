@@ -34,12 +34,13 @@ import { MAX_UPLOAD_SIZE_BYTES, STREAM_READ_SIZE_BYTES } from './media/mediaLimi
 import { isStagingResidueName } from './media/stagingResidue';
 import { uploadChunk, completeUpload } from './api/media';
 import { QuotaExceededError, AuthError } from './api/errors';
-import { saveMedia } from '../database/repositories/mediaRepository';
+import { saveMedia, deleteMedia } from '../database/repositories/mediaRepository';
 import { isDatabaseInitialized } from '../database/connection';
 import { useAppStore } from '../stores/useAppStore';
 import { generateUUID } from '../utils/uuid';
 import { sanitizeStillImage } from './media/imageSanitizer';
-import { prepareVideoForUpload } from './media/videoProcessing';
+import { prepareVideoForUpload, isCancellation } from './media/videoProcessing';
+import { UPLOAD_CANCELLED_MESSAGE } from './media/uploadCancellation';
 import {
   read,
   writeFile,
@@ -73,6 +74,38 @@ const BASE_RETRY_DELAY_MS = 1000;
 // Types
 // ---------------------------------------------------------------------------
 
+/** Coarse phase of an in-flight upload, for the composer's progress label. */
+export type UploadPhase = 'compressing' | 'encrypting' | 'uploading';
+
+/**
+ * One consistent snapshot of upload progress.
+ *
+ * A single payload (rather than separate numeric/phase callbacks) guarantees
+ * the bar and the MB readout can never disagree for a frame.
+ */
+export interface UploadProgressEvent {
+  /** Blended 0-1. Video: transcode 0→0.3, upload 0.3→1. Image: upload 0→1. */
+  fraction: number;
+  phase: UploadPhase;
+  /** Ciphertext bytes POSTed so far. Upload phase only — undefined otherwise. */
+  bytesSent?: number;
+  /** Total ciphertext bytes for THIS item. Known from the encrypting phase on. */
+  totalBytes?: number;
+}
+
+/**
+ * True for BOTH shapes a cancelled upload can reject with: our own
+ * `UPLOAD_CANCELLED_MESSAGE` sentinel and the native transcoder's
+ * `MediaTranscoderError { code: 'ECANCELLED' }`.
+ *
+ * Consumers MUST use this rather than a message-string check — a bare string
+ * check silently misses the transcode-phase cancel, which is the longest phase
+ * and therefore the most likely one to be cancelled.
+ */
+export function isUploadCancellation(e: unknown): boolean {
+  return isCancellation(e) || (e instanceof Error && e.message === UPLOAD_CANCELLED_MESSAGE);
+}
+
 export interface UploadMediaOptions {
   /** Local file URI (file:// or content://) from picker */
   fileUri: string;
@@ -92,10 +125,8 @@ export interface UploadMediaOptions {
   threadId?: string;
   /** Reply to associate with (if uploading for a reply) */
   replyId?: string;
-  /** Progress callback (0-1) */
-  onProgress?: (progress: number) => void;
-  /** Phase progress callback */
-  onPhase?: (phase: 'compressing' | 'encrypting' | 'uploading') => void;
+  /** Progress callback — one consistent {fraction, phase, bytes} snapshot per tick */
+  onProgress?: (e: UploadProgressEvent) => void;
   /** AbortSignal for cancellation */
   signal?: AbortSignal;
   /** Internal: marks this upload as a thumbnail child (no thread/reply association) */
@@ -201,7 +232,6 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
     threadId,
     replyId,
     onProgress,
-    onPhase,
     signal,
     _isThumbnail,
     _contentClass,
@@ -225,6 +255,14 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
       : options.mimeType.startsWith('image/')
         ? 'image'
         : undefined);
+
+  // Same post-transcode-reassignment footgun #707 fixed for contentClass: the
+  // video branch reassigns `mimeType`, so the progress base must be derived ONCE
+  // from the ORIGINAL options.mimeType. A thumbnail child is never a video and
+  // owns the whole 0→1 range of its (private) progress channel.
+  const isVideoSource = isVideoMime(options.mimeType) && !_isThumbnail;
+  /** Fraction the bar sits at once transcoding is done: 0.3 for video, 0 otherwise. */
+  const progressBase = isVideoSource ? 0.3 : 0;
 
   // 0. URI normalization
   const { sourcePath: resolvedPath, stagingPath } = await resolveUri(fileUri, mediaId);
@@ -255,11 +293,12 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
     // Video branch
     // -----------------------------------------------------------------------
     if (isVideoMime(mimeType) && !_isThumbnail) {
-      onPhase?.('compressing');
+      onProgress?.({ fraction: 0, phase: 'compressing' });
 
       const videoResult = await prepareVideoForUpload(sourcePath, mimeType, mediaId, {
         signal,
-        onProgress: (p) => onProgress?.(p * 0.3), // First 30% for compression
+        // First 30% of the bar is the transcode
+        onProgress: (p) => onProgress?.({ fraction: p * 0.3, phase: 'compressing' }),
       });
 
       // Switch source to compressed + sanitized video
@@ -299,6 +338,13 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
             thumbnailHeight = Math.round(videoResult.height * scale);
           }
         } catch (e) {
+          // A cancelled child is NOT a thumbnail failure. Rethrow before the
+          // degrade branch so cancel latency stays deterministic across the
+          // transcode/thumbnail boundary and a cancel is never logged (or
+          // silently absorbed) as a degradation.
+          if (isUploadCancellation(e) || signal?.aborted) {
+            throw e;
+          }
           // Thumbnail upload failure -- degrade to duration-only
           if (__DEV__) {
             console.warn('[uploadMedia] thumbnail upload failed, degrading:', e instanceof Error ? e.message : e);
@@ -320,7 +366,10 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
     // Thumbnail branch (_isThumbnail) -- already sanitized by videoProcessing
     // -----------------------------------------------------------------------
 
-    onPhase?.('encrypting');
+    // The 1 MiB encrypt loop below emits nothing: the bar holds at the
+    // post-transcode base while the label swaps to "Encrypting…". Re-scaling the
+    // fraction budget here would just move the stall somewhere else.
+    onProgress?.({ fraction: progressBase, phase: 'encrypting' });
 
     // 1. stat for authoritative file size
     const st = await stat(sourcePath);
@@ -342,6 +391,10 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
     const ciphertextLen = 16 + paddedLen + 32;
     const totalChunks = Math.ceil(ciphertextLen / CHUNK_SIZE_BYTES);
 
+    // Re-emit the encrypting phase now that the MB total is known, so the
+    // readout can render "0 MB / 32 MB" before the first chunk goes out.
+    onProgress?.({ fraction: progressBase, phase: 'encrypting', totalBytes: ciphertextLen });
+
     // 3. Generate attachment keys
     const generated = generateAttachmentKeys();
     keys = generated.keys;
@@ -352,7 +405,7 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
       for (let pos = 0; pos < fileSize; pos += STREAM_READ_SIZE_BYTES) {
         // Abort check
         if (signal?.aborted) {
-          throw new Error('Upload cancelled');
+          throw new Error(UPLOAD_CANCELLED_MESSAGE);
         }
 
         const n = Math.min(STREAM_READ_SIZE_BYTES, fileSize - pos);
@@ -428,13 +481,18 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
     // 6. Extract IV from ciphertext (first 16 bytes)
     const ivBase64 = await read(ctPath, 16, 0, 'base64');
 
-    onPhase?.('uploading');
+    onProgress?.({
+      fraction: progressBase,
+      phase: 'uploading',
+      bytesSent: 0,
+      totalBytes: ciphertextLen,
+    });
 
     // 7. PHASE 2 -- Upload chunks from ciphertext file
     for (let i = 0; i < totalChunks; i++) {
       // Check for cancellation
       if (signal?.aborted) {
-        throw new Error('Upload cancelled');
+        throw new Error(UPLOAD_CANCELLED_MESSAGE);
       }
 
       const chunkStart = i * CHUNK_SIZE_BYTES;
@@ -478,7 +536,7 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
 
             // Don't retry on cancellation
             if (signal?.aborted) {
-              throw new Error('Upload cancelled');
+              throw new Error(UPLOAD_CANCELLED_MESSAGE);
             }
 
             // Exponential backoff before retry
@@ -507,10 +565,16 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
         unlinkChunkFile(chunkFilePath);
       }
 
-      // Report progress (for videos: 30-100% is upload; for images: 0-100%)
-      const baseProgress = isVideoMime(mimeType) ? 0.3 : 0;
-      const uploadRange = 1 - baseProgress;
-      onProgress?.(baseProgress + ((i + 1) / totalChunks) * uploadRange);
+      // Report progress (for videos: 30-100% is upload; for images: 0-100%).
+      // bytesSent is capped at ciphertextLen so the final tick reads exactly
+      // "32 MB / 32 MB" rather than overshooting on the short last chunk.
+      const uploadRange = 1 - progressBase;
+      onProgress?.({
+        fraction: progressBase + ((i + 1) / totalChunks) * uploadRange,
+        phase: 'uploading',
+        bytesSent: Math.min((i + 1) * CHUNK_SIZE_BYTES, ciphertextLen),
+        totalBytes: ciphertextLen,
+      });
     }
 
     // 8. Complete the upload
@@ -588,6 +652,15 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
       attachmentKey: keys,
       digest: digestBytes,
     };
+  } catch (e) {
+    // Normalize EVERY abort-path rejection to the sentinel (mirrors
+    // mediaDownloadService). Transport-layer aborts surface as NetworkError
+    // ("Aborted"), RNFS reads as platform-specific strings; without this the
+    // two-shape guarantee of isUploadCancellation() would hold only by audit.
+    if (signal?.aborted && !isUploadCancellation(e)) {
+      throw new Error(UPLOAD_CANCELLED_MESSAGE);
+    }
+    throw e;
   } finally {
     // Best-effort cleanup of ciphertext temp file and staging file.
     // The canonical copy happens before this finally block, so unconditionally
@@ -617,6 +690,52 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
 // Batch upload helper
 // ---------------------------------------------------------------------------
 
+/** Progress payload for a batch — the per-item event plus its position. */
+export type BatchUploadProgressEvent = UploadProgressEvent & {
+  /** Zero-based index of the item currently uploading. */
+  itemIndex: number;
+  /** Total items in this batch. */
+  itemCount: number;
+};
+
+/** Error thrown by uploadMediaBatch, carrying whatever completed before it failed. */
+export interface BatchUploadError extends Error {
+  /**
+   * Server-assigned ids of items that fully completed before the batch failed.
+   * Their LOCAL half is rolled back on cancellation (see below); the server-side
+   * rows persist until retention reaps them — there is no abort endpoint yet.
+   */
+  uploadedMediaIds?: string[];
+}
+
+/**
+ * Roll back the LOCAL half of items a cancelled batch had already committed.
+ *
+ * uploadMedia's tail commits each completed item locally (canonical file copy,
+ * saveMedia with upload_state 'done' and thread_id NULL, Zustand upsert). On a
+ * mid-batch cancel nothing ever calls updateMediaParent, so those rows would sit
+ * in FileLibrary forever (its filter surfaces upload_state='done' rows regardless
+ * of parent) and their bytes would count against local storage usage.
+ *
+ * Best-effort throughout: a rollback failure must never mask the cancellation.
+ */
+async function rollbackLocalMedia(mediaIds: string[]): Promise<void> {
+  for (const id of mediaIds) {
+    const localPath = useAppStore.getState().media[id]?.localPath ?? null;
+    if (localPath) {
+      await unlink(localPath).catch(() => {});
+    }
+    if (isDatabaseInitialized()) {
+      try {
+        deleteMedia(id);
+      } catch {
+        // Best-effort -- the store removal below still hides the ghost row
+      }
+    }
+    useAppStore.getState().removeMedia(id);
+  }
+}
+
 /**
  * Upload a batch of picked media files sequentially.
  *
@@ -624,30 +743,63 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
  * ThreadDetailScreen (ReplyComposer) to avoid duplicating the
  * upload-loop pattern.
  *
+ * Progress is per-item: `fraction`/`bytesSent` describe the CURRENT item only,
+ * stamped with `itemIndex`/`itemCount` so the UI can blend a batch-overall bar.
+ * A cross-item byte total is deliberately not offered — ciphertext length is
+ * only known per item (and a video's source size is not its uploaded size), so
+ * any up-front total would jump or regress mid-post.
+ *
  * @param items - Array of PickedMedia from useMediaPicker.
  * @param groupId - The group to upload into.
- * @param opts - Optional parameters (onPhase callback).
+ * @param opts - Abort signal and progress callback.
  * @returns Array of mediaIds in the same order as the input items.
+ * @throws BatchUploadError — on cancellation the local rows of completed items
+ *   are rolled back first; `uploadedMediaIds` carries the server-side ids.
  */
 export async function uploadMediaBatch(
   items: PickedMedia[],
   groupId: string,
-  opts?: { onPhase?: (phase: 'compressing' | 'encrypting' | 'uploading') => void },
+  opts?: {
+    signal?: AbortSignal;
+    onProgress?: (e: BatchUploadProgressEvent) => void;
+  },
 ): Promise<string[]> {
   const ids: string[] = [];
-  for (const media of items) {
-    const result = await uploadMedia({
-      fileUri: media.uri,
-      mimeType: media.type,
-      fileName: media.fileName,
-      width: media.width,
-      height: media.height,
-      duration: media.duration,
-      groupId,
-      onPhase: opts?.onPhase,
-    });
-    ids.push(result.mediaId);
+  const itemCount = items.length;
+  const onProgress = opts?.onProgress;
+
+  try {
+    for (let itemIndex = 0; itemIndex < itemCount; itemIndex++) {
+      // An abort landing in the gap between two items must not start item N+1.
+      if (opts?.signal?.aborted) {
+        throw new Error(UPLOAD_CANCELLED_MESSAGE);
+      }
+
+      const media = items[itemIndex];
+      const result = await uploadMedia({
+        fileUri: media.uri,
+        mimeType: media.type,
+        fileName: media.fileName,
+        width: media.width,
+        height: media.height,
+        duration: media.duration,
+        groupId,
+        signal: opts?.signal,
+        onProgress: onProgress
+          ? (e) => onProgress({ ...e, itemIndex, itemCount })
+          : undefined,
+      });
+      ids.push(result.mediaId);
+    }
+  } catch (e) {
+    if (isUploadCancellation(e) || opts?.signal?.aborted) {
+      await rollbackLocalMedia(ids);
+    }
+    const err: BatchUploadError = e instanceof Error ? e : new Error(String(e));
+    err.uploadedMediaIds = ids;
+    throw err;
   }
+
   return ids;
 }
 

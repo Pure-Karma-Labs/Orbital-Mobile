@@ -369,15 +369,33 @@ async function _executeRequest(options: RequestOptions): Promise<Response> {
     // Combine caller signal + timeout signal.
     // AbortSignal.any() combines multiple signals into one (Node 20+, modern browsers).
     // Cast through unknown to avoid lib mismatch — AbortSignal.any is available at runtime
-    // in the Hermes / Node environments this app targets.
+    // in the Node environment the tests run under.
     type AbortSignalWithAny = typeof AbortSignal & {
       any?: (signals: AbortSignal[]) => AbortSignal;
     };
     const AbortSignalAny = (AbortSignal as AbortSignalWithAny).any;
-    const combinedSignal: AbortSignal =
-      callerSignal !== undefined && AbortSignalAny !== undefined
-        ? AbortSignalAny([callerSignal, timeoutController.signal])
-        : timeoutController.signal;
+
+    // RN 0.82 unconditionally polyfills AbortSignal with abort-controller@3,
+    // which has NO static `any` — so on device this is the branch that runs.
+    // Falling back to the timeout signal alone (the previous behaviour) silently
+    // dropped the caller's signal: a cancelled upload would keep its in-flight
+    // 5 MiB chunk POST alive until completion or the 60s timeout. Bridge the
+    // caller signal onto the timeout controller instead, and detach the listener
+    // per attempt (a long-lived caller signal would otherwise accumulate one
+    // listener per 429 retry — the same leak delayForRateLimit documents).
+    let combinedSignal: AbortSignal = timeoutController.signal;
+    let bridgeAbort: (() => void) | undefined;
+    if (callerSignal !== undefined) {
+      if (AbortSignalAny !== undefined) {
+        combinedSignal = AbortSignalAny([callerSignal, timeoutController.signal]);
+      } else if (callerSignal.aborted) {
+        // Pre-check: never arm a fetch we already know is cancelled.
+        timeoutController.abort();
+      } else {
+        bridgeAbort = () => timeoutController.abort();
+        callerSignal.addEventListener('abort', bridgeAbort, { once: true });
+      }
+    }
 
     let response: Response;
 
@@ -396,6 +414,9 @@ async function _executeRequest(options: RequestOptions): Promise<Response> {
       throw new NetworkError(message);
     } finally {
       clearTimeout(timeoutId);
+      if (bridgeAbort !== undefined) {
+        callerSignal?.removeEventListener('abort', bridgeAbort);
+      }
     }
 
     // 429 retry with exponential backoff

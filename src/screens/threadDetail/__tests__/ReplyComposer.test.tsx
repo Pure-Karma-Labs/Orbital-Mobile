@@ -34,6 +34,7 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { ThemeProvider } from '../../../theme';
 import { ReplyComposer, type ReplyComposerProps } from '../ReplyComposer';
 import type { PickedMedia } from '../../../hooks/useMediaPicker';
+import type { UploadProgressState } from '../../../hooks/useMediaUploadProgress';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -164,5 +165,64 @@ describe('ReplyComposer — send behavior', () => {
     const renderer = renderComposer({ text: 'hello', sending: false });
     const sendBtn = findByTestId(renderer, 'send-button');
     expect(sendBtn[0].props.disabled).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Upload progress (#645)
+// ---------------------------------------------------------------------------
+
+describe('ReplyComposer — upload progress', () => {
+  const fakeUploadProgress: UploadProgressState = {
+    fraction: 0.25,
+    phase: 'compressing',
+    bytesSent: null,
+    totalBytes: null,
+    itemIndex: 0,
+    itemCount: 1,
+    cancelling: false,
+  };
+
+  it('renders the progress bar, track, and cancel button with a phase-matched label', () => {
+    const renderer = renderComposer({ uploadProgress: fakeUploadProgress, onCancelUpload: jest.fn() });
+
+    expect(findByTestId(renderer, 'upload-progress').length).toBeGreaterThan(0);
+    expect(findByTestId(renderer, 'upload-progress-bar').length).toBeGreaterThan(0);
+    expect(findByTestId(renderer, 'upload-cancel-button').length).toBeGreaterThan(0);
+
+    const label = findByTestId(renderer, 'upload-progress-label');
+    expect(label[0].props.children).toBe('Preparing video…');
+  });
+
+  it('renders none of the upload progress elements when uploadProgress is omitted or null', () => {
+    const omitted = renderComposer();
+    expect(findByTestId(omitted, 'upload-progress').length).toBe(0);
+    expect(findByTestId(omitted, 'upload-cancel-button').length).toBe(0);
+
+    const withNull = renderComposer({ uploadProgress: null });
+    expect(findByTestId(withNull, 'upload-progress').length).toBe(0);
+    expect(findByTestId(withNull, 'upload-cancel-button').length).toBe(0);
+  });
+
+  it('calls onCancelUpload when the cancel button is pressed', () => {
+    const onCancelUpload = jest.fn();
+    const renderer = renderComposer({ uploadProgress: fakeUploadProgress, onCancelUpload });
+
+    const cancelBtn = findByTestId(renderer, 'upload-cancel-button');
+    act(() => {
+      cancelBtn[0].props.onPress();
+    });
+
+    expect(onCancelUpload).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the cancel button pressable while sending={true} freezes the reply input', () => {
+    const renderer = renderComposer({ uploadProgress: fakeUploadProgress, sending: true });
+
+    const cancelBtn = findByTestId(renderer, 'upload-cancel-button');
+    expect(cancelBtn[0].props.disabled).toBeFalsy();
+
+    const input = findByTestId(renderer, 'reply-input');
+    expect(input[0].props.editable).toBe(false);
   });
 });

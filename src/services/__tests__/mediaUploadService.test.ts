@@ -211,6 +211,12 @@ function setupRnfsMocks(plaintextSize: number) {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  // clearAllMocks does NOT drain mockReturnValueOnce queues (only mockReset
+  // does) — without this, ids queued by a test that consumes fewer than it
+  // arms leak into later tests and misattribute media ids (panel finding,
+  // PR #719 review).
+  mockGenerateUUID.mockReset();
+  mockGenerateUUID.mockImplementation(() => 'test-media-id');
   mockMediaMap = {};
 
   setupMockEncryptor();
@@ -1097,9 +1103,13 @@ describe('uploadMediaBatch', () => {
     mockMediaMap['batch-id-1'] = { localPath };
 
     const controller = new AbortController();
-    mockUploadChunk.mockImplementationOnce(() => {
+    // Abort DURING item 1's completeUpload: the pre-completeUpload abort check
+    // has already passed, so item 1 finishes and lands in `ids` — the batch's
+    // item-2 gap check then converts the abort into a cancellation, and the
+    // completed item 1 must be rolled back.
+    mockCompleteUpload.mockImplementationOnce(() => {
       controller.abort();
-      return Promise.resolve({ uploadId: 'u1', received: 1, complete: false });
+      return Promise.resolve({ mediaId: 'batch-id-1', complete: true });
     });
 
     const rnfs = require('@dr.pogodin/react-native-fs');
@@ -1111,6 +1121,56 @@ describe('uploadMediaBatch', () => {
     expect(mockRemoveMedia).toHaveBeenCalledWith('batch-id-1');
     expect(rnfs.unlink).toHaveBeenCalledWith(localPath);
     expect(err.uploadedMediaIds).toContain('batch-id-1');
+  });
+
+  it('cancels instead of completing when the abort lands after the final chunk POST (pre-completeUpload check)', async () => {
+    mockGenerateUUID.mockReturnValueOnce('tail-id-1');
+
+    const controller = new AbortController();
+    // Abort fires while the LAST (only) chunk POST is in flight — the old code
+    // would sail through completeUpload + canonical copy and resolve the batch,
+    // publishing the post the user cancelled (panel finding, PR #719 review).
+    mockUploadChunk.mockImplementationOnce(() => {
+      controller.abort();
+      return Promise.resolve({ uploadId: 'u1', received: 1, complete: false });
+    });
+
+    await expect(
+      uploadMediaBatch([fakeItems[0]], 'group-1', { signal: controller.signal }),
+    ).rejects.toThrow('cancelled');
+
+    // The item was stopped BEFORE the unsignalled tail — no server complete,
+    // no local commit to roll back.
+    expect(mockCompleteUpload).not.toHaveBeenCalled();
+    expect(mockSaveMedia).not.toHaveBeenCalled();
+  });
+
+  it('rejects and rolls back when the abort lands after the LAST item fully completes (post-loop check)', async () => {
+    mockGenerateUUID.mockReturnValueOnce('tail-id-2');
+
+    const localPath = '/tmp/media/tail-id-2.jpg';
+    mockMediaMap['tail-id-2'] = { localPath };
+
+    const controller = new AbortController();
+    // Abort fires during the LAST item's completeUpload: the item itself
+    // finishes (its pre-check already passed), so only the batch's trailing
+    // post-loop check can convert this into a cancellation — without it the
+    // batch resolves and the composer publishes.
+    mockCompleteUpload.mockImplementationOnce(() => {
+      controller.abort();
+      return Promise.resolve({ mediaId: 'tail-id-2', complete: true });
+    });
+
+    const rnfs = require('@dr.pogodin/react-native-fs');
+    const err = (await uploadMediaBatch([fakeItems[0]], 'group-1', {
+      signal: controller.signal,
+    }).catch((e) => e)) as BatchUploadError;
+
+    expect(err.message).toContain('cancelled');
+    expect(mockDeleteMedia).toHaveBeenCalledWith('tail-id-2');
+    expect(mockRemoveMedia).toHaveBeenCalledWith('tail-id-2');
+    expect(rnfs.unlink).toHaveBeenCalledWith(localPath);
+    expect(err.uploadedMediaIds).toContain('tail-id-2');
   });
 });
 

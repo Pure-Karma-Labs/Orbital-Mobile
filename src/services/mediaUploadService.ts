@@ -577,7 +577,14 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
       });
     }
 
-    // 8. Complete the upload
+    // 8. Complete the upload. An abort that landed after the final chunk POST
+    // must stop here — completeUpload takes no signal and the canonical copy
+    // below is seconds-long for a large video, so without this check a cancel
+    // in that tail window would resolve the upload (and the batch would then
+    // publish the post the user just cancelled).
+    if (signal?.aborted) {
+      throw new Error(UPLOAD_CANCELLED_MESSAGE);
+    }
     await completeUpload(mediaId, groupId);
 
     // 9. Copy plaintext to canonical path so file survives app restarts
@@ -790,6 +797,15 @@ export async function uploadMediaBatch(
           : undefined,
       });
       ids.push(result.mediaId);
+    }
+
+    // An abort landing in the last item's unsignalled tail (completeUpload
+    // round trip + canonical copy) resolves that item normally — this final
+    // check converts it into a cancellation so the catch below rolls back and
+    // the composer never publishes a post the user cancelled (panel finding,
+    // PR #719 review).
+    if (opts?.signal?.aborted) {
+      throw new Error(UPLOAD_CANCELLED_MESSAGE);
     }
   } catch (e) {
     if (isUploadCancellation(e) || opts?.signal?.aborted) {

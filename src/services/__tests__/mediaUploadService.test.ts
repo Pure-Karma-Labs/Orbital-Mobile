@@ -358,6 +358,41 @@ describe('uploadMedia', () => {
     expect(secondCall.encryptionIv).toBeUndefined();
   });
 
+  // Pins the class-beats-size decision (#707 / Backend #243): an image is tagged
+  // 'image' EXPLICITLY, which deliberately withdraws the incidental video-hold that
+  // >= 3 MiB photos get today from the server's NULL size-floor fallback. Changing
+  // this to omit the field for images is a retention-policy change, not a refactor.
+  it('tags an image upload with content_class "image" (class beats the server size floor)', async () => {
+    await uploadMedia(baseOptions);
+
+    const firstCall = mockUploadChunk.mock.calls[0][0] as Record<string, unknown>;
+    expect(firstCall.contentClass).toBe('image');
+  });
+
+  it('sends contentClass only with the first chunk', async () => {
+    const fileSize = 5 * 1024 * 1024;
+    const ctSize = computeCtSize(fileSize);
+    setupRnfsMocks(fileSize);
+    setupMockEncryptor(ctSize);
+
+    await uploadMedia(baseOptions);
+
+    expect(mockUploadChunk).toHaveBeenCalledTimes(2);
+    const firstCall = mockUploadChunk.mock.calls[0][0] as Record<string, unknown>;
+    const secondCall = mockUploadChunk.mock.calls[1][0] as Record<string, unknown>;
+    expect(firstCall.contentClass).toBe('image');
+    expect(secondCall.contentClass).toBeUndefined();
+  });
+
+  // Unknown types must stay untagged so the server keeps its NULL size-floor
+  // fallback rather than being handed a mislabelled class.
+  it('omits contentClass for a type that is neither image/* nor video/*', async () => {
+    await uploadMedia({ ...baseOptions, mimeType: 'audio/mp4', fileName: 'memo.m4a' });
+
+    const firstCall = mockUploadChunk.mock.calls[0][0] as Record<string, unknown>;
+    expect(firstCall.contentClass).toBeUndefined();
+  });
+
   it('encrypts metadata with group key (not plaintext)', async () => {
     await uploadMedia(baseOptions);
 
@@ -672,6 +707,51 @@ describe('uploadMedia — video branch', () => {
       (c: unknown[]) => (c[1] as string).includes('/media/test-media-id.mov'),
     );
     expect(canonicalCopy).toBeDefined();
+  });
+
+  // NESTED on purpose: un-nulling thumbnailPath in the parent beforeEach would make
+  // the thumbnail encrypt first and reorder mockEncryptContent.mock.calls, breaking
+  // the sibling assertions above.
+  describe('video branch — with thumbnail', () => {
+    beforeEach(() => {
+      prepareVideoForUpload.mockResolvedValue({
+        videoPath: '/tmp/test-cache/parent-media-id-staging.bin',
+        mimeType: 'video/quicktime',
+        fileName: 'parent-media-id.mov',
+        width: 720,
+        height: 1280,
+        duration: 12.3,
+        fileSize: SMALL_PLAINTEXT_SIZE,
+        thumbnailPath: '/tmp/test-cache/thumb.jpg',
+      });
+
+      // The parent draws its id first, the thumbnail recursion second. Without
+      // distinct ids the two uploads collide on the same cipher/chunk temp paths.
+      mockGenerateUUID
+        .mockReturnValueOnce('parent-media-id')
+        .mockReturnValueOnce('thumb-media-id');
+    });
+
+    it('sends content_class "video" on both the video and its inherited thumbnail', async () => {
+      await uploadMedia(videoOptions);
+
+      // Load-bearing: thumbnail upload failure degrades silently inside a
+      // try/catch, so without this count a broken thumbnail path passes vacuously.
+      expect(mockUploadChunk).toHaveBeenCalledTimes(2);
+
+      const calls = mockUploadChunk.mock.calls.map(
+        (c: unknown[]) => c[0] as Record<string, unknown>,
+      );
+      const parentCall = calls.find((c) => c.mediaId === 'parent-media-id');
+      const thumbCall = calls.find((c) => c.mediaId === 'thumb-media-id');
+
+      expect(parentCall).toBeDefined();
+      expect(thumbCall).toBeDefined();
+      // The thumbnail is an image/jpeg but inherits 'video' so a retained video
+      // keeps its poster frame instead of the thumbnail being evicted under it.
+      expect(parentCall!.contentClass).toBe('video');
+      expect(thumbCall!.contentClass).toBe('video');
+    });
   });
 });
 

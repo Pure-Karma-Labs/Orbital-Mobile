@@ -122,6 +122,26 @@ describe('uploadChunk', () => {
     expect((formData as unknown as { get(k: string): string | null }).get('encryption_iv')).toBe('iv==');
   });
 
+  it('includes content_class in FormData when provided', async () => {
+    mockFetchOk({ media_id: 'media-123', chunk_index: 0, chunks_received: 1, total_chunks: 3, progress: '33.33%', complete: false });
+
+    const params: UploadChunkParams = {
+      ...sampleUploadParams,
+      encryptedMetadata: '{"contentType":"video/mp4"}',
+      encryptionIv: 'iv==',
+      contentClass: 'video',
+    };
+
+    await uploadChunk(params);
+
+    const fetchMock = (globalThis as Record<string, unknown>).fetch as jest.Mock;
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const formData = init.body as FormData;
+
+    // Literal snake_case field name is load-bearing: FormData bypasses camelToSnake.
+    expect((formData as unknown as { get(k: string): string | null }).get('content_class')).toBe('video');
+  });
+
   it('omits optional fields when not provided', async () => {
     mockFetchOk({ media_id: 'media-123', chunk_index: 0, chunks_received: 1, total_chunks: 3, progress: '33.33%', complete: false });
 
@@ -133,6 +153,7 @@ describe('uploadChunk', () => {
 
     expect((formData as unknown as { get(k: string): string | null }).get('encrypted_metadata')).toBeNull();
     expect((formData as unknown as { get(k: string): string | null }).get('encryption_iv')).toBeNull();
+    expect((formData as unknown as { get(k: string): string | null }).get('content_class')).toBeNull();
   });
 
   it('uses 60s timeout', async () => {

@@ -59,8 +59,8 @@ All REST API endpoints defined in the Mobile App Spec (`docs/MOBILE-APP-SPEC.md`
 
 | Method | Path | Auth Required | Notes |
 |--------|------|--------------|-------|
-| POST | `/api/media/upload/chunk` | Yes | FormData body; 60s timeout; optional `AbortSignal` |
-| GET | `/api/media/:mediaId/download` | Yes | `rawResponse: true`; returns raw `ArrayBuffer`; 60s timeout; optional `AbortSignal` |
+| POST | `/api/media/upload/chunk` | Yes | FormData body; 60s timeout; optional `AbortSignal`. First chunk carries `encrypted_metadata`, `encryption_iv`, and `content_class` (write-only, never echoed; authoritative in both directions — an explicit class beats the server's size heuristic) |
+| GET | `/api/media/:mediaId/download` | Yes | `downloadMediaToFile` streams the ciphertext straight to disk (#578) — never crosses the bridge; 30s stall guard + 30min absolute backstop; optional `AbortSignal` |
 
 ### Users (`src/services/api/users.ts`)
 
@@ -140,22 +140,23 @@ Callers pass `cursor` as a query parameter to retrieve subsequent pages.
 
 `uploadAvatar` and `uploadChunk` use `FormData` bodies rather than JSON. The API client detects `FormData` and omits the `Content-Type: application/json` header, letting the browser/RN networking layer set the correct multipart boundary.
 
+FormData field names are written in snake_case by hand — the `camelToSnake` transform operates on JSON bodies only and never touches a `FormData` instance. `content_class` is a first-chunk-only, write-only eviction hint (`'image'`/`'video'`, omitted entirely for any other type so the server keeps its NULL size-floor fallback); video thumbnails deliberately send `'video'` so a retained video keeps its poster frame.
+
 ### 60-Second Timeout for Large Payloads
 
 The following endpoints use `timeout: 60_000` to accommodate large payloads over mobile networks:
 - `POST /api/users/avatar` — profile image upload
 - `POST /api/media/upload/chunk` — encrypted media chunk upload
-- `GET /api/media/:mediaId/download` — encrypted media download
 
-All other endpoints use the default client timeout.
+All other endpoints use the default client timeout. Media **download** is not on this list: since #578 it does not go through the `request()` timeout at all (see below).
 
-### rawResponse for Binary Downloads
+### Streaming Binary Downloads
 
-`downloadMedia` sets `rawResponse: true`, which instructs the API client to return the raw `ArrayBuffer` instead of attempting JSON parsing. Callers receive raw encrypted bytes and are responsible for decryption using the attachment key.
+`downloadMediaToFile` bypasses the JSON `request()` path entirely and hands the transfer to the native RNFS downloader, which writes the ciphertext straight to disk — the response body never crosses the bridge (#578). It is therefore governed by its own timers rather than the 60s client timeout: a 30s no-progress stall guard (`MEDIA_DOWNLOAD_STALL_TIMEOUT_MS`, mirrored by a JS-side watchdog) plus a flat 30-minute absolute backstop (`MEDIA_DOWNLOAD_BACKSTOP_MS`), so a slow-but-progressing large transfer is never killed. Callers receive only `{ bytesWritten }` and decrypt the file on disk using the attachment key.
 
 ### AbortSignal Support
 
-`uploadChunk` and `downloadMedia` accept an optional `AbortSignal` that is forwarded directly to the underlying fetch call. This enables in-flight cancellation for large uploads and downloads (e.g., user navigates away from the media upload screen).
+`uploadChunk` and `downloadMediaToFile` accept an optional `AbortSignal`. This enables in-flight cancellation for large uploads and downloads (e.g., user navigates away from the media upload screen).
 
 ### Client-Generated UUIDs
 

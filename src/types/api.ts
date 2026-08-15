@@ -539,6 +539,15 @@ export interface ListRepliesResponse {
 // ============================================================
 
 /**
+ * Coarse media class sent on the first upload chunk to drive server-side
+ * eviction policy. A deliberate, bounded, WRITE-ONLY one-bit disclosure:
+ * the backend stores it but never echoes it; the precise content type,
+ * filename, dimensions and duration stay inside the encrypted metadata
+ * envelope.
+ */
+export type MediaContentClass = 'image' | 'video';
+
+/**
  * Media metadata object returned inline with threads and replies.
  */
 export interface MediaMetadata {

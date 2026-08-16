@@ -6,6 +6,8 @@
 #import <ImageIO/ImageIO.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
+#include <atomic>
+
 // Error codes. Messages never carry paths, filenames, or user content — only
 // a non-identifying reason (an OS error constant or a fixed phrase).
 static NSString *const kOMTErrNotFound = @"ENOENT";
@@ -42,19 +44,66 @@ static NSString *_Nullable OMTMovieAliasIfNeeded(NSString *path)
   return alias;
 }
 
-/** Per-job state. Created, mutated, and destroyed only on the module queue. */
+/**
+ * Per-job state. Created, mutated, and destroyed only on the module queue, with
+ * exactly one deliberate exception: `cancelled` is ATOMIC because the video and
+ * audio sample loops poll it on _videoQueue/_audioQueue while a cancel request
+ * arrives on the module queue.
+ *
+ * Setting that flag is the ONLY thing a cancel may do cross-queue (#726). The
+ * reader and writer must never be cancelled while the loops may be inside
+ * -copyNextSampleBuffer: tearing the decode session down underneath an
+ * in-flight copy crashes in FigVisualContextGetEarliestSequentialImageTime.
+ * Teardown belongs to -finishTranscode:job:, which runs on the module queue
+ * only after both loops have drained.
+ */
 @interface OrbitalTranscodeJob : NSObject
 @property (nonatomic, copy) NSString *destPath;
 @property (nonatomic, copy) RCTPromiseResolveBlock resolve;
 @property (nonatomic, copy) RCTPromiseRejectBlock reject;
 @property (nonatomic, strong, nullable) AVAssetReader *reader;
 @property (nonatomic, strong, nullable) AVAssetWriter *writer;
-@property (nonatomic, assign) BOOL cancelled;
+/**
+ * Atomic (seq-cst), set once via -markCancelled and never cleared. Readable
+ * from any queue; the sample loops poll it between samples.
+ */
+@property (nonatomic, readonly, getter=isCancelled) BOOL cancelled;
+/**
+ * YES once requestMediaDataWhenReadyOnQueue: has installed the sample loops and
+ * a dispatch_group_notify is therefore pending. Module queue only.
+ */
+@property (nonatomic, assign) BOOL mediaLoopsInstalled;
 @property (nonatomic, assign) double lastProgress;
 @property (nonatomic, assign) NSTimeInterval lastProgressAt;
+- (void)markCancelled;
 @end
 
-@implementation OrbitalTranscodeJob
+@implementation OrbitalTranscodeJob {
+  std::atomic<bool> _cancelled;
+}
+
+- (instancetype)init
+{
+  if (self = [super init]) {
+    _cancelled.store(false);
+  }
+  return self;
+}
+
+// Hand-written accessors: implementing the getter of the readonly property
+// suppresses auto-synthesis, so `cancelled`/`isCancelled` resolve to the atomic
+// ivar rather than a plain BOOL. Sequentially consistent by default, which is
+// what the loops' between-sample polling wants.
+- (BOOL)isCancelled
+{
+  return _cancelled.load();
+}
+
+- (void)markCancelled
+{
+  _cancelled.store(true);
+}
+
 @end
 
 @implementation OrbitalMediaTranscoder {
@@ -96,6 +145,16 @@ RCT_EXPORT_MODULE()
  * Metro Fast Refresh tears the module down mid-transcode. Without this, the
  * reader/writer keep running into an orphaned staging file and late progress
  * emits fire against a dead event-emitter callback.
+ *
+ * Unlike -cancelTranscode:, the rejection here CANNOT be drain-deferred: the JS
+ * runtime is being torn down, so the promise blocks must not fire afterwards.
+ * We therefore settle immediately and unregister the job. We still leave the
+ * reader/writer strictly alone (#726) — cancelling them here would race the
+ * sample loops the same way a cancel does. -finishTranscode:job: then finds the
+ * job unregistered, settles nothing, and tears the pipeline down once for real
+ * after the loops drain.
+ *
+ * No [super invalidate]: the generated spec base is a bare NSObject.
  */
 - (void)invalidate
 {
@@ -107,9 +166,7 @@ RCT_EXPORT_MODULE()
       if (job == nil) {
         continue;
       }
-      job.cancelled = YES;
-      [job.reader cancelReading];
-      [job.writer cancelWriting];
+      [job markCancelled];
       [self removeFileAtPath:job.destPath];
       [self->_jobs removeObjectForKey:jobId];
       job.reject(kOMTErrCancelled, @"module invalidated", nil);
@@ -203,6 +260,22 @@ RCT_EXPORT_MODULE()
                }];
 }
 
+/**
+ * Builds and starts the reader/writer pipeline. Runs on _queue.
+ *
+ * Cancellation correctness (#726) depends on three properties of this method,
+ * all of which a future refactor could silently break:
+ *   (a) it is ATOMIC with respect to _queue — it never awaits or hops queues,
+ *       so the dispatch_group_notify it schedules on _queue cannot run until it
+ *       has returned, which is what makes `mediaLoopsInstalled = YES` at the
+ *       very end a sound "a notify is pending" flag;
+ *   (b) every early exit after the reader/writer are assigned to the job calls
+ *       -failJob:, so no job is ever left registered with no pending notify;
+ *   (c) settle-once: every path that removes a job from _jobs also settles its
+ *       promise, and no path settles a job it did not remove.
+ * Adding an early `return` or an async hop below breaks (a) or (b) and will
+ * strand a cancelled job's promise forever.
+ */
 - (void)runTranscode:(NSString *)jobId
                asset:(AVURLAsset *)asset
           videoTrack:(AVAssetTrack *)videoTrack
@@ -418,20 +491,53 @@ RCT_EXPORT_MODULE()
                                             }];
   }
 
+  // The notify captures the job so that teardown works even after the job has
+  // been unregistered from _jobs (invalidate).
   dispatch_group_notify(group, _queue, ^{
-    [self finishTranscode:jobId];
+    [self finishTranscode:jobId job:job];
   });
+
+  // MUST stay the final statement, immediately after the notify is scheduled:
+  // the flag being YES then structurally implies "a notify is pending", which
+  // is exactly the precondition -cancelTranscode: relies on to defer settling.
+  job.mediaLoopsInstalled = YES;
 }
 
-- (void)finishTranscode:(NSString *)jobId
+/**
+ * Runs on _queue once both sample loops have drained, so the reader/writer are
+ * now safe to tear down. `job` is the job this pipeline belongs to; it may no
+ * longer be the job registered under `jobId` (invalidate unregisters).
+ */
+- (void)finishTranscode:(NSString *)jobId job:(OrbitalTranscodeJob *)job
 {
-  OrbitalTranscodeJob *job = _jobs[jobId];
-  if (job == nil) {
-    return;
-  }
   AVAssetReader *reader = job.reader;
   AVAssetWriter *writer = job.writer;
 
+  OrbitalTranscodeJob *current = _jobs[jobId];
+  if (current == nil) {
+    // -invalidate unregistered and already rejected this job. Tear the pipeline
+    // down now that the loops have drained — this is what releases the encoder
+    // session and the writer's open fd — but settle NOTHING: re-rejecting an
+    // already-settled promise violates RN's single-settle contract.
+    [reader cancelReading];
+    [writer cancelWriting];
+    return;
+  }
+  if (current != job) {
+    // Unreachable today: jobId is a fresh UUID per uploadMedia call
+    // (mediaUploadService.ts:250), so no successor can reuse this id. Defensive
+    // against future id reuse: tear down OUR pipeline and reject OUR orphaned
+    // promise directly. Not via -failJob:, which would remove the SUCCESSOR
+    // from _jobs, settle its promise, and delete the file it now owns.
+    [reader cancelReading];
+    [writer cancelWriting];
+    job.reject(kOMTErrCancelled, @"transcode superseded", nil);
+    return;
+  }
+
+  // The cancelled check stays AHEAD of the failed-status check: a cancel that
+  // also trips a reader/writer failure must still report ECANCELLED, because JS
+  // duck-types cancellation on that code alone (isCancellation).
   if (job.cancelled) {
     [reader cancelReading];
     [writer cancelWriting];
@@ -448,7 +554,15 @@ RCT_EXPORT_MODULE()
   [writer finishWritingWithCompletionHandler:^{
     dispatch_async(self->_queue, ^{
       OrbitalTranscodeJob *pending = self->_jobs[jobId];
-      if (pending == nil) {
+      if (pending != job) {
+        if (pending == nil) {
+          // -invalidate ran while finalization was in flight: it deleted
+          // destPath and rejected, then finishWriting RECREATED the file at
+          // that path. Delete the resurrected plaintext.
+          [self removeFileAtPath:job.destPath];
+        }
+        // Otherwise a successor owns this id (see above) — never touch its
+        // promise or its file.
         return;
       }
       if (writer.status == AVAssetWriterStatusCompleted && !pending.cancelled) {
@@ -475,17 +589,55 @@ RCT_EXPORT_MODULE()
   job.reject(code, reason, nil);
 }
 
+/**
+ * Cancellation is a REQUEST, not a teardown (#726).
+ *
+ * Cancelling the reader/writer here used to crash: the sample loops run on
+ * _videoQueue/_audioQueue and may be inside -copyNextSampleBuffer at the exact
+ * moment a cancel arrives on the module queue, and pulling the decode session
+ * out from under them SIGSEGVs in
+ * FigVisualContextGetEarliestSequentialImageTime. So a cancel now only sets the
+ * atomic flag; the loops observe it between samples, finish, and
+ * -finishTranscode:job: does the teardown and the settling once they have
+ * drained.
+ *
+ * The JS contract is shape-identical, latency-deferred: JS discriminates
+ * cancellation solely on the code ECANCELLED delivered through the transcode
+ * promise, which still arrives — just after the drain rather than immediately.
+ * The cancelling-label affordance in useMediaUploadProgress absorbs a
+ * sub-second drain; that UI affordance IS the latency budget. (A JS-side
+ * settlement backstop is tracked in #727.)
+ */
 - (void)cancelTranscode:(NSString *)jobId
 {
   dispatch_async(_queue, ^{
     OrbitalTranscodeJob *job = self->_jobs[jobId];
     if (job == nil) {
+      // Unknown id, already-settled job, or a call for a path that never
+      // enters _jobs at all (image / thumbnail / metadata). Nothing to do.
       return;
     }
-    job.cancelled = YES;
-    [job.reader cancelReading];
-    [job.writer cancelWriting];
-    [self failJob:jobId code:kOMTErrCancelled reason:@"transcode cancelled"];
+    [job markCancelled];
+
+    if (!job.mediaLoopsInstalled) {
+      // Still loading tracks: no sample loops are running, no notify is
+      // pending, and the reader/writer do not exist yet. This is both the ONLY
+      // chance to settle the promise and a safe moment to do it — nothing can
+      // be mid-copyNextSampleBuffer. runTranscode later finds the job gone and
+      // bails.
+      [self failJob:jobId code:kOMTErrCancelled reason:@"transcode cancelled"];
+      return;
+    }
+
+    // Loops installed: settling is deferred to -finishTranscode:job:. Delete
+    // the partial plaintext output NOW anyway, matching Android's immediate
+    // delete, so the residue window does not stretch across the drain. Safe on
+    // APFS: the writer keeps its fd, its remaining writes land in the now
+    // anonymous inode and are reclaimed when -finishTranscode:job: cancels the
+    // writer; failJob's later delete no-ops; and -startTranscode: unlinks
+    // destPath for any successor anyway.
+    [self removeFileAtPath:job.destPath];
+    // NOTHING else here: no cancelReading, no cancelWriting, no failJob.
   });
 }
 

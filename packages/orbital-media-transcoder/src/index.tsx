@@ -13,6 +13,11 @@
  *   type from the file extension and fails outright on anything else.
  * - Rejections are normalized to MediaTranscoderError with a `code` field
  *   read from the native rejection code -- never match on message text.
+ * - cancelTranscode is a REQUEST, not an acknowledgement: the transcode promise
+ *   is the only cancellation signal, and on iOS its ECANCELLED rejection is
+ *   deferred until the native sample loops drain (bounded in practice by the
+ *   "Cancelling..." affordance in useMediaUploadProgress), while Android settles
+ *   immediately. Never assume a cancel has settled the promise yet (#726/#727).
  */
 
 import type { EventSubscription } from 'react-native';

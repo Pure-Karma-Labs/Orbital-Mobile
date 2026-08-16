@@ -283,6 +283,16 @@ const fakeReplies = [
 // Helpers
 // ---------------------------------------------------------------------------
 
+// Last renderer created by renderScreen(), unmounted in the global afterEach.
+// A renderer left mounted past its test leaks OrbitalSpinner's recursive
+// animation: the RN jest mock's startAnimatingNode fires an uncancellable 16ms
+// timer (stopAnimation is a no-op jest.fn()), so the spin chain outlives the
+// test and lands inside a later test's act() (CI: "Can't access .root on
+// unmounted test renderer") or after environment teardown. Unmounting inside
+// act() runs OrbitalSpinner's cleanup synchronously (alive.current = false),
+// so the final queued timer sees the flag and stops the chain.
+let currentRenderer: ReactTestRenderer | null = null;
+
 async function renderScreen(): Promise<ReactTestRenderer> {
   let renderer!: ReactTestRenderer;
   await act(async () => {
@@ -301,6 +311,7 @@ async function renderScreen(): Promise<ReactTestRenderer> {
   await act(async () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
   });
+  currentRenderer = renderer;
   return renderer;
 }
 
@@ -334,6 +345,15 @@ beforeEach(() => {
     syncStatus: 'synced',
   });
   mockUploadMediaBatch.mockResolvedValue(['media-id-1']);
+});
+
+afterEach(() => {
+  if (currentRenderer) {
+    act(() => {
+      currentRenderer!.unmount();
+    });
+    currentRenderer = null;
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -1126,6 +1146,7 @@ describe('ThreadDetailScreen — unmount aborts in-flight upload', () => {
     act(() => {
       renderer.unmount();
     });
+    currentRenderer = null; // already unmounted — keep afterEach from double-unmounting
 
     expect(getSignal()!.aborted).toBe(true);
 
@@ -1156,6 +1177,7 @@ describe('ThreadDetailScreen — unmount aborts in-flight upload', () => {
     act(() => {
       renderer.unmount();
     });
+    currentRenderer = null; // already unmounted — keep afterEach from double-unmounting
 
     // Flush the microtask chain the abort-triggered rejection propagates through
     // (uploadBatch's finally -> handleSend's catch/finally).

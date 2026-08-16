@@ -2,7 +2,7 @@
  * Compose thread screen — title + body inputs with encrypted posting.
  */
 
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import * as Sentry from '@sentry/react-native';
 import {
   Alert,
@@ -20,15 +20,17 @@ import { useTheme } from '../theme';
 import { useAuth, useContactForConversation } from '../stores';
 import { VerifiedStatus } from '../types/database';
 import { createNewThread } from '../services/threadService';
-import { uploadMediaBatch } from '../services/mediaUploadService';
+import { isUploadCancellation } from '../services/mediaUploadService';
 import { QuotaExceededError } from '../services/api/errors';
 import { updateMediaParent } from '../database/repositories/mediaRepository';
 import { useMediaPicker } from '../hooks/useMediaPicker';
+import { useMediaUploadProgress } from '../hooks/useMediaUploadProgress';
 import { Header } from '../components/Header';
 import { OrbitalKeyboardAvoidingView } from '../components/OrbitalKeyboardAvoidingView';
 import { LinkPreviewCard } from '../components/LinkPreviewCard';
 import { ErrorBanner } from '../components/ErrorBanner';
 import { MediaThumbnailStrip } from '../components/MediaThumbnailStrip';
+import { UploadProgressBar } from '../components/UploadProgressBar';
 import type { ThreadsStackParamList } from '../navigation/types';
 
 export type ComposeThreadScreenProps = NativeStackScreenProps<
@@ -48,9 +50,18 @@ export function ComposeThreadScreen({
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [loading, setLoading] = useState(false);
-  const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { selectedMedia, pickMedia, removeMedia } = useMediaPicker();
+  const { progress: uploadProgress, cancel: cancelUpload, uploadBatch } = useMediaUploadProgress();
+
+  const uploading = uploadProgress != null;
+
+  // Live view of the selection for the hook's post-batch id filter (see
+  // useMediaUploadProgress: the batch holds the array captured at call time).
+  const selectedMediaRef = useRef(selectedMedia);
+  useEffect(() => {
+    selectedMediaRef.current = selectedMedia;
+  }, [selectedMedia]);
 
   const busy = loading || uploading;
   const canSubmit = isDm
@@ -70,12 +81,7 @@ export function ComposeThreadScreen({
     try {
       let mediaIds: string[] | undefined;
       if (selectedMedia.length > 0) {
-        setUploading(true);
-        try {
-          mediaIds = await uploadMediaBatch(selectedMedia, groupId);
-        } finally {
-          setUploading(false);
-        }
+        mediaIds = await uploadBatch(selectedMedia, groupId, () => selectedMediaRef.current);
       }
 
       const thread = await createNewThread(
@@ -110,12 +116,16 @@ export function ComposeThreadScreen({
       if (__DEV__) {
         console.warn('[Compose] error:', e instanceof Error ? e.message : e);
       }
+      // The user cancelled their own upload — no error banner. The draft, the
+      // selected media and the thread stay exactly as they were; the finally
+      // below still re-arms the composer.
+      if (isUploadCancellation(e)) return;
       // instanceof applies to the upload path; createNewThread is JSON-only and never 413s
       setError(e instanceof QuotaExceededError ? e.message : 'Failed to create thread. Please try again.');
     } finally {
       setLoading(false);
     }
-  }, [canSubmit, userId, username, groupId, isDm, title, body, navigation, selectedMedia]);
+  }, [canSubmit, userId, username, groupId, isDm, title, body, navigation, selectedMedia, uploadBatch]);
 
   const handlePost = useCallback(() => {
     if (isDm && contact?.verifiedStatus === VerifiedStatus.Unverified) {
@@ -199,6 +209,22 @@ export function ComposeThreadScreen({
           </TouchableOpacity>
         }
       />
+      {uploadProgress != null && (
+        // In flow, full-bleed: the bar spans the screen, only its label row is
+        // inset. The cancel X lives here, OUTSIDE every disabled={busy} gate —
+        // it is the one control that must stay tappable while inputs are frozen.
+        <UploadProgressBar
+          fraction={uploadProgress.fraction}
+          phase={uploadProgress.phase}
+          bytesSent={uploadProgress.bytesSent}
+          totalBytes={uploadProgress.totalBytes}
+          itemIndex={uploadProgress.itemIndex}
+          itemCount={uploadProgress.itemCount}
+          cancelling={uploadProgress.cancelling}
+          onCancel={cancelUpload}
+          labelRowStyle={{ paddingHorizontal: theme.spacing.base }}
+        />
+      )}
       <OrbitalKeyboardAvoidingView keyboardVerticalOffset={0}>
         <ScrollView
           contentContainerStyle={scrollContentStyle}
@@ -240,7 +266,11 @@ export function ComposeThreadScreen({
 
           <LinkPreviewCard text={body} debounceMs={500} dismissible />
 
-          <MediaThumbnailStrip media={selectedMedia} onRemove={removeMedia} />
+          <MediaThumbnailStrip
+            media={selectedMedia}
+            onRemove={removeMedia}
+            disabled={uploading}
+          />
 
           <TouchableOpacity
             onPress={pickMedia}

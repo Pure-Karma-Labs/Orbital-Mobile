@@ -10,6 +10,12 @@ jest.mock('../media/imageSanitizer', () => ({
 
 jest.mock('../media/videoProcessing', () => ({
   prepareVideoForUpload: jest.fn(),
+  // Real implementation, not a stub: videoProcessing re-exports the transcoder's
+  // isCancellation (security invariant #7 forbids mediaUploadService importing
+  // the transcoder itself), and the global transcoder mock provides a working
+  // ECANCELLED check. A jest.fn() here would silently break
+  // isUploadCancellation for every abort-path test.
+  isCancellation: require('orbital-media-transcoder').isCancellation,
 }));
 
 jest.mock('../../database/connection', () => ({
@@ -69,17 +75,24 @@ jest.mock('../api/media', () => ({
 }));
 
 const mockSaveMedia = jest.fn();
+const mockDeleteMedia = jest.fn();
 
 jest.mock('../../database/repositories/mediaRepository', () => ({
   saveMedia: (...args: unknown[]) => mockSaveMedia(...args),
+  deleteMedia: (...args: unknown[]) => mockDeleteMedia(...args),
 }));
 
 const mockUpsertMedia = jest.fn();
+const mockRemoveMedia = jest.fn();
+/** Mutable backing store for the mocked Zustand `media` map — reset per test. */
+let mockMediaMap: Record<string, { localPath: string | null }> = {};
 
 jest.mock('../../stores/useAppStore', () => ({
   useAppStore: {
     getState: jest.fn(() => ({
       upsertMedia: mockUpsertMedia,
+      removeMedia: mockRemoveMedia,
+      media: mockMediaMap,
     })),
   },
 }));
@@ -90,8 +103,17 @@ jest.mock('../../utils/uuid', () => ({
   generateUUID: () => mockGenerateUUID(),
 }));
 
-import { uploadMedia, uploadMediaBatch, cleanupOrphanedChunks } from '../mediaUploadService';
+import {
+  uploadMedia,
+  uploadMediaBatch,
+  cleanupOrphanedChunks,
+  isUploadCancellation,
+  type UploadProgressEvent,
+  type BatchUploadProgressEvent,
+  type BatchUploadError,
+} from '../mediaUploadService';
 import { QuotaExceededError, AuthError } from '../api/errors';
+import { UPLOAD_CANCELLED_MESSAGE } from '../media/uploadCancellation';
 import type { PickedMedia } from '../../hooks/useMediaPicker';
 
 // ---------------------------------------------------------------------------
@@ -105,6 +127,9 @@ const fakeDigest = new Uint8Array(32).fill(0xDD);
 // A small plaintext (50 bytes) -- ciphertext = 16 (IV) + 64 (padded) + 32 (HMAC) = 112
 const SMALL_PLAINTEXT_SIZE = 50;
 const SMALL_CT_SIZE = 112; // 16 + (50 - 2 + 16) + 32
+
+/** Mirrors mediaUploadService's private CHUNK_SIZE_BYTES (5MB) for progress-math assertions. */
+const CHUNK_SIZE_BYTES = 5 * 1024 * 1024;
 
 /** Produce a base64 string that decodes to exactly `length` bytes. */
 function makeFakeBase64(length: number): string {
@@ -186,6 +211,13 @@ function setupRnfsMocks(plaintextSize: number) {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  // clearAllMocks does NOT drain mockReturnValueOnce queues (only mockReset
+  // does) — without this, ids queued by a test that consumes fewer than it
+  // arms leak into later tests and misattribute media ids (panel finding,
+  // PR #719 review).
+  mockGenerateUUID.mockReset();
+  mockGenerateUUID.mockImplementation(() => 'test-media-id');
+  mockMediaMap = {};
 
   setupMockEncryptor();
 
@@ -637,6 +669,73 @@ describe('uploadMedia', () => {
     expect(metadataParsed).not.toHaveProperty('fileName');
     expect(metadataParsed).not.toHaveProperty('contentType');
   });
+
+  it('emits a full progress sequence: encrypting totalBytes, then per-chunk fraction/bytesSent culminating at 1', async () => {
+    const fileSize = 12 * 1024 * 1024; // -> 3 chunks
+    const ctSize = computeCtSize(fileSize);
+    setupRnfsMocks(fileSize);
+    setupMockEncryptor(ctSize);
+
+    const events: UploadProgressEvent[] = [];
+    await uploadMedia({ ...baseOptions, onProgress: (e) => events.push(e) });
+
+    const totalChunks = Math.ceil(ctSize / CHUNK_SIZE_BYTES);
+    expect(totalChunks).toBeGreaterThanOrEqual(2);
+
+    const encryptingWithTotal = events.find(
+      (e) => e.phase === 'encrypting' && e.totalBytes === ctSize,
+    );
+    expect(encryptingWithTotal).toBeDefined();
+
+    // Per-chunk uploading events only -- excludes the pre-loop bytesSent:0 marker
+    // that announces the upload phase before the first chunk goes out.
+    const chunkEvents = events.filter((e) => e.phase === 'uploading' && (e.bytesSent ?? 0) > 0);
+    expect(chunkEvents).toHaveLength(totalChunks);
+    chunkEvents.forEach((e, i) => {
+      expect(e.fraction).toBe((i + 1) / totalChunks);
+      expect(e.bytesSent).toBe(Math.min((i + 1) * CHUNK_SIZE_BYTES, ctSize));
+    });
+
+    const last = chunkEvents[chunkEvents.length - 1];
+    expect(last.fraction).toBe(1);
+    expect(last.bytesSent).toBe(ctSize);
+  });
+
+  it('emits exactly one per-chunk uploading event for a single-chunk image (the 0→1 jump)', async () => {
+    const events: UploadProgressEvent[] = [];
+    await uploadMedia({ ...baseOptions, onProgress: (e) => events.push(e) });
+
+    const chunkEvents = events.filter((e) => e.phase === 'uploading' && (e.bytesSent ?? 0) > 0);
+    expect(chunkEvents).toHaveLength(1);
+    expect(chunkEvents[0].fraction).toBe(1);
+    expect(chunkEvents[0].bytesSent).toBe(SMALL_CT_SIZE);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isUploadCancellation
+// ---------------------------------------------------------------------------
+
+describe('isUploadCancellation', () => {
+  it('is true for the upload-cancelled sentinel message', () => {
+    expect(isUploadCancellation(new Error(UPLOAD_CANCELLED_MESSAGE))).toBe(true);
+  });
+
+  it('is true for a transcoder ECANCELLED-shaped rejection', () => {
+    expect(isUploadCancellation({ code: 'ECANCELLED' })).toBe(true);
+  });
+
+  it('is false for an unrelated Error', () => {
+    expect(isUploadCancellation(new Error('boom'))).toBe(false);
+  });
+
+  it('is false for undefined', () => {
+    expect(isUploadCancellation(undefined)).toBe(false);
+  });
+
+  it('is false for null', () => {
+    expect(isUploadCancellation(null)).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -753,6 +852,124 @@ describe('uploadMedia — video branch', () => {
       expect(thumbCall!.contentClass).toBe('video');
     });
   });
+
+  describe('video branch — progress + cancellation', () => {
+    it('maps transcode progress into compressing*0.3, then starts the upload phase at 0.3 and ends at 1', async () => {
+      // prepareVideoForUpload is mocked -- drive its onProgress callback directly
+      // so we control the transcode progress values fed into the 0.3x mapping.
+      prepareVideoForUpload.mockImplementation(
+        (
+          _src: string,
+          _mime: string,
+          _id: string,
+          opts: { onProgress?: (p: number) => void },
+        ) => {
+          opts.onProgress?.(0.5);
+          opts.onProgress?.(1);
+          return Promise.resolve({
+            videoPath: '/tmp/test-cache/test-media-id-staging.bin',
+            mimeType: 'video/quicktime',
+            fileName: 'test-media-id.mov',
+            width: 720,
+            height: 1280,
+            duration: 12.3,
+            fileSize: SMALL_PLAINTEXT_SIZE,
+            thumbnailPath: null,
+          });
+        },
+      );
+
+      const events: UploadProgressEvent[] = [];
+      await uploadMedia({ ...videoOptions, onProgress: (e) => events.push(e) });
+
+      // Excludes the initial fraction:0 "compressing started" marker emitted
+      // before prepareVideoForUpload is even called -- an assertion over the
+      // raw phase array would silently accept that marker being dropped.
+      const compressingFromTranscode = events
+        .filter((e) => e.phase === 'compressing' && e.fraction > 0)
+        .map((e) => e.fraction);
+      expect(compressingFromTranscode).toEqual([0.15, 0.3]);
+
+      const uploadingEvents = events.filter((e) => e.phase === 'uploading');
+      expect(uploadingEvents.length).toBeGreaterThan(0);
+      expect(uploadingEvents[0].fraction).toBe(0.3);
+      expect(uploadingEvents[uploadingEvents.length - 1].fraction).toBe(1);
+    });
+
+    // NESTED (mirrors the sibling 'with thumbnail' block above): reuses the
+    // two-UUID mock pattern so the parent and its thumbnail recursion don't
+    // collide on the same generated media id.
+    describe('with thumbnail', () => {
+      beforeEach(() => {
+        prepareVideoForUpload.mockResolvedValue({
+          videoPath: '/tmp/test-cache/parent-media-id-staging.bin',
+          mimeType: 'video/quicktime',
+          fileName: 'parent-media-id.mov',
+          width: 720,
+          height: 1280,
+          duration: 12.3,
+          fileSize: SMALL_PLAINTEXT_SIZE,
+          thumbnailPath: '/tmp/test-cache/thumb.jpg',
+        });
+
+        mockGenerateUUID
+          .mockReturnValueOnce('parent-media-id')
+          .mockReturnValueOnce('thumb-media-id');
+      });
+
+      it("thumbnail child never emits into the parent's progress channel; bytesSent stays monotonic", async () => {
+        const events: UploadProgressEvent[] = [];
+        await uploadMedia({ ...videoOptions, onProgress: (e) => events.push(e) });
+
+        let lastBytesSent = -Infinity;
+        for (const e of events) {
+          if (e.bytesSent != null) {
+            expect(e.bytesSent).toBeGreaterThanOrEqual(lastBytesSent);
+            lastBytesSent = e.bytesSent;
+          }
+        }
+
+        // The thumbnail recursion is a single small chunk too -- if it leaked its
+        // own uploadMedia progress into the parent's onProgress this would double.
+        const chunkEvents = events.filter(
+          (e) => e.phase === 'uploading' && (e.bytesSent ?? 0) > 0,
+        );
+        expect(chunkEvents).toHaveLength(1);
+        expect(chunkEvents[0].bytesSent).toBe(computeCtSize(SMALL_PLAINTEXT_SIZE));
+      });
+
+      it('rethrows a cancellation from the thumbnail child instead of degrading to duration-only', async () => {
+        const controller = new AbortController();
+        mockUploadChunk.mockImplementation((args: Record<string, unknown>) => {
+          // The thumbnail child uploads first (its recursive uploadMedia call
+          // completes before the parent's own chunk loop begins).
+          if (args.mediaId === 'thumb-media-id') {
+            controller.abort();
+            return Promise.reject(new Error(UPLOAD_CANCELLED_MESSAGE));
+          }
+          return Promise.resolve({ uploadId: 'u1', received: 1, complete: false });
+        });
+
+        const err = await uploadMedia({ ...videoOptions, signal: controller.signal }).catch(
+          (e) => e,
+        );
+
+        expect(isUploadCancellation(err)).toBe(true);
+        // Only the thumbnail's OWN metadata envelope was ever built (it builds
+        // its metadata before its chunk-upload loop runs). The parent's own
+        // metadata build -- which is where thumbnailMediaId would be attached --
+        // never runs on a cancel rethrow, proving it did not silently degrade to
+        // a duration-only upload.
+        expect(mockEncryptContent).toHaveBeenCalledTimes(1);
+        const [metadataJson] = mockEncryptContent.mock.calls[0];
+        const parsed = JSON.parse(metadataJson as string);
+        expect(parsed).not.toHaveProperty('thumbnailMediaId');
+        expect(parsed.contentType).toBe('image/jpeg');
+        // Only the thumbnail's own chunk went out; the parent's chunk loop never started.
+        expect(mockUploadChunk).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -795,6 +1012,165 @@ describe('uploadMediaBatch', () => {
     const ids = await uploadMediaBatch([], 'group-1');
     expect(ids).toEqual([]);
     expect(mockUploadChunk).not.toHaveBeenCalled();
+  });
+
+  it('stamps every progress event with itemIndex/itemCount', async () => {
+    mockGenerateUUID
+      .mockReturnValueOnce('batch-id-1')
+      .mockReturnValueOnce('batch-id-2');
+
+    const events: BatchUploadProgressEvent[] = [];
+    await uploadMediaBatch(fakeItems, 'group-1', { onProgress: (e) => events.push(e) });
+
+    expect(events.length).toBeGreaterThan(0);
+    const item0Count = events.filter((e) => e.itemIndex === 0).length;
+    const item1Count = events.filter((e) => e.itemIndex === 1).length;
+    expect(item0Count).toBeGreaterThan(0);
+    expect(item1Count).toBeGreaterThan(0);
+    for (const e of events) {
+      expect(e.itemCount).toBe(2);
+    }
+  });
+
+  it("threads the batch signal into every item's uploadChunk call", async () => {
+    mockGenerateUUID
+      .mockReturnValueOnce('batch-id-1')
+      .mockReturnValueOnce('batch-id-2');
+
+    const controller = new AbortController();
+    await uploadMediaBatch(fakeItems, 'group-1', { signal: controller.signal });
+
+    expect(mockUploadChunk).toHaveBeenCalledTimes(2);
+    for (const call of mockUploadChunk.mock.calls) {
+      expect(call[1]).toBe(controller.signal);
+    }
+  });
+
+  it('does not start item 2 when the signal aborts in the gap between items', async () => {
+    mockGenerateUUID
+      .mockReturnValueOnce('batch-id-1')
+      .mockReturnValueOnce('batch-id-2');
+
+    const controller = new AbortController();
+    // Item 1 is a single small chunk -- abort lands after it completes, in the
+    // gap the batch loop checks before starting item 2.
+    mockUploadChunk.mockImplementationOnce(() => {
+      controller.abort();
+      return Promise.resolve({ uploadId: 'u1', received: 1, complete: false });
+    });
+
+    await expect(
+      uploadMediaBatch(fakeItems, 'group-1', { signal: controller.signal }),
+    ).rejects.toThrow('cancelled');
+
+    // Only item 1's chunk went out -- item 2's uploadMedia (and its uploadChunk
+    // call) never started.
+    expect(mockUploadChunk).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects when the signal aborts mid item 1's own chunk loop", async () => {
+    const fileSize = 5 * 1024 * 1024; // -> 2 chunks per item
+    const ctSize = computeCtSize(fileSize);
+    setupRnfsMocks(fileSize);
+    setupMockEncryptor(ctSize);
+    mockGenerateUUID
+      .mockReturnValueOnce('batch-id-1')
+      .mockReturnValueOnce('batch-id-2');
+
+    const controller = new AbortController();
+    // Abort during item 1's FIRST chunk -- the abort check before its SECOND
+    // chunk must fail item 1 itself, not just skip item 2.
+    mockUploadChunk.mockImplementationOnce(() => {
+      controller.abort();
+      return Promise.resolve({ uploadId: 'u1', received: 1, complete: false });
+    });
+
+    await expect(
+      uploadMediaBatch(fakeItems, 'group-1', { signal: controller.signal }),
+    ).rejects.toThrow('cancelled');
+
+    // Only item 1's first chunk went out -- its second chunk, and all of item 2,
+    // never did.
+    expect(mockUploadChunk).toHaveBeenCalledTimes(1);
+  });
+
+  it('rolls back item 1 locally (delete + unlink) and reports it in uploadedMediaIds when the batch cancels before item 2', async () => {
+    mockGenerateUUID
+      .mockReturnValueOnce('batch-id-1')
+      .mockReturnValueOnce('batch-id-2');
+
+    const localPath = '/tmp/media/batch-id-1.jpg';
+    mockMediaMap['batch-id-1'] = { localPath };
+
+    const controller = new AbortController();
+    // Abort DURING item 1's completeUpload: the pre-completeUpload abort check
+    // has already passed, so item 1 finishes and lands in `ids` — the batch's
+    // item-2 gap check then converts the abort into a cancellation, and the
+    // completed item 1 must be rolled back.
+    mockCompleteUpload.mockImplementationOnce(() => {
+      controller.abort();
+      return Promise.resolve({ mediaId: 'batch-id-1', complete: true });
+    });
+
+    const rnfs = require('@dr.pogodin/react-native-fs');
+    const err = (await uploadMediaBatch(fakeItems, 'group-1', {
+      signal: controller.signal,
+    }).catch((e) => e)) as BatchUploadError;
+
+    expect(mockDeleteMedia).toHaveBeenCalledWith('batch-id-1');
+    expect(mockRemoveMedia).toHaveBeenCalledWith('batch-id-1');
+    expect(rnfs.unlink).toHaveBeenCalledWith(localPath);
+    expect(err.uploadedMediaIds).toContain('batch-id-1');
+  });
+
+  it('cancels instead of completing when the abort lands after the final chunk POST (pre-completeUpload check)', async () => {
+    mockGenerateUUID.mockReturnValueOnce('tail-id-1');
+
+    const controller = new AbortController();
+    // Abort fires while the LAST (only) chunk POST is in flight — the old code
+    // would sail through completeUpload + canonical copy and resolve the batch,
+    // publishing the post the user cancelled (panel finding, PR #719 review).
+    mockUploadChunk.mockImplementationOnce(() => {
+      controller.abort();
+      return Promise.resolve({ uploadId: 'u1', received: 1, complete: false });
+    });
+
+    await expect(
+      uploadMediaBatch([fakeItems[0]], 'group-1', { signal: controller.signal }),
+    ).rejects.toThrow('cancelled');
+
+    // The item was stopped BEFORE the unsignalled tail — no server complete,
+    // no local commit to roll back.
+    expect(mockCompleteUpload).not.toHaveBeenCalled();
+    expect(mockSaveMedia).not.toHaveBeenCalled();
+  });
+
+  it('rejects and rolls back when the abort lands after the LAST item fully completes (post-loop check)', async () => {
+    mockGenerateUUID.mockReturnValueOnce('tail-id-2');
+
+    const localPath = '/tmp/media/tail-id-2.jpg';
+    mockMediaMap['tail-id-2'] = { localPath };
+
+    const controller = new AbortController();
+    // Abort fires during the LAST item's completeUpload: the item itself
+    // finishes (its pre-check already passed), so only the batch's trailing
+    // post-loop check can convert this into a cancellation — without it the
+    // batch resolves and the composer publishes.
+    mockCompleteUpload.mockImplementationOnce(() => {
+      controller.abort();
+      return Promise.resolve({ mediaId: 'tail-id-2', complete: true });
+    });
+
+    const rnfs = require('@dr.pogodin/react-native-fs');
+    const err = (await uploadMediaBatch([fakeItems[0]], 'group-1', {
+      signal: controller.signal,
+    }).catch((e) => e)) as BatchUploadError;
+
+    expect(err.message).toContain('cancelled');
+    expect(mockDeleteMedia).toHaveBeenCalledWith('tail-id-2');
+    expect(mockRemoveMedia).toHaveBeenCalledWith('tail-id-2');
+    expect(rnfs.unlink).toHaveBeenCalledWith(localPath);
+    expect(err.uploadedMediaIds).toContain('tail-id-2');
   });
 });
 

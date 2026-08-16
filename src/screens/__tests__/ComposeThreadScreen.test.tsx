@@ -30,6 +30,13 @@ const mockUploadMediaBatch = jest.fn();
 jest.mock('../../services/mediaUploadService', () => ({
   uploadMedia: jest.fn(),
   uploadMediaBatch: (...args: unknown[]) => mockUploadMediaBatch(...args),
+  // Real implementation — the screen's catch calls this to decide whether the
+  // failure was a self-cancel (no error banner) or a real error. A jest.fn()
+  // returning undefined would make every error path look like a real error and
+  // every cancel path show a banner.
+  isUploadCancellation: (e: unknown) =>
+    require('orbital-media-transcoder').isCancellation(e) ||
+    (e instanceof Error && e.message === require('../../services/media/uploadCancellation').UPLOAD_CANCELLED_MESSAGE),
 }));
 
 let mockSelectedMedia: unknown[] = [];
@@ -58,6 +65,8 @@ jest.mock('../../stores', () => ({
 
 import { createNewThread } from '../../services/threadService';
 import { QuotaExceededError } from '../../services/api/errors';
+import { UPLOAD_CANCELLED_MESSAGE } from '../../services/media/uploadCancellation';
+import type { BatchUploadProgressEvent } from '../../services/mediaUploadService';
 const mockCreateNewThread = createNewThread as jest.Mock;
 
 // ---------------------------------------------------------------------------
@@ -364,5 +373,155 @@ describe('ComposeThreadScreen — quota error', () => {
         node.props.children === 'Failed to create thread. Please try again.',
     );
     expect(genericText).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Upload progress (#645) — deferred-promise mock so the batch is held open
+// mid-upload, letting the test drive onProgress/signal by hand.
+// ---------------------------------------------------------------------------
+
+describe('ComposeThreadScreen — upload progress', () => {
+  const fakeMedia = [
+    {
+      uri: 'file:///photo1.jpg',
+      type: 'image/jpeg',
+      fileName: 'photo1.jpg',
+      fileSize: 100,
+      width: 50,
+      height: 50,
+    },
+  ];
+
+  function fillAndArmMedia(): void {
+    mockSelectedMedia = fakeMedia;
+  }
+
+  /**
+   * Arms mockUploadMediaBatch to capture the batch's onProgress/signal and
+   * return a promise this test controls, mirroring the deferred-promise shape
+   * real code gets back from the service.
+   */
+  function armDeferredUpload(): {
+    getOnProgress: () => ((e: BatchUploadProgressEvent) => void) | undefined;
+    getSignal: () => AbortSignal | undefined;
+    reject: (e: unknown) => void;
+  } {
+    let capturedOnProgress: ((e: BatchUploadProgressEvent) => void) | undefined;
+    let capturedSignal: AbortSignal | undefined;
+    let doReject: (e: unknown) => void = () => {};
+    mockUploadMediaBatch.mockImplementation(
+      (
+        _items: unknown,
+        _groupId: unknown,
+        opts: { signal: AbortSignal; onProgress: (e: BatchUploadProgressEvent) => void },
+      ) => {
+        capturedOnProgress = opts.onProgress;
+        capturedSignal = opts.signal;
+        return new Promise((_resolve, reject) => {
+          doReject = reject;
+        });
+      },
+    );
+    return {
+      getOnProgress: () => capturedOnProgress,
+      getSignal: () => capturedSignal,
+      reject: (e: unknown) => doReject(e),
+    };
+  }
+
+  function fillTitleAndBody(renderer: ReactTestRenderer): void {
+    act(() => {
+      findByTestId(renderer.root, 'compose-title-input').props.onChangeText('My Title');
+      findByTestId(renderer.root, 'compose-body-input').props.onChangeText('Some body text');
+    });
+  }
+
+  it('renders the fill width and MB label for an in-flight uploading progress event', () => {
+    fillAndArmMedia();
+    const { getOnProgress } = armDeferredUpload();
+    const renderer = renderScreen();
+    fillTitleAndBody(renderer);
+
+    act(() => {
+      findPostButton(renderer.root).props.onPress();
+    });
+
+    act(() => {
+      getOnProgress()!({
+        fraction: 0.5,
+        phase: 'uploading',
+        bytesSent: 14 * 1024 * 1024,
+        totalBytes: 32 * 1024 * 1024,
+        itemIndex: 0,
+        itemCount: 1,
+      });
+    });
+
+    const fill = findByTestId(renderer.root, 'upload-progress-bar-fill');
+    expect(fill.props.style.width).toBe('50%');
+
+    const label = findByTestId(renderer.root, 'upload-progress-label');
+    expect(label.props.children).toBe('14 MB / 32 MB');
+  });
+
+  it('keeps the cancel button tappable while inputs are frozen mid-upload', () => {
+    fillAndArmMedia();
+    armDeferredUpload();
+    const renderer = renderScreen();
+    fillTitleAndBody(renderer);
+
+    act(() => {
+      findPostButton(renderer.root).props.onPress();
+    });
+
+    expect(findByTestId(renderer.root, 'compose-title-input').props.editable).toBe(false);
+    expect(findByTestId(renderer.root, 'compose-body-input').props.editable).toBe(false);
+    expect(findByTestId(renderer.root, 'upload-cancel-button').props.disabled).toBeFalsy();
+  });
+
+  it('aborts the signal and shows "Cancelling…" when the cancel button is pressed', () => {
+    fillAndArmMedia();
+    const { getSignal } = armDeferredUpload();
+    const renderer = renderScreen();
+    fillTitleAndBody(renderer);
+
+    act(() => {
+      findPostButton(renderer.root).props.onPress();
+    });
+
+    act(() => {
+      findByTestId(renderer.root, 'upload-cancel-button').props.onPress();
+    });
+
+    expect(getSignal()!.aborted).toBe(true);
+    expect(findByTestId(renderer.root, 'upload-progress-label').props.children).toBe('Cancelling…');
+  });
+
+  it('shows no error banner and preserves the draft body on a self-cancelled upload', async () => {
+    fillAndArmMedia();
+    const { reject } = armDeferredUpload();
+    const renderer = renderScreen();
+    fillTitleAndBody(renderer);
+
+    act(() => {
+      findPostButton(renderer.root).props.onPress();
+    });
+
+    await act(async () => {
+      reject(new Error(UPLOAD_CANCELLED_MESSAGE));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
+    const errorText = allText.find(
+      (node) =>
+        typeof node.props.children === 'string' &&
+        node.props.children.toLowerCase().includes('failed'),
+    );
+    expect(errorText).toBeUndefined();
+
+    expect(findByTestId(renderer.root, 'compose-body-input').props.value).toBe('Some body text');
   });
 });

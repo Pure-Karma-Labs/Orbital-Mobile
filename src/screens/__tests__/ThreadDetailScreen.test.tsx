@@ -96,6 +96,8 @@ import { ThemeProvider } from '../../theme';
 import { ThreadDetailScreen } from '../ThreadDetailScreen';
 import { QuotaExceededError } from '../../services/api/errors';
 import { toggleMute } from '../../services/notificationSettingsSync';
+import { UPLOAD_CANCELLED_MESSAGE } from '../../services/media/uploadCancellation';
+import type { BatchUploadProgressEvent } from '../../services/mediaUploadService';
 
 const mockToggleMute = toggleMute as jest.Mock;
 
@@ -118,6 +120,11 @@ const mockUploadMediaBatch = jest.fn();
 
 jest.mock('../../services/mediaUploadService', () => ({
   uploadMediaBatch: (...args: unknown[]) => mockUploadMediaBatch(...args),
+  // Real implementation — handleSend's catch uses it to suppress the Alert on a
+  // self-cancel. A jest.fn() would silently route cancels into the error branch.
+  isUploadCancellation: (e: unknown) =>
+    require('orbital-media-transcoder').isCancellation(e) ||
+    (e instanceof Error && e.message === require('../../services/media/uploadCancellation').UPLOAD_CANCELLED_MESSAGE),
 }));
 
 const mockPickPhotos = jest.fn();
@@ -630,9 +637,14 @@ describe('ThreadDetailScreen — media send', () => {
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
     });
 
+    // The hook now threads an abort signal and a progress callback into the batch.
     expect(mockUploadMediaBatch).toHaveBeenCalledWith(
       mockSelectedMedia,
       'group-1',
+      expect.objectContaining({
+        signal: expect.any(AbortSignal),
+        onProgress: expect.any(Function),
+      }),
     );
     expect(mockPostReply).toHaveBeenCalled();
     const postReplyArgs = mockPostReply.mock.calls[0];
@@ -987,5 +999,177 @@ describe('ThreadDetailScreen — header mute bell', () => {
     });
 
     expect(mockToggleMute).toHaveBeenCalledWith('thread-1', 'thread');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unmount aborts an in-flight upload (#645)
+// ---------------------------------------------------------------------------
+
+describe('ThreadDetailScreen — unmount aborts in-flight upload', () => {
+  beforeEach(() => {
+    const storesMock = jest.requireMock('../../stores') as {
+      useThreads: jest.Mock;
+    };
+    storesMock.useThreads.mockReturnValue({
+      threads: { 'thread-1': fakeThread },
+      threadIdsByConversation: { 'group-1': ['thread-1'] },
+      replies: {},
+      replyIdsByThread: {},
+      activeThreadId: 'thread-1',
+      setThreads: jest.fn(),
+      upsertThread: jest.fn(),
+      removeThread: jest.fn(),
+      setActiveThread: mockSetActiveThread,
+      markThreadViewed: jest.fn(),
+      setReplies: jest.fn(),
+      appendReplies: jest.fn(),
+      upsertReply: jest.fn(),
+      addOptimisticThread: jest.fn(),
+      addOptimisticReply: jest.fn(),
+      updateThreadSyncStatus: jest.fn(),
+      updateReplySyncStatus: jest.fn(),
+    });
+  });
+
+  afterEach(() => {
+    const storesMock = jest.requireMock('../../stores') as {
+      useThreads: jest.Mock;
+    };
+    storesMock.useThreads.mockReturnValue({
+      threads: {},
+      threadIdsByConversation: {},
+      replies: {},
+      replyIdsByThread: {},
+      activeThreadId: null,
+      setThreads: jest.fn(),
+      upsertThread: jest.fn(),
+      removeThread: jest.fn(),
+      setActiveThread: mockSetActiveThread,
+      markThreadViewed: jest.fn(),
+      setReplies: jest.fn(),
+      appendReplies: jest.fn(),
+      upsertReply: jest.fn(),
+      addOptimisticThread: jest.fn(),
+      addOptimisticReply: jest.fn(),
+      updateThreadSyncStatus: jest.fn(),
+      updateReplySyncStatus: jest.fn(),
+    });
+    mockSelectedMedia = [];
+  });
+
+  /**
+   * Arms mockUploadMediaBatch to capture the batch's AbortSignal and hold the
+   * batch open until that signal aborts, at which point it rejects with the
+   * same sentinel the real service throws on a cancelled upload — mirroring
+   * what uploadMediaBatch does for a real signal-driven abort.
+   */
+  function armInFlightUpload(): { getSignal: () => AbortSignal | undefined } {
+    let capturedSignal: AbortSignal | undefined;
+    mockUploadMediaBatch.mockImplementation(
+      (
+        _items: unknown,
+        _groupId: unknown,
+        opts: { signal: AbortSignal; onProgress?: (e: BatchUploadProgressEvent) => void },
+      ) => {
+        capturedSignal = opts.signal;
+        return new Promise((_resolve, reject) => {
+          opts.signal.addEventListener('abort', () => {
+            reject(new Error(UPLOAD_CANCELLED_MESSAGE));
+          });
+        });
+      },
+    );
+    return { getSignal: () => capturedSignal };
+  }
+
+  async function beginMidUploadSend(renderer: ReactTestRenderer): Promise<void> {
+    const input = renderer.root.findAll(
+      (node) => node.props.testID === 'reply-input',
+    );
+    await act(async () => {
+      input[0].props.onChangeText('mid-upload unmount');
+    });
+
+    const sendBtn = renderer.root.findAll(
+      (node) => node.props.testID === 'send-button',
+    );
+    await act(async () => {
+      sendBtn[0].props.onPress();
+    });
+
+    // Let the batch call land so the mock captures the signal.
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  it('aborts the in-flight upload signal when the screen unmounts mid-upload', async () => {
+    mockSelectedMedia = [
+      {
+        uri: 'file:///photo1.jpg',
+        type: 'image/jpeg',
+        fileName: 'photo1.jpg',
+        fileSize: 100,
+        width: 50,
+        height: 50,
+      },
+    ];
+    const { getSignal } = armInFlightUpload();
+
+    const renderer = await renderScreen();
+    await beginMidUploadSend(renderer);
+
+    expect(getSignal()).toBeDefined();
+    expect(getSignal()!.aborted).toBe(false);
+
+    act(() => {
+      renderer.unmount();
+    });
+
+    expect(getSignal()!.aborted).toBe(true);
+
+    // Flush the abort-triggered rejection so it does not leak into later tests.
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+  });
+
+  it('never posts the reply and logs no unmounted-update warning after the unmount-abort rejects', async () => {
+    mockSelectedMedia = [
+      {
+        uri: 'file:///photo1.jpg',
+        type: 'image/jpeg',
+        fileName: 'photo1.jpg',
+        fileSize: 100,
+        width: 50,
+        height: 50,
+      },
+    ];
+    const { getSignal } = armInFlightUpload();
+    const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    const renderer = await renderScreen();
+    await beginMidUploadSend(renderer);
+    expect(getSignal()).toBeDefined();
+
+    act(() => {
+      renderer.unmount();
+    });
+
+    // Flush the microtask chain the abort-triggered rejection propagates through
+    // (uploadBatch's finally -> handleSend's catch/finally).
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(mockPostReply).not.toHaveBeenCalled();
+
+    const unmountedWarning = consoleErrorSpy.mock.calls.some((args) =>
+      args.some((a) => typeof a === 'string' && /unmounted|not wrapped in act/i.test(a)),
+    );
+    expect(unmountedWarning).toBe(false);
+
+    consoleErrorSpy.mockRestore();
   });
 });

@@ -23,7 +23,9 @@ import { useTheme } from '../../theme';
 import { Emoji } from '../../components/Emoji';
 import { LinkPreviewCard } from '../../components/LinkPreviewCard';
 import { MediaThumbnailStrip } from '../../components/MediaThumbnailStrip';
+import { UploadProgressBar } from '../../components/UploadProgressBar';
 import type { PickedMedia } from '../../hooks/useMediaPicker';
+import type { UploadProgressState } from '../../hooks/useMediaUploadProgress';
 
 export interface ReplyTarget {
   replyId: string;
@@ -56,6 +58,10 @@ export interface ReplyComposerProps {
   onToggleEmojiPicker?: () => void;
   /** Called when the text input receives focus */
   onInputFocus?: () => void;
+  /** In-flight media upload progress, or null when idle */
+  uploadProgress?: UploadProgressState | null;
+  /** Called when the user taps the cancel X on the upload bar */
+  onCancelUpload?: () => void;
 }
 
 export const ReplyComposer = React.memo(function ReplyComposer({
@@ -71,6 +77,8 @@ export const ReplyComposer = React.memo(function ReplyComposer({
   showEmojiPicker,
   onToggleEmojiPicker,
   onInputFocus,
+  uploadProgress,
+  onCancelUpload,
 }: ReplyComposerProps): React.JSX.Element {
   const theme = useTheme();
 
@@ -173,6 +181,23 @@ export const ReplyComposer = React.memo(function ReplyComposer({
 
   return (
     <View style={containerStyle} testID="reply-composer">
+      {uploadProgress != null && (
+        // First child, in flow: the container's own paddingVertical (spacing.sm)
+        // seats the bar just under the composer's top border, above the
+        // reply-context row — no absolute positioning, so nothing overlaps.
+        // The cancel X is NOT gated on `sending`: it is the one control that has
+        // to stay tappable while every other input is frozen.
+        <UploadProgressBar
+          fraction={uploadProgress.fraction}
+          phase={uploadProgress.phase}
+          bytesSent={uploadProgress.bytesSent}
+          totalBytes={uploadProgress.totalBytes}
+          itemIndex={uploadProgress.itemIndex}
+          itemCount={uploadProgress.itemCount}
+          cancelling={uploadProgress.cancelling}
+          onCancel={onCancelUpload ?? (() => {})}
+        />
+      )}
       {replyTarget != null && (
         <View style={replyContextStyle} testID="reply-context">
           <Text style={replyContextTextStyle} numberOfLines={1}>
@@ -189,7 +214,11 @@ export const ReplyComposer = React.memo(function ReplyComposer({
         </View>
       )}
       {(media?.length ?? 0) > 0 && (
-        <MediaThumbnailStrip media={media!} onRemove={onRemoveMedia ?? (() => {})} />
+        <MediaThumbnailStrip
+          media={media!}
+          onRemove={onRemoveMedia ?? (() => {})}
+          disabled={uploadProgress != null}
+        />
       )}
       <LinkPreviewCard text={text} debounceMs={500} dismissible />
       <View style={inputRowStyle}>

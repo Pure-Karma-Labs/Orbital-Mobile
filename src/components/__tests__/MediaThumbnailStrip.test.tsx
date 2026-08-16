@@ -119,36 +119,24 @@ describe('MediaThumbnailStrip', () => {
     expect(onRemove).toHaveBeenCalledWith(1);
   });
 
-  it('shows progress overlay when uploadProgress < 1', () => {
-    const media = [makeMedia(0)];
-    const renderer = renderStrip({
-      media,
-      uploadProgress: { 0: 0.5 },
-    });
-
-    expect(findTextWithContent(renderer.root, '50%')).toBeDefined();
-    expect(findAllByTestId(renderer.root, 'remove-media-0')).toHaveLength(0);
-  });
-
-  it('hides progress overlay when uploadProgress >= 1', () => {
-    const media = [makeMedia(0)];
-    const renderer = renderStrip({
-      media,
-      uploadProgress: { 0: 1 },
-    });
-
-    expect(findTextWithContent(renderer.root, '100%')).toBeUndefined();
-    expect(findAllByTestId(renderer.root, 'remove-media-0')).toHaveLength(1);
-  });
-
-  it('hides remove button during upload', () => {
+  // The remove buttons are the ONLY thing `disabled` gates: the batch captured
+  // the item array by reference, so a removal mid-upload would still upload and
+  // attach the item the user pulled back.
+  it('hides every remove button when disabled', () => {
     const media = [makeMedia(0), makeMedia(1)];
-    const renderer = renderStrip({
-      media,
-      uploadProgress: { 0: 0.3 },
-    });
+    const renderer = renderStrip({ media, disabled: true });
 
     expect(findAllByTestId(renderer.root, 'remove-media-0')).toHaveLength(0);
+    expect(findAllByTestId(renderer.root, 'remove-media-1')).toHaveLength(0);
+    // The thumbnails themselves still render — only the affordance is gated.
+    expect(findAllByTestId(renderer.root, 'media-thumbnail-strip')).toHaveLength(1);
+  });
+
+  it('shows remove buttons when disabled is false', () => {
+    const media = [makeMedia(0), makeMedia(1)];
+    const renderer = renderStrip({ media, disabled: false });
+
+    expect(findAllByTestId(renderer.root, 'remove-media-0')).toHaveLength(1);
     expect(findAllByTestId(renderer.root, 'remove-media-1')).toHaveLength(1);
   });
 

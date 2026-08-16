@@ -38,6 +38,16 @@ import {
 import { sanitizeMp4Gps, verifyNoGpsAtoms } from './mp4GpsSanitizer';
 import { sanitizeStillImage } from './imageSanitizer';
 import { MAX_UPLOAD_SIZE_BYTES } from './mediaLimits';
+import { UPLOAD_CANCELLED_MESSAGE } from './uploadCancellation';
+
+/**
+ * Re-exported so `mediaUploadService` can recognise the native `ECANCELLED`
+ * shape WITHOUT importing 'orbital-media-transcoder' itself — security
+ * invariant #7 restricts that import to the two sanitizer callers
+ * (imageSanitizer, videoProcessing), and hand-rolling the `code === 'ECANCELLED'`
+ * check is the exact drift the invariant exists to prevent.
+ */
+export { isCancellation } from 'orbital-media-transcoder';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -133,7 +143,7 @@ export async function prepareVideoForUpload(
   try {
     // 1. Check abort before starting the transcode
     if (options?.signal?.aborted) {
-      throw new Error('Upload cancelled');
+      throw new Error(UPLOAD_CANCELLED_MESSAGE);
     }
 
     // 2. Transcode to 720p H.264. A device-specific encoder failure is not
@@ -162,7 +172,7 @@ export async function prepareVideoForUpload(
 
     // Check abort after the transcode
     if (options?.signal?.aborted) {
-      throw new Error('Upload cancelled');
+      throw new Error(UPLOAD_CANCELLED_MESSAGE);
     }
 
     // 3. Transcode integrity guard: if the transcode failed, or came out
@@ -211,7 +221,7 @@ export async function prepareVideoForUpload(
 
     // Abort check after guard
     if (options?.signal?.aborted) {
-      throw new Error('Upload cancelled');
+      throw new Error(UPLOAD_CANCELLED_MESSAGE);
     }
 
     // 4. Sanitize GPS atoms

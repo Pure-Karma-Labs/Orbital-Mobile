@@ -76,16 +76,33 @@ jest.mock('../api/media', () => ({
 
 const mockSaveMedia = jest.fn();
 const mockDeleteMedia = jest.fn();
+/**
+ * DB-fallback row lookup used by the rollback path when a media id has no store
+ * entry. Must be wired through the factory even though it defaults to null:
+ * omitting it does NOT fail at import time (babel CJS interop hands the service
+ * `undefined` at call time), and the service swallows the resulting TypeError in
+ * its narrow try/catch — so a missing passthrough would silently disable the
+ * DB-fallback branch instead of failing loudly (#721).
+ */
+const mockGetMedia = jest.fn((..._args: unknown[]): unknown => null);
 
 jest.mock('../../database/repositories/mediaRepository', () => ({
   saveMedia: (...args: unknown[]) => mockSaveMedia(...args),
   deleteMedia: (...args: unknown[]) => mockDeleteMedia(...args),
+  getMedia: (...args: unknown[]) => mockGetMedia(...args),
 }));
 
 const mockUpsertMedia = jest.fn();
 const mockRemoveMedia = jest.fn();
-/** Mutable backing store for the mocked Zustand `media` map — reset per test. */
-let mockMediaMap: Record<string, { localPath: string | null }> = {};
+/**
+ * Mutable backing store for the mocked Zustand `media` map — reset per test.
+ * `thumbnailMediaId` is part of the shape because the rollback path reads it to
+ * expand a video parent to its thumbnail child (#721).
+ */
+let mockMediaMap: Record<
+  string,
+  { localPath: string | null; thumbnailMediaId?: string | null }
+> = {};
 
 jest.mock('../../stores/useAppStore', () => ({
   useAppStore: {
@@ -217,6 +234,10 @@ beforeEach(() => {
   // PR #719 review).
   mockGenerateUUID.mockReset();
   mockGenerateUUID.mockImplementation(() => 'test-media-id');
+  // Same hazard for the same reason: clearAllMocks leaves a prior test's
+  // mockImplementation installed, so re-arm the DB-fallback lookup to "no row".
+  mockGetMedia.mockReset();
+  mockGetMedia.mockImplementation(() => null);
   mockMediaMap = {};
 
   setupMockEncryptor();
@@ -967,6 +988,73 @@ describe('uploadMedia — video branch', () => {
         expect(parsed.contentType).toBe('image/jpeg');
         // Only the thumbnail's own chunk went out; the parent's chunk loop never started.
         expect(mockUploadChunk).toHaveBeenCalledTimes(1);
+        // A child that was cancelled BEFORE it committed locally owes no
+        // rollback: it never wrote a canonical file, a DB row, or a store entry,
+        // so `committedThumbnailMediaId` is still null in the parent's catch.
+        // Deleting here would mean the rollback fires on a child that does not
+        // exist (#721).
+        expect(mockDeleteMedia).not.toHaveBeenCalled();
+      });
+
+      // W2-failure: the parent throws AFTER its thumbnail child fully committed,
+      // via retry exhaustion rather than a cancel. The child's canonical plaintext
+      // JPEG is invisible to every other cleanup path, so uploadMedia's own catch
+      // is the only thing that can remove it (#721).
+      it('rolls back a committed thumbnail child when the PARENT fails, and rethrows the original error unchanged', async () => {
+        mockUploadChunk.mockImplementation((args: Record<string, unknown>) => {
+          if (args.mediaId === 'parent-media-id') {
+            return Promise.reject(new Error('Network error'));
+          }
+          return Promise.resolve({ uploadId: 'u1', received: 1, complete: false });
+        });
+
+        // Seeded by hand: mockUpsertMedia is a bare spy, so the child's own
+        // commit never lands in the store map the rollback reads.
+        mockMediaMap['thumb-media-id'] = { localPath: '/tmp/test-docs/media/thumb-media-id.jpg' };
+
+        const rnfs = require('@dr.pogodin/react-native-fs');
+        const err = await uploadMedia({ ...videoOptions }).catch((e) => e);
+
+        expect(mockDeleteMedia).toHaveBeenCalledWith('thumb-media-id');
+        expect(rnfs.unlink).toHaveBeenCalledWith('/tmp/test-docs/media/thumb-media-id.jpg');
+        expect(mockRemoveMedia).toHaveBeenCalledWith('thumb-media-id');
+        // The rollback is best-effort and must be invisible to the caller: the
+        // original retry-exhaustion error is what surfaces, neither masked by a
+        // rollback failure nor replaced by a cancellation sentinel.
+        expect(err.message).toMatch(/Failed to upload media/);
+        // Real exponential backoff (1s + 2s) runs between the parent's three
+        // chunk attempts, so this test needs more than the default 5s budget.
+      }, 15000);
+
+      // W2-cancel at the unit level: same committed-child window as above, but
+      // reached through an abort instead of a failure.
+      it('rolls back a committed thumbnail child when the PARENT is cancelled mid-chunk, and still reports a cancellation', async () => {
+        const controller = new AbortController();
+        mockUploadChunk.mockImplementation((args: Record<string, unknown>) => {
+          // Keyed on the parent: the child's chunk POST fires FIRST, so an
+          // unkeyed abort would cancel the child before it ever commits and
+          // exercise the wrong window.
+          if (args.mediaId === 'parent-media-id') {
+            controller.abort();
+            return Promise.reject(new Error('net'));
+          }
+          return Promise.resolve({ uploadId: 'u1', received: 1, complete: false });
+        });
+
+        mockMediaMap['thumb-media-id'] = { localPath: '/tmp/test-docs/media/thumb-media-id.jpg' };
+
+        const rnfs = require('@dr.pogodin/react-native-fs');
+        const err = await uploadMedia({
+          ...videoOptions,
+          signal: controller.signal,
+        }).catch((e) => e);
+
+        expect(mockDeleteMedia).toHaveBeenCalledWith('thumb-media-id');
+        expect(rnfs.unlink).toHaveBeenCalledWith('/tmp/test-docs/media/thumb-media-id.jpg');
+        expect(mockRemoveMedia).toHaveBeenCalledWith('thumb-media-id');
+        // The rollback must not degrade the cancel into a generic failure —
+        // the composer branches on this to stay silent instead of showing an error.
+        expect(isUploadCancellation(err)).toBe(true);
       });
     });
   });
@@ -1171,6 +1259,174 @@ describe('uploadMediaBatch', () => {
     expect(mockRemoveMedia).toHaveBeenCalledWith('tail-id-2');
     expect(rnfs.unlink).toHaveBeenCalledWith(localPath);
     expect(err.uploadedMediaIds).toContain('tail-id-2');
+  });
+
+  // A video item commits TWO local media: itself and its thumbnail child, under
+  // an id that never enters the batch's `ids` array. Before #721 the child's
+  // canonical plaintext JPEG survived every cancel path.
+  describe('video item thumbnail rollback (#721)', () => {
+    const { prepareVideoForUpload } = require('../media/videoProcessing') as {
+      prepareVideoForUpload: jest.Mock;
+    };
+
+    const PARENT_LOCAL_PATH = '/tmp/test-docs/media/parent-media-id.mov';
+    const THUMB_LOCAL_PATH = '/tmp/test-docs/media/thumb-media-id.jpg';
+
+    const videoItem: PickedMedia = {
+      uri: 'file:///clip.mov',
+      type: 'video/quicktime',
+      fileName: 'IMG_0001.MOV',
+      fileSize: 50,
+      width: 720,
+      height: 1280,
+      duration: 12.3,
+    };
+
+    beforeEach(() => {
+      prepareVideoForUpload.mockResolvedValue({
+        videoPath: '/tmp/test-cache/parent-media-id-staging.bin',
+        mimeType: 'video/quicktime',
+        fileName: 'parent-media-id.mov',
+        width: 720,
+        height: 1280,
+        duration: 12.3,
+        fileSize: SMALL_PLAINTEXT_SIZE,
+        thumbnailPath: '/tmp/test-cache/thumb.jpg',
+      });
+
+      // Exactly two ids are armed and exactly two are drawn: the parent first,
+      // the thumbnail recursion second. Arming more than the test consumes leaks
+      // into later tests (the queue survives clearAllMocks).
+      mockGenerateUUID
+        .mockReturnValueOnce('parent-media-id')
+        .mockReturnValueOnce('thumb-media-id');
+    });
+
+    it('rolls back BOTH the video and its thumbnail child when the batch cancels after the item completes', async () => {
+      const controller = new AbortController();
+      // Keyed on the PARENT's completeUpload: the child's completeUpload fires
+      // first (its recursive uploadMedia finishes before the parent's own tail),
+      // so an unkeyed mockImplementationOnce would abort during the child and
+      // never reach the window this test is about.
+      mockCompleteUpload.mockImplementation((mediaId: string) => {
+        if (mediaId === 'parent-media-id') {
+          controller.abort();
+        }
+        return Promise.resolve({ mediaId, complete: true });
+      });
+
+      // Seeded by hand: mockUpsertMedia is a bare spy and deliberately does NOT
+      // write through to mockMediaMap (the sibling tests above seed it directly).
+      mockMediaMap['parent-media-id'] = {
+        localPath: PARENT_LOCAL_PATH,
+        thumbnailMediaId: 'thumb-media-id',
+      };
+      mockMediaMap['thumb-media-id'] = { localPath: THUMB_LOCAL_PATH };
+
+      const rnfs = require('@dr.pogodin/react-native-fs');
+      const err = (await uploadMediaBatch([videoItem], 'group-1', {
+        signal: controller.signal,
+      }).catch((e) => e)) as BatchUploadError;
+
+      // Both canonical plaintext files are gone.
+      expect(rnfs.unlink).toHaveBeenCalledWith(PARENT_LOCAL_PATH);
+      expect(rnfs.unlink).toHaveBeenCalledWith(THUMB_LOCAL_PATH);
+      // Both DB rows and both store entries are gone.
+      expect(mockDeleteMedia).toHaveBeenCalledWith('parent-media-id');
+      expect(mockDeleteMedia).toHaveBeenCalledWith('thumb-media-id');
+      expect(mockRemoveMedia).toHaveBeenCalledWith('parent-media-id');
+      expect(mockRemoveMedia).toHaveBeenCalledWith('thumb-media-id');
+      // uploadedMediaIds carries the SERVER-side ids the batch collected. The
+      // child never enters that array — which is precisely why the local rollback
+      // has to expand it, and why a caller cleaning up server-side must follow
+      // thumbnail_media_id rather than trusting this list.
+      expect(err.uploadedMediaIds).toContain('parent-media-id');
+      expect(err.uploadedMediaIds).not.toContain('thumb-media-id');
+      // Without these two the rollback assertions above would pass against the
+      // hand-seeded fixture alone, even if the service never actually produced
+      // the parent -> child link.
+      expect(mockUpsertMedia).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'parent-media-id', thumbnailMediaId: 'thumb-media-id' }),
+      );
+      expect(mockSaveMedia).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'thumb-media-id', is_thumbnail: 1 }),
+      );
+    });
+
+    it("rolls back only the thumbnail child when the abort lands mid the parent's own chunk loop", async () => {
+      const controller = new AbortController();
+      mockUploadChunk.mockImplementation((args: Record<string, unknown>) => {
+        if (args.mediaId === 'parent-media-id') {
+          controller.abort();
+          return Promise.reject(new Error('net'));
+        }
+        return Promise.resolve({ uploadId: 'u1', received: 1, complete: false });
+      });
+
+      // Only the CHILD committed — the parent threw before its own local commit,
+      // so it has no store entry and nothing to roll back.
+      mockMediaMap['thumb-media-id'] = { localPath: THUMB_LOCAL_PATH };
+
+      const rnfs = require('@dr.pogodin/react-native-fs');
+      const err = (await uploadMediaBatch([videoItem], 'group-1', {
+        signal: controller.signal,
+      }).catch((e) => e)) as BatchUploadError;
+
+      expect(mockDeleteMedia).toHaveBeenCalledWith('thumb-media-id');
+      expect(rnfs.unlink).toHaveBeenCalledWith(THUMB_LOCAL_PATH);
+      expect(mockRemoveMedia).toHaveBeenCalledWith('thumb-media-id');
+      // The parent never committed anything, so deleting it would be a
+      // rollback of a media that does not exist.
+      expect(mockDeleteMedia).not.toHaveBeenCalledWith('parent-media-id');
+      expect(isUploadCancellation(err)).toBe(true);
+      // The item never reached `ids` — nothing was uploaded from the batch's view.
+      expect(err.uploadedMediaIds).toEqual([]);
+    });
+
+    it('resolves the thumbnail child through the DB when no store entry exists, and unlinks the ABSOLUTE path', async () => {
+      const controller = new AbortController();
+      mockCompleteUpload.mockImplementation((mediaId: string) => {
+        if (mediaId === 'parent-media-id') {
+          controller.abort();
+        }
+        return Promise.resolve({ mediaId, complete: true });
+      });
+
+      // mockMediaMap stays EMPTY on purpose: with no store entry, child-id
+      // resolution and path resolution must both come from the media row.
+      mockGetMedia.mockImplementation((...args: unknown[]) => {
+        const id = args[0] as string;
+        if (id === 'parent-media-id') {
+          return {
+            id: 'parent-media-id',
+            // DB rows store RELATIVE paths.
+            local_path: 'media/parent-media-id.mov',
+            thumbnail_media_id: 'thumb-media-id',
+          };
+        }
+        if (id === 'thumb-media-id') {
+          return {
+            id: 'thumb-media-id',
+            local_path: 'media/thumb-media-id.jpg',
+            thumbnail_media_id: null,
+          };
+        }
+        return null;
+      });
+
+      const rnfs = require('@dr.pogodin/react-native-fs');
+      await uploadMediaBatch([videoItem], 'group-1', {
+        signal: controller.signal,
+      }).catch((e) => e);
+
+      // The ABSOLUTE form is the assertion that matters: it proves the row's
+      // relative local_path went through resolveMediaPath and that the raw
+      // column never reached unlink (which would have been a silent no-op,
+      // leaving the plaintext frame on disk).
+      expect(rnfs.unlink).toHaveBeenCalledWith(THUMB_LOCAL_PATH);
+      expect(mockDeleteMedia).toHaveBeenCalledWith('thumb-media-id');
+      expect(mockRemoveMedia).toHaveBeenCalledWith('thumb-media-id');
+    });
   });
 });
 

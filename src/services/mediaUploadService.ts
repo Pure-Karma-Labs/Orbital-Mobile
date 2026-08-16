@@ -52,6 +52,7 @@ import {
   exists,
   CachesDirectoryPath,
 } from '@dr.pogodin/react-native-fs';
+import type { MediaContentClass } from '../types/api';
 import type { MediaItem } from '../types/store';
 import type { MediaRow } from '../database/repositories/mediaRepository';
 
@@ -99,6 +100,8 @@ export interface UploadMediaOptions {
   signal?: AbortSignal;
   /** Internal: marks this upload as a thumbnail child (no thread/reply association) */
   _isThumbnail?: boolean;
+  /** Internal: content class inherited from the parent upload (thumbnails inherit the parent's class) */
+  _contentClass?: MediaContentClass;
 }
 
 /** Result from uploadMedia -- includes key/digest for envelope building */
@@ -201,11 +204,27 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
     onPhase,
     signal,
     _isThumbnail,
+    _contentClass,
   } = options;
 
   let { mimeType, fileName, width, height, duration } = options;
 
   const mediaId = generateUUID();
+
+  // Coarse class for the server's eviction policy — sent on the first chunk only.
+  // Derived ONCE from the ORIGINAL options.mimeType (not the `let mimeType` that the
+  // video branch reassigns post-transcode), so the value is stable for the whole chunk
+  // loop. A thumbnail inherits its parent's class via _contentClass rather than
+  // assuming every thumbnail has a video parent. Anything that is neither video/* nor
+  // image/* is left undefined so the field is omitted and the server keeps its NULL
+  // size-floor fallback instead of being handed a mislabelled class.
+  const contentClass: MediaContentClass | undefined =
+    _contentClass ??
+    (isVideoMime(options.mimeType)
+      ? 'video'
+      : options.mimeType.startsWith('image/')
+        ? 'image'
+        : undefined);
 
   // 0. URI normalization
   const { sourcePath: resolvedPath, stagingPath } = await resolveUri(fileUri, mediaId);
@@ -265,6 +284,8 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
             groupId,
             // No threadId/replyId -- thumbnails are not associated with threads/replies
             _isThumbnail: true,
+            // Inherit the parent's class so a retained video keeps its poster frame
+            _contentClass: contentClass,
             signal,
           });
           thumbnailSizeBytes = thumbStat.size;
@@ -367,8 +388,11 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
     }
 
     // 5. Build metadata and encrypt with group key (AES-256-GCM)
-    // SECURITY: Metadata (fileName, contentType, dimensions) is encrypted so the
-    // server never sees user filenames or content types (zero-knowledge).
+    // SECURITY: Metadata (fileName, contentType, dimensions, duration) is encrypted so
+    // the server never sees user filenames or precise content types. ONE carve-out: the
+    // first chunk also carries a coarse `content_class` ('image'/'video') as a separate
+    // multipart field, a deliberate write-only one-bit disclosure that drives the
+    // server's retention policy (#707). Nothing else about the file leaves this envelope.
     const digestBase64 = arrayBufferToBase64(toArrayBuffer(digestBytes));
     const metadataObj: Record<string, unknown> = {
       v: 1,
@@ -430,9 +454,9 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
                 chunkIndex: i,
                 totalChunks,
                 chunkFilePath,
-                // First chunk includes metadata and IV
+                // First chunk includes metadata, IV, and the coarse content class
                 ...(i === 0
-                  ? { encryptedMetadata: metadata, encryptionIv: ivBase64 }
+                  ? { encryptedMetadata: metadata, encryptionIv: ivBase64, contentClass }
                   : {}),
               },
               signal,

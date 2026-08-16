@@ -29,7 +29,7 @@ import {
 import { AuthError, NetworkError } from './errors';
 import { tokenManager } from './tokenManager';
 import { ciphertextByteCeiling } from '../media/mediaLimits';
-import type { UploadChunkResponse } from '../../types/api';
+import type { MediaContentClass, UploadChunkResponse } from '../../types/api';
 
 // ============================================================
 // Upload
@@ -46,6 +46,8 @@ export interface UploadChunkParams {
   encryptedMetadata?: string;
   /** Base64-encoded IV extracted from ciphertext — first chunk only */
   encryptionIv?: string;
+  /** Coarse media class for server eviction policy — first chunk only; write-only (never echoed) */
+  contentClass?: MediaContentClass;
 }
 
 /**
@@ -74,6 +76,9 @@ export function uploadChunk(
   }
   if (params.encryptionIv) {
     formData.append('encryption_iv', params.encryptionIv);
+  }
+  if (params.contentClass) {
+    formData.append('content_class', params.contentClass);
   }
 
   return request<UploadChunkResponse>({

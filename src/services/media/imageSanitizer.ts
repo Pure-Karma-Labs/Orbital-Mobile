@@ -17,12 +17,17 @@
  *
  * Always ends with verifyNoImageMetadata re-scan; THROWS if metadata persists (fail-closed).
  *
- * Pure byte-level cores (stripJpegMetadata, stripPngMetadata, hasExif) are exported
- * separately for fixture-based Jest tests.
+ * Stripping the APP1 also removes the EXIF orientation tag, so a JPEG that carries
+ * its rotation only in that tag is pre-encoded first (readJpegOrientation) -- the
+ * native re-encode bakes the rotation into the pixels.
+ *
+ * Pure byte-level cores (stripJpegMetadata, stripPngMetadata, hasExif,
+ * readJpegOrientation) are exported separately for fixture-based Jest tests.
  */
 
 import { reencodeImage } from 'orbital-media-transcoder';
 import {
+  read,
   readFile,
   writeFile,
   stat,
@@ -36,6 +41,13 @@ import {
 
 /** Files larger than 8MB are pre-compressed before stripping (memory bound). */
 const MAX_STRIP_SIZE_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Head slice read for the EXIF orientation probe. An Exif APP1 is capped at
+ * 65535 bytes and sits in the first segments, so this covers it with room to
+ * spare while never pulling a whole photo into JS.
+ */
+const ORIENTATION_HEAD_BYTES = 128 * 1024;
 
 // JPEG markers
 const JPEG_SOS = 0xFFDA;
@@ -250,6 +262,171 @@ function findJpegEoi(data: Uint8Array, sosPos: number): number {
   }
 
   return -1;
+}
+
+/**
+ * EXIF Orientation tag (0x0112) in IFD0 of the TIFF structure inside APP1.
+ * Values 1..8; 1 means "no rotation".
+ */
+const EXIF_TAG_ORIENTATION = 0x0112;
+
+/** Defensive ceiling on IFD0 entries -- real cameras write tens, not thousands. */
+const MAX_IFD_ENTRIES = 512;
+
+/**
+ * Read the EXIF orientation tag out of a JPEG's APP1 Exif segment.
+ *
+ * Why this exists: react-native-image-picker's Android resize decodes to raw
+ * pixels (dropping the sensor rotation) and then writes ONLY the orientation
+ * tag back into its output (Utils.java setOrientation). Stripping the APP1
+ * therefore removes the sole rotation hint, and a portrait photo uploads as
+ * sensor-native landscape. sanitizeStillImage uses this to detect that case and
+ * route the file through the native re-encode first, which bakes the rotation
+ * into the pixels before the strip.
+ *
+ * Every bound is checked against the APP1 segment's DECLARED length, not the
+ * buffer, so a tag whose offset points past the segment reads as absent. The
+ * walk never throws: anything malformed, truncated, or unrecognized returns
+ * null, which the caller treats as "no rotation needed" -- the pre-existing,
+ * strip-only behavior.
+ *
+ * Only the file head is needed; an Exif APP1 is at most 65535 bytes and sits
+ * within the first few segments.
+ *
+ * @param data JPEG file bytes (the head is sufficient)
+ * @returns Orientation value 1-8, or null if absent/unreadable/not a JPEG
+ */
+export function readJpegOrientation(data: Uint8Array): number | null {
+  if (data.length < 4) return null;
+  if (data[0] !== 0xFF || data[1] !== 0xD8) return null;
+
+  let pos = 2;
+
+  while (pos < data.length - 1) {
+    // Segment walk only -- unlike the strippers there is no need to tolerate
+    // stray bytes between markers, and refusing to resync keeps the walk from
+    // wandering into payload data.
+    if (data[pos] !== 0xFF) return null;
+
+    const marker = (data[pos] << 8) | data[pos + 1];
+
+    // Orientation lives in a header segment; past SOS (or at EOI) there is none.
+    if (marker === JPEG_SOS || marker === JPEG_EOI) return null;
+
+    // Payload-free markers.
+    if (marker === 0xFF00 || marker === 0xFF01 || (marker >= 0xFFD0 && marker <= 0xFFD7)) {
+      pos += 2;
+      continue;
+    }
+
+    if (pos + 3 >= data.length) return null;
+
+    const segLength = (data[pos + 2] << 8) | data[pos + 3];
+    if (segLength < 2) return null;
+
+    const segEnd = pos + 2 + segLength;
+    // A segment running past the buffer means the head read cut it (or the file
+    // is malformed); either way there is nothing trustworthy left to parse.
+    if (segEnd > data.length) return null;
+
+    // APP1 may be XMP rather than Exif, and a file can carry both -- keep
+    // walking until the "Exif\0\0" one is found.
+    if (marker === APP1 && isExifApp1(data, pos + 4, segEnd)) {
+      return readOrientationFromTiff(data, pos + 10, segEnd);
+    }
+
+    pos = segEnd;
+  }
+
+  return null;
+}
+
+/** True if the APP1 payload starting at `start` carries the "Exif\0\0" signature. */
+function isExifApp1(data: Uint8Array, start: number, segEnd: number): boolean {
+  if (start + 6 > segEnd) return false;
+  return (
+    data[start] === 0x45 &&     // E
+    data[start + 1] === 0x78 && // x
+    data[start + 2] === 0x69 && // i
+    data[start + 3] === 0x66 && // f
+    data[start + 4] === 0x00 && // NUL
+    data[start + 5] === 0x00    // NUL
+  );
+}
+
+/**
+ * Parse the TIFF structure of an Exif APP1 and return its IFD0 orientation.
+ *
+ * `tiffStart` is the offset of the TIFF header (the "II"/"MM" byte-order mark),
+ * which is also the base every TIFF offset in the segment is relative to.
+ * `segEnd` is the exclusive end of the enclosing APP1 segment -- the hard bound
+ * for every read below.
+ */
+function readOrientationFromTiff(
+  data: Uint8Array,
+  tiffStart: number,
+  segEnd: number,
+): number | null {
+  // TIFF header: 2 bytes byte order + 2 bytes magic (42) + 4 bytes IFD0 offset.
+  if (tiffStart + 8 > segEnd) return null;
+
+  let littleEndian: boolean;
+  if (data[tiffStart] === 0x49 && data[tiffStart + 1] === 0x49) {
+    littleEndian = true;  // "II"
+  } else if (data[tiffStart] === 0x4D && data[tiffStart + 1] === 0x4D) {
+    littleEndian = false; // "MM"
+  } else {
+    return null;
+  }
+
+  const u16 = (at: number): number =>
+    littleEndian
+      ? data[at] | (data[at + 1] << 8)
+      : (data[at] << 8) | data[at + 1];
+
+  // Unsigned 32-bit: >>> 0 keeps a high bit set from reading as negative.
+  const u32 = (at: number): number =>
+    (littleEndian
+      ? data[at] | (data[at + 1] << 8) | (data[at + 2] << 16) | (data[at + 3] << 24)
+      : (data[at] << 24) | (data[at + 1] << 16) | (data[at + 2] << 8) | data[at + 3]) >>> 0;
+
+  if (u16(tiffStart + 2) !== 42) return null;
+
+  const ifd0Offset = u32(tiffStart + 4);
+  // IFD0 cannot overlap the 8-byte header, and its entry count must be readable.
+  if (ifd0Offset < 8) return null;
+  const ifd0Pos = tiffStart + ifd0Offset;
+  if (ifd0Pos + 2 > segEnd) return null;
+
+  const entryCount = u16(ifd0Pos);
+  if (entryCount === 0 || entryCount > MAX_IFD_ENTRIES) return null;
+  // Every entry is 12 bytes and must lie inside the declared segment.
+  if (ifd0Pos + 2 + entryCount * 12 > segEnd) return null;
+
+  for (let i = 0; i < entryCount; i++) {
+    const entry = ifd0Pos + 2 + i * 12;
+    if (u16(entry) !== EXIF_TAG_ORIENTATION) continue;
+
+    const type = u16(entry + 2);
+    const count = u32(entry + 4);
+    if (count !== 1) return null;
+
+    // A single SHORT/LONG fits in the 4-byte value field, so it is stored
+    // inline -- no offset dereference. SHORT occupies the field's first
+    // 2 bytes in both byte orders.
+    let value: number;
+    if (type === 3) {
+      value = u16(entry + 8);
+    } else if (type === 4) {
+      value = u32(entry + 8);
+    } else {
+      return null;
+    }
+
+    return value >= 1 && value <= 8 ? value : null;
+  }
+
+  return null;
 }
 
 /**
@@ -511,13 +688,32 @@ function uint8ArrayToBase64(bytes: Uint8Array): string {
 }
 
 /**
+ * EXIF orientation of a JPEG on disk, read from its head slice only.
+ *
+ * Never throws: a failed or short read is indistinguishable from "no
+ * orientation tag" for routing purposes, and the caller's fallback (strip
+ * without re-encode, then fail-closed verify) is the pre-existing behavior. A
+ * genuinely unreadable file still surfaces its error on the full read below.
+ */
+async function readSourceOrientation(filePath: string): Promise<number | null> {
+  try {
+    const headBase64 = await read(filePath, ORIENTATION_HEAD_BYTES, 0, 'base64');
+    return readJpegOrientation(base64ToUint8Array(headBase64));
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Sanitize a still image file, stripping all EXIF/GPS/XMP metadata.
  *
  * For JPEG: byte-level strip of APP1/APP13 segments (no recompression).
  * For PNG: byte-level strip of eXIf/tEXt/zTXt/iTXt/tIME chunks.
  * For WebP/HEIC/other: re-encode via reencodeImage, then strip.
  *
- * Files >8MB are pre-encoded via reencodeImage before stripping (memory bound).
+ * Files >8MB are pre-encoded via reencodeImage before stripping (memory bound),
+ * as are JPEGs whose EXIF orientation is anything but 1 (rotation would be lost
+ * with the APP1 otherwise).
  *
  * The pre-encode temp file is this function's own property: it always lives in
  * Caches with a `-staging.bin` suffix so the orphan GC covers it, regardless of
@@ -559,7 +755,24 @@ export async function sanitizeStillImage(
     } else {
       // Check if file is too large for in-memory strip
       const st = await stat(sourcePath);
-      if (st.size > MAX_STRIP_SIZE_BYTES) {
+      let needsPreencode = st.size > MAX_STRIP_SIZE_BYTES;
+
+      // ORIENTATION: a JPEG whose rotation lives only in its EXIF orientation
+      // tag would render sideways once the strip drops that tag, so it takes
+      // the same pre-encode path -- the native re-encode bakes the rotation
+      // into the pixels. Skipped when the size check already routed here, so
+      // reencodeImage still runs at most once.
+      //
+      // KNOWN GAP: Android API 24-27 falls back to BitmapFactory, which does
+      // NOT apply EXIF orientation; those devices keep the current behavior.
+      // iOS (kCGImageSourceCreateThumbnailWithTransform) and Android API 28+
+      // (ImageDecoder) both rotate.
+      if (!needsPreencode && isJpeg) {
+        const orientation = await readSourceOrientation(sourcePath);
+        needsPreencode = orientation !== null && orientation !== 1;
+      }
+
+      if (needsPreencode) {
         await reencodeImage(sourcePath, preencodePath, {
           maxDimension: 2048,
           quality: 0.9,

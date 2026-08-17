@@ -9,6 +9,10 @@
  * Supported formats:
  * - JPEG: drops APP1 (Exif/XMP) + APP13 segments; keeps JFIF/ICC/Adobe + scan data
  * - PNG: drops eXIf/tEXt/zTXt/iTXt/tIME chunks
+ * Both strippers also truncate the output at the end of the image stream (JPEG
+ * EOI / PNG IEND). Anything a camera appended past that point -- notably the
+ * Samsung Motion Photo SEF trailer, which embeds an MP4 whose frames carry
+ * their own Exif/GPS headers -- is metadata by another name and is dropped.
  * - WebP/HEIC/unknown: re-encodes to JPEG via reencodeImage first, then strips
  *
  * Always ends with verifyNoImageMetadata re-scan; THROWS if metadata persists (fail-closed).
@@ -54,7 +58,9 @@ const PNG_STRIP_CHUNKS = new Set(['eXIf', 'tEXt', 'zTXt', 'iTXt', 'tIME']);
 /**
  * Strip EXIF/XMP/IPTC metadata from a JPEG byte array.
  *
- * Drops APP1 (Exif/XMP) and APP13 (IPTC) segments.
+ * Drops APP1 (Exif/XMP) and APP13 (IPTC) segments, plus anything past the EOI
+ * that closes the compressed stream (Samsung Motion Photo SEF trailers and the
+ * like -- see the SOS branch below).
  * Keeps APP0 (JFIF), APP2 (ICC), APP14 (Adobe), and all other markers + scan data.
  * No recompression -- scan data is byte-identical.
  *
@@ -77,11 +83,13 @@ export function stripJpegMetadata(data: Uint8Array): Uint8Array {
   output.push(0xFF, 0xD8);
 
   let pos = 2;
+  // Set once the output has been closed with an EOI; anything left in the
+  // input past that point is a trailer and must not be emitted.
+  let truncatedAtEoi = false;
 
   while (pos < data.length - 1) {
     // Find next marker
     if (data[pos] !== 0xFF) {
-      // In scan data after SOS, copy everything until EOI
       output.push(data[pos]);
       pos++;
       continue;
@@ -93,16 +101,28 @@ export function stripJpegMetadata(data: Uint8Array): Uint8Array {
     if (marker === JPEG_EOI) {
       output.push(0xFF, 0xD9);
       pos += 2;
+      truncatedAtEoi = true;
       break;
     }
 
-    // SOS marker -- copy it and the rest verbatim (entropy-coded data follows)
+    // SOS marker -- copy it and the entropy-coded stream verbatim, stopping
+    // after the EOI that closes the stream.
+    //
+    // SECURITY: bytes AFTER the EOI are deliberately dropped. Samsung Motion
+    // Photos append a SEF trailer (an embedded MP4 whose thumbnail frames
+    // carry their own Exif headers, often location-bearing) past the EOI.
+    // Copying it through would preserve exactly the metadata this module
+    // exists to remove -- truncating is the privacy-correct behavior.
     if (marker === JPEG_SOS) {
-      // Copy from SOS to end (including EOI)
-      while (pos < data.length) {
-        output.push(data[pos]);
-        pos++;
+      const eoiPos = findJpegEoi(data, pos);
+      // Malformed input with no EOI at all: keep the pre-existing behavior and
+      // copy to the end. verifyNoImageMetadata remains the fail-closed backstop.
+      const streamEnd = eoiPos === -1 ? data.length : eoiPos + 2;
+      for (let i = pos; i < streamEnd; i++) {
+        output.push(data[i]);
       }
+      pos = streamEnd;
+      truncatedAtEoi = eoiPos !== -1;
       break;
     }
 
@@ -154,19 +174,89 @@ export function stripJpegMetadata(data: Uint8Array): Uint8Array {
     }
   }
 
-  // Copy any trailing bytes (rare but defensive)
-  while (pos < data.length) {
-    output.push(data[pos]);
-    pos++;
+  // Trailing bytes are copied ONLY when the output was never closed with an
+  // EOI (malformed input). Once an EOI has been emitted, whatever follows is a
+  // trailer -- Samsung SEF, MPF, or similar -- and is dropped on purpose.
+  if (!truncatedAtEoi) {
+    while (pos < data.length) {
+      output.push(data[pos]);
+      pos++;
+    }
   }
 
   return new Uint8Array(output);
 }
 
 /**
+ * Index of the EOI marker that closes the compressed stream, walking forward
+ * from a SOS marker.
+ *
+ * Not a plain search for the FFD9 byte pair: entropy-coded data legitimately
+ * contains 0xFF bytes (stuffed as FF00, or RSTn restart markers), and
+ * progressive JPEGs interleave further header segments (DHT/DQT/SOS) between
+ * scans, so segments are skipped by their declared length. Anything the walk
+ * cannot make sense of degrades to "no EOI found" (-1) rather than throwing --
+ * the caller then keeps the pre-existing copy-to-end behavior.
+ *
+ * @param data JPEG file bytes
+ * @param sosPos Offset of the SOS marker to start walking from
+ * @returns Offset of the closing EOI marker, or -1 if there is none
+ */
+function findJpegEoi(data: Uint8Array, sosPos: number): number {
+  let pos = sosPos;
+
+  while (pos < data.length - 1) {
+    if (data[pos] !== 0xFF) {
+      pos++;
+      continue;
+    }
+
+    const marker = (data[pos] << 8) | data[pos + 1];
+
+    if (marker === JPEG_EOI) {
+      return pos;
+    }
+
+    // 0xFF fill bytes may pad the run-up to a marker, and the marker begins at
+    // the LAST of them -- in FF FF D9 the EOI starts at the second FF. Consume
+    // one byte only, or the real marker is stepped over.
+    if (marker === 0xFFFF) {
+      pos++;
+      continue;
+    }
+
+    // Payload-free bytes inside the entropy-coded stream:
+    // FF00 (stuffed 0xFF), TEM, and RST0-RST7.
+    if (
+      marker === 0xFF00 ||
+      marker === 0xFF01 ||
+      (marker >= 0xFFD0 && marker <= 0xFFD7)
+    ) {
+      pos += 2;
+      continue;
+    }
+
+    // Header segment -- the SOS we started on, or a later scan's tables.
+    // Skip its declared length and resume scanning the entropy data.
+    if (pos + 3 >= data.length) {
+      return -1;
+    }
+    const segLength = (data[pos + 2] << 8) | data[pos + 3];
+    if (segLength < 2) {
+      pos += 2;
+      continue;
+    }
+    pos += 2 + segLength;
+  }
+
+  return -1;
+}
+
+/**
  * Strip metadata chunks from a PNG byte array.
  *
- * Removes eXIf, tEXt, zTXt, iTXt, and tIME chunks.
+ * Removes eXIf, tEXt, zTXt, iTXt, and tIME chunks, plus anything appended
+ * after the IEND chunk that ends the stream.
  * Keeps IHDR, PLTE, IDAT, IEND, and all other chunks.
  *
  * @param data PNG file bytes
@@ -192,6 +282,8 @@ export function stripPngMetadata(data: Uint8Array): Uint8Array {
   }
 
   let pos = 8;
+  // Set once IEND has been emitted; the PNG stream ends there.
+  let truncatedAtIend = false;
 
   while (pos + 12 <= data.length) {
     // Read chunk: 4 bytes length, 4 bytes type, <length> bytes data, 4 bytes CRC
@@ -220,35 +312,46 @@ export function stripPngMetadata(data: Uint8Array): Uint8Array {
         output.push(data[i]);
       }
       pos += totalChunkSize;
+
+      // SECURITY: IEND terminates the PNG stream. Bytes appended after it are
+      // a proprietary trailer (the PNG analogue of a Samsung SEF block) and can
+      // carry metadata, so the output stops here -- same rule as the JPEG EOI.
+      if (chunkType === 'IEND') {
+        truncatedAtIend = true;
+        break;
+      }
     }
   }
 
-  // Copy any trailing bytes
-  while (pos < data.length) {
-    output.push(data[pos]);
-    pos++;
+  // Trailing bytes are copied ONLY when IEND was never reached (malformed
+  // input); verifyNoImageMetadata remains the fail-closed backstop.
+  if (!truncatedAtIend) {
+    while (pos < data.length) {
+      output.push(data[pos]);
+      pos++;
+    }
   }
 
   return new Uint8Array(output);
 }
 
-/**
- * Check if a byte array contains EXIF-like metadata.
- *
- * Checks for:
- * - JPEG APP1 markers (0xFFE1) followed by "Exif" or "http://ns.adobe.com/xap"
- * - PNG eXIf chunks
- * - The raw "Exif\0\0" byte pattern
- * - GPS IFD tag (0x8825 in Exif TIFF header context)
- *
- * @param data File bytes
- * @returns true if metadata detected
- */
-export function hasExif(data: Uint8Array): boolean {
-  if (data.length < 4) return false;
+/** XMP packet signature, as embedded in a JPEG APP1 or a PNG iTXt chunk. */
+const XMP_SIGNATURE = new TextEncoder().encode('http://ns.adobe.com/xap');
 
-  // Check for Exif\0\0 pattern anywhere in the file
-  for (let i = 0; i < data.length - 5; i++) {
+/**
+ * Raw scan of [start, end) for the "Exif\0\0" byte pattern or an XMP packet
+ * signature.
+ *
+ * Callers pass only structural regions (header segments, chunk payloads,
+ * trailers). It must NOT be pointed at compressed payloads -- entropy-coded
+ * JPEG scan data and PNG IDAT are arbitrary bytes, so a match there is a
+ * coincidence, and a false positive makes the fail-closed verify reject an
+ * image that carries no metadata at all.
+ */
+function rawMetadataScan(data: Uint8Array, start: number, end: number): boolean {
+  const limit = Math.min(end, data.length);
+
+  for (let i = Math.max(0, start); i + 5 < limit; i++) {
     if (
       data[i] === 0x45 &&     // E
       data[i + 1] === 0x78 && // x
@@ -261,13 +364,10 @@ export function hasExif(data: Uint8Array): boolean {
     }
   }
 
-  // Check for XMP marker (http://ns.adobe.com/xap)
-  const xmpSignature = 'http://ns.adobe.com/xap';
-  const xmpBytes = new TextEncoder().encode(xmpSignature);
-  for (let i = 0; i < data.length - xmpBytes.length; i++) {
+  for (let i = Math.max(0, start); i + XMP_SIGNATURE.length <= limit; i++) {
     let match = true;
-    for (let j = 0; j < xmpBytes.length; j++) {
-      if (data[i + j] !== xmpBytes[j]) {
+    for (let j = 0; j < XMP_SIGNATURE.length; j++) {
+      if (data[i + j] !== XMP_SIGNATURE[j]) {
         match = false;
         break;
       }
@@ -275,42 +375,110 @@ export function hasExif(data: Uint8Array): boolean {
     if (match) return true;
   }
 
-  // JPEG: scan for APP1 markers
+  return false;
+}
+
+/**
+ * Check if a byte array contains EXIF-like metadata.
+ *
+ * Format-aware and boundary-respecting -- it inspects the regions where
+ * metadata can actually live, and every region the strippers are supposed to
+ * have removed:
+ * - JPEG: APP1 markers (0xFFE1) via the segment walk, a raw scan of the header
+ *   segments, and a raw scan of anything past the closing EOI (a surviving
+ *   Samsung SEF trailer must still be reported).
+ * - PNG: eXIf/tEXt/zTXt/iTXt/tIME chunks, a raw scan of non-IDAT chunk
+ *   payloads, and a raw scan of anything past IEND.
+ * - Unrecognized or malformed input: conservative whole-buffer raw scan.
+ *
+ * Compressed payloads (JPEG entropy-coded scan data, PNG IDAT) are excluded:
+ * they are arbitrary bytes that can hold "Exif\0\0" by coincidence, and the
+ * strippers never touch them, so a hit there can only be a false positive.
+ *
+ * @param data File bytes
+ * @returns true if metadata detected
+ */
+export function hasExif(data: Uint8Array): boolean {
+  if (data.length < 4) return false;
+
+  // JPEG
   if (data[0] === 0xFF && data[1] === 0xD8) {
     let pos = 2;
+    let sosPos = -1;
+
     while (pos < data.length - 1) {
       if (data[pos] !== 0xFF) { pos++; continue; }
       const marker = (data[pos] << 8) | data[pos + 1];
-      if (marker === JPEG_SOS || marker === JPEG_EOI) break;
+      if (marker === JPEG_SOS) { sosPos = pos; break; }
+      if (marker === JPEG_EOI) break;
       if (marker === APP1) return true;
       if (pos + 3 >= data.length) break;
       const segLen = (data[pos + 2] << 8) | data[pos + 3];
       if (segLen < 2) break;
       pos += 2 + segLen;
     }
+
+    // Header region. If the segment walk could not reach a SOS the structure is
+    // not trustworthy, so fall back to scanning the whole buffer.
+    if (rawMetadataScan(data, 0, sosPos === -1 ? data.length : sosPos)) return true;
+
+    // Post-EOI trailer, if any survived.
+    if (sosPos !== -1) {
+      const eoiPos = findJpegEoi(data, sosPos);
+      if (eoiPos === -1) {
+        // No findable EOI. stripJpegMetadata falls back to copying to the end
+        // in exactly this case, so a trailer WOULD survive the strip -- scan
+        // the whole remainder rather than trusting a boundary we never found.
+        // False positives are possible here (entropy data is in range), which
+        // is the correct trade for structurally ambiguous input: fail closed.
+        return rawMetadataScan(data, sosPos, data.length);
+      }
+      if (rawMetadataScan(data, eoiPos + 2, data.length)) return true;
+    }
+
+    return false;
   }
 
-  // PNG: scan for eXIf chunk
-  if (data.length >= 8) {
-    let isPng = true;
-    for (let i = 0; i < 8; i++) {
-      if (data[i] !== PNG_SIGNATURE[i]) { isPng = false; break; }
-    }
-    if (isPng) {
-      let pos = 8;
-      while (pos + 12 <= data.length) {
-        const chunkLen =
-          (data[pos] << 24) | (data[pos + 1] << 16) | (data[pos + 2] << 8) | data[pos + 3];
-        const chunkType = String.fromCharCode(
-          data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7],
-        );
-        if (chunkType === 'eXIf') return true;
-        pos += 4 + 4 + chunkLen + 4;
+  // PNG
+  if (data.length >= 8 && isPngSignature(data)) {
+    let pos = 8;
+
+    while (pos + 12 <= data.length) {
+      const chunkLen =
+        (data[pos] << 24) | (data[pos + 1] << 16) | (data[pos + 2] << 8) | data[pos + 3];
+      const chunkType = String.fromCharCode(
+        data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7],
+      );
+      const totalChunkSize = 4 + 4 + chunkLen + 4;
+
+      // Any chunk the stripper is supposed to remove is metadata by definition.
+      if (PNG_STRIP_CHUNKS.has(chunkType)) return true;
+
+      if (chunkLen < 0 || pos + totalChunkSize > data.length) {
+        // Truncated or nonsense length -- scan the remainder conservatively.
+        return rawMetadataScan(data, pos, data.length);
+      }
+
+      if (chunkType !== 'IDAT' && rawMetadataScan(data, pos + 8, pos + 8 + chunkLen)) {
+        return true;
+      }
+
+      pos += totalChunkSize;
+
+      // IEND ends the stream; anything after it is a trailer.
+      if (chunkType === 'IEND') {
+        return rawMetadataScan(data, pos, data.length);
       }
     }
+
+    // Ran out of chunks without reaching IEND. stripPngMetadata copies that
+    // tail through (its !truncatedAtIend fallback), and an Exif\0\0 fits in
+    // 6 bytes, so the remainder still has to be scanned.
+    return rawMetadataScan(data, pos, data.length);
   }
 
-  return false;
+  // Unrecognized or malformed format: stay conservative and scan everything.
+  return rawMetadataScan(data, 0, data.length);
 }
 
 // ---------------------------------------------------------------------------

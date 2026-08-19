@@ -13,6 +13,7 @@ import { ComposeThreadScreen } from '../ComposeThreadScreen';
 
 jest.mock('@sentry/react-native', () => ({
   captureException: jest.fn(),
+  addBreadcrumb: jest.fn(),
   setUser: jest.fn(),
   wrap: (c: unknown) => c,
 }));
@@ -63,8 +64,9 @@ jest.mock('../../stores', () => ({
   useContactForConversation: () => null,
 }));
 
+import * as Sentry from '@sentry/react-native';
 import { createNewThread } from '../../services/threadService';
-import { QuotaExceededError } from '../../services/api/errors';
+import { NetworkError, QuotaExceededError } from '../../services/api/errors';
 import { UPLOAD_CANCELLED_MESSAGE } from '../../services/media/uploadCancellation';
 import type { BatchUploadProgressEvent } from '../../services/mediaUploadService';
 const mockCreateNewThread = createNewThread as jest.Mock;
@@ -373,6 +375,86 @@ describe('ComposeThreadScreen — quota error', () => {
         node.props.children === 'Failed to create thread. Please try again.',
     );
     expect(genericText).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Sentry reporting for post failures (#738)
+// ---------------------------------------------------------------------------
+
+describe('ComposeThreadScreen — failure reporting', () => {
+  const mockCaptureException = Sentry.captureException as unknown as jest.Mock;
+
+  const oneImage = [
+    {
+      uri: 'file:///photo1.jpg',
+      type: 'image/jpeg',
+      fileName: 'photo1.jpg',
+      fileSize: 100,
+      width: 50,
+      height: 50,
+    },
+  ];
+
+  async function post(): Promise<void> {
+    const renderer = renderScreen();
+    act(() => {
+      findByTestId(renderer.root, 'compose-title-input').props.onChangeText('My Title');
+      findByTestId(renderer.root, 'compose-body-input').props.onChangeText('Some body text');
+    });
+    await act(async () => {
+      findPostButton(renderer.root).props.onPress();
+    });
+  }
+
+  /** Tags of the first Sentry capture. */
+  function captureTags(): Record<string, string> {
+    return (mockCaptureException.mock.calls[0][1] as { tags: Record<string, string> }).tags;
+  }
+
+  it('reports a thread-create failure with the thread-create stage', async () => {
+    mockCreateNewThread.mockRejectedValue(new Error('Server error'));
+
+    await post();
+
+    expect(mockCaptureException).toHaveBeenCalledTimes(1);
+    expect(captureTags()).toMatchObject({
+      feature: 'media-upload',
+      stage: 'thread-create',
+      surface: 'compose-thread',
+    });
+  });
+
+  it('reports an upload failure with the media-upload stage', async () => {
+    mockSelectedMedia = oneImage;
+    mockUploadMediaBatch.mockRejectedValue(new NetworkError());
+
+    await post();
+
+    expect(captureTags()).toMatchObject({ stage: 'media-upload', surface: 'compose-thread' });
+    expect(mockCreateNewThread).not.toHaveBeenCalled();
+  });
+
+  it('scrubs the picker path out of the reported message', async () => {
+    mockSelectedMedia = oneImage;
+    mockUploadMediaBatch.mockRejectedValue(
+      new Error('sanitize failed: file:///var/mobile/tmp/photo1.jpg'),
+    );
+
+    await post();
+
+    const reported = mockCaptureException.mock.calls[0][0] as Error;
+    expect(reported.message).toBe('sanitize failed: <uri>');
+    expect(reported.message).not.toContain('photo1');
+  });
+
+  it('reports nothing when the user cancels their own upload', async () => {
+    mockSelectedMedia = oneImage;
+    mockUploadMediaBatch.mockRejectedValue(new Error(UPLOAD_CANCELLED_MESSAGE));
+
+    await post();
+
+    expect(mockCaptureException).not.toHaveBeenCalled();
   });
 });
 

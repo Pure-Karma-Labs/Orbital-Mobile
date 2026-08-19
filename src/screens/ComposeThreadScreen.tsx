@@ -3,7 +3,6 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import * as Sentry from '@sentry/react-native';
 import {
   Alert,
   ScrollView,
@@ -21,6 +20,7 @@ import { useAuth, useContactForConversation } from '../stores';
 import { VerifiedStatus } from '../types/database';
 import { createNewThread } from '../services/threadService';
 import { isUploadCancellation } from '../services/mediaUploadService';
+import { captureUploadFailure, type PostPipelineStage } from '../services/uploadTelemetry';
 import { QuotaExceededError } from '../services/api/errors';
 import { updateMediaParent } from '../database/repositories/mediaRepository';
 import { useMediaPicker } from '../hooks/useMediaPicker';
@@ -78,12 +78,17 @@ export function ComposeThreadScreen({
 
     setError(null);
     setLoading(true);
+    // Which half of the post failed. Media first, then the thread call — the
+    // catch reports this as the Sentry `stage` tag, since an unsymbolicated
+    // release stack cannot tell the two apart (#738).
+    let stage: PostPipelineStage = 'media-upload';
     try {
       let mediaIds: string[] | undefined;
       if (selectedMedia.length > 0) {
         mediaIds = await uploadBatch(selectedMedia, groupId, () => selectedMediaRef.current);
       }
 
+      stage = 'thread-create';
       const thread = await createNewThread(
         groupId,
         isDm ? '' : title.trim(),
@@ -99,7 +104,7 @@ export function ComposeThreadScreen({
           try {
             updateMediaParent(mid, thread.id, null);
           } catch (e) {
-            Sentry.captureException(e);
+            captureUploadFailure(e, { stage: 'local-commit', surface: 'compose-thread', level: 'warning' });
           }
         }
       }
@@ -120,6 +125,10 @@ export function ComposeThreadScreen({
       // selected media and the thread stay exactly as they were; the finally
       // below still re-arms the composer.
       if (isUploadCancellation(e)) return;
+      // Everything below this line is a real failure the user just watched
+      // happen. Before #738 it existed only in a __DEV__ console.warn, which is
+      // why the S24 sanitizer bug (#732) was invisible in release builds.
+      captureUploadFailure(e, { stage, surface: 'compose-thread' });
       // instanceof applies to the upload path; createNewThread is JSON-only and never 413s
       setError(e instanceof QuotaExceededError ? e.message : 'Failed to create thread. Please try again.');
     } finally {

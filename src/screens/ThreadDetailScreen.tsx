@@ -534,15 +534,21 @@ export function ThreadDetailScreen({
           if (__DEV__) console.warn('[Reply] upload cancelled by user');
         } else {
           captureUploadFailure(e, { stage, surface: 'thread-reply' });
-          if (e instanceof QuotaExceededError) {
-            Alert.alert('Upload Failed', e.message);
-          } else {
-            // Every other failure (network loss, retry exhaustion, 5xx) used to
-            // just stop the spinner, leaving the user unsure whether the reply
-            // went out (#612). The draft, media and reply target all survive
-            // (the reset block runs on the success path only), so this is
-            // signal, not recovery.
-            Alert.alert('Reply Failed', 'Failed to send your reply. Please try again.');
+          // Telemetry above fires unconditionally; the alerts must not —
+          // postReply is not abortable, so a rejection can land after the user
+          // navigated away, and an unguarded Alert pops over whatever screen
+          // they're on now (panel finding, PR #744).
+          if (mountedRef.current) {
+            if (e instanceof QuotaExceededError) {
+              Alert.alert('Upload Failed', e.message);
+            } else {
+              // Every other failure (network loss, retry exhaustion, 5xx) used
+              // to just stop the spinner, leaving the user unsure whether the
+              // reply went out (#612). The draft, media and reply target all
+              // survive (the reset block runs on the success path only), so
+              // this is signal, not recovery.
+              Alert.alert('Reply Failed', 'Failed to send your reply. Please try again.');
+            }
           }
           if (__DEV__) console.warn('[Reply] failed:', e instanceof Error ? e.message : e);
         }

@@ -71,11 +71,42 @@ const MAX_MESSAGE_LENGTH = 200;
 
 /** `file://…`, `content://…`, `https://…` — anything scheme-prefixed. */
 const URI_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/\S*/gi;
-/** Absolute POSIX paths of two or more segments (`/var/mobile/Containers/…`). */
-const PATH_PATTERN = /(?:\/[^\s/]+){2,}\/?/g;
+/**
+ * Absolute POSIX paths of two or more segments. Inner segments may contain
+ * spaces (`/Pictures/Baby Photos/…` — user-authored directory names are
+ * exactly the content this strips); the final segment is space-free so a
+ * trailing diagnostic (` not found`) survives the scrub.
+ */
+const PATH_PATTERN = /(?:\/[^/\n]+)+\/[^\s/]+\/?/g;
+const MEDIA_EXTENSIONS =
+  'jpe?g|png|heic|heif|gif|webp|avif|bmp|tiff?|dng|jfif|mp4|mov|m4v|3gp|mkv|webm|avi|mpe?g|wav|aac|bin|dat|tmp';
 /** Bare file names — an RNFS error can name the file without any directory. */
-const FILENAME_PATTERN =
-  /\b[\w.\-()]+\.(?:jpe?g|png|heic|heif|gif|webp|mp4|mov|m4v|3gp|bin|dat|tmp)\b/gi;
+const FILENAME_PATTERN = new RegExp(
+  String.raw`\b[\w.\-()]+\.(?:${MEDIA_EXTENSIONS})\b`,
+  'gi',
+);
+/**
+ * File names whose stem contains spaces (`My Vacation Video.mp4`). Requires
+ * each stem word to start with an uppercase letter or digit — the shape user
+ * file names actually take — so it does not swallow the sentence prefix of a
+ * diagnostic like `could not read my movie.mov`. Case-sensitive stems; the
+ * extension alternation is expanded to both cases by hand below.
+ */
+const SPACED_FILENAME_PATTERN = new RegExp(
+  String.raw`\b(?:[A-Z0-9][\w.\-()]* ){1,4}[\w.\-()]*\.(?:${MEDIA_EXTENSIONS.replace(
+    /[a-z]/g,
+    (c) => `[${c}${c.toUpperCase()}]`,
+  )})\b`,
+  'g',
+);
+
+function scrubText(text: string): string {
+  return text
+    .replace(URI_PATTERN, '<uri>')
+    .replace(PATH_PATTERN, '<path>')
+    .replace(SPACED_FILENAME_PATTERN, '<file>')
+    .replace(FILENAME_PATTERN, '<file>');
+}
 
 /**
  * Remove anything that could carry user content from an error message.
@@ -84,11 +115,7 @@ const FILENAME_PATTERN =
  * file name to Sentry is not. Exported for the unit tests that pin this.
  */
 export function scrubErrorMessage(message: string): string {
-  const scrubbed = message
-    .replace(URI_PATTERN, '<uri>')
-    .replace(PATH_PATTERN, '<path>')
-    .replace(FILENAME_PATTERN, '<file>')
-    .trim();
+  const scrubbed = scrubText(message).trim();
   return scrubbed.length > MAX_MESSAGE_LENGTH
     ? `${scrubbed.slice(0, MAX_MESSAGE_LENGTH)}…`
     : scrubbed;
@@ -105,10 +132,17 @@ function toReportableError(e: unknown): Error {
   const message = scrubErrorMessage(source.message ?? '');
   const reported = new Error(message);
   reported.name = name;
-  // Drop the stack's header line — it repeats the UNSCRUBBED message — and
-  // keep the frames, which are bundle positions and carry no user data.
-  const frames = source.stack?.split('\n').slice(1).join('\n');
-  reported.stack = frames ? `${name}: ${message}\n${frames}` : undefined;
+  // Keep only real frame lines. A multi-line message spans one stack-header
+  // line per newline, so dropping a fixed count would re-emit the UNSCRUBBED
+  // remainder as "frames". Scrub the kept block too, so the no-user-content
+  // guarantee is structural rather than resting on Sentry's frame parser
+  // discarding non-frame lines. Release frames are bundle-relative and pass
+  // through untouched, so symbolication is unaffected.
+  const frames = source.stack
+    ?.split('\n')
+    .filter((line) => /^\s*at /.test(line))
+    .join('\n');
+  reported.stack = frames ? `${name}: ${message}\n${scrubText(frames)}` : undefined;
   return reported;
 }
 

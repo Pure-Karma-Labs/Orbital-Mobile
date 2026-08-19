@@ -63,6 +63,28 @@ describe('scrubErrorMessage', () => {
     expect(scrubErrorMessage('could not read my movie.MOV')).toBe('could not read my <file>');
   });
 
+  it('strips paths whose directory names contain spaces, keeping the trailing diagnostic', () => {
+    expect(
+      scrubErrorMessage('/storage/emulated/0/Pictures/Baby Photos/img_0042.jpg not found'),
+    ).toBe('<path> not found');
+    expect(scrubErrorMessage('EACCES: /storage/emulated/0/Download/Wedding Album/x.heic')).toBe(
+      'EACCES: <path>',
+    );
+  });
+
+  it('strips file names whose stem contains spaces', () => {
+    expect(scrubErrorMessage('failed: My Vacation Video.mp4')).toBe('failed: <file>');
+  });
+
+  it('strips picker-reachable container formats beyond the common ones', () => {
+    expect(scrubErrorMessage('sanitize failed for holiday.dng')).toBe(
+      'sanitize failed for <file>',
+    );
+    expect(scrubErrorMessage('transcode failed for holiday.mkv then holiday.webm')).toBe(
+      'transcode failed for <file> then <file>',
+    );
+  });
+
   it('leaves a content-free message untouched', () => {
     expect(scrubErrorMessage('Cannot upload empty file.')).toBe('Cannot upload empty file.');
     expect(scrubErrorMessage('File too large (240MB). Maximum is 50MB.')).toBe(
@@ -105,7 +127,25 @@ describe('captureUploadFailure', () => {
     expect(reported.name).toBe('NetworkError');
     expect(reported.message).toBe('Network error — please check your connection');
     expect(reported.stack).toContain('NetworkError: Network error');
-    expect(reported.stack).toContain('uploadTelemetry.test');
+    // Frame lines survive the rebuild (scrubbed, so no machine paths).
+    expect(reported.stack).toMatch(/\n\s*at /);
+  });
+
+  it('does not leak lines 2..N of a multi-line message through the rebuilt stack', () => {
+    // A multi-line message spans one stack-header line per newline; only real
+    // frame lines may survive into reported.stack (panel finding, PR #744).
+    const original = new Error(
+      'sanitize failed\nnative detail: /var/mobile/Containers/Data/IMG_0042.HEIC\nsource: file:///var/mobile/tmp/secret photo.jpg',
+    );
+    captureUploadFailure(original, { stage: 'sanitize' });
+
+    const reported = capturedError();
+    expect(reported.message).not.toContain('IMG_0042');
+    expect(reported.stack).not.toContain('IMG_0042');
+    expect(reported.stack).not.toContain('secret photo');
+    expect(reported.stack).not.toContain('file://');
+    expect(reported.stack).not.toContain('/var/mobile');
+    expect(reported.stack).toMatch(/\n\s*at /);
   });
 
   it('never forwards the thrower\'s own error object or its custom fields', () => {

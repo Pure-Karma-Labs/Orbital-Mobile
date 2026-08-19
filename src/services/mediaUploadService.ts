@@ -49,6 +49,7 @@ import { generateUUID } from '../utils/uuid';
 import { sanitizeStillImage } from './media/imageSanitizer';
 import { prepareVideoForUpload, isCancellation } from './media/videoProcessing';
 import { UPLOAD_CANCELLED_MESSAGE } from './media/uploadCancellation';
+import { addUploadBreadcrumb, captureUploadFailure } from './uploadTelemetry';
 import {
   read,
   writeFile,
@@ -313,6 +314,7 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
     // Video branch
     // -----------------------------------------------------------------------
     if (isVideoMime(mimeType) && !_isThumbnail) {
+      addUploadBreadcrumb('transcode', { mime: mimeType });
       onProgress?.({ fraction: 0, phase: 'compressing' });
 
       const videoResult = await prepareVideoForUpload(sourcePath, mimeType, mediaId, {
@@ -334,6 +336,7 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
       // Upload thumbnail as separate encrypted media (best-effort)
       if (videoResult.thumbnailPath) {
         thumbStagingPath = videoResult.thumbnailPath;
+        addUploadBreadcrumb('thumbnail', { mime: 'image/jpeg', thumbnail: true });
         try {
           const thumbStat = await stat(videoResult.thumbnailPath);
           thumbnailResult = await uploadMedia({
@@ -372,6 +375,9 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
           if (__DEV__) {
             console.warn('[uploadMedia] thumbnail upload failed, degrading:', e instanceof Error ? e.message : e);
           }
+          // The post still goes out, so the user sees nothing — which is
+          // exactly why this needs a release-visible signal (#738).
+          captureUploadFailure(e, { stage: 'thumbnail', level: 'warning' });
           // Drops the envelope data ONLY. `committedThumbnailMediaId` must NOT be
           // cleared here: if the child had already committed locally, the parent
           // still owes it a rollback should the parent later throw (#721).
@@ -384,6 +390,7 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
     // -----------------------------------------------------------------------
     else if (!isVideoMime(mimeType) && !_isThumbnail) {
       // Sanitize still image (strip EXIF/GPS metadata, fail-closed verify)
+      addUploadBreadcrumb('sanitize', { mime: mimeType });
       const targetPath = stagingPath ? stagingPath : sanitizedStagingPath;
       await sanitizeStillImage(sourcePath, mimeType, targetPath);
       sourcePath = targetPath;
@@ -420,6 +427,13 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
     // Re-emit the encrypting phase now that the MB total is known, so the
     // readout can render "0 MB / 32 MB" before the first chunk goes out.
     onProgress?.({ fraction: progressBase, phase: 'encrypting', totalBytes: ciphertextLen });
+
+    addUploadBreadcrumb('encrypt', {
+      mime: mimeType,
+      bytes: fileSize,
+      chunks: totalChunks,
+      thumbnail: _isThumbnail === true,
+    });
 
     // 3. Generate attachment keys
     const generated = generateAttachmentKeys();
@@ -515,6 +529,7 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
     });
 
     // 7. PHASE 2 -- Upload chunks from ciphertext file
+    addUploadBreadcrumb('chunk-upload', { chunks: totalChunks });
     for (let i = 0; i < totalChunks; i++) {
       // Check for cancellation
       if (signal?.aborted) {
@@ -631,6 +646,7 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
         console.warn('[uploadMedia] Failed to copy plaintext to canonical path:', e instanceof Error ? e.message : e);
       }
       // Non-fatal -- upload succeeded, file will be re-downloadable
+      captureUploadFailure(e, { stage: 'local-commit', level: 'warning' });
     }
 
     // 10. Persist to local DB (DB stores relative path, store keeps absolute)
@@ -653,6 +669,7 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
         if (__DEV__) {
           console.warn('[uploadMedia] saveMedia failed (upload succeeded):', e instanceof Error ? e.message : e);
         }
+        captureUploadFailure(e, { stage: 'local-commit', level: 'warning' });
       }
     }
 

@@ -23,7 +23,6 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import * as Sentry from '@sentry/react-native';
 import {
   Alert,
   Animated,
@@ -45,6 +44,7 @@ import { useAuth, useThreads } from '../stores';
 import { useAppStore } from '../stores/useAppStore';
 import { loadThread, loadReplies, postReply, hydrateRepliesFromLocal } from '../services/threadService';
 import { isUploadCancellation } from '../services/mediaUploadService';
+import { captureUploadFailure, type PostPipelineStage } from '../services/uploadTelemetry';
 import { QuotaExceededError } from '../services/api/errors';
 import { updateMediaParent } from '../database/repositories/mediaRepository';
 import { useMediaPicker } from '../hooks/useMediaPicker';
@@ -483,6 +483,10 @@ export function ThreadDetailScreen({
       if (!thread || !userId || !username) return;
       setSending(true);
       setShowEmojiPicker(false);
+      // Which half of the send failed — reported as the Sentry `stage` tag so a
+      // release event separates a media-pipeline failure from a postReply
+      // failure without symbolicated frames (#738).
+      let stage: PostPipelineStage = 'media-upload';
       try {
         let mediaIds: string[] | undefined;
         if (selectedMedia.length > 0) {
@@ -494,6 +498,7 @@ export function ThreadDetailScreen({
         }
         const parentReplyId = replyTarget?.replyId ?? null;
         const depth = replyTarget ? replyTarget.depth + 1 : 0;
+        stage = 'reply-create';
         const reply = await postReply(
           threadId,
           thread.conversationId,
@@ -517,7 +522,7 @@ export function ThreadDetailScreen({
             try {
               updateMediaParent(mid, threadId, reply.id);
             } catch (e) {
-              Sentry.captureException(e);
+              captureUploadFailure(e, { stage: 'local-commit', surface: 'thread-reply', level: 'warning' });
             }
           }
         }
@@ -528,8 +533,22 @@ export function ThreadDetailScreen({
         if (isUploadCancellation(e)) {
           if (__DEV__) console.warn('[Reply] upload cancelled by user');
         } else {
-          if (e instanceof QuotaExceededError) {
-            Alert.alert('Upload Failed', e.message);
+          captureUploadFailure(e, { stage, surface: 'thread-reply' });
+          // Telemetry above fires unconditionally; the alerts must not —
+          // postReply is not abortable, so a rejection can land after the user
+          // navigated away, and an unguarded Alert pops over whatever screen
+          // they're on now (panel finding, PR #744).
+          if (mountedRef.current) {
+            if (e instanceof QuotaExceededError) {
+              Alert.alert('Upload Failed', e.message);
+            } else {
+              // Every other failure (network loss, retry exhaustion, 5xx) used
+              // to just stop the spinner, leaving the user unsure whether the
+              // reply went out (#612). The draft, media and reply target all
+              // survive (the reset block runs on the success path only), so
+              // this is signal, not recovery.
+              Alert.alert('Reply Failed', 'Failed to send your reply. Please try again.');
+            }
           }
           if (__DEV__) console.warn('[Reply] failed:', e instanceof Error ? e.message : e);
         }

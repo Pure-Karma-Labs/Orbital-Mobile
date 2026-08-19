@@ -4,6 +4,7 @@
 
 jest.mock('@sentry/react-native', () => ({
   captureException: jest.fn(),
+  addBreadcrumb: jest.fn(),
   setUser: jest.fn(),
   wrap: (c: unknown) => c,
 }));
@@ -91,10 +92,11 @@ jest.mock('../../components/Emoji', () => {
 
 import React from 'react';
 import { Alert } from 'react-native';
+import * as Sentry from '@sentry/react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import { ThemeProvider } from '../../theme';
 import { ThreadDetailScreen } from '../ThreadDetailScreen';
-import { QuotaExceededError } from '../../services/api/errors';
+import { NetworkError, QuotaExceededError } from '../../services/api/errors';
 import { toggleMute } from '../../services/notificationSettingsSync';
 import { UPLOAD_CANCELLED_MESSAGE } from '../../services/media/uploadCancellation';
 import type { BatchUploadProgressEvent } from '../../services/mediaUploadService';
@@ -1193,5 +1195,187 @@ describe('ThreadDetailScreen — unmount aborts in-flight upload', () => {
     expect(unmountedWarning).toBe(false);
 
     consoleErrorSpy.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Send failures — user-facing Alert (#612) + Sentry report (#738)
+// ---------------------------------------------------------------------------
+
+describe('ThreadDetailScreen — send failure signal', () => {
+  const mockCaptureException = Sentry.captureException as unknown as jest.Mock;
+  let alertSpy: jest.SpyInstance;
+
+  function threadsState(): Record<string, unknown> {
+    return {
+      threads: { 'thread-1': fakeThread },
+      threadIdsByConversation: { 'group-1': ['thread-1'] },
+      replies: {},
+      replyIdsByThread: {},
+      activeThreadId: 'thread-1',
+      setThreads: jest.fn(),
+      upsertThread: jest.fn(),
+      removeThread: jest.fn(),
+      setActiveThread: mockSetActiveThread,
+      markThreadViewed: jest.fn(),
+      setReplies: jest.fn(),
+      appendReplies: jest.fn(),
+      upsertReply: jest.fn(),
+      addOptimisticThread: jest.fn(),
+      addOptimisticReply: jest.fn(),
+      updateThreadSyncStatus: jest.fn(),
+      updateReplySyncStatus: jest.fn(),
+    };
+  }
+
+  beforeEach(() => {
+    const storesMock = jest.requireMock('../../stores') as { useThreads: jest.Mock };
+    storesMock.useThreads.mockReturnValue(threadsState());
+    alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    const storesMock = jest.requireMock('../../stores') as { useThreads: jest.Mock };
+    storesMock.useThreads.mockReturnValue({ ...threadsState(), threads: {}, threadIdsByConversation: {}, activeThreadId: null });
+    alertSpy.mockRestore();
+    mockSelectedMedia = [];
+  });
+
+  const oneImage = [
+    {
+      uri: 'file:///photo1.jpg',
+      type: 'image/jpeg',
+      fileName: 'photo1.jpg',
+      fileSize: 100,
+      width: 50,
+      height: 50,
+    },
+  ];
+
+  async function sendReply(): Promise<void> {
+    const renderer = await renderScreen();
+    const input = renderer.root.findAll((node) => node.props.testID === 'reply-input');
+    await act(async () => {
+      input[0].props.onChangeText('hello');
+    });
+    const sendBtn = renderer.root.findAll((node) => node.props.testID === 'send-button');
+    await act(async () => {
+      sendBtn[0].props.onPress();
+    });
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  /** Tags of the first Sentry capture. */
+  function captureTags(): Record<string, string> {
+    return (mockCaptureException.mock.calls[0][1] as { tags: Record<string, string> }).tags;
+  }
+
+  it('alerts and reports with the media-upload stage when the upload fails for a non-quota reason', async () => {
+    mockSelectedMedia = oneImage;
+    mockUploadMediaBatch.mockRejectedValue(new NetworkError());
+
+    await sendReply();
+
+    expect(alertSpy).toHaveBeenCalledWith(
+      'Reply Failed',
+      'Failed to send your reply. Please try again.',
+    );
+    expect(mockCaptureException).toHaveBeenCalledTimes(1);
+    expect(captureTags()).toMatchObject({
+      feature: 'media-upload',
+      stage: 'media-upload',
+      surface: 'thread-reply',
+    });
+    expect(mockPostReply).not.toHaveBeenCalled();
+  });
+
+  it('alerts and reports with the reply-create stage when postReply fails', async () => {
+    mockPostReply.mockRejectedValue(new Error('Server error'));
+
+    await sendReply();
+
+    expect(alertSpy).toHaveBeenCalledWith(
+      'Reply Failed',
+      'Failed to send your reply. Please try again.',
+    );
+    expect(captureTags()).toMatchObject({ stage: 'reply-create', surface: 'thread-reply' });
+  });
+
+  it('captures but does not alert when postReply fails after the screen unmounted', async () => {
+    // postReply is not abortable, so its rejection can land after the user
+    // navigated away. Telemetry must still fire; the modal must not (it would
+    // pop over an unrelated screen — panel finding, PR #744).
+    let rejectPostReply!: (e: Error) => void;
+    mockPostReply.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectPostReply = reject;
+        }),
+    );
+
+    const renderer = await renderScreen();
+    const input = renderer.root.findAll((node) => node.props.testID === 'reply-input');
+    await act(async () => {
+      input[0].props.onChangeText('hello');
+    });
+    const sendBtn = renderer.root.findAll((node) => node.props.testID === 'send-button');
+    await act(async () => {
+      sendBtn[0].props.onPress();
+    });
+
+    await act(async () => {
+      renderer.unmount();
+    });
+    currentRenderer = null; // already unmounted — keep afterEach from double-unmounting
+
+    await act(async () => {
+      rejectPostReply(new Error('Server error'));
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(alertSpy).not.toHaveBeenCalled();
+    expect(mockCaptureException).toHaveBeenCalledTimes(1);
+    expect(captureTags()).toMatchObject({ stage: 'reply-create', surface: 'thread-reply' });
+  });
+
+  it('keeps the quota path exactly as it was, reported at warning level', async () => {
+    mockSelectedMedia = oneImage;
+    const quotaBody = JSON.stringify({
+      error: 'QUOTA_EXCEEDED',
+      details: {
+        quota: {
+          storage_bytes: 500 * 1024 * 1024,
+          max_bytes: 500 * 1024 * 1024,
+          file_count: 42,
+          max_files: 1000,
+          storage_percent: 100,
+          files_percent: 4.2,
+          evictable_bytes: 0,
+        },
+      },
+    });
+    mockUploadMediaBatch.mockRejectedValue(new QuotaExceededError(quotaBody));
+
+    await sendReply();
+
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+    expect(alertSpy).toHaveBeenCalledWith(
+      'Upload Failed',
+      'Orbit storage is full. Delete old photos or videos to make room.',
+    );
+    const context = mockCaptureException.mock.calls[0][1] as { level: string };
+    expect(context.level).toBe('warning');
+  });
+
+  it('shows no alert and reports nothing when the user cancels the upload', async () => {
+    mockSelectedMedia = oneImage;
+    mockUploadMediaBatch.mockRejectedValue(new Error(UPLOAD_CANCELLED_MESSAGE));
+
+    await sendReply();
+
+    expect(alertSpy).not.toHaveBeenCalled();
+    expect(mockCaptureException).not.toHaveBeenCalled();
   });
 });

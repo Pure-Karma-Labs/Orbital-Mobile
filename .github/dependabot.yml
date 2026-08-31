@@ -8,14 +8,66 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    # Raised from 5 when native packages were split into their own group and
+    # majors were pushed out of the groups entirely: both changes trade a
+    # smaller blast radius per PR for a few more open PRs.
+    open-pull-requests-limit: 8
     groups:
-      # react-native-video (added #458 PR 3) rides this group like any other
-      # production npm dep — no special-casing needed. Its native media3
-      # dependency is NOT covered here; see the gradle section below for the
-      # media3 lockstep note.
+      # Native packages ship compiled code, so a bump is never mergeable on CI
+      # alone: it needs a paired `pod install` commit (which Dependabot cannot
+      # produce, so the Podfile.lock consistency check fails), builds on both
+      # platforms, and a device smoke. Keeping them in their own group stops a
+      # native bump from stranding JS-only bumps behind that gate — #753 held
+      # six JS bumps hostage to six native ones for exactly this reason.
+      #
+      # react-native-video (added #458 PR 3) lives here. Its native media3
+      # dependency is NOT covered by this group; see the gradle section below
+      # for the media3 lockstep note.
+      native-dependencies:
+        patterns:
+          - "@dr.pogodin/react-native-fs"
+          - "@notifee/react-native"
+          - "@op-engineering/op-sqlite"
+          - "@react-native-firebase/*"
+          - "@sentry/react-native"
+          - "react-native"
+          - "react-native-bootsplash"
+          - "react-native-config"
+          - "react-native-gesture-handler"
+          - "react-native-get-random-values"
+          - "react-native-image-picker"
+          - "react-native-keychain"
+          - "react-native-mmkv"
+          - "react-native-nitro-modules"
+          - "react-native-safe-area-context"
+          - "react-native-screens"
+          - "react-native-video"
+        update-types: ["minor", "patch"]
+      # Majors are deliberately excluded from both groups so they arrive as
+      # their own PR. op-sqlite 17 -> 18 rode into #753 as one of ten packages,
+      # where a major on the encrypted-database layer is far too easy to wave
+      # through on a green check.
       production-dependencies:
         dependency-type: production
+        update-types: ["minor", "patch"]
+        exclude-patterns:
+          - "@dr.pogodin/react-native-fs"
+          - "@notifee/react-native"
+          - "@op-engineering/op-sqlite"
+          - "@react-native-firebase/*"
+          - "@sentry/react-native"
+          - "react-native"
+          - "react-native-bootsplash"
+          - "react-native-config"
+          - "react-native-gesture-handler"
+          - "react-native-get-random-values"
+          - "react-native-image-picker"
+          - "react-native-keychain"
+          - "react-native-mmkv"
+          - "react-native-nitro-modules"
+          - "react-native-safe-area-context"
+          - "react-native-screens"
+          - "react-native-video"
       development-dependencies:
         dependency-type: development
         update-types: ["minor", "patch"]

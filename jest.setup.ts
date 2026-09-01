@@ -66,3 +66,35 @@ if (
     },
   };
 }
+
+// ---------------------------------------------------------------------------
+// OrbitalSpinner — global mock (#731)
+//
+// OrbitalSpinner drives its continuous rotation with a recursive
+// Animated.timing chain (OrbitalSpinner.tsx:14-41) under `useNativeDriver:
+// true`, so in Jest it routes through React Native's native-animation mock
+// (react-native/jest/mocks/NativeModules.js:96-99):
+//
+//   startAnimatingNode: (id, tag, cfg, cb) => setTimeout(() => cb({finished: true}), 16)
+//   stopAnimation:      jest.fn()   // no-op
+//
+// The mock re-arms the chain every 16 ms and unconditionally reports
+// `finished: true`, while the component's cleanup call to
+// `rotation.stopAnimation()` cancels nothing. That leaves `alive.current =
+// false` as the only working brake, and it runs on unmount alone. A suite that
+// leaves a renderer mounted — or whose test times out before teardown — leaks
+// the chain into later tests ("Can't access .root on unmounted test renderer")
+// or wedges the run outright.
+//
+// Ten of the twelve suites that render a spinner already mocked it file by
+// file for this reason. The two that did not — ThreadDetailScreen and
+// LightboxVideoPage — are exactly the two that flaked and hung CI. Hoisting the
+// mock here removes the failure mode for every suite, present and future.
+// Per-file `jest.mock()` calls still take precedence over this one.
+// ---------------------------------------------------------------------------
+jest.mock('./src/components/OrbitalSpinner', () => {
+  const { createElement } = require('react');
+  return {
+    OrbitalSpinner: () => createElement('View', { testID: 'orbital-spinner' }),
+  };
+});

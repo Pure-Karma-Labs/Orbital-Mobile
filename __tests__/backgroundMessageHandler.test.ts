@@ -8,7 +8,7 @@
  */
 
 import notifee from '@notifee/react-native';
-import messaging from '@react-native-firebase/messaging';
+import { setBackgroundMessageHandler } from '@react-native-firebase/messaging';
 
 // index.js pulls in the whole app tree at bundle load; stub the pieces that
 // need native modules or a React renderer.
@@ -26,10 +26,8 @@ type BackgroundHandler = (msg: { data?: Record<string, string> }) => Promise<voi
 /** Load index.js once and return its registered background message handler. */
 function getBackgroundHandler(): BackgroundHandler {
   require('../index');
-  const setHandler = (messaging() as unknown as {
-    setBackgroundMessageHandler: jest.Mock;
-  }).setBackgroundMessageHandler;
-  return setHandler.mock.calls[0][0] as BackgroundHandler;
+  // Modular signature: setBackgroundMessageHandler(messagingInstance, handler).
+  return (setBackgroundMessageHandler as jest.Mock).mock.calls[0][1] as BackgroundHandler;
 }
 
 let handler: BackgroundHandler;

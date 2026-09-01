@@ -13,8 +13,14 @@
  */
 
 import { Alert, AppState as RNAppState, Linking, PermissionsAndroid, Platform } from 'react-native';
-import messaging, {
-  type FirebaseMessagingTypes,
+import {
+  getMessaging,
+  getToken,
+  onTokenRefresh,
+  onMessage,
+  onNotificationOpenedApp,
+  getInitialNotification,
+  type RemoteMessage,
 } from '@react-native-firebase/messaging';
 import notifee, { AndroidImportance, AuthorizationStatus, EventType, type Event as NotifeeEvent } from '@notifee/react-native';
 import { registerDevice, deregisterDevice } from './api/devices';
@@ -175,7 +181,7 @@ async function requestPermissionAndRegister(): Promise<() => void> {
     return () => {};
   }
 
-  const token = await messaging().getToken();
+  const token = await getToken(getMessaging());
   if (__DEV__) console.warn(`[Push] FCM token obtained (${token.length} chars)`);
   useAppStore.getState().setPushToken(token);
 
@@ -203,7 +209,7 @@ async function requestPermissionAndRegister(): Promise<() => void> {
   // if registration ran more than once — it always tears down the CURRENT
   // listener, never a stale one).
   activeTokenRefreshUnsub?.();
-  activeTokenRefreshUnsub = messaging().onTokenRefresh(async (newToken: string) => {
+  activeTokenRefreshUnsub = onTokenRefresh(getMessaging(), async (newToken: string) => {
     useAppStore.getState().setPushToken(newToken);
     try {
       await registerDevice({ platform, pushToken: newToken, deviceId });
@@ -318,8 +324,8 @@ export async function setPushEnabled(enabled: boolean): Promise<void> {
  * @returns Unsubscribe function to tear down the listener.
  */
 export function setupForegroundHandler(): () => void {
-  const unsubscribe = messaging().onMessage(
-    async (remoteMessage: FirebaseMessagingTypes.RemoteMessage) => {
+  const unsubscribe = onMessage(getMessaging(),
+    async (remoteMessage: RemoteMessage) => {
       const data = remoteMessage.data;
 
       // #539: identity_key_reset is a security tripwire and must run even
@@ -527,8 +533,8 @@ export function setupNotificationTapHandler(): () => void {
   // 2a. Background tap (iOS) — Firebase notification opened from background state.
   // On iOS, the system displays the APNs alert notification (not Notifee),
   // so tapping it fires this handler rather than Notifee's onBackgroundEvent.
-  const unsubOpenedApp = messaging().onNotificationOpenedApp(
-    (remoteMessage: FirebaseMessagingTypes.RemoteMessage) => {
+  const unsubOpenedApp = onNotificationOpenedApp(getMessaging(),
+    (remoteMessage: RemoteMessage) => {
       if (remoteMessage?.data) {
         navigateFromNotification(remoteMessage.data as Record<string, string>);
       }
@@ -542,9 +548,8 @@ export function setupNotificationTapHandler(): () => void {
   // 3. Killed-state tap — Firebase getInitialNotification() is one-shot.
   // If the nav tree isn't ready yet, the payload is queued automatically
   // by navigateFromNotification → setPendingNotificationPayload.
-  messaging()
-    .getInitialNotification()
-    .then((remoteMessage: FirebaseMessagingTypes.RemoteMessage | null) => {
+  getInitialNotification(getMessaging())
+    .then((remoteMessage: RemoteMessage | null) => {
       if (remoteMessage?.data) {
         navigateFromNotification(remoteMessage.data as Record<string, string>);
       }

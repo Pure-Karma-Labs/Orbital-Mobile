@@ -82,9 +82,9 @@ jest.mock('../recoveryState', () => ({
 // ---------------------------------------------------------------------------
 
 import { Alert, PermissionsAndroid, Platform } from 'react-native';
-import messaging, {
-  type FirebaseMessagingTypes,
-} from '@react-native-firebase/messaging';
+import * as messaging from '@react-native-firebase/messaging';
+import type { RemoteMessage } from '@react-native-firebase/messaging';
+
 import notifee, { EventType } from '@notifee/react-native';
 import {
   registerIfEnabled,
@@ -104,9 +104,9 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Get the messaging singleton from the mock. */
-function getMessagingInstance() {
-  return messaging();
+/** The mocked modular module — each export is a jest.fn (see __mocks__). Every modular fn takes the messaging instance as arg 0; handlers/listeners are arg 1. */
+function mockedMessaging() {
+  return messaging;
 }
 
 /** Original Platform.OS/Version descriptors, restored after each Platform-mutating test. */
@@ -134,8 +134,8 @@ function restorePlatform(): void {
 /** Build a minimal remoteMessage with the given data payload. */
 function remoteMessage(
   data: Record<string, string>,
-): FirebaseMessagingTypes.RemoteMessage {
-  return { data } as FirebaseMessagingTypes.RemoteMessage;
+): RemoteMessage {
+  return { data } as RemoteMessage;
 }
 
 // ---------------------------------------------------------------------------
@@ -149,9 +149,9 @@ beforeEach(() => {
   (notifee.requestPermission as jest.Mock).mockResolvedValue({
     authorizationStatus: 1, // AUTHORIZED
   });
-  (getMessagingInstance().getToken as jest.Mock).mockResolvedValue('mock-fcm-token');
-  (getMessagingInstance().onTokenRefresh as jest.Mock).mockReturnValue(jest.fn());
-  (getMessagingInstance().onNotificationOpenedApp as jest.Mock).mockReturnValue(jest.fn());
+  (mockedMessaging().getToken as jest.Mock).mockResolvedValue('mock-fcm-token');
+  (mockedMessaging().onTokenRefresh as jest.Mock).mockReturnValue(jest.fn());
+  (mockedMessaging().onNotificationOpenedApp as jest.Mock).mockReturnValue(jest.fn());
   // mockReturnValue survives clearAllMocks — reset explicitly every test.
   mockIsRecoveryInitiator.mockReturnValue(false);
   // #449: reset the store double — prefs all on, nothing muted.
@@ -184,7 +184,7 @@ describe('registerIfEnabled — registration path', () => {
     await registerIfEnabled();
 
     expect(mockSetPushPermission).toHaveBeenCalledWith(false);
-    expect(getMessagingInstance().getToken).not.toHaveBeenCalled();
+    expect(mockedMessaging().getToken).not.toHaveBeenCalled();
     expect(mockRegisterDevice).not.toHaveBeenCalled();
   });
 
@@ -192,7 +192,7 @@ describe('registerIfEnabled — registration path', () => {
     await registerIfEnabled();
 
     expect(mockSetPushPermission).toHaveBeenCalledWith(true);
-    expect(getMessagingInstance().getToken).toHaveBeenCalled();
+    expect(mockedMessaging().getToken).toHaveBeenCalled();
     expect(mockSetPushToken).toHaveBeenCalledWith('mock-fcm-token');
     expect(mockRegisterDevice).toHaveBeenCalledWith({
       platform: expect.stringMatching(/^(ios|android)$/),
@@ -248,7 +248,7 @@ describe('registerIfEnabled — registration path', () => {
 
   it('teardownPushRegistration unsubscribes the listener installed by registerIfEnabled', async () => {
     const mockUnsub = jest.fn();
-    (getMessagingInstance().onTokenRefresh as jest.Mock).mockReturnValueOnce(mockUnsub);
+    (mockedMessaging().onTokenRefresh as jest.Mock).mockReturnValueOnce(mockUnsub);
 
     await registerIfEnabled();
 
@@ -259,7 +259,7 @@ describe('registerIfEnabled — registration path', () => {
   it('re-registration replaces the previous token-refresh listener (module ownership)', async () => {
     const firstUnsub = jest.fn();
     const secondUnsub = jest.fn();
-    (getMessagingInstance().onTokenRefresh as jest.Mock)
+    (mockedMessaging().onTokenRefresh as jest.Mock)
       .mockReturnValueOnce(firstUnsub)
       .mockReturnValueOnce(secondUnsub);
 
@@ -275,7 +275,7 @@ describe('registerIfEnabled — registration path', () => {
 
   it('teardownPushRegistration unsubscribes the current listener and is idempotent', async () => {
     const mockUnsub = jest.fn();
-    (getMessagingInstance().onTokenRefresh as jest.Mock).mockReturnValueOnce(mockUnsub);
+    (mockedMessaging().onTokenRefresh as jest.Mock).mockReturnValueOnce(mockUnsub);
 
     await registerIfEnabled();
     teardownPushRegistration();
@@ -287,7 +287,7 @@ describe('registerIfEnabled — registration path', () => {
   it('a second registration replaces the listener; teardown then tears down only the current one', async () => {
     const firstUnsub = jest.fn();
     const secondUnsub = jest.fn();
-    (getMessagingInstance().onTokenRefresh as jest.Mock)
+    (mockedMessaging().onTokenRefresh as jest.Mock)
       .mockReturnValueOnce(firstUnsub)
       .mockReturnValueOnce(secondUnsub);
 
@@ -343,7 +343,7 @@ describe('registerIfEnabled — Android 13+ POST_NOTIFICATIONS permission', () =
     expect(mockSetPushPermission).toHaveBeenCalledWith(false);
     // Should return early — Notifee/Firebase permission flow never runs.
     expect(notifee.requestPermission).not.toHaveBeenCalled();
-    expect(getMessagingInstance().getToken).not.toHaveBeenCalled();
+    expect(mockedMessaging().getToken).not.toHaveBeenCalled();
     expect(mockRegisterDevice).not.toHaveBeenCalled();
   });
 
@@ -383,9 +383,9 @@ describe('registerIfEnabled — opt-out gate (#683)', () => {
     // The bug this issue fixes: the launch path used to re-register
     // unconditionally, silently undoing an explicit master-push Off.
     expect(notifee.requestPermission).not.toHaveBeenCalled();
-    expect(getMessagingInstance().getToken).not.toHaveBeenCalled();
+    expect(mockedMessaging().getToken).not.toHaveBeenCalled();
     expect(mockRegisterDevice).not.toHaveBeenCalled();
-    expect(getMessagingInstance().onTokenRefresh).not.toHaveBeenCalled();
+    expect(mockedMessaging().onTokenRefresh).not.toHaveBeenCalled();
   });
 
   it('RECONCILES by deregistering the device on every opted-out launch', async () => {
@@ -424,7 +424,7 @@ describe('registerIfEnabled — opt-out gate (#683)', () => {
 describe('setPushEnabled(false) — turning push off', () => {
   it('writes intent, tears down the listener, deregisters, then clears OS state — in that order', async () => {
     const mockUnsub = jest.fn();
-    (getMessagingInstance().onTokenRefresh as jest.Mock).mockReturnValueOnce(mockUnsub);
+    (mockedMessaging().onTokenRefresh as jest.Mock).mockReturnValueOnce(mockUnsub);
     // Install a listener first so teardown has something observable to do.
     await registerIfEnabled();
     mockSetPushPermission.mockClear();
@@ -506,7 +506,8 @@ describe('setupForegroundHandler', () => {
   /** Capture the onMessage callback for simulating incoming messages. */
   function getOnMessageCallback(): (msg: { data?: Record<string, string> }) => Promise<void> {
     setupForegroundHandler();
-    return (getMessagingInstance().onMessage as jest.Mock).mock.calls[0][0];
+    // Modular API: arg 0 = messaging instance, arg 1 = handler callback.
+    return (mockedMessaging().onMessage as jest.Mock).mock.calls[0][1];
   }
 
   it('displays a notification for known type (new_thread)', async () => {
@@ -589,7 +590,7 @@ describe('setupForegroundHandler', () => {
 
   it('returns an unsubscribe function', () => {
     const mockUnsub = jest.fn();
-    (getMessagingInstance().onMessage as jest.Mock).mockReturnValueOnce(mockUnsub);
+    (mockedMessaging().onMessage as jest.Mock).mockReturnValueOnce(mockUnsub);
 
     const unsubscribe = setupForegroundHandler();
 
@@ -661,13 +662,13 @@ describe('setupNotificationTapHandler', () => {
   it('registers onNotificationOpenedApp handler', () => {
     setupNotificationTapHandler();
 
-    expect(getMessagingInstance().onNotificationOpenedApp).toHaveBeenCalledTimes(1);
-    expect(typeof (getMessagingInstance().onNotificationOpenedApp as jest.Mock).mock.calls[0][0]).toBe('function');
+    expect(mockedMessaging().onNotificationOpenedApp).toHaveBeenCalledTimes(1);
+    expect(typeof (mockedMessaging().onNotificationOpenedApp as jest.Mock).mock.calls[0][1]).toBe('function');
   });
 
   it('cleanup unsubscribes onNotificationOpenedApp', () => {
     const mockUnsubOpenedApp = jest.fn();
-    (getMessagingInstance().onNotificationOpenedApp as jest.Mock).mockReturnValueOnce(mockUnsubOpenedApp);
+    (mockedMessaging().onNotificationOpenedApp as jest.Mock).mockReturnValueOnce(mockUnsubOpenedApp);
 
     const cleanup = setupNotificationTapHandler();
     cleanup();
@@ -741,11 +742,11 @@ describe('setupNotificationTapHandler — onForegroundEvent press callback', () 
 describe('setupNotificationTapHandler — onNotificationOpenedApp callback', () => {
   /** Capture the onNotificationOpenedApp callback registered by the handler. */
   function getOpenedAppCallback(): (
-    msg: FirebaseMessagingTypes.RemoteMessage,
+    msg: RemoteMessage,
   ) => void {
     setupNotificationTapHandler();
-    return (getMessagingInstance().onNotificationOpenedApp as jest.Mock).mock
-      .calls[0][0];
+    return (mockedMessaging().onNotificationOpenedApp as jest.Mock).mock
+      .calls[0][1];
   }
 
   afterEach(() => {
@@ -821,7 +822,7 @@ describe('setupNotificationTapHandler — onNotificationOpenedApp callback', () 
     (navigationRef.isReady as jest.Mock).mockReturnValue(true);
     const cb = getOpenedAppCallback();
 
-    cb({} as FirebaseMessagingTypes.RemoteMessage);
+    cb({} as RemoteMessage);
 
     expect(navigationRef.navigate).not.toHaveBeenCalled();
   });
@@ -957,7 +958,7 @@ describe('setupNotificationTapHandler — killed-state getInitialNotification', 
 
   it('navigates using the cold-start notification payload when nav is ready', async () => {
     (navigationRef.isReady as jest.Mock).mockReturnValue(true);
-    (getMessagingInstance().getInitialNotification as jest.Mock).mockResolvedValueOnce(
+    (mockedMessaging().getInitialNotification as jest.Mock).mockResolvedValueOnce(
       remoteMessage({ t: 'new_dm', gid: 'conv-99' }),
     );
 
@@ -974,7 +975,7 @@ describe('setupNotificationTapHandler — killed-state getInitialNotification', 
 
   it('queues the cold-start payload when the nav tree is not ready yet', async () => {
     (navigationRef.isReady as jest.Mock).mockReturnValue(false);
-    (getMessagingInstance().getInitialNotification as jest.Mock).mockResolvedValueOnce(
+    (mockedMessaging().getInitialNotification as jest.Mock).mockResolvedValueOnce(
       remoteMessage({ t: 'orbit_invite', code: 'INV-2' }),
     );
 
@@ -990,7 +991,7 @@ describe('setupNotificationTapHandler — killed-state getInitialNotification', 
   });
 
   it('does not navigate when there is no cold-start notification (returns null)', async () => {
-    (getMessagingInstance().getInitialNotification as jest.Mock).mockResolvedValueOnce(
+    (mockedMessaging().getInitialNotification as jest.Mock).mockResolvedValueOnce(
       null,
     );
 
@@ -1003,7 +1004,7 @@ describe('setupNotificationTapHandler — killed-state getInitialNotification', 
   });
 
   it('swallows getInitialNotification rejection without throwing', async () => {
-    (getMessagingInstance().getInitialNotification as jest.Mock).mockRejectedValueOnce(
+    (mockedMessaging().getInitialNotification as jest.Mock).mockRejectedValueOnce(
       new Error('native bridge unavailable'),
     );
 
@@ -1021,7 +1022,7 @@ describe('setupNotificationTapHandler — killed-state getInitialNotification', 
   it('sets identityKeyConflict and navigates to Settings from a killed-state identity_key_reset notification (not initiator)', async () => {
     (navigationRef.isReady as jest.Mock).mockReturnValue(true);
     mockIsRecoveryInitiator.mockReturnValue(false);
-    (getMessagingInstance().getInitialNotification as jest.Mock).mockResolvedValueOnce(
+    (mockedMessaging().getInitialNotification as jest.Mock).mockResolvedValueOnce(
       remoteMessage({ t: 'identity_key_reset', v: '1' }),
     );
 
@@ -1039,7 +1040,7 @@ describe('setupNotificationTapHandler — killed-state getInitialNotification', 
   it('queues a killed-state identity_key_reset payload without setting identityKeyConflict when the nav tree is not ready yet', async () => {
     (navigationRef.isReady as jest.Mock).mockReturnValue(false);
     mockIsRecoveryInitiator.mockReturnValue(false);
-    (getMessagingInstance().getInitialNotification as jest.Mock).mockResolvedValueOnce(
+    (mockedMessaging().getInitialNotification as jest.Mock).mockResolvedValueOnce(
       remoteMessage({ t: 'identity_key_reset', v: '1' }),
     );
 
@@ -1086,7 +1087,7 @@ describe('deregisterCurrentDevice', () => {
 describe('setupForegroundHandler — #449 preference suppression', () => {
   function getOnMessageCallback(): (msg: { data?: Record<string, string> }) => Promise<void> {
     setupForegroundHandler();
-    return (getMessagingInstance().onMessage as jest.Mock).mock.calls[0][0];
+    return (mockedMessaging().onMessage as jest.Mock).mock.calls[0][1];
   }
 
   const PREF_OFF_CASES: [string, string, Record<string, string>][] = [
@@ -1142,7 +1143,7 @@ describe('setupForegroundHandler — #449 preference suppression', () => {
 describe('setupForegroundHandler — #449 DM group-type pref mapping', () => {
   function getOnMessageCallback(): (msg: { data?: Record<string, string> }) => Promise<void> {
     setupForegroundHandler();
-    return (getMessagingInstance().onMessage as jest.Mock).mock.calls[0][0];
+    return (mockedMessaging().onMessage as jest.Mock).mock.calls[0][1];
   }
 
   beforeEach(() => {
@@ -1206,7 +1207,7 @@ describe('setupForegroundHandler — #449 DM group-type pref mapping', () => {
 describe('setupForegroundHandler — #449 mute suppression', () => {
   function getOnMessageCallback(): (msg: { data?: Record<string, string> }) => Promise<void> {
     setupForegroundHandler();
-    return (getMessagingInstance().onMessage as jest.Mock).mock.calls[0][0];
+    return (mockedMessaging().onMessage as jest.Mock).mock.calls[0][1];
   }
 
   it('suppresses a new_reply carrying a muted tid', async () => {
@@ -1272,7 +1273,7 @@ describe('setupForegroundHandler — #449 mute suppression', () => {
 describe('setupForegroundHandler — #449 identity_key_reset is never suppressible', () => {
   function getOnMessageCallback(): (msg: { data?: Record<string, string> }) => Promise<void> {
     setupForegroundHandler();
-    return (getMessagingInstance().onMessage as jest.Mock).mock.calls[0][0];
+    return (mockedMessaging().onMessage as jest.Mock).mock.calls[0][1];
   }
 
   it('dispatches the conflict flag and displays with every pref off and everything muted', async () => {
@@ -1307,7 +1308,7 @@ describe('setupForegroundHandler — #449 identity_key_reset is never suppressib
 describe('setupForegroundHandler — #449 collapse key on display (D9)', () => {
   function getOnMessageCallback(): (msg: { data?: Record<string, string> }) => Promise<void> {
     setupForegroundHandler();
-    return (getMessagingInstance().onMessage as jest.Mock).mock.calls[0][0];
+    return (mockedMessaging().onMessage as jest.Mock).mock.calls[0][1];
   }
 
   function lastDisplayArg(): Record<string, unknown> {

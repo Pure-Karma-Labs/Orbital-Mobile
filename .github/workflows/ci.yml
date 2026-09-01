@@ -133,6 +133,7 @@ jobs:
           filters: |
             ios-native:
               - 'package.json'
+              - 'package-lock.json'   # caret-ranged native deps can move on the lock alone (#667)
               - 'ios/**'
               - 'packages/orbital-signal/*.podspec'
               - 'packages/orbital-media-transcoder/*.podspec'
@@ -162,18 +163,34 @@ jobs:
         shell: bash   # explicit bash => pipefail, so a pod failure is not masked by tee
         run: pod install --deployment 2>&1 | tee pod-install.log
 
-      # Issue #667 (guard 3 of 3 — positive proof the CocoaPods branch ran). The
-      # Podfile's Ruby assertions can only prove SPM artefacts are ABSENT; this
-      # is the one signal that the flag was actually honoured. The pbxproj check
-      # deliberately lives in the Podfile's post_integrate, not here, so it is
-      # not duplicated.
+      # Issue #667 (guard 3 of 3). Two checks that only make sense after
+      # CocoaPods has fully exited:
+      #   (a) RNFB's own log line for the CocoaPods branch — a belt-and-braces
+      #       positive signal alongside Podfile guard 1 (which already asserts
+      #       the umbrella subspecs resolved). Matched on the stable
+      #       "SPM disabled" prefix, not the full sentence, so an upstream
+      #       reword does not fail CI with a misleading cause.
+      #   (b) the committed app project must be byte-identical after
+      #       `pod install`. RNFB mutates the pbxproj AFTER the Podfile's
+      #       post_integrate hook (it wraps run_podfile_post_integrate_hooks),
+      #       so the Podfile's guard 2 is a next-run tripwire; this diff is
+      #       the same-run one.
       - name: Assert Firebase stays on CocoaPods (issue #667)
         if: github.event_name == 'pull_request' && steps.pod-filter.outputs.ios-native == 'true'
         working-directory: ios
         shell: bash
         run: |
-          if ! grep -F 'SPM disabled ($RNFirebaseDisableSPM = true)' pod-install.log; then
-            echo "ERROR: pod install did not report the RNFB CocoaPods branch (#667)"
+          if ! grep -F 'SPM disabled' pod-install.log; then
+            echo "ERROR: pod install did not print RNFB's 'SPM disabled' line (#667)."
+            echo "Either react-native-firebase resolved Firebase via SPM (check Podfile guard 1's"
+            echo "output above), or upstream reworded the log string in"
+            echo "node_modules/@react-native-firebase/app/firebase_spm.rb — check that first."
+            exit 1
+          fi
+          if ! git diff --exit-code -- OrbitalMobile.xcodeproj/project.pbxproj; then
+            echo "ERROR: pod install modified the committed app project (#667)."
+            echo "If the diff adds XCRemoteSwiftPackageReference / XCSwiftPackageProductDependency,"
+            echo "react-native-firebase took the SPM path despite \$RNFirebaseDisableSPM."
             exit 1
           fi
 

@@ -13,27 +13,21 @@
  */
 import type * as RNFBMessaging from '@react-native-firebase/messaging';
 
-type Fn<K extends keyof typeof RNFBMessaging> = (typeof RNFBMessaging)[K] extends (
-  ...args: infer P
-) => infer R
-  ? { params: P; ret: R }
-  : never;
-
 /** Opaque instance handle; the app never reads its properties. */
 const messagingInstance = {} as RNFBMessaging.Messaging;
 
 export const getMessaging: jest.MockedFunction<typeof RNFBMessaging.getMessaging> =
-  jest.fn<Fn<'getMessaging'>['ret'], Fn<'getMessaging'>['params']>(() => messagingInstance);
+  jest.fn<ReturnType<typeof RNFBMessaging.getMessaging>, Parameters<typeof RNFBMessaging.getMessaging>>(() => messagingInstance);
 export const getToken: jest.MockedFunction<typeof RNFBMessaging.getToken> =
-  jest.fn<Fn<'getToken'>['ret'], Fn<'getToken'>['params']>().mockResolvedValue('mock-fcm-token');
+  jest.fn<ReturnType<typeof RNFBMessaging.getToken>, Parameters<typeof RNFBMessaging.getToken>>().mockResolvedValue('mock-fcm-token');
 export const onTokenRefresh: jest.MockedFunction<typeof RNFBMessaging.onTokenRefresh> =
-  jest.fn<Fn<'onTokenRefresh'>['ret'], Fn<'onTokenRefresh'>['params']>().mockReturnValue(jest.fn()); // returns unsubscribe
+  jest.fn<ReturnType<typeof RNFBMessaging.onTokenRefresh>, Parameters<typeof RNFBMessaging.onTokenRefresh>>().mockReturnValue(jest.fn()); // returns unsubscribe
 export const onMessage: jest.MockedFunction<typeof RNFBMessaging.onMessage> =
-  jest.fn<Fn<'onMessage'>['ret'], Fn<'onMessage'>['params']>().mockReturnValue(jest.fn()); // returns unsubscribe
+  jest.fn<ReturnType<typeof RNFBMessaging.onMessage>, Parameters<typeof RNFBMessaging.onMessage>>().mockReturnValue(jest.fn()); // returns unsubscribe
 export const onNotificationOpenedApp: jest.MockedFunction<typeof RNFBMessaging.onNotificationOpenedApp> =
-  jest.fn<Fn<'onNotificationOpenedApp'>['ret'], Fn<'onNotificationOpenedApp'>['params']>().mockReturnValue(jest.fn()); // returns unsubscribe
+  jest.fn<ReturnType<typeof RNFBMessaging.onNotificationOpenedApp>, Parameters<typeof RNFBMessaging.onNotificationOpenedApp>>().mockReturnValue(jest.fn()); // returns unsubscribe
 export const getInitialNotification: jest.MockedFunction<typeof RNFBMessaging.getInitialNotification> =
-  jest.fn<Fn<'getInitialNotification'>['ret'], Fn<'getInitialNotification'>['params']>().mockResolvedValue(null);
+  jest.fn<ReturnType<typeof RNFBMessaging.getInitialNotification>, Parameters<typeof RNFBMessaging.getInitialNotification>>().mockResolvedValue(null);
 // Registered at bundle load in index.js (background push display path).
 export const setBackgroundMessageHandler: jest.MockedFunction<typeof RNFBMessaging.setBackgroundMessageHandler> =
-  jest.fn<Fn<'setBackgroundMessageHandler'>['ret'], Fn<'setBackgroundMessageHandler'>['params']>();
+  jest.fn<ReturnType<typeof RNFBMessaging.setBackgroundMessageHandler>, Parameters<typeof RNFBMessaging.setBackgroundMessageHandler>>();

@@ -468,13 +468,12 @@ try {
 // ---------------------------------------------------------------------------
 
 // @react-native-firebase >= 26 defaults to SPM on RN >= 0.75. We opt out via
-// $RNFirebaseDisableSPM = true in ios/Podfile because:
-//   - Notifee shares FirebaseCore via CocoaPods (two copies = duplicate symbols)
-//   - The eight :modular_headers => true pins have no SPM equivalent
-//   - The pbxproj is committed and CI has no Archive step
+// $RNFirebaseDisableSPM = true in ios/Podfile — the rationale has ONE home, the
+// comment above that line in ios/Podfile (short version: this Podfile pins the
+// Firebase pods directly, so SPM would add a second Firebase module graph).
 // The flag must be exactly `true` (ruby podspec tests `== true`).
-// Three runtime guards (Podfile post_install + post_integrate + ci.yml log check)
-// complement this static check. See issue #667 / #637.
+// Runtime guards (Podfile post_install + post_integrate, ci.yml pod-log check and
+// post-install pbxproj diff) complement this static check. See #667 / #637.
 //
 // Anchored on the dependency: if @react-native-firebase/app is ever removed,
 // delete this rule rather than leave it to pass vacuously.

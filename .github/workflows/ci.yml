@@ -159,7 +159,23 @@ jobs:
       - name: Podfile.lock consistency check
         if: github.event_name == 'pull_request' && steps.pod-filter.outputs.ios-native == 'true'
         working-directory: ios
-        run: pod install --deployment
+        shell: bash   # explicit bash => pipefail, so a pod failure is not masked by tee
+        run: pod install --deployment 2>&1 | tee pod-install.log
+
+      # Issue #667 (guard 3 of 3 — positive proof the CocoaPods branch ran). The
+      # Podfile's Ruby assertions can only prove SPM artefacts are ABSENT; this
+      # is the one signal that the flag was actually honoured. The pbxproj check
+      # deliberately lives in the Podfile's post_integrate, not here, so it is
+      # not duplicated.
+      - name: Assert Firebase stays on CocoaPods (issue #667)
+        if: github.event_name == 'pull_request' && steps.pod-filter.outputs.ios-native == 'true'
+        working-directory: ios
+        shell: bash
+        run: |
+          if ! grep -F 'SPM disabled ($RNFirebaseDisableSPM = true)' pod-install.log; then
+            echo "ERROR: pod install did not report the RNFB CocoaPods branch (#667)"
+            exit 1
+          fi
 
       # Issue #586: build.yml's full iOS build is main-only, so hand-written
       # native module code (and the generated Spec it must match) had no

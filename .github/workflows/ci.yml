@@ -18,7 +18,12 @@ jobs:
   lint-typecheck-test:
     name: Lint, Typecheck & Test
     runs-on: macos-latest
-    timeout-minutes: 20
+    # 30, not 20: this job carries ESLint, tsc, 161 Jest suites, a `pod install`
+    # for the Podfile.lock consistency check, and the iOS transcoder compile. A
+    # clean run finished with ~1 minute of headroom on 2026-08-31, and one hung
+    # suite (#731) consumed the whole budget and cancelled a job whose other 160
+    # suites had already passed -- a flake shouldn't discard passing work.
+    timeout-minutes: 30
 
     steps:
       - name: Checkout

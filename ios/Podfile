@@ -24,6 +24,37 @@ prepare_react_native_project!
 # source build of sentry-cocoa, which is what we did before 8.19.0 anyway.
 # Override to '1' only for a local experiment — do not commit the lock it makes.
 ENV['SENTRY_USE_XCFRAMEWORK'] ||= '0'
+# Issue #667: keep Firebase on CocoaPods, not Swift Package Manager.
+#
+# @react-native-firebase >= 26 defaults to SPM on RN >= 0.75 (firebase_spm.rb):
+# RNFBApp.podspec drops its `Firebase/CoreOnly` pod dependency and instead has
+# `pod install` add an `XCRemoteSwiftPackageReference` (firebase-ios-sdk) plus an
+# `XCSwiftPackageProductDependency` and two `[RNFB] ... SPM` shell phases to
+# OrbitalMobile.xcodeproj, and force `-ObjC` / `*_ENABLE_EXPLICIT_MODULES=NO`
+# onto every target. We opt out:
+#   1. This Podfile pins eight Firebase/Google pods directly (the
+#      `:modular_headers => true` lines below), so an SPM-resolved
+#      firebase-ios-sdk would coexist with the CocoaPods-resolved copy: two
+#      Firebase module graphs in one binary (duplicate symbols / double
+#      configure — the `redefinition of module 'Firebase'` collision RNFB
+#      itself documents). Notifee is NOT a Firebase consumer (RNNotifee depends
+#      only on React-Core); the CocoaPods copy is ours.
+#   2. Those eight pins have no SPM equivalent.
+#   3. The pbxproj is committed and CI has no Archive step, so SPM resolution
+#      churn would first be seen at release time.
+# Must be exactly `true` (the podspec tests `== true`). Enforced by the
+# post_install / post_integrate assertions at the bottom of this file, the
+# ci.yml "Assert Firebase stays on CocoaPods" log check, and
+# scripts/check-security-invariants.mjs #12.
+# Coupling note: regardless of this flag, RNFB >= 26 monkey-patches
+# Pod::Installer at podspec-require time (firebase_spm.rb aliases
+# run_podfile_post_install_hooks, run_podfile_post_integrate_hooks and the
+# pods-project generate method). A CocoaPods release that renames or re-arities
+# those methods breaks `pod install` from inside RNFB's podspec — check that
+# the patch still applies before bumping the Homebrew pod / lockfile stamp.
+# Horizon: Firebase stops publishing pods after October 2026 (DEBT-147/#637);
+# the SPM migration belongs to that issue (#769), not this one.
+$RNFirebaseDisableSPM = true
 
 linkage = ENV['USE_FRAMEWORKS']
 if linkage != nil
@@ -82,5 +113,41 @@ target 'OrbitalMobile' do
         File.write(fmt_base, patched)
       end
     end
+
+    # Issue #667 (guard 1 of 3 — resolved spec set): in CocoaPods mode the RNFB
+    # podspecs declare the `Firebase/CoreOnly` and `Firebase/Messaging` umbrella
+    # subspecs; in SPM mode they declare neither and pull Firebase as a Swift
+    # package instead. Our own Podfile pins FirebaseCore/FirebaseMessaging
+    # directly, so THOSE targets exist in both modes and prove nothing — the
+    # umbrella subspecs are the discriminator. (Confirmed against the installed
+    # RNFBApp.podspec / RNFBMessaging.podspec before writing this list.)
+    resolved = installer.analysis_result.specifications.map(&:name)
+    %w[Firebase/CoreOnly Firebase/Messaging].each do |spec|
+      next if resolved.include?(spec)
+      raise "[Orbital] $RNFirebaseDisableSPM is set but '#{spec}' is not in the " \
+            "resolved pod specs -- react-native-firebase resolved Firebase via SPM. " \
+            "See the $RNFirebaseDisableSPM comment in ios/Podfile (#667)."
+    end
   end
+
+  # Issue #667 (guard 2 of 3 — committed app project). RNFB wraps
+  # Pod::Installer#run_podfile_post_integrate_hooks and runs its own
+  # user-project mutations AFTER the Podfile's post_integrate returns, so this
+  # hook sees the pbxproj as committed, not as RNFB leaves it: it is a
+  # next-run tripwire (a committed SPM reference fails the following install),
+  # and it can fire before RNFB's own stale-link cleanup on an SPM→CocoaPods
+  # reversal (#769 path). Same-run coverage is ci.yml's post-install
+  # `git diff --exit-code` on the pbxproj. RNFB writes two node classes and its
+  # cleanup is rescue-wrapped (warns and continues), so match both.
+  # Pods.xcodeproj may legitimately carry RN's own package references; the app
+  # project must carry none.
+  post_integrate do |installer|
+    pbxproj = File.expand_path('../OrbitalMobile.xcodeproj/project.pbxproj', installer.sandbox.root)
+    if File.read(pbxproj) =~ /XCRemoteSwiftPackageReference|XCSwiftPackageProductDependency/
+      raise "[Orbital] OrbitalMobile.xcodeproj gained a Swift package reference or " \
+            "product dependency -- react-native-firebase SPM integration ran despite " \
+            "$RNFirebaseDisableSPM. Revert the pbxproj and fix ios/Podfile (#667)."
+    end
+  end
+
 end

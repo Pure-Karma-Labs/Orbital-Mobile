@@ -7,7 +7,7 @@ import 'react-native-gesture-handler';
 import './src/sentryInit';
 import { AppRegistry } from 'react-native';
 import { enableScreens } from 'react-native-screens';
-import messaging from '@react-native-firebase/messaging';
+import { getMessaging, setBackgroundMessageHandler } from '@react-native-firebase/messaging';
 import notifee, { AndroidImportance, EventType } from '@notifee/react-native';
 import App from './src/App';
 import { name as appName } from './app.json';
@@ -39,7 +39,7 @@ notifee.createChannel({
 // Must be registered at module top-level BEFORE AppRegistry.registerComponent.
 // Without this, Android data-only push payloads are silently consumed when the
 // app is killed or backgrounded — no system notification appears.
-messaging().setBackgroundMessageHandler(async (remoteMessage) => {
+setBackgroundMessageHandler(getMessaging(), async (remoteMessage) => {
   const data = remoteMessage.data;
   if (!data || !data.t) return;
 

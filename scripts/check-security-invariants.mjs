@@ -464,6 +464,49 @@ try {
 }
 
 // ---------------------------------------------------------------------------
+// 12. Firebase stays on CocoaPods (SPM disabled)
+// ---------------------------------------------------------------------------
+
+// @react-native-firebase >= 26 defaults to SPM on RN >= 0.75. We opt out via
+// $RNFirebaseDisableSPM = true in ios/Podfile — the rationale has ONE home, the
+// comment above that line in ios/Podfile (short version: this Podfile pins the
+// Firebase pods directly, so SPM would add a second Firebase module graph).
+// The flag must be exactly `true` (ruby podspec tests `== true`).
+// Runtime guards (Podfile post_install + post_integrate, ci.yml pod-log check and
+// post-install pbxproj diff) complement this static check. See #667 / #637.
+//
+// Anchored on the dependency: if @react-native-firebase/app is ever removed,
+// delete this rule rather than leave it to pass vacuously.
+
+try {
+  const pkg = JSON.parse(readFileSync(PKG_JSON, 'utf8'));
+  if (pkg.dependencies?.['@react-native-firebase/app'] === undefined) {
+    violations.push(
+      `  ${PKG_JSON}:0  [rnfb-cocoapods-pinned]  @react-native-firebase/app is no longer a dependency — delete this rule instead of leaving a vacuous check`,
+    );
+  } else {
+    let podfile;
+    try {
+      podfile = readFileSync(join('ios', 'Podfile'), 'utf8');
+    } catch {
+      podfile = null;
+      violations.push(
+        `  ios/Podfile:0  [rnfb-cocoapods-pinned]  ios/Podfile not found — cannot verify $RNFirebaseDisableSPM`,
+      );
+    }
+    if (podfile !== null && !/^\$RNFirebaseDisableSPM\s*=\s*true\s*$/m.test(podfile)) {
+      violations.push(
+        `  ios/Podfile:0  [rnfb-cocoapods-pinned]  ios/Podfile must declare "$RNFirebaseDisableSPM = true" (exactly true) — see #667/#637`,
+      );
+    }
+  }
+} catch {
+  violations.push(
+    `  ${PKG_JSON}:0  [rnfb-cocoapods-pinned]  package.json unreadable — cannot verify the @react-native-firebase/app anchor`,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------
 

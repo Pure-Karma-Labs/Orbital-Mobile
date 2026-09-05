@@ -98,6 +98,16 @@ updates:
       # a release whose codegen schema parses again.
       - dependency-name: "react-native-screens"
         versions: ["> 4.25.2"]
+      # @sentry/react-native >= 8.23.0 raises sentry_cocoa_version to 9.24.0, and
+      # RNSentry.podspec then *raises* when SENTRY_USE_XCFRAMEWORK=0 -- which
+      # ios/Podfile sets deliberately. sentry-cocoa stopped publishing to the
+      # CocoaPods trunk at 9.20.0, so 9.19.1 is the last version reachable that
+      # way and there is no safe intermediate (8.23.0 is already the cliff, not
+      # 8.24.0). Verified against `npm pack` of 8.22.0/8.23.0/8.24.0/8.25.0; see
+      # closed PR #773. Lift when ios/Podfile drops the opt-out (#768) or with
+      # the SPM migration (milestone #16).
+      - dependency-name: "@sentry/react-native"
+        versions: ["> 8.22.0"]
       # Babel 8 and ESLint 10 require RN ecosystem support — tracked in #311
       - dependency-name: "@babel/core"
         update-types: ["version-update:semver-major"]

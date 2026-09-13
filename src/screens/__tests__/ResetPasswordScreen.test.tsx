@@ -8,6 +8,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../../theme';
 import { ResetPasswordScreen } from '../ResetPasswordScreen';
 import { ApiError, NetworkError, ValidationError } from '../../services/api/errors';
+import { PASSWORD_RULE_HINT } from '../../utils/validatePassword';
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -225,14 +226,19 @@ describe('ResetPasswordScreen — validation', () => {
       findByTestId(root, 'reset-submit-button').props.onPress();
     });
 
-    const allText = root.findAllByType('Text' as unknown as React.ComponentType);
-    const errorText = allText.find(
-      (node) =>
-        typeof node.props.children === 'string' &&
-        node.props.children.toLowerCase().includes('12 characters'),
+    expect(findByTestId(root, 'reset-new-password-input-error').props.children).toBe(
+      'Password must be at least 12 characters',
     );
-    expect(errorText).toBeDefined();
     expect(mockResetPassword).not.toHaveBeenCalled();
+  });
+
+  it('shows the persistent password rule hint on mount', () => {
+    const renderer = renderResetPasswordScreen();
+    const root = renderer.root;
+
+    expect(findByTestId(root, 'reset-new-password-input-helper').props.children).toBe(
+      PASSWORD_RULE_HINT,
+    );
   });
 });
 

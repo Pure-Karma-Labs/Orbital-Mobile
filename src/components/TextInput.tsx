@@ -26,6 +26,10 @@ export interface TextInputProps {
   textContentType?: RNTextInputProps['textContentType'];
   maxLength?: number;
   placeholder?: string;
+  /** Persistent hint rendered below the input. Suppressed while `error` is set. */
+  helperText?: string;
+  /** Field-level validation message. Replaces `helperText` and reddens the border. */
+  error?: string | null;
   testID?: string;
 }
 
@@ -40,11 +44,16 @@ export function TextInput({
   textContentType,
   maxLength,
   placeholder,
+  helperText,
+  error,
   testID,
 }: TextInputProps): React.JSX.Element {
   const theme = useTheme();
   const [focused, setFocused] = useState(false);
   const [hidden, setHidden] = useState(secureTextEntry);
+
+  const hasError = error != null && error.length > 0;
+  const hasSlot = hasError || (helperText != null && helperText.length > 0);
 
   const containerStyle: ViewStyle = {
     marginBottom: theme.spacing.md,
@@ -60,7 +69,11 @@ export function TextInput({
   const inputContainerStyle: ViewStyle = {
     backgroundColor: theme.colors.surfaceElevated,
     borderWidth: 1,
-    borderColor: focused ? theme.colors.blue : theme.colors.borderSubtle,
+    borderColor: hasError
+      ? theme.colors.error
+      : focused
+        ? theme.colors.blue
+        : theme.colors.borderSubtle,
     borderRadius: theme.borderRadius.base,
     paddingHorizontal: theme.spacing.base,
     paddingVertical: theme.spacing.sm,
@@ -83,6 +96,33 @@ export function TextInput({
     margin: 0,
   };
 
+  // Inline errors / helper text: fontSize.sm (11) at lineHeight.normal (1.4),
+  // 4px below the input — MOBILE-PATTERNS.md "Error States → Inline Errors".
+  const subTextLineHeight =
+    theme.typography.fontSize.sm * theme.typography.lineHeight.normal;
+
+  const helperTextStyle: TextStyle = {
+    fontFamily: theme.typography.fontFamily.body,
+    fontSize: theme.typography.fontSize.sm,
+    lineHeight: subTextLineHeight,
+    color: theme.colors.textTertiary,
+    marginTop: theme.spacing.xs,
+  };
+
+  const errorTextStyle: TextStyle = {
+    ...helperTextStyle,
+    color: theme.colors.error,
+  };
+
+  // Reserve two lines when a persistent helper is present so swapping the
+  // helper for a shorter error message does not reflow the fields below.
+  const subTextSlotStyle: ViewStyle = {
+    minHeight:
+      helperText != null && helperText.length > 0
+        ? theme.spacing.xs + subTextLineHeight * 2
+        : undefined,
+  };
+
   return (
     <View style={containerStyle}>
       <Text style={labelStyle}>{label}</Text>
@@ -101,6 +141,8 @@ export function TextInput({
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}
           placeholderTextColor={theme.colors.textTertiary}
+          accessibilityLabel={label}
+          accessibilityHint={(hasError ? error : helperText) ?? undefined}
           testID={testID}
         />
         {secureTextEntry && (
@@ -114,6 +156,26 @@ export function TextInput({
           </TouchableOpacity>
         )}
       </View>
+      {hasSlot && (
+        <View style={subTextSlotStyle}>
+          {hasError ? (
+            <Text
+              style={errorTextStyle}
+              testID={testID != null ? `${testID}-error` : undefined}
+              accessibilityLiveRegion="polite"
+            >
+              {error}
+            </Text>
+          ) : (
+            <Text
+              style={helperTextStyle}
+              testID={testID != null ? `${testID}-helper` : undefined}
+            >
+              {helperText}
+            </Text>
+          )}
+        </View>
+      )}
     </View>
   );
 }

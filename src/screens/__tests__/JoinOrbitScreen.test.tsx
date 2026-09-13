@@ -202,13 +202,9 @@ describe('JoinOrbitScreen — error handling', () => {
       findByTestId(renderer.root, 'join-orbit-button').props.onPress();
     });
 
-    const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
-    const errorText = allText.find(
-      (node) =>
-        typeof node.props.children === 'string' &&
-        node.props.children.toLowerCase().includes('invalid'),
+    expect(findByTestId(renderer.root, 'invite-code-input-error').props.children).toBe(
+      'Invalid or expired invite code',
     );
-    expect(errorText).toBeDefined();
     expect(mockNavigation.goBack).not.toHaveBeenCalled();
   });
 });

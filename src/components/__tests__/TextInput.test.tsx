@@ -4,8 +4,18 @@
 
 import React from 'react';
 import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'react-test-renderer';
-import { ThemeProvider } from '../../theme';
+import { ThemeProvider, lightColors } from '../../theme';
 import { TextInput } from '../TextInput';
+
+function flattenStyle(style: unknown): Record<string, unknown> {
+  if (Array.isArray(style)) {
+    return style.reduce(
+      (acc: Record<string, unknown>, s) => ({ ...acc, ...flattenStyle(s) }),
+      {},
+    );
+  }
+  return (style ?? {}) as Record<string, unknown>;
+}
 
 function renderTextInput(
   props: Partial<React.ComponentProps<typeof TextInput>> = {},
@@ -85,5 +95,63 @@ describe('TextInput — interaction', () => {
     const renderer = renderTextInput({ autoCapitalize: 'none', testID: 'cap-input' });
     const input = findByTestId(renderer.root, 'cap-input');
     expect(input.props.autoCapitalize).toBe('none');
+  });
+});
+
+describe('TextInput — helper text and error', () => {
+  it('renders the helper node with the helper text', () => {
+    const renderer = renderTextInput({
+      helperText: 'Pick something memorable',
+      testID: 'helper-input',
+    });
+    const helper = findByTestId(renderer.root, 'helper-input-helper');
+    expect(helper.props.children).toBe('Pick something memorable');
+  });
+
+  it('renders the error node with the error text', () => {
+    const renderer = renderTextInput({
+      error: 'This field is required',
+      testID: 'error-input',
+    });
+    const error = findByTestId(renderer.root, 'error-input-error');
+    expect(error.props.children).toBe('This field is required');
+  });
+
+  it('suppresses the helper node when a non-empty error is set', () => {
+    const renderer = renderTextInput({
+      helperText: 'Pick something memorable',
+      error: 'This field is required',
+      testID: 'both-input',
+    });
+    expect(() => findByTestId(renderer.root, 'both-input-helper')).toThrow();
+    expect(findByTestId(renderer.root, 'both-input-error').props.children).toBe(
+      'This field is required',
+    );
+  });
+
+  it('renders neither node when helperText and error are both absent', () => {
+    const renderer = renderTextInput({ testID: 'plain-input' });
+    expect(() => findByTestId(renderer.root, 'plain-input-helper')).toThrow();
+    expect(() => findByTestId(renderer.root, 'plain-input-error')).toThrow();
+  });
+
+  it('reddens the input container border when error is set', () => {
+    // Assert on the rendered border colours rather than a fixed tree position:
+    // the host node carrying testID is RN's TextInput, whose parent chain is an
+    // implementation detail of the platform component.
+    const borderColors = (renderer: ReactTestRenderer): unknown[] =>
+      renderer.root
+        .findAll((node) => node.props.style != null)
+        .map((node) => flattenStyle(node.props.style).borderColor)
+        .filter((color) => color !== undefined);
+
+    const withError = renderTextInput({
+      error: 'This field is required',
+      testID: 'border-input',
+    });
+    expect(borderColors(withError)).toContain(lightColors.error);
+
+    const withoutError = renderTextInput({ testID: 'border-input' });
+    expect(borderColors(withoutError)).not.toContain(lightColors.error);
   });
 });

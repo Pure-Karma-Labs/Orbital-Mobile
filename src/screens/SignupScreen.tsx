@@ -16,8 +16,9 @@ import { useTheme } from '../theme';
 import { TextInput, Button, ErrorBanner, OrbitalLoader, AsciiBanner } from '../components';
 import { TermsCheckbox } from '../components/TermsCheckbox';
 import { signupUser } from '../services/authService';
-import { AccountSwitchError, AuthError, ConflictError, NetworkError, ValidationError } from '../services/api/errors';
+import { AccountSwitchError, ApiError, AuthError, ConflictError, NetworkError, ValidationError } from '../services/api/errors';
 import { formatInviteCode, stripInviteCode } from '../services/crypto/inviteCrypto';
+import { validatePassword, PASSWORD_RULE_HINT } from '../utils/validatePassword';
 import type { OnPreAuthNavigate } from '../navigation/preAuthTypes';
 
 export interface SignupScreenProps {
@@ -33,12 +34,26 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
   const [password, setPassword] = useState('');
   const [inviteCode, setInviteCode] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [usernameError, setUsernameError] = useState<string | null>(null);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [inviteCodeError, setInviteCodeError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [termsAccepted, setTermsAccepted] = useState(false);
+
+  const handleUsernameChange = useCallback((text: string) => {
+    setUsername(text);
+    setUsernameError(null);
+  }, []);
+
+  const handlePasswordChange = useCallback((text: string) => {
+    setPassword(text);
+    setPasswordError(null);
+  }, []);
 
   const handleInviteCodeChange = useCallback((text: string) => {
     const sanitized = text.replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 20);
     setInviteCode(sanitized.length > 0 ? formatInviteCode(sanitized) : '');
+    setInviteCodeError(null);
   }, []);
 
   async function handleSignup(): Promise<void> {
@@ -59,7 +74,34 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
       return;
     }
 
+    // Backend rules enforced client-side so the user is never spent on a
+    // round-trip (and the shared auth rate limiter) for a knowable failure.
+    // Messages are verbatim from Orbital-Backend/src/routes/auth.js.
+    const trimmedUsername = username.trim();
+    if (trimmedUsername.length < 3 || trimmedUsername.length > 50) {
+      setUsernameError('Username must be between 3 and 50 characters');
+      return;
+    }
+    if (!/^[A-Za-z0-9_]+$/.test(trimmedUsername)) {
+      setUsernameError('Username can only contain letters, numbers, and underscores');
+      return;
+    }
+
+    const passwordRuleError = validatePassword(password);
+    if (passwordRuleError !== null) {
+      setPasswordError(passwordRuleError);
+      return;
+    }
+
+    if (stripInviteCode(inviteCode).length !== 20) {
+      setInviteCodeError('Invalid invite code format — must be a 20-character v2 code');
+      return;
+    }
+
     setError(null);
+    setUsernameError(null);
+    setPasswordError(null);
+    setInviteCodeError(null);
     setLoading(true);
     try {
       await signupUser(username.trim(), password, email.trim(), stripInviteCode(inviteCode));
@@ -67,6 +109,8 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
     } catch (e) {
       if (e instanceof AccountSwitchError) {
         setError(e.message);
+      } else if (e instanceof ApiError && e.code === 'RATE_LIMITED') {
+        setError('Too many attempts — please wait about 15 minutes and try again');
       } else if (e instanceof AuthError || e instanceof ValidationError || e instanceof ConflictError) {
         setError(e.message || 'Signup failed');
       } else if (e instanceof NetworkError) {
@@ -129,10 +173,11 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
           <TextInput
             label="Username"
             value={username}
-            onChangeText={setUsername}
+            onChangeText={handleUsernameChange}
             autoCapitalize="none"
             autoCorrect={false}
             maxLength={64}
+            error={usernameError}
             testID="signup-username-input"
           />
           <TextInput
@@ -148,11 +193,14 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
           <TextInput
             label="Password"
             value={password}
-            onChangeText={setPassword}
+            onChangeText={handlePasswordChange}
             secureTextEntry
             autoCapitalize="none"
             autoCorrect={false}
+            textContentType="newPassword"
             maxLength={128}
+            helperText={PASSWORD_RULE_HINT}
+            error={passwordError}
             testID="signup-password-input"
           />
           <TextInput
@@ -163,6 +211,7 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
             autoCorrect={false}
             maxLength={24}
             placeholder="XXXX-XXXX-XXXX-XXXX-XXXX"
+            error={inviteCodeError}
             testID="signup-invite-code-input"
           />
 

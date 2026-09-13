@@ -17,7 +17,7 @@ import { TextInput, Button, ErrorBanner, OrbitalLoader, AsciiBanner } from '../c
 import { resetPassword } from '../services/authService';
 import { ApiError, NetworkError, ValidationError } from '../services/api/errors';
 import { maskEmail } from '../utils/maskEmail';
-import { validatePassword } from '../utils/validatePassword';
+import { validatePassword, PASSWORD_RULE_HINT } from '../utils/validatePassword';
 import type { OnPreAuthNavigate } from '../navigation/preAuthTypes';
 
 export interface ResetPasswordScreenProps {
@@ -36,7 +36,13 @@ export function ResetPasswordScreen({
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [newPasswordError, setNewPasswordError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  function handleNewPasswordChange(text: string): void {
+    setNewPassword(text);
+    setNewPasswordError(null);
+  }
 
   async function handleSubmit(): Promise<void> {
     // Normalize code: strip whitespace + hyphens, uppercase
@@ -54,11 +60,12 @@ export function ResetPasswordScreen({
 
     const passwordError = validatePassword(newPassword);
     if (passwordError !== null) {
-      setError(passwordError);
+      setNewPasswordError(passwordError);
       return;
     }
 
     setError(null);
+    setNewPasswordError(null);
     setLoading(true);
     try {
       await resetPassword(email, normalizedCode, newPassword);
@@ -161,12 +168,14 @@ export function ResetPasswordScreen({
           <TextInput
             label="New Password"
             value={newPassword}
-            onChangeText={setNewPassword}
+            onChangeText={handleNewPasswordChange}
             secureTextEntry
             autoCapitalize="none"
             autoCorrect={false}
             textContentType="newPassword"
             maxLength={128}
+            helperText={PASSWORD_RULE_HINT}
+            error={newPasswordError}
             testID="reset-new-password-input"
           />
           <TextInput

@@ -5,9 +5,7 @@
 
 import React, { useCallback, useState } from 'react';
 import {
-  Text,
   View,
-  type TextStyle,
   type ViewStyle,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -88,13 +86,6 @@ export function JoinOrbitScreen({
     paddingTop: theme.spacing.lg,
   };
 
-  const errorStyle: TextStyle = {
-    fontFamily: theme.typography.fontFamily.body,
-    fontSize: theme.typography.fontSize.sm,
-    color: theme.colors.error,
-    marginBottom: theme.spacing.md,
-  };
-
   return (
     <View style={containerStyle} testID="join-orbit-screen">
       <Header
@@ -112,10 +103,9 @@ export function JoinOrbitScreen({
             autoCorrect={false}
             maxLength={24}
             placeholder="XXXX-XXXX-XXXX-XXXX-XXXX"
+            error={error}
             testID="invite-code-input"
           />
-
-          {error != null && <Text style={errorStyle}>{error}</Text>}
 
           <Button
             title="Join"

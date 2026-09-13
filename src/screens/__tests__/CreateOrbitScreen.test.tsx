@@ -278,13 +278,9 @@ describe('CreateOrbitScreen — error handling', () => {
       findByTestId(renderer.root, 'create-orbit-button').props.onPress();
     });
 
-    const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
-    const errorText = allText.find(
-      (node) =>
-        typeof node.props.children === 'string' &&
-        node.props.children === 'Server error',
+    expect(findByTestId(renderer.root, 'orbit-name-input-error').props.children).toBe(
+      'Server error',
     );
-    expect(errorText).toBeDefined();
   });
 });
 

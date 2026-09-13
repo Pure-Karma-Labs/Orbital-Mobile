@@ -141,13 +141,6 @@ export function CreateOrbitScreen({
     paddingTop: theme.spacing.lg,
   };
 
-  const errorStyle: TextStyle = {
-    fontFamily: theme.typography.fontFamily.body,
-    fontSize: theme.typography.fontSize.sm,
-    color: theme.colors.error,
-    marginBottom: theme.spacing.md,
-  };
-
   const successTitleStyle: TextStyle = {
     fontFamily: theme.typography.fontFamily.header,
     fontSize: theme.typography.fontSize.xl,
@@ -320,10 +313,9 @@ export function CreateOrbitScreen({
             autoCapitalize="sentences"
             autoCorrect={false}
             maxLength={50}
+            error={error}
             testID="orbit-name-input"
           />
-
-          {error != null && <Text style={errorStyle}>{error}</Text>}
 
           <Button
             title="Create"

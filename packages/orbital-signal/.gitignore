@@ -4,3 +4,12 @@ android/src/main/jniLibs/
 
 # Profile marker written by build:ios / build:ios:release (local only)
 rust-profile-ios.txt
+
+# No lockfile here on purpose (removed in #798). This package is a `file:`
+# dependency of the app root, so its one dependency (uniffi-bindgen-react-native)
+# resolves into the ROOT package-lock.json and `ubrn` runs from the root
+# node_modules/.bin. The old sub-lock was an orphan peer closure pinned at a
+# different react-native than the app, installed by nothing, audited by nothing,
+# and a Dependabot alert surface. Never run `npm install` in this directory.
+package-lock.json
+node_modules/

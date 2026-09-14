@@ -286,13 +286,23 @@ const fakeReplies = [
 // ---------------------------------------------------------------------------
 
 // Last renderer created by renderScreen(), unmounted in the global afterEach.
-// A renderer left mounted past its test leaks OrbitalSpinner's recursive
-// animation: the RN jest mock's startAnimatingNode fires an uncancellable 16ms
-// timer (stopAnimation is a no-op jest.fn()), so the spin chain outlives the
-// test and lands inside a later test's act() (CI: "Can't access .root on
-// unmounted test renderer") or after environment teardown. Unmounting inside
-// act() runs OrbitalSpinner's cleanup synchronously (alive.current = false),
-// so the final queued timer sees the flag and stops the chain.
+//
+// Assigned synchronously inside renderScreen's first act() callback rather than
+// after the awaits (#731), so a test that exceeds the 5000 ms timeout mid-flush
+// still leaves its renderer registered for teardown. Unmounting inside act()
+// runs component cleanups synchronously, which is what stops any recursive
+// Animated chain in the tree: the RN jest mock's startAnimatingNode fires an
+// uncancellable 16 ms timer and stopAnimation is a no-op jest.fn(), so an
+// `alive` ref flipped on unmount is the only brake.
+//
+// This does NOT contain the ~30-failure cascade that follows a timeout in CI
+// ("Can't access .root on unmounted test renderer"). That was measured: force
+// the first test to time out inside act and every later test still fails
+// identically, whether this afterEach unmounts or is disabled entirely. Once a
+// test is abandoned inside an async act(), React's act state is corrupted for
+// the rest of the file and every subsequent create() yields an already
+// unmounted root. The only lever the harness has is to not time out in the
+// first place — see the warm-up in beforeAll below.
 let currentRenderer: ReactTestRenderer | null = null;
 
 async function renderScreen(): Promise<ReactTestRenderer> {
@@ -308,12 +318,13 @@ async function renderScreen(): Promise<ReactTestRenderer> {
         }),
       ),
     );
+    // Register for teardown before the first await: see the note above.
+    currentRenderer = renderer;
   });
   // Flush pending microtasks (async effects from useEffect: loadThread/loadReplies)
   await act(async () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
   });
-  currentRenderer = renderer;
   return renderer;
 }
 
@@ -321,7 +332,7 @@ async function renderScreen(): Promise<ReactTestRenderer> {
 // Setup
 // ---------------------------------------------------------------------------
 
-beforeEach(() => {
+function applyDefaultMocks(): void {
   jest.clearAllMocks();
   mockSelectedMedia = [];
   mockBlockedSet = new Set<string>();
@@ -347,6 +358,26 @@ beforeEach(() => {
     syncStatus: 'synced',
   });
   mockUploadMediaBatch.mockResolvedValue(['media-id-1']);
+}
+
+// Pay the cold-render cost once, outside any test (#731). The first render of
+// this screen used to cost ~20x a warm one (measured: 147 ms vs 7-15 ms
+// locally; 9 ms with this warm-up in place), and under CI contention that
+// margin is what pushed the suite's first test past the 5000 ms default —
+// the trigger for every occurrence of this flake since 2026-07-22. It carries
+// its own generous timeout so the per-test default stays 5000 ms and a genuine
+// regression still fails loudly.
+beforeAll(async () => {
+  applyDefaultMocks();
+  const renderer = await renderScreen();
+  act(() => {
+    renderer.unmount();
+  });
+  currentRenderer = null;
+}, 15000);
+
+beforeEach(() => {
+  applyDefaultMocks();
 });
 
 afterEach(() => {

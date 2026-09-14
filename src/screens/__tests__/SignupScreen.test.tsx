@@ -8,7 +8,9 @@ import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'rea
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../../theme';
 import { SignupScreen } from '../SignupScreen';
-import { AuthError, NetworkError, ValidationError } from '../../services/api/errors';
+import { ApiError, AuthError, NetworkError, ValidationError } from '../../services/api/errors';
+import { PASSWORD_RULE_HINT } from '../../utils/validatePassword';
+import { RATE_LIMIT_MESSAGE } from '../../utils/errorMessages';
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -21,6 +23,8 @@ jest.mock('../../services/authService', () => ({
 jest.mock('../../services/crypto/inviteCrypto', () => ({
   formatInviteCode: jest.fn((s: string) => s.match(/.{1,4}/g)?.join('-') ?? s),
   stripInviteCode: jest.fn((s: string) => s.replace(/-/g, '').toUpperCase()),
+  hasV2InviteCodeLength: jest.fn((s: string) => s.length === 20),
+  V2_CODE_LENGTH: 20,
 }));
 
 jest.mock('../../components/OrbitalLoader', () => ({
@@ -125,7 +129,7 @@ describe('SignupScreen — validation', () => {
     act(() => {
       findByTestId(root, 'signup-username-input').props.onChangeText('alice');
       findByTestId(root, 'signup-email-input').props.onChangeText('notanemail');
-      findByTestId(root, 'signup-password-input').props.onChangeText('password123');
+      findByTestId(root, 'signup-password-input').props.onChangeText('StrongPass123');
       findByTestId(root, 'signup-invite-code-input').props.onChangeText('INVITE');
     });
 
@@ -160,6 +164,324 @@ describe('SignupScreen — validation', () => {
   });
 });
 
+describe('SignupScreen — field-level validation errors', () => {
+  it('shows the length rule message for a too-short password', async () => {
+    const renderer = renderSignupScreen();
+    const root = renderer.root;
+
+    act(() => {
+      findByTestId(root, 'signup-username-input').props.onChangeText('alice');
+      findByTestId(root, 'signup-email-input').props.onChangeText('alice@example.com');
+      findByTestId(root, 'signup-password-input').props.onChangeText('Short1Aa');
+      findByTestId(root, 'signup-invite-code-input').props.onChangeText('ABCDEFGHJKMNPQRSTVW0');
+    });
+
+    await act(async () => {
+      findByTestId(root, 'signup-submit-button').props.onPress();
+    });
+
+    expect(findByTestId(root, 'signup-password-input-error').props.children).toBe(
+      'Password must be at least 12 characters',
+    );
+    expect(mockSignupUser).not.toHaveBeenCalled();
+  });
+
+  it('shows the uppercase rule message when the password has no uppercase letter', async () => {
+    const renderer = renderSignupScreen();
+    const root = renderer.root;
+
+    act(() => {
+      findByTestId(root, 'signup-username-input').props.onChangeText('alice');
+      findByTestId(root, 'signup-email-input').props.onChangeText('alice@example.com');
+      findByTestId(root, 'signup-password-input').props.onChangeText('nouppercase123');
+      findByTestId(root, 'signup-invite-code-input').props.onChangeText('ABCDEFGHJKMNPQRSTVW0');
+    });
+
+    await act(async () => {
+      findByTestId(root, 'signup-submit-button').props.onPress();
+    });
+
+    expect(findByTestId(root, 'signup-password-input-error').props.children).toBe(
+      'Password must contain at least one uppercase letter',
+    );
+    expect(mockSignupUser).not.toHaveBeenCalled();
+  });
+
+  it('shows the number rule message when the password has no digit', async () => {
+    const renderer = renderSignupScreen();
+    const root = renderer.root;
+
+    act(() => {
+      findByTestId(root, 'signup-username-input').props.onChangeText('alice');
+      findByTestId(root, 'signup-email-input').props.onChangeText('alice@example.com');
+      findByTestId(root, 'signup-password-input').props.onChangeText('NoNumbersHereAtAll');
+      findByTestId(root, 'signup-invite-code-input').props.onChangeText('ABCDEFGHJKMNPQRSTVW0');
+    });
+
+    await act(async () => {
+      findByTestId(root, 'signup-submit-button').props.onPress();
+    });
+
+    expect(findByTestId(root, 'signup-password-input-error').props.children).toBe(
+      'Password must contain at least one number',
+    );
+    expect(mockSignupUser).not.toHaveBeenCalled();
+  });
+
+  it('shows the length rule message for a too-short username', async () => {
+    const renderer = renderSignupScreen();
+    const root = renderer.root;
+
+    act(() => {
+      findByTestId(root, 'signup-username-input').props.onChangeText('ab');
+      findByTestId(root, 'signup-email-input').props.onChangeText('alice@example.com');
+      findByTestId(root, 'signup-password-input').props.onChangeText('StrongPass123');
+      findByTestId(root, 'signup-invite-code-input').props.onChangeText('ABCDEFGHJKMNPQRSTVW0');
+    });
+
+    await act(async () => {
+      findByTestId(root, 'signup-submit-button').props.onPress();
+    });
+
+    expect(findByTestId(root, 'signup-username-input-error').props.children).toBe(
+      'Username must be between 3 and 50 characters',
+    );
+    expect(mockSignupUser).not.toHaveBeenCalled();
+  });
+
+  it('shows the character-set rule message for a username with a space', async () => {
+    const renderer = renderSignupScreen();
+    const root = renderer.root;
+
+    act(() => {
+      findByTestId(root, 'signup-username-input').props.onChangeText('bad name');
+      findByTestId(root, 'signup-email-input').props.onChangeText('alice@example.com');
+      findByTestId(root, 'signup-password-input').props.onChangeText('StrongPass123');
+      findByTestId(root, 'signup-invite-code-input').props.onChangeText('ABCDEFGHJKMNPQRSTVW0');
+    });
+
+    await act(async () => {
+      findByTestId(root, 'signup-submit-button').props.onPress();
+    });
+
+    expect(findByTestId(root, 'signup-username-input-error').props.children).toBe(
+      'Username can only contain letters, numbers, and underscores',
+    );
+    expect(mockSignupUser).not.toHaveBeenCalled();
+  });
+
+  it('shows the invite code format message for a 19-character code', async () => {
+    const renderer = renderSignupScreen();
+    const root = renderer.root;
+
+    act(() => {
+      findByTestId(root, 'signup-username-input').props.onChangeText('alice');
+      findByTestId(root, 'signup-email-input').props.onChangeText('alice@example.com');
+      findByTestId(root, 'signup-password-input').props.onChangeText('StrongPass123');
+      findByTestId(root, 'signup-invite-code-input').props.onChangeText('ABCDEFGHJKMNPQRSTVW');
+    });
+
+    await act(async () => {
+      findByTestId(root, 'signup-submit-button').props.onPress();
+    });
+
+    expect(findByTestId(root, 'signup-invite-code-input-error').props.children).toBe(
+      'Invalid invite code format — must be a 20-character v2 code',
+    );
+    expect(mockSignupUser).not.toHaveBeenCalled();
+  });
+
+  it('shows the persistent password rule hint on mount', () => {
+    const renderer = renderSignupScreen();
+    const root = renderer.root;
+
+    expect(findByTestId(root, 'signup-password-input-helper').props.children).toBe(
+      PASSWORD_RULE_HINT,
+    );
+  });
+
+  it('clears the password field error when the password is edited', async () => {
+    const renderer = renderSignupScreen();
+    const root = renderer.root;
+
+    act(() => {
+      findByTestId(root, 'signup-username-input').props.onChangeText('alice');
+      findByTestId(root, 'signup-email-input').props.onChangeText('alice@example.com');
+      findByTestId(root, 'signup-password-input').props.onChangeText('Short1Aa');
+      findByTestId(root, 'signup-invite-code-input').props.onChangeText('ABCDEFGHJKMNPQRSTVW0');
+    });
+
+    await act(async () => {
+      findByTestId(root, 'signup-submit-button').props.onPress();
+    });
+
+    expect(() => findByTestId(root, 'signup-password-input-error')).not.toThrow();
+
+    act(() => {
+      findByTestId(root, 'signup-password-input').props.onChangeText('StrongPass123');
+    });
+
+    expect(() => findByTestId(root, 'signup-password-input-error')).toThrow();
+  });
+
+  it('clears the username field error when the username is edited', async () => {
+    const renderer = renderSignupScreen();
+    const root = renderer.root;
+
+    act(() => {
+      findByTestId(root, 'signup-username-input').props.onChangeText('ab');
+      findByTestId(root, 'signup-email-input').props.onChangeText('alice@example.com');
+      findByTestId(root, 'signup-password-input').props.onChangeText('StrongPass123');
+      findByTestId(root, 'signup-invite-code-input').props.onChangeText('ABCDEFGHJKMNPQRSTVW0');
+    });
+
+    await act(async () => {
+      findByTestId(root, 'signup-submit-button').props.onPress();
+    });
+
+    expect(() => findByTestId(root, 'signup-username-input-error')).not.toThrow();
+
+    act(() => {
+      findByTestId(root, 'signup-username-input').props.onChangeText('alice');
+    });
+
+    expect(() => findByTestId(root, 'signup-username-input-error')).toThrow();
+  });
+
+  it('clears the invite code field error when a valid code is typed', async () => {
+    const renderer = renderSignupScreen();
+    const root = renderer.root;
+
+    act(() => {
+      findByTestId(root, 'signup-username-input').props.onChangeText('alice');
+      findByTestId(root, 'signup-email-input').props.onChangeText('alice@example.com');
+      findByTestId(root, 'signup-password-input').props.onChangeText('StrongPass123');
+      findByTestId(root, 'signup-invite-code-input').props.onChangeText('ABCDEFGHJKMNPQRSTVW');
+    });
+
+    await act(async () => {
+      findByTestId(root, 'signup-submit-button').props.onPress();
+    });
+
+    expect(() => findByTestId(root, 'signup-invite-code-input-error')).not.toThrow();
+
+    act(() => {
+      findByTestId(root, 'signup-invite-code-input').props.onChangeText('ABCDEFGHJKMNPQRSTVW0');
+    });
+
+    expect(() => findByTestId(root, 'signup-invite-code-input-error')).toThrow();
+  });
+
+  it('shows the length rule message for a 51-character username', async () => {
+    const renderer = renderSignupScreen();
+    const root = renderer.root;
+
+    act(() => {
+      findByTestId(root, 'signup-username-input').props.onChangeText('a'.repeat(51));
+      findByTestId(root, 'signup-email-input').props.onChangeText('alice@example.com');
+      findByTestId(root, 'signup-password-input').props.onChangeText('StrongPass123');
+      findByTestId(root, 'signup-invite-code-input').props.onChangeText('ABCDEFGHJKMNPQRSTVW0');
+    });
+
+    await act(async () => {
+      findByTestId(root, 'signup-submit-button').props.onPress();
+    });
+
+    expect(findByTestId(root, 'signup-username-input-error').props.children).toBe(
+      'Username must be between 3 and 50 characters',
+    );
+    expect(mockSignupUser).not.toHaveBeenCalled();
+  });
+
+  it('shows the lowercase rule message when the password has no lowercase letter', async () => {
+    const renderer = renderSignupScreen();
+    const root = renderer.root;
+
+    act(() => {
+      findByTestId(root, 'signup-username-input').props.onChangeText('alice');
+      findByTestId(root, 'signup-email-input').props.onChangeText('alice@example.com');
+      findByTestId(root, 'signup-password-input').props.onChangeText('ALLUPPER12345678');
+      findByTestId(root, 'signup-invite-code-input').props.onChangeText('ABCDEFGHJKMNPQRSTVW0');
+    });
+
+    await act(async () => {
+      findByTestId(root, 'signup-submit-button').props.onPress();
+    });
+
+    expect(findByTestId(root, 'signup-password-input-error').props.children).toBe(
+      'Password must contain at least one lowercase letter',
+    );
+    expect(mockSignupUser).not.toHaveBeenCalled();
+  });
+
+  it('clears the stale email banner and shows the password field error on a second submit, without ever calling signupUser', async () => {
+    const renderer = renderSignupScreen();
+    const root = renderer.root;
+
+    act(() => {
+      findByTestId(root, 'signup-username-input').props.onChangeText('alice');
+      findByTestId(root, 'signup-email-input').props.onChangeText('notanemail');
+      findByTestId(root, 'signup-password-input').props.onChangeText('short');
+      findByTestId(root, 'signup-invite-code-input').props.onChangeText('ABCDEFGHJKMNPQRSTVW0');
+    });
+
+    await act(async () => {
+      findByTestId(root, 'signup-submit-button').props.onPress();
+    });
+
+    const findEmailBanner = () =>
+      root
+        .findAllByType('Text' as unknown as React.ComponentType)
+        .find(
+          (node) =>
+            typeof node.props.children === 'string' &&
+            node.props.children === 'Please enter a valid email address',
+        );
+
+    expect(findEmailBanner()).toBeDefined();
+
+    act(() => {
+      findByTestId(root, 'signup-email-input').props.onChangeText('alice@example.com');
+    });
+
+    await act(async () => {
+      findByTestId(root, 'signup-submit-button').props.onPress();
+    });
+
+    expect(findEmailBanner()).toBeUndefined();
+    expect(findByTestId(root, 'signup-password-input-error').props.children).toBe(
+      'Password must be at least 12 characters',
+    );
+    expect(mockSignupUser).not.toHaveBeenCalled();
+  });
+
+  it('surfaces the email guard on the banner ahead of the password field error', async () => {
+    const renderer = renderSignupScreen();
+    const root = renderer.root;
+
+    act(() => {
+      findByTestId(root, 'signup-username-input').props.onChangeText('alice');
+      findByTestId(root, 'signup-email-input').props.onChangeText('notanemail');
+      findByTestId(root, 'signup-password-input').props.onChangeText('short');
+      findByTestId(root, 'signup-invite-code-input').props.onChangeText('ABCDEFGHJKMNPQRSTVW0');
+    });
+
+    await act(async () => {
+      findByTestId(root, 'signup-submit-button').props.onPress();
+    });
+
+    const allText = root.findAllByType('Text' as unknown as React.ComponentType);
+    const errorText = allText.find(
+      (node) =>
+        typeof node.props.children === 'string' &&
+        node.props.children === 'Please enter a valid email address',
+    );
+    expect(errorText).toBeDefined();
+    expect(() => findByTestId(root, 'signup-password-input-error')).toThrow();
+    expect(mockSignupUser).not.toHaveBeenCalled();
+  });
+});
+
 describe('SignupScreen — submission', () => {
   it('calls signupUser with stripped invite code on valid submission', async () => {
     mockSignupUser.mockResolvedValue(undefined);
@@ -169,7 +491,7 @@ describe('SignupScreen — submission', () => {
     act(() => {
       findByTestId(root, 'signup-username-input').props.onChangeText('alice');
       findByTestId(root, 'signup-email-input').props.onChangeText('alice@example.com');
-      findByTestId(root, 'signup-password-input').props.onChangeText('password123');
+      findByTestId(root, 'signup-password-input').props.onChangeText('StrongPass123');
     });
 
     // Simulate typing a v2 invite code — the handler auto-formats it
@@ -189,7 +511,7 @@ describe('SignupScreen — submission', () => {
     // stripInviteCode removes dashes and uppercases
     expect(mockSignupUser).toHaveBeenCalledWith(
       'alice',
-      'password123',
+      'StrongPass123',
       'alice@example.com',
       'ABCDEFGHJKMNPQRSTVW0',
     );
@@ -201,8 +523,8 @@ describe('SignupScreen — error handling', () => {
     act(() => {
       findByTestId(root, 'signup-username-input').props.onChangeText('alice');
       findByTestId(root, 'signup-email-input').props.onChangeText('alice@example.com');
-      findByTestId(root, 'signup-password-input').props.onChangeText('password123');
-      findByTestId(root, 'signup-invite-code-input').props.onChangeText('INVITE');
+      findByTestId(root, 'signup-password-input').props.onChangeText('StrongPass123');
+      findByTestId(root, 'signup-invite-code-input').props.onChangeText('ABCDEFGHJKMNPQRSTVW0');
       findCheckbox(root).props.onPress();
     });
   }
@@ -280,6 +602,27 @@ describe('SignupScreen — error handling', () => {
       (node) =>
         typeof node.props.children === 'string' &&
         node.props.children.toLowerCase().includes('server error'),
+    );
+    expect(errorText).toBeDefined();
+  });
+
+  it('shows a rate-limit message on RATE_LIMITED ApiError', async () => {
+    mockSignupUser.mockRejectedValue(
+      new ApiError('Too many requests', 429, 'RATE_LIMITED', false),
+    );
+    const renderer = renderSignupScreen();
+    const root = renderer.root;
+    fillValidFields(root);
+
+    await act(async () => {
+      findByTestId(root, 'signup-submit-button').props.onPress();
+    });
+
+    const allText = root.findAllByType('Text' as unknown as React.ComponentType);
+    const errorText = allText.find(
+      (node) =>
+        typeof node.props.children === 'string' &&
+        node.props.children === RATE_LIMIT_MESSAGE,
     );
     expect(errorText).toBeDefined();
   });

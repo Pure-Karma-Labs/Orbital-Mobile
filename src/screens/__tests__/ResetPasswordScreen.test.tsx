@@ -8,6 +8,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../../theme';
 import { ResetPasswordScreen } from '../ResetPasswordScreen';
 import { ApiError, NetworkError, ValidationError } from '../../services/api/errors';
+import { PASSWORD_RULE_HINT } from '../../utils/validatePassword';
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -177,13 +178,9 @@ describe('ResetPasswordScreen — validation', () => {
       findByTestId(root, 'reset-submit-button').props.onPress();
     });
 
-    const allText = root.findAllByType('Text' as unknown as React.ComponentType);
-    const errorText = allText.find(
-      (node) =>
-        typeof node.props.children === 'string' &&
-        node.props.children.includes('8 characters'),
+    expect(findByTestId(root, 'reset-code-input-error').props.children).toBe(
+      'Reset code must be 8 characters',
     );
-    expect(errorText).toBeDefined();
     expect(mockResetPassword).not.toHaveBeenCalled();
   });
 
@@ -225,13 +222,59 @@ describe('ResetPasswordScreen — validation', () => {
       findByTestId(root, 'reset-submit-button').props.onPress();
     });
 
-    const allText = root.findAllByType('Text' as unknown as React.ComponentType);
-    const errorText = allText.find(
-      (node) =>
-        typeof node.props.children === 'string' &&
-        node.props.children.toLowerCase().includes('12 characters'),
+    expect(findByTestId(root, 'reset-new-password-input-error').props.children).toBe(
+      'Password must be at least 12 characters',
     );
-    expect(errorText).toBeDefined();
+    expect(mockResetPassword).not.toHaveBeenCalled();
+  });
+
+  it('shows the persistent password rule hint on mount', () => {
+    const renderer = renderResetPasswordScreen();
+    const root = renderer.root;
+
+    expect(findByTestId(root, 'reset-new-password-input-helper').props.children).toBe(
+      PASSWORD_RULE_HINT,
+    );
+  });
+
+  it('clears the stale mismatch banner and shows the password field error on a second submit, without ever calling resetPassword', async () => {
+    const renderer = renderResetPasswordScreen();
+    const root = renderer.root;
+
+    act(() => {
+      findByTestId(root, 'reset-code-input').props.onChangeText('ABCD1234');
+      findByTestId(root, 'reset-new-password-input').props.onChangeText('NewPassword123');
+      findByTestId(root, 'reset-confirm-password-input').props.onChangeText('DifferentPass1');
+    });
+
+    await act(async () => {
+      findByTestId(root, 'reset-submit-button').props.onPress();
+    });
+
+    const findMismatchBanner = () =>
+      root
+        .findAllByType('Text' as unknown as React.ComponentType)
+        .find(
+          (node) =>
+            typeof node.props.children === 'string' &&
+            node.props.children === 'Passwords do not match',
+        );
+
+    expect(findMismatchBanner()).toBeDefined();
+
+    act(() => {
+      findByTestId(root, 'reset-new-password-input').props.onChangeText('short');
+      findByTestId(root, 'reset-confirm-password-input').props.onChangeText('short');
+    });
+
+    await act(async () => {
+      findByTestId(root, 'reset-submit-button').props.onPress();
+    });
+
+    expect(findMismatchBanner()).toBeUndefined();
+    expect(findByTestId(root, 'reset-new-password-input-error').props.children).toBe(
+      'Password must be at least 12 characters',
+    );
     expect(mockResetPassword).not.toHaveBeenCalled();
   });
 });
@@ -304,13 +347,32 @@ describe('ResetPasswordScreen — error handling', () => {
       findByTestId(root, 'reset-submit-button').props.onPress();
     });
 
-    const allText = root.findAllByType('Text' as unknown as React.ComponentType);
-    const errorText = allText.find(
-      (node) =>
-        typeof node.props.children === 'string' &&
-        node.props.children.includes('Invalid or expired code'),
+    expect(findByTestId(root, 'reset-code-input-error').props.children).toBe(
+      'Invalid or expired code',
     );
-    expect(errorText).toBeDefined();
+  });
+
+  it('clears the code field error when the code is edited', async () => {
+    const renderer = renderResetPasswordScreen();
+    const root = renderer.root;
+
+    act(() => {
+      findByTestId(root, 'reset-code-input').props.onChangeText('ABC');
+      findByTestId(root, 'reset-new-password-input').props.onChangeText('NewPassword123');
+      findByTestId(root, 'reset-confirm-password-input').props.onChangeText('NewPassword123');
+    });
+
+    await act(async () => {
+      findByTestId(root, 'reset-submit-button').props.onPress();
+    });
+
+    expect(() => findByTestId(root, 'reset-code-input-error')).not.toThrow();
+
+    act(() => {
+      findByTestId(root, 'reset-code-input').props.onChangeText('ABCD1234');
+    });
+
+    expect(() => findByTestId(root, 'reset-code-input-error')).toThrow();
   });
 
   it('shows network error message on NetworkError', async () => {

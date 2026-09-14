@@ -7,10 +7,19 @@ import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'rea
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../../theme';
 import { CreateOrbitScreen } from '../CreateOrbitScreen';
+import { ApiError, NetworkError } from '../../services/api/errors';
+import { RATE_LIMIT_MESSAGE } from '../../utils/errorMessages';
 
 // ---------------------------------------------------------------------------
 // Module mocks
 // ---------------------------------------------------------------------------
+
+jest.mock('@sentry/react-native', () => ({
+  captureException: jest.fn(),
+  addBreadcrumb: jest.fn(),
+  setUser: jest.fn(),
+  wrap: (c: unknown) => c,
+}));
 
 jest.mock('../../services/conversationService', () => ({
   createOrbit: jest.fn(),
@@ -26,8 +35,10 @@ jest.mock('../../components/OrbitalSpinner', () => ({
 }));
 
 import { createOrbit, createInviteCode } from '../../services/conversationService';
+import * as Sentry from '@sentry/react-native';
 const mockCreateOrbit = createOrbit as jest.Mock;
 const mockCreateInviteCode = createInviteCode as jest.Mock;
+const mockCaptureException = Sentry.captureException as unknown as jest.Mock;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -89,6 +100,15 @@ function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstanc
   const found = root.findAll((node) => node.props.testID === testID);
   if (found.length === 0) throw new Error(`No element with testID "${testID}"`);
   return found[0];
+}
+
+function findTextWithChildren(
+  root: ReactTestInstance,
+  children: string,
+): ReactTestInstance | undefined {
+  return root
+    .findAllByType('Text' as unknown as React.ComponentType)
+    .find((node) => node.props.children === children);
 }
 
 // ---------------------------------------------------------------------------
@@ -263,10 +283,91 @@ describe('CreateOrbitScreen — invite generation', () => {
 
     expect(mockNavigation.goBack).toHaveBeenCalledTimes(1);
   });
+
+  it('shows the NetworkError message on the invite banner when createInviteCode fails', async () => {
+    mockCreateOrbit.mockResolvedValue({ groupId: 'g-1' });
+    const netErr = new NetworkError('No connection');
+    mockCreateInviteCode.mockRejectedValue(netErr);
+
+    const renderer = renderScreen();
+
+    act(() => {
+      findByTestId(renderer.root, 'orbit-name-input').props.onChangeText('Family Orbit');
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'create-orbit-button').props.onPress();
+    });
+
+    act(() => {
+      findByTestId(renderer.root, 'invite-email-input').props.onChangeText('member@example.com');
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'generate-invite-button').props.onPress();
+    });
+
+    expect(findTextWithChildren(renderer.root, netErr.message)).toBeDefined();
+  });
+
+  it('shows RATE_LIMIT_MESSAGE on the invite banner for a RATE_LIMITED ApiError from createInviteCode', async () => {
+    mockCreateOrbit.mockResolvedValue({ groupId: 'g-1' });
+    mockCreateInviteCode.mockRejectedValue(
+      new ApiError('Too many requests', 429, 'RATE_LIMITED', false),
+    );
+
+    const renderer = renderScreen();
+
+    act(() => {
+      findByTestId(renderer.root, 'orbit-name-input').props.onChangeText('Family Orbit');
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'create-orbit-button').props.onPress();
+    });
+
+    act(() => {
+      findByTestId(renderer.root, 'invite-email-input').props.onChangeText('member@example.com');
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'generate-invite-button').props.onPress();
+    });
+
+    expect(findTextWithChildren(renderer.root, RATE_LIMIT_MESSAGE)).toBeDefined();
+  });
+
+  it('shows the generic invite-failure copy for an unrecognized error, and never the raw server message', async () => {
+    mockCreateOrbit.mockResolvedValue({ groupId: 'g-1' });
+    mockCreateInviteCode.mockRejectedValue(new Error('boom'));
+
+    const renderer = renderScreen();
+
+    act(() => {
+      findByTestId(renderer.root, 'orbit-name-input').props.onChangeText('Family Orbit');
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'create-orbit-button').props.onPress();
+    });
+
+    act(() => {
+      findByTestId(renderer.root, 'invite-email-input').props.onChangeText('member@example.com');
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'generate-invite-button').props.onPress();
+    });
+
+    expect(
+      findTextWithChildren(renderer.root, 'Failed to generate invite code. Please try again.'),
+    ).toBeDefined();
+    expect(findTextWithChildren(renderer.root, 'boom')).toBeUndefined();
+  });
 });
 
 describe('CreateOrbitScreen — error handling', () => {
-  it('shows error message on creation failure', async () => {
+  it('shows a generic banner on creation failure, never the field error node, never the raw server message, and reports to Sentry', async () => {
     mockCreateOrbit.mockRejectedValue(new Error('Server error'));
     const renderer = renderScreen();
 
@@ -278,13 +379,70 @@ describe('CreateOrbitScreen — error handling', () => {
       findByTestId(renderer.root, 'create-orbit-button').props.onPress();
     });
 
-    const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
-    const errorText = allText.find(
-      (node) =>
-        typeof node.props.children === 'string' &&
-        node.props.children === 'Server error',
+    expect(findTextWithChildren(renderer.root, 'Could not create orbit — please try again')).toBeDefined();
+    expect(() => findByTestId(renderer.root, 'orbit-name-input-error')).toThrow();
+    expect(findTextWithChildren(renderer.root, 'Server error')).toBeUndefined();
+
+    expect(mockCaptureException).toHaveBeenCalledTimes(1);
+    const [reportedError, context] = mockCaptureException.mock.calls[0];
+    expect(reportedError).toBeInstanceOf(Error);
+    expect((context as { tags: { feature: string } }).tags.feature).toBe('orbit-create');
+  });
+
+  it('shows the NetworkError message on the banner, without reporting to Sentry', async () => {
+    const netErr = new NetworkError('No connection');
+    mockCreateOrbit.mockRejectedValue(netErr);
+    const renderer = renderScreen();
+
+    act(() => {
+      findByTestId(renderer.root, 'orbit-name-input').props.onChangeText('My Orbit');
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'create-orbit-button').props.onPress();
+    });
+
+    expect(findTextWithChildren(renderer.root, netErr.message)).toBeDefined();
+    expect(mockCaptureException).not.toHaveBeenCalled();
+  });
+
+  it('shows RATE_LIMIT_MESSAGE on the banner for a RATE_LIMITED ApiError, without reporting to Sentry', async () => {
+    mockCreateOrbit.mockRejectedValue(
+      new ApiError('Too many requests', 429, 'RATE_LIMITED', false),
     );
-    expect(errorText).toBeDefined();
+    const renderer = renderScreen();
+
+    act(() => {
+      findByTestId(renderer.root, 'orbit-name-input').props.onChangeText('My Orbit');
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'create-orbit-button').props.onPress();
+    });
+
+    expect(findTextWithChildren(renderer.root, RATE_LIMIT_MESSAGE)).toBeDefined();
+    expect(mockCaptureException).not.toHaveBeenCalled();
+  });
+
+  it('clears the banner when the orbit name is edited after a failure', async () => {
+    mockCreateOrbit.mockRejectedValue(new Error('Server error'));
+    const renderer = renderScreen();
+
+    act(() => {
+      findByTestId(renderer.root, 'orbit-name-input').props.onChangeText('My Orbit');
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'create-orbit-button').props.onPress();
+    });
+
+    expect(findTextWithChildren(renderer.root, 'Could not create orbit — please try again')).toBeDefined();
+
+    act(() => {
+      findByTestId(renderer.root, 'orbit-name-input').props.onChangeText('My Orbit 2');
+    });
+
+    expect(findTextWithChildren(renderer.root, 'Could not create orbit — please try again')).toBeUndefined();
   });
 });
 

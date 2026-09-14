@@ -19,10 +19,14 @@ import { useTheme } from '../theme';
 import { TextInput } from '../components/TextInput';
 import { Button } from '../components/Button';
 import { EmojiText } from '../components/EmojiText';
+import { ErrorBanner } from '../components/ErrorBanner';
 import { Header } from '../components/Header';
 import { OrbitalKeyboardAvoidingView } from '../components/OrbitalKeyboardAvoidingView';
 import { createOrbit, createInviteCode } from '../services/conversationService';
+import { ApiError, NetworkError } from '../services/api/errors';
+import * as Sentry from '@sentry/react-native';
 import { formatInviteCode } from '../services/crypto/inviteCrypto';
+import { RATE_LIMIT_MESSAGE } from '../utils/errorMessages';
 import type { ThreadsStackParamList } from '../navigation/types';
 
 // ---------------------------------------------------------------------------
@@ -46,7 +50,13 @@ export function CreateOrbitScreen({
 
   const [name, setName] = useState('');
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // Banner only, deliberately: nothing the server can answer here is a verdict
+  // on the orbit name. The name is encrypted client-side and never validated by
+  // POST /groups — a 400 from that route means a malformed envelope or group id
+  // (a client bug), not a bad name — and the 1-50 character rule is enforced by
+  // `isValid` disabling the button. So no failure may render as a red border on
+  // the field.
+  const [bannerError, setBannerError] = useState<string | null>(null);
   const [createdGroupId, setCreatedGroupId] = useState<string | null>(null);
   const [createdName, setCreatedName] = useState('');
   const [email, setEmail] = useState('');
@@ -57,20 +67,42 @@ export function CreateOrbitScreen({
   const trimmedName = name.trim();
   const isValid = trimmedName.length >= 1 && trimmedName.length <= 50;
 
+  const handleNameChange = useCallback((text: string) => {
+    setName(text);
+    setBannerError(null);
+  }, []);
+
   const handleCreate = useCallback(async () => {
     if (!isValid || loading) {
       return;
     }
-    setError(null);
+    setBannerError(null);
     setLoading(true);
     try {
       const result = await createOrbit(trimmedName);
       setCreatedGroupId(result.groupId);
       setCreatedName(trimmedName);
     } catch (err) {
-      const message =
-        err instanceof Error ? err.message : 'Failed to create orbit';
-      setError(message);
+      if (err instanceof NetworkError) {
+        setBannerError(err.message);
+      } else if (err instanceof ApiError && err.code === 'RATE_LIMITED') {
+        setBannerError(RATE_LIMIT_MESSAGE);
+      } else {
+        // Never surface a raw error message: outside __DEV__ these are either
+        // hardcoded client copy or server internals. Report it — this branch
+        // also catches local crypto faults (identity key, group key wrap), and
+        // a permanent fault (#675 class) otherwise presents to the user as a
+        // transient retry prompt with no telemetry at all.
+        Sentry.captureException(err instanceof Error ? err : new Error(String(err)), {
+          tags: {
+            feature: 'orbit-create',
+            ...(err instanceof ApiError
+              ? { status: String(err.statusCode), api_code: err.code }
+              : {}),
+          },
+        });
+        setBannerError('Could not create orbit — please try again');
+      }
     } finally {
       setLoading(false);
     }
@@ -83,8 +115,18 @@ export function CreateOrbitScreen({
     try {
       const rawCode = await createInviteCode(createdGroupId, email.trim());
       setGeneratedCode(rawCode);
-    } catch {
-      setInviteError('Failed to generate invite code. Please try again.');
+    } catch (err) {
+      // Same split as handleCreate: no outcome here is a verdict on the email
+      // typed above (the server validates it only for shape), so everything
+      // lands on the banner — but transport and throttling still say what
+      // actually happened.
+      if (err instanceof NetworkError) {
+        setInviteError(err.message);
+      } else if (err instanceof ApiError && err.code === 'RATE_LIMITED') {
+        setInviteError(RATE_LIMIT_MESSAGE);
+      } else {
+        setInviteError('Failed to generate invite code. Please try again.');
+      }
     } finally {
       setGeneratingInvite(false);
     }
@@ -141,13 +183,6 @@ export function CreateOrbitScreen({
     paddingTop: theme.spacing.lg,
   };
 
-  const errorStyle: TextStyle = {
-    fontFamily: theme.typography.fontFamily.body,
-    fontSize: theme.typography.fontSize.sm,
-    color: theme.colors.error,
-    marginBottom: theme.spacing.md,
-  };
-
   const successTitleStyle: TextStyle = {
     fontFamily: theme.typography.fontFamily.header,
     fontSize: theme.typography.fontSize.xl,
@@ -194,13 +229,6 @@ export function CreateOrbitScreen({
     fontFamily: theme.typography.fontFamily.body,
     fontSize: theme.typography.fontSize.base,
     color: theme.colors.textPrimary,
-  };
-
-  const inviteErrorStyle: TextStyle = {
-    fontFamily: theme.typography.fontFamily.body,
-    fontSize: theme.typography.fontSize.sm,
-    color: theme.colors.error,
-    marginBottom: theme.spacing.md,
   };
 
   const warningStyle: TextStyle = {
@@ -280,9 +308,7 @@ export function CreateOrbitScreen({
               autoCorrect={false}
               testID="invite-email-input"
             />
-            {inviteError != null && (
-              <Text style={inviteErrorStyle}>{inviteError}</Text>
-            )}
+            <ErrorBanner message={inviteError} />
             <Button
               title={generatingInvite ? 'Generating...' : 'Generate Invite Code'}
               onPress={handleGenerateInvite}
@@ -316,14 +342,14 @@ export function CreateOrbitScreen({
           <TextInput
             label="Orbit Name"
             value={name}
-            onChangeText={setName}
+            onChangeText={handleNameChange}
             autoCapitalize="sentences"
             autoCorrect={false}
             maxLength={50}
             testID="orbit-name-input"
           />
 
-          {error != null && <Text style={errorStyle}>{error}</Text>}
+          <ErrorBanner message={bannerError} />
 
           <Button
             title="Create"

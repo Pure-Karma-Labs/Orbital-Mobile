@@ -17,7 +17,7 @@ import { TextInput, Button, ErrorBanner, OrbitalLoader, AsciiBanner } from '../c
 import { resetPassword } from '../services/authService';
 import { ApiError, NetworkError, ValidationError } from '../services/api/errors';
 import { maskEmail } from '../utils/maskEmail';
-import { validatePassword } from '../utils/validatePassword';
+import { validatePassword, PASSWORD_RULE_HINT } from '../utils/validatePassword';
 import type { OnPreAuthNavigate } from '../navigation/preAuthTypes';
 
 export interface ResetPasswordScreenProps {
@@ -36,14 +36,33 @@ export function ResetPasswordScreen({
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [newPasswordError, setNewPasswordError] = useState<string | null>(null);
+  const [codeError, setCodeError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
+  function handleCodeChange(text: string): void {
+    setCode(text);
+    setCodeError(null);
+  }
+
+  function handleNewPasswordChange(text: string): void {
+    setNewPassword(text);
+    setNewPasswordError(null);
+  }
+
   async function handleSubmit(): Promise<void> {
+    // Clear every error slot up front: a guard that returns early must never
+    // leave a now-false message from the previous submit on screen (a banner
+    // beside a fresh field error is exactly the misdiagnosis #777 removes).
+    setError(null);
+    setNewPasswordError(null);
+    setCodeError(null);
+
     // Normalize code: strip whitespace + hyphens, uppercase
     const normalizedCode = code.trim().replace(/[\s-]/g, '').toUpperCase();
 
     if (normalizedCode.length !== 8) {
-      setError('Reset code must be 8 characters');
+      setCodeError('Reset code must be 8 characters');
       return;
     }
 
@@ -54,11 +73,10 @@ export function ResetPasswordScreen({
 
     const passwordError = validatePassword(newPassword);
     if (passwordError !== null) {
-      setError(passwordError);
+      setNewPasswordError(passwordError);
       return;
     }
 
-    setError(null);
     setLoading(true);
     try {
       await resetPassword(email, normalizedCode, newPassword);
@@ -71,7 +89,10 @@ export function ResetPasswordScreen({
       if (e instanceof ApiError && e.code === 'RATE_LIMITED') {
         setError('Too many attempts — please request a new code');
       } else if (e instanceof ValidationError) {
-        setError('Invalid or expired code. Please try again or request a new code.');
+        // The only server outcome attributable to a field on this screen: the
+        // password already passed the client rules, so a 400/422 here is the
+        // code. ("Didn't receive it?" below is the request-a-new-code path.)
+        setCodeError('Invalid or expired code');
       } else if (e instanceof NetworkError) {
         setError(e.message);
       } else {
@@ -151,22 +172,25 @@ export function ResetPasswordScreen({
           <TextInput
             label="Reset Code"
             value={code}
-            onChangeText={setCode}
+            onChangeText={handleCodeChange}
             autoCapitalize="characters"
             autoCorrect={false}
             textContentType="oneTimeCode"
             maxLength={12}
+            error={codeError}
             testID="reset-code-input"
           />
           <TextInput
             label="New Password"
             value={newPassword}
-            onChangeText={setNewPassword}
+            onChangeText={handleNewPasswordChange}
             secureTextEntry
             autoCapitalize="none"
             autoCorrect={false}
             textContentType="newPassword"
             maxLength={128}
+            helperText={PASSWORD_RULE_HINT}
+            error={newPasswordError}
             testID="reset-new-password-input"
           />
           <TextInput

@@ -8,6 +8,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../../theme';
 import { ForgotPasswordScreen } from '../ForgotPasswordScreen';
 import { ApiError, NetworkError } from '../../services/api/errors';
+import { RATE_LIMIT_MESSAGE } from '../../utils/errorMessages';
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -179,9 +180,7 @@ describe('ForgotPasswordScreen — error handling', () => {
 
     const allText = root.findAllByType('Text' as unknown as React.ComponentType);
     const errorText = allText.find(
-      (node) =>
-        typeof node.props.children === 'string' &&
-        node.props.children.includes('Too many attempts'),
+      (node) => node.props.children === RATE_LIMIT_MESSAGE,
     );
     expect(errorText).toBeDefined();
   });

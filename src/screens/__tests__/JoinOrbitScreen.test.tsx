@@ -7,10 +7,26 @@ import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'rea
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../../theme';
 import { JoinOrbitScreen } from '../JoinOrbitScreen';
+import {
+  ApiError,
+  AuthError,
+  ConflictError,
+  NetworkError,
+  NotFoundError,
+  ValidationError,
+} from '../../services/api/errors';
+import { RATE_LIMIT_MESSAGE } from '../../utils/errorMessages';
 
 // ---------------------------------------------------------------------------
 // Module mocks
 // ---------------------------------------------------------------------------
+
+jest.mock('@sentry/react-native', () => ({
+  captureException: jest.fn(),
+  addBreadcrumb: jest.fn(),
+  setUser: jest.fn(),
+  wrap: (c: unknown) => c,
+}));
 
 jest.mock('../../services/conversationService', () => ({
   joinOrbit: jest.fn(),
@@ -19,14 +35,22 @@ jest.mock('../../services/conversationService', () => ({
 jest.mock('../../services/crypto/inviteCrypto', () => ({
   stripInviteCode: jest.fn((s: string) => s.replace(/-/g, '').toUpperCase()),
   formatInviteCode: jest.fn((s: string) => s.match(/.{1,4}/g)?.join('-') ?? s),
+  hasV2InviteCodeLength: jest.fn((s: string) => s.length === 20),
+  V2_CODE_LENGTH: 20,
 }));
+
+// A code that survives the screen's own 20-character pre-flight, so tests
+// exercising the joinOrbit call (success or rejection) actually reach it.
+const VALID_CODE = 'ABCDEFGHJKMNPQRSTVW0';
 
 jest.mock('../../components/OrbitalSpinner', () => ({
   OrbitalSpinner: () => null,
 }));
 
 import { joinOrbit } from '../../services/conversationService';
+import * as Sentry from '@sentry/react-native';
 const mockJoinOrbit = joinOrbit as jest.Mock;
+const mockCaptureException = Sentry.captureException as unknown as jest.Mock;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -88,6 +112,15 @@ function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstanc
   const found = root.findAll((node) => node.props.testID === testID);
   if (found.length === 0) throw new Error(`No element with testID "${testID}"`);
   return found[0];
+}
+
+function findTextWithChildren(
+  root: ReactTestInstance,
+  children: string,
+): ReactTestInstance | undefined {
+  return root
+    .findAllByType('Text' as unknown as React.ComponentType)
+    .find((node) => node.props.children === children);
 }
 
 // ---------------------------------------------------------------------------
@@ -178,7 +211,7 @@ describe('JoinOrbitScreen — submission', () => {
     const renderer = renderScreen();
 
     act(() => {
-      findByTestId(renderer.root, 'invite-code-input').props.onChangeText('VALID1');
+      findByTestId(renderer.root, 'invite-code-input').props.onChangeText(VALID_CODE);
     });
 
     await act(async () => {
@@ -190,26 +223,226 @@ describe('JoinOrbitScreen — submission', () => {
 });
 
 describe('JoinOrbitScreen — error handling', () => {
-  it('shows error message on invalid or expired invite code', async () => {
-    mockJoinOrbit.mockRejectedValue(new Error('Not found'));
+  it('shows the NetworkError message on the banner, with no field error', async () => {
+    const netErr = new NetworkError('No connection');
+    mockJoinOrbit.mockRejectedValue(netErr);
     const renderer = renderScreen();
 
     act(() => {
-      findByTestId(renderer.root, 'invite-code-input').props.onChangeText('BADCODE');
+      findByTestId(renderer.root, 'invite-code-input').props.onChangeText(VALID_CODE);
     });
 
     await act(async () => {
       findByTestId(renderer.root, 'join-orbit-button').props.onPress();
     });
 
-    const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
-    const errorText = allText.find(
-      (node) =>
-        typeof node.props.children === 'string' &&
-        node.props.children.toLowerCase().includes('invalid'),
-    );
-    expect(errorText).toBeDefined();
+    expect(findTextWithChildren(renderer.root, netErr.message)).toBeDefined();
+    expect(() => findByTestId(renderer.root, 'invite-code-input-error')).toThrow();
     expect(mockNavigation.goBack).not.toHaveBeenCalled();
+    expect(mockCaptureException).not.toHaveBeenCalled();
+  });
+
+  it('shows RATE_LIMIT_MESSAGE on the banner for a RATE_LIMITED ApiError, with no field error', async () => {
+    mockJoinOrbit.mockRejectedValue(
+      new ApiError('Too many requests', 429, 'RATE_LIMITED', false),
+    );
+    const renderer = renderScreen();
+
+    act(() => {
+      findByTestId(renderer.root, 'invite-code-input').props.onChangeText(VALID_CODE);
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'join-orbit-button').props.onPress();
+    });
+
+    expect(findTextWithChildren(renderer.root, RATE_LIMIT_MESSAGE)).toBeDefined();
+    expect(() => findByTestId(renderer.root, 'invite-code-input-error')).toThrow();
+  });
+
+  it('shows the field error for a ValidationError', async () => {
+    mockJoinOrbit.mockRejectedValue(new ValidationError(400, 'used'));
+    const renderer = renderScreen();
+
+    act(() => {
+      findByTestId(renderer.root, 'invite-code-input').props.onChangeText(VALID_CODE);
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'join-orbit-button').props.onPress();
+    });
+
+    expect(findByTestId(renderer.root, 'invite-code-input-error').props.children).toBe(
+      'Invalid or expired invite code',
+    );
+    expect(mockNavigation.goBack).not.toHaveBeenCalled();
+    expect(mockCaptureException).not.toHaveBeenCalled();
+  });
+
+  it('shows the field error for a NotFoundError', async () => {
+    mockJoinOrbit.mockRejectedValue(new NotFoundError());
+    const renderer = renderScreen();
+
+    act(() => {
+      findByTestId(renderer.root, 'invite-code-input').props.onChangeText(VALID_CODE);
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'join-orbit-button').props.onPress();
+    });
+
+    expect(findByTestId(renderer.root, 'invite-code-input-error').props.children).toBe(
+      'Invalid or expired invite code',
+    );
+    expect(mockNavigation.goBack).not.toHaveBeenCalled();
+  });
+
+  it('shows the already-a-member banner for a ConflictError, with no field error', async () => {
+    mockJoinOrbit.mockRejectedValue(new ConflictError());
+    const renderer = renderScreen();
+
+    act(() => {
+      findByTestId(renderer.root, 'invite-code-input').props.onChangeText(VALID_CODE);
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'join-orbit-button').props.onPress();
+    });
+
+    expect(
+      findTextWithChildren(renderer.root, 'You are already a member of this orbit'),
+    ).toBeDefined();
+    expect(() => findByTestId(renderer.root, 'invite-code-input-error')).toThrow();
+  });
+
+  it('shows a generic banner for an unrecognized error, with no field error and no raw message, and reports to Sentry', async () => {
+    const err = new Error('boom');
+    mockJoinOrbit.mockRejectedValue(err);
+    const renderer = renderScreen();
+
+    act(() => {
+      findByTestId(renderer.root, 'invite-code-input').props.onChangeText(VALID_CODE);
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'join-orbit-button').props.onPress();
+    });
+
+    expect(
+      findTextWithChildren(renderer.root, 'Could not join orbit — please try again'),
+    ).toBeDefined();
+    expect(() => findByTestId(renderer.root, 'invite-code-input-error')).toThrow();
+    expect(findTextWithChildren(renderer.root, 'boom')).toBeUndefined();
+
+    expect(mockCaptureException).toHaveBeenCalledTimes(1);
+    const [reportedError, context] = mockCaptureException.mock.calls[0];
+    expect(reportedError).toBeInstanceOf(Error);
+    expect((context as { tags: { feature: string } }).tags.feature).toBe('orbit-join');
+  });
+
+  it('shows the email-mismatch banner for a 403 AuthError, with no field error', async () => {
+    mockJoinOrbit.mockRejectedValue(new AuthError(403, 'email mismatch'));
+    const renderer = renderScreen();
+
+    act(() => {
+      findByTestId(renderer.root, 'invite-code-input').props.onChangeText(VALID_CODE);
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'join-orbit-button').props.onPress();
+    });
+
+    expect(
+      findTextWithChildren(
+        renderer.root,
+        'This invite is not for this account — check you are signed in with the invited email',
+      ),
+    ).toBeDefined();
+    expect(() => findByTestId(renderer.root, 'invite-code-input-error')).toThrow();
+    expect(mockCaptureException).not.toHaveBeenCalled();
+  });
+
+  it('shows the generic banner for a 401 AuthError, proving the 403 branch is status-specific', async () => {
+    mockJoinOrbit.mockRejectedValue(new AuthError(401));
+    const renderer = renderScreen();
+
+    act(() => {
+      findByTestId(renderer.root, 'invite-code-input').props.onChangeText(VALID_CODE);
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'join-orbit-button').props.onPress();
+    });
+
+    expect(
+      findTextWithChildren(renderer.root, 'Could not join orbit — please try again'),
+    ).toBeDefined();
+  });
+
+  it('rejects a 19-character code at the pre-flight without calling joinOrbit', async () => {
+    const renderer = renderScreen();
+
+    act(() => {
+      findByTestId(renderer.root, 'invite-code-input').props.onChangeText(
+        'ABCDEFGHJKMNPQRSTVW',
+      );
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'join-orbit-button').props.onPress();
+    });
+
+    expect(findByTestId(renderer.root, 'invite-code-input-error').props.children).toBe(
+      'Invalid invite code format — must be a 20-character v2 code',
+    );
+    expect(mockJoinOrbit).not.toHaveBeenCalled();
+  });
+
+  it('clears the field error when the code is edited', async () => {
+    mockJoinOrbit.mockRejectedValue(new ValidationError(400, 'used'));
+    const renderer = renderScreen();
+
+    act(() => {
+      findByTestId(renderer.root, 'invite-code-input').props.onChangeText(VALID_CODE);
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'join-orbit-button').props.onPress();
+    });
+
+    expect(() => findByTestId(renderer.root, 'invite-code-input-error')).not.toThrow();
+
+    act(() => {
+      findByTestId(renderer.root, 'invite-code-input').props.onChangeText(
+        'ZYXWVUTSRQPNMKJHGFE1',
+      );
+    });
+
+    expect(() => findByTestId(renderer.root, 'invite-code-input-error')).toThrow();
+  });
+
+  it('clears the banner when the code is edited', async () => {
+    const netErr = new NetworkError('No connection');
+    mockJoinOrbit.mockRejectedValue(netErr);
+    const renderer = renderScreen();
+
+    act(() => {
+      findByTestId(renderer.root, 'invite-code-input').props.onChangeText(VALID_CODE);
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'join-orbit-button').props.onPress();
+    });
+
+    expect(findTextWithChildren(renderer.root, netErr.message)).toBeDefined();
+
+    act(() => {
+      findByTestId(renderer.root, 'invite-code-input').props.onChangeText(
+        'ZYXWVUTSRQPNMKJHGFE1',
+      );
+    });
+
+    expect(findTextWithChildren(renderer.root, netErr.message)).toBeUndefined();
   });
 });
 
@@ -219,7 +452,7 @@ describe('JoinOrbitScreen — loading state', () => {
     const renderer = renderScreen();
 
     act(() => {
-      findByTestId(renderer.root, 'invite-code-input').props.onChangeText('CODE99');
+      findByTestId(renderer.root, 'invite-code-input').props.onChangeText(VALID_CODE);
     });
 
     await act(async () => {

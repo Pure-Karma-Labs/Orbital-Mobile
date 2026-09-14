@@ -35,7 +35,7 @@ import { EmojiText } from '../components/EmojiText';
 import type { GroupQuotaResponse } from '../types/api';
 import type { SettingsStackParamList } from '../navigation/types';
 import { recoverIdentityKeys } from '../services/keyRecoveryService';
-import { RATE_LIMIT_MESSAGE } from '../utils/errorMessages';
+import { RECOVERY_RATE_LIMIT_MESSAGE } from '../utils/errorMessages';
 
 type ColorSchemeLabel = 'Light' | 'Dark' | 'System';
 
@@ -83,7 +83,7 @@ export function SettingsScreen(): React.JSX.Element {
         setRecoveryPasswordError('Incorrect password — please try again');
         break;
       case 'rate_limited':
-        setRecoveryPasswordError(RATE_LIMIT_MESSAGE);
+        setRecoveryPasswordError(RECOVERY_RATE_LIMIT_MESSAGE);
         break;
       case 'needs_email':
         setRecoveryPasswordError('Unable to determine account email — please use the key conflict screen');
@@ -243,7 +243,7 @@ export function SettingsScreen(): React.JSX.Element {
         setRecoveryPasswordError('Incorrect password — please try again');
         break;
       case 'rate_limited':
-        setRecoveryPasswordError(RATE_LIMIT_MESSAGE);
+        setRecoveryPasswordError(RECOVERY_RATE_LIMIT_MESSAGE);
         break;
       case 'needs_email':
         // Settings row doesn't have an email input — surface as modal error

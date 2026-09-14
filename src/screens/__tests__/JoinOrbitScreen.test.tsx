@@ -9,6 +9,7 @@ import { ThemeProvider } from '../../theme';
 import { JoinOrbitScreen } from '../JoinOrbitScreen';
 import {
   ApiError,
+  AuthError,
   ConflictError,
   NetworkError,
   NotFoundError,
@@ -20,6 +21,13 @@ import { RATE_LIMIT_MESSAGE } from '../../utils/errorMessages';
 // Module mocks
 // ---------------------------------------------------------------------------
 
+jest.mock('@sentry/react-native', () => ({
+  captureException: jest.fn(),
+  addBreadcrumb: jest.fn(),
+  setUser: jest.fn(),
+  wrap: (c: unknown) => c,
+}));
+
 jest.mock('../../services/conversationService', () => ({
   joinOrbit: jest.fn(),
 }));
@@ -27,7 +35,7 @@ jest.mock('../../services/conversationService', () => ({
 jest.mock('../../services/crypto/inviteCrypto', () => ({
   stripInviteCode: jest.fn((s: string) => s.replace(/-/g, '').toUpperCase()),
   formatInviteCode: jest.fn((s: string) => s.match(/.{1,4}/g)?.join('-') ?? s),
-  isValidV2InviteCode: jest.fn((s: string) => s.length === 20),
+  hasV2InviteCodeLength: jest.fn((s: string) => s.length === 20),
   V2_CODE_LENGTH: 20,
 }));
 
@@ -40,7 +48,9 @@ jest.mock('../../components/OrbitalSpinner', () => ({
 }));
 
 import { joinOrbit } from '../../services/conversationService';
+import * as Sentry from '@sentry/react-native';
 const mockJoinOrbit = joinOrbit as jest.Mock;
+const mockCaptureException = Sentry.captureException as unknown as jest.Mock;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -229,6 +239,7 @@ describe('JoinOrbitScreen — error handling', () => {
     expect(findTextWithChildren(renderer.root, netErr.message)).toBeDefined();
     expect(() => findByTestId(renderer.root, 'invite-code-input-error')).toThrow();
     expect(mockNavigation.goBack).not.toHaveBeenCalled();
+    expect(mockCaptureException).not.toHaveBeenCalled();
   });
 
   it('shows RATE_LIMIT_MESSAGE on the banner for a RATE_LIMITED ApiError, with no field error', async () => {
@@ -265,6 +276,7 @@ describe('JoinOrbitScreen — error handling', () => {
       'Invalid or expired invite code',
     );
     expect(mockNavigation.goBack).not.toHaveBeenCalled();
+    expect(mockCaptureException).not.toHaveBeenCalled();
   });
 
   it('shows the field error for a NotFoundError', async () => {
@@ -303,8 +315,9 @@ describe('JoinOrbitScreen — error handling', () => {
     expect(() => findByTestId(renderer.root, 'invite-code-input-error')).toThrow();
   });
 
-  it('shows a generic banner for an unrecognized error, with no field error and no raw message', async () => {
-    mockJoinOrbit.mockRejectedValue(new Error('boom'));
+  it('shows a generic banner for an unrecognized error, with no field error and no raw message, and reports to Sentry', async () => {
+    const err = new Error('boom');
+    mockJoinOrbit.mockRejectedValue(err);
     const renderer = renderScreen();
 
     act(() => {
@@ -320,6 +333,50 @@ describe('JoinOrbitScreen — error handling', () => {
     ).toBeDefined();
     expect(() => findByTestId(renderer.root, 'invite-code-input-error')).toThrow();
     expect(findTextWithChildren(renderer.root, 'boom')).toBeUndefined();
+
+    expect(mockCaptureException).toHaveBeenCalledTimes(1);
+    const [reportedError, context] = mockCaptureException.mock.calls[0];
+    expect(reportedError).toBeInstanceOf(Error);
+    expect((context as { tags: { feature: string } }).tags.feature).toBe('orbit-join');
+  });
+
+  it('shows the email-mismatch banner for a 403 AuthError, with no field error', async () => {
+    mockJoinOrbit.mockRejectedValue(new AuthError(403, 'email mismatch'));
+    const renderer = renderScreen();
+
+    act(() => {
+      findByTestId(renderer.root, 'invite-code-input').props.onChangeText(VALID_CODE);
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'join-orbit-button').props.onPress();
+    });
+
+    expect(
+      findTextWithChildren(
+        renderer.root,
+        'This invite is not for this account — check you are signed in with the invited email',
+      ),
+    ).toBeDefined();
+    expect(() => findByTestId(renderer.root, 'invite-code-input-error')).toThrow();
+    expect(mockCaptureException).not.toHaveBeenCalled();
+  });
+
+  it('shows the generic banner for a 401 AuthError, proving the 403 branch is status-specific', async () => {
+    mockJoinOrbit.mockRejectedValue(new AuthError(401));
+    const renderer = renderScreen();
+
+    act(() => {
+      findByTestId(renderer.root, 'invite-code-input').props.onChangeText(VALID_CODE);
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'join-orbit-button').props.onPress();
+    });
+
+    expect(
+      findTextWithChildren(renderer.root, 'Could not join orbit — please try again'),
+    ).toBeDefined();
   });
 
   it('rejects a 19-character code at the pre-flight without calling joinOrbit', async () => {

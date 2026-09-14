@@ -17,7 +17,7 @@ import { TextInput, Button, ErrorBanner, OrbitalLoader, AsciiBanner } from '../c
 import { TermsCheckbox } from '../components/TermsCheckbox';
 import { signupUser } from '../services/authService';
 import { AccountSwitchError, ApiError, AuthError, ConflictError, NetworkError, ValidationError } from '../services/api/errors';
-import { formatInviteCode, stripInviteCode, isValidV2InviteCode } from '../services/crypto/inviteCrypto';
+import { formatInviteCode, stripInviteCode, hasV2InviteCodeLength } from '../services/crypto/inviteCrypto';
 import { validatePassword, PASSWORD_RULE_HINT } from '../utils/validatePassword';
 import { validateUsername } from '../utils/validateUsername';
 import { RATE_LIMIT_MESSAGE } from '../utils/errorMessages';
@@ -99,7 +99,7 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
       return;
     }
 
-    if (!isValidV2InviteCode(stripInviteCode(inviteCode))) {
+    if (!hasV2InviteCodeLength(stripInviteCode(inviteCode))) {
       setInviteCodeError('Invalid invite code format — must be a 20-character v2 code');
       return;
     }

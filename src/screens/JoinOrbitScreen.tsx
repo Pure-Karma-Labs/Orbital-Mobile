@@ -19,6 +19,7 @@ import { OrbitalKeyboardAvoidingView } from '../components/OrbitalKeyboardAvoidi
 import { joinOrbit } from '../services/conversationService';
 import {
   ApiError,
+  AuthError,
   ConflictError,
   NetworkError,
   NotFoundError,
@@ -27,9 +28,10 @@ import {
 import {
   stripInviteCode,
   formatInviteCode,
-  isValidV2InviteCode,
+  hasV2InviteCodeLength,
 } from '../services/crypto/inviteCrypto';
 import { RATE_LIMIT_MESSAGE } from '../utils/errorMessages';
+import * as Sentry from '@sentry/react-native';
 import type { ThreadsStackParamList } from '../navigation/types';
 
 // ---------------------------------------------------------------------------
@@ -77,8 +79,10 @@ export function JoinOrbitScreen({
     setBannerError(null);
 
     // Pre-flight: a mistyped length is knowable without a request, and every
-    // attempt spends the shared auth rate-limit budget.
-    if (!isValidV2InviteCode(trimmedCode)) {
+    // attempt spends this user's contentCreationLimiter budget (60 per 15 min,
+    // shared with thread and reply creation — rateLimiters.js), so a typo here
+    // costs the user posting headroom, not just a round trip.
+    if (!hasV2InviteCodeLength(trimmedCode)) {
       setCodeError('Invalid invite code format — must be a 20-character v2 code');
       return;
     }
@@ -95,13 +99,35 @@ export function JoinOrbitScreen({
       } else if (err instanceof ValidationError || err instanceof NotFoundError) {
         // 400 (used / expired / DM code) and 404 (unknown code) are verdicts on
         // this code — Orbital-Backend/src/routes/groups.js:263-271.
+        // KNOWN MISROUTE: groups.js:275 answers GROUP_FULL with the same 400,
+        // which is indistinguishable client-side, so a valid code for a full
+        // orbit reads here as "invalid or expired". Fixing it needs a
+        // machine-readable reason on the 400 (backend follow-up pending).
         setCodeError('Invalid or expired invite code');
       } else if (err instanceof ConflictError) {
         // The join route's only 409 — groups.js:273.
         setBannerError('You are already a member of this orbit');
+      } else if (err instanceof AuthError && err.statusCode === 403) {
+        // Both of the join route's forbiddenError cases — DEMO_BOUNDARY
+        // (groups.js:265) and EMAIL_MISMATCH (groups.js:277). Invites minted from
+        // CreateOrbit are always email-bound, so this is a likely legitimate
+        // failure and the user can act on it.
+        setBannerError(
+          'This invite is not for this account — check you are signed in with the invited email',
+        );
       } else {
-        // Auth, 5xx, crypto and anything unknown: never claim the code is wrong,
-        // and never surface a raw error message.
+        // Auth (401), 5xx, crypto and anything unknown: never claim the code is
+        // wrong, and never surface a raw error message. Silent here before
+        // #787 — a permanent identity-key fault (#675 class) looked like a
+        // transient retry prompt, so report it.
+        Sentry.captureException(err instanceof Error ? err : new Error(String(err)), {
+          tags: {
+            feature: 'orbit-join',
+            ...(err instanceof ApiError
+              ? { status: String(err.statusCode), api_code: err.code }
+              : {}),
+          },
+        });
         setBannerError('Could not join orbit — please try again');
       }
     } finally {

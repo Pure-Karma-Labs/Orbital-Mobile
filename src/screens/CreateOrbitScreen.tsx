@@ -24,6 +24,7 @@ import { Header } from '../components/Header';
 import { OrbitalKeyboardAvoidingView } from '../components/OrbitalKeyboardAvoidingView';
 import { createOrbit, createInviteCode } from '../services/conversationService';
 import { ApiError, NetworkError } from '../services/api/errors';
+import * as Sentry from '@sentry/react-native';
 import { formatInviteCode } from '../services/crypto/inviteCrypto';
 import { RATE_LIMIT_MESSAGE } from '../utils/errorMessages';
 import type { ThreadsStackParamList } from '../navigation/types';
@@ -88,7 +89,18 @@ export function CreateOrbitScreen({
         setBannerError(RATE_LIMIT_MESSAGE);
       } else {
         // Never surface a raw error message: outside __DEV__ these are either
-        // hardcoded client copy or server internals.
+        // hardcoded client copy or server internals. Report it — this branch
+        // also catches local crypto faults (identity key, group key wrap), and
+        // a permanent fault (#675 class) otherwise presents to the user as a
+        // transient retry prompt with no telemetry at all.
+        Sentry.captureException(err instanceof Error ? err : new Error(String(err)), {
+          tags: {
+            feature: 'orbit-create',
+            ...(err instanceof ApiError
+              ? { status: String(err.statusCode), api_code: err.code }
+              : {}),
+          },
+        });
         setBannerError('Could not create orbit — please try again');
       }
     } finally {
@@ -103,8 +115,18 @@ export function CreateOrbitScreen({
     try {
       const rawCode = await createInviteCode(createdGroupId, email.trim());
       setGeneratedCode(rawCode);
-    } catch {
-      setInviteError('Failed to generate invite code. Please try again.');
+    } catch (err) {
+      // Same split as handleCreate: no outcome here is a verdict on the email
+      // typed above (the server validates it only for shape), so everything
+      // lands on the banner — but transport and throttling still say what
+      // actually happened.
+      if (err instanceof NetworkError) {
+        setInviteError(err.message);
+      } else if (err instanceof ApiError && err.code === 'RATE_LIMITED') {
+        setInviteError(RATE_LIMIT_MESSAGE);
+      } else {
+        setInviteError('Failed to generate invite code. Please try again.');
+      }
     } finally {
       setGeneratingInvite(false);
     }
@@ -209,13 +231,6 @@ export function CreateOrbitScreen({
     color: theme.colors.textPrimary,
   };
 
-  const inviteErrorStyle: TextStyle = {
-    fontFamily: theme.typography.fontFamily.body,
-    fontSize: theme.typography.fontSize.sm,
-    color: theme.colors.error,
-    marginBottom: theme.spacing.md,
-  };
-
   const warningStyle: TextStyle = {
     fontFamily: theme.typography.fontFamily.body,
     fontSize: theme.typography.fontSize.sm,
@@ -293,9 +308,7 @@ export function CreateOrbitScreen({
               autoCorrect={false}
               testID="invite-email-input"
             />
-            {inviteError != null && (
-              <Text style={inviteErrorStyle}>{inviteError}</Text>
-            )}
+            <ErrorBanner message={inviteError} />
             <Button
               title={generatingInvite ? 'Generating...' : 'Generate Invite Code'}
               onPress={handleGenerateInvite}

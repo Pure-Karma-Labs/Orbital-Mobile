@@ -16,6 +16,7 @@ import { useTheme } from '../theme';
 import { TextInput, Button, ErrorBanner, OrbitalLoader, AsciiBanner } from '../components';
 import { requestPasswordReset } from '../services/authService';
 import { ApiError, NetworkError } from '../services/api/errors';
+import { RATE_LIMIT_MESSAGE } from '../utils/errorMessages';
 import type { OnPreAuthNavigate } from '../navigation/preAuthTypes';
 
 export interface ForgotPasswordScreenProps {
@@ -48,7 +49,7 @@ export function ForgotPasswordScreen({
       onNavigate('resetPassword', { email: trimmed });
     } catch (e) {
       if (e instanceof ApiError && e.code === 'RATE_LIMITED') {
-        setError('Too many attempts — please wait a few minutes');
+        setError(RATE_LIMIT_MESSAGE);
       } else if (e instanceof NetworkError) {
         setError(e.message);
       } else {

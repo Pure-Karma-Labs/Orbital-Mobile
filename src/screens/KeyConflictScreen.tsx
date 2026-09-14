@@ -31,7 +31,7 @@ import { PasswordConfirmModal } from './settings/PasswordConfirmModal';
 import { recoverIdentityKeys } from '../services/keyRecoveryService';
 import { logout } from '../services/authService';
 import { useAuth } from '../stores';
-import { RATE_LIMIT_MESSAGE } from '../utils/errorMessages';
+import { RECOVERY_RATE_LIMIT_MESSAGE } from '../utils/errorMessages';
 
 export function KeyConflictScreen(): React.JSX.Element {
   const theme = useTheme();
@@ -55,7 +55,7 @@ export function KeyConflictScreen(): React.JSX.Element {
         setError('Incorrect password — please try again');
         break;
       case 'rate_limited':
-        setError(RATE_LIMIT_MESSAGE);
+        setError(RECOVERY_RATE_LIMIT_MESSAGE);
         break;
       case 'needs_email':
         // Panel amendment: also initialize needsManualEmail so the TextInput renders.
@@ -93,7 +93,7 @@ export function KeyConflictScreen(): React.JSX.Element {
         setPasswordError('Incorrect password — please try again');
         break;
       case 'rate_limited':
-        setPasswordError(RATE_LIMIT_MESSAGE);
+        setPasswordError(RECOVERY_RATE_LIMIT_MESSAGE);
         break;
       case 'needs_email':
         // Auto-resolution failed — show editable email field

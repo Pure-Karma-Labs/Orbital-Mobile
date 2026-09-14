@@ -178,13 +178,9 @@ describe('ResetPasswordScreen — validation', () => {
       findByTestId(root, 'reset-submit-button').props.onPress();
     });
 
-    const allText = root.findAllByType('Text' as unknown as React.ComponentType);
-    const errorText = allText.find(
-      (node) =>
-        typeof node.props.children === 'string' &&
-        node.props.children.includes('8 characters'),
+    expect(findByTestId(root, 'reset-code-input-error').props.children).toBe(
+      'Reset code must be 8 characters',
     );
-    expect(errorText).toBeDefined();
     expect(mockResetPassword).not.toHaveBeenCalled();
   });
 
@@ -351,13 +347,32 @@ describe('ResetPasswordScreen — error handling', () => {
       findByTestId(root, 'reset-submit-button').props.onPress();
     });
 
-    const allText = root.findAllByType('Text' as unknown as React.ComponentType);
-    const errorText = allText.find(
-      (node) =>
-        typeof node.props.children === 'string' &&
-        node.props.children.includes('Invalid or expired code'),
+    expect(findByTestId(root, 'reset-code-input-error').props.children).toBe(
+      'Invalid or expired code',
     );
-    expect(errorText).toBeDefined();
+  });
+
+  it('clears the code field error when the code is edited', async () => {
+    const renderer = renderResetPasswordScreen();
+    const root = renderer.root;
+
+    act(() => {
+      findByTestId(root, 'reset-code-input').props.onChangeText('ABC');
+      findByTestId(root, 'reset-new-password-input').props.onChangeText('NewPassword123');
+      findByTestId(root, 'reset-confirm-password-input').props.onChangeText('NewPassword123');
+    });
+
+    await act(async () => {
+      findByTestId(root, 'reset-submit-button').props.onPress();
+    });
+
+    expect(() => findByTestId(root, 'reset-code-input-error')).not.toThrow();
+
+    act(() => {
+      findByTestId(root, 'reset-code-input').props.onChangeText('ABCD1234');
+    });
+
+    expect(() => findByTestId(root, 'reset-code-input-error')).toThrow();
   });
 
   it('shows network error message on NetworkError', async () => {

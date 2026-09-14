@@ -37,7 +37,13 @@ export function ResetPasswordScreen({
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [newPasswordError, setNewPasswordError] = useState<string | null>(null);
+  const [codeError, setCodeError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  function handleCodeChange(text: string): void {
+    setCode(text);
+    setCodeError(null);
+  }
 
   function handleNewPasswordChange(text: string): void {
     setNewPassword(text);
@@ -50,12 +56,13 @@ export function ResetPasswordScreen({
     // beside a fresh field error is exactly the misdiagnosis #777 removes).
     setError(null);
     setNewPasswordError(null);
+    setCodeError(null);
 
     // Normalize code: strip whitespace + hyphens, uppercase
     const normalizedCode = code.trim().replace(/[\s-]/g, '').toUpperCase();
 
     if (normalizedCode.length !== 8) {
-      setError('Reset code must be 8 characters');
+      setCodeError('Reset code must be 8 characters');
       return;
     }
 
@@ -82,7 +89,10 @@ export function ResetPasswordScreen({
       if (e instanceof ApiError && e.code === 'RATE_LIMITED') {
         setError('Too many attempts — please request a new code');
       } else if (e instanceof ValidationError) {
-        setError('Invalid or expired code. Please try again or request a new code.');
+        // The only server outcome attributable to a field on this screen: the
+        // password already passed the client rules, so a 400/422 here is the
+        // code. ("Didn't receive it?" below is the request-a-new-code path.)
+        setCodeError('Invalid or expired code');
       } else if (e instanceof NetworkError) {
         setError(e.message);
       } else {
@@ -162,11 +172,12 @@ export function ResetPasswordScreen({
           <TextInput
             label="Reset Code"
             value={code}
-            onChangeText={setCode}
+            onChangeText={handleCodeChange}
             autoCapitalize="characters"
             autoCorrect={false}
             textContentType="oneTimeCode"
             maxLength={12}
+            error={codeError}
             testID="reset-code-input"
           />
           <TextInput

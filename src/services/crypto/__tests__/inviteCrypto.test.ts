@@ -9,7 +9,7 @@ import {
   stripInviteCode,
   encryptGroupKeyForInvite,
   decryptGroupKeyFromInvite,
-  isValidV2InviteCode,
+  hasV2InviteCodeLength,
   V2_CODE_LENGTH,
 } from '../inviteCrypto';
 import {inviteEncryptGroupKey, inviteDecryptGroupKey} from 'orbital-signal';
@@ -66,21 +66,25 @@ describe('inviteCrypto', () => {
     });
   });
 
-  describe('isValidV2InviteCode', () => {
+  describe('hasV2InviteCodeLength', () => {
     it('returns true for a 20-character stripped code', () => {
-      expect(isValidV2InviteCode('ABCDEFGHJKMNPQRSTVW0')).toBe(true);
+      expect(hasV2InviteCodeLength('ABCDEFGHJKMNPQRSTVW0')).toBe(true);
     });
 
     it('returns false for a 19-character code', () => {
-      expect(isValidV2InviteCode('ABCDEFGHJKMNPQRSTVW')).toBe(false);
+      expect(hasV2InviteCodeLength('ABCDEFGHJKMNPQRSTVW')).toBe(false);
     });
 
     it('returns false for a 21-character code', () => {
-      expect(isValidV2InviteCode('ABCDEFGHJKMNPQRSTVW01')).toBe(false);
+      expect(hasV2InviteCodeLength('ABCDEFGHJKMNPQRSTVW01')).toBe(false);
     });
 
     it('returns false for an empty string', () => {
-      expect(isValidV2InviteCode('')).toBe(false);
+      expect(hasV2InviteCodeLength('')).toBe(false);
+    });
+
+    it('returns true for a 20-character string outside the Crockford alphabet, because this is a length check only', () => {
+      expect(hasV2InviteCodeLength('!!!!!!!!!!!!!!!!!!!!')).toBe(true);
     });
   });
 

@@ -23,7 +23,7 @@ jest.mock('../../services/authService', () => ({
 jest.mock('../../services/crypto/inviteCrypto', () => ({
   formatInviteCode: jest.fn((s: string) => s.match(/.{1,4}/g)?.join('-') ?? s),
   stripInviteCode: jest.fn((s: string) => s.replace(/-/g, '').toUpperCase()),
-  isValidV2InviteCode: jest.fn((s: string) => s.length === 20),
+  hasV2InviteCodeLength: jest.fn((s: string) => s.length === 20),
   V2_CODE_LENGTH: 20,
 }));
 

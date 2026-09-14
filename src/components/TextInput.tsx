@@ -105,7 +105,9 @@ export function TextInput({
     fontFamily: theme.typography.fontFamily.body,
     fontSize: theme.typography.fontSize.sm,
     lineHeight: subTextLineHeight,
-    color: theme.colors.textTertiary,
+    // textSecondary, not textTertiary: the helper carries a load-bearing rule
+    // at 11px, and textTertiary is placeholder-grade contrast.
+    color: theme.colors.textSecondary,
     marginTop: theme.spacing.xs,
   };
 

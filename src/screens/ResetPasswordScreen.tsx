@@ -45,6 +45,12 @@ export function ResetPasswordScreen({
   }
 
   async function handleSubmit(): Promise<void> {
+    // Clear every error slot up front: a guard that returns early must never
+    // leave a now-false message from the previous submit on screen (a banner
+    // beside a fresh field error is exactly the misdiagnosis #777 removes).
+    setError(null);
+    setNewPasswordError(null);
+
     // Normalize code: strip whitespace + hyphens, uppercase
     const normalizedCode = code.trim().replace(/[\s-]/g, '').toUpperCase();
 
@@ -64,8 +70,6 @@ export function ResetPasswordScreen({
       return;
     }
 
-    setError(null);
-    setNewPasswordError(null);
     setLoading(true);
     try {
       await resetPassword(email, normalizedCode, newPassword);

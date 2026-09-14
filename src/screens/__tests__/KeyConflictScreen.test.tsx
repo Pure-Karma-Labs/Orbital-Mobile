@@ -212,7 +212,7 @@ describe('KeyConflictScreen — store-seeded error on mount', () => {
     const renderer = renderScreen();
     const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
     const texts = allText.map((n) => n.props.children).filter((c) => typeof c === 'string');
-    expect(texts.some((t: string) => t.includes('15 minutes'))).toBe(true);
+    expect(texts.some((t: string) => t.includes('a few minutes'))).toBe(true);
   });
 
   it('shows error message verbatim from store on mount', () => {

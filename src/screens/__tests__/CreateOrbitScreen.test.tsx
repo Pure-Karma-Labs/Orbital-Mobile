@@ -7,6 +7,8 @@ import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'rea
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../../theme';
 import { CreateOrbitScreen } from '../CreateOrbitScreen';
+import { ApiError, NetworkError } from '../../services/api/errors';
+import { RATE_LIMIT_MESSAGE } from '../../utils/errorMessages';
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -89,6 +91,15 @@ function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstanc
   const found = root.findAll((node) => node.props.testID === testID);
   if (found.length === 0) throw new Error(`No element with testID "${testID}"`);
   return found[0];
+}
+
+function findTextWithChildren(
+  root: ReactTestInstance,
+  children: string,
+): ReactTestInstance | undefined {
+  return root
+    .findAllByType('Text' as unknown as React.ComponentType)
+    .find((node) => node.props.children === children);
 }
 
 // ---------------------------------------------------------------------------
@@ -266,7 +277,7 @@ describe('CreateOrbitScreen — invite generation', () => {
 });
 
 describe('CreateOrbitScreen — error handling', () => {
-  it('shows error message on creation failure', async () => {
+  it('shows a generic banner on creation failure, never the field error node, and never the raw server message', async () => {
     mockCreateOrbit.mockRejectedValue(new Error('Server error'));
     const renderer = renderScreen();
 
@@ -278,9 +289,63 @@ describe('CreateOrbitScreen — error handling', () => {
       findByTestId(renderer.root, 'create-orbit-button').props.onPress();
     });
 
-    expect(findByTestId(renderer.root, 'orbit-name-input-error').props.children).toBe(
-      'Server error',
+    expect(findTextWithChildren(renderer.root, 'Could not create orbit — please try again')).toBeDefined();
+    expect(() => findByTestId(renderer.root, 'orbit-name-input-error')).toThrow();
+    expect(findTextWithChildren(renderer.root, 'Server error')).toBeUndefined();
+  });
+
+  it('shows the NetworkError message on the banner', async () => {
+    const netErr = new NetworkError('No connection');
+    mockCreateOrbit.mockRejectedValue(netErr);
+    const renderer = renderScreen();
+
+    act(() => {
+      findByTestId(renderer.root, 'orbit-name-input').props.onChangeText('My Orbit');
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'create-orbit-button').props.onPress();
+    });
+
+    expect(findTextWithChildren(renderer.root, netErr.message)).toBeDefined();
+  });
+
+  it('shows RATE_LIMIT_MESSAGE on the banner for a RATE_LIMITED ApiError', async () => {
+    mockCreateOrbit.mockRejectedValue(
+      new ApiError('Too many requests', 429, 'RATE_LIMITED', false),
     );
+    const renderer = renderScreen();
+
+    act(() => {
+      findByTestId(renderer.root, 'orbit-name-input').props.onChangeText('My Orbit');
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'create-orbit-button').props.onPress();
+    });
+
+    expect(findTextWithChildren(renderer.root, RATE_LIMIT_MESSAGE)).toBeDefined();
+  });
+
+  it('clears the banner when the orbit name is edited after a failure', async () => {
+    mockCreateOrbit.mockRejectedValue(new Error('Server error'));
+    const renderer = renderScreen();
+
+    act(() => {
+      findByTestId(renderer.root, 'orbit-name-input').props.onChangeText('My Orbit');
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'create-orbit-button').props.onPress();
+    });
+
+    expect(findTextWithChildren(renderer.root, 'Could not create orbit — please try again')).toBeDefined();
+
+    act(() => {
+      findByTestId(renderer.root, 'orbit-name-input').props.onChangeText('My Orbit 2');
+    });
+
+    expect(findTextWithChildren(renderer.root, 'Could not create orbit — please try again')).toBeUndefined();
   });
 });
 

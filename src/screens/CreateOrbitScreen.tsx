@@ -19,10 +19,13 @@ import { useTheme } from '../theme';
 import { TextInput } from '../components/TextInput';
 import { Button } from '../components/Button';
 import { EmojiText } from '../components/EmojiText';
+import { ErrorBanner } from '../components/ErrorBanner';
 import { Header } from '../components/Header';
 import { OrbitalKeyboardAvoidingView } from '../components/OrbitalKeyboardAvoidingView';
 import { createOrbit, createInviteCode } from '../services/conversationService';
+import { ApiError, NetworkError } from '../services/api/errors';
 import { formatInviteCode } from '../services/crypto/inviteCrypto';
+import { RATE_LIMIT_MESSAGE } from '../utils/errorMessages';
 import type { ThreadsStackParamList } from '../navigation/types';
 
 // ---------------------------------------------------------------------------
@@ -46,7 +49,13 @@ export function CreateOrbitScreen({
 
   const [name, setName] = useState('');
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // Banner only, deliberately: nothing the server can answer here is a verdict
+  // on the orbit name. The name is encrypted client-side and never validated by
+  // POST /groups — a 400 from that route means a malformed envelope or group id
+  // (a client bug), not a bad name — and the 1-50 character rule is enforced by
+  // `isValid` disabling the button. So no failure may render as a red border on
+  // the field.
+  const [bannerError, setBannerError] = useState<string | null>(null);
   const [createdGroupId, setCreatedGroupId] = useState<string | null>(null);
   const [createdName, setCreatedName] = useState('');
   const [email, setEmail] = useState('');
@@ -57,20 +66,31 @@ export function CreateOrbitScreen({
   const trimmedName = name.trim();
   const isValid = trimmedName.length >= 1 && trimmedName.length <= 50;
 
+  const handleNameChange = useCallback((text: string) => {
+    setName(text);
+    setBannerError(null);
+  }, []);
+
   const handleCreate = useCallback(async () => {
     if (!isValid || loading) {
       return;
     }
-    setError(null);
+    setBannerError(null);
     setLoading(true);
     try {
       const result = await createOrbit(trimmedName);
       setCreatedGroupId(result.groupId);
       setCreatedName(trimmedName);
     } catch (err) {
-      const message =
-        err instanceof Error ? err.message : 'Failed to create orbit';
-      setError(message);
+      if (err instanceof NetworkError) {
+        setBannerError(err.message);
+      } else if (err instanceof ApiError && err.code === 'RATE_LIMITED') {
+        setBannerError(RATE_LIMIT_MESSAGE);
+      } else {
+        // Never surface a raw error message: outside __DEV__ these are either
+        // hardcoded client copy or server internals.
+        setBannerError('Could not create orbit — please try again');
+      }
     } finally {
       setLoading(false);
     }
@@ -309,13 +329,14 @@ export function CreateOrbitScreen({
           <TextInput
             label="Orbit Name"
             value={name}
-            onChangeText={setName}
+            onChangeText={handleNameChange}
             autoCapitalize="sentences"
             autoCorrect={false}
             maxLength={50}
-            error={error}
             testID="orbit-name-input"
           />
+
+          <ErrorBanner message={bannerError} />
 
           <Button
             title="Create"

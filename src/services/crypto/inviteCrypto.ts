@@ -7,7 +7,19 @@ import {
 } from './utils';
 
 const CROCKFORD_CHARS = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
-const V2_CODE_LENGTH = 20;
+
+/** Character count of a v2 invite code, dashes stripped. */
+export const V2_CODE_LENGTH = 20;
+
+/**
+ * Cheap shape check for a stripped (dash-free) invite code, so screens can
+ * reject a mistyped code before spending a request against the shared auth
+ * rate limiter. Mirrors the backend's own length check
+ * (`Orbital-Backend/src/routes/auth.js`: "must be a 20-character v2 code").
+ */
+export function isValidV2InviteCode(strippedCode: string): boolean {
+  return strippedCode.length === V2_CODE_LENGTH;
+}
 
 export function generateInviteCode(): string {
   const bytes = new Uint8Array(V2_CODE_LENGTH);

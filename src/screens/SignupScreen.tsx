@@ -17,8 +17,10 @@ import { TextInput, Button, ErrorBanner, OrbitalLoader, AsciiBanner } from '../c
 import { TermsCheckbox } from '../components/TermsCheckbox';
 import { signupUser } from '../services/authService';
 import { AccountSwitchError, ApiError, AuthError, ConflictError, NetworkError, ValidationError } from '../services/api/errors';
-import { formatInviteCode, stripInviteCode } from '../services/crypto/inviteCrypto';
+import { formatInviteCode, stripInviteCode, isValidV2InviteCode } from '../services/crypto/inviteCrypto';
 import { validatePassword, PASSWORD_RULE_HINT } from '../utils/validatePassword';
+import { validateUsername } from '../utils/validateUsername';
+import { RATE_LIMIT_MESSAGE } from '../utils/errorMessages';
 import type { OnPreAuthNavigate } from '../navigation/preAuthTypes';
 
 export interface SignupScreenProps {
@@ -57,6 +59,14 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
   }, []);
 
   async function handleSignup(): Promise<void> {
+    // Clear every error slot up front: a guard that returns early must never
+    // leave a now-false message from the previous submit on screen (a banner
+    // beside a fresh field error is exactly the misdiagnosis #777 removes).
+    setError(null);
+    setUsernameError(null);
+    setPasswordError(null);
+    setInviteCodeError(null);
+
     // Validate all required fields
     if (
       username.trim().length === 0 ||
@@ -77,13 +87,9 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
     // Backend rules enforced client-side so the user is never spent on a
     // round-trip (and the shared auth rate limiter) for a knowable failure.
     // Messages are verbatim from Orbital-Backend/src/routes/auth.js.
-    const trimmedUsername = username.trim();
-    if (trimmedUsername.length < 3 || trimmedUsername.length > 50) {
-      setUsernameError('Username must be between 3 and 50 characters');
-      return;
-    }
-    if (!/^[A-Za-z0-9_]+$/.test(trimmedUsername)) {
-      setUsernameError('Username can only contain letters, numbers, and underscores');
+    const usernameRuleError = validateUsername(username.trim());
+    if (usernameRuleError !== null) {
+      setUsernameError(usernameRuleError);
       return;
     }
 
@@ -93,15 +99,11 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
       return;
     }
 
-    if (stripInviteCode(inviteCode).length !== 20) {
+    if (!isValidV2InviteCode(stripInviteCode(inviteCode))) {
       setInviteCodeError('Invalid invite code format — must be a 20-character v2 code');
       return;
     }
 
-    setError(null);
-    setUsernameError(null);
-    setPasswordError(null);
-    setInviteCodeError(null);
     setLoading(true);
     try {
       await signupUser(username.trim(), password, email.trim(), stripInviteCode(inviteCode));
@@ -110,7 +112,7 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
       if (e instanceof AccountSwitchError) {
         setError(e.message);
       } else if (e instanceof ApiError && e.code === 'RATE_LIMITED') {
-        setError('Too many attempts — please wait about 15 minutes and try again');
+        setError(RATE_LIMIT_MESSAGE);
       } else if (e instanceof AuthError || e instanceof ValidationError || e instanceof ConflictError) {
         setError(e.message || 'Signup failed');
       } else if (e instanceof NetworkError) {

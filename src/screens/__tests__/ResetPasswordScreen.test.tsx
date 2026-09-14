@@ -240,6 +240,47 @@ describe('ResetPasswordScreen — validation', () => {
       PASSWORD_RULE_HINT,
     );
   });
+
+  it('clears the stale mismatch banner and shows the password field error on a second submit, without ever calling resetPassword', async () => {
+    const renderer = renderResetPasswordScreen();
+    const root = renderer.root;
+
+    act(() => {
+      findByTestId(root, 'reset-code-input').props.onChangeText('ABCD1234');
+      findByTestId(root, 'reset-new-password-input').props.onChangeText('NewPassword123');
+      findByTestId(root, 'reset-confirm-password-input').props.onChangeText('DifferentPass1');
+    });
+
+    await act(async () => {
+      findByTestId(root, 'reset-submit-button').props.onPress();
+    });
+
+    const findMismatchBanner = () =>
+      root
+        .findAllByType('Text' as unknown as React.ComponentType)
+        .find(
+          (node) =>
+            typeof node.props.children === 'string' &&
+            node.props.children === 'Passwords do not match',
+        );
+
+    expect(findMismatchBanner()).toBeDefined();
+
+    act(() => {
+      findByTestId(root, 'reset-new-password-input').props.onChangeText('short');
+      findByTestId(root, 'reset-confirm-password-input').props.onChangeText('short');
+    });
+
+    await act(async () => {
+      findByTestId(root, 'reset-submit-button').props.onPress();
+    });
+
+    expect(findMismatchBanner()).toBeUndefined();
+    expect(findByTestId(root, 'reset-new-password-input-error').props.children).toBe(
+      'Password must be at least 12 characters',
+    );
+    expect(mockResetPassword).not.toHaveBeenCalled();
+  });
 });
 
 describe('ResetPasswordScreen — submission', () => {

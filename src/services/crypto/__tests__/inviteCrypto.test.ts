@@ -9,6 +9,8 @@ import {
   stripInviteCode,
   encryptGroupKeyForInvite,
   decryptGroupKeyFromInvite,
+  isValidV2InviteCode,
+  V2_CODE_LENGTH,
 } from '../inviteCrypto';
 import {inviteEncryptGroupKey, inviteDecryptGroupKey} from 'orbital-signal';
 
@@ -55,6 +57,30 @@ describe('inviteCrypto', () => {
 
     it('handles code without dashes', () => {
       expect(stripInviteCode('ABCDEFGHJKMNPQRSTVW0')).toBe('ABCDEFGHJKMNPQRSTVW0');
+    });
+  });
+
+  describe('V2_CODE_LENGTH', () => {
+    it('is 20', () => {
+      expect(V2_CODE_LENGTH).toBe(20);
+    });
+  });
+
+  describe('isValidV2InviteCode', () => {
+    it('returns true for a 20-character stripped code', () => {
+      expect(isValidV2InviteCode('ABCDEFGHJKMNPQRSTVW0')).toBe(true);
+    });
+
+    it('returns false for a 19-character code', () => {
+      expect(isValidV2InviteCode('ABCDEFGHJKMNPQRSTVW')).toBe(false);
+    });
+
+    it('returns false for a 21-character code', () => {
+      expect(isValidV2InviteCode('ABCDEFGHJKMNPQRSTVW01')).toBe(false);
+    });
+
+    it('returns false for an empty string', () => {
+      expect(isValidV2InviteCode('')).toBe(false);
     });
   });
 

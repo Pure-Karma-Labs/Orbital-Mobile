@@ -19,6 +19,8 @@ on:
       - 'scripts/test-rust-profile-gate-ios.sh'
       - 'scripts/test-rust-profile-gate-android.sh'
       - 'scripts/rust-gate-probe.init.gradle'
+      - 'scripts/assert-no-absolute-pod-paths.sh'
+      - 'scripts/test-assert-no-absolute-pod-paths.sh'
   pull_request:
     paths:
       - 'packages/orbital-signal/**'
@@ -36,6 +38,8 @@ on:
       - 'scripts/test-rust-profile-gate-ios.sh'
       - 'scripts/test-rust-profile-gate-android.sh'
       - 'scripts/rust-gate-probe.init.gradle'
+      - 'scripts/assert-no-absolute-pod-paths.sh'
+      - 'scripts/test-assert-no-absolute-pod-paths.sh'
   # workflow_dispatch lets us manually trigger build jobs on this branch to
   # verify the hosted-runner migration before it merges to main.
   workflow_dispatch:
@@ -70,7 +74,6 @@ jobs:
 
       - name: Paths filter
         id: filter
-        # SHA-pinned: 7b450fff21473bca461d4b92ce414b9d0420d706 = v4.0.2
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
           filters: |
@@ -456,9 +459,61 @@ jobs:
           restore-keys: |
             pods-${{ runner.os }}-
 
+      # Issue #767: see the matching comment in ci.yml. Same path and key,
+      # no restore-keys. Keep this step identical to ci.yml's.
+      - name: Cache Sentry xcframework download
+        uses: actions/cache@v6
+        with:
+          path: ~/Library/Caches/sentry-react-native
+          key: sentry-xcframework-${{ runner.os }}-${{ hashFiles('node_modules/@sentry/react-native/RNSentry.podspec', 'node_modules/@sentry/react-native/scripts/sentry_utils.rb') }}
+
       - name: Install CocoaPods
         working-directory: ios
         run: pod install
+
+      # Issue #767 (1 of 2): see scripts/assert-no-absolute-pod-paths.sh and the
+      # matching comment in ci.yml. Unlike the --deployment install there, a
+      # bare `pod install` succeeds on a leak and silently rewrites the RNSentry
+      # SPEC CHECKSUM, so this step is the only thing that names the cause on
+      # main. Default success() gate: pod install never fails on the leak, and
+      # running after an unrelated upstream failure would only add a misleading
+      # "podspec not found" red.
+      - name: Assert no absolute paths in the pod graph (issue #767)
+        run: bash scripts/assert-no-absolute-pod-paths.sh
+
+      # Issue #767 (2 of 2): the committed app project and lockfile must be
+      # byte-identical after a bare `pod install`. Unlike ci.yml this is the
+      # only pbxproj guard here (no #667 step), and a bare install DOES rewrite
+      # the trailing `COCOAPODS: x.y.z` stamp whenever the runner image's
+      # CocoaPods differs from the committed one. That is runner drift, not a
+      # dependency change, and runner images roll without any PR -- so a
+      # stamp-only diff warns and continues; any other diff fails.
+      - name: Assert pod install left the tree clean (issue #767)
+        working-directory: ios
+        shell: bash
+        run: |
+          if ! git diff --exit-code -- OrbitalMobile.xcodeproj/project.pbxproj; then
+            echo "ERROR: pod install modified the committed app project (#767)."
+            echo "For an SPM-shaped diff (XCRemoteSwiftPackageReference / XCSwiftPackageProductDependency)"
+            echo "see the #667 step in ci.yml and the \$RNFirebaseDisableSPM comment in ios/Podfile."
+            exit 1
+          fi
+          if ! git diff --exit-code -- Podfile.lock; then
+            NON_STAMP=$(git diff -U0 -- Podfile.lock \
+              | grep -E '^[+-]' \
+              | grep -vE '^(\+\+\+|---) ' \
+              | grep -vE '^[+-]COCOAPODS: ' || true)
+            if [ -z "$NON_STAMP" ]; then
+              echo "::warning file=ios/Podfile.lock::pod install bumped only the COCOAPODS version stamp (runner CocoaPods drift, not a dependency change). Align the committed stamp with 'pod --version' on macos-latest in a follow-up PR."
+            else
+              echo "ERROR: pod install modified ios/Podfile.lock beyond the COCOAPODS stamp (#767)."
+              echo "A SPEC CHECKSUM change means a podspec evaluated differently on this runner than on"
+              echo "the machine that committed the lock (RNSentry: see the assertion above). A dependency"
+              echo "tree change means the lock was committed stale -- run 'pod install' locally and commit."
+              echo "$NON_STAMP"
+              exit 1
+            fi
+          fi
 
       - name: Detect iOS Simulator
         id: simulator

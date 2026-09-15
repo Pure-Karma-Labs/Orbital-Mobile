@@ -26,6 +26,7 @@
     "build:rust:release": "npm run build:rust:ios:release && npm run build:rust:android:release",
     "security:invariants": "node scripts/check-security-invariants.mjs",
     "generate:emoji": "node scripts/generate-emoji-assets.mjs",
+    "test:pod-paths": "bash scripts/test-assert-no-absolute-pod-paths.sh",
     "test:rust-gate:android": "bash scripts/test-rust-profile-gate-android.sh",
     "test:rust-gate:ios": "bash scripts/test-rust-profile-gate-ios.sh"
   },

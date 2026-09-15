@@ -468,7 +468,6 @@ jobs:
           key: sentry-xcframework-${{ runner.os }}-${{ hashFiles('node_modules/@sentry/react-native/RNSentry.podspec', 'node_modules/@sentry/react-native/scripts/sentry_utils.rb') }}
 
       - name: Install CocoaPods
-        id: pod-install
         working-directory: ios
         run: pod install
 
@@ -495,8 +494,8 @@ jobs:
         run: |
           if ! git diff --exit-code -- OrbitalMobile.xcodeproj/project.pbxproj; then
             echo "ERROR: pod install modified the committed app project (#767)."
-            echo "If the diff adds XCRemoteSwiftPackageReference / XCSwiftPackageProductDependency,"
-            echo "react-native-firebase took the SPM path despite \$RNFirebaseDisableSPM (#667)."
+            echo "For an SPM-shaped diff (XCRemoteSwiftPackageReference / XCSwiftPackageProductDependency)"
+            echo "see the #667 step in ci.yml and the \$RNFirebaseDisableSPM comment in ios/Podfile."
             exit 1
           fi
           if ! git diff --exit-code -- Podfile.lock; then

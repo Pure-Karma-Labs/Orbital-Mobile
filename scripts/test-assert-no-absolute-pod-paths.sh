@@ -12,6 +12,8 @@
 #   T6  outcome=failure, JSON only; clean → exit 0; leaked JSON → exit 1
 #   T7  FRAMEWORK_SEARCH_PATHS with "/tmp/sentry-cache/..." (non-/Users) → exit 1
 #   T8  aggregate Pods-OrbitalMobile xcconfigs missing (required-file guard) → exit 1
+#   T9  RNSentry.podspec.json missing                                   → exit 1
+#   T10 broken symlink among the xcconfigs (grep error, exit 2)         → exit 1  (fail-closed guard)
 #
 # This harness never touches ios/Pods or any real repo file.
 #
@@ -175,6 +177,22 @@ run_test "T7 (/tmp/ quoted absolute FRAMEWORK_SEARCH_PATHS → exit 1)" 1 "absol
 FIXTURE="${TMPDIR_BASE}/t8"
 make_fixture "$FIXTURE" "0" "0" "" "0" "1"
 run_test "T8 (aggregate xcconfigs missing → exit 1)" 1 "vacuously" \
+  bash "$SCRIPT" "$FIXTURE"
+
+# T9: RNSentry.podspec.json missing → exit 1 (first required-file guard)
+FIXTURE="${TMPDIR_BASE}/t9"
+make_fixture "$FIXTURE"
+rm "${FIXTURE}/Local Podspecs/RNSentry.podspec.json"
+run_test "T9 (RNSentry podspec JSON missing → exit 1)" 1 "not found" \
+  bash "$SCRIPT" "$FIXTURE"
+
+# T10: a broken symlink among the xcconfigs makes grep exit 2 → the gate must
+# fail CLOSED, not print OK. This is the post-#768 shape of a dangling
+# Pods/sentry-xcframeworks link.
+FIXTURE="${TMPDIR_BASE}/t10"
+make_fixture "$FIXTURE"
+ln -s "${FIXTURE}/does-not-exist.xcconfig" "${FIXTURE}/Target Support Files/RNSentry/Broken.xcconfig"
+run_test "T10 (broken symlink xcconfig → grep error → exit 1)" 1 "refusing to pass" \
   bash "$SCRIPT" "$FIXTURE"
 
 echo ""

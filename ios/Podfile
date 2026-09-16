@@ -151,14 +151,16 @@ target 'OrbitalMobile' do
     expected_sentry_cocoa = '9.19.1' # bump with @sentry/react-native (#743); the docs table points here
     pods_root = installer.sandbox.root.to_s
     staging = File.join(pods_root, SENTRY_XCFRAMEWORK_STAGING_DIR)
-    sentry_fix = "Unset SENTRY_USE_XCFRAMEWORK in your shell (the ios/Podfile opt-out was removed in " \
-                 "#768), look for a '[Sentry] Could not link' warning in the pod install output, " \
-                 "then re-run pod install. See docs/ios-dependency-delivery.md (#768)."
+    sentry_fix = "Unset SENTRY_USE_XCFRAMEWORK (and the deprecated SENTRY_USE_SPM) in your shell -- the " \
+                 "ios/Podfile opt-out was removed in #768 -- look for a '[Sentry] Could not link' warning " \
+                 "in the pod install output, then re-run pod install. See docs/ios-dependency-delivery.md (#768)."
     versions = Dir.exist?(staging) ? Dir.children(staging).reject { |d| d.start_with?('.') } : []
     unless versions == [expected_sentry_cocoa]
       raise "[Orbital] expected #{staging}/#{expected_sentry_cocoa} and nothing else, found " \
             "#{versions.inspect} -- RNSentry did not stage its xcframework, or sentry-cocoa moved " \
-            "without updating expected_sentry_cocoa in ios/Podfile. #{sentry_fix}"
+            "without updating expected_sentry_cocoa in ios/Podfile. If the extra entry is a previous " \
+            "sentry-cocoa version (a restored ios/Pods cache), rm -rf ios/Pods/sentry-xcframeworks and " \
+            "re-run pod install. #{sentry_fix}"
     end
     link = File.join(staging, expected_sentry_cocoa, 'Sentry.xcframework')
     unless File.symlink?(link) && File.file?(File.join(link, 'Info.plist'))
@@ -174,7 +176,8 @@ target 'OrbitalMobile' do
     # The leak pattern and the required-file list have ONE home: the script CI
     # runs after pod install. Running it here makes the build machine run it too.
     assert_script = File.expand_path('../../scripts/assert-no-absolute-pod-paths.sh', pods_root)
-    unless system('bash', assert_script, pods_root)
+    # Env passed explicitly so an exported POD_INSTALL_OUTCOME cannot downgrade this run.
+    unless system({ 'POD_INSTALL_OUTCOME' => 'success' }, 'bash', assert_script, pods_root)
       raise "[Orbital] scripts/assert-no-absolute-pod-paths.sh failed (see its output above) -- an " \
             "absolute machine-specific path leaked into the pod graph. #{sentry_fix}"
     end

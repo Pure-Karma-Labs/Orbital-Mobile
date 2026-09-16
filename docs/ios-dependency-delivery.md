@@ -34,6 +34,15 @@ the RNSentry **SPEC CHECKSUM** is now machine-independent and `Podfile.lock` is
 reproducible. `Sentry (x.y.z)` no longer appears as a resolved pod in
 `Podfile.lock`; only `RNSentry (x.y.z)` does.
 
+The xcframework is consumed only through `FRAMEWORK_SEARCH_PATHS` (no pod
+dependency, no `vendored_frameworks`), so CocoaPods copies **no Sentry resource
+bundle** into the app. The source pod used to ship `Sentry.bundle/PrivacyInfo.xcprivacy`;
+after #768, `ios/OrbitalMobile/PrivacyInfo.xcprivacy` is the **sole carrier** of
+Sentry's required-reason API declarations (it already declares a superset), and
+Sentry's collected-data rows (`PerformanceData`, `OtherDiagnosticData`) appear
+nowhere in the bundle — adding them to the app manifest is a store-compliance
+decision, not a build one.
+
 ### Version record
 
 | What | Value | Where it lives |
@@ -68,7 +77,7 @@ on a runner would make that cache a supply-chain input.
 | Guard | Where it runs | What it checks |
 |---|---|---|
 | Issue #768 `post_install` in `ios/Podfile` | Every machine, every `pod install` | Staged version set equals `expected_sentry_cocoa`; symlink exists and `Info.plist` is reachable through it; `$(PODS_ROOT)` reference present in `RNSentry.podspec.json`; then runs `scripts/assert-no-absolute-pod-paths.sh` |
-| `scripts/assert-no-absolute-pod-paths.sh` | `ci.yml` after `pod install --deployment` (incl. after a failed `--deployment`); `build.yml` after bare `pod install` | No `/Users/`, `/Library/Caches/`, or quoted absolute `FRAMEWORK_SEARCH_PATHS` in `Pods/Local Podspecs/*.json` or `Pods/Target Support Files/**/*.xcconfig` |
+| `scripts/assert-no-absolute-pod-paths.sh` | From the Podfile hook on every machine; `ci.yml` after `pod install --deployment` (incl. after a failed `--deployment`); `build.yml` after bare `pod install` | The leak pattern and required-file list defined in the script (single home) over every podspec JSON and xcconfig under `ios/Pods` |
 | `pod install --deployment` + tree-clean diff | `ci.yml` | Lock drift — fails if `Podfile.lock` changes after a deployment install |
 
 **Never set `SENTRY_USE_XCFRAMEWORK=0`** (in `ios/Podfile` or your shell). The
@@ -88,6 +97,12 @@ Any `@sentry/react-native` bump (next: #743, targets ≥ 8.23 / sentry-cocoa 9.2
 4. Run `pod install` from the **main checkout** (not a worktree — worktree
    installs poison the ReactCodegen SPEC CHECKSUM).
 5. Update the Version record table above.
+6. Confirm `ios/OrbitalMobile/PrivacyInfo.xcprivacy` still covers the SDK's
+   `NSPrivacyAccessedAPITypes` (the app manifest is the only carrier now).
+7. On CI the restored `ios/Pods` cache may still hold the previous
+   `sentry-xcframeworks/<old>` entry beside the new one; the guard fails on two
+   versions — `rm -rf ios/Pods/sentry-xcframeworks` and re-run, or expect the
+   first run after the bump to need a cache-clearing retry.
 
 ---
 

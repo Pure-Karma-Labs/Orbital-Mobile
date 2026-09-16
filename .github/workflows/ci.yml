@@ -18,12 +18,14 @@ jobs:
   lint-typecheck-test:
     name: Lint, Typecheck & Test
     runs-on: macos-latest
-    # 30, not 20: this job carries ESLint, tsc, 161 Jest suites, a `pod install`
-    # for the Podfile.lock consistency check, and the iOS transcoder compile. A
-    # clean run finished with ~1 minute of headroom on 2026-08-31, and one hung
-    # suite (#731) consumed the whole budget and cancelled a job whose other 160
-    # suites had already passed -- a flake shouldn't discard passing work.
-    timeout-minutes: 30
+    # 40, not 30: typical runs are 20-23 min (ESLint, tsc, 161 Jest suites, pod
+    # install, iOS transcoder compile). A slow runner reached 29m13s (transcoder
+    # xcodebuild 18m57s). Since #768 a Sentry-cache miss adds a 66 MB download.
+    # One hung suite (#731) consumed the whole budget and cancelled a job whose
+    # other 160 suites had already passed -- a flake shouldn't discard passing
+    # work. If runs approach 40, split the transcoder compile into its own job
+    # rather than raising this again (tracked on #769).
+    timeout-minutes: 40
 
     steps:
       - name: Checkout
@@ -152,15 +154,14 @@ jobs:
           restore-keys: |
             pods-${{ runner.os }}-
 
-      # Issue #767: RNSentry's xcframework mode (opted out in ios/Podfile until
-      # #768) downloads Sentry.xcframework.zip into this dir and symlinks
-      # Pods/sentry-xcframeworks/<ver> into it. Own cache entry, keyed on the
-      # installed podspec + helper (sentry-cocoa version and checksum table),
-      # NO restore-keys: a cached tree is never inherited across versions.
-      # Until #768 the dir does not exist, so the post-job save logs a
-      # "Path Validation Error" warning -- expected, not a failure. Do not
-      # pre-create the dir: an empty entry under this key would be hit forever.
-      # Keep this step identical in build.yml.
+      # Issue #767/#768: RNSentry downloads Sentry.xcframework.zip into this dir
+      # and symlinks Pods/sentry-xcframeworks/<ver> into it. Own cache entry,
+      # keyed on the installed podspec + helper (sentry-cocoa version and
+      # checksum table), NO restore-keys: a cached tree is never inherited across
+      # versions. Do not pre-create the dir: an empty entry under this key would
+      # be hit forever. The ios/Pods cache carries the symlink, and on a miss
+      # here the podspec re-downloads during resolution so the two caches cannot
+      # get out of step. Keep this step identical in build.yml.
       - name: Cache Sentry xcframework download
         if: github.event_name == 'pull_request' && steps.pod-filter.outputs.ios-native == 'true'
         uses: actions/cache@v6

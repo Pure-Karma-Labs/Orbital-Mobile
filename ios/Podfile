@@ -8,22 +8,13 @@ require Pod::Executable.execute_command('node', ['-p',
 platform :ios, min_ios_version_supported
 prepare_react_native_project!
 
-# Keep RNSentry on the source-built `Sentry` CocoaPod rather than the prebuilt
-# Sentry.xcframework that @sentry/react-native 8.19.0 made the default.
-#
-# The xcframework path bakes the pod-install-time ABSOLUTE cache path
-# (~/Library/Caches/sentry-react-native/...) into the pod's
-# FRAMEWORK_SEARCH_PATHS. CocoaPods checksums a development pod by SHA1'ing the
-# evaluated `Pods/Local Podspecs/RNSentry.podspec.json`, so that absolute path
-# lands in SPEC CHECKSUMS — making the RNSentry checksum a function of $HOME.
-# A lock generated on a dev Mac then never matches the one CI computes, and
-# `pod install --deployment` fails for whoever didn't generate it.
-#
-# Opting out keeps `Sentry (9.19.1)` pinned in Podfile.lock (visible to
-# dependency review) and keeps the lock reproducible across machines. Costs a
-# source build of sentry-cocoa, which is what we did before 8.19.0 anyway.
-# Override to '1' only for a local experiment — do not commit the lock it makes.
-ENV['SENTRY_USE_XCFRAMEWORK'] ||= '0'
+# Issue #768: RNSentry consumes sentry-cocoa as the prebuilt Sentry.xcframework
+# (the @sentry/react-native >= 8.19 default). The SENTRY_USE_XCFRAMEWORK=0
+# opt-out is gone -- do not export it in your shell either: >= 8.23 raises on
+# it, and the "Issue #768" post_install guard below fails without the staged
+# xcframework. Mechanics, version record, provenance policy and the re-check
+# trigger for every @sentry/react-native bump: docs/ios-dependency-delivery.md.
+
 # Issue #667: keep Firebase on CocoaPods, not Swift Package Manager.
 #
 # @react-native-firebase >= 26 defaults to SPM on RN >= 0.75 (firebase_spm.rb):
@@ -145,6 +136,47 @@ target 'OrbitalMobile' do
       raise "[Orbital] $RNFirebaseDisableSPM is set but '#{spec}' is not in the " \
             "resolved pod specs -- react-native-firebase resolved Firebase via SPM. " \
             "See the $RNFirebaseDisableSPM comment in ios/Podfile (#667)."
+    end
+
+    # Issue #768: RNSentry must consume the prebuilt Sentry.xcframework through
+    # the Pods/sentry-xcframeworks symlink, never the absolute ~/Library/Caches
+    # path (docs/ios-dependency-delivery.md). Deliberately NOT vacuous: the
+    # staged version, the link and the "$(PODS_ROOT)" search path must all
+    # exist, so re-adding the opt-out (or exporting SENTRY_USE_XCFRAMEWORK=0)
+    # fails here. Never call ensure_sentry_xcframework /
+    # stage_sentry_xcframework_in_pods from this hook: both have side effects
+    # and would make the check self-fulfilling. SENTRY_XCFRAMEWORK_STAGING_DIR
+    # is defined by RNSentry's scripts/sentry_utils.rb (required by its podspec);
+    # a NameError here means upstream renamed it -- re-check the whole guard.
+    expected_sentry_cocoa = '9.19.1' # bump with @sentry/react-native (#743); the docs table points here
+    pods_root = installer.sandbox.root.to_s
+    staging = File.join(pods_root, SENTRY_XCFRAMEWORK_STAGING_DIR)
+    sentry_fix = "Unset SENTRY_USE_XCFRAMEWORK in your shell (the ios/Podfile opt-out was removed in " \
+                 "#768), look for a '[Sentry] Could not link' warning in the pod install output, " \
+                 "then re-run pod install. See docs/ios-dependency-delivery.md (#768)."
+    versions = Dir.exist?(staging) ? Dir.children(staging).reject { |d| d.start_with?('.') } : []
+    unless versions == [expected_sentry_cocoa]
+      raise "[Orbital] expected #{staging}/#{expected_sentry_cocoa} and nothing else, found " \
+            "#{versions.inspect} -- RNSentry did not stage its xcframework, or sentry-cocoa moved " \
+            "without updating expected_sentry_cocoa in ios/Podfile. #{sentry_fix}"
+    end
+    link = File.join(staging, expected_sentry_cocoa, 'Sentry.xcframework')
+    unless File.symlink?(link) && File.file?(File.join(link, 'Info.plist'))
+      raise "[Orbital] #{link} is not a symlink to a populated Sentry.xcframework -- the cache it " \
+            "points at is missing or the extract was interrupted. #{sentry_fix}"
+    end
+    podspec_json = File.join(pods_root, 'Local Podspecs', 'RNSentry.podspec.json')
+    expected_ref = "$(PODS_ROOT)/#{SENTRY_XCFRAMEWORK_STAGING_DIR}/#{expected_sentry_cocoa}/Sentry.xcframework"
+    unless File.file?(podspec_json) && File.read(podspec_json).include?(expected_ref)
+      raise "[Orbital] #{podspec_json} has no FRAMEWORK_SEARCH_PATHS entry for #{expected_ref} -- " \
+            "RNSentry resolved without the xcframework staging path. #{sentry_fix}"
+    end
+    # The leak pattern and the required-file list have ONE home: the script CI
+    # runs after pod install. Running it here makes the build machine run it too.
+    assert_script = File.expand_path('../../scripts/assert-no-absolute-pod-paths.sh', pods_root)
+    unless system('bash', assert_script, pods_root)
+      raise "[Orbital] scripts/assert-no-absolute-pod-paths.sh failed (see its output above) -- an " \
+            "absolute machine-specific path leaked into the pod graph. #{sentry_fix}"
     end
   end
 

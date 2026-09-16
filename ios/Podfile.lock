@@ -3067,12 +3067,8 @@ PODS:
     - ReactCodegen
     - ReactCommon/turbomodule/bridging
     - ReactCommon/turbomodule/core
-    - Sentry (= 9.19.1)
     - SocketRocket
     - Yoga
-  - Sentry (9.19.1):
-    - Sentry/Core (= 9.19.1)
-  - Sentry/Core (9.19.1)
   - SocketRocket (0.7.1)
   - uniffi-bindgen-react-native (0.31.0-2):
     - React-Core
@@ -3196,7 +3192,6 @@ SPEC REPOS:
     - nanopb
     - OpenSSL-Universal
     - PromisesObjC
-    - Sentry
     - SocketRocket
     - uniffi-bindgen-react-native
 
@@ -3490,12 +3485,11 @@ SPEC CHECKSUMS:
   RNKeychain: a2c134ab796272c3d605e035ab727591000b30f3
   RNNotifee: 5e3b271e8ea7456a36eec994085543c9adca9168
   RNScreens: 9269ab4971b2bd24917be84295d2c2ae7d06e9be
-  RNSentry: b807d0fc29acf03d1d996e7c1f90e688a1287f80
-  Sentry: e4588d62ac3fd3c82652bb7c8a215ec8c3de776b
+  RNSentry: 6680b573b5be15ed6c6cb8f4586291b39b9c9e72
   SocketRocket: d4aabe649be1e368d1318fdf28a022d714d65748
   uniffi-bindgen-react-native: 205a15613d97a49fe17d5bda57f7fa46a7bbafd0
   Yoga: 689c8e04277f3ad631e60fe2a08e41d411daf8eb
 
-PODFILE CHECKSUM: 66313ca46e3d2a084053de1d90b1cbf2ddbc4977
+PODFILE CHECKSUM: 15bd652100fc6b4648f6d088741a0800fb88f7bc
 
 COCOAPODS: 1.17.0

@@ -7,10 +7,11 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		0C80B921A6F3F58F76C31292 /* libPods-OrbitalMobile.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 5DCACB8F33CDC322A6C60F78 /* libPods-OrbitalMobile.a */; };
+		0A3CBC89D66215031DDE59D8 /* FirebaseCore in Frameworks */ = {isa = PBXBuildFile; productRef = 0379D0805433920CFB72E424 /* FirebaseCore */; };
 		13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
 		148C606E6D6B4CB8BCA6C7DF /* BitstreamVeraSans-Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 808E83EE353D4B898CC7753D /* BitstreamVeraSans-Bold.ttf */; };
 		24ED7860364903DBE9231389 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */; };
+		2609A25C28CC6DE112FB6F4C /* Pods_OrbitalMobile.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6F3EAFA3A6BB666FC125C575 /* Pods_OrbitalMobile.framework */; };
 		4DBA2465222A4C9985554FA4 /* BitstreamVeraSans-Italic.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 23F2E610713843D4841AD610 /* BitstreamVeraSans-Italic.ttf */; };
 		61167967F21C4C21A6A0E86F /* FiraSans-Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 7F0CE053C13845009B102534 /* FiraSans-Bold.ttf */; };
 		761780ED2CA45674006654EE /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761780EC2CA45674006654EE /* AppDelegate.swift */; };
@@ -36,7 +37,7 @@
 		3B4392A12AC88292D35C810B /* Pods-OrbitalMobile.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-OrbitalMobile.debug.xcconfig"; path = "Target Support Files/Pods-OrbitalMobile/Pods-OrbitalMobile.debug.xcconfig"; sourceTree = "<group>"; };
 		42F54BA0645041FB84ECC24F /* BitstreamVeraSansMono.ttf */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = 9; includeInIndex = 0; lastKnownFileType = unknown; name = BitstreamVeraSansMono.ttf; path = ../src/theme/fonts/BitstreamVeraSansMono.ttf; sourceTree = "<group>"; };
 		5709B34CF0A7D63546082F79 /* Pods-OrbitalMobile.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-OrbitalMobile.release.xcconfig"; path = "Target Support Files/Pods-OrbitalMobile/Pods-OrbitalMobile.release.xcconfig"; sourceTree = "<group>"; };
-		5DCACB8F33CDC322A6C60F78 /* libPods-OrbitalMobile.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-OrbitalMobile.a"; sourceTree = BUILT_PRODUCTS_DIR; };
+		6F3EAFA3A6BB666FC125C575 /* Pods_OrbitalMobile.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_OrbitalMobile.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		761780EC2CA45674006654EE /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = OrbitalMobile/AppDelegate.swift; sourceTree = "<group>"; };
 		78D60917D64B492CA9631E85 /* Colors.xcassets */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = 9; includeInIndex = 0; lastKnownFileType = folder.assetcatalog; name = Colors.xcassets; path = OrbitalMobile/Colors.xcassets; sourceTree = "<group>"; };
 		7F0CE053C13845009B102534 /* FiraSans-Bold.ttf */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = 9; includeInIndex = 0; lastKnownFileType = unknown; name = "FiraSans-Bold.ttf"; path = "../src/theme/fonts/FiraSans-Bold.ttf"; sourceTree = "<group>"; };
@@ -54,7 +55,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				0C80B921A6F3F58F76C31292 /* libPods-OrbitalMobile.a in Frameworks */,
+				2609A25C28CC6DE112FB6F4C /* Pods_OrbitalMobile.framework in Frameworks */,
+				0A3CBC89D66215031DDE59D8 /* FirebaseCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -80,7 +82,7 @@
 			isa = PBXGroup;
 			children = (
 				ED297162215061F000B7C4FE /* JavaScriptCore.framework */,
-				5DCACB8F33CDC322A6C60F78 /* libPods-OrbitalMobile.a */,
+				6F3EAFA3A6BB666FC125C575 /* Pods_OrbitalMobile.framework */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -156,12 +158,17 @@
 				E235C05ADACE081382539298 /* [CP] Copy Pods Resources */,
 				A9575C7E5D0A4C1BA25FB354 /* [CP-User] [RNFB] Core Configuration */,
 				A8C8F2BD0D6F2AB30F03F05D /* [CP-User] Upload Debug Symbols to Sentry */,
+				1CA5EC319802212A68CBD27D /* [RNFB] Embed Firebase SPM Frameworks */,
+				D29C7F4DCC4E8C71CD156421 /* [RNFB] Remove duplicate Firebase/Google SPM binary xcframework signature files */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 			);
 			name = OrbitalMobile;
+			packageProductDependencies = (
+				0379D0805433920CFB72E424 /* FirebaseCore */,
+			);
 			productName = Orbital;
 			productReference = 13B07F961A680F5B00A75B9A /* Orbital.app */;
 			productType = "com.apple.product-type.application";
@@ -189,6 +196,9 @@
 				Base,
 			);
 			mainGroup = 83CBB9F61A601CBA00E9B192;
+			packageReferences = (
+				F304ABDAAE377AAB4CA44452 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
+			);
 			productRefGroup = 83CBBA001A601CBA00E9B192 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -256,6 +266,27 @@
 			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-OrbitalMobile/Pods-OrbitalMobile-frameworks.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
+		1CA5EC319802212A68CBD27D /* [RNFB] Embed Firebase SPM Frameworks */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"${BUILT_PRODUCTS_DIR}/PackageFrameworks",
+			);
+			name = "[RNFB] Embed Firebase SPM Frameworks";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "set -euo pipefail\n\napp_frameworks_dir=\"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}\"\nmkdir -p \"${app_frameworks_dir}\"\n\nembed_frameworks_from() {\n  local source_dir=\"$1\"\n  [ -d \"${source_dir}\" ] || return 0\n\n  find \"${source_dir}\" -maxdepth 1 -type d -name \"*.framework\" -print0 | while IFS= read -r -d '' framework; do\n    framework_name=\"$(basename \"${framework}\")\"\n    destination=\"${app_frameworks_dir}/${framework_name}\"\n\n    if [ -e \"${destination}\" ]; then\n      continue\n    fi\n\n    # Xcode's Archive action writes EVERY SKIP_INSTALL=YES product into\n    # ${OBJROOT}/UninstalledProducts/${PLATFORM_NAME} -- not just Swift\n    # Package products. With CocoaPods + `use_frameworks!` (required for\n    # SPM mode), that folder also contains every pod's .framework,\n    # including STATIC ones (Expo modules, the Pods_<target> umbrella,\n    # ...). Embedding a static framework into the app bundle makes App\n    # Store validation fail with \"Invalid bundle structure ... binary\n    # file is not permitted\". Only ever embed real dynamic libraries.\n    #\n    # Internal binary name matches the .framework folder name minus the\n    # extension for every CocoaPods/SPM-built framework (all this script\n    # handles).\n    binary_name=\"${framework_name%.framework}\"\n    # Deliberate tradeoff: match `file -b` prose for \"dynamically linked\"\n    # rather than inspecting Mach-O magic bytes. Locale-independent in\n    # practice on Apple's `file`, but still a CLI string match.\n    if [ ! -f \"${framework}/${binary_name}\" ] || \\\n       ! file -b \"${framework}/${binary_name}\" | grep -q 'dynamically linked'; then\n      echo \"Skipping ${framework_name}: binary missing or not dynamically linked\"\n      continue\n    fi\n\n    echo \"Embedding Firebase SPM framework ${framework_name} (from ${source_dir})\"\n    rsync -av --delete \\\n      --filter \"- Headers\" \\\n      --filter \"- PrivateHeaders\" \\\n      --filter \"- Modules\" \\\n      \"${framework}\" \\\n      \"${app_frameworks_dir}\"\n\n    if [ -n \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" ] && [ \"${CODE_SIGNING_REQUIRED:-}\" != \"NO\" ] && [ \"${CODE_SIGNING_ALLOWED:-}\" != \"NO\" ]; then\n      /usr/bin/codesign --force --sign \"${EXPANDED_CODE_SIGN_IDENTITY}\" ${OTHER_CODE_SIGN_FLAGS:-} --preserve-metadata=identifier,entitlements \"${destination}\"\n    fi\n  done\n}\n\n# Regular (simulator/device) builds put every Swift Package product for\n# the whole scheme's dependency graph into one shared folder.\nembed_frameworks_from \"${BUILT_PRODUCTS_DIR}/PackageFrameworks\"\n\n# Xcode's Archive action (ONLY_ACTIVE_ARCH=NO, DEPLOYMENT_POSTPROCESSING=YES)\n# never populates PackageFrameworks. It stages build products under\n# ${OBJROOT}/UninstalledProducts/${PLATFORM_NAME} instead -- and that\n# folder is NOT SPM-only: Archive writes every SKIP_INSTALL=YES product\n# there, which under CocoaPods + use_frameworks! (required for SPM mode)\n# includes every pod .framework (dynamic Firebase SPM products and static\n# pods alike). Without this fallback, Archive embeds zero Firebase SPM\n# frameworks and the app crashes at launch (missing-library dyld). The\n# filter inside embed_frameworks_from keeps only dynamically linked\n# binaries so static CocoaPods frameworks are not copied into the app\n# bundle (App Store \"Invalid bundle structure\").\nembed_frameworks_from \"${OBJROOT}/UninstalledProducts/${PLATFORM_NAME}\"\n";
+		};
 		A8C8F2BD0D6F2AB30F03F05D /* [CP-User] Upload Debug Symbols to Sentry */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -301,6 +332,25 @@
 			shellPath = /bin/sh;
 			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
 			showEnvVarsInLog = 0;
+		};
+		D29C7F4DCC4E8C71CD156421 /* [RNFB] Remove duplicate Firebase/Google SPM binary xcframework signature files */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "[RNFB] Remove duplicate Firebase/Google SPM binary xcframework signature files";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "rm -f \"${CONFIGURATION_BUILD_DIR}\"/GoogleAppMeasurement.xcframework-ios.signature\nrm -f \"${CONFIGURATION_BUILD_DIR}\"/GoogleAppMeasurementIdentitySupport.xcframework-ios.signature\nrm -f \"${CONFIGURATION_BUILD_DIR}\"/GoogleAdsOnDeviceConversion.xcframework-ios.signature\nrm -f \"${CONFIGURATION_BUILD_DIR}\"/FirebaseAnalytics.xcframework-ios.signature\nrm -f \"${CONFIGURATION_BUILD_DIR}\"/FirebaseFirestoreInternal.xcframework-ios.signature\nrm -f \"${CONFIGURATION_BUILD_DIR}\"/absl.xcframework-ios.signature\nrm -f \"${CONFIGURATION_BUILD_DIR}\"/grpc.xcframework-ios.signature\nrm -f \"${CONFIGURATION_BUILD_DIR}\"/grpcpp.xcframework-ios.signature\nrm -f \"${CONFIGURATION_BUILD_DIR}\"/openssl_grpc.xcframework-ios.signature\n";
 		};
 		E235C05ADACE081382539298 /* [CP] Copy Pods Resources */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -349,6 +399,7 @@
 			baseConfigurationReference = 3B4392A12AC88292D35C810B /* Pods-OrbitalMobile.debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_ENABLE_EXPLICIT_MODULES = NO;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = OrbitalMobile/OrbitalMobile.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
@@ -372,6 +423,8 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.orbital.mobile;
 				PRODUCT_NAME = Orbital;
 				PROVISIONING_PROFILE_SPECIFIER = "";
+				SWIFT_ENABLE_EXPLICIT_MODULES = NO;
+				SWIFT_INCLUDE_PATHS = "$(inherited) ${SYMROOT}/${CONFIGURATION}${EFFECTIVE_PLATFORM_NAME}/";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
 				VERSIONING_SYSTEM = "apple-generic";
@@ -383,6 +436,7 @@
 			baseConfigurationReference = 5709B34CF0A7D63546082F79 /* Pods-OrbitalMobile.release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_ENABLE_EXPLICIT_MODULES = NO;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = OrbitalMobile/OrbitalMobile.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
@@ -405,6 +459,8 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.orbital.mobile;
 				PRODUCT_NAME = Orbital;
 				PROVISIONING_PROFILE_SPECIFIER = "";
+				SWIFT_ENABLE_EXPLICIT_MODULES = NO;
+				SWIFT_INCLUDE_PATHS = "$(inherited) ${SYMROOT}/${CONFIGURATION}${EFFECTIVE_PLATFORM_NAME}/";
 				SWIFT_VERSION = 5.0;
 				VERSIONING_SYSTEM = "apple-generic";
 			};
@@ -461,6 +517,19 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"${PODS_CONFIGURATION_BUILD_DIR}/ReactCommon/ReactCommon.framework/Headers",
+					"${PODS_CONFIGURATION_BUILD_DIR}/ReactCommon/ReactCommon.framework/Headers/react/nativemodule/core",
+					"${PODS_CONFIGURATION_BUILD_DIR}/React-runtimeexecutor/React_runtimeexecutor.framework/Headers",
+					"${PODS_CONFIGURATION_BUILD_DIR}/React-runtimeexecutor/React_runtimeexecutor.framework/Headers/platform/ios",
+					"${PODS_CONFIGURATION_BUILD_DIR}/ReactCommon-Samples/ReactCommon_Samples.framework/Headers",
+					"${PODS_CONFIGURATION_BUILD_DIR}/ReactCommon-Samples/ReactCommon_Samples.framework/Headers/platform/ios",
+					"${PODS_CONFIGURATION_BUILD_DIR}/React-Fabric/React_Fabric.framework/Headers/react/renderer/components/view/platform/cxx",
+					"${PODS_CONFIGURATION_BUILD_DIR}/React-NativeModulesApple/React_NativeModulesApple.framework/Headers",
+					"${PODS_CONFIGURATION_BUILD_DIR}/React-graphics/React_graphics.framework/Headers",
+					"${PODS_CONFIGURATION_BUILD_DIR}/React-graphics/React_graphics.framework/Headers/react/renderer/graphics/platform/ios",
+				);
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
 				LD_RUNPATH_SEARCH_PATHS = (
 					/usr/lib/swift,
@@ -533,6 +602,19 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"${PODS_CONFIGURATION_BUILD_DIR}/ReactCommon/ReactCommon.framework/Headers",
+					"${PODS_CONFIGURATION_BUILD_DIR}/ReactCommon/ReactCommon.framework/Headers/react/nativemodule/core",
+					"${PODS_CONFIGURATION_BUILD_DIR}/React-runtimeexecutor/React_runtimeexecutor.framework/Headers",
+					"${PODS_CONFIGURATION_BUILD_DIR}/React-runtimeexecutor/React_runtimeexecutor.framework/Headers/platform/ios",
+					"${PODS_CONFIGURATION_BUILD_DIR}/ReactCommon-Samples/ReactCommon_Samples.framework/Headers",
+					"${PODS_CONFIGURATION_BUILD_DIR}/ReactCommon-Samples/ReactCommon_Samples.framework/Headers/platform/ios",
+					"${PODS_CONFIGURATION_BUILD_DIR}/React-Fabric/React_Fabric.framework/Headers/react/renderer/components/view/platform/cxx",
+					"${PODS_CONFIGURATION_BUILD_DIR}/React-NativeModulesApple/React_NativeModulesApple.framework/Headers",
+					"${PODS_CONFIGURATION_BUILD_DIR}/React-graphics/React_graphics.framework/Headers",
+					"${PODS_CONFIGURATION_BUILD_DIR}/React-graphics/React_graphics.framework/Headers/react/renderer/graphics/platform/ios",
+				);
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
 				LD_RUNPATH_SEARCH_PATHS = (
 					/usr/lib/swift,
@@ -583,6 +665,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		F304ABDAAE377AAB4CA44452 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/firebase/firebase-ios-sdk.git";
+			requirement = {
+				kind = exactVersion;
+				version = 12.18.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		0379D0805433920CFB72E424 /* FirebaseCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F304ABDAAE377AAB4CA44452 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseCore;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 83CBB9F71A601CBA00E9B192 /* Project object */;
 }

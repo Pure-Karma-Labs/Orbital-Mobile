@@ -464,17 +464,14 @@ try {
 }
 
 // ---------------------------------------------------------------------------
-// 12. Firebase stays on CocoaPods (SPM disabled)
+// 12. Firebase resolves via Swift Package Manager with dynamic frameworks (#769)
 // ---------------------------------------------------------------------------
 
-// @react-native-firebase >= 26 defaults to SPM on RN >= 0.75. We opt out via
-// $RNFirebaseDisableSPM = true in ios/Podfile — the rationale has ONE home, the
-// comment above that line in ios/Podfile (short version: this Podfile pins the
-// Firebase pods directly, so SPM would add a second Firebase module graph).
-// The flag must be exactly `true` (ruby podspec tests `== true`).
-// Runtime guards (Podfile post_install + post_integrate, ci.yml pod-log check and
-// post-install pbxproj diff) complement this static check. See #667 / #637.
-//
+// @react-native-firebase >= 26 resolves Firebase via Swift Package Manager and
+// requires dynamic frameworks (#769). Rationale has ONE home: the comment above
+// `use_frameworks!` in ios/Podfile. This static check guards the Podfile lines
+// the runtime guards (Podfile post_install + scripts/verify-firebase-spm.rb,
+// ci.yml SPM log + pbxproj diff + Package.resolved gate) depend on.
 // Anchored on the dependency: if @react-native-firebase/app is ever removed,
 // delete this rule rather than leave it to pass vacuously.
 
@@ -482,7 +479,7 @@ try {
   const pkg = JSON.parse(readFileSync(PKG_JSON, 'utf8'));
   if (pkg.dependencies?.['@react-native-firebase/app'] === undefined) {
     violations.push(
-      `  ${PKG_JSON}:0  [rnfb-cocoapods-pinned]  @react-native-firebase/app is no longer a dependency — delete this rule instead of leaving a vacuous check`,
+      `  ${PKG_JSON}:0  [rnfb-spm-dynamic]  @react-native-firebase/app is no longer a dependency — delete this rule instead of leaving a vacuous check`,
     );
   } else {
     let podfile;
@@ -491,19 +488,127 @@ try {
     } catch {
       podfile = null;
       violations.push(
-        `  ios/Podfile:0  [rnfb-cocoapods-pinned]  ios/Podfile not found — cannot verify $RNFirebaseDisableSPM`,
+        `  ios/Podfile:0  [rnfb-spm-dynamic]  ios/Podfile not found — cannot verify Firebase SPM configuration`,
       );
     }
-    if (podfile !== null && !/^\$RNFirebaseDisableSPM\s*=\s*true\s*$/m.test(podfile)) {
-      violations.push(
-        `  ios/Podfile:0  [rnfb-cocoapods-pinned]  ios/Podfile must declare "$RNFirebaseDisableSPM = true" (exactly true) — see #667/#637`,
-      );
+    if (podfile !== null) {
+      if (/^\s*\$RNFirebaseDisableSPM\s*=/m.test(podfile)) {
+        violations.push(`  ios/Podfile:0  [rnfb-spm-dynamic]  ios/Podfile must not assign $RNFirebaseDisableSPM — Firebase is SPM-resolved since #769`);
+      }
+      if (!/^use_frameworks! :linkage => :dynamic\s*$/m.test(podfile)) {
+        violations.push(`  ios/Podfile:0  [rnfb-spm-dynamic]  ios/Podfile must declare "use_frameworks! :linkage => :dynamic" at top level — see #769`);
+      }
+      if (!/^ORBITAL_FIREBASE_SPM_URL = 'https:\/\/github\.com\/firebase\/firebase-ios-sdk\.git'\s*$/m.test(podfile)) {
+        violations.push(`  ios/Podfile:0  [rnfb-spm-dynamic]  ios/Podfile must pin ORBITAL_FIREBASE_SPM_URL to the canonical firebase-ios-sdk URL — see #769`);
+      }
     }
   }
 } catch {
   violations.push(
-    `  ${PKG_JSON}:0  [rnfb-cocoapods-pinned]  package.json unreadable — cannot verify the @react-native-firebase/app anchor`,
+    `  ${PKG_JSON}:0  [rnfb-spm-dynamic]  package.json unreadable — cannot verify the @react-native-firebase/app anchor`,
   );
+}
+
+// ---------------------------------------------------------------------------
+// 13. iOS CI/build cache-step parity
+// ---------------------------------------------------------------------------
+
+// ci.yml and build.yml must carry identical path: and key: for the three iOS
+// cache steps (CocoaPods, Sentry xcframework, Swift package clones). A drift
+// between the two files silently breaks reproducibility: one machine fetches
+// stale pods while the other hits a good cache. Anchored on the step names
+// existing in both files; a missing name is itself a violation.
+// (◆ agreed at #800, implemented in #769.)
+
+const CI_YML = join('.github', 'workflows', 'ci.yml');
+const BUILD_YML = join('.github', 'workflows', 'build.yml');
+
+const PARITY_STEPS = [
+  'Cache CocoaPods',
+  'Cache Sentry xcframework download',
+  'Cache Swift package clones',
+];
+
+function extractCacheStep(yamlText, stepName) {
+  // Find the step block by name, then extract path: and key: values.
+  // Uses line-based extraction: find "- name: <stepName>" then scan forward
+  // for path: and key: lines until the next "- name:" or "- uses:" or end.
+  const lines = yamlText.split('\n');
+  let inStep = false;
+  let depth = null;
+  const result = { path: null, key: null, restoreKeys: null };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const nameMatch = line.match(/^(\s*)- name:\s*(.+)$/);
+    if (nameMatch) {
+      if (inStep) break; // left the step
+      if (nameMatch[2].trim() === stepName) {
+        inStep = true;
+        depth = nameMatch[1].length;
+        continue;
+      }
+    }
+    if (!inStep) continue;
+    // Stop at the next step-level list item
+    if (line.match(/^\s{0,}(-\s+(name|uses|run|if|id):)/)) {
+      const indent = line.match(/^(\s*)/)[1].length;
+      if (indent <= depth) break;
+    }
+    const pathMatch = line.match(/^\s+path:\s*\|?\s*$/);
+    if (pathMatch) {
+      // Multi-line path: collect subsequent indented lines
+      let paths = [];
+      let j = i + 1;
+      while (j < lines.length && lines[j].match(/^\s{4,}/)) {
+        paths.push(lines[j].trim());
+        j++;
+      }
+      result.path = paths.length > 0 ? paths.join('\n') : null;
+      continue;
+    }
+    const pathInlineMatch = line.match(/^\s+path:\s*(.+)$/);
+    if (pathInlineMatch) { result.path = pathInlineMatch[1].trim(); continue; }
+    const keyMatch = line.match(/^\s+key:\s*(.+)$/);
+    if (keyMatch) { result.key = keyMatch[1].trim(); continue; }
+    const rkMatch = line.match(/^\s+restore-keys:\s*\|?\s*(.*)$/);
+    if (rkMatch) { result.restoreKeys = rkMatch[1].trim() || 'present'; continue; }
+  }
+  return inStep ? result : null;
+}
+
+let ciYaml = null;
+let buildYaml = null;
+try { ciYaml = readFileSync(CI_YML, 'utf8'); } catch { violations.push(`  ${CI_YML}:0  [ios-cache-parity]  ci.yml not found`); }
+try { buildYaml = readFileSync(BUILD_YML, 'utf8'); } catch { violations.push(`  ${BUILD_YML}:0  [ios-cache-parity]  build.yml not found`); }
+
+if (ciYaml !== null && buildYaml !== null) {
+  for (const stepName of PARITY_STEPS) {
+    const ci = extractCacheStep(ciYaml, stepName);
+    const build = extractCacheStep(buildYaml, stepName);
+    if (ci === null) {
+      violations.push(`  ${CI_YML}:0  [ios-cache-parity]  step "${stepName}" not found in ci.yml`);
+    }
+    if (build === null) {
+      violations.push(`  ${BUILD_YML}:0  [ios-cache-parity]  step "${stepName}" not found in build.yml`);
+    }
+    if (ci !== null && build !== null) {
+      if (ci.path !== build.path) {
+        violations.push(`  ${CI_YML}:0  [ios-cache-parity]  step "${stepName}" path: differs between ci.yml (${ci.path}) and build.yml (${build.path})`);
+      }
+      if (ci.key !== build.key) {
+        violations.push(`  ${CI_YML}:0  [ios-cache-parity]  step "${stepName}" key: differs between ci.yml (${ci.key}) and build.yml (${build.key})`);
+      }
+      // Sentry xcframework download must have no restore-keys in either file
+      if (stepName === 'Cache Sentry xcframework download') {
+        if (ci.restoreKeys) {
+          violations.push(`  ${CI_YML}:0  [ios-cache-parity]  "Cache Sentry xcframework download" must have no restore-keys in ci.yml`);
+        }
+        if (build.restoreKeys) {
+          violations.push(`  ${BUILD_YML}:0  [ios-cache-parity]  "Cache Sentry xcframework download" must have no restore-keys in build.yml`);
+        }
+      }
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

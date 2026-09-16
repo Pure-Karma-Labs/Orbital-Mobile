@@ -15,43 +15,24 @@ prepare_react_native_project!
 # xcframework. Mechanics, version record, provenance policy and the re-check
 # trigger for every @sentry/react-native bump: docs/ios-dependency-delivery.md.
 
-# Issue #667: keep Firebase on CocoaPods, not Swift Package Manager.
-#
-# @react-native-firebase >= 26 defaults to SPM on RN >= 0.75 (firebase_spm.rb):
-# RNFBApp.podspec drops its `Firebase/CoreOnly` pod dependency and instead has
-# `pod install` add an `XCRemoteSwiftPackageReference` (firebase-ios-sdk) plus an
-# `XCSwiftPackageProductDependency` and two `[RNFB] ... SPM` shell phases to
-# OrbitalMobile.xcodeproj, and force `-ObjC` / `*_ENABLE_EXPLICIT_MODULES=NO`
-# onto every target. We opt out:
-#   1. This Podfile pins eight Firebase/Google pods directly (the
-#      `:modular_headers => true` lines below), so an SPM-resolved
-#      firebase-ios-sdk would coexist with the CocoaPods-resolved copy: two
-#      Firebase module graphs in one binary (duplicate symbols / double
-#      configure — the `redefinition of module 'Firebase'` collision RNFB
-#      itself documents). Notifee is NOT a Firebase consumer (RNNotifee depends
-#      only on React-Core); the CocoaPods copy is ours.
-#   2. Those eight pins have no SPM equivalent.
-#   3. The pbxproj is committed and CI has no Archive step, so SPM resolution
-#      churn would first be seen at release time.
-# Must be exactly `true` (the podspec tests `== true`). Enforced by the
-# post_install / post_integrate assertions at the bottom of this file, the
-# ci.yml "Assert Firebase stays on CocoaPods" log check, and
-# scripts/check-security-invariants.mjs #12.
-# Coupling note: regardless of this flag, RNFB >= 26 monkey-patches
-# Pod::Installer at podspec-require time (firebase_spm.rb aliases
-# run_podfile_post_install_hooks, run_podfile_post_integrate_hooks and the
-# pods-project generate method). A CocoaPods release that renames or re-arities
-# those methods breaks `pod install` from inside RNFB's podspec — check that
-# the patch still applies before bumping the Homebrew pod / lockfile stamp.
-# Horizon: Firebase stops publishing pods after October 2026 (DEBT-147/#637);
-# the SPM migration belongs to that issue (#769), not this one.
-$RNFirebaseDisableSPM = true
+require 'json'
 
-linkage = ENV['USE_FRAMEWORKS']
-if linkage != nil
-  Pod::UI.puts "Configuring Pod with #{linkage}ally linked Frameworks".green
-  use_frameworks! :linkage => linkage.to_sym
-end
+# Issue #769: Firebase is a Swift package (firebase-ios-sdk), resolved by
+# react-native-firebase's firebase_spm.rb, which REQUIRES dynamic frameworks
+# (static + SPM hard-fails inside RNFB). The whole pod graph therefore builds
+# as dynamic frameworks; there is no env override on purpose. Never re-add
+# `$RNFirebaseDisableSPM` or pin Firebase pods here. The exact Firebase
+# version is the `exactVersion` requirement on the firebase-ios-sdk package
+# reference in OrbitalMobile.xcodeproj; Package.resolved is derived from it.
+# Guards: scripts/verify-firebase-spm.rb (harness: npm run test:firebase-spm).
+# Rationale, version record, provenance, bump procedure:
+# docs/ios-dependency-delivery.md.
+use_frameworks! :linkage => :dynamic
+
+# ◆ Supply-chain anchor for the Swift package (security review): this literal,
+# not node_modules, is what the guards compare against. Mirrored by the
+# rnfb-spm-dynamic rule in scripts/check-security-invariants.mjs.
+ORBITAL_FIREBASE_SPM_URL = 'https://github.com/firebase/firebase-ios-sdk.git'
 
 target 'OrbitalMobile' do
   # Fail Release builds (incl. Product > Archive) if the vendored Rust
@@ -76,16 +57,6 @@ target 'OrbitalMobile' do
     :execution_position => :after_compile,
     :always_out_of_date => '1'
 
-  # Firebase requires modular headers for its Swift→ObjC interop
-  pod 'FirebaseCore', :modular_headers => true
-  pod 'FirebaseCoreInternal', :modular_headers => true
-  pod 'FirebaseInstallations', :modular_headers => true
-  pod 'FirebaseMessaging', :modular_headers => true
-  pod 'GoogleUtilities', :modular_headers => true
-  pod 'GoogleDataTransport', :modular_headers => true
-  pod 'nanopb', :modular_headers => true
-  pod 'FirebaseCoreExtension', :modular_headers => true
-
   config = use_native_modules!
 
   use_react_native!(
@@ -105,11 +76,14 @@ target 'OrbitalMobile' do
     # Xcode 27 rejects any target whose IPHONEOS_DEPLOYMENT_TARGET is below
     # 15.0 (an error, not the warning Xcode 26 gave). react_native_post_install
     # raises the floor on each pod's native target only; the privacy-manifest
-    # resource bundles (nanopb_Privacy, GoogleUtilities_Privacy,
-    # GoogleDataTransport_Privacy, FBLPromises_Privacy, RNImagePickerPrivacyInfo)
-    # keep their podspec's 9.0/12.0 and fail `xcodebuild archive` on Xcode 27.
-    # Raise them to the same floor RN uses for native targets. CI cannot see
-    # this: build.yml pins the newest Xcode 26.x.
+    # resource bundles (RNImagePickerPrivacyInfo) keep their podspec's 9.0/12.0
+    # and fail `xcodebuild archive` on Xcode 27. Raise them to the same floor
+    # RN uses for native targets. CI cannot see this: build.yml pins the newest
+    # Xcode 26.x. Note: Firebase/Google resource bundles (nanopb_Privacy,
+    # GoogleUtilities_Privacy, GoogleDataTransport_Privacy, FBLPromises_Privacy)
+    # left the pod graph when Firebase moved to SPM (#769); SPM package resource
+    # bundles are not pod targets and never pass through this loop -- that is
+    # fine, Xcode builds them at the package's own floor.
     floor = min_ios_version_supported.to_f
     installer.target_installation_results.pod_target_installation_results.each_value do |result|
       result.resource_bundle_targets.each do |bundle|
@@ -117,6 +91,58 @@ target 'OrbitalMobile' do
           current = build_config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'].to_f
           build_config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = min_ios_version_supported if current < floor
         end
+      end
+    end
+
+    # Issue #769: under dynamic frameworks each pod links on its own, so a
+    # podspec that uses a symbol without declaring the pod that compiles it
+    # fails with "Undefined symbols" at ITS link step. Table: pod target =>
+    # [[pod directory (nil = system framework), framework name]].
+    # VERIFIED rows were each found by a real link failure in the Tier-1 probe.
+    # PRE-EMPTIVE rows are the dependency edges RN 0.83-stable's podspecs added
+    # (diff of every RN podspec 0.82.1 -> 0.83-stable) and never failed here;
+    # they are harmless extra -framework flags. Do NOT add 0.83's
+    # jsinspectortracing -> jsinspectornetwork edge: 0.82 has the reverse edge
+    # and Xcode reports a target cycle.
+    # DELETE the RN rows at the RN >= 0.83 upgrade (#311); delete the two
+    # third-party rows when those packages fix their podspecs; re-run the
+    # Tier-1 probe (docs/ios-dependency-delivery.md) after either.
+    #
+    # OrbitalSignal.podspec is regenerated byte-for-byte by ubrn on every
+    # `build:ios[:release]` (ubrn.config.yaml has no `noOverwrite`). OrbitalSignal's
+    # linkage settings therefore have exactly ONE legal home -- this post_install
+    # hook -- never the podspec. The merge-gate no-op assertion covers it.
+    missing_links = {
+      # VERIFIED (link failure in the probe)
+      'React-webperformancenativemodule' => [['React-cxxreact', 'cxxreact']],          # ReactMarker::StartupLogger; RN 0.83 adds s.dependency "React-cxxreact"
+      'React-defaultsnativemodule'       => [['React-featureflags', 'React_featureflags']], # ReactNativeFeatureFlags; RN 0.83 adds add_dependency React-featureflags
+      'react-native-video'               => [['React-CoreModules', 'CoreModules']],      # RCTEventDispatcher class lives in React-CoreModules
+      'ReactNativeFs'                    => [[nil, 'UniformTypeIdentifiers']],          # UTType / UTTypeItem
+      # PRE-EMPTIVE (from the 0.83 podspec diff; never failed here)
+      'React-CoreModules'                => [['React-featureflags', 'React_featureflags'], ['React-utils', 'React_utils']],
+      'React-jsiexecutor'                => [['React-utils', 'React_utils']],
+      'React-cxxreact'                   => [['React-utils', 'React_utils']],
+      'React-jsitooling'                 => [['React-utils', 'React_utils']],
+      'React-jsinspector'                => [['React-utils', 'React_utils']],
+      'React-RCTRuntime'                 => [['React-utils', 'React_utils']],
+      'React-jsinspectortracing'         => [['React-utils', 'React_utils'], ['React-jsi', 'jsi']],
+    }
+    by_name = installer.pods_project.native_targets.to_h { |t| [t.name, t] }
+    missing = missing_links.keys - by_name.keys
+    unless missing.empty?
+      raise "[Orbital] missing_links names pod targets that do not exist: #{missing.inspect} -- " \
+            "a pod was renamed or dropped; delete or fix the row rather than let it apply nothing (#769)."
+    end
+    missing_links.each do |name, links|
+      by_name[name].build_configurations.each do |c|
+        ld = Array(c.build_settings['OTHER_LDFLAGS'] || '$(inherited)').join(' ')
+        fw = Array(c.build_settings['FRAMEWORK_SEARCH_PATHS'] || '$(inherited)').join(' ')
+        links.each do |dir, fname|
+          ld += " -framework \"#{fname}\""
+          fw += " \"${PODS_CONFIGURATION_BUILD_DIR}/#{dir}\"" if dir
+        end
+        c.build_settings['OTHER_LDFLAGS'] = ld
+        c.build_settings['FRAMEWORK_SEARCH_PATHS'] = fw
       end
     end
 
@@ -136,19 +162,28 @@ target 'OrbitalMobile' do
       end
     end
 
-    # Issue #667 (guard 1 of 3 — resolved spec set): in CocoaPods mode the RNFB
-    # podspecs declare the `Firebase/CoreOnly` and `Firebase/Messaging` umbrella
-    # subspecs; in SPM mode they declare neither and pull Firebase as a Swift
-    # package instead. Our own Podfile pins FirebaseCore/FirebaseMessaging
-    # directly, so THOSE targets exist in both modes and prove nothing — the
-    # umbrella subspecs are the discriminator. (Confirmed against the installed
-    # RNFBApp.podspec / RNFBMessaging.podspec before writing this list.)
+    # Issue #769 (guard 1 of 3 — installer state; read-only tenant, keep last
+    # among mutating tenants). RNFirebaseSPM is defined by node_modules/
+    # @react-native-firebase/app/firebase_spm.rb; a NameError here means
+    # upstream renamed it -- re-check the whole guard. Never call rnfirebase_*
+    # helpers from a hook: they mutate projects. The committed-file checks
+    # (pbxproj reference, Package.resolved) run in post_integrate (guard 2).
+    unless RNFirebaseSPM.active?
+      raise "[Orbital] react-native-firebase did not take the SPM path -- a " \
+            "$RNFirebaseDisableSPM assignment or a non-dynamic use_frameworks! " \
+            "line is back in ios/Podfile (#769)."
+    end
+    unless RNFirebaseSPM.url == ORBITAL_FIREBASE_SPM_URL
+      raise "[Orbital] @react-native-firebase/app resolves Firebase from " \
+            "#{RNFirebaseSPM.url.inspect}, expected #{ORBITAL_FIREBASE_SPM_URL}. Do NOT " \
+            "'fix' the Podfile literal: verify the installed react-native-firebase package " \
+            "has not been tampered with (sdkVersions.ios.firebaseSpmUrl) (#769)."
+    end
     resolved = installer.analysis_result.specifications.map(&:name)
-    %w[Firebase/CoreOnly Firebase/Messaging].each do |spec|
-      next if resolved.include?(spec)
-      raise "[Orbital] $RNFirebaseDisableSPM is set but '#{spec}' is not in the " \
-            "resolved pod specs -- react-native-firebase resolved Firebase via SPM. " \
-            "See the $RNFirebaseDisableSPM comment in ios/Podfile (#667)."
+    stray = resolved.select { |n| n.start_with?('Firebase', 'GoogleUtilities', 'GoogleDataTransport', 'nanopb', 'PromisesObjC') }
+    unless stray.empty?
+      raise "[Orbital] CocoaPods resolved #{stray.inspect} -- Firebase/Google pods must not " \
+            "exist in the pod graph next to the SPM package (double module graph) (#769)."
     end
 
     # Issue #768: RNSentry must consume the prebuilt Sentry.xcframework through
@@ -196,23 +231,28 @@ target 'OrbitalMobile' do
     end
   end
 
-  # Issue #667 (guard 2 of 3 — committed app project). RNFB wraps
-  # Pod::Installer#run_podfile_post_integrate_hooks and runs its own
-  # user-project mutations AFTER the Podfile's post_integrate returns, so this
-  # hook sees the pbxproj as committed, not as RNFB leaves it: it is a
-  # next-run tripwire (a committed SPM reference fails the following install),
-  # and it can fire before RNFB's own stale-link cleanup on an SPM→CocoaPods
-  # reversal (#769 path). Same-run coverage is ci.yml's post-install
-  # `git diff --exit-code` on the pbxproj. RNFB writes two node classes and its
-  # cleanup is rescue-wrapped (warns and continues), so match both.
-  # Pods.xcodeproj may legitimately carry RN's own package references; the app
-  # project must carry none.
+  # Issue #769 (guard 2 of 3 — committed app project + Package.resolved).
+  # Logic and fixtures: scripts/verify-firebase-spm.rb (+ test-verify-firebase-spm.sh,
+  # run by ci.yml before pod install and by `npm run test:firebase-spm`).
+  # RNFB writes the app-project package reference AFTER this hook returns (it
+  # wraps run_podfile_post_integrate_hooks), so this checks the pbxproj AS
+  # COMMITTED: a next-run tripwire. Same-run coverage: ci.yml's pbxproj diff.
+  # Bootstrap (the very first install on a tree with no reference yet):
+  # ORBITAL_SPM_BOOTSTRAP=1 downgrades ONLY the "reference missing" and
+  # "Package.resolved missing" failures to warnings so RNFB can write the
+  # reference; every other check still raises. Never set it in CI or in a
+  # shell profile -- docs/ios-dependency-delivery.md §Bootstrap.
   post_integrate do |installer|
-    pbxproj = File.expand_path('../OrbitalMobile.xcodeproj/project.pbxproj', installer.sandbox.root)
-    if File.read(pbxproj) =~ /XCRemoteSwiftPackageReference|XCSwiftPackageProductDependency/
-      raise "[Orbital] OrbitalMobile.xcodeproj gained a Swift package reference or " \
-            "product dependency -- react-native-firebase SPM integration ran despite " \
-            "$RNFirebaseDisableSPM. Revert the pbxproj and fix ios/Podfile (#667)."
+    script = File.expand_path('../../scripts/verify-firebase-spm.rb', installer.sandbox.root)
+    args = ['ruby', script,
+            '--pbxproj', File.expand_path('../OrbitalMobile.xcodeproj/project.pbxproj', installer.sandbox.root),
+            '--resolved', File.expand_path('../OrbitalMobile.xcworkspace/xcshareddata/swiftpm/Package.resolved', installer.sandbox.root),
+            '--expected-url', ORBITAL_FIREBASE_SPM_URL,
+            '--expected-version', RNFirebaseSPM.version,
+            '--app-target', 'OrbitalMobile']
+    args << '--bootstrap' if ENV['ORBITAL_SPM_BOOTSTRAP'] == '1'
+    unless system(*args)
+      raise "[Orbital] scripts/verify-firebase-spm.rb failed (see its output above) (#769)."
     end
   end
 

@@ -1,0 +1,60 @@
+/* Fixture: relevant pbxproj sections for scripts/verify-firebase-spm.rb harness.
+ * Derived from the real probe-769 project.pbxproj after the §2 bootstrap and
+ * exactVersion hand-edit. The verifier's regexes work identically on this
+ * excerpt and on the full generated file. */
+
+/* Begin PBXBuildFile section */
+		919CC073814D537F93CC2369 /* FirebaseCore in Frameworks */ = {isa = PBXBuildFile; productRef = B93B4D599DF94549D6E65E93 /* FirebaseCore */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXNativeTarget section */
+		13B07F861A680F5B00A75B9A /* OrbitalMobile */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "OrbitalMobile" */;
+			buildPhases = (
+				FD10A7F022414F080027D42C /* [CP] Check Pods Manifest.lock */,
+				13B07F871A680F5B00A75B9A /* Sources */,
+				13B07F8C1A680F5B00A75B9A /* Frameworks */,
+				13B07F8E1A680F5B00A75B9A /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = OrbitalMobile;
+			packageProductDependencies = (
+				B93B4D599DF94549D6E65E93 /* FirebaseCore */,
+			);
+			productName = Orbital;
+			productReference = 13B07F961A680F5B00A75B9A /* Orbital.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		83CBB9F71A601CBA00E9B192 /* Project object */ = {
+			isa = PBXProject;
+			packageReferences = (
+				07AD35AE47930FBC30247D52 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		07AD35AE47930FBC30247D52 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/firebase/firebase-ios-sdk.git";
+			requirement = {
+				kind = exactVersion;
+				version = 12.18.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		B93B4D599DF94549D6E65E93 /* FirebaseCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 07AD35AE47930FBC30247D52 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseCore;
+		};
+/* End XCSwiftPackageProductDependency section */

@@ -83,3 +83,9 @@ project-docs/*
 !project-docs/store-listing.md
 /uploads/
 docs/compliance/BIS Supplement*
+
+# Swift Package Manager: the WORKSPACE Package.resolved is the committed Firebase pin (#769).
+# Xcode also writes a project-scoped copy when the .xcodeproj is opened directly, and a
+# per-user configuration dir under both; neither is a build input.
+ios/OrbitalMobile.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
+ios/OrbitalMobile.xcworkspace/xcshareddata/swiftpm/configuration/

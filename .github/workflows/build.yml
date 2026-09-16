@@ -21,6 +21,8 @@ on:
       - 'scripts/rust-gate-probe.init.gradle'
       - 'scripts/assert-no-absolute-pod-paths.sh'
       - 'scripts/test-assert-no-absolute-pod-paths.sh'
+      - 'scripts/verify-firebase-spm.rb'
+      - 'scripts/fixtures/firebase-spm/**'
   pull_request:
     paths:
       - 'packages/orbital-signal/**'
@@ -40,6 +42,8 @@ on:
       - 'scripts/rust-gate-probe.init.gradle'
       - 'scripts/assert-no-absolute-pod-paths.sh'
       - 'scripts/test-assert-no-absolute-pod-paths.sh'
+      - 'scripts/verify-firebase-spm.rb'
+      - 'scripts/fixtures/firebase-spm/**'
   # workflow_dispatch lets us manually trigger build jobs on this branch to
   # verify the hosted-runner migration before it merges to main.
   workflow_dispatch:
@@ -467,6 +471,16 @@ jobs:
           path: ~/Library/Caches/sentry-react-native
           key: sentry-xcframework-${{ runner.os }}-${{ hashFiles('node_modules/@sentry/react-native/RNSentry.podspec', 'node_modules/@sentry/react-native/scripts/sentry_utils.rb') }}
 
+      # Issue #769: see the matching comment in ci.yml. Same path/key (enforced
+      # by the cache-parity rule in scripts/check-security-invariants.mjs).
+      - name: Cache Swift package clones
+        uses: actions/cache@v6
+        with:
+          path: ~/Library/Caches/orbital-spm
+          key: spm-${{ runner.os }}-${{ hashFiles('ios/OrbitalMobile.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: |
+            spm-${{ runner.os }}-
+
       - name: Install CocoaPods
         working-directory: ios
         run: pod install
@@ -483,7 +497,7 @@ jobs:
 
       # Issue #767 (2 of 2): the committed app project and lockfile must be
       # byte-identical after a bare `pod install`. Unlike ci.yml this is the
-      # only pbxproj guard here (no #667 step), and a bare install DOES rewrite
+      # only pbxproj guard here (no #769 step), and a bare install DOES rewrite
       # the trailing `COCOAPODS: x.y.z` stamp whenever the runner image's
       # CocoaPods differs from the committed one. That is runner drift, not a
       # dependency change, and runner images roll without any PR -- so a
@@ -493,9 +507,11 @@ jobs:
         shell: bash
         run: |
           if ! git diff --exit-code -- OrbitalMobile.xcodeproj/project.pbxproj; then
-            echo "ERROR: pod install modified the committed app project (#767)."
-            echo "For an SPM-shaped diff (XCRemoteSwiftPackageReference / XCSwiftPackageProductDependency)"
-            echo "see the #667 step in ci.yml and the \$RNFirebaseDisableSPM comment in ios/Podfile."
+            echo "ERROR: pod install modified the committed app project (#769)."
+            echo "The committed pbxproj carries the firebase-ios-sdk package reference (exactVersion),"
+            echo "the FirebaseCore product dependency and the [RNFB] phases; every pod install must be"
+            echo "a no-op on it. A diff means RNFB or RN changed what they write -- run pod install"
+            echo "locally from the main checkout, inspect, and commit the result deliberately."
             exit 1
           fi
           if ! git diff --exit-code -- Podfile.lock; then
@@ -541,6 +557,8 @@ jobs:
             -configuration Debug \
             -sdk iphonesimulator \
             -destination "platform=iOS Simulator,name=${{ steps.simulator.outputs.device }}" \
+            -disableAutomaticPackageResolution \
+            -clonedSourcePackagesDirPath ~/Library/Caches/orbital-spm \
             CODE_SIGNING_ALLOWED=NO \
             build 2>&1 | tee xcodebuild.log | tail -50
         env:

@@ -22,9 +22,8 @@ jobs:
     # install, iOS compile gate). A slow runner reached 29m13s (transcoder
     # xcodebuild 18m57s). Since #768 a Sentry-cache miss adds a 66 MB download.
     # Since #769 the budget includes the Firebase SPM verifier harness (seconds),
-    # the Package.resolved gate (~10 s hit / 2-4 min miss), the SPM cache save
-    # on a miss (compress+upload ~1.2 GB, est. 2-3 min), and the OrbitalSignal
-    # delta in the compile step (est. 1-3 min). One hung suite (#731) consumed
+    # the Package.resolved gate (66 s measured on a cold cache) and the SPM cache
+    # save on a miss (compress+upload ~1.2 GB). One hung suite (#731) consumed
     # the whole budget and cancelled a job whose other 160 suites had already
     # passed -- a flake shouldn't discard passing work. If runs approach 40,
     # split the transcoder compile into its own job rather than raising this
@@ -324,25 +323,28 @@ jobs:
             exit 1
           fi
 
-      # Issue #586 / #769: PR-time compile of the two first-party pods. Must go
-      # through the workspace (a package-bearing Pods.xcodeproj cannot be built
-      # with -project: "Packages are not supported when using legacy build
-      # locations"). ◆ OrbitalSignal is added (rust review): it now links the
-      # vendored Rust archive at its own link step and had zero PR-time coverage.
-      # Both schemes share one DerivedData, so the second build is the delta only.
-      - name: Compile OrbitalMediaTranscoder + OrbitalSignal (PR-time iOS gate)
+      # Issue #586 / #769: PR-time compile of the OrbitalMediaTranscoder pod.
+      # Must go through the workspace: a package-bearing Pods.xcodeproj cannot
+      # be built with -project ("Packages are not supported when using legacy
+      # build locations"). -disableAutomaticPackageResolution keeps the
+      # committed Package.resolved authoritative. NOT OrbitalSignal: under
+      # dynamic frameworks it links the vendored Rust archive
+      # (OrbitalSignalFramework.xcframework, gitignored) at its own link step,
+      # and this job never builds Rust -- tried on PR #810 and it fails with
+      # undefined _ffi_orbital_signal_* symbols. OrbitalSignal's link step is
+      # covered by build.yml's build-ios job (main + workflow_dispatch), which
+      # cross-compiles the crate first.
+      - name: Compile OrbitalMediaTranscoder (PR-time iOS gate)
         if: github.event_name == 'pull_request' && steps.pod-filter.outputs.ios-native == 'true'
         working-directory: ios
         run: |
-          for SCHEME in OrbitalMediaTranscoder OrbitalSignal; do
-            xcodebuild \
-              -workspace OrbitalMobile.xcworkspace \
-              -scheme "$SCHEME" \
-              -sdk iphonesimulator \
-              -configuration Debug \
-              -derivedDataPath "$RUNNER_TEMP/dd" \
-              -clonedSourcePackagesDirPath ~/Library/Caches/orbital-spm \
-              -disableAutomaticPackageResolution \
-              build \
-              CODE_SIGNING_ALLOWED=NO
-          done
+          xcodebuild \
+            -workspace OrbitalMobile.xcworkspace \
+            -scheme OrbitalMediaTranscoder \
+            -sdk iphonesimulator \
+            -configuration Debug \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            -clonedSourcePackagesDirPath ~/Library/Caches/orbital-spm \
+            -disableAutomaticPackageResolution \
+            build \
+            CODE_SIGNING_ALLOWED=NO

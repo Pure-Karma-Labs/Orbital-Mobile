@@ -288,7 +288,6 @@ run_test F15 1 \
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
-TOTAL=$((PASS + FAIL))
 # ---------------------------------------------------------------------------
 # F16: Package.resolved format version 2 → exit 1
 # ---------------------------------------------------------------------------
@@ -338,6 +337,7 @@ run_test F19 1 \
   --pbxproj "$GOOD_PBXPROJ" \
   --resolved "$T/Package.resolved"
 
+TOTAL=$((PASS + FAIL))
 echo ""
 echo "Results: ${PASS}/${TOTAL} passed, ${FAIL} failed"
 if [ "$FAIL" -ne 0 ]; then

@@ -155,6 +155,7 @@
 				00EEFC60759A1932668264C0 /* [CP] Embed Pods Frameworks */,
 				E235C05ADACE081382539298 /* [CP] Copy Pods Resources */,
 				A9575C7E5D0A4C1BA25FB354 /* [CP-User] [RNFB] Core Configuration */,
+				A8C8F2BD0D6F2AB30F03F05D /* [CP-User] Upload Debug Symbols to Sentry */,
 			);
 			buildRules = (
 			);
@@ -254,6 +255,17 @@
 			shellPath = /bin/sh;
 			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-OrbitalMobile/Pods-OrbitalMobile-frameworks.sh\"\n";
 			showEnvVarsInLog = 0;
+		};
+		A8C8F2BD0D6F2AB30F03F05D /* [CP-User] Upload Debug Symbols to Sentry */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			name = "[CP-User] Upload Debug Symbols to Sentry";
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "/bin/sh \"${SRCROOT}/../node_modules/@sentry/react-native/scripts/sentry-xcode-debug-files.sh\"";
 		};
 		A9575C7E5D0A4C1BA25FB354 /* [CP-User] [RNFB] Core Configuration */ = {
 			isa = PBXShellScriptBuildPhase;

@@ -98,6 +98,24 @@ target 'OrbitalMobile' do
       # :ccache_enabled => true
     )
 
+    # Xcode 27 rejects any target whose IPHONEOS_DEPLOYMENT_TARGET is below
+    # 15.0 (an error, not the warning Xcode 26 gave). react_native_post_install
+    # raises the floor on each pod's native target only; the privacy-manifest
+    # resource bundles (nanopb_Privacy, GoogleUtilities_Privacy,
+    # GoogleDataTransport_Privacy, FBLPromises_Privacy, RNImagePickerPrivacyInfo)
+    # keep their podspec's 9.0/12.0 and fail `xcodebuild archive` on Xcode 27.
+    # Raise them to the same floor RN uses for native targets. CI cannot see
+    # this: build.yml pins the newest Xcode 26.x.
+    floor = min_ios_version_supported.to_f
+    installer.target_installation_results.pod_target_installation_results.each_value do |result|
+      result.resource_bundle_targets.each do |bundle|
+        bundle.build_configurations.each do |build_config|
+          current = build_config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'].to_f
+          build_config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = min_ios_version_supported if current < floor
+        end
+      end
+    end
+
     # Xcode 26 Clang falsely advertises consteval support but fails to compile it.
     # Patch fmt's base.h to force-disable consteval on all Apple Clang versions.
     # Tracking: https://github.com/facebook/react-native/issues/55601

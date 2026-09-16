@@ -63,6 +63,19 @@ target 'OrbitalMobile' do
     :execution_position => :before_compile,
     :always_out_of_date => '1'
 
+  # Native crash symbolication: upload the app dSYM to Sentry after linking.
+  # sentry-xcode-debug-files.sh sources with-environment.sh itself (node on
+  # PATH via ios/.xcode.env), reads ios/sentry.properties (gitignored; org,
+  # project, auth token), skips Debug configurations and honours
+  # SENTRY_DISABLE_AUTO_UPLOAD=true (CI). Without this phase every native
+  # crash arrives in Sentry as native_missing_dsym (found 2026-09-16).
+  # Phase name "Upload Debug Symbols to Sentry" is the canonical string
+  # upstream's sentryExpoNativeCheck.js looks for — do not rename it.
+  script_phase :name => 'Upload Debug Symbols to Sentry',
+    :script => '/bin/sh "${SRCROOT}/../node_modules/@sentry/react-native/scripts/sentry-xcode-debug-files.sh"',
+    :execution_position => :after_compile,
+    :always_out_of_date => '1'
+
   # Firebase requires modular headers for its Swift→ObjC interop
   pod 'FirebaseCore', :modular_headers => true
   pod 'FirebaseCoreInternal', :modular_headers => true

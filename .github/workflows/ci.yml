@@ -23,7 +23,7 @@ jobs:
     # xcodebuild 18m57s). Since #768 a Sentry-cache miss adds a 66 MB download.
     # Since #769 the budget includes the Firebase SPM verifier harness (seconds),
     # the Package.resolved gate (66 s measured on a cold cache) and the SPM cache
-    # save on a miss (compress+upload ~1.2 GB). One hung suite (#731) consumed
+    # save on a miss (1.2 GB on disk, 437 MB compressed; measured 26 s). One hung suite (#731) consumed
     # the whole budget and cancelled a job whose other 160 suites had already
     # passed -- a flake shouldn't discard passing work. If runs approach 40,
     # split the transcoder compile into its own job rather than raising this
@@ -176,8 +176,8 @@ jobs:
           key: sentry-xcframework-${{ runner.os }}-${{ hashFiles('node_modules/@sentry/react-native/RNSentry.podspec', 'node_modules/@sentry/react-native/scripts/sentry_utils.rb') }}
 
       # Issue #769: Xcode resolves the firebase-ios-sdk Swift package (13 repos,
-      # ~1.2 GB incl. every binaryTarget zip in the graph, grpc-binary alone
-      # 609 MB) before it can build any target that shares the workspace.
+      # 1.2 GB on disk / 437 MB compressed, incl. every binaryTarget zip in the
+      # graph, grpc-binary alone 609 MB) before it can build any target that shares the workspace.
       # Keyed on the committed pin so a bump gets a fresh resolve; restore-keys
       # lets Xcode reuse unchanged mirrors on a miss. Keep path/key identical
       # in build.yml (enforced by the cache-parity rule in
@@ -307,7 +307,7 @@ jobs:
       # dependencies" when a pin is outside the requirement, and never rewrite
       # the file (SwiftPM's lock-file strategy neither computes originHash nor
       # saves). The diff below is the backstop. A cache hit costs seconds; a
-      # miss is the full ~1.2 GB fetch (~2 min measured).
+      # miss is the full 1.2 GB fetch (51 s measured on the runner, ~2 min on a Mac mini).
       - name: Assert Package.resolved satisfies the Firebase requirement (issue #769)
         if: github.event_name == 'pull_request' && steps.pod-filter.outputs.ios-native == 'true'
         working-directory: ios

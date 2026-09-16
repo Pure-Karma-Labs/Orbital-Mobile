@@ -16,7 +16,13 @@
 #   F10  A pin location on gitlab.com (not github.com)                         → exit 1
 #   F11  --bootstrap + zero references + absent Package.resolved               → exit 0 (2 warnings)
 #   F12  --bootstrap + wrong URL in pbxproj                                    → exit 1
-#   F13  Full probe pbxproj (if exists at the expected path)                   → exit 0 (optional)
+#   F13  Committed ios/ pbxproj + Package.resolved (fixture-drift check)        → exit 0
+#   F14  Package.resolved pin under a github.com org outside the allow-list   → exit 1
+#   F15  Package.resolved pin with a non-40-hex revision                      → exit 1
+#   F16  Package.resolved format version 2                                     → exit 1
+#   F17  Second package reference with a lowercase-hex object id               → exit 1
+#   F18  Pin location with path traversal (google/../../evil)                  → exit 1
+#   F19  mirrors.json in the workspace swiftpm/configuration dir              → exit 1
 #
 # This harness never touches ios/ or any real repo file.
 
@@ -80,15 +86,10 @@ run_test F1 0 \
 # F2: Zero XCRemoteSwiftPackageReference → exit 1
 # ---------------------------------------------------------------------------
 T="${TMPDIR_BASE}/f2"; mkdir -p "$T"
+# Deleting every line that names the class removes the object header, its isa
+# line and the packageReferences entry; the orphaned requirement lines that
+# remain carry no isa, so the verifier sees zero references.
 sed '/XCRemoteSwiftPackageReference/d' "$GOOD_PBXPROJ" > "$T/f2.pbxproj"
-# Also remove the isa line so no SPM block remains
-python3 -c "
-import re, sys
-content = open('$T/f2.pbxproj').read()
-# Remove the entire XCRemoteSwiftPackageReference object
-content = re.sub(r'\t\t[0-9A-F]{24} /\* XCRemoteSwiftPackageReference.*?\*/.*?;[\r\n]', '', content, flags=re.DOTALL)
-open('$T/f2.pbxproj','w').write(content)
-"
 run_test F2 1 \
   "${base_args[@]}" \
   --pbxproj "$T/f2.pbxproj" \
@@ -242,23 +243,101 @@ run_test F12 1 \
   --bootstrap
 
 # ---------------------------------------------------------------------------
-# F13: Full probe pbxproj (optional — skipped if probe path does not exist)
+# F13: The committed real project + Package.resolved (fixture-drift check).
+# good.pbxproj is an excerpt of ios/OrbitalMobile.xcodeproj/project.pbxproj; this
+# case proves the verifier's regexes give the same answer on the full generated
+# file. Skipped only when the harness runs outside the repo (no ios/ present).
 # ---------------------------------------------------------------------------
-PROBE_PBXPROJ="/private/tmp/claude-501/-Users-alexg-Documents-GitHub-Orbital/2d2c4b96-2a5a-41f5-98ca-9cf8f9a60950/scratchpad/probe-769/ios/OrbitalMobile.xcodeproj/project.pbxproj"
-PROBE_RESOLVED="/private/tmp/claude-501/-Users-alexg-Documents-GitHub-Orbital/2d2c4b96-2a5a-41f5-98ca-9cf8f9a60950/scratchpad/probe-769/ios/OrbitalMobile.xcworkspace/xcshareddata/swiftpm/Package.resolved"
-if [ -f "$PROBE_PBXPROJ" ] && [ -f "$PROBE_RESOLVED" ]; then
-  run_test "F13 (full probe pbxproj)" 0 \
+REAL_PBXPROJ="${REPO_ROOT}/ios/OrbitalMobile.xcodeproj/project.pbxproj"
+REAL_RESOLVED="${REPO_ROOT}/ios/OrbitalMobile.xcworkspace/xcshareddata/swiftpm/Package.resolved"
+if [ -f "$REAL_PBXPROJ" ] && [ -f "$REAL_RESOLVED" ]; then
+  run_test "F13 (committed pbxproj + Package.resolved)" 0 \
     "${base_args[@]}" \
-    --pbxproj "$PROBE_PBXPROJ" \
-    --resolved "$PROBE_RESOLVED"
+    --pbxproj "$REAL_PBXPROJ" \
+    --resolved "$REAL_RESOLVED"
 else
-  echo "SKIP F13 (probe pbxproj not present at expected path)"
+  echo "SKIP F13 (ios/ not present — harness running outside the repo)"
 fi
+
+# ---------------------------------------------------------------------------
+# F14: github.com location under an org outside the allow-list → exit 1
+# ---------------------------------------------------------------------------
+T="${TMPDIR_BASE}/f14"; mkdir -p "$T"
+sed 's#https://github.com/google/promises.git#https://github.com/notallowed/promises.git#' "$GOOD_RESOLVED" > "$T/f14.Package.resolved"
+grep -q 'github.com/notallowed/' "$T/f14.Package.resolved" || { echo "FAIL F14 fixture: substitution did not apply"; FAIL=$((FAIL + 1)); }
+run_test F14 1 \
+  "${base_args[@]}" \
+  --pbxproj "$GOOD_PBXPROJ" \
+  --resolved "$T/f14.Package.resolved"
+
+# ---------------------------------------------------------------------------
+# F15: a pin whose revision is not a 40-hex commit SHA → exit 1
+# ---------------------------------------------------------------------------
+T="${TMPDIR_BASE}/f15"; mkdir -p "$T"
+python3 -c "
+import json
+d = json.load(open('$GOOD_RESOLVED'))
+d['pins'][0]['state']['revision'] = 'deadbeef'
+json.dump(d, open('$T/f15.Package.resolved', 'w'), indent=2)
+"
+run_test F15 1 \
+  "${base_args[@]}" \
+  --pbxproj "$GOOD_PBXPROJ" \
+  --resolved "$T/f15.Package.resolved"
 
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 TOTAL=$((PASS + FAIL))
+# ---------------------------------------------------------------------------
+# F16: Package.resolved format version 2 → exit 1
+# ---------------------------------------------------------------------------
+T="${TMPDIR_BASE}/f16"; mkdir -p "$T"
+python3 -c "
+import json
+d = json.load(open('$GOOD_RESOLVED')); d['version'] = 2
+json.dump(d, open('$T/f16.Package.resolved', 'w'), indent=2)
+"
+run_test F16 1 \
+  "${base_args[@]}" \
+  --pbxproj "$GOOD_PBXPROJ" \
+  --resolved "$T/f16.Package.resolved"
+
+# ---------------------------------------------------------------------------
+# F17: second XCRemoteSwiftPackageReference written with a lowercase-hex id → exit 1
+# (an id-anchored uppercase-only scan would not see it; the isa count must)
+# ---------------------------------------------------------------------------
+T="${TMPDIR_BASE}/f17"; mkdir -p "$T"
+printf '\t\tdeadbeefdeadbeefdeadbeef /* XCRemoteSwiftPackageReference "evil" */ = {\n\t\t\tisa = XCRemoteSwiftPackageReference;\n\t\t\trepositoryURL = "https://github.com/evil/evil.git";\n\t\t\trequirement = {\n\t\t\t\tkind = upToNextMajorVersion;\n\t\t\t\tminimumVersion = 1.0.0;\n\t\t\t};\n\t\t};\n' > "$T/extra.txt"
+awk -v extra="$T/extra.txt" '/End XCRemoteSwiftPackageReference section/ { while ((getline line < extra) > 0) print line } { print }' "$GOOD_PBXPROJ" > "$T/f17.pbxproj"
+grep -q 'deadbeefdeadbeefdeadbeef' "$T/f17.pbxproj" || { echo "FAIL F17 fixture: insertion did not apply"; FAIL=$((FAIL + 1)); }
+run_test F17 1 \
+  "${base_args[@]}" \
+  --pbxproj "$T/f17.pbxproj" \
+  --resolved "$GOOD_RESOLVED"
+
+# ---------------------------------------------------------------------------
+# F18: pin location with path traversal → exit 1
+# ---------------------------------------------------------------------------
+T="${TMPDIR_BASE}/f18"; mkdir -p "$T"
+sed 's#https://github.com/google/promises.git#https://github.com/google/../../evil/promises.git#' "$GOOD_RESOLVED" > "$T/f18.Package.resolved"
+grep -q 'google/\.\./\.\./evil' "$T/f18.Package.resolved" || { echo "FAIL F18 fixture: substitution did not apply"; FAIL=$((FAIL + 1)); }
+run_test F18 1 \
+  "${base_args[@]}" \
+  --pbxproj "$GOOD_PBXPROJ" \
+  --resolved "$T/f18.Package.resolved"
+
+# ---------------------------------------------------------------------------
+# F19: mirrors.json beside Package.resolved (swiftpm/configuration) → exit 1
+# ---------------------------------------------------------------------------
+T="${TMPDIR_BASE}/f19/swiftpm"; mkdir -p "$T/configuration"
+cp "$GOOD_RESOLVED" "$T/Package.resolved"
+echo '{"object":[{"original":"https://github.com/firebase/firebase-ios-sdk.git","mirror":"https://evil.example/x.git"}],"version":1}' > "$T/configuration/mirrors.json"
+run_test F19 1 \
+  "${base_args[@]}" \
+  --pbxproj "$GOOD_PBXPROJ" \
+  --resolved "$T/Package.resolved"
+
 echo ""
 echo "Results: ${PASS}/${TOTAL} passed, ${FAIL} failed"
 if [ "$FAIL" -ne 0 ]; then

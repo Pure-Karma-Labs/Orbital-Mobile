@@ -131,7 +131,7 @@ unset, `firebase_dependency` calls RN's `spm_dependency` instead of `s.dependenc
    `SWIFT_INCLUDE_PATHS` on the app target. Every write is an upsert keyed on URL,
    product name or phase name, so once committed, `pod install` is a no-op on the
    pbxproj — CI's tree-clean diffs are the cross-machine determinism check.
-3. Xcode resolves the package graph (13 repositories, ~1.2 GB in the clone dir:
+3. Xcode resolves the package graph (13 repositories, 1.2 GB in the clone dir, 437 MB as a CI cache entry:
    841 MB of `binaryTarget` zips it downloads for every artifact in the graph even
    though Messaging builds none of them — grpc-binary alone is 609 MB — plus a 251 MB
    firebase-ios-sdk mirror) and writes
@@ -158,7 +158,7 @@ one legal home, the `missing_links` block in `ios/Podfile` — never the podspec
 | Firebase iOS SDK | 12.18.0 | **Enforced:** `exactVersion` on the firebase-ios-sdk `XCRemoteSwiftPackageReference` in `ios/OrbitalMobile.xcodeproj/project.pbxproj`, checked by `scripts/verify-firebase-spm.rb` against `sdkVersions.ios.firebase` in the installed RNFB package on every `pod install`; resolved into `Package.resolved` (same script + ci.yml gate) |
 | firebase-ios-sdk revision | `346daa9f4631…` (tag 12.18.0) | `Package.resolved` `state.revision`; recorded here so a same-version revision swap is a visible two-file diff. Re-record at every bump. |
 | Package URL (supply-chain anchor) | `https://github.com/firebase/firebase-ios-sdk.git` | **Literal** `ORBITAL_FIREBASE_SPM_URL` in `ios/Podfile` (mirrored by the `rnfb-spm-dynamic` invariant); guard 1 requires the installed RNFB's `firebaseSpmUrl` to equal it, the verifier requires the pbxproj reference and the pin `location` to equal it |
-| Transitive packages (12) | see `Package.resolved` | each pinned by version **and** commit revision; the verifier requires every `location` to be a `github.com` repo under firebase / google / googleads / apple / grpc / protobuf orgs |
+| Transitive packages (12) | see `Package.resolved` | each pinned by version **and** commit revision; the verifier requires every `location` to be a `github.com` repo under the firebase / google / googleads orgs (the only orgs the graph uses; grpc-binary and abseil live under google/) |
 | Local clone cache | `~/Library/Caches/orbital-spm` (CI + build machine via `-clonedSourcePackagesDirPath`); Xcode GUI uses DerivedData/SourcePackages | CI cache key `spm-<os>-<hash of Package.resolved>` |
 
 RNFB creates the package reference with `upToNextMajorVersion` (floating within 12.x —
@@ -194,7 +194,7 @@ bootstrap resolve (below) and confirm the file is byte-identical to the committe
 | `Assert Firebase resolves via SPM` + pbxproj diff | `ci.yml` | ≥ 2 SPM log lines (measured 6), no CocoaPods-branch line; `pod install` was a no-op on the committed pbxproj |
 | `Assert Package.resolved satisfies the Firebase requirement` | `ci.yml` | `xcodebuild -resolvePackageDependencies -disableAutomaticPackageResolution` exits 0 (fails with 74 on a pin outside the requirement) and leaves `Package.resolved` unchanged |
 | Tree-clean diffs | `build.yml` | pbxproj + Podfile.lock byte-identical after a bare `pod install` on a second machine (Xcode 26.x) |
-| `rnfb-spm-dynamic`, `ios-cache-parity` in `scripts/check-security-invariants.mjs` | `security.yml` | No `$RNFirebaseDisableSPM`; `use_frameworks! :linkage => :dynamic`; the URL literal; cache steps identical across workflows |
+| `rnfb-spm-dynamic`, `ios-cache-parity` in `scripts/check-security-invariants.mjs` | `security.yml` | No `$RNFirebaseDisableSPM`; `use_frameworks! :linkage => :dynamic`; the URL literal; the three cache steps' `path`, `key` and `restore-keys` identical across workflows |
 
 ### Bootstrap (first install on a tree with no package reference — only ever needed once, or after deliberately reverting the pbxproj)
 
@@ -222,5 +222,5 @@ exactly two checks (reference missing, `Package.resolved` missing) to warnings; 
 - **RN 0.82.1 podspec gaps** patched in the Podfile (`missing_links` table) until #311 lands RN ≥ 0.83.
 - **`[RNFB] Remove duplicate ... signature files` phase** runs `rm -f` on nine binary-xcframework `.signature` names at every build. Messaging links none of those binaries, but Xcode downloads all of them at resolution; whether any is staged into `CONFIGURATION_BUILD_DIR` at Archive is a merge-gate measurement (recorded in the PR), not an assumption. If Analytics, Firestore or any product with a binaryTarget dependency is ever added, this phase becomes an SDK-signature removal on the release path and must be re-evaluated.
 - **Privacy manifests** now travel as SPM resource bundles; their presence in the Release archive is a merge-gate check, not an assumption (see the plan's gate list).
-- **SPM network dependency:** every fresh clone (new machine, CI cache miss, `rm -rf` of the clone cache) fetches ~1.2 GB from github.com and dl.google.com. CocoaPods already required github.com for pod sources; the delta is size, not a new origin.
+- **SPM network dependency:** every fresh clone (new machine, CI cache miss, `rm -rf` of the clone cache) fetches 1.2 GB from github.com and dl.google.com. CocoaPods already required github.com for pod sources; the delta is size, not a new origin.
 - **Floating requirement in Pods.xcodeproj** is untracked (gitignored) and re-created each install; it cannot widen the resolved version past the app project's exact pin, and `-disableAutomaticPackageResolution` in both workflows fails loudly if anything tries.

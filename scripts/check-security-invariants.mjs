@@ -559,7 +559,7 @@ function extractCacheStep(yamlText, stepName) {
       // Multi-line path: collect subsequent indented lines
       let paths = [];
       let j = i + 1;
-      while (j < lines.length && lines[j].match(/^\s{4,}/)) {
+      while (j < lines.length && lines[j].match(/^\s{4,}/) && !lines[j].match(/^\s+[\w-]+:/)) {
         paths.push(lines[j].trim());
         j++;
       }
@@ -571,7 +571,18 @@ function extractCacheStep(yamlText, stepName) {
     const keyMatch = line.match(/^\s+key:\s*(.+)$/);
     if (keyMatch) { result.key = keyMatch[1].trim(); continue; }
     const rkMatch = line.match(/^\s+restore-keys:\s*\|?\s*(.*)$/);
-    if (rkMatch) { result.restoreKeys = rkMatch[1].trim() || 'present'; continue; }
+    if (rkMatch) {
+      // Collect the VALUES (block scalar lines or the inline value) so a
+      // restore-keys drift is a real mismatch, not just presence/absence.
+      const values = rkMatch[1].trim() ? [rkMatch[1].trim()] : [];
+      let j = i + 1;
+      while (j < lines.length && lines[j].match(/^\s{4,}/) && !lines[j].match(/^\s+[\w-]+:/)) {
+        values.push(lines[j].trim());
+        j++;
+      }
+      result.restoreKeys = values.join('\n');
+      continue;
+    }
   }
   return inStep ? result : null;
 }
@@ -597,6 +608,9 @@ if (ciYaml !== null && buildYaml !== null) {
       }
       if (ci.key !== build.key) {
         violations.push(`  ${CI_YML}:0  [ios-cache-parity]  step "${stepName}" key: differs between ci.yml (${ci.key}) and build.yml (${build.key})`);
+      }
+      if ((ci.restoreKeys || '') !== (build.restoreKeys || '')) {
+        violations.push(`  ${CI_YML}:0  [ios-cache-parity]  step "${stepName}" restore-keys differ between ci.yml (${JSON.stringify(ci.restoreKeys)}) and build.yml (${JSON.stringify(build.restoreKeys)})`);
       }
       // Sentry xcframework download must have no restore-keys in either file
       if (stepName === 'Cache Sentry xcframework download') {

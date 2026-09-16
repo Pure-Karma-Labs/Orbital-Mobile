@@ -47,8 +47,8 @@ android/keystore.properties
 # IDE
 .vscode/
 .idea/
-*.xcworkspace/xcuserdata/
-*.xcodeproj/xcuserdata/
+**/*.xcworkspace/xcuserdata/
+**/*.xcodeproj/xcuserdata/
 
 # OS
 .DS_Store

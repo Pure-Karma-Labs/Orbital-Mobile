@@ -105,6 +105,17 @@ npm test -- --watch
 npm test -- --ci --coverage
 ```
 
+## iOS Native Gates
+
+Shell/Ruby harnesses that guard the iOS dependency graph; each runs on every
+`ios-native` PR in `ci.yml` before `pod install`, and locally via npm:
+
+- `npm run test:pod-paths` — fixture harness for `scripts/assert-no-absolute-pod-paths.sh`
+  (no machine-specific paths in the pod graph, #767).
+- `npm run test:firebase-spm` — fixture harness for `scripts/verify-firebase-spm.rb`
+  (Firebase Swift-package pin: app-project reference, exactVersion, Package.resolved, #769).
+- `npm run test:rust-gate:ios` / `:android` — the Rust release-profile gates (#550).
+
 ## Crypto Testing Notes
 
 - **Never test crypto by reimplementing it** — test the orchestration (correct store reads, correct Rust function called, correct mutations persisted)

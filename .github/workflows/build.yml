@@ -508,10 +508,8 @@ jobs:
         run: |
           if ! git diff --exit-code -- OrbitalMobile.xcodeproj/project.pbxproj; then
             echo "ERROR: pod install modified the committed app project (#769)."
-            echo "The committed pbxproj carries the firebase-ios-sdk package reference (exactVersion),"
-            echo "the FirebaseCore product dependency and the [RNFB] phases; every pod install must be"
-            echo "a no-op on it. A diff means RNFB or RN changed what they write -- run pod install"
-            echo "locally from the main checkout, inspect, and commit the result deliberately."
+            echo "This job has no SPM-log step; the remediation is the one in ci.yml's"
+            echo "'Assert Firebase resolves via SPM' step and docs/ios-dependency-delivery.md."
             exit 1
           fi
           if ! git diff --exit-code -- Podfile.lock; then

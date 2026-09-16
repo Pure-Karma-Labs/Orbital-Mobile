@@ -74,9 +74,17 @@ end
 # ---------------------------------------------------------------------------
 # Check 1: Exactly one XCRemoteSwiftPackageReference, canonical URL, exactVersion
 # ---------------------------------------------------------------------------
-spr_objects = pbxproj_content.scan(/[0-9A-F]{24}\s*\/\*.*?\*\/\s*=\s*\{[^}]*isa = XCRemoteSwiftPackageReference;[^}]*\}/m)
+# Uniqueness is counted on the isa literal itself, so an object written with an
+# unusual id (lowercase hex, different length) cannot hide from the count.
+isa_count = pbxproj_content.scan(/isa = XCRemoteSwiftPackageReference;/).size
+spr_objects = pbxproj_content.scan(/[0-9A-Za-z]{24}\s*\/\*.*?\*\/\s*=\s*\{[^}]*isa = XCRemoteSwiftPackageReference;[^}]*\}/m)
+if isa_count != spr_objects.size
+  fail_check "pbxproj has #{isa_count} 'isa = XCRemoteSwiftPackageReference;' object(s) but only #{spr_objects.size} " \
+             "could be parsed as a package reference — the project carries a malformed or disguised package reference"
+  failures += 1
+end
 
-zero_references = spr_objects.empty?
+zero_references = isa_count.zero?
 
 if zero_references
   msg = "pbxproj has no XCRemoteSwiftPackageReference — firebase-ios-sdk package reference is missing from the app project"
@@ -87,11 +95,11 @@ if zero_references
     fail_check msg
     failures += 1
   end
-elsif spr_objects.size > 1
-  fail_check "pbxproj has #{spr_objects.size} XCRemoteSwiftPackageReference objects — exactly one is required; " \
+elsif isa_count > 1
+  fail_check "pbxproj has #{isa_count} XCRemoteSwiftPackageReference objects — exactly one is required; " \
              "no Swift package other than firebase-ios-sdk may appear in the app project"
   failures += 1
-else
+elsif spr_objects.size == 1
   obj = spr_objects.first
   # Check URL
   if obj =~ /repositoryURL\s*=\s*"([^"]+)"/
@@ -159,8 +167,6 @@ unless check2_skip
   firebase_core_dep_id = nil
   if pbxproj_content =~ /([0-9A-F]{24})\s*\/\*\s*FirebaseCore\s*\*\/\s*=\s*\{[^}]*isa = XCSwiftPackageProductDependency;[^}]*productName = FirebaseCore;[^}]*\}/m
     firebase_core_dep_id = $1
-  elsif pbxproj_content =~ /([0-9A-F]{24})\s*\/\*\s*FirebaseCore\s*\*\/[^=]*=\s*\{[^}]*productName = FirebaseCore;[^}]*\}/m
-    firebase_core_dep_id = $1
   end
 
   if firebase_core_dep_id.nil?
@@ -180,12 +186,11 @@ unless check2_skip
       end
     end
 
-    # Check that a PBXBuildFile with productRef = <that id> exists
-    unless pbxproj_content =~ /isa = PBXBuildFile;.*?productRef\s*=\s*#{Regexp.escape(firebase_core_dep_id)}/m ||
-           pbxproj_content =~ /productRef\s*=\s*#{Regexp.escape(firebase_core_dep_id)}.*?isa = PBXBuildFile;/m ||
-           pbxproj_content.include?("productRef = #{firebase_core_dep_id}")
+    # A PBXBuildFile whose productRef is this dependency is what actually links
+    # the product ("productRef = <id>" occurs only inside PBXBuildFile objects).
+    unless pbxproj_content.include?("productRef = #{firebase_core_dep_id}")
       fail_check "pbxproj has no PBXBuildFile with productRef = #{firebase_core_dep_id} (FirebaseCore) — " \
-                 "the Firebase framework is not in the app target's Frameworks build phase"
+                 "the product dependency is declared but never linked (RNFB #9158 shape)"
       failures += 1
     end
   end
@@ -196,6 +201,7 @@ end
 # ---------------------------------------------------------------------------
 resolved_path = options[:resolved]
 resolved_missing = !File.exist?(resolved_path)
+resolved_data = nil
 
 if resolved_missing
   msg = "Package.resolved not found at #{resolved_path} — run xcodebuild -resolvePackageDependencies " \
@@ -246,8 +252,10 @@ else
       end
     end
 
-    # Allowlisted github.com orgs
-    ALLOWED_ORGS = %w[firebase google googleads apple grpc protocolbuffers].freeze
+    # Allow-listed github.com orgs: exactly the orgs the committed Package.resolved
+    # uses (google, firebase, googleads; grpc-binary and abseil live under google/).
+    # A new org in the graph is a reviewed diff here AND in Package.resolved.
+    ALLOWED_ORGS = %w[firebase google googleads].freeze
 
     pins.each do |pin|
       loc = pin['location'].to_s
@@ -259,9 +267,16 @@ else
         failures += 1
         next
       end
-      # Check org is on the allowlist
+      # Exactly org/repo, no traversal, before the org lookup (a location such as
+      # https://github.com/google/../../evil/x.git would otherwise pass as "google").
       path_parts = loc.sub('https://github.com/', '').split('/')
-      org = path_parts.first.to_s.downcase
+      if path_parts.size != 2 || path_parts.any? { |p| p.empty? || p == '.' || p == '..' }
+        fail_check "Package.resolved pin #{identity.inspect} has location #{loc.inspect} — " \
+                   "expected exactly https://github.com/<org>/<repo>(.git) with no traversal"
+        failures += 1
+        next
+      end
+      org = path_parts.first.downcase
       unless ALLOWED_ORGS.include?(org)
         fail_check "Package.resolved pin #{identity.inspect} location org is #{org.inspect}, " \
                    "not in the allowlist #{ALLOWED_ORGS.inspect} — verify this package belongs in the graph"
@@ -279,6 +294,24 @@ else
 end
 
 # ---------------------------------------------------------------------------
+# Check 4: no SwiftPM mirror/registry configuration next to the workspace or
+# project. swiftpm/configuration/ is gitignored (per-user), so a mirrors.json
+# or registries.json there would redirect the fetch URL AFTER every literal
+# comparison above, invisibly to git status and to CI.
+# ---------------------------------------------------------------------------
+resolved_dir = File.dirname(resolved_path)
+project_swiftpm = File.expand_path('../../../OrbitalMobile.xcodeproj/project.xcworkspace/xcshareddata/swiftpm', resolved_dir)
+[resolved_dir, project_swiftpm].each do |dir|
+  %w[mirrors.json registries.json].each do |name|
+    cfg = File.join(dir, 'configuration', name)
+    next unless File.exist?(cfg)
+    fail_check "#{cfg} exists — a SwiftPM mirror/registry configuration can redirect the firebase-ios-sdk " \
+               "fetch URL after every URL check has passed; delete it (nothing in this repo needs one)"
+    failures += 1
+  end
+end
+
+# ---------------------------------------------------------------------------
 # Report
 # ---------------------------------------------------------------------------
 if failures > 0
@@ -286,7 +319,7 @@ if failures > 0
 end
 
 # Print success line
-if !resolved_missing && (resolved_data = JSON.parse(File.read(resolved_path)) rescue nil)
+if resolved_data
   pins = resolved_data['pins'] || []
   n_pins = pins.size
   firebase_pin = pins.find { |p| p['identity'] == 'firebase-ios-sdk' }

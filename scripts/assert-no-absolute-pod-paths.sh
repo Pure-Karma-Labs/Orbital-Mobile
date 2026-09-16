@@ -1,19 +1,10 @@
 #!/usr/bin/env bash
 # Assert no absolute, machine-specific paths leaked into the pod graph (issue #767).
-# Pairs with the Podfile guard added in #768.
+# Invoked by the Issue #768 post_install guard in ios/Podfile.
 #
-# MECHANICS (verified in node_modules/@sentry/react-native 8.22.0):
-# In xcframework mode, RNSentry.podspec calls ensure_sentry_xcframework (downloads
-# Sentry.xcframework.zip into ~/Library/Caches/sentry-react-native/xcframeworks/<ver>/;
-# SHA256 verified on FIRST download only — sentry_utils.rb:116 returns early when
-# Info.plist exists) then stage_sentry_xcframework_in_pods (symlinks
-# Pods/sentry-xcframeworks/<ver>/Sentry.xcframework into the cache; returns
-# "$(PODS_ROOT)/..."). On nil return (outside a real install, or ANY exception,
-# reported only via Pod::UI.warn) the absolute $HOME cache path is interpolated into
-# per-SDK FRAMEWORK_SEARCH_PATHS in both pod_target_xcconfig and user_target_xcconfig,
-# landing in Pods/Local Podspecs/RNSentry.podspec.json (-> $HOME-dependent RNSentry
-# SPEC CHECKSUM in Podfile.lock), the RNSentry xcconfigs, AND the aggregate
-# Pods-OrbitalMobile.{debug,release}.xcconfig.
+# Mechanics, version record and provenance policy: docs/ios-dependency-delivery.md.
+# Runs after pod install in ci.yml and build.yml, and from the Issue #768 post_install
+# hook in ios/Podfile (same-run, on the build machine).
 #
 # WHY NOT BARE '/Library/':
 # hermes-engine legitimately uses ${PODS_ROOT}/hermes-engine/destroot/Library/Frameworks/universal

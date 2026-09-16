@@ -7,6 +7,9 @@
 
 ## iOS
 
+For how prebuilt SDKs (the Sentry xcframework) reach the build and what keeps
+`Podfile.lock` reproducible, see [ios-dependency-delivery.md](ios-dependency-delivery.md).
+
 1. Build the Rust crate with the release cargo profile (also runs `pod install`):
    ```bash
    npm run build:rust:ios:release

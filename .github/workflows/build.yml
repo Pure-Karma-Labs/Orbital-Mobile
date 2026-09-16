@@ -472,12 +472,12 @@ jobs:
         run: pod install
 
       # Issue #767 (1 of 2): see scripts/assert-no-absolute-pod-paths.sh and the
-      # matching comment in ci.yml. Unlike the --deployment install there, a
-      # bare `pod install` succeeds on a leak and silently rewrites the RNSentry
-      # SPEC CHECKSUM, so this step is the only thing that names the cause on
-      # main. Default success() gate: pod install never fails on the leak, and
-      # running after an unrelated upstream failure would only add a misleading
-      # "podspec not found" red.
+      # matching comment in ci.yml. Since #768 the Podfile's post_install hook
+      # runs this same script inside `pod install`, so a leak already fails the
+      # install step above; this standalone run is the backstop if that in-hook
+      # invocation is ever removed. Default success() gate: running after an
+      # unrelated upstream failure would only add a misleading "podspec not
+      # found" red.
       - name: Assert no absolute paths in the pod graph (issue #767)
         run: bash scripts/assert-no-absolute-pod-paths.sh
 

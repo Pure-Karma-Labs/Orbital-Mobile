@@ -660,3 +660,227 @@ fn test_session_roundtrip_with_uuid_addresses_mac_binding() {
         "decrypting with a wrong local address must fail MAC verification (got Ok)"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Test 8e: libsignal v0.102.3 rejects a re-delivered PreKey message whose
+//          envelope identity key does not match the established session
+// ---------------------------------------------------------------------------
+//
+// Upstream anchor: libsignal `rust/protocol/src/session.rs:116` @ v0.102.3
+// (`process_prekey_impl`). On the `promote_matching_session` early-exit branch
+// — i.e. a PreKey message whose base key we already have a session for —
+// upstream now compares the *envelope* identity key against the session's
+// stored remote identity key and returns
+// `SignalProtocolError::InvalidMessage(PreKey, "remote identity key not
+// consistent with previously-established session")` on mismatch. Before
+// v0.102.3 that branch returned `Ok(None)` unconditionally and went straight on
+// to decrypt with the stored session, so the substituted envelope key was never
+// examined at all.
+//
+// Why that matters on OUR side of the FFI: `signal_decrypt_pre_key` reads
+// `sender_identity_key` from the envelope *before* decryption (src/session.rs,
+// "Extract sender identity key from the message BEFORE decryption") and returns
+// it — plus the derived `identity_changed` flag — to TypeScript. A forged
+// envelope key was therefore reportable upward as the peer's identity. This
+// test pins that closed.
+//
+// The assertion deliberately matches on the reason string and not merely on
+// `is_err()`: several unrelated failures on this path (inner-MAC failure,
+// duplicate message counter, protobuf decode) are also `Err`, so the variant
+// alone cannot show that the *new* check is what fired. If upstream rewords the
+// literal, re-read the upstream diff — do not relax the assertion here.
+//
+// NOT a duplicate of Test 8c (`test_identity_change_detection_*`): 8c covers
+// the store-level `is_trusted_identity` / `identity_changed` reporting for a
+// genuine identity rotation, where the peer sends its own, correctly
+// self-consistent envelope. 8e covers a *forged* envelope key on a
+// re-delivered message — a check that lives one layer deeper, inside
+// `process_prekey_impl`, and did not exist before v0.102.3.
+//
+// `remote_identity: None` is load-bearing: `process_prekey` runs
+// `is_trusted_identity` (upstream session.rs:59) *before* `process_prekey_impl`
+// (:87), so pre-loading Alice #1's identity short-circuits to
+// `UntrustedIdentity` — that is Test 8c sub-case (a) — and never reaches the
+// new check.
+//
+// The 1:1 Signal session surface has no production TypeScript callers today
+// (#17 deferral / DEBT-159; DMs use ECIES + AES-GCM), which lowers the urgency
+// of this check but not its value: it is the only assertion in this crate that
+// tells v0.102.3 apart from v0.99.1.
+
+#[test]
+fn test_prekey_redelivery_with_substituted_identity_key_is_rejected() {
+    use libsignal_protocol::{IdentityKey, KyberPayload, PreKeySignalMessage};
+
+    let alice1_identity = generate_identity_key_pair();
+    let alice2_identity = generate_identity_key_pair();
+    let bob_identity = generate_identity_key_pair();
+
+    assert_ne!(
+        alice1_identity.public_key, alice2_identity.public_key,
+        "the substituted identity key must actually differ from Alice #1's"
+    );
+
+    // --- Bob's key material (one generation, reused for both decrypt calls:
+    //     create_store rebuilds the in-memory stores per FFI call) ---
+    let bob_pre_key_record = generate_pre_key(30).expect("pre-key");
+    let bob_signed_pre_key_record =
+        generate_signed_pre_key(30, bob_identity.clone(), 1700000000000).expect("signed pre-key");
+    let bob_kyber_result =
+        generate_kyber_pre_key_sync(30, bob_identity.clone(), 1700000000000, false);
+
+    let pre_key_pub = get_pre_key_public(bob_pre_key_record.clone()).expect("pre-key public");
+    let signed_pre_key_pub = get_signed_pre_key_public(bob_signed_pre_key_record.clone())
+        .expect("signed pre-key public");
+    let kyber_pre_key_pub =
+        get_kyber_pre_key_public(bob_kyber_result.record.clone()).expect("kyber pre-key public");
+
+    let bundle = PreKeyBundleData {
+        registration_id: 2,
+        device_id: 1,
+        pre_key_id: Some(pre_key_pub.id),
+        pre_key_public: Some(pre_key_pub.public_key),
+        signed_pre_key_id: signed_pre_key_pub.id,
+        signed_pre_key_public: signed_pre_key_pub.public_key,
+        signed_pre_key_signature: signed_pre_key_pub.signature,
+        identity_key: bob_identity.public_key.clone(),
+        kyber_pre_key_id: Some(kyber_pre_key_pub.id),
+        kyber_pre_key_public: Some(kyber_pre_key_pub.public_key),
+        kyber_pre_key_signature: Some(kyber_pre_key_pub.signature),
+    };
+
+    let bob_address = ProtocolAddressData {
+        name: "bob-uuid-8e".to_string(),
+        device_id: 1,
+    };
+    let alice_address = ProtocolAddressData {
+        name: "alice-uuid-8e".to_string(),
+        device_id: 1,
+    };
+
+    // --- Step 1: Alice #1 -> Bob PreKey message M1; Bob establishes session S ---
+    let bundle_result = process_pre_key_bundle(ProcessPreKeyBundleInput {
+        identity_key_pair: alice1_identity.clone(),
+        registration_id: 1,
+        remote_address: bob_address.clone(),
+        local_address: alice_address.clone(),
+        bundle,
+        existing_session_record: None,
+        remote_identity: None,
+    })
+    .expect("Alice #1 process_pre_key_bundle");
+
+    let encrypt_result = signal_encrypt(EncryptInput {
+        identity_key_pair: alice1_identity.clone(),
+        registration_id: 1,
+        session_record: Some(bundle_result.updated_session_record),
+        remote_identity: Some(bundle_result.identity_key),
+        remote_address: bob_address.clone(),
+        local_address: alice_address.clone(),
+        plaintext: b"message from alice #1 (8e)".to_vec(),
+    })
+    .expect("Alice #1 signal_encrypt");
+    let m1 = encrypt_result.ciphertext.serialized;
+
+    let decrypt_result = signal_decrypt_pre_key(DecryptPreKeyInput {
+        identity_key_pair: bob_identity.clone(),
+        registration_id: 2,
+        sender_address: alice_address.clone(),
+        local_address: bob_address.clone(),
+        existing_session_record: None,
+        remote_identity: None,
+        pre_key_record: Some(bob_pre_key_record.clone()),
+        signed_pre_key_record: bob_signed_pre_key_record.clone(),
+        kyber_pre_key_record: Some(bob_kyber_result.record.clone()),
+        ciphertext: m1.clone(),
+    })
+    .expect("Bob decrypt M1");
+    assert_eq!(decrypt_result.plaintext, b"message from alice #1 (8e)");
+    let session_s = decrypt_result.updated_session_record;
+
+    // --- Step 2: rebuild M1 with Alice #2's identity key in the envelope.
+    //     `PreKeySignalMessage::new` takes everything owned; the accessors hand
+    //     back references (SignalMessage / KyberPayload derive Clone, PublicKey
+    //     and IdentityKey are Copy). Base key, pre-key ids and the inner
+    //     SignalMessage are carried over verbatim, so `promote_matching_session`
+    //     still matches session S and the *only* difference is the envelope
+    //     identity key. ---
+    let m = PreKeySignalMessage::try_from(m1.as_slice()).expect("parse M1");
+    let alice2_identity_key =
+        IdentityKey::decode(&alice2_identity.public_key).expect("decode Alice #2 identity key");
+    assert_ne!(
+        *m.identity_key(),
+        alice2_identity_key,
+        "the rebuild must actually substitute the envelope identity key"
+    );
+
+    let forged = PreKeySignalMessage::new(
+        m.message_version(),
+        m.registration_id(),
+        m.pre_key_id(),
+        m.signed_pre_key_id(),
+        Some(KyberPayload::new(
+            m.kyber_pre_key_id()
+                .expect("PQXDH message carries a kyber pre-key id"),
+            m.kyber_ciphertext()
+                .expect("PQXDH message carries a kyber ciphertext")
+                .clone(),
+        )),
+        *m.base_key(),
+        alice2_identity_key,
+        m.message().clone(),
+    )
+    .expect("rebuild PreKeySignalMessage with substituted identity key");
+
+    // Precondition for reaching the new check: same base key (so
+    // promote_matching_session matches), different envelope identity key.
+    let forged_parsed =
+        PreKeySignalMessage::try_from(forged.serialized()).expect("parse forged message");
+    assert_eq!(
+        forged_parsed.base_key().serialize(),
+        m.base_key().serialize(),
+        "base key must be carried over verbatim or promote_matching_session will not match"
+    );
+    assert_eq!(
+        *forged_parsed.identity_key(),
+        alice2_identity_key,
+        "forged message must carry Alice #2's identity key"
+    );
+
+    // --- Step 3: Bob re-processes the forged message against session S.
+    //     remote_identity: None — see the header comment. ---
+    let forged_result = signal_decrypt_pre_key(DecryptPreKeyInput {
+        identity_key_pair: bob_identity.clone(),
+        registration_id: 2,
+        sender_address: alice_address.clone(),
+        local_address: bob_address.clone(),
+        existing_session_record: Some(session_s),
+        remote_identity: None,
+        pre_key_record: Some(bob_pre_key_record),
+        signed_pre_key_record: bob_signed_pre_key_record,
+        kyber_pre_key_record: Some(bob_kyber_result.record),
+        ciphertext: forged.serialized().to_vec(),
+    });
+
+    // --- Step 4: structural assertion first (the call must fail, so neither a
+    //     plaintext nor an updated session record ever crosses the FFI
+    //     boundary), then the substring as the discriminator. ---
+    let err = match forged_result {
+        Ok(ok) => panic!(
+            "a PreKey re-delivery with a substituted envelope identity key must be rejected; \
+             got plaintext {:?} and a {}-byte updated session record",
+            String::from_utf8_lossy(&ok.plaintext),
+            ok.updated_session_record.len()
+        ),
+        Err(e) => e,
+    };
+    let reason = match &err {
+        SignalError::InvalidMessage { reason } => reason,
+        other => panic!("expected SignalError::InvalidMessage, got {other:?}"),
+    };
+    assert!(
+        reason.contains("not consistent with previously-established session"),
+        "expected upstream's identity-mismatch reason (libsignal session.rs:116 @ v0.102.3), \
+         got: {reason}"
+    );
+}

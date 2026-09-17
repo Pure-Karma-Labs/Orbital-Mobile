@@ -19,12 +19,15 @@ jobs:
     name: Lint, Typecheck & Test
     runs-on: macos-latest
     # 40, not 30: typical runs are 20-23 min (ESLint, tsc, 161 Jest suites, pod
-    # install, iOS transcoder compile). A slow runner reached 29m13s (transcoder
+    # install, iOS compile gate). A slow runner reached 29m13s (transcoder
     # xcodebuild 18m57s). Since #768 a Sentry-cache miss adds a 66 MB download.
-    # One hung suite (#731) consumed the whole budget and cancelled a job whose
-    # other 160 suites had already passed -- a flake shouldn't discard passing
-    # work. If runs approach 40, split the transcoder compile into its own job
-    # rather than raising this again (tracked on #769).
+    # Since #769 the budget includes the Firebase SPM verifier harness (seconds),
+    # the Package.resolved gate (66 s measured on a cold cache) and the SPM cache
+    # save on a miss (1.2 GB on disk, 437 MB compressed; measured 26 s). One hung suite (#731) consumed
+    # the whole budget and cancelled a job whose other 160 suites had already
+    # passed -- a flake shouldn't discard passing work. If runs approach 40,
+    # split the transcoder compile into its own job rather than raising this
+    # again (tracked on #769).
     timeout-minutes: 40
 
     steps:
@@ -142,6 +145,9 @@ jobs:
               - '.github/workflows/ci.yml'                        # edits to this gate must exercise the gate (#767)
               - 'scripts/assert-no-absolute-pod-paths.sh'         # #767
               - 'scripts/test-assert-no-absolute-pod-paths.sh'    # #767
+              - 'scripts/verify-firebase-spm.rb'                  # #769
+              - 'scripts/test-verify-firebase-spm.sh'             # #769
+              - 'scripts/fixtures/firebase-spm/**'                # #769
 
       - name: Cache CocoaPods
         if: github.event_name == 'pull_request' && steps.pod-filter.outputs.ios-native == 'true'
@@ -169,6 +175,22 @@ jobs:
           path: ~/Library/Caches/sentry-react-native
           key: sentry-xcframework-${{ runner.os }}-${{ hashFiles('node_modules/@sentry/react-native/RNSentry.podspec', 'node_modules/@sentry/react-native/scripts/sentry_utils.rb') }}
 
+      # Issue #769: Xcode resolves the firebase-ios-sdk Swift package (13 repos,
+      # 1.2 GB on disk / 437 MB compressed, incl. every binaryTarget zip in the
+      # graph, grpc-binary alone 609 MB) before it can build any target that shares the workspace.
+      # Keyed on the committed pin so a bump gets a fresh resolve; restore-keys
+      # lets Xcode reuse unchanged mirrors on a miss. Keep path/key identical
+      # in build.yml (enforced by the cache-parity rule in
+      # scripts/check-security-invariants.mjs).
+      - name: Cache Swift package clones
+        if: github.event_name == 'pull_request' && steps.pod-filter.outputs.ios-native == 'true'
+        uses: actions/cache@v6
+        with:
+          path: ~/Library/Caches/orbital-spm
+          key: spm-${{ runner.os }}-${{ hashFiles('ios/OrbitalMobile.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: |
+            spm-${{ runner.os }}-
+
       # `pod install` evaluates the Podfile and every dependency's podspec as
       # arbitrary Ruby. On GitHub-hosted ephemeral runners this is safe --
       # the VM is discarded after the job, so fork PRs cannot exfiltrate
@@ -182,6 +204,13 @@ jobs:
         if: github.event_name == 'pull_request' && steps.pod-filter.outputs.ios-native == 'true'
         run: bash scripts/test-assert-no-absolute-pod-paths.sh
 
+      # Issue #769: fixture harness for scripts/verify-firebase-spm.rb, run on
+      # this macOS runner's system Ruby before the real guard runs from the
+      # Podfile post_integrate hook. Needs no ios/ files.
+      - name: Self-test the Firebase SPM verifier (issue #769)
+        if: github.event_name == 'pull_request' && steps.pod-filter.outputs.ios-native == 'true'
+        run: bash scripts/test-verify-firebase-spm.sh
+
       - name: Podfile.lock consistency check
         id: pod-install
         if: github.event_name == 'pull_request' && steps.pod-filter.outputs.ios-native == 'true'
@@ -189,34 +218,44 @@ jobs:
         shell: bash   # explicit bash => pipefail, so a pod failure is not masked by tee
         run: pod install --deployment 2>&1 | tee pod-install.log
 
-      # Issue #667 (guard 3 of 3). Two checks that only make sense after
-      # CocoaPods has fully exited:
-      #   (a) RNFB's own log line for the CocoaPods branch — a belt-and-braces
-      #       positive signal alongside Podfile guard 1 (which already asserts
-      #       the umbrella subspecs resolved). Matched on the stable
-      #       "SPM disabled" prefix, not the full sentence, so an upstream
-      #       reword does not fail CI with a misleading cause.
-      #   (b) the committed app project must be byte-identical after
-      #       `pod install`. RNFB mutates the pbxproj AFTER the Podfile's
-      #       post_integrate hook (it wraps run_podfile_post_integrate_hooks),
-      #       so the Podfile's guard 2 is a next-run tripwire; this diff is
-      #       the same-run one.
-      - name: Assert Firebase stays on CocoaPods (issue #667)
+      # Issue #769 (guard 3 of 3). Two independent signals that Firebase resolved
+      # via SPM, plus a same-run pbxproj diff:
+      #   (a) firebase_spm.rb prints "Using SPM for Firebase dependency resolution"
+      #       once per firebase_dependency call that takes the SPM branch. Measured:
+      #       6 per install on CocoaPods 1.17.0 (RNFBApp + RNFBMessaging, three
+      #       podspec evaluations each; probe-pod-install-{2,4,9}.log). Assert >= 2
+      #       (both pods at least once) so that an upstream reword is loud rather
+      #       than silent; the CocoaPods-branch check below is the second signal.
+      #   (b) the committed app project must be byte-identical after `pod install`.
+      #       RNFB writes the package reference AFTER the Podfile's post_integrate
+      #       hook (it wraps run_podfile_post_integrate_hooks), so the Podfile's
+      #       guard 2 is a next-run tripwire; this diff is the same-run one.
+      - name: Assert Firebase resolves via SPM (issue #769)
         if: github.event_name == 'pull_request' && steps.pod-filter.outputs.ios-native == 'true'
         working-directory: ios
         shell: bash
         run: |
-          if ! grep -F 'SPM disabled' pod-install.log; then
-            echo "ERROR: pod install did not print RNFB's 'SPM disabled' line (#667)."
-            echo "Either react-native-firebase resolved Firebase via SPM (check Podfile guard 1's"
-            echo "output above), or upstream reworded the log string in"
-            echo "node_modules/@react-native-firebase/app/firebase_spm.rb — check that first."
+          # firebase_spm.rb prints this once per firebase_dependency call that takes
+          # the SPM branch. Measured: 6 per install on CocoaPods 1.17.0 (RNFBApp +
+          # RNFBMessaging, three podspec evaluations each; probe-pod-install-{2,4,9}.log).
+          # Assert >= 2 (both pods at least once) and that the CocoaPods branch never
+          # printed; the committed pbxproj is the structural second signal (guard 2).
+          if [ "$(grep -c -F 'Using SPM for Firebase dependency resolution' pod-install.log)" -lt 2 ]; then
+            echo "ERROR: expected RNFBApp and RNFBMessaging to resolve Firebase via SPM (#769)."
+            echo "Either the Podfile lost 'use_frameworks! :linkage => :dynamic' / regained"
+            echo "\$RNFirebaseDisableSPM (Podfile guard 1 should have failed first), or upstream"
+            echo "reworded the log line in node_modules/@react-native-firebase/app/firebase_spm.rb."
             exit 1
           fi
+          if grep -F 'SPM disabled' pod-install.log; then
+            echo "ERROR: react-native-firebase took the CocoaPods branch (#769)."; exit 1
+          fi
           if ! git diff --exit-code -- OrbitalMobile.xcodeproj/project.pbxproj; then
-            echo "ERROR: pod install modified the committed app project (#667)."
-            echo "If the diff adds XCRemoteSwiftPackageReference / XCSwiftPackageProductDependency,"
-            echo "react-native-firebase took the SPM path despite \$RNFirebaseDisableSPM."
+            echo "ERROR: pod install modified the committed app project (#769)."
+            echo "The committed pbxproj already carries the firebase-ios-sdk package reference (exactVersion),"
+            echo "the FirebaseCore product dependency and the [RNFB] phases; every pod install must be a"
+            echo "no-op on it. A diff means RNFB or RN changed what they write — run pod install locally"
+            echo "from the main checkout, inspect, and commit the result deliberately."
             exit 1
           fi
 
@@ -241,9 +280,9 @@ jobs:
       # `pod install`. --deployment stops the resolver writing Podfile.lock (and
       # already rejects a COCOAPODS-stamp drift as a lockfile change), but
       # Podfile hooks and CocoaPods plugins run after that check and can still
-      # touch it. project.pbxproj is diffed by the #667 step above with an
+      # touch it. project.pbxproj is diffed by the #769 step above with an
       # SPM-specific message; build.yml carries both diffs because it has no
-      # #667 step.
+      # #769 step.
       - name: Assert pod install left the tree clean (issue #767)
         if: github.event_name == 'pull_request' && steps.pod-filter.outputs.ios-native == 'true'
         working-directory: ios
@@ -257,20 +296,55 @@ jobs:
             exit 1
           fi
 
-      # Issue #586: build.yml's full iOS build is main-only, so hand-written
-      # native module code (and the generated Spec it must match) had no
-      # PR-time compile at all -- the hole class behind #513/#634. Compiling
-      # just the OrbitalMediaTranscoder pod target is cheap and catches
-      # codegen/protocol drift on every PR that touches the module, including
-      # future iOS-only changes to it.
+      # Issue #769: the Firebase version gate. `pod install --deployment` no
+      # longer sees Firebase (it is a Swift package). The exact pin is the
+      # exactVersion requirement in the app pbxproj, resolved into the committed
+      # Package.resolved (both verified by scripts/verify-firebase-spm.rb from
+      # the Podfile). Verified on Xcode 27.0 (2026-09-16, five scenarios):
+      # -disableAutomaticPackageResolution makes this command RESOLVE (it lists
+      # the packages) and exit 0 without touching Package.resolved when the pins
+      # satisfy the requirements, exit 74 "Could not resolve package
+      # dependencies" when a pin is outside the requirement, and never rewrite
+      # the file (SwiftPM's lock-file strategy neither computes originHash nor
+      # saves). The diff below is the backstop. A cache hit costs seconds; a
+      # miss is the full 1.2 GB fetch (51 s measured on the runner, ~2 min on a Mac mini).
+      - name: Assert Package.resolved satisfies the Firebase requirement (issue #769)
+        if: github.event_name == 'pull_request' && steps.pod-filter.outputs.ios-native == 'true'
+        working-directory: ios
+        shell: bash
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -workspace OrbitalMobile.xcworkspace \
+            -scheme OrbitalMobile \
+            -disableAutomaticPackageResolution \
+            -clonedSourcePackagesDirPath ~/Library/Caches/orbital-spm
+          if ! git diff --exit-code -- OrbitalMobile.xcworkspace/xcshareddata/swiftpm/Package.resolved; then
+            echo "ERROR: package resolution changed the committed Package.resolved (#769)."
+            exit 1
+          fi
+
+      # Issue #586 / #769: PR-time compile of the OrbitalMediaTranscoder pod.
+      # Must go through the workspace: a package-bearing Pods.xcodeproj cannot
+      # be built with -project ("Packages are not supported when using legacy
+      # build locations"). -disableAutomaticPackageResolution keeps the
+      # committed Package.resolved authoritative. NOT OrbitalSignal: under
+      # dynamic frameworks it links the vendored Rust archive
+      # (OrbitalSignalFramework.xcframework, gitignored) at its own link step,
+      # and this job never builds Rust -- tried on PR #810 and it fails with
+      # undefined _ffi_orbital_signal_* symbols. OrbitalSignal's link step is
+      # covered by build.yml's build-ios job (main + workflow_dispatch), which
+      # cross-compiles the crate first.
       - name: Compile OrbitalMediaTranscoder (PR-time iOS gate)
         if: github.event_name == 'pull_request' && steps.pod-filter.outputs.ios-native == 'true'
         working-directory: ios
         run: |
           xcodebuild \
-            -project Pods/Pods.xcodeproj \
-            -target OrbitalMediaTranscoder \
+            -workspace OrbitalMobile.xcworkspace \
+            -scheme OrbitalMediaTranscoder \
             -sdk iphonesimulator \
             -configuration Debug \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            -clonedSourcePackagesDirPath ~/Library/Caches/orbital-spm \
+            -disableAutomaticPackageResolution \
             build \
             CODE_SIGNING_ALLOWED=NO

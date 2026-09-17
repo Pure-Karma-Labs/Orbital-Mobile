@@ -323,6 +323,13 @@ fn golden_ecies_open() {
 /// A failure here is a **hard stop**, not a fixture to regenerate. Regenerating
 /// it to get green would erase the only evidence that shipped clients can still
 /// read what the new build produces.
+///
+/// Conditional exemption: the replay may be skipped only when the sealing path
+/// is provably untouched. v0.102.3 (#811): replay skipped — `rust/core/src/curve.rs`
+/// and `curve/curve25519.rs` are byte-identical v0.99.1..v0.102.3 and
+/// `curve25519-dalek` stays at stock 5.0.0, so the sealed bytes cannot have
+/// moved. The replay is mandatory again on any bump that touches `rust/core`
+/// or moves the dalek crate.
 #[test]
 fn golden_ecies_open_sealed_under_stock_dalek() {
     // TEST VECTOR — synthetic sender public key, never used outside this test

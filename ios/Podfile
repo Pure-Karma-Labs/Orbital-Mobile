@@ -198,7 +198,7 @@ target 'OrbitalMobile' do
     # and would make the check self-fulfilling. SENTRY_XCFRAMEWORK_STAGING_DIR
     # is defined by RNSentry's scripts/sentry_utils.rb (required by its podspec);
     # a NameError here means upstream renamed it -- re-check the whole guard.
-    expected_sentry_cocoa = '9.19.1' # bump with @sentry/react-native (#743); the docs table points here
+    expected_sentry_cocoa = '9.29.0' # bump with @sentry/react-native; the docs table points here
     pods_root = installer.sandbox.root.to_s
     staging = File.join(pods_root, SENTRY_XCFRAMEWORK_STAGING_DIR)
     sentry_fix = "Unset SENTRY_USE_XCFRAMEWORK (and the deprecated SENTRY_USE_SPM) in your shell -- the " \

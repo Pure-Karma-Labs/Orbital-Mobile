@@ -34,9 +34,15 @@ the RNSentry **SPEC CHECKSUM** is now machine-independent and `Podfile.lock` is
 reproducible. `Sentry (x.y.z)` no longer appears as a resolved pod in
 `Podfile.lock`; only `RNSentry (x.y.z)` does.
 
-The xcframework is consumed only through `FRAMEWORK_SEARCH_PATHS` (no pod
-dependency, no `vendored_frameworks`), so CocoaPods copies **no Sentry resource
-bundle** into the app. The source pod used to ship `Sentry.bundle/PrivacyInfo.xcprivacy`;
+The xcframework is consumed through `FRAMEWORK_SEARCH_PATHS` plus, since
+`@sentry/react-native` 8.23, an `OTHER_LDFLAGS` `-force_load` of the static
+`Sentry` archive (no pod dependency, no `vendored_frameworks`), so CocoaPods
+copies **no Sentry resource bundle** into the app. The podspec routes the
+`-force_load` by `ENV['USE_FRAMEWORKS']`: `dynamic` (set by RN's
+`use_react_native!` from our `use_frameworks! :linkage => :dynamic`) puts it on
+the **RNSentry pod target's** xcconfig; anything else puts it on the app target.
+Both at once would link a second copy of Sentry into the app, and CI cannot see
+the placement — see the re-check trigger below. The source pod used to ship `Sentry.bundle/PrivacyInfo.xcprivacy`;
 after #768, `ios/OrbitalMobile/PrivacyInfo.xcprivacy` is the **sole carrier** of
 Sentry's required-reason API declarations (it already declares a superset), and
 Sentry's collected-data rows (`PerformanceData`, `OtherDiagnosticData`) appear
@@ -47,15 +53,15 @@ decision, not a build one.
 
 | What | Value | Where it lives |
 |---|---|---|
-| `@sentry/react-native` | 8.22.0 | `package.json` / `package-lock.json`; `RNSentry (8.22.0)` in `ios/Podfile.lock` |
-| sentry-cocoa | 9.19.1 | **Enforced:** `expected_sentry_cocoa` in the Issue #768 guard in `ios/Podfile` (pod install fails if the staged version differs). Upstream source: `sentry_cocoa_version` in `node_modules/@sentry/react-native/RNSentry.podspec` |
-| `Sentry.xcframework.zip` SHA256 | `d6d545af17e49851cda2747b0f45cde78ce08ea37709dde5a956c6b4671224e8` | `SENTRY_COCOA_XCFRAMEWORK_CHECKSUMS['9.19.1']['Sentry']` in `sentry_utils.rb`; independently matched against sentry-cocoa's `Package.swift` binary-target checksum at tag 9.19.1 |
-| Local cache | `~/Library/Caches/sentry-react-native/xcframeworks/9.19.1/` | Build machine; CI cache key `sentry-xcframework-<os>-<hash of podspec + sentry_utils.rb>` |
+| `@sentry/react-native` | 8.27.0 | `package.json` / `package-lock.json`; `RNSentry (8.27.0)` in `ios/Podfile.lock` |
+| sentry-cocoa | 9.29.0 | **Enforced:** `expected_sentry_cocoa` in the Issue #768 guard in `ios/Podfile` (pod install fails if the staged version differs). Upstream source: `sentry_cocoa_version` in `node_modules/@sentry/react-native/RNSentry.podspec` |
+| `Sentry.xcframework.zip` SHA256 | `63fe5a7258097fded9ef485bbb1d8e80e1e91d419ee6d8a6ad405454b5b50fef` | `SENTRY_COCOA_XCFRAMEWORK_CHECKSUMS['9.29.0']['Sentry']` in `sentry_utils.rb`; independently matched against sentry-cocoa's `Package.swift` binary-target checksum at tag 9.29.0 |
+| Local cache | `~/Library/Caches/sentry-react-native/xcframeworks/9.29.0/` | Build machine; CI cache key `sentry-xcframework-<os>-<hash of podspec + sentry_utils.rb>` |
 
 **Note:** nothing verifies the SHA256 row against `node_modules` at install
-time; the Podfile literal enforces the version row. Next bump is #743, which
-must update this table, the Podfile literal (`expected_sentry_cocoa`), and
-re-do the `Package.swift` comparison.
+time; the Podfile literal enforces the version row. Any bump must update this
+table, the Podfile literal (`expected_sentry_cocoa`), and re-do the
+`Package.swift` comparison.
 
 ### Provenance policy (decided 2026-09-15)
 
@@ -88,7 +94,7 @@ it, and the Issue #768 `post_install` guard fails without the staged xcframework
 
 ## Re-check trigger (Sentry)
 
-Any `@sentry/react-native` bump (next: #743, targets ≥ 8.23 / sentry-cocoa 9.24):
+Any `@sentry/react-native` bump:
 
 1. Confirm `stage_sentry_xcframework_in_pods` still returns a
    `$(PODS_ROOT)/sentry-xcframeworks/...` path.
@@ -99,10 +105,36 @@ Any `@sentry/react-native` bump (next: #743, targets ≥ 8.23 / sentry-cocoa 9.2
 5. Update the Version record table above.
 6. Confirm `ios/OrbitalMobile/PrivacyInfo.xcprivacy` still covers the SDK's
    `NSPrivacyAccessedAPITypes` (the app manifest is the only carrier now).
-7. On CI the restored `ios/Pods` cache may still hold the previous
-   `sentry-xcframeworks/<old>` entry beside the new one; the guard fails on two
-   versions — `rm -rf ios/Pods/sentry-xcframeworks` and re-run, or expect the
-   first run after the bump to need a cache-clearing retry.
+7. CI's `Cache CocoaPods` step has `restore-keys: pods-<os>-`, so when
+   `Podfile.lock`/`Podfile` change the exact key misses and the prefix key
+   restores an OLD `ios/Pods` that still holds `sentry-xcframeworks/<old>`
+   beside the new one; the guard fails on two versions, and it fails the same
+   way on every re-run (`actions/cache` never saves on a failed job). Before
+   pushing the bump, delete the stale entries:
+   `gh cache list --repo Pure-Karma-Labs/Orbital-Mobile --key pods-macOS-` →
+   `gh cache delete <id>` for each. Locally, `rm -rf ios/Pods/sentry-xcframeworks`
+   and re-run `pod install` if the previous version is still staged.
+8. Check the `-force_load` placement after `pod install`, before committing:
+   `Pods/Target Support Files/RNSentry/RNSentry.{debug,release}.xcconfig` must
+   contain `-force_load "$(PODS_ROOT)/sentry-xcframeworks/<ver>/Sentry.xcframework/ios-arm64/Sentry.framework/Sentry"`,
+   and `Pods/Target Support Files/Pods-OrbitalMobile/Pods-OrbitalMobile.{debug,release}.xcconfig`
+   must contain no `-force_load` of Sentry at all. The wrong branch means a
+   second Sentry copy in the app binary; nothing in CI detects it.
+9. Read the `@sentry/react-native` CHANGELOG for the crossed versions for new
+   privacy-relevant native options (8.26 added `enableMemoryIntrospection`,
+   pinned to `false` in `src/sentryInit.ts`) and for grouping changes that
+   regroup existing issues (8.27: iOS native crashes set `mechanism.synthetic`).
+
+---
+
+## op-sqlite
+
+`@op-engineering/op-sqlite` stays CocoaPods-integrated. Its 18.x `Package.swift`
+is inert under CocoaPods (the podspec has no SPM references), and it swaps
+`OpenSSL-Universal` for a different OpenSSL distribution on the SQLCipher path,
+which upstream itself marks as untested. Any future SPM migration of this pod
+needs its own crypto-provider review before it ships the database layer under
+all E2EE storage.
 
 ---
 

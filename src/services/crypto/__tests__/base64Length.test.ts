@@ -32,7 +32,7 @@ describe('base64DecodedLength', () => {
     expect(base64DecodedLength(b64)).toBe(base64ToUint8Array(b64).length);
   });
 
-  // Defensive: some base64 encoders wrap their output (RNFS 2.39.2 does not);
+  // Defensive: some base64 encoders wrap their output (RNFS does not wrap its output);
   // atob tolerates the whitespace, so the length helper has to agree with atob
   // rather than with the raw string length.
   it('ignores embedded ASCII whitespace (wrapped base64)', () => {

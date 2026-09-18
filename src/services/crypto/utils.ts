@@ -56,7 +56,7 @@ export function arrayBufferToBase64(buffer: ArrayBuffer): string {
  *
  * Uses atob, which is available in Hermes via the react-native polyfills and
  * tolerates embedded whitespace/newlines (defensive: some base64 encoders wrap
- * their output; RNFS 2.39.2 does not).
+ * their output; RNFS does not wrap its output).
  */
 export function base64ToUint8Array(base64: string): Uint8Array {
   const g = globalThis as unknown as { atob: (s: string) => string };
@@ -83,7 +83,7 @@ export function base64ToArrayBuffer(base64: string): ArrayBuffer {
  * accumulator have to derive lengths from the string itself.
  *
  * ASCII whitespace is ignored (defensive: some base64 encoders wrap their
- * output and `atob` accepts it — RNFS 2.39.2 does not wrap), so this stays
+ * output and `atob` accepts it — RNFS does not wrap its output), so this stays
  * consistent with what a decoder would actually produce. Structurally invalid
  * input throws rather than returning a plausible-but-wrong length: a silently
  * wrong length desynchronises the read position and would surface as an opaque

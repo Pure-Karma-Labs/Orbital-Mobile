@@ -120,7 +120,6 @@ target 'OrbitalMobile' do
       'React-webperformancenativemodule' => [['React-cxxreact', 'cxxreact']],          # ReactMarker::StartupLogger; RN 0.83 adds s.dependency "React-cxxreact"
       'React-defaultsnativemodule'       => [['React-featureflags', 'React_featureflags']], # ReactNativeFeatureFlags; RN 0.83 adds add_dependency React-featureflags
       'react-native-video'               => [['React-CoreModules', 'CoreModules']],      # RCTEventDispatcher class lives in React-CoreModules
-      'ReactNativeFs'                    => [[nil, 'UniformTypeIdentifiers']],          # UTType / UTTypeItem
       # PRE-EMPTIVE (from the 0.83 podspec diff; never failed here)
       'React-CoreModules'                => [['React-featureflags', 'React_featureflags'], ['React-utils', 'React_utils']],
       'React-jsiexecutor'                => [['React-utils', 'React_utils']],

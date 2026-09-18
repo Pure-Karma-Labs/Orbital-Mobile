@@ -32,7 +32,7 @@
     "test:rust-gate:ios": "bash scripts/test-rust-profile-gate-ios.sh"
   },
   "dependencies": {
-    "@dr.pogodin/react-native-fs": "^2.39.2",
+    "@dr.pogodin/react-native-fs": "^2.40.3",
     "@notifee/react-native": "^9.1.8",
     "@op-engineering/op-sqlite": "^17.1.5",
     "@react-native-firebase/app": "^26.3.3",

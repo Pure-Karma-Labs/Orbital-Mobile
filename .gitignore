@@ -92,3 +92,6 @@ ios/OrbitalMobile.xcworkspace/xcshareddata/swiftpm/configuration/
 
 # Kotlin 2.x compiler session cache (Gradle 9 toolchain)
 android/.kotlin/
+
+# NDK/CMake build caches (android/app/.cxx, packages/*/android/.cxx)
+**/.cxx/

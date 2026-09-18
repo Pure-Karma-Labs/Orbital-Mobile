@@ -114,12 +114,16 @@ Any `@sentry/react-native` bump:
    `gh cache list --repo Pure-Karma-Labs/Orbital-Mobile --key pods-macOS-` →
    `gh cache delete <id>` for each. Locally, `rm -rf ios/Pods/sentry-xcframeworks`
    and re-run `pod install` if the previous version is still staged.
-8. Check the `-force_load` placement after `pod install`, before committing:
-   `Pods/Target Support Files/RNSentry/RNSentry.{debug,release}.xcconfig` must
-   contain `-force_load "$(PODS_ROOT)/sentry-xcframeworks/<ver>/Sentry.xcframework/ios-arm64/Sentry.framework/Sentry"`,
-   and `Pods/Target Support Files/Pods-OrbitalMobile/Pods-OrbitalMobile.{debug,release}.xcconfig`
-   must contain no `-force_load` of Sentry at all. The wrong branch means a
-   second Sentry copy in the app binary; nothing in CI detects it.
+8. Check the `-force_load` placement after `pod install`, before committing.
+   CocoaPods emits the flags as per-SDK `OTHER_LDFLAGS[sdk=...]` lines, one per
+   xcframework slice (e.g. `ios-arm64_arm64e` for `iphoneos*`), so check for
+   placement, not for a literal slice path:
+   `grep -c force_load "Pods/Target Support Files/RNSentry/RNSentry.release.xcconfig"`
+   (and `.debug.xcconfig`) must be non-zero and every match must reference
+   `sentry-xcframeworks/<ver>/Sentry.xcframework`; `grep -c force_load
+   "Pods/Target Support Files/Pods-OrbitalMobile/Pods-OrbitalMobile.release.xcconfig"`
+   (and `.debug.xcconfig`) must be 0. The wrong branch means a second Sentry
+   copy in the app binary; nothing in CI detects it.
 9. Read the `@sentry/react-native` CHANGELOG for the crossed versions for new
    privacy-relevant native options (8.26 added `enableMemoryIntrospection`,
    pinned to `false` in `src/sentryInit.ts`) and for grouping changes that

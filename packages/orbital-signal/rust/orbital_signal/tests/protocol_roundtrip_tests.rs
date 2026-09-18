@@ -707,7 +707,7 @@ fn test_session_roundtrip_with_uuid_addresses_mac_binding() {
 // new check.
 //
 // The 1:1 Signal session surface has no production TypeScript callers today
-// (#17 deferral / DEBT-159; DMs use ECIES + AES-GCM), which lowers the urgency
+// (#200 deferral / DEBT-159; DMs use ECIES + AES-GCM), which lowers the urgency
 // of this check but not its value: it is the only assertion in this crate that
 // tells v0.102.3 apart from v0.99.1.
 

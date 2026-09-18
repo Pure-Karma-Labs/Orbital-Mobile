@@ -89,3 +89,6 @@ docs/compliance/BIS Supplement*
 # per-user configuration dir under both; neither is a build input.
 ios/OrbitalMobile.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
 ios/OrbitalMobile.xcworkspace/xcshareddata/swiftpm/configuration/
+
+# Kotlin 2.x compiler session cache (Gradle 9 toolchain)
+android/.kotlin/

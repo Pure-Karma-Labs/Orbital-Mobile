@@ -162,7 +162,7 @@ Keychain items use `AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY` accessibility but do no
 - Sealed sender stubs return errors (not empty data)
 - Transaction wrapping in cryptoService with `BEGIN IMMEDIATE`
 - Per-address operation locking
-- SQLCipher configuration (cipher_memory_security, WAL, raw-key)
+- SQLCipher configuration (cipher_memory_security, WAL)
 - BLOB columns for key material
 - Correct Keychain accessibility level
 - Fresh install detection

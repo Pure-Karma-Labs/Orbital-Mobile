@@ -2,8 +2,9 @@
  * Encryption key provisioning for MMKV and SQLCipher.
  *
  * Keys are CSPRNG output — no KDF needed. MMKV uses AES-CFB-128 internally
- * (128 bits effective). SQLCipher should use PRAGMA key = "x'<hex>'" to use
- * raw bytes.
+ * (128 bits effective). The SQLCipher key is handed to op-sqlite's `open()`
+ * as a bare hex string and SQLCipher derives it with PBKDF2; see
+ * `src/database/connection.ts` for why it must never be wrapped in `x'...'`.
  */
 
 import { SecureKeys } from './constants';

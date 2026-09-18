@@ -1,9 +1,8 @@
 /**
  * Manual Jest mock for @op-engineering/op-sqlite.
  *
- * This native module is not installed in node_modules (it's resolved at
- * build time by the React Native bundler). This mock provides the minimum
- * export shape so that:
+ * This native module requires a device/simulator to run. This mock provides
+ * the minimum export shape so that:
  *   1. Jest can resolve `import { open } from '@op-engineering/op-sqlite'`
  *   2. Test files can override behavior via `jest.mock(...)` as usual
  */

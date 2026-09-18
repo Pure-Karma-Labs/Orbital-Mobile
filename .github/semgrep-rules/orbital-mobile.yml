@@ -53,9 +53,18 @@ rules:
       - pattern: "maskAllImages: false"
       - pattern: "attachScreenshot: true"
       - pattern: "enableCaptureFailedRequests: true"
+      # The SDK installs mobileReplayIntegration itself whenever a replay
+      # sample rate is a number (dist/js/integrations/default.js), so the
+      # options are the real switch, not the integration call.
+      - pattern: "replaysSessionSampleRate: $X"
+      - pattern: "replaysOnErrorSampleRate: $X"
+      # iOS: reads process memory near the crash site into native crash
+      # reports; that memory holds the SQLCipher key and plaintext (#743).
+      - pattern: "enableMemoryIntrospection: true"
     message: >
-      Sentry Session Replay, screenshot capture, and network body capture
-      are forbidden — they could exfiltrate encrypted API payloads or
-      E2EE message content. Requires security review before enabling.
+      Sentry Session Replay, screenshot capture, network body capture and
+      crash-time memory introspection are forbidden — they could exfiltrate
+      encrypted API payloads, E2EE message content or key material. Requires
+      security review before enabling.
     languages: [typescript, javascript]
     severity: ERROR

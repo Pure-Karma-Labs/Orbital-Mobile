@@ -10,4 +10,9 @@ Sentry.init({
   enabled: Boolean(SENTRY_DSN),
   environment: __DEV__ ? 'development' : 'production',
   sendDefaultPii: false,
+  // iOS only. sentry-cocoa >= 9.2x defaults this to false (it was unconditionally
+  // on before, reading memory near the crash site into native crash reports).
+  // Pinned explicitly: process memory holds the SQLCipher key, identity keys
+  // and decrypted plaintext, and this must never follow an upstream default.
+  enableMemoryIntrospection: false,
 });

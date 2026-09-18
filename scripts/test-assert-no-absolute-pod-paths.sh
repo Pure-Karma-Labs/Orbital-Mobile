@@ -87,6 +87,8 @@ make_fixture() {
   mkdir -p "$rnsentry_dir"
 
   # Mirrors the real generated form: quoted ${PODS_ROOT} entries after $(inherited).
+  # The sentry-cocoa version inside these fixture strings is arbitrary: the script
+  # under test matches path shapes, never versions, so it need not track bumps.
   local debug_xcconfig_content='FRAMEWORK_SEARCH_PATHS = $(inherited) "${PODS_ROOT}/hermes-engine/destroot/Library/Frameworks/universal" "${PODS_XCFRAMEWORKS_BUILD_DIR}/hermes-engine/Pre-built" "$(PODS_ROOT)/sentry-xcframeworks/9.19.1/Sentry.xcframework/ios-arm64"'
   local release_xcconfig_content='FRAMEWORK_SEARCH_PATHS = $(inherited) "${PODS_ROOT}/hermes-engine/destroot/Library/Frameworks/universal" "${PODS_XCFRAMEWORKS_BUILD_DIR}/hermes-engine/Pre-built" "$(PODS_ROOT)/sentry-xcframeworks/9.19.1/Sentry.xcframework/ios-arm64"'
 

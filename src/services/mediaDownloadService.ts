@@ -266,7 +266,7 @@ function assertStagedCiphertextSize(
  * chunk — so the decoded length is derived from the string and the read
  * position advances by THAT, not by n. The length helper also tolerates
  * embedded whitespace (defensive: some base64 encoders wrap their output;
- * RNFS 2.39.2 does not).
+ * RNFS does not wrap its output).
  */
 async function readChunk(
   path: string,

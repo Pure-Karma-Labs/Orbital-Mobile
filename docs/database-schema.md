@@ -326,7 +326,7 @@ Draft persistence.
 
 ## Security Considerations
 
-- **SQLCipher configuration:** 256-bit AES-CBC, PBKDF2 with 256,000 iterations (or platform keychain-derived key for zero-iteration unlock)
+- **SQLCipher configuration:** 256-bit AES-CBC, PBKDF2 with 256,000 iterations
 - **Key storage:** Database encryption key stored in iOS Keychain / Android Keystore with biometric binding where available
 - **Key material columns:** All pre-keys, identity keys, session records, and attachment keys stored as BLOB — never base64 or hex TEXT
 - **No plaintext secrets in `items`:** Registration IDs and profile keys are not secret per se, but sensitive values must not be stored in the `items` table without additional encryption

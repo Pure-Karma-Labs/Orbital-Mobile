@@ -98,6 +98,17 @@ updates:
       # a release whose codegen schema parses again.
       - dependency-name: "react-native-screens"
         versions: ["> 4.25.2"]
+      # react-native-nitro-modules 0.37.x adds view-layer headers (RawPropsCompat.hpp,
+      # ReactProp.hpp, ViewComponentDescriptor.hpp, ...) to the NitroModules public
+      # umbrella. They include React renderer headers -> react_native_assert.h ->
+      # glog, and under the dynamic-framework module build adopted in #769 the
+      # NitroModules Swift module then fails: "import of module 'glog.log_severity'
+      # appears within namespace 'google'". Found in #743 (iOS only; Android built).
+      # react-native-mmkv 4.3.2, the only nitro consumer here, works on 0.36.5.
+      # Lift when a nitro release stops exporting those headers from the umbrella
+      # (or ships a modular glog path) and a local iOS Debug build passes.
+      - dependency-name: "react-native-nitro-modules"
+        versions: ["> 0.36.5"]
       # Babel 8 and ESLint 10 require RN ecosystem support — tracked in #311
       - dependency-name: "@babel/core"
         update-types: ["version-update:semver-major"]

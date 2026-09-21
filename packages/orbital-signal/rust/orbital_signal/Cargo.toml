@@ -35,8 +35,8 @@ uuid = { version = "1.5", features = ["v4"] }
 # aes 0.9 / cbc 0.2 / hmac 0.13 / sha2 0.11 / hkdf 0.13). Collapsing them is the
 # RustCrypto-modernization follow-up #635 — see that issue for
 # the migration surface (attachment_crypto.rs, ecies.rs, 4 golden fixtures).
-libsignal-protocol = { git = "https://github.com/signalapp/libsignal", tag = "v0.102.3" }
-libsignal-core = { git = "https://github.com/signalapp/libsignal", tag = "v0.102.3" }
+libsignal-protocol = { git = "https://github.com/signalapp/libsignal", tag = "v0.103.0" }
+libsignal-core = { git = "https://github.com/signalapp/libsignal", tag = "v0.103.0" }
 
 # AES-256-GCM for content encryption (threads, replies — per-field with AAD)
 aes-gcm = { version = "0.11", features = ["zeroize"] }

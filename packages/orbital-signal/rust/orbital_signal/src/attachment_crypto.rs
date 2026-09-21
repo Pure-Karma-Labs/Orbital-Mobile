@@ -1151,12 +1151,19 @@ mod tests {
 
     #[test]
     fn test_wrong_aes_key_same_hmac_key_fails() {
-        // Same HMAC key (MAC passes) but different AES key — fails at CBC decrypt/unpad (opaque error)
-        let plaintext = b"aes key mismatch test".to_vec();
+        // Same HMAC key (MAC passes) but different AES key — fails at CBC decrypt/unpad (opaque error).
+        //
+        // The IV is pinned rather than drawn by `attachment_encrypt`: with a wrong AES key the
+        // last CBC block decrypts to pseudo-random bytes, and PKCS7 unpadding accepts a random
+        // trailing byte of 0x01 about once in 256 tries. A random IV therefore made this test
+        // fail ~0.4% of runs (observed 2026-09-21 during the #822 probe: 31 bytes "recovered"
+        // from a 32-byte block). This IV is the one the streaming twin
+        // (`test_streaming_decrypt_wrong_aes_key_same_hmac_key_fails`) already relies on; the
+        // CBC arithmetic is identical, so the padding failure is deterministic.
         let keys = test_keys();
+        let iv: [u8; 16] = hex!("6767676767676767898989898989898e");
 
-        let result =
-            attachment_encrypt(plaintext, keys.clone()).expect("encryption should succeed");
+        let result = oneshot_encrypt(b"aes key mismatch test", &keys, &iv);
 
         // Keep HMAC key identical, change only AES key
         let mut wrong_keys = vec![0x11; 32]; // different AES key

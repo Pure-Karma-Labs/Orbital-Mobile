@@ -626,6 +626,88 @@ if (ciYaml !== null && buildYaml !== null) {
 }
 
 // ---------------------------------------------------------------------------
+// 14. iOS UIScene lifecycle adoption (#815)
+// ---------------------------------------------------------------------------
+
+// iOS 27 refuses to launch an app built against the iOS 27 SDK that has no
+// UIApplicationSceneManifest ("UIScene life cycle is required for apps built
+// with this SDK"). CI compiles on the Xcode 26.x pin and therefore cannot
+// observe that refusal, so this static check is the only PR-time detector for
+// the three plain-text facts that keep the app launchable: the manifest, the
+// scene-delegate class name, and SceneDelegate.swift being in the Sources
+// build phase. React Native 0.82 ships no scene support, so SceneDelegate.swift
+// hand-ports facebook/react-native#57700; its header carries the grep condition
+// under which the whole shim can be deleted.
+//
+// UIApplicationSupportsMultipleScenes stays false, and that is not a free
+// toggle (Xcode's "Supports multiple windows" checkbox flips it silently): one
+// RN host belongs to one process. A second scene would build a second
+// RCTReactNativeFactory and a second RN host inside this process — two
+// bootstrap() runs, two SQLCipher connections against one orbital.db (the
+// src/database/connection.ts guard is per-JS-context only), two WebSocket
+// sessions, and two concurrent writers to the Signal protocol stores.
+//
+// Anchored on the files existing: a missing SceneDelegate.swift or a missing
+// manifest is itself a violation, so the rule cannot pass vacuously.
+
+const IOS_INFO_PLIST = join('ios', 'OrbitalMobile', 'Info.plist');
+const SCENE_DELEGATE = join('ios', 'OrbitalMobile', 'SceneDelegate.swift');
+const PBXPROJ = join('ios', 'OrbitalMobile.xcodeproj', 'project.pbxproj');
+
+try {
+  const infoPlist = readFileSync(IOS_INFO_PLIST, 'utf8');
+  if (!infoPlist.includes('<key>UIApplicationSceneManifest</key>')) {
+    violations.push(
+      `  ${IOS_INFO_PLIST}:0  [ios-scene-lifecycle]  UIApplicationSceneManifest missing — iOS 27 refuses to launch apps built with the iOS 27 SDK without it (#815)`,
+    );
+  }
+  if (!/<key>UIApplicationSupportsMultipleScenes<\/key>\s*<false\/>/.test(infoPlist)) {
+    violations.push(
+      `  ${IOS_INFO_PLIST}:0  [ios-scene-lifecycle]  UIApplicationSupportsMultipleScenes must be <false/> — a second scene would start a second RN host in this process (#815)`,
+    );
+  }
+  if (
+    !/<key>UISceneDelegateClassName<\/key>\s*<string>\$\(PRODUCT_MODULE_NAME\)\.SceneDelegate<\/string>/.test(
+      infoPlist,
+    )
+  ) {
+    violations.push(
+      `  ${IOS_INFO_PLIST}:0  [ios-scene-lifecycle]  UISceneDelegateClassName must be $(PRODUCT_MODULE_NAME).SceneDelegate — a hardcoded module name fails at launch because PRODUCT_NAME is Orbital (#815)`,
+    );
+  }
+} catch {
+  violations.push(
+    `  ${IOS_INFO_PLIST}:0  [ios-scene-lifecycle]  Info.plist not found — cannot verify the UIScene manifest that keeps the app launchable on iOS 27 (#815)`,
+  );
+}
+
+try {
+  const sceneDelegate = readFileSync(SCENE_DELEGATE, 'utf8');
+  if (!/^class SceneDelegate\b.*UIWindowSceneDelegate/m.test(sceneDelegate)) {
+    violations.push(
+      `  ${SCENE_DELEGATE}:0  [ios-scene-lifecycle]  SceneDelegate must declare "class SceneDelegate ... UIWindowSceneDelegate" — the Info.plist delegate class must resolve at launch (#815)`,
+    );
+  }
+} catch {
+  violations.push(
+    `  ${SCENE_DELEGATE}:0  [ios-scene-lifecycle]  SceneDelegate.swift not found — iOS 27 launch refusal returns without it (#815)`,
+  );
+}
+
+try {
+  const pbxproj = readFileSync(PBXPROJ, 'utf8');
+  if (!/\/\* SceneDelegate\.swift in Sources \*\//.test(pbxproj)) {
+    violations.push(
+      `  ${PBXPROJ}:0  [ios-scene-lifecycle]  SceneDelegate.swift is not in the OrbitalMobile Sources build phase — the scene delegate class would be absent from the binary and iOS 27 would refuse to launch (#815)`,
+    );
+  }
+} catch {
+  violations.push(
+    `  ${PBXPROJ}:0  [ios-scene-lifecycle]  project.pbxproj not found — cannot verify that SceneDelegate.swift compiles into the app (#815)`,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------
 

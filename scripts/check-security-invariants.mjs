@@ -626,6 +626,116 @@ if (ciYaml !== null && buildYaml !== null) {
 }
 
 // ---------------------------------------------------------------------------
+// 14. iOS UIScene lifecycle adoption (#815)
+// ---------------------------------------------------------------------------
+
+// iOS 27 refuses to launch an app built against the iOS 27 SDK that has no
+// UIApplicationSceneManifest ("UIScene life cycle is required for apps built
+// with this SDK"). CI compiles on the Xcode 26.x pin and therefore cannot
+// observe that refusal, so this static check is the only PR-time detector for
+// the three plain-text facts that keep the app launchable: the manifest, the
+// scene-delegate class name, and SceneDelegate.swift being in the Sources
+// build phase. React Native 0.82 ships no scene support, so SceneDelegate.swift
+// hand-ports facebook/react-native#57700; its header carries the grep condition
+// under which the whole shim can be deleted.
+//
+// UIApplicationSupportsMultipleScenes stays false (Xcode's "Supports multiple
+// windows" checkbox flips it silently): one RN host per process. The full
+// rationale, including the sequential disconnect/reconnect case the flag does
+// NOT cover, lives in the SceneDelegate.swift header — one home, do not
+// duplicate it here.
+//
+// The last two assertions pin the facts that bound scene(_:openURLContexts:),
+// which forwards any URL iOS hands the scene into RCTLinkingManager with no
+// scheme check: only the `orbital` scheme is declared, and no document /
+// file-sharing keys exist, so iOS cannot deliver file:// or foreign schemes.
+// If either assertion has to change, validate the scheme at the consumer (see
+// the forwarder's comment in SceneDelegate.swift).
+//
+// Anchored on the files existing: a missing SceneDelegate.swift or a missing
+// manifest is itself a violation, so the rule cannot pass vacuously.
+
+const IOS_INFO_PLIST = join('ios', 'OrbitalMobile', 'Info.plist');
+const SCENE_DELEGATE = join('ios', 'OrbitalMobile', 'SceneDelegate.swift');
+const PBXPROJ = join('ios', 'OrbitalMobile.xcodeproj', 'project.pbxproj');
+
+try {
+  const infoPlist = readFileSync(IOS_INFO_PLIST, 'utf8');
+  if (!infoPlist.includes('<key>UIApplicationSceneManifest</key>')) {
+    violations.push(
+      `  ${IOS_INFO_PLIST}:0  [ios-scene-lifecycle]  UIApplicationSceneManifest missing — iOS 27 refuses to launch apps built with the iOS 27 SDK without it (#815)`,
+    );
+  }
+  if (!/<key>UIApplicationSupportsMultipleScenes<\/key>\s*<false\/>/.test(infoPlist)) {
+    violations.push(
+      `  ${IOS_INFO_PLIST}:0  [ios-scene-lifecycle]  UIApplicationSupportsMultipleScenes must be <false/> — a second scene would start a second RN host in this process (#815)`,
+    );
+  }
+  if (
+    !/<key>UISceneDelegateClassName<\/key>\s*<string>\$\(PRODUCT_MODULE_NAME\)\.SceneDelegate<\/string>/.test(
+      infoPlist,
+    )
+  ) {
+    violations.push(
+      `  ${IOS_INFO_PLIST}:0  [ios-scene-lifecycle]  UISceneDelegateClassName must be $(PRODUCT_MODULE_NAME).SceneDelegate — a hardcoded module name fails at launch because PRODUCT_NAME is Orbital (#815)`,
+    );
+  }
+  // The delegate entry only loads under the application window-scene role; a
+  // renamed or misplaced role key passes the string checks above and iOS never
+  // instantiates SceneDelegate.
+  if (!/<key>UIWindowSceneSessionRoleApplication<\/key>\s*<array>/.test(infoPlist)) {
+    violations.push(
+      `  ${IOS_INFO_PLIST}:0  [ios-scene-lifecycle]  UISceneConfigurations must declare the UIWindowSceneSessionRoleApplication role array — SceneDelegate is not loaded under any other role (#815)`,
+    );
+  }
+  // Deep-link containment facts (see SceneDelegate.swift scene(_:openURLContexts:)).
+  const schemeArrays = [...infoPlist.matchAll(/<key>CFBundleURLSchemes<\/key>\s*<array>([\s\S]*?)<\/array>/g)];
+  const schemes = schemeArrays.flatMap((m) => [...m[1].matchAll(/<string>([^<]*)<\/string>/g)].map((x) => x[1].trim()));
+  if (schemes.length !== 1 || schemes[0] !== 'orbital') {
+    violations.push(
+      `  ${IOS_INFO_PLIST}:0  [ios-scene-lifecycle]  CFBundleURLSchemes must declare exactly one scheme, "orbital" (found: ${JSON.stringify(schemes)}) — SceneDelegate forwards inbound URLs unvalidated on that assumption (#815)`,
+    );
+  }
+  for (const key of ['CFBundleDocumentTypes', 'UIFileSharingEnabled', 'LSSupportsOpeningDocumentsInPlace']) {
+    if (infoPlist.includes(`<key>${key}</key>`)) {
+      violations.push(
+        `  ${IOS_INFO_PLIST}:0  [ios-scene-lifecycle]  ${key} must not be declared — it would let iOS hand file:// or foreign URLs to the unvalidated scene(_:openURLContexts:) forwarder; validate the scheme at the consumer first (#815)`,
+      );
+    }
+  }
+} catch {
+  violations.push(
+    `  ${IOS_INFO_PLIST}:0  [ios-scene-lifecycle]  Info.plist not found — cannot verify the UIScene manifest that keeps the app launchable on iOS 27 (#815)`,
+  );
+}
+
+try {
+  const sceneDelegate = readFileSync(SCENE_DELEGATE, 'utf8');
+  if (!/^class SceneDelegate\b.*UIWindowSceneDelegate/m.test(sceneDelegate)) {
+    violations.push(
+      `  ${SCENE_DELEGATE}:0  [ios-scene-lifecycle]  SceneDelegate must declare "class SceneDelegate ... UIWindowSceneDelegate" — the Info.plist delegate class must resolve at launch (#815)`,
+    );
+  }
+} catch {
+  violations.push(
+    `  ${SCENE_DELEGATE}:0  [ios-scene-lifecycle]  SceneDelegate.swift not found — iOS 27 launch refusal returns without it (#815)`,
+  );
+}
+
+try {
+  const pbxproj = readFileSync(PBXPROJ, 'utf8');
+  if (!/\/\* SceneDelegate\.swift in Sources \*\//.test(pbxproj)) {
+    violations.push(
+      `  ${PBXPROJ}:0  [ios-scene-lifecycle]  SceneDelegate.swift is not in the OrbitalMobile Sources build phase — the scene delegate class would be absent from the binary and iOS 27 would refuse to launch (#815)`,
+    );
+  }
+} catch {
+  violations.push(
+    `  ${PBXPROJ}:0  [ios-scene-lifecycle]  project.pbxproj not found — cannot verify that SceneDelegate.swift compiles into the app (#815)`,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------
 

@@ -330,6 +330,14 @@ fn golden_ecies_open() {
 /// `curve25519-dalek` stays at stock 5.0.0, so the sealed bytes cannot have
 /// moved. The replay is mandatory again on any bump that touches `rust/core`
 /// or moves the dalek crate.
+///
+/// v0.103.0 (#822): replay skipped — the `rust/core` trigger fired only on
+/// `rust/core/src/version.rs` (the `VERSION` string const); `curve.rs`,
+/// `curve/curve25519.rs` and all of `rust/crypto` are byte-identical
+/// v0.102.3..v0.103.0, `rust/protocol` changed only `verify_mac`'s logging, and
+/// `curve25519-dalek` stays at stock 5.0.0 from crates.io (only its unrelated
+/// `rand_core` feature left the graph when spqr 1.6.0 moved dalek to a
+/// dev-dependency). The sealing path is provably untouched.
 #[test]
 fn golden_ecies_open_sealed_under_stock_dalek() {
     // TEST VECTOR — synthetic sender public key, never used outside this test

@@ -1,59 +1,25 @@
 import UIKit
-import React
-import React_RCTAppDelegate
-import ReactAppDependencyProvider
 import FirebaseCore
-import RNBootSplash
 
 @main
 class AppDelegate: UIResponder, UIApplicationDelegate {
+  /// Compatibility shim only. The real window is created and owned by
+  /// SceneDelegate (issue #815); it assigns and clears this property. Two RN
+  /// 0.82 call sites still read UIApplication.shared.delegate.window:
+  /// RCTDeviceInfo.mm:245 and RCTLogBoxView.mm:85. Delete together with the
+  /// SceneDelegate shims under the condition in SceneDelegate.swift's header.
   var window: UIWindow?
-
-  var reactNativeDelegate: ReactNativeDelegate?
-  var reactNativeFactory: RCTReactNativeFactory?
 
   func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
   ) -> Bool {
-    // Initialize Firebase before React Native so the JS-side Firebase SDK
-    // can access the native Firebase app instance immediately on startup.
+    // Must stay here, before any scene connects: the JS-side Firebase SDK and
+    // RNFB's launch observer (RNFBMessaging+NSNotificationCenter.m:81-85) both
+    // expect the native app instance to exist by end of didFinishLaunching.
+    // APNs registration/device-token callbacks remain UIApplicationDelegate
+    // methods under scenes (proxied by GULAppDelegateSwizzler).
     FirebaseApp.configure()
-
-    let delegate = ReactNativeDelegate()
-    let factory = RCTReactNativeFactory(delegate: delegate)
-    delegate.dependencyProvider = RCTAppDependencyProvider()
-
-    reactNativeDelegate = delegate
-    reactNativeFactory = factory
-
-    window = UIWindow(frame: UIScreen.main.bounds)
-
-    factory.startReactNative(
-      withModuleName: "OrbitalMobile",
-      in: window,
-      launchOptions: launchOptions
-    )
-
     return true
-  }
-}
-
-class ReactNativeDelegate: RCTDefaultReactNativeFactoryDelegate {
-  override func sourceURL(for bridge: RCTBridge) -> URL? {
-    self.bundleURL()
-  }
-
-  override func bundleURL() -> URL? {
-#if DEBUG
-    RCTBundleURLProvider.sharedSettings().jsBundleURL(forBundleRoot: "index")
-#else
-    Bundle.main.url(forResource: "main", withExtension: "jsbundle")
-#endif
-  }
-
-  override func customize(_ rootView: RCTRootView) {
-    super.customize(rootView)
-    RNBootSplash.initWithStoryboard("BootSplash", rootView: rootView)
   }
 }

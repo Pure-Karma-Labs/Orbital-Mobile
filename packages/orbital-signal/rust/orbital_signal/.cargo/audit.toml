@@ -9,7 +9,8 @@
 # Empty as of #634 (2026-07-27): libsignal v0.99.1 pulls libcrux-ml-kem 0.0.10 /
 # libcrux-secrets 0.0.6 / libcrux-sha3 0.0.10, which carry the upstream fixes for
 # RUSTSEC-2026-0212, -0207 and -0208. Re-verified by reading this crate's
-# Cargo.lock at v0.102.3 (#811): all three are registry-sourced and unchanged.
+# Cargo.lock at v0.102.3 (#811) and again at v0.103.0 (#822, only the five git
+# crates moved): all three are registry-sourced and unchanged.
 # Two different controls apply here. The libcrux crates come from crates.io, so
 # `cargo audit` DOES evaluate them and the blocking rust-audit job is the
 # standing gate for those advisories. `cargo audit` is blind only to the

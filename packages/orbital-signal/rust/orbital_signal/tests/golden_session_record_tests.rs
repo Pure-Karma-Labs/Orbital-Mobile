@@ -51,6 +51,15 @@
 //! discriminate pre- from post-bump capture. The table above is the only
 //! evidence of capture order; keep it accurate.
 //!
+//! spqr 1.5.3 -> 1.6.0 (#822, libsignal v0.103.0): the persisted `PqRatchetState`
+//! proto is unchanged, so these pre-bump fixtures keep restoring. What 1.6.0
+//! changes is the *negotiation* on the receive path: a message from a peer whose
+//! SPQR version is higher than ours now yields the epoch-0 chain key (instead of
+//! `key: None`) and keeps `version_negotiation` in state, and downgrade below
+//! `min_version` is rejected. None of that is reachable from these same-version
+//! fixtures, and there is no libsignal-level API to forge a higher SPQR version,
+//! so 1.6.0 is covered here only for state compatibility, not for negotiation.
+//!
 //! ## How to regenerate
 //!
 //! ```sh

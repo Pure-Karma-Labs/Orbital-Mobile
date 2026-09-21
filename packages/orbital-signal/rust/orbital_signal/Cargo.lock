@@ -495,7 +495,6 @@ dependencies = [
  "curve25519-dalek-derive",
  "digest 0.11.3",
  "fiat-crypto",
- "rand_core 0.10.1",
  "rustc_version",
  "subtle",
  "zeroize",
@@ -1091,7 +1090,7 @@ dependencies = [
 [[package]]
 name = "libsignal-core"
 version = "0.1.0"
-source = "git+https://github.com/signalapp/libsignal?tag=v0.102.3#91abf5000783cbc131701ea20bafd5f8f8158720"
+source = "git+https://github.com/signalapp/libsignal?tag=v0.103.0#ba133bd3457f556fbf56db0a5ab985de0af79da6"
 dependencies = [
  "curve25519-dalek",
  "derive_more",
@@ -1109,8 +1108,8 @@ dependencies = [
 
 [[package]]
 name = "libsignal-debug"
-version = "0.102.3"
-source = "git+https://github.com/signalapp/libsignal?tag=v0.102.3#91abf5000783cbc131701ea20bafd5f8f8158720"
+version = "0.103.0"
+source = "git+https://github.com/signalapp/libsignal?tag=v0.103.0#ba133bd3457f556fbf56db0a5ab985de0af79da6"
 dependencies = [
  "cfg-if",
 ]
@@ -1118,7 +1117,7 @@ dependencies = [
 [[package]]
 name = "libsignal-protocol"
 version = "0.1.0"
-source = "git+https://github.com/signalapp/libsignal?tag=v0.102.3#91abf5000783cbc131701ea20bafd5f8f8158720"
+source = "git+https://github.com/signalapp/libsignal?tag=v0.103.0#ba133bd3457f556fbf56db0a5ab985de0af79da6"
 dependencies = [
  "aes 0.9.1",
  "aes-gcm-siv",
@@ -1728,7 +1727,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 [[package]]
 name = "signal-crypto"
 version = "0.1.0"
-source = "git+https://github.com/signalapp/libsignal?tag=v0.102.3#91abf5000783cbc131701ea20bafd5f8f8158720"
+source = "git+https://github.com/signalapp/libsignal?tag=v0.103.0#ba133bd3457f556fbf56db0a5ab985de0af79da6"
 dependencies = [
  "aes 0.9.1",
  "cbc 0.2.1",
@@ -1777,12 +1776,10 @@ checksum = "19f58d7b0190c7f12df7e8be6b79767a0836059159811b869d5ab55721fe14d0"
 
 [[package]]
 name = "spqr"
-version = "1.5.3"
-source = "git+https://github.com/signalapp/SparsePostQuantumRatchet.git?tag=v1.5.3#fd320484dcec89004021e6fdc7481825f5f261fa"
+version = "1.6.0"
+source = "git+https://github.com/signalapp/SparsePostQuantumRatchet.git?tag=v1.6.0#06959b4708f9b7b1e94d0f8cc835f3958c077e94"
 dependencies = [
  "cpufeatures 0.3.0",
- "curve25519-dalek",
- "displaydoc",
  "hax-lib",
  "hkdf 0.13.0",
  "libcrux-hmac",

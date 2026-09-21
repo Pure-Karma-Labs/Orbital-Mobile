@@ -26,8 +26,17 @@ import UIKit
 /// One RN host per process: Info.plist pins UIApplicationSupportsMultipleScenes
 /// to false (guarded by security invariant #14). A second scene would create a
 /// second RCTReactNativeFactory in this process — two bootstrap() runs, two
-/// SQLCipher connections on one orbital.db, two WebSocket sessions and two
-/// writers to the Signal stores. Multi-window is not a free toggle.
+/// SQLCipher connections on one orbital.db (the src/database/connection.ts
+/// guard is per JS context, so it would NOT throw), two WebSocket sessions and
+/// two writers to the Signal stores. Multi-window is not a free toggle.
+///
+/// That flag bounds CONCURRENT scenes only. A UIKit disconnect of the single
+/// UISceneSession followed by a reconnect re-enters scene(_:willConnectTo:) and
+/// rebuilds the factory (same shape as the upstream template). Not observed on
+/// a single-scene iPhone app; the target is universal, so iPad multitasking is
+/// where it would surface. Whether op-sqlite closes orbital.db when the old
+/// RCTHost is released, or the live factory should be reused on reconnect, is
+/// tracked as a follow-up to #815 — do not read the plist flag as covering it.
 class SceneDelegate: RCTDefaultReactNativeFactoryDelegate, UIWindowSceneDelegate {
   var window: UIWindow?
   var reactNativeFactory: RCTReactNativeFactory?

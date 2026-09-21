@@ -639,13 +639,18 @@ if (ciYaml !== null && buildYaml !== null) {
 // hand-ports facebook/react-native#57700; its header carries the grep condition
 // under which the whole shim can be deleted.
 //
-// UIApplicationSupportsMultipleScenes stays false, and that is not a free
-// toggle (Xcode's "Supports multiple windows" checkbox flips it silently): one
-// RN host belongs to one process. A second scene would build a second
-// RCTReactNativeFactory and a second RN host inside this process — two
-// bootstrap() runs, two SQLCipher connections against one orbital.db (the
-// src/database/connection.ts guard is per-JS-context only), two WebSocket
-// sessions, and two concurrent writers to the Signal protocol stores.
+// UIApplicationSupportsMultipleScenes stays false (Xcode's "Supports multiple
+// windows" checkbox flips it silently): one RN host per process. The full
+// rationale, including the sequential disconnect/reconnect case the flag does
+// NOT cover, lives in the SceneDelegate.swift header — one home, do not
+// duplicate it here.
+//
+// The last two assertions pin the facts that bound scene(_:openURLContexts:),
+// which forwards any URL iOS hands the scene into RCTLinkingManager with no
+// scheme check: only the `orbital` scheme is declared, and no document /
+// file-sharing keys exist, so iOS cannot deliver file:// or foreign schemes.
+// If either assertion has to change, validate the scheme at the consumer (see
+// the forwarder's comment in SceneDelegate.swift).
 //
 // Anchored on the files existing: a missing SceneDelegate.swift or a missing
 // manifest is itself a violation, so the rule cannot pass vacuously.
@@ -674,6 +679,29 @@ try {
     violations.push(
       `  ${IOS_INFO_PLIST}:0  [ios-scene-lifecycle]  UISceneDelegateClassName must be $(PRODUCT_MODULE_NAME).SceneDelegate — a hardcoded module name fails at launch because PRODUCT_NAME is Orbital (#815)`,
     );
+  }
+  // The delegate entry only loads under the application window-scene role; a
+  // renamed or misplaced role key passes the string checks above and iOS never
+  // instantiates SceneDelegate.
+  if (!/<key>UIWindowSceneSessionRoleApplication<\/key>\s*<array>/.test(infoPlist)) {
+    violations.push(
+      `  ${IOS_INFO_PLIST}:0  [ios-scene-lifecycle]  UISceneConfigurations must declare the UIWindowSceneSessionRoleApplication role array — SceneDelegate is not loaded under any other role (#815)`,
+    );
+  }
+  // Deep-link containment facts (see SceneDelegate.swift scene(_:openURLContexts:)).
+  const schemeArrays = [...infoPlist.matchAll(/<key>CFBundleURLSchemes<\/key>\s*<array>([\s\S]*?)<\/array>/g)];
+  const schemes = schemeArrays.flatMap((m) => [...m[1].matchAll(/<string>([^<]*)<\/string>/g)].map((x) => x[1].trim()));
+  if (schemes.length !== 1 || schemes[0] !== 'orbital') {
+    violations.push(
+      `  ${IOS_INFO_PLIST}:0  [ios-scene-lifecycle]  CFBundleURLSchemes must declare exactly one scheme, "orbital" (found: ${JSON.stringify(schemes)}) — SceneDelegate forwards inbound URLs unvalidated on that assumption (#815)`,
+    );
+  }
+  for (const key of ['CFBundleDocumentTypes', 'UIFileSharingEnabled', 'LSSupportsOpeningDocumentsInPlace']) {
+    if (infoPlist.includes(`<key>${key}</key>`)) {
+      violations.push(
+        `  ${IOS_INFO_PLIST}:0  [ios-scene-lifecycle]  ${key} must not be declared — it would let iOS hand file:// or foreign URLs to the unvalidated scene(_:openURLContexts:) forwarder; validate the scheme at the consumer first (#815)`,
+      );
+    }
   }
 } catch {
   violations.push(

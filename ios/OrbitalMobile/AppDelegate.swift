@@ -6,8 +6,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
   /// Compatibility shim only. The real window is created and owned by
   /// SceneDelegate (issue #815); it assigns and clears this property. Two RN
   /// 0.82 call sites still read UIApplication.shared.delegate.window:
-  /// RCTDeviceInfo.mm:245 and RCTLogBoxView.mm:85. Delete together with the
-  /// SceneDelegate shims under the condition in SceneDelegate.swift's header.
+  /// React/CoreModules/RCTDeviceInfo.mm:245 and RCTLogBoxView.mm:85 (plus the
+  /// RCT_PROFILE-gated RCTProfile.m:408). Delete together with the SceneDelegate
+  /// shims under the condition in SceneDelegate.swift's header.
   var window: UIWindow?
 
   func application(

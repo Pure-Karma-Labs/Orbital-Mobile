@@ -97,6 +97,11 @@ export interface BuildJpegOptions {
   xmp?: boolean;
   /** APP13 Photoshop/IPTC segment (dropped by the stripper). */
   iptc?: boolean;
+  /**
+   * COM comment segment (dropped by the stripper). Its payload is plain ASCII
+   * with no Exif or XMP signature, so only a marker-aware detector sees it.
+   */
+  com?: boolean;
   /** APP2 "ICC_PROFILE\0" segment (KEPT by the stripper -- a color profile is not metadata). */
   icc?: boolean;
   /** Use SOF2 (progressive) instead of SOF0 (baseline). */
@@ -147,6 +152,9 @@ const EXIF_PAYLOAD = [
 /** APP13 (IPTC / Photoshop) payload. */
 const IPTC_PAYLOAD = [0x50, 0x68, 0x6F, 0x74, 0x6F]; // "Photo"
 
+/** COM payload: plain ASCII, deliberately free of Exif and XMP signatures. */
+const COM_PAYLOAD = Array.from(new TextEncoder().encode('Orbital fixture comment'));
+
 /** SOF payload: 8-bit precision, 1x1, single grayscale component. */
 const SOF_PAYLOAD = [
   0x08,       // precision: 8 bits
@@ -175,15 +183,16 @@ const SOS_PAYLOAD = [
  * Structurally complete JPEG with optional metadata segments and an optional
  * post-EOI trailer.
  *
- * Layout: SOI, APP0 JFIF, [APP1 Exif], [APP1 XMP], [APP13 IPTC], [APP2 ICC],
- * SOF0/SOF2, DHT, SOS, scanData, [betweenScans, SOS, scan2Data], [EOI],
- * [postEoiTrailer].
+ * Layout: SOI, APP0 JFIF, [APP1 Exif], [APP1 XMP], [APP13 IPTC], [COM],
+ * [APP2 ICC], SOF0/SOF2, DHT, SOS, scanData, [betweenScans, SOS, scan2Data],
+ * [EOI], [postEoiTrailer].
  */
 export function buildJpeg(opts: BuildJpegOptions = {}): Uint8Array {
   const {
     exif = false,
     xmp = false,
     iptc = false,
+    com = false,
     icc = false,
     progressive = false,
     scanData = [0xAA, 0xBB, 0xCC],
@@ -218,7 +227,12 @@ export function buildJpeg(opts: BuildJpegOptions = {}): Uint8Array {
     parts.push(...writeSegment([0xFF, 0xED], IPTC_PAYLOAD));
   }
 
-  // APP2 ICC profile -- kept (only APP1 and APP13 are dropped)
+  // COM comment -- dropped (textual metadata by definition)
+  if (com) {
+    parts.push(...writeSegment([0xFF, 0xFE], COM_PAYLOAD));
+  }
+
+  // APP2 ICC profile -- kept (a color profile is a rendering instruction)
   if (icc) {
     const iccSig = Array.from(new TextEncoder().encode('ICC_PROFILE\0'));
     parts.push(...writeSegment([0xFF, 0xE2], [...iccSig, 0x01, 0x01, 0xDE, 0xAD]));
@@ -321,6 +335,95 @@ export function buildSefTrailer(): number[] {
     0x53, 0x45, 0x46, 0x54,             // "SEFT"
     0x00, 0x00, 0x00, 0x00,             // size placeholder (not needed for these tests)
   ];
+}
+
+// ---------------------------------------------------------------------------
+// Real Samsung Galaxy S24 post-EOI layout
+// ---------------------------------------------------------------------------
+
+/**
+ * Embedded Ultra HDR gain-map JPEG, as it appears immediately after the primary
+ * stream's EOI on an S24 capture: a complete JPEG whose FIRST segment is an XMP
+ * APP1 of declared length 605.
+ *
+ * It matters because it is the half of the trailer a pattern scan CAN see (the
+ * XMP packet signature), which is why the real capture was detectable at all
+ * before the strip learned to truncate at the EOI. Posting the photo drops it,
+ * so an Ultra HDR capture posts as SDR (Mobile #736).
+ */
+export function buildGainMapJpeg(): number[] {
+  const payload = [
+    ...Array.from(new TextEncoder().encode('http://ns.adobe.com/xap/1.0/\0')),
+    ...Array.from(new TextEncoder().encode(
+      '<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF><rdf:Description ' +
+      'hdrgm:Version="1.0" hdrgm:GainMapMin="0.0" hdrgm:GainMapMax="3.0"/>' +
+      '</rdf:RDF></x:xmpmeta>',
+    )),
+  ];
+  // The real segment declares 605; pad the packet out to match it exactly.
+  const declaredLength = 605;
+  while (payload.length < declaredLength - 2) payload.push(0x20); // XMP pad
+  return [
+    0xFF, 0xD8,
+    ...writeSegment([0xFF, 0xE1], payload),
+    ...writeSegment([0xFF, 0xC0], SOF_PAYLOAD),
+    ...writeSegment([0xFF, 0xC4], DHT_PAYLOAD),
+    ...writeSegment([0xFF, 0xDA], SOS_PAYLOAD),
+    0x7F, 0x11, 0x22,
+    0xFF, 0xD9,
+  ];
+}
+
+/**
+ * The capture timestamp carried by the committed SEF tail, SCRUBBED.
+ *
+ * The real capture wrote a 13-digit epoch-millis value; it is replaced here by
+ * the same number of digits, because every offset in the SEFH index is measured
+ * backwards from "SEFH" and a shorter value would invalidate the whole table.
+ */
+export const S24_SEF_CAPTURE_TIMESTAMP = '1700000000000';
+
+/** Mobile Country Code recorded by the capture. 311 = United States. */
+export const S24_SEF_MCC = '311';
+
+/**
+ * The last 217 bytes of a real Samsung Galaxy S24 photo -- the Samsung SEF tail
+ * that validated the #732 fix, committed as reviewable hex rather than as an
+ * opaque binary fixture.
+ *
+ * Provenance: source photo sha256
+ * 537437998214caecc4b08f04f38a6abe8fdbafecfbac09bafe07f9adaaa4e341,
+ * 2,685,491 bytes. Its primary JPEG stream closed with an EOI at offset
+ * 2,643,609; the 41,880 bytes that followed were an embedded Ultra HDR gain-map
+ * JPEG (first segment an XMP APP1 of declared length 605 -- see
+ * buildGainMapJpeg) and then these 217 bytes. The photo is not in the repo.
+ *
+ * Layout: five key/value blocks (Image_UTC_Data, MCC_Data, Color_Display_P3,
+ * Photo_HDR_Info, Camera_Capture_Mode_Info), then "SEFH" with one 12-byte index
+ * entry per block, a size field, and the terminal "SEFT" magic.
+ *
+ * Why it is the interesting half: this tail carries NO "Exif\0\0" and NO XMP
+ * packet, so no pattern scan can see it -- yet it is plainly capture metadata
+ * (time, carrier country, HDR mode, capture mode). On the copy-through path,
+ * where the strip cannot find an EOI, the terminal SEFT check in hasExif is the
+ * only thing that catches it.
+ */
+export const S24_SEF_TAIL_HEX =
+  '0000010a0e000000496d6167655f5554435f446174613137303030303030303030303000' +
+  '00a10a080000004d43435f446174613331310000c10c10000000436f6c6f725f44697370' +
+  '6c61795f50330c06060000d20c0e00000050686f746f5f4844525f496e666f000000610c' +
+  '1800000043616d6572615f436170747572655f4d6f64655f496e666f31534546486b0000' +
+  '00050000000000010a89000000230000000000a10a66000000130000000000c10c530000' +
+  '001b0000000000d20c38000000170000000000610c210000002100000048000000534546' +
+  '54';
+
+/** The real S24 SEF tail as bytes. */
+export function s24SefTail(): number[] {
+  const bytes: number[] = [];
+  for (let i = 0; i < S24_SEF_TAIL_HEX.length; i += 2) {
+    bytes.push(parseInt(S24_SEF_TAIL_HEX.slice(i, i + 2), 16));
+  }
+  return bytes;
 }
 
 // ---------------------------------------------------------------------------

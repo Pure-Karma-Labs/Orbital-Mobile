@@ -56,6 +56,46 @@ const JPEG_EOI = 0xFFD9;
 // APP segment markers
 const APP1 = 0xFFE1;  // Exif / XMP
 const APP13 = 0xFFED; // Photoshop / IPTC
+const COM = 0xFFFE;   // Comment
+
+/**
+ * The JPEG segments this module removes, shared by the strip and the detect so
+ * the two halves can never disagree about what counts as metadata.
+ *
+ * COM is in the set because a comment is textual metadata by definition -- and
+ * because keeping it while the detect flags it would make a COM-borne signature
+ * a permanent dead end: the verify would reject an image the strip cannot fix.
+ * APP2 (ICC) and APP14 (Adobe) are deliberately absent -- a color profile is a
+ * rendering instruction, not a description of the subject.
+ */
+const JPEG_DROP_MARKERS: ReadonlySet<number> = new Set([APP1, APP13, COM]);
+
+/**
+ * Markers whose declared length may be trusted between scans.
+ *
+ * T.81 allows frame/scan headers (SOFn, DHT, DAC), tables and restart
+ * definitions (DQT, DNL, DRI), hierarchical-mode segments (DHP, EXP),
+ * application segments (APPn) and comments (COM) to appear between scans.
+ * Anything else there -- a stray SOI, a reserved FF02..FFBF byte pair, an
+ * FFF0..FFFD -- is not something whose "length" means anything, and skipping by
+ * it can step OVER the real EOI and land on a coincidental FFD9 inside a
+ * trailer. FFC8 (JPG) is reserved and excluded with the rest.
+ */
+function isScanStreamSegmentMarker(marker: number): boolean {
+  return (
+    (marker >= 0xFFC0 && marker <= 0xFFCF && marker !== 0xFFC8) || // SOFn, DHT, DAC
+    (marker >= 0xFFDA && marker <= 0xFFDF) ||                      // SOS, DQT, DNL, DRI, DHP, EXP
+    (marker >= 0xFFE0 && marker <= 0xFFEF) ||                      // APPn
+    marker === COM
+  );
+}
+
+/** Append `data[start, end)` to `output`. */
+function pushRange(output: number[], data: Uint8Array, start: number, end: number): void {
+  for (let i = start; i < end; i++) {
+    output.push(data[i]);
+  }
+}
 
 // PNG constants
 const PNG_SIGNATURE = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
@@ -126,13 +166,26 @@ export function stripJpegMetadata(data: Uint8Array): Uint8Array {
     // Copying it through would preserve exactly the metadata this module
     // exists to remove -- truncating is the privacy-correct behavior.
     if (marker === JPEG_SOS) {
-      const eoiPos = findJpegEoi(data, pos);
+      const { eoiPos, segments } = walkJpegScanStream(data, pos);
       // Malformed input with no EOI at all: keep the pre-existing behavior and
       // copy to the end. verifyNoImageMetadata remains the fail-closed backstop.
       const streamEnd = eoiPos === -1 ? data.length : eoiPos + 2;
-      for (let i = pos; i < streamEnd; i++) {
-        output.push(data[i]);
+
+      // Copy [pos, streamEnd) while skipping any drop-set segment the walk
+      // recognized between scans -- an encoder is free to put an APP1, APP13 or
+      // COM there, and a header-only walk would never see it. Segments the walk
+      // recognized before giving up are dropped too, so the copy-through path
+      // is not a free pass for inter-scan metadata.
+      let cursor = pos;
+      for (const segment of segments) {
+        if (!JPEG_DROP_MARKERS.has(segment.marker)) continue;
+        // Every recognized segment ends at or before streamEnd by construction:
+        // the walk returns as soon as it reaches the EOI or gives up.
+        pushRange(output, data, cursor, segment.start);
+        cursor = segment.end;
       }
+      pushRange(output, data, cursor, streamEnd);
+
       pos = streamEnd;
       truncatedAtEoi = eoiPos !== -1;
       break;
@@ -169,21 +222,11 @@ export function stripJpegMetadata(data: Uint8Array): Uint8Array {
       throw new Error('JPEG segment extends beyond file');
     }
 
-    // Decide whether to keep or drop this segment
-    const shouldDrop =
-      marker === APP1 ||   // Exif, XMP
-      marker === APP13;    // IPTC / Photoshop
-
-    if (shouldDrop) {
-      // Skip entire segment
-      pos = segEnd;
-    } else {
-      // Keep segment
-      for (let i = pos; i < segEnd; i++) {
-        output.push(data[i]);
-      }
-      pos = segEnd;
+    // Keep or drop, by the one shared drop set.
+    if (!JPEG_DROP_MARKERS.has(marker)) {
+      pushRange(output, data, pos, segEnd);
     }
+    pos = segEnd;
   }
 
   // Trailing bytes are copied ONLY when the output was never closed with an
@@ -199,22 +242,45 @@ export function stripJpegMetadata(data: Uint8Array): Uint8Array {
   return new Uint8Array(output);
 }
 
+/** A length-bearing segment found between scans. `end` is exclusive. */
+interface ScanStreamSegment {
+  marker: number;
+  start: number;
+  end: number;
+}
+
 /**
- * Index of the EOI marker that closes the compressed stream, walking forward
- * from a SOS marker.
+ * Walk the compressed stream from a SOS marker, reporting where it ends and
+ * which length-bearing segments sit inside it.
  *
  * Not a plain search for the FFD9 byte pair: entropy-coded data legitimately
  * contains 0xFF bytes (stuffed as FF00, or RSTn restart markers), and
- * progressive JPEGs interleave further header segments (DHT/DQT/SOS) between
- * scans, so segments are skipped by their declared length. Anything the walk
- * cannot make sense of degrades to "no EOI found" (-1) rather than throwing --
- * the caller then keeps the pre-existing copy-to-end behavior.
+ * progressive JPEGs interleave further header segments (DHT/DQT/SOS, and
+ * sometimes an APPn or COM) between scans, so segments are skipped by their
+ * declared length.
+ *
+ * A declared length is only trusted for markers T.81 actually allows here
+ * (isScanStreamSegmentMarker). That restriction is the point: skipping by the
+ * "length" of an arbitrary byte pair can carry the walk PAST the real EOI and
+ * onto a coincidental FFD9 inside a trailer, which would truncate the output at
+ * a fake boundary -- keeping part of the trailer while the detect, scanning
+ * only past that boundary, reports the file clean.
+ *
+ * Anything the walk cannot make sense of degrades to `eoiPos: -1` rather than
+ * throwing; the caller then keeps the pre-existing copy-to-end behavior and the
+ * detect stays hot over the whole stream. Segments recognized before the
+ * failure are still returned, so inter-scan metadata found before the walk gave
+ * up can still be dropped.
  *
  * @param data JPEG file bytes
  * @param sosPos Offset of the SOS marker to start walking from
- * @returns Offset of the closing EOI marker, or -1 if there is none
+ * @returns Offset of the closing EOI (or -1), plus the segments recognized
  */
-function findJpegEoi(data: Uint8Array, sosPos: number): number {
+function walkJpegScanStream(
+  data: Uint8Array,
+  sosPos: number,
+): { eoiPos: number; segments: ScanStreamSegment[] } {
+  const segments: ScanStreamSegment[] = [];
   let pos = sosPos;
 
   while (pos < data.length - 1) {
@@ -226,7 +292,7 @@ function findJpegEoi(data: Uint8Array, sosPos: number): number {
     const marker = (data[pos] << 8) | data[pos + 1];
 
     if (marker === JPEG_EOI) {
-      return pos;
+      return { eoiPos: pos, segments };
     }
 
     // 0xFF fill bytes may pad the run-up to a marker, and the marker begins at
@@ -248,20 +314,31 @@ function findJpegEoi(data: Uint8Array, sosPos: number): number {
       continue;
     }
 
-    // Header segment -- the SOS we started on, or a later scan's tables.
-    // Skip its declared length and resume scanning the entropy data.
+    // A marker that cannot legally carry a length here: stop trusting the
+    // structure entirely rather than stepping by a number that means nothing.
+    if (!isScanStreamSegmentMarker(marker)) {
+      return { eoiPos: -1, segments };
+    }
+
     if (pos + 3 >= data.length) {
-      return -1;
+      return { eoiPos: -1, segments };
     }
     const segLength = (data[pos + 2] << 8) | data[pos + 3];
+    // A length field below 2 cannot even cover itself, and a segment running
+    // past the buffer is truncated input -- neither is walkable.
     if (segLength < 2) {
-      pos += 2;
-      continue;
+      return { eoiPos: -1, segments };
     }
-    pos += 2 + segLength;
+    const segEnd = pos + 2 + segLength;
+    if (segEnd > data.length) {
+      return { eoiPos: -1, segments };
+    }
+
+    segments.push({ marker, start: pos, end: segEnd });
+    pos = segEnd;
   }
 
-  return -1;
+  return { eoiPos: -1, segments };
 }
 
 /**
@@ -594,7 +671,7 @@ export function hasExif(data: Uint8Array): boolean {
       const marker = (data[pos] << 8) | data[pos + 1];
       if (marker === JPEG_SOS) { sosPos = pos; break; }
       if (marker === JPEG_EOI) break;
-      if (marker === APP1) return true;
+      if (JPEG_DROP_MARKERS.has(marker)) return true;
       if (pos + 3 >= data.length) break;
       const segLen = (data[pos + 2] << 8) | data[pos + 3];
       if (segLen < 2) break;
@@ -605,19 +682,44 @@ export function hasExif(data: Uint8Array): boolean {
     // not trustworthy, so fall back to scanning the whole buffer.
     if (rawMetadataScan(data, 0, sosPos === -1 ? data.length : sosPos)) return true;
 
-    // Post-EOI trailer, if any survived.
     if (sosPos !== -1) {
-      const eoiPos = findJpegEoi(data, sosPos);
+      const { eoiPos, segments } = walkJpegScanStream(data, sosPos);
+
+      // Inter-scan segments. A drop-set marker is metadata by definition; for
+      // the ones the strip KEEPS, only APPn payloads are scanned. Tables and
+      // frame/scan headers (DQT/DHT/DRI/DNL/DAC/SOFn/SOS) are excluded for the
+      // same reason entropy data is: the strip can never remove them, so a hit
+      // there could only be an unclearable false positive.
+      for (const segment of segments) {
+        if (JPEG_DROP_MARKERS.has(segment.marker)) return true;
+        if (
+          segment.marker >= 0xFFE0 && segment.marker <= 0xFFEF &&
+          rawMetadataScan(data, segment.start, segment.end)
+        ) {
+          return true;
+        }
+      }
+
       if (eoiPos === -1) {
         // No findable EOI. stripJpegMetadata falls back to copying to the end
         // in exactly this case, so a trailer WOULD survive the strip -- scan
         // the whole remainder rather than trusting a boundary we never found.
         // False positives are possible here (entropy data is in range), which
         // is the correct trade for structurally ambiguous input: fail closed.
-        return rawMetadataScan(data, sosPos, data.length);
+        if (rawMetadataScan(data, sosPos, data.length)) return true;
+      } else if (rawMetadataScan(data, eoiPos + 2, data.length)) {
+        // Post-EOI trailer, if any survived.
+        return true;
       }
-      if (rawMetadataScan(data, eoiPos + 2, data.length)) return true;
     }
+
+    // A Samsung SEF trailer that carries neither an Exif signature nor an XMP
+    // packet is invisible to every scan above -- and its plain-text blocks are
+    // still capture metadata (time, carrier country, capture mode). A correctly
+    // truncated output ends in FFD9, so a terminal "SEFT" can only mean such a
+    // trailer rode through the copy-to-end path. Four anchored bytes make a
+    // coincidence a 2^-32 event.
+    if (endsWithSefTrailer(data)) return true;
 
     return false;
   }
@@ -845,6 +947,18 @@ export async function verifyNoImageMetadata(filePath: string): Promise<void> {
 function basename(filePath: string): string {
   const slash = filePath.lastIndexOf('/');
   return slash === -1 ? filePath : filePath.slice(slash + 1);
+}
+
+/** True if the buffer's last four bytes are the ASCII "SEFT" trailer magic. */
+function endsWithSefTrailer(data: Uint8Array): boolean {
+  const end = data.length;
+  if (end < 4) return false;
+  return (
+    data[end - 4] === 0x53 && // S
+    data[end - 3] === 0x45 && // E
+    data[end - 2] === 0x46 && // F
+    data[end - 1] === 0x54    // T
+  );
 }
 
 function isPngSignature(data: Uint8Array): boolean {

@@ -12,7 +12,12 @@ import {
   stripPngMetadata,
   hasExif,
 } from '../media/imageSanitizer';
-import { buildJpeg, buildPng } from '../testUtils/imageFixtures';
+import {
+  buildJpeg,
+  buildPng,
+  buildSefTrailer,
+  writeChunk,
+} from '../testUtils/imageFixtures';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -38,6 +43,25 @@ describe('imageSanitizer', () => {
       const output = stripJpegMetadata(input);
       expect(hasExif(output)).toBe(false);
       // Output should be smaller (Exif segment removed)
+      expect(output.length).toBeLessThan(input.length);
+    });
+
+    it('strips a COM comment segment from the header', () => {
+      const input = buildJpeg({ com: true });
+      const output = stripJpegMetadata(input);
+
+      // COM is textual metadata by definition, so it joins APP1/APP13 in the
+      // drop set. Keeping it would also make a COM-borne signature permanently
+      // unpostable: the detect half would flag it and the strip could not
+      // remove it.
+      let hasCom = false;
+      for (let i = 0; i < output.length - 1; i++) {
+        if (output[i] === 0xFF && output[i + 1] === 0xFE) {
+          hasCom = true;
+          break;
+        }
+      }
+      expect(hasCom).toBe(false);
       expect(output.length).toBeLessThan(input.length);
     });
 
@@ -179,6 +203,63 @@ describe('imageSanitizer', () => {
     it('returns false for tiny input', () => {
       expect(hasExif(new Uint8Array([]))).toBe(false);
       expect(hasExif(new Uint8Array([0]))).toBe(false);
+    });
+
+    it('detects a header APP13 (IPTC) segment', () => {
+      // The payload carries no Exif or XMP signature, so only the marker walk
+      // can see it -- a raw pattern scan of the header region cannot.
+      expect(hasExif(buildJpeg({ iptc: true }))).toBe(true);
+    });
+
+    it('detects a header COM segment', () => {
+      expect(hasExif(buildJpeg({ com: true }))).toBe(true);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // The strip and the detect walk the header region with two separate loops.
+  // This block pins them together: for every fixture the builders can produce,
+  // stripping then detecting must agree. The degraded fixtures are listed with
+  // an explicit `true` -- when the strip cannot find its boundary the trailer
+  // survives, and the detect has to keep reporting it.
+  // -------------------------------------------------------------------------
+  describe('strip and detect agreement', () => {
+    const EXIF_TRAILER = [0x45, 0x78, 0x69, 0x66, 0x00, 0x00, 0xDE, 0xAD];
+
+    it.each([
+      ['clean baseline', () => buildJpeg(), false],
+      ['Exif APP1', () => buildJpeg({ exif: true }), false],
+      ['XMP APP1', () => buildJpeg({ xmp: true }), false],
+      ['APP13 IPTC', () => buildJpeg({ iptc: true }), false],
+      ['COM comment', () => buildJpeg({ com: true }), false],
+      ['every droppable segment at once', () => buildJpeg({ exif: true, xmp: true, iptc: true, com: true }), false],
+      ['ICC APP2 (kept, not metadata)', () => buildJpeg({ icc: true }), false],
+      ['progressive with Exif', () => buildJpeg({ exif: true, progressive: true }), false],
+      ['post-EOI SEF trailer', () => buildJpeg({ exif: true, postEoiTrailer: buildSefTrailer() }), false],
+      ['degraded: no findable EOI', () => buildJpeg({ omitEoi: true, postEoiTrailer: EXIF_TRAILER }), true],
+    ])('JPEG %s', (_label, build, expected) => {
+      expect(hasExif(stripJpegMetadata(build()))).toBe(expected);
+    });
+
+    it.each([
+      ['clean baseline', () => buildPng(), false],
+      ['eXIf chunk', () => buildPng({ exif: true }), false],
+      ['tEXt chunk', () => buildPng({ text: true }), false],
+      ['tIME chunk', () => buildPng({ time: true }), false],
+      ['every droppable chunk at once', () => buildPng({ exif: true, text: true, time: true }), false],
+      ['post-IEND trailer', () => buildPng({ tail: EXIF_TRAILER }), false],
+      ['degraded: no IEND', () => buildPng({ omitIend: true, tail: EXIF_TRAILER }), true],
+      [
+        'degraded: nonsense chunk length',
+        () => buildPng({
+          omitIend: true,
+          afterIdat: writeChunk('bOgU', [], 0x80000000),
+          tail: EXIF_TRAILER,
+        }),
+        true,
+      ],
+    ])('PNG %s', (_label, build, expected) => {
+      expect(hasExif(stripPngMetadata(build()))).toBe(expected);
     });
   });
 

@@ -7,7 +7,8 @@
  * byte-identical pass-through in 2026-07-16 smoke test).
  *
  * Supported formats:
- * - JPEG: drops APP1 (Exif/XMP) + APP13 segments; keeps JFIF/ICC/Adobe + scan data
+ * - JPEG: drops APP1 (Exif/XMP), APP13 (IPTC) and COM segments -- wherever they
+ *   sit, header or between scans; keeps JFIF/ICC/Adobe + scan data
  * - PNG: drops eXIf/tEXt/zTXt/iTXt/tIME chunks
  * Both strippers also truncate the output at the end of the image stream (JPEG
  * EOI / PNG IEND). Anything a camera appended past that point -- notably the
@@ -16,6 +17,18 @@
  * - WebP/HEIC/unknown: re-encodes to JPEG via reencodeImage first, then strips
  *
  * Always ends with verifyNoImageMetadata re-scan; THROWS if metadata persists (fail-closed).
+ *
+ * The strip half and the detect half are one contract, and they degrade
+ * TOGETHER. When the structure cannot be parsed -- no findable EOI, no IEND, a
+ * nonsense chunk length -- the strippers copy through unchanged rather than
+ * guessing at a boundary, and hasExif widens its scan over exactly the region
+ * that survived. Tightening one half alone would either pass metadata through
+ * the verify or reject an image the strip has no way to clean.
+ *
+ * Every unmodified user-picked JPEG of 8MB or less whose orientation tag is 1
+ * or absent reaches these walkers directly, with no native re-encode in front
+ * of them: gallery files of unknown provenance, not just this app's own camera
+ * output. Unparseable input is contained by the copy-through, never trusted.
  *
  * Stripping the APP1 also removes the EXIF orientation tag, so a JPEG that carries
  * its rotation only in that tag is pre-encoded first (readJpegOrientation) -- the
@@ -110,11 +123,17 @@ const PNG_STRIP_CHUNKS = new Set(['eXIf', 'tEXt', 'zTXt', 'iTXt', 'tIME']);
 /**
  * Strip EXIF/XMP/IPTC metadata from a JPEG byte array.
  *
- * Drops APP1 (Exif/XMP) and APP13 (IPTC) segments, plus anything past the EOI
+ * Drops every JPEG_DROP_MARKERS segment (APP1 Exif/XMP, APP13 IPTC, COM),
+ * whether it sits in the header or between scans, plus anything past the EOI
  * that closes the compressed stream (Samsung Motion Photo SEF trailers and the
  * like -- see the SOS branch below).
  * Keeps APP0 (JFIF), APP2 (ICC), APP14 (Adobe), and all other markers + scan data.
  * No recompression -- scan data is byte-identical.
+ *
+ * When the scan stream cannot be walked (an unrecognized marker, a segment past
+ * EOF) the output is copied through to the end rather than truncated at a
+ * boundary that was never found -- drop-set segments recognized before that
+ * point are still removed, and hasExif scans the whole surviving remainder.
  *
  * @param data JPEG file bytes
  * @returns Sanitized JPEG bytes
@@ -644,12 +663,18 @@ function rawMetadataScan(data: Uint8Array, start: number, end: number): boolean 
  * Format-aware and boundary-respecting -- it inspects the regions where
  * metadata can actually live, and every region the strippers are supposed to
  * have removed:
- * - JPEG: APP1 markers (0xFFE1) via the segment walk, a raw scan of the header
- *   segments, and a raw scan of anything past the closing EOI (a surviving
- *   Samsung SEF trailer must still be reported).
+ * - JPEG: drop-set markers (APP1/APP13/COM) via the header walk AND the
+ *   scan-stream walk, a raw scan of the header segments, a raw scan of kept
+ *   APPn payloads between scans, a raw scan of anything past the closing EOI
+ *   (a surviving Samsung SEF trailer must still be reported), and a terminal
+ *   "SEFT" check for the signature-less trailer that no scan can see.
  * - PNG: eXIf/tEXt/zTXt/iTXt/tIME chunks, a raw scan of non-IDAT chunk
  *   payloads, and a raw scan of anything past IEND.
  * - Unrecognized or malformed input: conservative whole-buffer raw scan.
+ *
+ * When the strip degrades to copying through (no findable EOI, no IEND, a
+ * nonsense chunk length), this widens to the whole surviving remainder. False
+ * positives are possible there and are the correct trade: fail closed.
  *
  * Compressed payloads (JPEG entropy-coded scan data, PNG IDAT) are excluded:
  * they are arbitrary bytes that can hold "Exif\0\0" by coincidence, and the
@@ -870,11 +895,6 @@ export async function sanitizeStillImage(
       // the same pre-encode path -- the native re-encode bakes the rotation
       // into the pixels. Skipped when the size check already routed here, so
       // reencodeImage still runs at most once.
-      //
-      // KNOWN GAP: Android API 24-27 falls back to BitmapFactory, which does
-      // NOT apply EXIF orientation; those devices keep the current behavior.
-      // iOS (kCGImageSourceCreateThumbnailWithTransform) and Android API 28+
-      // (ImageDecoder) both rotate.
       if (!needsPreencode && isJpeg) {
         const orientation = await readSourceOrientation(sourcePath);
         needsPreencode = orientation !== null && orientation !== 1;

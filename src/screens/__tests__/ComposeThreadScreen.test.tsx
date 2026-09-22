@@ -66,7 +66,7 @@ jest.mock('../../stores', () => ({
 
 import * as Sentry from '@sentry/react-native';
 import { createNewThread } from '../../services/threadService';
-import { NetworkError, QuotaExceededError } from '../../services/api/errors';
+import { NetworkError, QuotaExceededError, ServerError } from '../../services/api/errors';
 import { UPLOAD_CANCELLED_MESSAGE } from '../../services/media/uploadCancellation';
 import type { BatchUploadProgressEvent } from '../../services/mediaUploadService';
 const mockCreateNewThread = createNewThread as jest.Mock;
@@ -106,7 +106,15 @@ const mockRoute = {
   params: { groupId: 'group-1' },
 };
 
-function renderScreen(): ReactTestRenderer {
+/**
+ * Render the composer. `params` defaults to the orbit case, so the zero-arg
+ * call sites read the same as before; pass `{ groupId, isDm: true }` for the
+ * DM variant (no title input, "Send message" button).
+ */
+function renderScreen(
+  params: { groupId: string; isDm?: boolean } = { groupId: 'group-1' },
+): ReactTestRenderer {
+  const route = { ...mockRoute, params };
   let renderer!: ReactTestRenderer;
   act(() => {
     renderer = create(
@@ -118,7 +126,7 @@ function renderScreen(): ReactTestRenderer {
           { colorSchemeOverride: 'light' },
           React.createElement(ComposeThreadScreen, {
             navigation: mockNavigation as unknown as React.ComponentProps<typeof ComposeThreadScreen>['navigation'],
-            route: mockRoute as unknown as React.ComponentProps<typeof ComposeThreadScreen>['route'],
+            route: route as unknown as React.ComponentProps<typeof ComposeThreadScreen>['route'],
           }),
         ),
       ),
@@ -407,13 +415,33 @@ describe('ComposeThreadScreen — failure reporting', () => {
     });
   }
 
+  /**
+   * Post from the DM variant: no title input exists (`{!isDm && (`), and the
+   * send control is labelled "Send message" rather than "Post thread".
+   */
+  async function postDm(): Promise<void> {
+    const renderer = renderScreen({ groupId: 'group-1', isDm: true });
+    act(() => {
+      findByTestId(renderer.root, 'compose-body-input').props.onChangeText('Some body text');
+    });
+    const sendBtn = renderer.root.findAll(
+      (node) => node.props.accessibilityLabel === 'Send message',
+    );
+    if (sendBtn.length === 0) throw new Error('Send button not found (accessibilityLabel="Send message")');
+    await act(async () => {
+      sendBtn[0].props.onPress();
+    });
+  }
+
   /** Tags of the first Sentry capture. */
   function captureTags(): Record<string, string> {
     return (mockCaptureException.mock.calls[0][1] as { tags: Record<string, string> }).tags;
   }
 
   it('reports a thread-create failure with the thread-create stage', async () => {
-    mockCreateNewThread.mockRejectedValue(new Error('Server error'));
+    // A typed ApiError, so the status/api_code tags are exercised alongside the
+    // stage — #747 made this catch rethrow the original service error.
+    mockCreateNewThread.mockRejectedValue(new ServerError(500));
 
     await post();
 
@@ -422,7 +450,19 @@ describe('ComposeThreadScreen — failure reporting', () => {
       feature: 'media-upload',
       stage: 'thread-create',
       surface: 'compose-thread',
+      status: '500',
+      api_code: 'SERVER_ERROR',
+      dm: 'false',
     });
+  });
+
+  it('tags a DM post failure with dm:true', async () => {
+    mockCreateNewThread.mockRejectedValue(new ServerError(500));
+
+    await postDm();
+
+    expect(mockCaptureException).toHaveBeenCalledTimes(1);
+    expect(captureTags().dm).toBe('true');
   });
 
   it('reports an upload failure with the media-upload stage', async () => {

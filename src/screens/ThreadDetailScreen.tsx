@@ -481,6 +481,11 @@ export function ThreadDetailScreen({
   const handleSend = useCallback(
     async (body: string) => {
       if (!thread || !userId || !username) return;
+      // #745: DM vs orbit discriminator for post-failure telemetry. Tri-state:
+      // undefined (tag omitted) when the conversation is not in the store, so
+      // dm:'false' always means "known orbit", never "unknown".
+      const conversation = useAppStore.getState().conversations[thread.conversationId];
+      const dm = conversation ? conversation.type === 'direct' : undefined;
       setSending(true);
       setShowEmojiPicker(false);
       // Which half of the send failed — reported as the Sentry `stage` tag so a
@@ -522,7 +527,12 @@ export function ThreadDetailScreen({
             try {
               updateMediaParent(mid, threadId, reply.id);
             } catch (e) {
-              captureUploadFailure(e, { stage: 'local-commit', surface: 'thread-reply', level: 'warning' });
+              captureUploadFailure(e, {
+                stage: 'local-commit',
+                surface: 'thread-reply',
+                level: 'warning',
+                dm,
+              });
             }
           }
         }
@@ -533,7 +543,7 @@ export function ThreadDetailScreen({
         if (isUploadCancellation(e)) {
           if (__DEV__) console.warn('[Reply] upload cancelled by user');
         } else {
-          captureUploadFailure(e, { stage, surface: 'thread-reply' });
+          captureUploadFailure(e, { stage, surface: 'thread-reply', dm });
           // Telemetry above fires unconditionally; the alerts must not —
           // postReply is not abortable, so a rejection can land after the user
           // navigated away, and an unguarded Alert pops over whatever screen

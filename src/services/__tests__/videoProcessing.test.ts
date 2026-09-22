@@ -20,7 +20,9 @@ import {
   unlink,
   CachesDirectoryPath,
 } from '@dr.pogodin/react-native-fs';
+import * as Sentry from '@sentry/react-native';
 import { prepareVideoForUpload, VIDEO_MIME_EXT } from '../media/videoProcessing';
+import { UPLOAD_CANCELLED_MESSAGE } from '../media/uploadCancellation';
 import { MAX_UPLOAD_SIZE_BYTES } from '../media/mediaLimits';
 import { sanitizeMp4Gps, verifyNoGpsAtoms } from '../media/mp4GpsSanitizer';
 import { sanitizeStillImage } from '../media/imageSanitizer';
@@ -42,6 +44,18 @@ const STAGING_PATH = `${CachesDirectoryPath}/media-123-staging.bin`;
 /** Note the .mp4 extension: AVAssetWriter derives the container from it. */
 const TRANSCODE_PATH = `${CachesDirectoryPath}/media-123-transcode-staging.mp4`;
 const THUMB_RAW_PATH = `${CachesDirectoryPath}/media-123-thumbraw-staging.bin`;
+
+const mockCapture = Sentry.captureException as unknown as jest.Mock;
+
+/** The tags uploadTelemetry attached to the single captured event. */
+function capturedTags(): Record<string, string> {
+  return (mockCapture.mock.calls[0][1] as { tags: Record<string, string> }).tags;
+}
+
+/** The level uploadTelemetry attached to the single captured event. */
+function capturedLevel(): string {
+  return (mockCapture.mock.calls[0][1] as { level: string }).level;
+}
 
 /** Configure per-path stat sizes. Paths not in the map return `fallback`. */
 function mockStatSizes(sizes: Record<string, number>, fallback = 1024) {
@@ -122,6 +136,8 @@ describe('prepareVideoForUpload', () => {
       `${CachesDirectoryPath}/media-123-thumb-staging.bin`,
     );
     expect(result.videoPath).toBe(STAGING_PATH);
+    // The happy path is silent — no degradation event (#748).
+    expect(mockCapture).not.toHaveBeenCalled();
   });
 
   it('degrades to a null thumbnailPath when thumbnail extraction fails', async () => {
@@ -133,6 +149,37 @@ describe('prepareVideoForUpload', () => {
 
     expect(result.thumbnailPath).toBeNull();
     expect(result.videoPath).toBe(STAGING_PATH);
+    // #748: the user still gets a post, so the silent degradation needs a
+    // release-visible warning under its own stage.
+    expect(mockCapture).toHaveBeenCalledTimes(1);
+    expect(capturedTags()).toMatchObject({ stage: 'thumbnail-extract' });
+    expect(capturedLevel()).toBe('warning');
+  });
+
+  it('rethrows a cancelled thumbnail extraction instead of degrading, and does not capture (#748)', async () => {
+    const cancelled = new MediaTranscoderError('ECANCELLED', 'thumbnail cancelled');
+    (extractThumbnail as jest.Mock).mockRejectedValueOnce(cancelled);
+
+    await expect(
+      prepareVideoForUpload('/gallery/source.mp4', 'video/mp4', 'media-123'),
+    ).rejects.toBe(cancelled);
+
+    expect(mockCapture).not.toHaveBeenCalled();
+  });
+
+  it('normalizes a foreign thumbnail rejection racing an abort to the cancellation sentinel (#748)', async () => {
+    const controller = new AbortController();
+    (extractThumbnail as jest.Mock).mockImplementationOnce(() => {
+      controller.abort();
+      return Promise.reject(new Error('disk yanked'));
+    });
+
+    const err = await prepareVideoForUpload('/gallery/source.mp4', 'video/mp4', 'media-123', {
+      signal: controller.signal,
+    }).catch((e) => e);
+
+    expect((err as Error).message).toBe(UPLOAD_CANCELLED_MESSAGE);
+    expect(mockCapture).not.toHaveBeenCalled();
   });
 
   it('uses metadata from the transcoded video', async () => {
@@ -304,6 +351,10 @@ describe('prepareVideoForUpload', () => {
     // Source MIME/extension preserved
     expect(result.mimeType).toBe('video/quicktime');
     expect(result.fileName).toBe('media-123.mov');
+    // #748: an un-transcoded upload is a silent quality regression — warn.
+    expect(mockCapture).toHaveBeenCalledTimes(1);
+    expect(capturedTags()).toMatchObject({ stage: 'transcode' });
+    expect(capturedLevel()).toBe('warning');
   });
 
   it('routes an unknown rejection shape to pass-through rather than crashing', async () => {

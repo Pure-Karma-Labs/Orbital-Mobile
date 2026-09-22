@@ -85,6 +85,22 @@ describe('scrubErrorMessage', () => {
     );
   });
 
+  it('replaces UUIDs and long hex runs with <id> (#747)', () => {
+    expect(
+      scrubErrorMessage('wrap missing for 3f9a1c2e-4b5d-6e7f-8a9b-0c1d2e3f4a5b'),
+    ).toBe('wrap missing for <id>');
+    expect(
+      scrubErrorMessage('digest 0123456789abcdef0123456789ABCDEF mismatch'),
+    ).toBe('digest <id> mismatch');
+  });
+
+  it('leaves short hex words and ordinary prose alone', () => {
+    expect(scrubErrorMessage('cache miss for deadbeef')).toBe('cache miss for deadbeef');
+    expect(scrubErrorMessage('transcode failed after 3 attempts')).toBe(
+      'transcode failed after 3 attempts',
+    );
+  });
+
   it('leaves a content-free message untouched', () => {
     expect(scrubErrorMessage('Cannot upload empty file.')).toBe('Cannot upload empty file.');
     expect(scrubErrorMessage('File too large (240MB). Maximum is 50MB.')).toBe(
@@ -117,6 +133,19 @@ describe('captureUploadFailure', () => {
       surface: 'compose-thread',
     });
     expect(capturedContext().level).toBe('error');
+  });
+
+  it('tags dm true/false and omits the tag when the caller does not know (#745)', () => {
+    captureUploadFailure(new Error('boom'), { stage: 'reply-create', dm: true });
+    expect(capturedContext().tags.dm).toBe('true');
+
+    mockCapture.mockClear();
+    captureUploadFailure(new Error('boom'), { stage: 'reply-create', dm: false });
+    expect(capturedContext().tags.dm).toBe('false');
+
+    mockCapture.mockClear();
+    captureUploadFailure(new Error('boom'), { stage: 'reply-create' });
+    expect(capturedContext().tags).not.toHaveProperty('dm');
   });
 
   it('preserves the error class name and the original frames', () => {

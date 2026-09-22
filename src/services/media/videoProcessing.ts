@@ -39,6 +39,7 @@ import { sanitizeMp4Gps, verifyNoGpsAtoms } from './mp4GpsSanitizer';
 import { sanitizeStillImage } from './imageSanitizer';
 import { MAX_UPLOAD_SIZE_BYTES } from './mediaLimits';
 import { UPLOAD_CANCELLED_MESSAGE } from './uploadCancellation';
+import { captureUploadFailure } from '../uploadTelemetry';
 
 /**
  * Re-exported so `mediaUploadService` can recognise the native `ECANCELLED`
@@ -168,6 +169,7 @@ export async function prepareVideoForUpload(
           e instanceof Error ? e.message : e,
         );
       }
+      captureUploadFailure(e, { stage: 'transcode', level: 'warning' });
     }
 
     // Check abort after the transcode
@@ -261,10 +263,16 @@ export async function prepareVideoForUpload(
       await sanitizeStillImage(rawThumbPath, 'image/jpeg', thumbStagingPath);
       thumbnailPath = thumbStagingPath;
     } catch (e) {
+      // A cancel here must abort the upload, not degrade it. Native cancel
+      // rethrows as-is; a foreign rejection racing an abort is normalized to
+      // the sentinel so isUploadCancellation() matches (same as :145/:174/:223).
+      if (isCancellation(e)) throw e;
+      if (options?.signal?.aborted) throw new Error(UPLOAD_CANCELLED_MESSAGE);
       // Thumbnail creation is best-effort -- degrade to duration-only
       if (__DEV__) {
         console.warn('[prepareVideoForUpload] thumbnail creation failed:', e instanceof Error ? e.message : e);
       }
+      captureUploadFailure(e, { stage: 'thumbnail-extract', level: 'warning' });
     } finally {
       if (rawThumbPath) {
         await unlink(rawThumbPath).catch(() => {});

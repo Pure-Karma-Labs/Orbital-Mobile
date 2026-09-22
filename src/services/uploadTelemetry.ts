@@ -9,7 +9,11 @@
  *
  * E2EE constraints — this is the only place upload failures reach a server we
  * do not control, so the payload is deliberately minimal:
- *   - Nothing derived from plaintext, ciphertext, keys, IVs or digests.
+ *   - Nothing derived from plaintext, ciphertext, key, IV or digest BYTES; a
+ *     malformed-key byte COUNT (`contentCrypto.ts:75/:109`) may appear in a
+ *     message.
+ *   - No identifiers: UUIDs and long hex runs are scrubbed to `<id>`, so a
+ *     group, user, media or thread id cannot ride out inside a message.
  *   - No file names, URIs or filesystem paths: `scrubErrorMessage()` strips
  *     them from the message, because RNFS/native errors routinely embed the
  *     picker URI (which on Android carries the user's file name).
@@ -20,6 +24,11 @@
  *   - Breadcrumb data is limited to MIME type, plaintext byte count and chunk
  *     count: coarse shape metadata the server already observes, and the exact
  *     axes a pipeline bug varies along.
+ *
+ * Since #747 the thread-create / reply-create messages are whatever the service
+ * layer threw — those two catches used to rewrap into a fixed string and now
+ * rethrow the original — so the scrub, not the rewrap, is the guarantee that
+ * this channel carries no user content.
  *
  * CANCELLATION IS THE CALLER'S JOB. A user-cancelled upload must never be
  * captured, and this module does not re-check: `isUploadCancellation()` lives
@@ -36,8 +45,10 @@ export type PostPipelineStage =
   | 'transcode'
   /** Still-image EXIF strip / re-encode. */
   | 'sanitize'
-  /** Best-effort video poster frame (degrades to duration-only). */
+  /** Best-effort video poster frame upload (degrades to duration-only). */
   | 'thumbnail'
+  /** Local poster-frame extraction/sanitize, before any upload (degrades to duration-only). */
+  | 'thumbnail-extract'
   /** Streaming AES encrypt to the ciphertext temp file. */
   | 'encrypt'
   /** Chunk POST loop + completeUpload. */
@@ -78,6 +89,9 @@ const URI_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/\S*/gi;
  * trailing diagnostic (` not found`) survives the scrub.
  */
 const PATH_PATTERN = /(?:\/[^/\n]+)+\/[^\s/]+\/?/g;
+/** UUIDs and long hex runs — group / user / media ids must never reach Sentry. */
+const ID_PATTERN =
+  /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b|\b[0-9a-f]{24,}\b/gi;
 const MEDIA_EXTENSIONS =
   'jpe?g|png|heic|heif|gif|webp|avif|bmp|tiff?|dng|jfif|mp4|mov|m4v|3gp|mkv|webm|avi|mpe?g|wav|aac|bin|dat|tmp';
 /** Bare file names — an RNFS error can name the file without any directory. */
@@ -104,6 +118,7 @@ function scrubText(text: string): string {
   return text
     .replace(URI_PATTERN, '<uri>')
     .replace(PATH_PATTERN, '<path>')
+    .replace(ID_PATTERN, '<id>')
     .replace(SPACED_FILENAME_PATTERN, '<file>')
     .replace(FILENAME_PATTERN, '<file>');
 }
@@ -177,6 +192,12 @@ export function captureUploadFailure(
     stage: PostPipelineStage;
     surface?: PostSurface;
     level?: 'error' | 'warning';
+    /**
+     * Whether the post was a DM. Set only by the two composer surfaces
+     * (screen-level stages); absent for service-internal reports and when the
+     * conversation is not in the store, so a `dm:` query is screen-scoped.
+     */
+    dm?: boolean;
   },
 ): void {
   const tags: Record<string, string> = {
@@ -184,6 +205,7 @@ export function captureUploadFailure(
     stage: ctx.stage,
   };
   if (ctx.surface) tags.surface = ctx.surface;
+  if (ctx.dm !== undefined) tags.dm = String(ctx.dm);
   // Status + machine code are the two non-content facts that separate "server
   // said no" from "the device broke"; ApiError.message is already generic.
   if (e instanceof ApiError) {

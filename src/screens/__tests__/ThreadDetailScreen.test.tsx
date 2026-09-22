@@ -26,6 +26,11 @@ jest.mock('../../hooks/useBlockedSet', () => ({
 // Mutable so a test can render the muted bell (#449).
 let mockMutedTargets: Record<string, string> = {};
 
+// Mutable so a test can make the thread's conversation a DM or an orbit (#745).
+// Left empty by default: handleSend then reads undefined out of the map and the
+// `dm` tag is omitted entirely.
+let mockConversations: Record<string, { type: 'group' | 'direct' }> = {};
+
 jest.mock('../../services/notificationSettingsSync', () => ({
   toggleMute: jest.fn().mockResolvedValue(true),
 }));
@@ -40,6 +45,7 @@ jest.mock('../../stores/useAppStore', () => ({
         blockedUserIds: [],
         blockUser: jest.fn(),
         mutedTargets: mockMutedTargets,
+        conversations: mockConversations,
       }),
     ),
     {
@@ -52,6 +58,7 @@ jest.mock('../../stores/useAppStore', () => ({
         viewingConversationId: null,
         setViewingConversation: jest.fn(),
         mutedTargets: mockMutedTargets,
+        conversations: mockConversations,
       })),
     },
   ),
@@ -96,7 +103,7 @@ import * as Sentry from '@sentry/react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import { ThemeProvider } from '../../theme';
 import { ThreadDetailScreen } from '../ThreadDetailScreen';
-import { NetworkError, QuotaExceededError } from '../../services/api/errors';
+import { NetworkError, QuotaExceededError, ServerError } from '../../services/api/errors';
 import { toggleMute } from '../../services/notificationSettingsSync';
 import { UPLOAD_CANCELLED_MESSAGE } from '../../services/media/uploadCancellation';
 import type { BatchUploadProgressEvent } from '../../services/mediaUploadService';
@@ -337,6 +344,7 @@ function applyDefaultMocks(): void {
   mockSelectedMedia = [];
   mockBlockedSet = new Set<string>();
   mockMutedTargets = {};
+  mockConversations = {};
   // Default: loadThread and loadReplies resolve but store stays empty
   // (store is mocked separately)
   mockLoadThread.mockResolvedValue(fakeThread);
@@ -1323,7 +1331,9 @@ describe('ThreadDetailScreen — send failure signal', () => {
   });
 
   it('alerts and reports with the reply-create stage when postReply fails', async () => {
-    mockPostReply.mockRejectedValue(new Error('Server error'));
+    // A typed ApiError reaches the catch intact since #747 stopped rewrapping
+    // service errors, so status/api_code ride along with the stage.
+    mockPostReply.mockRejectedValue(new ServerError(500));
 
     await sendReply();
 
@@ -1331,7 +1341,33 @@ describe('ThreadDetailScreen — send failure signal', () => {
       'Reply Failed',
       'Failed to send your reply. Please try again.',
     );
-    expect(captureTags()).toMatchObject({ stage: 'reply-create', surface: 'thread-reply' });
+    expect(captureTags()).toMatchObject({
+      stage: 'reply-create',
+      surface: 'thread-reply',
+      status: '500',
+      api_code: 'SERVER_ERROR',
+    });
+    // Conversation absent from the store — the tag is omitted rather than
+    // guessed, so dm:'false' always means "known orbit" (#745).
+    expect(captureTags().dm).toBeUndefined();
+  });
+
+  it('tags an orbit reply failure with dm:false', async () => {
+    mockConversations = { 'group-1': { type: 'group' } };
+    mockPostReply.mockRejectedValue(new ServerError(500));
+
+    await sendReply();
+
+    expect(captureTags().dm).toBe('false');
+  });
+
+  it('tags a DM reply failure with dm:true', async () => {
+    mockConversations = { 'group-1': { type: 'direct' } };
+    mockPostReply.mockRejectedValue(new ServerError(500));
+
+    await sendReply();
+
+    expect(captureTags().dm).toBe('true');
   });
 
   it('captures but does not alert when postReply fails after the screen unmounted', async () => {

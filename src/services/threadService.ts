@@ -973,7 +973,10 @@ export async function postReply(
       console.warn('[postReply]', e instanceof Error ? e.message : e);
     }
     store.updateReplySyncStatus(clientId, 'failed');
-    throw new Error('Failed to post reply');
+    // #747: rethrow the original so telemetry sees the real class / status.
+    // Everything thrown out of this function is reportable free text — never
+    // interpolate ids, key material or native payloads into a message.
+    throw e;
   }
 }
 
@@ -1080,7 +1083,10 @@ export async function createNewThread(
       console.warn('[createNewThread]', e instanceof Error ? e.message : e);
     }
     store.updateThreadSyncStatus(clientId, 'failed');
-    throw new Error('Failed to create thread');
+    // #747: rethrow the original so telemetry sees the real class / status.
+    // Everything thrown out of this function is reportable free text — never
+    // interpolate ids, key material or native payloads into a message.
+    throw e;
   }
 }
 

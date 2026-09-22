@@ -623,6 +623,61 @@ describe('imageSanitizer – real-world JPEG fixtures', () => {
   });
 
   // =========================================================================
+  // PNG CHUNK LENGTH HARDENING (availability)
+  //
+  // A PNG chunk length is a 32-bit big-endian field, and the reader builds it
+  // with << -- so a length with the high bit set reads as NEGATIVE. The old
+  // bounds check (pos + totalChunkSize > data.length) cannot catch that: a
+  // negative total makes `pos` walk BACKWARDS, which is an unbounded loop
+  // (hang, then OOM) on a user-picked PNG of 8MB or less. A positive but
+  // over-long length had a milder defect: the truncated-chunk branch copied
+  // the remainder without advancing `pos`, so the !truncatedAtIend fallback
+  // copied it a second time.
+  //
+  // Contract: never throw, never loop, and emit the input verbatim (the
+  // copy-through of a stream whose structure we cannot trust) -- with hasExif
+  // still reporting the metadata in that copied-through tail.
+  // =========================================================================
+  describe('PNG with a nonsense chunk length', () => {
+    /** PNG whose third chunk declares `declaredLength` but carries no data. */
+    function buildPngWithBogusChunkLength(declaredLength: number): Uint8Array {
+      const parts: number[] = [137, 80, 78, 71, 13, 10, 26, 10];
+
+      function writeChunk(type: string, data: number[], lengthOverride?: number) {
+        const len = lengthOverride ?? data.length;
+        parts.push((len >>> 24) & 0xFF, (len >>> 16) & 0xFF, (len >>> 8) & 0xFF, len & 0xFF);
+        parts.push(...Array.from(new TextEncoder().encode(type)));
+        parts.push(...data);
+        parts.push(0, 0, 0, 0); // CRC placeholder
+      }
+
+      writeChunk('IHDR', [0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0]);
+      writeChunk('IDAT', [0x08, 0x1D, 0x00]);
+      writeChunk('bOgU', [], declaredLength);
+      // A tail long enough (>= 12 bytes) that the chunk loop would keep going.
+      parts.push(0x45, 0x78, 0x69, 0x66, 0x00, 0x00, 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01);
+
+      return new Uint8Array(parts);
+    }
+
+    it.each([
+      ['high bit set (negative when read with <<)', 0x80000000],
+      ['all bits set', 0xFFFFFFFF],
+      ['positive but past the end of the buffer', 0x1000],
+    ])('copies through and terminates: %s', (_label, declaredLength) => {
+      const png = buildPngWithBogusChunkLength(declaredLength);
+      expect(hasExif(png)).toBe(true);
+
+      const stripped = stripPngMetadata(png);
+
+      // Byte-identical copy-through: nothing dropped, nothing duplicated.
+      expect(Array.from(stripped)).toEqual(Array.from(png));
+      // The structure was never trustworthy, so the detect half stays hot.
+      expect(hasExif(stripped)).toBe(true);
+    });
+  });
+
+  // =========================================================================
   // DEGRADED AND PADDED STREAMS
   //
   // The strippers truncate at a boundary (JPEG EOI / PNG IEND).  When that

@@ -472,11 +472,17 @@ export function stripPngMetadata(data: Uint8Array): Uint8Array {
 
     const totalChunkSize = 4 + 4 + chunkDataLength + 4; // length + type + data + CRC
 
-    if (pos + totalChunkSize > data.length) {
-      // Truncated chunk -- copy remaining bytes
+    // AVAILABILITY: the length field is a 32-bit big-endian unsigned value, but
+    // `<<` yields a SIGNED result -- a chunk declaring >= 2GB reads as negative,
+    // which makes `totalChunkSize` negative and walks `pos` BACKWARDS forever
+    // (hang, then OOM). Mirrors the guard hasExif already applies. The
+    // remainder is copied exactly once and `pos` is parked at the end so the
+    // !truncatedAtIend fallback below cannot emit it a second time.
+    if (chunkDataLength < 0 || pos + totalChunkSize > data.length) {
       for (let i = pos; i < data.length; i++) {
         output.push(data[i]);
       }
+      pos = data.length;
       break;
     }
 

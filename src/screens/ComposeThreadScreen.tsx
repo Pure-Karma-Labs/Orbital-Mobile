@@ -104,7 +104,12 @@ export function ComposeThreadScreen({
           try {
             updateMediaParent(mid, thread.id, null);
           } catch (e) {
-            captureUploadFailure(e, { stage: 'local-commit', surface: 'compose-thread', level: 'warning' });
+            captureUploadFailure(e, {
+              stage: 'local-commit',
+              surface: 'compose-thread',
+              level: 'warning',
+              dm: !!isDm,
+            });
           }
         }
       }
@@ -128,7 +133,7 @@ export function ComposeThreadScreen({
       // Everything below this line is a real failure the user just watched
       // happen. Before #738 it existed only in a __DEV__ console.warn, which is
       // why the S24 sanitizer bug (#732) was invisible in release builds.
-      captureUploadFailure(e, { stage, surface: 'compose-thread' });
+      captureUploadFailure(e, { stage, surface: 'compose-thread', dm: !!isDm });
       // instanceof applies to the upload path; createNewThread is JSON-only and never 413s
       setError(e instanceof QuotaExceededError ? e.message : 'Failed to create thread. Please try again.');
     } finally {

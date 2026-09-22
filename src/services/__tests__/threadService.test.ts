@@ -89,6 +89,8 @@ import { loadThread, loadReplies, postReply, hydrateThreadsFromLocal, hydrateRep
 import { saveThread as dbSaveThread, saveThreadBatch, getThreadsForConversation } from '../../database/repositories/threadRepository';
 import { saveReply as dbSaveReply, saveReplyBatch, getRepliesForThread } from '../../database/repositories/replyRepository';
 import { isDatabaseInitialized } from '../../database/connection';
+import { ServerError } from '../api/errors';
+import { PendingWrapError } from '../crypto/contentCrypto';
 import { getThread, getGroupThreads, getThreadReplies, createReply, createThread } from '../api/threads';
 import {
   decryptContent,
@@ -402,16 +404,29 @@ describe('postReply', () => {
     expect(result.id).toBe('server-reply-id');
   });
 
-  it('sets sync status to failed when API call throws', async () => {
-    mockCreateReply.mockRejectedValue(new Error('Network error'));
+  it('sets sync status to failed and rethrows the ORIGINAL error (#747)', async () => {
+    // The rethrow must be the same object: uploadTelemetry reads `instanceof
+    // ApiError` off it for the status / api_code tags, which a rewrapped
+    // `new Error('Failed to post reply')` erased.
+    const err = new ServerError(500);
+    mockCreateReply.mockRejectedValue(err);
 
     await expect(
       postReply('thread-1', 'group-1', 'Hello', null, 0, { authorId: 'user-1', authorUsername: 'alice' }),
-    ).rejects.toThrow('Failed to post reply');
+    ).rejects.toBe(err);
 
     expect(mockAddOptimisticReply).toHaveBeenCalledTimes(1);
 
     expect(mockUpdateReplySyncStatus).toHaveBeenCalledWith('client-uuid-000', 'failed');
+  });
+
+  it('propagates a PendingWrapError from the key fetch as the same object (#747)', async () => {
+    const err = new PendingWrapError();
+    mockGetOrFetchGroupKey.mockRejectedValue(err);
+
+    await expect(
+      postReply('thread-1', 'group-1', 'Hello', null, 0, { authorId: 'user-1', authorUsername: 'alice' }),
+    ).rejects.toBe(err);
   });
 
   it('bumps the parent thread replyCount and lastReplyAt after a successful post (#329)', async () => {
@@ -513,6 +528,27 @@ describe('postReply', () => {
       bodyIv: 'encrypted-iv',
       parentReplyId: 'parent-reply-1',
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createNewThread failure
+// ---------------------------------------------------------------------------
+
+describe('createNewThread', () => {
+  it('sets sync status to failed and rethrows the ORIGINAL error (#747)', async () => {
+    const err = new ServerError(500);
+    mockCreateThread.mockRejectedValue(err);
+
+    await expect(
+      createNewThread('group-1', 'My Thread Title', 'My thread body', {
+        authorId: 'user-1',
+        authorUsername: 'alice',
+      }),
+    ).rejects.toBe(err);
+
+    expect(mockAddOptimisticThread).toHaveBeenCalledTimes(1);
+    expect(mockUpdateThreadSyncStatus).toHaveBeenCalledWith('client-uuid-000', 'failed');
   });
 });
 

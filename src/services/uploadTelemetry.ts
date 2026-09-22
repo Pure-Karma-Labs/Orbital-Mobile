@@ -9,7 +9,14 @@
  *
  * E2EE constraints — this is the only place upload failures reach a server we
  * do not control, so the payload is deliberately minimal:
- *   - Nothing derived from plaintext, ciphertext, keys, IVs or digests.
+ *   - Nothing derived from plaintext, ciphertext, key, IV or digest BYTES; a
+ *     malformed-key byte COUNT (`contentCrypto.ts:75/:109`) may appear in a
+ *     message.
+ *   - Identifier scrub, scoped: full UUIDs and 24+ character hex runs become
+ *     `<id>` and JWT-shaped strings become `<token>`. Short ids, truncated
+ *     UUIDs and base64url tokens are NOT covered — the guarantee is that no
+ *     producer on this path interpolates them (see the #747 note below), and
+ *     the regexes are defence-in-depth, not the boundary.
  *   - No file names, URIs or filesystem paths: `scrubErrorMessage()` strips
  *     them from the message, because RNFS/native errors routinely embed the
  *     picker URI (which on Android carries the user's file name).
@@ -20,6 +27,11 @@
  *   - Breadcrumb data is limited to MIME type, plaintext byte count and chunk
  *     count: coarse shape metadata the server already observes, and the exact
  *     axes a pipeline bug varies along.
+ *
+ * Since #747 the thread-create / reply-create messages are whatever the service
+ * layer threw — those two catches used to rewrap into a fixed string and now
+ * rethrow the original — so the scrub, not the rewrap, is the guarantee that
+ * this channel carries no user content.
  *
  * CANCELLATION IS THE CALLER'S JOB. A user-cancelled upload must never be
  * captured, and this module does not re-check: `isUploadCancellation()` lives
@@ -32,12 +44,20 @@ import { ApiError, QuotaExceededError } from './api/errors';
 
 /** Where in the compose → upload → post pipeline the failure happened. */
 export type PostPipelineStage =
-  /** Video transcode + MP4 GPS strip. */
+  /**
+   * Video transcode + MP4 GPS strip. As a capture stage this reports the
+   * ENCODER failing (fallback to the sanitized source); the integrity-guard
+   * pass-through (transcode >= source, routine for already-compressed input)
+   * is deliberately not reported, so `stage:transcode` undercounts
+   * un-transcoded uploads.
+   */
   | 'transcode'
   /** Still-image EXIF strip / re-encode. */
   | 'sanitize'
-  /** Best-effort video poster frame (degrades to duration-only). */
+  /** Best-effort video poster frame upload (degrades to duration-only). */
   | 'thumbnail'
+  /** Local poster-frame extraction/sanitize, before any upload (degrades to duration-only). */
+  | 'thumbnail-extract'
   /** Streaming AES encrypt to the ciphertext temp file. */
   | 'encrypt'
   /** Chunk POST loop + completeUpload. */
@@ -78,6 +98,15 @@ const URI_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/\S*/gi;
  * trailing diagnostic (` not found`) survives the scrub.
  */
 const PATH_PATTERN = /(?:\/[^/\n]+)+\/[^\s/]+\/?/g;
+/**
+ * UUIDs and long hex runs — group / user / media ids must never reach Sentry.
+ * No leading `\b`: an id glued to a prefix (`group_<uuid>`, `media<hex>`) has
+ * no word boundary in front of it and would otherwise survive.
+ */
+const ID_PATTERN =
+  /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b|[0-9a-f]{24,}\b/gi;
+/** JWT-shaped strings (`eyJ…`.`…`.`…`) — an auth token must never reach Sentry. */
+const JWT_PATTERN = /eyJ[\w-]+\.[\w-]+\.[\w-]+/g;
 const MEDIA_EXTENSIONS =
   'jpe?g|png|heic|heif|gif|webp|avif|bmp|tiff?|dng|jfif|mp4|mov|m4v|3gp|mkv|webm|avi|mpe?g|wav|aac|bin|dat|tmp';
 /** Bare file names — an RNFS error can name the file without any directory. */
@@ -105,7 +134,12 @@ function scrubText(text: string): string {
     .replace(URI_PATTERN, '<uri>')
     .replace(PATH_PATTERN, '<path>')
     .replace(SPACED_FILENAME_PATTERN, '<file>')
-    .replace(FILENAME_PATTERN, '<file>');
+    .replace(FILENAME_PATTERN, '<file>')
+    // Identifier scrubs run LAST: `<id>` inserts angle brackets the filename
+    // regexes cannot cross, so running it first would let a user file name
+    // with a hex stem (`Summer BBQ <hex>.jpg`) leak its stem past the scrub.
+    .replace(JWT_PATTERN, '<token>')
+    .replace(ID_PATTERN, '<id>');
 }
 
 /**
@@ -177,6 +211,12 @@ export function captureUploadFailure(
     stage: PostPipelineStage;
     surface?: PostSurface;
     level?: 'error' | 'warning';
+    /**
+     * Whether the post was a DM. Set only by the two composer surfaces
+     * (screen-level stages); absent for service-internal reports and when the
+     * conversation is not in the store, so a `dm:` query is screen-scoped.
+     */
+    dm?: boolean;
   },
 ): void {
   const tags: Record<string, string> = {
@@ -184,6 +224,7 @@ export function captureUploadFailure(
     stage: ctx.stage,
   };
   if (ctx.surface) tags.surface = ctx.surface;
+  if (ctx.dm !== undefined) tags.dm = String(ctx.dm);
   // Status + machine code are the two non-content facts that separate "server
   // said no" from "the device broke"; ApiError.message is already generic.
   if (e instanceof ApiError) {

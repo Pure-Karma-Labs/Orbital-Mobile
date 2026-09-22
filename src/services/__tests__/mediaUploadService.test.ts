@@ -129,6 +129,7 @@ import {
   type BatchUploadProgressEvent,
   type BatchUploadError,
 } from '../mediaUploadService';
+import * as Sentry from '@sentry/react-native';
 import { QuotaExceededError, AuthError } from '../api/errors';
 import { UPLOAD_CANCELLED_MESSAGE } from '../media/uploadCancellation';
 import type { PickedMedia } from '../../hooks/useMediaPicker';
@@ -872,6 +873,30 @@ describe('uploadMedia — video branch', () => {
       expect(parentCall!.contentClass).toBe('video');
       expect(thumbCall!.contentClass).toBe('video');
     });
+
+    it('captures a degrading thumbnail UPLOAD failure under the `thumbnail` stage', async () => {
+      // Pins the two thumbnail stages apart: this is the upload-side degradation
+      // ('thumbnail'); local poster-frame extraction reports 'thumbnail-extract'
+      // from videoProcessing (#748).
+      mockUploadChunk.mockImplementation((args: Record<string, unknown>) => {
+        if (args.mediaId === 'thumb-media-id') {
+          return Promise.reject(new Error('Network error'));
+        }
+        return Promise.resolve({ uploadId: 'u1', received: 1, complete: false });
+      });
+
+      await uploadMedia(videoOptions);
+
+      const capture = Sentry.captureException as unknown as jest.Mock;
+      const degradations = capture.mock.calls.filter(
+        (c: unknown[]) =>
+          (c[1] as { tags?: Record<string, string> })?.tags?.stage === 'thumbnail',
+      );
+      expect(degradations).toHaveLength(1);
+      expect((degradations[0][1] as { level: string }).level).toBe('warning');
+      // Real exponential backoff (1s + 2s) runs between the child's three
+      // chunk attempts, so this test needs more than the default 5s budget.
+    }, 15000);
   });
 
   describe('video branch — progress + cancellation', () => {

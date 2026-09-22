@@ -85,6 +85,38 @@ describe('scrubErrorMessage', () => {
     );
   });
 
+  it('scrubs a spaced user file name with a hex stem as a whole file, not an id (#825)', () => {
+    // Regression: the <id> replace once ran before the filename patterns and
+    // the inserted angle brackets stopped them matching, leaking the stem
+    // (`Summer BBQ Grandma <id>.jpg`). Stem words must be capitalised for the
+    // spaced pattern, same as on main.
+    expect(
+      scrubErrorMessage('ENOENT: Summer BBQ Grandma 3f9a1c2e4b5d6e7f8a9b0c1d2e3f4a5b.jpg not found'),
+    ).toBe('ENOENT: <file> not found');
+    // PATH_PATTERN stops before a space-containing final segment; the spaced
+    // file name is then caught whole instead of leaking `Baby <id>.mp4`.
+    expect(
+      scrubErrorMessage('/storage/emulated/0/DCIM/Baby 3f9a1c2e4b5d6e7f8a9b0c1d2e3f4a5b.mp4 missing'),
+    ).toBe('<path> <file> missing');
+  });
+
+  it('scrubs ids glued to a word prefix and JWT-shaped tokens (#825)', () => {
+    expect(scrubErrorMessage('wrap missing for group_3f9a1c2e-4b5d-6e7f-8a9b-0c1d2e3f4a5b')).toBe(
+      'wrap missing for group_<id>',
+    );
+    // No leading word boundary, so a prefix's trailing hex letters are absorbed
+    // too (`media<hex>` -> `medi<id>`): over-eager by design, never under.
+    expect(scrubErrorMessage('no row for key3f9a1c2e4b5d6e7f8a9b0c1d2e3f4a5b')).toBe(
+      'no row for key<id>',
+    );
+    expect(scrubErrorMessage('no row for media3f9a1c2e4b5d6e7f8a9b0c1d2e3f4a5b')).toBe(
+      'no row for medi<id>',
+    );
+    expect(
+      scrubErrorMessage('401 for eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.abc-DEF_123 retry'),
+    ).toBe('401 for <token> retry');
+  });
+
   it('replaces UUIDs and long hex runs with <id> (#747)', () => {
     expect(
       scrubErrorMessage('wrap missing for 3f9a1c2e-4b5d-6e7f-8a9b-0c1d2e3f4a5b'),

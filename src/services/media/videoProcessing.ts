@@ -263,9 +263,12 @@ export async function prepareVideoForUpload(
       await sanitizeStillImage(rawThumbPath, 'image/jpeg', thumbStagingPath);
       thumbnailPath = thumbStagingPath;
     } catch (e) {
-      // A cancel here must abort the upload, not degrade it. Native cancel
-      // rethrows as-is; a foreign rejection racing an abort is normalized to
-      // the sentinel so isUploadCancellation() matches (same as :145/:174/:223).
+      // A cancel here must abort the upload, not degrade it. The live guard is
+      // the signal check: extractThumbnail never joins the native transcode job
+      // map, so it cannot reject ECANCELLED — the isCancellation branch is
+      // defensive symmetry with the transcode catch. A foreign rejection racing
+      // an abort is normalized to the sentinel, like the step 1/2/3 abort
+      // checks above, so isUploadCancellation() matches at the caller.
       if (isCancellation(e)) throw e;
       if (options?.signal?.aborted) throw new Error(UPLOAD_CANCELLED_MESSAGE);
       // Thumbnail creation is best-effort -- degrade to duration-only

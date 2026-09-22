@@ -12,8 +12,11 @@
  *   - Nothing derived from plaintext, ciphertext, key, IV or digest BYTES; a
  *     malformed-key byte COUNT (`contentCrypto.ts:75/:109`) may appear in a
  *     message.
- *   - No identifiers: UUIDs and long hex runs are scrubbed to `<id>`, so a
- *     group, user, media or thread id cannot ride out inside a message.
+ *   - Identifier scrub, scoped: full UUIDs and 24+ character hex runs become
+ *     `<id>` and JWT-shaped strings become `<token>`. Short ids, truncated
+ *     UUIDs and base64url tokens are NOT covered — the guarantee is that no
+ *     producer on this path interpolates them (see the #747 note below), and
+ *     the regexes are defence-in-depth, not the boundary.
  *   - No file names, URIs or filesystem paths: `scrubErrorMessage()` strips
  *     them from the message, because RNFS/native errors routinely embed the
  *     picker URI (which on Android carries the user's file name).
@@ -41,7 +44,13 @@ import { ApiError, QuotaExceededError } from './api/errors';
 
 /** Where in the compose → upload → post pipeline the failure happened. */
 export type PostPipelineStage =
-  /** Video transcode + MP4 GPS strip. */
+  /**
+   * Video transcode + MP4 GPS strip. As a capture stage this reports the
+   * ENCODER failing (fallback to the sanitized source); the integrity-guard
+   * pass-through (transcode >= source, routine for already-compressed input)
+   * is deliberately not reported, so `stage:transcode` undercounts
+   * un-transcoded uploads.
+   */
   | 'transcode'
   /** Still-image EXIF strip / re-encode. */
   | 'sanitize'
@@ -89,9 +98,15 @@ const URI_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/\S*/gi;
  * trailing diagnostic (` not found`) survives the scrub.
  */
 const PATH_PATTERN = /(?:\/[^/\n]+)+\/[^\s/]+\/?/g;
-/** UUIDs and long hex runs — group / user / media ids must never reach Sentry. */
+/**
+ * UUIDs and long hex runs — group / user / media ids must never reach Sentry.
+ * No leading `\b`: an id glued to a prefix (`group_<uuid>`, `media<hex>`) has
+ * no word boundary in front of it and would otherwise survive.
+ */
 const ID_PATTERN =
-  /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b|\b[0-9a-f]{24,}\b/gi;
+  /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b|[0-9a-f]{24,}\b/gi;
+/** JWT-shaped strings (`eyJ…`.`…`.`…`) — an auth token must never reach Sentry. */
+const JWT_PATTERN = /eyJ[\w-]+\.[\w-]+\.[\w-]+/g;
 const MEDIA_EXTENSIONS =
   'jpe?g|png|heic|heif|gif|webp|avif|bmp|tiff?|dng|jfif|mp4|mov|m4v|3gp|mkv|webm|avi|mpe?g|wav|aac|bin|dat|tmp';
 /** Bare file names — an RNFS error can name the file without any directory. */
@@ -118,9 +133,13 @@ function scrubText(text: string): string {
   return text
     .replace(URI_PATTERN, '<uri>')
     .replace(PATH_PATTERN, '<path>')
-    .replace(ID_PATTERN, '<id>')
     .replace(SPACED_FILENAME_PATTERN, '<file>')
-    .replace(FILENAME_PATTERN, '<file>');
+    .replace(FILENAME_PATTERN, '<file>')
+    // Identifier scrubs run LAST: `<id>` inserts angle brackets the filename
+    // regexes cannot cross, so running it first would let a user file name
+    // with a hex stem (`Summer BBQ <hex>.jpg`) leak its stem past the scrub.
+    .replace(JWT_PATTERN, '<token>')
+    .replace(ID_PATTERN, '<id>');
 }
 
 /**

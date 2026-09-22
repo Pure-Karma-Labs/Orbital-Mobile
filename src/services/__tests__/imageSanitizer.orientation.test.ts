@@ -24,6 +24,7 @@ import {
   sanitizeStillImage,
   hasExif,
 } from '../media/imageSanitizer';
+import { buildPng } from '../testUtils/imageFixtures';
 
 // ---------------------------------------------------------------------------
 // Byte-level builders
@@ -427,7 +428,7 @@ describe('sanitizeStillImage orientation routing', () => {
   });
 
   it('does not probe orientation for PNG sources', async () => {
-    const png = buildPngFixture();
+    const png = buildPng();
     const files: Record<string, Uint8Array> = { [SOURCE]: png };
     mockFs(files, 1024);
 
@@ -449,22 +450,3 @@ describe('sanitizeStillImage orientation routing', () => {
     expect(hasExif(files[OUT])).toBe(false);
   });
 });
-
-/** Minimal PNG: signature + IHDR + IDAT + IEND, no metadata chunks. */
-function buildPngFixture(): Uint8Array {
-  const parts: number[] = [137, 80, 78, 71, 13, 10, 26, 10];
-
-  function writeChunk(type: string, data: number[]) {
-    const len = data.length;
-    parts.push((len >> 24) & 0xFF, (len >> 16) & 0xFF, (len >> 8) & 0xFF, len & 0xFF);
-    parts.push(...Array.from(new TextEncoder().encode(type)));
-    parts.push(...data);
-    parts.push(0, 0, 0, 0); // CRC placeholder -- not validated by the stripper
-  }
-
-  writeChunk('IHDR', [0, 0, 0, 16, 0, 0, 0, 16, 8, 2, 0, 0, 0]);
-  writeChunk('IDAT', [0x08, 0x99, 0x01, 0x00]);
-  writeChunk('IEND', []);
-
-  return new Uint8Array(parts);
-}

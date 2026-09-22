@@ -12,6 +12,7 @@ import {
   stripPngMetadata,
   hasExif,
 } from '../media/imageSanitizer';
+import { buildJpeg, buildPng } from '../testUtils/imageFixtures';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -22,129 +23,6 @@ const FIXTURE_DIR = path.join(__dirname, 'fixtures');
 function loadFixture(name: string): Uint8Array {
   const buf = fs.readFileSync(path.join(FIXTURE_DIR, name));
   return new Uint8Array(buf);
-}
-
-/**
- * Build a minimal valid JPEG with optional APP1 (Exif) and APP13 (IPTC) segments.
- */
-function buildJpeg(opts?: {
-  exif?: boolean;
-  xmp?: boolean;
-  iptc?: boolean;
-  multiApp1?: boolean;
-}): Uint8Array {
-  const parts: number[] = [];
-
-  // SOI
-  parts.push(0xFF, 0xD8);
-
-  // APP0 (JFIF) -- should be kept
-  const jfifData = [0x4A, 0x46, 0x49, 0x46, 0x00]; // "JFIF\0"
-  const jfifLen = jfifData.length + 2;
-  parts.push(0xFF, 0xE0, (jfifLen >> 8) & 0xFF, jfifLen & 0xFF, ...jfifData);
-
-  // APP1 with XMP (if requested) -- should be dropped
-  if (opts?.xmp || opts?.multiApp1) {
-    const xmpSig = Array.from(new TextEncoder().encode('http://ns.adobe.com/xap/1.0/\0<x:xmpmeta/>'));
-    const xmpLen = xmpSig.length + 2;
-    parts.push(0xFF, 0xE1, (xmpLen >> 8) & 0xFF, xmpLen & 0xFF, ...xmpSig);
-  }
-
-  // APP1 with Exif (if requested) -- should be dropped
-  if (opts?.exif || opts?.multiApp1) {
-    const exifSig = [0x45, 0x78, 0x69, 0x66, 0x00, 0x00]; // "Exif\0\0"
-    // Add some GPS IFD data
-    const gpsData = [0x00, 0x08, 0x00, 0x04, 0x88, 0x25, 0x00, 0x00];
-    const exifPayload = [...exifSig, ...gpsData];
-    const exifLen = exifPayload.length + 2;
-    parts.push(0xFF, 0xE1, (exifLen >> 8) & 0xFF, exifLen & 0xFF, ...exifPayload);
-  }
-
-  // APP13 (IPTC) -- should be dropped
-  if (opts?.iptc) {
-    const iptcData = [0x50, 0x68, 0x6F, 0x74, 0x6F]; // "Photo"
-    const iptcLen = iptcData.length + 2;
-    parts.push(0xFF, 0xED, (iptcLen >> 8) & 0xFF, iptcLen & 0xFF, ...iptcData);
-  }
-
-  // SOF0 (Start of Frame) -- should be kept
-  const sofData = [0x08, 0x00, 0x10, 0x00, 0x10, 0x03, 0x01, 0x11, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01];
-  const sofLen = sofData.length + 2;
-  parts.push(0xFF, 0xC0, (sofLen >> 8) & 0xFF, sofLen & 0xFF, ...sofData);
-
-  // SOS (Start of Scan) -- should be kept with all following data
-  const sosData = [0x03, 0x01, 0x00, 0x02, 0x11, 0x03, 0x11, 0x00, 0x3F, 0x00];
-  const sosLen = sosData.length + 2;
-  parts.push(0xFF, 0xDA, (sosLen >> 8) & 0xFF, sosLen & 0xFF, ...sosData);
-
-  // Scan data (entropy coded)
-  const scanData = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE];
-  parts.push(...scanData);
-
-  // EOI
-  parts.push(0xFF, 0xD9);
-
-  return new Uint8Array(parts);
-}
-
-/**
- * Build a minimal valid PNG with optional metadata chunks.
- */
-function buildPng(opts?: {
-  exif?: boolean;
-  text?: boolean;
-  time?: boolean;
-}): Uint8Array {
-  const parts: number[] = [];
-
-  // PNG signature
-  parts.push(137, 80, 78, 71, 13, 10, 26, 10);
-
-  function writeChunk(type: string, data: number[]) {
-    const len = data.length;
-    parts.push((len >> 24) & 0xFF, (len >> 16) & 0xFF, (len >> 8) & 0xFF, len & 0xFF);
-    const typeBytes = Array.from(new TextEncoder().encode(type));
-    parts.push(...typeBytes);
-    parts.push(...data);
-    // CRC (placeholder -- not validated by our stripper)
-    parts.push(0, 0, 0, 0);
-  }
-
-  // IHDR (required)
-  writeChunk('IHDR', [
-    0, 0, 0, 16, // width
-    0, 0, 0, 16, // height
-    8, // bit depth
-    2, // color type (RGB)
-    0, // compression
-    0, // filter
-    0, // interlace
-  ]);
-
-  // eXIf chunk (if requested) -- should be stripped
-  if (opts?.exif) {
-    const exifData = [0x45, 0x78, 0x69, 0x66, 0x00, 0x00, 0x4D, 0x4D]; // "Exif\0\0MM"
-    writeChunk('eXIf', exifData);
-  }
-
-  // tEXt chunk (if requested) -- should be stripped
-  if (opts?.text) {
-    const textData = Array.from(new TextEncoder().encode('Comment\0Test text'));
-    writeChunk('tEXt', textData);
-  }
-
-  // tIME chunk (if requested) -- should be stripped
-  if (opts?.time) {
-    writeChunk('tIME', [0x07, 0xEA, 0x07, 0x11, 0x0A, 0x1E, 0x00]);
-  }
-
-  // IDAT (required, minimal)
-  writeChunk('IDAT', [0x08, 0x99, 0x01, 0x00]);
-
-  // IEND (required)
-  writeChunk('IEND', []);
-
-  return new Uint8Array(parts);
 }
 
 // ---------------------------------------------------------------------------
@@ -178,7 +56,9 @@ describe('imageSanitizer', () => {
     });
 
     it('preserves APP0 (JFIF) and SOF/SOS data', () => {
-      const input = buildJpeg({ exif: true });
+      // scanData is pinned explicitly: the tail assertion below compares the
+      // last seven output bytes, so the entropy bytes must be exactly these.
+      const input = buildJpeg({ exif: true, scanData: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE] });
       const output = stripJpegMetadata(input);
 
       // Should still start with SOI
@@ -201,8 +81,8 @@ describe('imageSanitizer', () => {
       expect(outputEnd).toEqual(scanData);
     });
 
-    it('handles multi-APP1 JPEG (XMP first, then Exif)', () => {
-      const input = buildJpeg({ multiApp1: true });
+    it('handles multi-APP1 JPEG (Exif and XMP)', () => {
+      const input = buildJpeg({ exif: true, xmp: true });
       expect(hasExif(input)).toBe(true);
 
       const output = stripJpegMetadata(input);

@@ -19,6 +19,23 @@
  */
 
 // ---------------------------------------------------------------------------
+// Shared byte patterns
+// ---------------------------------------------------------------------------
+
+/** "Exif\0\0" -- the six-byte pattern the raw metadata scan matches. */
+export const EXIF_SIGNATURE = [0x45, 0x78, 0x69, 0x66, 0x00, 0x00];
+
+/** Trailer that is nothing but an Exif signature and two filler bytes. */
+export const EXIF_TRAILER_BARE = [...EXIF_SIGNATURE, 0xDE, 0xAD];
+
+/** Trailer shaped like a Samsung SEF block header carrying an Exif signature. */
+export const SEFH_EXIF_TRAILER = [
+  0x53, 0x45, 0x46, 0x48, // "SEFH"
+  ...EXIF_SIGNATURE,
+  0xDE, 0xAD,
+];
+
+// ---------------------------------------------------------------------------
 // Low-level writers
 // ---------------------------------------------------------------------------
 
@@ -136,7 +153,7 @@ const JFIF_PAYLOAD = [
  * correct TIFF IFD ("MM" big-endian, magic 42, IFD0 at offset 8, one Make tag).
  */
 const EXIF_PAYLOAD = [
-  0x45, 0x78, 0x69, 0x66, 0x00, 0x00, // "Exif\0\0" -- the pattern the detector looks for
+  ...EXIF_SIGNATURE,
   0x4D, 0x4D,                         // "MM" big-endian
   0x00, 0x2A,                         // TIFF magic 42
   0x00, 0x00, 0x00, 0x08,             // IFD0 offset = 8 (relative to "MM")
@@ -286,7 +303,7 @@ export function buildSefTrailer(): number[] {
   // The Exif\0\0 bytes that appear inside the embedded JPEG thumbnail
   // that Samsung's SEF MP4 container holds.
   const embeddedJpegApp1Payload = [
-    0x45, 0x78, 0x69, 0x66, 0x00, 0x00, // "Exif\0\0"
+    ...EXIF_SIGNATURE,
     0x4D, 0x4D, 0x00, 0x2A,             // TIFF: MM + magic
     0x00, 0x00, 0x00, 0x08,             // IFD0 at offset 8
     0x00, 0x00,                         // 0 IFD entries (minimal)
@@ -360,7 +377,8 @@ export function buildGainMapJpeg(): number[] {
       '</rdf:RDF></x:xmpmeta>',
     )),
   ];
-  // The real segment declares 605; pad the packet out to match it exactly.
+  // 605 is the length field the real capture wrote for this segment (see the
+  // provenance note on S24_SEF_TAIL_HEX below); pad the packet to match it.
   const declaredLength = 605;
   while (payload.length < declaredLength - 2) payload.push(0x20); // XMP pad
   return [
@@ -408,7 +426,7 @@ export const S24_SEF_MCC = '311';
  * where the strip cannot find an EOI, the terminal SEFT check in hasExif is the
  * only thing that catches it.
  */
-export const S24_SEF_TAIL_HEX =
+const S24_SEF_TAIL_HEX =
   '0000010a0e000000496d6167655f5554435f446174613137303030303030303030303000' +
   '00a10a080000004d43435f446174613331310000c10c10000000436f6c6f725f44697370' +
   '6c61795f50330c06060000d20c0e00000050686f746f5f4844525f496e666f000000610c' +
@@ -476,7 +494,7 @@ export function buildPng(opts: BuildPngOptions = {}): Uint8Array {
   parts.push(...writeChunk('IHDR', IHDR_PAYLOAD));
 
   if (exif) {
-    parts.push(...writeChunk('eXIf', [0x45, 0x78, 0x69, 0x66, 0x00, 0x00, 0x4D, 0x4D])); // "Exif\0\0MM"
+    parts.push(...writeChunk('eXIf', [...EXIF_SIGNATURE, 0x4D, 0x4D])); // "Exif\0\0MM"
   }
 
   if (text) {

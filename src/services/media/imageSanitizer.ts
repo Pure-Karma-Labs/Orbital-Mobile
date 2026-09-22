@@ -25,6 +25,14 @@
  * that survived. Tightening one half alone would either pass metadata through
  * the verify or reject an image the strip has no way to clean.
  *
+ * What that widening actually covers, precisely: a raw scan for an Exif or XMP
+ * *signature*, plus the terminal SEFT anchor. It is NOT a structural check. A
+ * signature-less APP13 or COM sitting past the point where the walk gave up
+ * survives the copy-through and passes the verify -- there is nothing in those
+ * bytes to match. Narrowing that residue (by treating an unwalkable stream as
+ * unverifiable, or by a structural marker check over the surviving region) is
+ * tracked as a follow-up, not solved here.
+ *
  * Every unmodified user-picked JPEG of 8MB or less whose orientation tag is 1
  * or absent reaches these walkers directly, with no native re-encode in front
  * of them: gallery files of unknown provenance, not just this app's own camera
@@ -69,7 +77,17 @@ const JPEG_EOI = 0xFFD9;
 // APP segment markers
 const APP1 = 0xFFE1;  // Exif / XMP
 const APP13 = 0xFFED; // Photoshop / IPTC
+const APP14 = 0xFFEE; // Adobe (color transform)
 const COM = 0xFFFE;   // Comment
+
+/**
+ * Defensive ceiling on inter-scan segments recorded from one scan stream --
+ * same idiom as MAX_IFD_ENTRIES. A conforming JPEG has a handful; the array is
+ * sized by untrusted bytes, and a dense run of 4-byte segments in an 8MB file
+ * would otherwise allocate millions of objects. Past the ceiling the walk
+ * reports no EOI, which is the fail-closed copy-through path.
+ */
+const MAX_SCAN_STREAM_SEGMENTS = 4096;
 
 /**
  * The JPEG segments this module removes, shared by the strip and the detect so
@@ -101,6 +119,40 @@ function isScanStreamSegmentMarker(marker: number): boolean {
     (marker >= 0xFFE0 && marker <= 0xFFEF) ||                      // APPn
     marker === COM
   );
+}
+
+/**
+ * Inter-scan segments the strip removes -- the shared drop set, plus every
+ * APPn except APP14.
+ *
+ * Why every APPn and not just the drop set: between scans is not where an
+ * application segment belongs, and the strip and the detect have to agree on
+ * each one. Keeping (say) an inter-scan APP2 while the detect flagged its
+ * payload would make that photo permanently unpostable -- the verify rejects
+ * what the strip cannot remove. Dropping them costs nothing a decoder needs;
+ * an ICC profile is read from the header.
+ *
+ * APP14 is the exception: its Adobe transform flag can change how the color
+ * components are interpreted, so it is kept, and its payload is raw-scanned
+ * instead. An Adobe APP14 carrying an Exif or XMP signature is the one
+ * remaining unclearable rejection here, and it is a shape nothing emits.
+ */
+function isDroppedInterScanSegment(marker: number): boolean {
+  return (
+    JPEG_DROP_MARKERS.has(marker) ||
+    (marker >= 0xFFE0 && marker <= 0xFFEF && marker !== APP14)
+  );
+}
+
+/**
+ * Markers whose spans the strip and the detect actually consult: APPn and COM.
+ *
+ * Tables and frame/scan headers are still walked -- they have to be, to find
+ * the EOI -- but recording them serves nobody and let untrusted bytes size an
+ * unbounded array.
+ */
+function isConsultedScanStreamSegment(marker: number): boolean {
+  return (marker >= 0xFFE0 && marker <= 0xFFEF) || marker === COM;
 }
 
 /** Append `data[start, end)` to `output`. */
@@ -190,17 +242,32 @@ export function stripJpegMetadata(data: Uint8Array): Uint8Array {
       // copy to the end. verifyNoImageMetadata remains the fail-closed backstop.
       const streamEnd = eoiPos === -1 ? data.length : eoiPos + 2;
 
-      // Copy [pos, streamEnd) while skipping any drop-set segment the walk
-      // recognized between scans -- an encoder is free to put an APP1, APP13 or
-      // COM there, and a header-only walk would never see it. Segments the walk
-      // recognized before giving up are dropped too, so the copy-through path
-      // is not a free pass for inter-scan metadata.
+      // Copy [pos, streamEnd) while skipping the segments isDroppedInterScanSegment
+      // names -- an encoder is free to put an APP1, APP13 or COM between scans,
+      // and a header-only walk would never see it. Segments the walk recognized
+      // before giving up are dropped too, so the copy-through path is not a
+      // free pass for inter-scan metadata.
+      //
+      // This is the one place the strip deletes bytes from inside the
+      // entropy-coded region, and it is reachable only on input that is already
+      // non-compliant: T.81 puts application segments and comments in the
+      // header, not between scans. A decoder that was relying on them was
+      // reading a file no encoder should have produced -- and the alternative,
+      // shipping the metadata, is the thing this module exists to prevent.
       let cursor = pos;
       for (const segment of segments) {
-        if (!JPEG_DROP_MARKERS.has(segment.marker)) continue;
+        if (!isDroppedInterScanSegment(segment.marker)) continue;
+        // 0xFF fill may pad the run-up to a marker. Removing the segment while
+        // leaving that padding behind would splice the stray 0xFF onto the next
+        // entropy byte and FABRICATE a marker (FF 40 and so on), so the removed
+        // range extends back over the whole fill run.
+        let dropStart = segment.start;
+        while (dropStart > cursor && data[dropStart - 1] === 0xFF) {
+          dropStart--;
+        }
         // Every recognized segment ends at or before streamEnd by construction:
         // the walk returns as soon as it reaches the EOI or gives up.
-        pushRange(output, data, cursor, segment.start);
+        pushRange(output, data, cursor, dropStart);
         cursor = segment.end;
       }
       pushRange(output, data, cursor, streamEnd);
@@ -291,9 +358,12 @@ interface ScanStreamSegment {
  * failure are still returned, so inter-scan metadata found before the walk gave
  * up can still be dropped.
  *
+ * Only the segments a caller consults are recorded, and never more than
+ * MAX_SCAN_STREAM_SEGMENTS of them: the array is sized by untrusted bytes.
+ *
  * @param data JPEG file bytes
  * @param sosPos Offset of the SOS marker to start walking from
- * @returns Offset of the closing EOI (or -1), plus the segments recognized
+ * @returns Offset of the closing EOI (or -1), plus the segments recorded
  */
 function walkJpegScanStream(
   data: Uint8Array,
@@ -353,7 +423,15 @@ function walkJpegScanStream(
       return { eoiPos: -1, segments };
     }
 
-    segments.push({ marker, start: pos, end: segEnd });
+    if (isConsultedScanStreamSegment(marker)) {
+      if (segments.length >= MAX_SCAN_STREAM_SEGMENTS) {
+        // Too many to be a real image. Stop trusting the structure rather than
+        // letting the input decide how much memory this walk costs; what was
+        // recorded so far is still returned, so the detect keeps what it saw.
+        return { eoiPos: -1, segments };
+      }
+      segments.push({ marker, start: pos, end: segEnd });
+    }
     pos = segEnd;
   }
 
@@ -710,15 +788,16 @@ export function hasExif(data: Uint8Array): boolean {
     if (sosPos !== -1) {
       const { eoiPos, segments } = walkJpegScanStream(data, sosPos);
 
-      // Inter-scan segments. A drop-set marker is metadata by definition; for
-      // the ones the strip KEEPS, only APPn payloads are scanned. Tables and
-      // frame/scan headers (DQT/DHT/DRI/DNL/DAC/SOFn/SOS) are excluded for the
-      // same reason entropy data is: the strip can never remove them, so a hit
+      // Inter-scan segments, reported on exactly the rule the strip removes
+      // them by -- the two halves must not disagree, or a photo becomes
+      // permanently unpostable. The only payload scanned is the one segment
+      // kept here (APP14); tables, frame/scan headers and entropy data are all
+      // excluded for the same reason: the strip can never remove them, so a hit
       // there could only be an unclearable false positive.
       for (const segment of segments) {
-        if (JPEG_DROP_MARKERS.has(segment.marker)) return true;
+        if (isDroppedInterScanSegment(segment.marker)) return true;
         if (
-          segment.marker >= 0xFFE0 && segment.marker <= 0xFFEF &&
+          segment.marker === APP14 &&
           rawMetadataScan(data, segment.start, segment.end)
         ) {
           return true;

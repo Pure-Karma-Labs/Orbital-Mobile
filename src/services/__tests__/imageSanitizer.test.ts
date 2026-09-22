@@ -17,6 +17,9 @@ import {
   buildPng,
   buildSefTrailer,
   writeChunk,
+  writeSegment,
+  EXIF_SIGNATURE,
+  EXIF_TRAILER_BARE,
 } from '../testUtils/imageFixtures';
 
 // ---------------------------------------------------------------------------
@@ -224,8 +227,6 @@ describe('imageSanitizer', () => {
   // survives, and the detect has to keep reporting it.
   // -------------------------------------------------------------------------
   describe('strip and detect agreement', () => {
-    const EXIF_TRAILER = [0x45, 0x78, 0x69, 0x66, 0x00, 0x00, 0xDE, 0xAD];
-
     it.each([
       ['clean baseline', () => buildJpeg(), false],
       ['Exif APP1', () => buildJpeg({ exif: true }), false],
@@ -236,7 +237,28 @@ describe('imageSanitizer', () => {
       ['ICC APP2 (kept, not metadata)', () => buildJpeg({ icc: true }), false],
       ['progressive with Exif', () => buildJpeg({ exif: true, progressive: true }), false],
       ['post-EOI SEF trailer', () => buildJpeg({ exif: true, postEoiTrailer: buildSefTrailer() }), false],
-      ['degraded: no findable EOI', () => buildJpeg({ omitEoi: true, postEoiTrailer: EXIF_TRAILER }), true],
+      [
+        // An APP2 between scans is already non-conforming, and the strip can
+        // only agree with the detect by removing it -- keeping it while
+        // flagging its payload would make this photo permanently unpostable.
+        'inter-scan APP2 carrying an Exif signature',
+        () => buildJpeg({
+          betweenScans: writeSegment([0xFF, 0xE2], [...EXIF_SIGNATURE, 0x4D, 0x4D]),
+          scan2Data: [0x44, 0x55],
+        }),
+        false,
+      ],
+      [
+        'inter-scan APP14 (kept) with a clean payload',
+        () => buildJpeg({
+          betweenScans: writeSegment([0xFF, 0xEE], [
+            0x41, 0x64, 0x6F, 0x62, 0x65, 0x00, 0x64, 0x00, 0x00, 0x00, 0x00, 0x01, // "Adobe"
+          ]),
+          scan2Data: [0x44, 0x55],
+        }),
+        false,
+      ],
+      ['degraded: no findable EOI', () => buildJpeg({ omitEoi: true, postEoiTrailer: EXIF_TRAILER_BARE }), true],
     ])('JPEG %s', (_label, build, expected) => {
       expect(hasExif(stripJpegMetadata(build()))).toBe(expected);
     });
@@ -247,14 +269,14 @@ describe('imageSanitizer', () => {
       ['tEXt chunk', () => buildPng({ text: true }), false],
       ['tIME chunk', () => buildPng({ time: true }), false],
       ['every droppable chunk at once', () => buildPng({ exif: true, text: true, time: true }), false],
-      ['post-IEND trailer', () => buildPng({ tail: EXIF_TRAILER }), false],
-      ['degraded: no IEND', () => buildPng({ omitIend: true, tail: EXIF_TRAILER }), true],
+      ['post-IEND trailer', () => buildPng({ tail: EXIF_TRAILER_BARE }), false],
+      ['degraded: no IEND', () => buildPng({ omitIend: true, tail: EXIF_TRAILER_BARE }), true],
       [
         'degraded: nonsense chunk length',
         () => buildPng({
           omitIend: true,
           afterIdat: writeChunk('bOgU', [], 0x80000000),
-          tail: EXIF_TRAILER,
+          tail: EXIF_TRAILER_BARE,
         }),
         true,
       ],

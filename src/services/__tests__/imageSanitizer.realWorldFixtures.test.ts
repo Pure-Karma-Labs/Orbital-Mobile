@@ -42,6 +42,10 @@
  *      branch copy the remainder twice. Contract: never throw, never loop, emit
  *      the input verbatim, and keep reporting the metadata in that tail.
  *
+ * Not covered here: resolveUri / file:// path handling. These suites drive the
+ * pure byte-level cores, which take a Uint8Array and never see a URI -- how the
+ * picker's file:// URIs resolve on a real filesystem is an on-device path only.
+ *
  * Run: npm test -- imageSanitizer.realWorldFixtures
  */
 
@@ -62,17 +66,10 @@ import {
   hasHeaderMarker,
   S24_SEF_CAPTURE_TIMESTAMP,
   S24_SEF_MCC,
+  EXIF_SIGNATURE,
+  EXIF_TRAILER_BARE,
+  SEFH_EXIF_TRAILER,
 } from '../testUtils/imageFixtures';
-
-/** "Exif\0\0" as bytes -- the pattern the raw scan looks for. */
-const EXIF_SIGNATURE = [0x45, 0x78, 0x69, 0x66, 0x00, 0x00];
-
-/** A metadata-bearing trailer with a signature a raw scan CAN see. */
-const EXIF_TRAILER = [
-  0x53, 0x45, 0x46, 0x48, // "SEFH"
-  ...EXIF_SIGNATURE,
-  0xDE, 0xAD,
-];
 
 describe('imageSanitizer – real-world JPEG fixtures', () => {
 
@@ -269,8 +266,7 @@ describe('imageSanitizer – real-world JPEG fixtures', () => {
     });
 
     it('post-IEND Exif\\0\\0 bytes are dropped by stripPngMetadata', () => {
-      const postIendTrailer = [0x45, 0x78, 0x69, 0x66, 0x00, 0x00, 0xDE, 0xAD];
-      const png = buildPng({ exif: true, tail: postIendTrailer });
+      const png = buildPng({ exif: true, tail: EXIF_TRAILER_BARE });
       expect(hasExif(png)).toBe(true);
 
       const stripped = stripPngMetadata(png);
@@ -355,10 +351,7 @@ describe('imageSanitizer – real-world JPEG fixtures', () => {
     it('PNG that never reaches IEND: tail survives the strip and hasExif still reports it', () => {
       // Truncated tail: shorter than a chunk header, so the walk stops there
       // without ever seeing IEND. Six of these eight bytes are an Exif\0\0.
-      const png = buildPng({
-        omitIend: true,
-        tail: [0x45, 0x78, 0x69, 0x66, 0x00, 0x00, 0xDE, 0xAD],
-      });
+      const png = buildPng({ omitIend: true, tail: EXIF_TRAILER_BARE });
       expect(hasExif(png)).toBe(true);
 
       const stripped = stripPngMetadata(png);
@@ -410,18 +403,15 @@ describe('imageSanitizer – real-world JPEG fixtures', () => {
       expect(hasExif(stripped)).toBe(false);
     });
 
-    it('keeps clean inter-scan segments and raises no false positive', () => {
-      // APP2/DQT/DRI between scans are ordinary coding data. Dropping them
-      // would corrupt the image, and flagging them would make a clean photo
+    it('keeps inter-scan tables and raises no false positive', () => {
+      // DQT/DRI between scans are ordinary coding data: dropping them would
+      // corrupt the image, and flagging them would make a clean photo
       // permanently unpostable.
-      const icc = writeSegment([0xFF, 0xE2], [
-        ...Array.from(new TextEncoder().encode('ICC_PROFILE\0')), 0x01, 0x01,
-      ]);
       const dqt = writeSegment([0xFF, 0xDB], [0x00, ...new Array(64).fill(0x10)]);
       const dri = writeSegment([0xFF, 0xDD], [0x00, 0x04]);
       const jpeg = buildJpeg({
         scanData: SCAN1,
-        betweenScans: [...icc, ...dqt, ...dri],
+        betweenScans: [...dqt, ...dri],
         scan2Data: SCAN2,
       });
 
@@ -429,6 +419,66 @@ describe('imageSanitizer – real-world JPEG fixtures', () => {
 
       const stripped = stripJpegMetadata(jpeg);
       expect(Array.from(stripped)).toEqual(Array.from(jpeg));
+      expect(hasExif(stripped)).toBe(false);
+    });
+
+    it('drops an inter-scan APP2 rather than flagging what it cannot remove', () => {
+      // An APP2 between scans is already non-conforming (a color profile is
+      // read from the header), and if its payload happens to carry an Exif
+      // signature, keeping it while the detect flags it would reject this
+      // photo forever. The halves agree by removing it.
+      const app2 = writeSegment([0xFF, 0xE2], [
+        ...Array.from(new TextEncoder().encode('ICC_PROFILE\0')), ...EXIF_SIGNATURE,
+      ]);
+      const jpeg = buildJpeg({ scanData: SCAN1, betweenScans: app2, scan2Data: SCAN2 });
+
+      expect(hasExif(jpeg)).toBe(true);
+
+      const stripped = stripJpegMetadata(jpeg);
+      expect(indexOfSeq(Array.from(stripped), app2)).toBe(-1);
+      expect(stripped.length).toBe(jpeg.length - app2.length);
+      expect(hasExif(stripped)).toBe(false);
+    });
+
+    it('keeps an inter-scan APP14 and scans its payload instead', () => {
+      // APP14's Adobe transform flag can change how the color components are
+      // interpreted, so this one is kept -- and therefore raw-scanned. A clean
+      // one must not be flagged.
+      const adobe = [0x41, 0x64, 0x6F, 0x62, 0x65, 0x00, 0x64, 0x00, 0x00, 0x00, 0x00, 0x01];
+      const app14 = writeSegment([0xFF, 0xEE], adobe);
+      const jpeg = buildJpeg({ scanData: SCAN1, betweenScans: app14, scan2Data: SCAN2 });
+
+      expect(hasExif(jpeg)).toBe(false);
+      const stripped = stripJpegMetadata(jpeg);
+      expect(Array.from(stripped)).toEqual(Array.from(jpeg));
+      expect(hasExif(stripped)).toBe(false);
+
+      // The one remaining unclearable rejection, kept deliberately narrow.
+      const dirty = buildJpeg({
+        scanData: SCAN1,
+        betweenScans: writeSegment([0xFF, 0xEE], [...adobe, ...EXIF_SIGNATURE]),
+        scan2Data: SCAN2,
+      });
+      expect(hasExif(stripJpegMetadata(dirty))).toBe(true);
+    });
+
+    it('does not fabricate a marker when the dropped segment follows 0xFF fill', () => {
+      // Fill bytes may pad the run-up to a marker. Removing the segment but
+      // leaving the padding would splice that 0xFF onto the next entropy byte
+      // and invent an FF40 marker out of thin air.
+      const app1 = writeSegment([0xFF, 0xE1], [...EXIF_SIGNATURE, 0x4D, 0x4D]);
+      const jpeg = buildJpeg({
+        scanData: [0x11, 0x22, 0xFF, ...app1, 0x40, 0x41],
+      });
+      expect(hasExif(jpeg)).toBe(true);
+
+      const stripped = stripJpegMetadata(jpeg);
+      const bytes = Array.from(stripped);
+
+      expect(indexOfSeq(bytes, [0x11, 0x22, 0x40, 0x41])).toBeGreaterThan(-1);
+      expect(indexOfSeq(bytes, [0xFF, 0x40])).toBe(-1);
+      expect(stripped[stripped.length - 2]).toBe(0xFF);
+      expect(stripped[stripped.length - 1]).toBe(0xD9);
       expect(hasExif(stripped)).toBe(false);
     });
 
@@ -467,8 +517,8 @@ describe('imageSanitizer – real-world JPEG fixtures', () => {
       ['FF02 with a length that steps over the EOI', [0xAA, 0xFF, 0x02, 0x00, 0x0F, 0xBB], [
         ...EXIF_SIGNATURE, 0xDE, 0xAD, 0xBE, 0xEF, 0xFF, 0xD9, 0x11, 0x22,
       ]],
-      ['a stray SOI inside the scan', [0xAA, 0xFF, 0xD8, 0xBB, 0xCC], EXIF_TRAILER],
-      ['a DHT declaring a length below the minimum', [0xAA, 0xFF, 0xC4, 0x00, 0x00, 0xBB], EXIF_TRAILER],
+      ['a stray SOI inside the scan', [0xAA, 0xFF, 0xD8, 0xBB, 0xCC], SEFH_EXIF_TRAILER],
+      ['a DHT declaring a length below the minimum', [0xAA, 0xFF, 0xC4, 0x00, 0x00, 0xBB], SEFH_EXIF_TRAILER],
     ])('copies through and stays detectable: %s', (_label, scanData, trailer) => {
       const jpeg = buildJpeg({ scanData, postEoiTrailer: trailer });
 
@@ -485,12 +535,57 @@ describe('imageSanitizer – real-world JPEG fixtures', () => {
       const jpeg = buildJpeg({
         betweenScans: [0xFF, 0xC4, 0xFF, 0xFF], // DHT declaring 65535 bytes
         scan2Data: [0x44, 0x55],
-        postEoiTrailer: EXIF_TRAILER,
+        postEoiTrailer: SEFH_EXIF_TRAILER,
       });
 
       const stripped = stripJpegMetadata(jpeg);
       expect(Array.from(stripped)).toEqual(Array.from(jpeg));
       expect(hasExif(stripped)).toBe(true);
+    });
+
+    // The recorded-segment array is sized by untrusted bytes, so it is capped.
+    // A dense run of 4-byte segments in an 8MB file would otherwise allocate
+    // millions of objects, twice per sanitize.
+    it.each([
+      ['APP0', [0xFF, 0xE0, 0x00, 0x02]],
+      ['COM', [0xFF, 0xFE, 0x00, 0x02]],
+    ])('fails closed past the recorded-segment ceiling: a dense %s run', (_label, segment) => {
+      const dense: number[] = [];
+      for (let i = 0; i < 4100; i++) dense.push(...segment); // > MAX_SCAN_STREAM_SEGMENTS
+
+      const jpeg = buildJpeg({
+        scanData: [0xAA, ...dense, 0xBB],
+        postEoiTrailer: SEFH_EXIF_TRAILER,
+      });
+
+      let stripped!: Uint8Array;
+      expect(() => { stripped = stripJpegMetadata(jpeg); }).not.toThrow();
+
+      // The ceiling means "stop trusting this structure": no boundary was
+      // found, so the trailer rides through rather than being truncated at
+      // something the walk never actually reached...
+      expect(indexOfSeq(Array.from(stripped), EXIF_SIGNATURE)).toBeGreaterThan(-1);
+      // ...and the detect stays hot over it.
+      expect(hasExif(stripped)).toBe(true);
+    });
+
+    it('is not slowed or capped by segments nobody consults', () => {
+      // The same count of DHT segments: walked to find the EOI, never
+      // recorded, so the ceiling is never reached and the real boundary is
+      // still found. This is the difference the narrowed recording makes.
+      const dense: number[] = [];
+      for (let i = 0; i < 4100; i++) dense.push(0xFF, 0xC4, 0x00, 0x02);
+
+      const jpeg = buildJpeg({
+        scanData: [0xAA, ...dense, 0xBB],
+        postEoiTrailer: SEFH_EXIF_TRAILER,
+      });
+
+      const stripped = stripJpegMetadata(jpeg);
+      expect(indexOfSeq(Array.from(stripped), EXIF_SIGNATURE)).toBe(-1); // trailer truncated
+      expect(stripped[stripped.length - 2]).toBe(0xFF);
+      expect(stripped[stripped.length - 1]).toBe(0xD9);
+      expect(hasExif(stripped)).toBe(false);
     });
 
     it('still finds the real EOI across DNL, DAC, DHP and EXP segments', () => {
@@ -507,7 +602,7 @@ describe('imageSanitizer – real-world JPEG fixtures', () => {
         scanData: [0x11, 0x22],
         betweenScans: [...dnl, ...dac, ...dhp, ...exp],
         scan2Data: [0x33, 0x44],
-        postEoiTrailer: EXIF_TRAILER,
+        postEoiTrailer: SEFH_EXIF_TRAILER,
       });
 
       const stripped = stripJpegMetadata(jpeg);

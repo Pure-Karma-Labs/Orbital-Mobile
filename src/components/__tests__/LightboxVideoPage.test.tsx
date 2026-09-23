@@ -721,6 +721,13 @@ describe('audio focus', () => {
   });
 
   afterEach(() => {
+    // Drain pending fake timers before restoring the real clock. After the
+    // drain, alive guards prevent re-arming, so no fake-timer callbacks are
+    // adopted as real timers in the file-level afterEach's unmount (#834,
+    // DEBT-280). jest-circus runs this innermost afterEach before the
+    // file-level one, so the clock is still fake during the drain.
+    act(() => { jest.runOnlyPendingTimers(); });
+    jest.clearAllTimers();
     jest.useRealTimers();
   });
 
@@ -824,6 +831,28 @@ describe('audio focus', () => {
       jest.advanceTimersByTime(TRANSIENT_PAUSE_GRACE_MS);
     });
     expect(video(renderer).props.paused).toBe(true);
+  });
+
+  // Regression guard for DEBT-280 / #834: after unmounting under fake timers,
+  // drain pending timers (the alive.current guard must prevent re-arming), then
+  // assert zero. Mirrors OrbitalSpinner.test.tsx:78–93. Drain before any clear
+  // so a real post-unmount leak fails loudly instead of being swept away.
+  it('leaves no pending timers after unmount (timer-leak regression guard)', () => {
+    const renderer = renderReady();
+    act(() => {
+      video(renderer).props.onProgress({ currentTime: 0.5, seekableDuration: 42 });
+    });
+
+    // Null the file-level tracker first so the outer afterEach does not
+    // attempt a second unmount of the same renderer.
+    mounted = null;
+    act(() => { renderer.unmount(); });
+
+    // Drain whatever was queued at unmount time. Alive guards must prevent
+    // re-arming. If this regresses, the chain leaks into later tests.
+    act(() => { jest.runOnlyPendingTimers(); });
+
+    expect(jest.getTimerCount()).toBe(0);
   });
 });
 

@@ -140,6 +140,7 @@ family,messaging,encrypted,private,groups,chat,photos,secure,signal,social
 - Invite code screenshots (iOS #11, Android #11) must be redacted before upload.
 - support@orbitl.org mailbox needs to be provisioned before submission.
 - Data Safety form answers are documented separately in `docs/play-store-data-safety.md`.
+- Per-version "What's New" drafts live in `project-docs/release-notes/<version>.md` (tracked, same as this file); this document holds only the evergreen listing copy. The rules for what may go in that copy are in `project-docs/release-notes/README.md`.
 
 ### Platform variants
 

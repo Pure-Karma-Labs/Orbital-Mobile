@@ -18,8 +18,12 @@ import {
   buildSefTrailer,
   writeChunk,
   writeSegment,
+  indexOfSeq,
+  hasHeaderMarker,
   EXIF_SIGNATURE,
   EXIF_TRAILER_BARE,
+  MPF_SIGNATURE,
+  MPF_HEADER,
 } from '../testUtils/imageFixtures';
 
 // ---------------------------------------------------------------------------
@@ -31,6 +35,15 @@ const FIXTURE_DIR = path.join(__dirname, 'fixtures');
 function loadFixture(name: string): Uint8Array {
   const buf = fs.readFileSync(path.join(FIXTURE_DIR, name));
   return new Uint8Array(buf);
+}
+
+/**
+ * Splice a hand-built segment into the header of a fixture, immediately after
+ * the SOI -- for header shapes the builder has no option for (an APP2 whose
+ * payload is neither a plain ICC profile nor a plain MPF index).
+ */
+function withHeaderSegment(jpeg: Uint8Array, segment: number[]): Uint8Array {
+  return new Uint8Array([...jpeg.slice(0, 2), ...segment, ...jpeg.slice(2)]);
 }
 
 // ---------------------------------------------------------------------------
@@ -114,6 +127,52 @@ describe('imageSanitizer', () => {
 
       const output = stripJpegMetadata(input);
       expect(hasExif(output)).toBe(false);
+    });
+
+    it.each([
+      ['before the ICC APP2', 'before-icc' as const],
+      ['after the ICC APP2', 'after-icc' as const],
+    ])('drops the APP2 MPF index and keeps the ICC APP2: MPF %s', (_label, order) => {
+      const input = buildJpeg({ icc: true, mpf: order });
+      expect(indexOfSeq(Array.from(input), MPF_SIGNATURE)).toBeGreaterThan(-1);
+
+      const output = stripJpegMetadata(input);
+
+      // The MPF index only ever describes images at or past the primary EOI,
+      // which the strip truncates -- leaving it behind would point a decoder
+      // past the end of the file and keep the device-written bytes of the MP
+      // Index IFD along with it.
+      expect(indexOfSeq(Array.from(output), MPF_SIGNATURE)).toBe(-1);
+      // Exactly that segment is gone: marker + length field + payload.
+      expect(output.length).toBe(
+        input.length - (4 + MPF_SIGNATURE.length + MPF_HEADER.length),
+      );
+      // ...and the ICC APP2 it shares a marker with survives, either order.
+      expect(hasHeaderMarker(output, 0xFFE2)).toBe(true);
+    });
+
+    it.each([
+      ['a payload too short to hold the signature', [0x4D, 0x50]],
+      ['a four-byte signature that merely starts "MP"', [0x4D, 0x50, 0x00, 0x01, 0xDE, 0xAD]],
+    ])('keeps an APP2 that is not an MPF index: %s', (_label, payload) => {
+      const segment = writeSegment([0xFF, 0xE2], payload);
+      const input = withHeaderSegment(buildJpeg(), segment);
+
+      const output = stripJpegMetadata(input);
+
+      // Only the exact "MPF\0" signature, bounded by the declared segment end,
+      // selects the drop -- an unknown APP2 is left alone.
+      expect(Array.from(output)).toEqual(Array.from(input));
+      expect(indexOfSeq(Array.from(output), segment)).toBeGreaterThan(-1);
+    });
+
+    it('leaves the detect half silent about MPF (strip-only, by design)', () => {
+      // The direction rule: the strip may remove more than the detect flags,
+      // never the reverse. Every MPF image carries an APP2 MPF, so flagging it
+      // would be an unclearable rejection on the copy-through path.
+      const input = buildJpeg({ mpf: 'before-icc' });
+      expect(hasExif(input)).toBe(false);
+      expect(hasExif(stripJpegMetadata(input))).toBe(false);
     });
 
     it('is idempotent on clean input', () => {
@@ -235,6 +294,20 @@ describe('imageSanitizer', () => {
       ['COM comment', () => buildJpeg({ com: true }), false],
       ['every droppable segment at once', () => buildJpeg({ exif: true, xmp: true, iptc: true, com: true }), false],
       ['ICC APP2 (kept, not metadata)', () => buildJpeg({ icc: true }), false],
+      ['MPF APP2 (dropped by the strip, never flagged)', () => buildJpeg({ icc: true, mpf: 'after-icc' }), false],
+      [
+        // A header APP2 carrying an Exif signature is today an unclearable
+        // rejection when its payload is an ICC profile: the strip keeps the
+        // segment and the detect's header scan sees the signature. An MPF one
+        // clears, because the strip removes the whole segment. The ICC twin
+        // stays accepted residue -- narrowing it is not this change.
+        'MPF APP2 carrying an Exif signature',
+        () => withHeaderSegment(
+          buildJpeg(),
+          writeSegment([0xFF, 0xE2], [...MPF_SIGNATURE, ...MPF_HEADER, ...EXIF_SIGNATURE]),
+        ),
+        false,
+      ],
       ['progressive with Exif', () => buildJpeg({ exif: true, progressive: true }), false],
       ['post-EOI SEF trailer', () => buildJpeg({ exif: true, postEoiTrailer: buildSefTrailer() }), false],
       [

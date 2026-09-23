@@ -1,37 +1,50 @@
 /**
- * Real-world JPEG fixture tests for imageSanitizer.
+ * Real-world-shaped image fixtures for imageSanitizer.
  *
- * Tests the exact pipeline that sanitizeStillImage + verifyNoImageMetadata
- * execute on-device:
- *   stripJpegMetadata(bytes) → hasExif(stripped)
+ * Exercises the exact pipeline sanitizeStillImage + verifyNoImageMetadata run
+ * on-device — stripJpegMetadata(bytes) → hasExif(stripped) — against the file
+ * shapes real cameras and pickers actually emit. imageSanitizer.test.ts covers
+ * small, programmatically clean synthetic images; this file covers the messy
+ * ones, and pins these contracts:
  *
- * The existing imageSanitizer.test.ts covers only programmatically-clean
- * synthetic JPEGs (small, no post-EOI bytes, no real camera provenance).
- * This file adds fixtures that reflect real Android camera output.
+ *   1. Post-EOI trailer truncation (Samsung SEF). Samsung Motion Photos append
+ *      a SEF trailer after the JPEG EOI: an embedded MP4 whose thumbnail frames
+ *      carry their own Exif APP1 headers, often location-bearing. Copying those
+ *      bytes through would preserve exactly the metadata the strip exists to
+ *      remove, and would also make the fail-closed verify reject the image. The
+ *      output must end at the EOI.
  *
- * Coverage gap analysis (relative to existing tests):
- *   - No fixture >8KB (emulator test images are tiny)
- *   - No EXIF-bearing fixture from a real camera (gps-small.jpg is 598 bytes
- *     and lacks a post-EOI Samsung trailer)
- *   - No post-EOI trailer fixture (Samsung SEF / motion photo)
- *   - No entropy-coded scan data containing Exif\0\0 bytes by coincidence
- *   - Progressive JPEG not tested against hasExif after strip
- *   - picker re-encode behavior invisible (launchImageLibrary fully mocked)
+ *   2. No false positive from Exif bytes in entropy-coded scan data. Compressed
+ *      scan data is arbitrary bytes, so the "Exif\0\0" pattern can occur there
+ *      by coincidence. Detection must be structural (header segments, chunk
+ *      payloads, trailers) and must never pattern-scan the compressed stream —
+ *      a match there would make verifyNoImageMetadata reject an image that
+ *      carries no metadata at all.
  *
- * Hypothesis under test (in priority order):
- *   A. Samsung SEF motion-photo trailer survives stripJpegMetadata because the
- *      SOS branch copies every byte from the SOS marker to data.length verbatim
- *      (imageSanitizer.ts line 102-105), including post-EOI bytes. The trailer
- *      embeds JPEG thumbnails with their own Exif\0\0 signatures. hasExif()
- *      scans the entire output file for the Exif\0\0 byte pattern (line 251-260)
- *      and finds it in the trailer → verifyNoImageMetadata throws.
+ *   3. Progressive multi-scan preservation. A progressive JPEG has several SOS
+ *      sections with tables between them, all preceding one closing EOI.
+ *      Truncating at the first FFD9-looking byte pair, or at the first scan,
+ *      would corrupt the image.
  *
- *   A-variant. Coincidental Exif\0\0 byte sequence in entropy-coded scan data
- *      triggers the same raw-byte scan false positive even without a trailer.
+ *   4. Multi-segment headers. Exif APP1 and XMP APP1 are both dropped; an ICC
+ *      APP2 color profile is not metadata and is kept.
  *
- *   B. Progressive JPEG or multi-APP1 JPEG -- covered in the multi-segment
- *      section below; both strip correctly (hypothesis B eliminated for these
- *      formats).
+ *   5. Degraded-boundary fail-closed. When the truncation boundary (JPEG EOI /
+ *      PNG IEND) cannot be located, the strip falls back to copying to the end,
+ *      so a trailer survives — and detection must still report it. The strip
+ *      half and the detect half have to degrade together, or a metadata-bearing
+ *      image sails past the verify.
+ *
+ *   6. PNG chunk-length hardening. A chunk length is a 32-bit big-endian field
+ *      read with <<, so a length with the high bit set reads as NEGATIVE and
+ *      would walk `pos` backwards — an unbounded loop on a user-picked file.
+ *      A positive but over-long length previously made the truncated-chunk
+ *      branch copy the remainder twice. Contract: never throw, never loop, emit
+ *      the input verbatim, and keep reporting the metadata in that tail.
+ *
+ * Not covered here: resolveUri / file:// path handling. These suites drive the
+ * pure byte-level cores, which take a Uint8Array and never see a URI -- how the
+ * picker's file:// URIs resolve on a real filesystem is an on-device path only.
  *
  * Run: npm test -- imageSanitizer.realWorldFixtures
  */
@@ -41,293 +54,65 @@ import {
   stripPngMetadata,
   hasExif,
 } from '../media/imageSanitizer';
-
-// ---------------------------------------------------------------------------
-// Byte-level JPEG builder
-//
-// Produces a structurally complete JPEG with optional segments and optional
-// post-EOI trailer bytes.  All segment lengths are computed from actual data
-// so the stripper's segment-walking never throws on a malformed length.
-// ---------------------------------------------------------------------------
-
-function writeSegment(marker: [number, number], payload: number[]): number[] {
-  // length field includes itself (2 bytes) but not the 2-byte marker
-  const len = payload.length + 2;
-  return [...marker, (len >> 8) & 0xFF, len & 0xFF, ...payload];
-}
-
-function buildTestJpeg(opts: {
-  /** Include a real EXIF APP1 segment (will be dropped by stripJpegMetadata). */
-  includeExifApp1?: boolean;
-  /** Include an XMP APP1 segment (will be dropped by stripJpegMetadata). */
-  includeXmpApp1?: boolean;
-  /** Include an ICC profile APP2 segment (must be KEPT by stripJpegMetadata). */
-  includeIccApp2?: boolean;
-  /**
-   * Use SOF2 (progressive) instead of SOF0 (baseline).
-   * The stripper must still remove APP1 and leave scan data intact.
-   */
-  progressive?: boolean;
-  /**
-   * Raw bytes for the entropy-coded scan data section.
-   * Defaults to a harmless three-byte sequence.
-   */
-  scanData?: number[];
-  /**
-   * Bytes appended verbatim AFTER the JPEG EOI marker.
-   * Simulates Samsung SEF motion-photo trailers.
-   */
-  postEoiTrailer?: number[];
-}): Uint8Array {
-  const {
-    includeExifApp1 = false,
-    includeXmpApp1 = false,
-    includeIccApp2 = false,
-    progressive = false,
-    scanData = [0xAA, 0xBB, 0xCC],
-    postEoiTrailer = [],
-  } = opts;
-
-  const parts: number[] = [];
-
-  // SOI
-  parts.push(0xFF, 0xD8);
-
-  // APP0 JFIF -- kept by stripper
-  parts.push(...writeSegment([0xFF, 0xE0], [
-    0x4A, 0x46, 0x49, 0x46, 0x00, // "JFIF\0"
-    0x01, 0x01,                     // version 1.1
-    0x00,                           // aspect ratio units = 0
-    0x00, 0x01, 0x00, 0x01,         // 1 dpi
-    0x00, 0x00,                     // no thumbnail
-  ]));
-
-  // APP1 Exif -- DROPPED by stripJpegMetadata
-  if (includeExifApp1) {
-    // Minimal but structurally correct TIFF IFD inside APP1.
-    // "MM" = big-endian, magic = 42, IFD0 at offset 8.
-    // IFD0 has one entry: Make tag (0x010F), ASCII, 4 chars ("Cam\0").
-    const exifPayload = [
-      0x45, 0x78, 0x69, 0x66, 0x00, 0x00, // "Exif\0\0" -- the byte pattern hasExif scans for
-      0x4D, 0x4D,                           // "MM" big-endian
-      0x00, 0x2A,                           // TIFF magic 42
-      0x00, 0x00, 0x00, 0x08,               // IFD0 offset = 8 (relative to "MM")
-      // IFD0: 1 entry
-      0x00, 0x01,
-      // Entry: Make (0x010F) | ASCII (0x0002) | count 4 | offset 0x1A
-      0x01, 0x0F, 0x00, 0x02, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x1A,
-      0x00, 0x00, 0x00, 0x00,               // next IFD = 0
-      // "Cam\0" at offset 0x1A (26 dec) from start of TIFF header
-      0x43, 0x61, 0x6D, 0x00,
-    ];
-    parts.push(...writeSegment([0xFF, 0xE1], exifPayload));
-  }
-
-  // APP1 XMP -- DROPPED by stripJpegMetadata (same APP1 marker 0xFFE1)
-  if (includeXmpApp1) {
-    const xmpSig = Array.from(new TextEncoder().encode('http://ns.adobe.com/xap/1.0/\0'));
-    const xmpPayload = [...xmpSig, ...Array.from(new TextEncoder().encode('<x:xmpmeta/>'))];
-    parts.push(...writeSegment([0xFF, 0xE1], xmpPayload));
-  }
-
-  // APP2 ICC profile -- KEPT by stripJpegMetadata (only APP1 and APP13 are dropped)
-  if (includeIccApp2) {
-    const iccSig = Array.from(new TextEncoder().encode('ICC_PROFILE\0'));
-    parts.push(...writeSegment([0xFF, 0xE2], [...iccSig, 0x01, 0x01, 0xDE, 0xAD]));
-  }
-
-  // SOF0 or SOF2 (progressive) -- kept
-  const sofMarker: [number, number] = progressive ? [0xFF, 0xC2] : [0xFF, 0xC0];
-  parts.push(...writeSegment(sofMarker, [
-    0x08,       // precision: 8 bits
-    0x00, 0x01, // height: 1 px
-    0x00, 0x01, // width: 1 px
-    0x01,       // components: 1 (grayscale)
-    0x01, 0x11, 0x00, // Y: sampling 1x1, quantization table 0
-  ]));
-
-  // DHT -- kept (minimal table, not a real Huffman table but structurally valid)
-  parts.push(...writeSegment([0xFF, 0xC4], [
-    0x00,                                               // TC=0 TH=0 (DC luma)
-    0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,    // 1 code of length 2
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,           // 0 codes for lengths 3-16
-    0x00,                                               // symbol: 0
-  ]));
-
-  // SOS -- everything after this marker is copied verbatim by stripJpegMetadata
-  parts.push(...writeSegment([0xFF, 0xDA], [
-    0x01,       // Ns=1 component
-    0x01, 0x00, // C1, Td=0/Ta=0
-    0x00, 0x3F, 0x00, // Ss=0, Se=63, Ah=0/Al=0
-  ]));
-
-  // Entropy-coded scan data (not parsed by stripper -- copied verbatim)
-  parts.push(...scanData);
-
-  // EOI
-  parts.push(0xFF, 0xD9);
-
-  // Post-EOI trailer (e.g. Samsung SEF) -- appended after EOI
-  parts.push(...postEoiTrailer);
-
-  return new Uint8Array(parts);
-}
-
-// ---------------------------------------------------------------------------
-// Samsung SEF motion-photo trailer builder
-//
-// Samsung phones store a motion video (a short MP4) AFTER the JPEG EOI on
-// every Motion Photo.  The SEF block structure wraps an MP4 container that
-// in turn contains JPEG frames with their own EXIF APP1 segments.  The
-// minimal reproduction below captures the key byte pattern: an Exif\0\0
-// signature inside the embedded thumbnail frame that the MP4/SEF carries.
-//
-// Real trailers are several MB; this is a structurally representative
-// minimum that exercises the exact code path that fails on-device.
-// ---------------------------------------------------------------------------
-
-function buildSefTrailer(): number[] {
-  // The Exif\0\0 bytes that appear inside the embedded JPEG thumbnail
-  // that Samsung's SEF MP4 container holds.
-  const embeddedJpegApp1Payload = [
-    0x45, 0x78, 0x69, 0x66, 0x00, 0x00, // "Exif\0\0" ← byte pattern hasExif finds
-    0x4D, 0x4D, 0x00, 0x2A,             // TIFF: MM + magic
-    0x00, 0x00, 0x00, 0x08,             // IFD0 at offset 8
-    0x00, 0x00,                          // 0 IFD entries (minimal)
-    0x00, 0x00, 0x00, 0x00,             // next IFD = 0
-  ];
-
-  // Minimal embedded JPEG thumbnail (SOI + APP1 + EOI) as would appear
-  // inside the SEF's MP4 'mdat' box.
-  const embeddedJpeg = [
-    0xFF, 0xD8,                          // SOI of embedded thumbnail
-    ...writeSegment([0xFF, 0xE1], embeddedJpegApp1Payload),
-    0xFF, 0xD9,                          // EOI of embedded thumbnail
-  ];
-
-  // SEF block count and offset table (simplified from the Samsung SEF v2 spec)
-  const blockName = Array.from(new TextEncoder().encode('moti')); // "moti" block type
-  const blockDataOffset = 0x18;           // offset from end of SEFH to block data
-  const blockDataSize = embeddedJpeg.length;
-
-  const sefhBody = [
-    0x00, 0x00, 0x00, 0x02,             // SEF version 2
-    0x00, 0x00, 0x00, 0x01,             // num blocks = 1
-    ...blockName,                        // block name: "moti"
-    (blockDataOffset >> 24) & 0xFF, (blockDataOffset >> 16) & 0xFF,
-    (blockDataOffset >> 8) & 0xFF, blockDataOffset & 0xFF,
-    (blockDataSize >> 24) & 0xFF, (blockDataSize >> 16) & 0xFF,
-    (blockDataSize >> 8) & 0xFF, blockDataSize & 0xFF,
-  ];
-
-  const sefhSize = sefhBody.length + 8; // 4 "SEFH" + 4 size field + body
-
-  return [
-    // SEFH marker
-    0x53, 0x45, 0x46, 0x48,             // "SEFH"
-    (sefhSize >> 24) & 0xFF, (sefhSize >> 16) & 0xFF,
-    (sefhSize >> 8) & 0xFF, sefhSize & 0xFF,
-    ...sefhBody,
-
-    // Padding between SEFH and block data (blockDataOffset bytes)
-    ...new Array(blockDataOffset).fill(0x00),
-
-    // Embedded JPEG thumbnail with its own Exif\0\0 in APP1
-    ...embeddedJpeg,
-
-    // SEFT footer (trailer end marker + total SEF size)
-    0x53, 0x45, 0x46, 0x54,             // "SEFT"
-    0x00, 0x00, 0x00, 0x00,             // size placeholder (not needed for this test)
-  ];
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+import {
+  buildJpeg,
+  buildPng,
+  buildSefTrailer,
+  buildGainMapJpeg,
+  s24SefTail,
+  writeChunk,
+  writeSegment,
+  indexOfSeq,
+  hasHeaderMarker,
+  S24_SEF_CAPTURE_TIMESTAMP,
+  S24_SEF_MCC,
+  EXIF_SIGNATURE,
+  EXIF_TRAILER_BARE,
+  SEFH_EXIF_TRAILER,
+} from '../testUtils/imageFixtures';
 
 describe('imageSanitizer – real-world JPEG fixtures', () => {
 
-  // =========================================================================
-  // CONTROL: standard JPEG with EXIF APP1 (no post-EOI bytes)
-  // =========================================================================
   describe('control: baseline JPEG with EXIF APP1', () => {
     it('detects EXIF in original JPEG', () => {
-      const jpeg = buildTestJpeg({ includeExifApp1: true });
+      const jpeg = buildJpeg({ exif: true });
       expect(hasExif(jpeg)).toBe(true);
     });
 
     it('stripJpegMetadata removes EXIF → hasExif returns false (clean path)', () => {
-      const jpeg = buildTestJpeg({ includeExifApp1: true });
+      const jpeg = buildJpeg({ exif: true });
       const stripped = stripJpegMetadata(jpeg);
       // The existing suite already exercises this; this is the control that
-      // must pass so we know the failure below is specifically about the trailer.
+      // must pass so we know the trailer cases below are specifically about
+      // the trailer.
       expect(hasExif(stripped)).toBe(false);
     });
   });
 
-  // =========================================================================
-  // HYPOTHESIS A: Samsung SEF motion-photo trailer survival
-  //
-  // Root cause (two cooperating defects):
-  //
-  //   1. stripJpegMetadata (imageSanitizer.ts line 100-107):
-  //      When the SOS marker is found, the function copies EVERYTHING from
-  //      the current position to data.length — including any bytes that
-  //      appear after the EOI marker.  The Samsung SEF trailer is entirely
-  //      within that range and is copied verbatim into the stripped output.
-  //
-  //   2. hasExif (imageSanitizer.ts line 251-260):
-  //      The first check is a raw full-file byte scan for the 6-byte sequence
-  //      [0x45 0x78 0x69 0x66 0x00 0x00] ("Exif\0\0") at any offset.
-  //      It does not stop at the EOI marker.  When the SEF trailer contains
-  //      an embedded JPEG thumbnail (which it does on Samsung motion photos),
-  //      that thumbnail's own APP1 Exif header supplies the "Exif\0\0" bytes
-  //      anywhere in the file — well past the original EOI.
-  //
-  // Consequence:
-  //   sanitizeStillImage → stripJpegMetadata (drops APP1 ✓)
-  //                      → writeFile (writes stripped bytes including trailer)
-  //                      → verifyNoImageMetadata → readFile → hasExif → true
-  //                      → throws "Could not remove metadata from this image."
-  //   Error is swallowed by uploadMedia's catch (only console.warn under __DEV__,
-  //   silent in release builds) → generic banner, zero network requests.
-  // =========================================================================
-  describe('Hypothesis A – Samsung SEF motion-photo trailer (THE BUG)', () => {
+  describe('post-EOI trailer truncation (Samsung SEF)', () => {
     it('original JPEG+SEF trailer is detected as containing EXIF', () => {
-      const jpeg = buildTestJpeg({
-        includeExifApp1: true,
+      const jpeg = buildJpeg({
+        exif: true,
         postEoiTrailer: buildSefTrailer(),
       });
       expect(hasExif(jpeg)).toBe(true);
     });
 
     it('stripJpegMetadata removes the JPEG APP1 segment', () => {
-      const jpeg = buildTestJpeg({
-        includeExifApp1: true,
+      const jpeg = buildJpeg({
+        exif: true,
         postEoiTrailer: buildSefTrailer(),
       });
       const stripped = stripJpegMetadata(jpeg);
 
-      // Walk the header segments of the stripped output and confirm no APP1 remains.
-      let app1Found = false;
-      let pos = 2; // skip SOI
-      while (pos < stripped.length - 1) {
-        if (stripped[pos] !== 0xFF) { pos++; continue; }
-        const marker = (stripped[pos] << 8) | stripped[pos + 1];
-        if (marker === 0xFFDA || marker === 0xFFD9) break; // SOS or EOI
-        if (marker === 0xFFE1) { app1Found = true; break; }
-        if (pos + 3 >= stripped.length) break;
-        const segLen = (stripped[pos + 2] << 8) | stripped[pos + 3];
-        if (segLen < 2) break;
-        pos += 2 + segLen;
-      }
-      expect(app1Found).toBe(false); // APP1 (Exif) correctly stripped
+      // Structural walk of the stripped header: no APP1 may remain.
+      expect(hasHeaderMarker(stripped, 0xFFE1)).toBe(false);
     });
 
     it('stripJpegMetadata drops the SEF trailer (output truncated at EOI)', () => {
       const trailer = buildSefTrailer();
-      const jpeg = buildTestJpeg({
-        includeExifApp1: true,
+      const jpeg = buildJpeg({
+        exif: true,
         postEoiTrailer: trailer,
       });
       const stripped = stripJpegMetadata(jpeg);
@@ -335,7 +120,7 @@ describe('imageSanitizer – real-world JPEG fixtures', () => {
       // The stripped output must be byte-for-byte the same length as a clean
       // JPEG (no trailer) of the same structural shape: the whole trailer is
       // gone, not merely the APP1 segment.
-      const cleanJpeg = buildTestJpeg({ includeExifApp1: false });
+      const cleanJpeg = buildJpeg({ exif: false });
       const cleanStripped = stripJpegMetadata(cleanJpeg);
       expect(stripped.length).toBe(cleanStripped.length);
 
@@ -344,27 +129,9 @@ describe('imageSanitizer – real-world JPEG fixtures', () => {
       expect(stripped[stripped.length - 1]).toBe(0xD9);
     });
 
-    /**
-     * THE FAILING TEST — this reproduces the production bug.
-     *
-     * verifyNoImageMetadata reads the file and calls hasExif.
-     * hasExif scans the ENTIRE output (including the SEF trailer that
-     * survived the strip) for the Exif\0\0 byte pattern.
-     * It finds the pattern in the trailer's embedded thumbnail APP1 header
-     * and returns true → verifyNoImageMetadata throws:
-     *
-     *   "Could not remove metadata from this image. The image cannot be sent."
-     *
-     * Expected (what SHOULD happen): hasExif(stripped) === false
-     * Actual (what DOES happen):     hasExif(stripped) === true  ← BUG
-     *
-     * Offending lines:
-     *   stripJpegMetadata copies post-EOI bytes: imageSanitizer.ts lines 100-107
-     *   hasExif raw full-file scan:              imageSanitizer.ts lines 251-260
-     */
     it('hasExif returns false after strip: the SEF trailer no longer survives', () => {
-      const jpeg = buildTestJpeg({
-        includeExifApp1: true,
+      const jpeg = buildJpeg({
+        exif: true,
         postEoiTrailer: buildSefTrailer(),
       });
 
@@ -378,15 +145,14 @@ describe('imageSanitizer – real-world JPEG fixtures', () => {
     it('JPEG with no original APP1 but a SEF trailer also verifies clean after strip', () => {
       // A JPEG where the picker's re-encode already dropped the APP1 header
       // (picker re-encoded the file for >2048px resize) but the SEF trailer
-      // was preserved byte-for-byte.  stripJpegMetadata still copies the
-      // trailer verbatim, so hasExif still fires.
-      const jpeg = buildTestJpeg({
-        includeExifApp1: false,      // no APP1 — picker already dropped it
+      // was preserved byte-for-byte.
+      const jpeg = buildJpeg({
+        exif: false,                       // no APP1 — picker already dropped it
         postEoiTrailer: buildSefTrailer(), // but trailer is still there
       });
 
-      // The original has no APP1 but hasExif finds the trailer pattern
-      expect(hasExif(jpeg)).toBe(true); // raw byte scan hits the trailer
+      // The original has no APP1; the trailer supplies the Exif signature.
+      expect(hasExif(jpeg)).toBe(true);
 
       const stripped = stripJpegMetadata(jpeg);
 
@@ -395,21 +161,7 @@ describe('imageSanitizer – real-world JPEG fixtures', () => {
     });
   });
 
-  // =========================================================================
-  // HYPOTHESIS A-VARIANT: Exif\0\0 pattern in entropy-coded scan data
-  //
-  // The raw full-file scan in hasExif (line 251-260) runs over scan data
-  // as well as header segments.  If the entropy-coded scan data contains
-  // the bytes [0x45 0x78 0x69 0x66 0x00 0x00] by coincidence (statistically
-  // unlikely in any given 2MB photo but non-zero), verifyNoImageMetadata
-  // throws even for a structurally clean JPEG that never had an APP1.
-  //
-  // This is a secondary defect in hasExif (scan should stop at SOS) that
-  // the production failure confirms exists in the codebase, but which is
-  // not the primary cause because the SEF trailer (Hypothesis A) is a
-  // far more deterministic trigger for Samsung devices.
-  // =========================================================================
-  describe('Hypothesis A-variant – Exif\\0\\0 coincidence in entropy-coded scan data', () => {
+  describe('no false positive from Exif bytes in entropy-coded scan data', () => {
     const EXIF_BYTES_IN_SCAN: number[] = [
       0xAA, 0xBB,
       0x45, 0x78, 0x69, 0x66, 0x00, 0x00, // "Exif\0\0" embedded inside scan data
@@ -417,8 +169,8 @@ describe('imageSanitizer – real-world JPEG fixtures', () => {
     ];
 
     it('no false positive: clean JPEG with Exif bytes in entropy-coded scan data', () => {
-      const jpeg = buildTestJpeg({
-        includeExifApp1: false,
+      const jpeg = buildJpeg({
+        exif: false,
         scanData: EXIF_BYTES_IN_SCAN,
       });
 
@@ -436,63 +188,41 @@ describe('imageSanitizer – real-world JPEG fixtures', () => {
     });
   });
 
-  // =========================================================================
-  // HYPOTHESIS B: progressive JPEG or multi-segment JPEG
-  //
-  // Hypothesis B posited that the strip might CORRUPT some real-world variant.
-  // Tests below confirm that progressive JPEG and multi-APP1/APP2 JPEGs
-  // strip correctly → Hypothesis B is ELIMINATED for these variants.
-  // =========================================================================
-  describe('Hypothesis B – progressive JPEG (SOF2)', () => {
-    it('strips EXIF APP1 from progressive JPEG → hasExif false (B eliminated)', () => {
-      const jpeg = buildTestJpeg({
-        includeExifApp1: true,
+  describe('progressive multi-scan preservation', () => {
+    it('strips EXIF APP1 from progressive JPEG → hasExif false', () => {
+      const jpeg = buildJpeg({
+        exif: true,
         progressive: true,
       });
       expect(hasExif(jpeg)).toBe(true);
 
       const stripped = stripJpegMetadata(jpeg);
-      expect(hasExif(stripped)).toBe(false); // passes: B is not the cause
+      expect(hasExif(stripped)).toBe(false);
     });
 
-    /**
-     * Guards the EOI-truncation logic against the multi-scan case: a real
-     * progressive JPEG has several SOS sections, with tables between them, and
-     * all of them precede the single closing EOI.  Truncating at the *first*
-     * FFD9-looking byte pair, or at the first scan, would corrupt the image.
-     */
     it('keeps every scan of a multi-scan progressive JPEG up to the closing EOI', () => {
-      const parts: number[] = [];
-      parts.push(0xFF, 0xD8); // SOI
-      parts.push(...writeSegment([0xFF, 0xE1], [
-        0x45, 0x78, 0x69, 0x66, 0x00, 0x00, // "Exif\0\0" -- dropped
-      ]));
-      parts.push(...writeSegment([0xFF, 0xC2], [
-        0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x11, 0x00,
-      ]));
-
-      // Scan 1: SOS + entropy data containing stuffed 0xFF (FF00) and a restart
-      // marker (FFD0) -- both legal inside an entropy-coded stream.
-      parts.push(...writeSegment([0xFF, 0xDA], [0x01, 0x01, 0x00, 0x00, 0x05, 0x00]));
       const scan1 = [0x11, 0xFF, 0x00, 0x22, 0xFF, 0xD0, 0x33];
-      parts.push(...scan1);
-
-      // Tables between scans, then scan 2.
-      const dht = writeSegment([0xFF, 0xC4], [
-        0x00,
+      const scan2 = [0x44, 0x55, 0x66];
+      // An AC-luma Huffman table between the two scans. TC=1 distinguishes it
+      // from the DC-luma table the builder emits before the first scan, so the
+      // search below can only be satisfied by the inter-scan segment.
+      const interScanDht = writeSegment([0xFF, 0xC4], [
+        0x10,
         0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00,
       ]);
-      parts.push(...dht);
-      parts.push(...writeSegment([0xFF, 0xDA], [0x01, 0x01, 0x00, 0x06, 0x3F, 0x02]));
-      const scan2 = [0x44, 0x55, 0x66];
-      parts.push(...scan2);
 
-      parts.push(0xFF, 0xD9); // EOI
-      parts.push(...buildSefTrailer()); // Samsung-style trailer past the EOI
-
-      const jpeg = new Uint8Array(parts);
+      // scan1 carries a stuffed 0xFF (FF00) and a restart marker (FFD0) --
+      // both legal inside an entropy-coded stream and neither an EOI.
+      const jpeg = buildJpeg({
+        exif: true,
+        progressive: true,
+        scanData: scan1,
+        betweenScans: interScanDht,
+        scan2Data: scan2,
+        postEoiTrailer: buildSefTrailer(), // Samsung-style trailer past the EOI
+      });
       expect(hasExif(jpeg)).toBe(true);
 
       const stripped = stripJpegMetadata(jpeg);
@@ -500,19 +230,9 @@ describe('imageSanitizer – real-world JPEG fixtures', () => {
 
       // Both scans and the inter-scan DHT survive; only APP1 and the trailer go.
       const bytes = Array.from(stripped);
-      function indexOfSeq(hay: number[], needle: number[]): number {
-        for (let i = 0; i + needle.length <= hay.length; i++) {
-          let match = true;
-          for (let j = 0; j < needle.length; j++) {
-            if (hay[i + j] !== needle[j]) { match = false; break; }
-          }
-          if (match) return i;
-        }
-        return -1;
-      }
       expect(indexOfSeq(bytes, scan1)).toBeGreaterThan(-1);
       expect(indexOfSeq(bytes, scan2)).toBeGreaterThan(-1);
-      expect(indexOfSeq(bytes, dht)).toBeGreaterThan(-1);
+      expect(indexOfSeq(bytes, interScanDht)).toBeGreaterThan(-1);
 
       // Ends exactly at the EOI, trailer removed.
       expect(stripped[stripped.length - 2]).toBe(0xFF);
@@ -520,98 +240,33 @@ describe('imageSanitizer – real-world JPEG fixtures', () => {
     });
   });
 
-  describe('Hypothesis B – multi-segment JPEG (APP1 Exif + XMP + APP2 ICC)', () => {
+  describe('multi-segment header (Exif + XMP + ICC)', () => {
     it('strips both APP1 segments (Exif+XMP), keeps APP2 (ICC) → hasExif false', () => {
-      const jpeg = buildTestJpeg({
-        includeExifApp1: true,
-        includeXmpApp1: true,
-        includeIccApp2: true,
+      const jpeg = buildJpeg({
+        exif: true,
+        xmp: true,
+        icc: true,
       });
       expect(hasExif(jpeg)).toBe(true);
 
       const stripped = stripJpegMetadata(jpeg);
-      expect(hasExif(stripped)).toBe(false); // passes: B is not the cause
+      expect(hasExif(stripped)).toBe(false);
 
-      // Confirm APP2 (ICC profile) was preserved — it is not metadata
-      let app2Found = false;
-      let pos = 2;
-      while (pos < stripped.length - 1) {
-        if (stripped[pos] !== 0xFF) { pos++; continue; }
-        const marker = (stripped[pos] << 8) | stripped[pos + 1];
-        if (marker === 0xFFDA || marker === 0xFFD9) break;
-        if (marker === 0xFFE2) { app2Found = true; break; }
-        if (pos + 3 >= stripped.length) break;
-        const segLen = (stripped[pos + 2] << 8) | stripped[pos + 3];
-        if (segLen < 2) break;
-        pos += 2 + segLen;
-      }
-      expect(app2Found).toBe(true);
+      // The ICC profile is a rendering instruction, not metadata: it stays.
+      expect(hasHeaderMarker(stripped, 0xFFE2)).toBe(true);
     });
   });
 
-  // =========================================================================
-  // HYPOTHESIS C: resolveUri / file:// path handling
-  //
-  // The brief flagged path/URI mishandling as hypothesis C.  resolveUri is
-  // not exported and cannot be tested at the pure-bytes level.  The test
-  // below confirms that the pure-core path (no RNFS) is not at fault — the
-  // strip functions receive a Uint8Array, not a URI, so path handling is
-  // orthogonal to what these tests exercise.  C is untestable in Jest and
-  // remains a candidate only for on-device logcat investigation.
-  // =========================================================================
-  describe('Hypothesis C note (not a Jest-testable code path)', () => {
-    it('placeholder: pure-core functions accept Uint8Array, not URIs — C is out of scope here', () => {
-      // resolveUri is private to mediaUploadService and not exported.
-      // Its behavior with file:// URIs returned by the picker is invisible
-      // to Jest without an RNFS mock replicating real-device filesystem paths.
-      // Flag C as "untestable in Jest — requires on-device logcat" in the report.
-      expect(true).toBe(true);
-    });
-  });
-
-  // =========================================================================
-  // PNG: post-IEND trailing bytes (parallel to the JPEG SEF case)
-  //
-  // stripPngMetadata copies any bytes that appear after the IEND chunk
-  // (the "Copy any trailing bytes" guard at the end of the function).
-  // If those trailing bytes contain Exif\0\0, hasExif fires on the
-  // stripped output.  PNG is not the failing format on the reported device,
-  // but the same structural bug exists for PNG too.
-  // =========================================================================
   describe('PNG with eXIf chunk + post-IEND Exif bytes', () => {
-    function buildPngWithTrailer(postIendBytes: number[]): Uint8Array {
-      const sig = [137, 80, 78, 71, 13, 10, 26, 10];
-      const parts: number[] = [...sig];
-
-      function writeChunk(type: string, data: number[]) {
-        const len = data.length;
-        parts.push((len >> 24) & 0xFF, (len >> 16) & 0xFF, (len >> 8) & 0xFF, len & 0xFF);
-        parts.push(...Array.from(new TextEncoder().encode(type)));
-        parts.push(...data);
-        parts.push(0, 0, 0, 0); // CRC placeholder
-      }
-
-      writeChunk('IHDR', [0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0]);
-      writeChunk('eXIf', [0x45, 0x78, 0x69, 0x66, 0x00, 0x00, 0x4D, 0x4D]);
-      writeChunk('IDAT', [0x08, 0x1D, 0x00]);
-      writeChunk('IEND', []);
-
-      // Post-IEND bytes (e.g. some proprietary trailer with Exif\0\0)
-      parts.push(...postIendBytes);
-
-      return new Uint8Array(parts);
-    }
-
     it('strips eXIf chunk from clean PNG correctly (no trailer)', () => {
-      const png = buildPngWithTrailer([]);
+      const png = buildPng({ exif: true });
       expect(hasExif(png)).toBe(true);
       const stripped = stripPngMetadata(png);
       expect(hasExif(stripped)).toBe(false);
     });
 
     it('post-IEND Exif\\0\\0 bytes are dropped by stripPngMetadata', () => {
-      const postIendTrailer = [0x45, 0x78, 0x69, 0x66, 0x00, 0x00, 0xDE, 0xAD];
-      const png = buildPngWithTrailer(postIendTrailer);
+      const png = buildPng({ exif: true, tail: EXIF_TRAILER_BARE });
       expect(hasExif(png)).toBe(true);
 
       const stripped = stripPngMetadata(png);
@@ -622,34 +277,47 @@ describe('imageSanitizer – real-world JPEG fixtures', () => {
     });
   });
 
-  // =========================================================================
-  // DEGRADED AND PADDED STREAMS
-  //
-  // The strippers truncate at a boundary (JPEG EOI / PNG IEND).  When that
-  // boundary cannot be located the strippers fall back to copying to the end,
-  // so a trailer survives — and hasExif MUST still report it, or a
-  // metadata-bearing image would sail past the fail-closed verify.  These
-  // tests pin the strip and the detect halves together: whenever the strip
-  // degrades, the detect degrades conservatively in the same direction.
-  // =========================================================================
-  describe('degraded and padded streams (fail-closed boundaries)', () => {
+  describe('PNG with a nonsense chunk length', () => {
+    /** PNG whose third chunk declares `declaredLength` but carries no data. */
+    function buildPngWithBogusChunkLength(declaredLength: number): Uint8Array {
+      return buildPng({
+        omitIend: true,
+        afterIdat: writeChunk('bOgU', [], declaredLength),
+        // A tail long enough (>= 12 bytes) that the chunk loop would keep going.
+        tail: [0x45, 0x78, 0x69, 0x66, 0x00, 0x00, 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01],
+      });
+    }
+
+    it.each([
+      ['high bit set (negative when read with <<)', 0x80000000],
+      ['all bits set', 0xFFFFFFFF],
+      ['positive but past the end of the buffer', 0x1000],
+    ])('copies through and terminates: %s', (_label, declaredLength) => {
+      const png = buildPngWithBogusChunkLength(declaredLength);
+      expect(hasExif(png)).toBe(true);
+
+      const stripped = stripPngMetadata(png);
+
+      // Byte-identical copy-through: nothing dropped, nothing duplicated.
+      expect(Array.from(stripped)).toEqual(Array.from(png));
+      // The structure was never trustworthy, so the detect half stays hot.
+      expect(hasExif(stripped)).toBe(true);
+    });
+  });
+
+  describe('degraded-boundary fail-closed', () => {
     it('JPEG with no findable EOI: trailer survives the strip and hasExif still reports it', () => {
       // Structurally valid header and SOS, entropy data that never reaches an
       // EOI, then a metadata-bearing trailer.
-      const parts: number[] = [];
-      parts.push(0xFF, 0xD8); // SOI
-      parts.push(...writeSegment([0xFF, 0xE0], [0x4A, 0x46, 0x49, 0x46, 0x00]));
-      parts.push(...writeSegment([0xFF, 0xC0], [
-        0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x11, 0x00,
-      ]));
-      parts.push(...writeSegment([0xFF, 0xDA], [0x01, 0x01, 0x00, 0x00, 0x3F, 0x00]));
-      parts.push(0x11, 0x22, 0x33); // entropy data -- no EOI anywhere in the file
-      parts.push(
-        0x53, 0x45, 0x46, 0x48,             // "SEFH"
-        0x45, 0x78, 0x69, 0x66, 0x00, 0x00, // "Exif\0\0" in the trailer
-        0xDE, 0xAD,
-      );
-      const jpeg = new Uint8Array(parts);
+      const jpeg = buildJpeg({
+        scanData: [0x11, 0x22, 0x33],
+        omitEoi: true,
+        postEoiTrailer: [
+          0x53, 0x45, 0x46, 0x48,             // "SEFH"
+          0x45, 0x78, 0x69, 0x66, 0x00, 0x00, // "Exif\0\0" in the trailer
+          0xDE, 0xAD,
+        ],
+      });
 
       expect(hasExif(jpeg)).toBe(true);
 
@@ -666,8 +334,8 @@ describe('imageSanitizer – real-world JPEG fixtures', () => {
       // An odd number of 0xFF bytes runs up to the marker: ... AA BB FF | FF D9.
       // Treating the fill byte as a two-byte token would step over the D9 and
       // lose the EOI entirely.
-      const jpeg = buildTestJpeg({
-        includeExifApp1: true,
+      const jpeg = buildJpeg({
+        exif: true,
         scanData: [0xAA, 0xBB, 0xFF],
         postEoiTrailer: buildSefTrailer(),
       });
@@ -681,28 +349,364 @@ describe('imageSanitizer – real-world JPEG fixtures', () => {
     });
 
     it('PNG that never reaches IEND: tail survives the strip and hasExif still reports it', () => {
-      const parts: number[] = [137, 80, 78, 71, 13, 10, 26, 10];
-
-      function writeChunk(type: string, data: number[]) {
-        const len = data.length;
-        parts.push((len >> 24) & 0xFF, (len >> 16) & 0xFF, (len >> 8) & 0xFF, len & 0xFF);
-        parts.push(...Array.from(new TextEncoder().encode(type)));
-        parts.push(...data);
-        parts.push(0, 0, 0, 0); // CRC placeholder
-      }
-
-      writeChunk('IHDR', [0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0]);
-      writeChunk('IDAT', [0x08, 0x1D, 0x00]);
-      // Truncated tail: shorter than a chunk header, so the walk stops here
+      // Truncated tail: shorter than a chunk header, so the walk stops there
       // without ever seeing IEND. Six of these eight bytes are an Exif\0\0.
-      parts.push(0x45, 0x78, 0x69, 0x66, 0x00, 0x00, 0xDE, 0xAD);
-
-      const png = new Uint8Array(parts);
+      const png = buildPng({ omitIend: true, tail: EXIF_TRAILER_BARE });
       expect(hasExif(png)).toBe(true);
 
       const stripped = stripPngMetadata(png);
       expect(stripped.length).toBe(png.length); // tail copied through
       expect(hasExif(stripped)).toBe(true);     // so it must still be detected
+    });
+  });
+
+  // =========================================================================
+  // INTER-SCAN SEGMENTS
+  //
+  // A progressive JPEG may carry header segments between its scans, and
+  // nothing stops an encoder from putting an APP1, APP13 or COM there. Those
+  // sit PAST the SOS, so a header walk that stops at the first SOS never sees
+  // them: they survived the strip and the detect reported the file clean --
+  // metadata passing the fail-closed verify.
+  // =========================================================================
+  describe('inter-scan metadata segments', () => {
+    const SCAN1 = [0x11, 0x22, 0x33, 0x44];
+    const SCAN2 = [0x55, 0x66, 0x77, 0x88];
+
+    const INTER_SCAN_SEGMENTS: [string, number[]][] = [
+      ['Exif APP1', writeSegment([0xFF, 0xE1], [...EXIF_SIGNATURE, 0x4D, 0x4D, 0x00, 0x2A])],
+      ['APP13 IPTC', writeSegment([0xFF, 0xED], [0x50, 0x68, 0x6F, 0x74, 0x6F])],
+      ['COM comment', writeSegment([0xFF, 0xFE], [0x48, 0x65, 0x6C, 0x6C, 0x6F])],
+    ];
+
+    it.each(INTER_SCAN_SEGMENTS)('detects and drops a %s between two scans', (_label, segment) => {
+      const jpeg = buildJpeg({
+        scanData: SCAN1,
+        betweenScans: segment,
+        scan2Data: SCAN2,
+      });
+
+      // Seen at all only because the detect walks the scan stream too.
+      expect(hasExif(jpeg)).toBe(true);
+
+      const stripped = stripJpegMetadata(jpeg);
+      const bytes = Array.from(stripped);
+
+      // Exactly the one segment is gone -- both scans and the tables stay.
+      expect(indexOfSeq(bytes, segment)).toBe(-1);
+      expect(indexOfSeq(bytes, SCAN1)).toBeGreaterThan(-1);
+      expect(indexOfSeq(bytes, SCAN2)).toBeGreaterThan(-1);
+      expect(stripped.length).toBe(jpeg.length - segment.length);
+      expect(stripped[stripped.length - 2]).toBe(0xFF);
+      expect(stripped[stripped.length - 1]).toBe(0xD9);
+
+      expect(hasExif(stripped)).toBe(false);
+    });
+
+    it('keeps inter-scan tables and raises no false positive', () => {
+      // DQT/DRI between scans are ordinary coding data: dropping them would
+      // corrupt the image, and flagging them would make a clean photo
+      // permanently unpostable.
+      const dqt = writeSegment([0xFF, 0xDB], [0x00, ...new Array(64).fill(0x10)]);
+      const dri = writeSegment([0xFF, 0xDD], [0x00, 0x04]);
+      const jpeg = buildJpeg({
+        scanData: SCAN1,
+        betweenScans: [...dqt, ...dri],
+        scan2Data: SCAN2,
+      });
+
+      expect(hasExif(jpeg)).toBe(false);
+
+      const stripped = stripJpegMetadata(jpeg);
+      expect(Array.from(stripped)).toEqual(Array.from(jpeg));
+      expect(hasExif(stripped)).toBe(false);
+    });
+
+    it('drops an inter-scan APP2 rather than flagging what it cannot remove', () => {
+      // An APP2 between scans is already non-conforming (a color profile is
+      // read from the header), and if its payload happens to carry an Exif
+      // signature, keeping it while the detect flags it would reject this
+      // photo forever. The halves agree by removing it.
+      const app2 = writeSegment([0xFF, 0xE2], [
+        ...Array.from(new TextEncoder().encode('ICC_PROFILE\0')), ...EXIF_SIGNATURE,
+      ]);
+      const jpeg = buildJpeg({ scanData: SCAN1, betweenScans: app2, scan2Data: SCAN2 });
+
+      expect(hasExif(jpeg)).toBe(true);
+
+      const stripped = stripJpegMetadata(jpeg);
+      expect(indexOfSeq(Array.from(stripped), app2)).toBe(-1);
+      expect(stripped.length).toBe(jpeg.length - app2.length);
+      expect(hasExif(stripped)).toBe(false);
+    });
+
+    it('keeps an inter-scan APP14 and scans its payload instead', () => {
+      // APP14's Adobe transform flag can change how the color components are
+      // interpreted, so this one is kept -- and therefore raw-scanned. A clean
+      // one must not be flagged.
+      const adobe = [0x41, 0x64, 0x6F, 0x62, 0x65, 0x00, 0x64, 0x00, 0x00, 0x00, 0x00, 0x01];
+      const app14 = writeSegment([0xFF, 0xEE], adobe);
+      const jpeg = buildJpeg({ scanData: SCAN1, betweenScans: app14, scan2Data: SCAN2 });
+
+      expect(hasExif(jpeg)).toBe(false);
+      const stripped = stripJpegMetadata(jpeg);
+      expect(Array.from(stripped)).toEqual(Array.from(jpeg));
+      expect(hasExif(stripped)).toBe(false);
+
+      // The one remaining unclearable rejection, kept deliberately narrow.
+      const dirty = buildJpeg({
+        scanData: SCAN1,
+        betweenScans: writeSegment([0xFF, 0xEE], [...adobe, ...EXIF_SIGNATURE]),
+        scan2Data: SCAN2,
+      });
+      expect(hasExif(stripJpegMetadata(dirty))).toBe(true);
+    });
+
+    it('does not fabricate a marker when the dropped segment follows 0xFF fill', () => {
+      // Fill bytes may pad the run-up to a marker. Removing the segment but
+      // leaving the padding would splice that 0xFF onto the next entropy byte
+      // and invent an FF40 marker out of thin air.
+      const app1 = writeSegment([0xFF, 0xE1], [...EXIF_SIGNATURE, 0x4D, 0x4D]);
+      const jpeg = buildJpeg({
+        scanData: [0x11, 0x22, 0xFF, ...app1, 0x40, 0x41],
+      });
+      expect(hasExif(jpeg)).toBe(true);
+
+      const stripped = stripJpegMetadata(jpeg);
+      const bytes = Array.from(stripped);
+
+      expect(indexOfSeq(bytes, [0x11, 0x22, 0x40, 0x41])).toBeGreaterThan(-1);
+      expect(indexOfSeq(bytes, [0xFF, 0x40])).toBe(-1);
+      expect(stripped[stripped.length - 2]).toBe(0xFF);
+      expect(stripped[stripped.length - 1]).toBe(0xD9);
+      expect(hasExif(stripped)).toBe(false);
+    });
+
+    it('drops an inter-scan APP1 even when the walk later fails', () => {
+      // The walk gives up at the unrecognized marker in scan 2 and reports no
+      // EOI, but the APP1 it already recognized is still removed: segments
+      // found before a failure are not forgotten.
+      const app1 = writeSegment([0xFF, 0xE1], [...EXIF_SIGNATURE, 0x4D, 0x4D]);
+      const jpeg = buildJpeg({
+        scanData: SCAN1,
+        betweenScans: app1,
+        scan2Data: [0xFF, 0x02, 0x00, 0x08, 0x99],
+      });
+
+      const stripped = stripJpegMetadata(jpeg);
+      expect(indexOfSeq(Array.from(stripped), app1)).toBe(-1);
+      expect(stripped.length).toBe(jpeg.length - app1.length);
+    });
+  });
+
+  // =========================================================================
+  // SCAN-STREAM WALKER ALLOWLIST
+  //
+  // Between scans, only markers T.81 actually allows there may be skipped by
+  // a declared length. Trusting the length of anything else lets a crafted or
+  // corrupt byte pair step OVER the real EOI and land on a later FFD9 inside
+  // the trailer -- the strip then truncates at the wrong place, keeping part
+  // of the trailer while the detect, scanning only past that fake boundary,
+  // reports the file clean. An unrecognized marker must degrade to "no EOI
+  // found": copy through, and let the detect stay hot over the whole stream.
+  // =========================================================================
+  describe('scan-stream walker allowlist', () => {
+    it.each([
+      // A length that would carry the walk past the true EOI and onto a
+      // FFD9 byte pair inside the trailer.
+      ['FF02 with a length that steps over the EOI', [0xAA, 0xFF, 0x02, 0x00, 0x0F, 0xBB], [
+        ...EXIF_SIGNATURE, 0xDE, 0xAD, 0xBE, 0xEF, 0xFF, 0xD9, 0x11, 0x22,
+      ]],
+      ['a stray SOI inside the scan', [0xAA, 0xFF, 0xD8, 0xBB, 0xCC], SEFH_EXIF_TRAILER],
+      ['a DHT declaring a length below the minimum', [0xAA, 0xFF, 0xC4, 0x00, 0x00, 0xBB], SEFH_EXIF_TRAILER],
+    ])('copies through and stays detectable: %s', (_label, scanData, trailer) => {
+      const jpeg = buildJpeg({ scanData, postEoiTrailer: trailer });
+
+      let stripped!: Uint8Array;
+      expect(() => { stripped = stripJpegMetadata(jpeg); }).not.toThrow();
+
+      // No trustworthy boundary, so nothing is truncated...
+      expect(Array.from(stripped)).toEqual(Array.from(jpeg));
+      // ...and the trailer is still reported.
+      expect(hasExif(stripped)).toBe(true);
+    });
+
+    it('copies through when an inter-scan segment runs past the end of the file', () => {
+      const jpeg = buildJpeg({
+        betweenScans: [0xFF, 0xC4, 0xFF, 0xFF], // DHT declaring 65535 bytes
+        scan2Data: [0x44, 0x55],
+        postEoiTrailer: SEFH_EXIF_TRAILER,
+      });
+
+      const stripped = stripJpegMetadata(jpeg);
+      expect(Array.from(stripped)).toEqual(Array.from(jpeg));
+      expect(hasExif(stripped)).toBe(true);
+    });
+
+    // The recorded-segment array is sized by untrusted bytes, so it is capped.
+    // A dense run of 4-byte segments in an 8MB file would otherwise allocate
+    // millions of objects, twice per sanitize.
+    it.each([
+      ['APP0', [0xFF, 0xE0, 0x00, 0x02]],
+      ['COM', [0xFF, 0xFE, 0x00, 0x02]],
+    ])('fails closed past the recorded-segment ceiling: a dense %s run', (_label, segment) => {
+      const dense: number[] = [];
+      for (let i = 0; i < 4100; i++) dense.push(...segment); // > MAX_SCAN_STREAM_SEGMENTS
+
+      const jpeg = buildJpeg({
+        scanData: [0xAA, ...dense, 0xBB],
+        postEoiTrailer: SEFH_EXIF_TRAILER,
+      });
+
+      let stripped!: Uint8Array;
+      expect(() => { stripped = stripJpegMetadata(jpeg); }).not.toThrow();
+
+      // The ceiling means "stop trusting this structure": no boundary was
+      // found, so the trailer rides through rather than being truncated at
+      // something the walk never actually reached...
+      expect(indexOfSeq(Array.from(stripped), EXIF_SIGNATURE)).toBeGreaterThan(-1);
+      // ...and the detect stays hot over it.
+      expect(hasExif(stripped)).toBe(true);
+    });
+
+    it('is not slowed or capped by segments nobody consults', () => {
+      // The same count of DHT segments: walked to find the EOI, never
+      // recorded, so the ceiling is never reached and the real boundary is
+      // still found. This is the difference the narrowed recording makes.
+      const dense: number[] = [];
+      for (let i = 0; i < 4100; i++) dense.push(0xFF, 0xC4, 0x00, 0x02);
+
+      const jpeg = buildJpeg({
+        scanData: [0xAA, ...dense, 0xBB],
+        postEoiTrailer: SEFH_EXIF_TRAILER,
+      });
+
+      const stripped = stripJpegMetadata(jpeg);
+      expect(indexOfSeq(Array.from(stripped), EXIF_SIGNATURE)).toBe(-1); // trailer truncated
+      expect(stripped[stripped.length - 2]).toBe(0xFF);
+      expect(stripped[stripped.length - 1]).toBe(0xD9);
+      expect(hasExif(stripped)).toBe(false);
+    });
+
+    it('still finds the real EOI across DNL, DAC, DHP and EXP segments', () => {
+      // All four are legal between scans, so the allowlist must admit them --
+      // otherwise a legitimate progressive JPEG would take the copy-through
+      // path and its trailer would survive.
+      const dnl = writeSegment([0xFF, 0xDC], [0x00, 0x01]);
+      const dac = writeSegment([0xFF, 0xCC], [0x00, 0x00]);
+      const dhp = writeSegment([0xFF, 0xDE], [0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x11, 0x00]);
+      const exp = writeSegment([0xFF, 0xDF], [0x11]);
+      const jpeg = buildJpeg({
+        exif: true,
+        progressive: true,
+        scanData: [0x11, 0x22],
+        betweenScans: [...dnl, ...dac, ...dhp, ...exp],
+        scan2Data: [0x33, 0x44],
+        postEoiTrailer: SEFH_EXIF_TRAILER,
+      });
+
+      const stripped = stripJpegMetadata(jpeg);
+      const bytes = Array.from(stripped);
+
+      // Boundary found: the trailer is gone and the output closes at the EOI.
+      expect(indexOfSeq(bytes, EXIF_SIGNATURE)).toBe(-1);
+      expect(stripped[stripped.length - 2]).toBe(0xFF);
+      expect(stripped[stripped.length - 1]).toBe(0xD9);
+      // All four segments survive.
+      for (const seg of [dnl, dac, dhp, exp]) {
+        expect(indexOfSeq(bytes, seg)).toBeGreaterThan(-1);
+      }
+      expect(hasExif(stripped)).toBe(false);
+    });
+  });
+
+  // =========================================================================
+  // REAL SAMSUNG GALAXY S24 CAPTURE TAIL
+  //
+  // The post-EOI layout of the capture that validated #732: an embedded Ultra
+  // HDR gain-map JPEG followed by a 217-byte Samsung SEF tail. The gain map
+  // carries an XMP packet a raw scan can see; the SEF tail carries no
+  // signature at all, only plain-text capture metadata.
+  // =========================================================================
+  describe('real Samsung S24 SEF tail', () => {
+    const tailText = (bytes: number[]): string => String.fromCharCode(...bytes);
+
+    it('is the scrubbed 217-byte tail and nothing else', () => {
+      const tail = s24SefTail();
+      const text = tailText(tail);
+
+      expect(tail.length).toBe(217);
+      expect(text.endsWith('SEFT')).toBe(true);
+      expect(text).toContain('SEFH');
+      expect(text).toContain(`Image_UTC_Data${S24_SEF_CAPTURE_TIMESTAMP}`);
+      expect(text).toContain(`MCC_Data${S24_SEF_MCC}`);
+
+      // The complete inventory of printable runs: every human-readable thing
+      // in the committed bytes is listed here, so nothing from the capture can
+      // ride along unreviewed. The capture date and time do not appear.
+      expect(text.match(/[ -~]{4,}/g)).toEqual([
+        `Image_UTC_Data${S24_SEF_CAPTURE_TIMESTAMP}`,
+        `MCC_Data${S24_SEF_MCC}`,
+        'Color_Display_P3',
+        'Photo_HDR_Info',
+        'Camera_Capture_Mode_Info1SEFHk',
+        'SEFT',
+      ]);
+      expect(text).not.toContain('20260711');
+      expect(text).not.toContain('193739');
+    });
+
+    it('strips the full S24 post-EOI layout back to the primary image', () => {
+      const captured = buildJpeg({
+        exif: true,
+        postEoiTrailer: [...buildGainMapJpeg(), ...s24SefTail()],
+      });
+      expect(hasExif(captured)).toBe(true);
+
+      const stripped = stripJpegMetadata(captured);
+      const bytes = Array.from(stripped);
+
+      // Byte-identical to stripping the primary image on its own.
+      expect(bytes).toEqual(Array.from(stripJpegMetadata(buildJpeg({ exif: true }))));
+
+      const text = tailText(bytes);
+      expect(text).not.toContain('SEFT');
+      expect(text).not.toContain('Image_UTC_Data');
+      // The gain map's own SOI is gone: only the primary image's remains.
+      expect(indexOfSeq(bytes.slice(2), [0xFF, 0xD8])).toBe(-1);
+
+      expect(hasExif(stripped)).toBe(false);
+    });
+
+    it('strips the same layout when the picker already dropped the APP1', () => {
+      const captured = buildJpeg({
+        postEoiTrailer: [...buildGainMapJpeg(), ...s24SefTail()],
+      });
+      expect(hasExif(captured)).toBe(true); // the gain map's XMP packet
+
+      const stripped = stripJpegMetadata(captured);
+      expect(Array.from(stripped)).toEqual(Array.from(stripJpegMetadata(buildJpeg())));
+      expect(hasExif(stripped)).toBe(false);
+    });
+
+    it('flags a signature-less SEF tail that survived the copy-through', () => {
+      // The unparseable-stream path: the strip cannot find an EOI, so the tail
+      // is copied into the output. It holds no Exif and no XMP, so no pattern
+      // scan can see it -- the terminal SEFT check is the only thing standing
+      // between this file and a verify that passes capture metadata through.
+      const jpeg = buildJpeg({
+        scanData: [0xAA, 0xFF, 0x02, 0x00, 0x08, 0xBB], // unrecognized marker
+        postEoiTrailer: s24SefTail(),
+      });
+      expect(hasExif(jpeg)).toBe(true);
+
+      const stripped = stripJpegMetadata(jpeg);
+      expect(Array.from(stripped)).toEqual(Array.from(jpeg)); // tail survives
+      // Nothing a raw pattern scan could latch onto:
+      expect(indexOfSeq(Array.from(stripped), EXIF_SIGNATURE)).toBe(-1);
+      expect(tailText(Array.from(stripped))).not.toContain('http://ns.adobe.com/xap');
+
+      expect(hasExif(stripped)).toBe(true);
     });
   });
 });

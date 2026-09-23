@@ -53,6 +53,8 @@ const URL_SKIP_PATTERNS = [
   'src/config/env.ts',
   'src/components/EmojiText.tsx',
   'src/services/media/imageSanitizer.ts',
+  // Holds XMP packet signatures for test fixtures -- same reason as imageSanitizer.ts above.
+  'src/services/testUtils/imageFixtures.ts',
 ];
 
 for (const file of allFiles) {

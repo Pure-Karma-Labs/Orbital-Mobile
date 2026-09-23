@@ -16,6 +16,16 @@
  * their own Exif/GPS headers -- is metadata by another name and is dropped.
  * - WebP/HEIC/unknown: re-encodes to JPEG via reencodeImage first, then strips
  *
+ * ULTRA HDR: the same truncation is why HDR photos post as SDR, deliberately.
+ * A Galaxy S24 or Pixel Ultra HDR JPEG stores its gain map as a SECOND image
+ * past the primary EOI, with its own XMP/Exif; the truncation drops it, and
+ * decoders that find no gain map fall back to the base image, which is the
+ * ordinary SDR rendering of the photo. The APP2 "MPF\0" index that pointed at
+ * that gain map is dropped with it -- keeping it would leave a table pointing
+ * past the end of the file, plus the device-written bytes of its MP Index IFD.
+ * Samsung Motion Photos lose their video the same way and post as stills.
+ * Restoring either would mean shipping the capture metadata they carry.
+ *
  * Always ends with verifyNoImageMetadata re-scan; THROWS if metadata persists (fail-closed).
  *
  * The strip half and the detect half are one contract, and they degrade
@@ -24,6 +34,10 @@
  * guessing at a boundary, and hasExif widens its scan over exactly the region
  * that survived. Tightening one half alone would either pass metadata through
  * the verify or reject an image the strip has no way to clean.
+ *
+ * That contract has a direction: the strip may remove MORE than the detect
+ * flags, never less. The APP2 MPF index is the one case that uses it -- see the
+ * DIRECTION RULE on JPEG_DROP_MARKERS, where the invariant is declared.
  *
  * What that widening actually covers, precisely: a raw scan for an Exif or XMP
  * *signature*, plus the terminal SEFT anchor. It is NOT a structural check. A
@@ -76,9 +90,34 @@ const JPEG_EOI = 0xFFD9;
 
 // APP segment markers
 const APP1 = 0xFFE1;  // Exif / XMP
+const APP2 = 0xFFE2;  // ICC profile / MPF (Multi-Picture Format) index
 const APP13 = 0xFFED; // Photoshop / IPTC
 const APP14 = 0xFFEE; // Adobe (color transform)
 const COM = 0xFFFE;   // Comment
+
+/** "Exif\0\0" -- the signature that makes an APP1 an Exif segment. */
+const EXIF_APP1_SIGNATURE: readonly number[] = [0x45, 0x78, 0x69, 0x66, 0x00, 0x00];
+
+/** "MPF\0" -- the signature that makes an APP2 a Multi-Picture Format index. */
+const MPF_APP2_SIGNATURE: readonly number[] = [0x4D, 0x50, 0x46, 0x00];
+
+/**
+ * True if `sig` sits exactly at `start`, bounded by the enclosing segment's
+ * DECLARED end rather than the buffer -- a signature that would run past the
+ * segment is not in that segment, whatever the following bytes happen to be.
+ */
+function matchesSignatureAt(
+  data: Uint8Array,
+  start: number,
+  segEnd: number,
+  sig: readonly number[],
+): boolean {
+  if (start + sig.length > segEnd) return false;
+  for (let i = 0; i < sig.length; i++) {
+    if (data[start + i] !== sig[i]) return false;
+  }
+  return true;
+}
 
 /**
  * Defensive ceiling on inter-scan segments recorded from one scan stream --
@@ -98,6 +137,17 @@ const MAX_SCAN_STREAM_SEGMENTS = 4096;
  * a permanent dead end: the verify would reject an image the strip cannot fix.
  * APP2 (ICC) and APP14 (Adobe) are deliberately absent -- a color profile is a
  * rendering instruction, not a description of the subject.
+ *
+ * DIRECTION RULE: "cannot disagree" is one-way. The strip may remove MORE than
+ * the detect flags; it may never remove less. Removing more only means an
+ * image verifies clean it would have verified clean without; flagging more than
+ * the strip removes is the failure mode -- an image no strip can clear.
+ *
+ * The APP2 MPF index (isMpfApp2) is the one case that uses that latitude: the
+ * strip drops it, the detect stays silent. The detect stays silent on purpose,
+ * because the MPF spec puts an APP2 MPF in EVERY image of a multi-picture
+ * file -- flagging it would turn the copy-through path (where a secondary image
+ * can survive) into an unclearable rejection.
  */
 const JPEG_DROP_MARKERS: ReadonlySet<number> = new Set([APP1, APP13, COM]);
 
@@ -173,12 +223,29 @@ const PNG_STRIP_CHUNKS = new Set(['eXIf', 'tEXt', 'zTXt', 'iTXt', 'tIME']);
 // ---------------------------------------------------------------------------
 
 /**
+ * True if this header segment is an APP2 carrying an MPF (Multi-Picture Format)
+ * index -- the table that points at the secondary images of an Ultra HDR or
+ * multi-picture JPEG.
+ *
+ * `start` is the offset of the segment's payload (marker + length field
+ * skipped); `segEnd` its exclusive declared end.
+ *
+ * The strip removes it unconditionally, and it is the one segment the detect
+ * half deliberately does not flag -- see the DIRECTION RULE on
+ * JPEG_DROP_MARKERS for why that asymmetry is the safe one.
+ */
+function isMpfApp2(data: Uint8Array, marker: number, start: number, segEnd: number): boolean {
+  return marker === APP2 && matchesSignatureAt(data, start, segEnd, MPF_APP2_SIGNATURE);
+}
+
+/**
  * Strip EXIF/XMP/IPTC metadata from a JPEG byte array.
  *
  * Drops every JPEG_DROP_MARKERS segment (APP1 Exif/XMP, APP13 IPTC, COM),
  * whether it sits in the header or between scans, plus anything past the EOI
  * that closes the compressed stream (Samsung Motion Photo SEF trailers and the
- * like -- see the SOS branch below).
+ * like -- see the SOS branch below), plus the APP2 MPF index that describes
+ * images living past that EOI.
  * Keeps APP0 (JFIF), APP2 (ICC), APP14 (Adobe), and all other markers + scan data.
  * No recompression -- scan data is byte-identical.
  *
@@ -308,8 +375,22 @@ export function stripJpegMetadata(data: Uint8Array): Uint8Array {
       throw new Error('JPEG segment extends beyond file');
     }
 
-    // Keep or drop, by the one shared drop set.
-    if (!JPEG_DROP_MARKERS.has(marker)) {
+    // Keep or drop, by the one shared drop set -- plus the APP2 MPF index,
+    // which the strip removes on its own authority.
+    //
+    // Unconditional, and safe in both directions: an MP index can only ever
+    // describe images AT OR AFTER the primary EOI, and whenever an EOI is
+    // found the output is truncated there, so every image the index names is
+    // already gone. On the copy-through path (no findable EOI) a secondary
+    // image may survive and the index is then merely accurate about bytes we
+    // did not remove -- dropping it there is a no-harm structural change, not
+    // a guarantee the file is rejected. (An Ultra HDR v1 gain map carries XMP
+    // and would be; an ISO 21496-1 map need not.)
+    //
+    // What goes with it is a dangling pointer PLUS device-written bytes: the
+    // MP Index IFD can carry an ImageUIDList and similar per-capture values,
+    // and none of it has a rendering role once the secondary images are gone.
+    if (!JPEG_DROP_MARKERS.has(marker) && !isMpfApp2(data, marker, pos + 4, segEnd)) {
       pushRange(output, data, pos, segEnd);
     }
     pos = segEnd;
@@ -517,15 +598,7 @@ export function readJpegOrientation(data: Uint8Array): number | null {
 
 /** True if the APP1 payload starting at `start` carries the "Exif\0\0" signature. */
 function isExifApp1(data: Uint8Array, start: number, segEnd: number): boolean {
-  if (start + 6 > segEnd) return false;
-  return (
-    data[start] === 0x45 &&     // E
-    data[start + 1] === 0x78 && // x
-    data[start + 2] === 0x69 && // i
-    data[start + 3] === 0x66 && // f
-    data[start + 4] === 0x00 && // NUL
-    data[start + 5] === 0x00    // NUL
-  );
+  return matchesSignatureAt(data, start, segEnd, EXIF_APP1_SIGNATURE);
 }
 
 /**

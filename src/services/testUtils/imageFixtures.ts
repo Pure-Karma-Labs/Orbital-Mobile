@@ -25,6 +25,22 @@
 /** "Exif\0\0" -- the six-byte pattern the raw metadata scan matches. */
 export const EXIF_SIGNATURE = [0x45, 0x78, 0x69, 0x66, 0x00, 0x00];
 
+/** "MPF\0" -- the four-byte signature of a Multi-Picture Format APP2. */
+export const MPF_SIGNATURE = [0x4D, 0x50, 0x46, 0x00];
+
+/**
+ * Minimal MP header that follows "MPF\0": a big-endian TIFF header whose MP
+ * Index IFD sits at offset 8 and carries no entries. Structurally walkable,
+ * deliberately free of any Exif or XMP signature.
+ */
+export const MPF_HEADER = [
+  0x4D, 0x4D,             // "MM" big-endian
+  0x00, 0x2A,             // TIFF magic 42
+  0x00, 0x00, 0x00, 0x08, // MP Index IFD at offset 8
+  0x00, 0x00,             // 0 entries
+  0x00, 0x00, 0x00, 0x00, // next IFD = 0
+];
+
 /** Trailer that is nothing but an Exif signature and two filler bytes. */
 export const EXIF_TRAILER_BARE = [...EXIF_SIGNATURE, 0xDE, 0xAD];
 
@@ -121,6 +137,15 @@ export interface BuildJpegOptions {
   com?: boolean;
   /** APP2 "ICC_PROFILE\0" segment (KEPT by the stripper -- a color profile is not metadata). */
   icc?: boolean;
+  /**
+   * APP2 "MPF\0" Multi-Picture Format index (DROPPED by the stripper -- it can
+   * only describe images at or past the primary EOI, which the strip truncates).
+   *
+   * Positional rather than boolean: the drop must not depend on whether the MPF
+   * segment precedes or follows the ICC APP2 it shares a marker with, and only
+   * two orders can express that.
+   */
+  mpf?: 'before-icc' | 'after-icc';
   /** Use SOF2 (progressive) instead of SOF0 (baseline). */
   progressive?: boolean;
   /** Entropy bytes of the first scan. Default `[0xAA, 0xBB, 0xCC]`. */
@@ -201,8 +226,8 @@ const SOS_PAYLOAD = [
  * post-EOI trailer.
  *
  * Layout: SOI, APP0 JFIF, [APP1 Exif], [APP1 XMP], [APP13 IPTC], [COM],
- * [APP2 ICC], SOF0/SOF2, DHT, SOS, scanData, [betweenScans, SOS, scan2Data],
- * [EOI], [postEoiTrailer].
+ * [APP2 MPF before-icc], [APP2 ICC], [APP2 MPF after-icc], SOF0/SOF2, DHT, SOS,
+ * scanData, [betweenScans, SOS, scan2Data], [EOI], [postEoiTrailer].
  */
 export function buildJpeg(opts: BuildJpegOptions = {}): Uint8Array {
   const {
@@ -211,6 +236,7 @@ export function buildJpeg(opts: BuildJpegOptions = {}): Uint8Array {
     iptc = false,
     com = false,
     icc = false,
+    mpf,
     progressive = false,
     scanData = [0xAA, 0xBB, 0xCC],
     betweenScans,
@@ -249,10 +275,21 @@ export function buildJpeg(opts: BuildJpegOptions = {}): Uint8Array {
     parts.push(...writeSegment([0xFF, 0xFE], COM_PAYLOAD));
   }
 
+  // APP2 MPF index -- dropped; emitted on either side of the ICC APP2 so the
+  // drop can be pinned as order-independent.
+  const mpfSegment = writeSegment([0xFF, 0xE2], [...MPF_SIGNATURE, ...MPF_HEADER]);
+  if (mpf === 'before-icc') {
+    parts.push(...mpfSegment);
+  }
+
   // APP2 ICC profile -- kept (a color profile is a rendering instruction)
   if (icc) {
     const iccSig = Array.from(new TextEncoder().encode('ICC_PROFILE\0'));
     parts.push(...writeSegment([0xFF, 0xE2], [...iccSig, 0x01, 0x01, 0xDE, 0xAD]));
+  }
+
+  if (mpf === 'after-icc') {
+    parts.push(...mpfSegment);
   }
 
   // SOF0 or SOF2 (progressive) -- kept
@@ -366,7 +403,8 @@ export function buildSefTrailer(): number[] {
  * It matters because it is the half of the trailer a pattern scan CAN see (the
  * XMP packet signature), which is why the real capture was detectable at all
  * before the strip learned to truncate at the EOI. Posting the photo drops it,
- * so an Ultra HDR capture posts as SDR (Mobile #736).
+ * so an Ultra HDR capture posts as SDR -- see the Ultra HDR paragraph in the
+ * imageSanitizer module header for why that is the deliberate behavior.
  */
 export function buildGainMapJpeg(): number[] {
   const payload = [

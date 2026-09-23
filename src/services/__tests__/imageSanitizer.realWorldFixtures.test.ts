@@ -69,6 +69,7 @@ import {
   EXIF_SIGNATURE,
   EXIF_TRAILER_BARE,
   SEFH_EXIF_TRAILER,
+  MPF_SIGNATURE,
 } from '../testUtils/imageFixtures';
 
 describe('imageSanitizer – real-world JPEG fixtures', () => {
@@ -657,8 +658,12 @@ describe('imageSanitizer – real-world JPEG fixtures', () => {
     });
 
     it('strips the full S24 post-EOI layout back to the primary image', () => {
+      // The real capture's header: an ICC profile, the APP2 MPF index that
+      // points at the gain map, and an Exif APP1.
       const captured = buildJpeg({
         exif: true,
+        icc: true,
+        mpf: 'after-icc',
         postEoiTrailer: [...buildGainMapJpeg(), ...s24SefTail()],
       });
       expect(hasExif(captured)).toBe(true);
@@ -667,7 +672,9 @@ describe('imageSanitizer – real-world JPEG fixtures', () => {
       const bytes = Array.from(stripped);
 
       // Byte-identical to stripping the primary image on its own.
-      expect(bytes).toEqual(Array.from(stripJpegMetadata(buildJpeg({ exif: true }))));
+      expect(bytes).toEqual(
+        Array.from(stripJpegMetadata(buildJpeg({ exif: true, icc: true, mpf: 'after-icc' }))),
+      );
 
       const text = tailText(bytes);
       expect(text).not.toContain('SEFT');
@@ -675,17 +682,32 @@ describe('imageSanitizer – real-world JPEG fixtures', () => {
       // The gain map's own SOI is gone: only the primary image's remains.
       expect(indexOfSeq(bytes.slice(2), [0xFF, 0xD8])).toBe(-1);
 
+      // The gain map went with the truncation, so the MPF index that described
+      // it would point past the end of the file -- it goes too. The ICC
+      // profile is a rendering instruction and stays.
+      expect(indexOfSeq(bytes, MPF_SIGNATURE)).toBe(-1);
+      expect(hasHeaderMarker(stripped, 0xFFE2)).toBe(true);
+      // Output closes at the primary EOI.
+      expect(stripped[stripped.length - 2]).toBe(0xFF);
+      expect(stripped[stripped.length - 1]).toBe(0xD9);
+
       expect(hasExif(stripped)).toBe(false);
     });
 
     it('strips the same layout when the picker already dropped the APP1', () => {
       const captured = buildJpeg({
+        icc: true,
+        mpf: 'after-icc',
         postEoiTrailer: [...buildGainMapJpeg(), ...s24SefTail()],
       });
       expect(hasExif(captured)).toBe(true); // the gain map's XMP packet
 
       const stripped = stripJpegMetadata(captured);
-      expect(Array.from(stripped)).toEqual(Array.from(stripJpegMetadata(buildJpeg())));
+      expect(Array.from(stripped)).toEqual(
+        Array.from(stripJpegMetadata(buildJpeg({ icc: true, mpf: 'after-icc' }))),
+      );
+      expect(indexOfSeq(Array.from(stripped), MPF_SIGNATURE)).toBe(-1);
+      expect(hasHeaderMarker(stripped, 0xFFE2)).toBe(true);
       expect(hasExif(stripped)).toBe(false);
     });
 

@@ -21,10 +21,10 @@
  * past the primary EOI, with its own XMP/Exif; the truncation drops it, and
  * decoders that find no gain map fall back to the base image, which is the
  * ordinary SDR rendering of the photo. The APP2 "MPF\0" index that pointed at
- * that gain map is dropped with it -- keeping it would leave a table pointing
- * past the end of the file, plus the device-written bytes of its MP Index IFD.
- * Samsung Motion Photos lose their video the same way and post as stills.
- * Restoring either would mean shipping the capture metadata they carry.
+ * that gain map is dropped with it (why: see the keep-or-drop comment in
+ * stripJpegMetadata's header loop). Samsung Motion Photos lose their video the
+ * same way and post as stills. Restoring either would mean shipping the
+ * capture metadata they carry.
  *
  * Always ends with verifyNoImageMetadata re-scan; THROWS if metadata persists (fail-closed).
  *
@@ -102,17 +102,21 @@ const EXIF_APP1_SIGNATURE: readonly number[] = [0x45, 0x78, 0x69, 0x66, 0x00, 0x
 const MPF_APP2_SIGNATURE: readonly number[] = [0x4D, 0x50, 0x46, 0x00];
 
 /**
- * True if `sig` sits exactly at `start`, bounded by the enclosing segment's
- * DECLARED end rather than the buffer -- a signature that would run past the
- * segment is not in that segment, whatever the following bytes happen to be.
+ * True if `sig` sits exactly at `start`, bounded by `end` rather than by the
+ * buffer -- for a segment that is its DECLARED end, so a signature that would
+ * run past the segment is not in it, whatever the following bytes happen to be;
+ * for rawMetadataScan it is the end of the region being scanned.
+ *
+ * Every signature comparison in this module goes through here, so each pattern
+ * has exactly one definition.
  */
 function matchesSignatureAt(
   data: Uint8Array,
   start: number,
-  segEnd: number,
-  sig: readonly number[],
+  end: number,
+  sig: ArrayLike<number>,
 ): boolean {
-  if (start + sig.length > segEnd) return false;
+  if (start + sig.length > end) return false;
   for (let i = 0; i < sig.length; i++) {
     if (data[start + i] !== sig[i]) return false;
   }
@@ -139,15 +143,20 @@ const MAX_SCAN_STREAM_SEGMENTS = 4096;
  * rendering instruction, not a description of the subject.
  *
  * DIRECTION RULE: "cannot disagree" is one-way. The strip may remove MORE than
- * the detect flags; it may never remove less. Removing more only means an
- * image verifies clean it would have verified clean without; flagging more than
- * the strip removes is the failure mode -- an image no strip can clear.
+ * the detect flags; it may never flag more than the strip removes. Removing
+ * more only means an image verifies clean that would have verified clean
+ * anyway; flagging more is the failure mode -- an image no strip can clear.
  *
- * The APP2 MPF index (isMpfApp2) is the one case that uses that latitude: the
- * strip drops it, the detect stays silent. The detect stays silent on purpose,
- * because the MPF spec puts an APP2 MPF in EVERY image of a multi-picture
- * file -- flagging it would turn the copy-through path (where a secondary image
- * can survive) into an unclearable rejection.
+ * The APP2 MPF index (isMpfApp2) is the one case that uses that latitude, and
+ * there is simply nothing for the detect half to do about it:
+ * - hasExif has no MPF-aware check anywhere. Its header walk flags only the
+ *   drop-set markers, and rawMetadataScan matches an Exif or XMP *signature* --
+ *   which an MP index does not carry.
+ * - The strip removes a header MPF on BOTH paths: the drop happens in the
+ *   header loop, before and independent of whether an EOI is ever found.
+ * - An inter-scan MPF is not this case at all -- isDroppedInterScanSegment
+ *   already removes every inter-scan APPn but APP14, and hasExif flags them by
+ *   that same rule, so those two halves stay symmetric.
  */
 const JPEG_DROP_MARKERS: ReadonlySet<number> = new Set([APP1, APP13, COM]);
 
@@ -376,12 +385,19 @@ export function stripJpegMetadata(data: Uint8Array): Uint8Array {
     }
 
     // Keep or drop, by the one shared drop set -- plus the APP2 MPF index,
-    // which the strip removes on its own authority.
+    // which the strip removes on its own authority. This comment is the one
+    // home for that rationale; other sites point here.
     //
-    // Unconditional, and safe in both directions: an MP index can only ever
-    // describe images AT OR AFTER the primary EOI, and whenever an EOI is
-    // found the output is truncated there, so every image the index names is
-    // already gone. On the copy-through path (no findable EOI) a secondary
+    // WHY THE WHOLE INDEX, rather than a rewrite: per CIPA DC-007 the MP Index
+    // IFD's first entry is the PRIMARY image itself, at offset 0 -- only the
+    // entries after it name secondary images (an Ultra HDR gain map, a
+    // multi-picture frame), and those are exactly the ones that live past the
+    // primary EOI. Truncating at that EOI removes every image the index still
+    // usefully describes, leaving a table whose remaining entries point past
+    // the end of the file. A one-entry index is not worth synthesizing: no
+    // decoder needs an MP index to render the primary image.
+    //
+    // Unconditional. On the copy-through path (no findable EOI) a secondary
     // image may survive and the index is then merely accurate about bytes we
     // did not remove -- dropping it there is a no-harm structural change, not
     // a guarantee the file is rejected. (An Ultra HDR v1 gain map carries XMP
@@ -390,6 +406,8 @@ export function stripJpegMetadata(data: Uint8Array): Uint8Array {
     // What goes with it is a dangling pointer PLUS device-written bytes: the
     // MP Index IFD can carry an ImageUIDList and similar per-capture values,
     // and none of it has a rendering role once the secondary images are gone.
+    //
+    // Strip-only by design: see the DIRECTION RULE on JPEG_DROP_MARKERS.
     if (!JPEG_DROP_MARKERS.has(marker) && !isMpfApp2(data, marker, pos + 4, segEnd)) {
       pushRange(output, data, pos, segEnd);
     }
@@ -780,29 +798,20 @@ const XMP_SIGNATURE = new TextEncoder().encode('http://ns.adobe.com/xap');
  */
 function rawMetadataScan(data: Uint8Array, start: number, end: number): boolean {
   const limit = Math.min(end, data.length);
+  const from = Math.max(0, start);
 
-  for (let i = Math.max(0, start); i + 5 < limit; i++) {
-    if (
-      data[i] === 0x45 &&     // E
-      data[i + 1] === 0x78 && // x
-      data[i + 2] === 0x69 && // i
-      data[i + 3] === 0x66 && // f
-      data[i + 4] === 0x00 && // NUL
-      data[i + 5] === 0x00    // NUL
-    ) {
-      return true;
-    }
-  }
-
-  for (let i = Math.max(0, start); i + XMP_SIGNATURE.length <= limit; i++) {
-    let match = true;
-    for (let j = 0; j < XMP_SIGNATURE.length; j++) {
-      if (data[i + j] !== XMP_SIGNATURE[j]) {
-        match = false;
-        break;
+  // Both patterns go through matchesSignatureAt, so "Exif\0\0" and the XMP
+  // packet each have one definition in this module (EXIF_APP1_SIGNATURE is the
+  // same constant isExifApp1 matches). The first-byte test keeps the common
+  // case to a single byte compare -- this scan runs over the whole surviving
+  // buffer on the degraded path, and a call per offset is not free.
+  const signatures: ArrayLike<number>[] = [EXIF_APP1_SIGNATURE, XMP_SIGNATURE];
+  for (const sig of signatures) {
+    for (let i = from; i + sig.length <= limit; i++) {
+      if (data[i] === sig[0] && matchesSignatureAt(data, i, limit, sig)) {
+        return true;
       }
     }
-    if (match) return true;
   }
 
   return false;

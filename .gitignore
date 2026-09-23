@@ -78,12 +78,16 @@ ios/OrbitalMobile/GoogleService-Info.plist
 .claude/
 
 # Compliance material and store assets — never commit
-# (store-listing.md and release-notes/ are deliberately tracked; keep the
-#  negations below it — a parent directory has to be re-included before any
-#  file inside it can be)
+# (store-listing.md and the release-notes MARKDOWN are deliberately tracked.
+#  A parent directory has to be re-included before any file inside it can be,
+#  so release-notes/ is un-ignored and then re-ignored down to *.md only —
+#  screenshots, exports and stray .env files under it stay covered by the
+#  never-commit rule.)
 project-docs/*
 !project-docs/store-listing.md
 !project-docs/release-notes/
+project-docs/release-notes/*
+!project-docs/release-notes/*.md
 /uploads/
 docs/compliance/BIS Supplement*
 

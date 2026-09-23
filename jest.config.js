@@ -1,5 +1,11 @@
 module.exports = {
   preset: 'react-native',
+  // In CI, emit a START line per test file so that when the Jest step cap
+  // fires the last logged file identifies the hung suite (#834).
+  reporters: [
+    'default',
+    ...(process.env.CI ? ['./scripts/jest/startLoggerReporter'] : []),
+  ],
   testPathIgnorePatterns: ['/node_modules/', '\\.clone/', '\\.claude/worktrees/'],
   modulePathIgnorePatterns: ['\\.clone/', '\\.claude/worktrees/'],
   transformIgnorePatterns: [

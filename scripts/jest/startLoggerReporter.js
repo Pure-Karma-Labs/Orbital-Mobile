@@ -3,14 +3,16 @@
 /**
  * Jest reporter that prints a START line for every test file as it begins.
  *
- * Registered in jest.config.js reporters only when process.env.CI is set, so
- * local output stays quiet.  When the Jest step cap fires in CI, the last
- * "▶ START" line without a matching PASS names the hung suite (#834).
+ * Active when process.env.CI is set (GitHub Actions) or when
+ * JEST_LOG_START=1 is set locally.  When the Jest step cap fires in CI, the
+ * last "▶ START" line without a matching PASS names the hung suite (#834).
  *
  * Usage (jest.config.js):
  *   reporters: [
  *     'default',
- *     ...(process.env.CI ? ['./scripts/jest/startLoggerReporter'] : []),
+ *     ...(process.env.CI || process.env.JEST_LOG_START
+ *       ? ['./scripts/jest/startLoggerReporter']
+ *       : []),
  *   ],
  */
 class StartLoggerReporter {

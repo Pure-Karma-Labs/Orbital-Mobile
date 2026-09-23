@@ -194,8 +194,9 @@ function videoItem(id: string): MediaItem {
   };
 }
 
-/** Tracked so afterEach can unmount — OrbitalSpinner's recursive timing keeps
- *  scheduling animation frames past teardown otherwise. */
+/** Tracked so afterEach can unmount — VideoControls.tsx:140-148 and
+ *  ActiveVideoPage.tsx effect cleanups keep scheduling timer callbacks past
+ *  teardown otherwise. */
 let mounted: ReactTestRenderer | null = null;
 
 function renderLightbox(
@@ -721,14 +722,19 @@ describe('audio focus', () => {
   });
 
   afterEach(() => {
-    // Drain pending fake timers before restoring the real clock. After the
-    // drain, alive guards prevent re-arming, so no fake-timer callbacks are
-    // adopted as real timers in the file-level afterEach's unmount (#834,
-    // DEBT-280). jest-circus runs this innermost afterEach before the
-    // file-level one, so the clock is still fake during the drain.
-    act(() => { jest.runOnlyPendingTimers(); });
-    jest.clearAllTimers();
-    jest.useRealTimers();
+    // Drain first so a genuine timer leak fails loudly (pending callbacks
+    // fire and the alive guard should prevent re-arming; if it doesn't, the
+    // count stays non-zero and the guard test below catches it). Clear is the
+    // load-bearing backstop that discards any residue — including the extra
+    // timer NativeAnimatedHelper schedules on unmount (#834). Then restore the
+    // real clock. The try/finally ensures the clock is always restored even if
+    // a timer callback throws.
+    try {
+      act(() => { jest.runOnlyPendingTimers(); });
+    } finally {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    }
   });
 
   function renderReady(): ReactTestRenderer {
@@ -833,10 +839,12 @@ describe('audio focus', () => {
     expect(video(renderer).props.paused).toBe(true);
   });
 
-  // Regression guard for DEBT-280 / #834: after unmounting under fake timers,
-  // drain pending timers (the alive.current guard must prevent re-arming), then
-  // assert zero. Mirrors OrbitalSpinner.test.tsx:78–93. Drain before any clear
-  // so a real post-unmount leak fails loudly instead of being swept away.
+  // Guards the "no re-arm after unmount" invariant for ActiveVideoPage's
+  // effect cleanups (VideoControls.tsx:140-148, ActiveVideoPage.tsx timers).
+  // The extra timer seen at unmount in the probe (#834: 7→8→0) is
+  // NativeAnimatedHelper's setImmediate flush — framework residue, not a
+  // product-code leak. The afterEach ordering fix is a separate concern
+  // backstopped by the CI Jest step cap, not by this test.
   it('leaves no pending timers after unmount (timer-leak regression guard)', () => {
     const renderer = renderReady();
     act(() => {

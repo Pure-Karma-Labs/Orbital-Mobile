@@ -56,6 +56,13 @@ jobs:
         run: npm run typecheck
 
       - name: Jest tests
+        # Green baseline: 92–150 s. Cap at 10 min (~4× worst green) to
+        # surface hangs fast (#834). A timed-out Jest step skips every
+        # native/iOS gate below it (#767/#769 pod-path, Firebase-SPM,
+        # Package.resolved and Podfile.lock diffs, transcoder compile),
+        # so a timed-out or failing run MUST be re-run to green and MUST
+        # NEVER be force-merged.
+        timeout-minutes: 10
         run: npm test -- --ci --coverage
 
       # ---------------------------------------------------------------------

@@ -789,6 +789,10 @@ function checkWindowedPins(file, rule, windowRe, windowLabel, pins) {
   const body = match[0]
     .split('\n')
     .filter((line) => !/^\s*(\/\/|\/\*|\*)/.test(line))
+    // Trailing comments too: `enableNetworkBreadcrumbs: true, // was: false`
+    // must not satisfy the pin (PR #837 review). None of these windows holds
+    // a `//` inside a string literal, so a plain strip is safe.
+    .map((line) => line.replace(/\s\/\/.*$/, ''))
     .join('\n');
   for (const pin of pins) {
     if (!body.includes(pin)) {
@@ -813,6 +817,7 @@ checkWindowedPins(
     'beforeSend: scrubEvent',
     'enableNetworkBreadcrumbs: false',
     'console: false',
+    'xhr: false',
     'sendDefaultPii: false',
     'enableMemoryIntrospection: false',
     'maxBreadcrumbs:',

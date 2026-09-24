@@ -9,7 +9,12 @@
  */
 
 import type { Breadcrumb, ErrorEvent } from '@sentry/react-native';
-import { filterBreadcrumb, scrubErrorMessage, scrubEvent } from '../telemetryScrub';
+import {
+  filterBreadcrumb,
+  scrubErrorMessage,
+  scrubEvent,
+  toReportableError,
+} from '../telemetryScrub';
 
 /** A minimal but type-correct error event. */
 function makeEvent(partial: Partial<ErrorEvent> = {}): ErrorEvent {
@@ -167,6 +172,12 @@ describe('filterBreadcrumb', () => {
     expect(filterBreadcrumb(touch)).toBeNull();
     expect(
       filterBreadcrumb({ category: 'ui.multiClick', message: 'Thread: Secret title' }),
+    ).toBeNull();
+  });
+
+  it('drops sentry-cocoa ui.tap interaction crumbs', () => {
+    expect(
+      filterBreadcrumb({ category: 'ui.tap', type: 'user', data: { view: 'RCTView' } }),
     ).toBeNull();
   });
 
@@ -349,6 +360,31 @@ describe('scrubEvent', () => {
     expect(out?.breadcrumbs?.map((b) => b.message)).toEqual(stages);
   });
 
+  it('keeps event.user.id verbatim and drops every other user field', () => {
+    const userId = '8f14e45f-ceea-467a-9b8e-6a9c6f0b5f21';
+    const event = makeEvent({
+      user: { id: userId, email: 'mom@example.com', username: 'grandma', ip_address: '1.2.3.4' },
+    });
+
+    const out = scrubEvent(event);
+
+    expect(out?.user).toEqual({ id: userId });
+  });
+
+  it('scrubs string logentry params and replaces non-primitive ones', () => {
+    const event = makeEvent({
+      logentry: {
+        message: 'restore %s for %s',
+        params: ['file:///var/mobile/tmp/IMG_0042.HEIC', { title: 'Secret title' }, 3],
+      },
+    });
+
+    const out = scrubEvent(event);
+
+    expect(out?.logentry?.params).toEqual(['<uri>', '<dropped>', 3]);
+    expect(JSON.stringify(out)).not.toContain('Secret title');
+  });
+
   it('returns a content-free skeleton when the scrub throws', () => {
     // Silence would hide a broken scrub; forwarding the event would be the
     // leak. The skeleton shows up as a `scrub:failed` spike instead.
@@ -371,5 +407,49 @@ describe('scrubEvent', () => {
     expect(out?.breadcrumbs).toBeUndefined();
     expect(out?.extra).toBeUndefined();
     expect(JSON.stringify(out)).not.toContain('Secret title');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// toReportableError — the frame-scrub invariants, pinned on the pure function
+// (also covered end-to-end through captureUploadFailure in uploadTelemetry.test)
+// ---------------------------------------------------------------------------
+
+describe('toReportableError', () => {
+  it('preserves the class name and real frame lines', () => {
+    class NetworkError extends Error {
+      constructor(message: string) {
+        super(message);
+        this.name = 'NetworkError';
+      }
+    }
+    const reported = toReportableError(new NetworkError('offline'));
+
+    expect(reported.name).toBe('NetworkError');
+    expect(reported.stack).toContain('NetworkError: offline');
+    expect(reported.stack).toMatch(/\n\s*at /);
+  });
+
+  it('does not leak lines 2..N of a multi-line message through the rebuilt stack', () => {
+    const reported = toReportableError(
+      new Error(
+        'sanitize failed\nnative detail: /var/mobile/Containers/Data/IMG_0042.HEIC\nsource: file:///var/mobile/tmp/secret photo.jpg',
+      ),
+    );
+
+    expect(reported.message).not.toContain('IMG_0042');
+    expect(reported.stack).not.toContain('IMG_0042');
+    expect(reported.stack).not.toContain('secret photo');
+    expect(reported.stack).not.toContain('file://');
+    expect(reported.stack).not.toContain('/var/mobile');
+    expect(reported.stack).toMatch(/\n\s*at /);
+  });
+
+  it('never returns the original object and drops its custom fields', () => {
+    const original = Object.assign(new Error('boom'), { serverMessage: 'orbit "Secret title"' });
+    const reported = toReportableError(original);
+
+    expect(reported).not.toBe(original);
+    expect(reported).not.toHaveProperty('serverMessage');
   });
 });

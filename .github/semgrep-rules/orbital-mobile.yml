@@ -96,6 +96,36 @@ rules:
       QuotaExceededError.usage) are one enabled integration away from being
       serialized into the event. Use captureError() from
       src/services/telemetry.ts, which reports a rebuilt, scrubbed copy (#746).
-      captureMessage() is unaffected: it takes a literal the call site controls.
+      captureMessage() is not covered by this rule: beforeSend scrubs its
+      message, but the scrub cannot recognise a name, title or invite code, so
+      interpolate only closed enum values into it.
+    languages: [typescript, javascript]
+    severity: ERROR
+
+  - id: no-raw-sentry-scope
+    patterns:
+      - pattern-either:
+          - pattern: Sentry.setContext(...)
+          - pattern: Sentry.setExtra(...)
+          - pattern: Sentry.setExtras(...)
+          - pattern: Sentry.setTag(...)
+          - pattern: Sentry.setTags(...)
+          - pattern: Sentry.setUser(...)
+      # The one deliberate attribution: App.tsx sets the account id on login
+      # and clears it on logout. scrubEvent keeps user.id and drops the rest.
+      # Exact-text allowlist: a structural `{ id: $ID }` pattern would also
+      # match `{ id, email }` (Semgrep object patterns match partially).
+      - pattern-not-regex: 'Sentry\.setUser\((null|\{ id: \w+ \}|\w+ \? \{ id: \w+ \} : null)\)'
+    paths:
+      include:
+        - 'src/**'
+      exclude:
+        - "*__tests__*"
+    message: >
+      Sentry scope setters attach data to EVERY subsequent event and are
+      synced to native, where no JS scrub runs on a hard crash report.
+      scrubEvent does not scrub event.contexts, so setContext/setExtra/setTag
+      /setUser are forbidden outside the setUser({ id }) attribution (#746,
+      PR #837 review). Pass per-event tags/extra to captureError() instead.
     languages: [typescript, javascript]
     severity: ERROR

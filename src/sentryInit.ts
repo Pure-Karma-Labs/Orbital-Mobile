@@ -46,15 +46,15 @@ const options: Sentry.ReactNativeOptions & CocoaPassthrough = {
   // for the re-check triggers on an SDK bump.
   enableNetworkBreadcrumbs: false,
   // Replace the default Breadcrumbs integration (name: 'Breadcrumbs') with one
-  // that has console capture off. Console crumbs would otherwise record the
-  // raw arguments of every console.warn/error; our content-bearing logs are
-  // `__DEV__`-guarded, so this is hardening rather than a live leak, but the
-  // guard is a convention and this is not. Every other default is preserved:
-  // `xhr: true` (dropped by filterBreadcrumb anyway), `sentry: true`, and
-  // fetch/dom/history which are off outside web.
+  // that has console and xhr capture off at the SOURCE. Console crumbs would
+  // otherwise record the raw arguments of every console.warn/error (our
+  // content-bearing logs are `__DEV__`-guarded, but that guard is a convention
+  // and this is not); xhr crumbs carry request URLs and were only ever dropped
+  // by filterBreadcrumb — which stays as the defence for native-merged http
+  // crumbs. `sentry: true` is preserved; fetch/dom/history are off outside web.
   integrations: (defaults) => [
     ...defaults.filter((integration) => integration.name !== 'Breadcrumbs'),
-    Sentry.breadcrumbsIntegration({ console: false }),
+    Sentry.breadcrumbsIntegration({ console: false, xhr: false }),
   ],
   // Drops http / touch / ui.multiClick / console crumbs and rebuilds the rest
   // from primitives. Runs for JS crumbs only.

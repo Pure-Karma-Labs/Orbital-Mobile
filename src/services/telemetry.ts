@@ -12,8 +12,11 @@
  * `beforeBreadcrumb` (sentryInit.ts) still scrub whatever reaches the client
  * by another route, including the SDK's own auto-captured events.
  *
- * `captureMessage` is deliberately NOT wrapped here. It takes a literal string
- * the call site controls, and `scrubEvent` covers `event.message` anyway.
+ * `captureMessage` is deliberately NOT wrapped here. `scrubEvent` scrubs
+ * `event.message` / `logentry`, but that scrub only removes paths, URIs, file
+ * names, ids, tokens and emails — it cannot recognise a name or a title. So
+ * never interpolate a name, title, invite code or message body into a
+ * captureMessage argument; interpolate only closed enum values.
  *
  * Banned from crypto / secure-storage / database paths by ESLint, same as the
  * SDK itself. Those paths may import `telemetryScrub.ts`, which sends nothing.

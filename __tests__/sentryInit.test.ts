@@ -66,6 +66,6 @@ describe('sentryInit', () => {
       'Breadcrumbs',
     ]);
     // Every other default survives the swap.
-    expect(Sentry.breadcrumbsIntegration).toHaveBeenCalledWith({ console: false });
+    expect(Sentry.breadcrumbsIntegration).toHaveBeenCalledWith({ console: false, xhr: false });
   });
 });

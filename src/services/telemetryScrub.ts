@@ -31,6 +31,12 @@
  * breadcrumb message or breadcrumb data. The patterns below are a second line
  * of defence and cannot recognise a family name or an orbit title.
  *
+ * USER ID: `event.user` is the one deliberate exception to the id rule.
+ * `App.tsx` calls `setUser({ id })` so events are attributable to an account;
+ * `scrubEvent` keeps `user.id` verbatim and drops every other `user` field.
+ * The same id appearing in `extra` / breadcrumb data IS scrubbed to `<id>` —
+ * attribution rides on `event.user`, nowhere else.
+ *
  * Breadcrumb `data` is rebuilt from PRIMITIVES ONLY, so the scrub is
  * structural: it does not depend on the producer sending a known shape, and a
  * nested object added later cannot smuggle content past the string patterns.
@@ -51,7 +57,8 @@ const URI_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/\S*/gi;
  */
 const PATH_PATTERN = /(?:\/[^/\n]+)+\/[^\s/]+\/?/g;
 /**
- * UUIDs and long hex runs — group / user / media ids must never reach Sentry.
+ * UUIDs and long hex runs — group / media ids (and user ids outside
+ * `event.user`, see the header) must never reach Sentry.
  * No leading `\b`: an id glued to a prefix (`group_<uuid>`, `media<hex>`) has
  * no word boundary in front of it and would otherwise survive.
  */
@@ -150,12 +157,18 @@ export function toReportableError(e: unknown): Error {
  * orbit names, display names). This drop is the primary defence; the
  * boundary's own props (App.tsx) are the secondary one.
  *
+ * `ui.tap` is sentry-cocoa's native interaction category. Its data is the
+ * view's `accessibilityIdentifier` (RN maps that from `testID`, not the
+ * label), so it is not a known content leak — but it is an interaction crumb
+ * merged in natively, and dropping it costs nothing.
+ *
  * `console` is belt-and-braces: console breadcrumbs are also disabled at the
  * source via `breadcrumbsIntegration({ console: false })` in sentryInit.ts.
  */
 const DROPPED_CATEGORIES = new Set([
   'touch',
   'ui.multiClick',
+  'ui.tap',
   'console',
 ]);
 
@@ -266,6 +279,18 @@ export function scrubEvent(event: ErrorEvent): ErrorEvent | null {
     if (typeof event.message === 'string') event.message = scrubErrorMessage(event.message);
     if (event.logentry && typeof event.logentry.message === 'string') {
       event.logentry.message = scrubErrorMessage(event.logentry.message);
+    }
+    if (event.logentry && Array.isArray(event.logentry.params)) {
+      event.logentry.params = event.logentry.params.map((p: unknown) =>
+        typeof p === 'string' ? scrubErrorMessage(p) : typeof p === 'number' || typeof p === 'boolean' ? p : '<dropped>',
+      );
+    }
+
+    // The deliberate attribution exception (see header): keep `id` verbatim,
+    // drop everything else a future `setUser` call might add.
+    if (event.user !== null && typeof event.user === 'object') {
+      const id: unknown = event.user.id;
+      event.user = typeof id === 'string' || typeof id === 'number' ? { id } : {};
     }
 
     if (Array.isArray(event.breadcrumbs)) {

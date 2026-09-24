@@ -3,7 +3,7 @@
 # Invariant ownership model:
 #   ESLint              -> syntactic invariants (code style, obvious anti-patterns)
 #   Jest                -> behavioral invariants (unit/integration correctness)
-#   invariants script   -> cross-file invariants [Phase 2, not yet wired]
+#   invariants script   -> cross-file invariants (job 4 below: npm run security:invariants)
 #   Semgrep             -> generic vulnerability patterns (OWASP, JS/TS/React anti-patterns)
 #
 # All third-party actions are SHA-pinned to a specific commit.

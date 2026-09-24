@@ -2,6 +2,8 @@
  * Tests for authService — login, signup, session restore, logout, deleteAccount orchestration.
  */
 
+import * as Sentry from '@sentry/react-native';
+
 import { loginUser, signupUser, restoreSession, logout, deleteAccount, acceptCurrentTerms, checkAccountSwitch, loginForRecovery } from '../authService';
 import { clearAvatarCache } from '../avatarService';
 
@@ -1526,6 +1528,24 @@ describe('identity restore integration', () => {
 
     expect(mockSetIdentityRestoreDeferred).toHaveBeenCalledWith(true);
     expect(mockEnsureKeysInitialized).not.toHaveBeenCalled();
+  });
+
+  it('postAuthBootstrap defers on an unexpected restore throw and reports a rebuilt error', async () => {
+    mockAttemptKeychainIdentityRestore.mockRejectedValueOnce(new Error('keychain exploded'));
+    mockLogin.mockResolvedValue({
+      token: 'tok', userId: 'user-1', username: 'alice', publicKey: null,
+    });
+
+    await loginUser('alice@test.com', 'secret');
+
+    expect(mockSetIdentityRestoreDeferred).toHaveBeenCalledWith(true);
+    // #746: the catch reports through `captureError`, which hands Sentry a
+    // REBUILT Error — class name plus scrubbed message only, never the thrown
+    // object — and omits `level`/`extra` because the call site passed neither.
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Error', message: 'keychain exploded' }),
+      { tags: { feature: 'key-recovery', outcome: 'deferred-exception' } },
+    );
   });
 
   it('signupUser clears stale keychain identity BEFORE generating keys', async () => {

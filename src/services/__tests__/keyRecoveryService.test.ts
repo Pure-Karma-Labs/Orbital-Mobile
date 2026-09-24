@@ -979,22 +979,36 @@ describe('recoverIdentityKeys — Sentry telemetry', () => {
     );
   });
 
+  // #746: every capture now goes through `captureError`, which hands Sentry a
+  // REBUILT plain Error (class name + scrubbed message + scrubbed frames) and
+  // auto-adds `status`/`api_code` tags for an ApiError. The assertions below
+  // therefore pin the class NAME rather than the thrown instance, and spell
+  // out the auto-added tags — that pair is the privacy boundary.
   it('captureException on local wipe failure', async () => {
     mockFullCryptoWipe.mockRejectedValueOnce(new Error('disk error'));
     await recoverIdentityKeys('pw', false);
+    // Plain Error: no status/api_code, so `tags` is exactly the call site's.
     expect(mockSentryCaptureException).toHaveBeenCalledWith(
-      expect.any(Error),
-      expect.objectContaining({ tags: { feature: 'key-recovery' } }),
+      expect.objectContaining({ name: 'Error', message: 'disk error' }),
+      expect.objectContaining({
+        tags: { feature: 'key-recovery' },
+        extra: { step: 'local-wipe' },
+      }),
     );
   });
 
   it('captureException on second 409 (conflict persists)', async () => {
     mockEnsureKeysInitialized.mockRejectedValueOnce(new ConflictError());
     await recoverIdentityKeys('pw', false);
+    // Was `expect.any(ConflictError)` — the reported copy is a plain Error
+    // whose `.name` carries the class, so match on the name (#746).
     expect(mockSentryCaptureException).toHaveBeenCalledWith(
-      expect.any(ConflictError),
       expect.objectContaining({
-        tags: { feature: 'key-recovery' },
+        name: 'ConflictError',
+        message: 'Conflict — action cannot be completed',
+      }),
+      expect.objectContaining({
+        tags: { feature: 'key-recovery', status: '409', api_code: 'CONFLICT' },
         extra: { step: 'second-409-conflict-persists' },
       }),
     );
@@ -1006,10 +1020,15 @@ describe('recoverIdentityKeys — Sentry telemetry', () => {
     const promise = recoverIdentityKeys('pw', false);
     await jest.advanceTimersByTimeAsync(1600);
     await promise;
+    // `revoked` is the AuthError's serverMessage, never its message — the
+    // reported message is the generic one, and 401/AUTH_ERROR ride as tags.
     expect(mockSentryCaptureException).toHaveBeenCalledWith(
-      expect.any(Error),
       expect.objectContaining({
-        tags: { feature: 'key-recovery' },
+        name: 'AuthError',
+        message: 'Authentication required',
+      }),
+      expect.objectContaining({
+        tags: { feature: 'key-recovery', status: '401', api_code: 'AUTH_ERROR' },
         extra: { step: 're-login-retry-exhausted' },
       }),
     );
@@ -1020,7 +1039,7 @@ describe('recoverIdentityKeys — Sentry telemetry', () => {
     mockLoadConversations.mockRejectedValueOnce(new Error('sync fail'));
     await recoverIdentityKeys('pw', false);
     expect(mockSentryCaptureException).toHaveBeenCalledWith(
-      expect.any(Error),
+      expect.objectContaining({ name: 'Error', message: 'sync fail' }),
       expect.objectContaining({
         tags: { feature: 'key-recovery' },
         extra: { step: '[Recovery:ConversationSync]' },
@@ -1321,8 +1340,10 @@ describe('recoverIdentityKeys — post-login re-probe', () => {
       .mockRejectedValueOnce(new Error('server hiccup'));
     const result = await recoverIdentityKeys('pw', false);
     expect(result.status).toBe('success');
+    // Rebuilt copy, not the thrown instance — class name and scrubbed message
+    // are all that reach Sentry (#746).
     expect(mockSentryCaptureException).toHaveBeenCalledWith(
-      expect.any(Error),
+      expect.objectContaining({ name: 'Error', message: 'server hiccup' }),
       expect.objectContaining({ extra: { step: 'post-login-reset' } }),
     );
     // Failed reset did NOT revoke the JWT — no extra re-login (#632 panel item 1)

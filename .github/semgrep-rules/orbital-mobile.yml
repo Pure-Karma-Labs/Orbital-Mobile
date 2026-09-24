@@ -61,10 +61,71 @@ rules:
       # iOS: reads process memory near the crash site into native crash
       # reports; that memory holds the SQLCipher key and plaintext (#743).
       - pattern: "enableMemoryIntrospection: true"
+      # Serializes every own-enumerable property of the thrown object onto
+      # event.extra — exactly what toReportableError() exists to prevent
+      # (ApiError.serverMessage, QuotaExceededError.usage) (#746).
+      - pattern: extraErrorDataIntegration(...)
+      # Attaches the rendered native view tree, including decrypted thread
+      # titles, orbit names and message text (#746).
+      - pattern: "attachViewHierarchy: true"
     message: >
-      Sentry Session Replay, screenshot capture, network body capture and
-      crash-time memory introspection are forbidden — they could exfiltrate
-      encrypted API payloads, E2EE message content or key material. Requires
-      security review before enabling.
+      Sentry Session Replay, screenshot capture, view-hierarchy capture,
+      network body capture, error-object serialization and crash-time memory
+      introspection are forbidden — they could exfiltrate encrypted API
+      payloads, E2EE message content or key material. Requires security review
+      before enabling.
+    languages: [typescript, javascript]
+    severity: ERROR
+
+  - id: no-raw-sentry-capture
+    pattern-either:
+      - pattern: $X.captureException(...)
+      - pattern: captureException(...)
+      - pattern: $X.captureEvent(...)
+      - pattern: captureEvent(...)
+    paths:
+      exclude:
+        # The one approved capture path: it reports a rebuilt Error carrying
+        # only class name, scrubbed message and scrubbed frames.
+        - '**/src/services/telemetry.ts'
+        - "*__tests__*"
+        - '**/__mocks__/**'
+    message: >
+      Raw Sentry captures are forbidden — they hand Sentry the thrower's own
+      error object, whose custom fields (ApiError.serverMessage,
+      QuotaExceededError.usage) are one enabled integration away from being
+      serialized into the event. Use captureError() from
+      src/services/telemetry.ts, which reports a rebuilt, scrubbed copy (#746).
+      captureMessage() is not covered by this rule: beforeSend scrubs its
+      message, but the scrub cannot recognise a name, title or invite code, so
+      interpolate only closed enum values into it.
+    languages: [typescript, javascript]
+    severity: ERROR
+
+  - id: no-raw-sentry-scope
+    patterns:
+      - pattern-either:
+          - pattern: Sentry.setContext(...)
+          - pattern: Sentry.setExtra(...)
+          - pattern: Sentry.setExtras(...)
+          - pattern: Sentry.setTag(...)
+          - pattern: Sentry.setTags(...)
+          - pattern: Sentry.setUser(...)
+      # The one deliberate attribution: App.tsx sets the account id on login
+      # and clears it on logout. scrubEvent keeps user.id and drops the rest.
+      # Exact-text allowlist: a structural `{ id: $ID }` pattern would also
+      # match `{ id, email }` (Semgrep object patterns match partially).
+      - pattern-not-regex: 'Sentry\.setUser\((null|\{ id: \w+ \}|\w+ \? \{ id: \w+ \} : null)\)'
+    paths:
+      include:
+        - 'src/**'
+      exclude:
+        - "*__tests__*"
+    message: >
+      Sentry scope setters attach data to EVERY subsequent event and are
+      synced to native, where no JS scrub runs on a hard crash report.
+      scrubEvent does not scrub event.contexts, so setContext/setExtra/setTag
+      /setUser are forbidden outside the setUser({ id }) attribution (#746,
+      PR #837 review). Pass per-event tags/extra to captureError() instead.
     languages: [typescript, javascript]
     severity: ERROR

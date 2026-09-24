@@ -23,4 +23,12 @@ export const setTags = jest.fn();
 export const setContext = jest.fn();
 export const setExtra = jest.fn();
 export const withScope = jest.fn();
+/**
+ * Returned shape mirrors a real Integration (it has a `name`), so
+ * sentryInit's `integrations` callback can be exercised: it filters the
+ * defaults on `name !== 'Breadcrumbs'` and appends this one.
+ */
+export const breadcrumbsIntegration = jest.fn(
+  (options?: Record<string, unknown>) => ({ name: 'Breadcrumbs', options }),
+);
 export const flush = jest.fn(async () => true);

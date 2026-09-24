@@ -15,6 +15,7 @@ import { attemptKeychainIdentityRestore } from './crypto/identityRestoreService'
 import { ensureKeysInitialized } from './crypto/keyGenerationService';
 import { useAppStore } from '../stores/useAppStore';
 import { ConflictError } from './api/errors';
+import { captureError } from './telemetry';
 
 export async function retryIdentityRestore(): Promise<void> {
   try {
@@ -47,14 +48,14 @@ export async function retryIdentityRestore(): Promise<void> {
         // Keys are still uninitialized after a successful restore — must be
         // visible in production, not just dev logs.
         if (__DEV__) console.warn('[DeferredRestore:KeyMaintenance]', e instanceof Error ? e.message : e);
-        Sentry.captureException(e instanceof Error ? e : new Error(String(e)), {
+        captureError(e, {
           tags: { feature: 'key-recovery', outcome: 'retry-key-init-failed' },
         });
       }
     });
   } catch (e) {
     // Unexpected error — treat as still deferred
-    Sentry.captureException(e, {
+    captureError(e, {
       tags: { feature: 'key-recovery', outcome: 'retry-failed' },
     });
   }

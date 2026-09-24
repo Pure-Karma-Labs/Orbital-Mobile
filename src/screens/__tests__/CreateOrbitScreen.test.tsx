@@ -368,7 +368,8 @@ describe('CreateOrbitScreen — invite generation', () => {
 
 describe('CreateOrbitScreen — error handling', () => {
   it('shows a generic banner on creation failure, never the field error node, never the raw server message, and reports to Sentry', async () => {
-    mockCreateOrbit.mockRejectedValue(new Error('Server error'));
+    const thrown = new Error('Server error');
+    mockCreateOrbit.mockRejectedValue(thrown);
     const renderer = renderScreen();
 
     act(() => {
@@ -385,8 +386,17 @@ describe('CreateOrbitScreen — error handling', () => {
 
     expect(mockCaptureException).toHaveBeenCalledTimes(1);
     const [reportedError, context] = mockCaptureException.mock.calls[0];
+    // #746: the screen reports through `captureError`, which sends a REBUILT
+    // Error — class name plus scrubbed message, nothing the thrower hung off
+    // the object. So this is deliberately NOT the instance we rejected with.
     expect(reportedError).toBeInstanceOf(Error);
-    expect((context as { tags: { feature: string } }).tags.feature).toBe('orbit-create');
+    expect(reportedError).not.toBe(thrown);
+    expect((reportedError as Error).name).toBe('Error');
+    expect((reportedError as Error).message).toBe('Server error');
+    // Exact match, not objectContaining: `captureError` omits `level`/`extra`
+    // when the call site passed neither, and a non-ApiError adds no
+    // status/api_code tags (#746).
+    expect(context).toEqual({ tags: { feature: 'orbit-create' } });
   });
 
   it('shows the NetworkError message on the banner, without reporting to Sentry', async () => {

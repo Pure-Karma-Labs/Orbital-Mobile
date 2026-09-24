@@ -31,6 +31,7 @@ import { clearAllReplies } from '../database/repositories/replyRepository';
 import { clearLinkPreviewCache } from '../hooks/useLinkPreview';
 import { clearIdentityInflightState } from './crypto/identityKeyAccess';
 import { clearAvatarServiceState, clearAvatarCache } from './avatarService';
+import { captureError } from './telemetry';
 import { isStagingResidueName } from './media/stagingResidue';
 import { clearMessageHandlerState } from './websocket/messageHandler';
 import { execute } from '../database/queryHelpers';
@@ -122,7 +123,7 @@ async function postAuthBootstrap(): Promise<void> {
     // Treat any unexpected error as deferred — never block bootstrap
     restoreDeferred = true;
     useAppStore.getState().setIdentityRestoreDeferred(true);
-    Sentry.captureException(e, {
+    captureError(e, {
       tags: { feature: 'key-recovery', outcome: 'deferred-exception' },
     });
   }

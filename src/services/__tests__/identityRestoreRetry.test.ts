@@ -87,11 +87,13 @@ describe('retryIdentityRestore', () => {
 
     await retryIdentityRestore();
 
+    // #746: `captureError` reports a REBUILT Error (class name + scrubbed
+    // message), so pin those rather than the thrown instance. A plain Error
+    // adds no status/api_code tags, and no `level`/`extra` key is emitted
+    // because the call site passed neither — hence the exact `toEqual`.
     expect(mockSentryCaptureException).toHaveBeenCalledWith(
-      expect.any(Error),
-      expect.objectContaining({
-        tags: expect.objectContaining({ outcome: 'retry-key-init-failed' }),
-      }),
+      expect.objectContaining({ name: 'Error', message: 'disk full' }),
+      { tags: { feature: 'key-recovery', outcome: 'retry-key-init-failed' } },
     );
   });
 
@@ -101,10 +103,8 @@ describe('retryIdentityRestore', () => {
     await retryIdentityRestore();
 
     expect(mockSentryCaptureException).toHaveBeenCalledWith(
-      expect.any(Error),
-      expect.objectContaining({
-        tags: expect.objectContaining({ outcome: 'retry-failed' }),
-      }),
+      expect.objectContaining({ name: 'Error', message: 'keychain exploded' }),
+      { tags: { feature: 'key-recovery', outcome: 'retry-failed' } },
     );
     expect(mockSetIdentityRestoreDeferred).not.toHaveBeenCalled();
     expect(mockEnsureKeysInitialized).not.toHaveBeenCalled();

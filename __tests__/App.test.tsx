@@ -74,10 +74,26 @@ jest.mock('../src/services/authService', () => ({
   logout: jest.fn(() => Promise.resolve()),
 }));
 
+import * as Sentry from '@sentry/react-native';
+
 import App from '../src/App';
 
 test('renders correctly', async () => {
   await act(async () => {
     create(<App />);
+  });
+});
+
+// #746: `Sentry.wrap` installs the TouchEventBoundary, whose breadcrumbs carry
+// the pressed element's rendered text / accessibilityLabel — and a dozen of
+// ours interpolate DECRYPTED content. The boundary props below are the
+// secondary defence (the primary one is the category drop in filterBreadcrumb),
+// so pin the exact options the default export is wrapped with.
+test('wraps App with the touch breadcrumb sources disabled', () => {
+  expect(Sentry.wrap).toHaveBeenCalledWith(expect.any(Function), {
+    touchEventBoundaryProps: {
+      extractTextFromChildren: false,
+      enableRageTapDetection: false,
+    },
   });
 });

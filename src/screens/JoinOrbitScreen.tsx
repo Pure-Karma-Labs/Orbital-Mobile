@@ -31,7 +31,7 @@ import {
   hasV2InviteCodeLength,
 } from '../services/crypto/inviteCrypto';
 import { RATE_LIMIT_MESSAGE } from '../utils/errorMessages';
-import * as Sentry from '@sentry/react-native';
+import { captureError } from '../services/telemetry';
 import type { ThreadsStackParamList } from '../navigation/types';
 
 // ---------------------------------------------------------------------------
@@ -120,14 +120,8 @@ export function JoinOrbitScreen({
         // wrong, and never surface a raw error message. Silent here before
         // #787 — a permanent identity-key fault (#675 class) looked like a
         // transient retry prompt, so report it.
-        Sentry.captureException(err instanceof Error ? err : new Error(String(err)), {
-          tags: {
-            feature: 'orbit-join',
-            ...(err instanceof ApiError
-              ? { status: String(err.statusCode), api_code: err.code }
-              : {}),
-          },
-        });
+        // captureError adds status/api_code for an ApiError (#746).
+        captureError(err, { tags: { feature: 'orbit-join' } });
         setBannerError('Could not join orbit — please try again');
       }
     } finally {

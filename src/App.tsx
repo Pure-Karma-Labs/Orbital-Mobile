@@ -18,6 +18,7 @@ import { useAuth } from './stores';
 import { useAppStore } from './stores/useAppStore';
 import { bootstrap } from './bootstrap';
 import { restoreSession } from './services/authService';
+import { captureError } from './services/telemetry';
 import { websocketManager } from './services/websocket';
 import {
   initNotifications,
@@ -93,7 +94,7 @@ function AppContent(): React.JSX.Element {
         if (!restored) setRestoreDone(true);
       })
       .catch((e: unknown) => {
-        Sentry.captureException(e);
+        captureError(e);
         setRestoreDone(true);
       })
       .finally(() => {
@@ -214,4 +215,24 @@ function LoadingView(): React.JSX.Element {
   );
 }
 
-export default Sentry.wrap(App);
+/**
+ * `Sentry.wrap` installs the TouchEventBoundary, which records the pressed
+ * element's `accessibilityLabel` (or its rendered text) into `touch` and
+ * `ui.multiClick` breadcrumbs. At least a dozen of our labels interpolate
+ * DECRYPTED content — `Thread: ${title}`, orbit names, display names — so
+ * these props are turned off.
+ *
+ * This is the SECONDARY layer: the category drop in `filterBreadcrumb`
+ * (telemetryScrub.ts) is the fix, and it also covers crumbs the boundary
+ * records for elements we do not control.
+ *
+ * With no `tracesSampleRate` set, `wrap` adds only the touch boundary, the
+ * profiler wrapper and the feedback provider — nothing we use. Deleting the
+ * wrap entirely is the next step if touch handling ever shows up in a profile.
+ */
+export default Sentry.wrap(App, {
+  touchEventBoundaryProps: {
+    extractTextFromChildren: false,
+    enableRageTapDetection: false,
+  },
+});

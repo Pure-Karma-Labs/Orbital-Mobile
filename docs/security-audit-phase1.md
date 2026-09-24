@@ -106,6 +106,22 @@
 
 ---
 
+## Sentry Payload Guards (#746)
+
+**Location:** `src/sentryInit.ts`, `src/services/telemetry.ts`, `src/services/telemetryScrub.ts`, `src/App.tsx`
+**Status:** Post-audit hardening -- extends the "no user content in diagnostics" posture of F-08 from console logging to the crash-reporting channel.
+
+Crash reporting is the one path on which a failure leaves the device for a server the developer does not control, so the payload is constrained by a single global boundary rather than by call-site discipline.
+
+- **One capture path.** Every caught error reaches Sentry through `captureError()` in `src/services/telemetry.ts`, which reports a rebuilt `Error` -- class name, scrubbed message, scrubbed stack frames -- instead of the thrower's own object. Custom fields (`ApiError.serverMessage`, `QuotaExceededError.usage`) therefore cannot be serialized into the event.
+- **Breadcrumb drops.** `beforeBreadcrumb` (`filterBreadcrumb`) drops every `http`-type crumb and the `touch`, `ui.multiClick` and `console` categories, and rebuilds the surviving crumb's `data` from primitives only. `touch` / `ui.multiClick` crumbs come from `Sentry.wrap`'s TouchEventBoundary and carry the pressed element's accessibility label or rendered text, several of which interpolate decrypted content. Console capture is additionally off at source (`breadcrumbsIntegration({ console: false })`), and `Sentry.wrap(App, { touchEventBoundaryProps: { extractTextFromChildren: false, enableRageTapDetection: false } })` is the secondary touch-label defence.
+- **`beforeSend` re-filters.** `scrubEvent` scrubs exception values, `message` / `logentry`, `extra` and `tags`, and runs the breadcrumb filter a second time. The second pass is required, not belt-and-braces: `deviceContextIntegration` merges the native breadcrumb buffer into the event inside an event processor (concat, sort by timestamp, slice to `maxBreadcrumbs`), which runs after `beforeBreadcrumb` and before `beforeSend`, so native crumbs never pass through the first hook at all.
+- **Native network breadcrumbs off.** `enableNetworkBreadcrumbs: false` stops sentry-cocoa swizzling `NSURLSession`. The JS hooks cannot cover this: `initNativeSdk` strips `beforeSend` and `beforeBreadcrumb` from the options it forwards to native, so a hard native crash report is assembled by sentry-cocoa with no JS boundary in the path, and request URLs -- orbit, thread and media UUIDs, attributable through `setUser({ id })` -- would ship inside it. The re-check triggers for an SDK bump are in `docs/ios-dependency-delivery.md`.
+
+**Enforcement.** Four layers, all in CI: the Semgrep rule `no-raw-sentry-capture` in `.github/semgrep-rules/orbital-mobile.yml` is severity ERROR and the scan runs with `--severity ERROR --error`, so any `captureException` / `captureEvent` outside `src/services/telemetry.ts` fails the job; `.eslintrc.js` bans `@sentry/*` and the telemetry facades from crypto, secure-storage and database paths (the pure `telemetryScrub.ts` stays allowed); section 15 (`sentry-privacy-hooks`) of `scripts/check-security-invariants.mjs`, run by the Security Invariants job of `.github/workflows/security.yml`, pins the four cross-file facts a unit test cannot observe -- the `Sentry.init()` options literal (both hooks, `enableNetworkBreadcrumbs: false`, `console: false`, `sendDefaultPii: false`, `enableMemoryIntrospection: false`, `maxBreadcrumbs`), the `filterBreadcrumb` drop block, the `captureError` body and the `Sentry.wrap(App, ...)` props -- matching inside a located window with comment lines stripped, so a pin that survives only in a comment does not satisfy the rule; and Jest pins the privacy-relevant init options (`__tests__/sentryInit.test.ts`) and the scrub primitives (telemetry tests under `src/services/__tests__/`).
+
+---
+
 ## Open Findings
 
 ### F-06: bytesEqual not constant-time

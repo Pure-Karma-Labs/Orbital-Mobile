@@ -7,10 +7,29 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { ThemeProvider } from '../../../theme';
 import { ReplyItem } from '../ReplyItem';
 
+// Captures the onEnd callback so tests can fire the tap gesture manually.
+// The chainable shape mirrors the real API: Tap() → onEnd(cb) → runOnJS() → same handler.
+let capturedTapEndCallback: (() => void) | undefined;
 jest.mock('react-native-gesture-handler', () => {
   const { View } = require('react-native');
   return {
-    Gesture: { Tap: () => ({ onEnd: () => ({ runOnJS: () => ({}) }) }) },
+    Gesture: {
+      Tap: () => {
+        const handler: {
+          onEnd: (cb: () => void) => typeof handler;
+          runOnJS: () => typeof handler;
+        } = {
+          onEnd(cb: () => void) {
+            capturedTapEndCallback = cb;
+            return handler;
+          },
+          runOnJS() {
+            return handler;
+          },
+        };
+        return handler;
+      },
+    },
     GestureDetector: ({ children }: { children: React.ReactNode }) => children,
     GestureHandlerRootView: View,
   };
@@ -81,6 +100,44 @@ function renderReplyItem(
   });
   return renderer;
 }
+
+// ---------------------------------------------------------------------------
+// Tap gesture behaviour (#749)
+// ---------------------------------------------------------------------------
+
+describe('ReplyItem — tap gesture syncStatus guard', () => {
+  beforeEach(() => {
+    capturedTapEndCallback = undefined;
+  });
+
+  it('does NOT call onPress when syncStatus is "pending"', () => {
+    const mockOnPress = jest.fn();
+    renderReplyItem({ syncStatus: 'pending', onPress: mockOnPress });
+    expect(capturedTapEndCallback).toBeDefined();
+    capturedTapEndCallback!();
+    expect(mockOnPress).not.toHaveBeenCalled();
+  });
+
+  it('DOES call onPress when syncStatus is "synced"', () => {
+    const mockOnPress = jest.fn();
+    renderReplyItem({ syncStatus: 'synced', replyId: 'r-1', authorUsername: 'bob', depth: 0, onPress: mockOnPress });
+    expect(capturedTapEndCallback).toBeDefined();
+    capturedTapEndCallback!();
+    // useDisplayName mock: (_authorId, fallback) => fallback, so displayName = 'bob'
+    expect(mockOnPress).toHaveBeenCalledWith('r-1', 'bob', 0);
+  });
+
+  it('renders no "Failed to send" text for syncStatus "failed"', () => {
+    const renderer = renderReplyItem({ syncStatus: 'failed' });
+    const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
+    const failedLabel = allText.find(
+      (node) =>
+        typeof node.props.children === 'string' &&
+        node.props.children.toLowerCase().includes('failed to send'),
+    );
+    expect(failedLabel).toBeUndefined();
+  });
+});
 
 describe('ReplyItem — useAuthorActions context', () => {
   it('passes { contentType: "reply", contentId: replyId, groupId } as the 4th argument', () => {

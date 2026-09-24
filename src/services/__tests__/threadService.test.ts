@@ -404,7 +404,7 @@ describe('postReply', () => {
     expect(result.id).toBe('server-reply-id');
   });
 
-  it('sets sync status to failed and rethrows the ORIGINAL error (#747)', async () => {
+  it('removes the optimistic row and rethrows the ORIGINAL error on failure (#749/#747)', async () => {
     // The rethrow must be the same object: uploadTelemetry reads `instanceof
     // ApiError` off it for the status / api_code tags, which a rewrapped
     // `new Error('Failed to post reply')` erased.
@@ -417,16 +417,28 @@ describe('postReply', () => {
 
     expect(mockAddOptimisticReply).toHaveBeenCalledTimes(1);
 
-    expect(mockUpdateReplySyncStatus).toHaveBeenCalledWith('client-uuid-000', 'failed');
+    // #749: failure path removes the optimistic row rather than marking it 'failed'
+    expect(mockRemoveReply).toHaveBeenCalledTimes(1);
+    expect(mockRemoveReply).toHaveBeenCalledWith('client-uuid-000');
+    // upsertReply only fires on the success path — never reached when createReply rejects
+    expect(mockUpsertReply).not.toHaveBeenCalled();
+    // updateReplySyncStatus has no production caller after #749
+    expect(mockUpdateReplySyncStatus).not.toHaveBeenCalled();
   });
 
-  it('propagates a PendingWrapError from the key fetch as the same object (#747)', async () => {
+  it('removes the optimistic row and rethrows a PendingWrapError from the key fetch (#749/#747)', async () => {
     const err = new PendingWrapError();
     mockGetOrFetchGroupKey.mockRejectedValue(err);
 
     await expect(
       postReply('thread-1', 'group-1', 'Hello', null, 0, { authorId: 'user-1', authorUsername: 'alice' }),
     ).rejects.toBe(err);
+
+    // addOptimisticReply fires before the try block, so the row exists and must be removed
+    expect(mockAddOptimisticReply).toHaveBeenCalledTimes(1);
+    expect(mockRemoveReply).toHaveBeenCalledTimes(1);
+    expect(mockRemoveReply).toHaveBeenCalledWith('client-uuid-000');
+    expect(mockUpdateReplySyncStatus).not.toHaveBeenCalled();
   });
 
   it('bumps the parent thread replyCount and lastReplyAt after a successful post (#329)', async () => {
@@ -536,7 +548,7 @@ describe('postReply', () => {
 // ---------------------------------------------------------------------------
 
 describe('createNewThread', () => {
-  it('sets sync status to failed and rethrows the ORIGINAL error (#747)', async () => {
+  it('removes the optimistic row and rethrows the ORIGINAL error on failure (#749/#747)', async () => {
     const err = new ServerError(500);
     mockCreateThread.mockRejectedValue(err);
 
@@ -548,7 +560,13 @@ describe('createNewThread', () => {
     ).rejects.toBe(err);
 
     expect(mockAddOptimisticThread).toHaveBeenCalledTimes(1);
-    expect(mockUpdateThreadSyncStatus).toHaveBeenCalledWith('client-uuid-000', 'failed');
+    // #749: failure path removes the optimistic row rather than marking it 'failed'
+    expect(mockRemoveThread).toHaveBeenCalledTimes(1);
+    expect(mockRemoveThread).toHaveBeenCalledWith('client-uuid-000');
+    // upsertThread only fires on the success path — never reached when createThread rejects
+    expect(mockUpsertThread).not.toHaveBeenCalled();
+    // updateThreadSyncStatus has no production caller after #749
+    expect(mockUpdateThreadSyncStatus).not.toHaveBeenCalled();
   });
 });
 

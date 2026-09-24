@@ -45,10 +45,11 @@ import { useAppStore } from '../stores/useAppStore';
 import { loadThread, loadReplies, postReply, hydrateRepliesFromLocal } from '../services/threadService';
 import { isUploadCancellation } from '../services/mediaUploadService';
 import { captureUploadFailure, type PostPipelineStage } from '../services/uploadTelemetry';
-import { QuotaExceededError } from '../services/api/errors';
+import { ConflictError, QuotaExceededError } from '../services/api/errors';
 import { updateMediaParent } from '../database/repositories/mediaRepository';
 import { useMediaPicker } from '../hooks/useMediaPicker';
 import { useMediaUploadProgress } from '../hooks/useMediaUploadProgress';
+import { useDiscardUploadGuard } from '../hooks/useDiscardUploadGuard';
 import { Header } from '../components/Header';
 import { OrbitalKeyboardAvoidingView } from '../components/OrbitalKeyboardAvoidingView';
 import { AsciiSection } from '../components/AsciiSeparator';
@@ -173,8 +174,31 @@ export function ThreadDetailScreen({
   const [replyTarget, setReplyTarget] = useState<ReplyTarget | null>(null);
   const [sending, setSending] = useState(false);
   const { selectedMedia, pickMedia, removeMedia, clearMedia } = useMediaPicker();
-  const { progress: uploadProgress, cancel: cancelUpload, uploadBatch } = useMediaUploadProgress();
+  const {
+    progress: uploadProgress,
+    cancel: cancelUpload,
+    uploadBatch,
+    clearUploadCache,
+    hasUnsentUpload,
+  } = useMediaUploadProgress();
   const uploading = uploadProgress != null;
+
+  // #722: leaving mid-upload aborts it, and leaving after a failed send strands
+  // media that only this screen session can still attach. Both get a confirm.
+  const handleDiscardUpload = useCallback(() => {
+    cancelUpload();
+    clearUploadCache();
+  }, [cancelUpload, clearUploadCache]);
+
+  useDiscardUploadGuard({
+    uploading: uploadProgress != null && !uploadProgress.cancelling,
+    // Only while media is still selected: clearing the strip after a failed send
+    // leaves nothing the prompt could be about (the stale cache misses on the
+    // next send anyway).
+    unsent: hasUnsentUpload && selectedMedia.length > 0,
+    noun: 'reply',
+    onDiscard: handleDiscardUpload,
+  });
 
   // Live view of the selection for the hook's post-batch id filter — the batch
   // holds the array captured at call time, so an item removed mid-upload must
@@ -495,11 +519,17 @@ export function ThreadDetailScreen({
       try {
         let mediaIds: string[] | undefined;
         if (selectedMedia.length > 0) {
+          // scopeKey = threadId: a params-in-place navigate to another thread
+          // keeps this screen mounted, and those ids belong to the old thread.
           mediaIds = await uploadBatch(
             selectedMedia,
             thread.conversationId,
             () => selectedMediaRef.current,
+            threadId,
           );
+        } else {
+          // Nothing attached: any held ids are from an abandoned send.
+          clearUploadCache();
         }
         const parentReplyId = replyTarget?.replyId ?? null;
         const depth = replyTarget ? replyTarget.depth + 1 : 0;
@@ -513,6 +543,10 @@ export function ThreadDetailScreen({
           { authorId: userId, authorUsername: username },
           mediaIds ? { mediaIds } : undefined,
         );
+
+        // The ids are attached now, so the reuse cache must not survive into
+        // the next send (mount-guarded inside the hook).
+        clearUploadCache();
 
         // Reset composer immediately on successful post
         if (mountedRef.current) {
@@ -551,6 +585,15 @@ export function ThreadDetailScreen({
           if (mountedRef.current) {
             if (e instanceof QuotaExceededError) {
               Alert.alert('Upload Failed', e.message);
+            } else if (e instanceof ConflictError) {
+              // 409 on a reused send: the media was already attached, which is
+              // near-proof that the previous create committed. Never invite a
+              // blind retry here -- the cache is deliberately kept so a repeat
+              // press draws another 409 instead of posting a duplicate.
+              Alert.alert(
+                'Reply May Have Been Sent',
+                'Your reply may already have been sent. Pull to refresh before sending again.',
+              );
             } else {
               // Every other failure (network loss, retry exhaustion, 5xx) used
               // to just stop the spinner, leaving the user unsure whether the
@@ -566,7 +609,7 @@ export function ThreadDetailScreen({
         if (mountedRef.current) setSending(false);
       }
     },
-    [thread, threadId, userId, username, replyTarget, selectedMedia, clearMedia, uploadBatch],
+    [thread, threadId, userId, username, replyTarget, selectedMedia, clearMedia, uploadBatch, clearUploadCache],
   );
 
   // ---------------------------------------------------------------------------

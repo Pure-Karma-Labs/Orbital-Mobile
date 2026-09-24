@@ -98,9 +98,13 @@ export const ReplyItem = React.memo(function ReplyItem({
 
   const tapGesture = useMemo(
     () => Gesture.Tap().onEnd(() => {
+      // A pending row is intentionally inert: its clientId is never a valid
+      // parentReplyId, so letting it become the reply target would post a reply
+      // parented to an id the server has never seen (#749).
+      if (syncStatus !== 'synced') return;
       onPress(replyId, displayName, depth);
     }).runOnJS(true),
-    [onPress, replyId, displayName, depth],
+    [onPress, replyId, displayName, depth, syncStatus],
   );
 
   const handleMediaPress = useCallback((index: number) => {
@@ -168,13 +172,6 @@ export const ReplyItem = React.memo(function ReplyItem({
     marginTop: theme.spacing.xs,
   };
 
-  const failedStyle: TextStyle = {
-    fontFamily: theme.typography.fontFamily.mono,
-    fontSize: theme.typography.fontSize.xs,
-    color: theme.colors.error,
-    marginTop: theme.spacing.xs,
-  };
-
   const replyContextStyle: TextStyle = {
     fontFamily: theme.typography.fontFamily.mono,
     fontSize: theme.typography.fontSize.xs,
@@ -232,9 +229,6 @@ export const ReplyItem = React.memo(function ReplyItem({
           }
           onItemPress={handleMediaPress}
         />
-      )}
-      {syncStatus === 'failed' && (
-        <Text style={failedStyle}>Failed to send</Text>
       )}
       {mediaItems.length > 0 && (
         <MediaLightbox

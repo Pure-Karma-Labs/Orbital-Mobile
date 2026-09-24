@@ -236,6 +236,9 @@ export const createThreadsSlice: StateCreator<
     );
   },
 
+  // No production caller since #749: both threadService failure paths call
+  // removeThread/removeReply instead, so nothing writes 'failed' any more.
+  // Retained only as slice API the suites exercise.
   updateThreadSyncStatus: (id: string, status: SyncStatus) => {
     const { threads } = get();
     const existing = threads[id];

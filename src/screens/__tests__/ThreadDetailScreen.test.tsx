@@ -2,6 +2,20 @@
  * Tests for ThreadDetailScreen — thread detail view with nested replies and composer.
  */
 
+// ---------------------------------------------------------------------------
+// @react-navigation/native — useDiscardUploadGuard calls useNavigation() and
+// usePreventRemove(). Without this mock, every render throws "Couldn't find a
+// navigation object." The hook navigation uses the prop mockNavigation so that
+// dispatch() calls from the guard are observable on the same mock.
+// ---------------------------------------------------------------------------
+const mockUsePreventRemove = jest.fn();
+jest.mock('@react-navigation/native', () => ({
+  ...jest.requireActual('@react-navigation/native'),
+  usePreventRemove: (preventRemove: boolean, cb: unknown) =>
+    mockUsePreventRemove(preventRemove, cb),
+  useNavigation: () => mockNavigation,
+}));
+
 jest.mock('@sentry/react-native', () => ({
   captureException: jest.fn(),
   addBreadcrumb: jest.fn(),
@@ -103,7 +117,7 @@ import * as Sentry from '@sentry/react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import { ThemeProvider } from '../../theme';
 import { ThreadDetailScreen } from '../ThreadDetailScreen';
-import { NetworkError, QuotaExceededError, ServerError } from '../../services/api/errors';
+import { ConflictError, NetworkError, QuotaExceededError, ServerError } from '../../services/api/errors';
 import { toggleMute } from '../../services/notificationSettingsSync';
 import { UPLOAD_CANCELLED_MESSAGE } from '../../services/media/uploadCancellation';
 import type { BatchUploadProgressEvent } from '../../services/mediaUploadService';
@@ -345,6 +359,9 @@ function applyDefaultMocks(): void {
   mockBlockedSet = new Set<string>();
   mockMutedTargets = {};
   mockConversations = {};
+  // The guard mock has no implementation — clearAllMocks() above already resets
+  // its call history. Explicitly clear in case a test overrides its behaviour.
+  mockUsePreventRemove.mockReset();
   // Default: loadThread and loadReplies resolve but store stays empty
   // (store is mocked separately)
   mockLoadThread.mockResolvedValue(fakeThread);
@@ -780,6 +797,37 @@ describe('ThreadDetailScreen — media send', () => {
     });
 
     expect(mockClearMedia).not.toHaveBeenCalled();
+  });
+
+  it('keeps the unsent guard off while postReply is in flight and arms it after a failure (PR #839 review)', async () => {
+    let rejectReply: (e: Error) => void = () => {};
+    mockPostReply.mockImplementation(
+      () => new Promise((_resolve, reject) => { rejectReply = reject; }),
+    );
+    mockSelectedMedia = [
+      { uri: 'file:///photo1.jpg', type: 'image/jpeg', fileName: 'photo1.jpg', fileSize: 100 },
+    ];
+
+    const renderer = await renderScreen();
+    const input = renderer.root.findAll((node) => node.props.testID === 'reply-input');
+    await act(async () => {
+      input[0].props.onChangeText('will fail');
+    });
+    const sendBtn = renderer.root.findAll((node) => node.props.testID === 'send-button');
+    await act(async () => {
+      sendBtn[0].props.onPress();
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+    // Upload landed, reply-create pending: the unabortable create is not guarded.
+    expect(mockPostReply).toHaveBeenCalled();
+    expect(mockUsePreventRemove.mock.calls.at(-1)?.[0]).toBe(false);
+
+    await act(async () => {
+      rejectReply(new Error('Server error'));
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+    // Failed with media still selected: the unsent arm is live.
+    expect(mockUsePreventRemove.mock.calls.at(-1)?.[0]).toBe(true);
   });
 });
 
@@ -1444,5 +1492,223 @@ describe('ThreadDetailScreen — send failure signal', () => {
 
     expect(alertSpy).not.toHaveBeenCalled();
     expect(mockCaptureException).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Upload cache reuse (#749/#724)
+// ---------------------------------------------------------------------------
+
+describe('ThreadDetailScreen — upload cache reuse', () => {
+  let alertSpy: jest.SpyInstance;
+
+  const oneImage = [
+    {
+      uri: 'file:///photo1.jpg',
+      type: 'image/jpeg',
+      fileName: 'photo1.jpg',
+      fileSize: 100,
+      width: 50,
+      height: 50,
+    },
+  ];
+
+  function cacheThreadsState(extras: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      threads: { 'thread-1': fakeThread },
+      threadIdsByConversation: { 'group-1': ['thread-1'] },
+      replies: {},
+      replyIdsByThread: {},
+      activeThreadId: 'thread-1',
+      setThreads: jest.fn(),
+      upsertThread: jest.fn(),
+      removeThread: jest.fn(),
+      setActiveThread: mockSetActiveThread,
+      markThreadViewed: jest.fn(),
+      setReplies: jest.fn(),
+      appendReplies: jest.fn(),
+      upsertReply: jest.fn(),
+      addOptimisticThread: jest.fn(),
+      addOptimisticReply: jest.fn(),
+      updateThreadSyncStatus: jest.fn(),
+      updateReplySyncStatus: jest.fn(),
+      ...extras,
+    };
+  }
+
+  beforeEach(() => {
+    const storesMock = jest.requireMock('../../stores') as { useThreads: jest.Mock };
+    storesMock.useThreads.mockReturnValue(cacheThreadsState());
+    alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    const storesMock = jest.requireMock('../../stores') as { useThreads: jest.Mock };
+    storesMock.useThreads.mockReturnValue({
+      ...cacheThreadsState(),
+      threads: {},
+      threadIdsByConversation: {},
+      activeThreadId: null,
+    });
+    alertSpy.mockRestore();
+    mockSelectedMedia = [];
+  });
+
+  async function doSend(renderer: ReactTestRenderer): Promise<void> {
+    const input = renderer.root.findAll((node) => node.props.testID === 'reply-input');
+    await act(async () => {
+      input[0].props.onChangeText('hello');
+    });
+    const sendBtn = renderer.root.findAll((node) => node.props.testID === 'send-button');
+    await act(async () => {
+      sendBtn[0].props.onPress();
+    });
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  it('reuses uploaded media ids on a second send after a postReply failure', async () => {
+    // mockSelectedMedia is a module-level array; useMediaPicker returns the same
+    // reference on every render so array identity is stable — the cache hit
+    // condition `cached.source === items` is satisfied on the second send.
+    mockSelectedMedia = oneImage;
+    mockPostReply
+      .mockRejectedValueOnce(new Error('Server error'))
+      .mockResolvedValueOnce({
+        id: 'reply-new',
+        threadId: 'thread-1',
+        authorId: 'user-1',
+        authorUsername: 'alice',
+        body: 'hello',
+        parentReplyId: null,
+        depth: 0,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        syncStatus: 'synced',
+      });
+
+    const renderer = await renderScreen();
+
+    // First send — upload runs, postReply fails, cache is populated.
+    await doSend(renderer);
+    expect(mockUploadMediaBatch).toHaveBeenCalledTimes(1);
+
+    // Second send — same items reference, same groupId, same scopeKey (thread-1):
+    // uploadBatch returns the cached ids without calling uploadMediaBatch again.
+    await doSend(renderer);
+    expect(mockUploadMediaBatch).toHaveBeenCalledTimes(1);
+
+    // Both postReply calls must carry the same mediaIds.
+    const firstMediaArg = mockPostReply.mock.calls[0][6] as { mediaIds: string[] };
+    const secondMediaArg = mockPostReply.mock.calls[1][6] as { mediaIds: string[] };
+    expect(secondMediaArg).toEqual({ mediaIds: ['media-id-1'] });
+    expect(secondMediaArg).toEqual(firstMediaArg);
+  });
+
+  it('alerts with the conflict copy and keeps the cache alive on a ConflictError (409)', async () => {
+    mockSelectedMedia = oneImage;
+    // 409 deliberately does NOT clear the cache — see useMediaUploadProgress —
+    // so the second press re-attaches the same ids and draws another 409 rather
+    // than uploading a duplicate set.
+    mockPostReply.mockRejectedValue(new ConflictError());
+
+    const renderer = await renderScreen();
+
+    // First send: upload runs once, postReply throws ConflictError.
+    await doSend(renderer);
+    expect(alertSpy).toHaveBeenCalledWith(
+      'Reply May Have Been Sent',
+      'Your reply may already have been sent. Pull to refresh before sending again.',
+    );
+    expect(mockUploadMediaBatch).toHaveBeenCalledTimes(1);
+
+    // Second send: cache entry is still alive → no re-upload.
+    await doSend(renderer);
+    expect(mockUploadMediaBatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-uploads when the threadId (scopeKey) changes after a failed send', async () => {
+    // Set up both thread-1 and thread-2 in the store so handleSend can resolve
+    // `thread` and proceed after the route is updated to thread-2.
+    const fakeThread2 = { ...fakeThread, id: 'thread-2' };
+    const storesMock = jest.requireMock('../../stores') as { useThreads: jest.Mock };
+    storesMock.useThreads.mockReturnValue(
+      cacheThreadsState({
+        threads: { 'thread-1': fakeThread, 'thread-2': fakeThread2 },
+        threadIdsByConversation: { 'group-1': ['thread-1', 'thread-2'] },
+        replyIdsByThread: { 'thread-1': [], 'thread-2': [] },
+      }),
+    );
+
+    mockSelectedMedia = oneImage;
+    mockPostReply
+      .mockRejectedValueOnce(new Error('Server error'))
+      .mockResolvedValueOnce({
+        id: 'reply-new',
+        threadId: 'thread-2',
+        authorId: 'user-1',
+        authorUsername: 'alice',
+        body: 'hello',
+        parentReplyId: null,
+        depth: 0,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        syncStatus: 'synced',
+      });
+
+    const renderer = await renderScreen(); // thread-1
+
+    // First send on thread-1 — fails at postReply; cache populated with scopeKey='thread-1'.
+    await doSend(renderer);
+    expect(mockUploadMediaBatch).toHaveBeenCalledTimes(1);
+
+    // Update the route to thread-2 in-place. React reconciles the same component
+    // type at the same position without remounting (no key change), so the hook
+    // instance and its cacheRef survive. A new scopeKey ('thread-2') makes the
+    // cache entry a miss on the next uploadBatch call.
+    //
+    // If ThreadDetailScreen or a navigator ancestor keys on threadId and DOES
+    // remount on the update, the re-upload still happens — the hook instance is
+    // fresh, the cache is empty, and uploadMediaBatch is called again. The
+    // user-visible outcome (fresh upload on the new thread) is the same; only
+    // the mechanism differs (no-cache vs. scopeKey miss).
+    const thread2Route = {
+      key: 'ThreadDetail',
+      name: 'ThreadDetail' as const,
+      params: { threadId: 'thread-2', threadTitle: 'Thread Two' },
+    };
+    await act(async () => {
+      renderer.update(
+        React.createElement(
+          ThemeProvider,
+          { colorSchemeOverride: 'light' },
+          React.createElement(ThreadDetailScreen, {
+            navigation: mockNavigation as unknown as React.ComponentProps<typeof ThreadDetailScreen>['navigation'],
+            route: thread2Route as unknown as React.ComponentProps<typeof ThreadDetailScreen>['route'],
+          }),
+        ),
+      );
+    });
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+
+    // Second send on thread-2 — scopeKey mismatch (or remount) → re-upload.
+    await doSend(renderer);
+    expect(mockUploadMediaBatch).toHaveBeenCalledTimes(2);
+  });
+
+  it('fires exactly one Alert.alert on a postReply failure', async () => {
+    mockPostReply.mockRejectedValue(new Error('Server error'));
+
+    const renderer = await renderScreen();
+    await doSend(renderer);
+
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+    expect(alertSpy).toHaveBeenCalledWith(
+      'Reply Failed',
+      'Failed to send your reply. Please try again.',
+    );
   });
 });

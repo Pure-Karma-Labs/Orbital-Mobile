@@ -21,10 +21,11 @@ import { VerifiedStatus } from '../types/database';
 import { createNewThread } from '../services/threadService';
 import { isUploadCancellation } from '../services/mediaUploadService';
 import { captureUploadFailure, type PostPipelineStage } from '../services/uploadTelemetry';
-import { QuotaExceededError } from '../services/api/errors';
+import { ConflictError, QuotaExceededError } from '../services/api/errors';
 import { updateMediaParent } from '../database/repositories/mediaRepository';
 import { useMediaPicker } from '../hooks/useMediaPicker';
 import { useMediaUploadProgress } from '../hooks/useMediaUploadProgress';
+import { useDiscardUploadGuard } from '../hooks/useDiscardUploadGuard';
 import { Header } from '../components/Header';
 import { OrbitalKeyboardAvoidingView } from '../components/OrbitalKeyboardAvoidingView';
 import { LinkPreviewCard } from '../components/LinkPreviewCard';
@@ -52,9 +53,49 @@ export function ComposeThreadScreen({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { selectedMedia, pickMedia, removeMedia } = useMediaPicker();
-  const { progress: uploadProgress, cancel: cancelUpload, uploadBatch } = useMediaUploadProgress();
+  const {
+    progress: uploadProgress,
+    cancel: cancelUpload,
+    uploadBatch,
+    clearUploadCache,
+    hasUnsentUpload,
+  } = useMediaUploadProgress();
 
   const uploading = uploadProgress != null;
+
+  // createNewThread is not abortable, so a rejection can land after the screen
+  // is gone (same shape as ThreadDetail's, PR #744): report always, touch screen
+  // state only while mounted.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  // #722: leaving mid-upload aborts it, and leaving after a failed post strands
+  // media that only this screen session can still attach. Both get a confirm.
+  const handleDiscardUpload = useCallback(() => {
+    cancelUpload();
+    clearUploadCache();
+  }, [cancelUpload, clearUploadCache]);
+
+  useDiscardUploadGuard({
+    uploading: uploadProgress != null && !uploadProgress.cancelling,
+    // Only while media is still selected (clearing the strip after a failed
+    // send leaves nothing the prompt could be about), and never while a send is
+    // in flight. `hasUnsentUpload` turns true the moment the batch lands, i.e.
+    // BEFORE the unabortable create call; and on success clearUploadCache()'s
+    // setState is not yet committed when replace()/goBack() dispatches, while
+    // usePreventRemove reads the last COMMITTED render. `loading` is still true on
+    // that frame, so gating on it keeps the guard off the composer's own
+    // success navigation (PR #839 review). The finally flips it false after a
+    // failure, so the post-failure state still arms.
+    unsent: hasUnsentUpload && selectedMedia.length > 0 && !loading,
+    noun: isDm ? 'message' : 'post',
+    onDiscard: handleDiscardUpload,
+  });
 
   // Live view of the selection for the hook's post-batch id filter (see
   // useMediaUploadProgress: the batch holds the array captured at call time).
@@ -85,7 +126,17 @@ export function ComposeThreadScreen({
     try {
       let mediaIds: string[] | undefined;
       if (selectedMedia.length > 0) {
-        mediaIds = await uploadBatch(selectedMedia, groupId, () => selectedMediaRef.current);
+        // scopeKey = groupId: this screen is always composing for one group, so
+        // the group is the whole scope a cached id is valid in.
+        mediaIds = await uploadBatch(
+          selectedMedia,
+          groupId,
+          () => selectedMediaRef.current,
+          groupId,
+        );
+      } else {
+        // Nothing attached: any held ids are from an abandoned post.
+        clearUploadCache();
       }
 
       stage = 'thread-create';
@@ -114,6 +165,13 @@ export function ComposeThreadScreen({
         }
       }
 
+      // The ids are attached now, so the reuse cache must not survive into the
+      // next post (mount-guarded inside the hook).
+      clearUploadCache();
+
+      // Navigation is screen state: a create that resolves after the screen is
+      // gone must not move whatever screen replaced it.
+      if (!mountedRef.current) return;
       if (isDm) {
         navigation.goBack();
       } else {
@@ -134,12 +192,28 @@ export function ComposeThreadScreen({
       // happen. Before #738 it existed only in a __DEV__ console.warn, which is
       // why the S24 sanitizer bug (#732) was invisible in release builds.
       captureUploadFailure(e, { stage, surface: 'compose-thread', dm: !!isDm });
-      // instanceof applies to the upload path; createNewThread is JSON-only and never 413s
-      setError(e instanceof QuotaExceededError ? e.message : 'Failed to create thread. Please try again.');
+      // Telemetry above is unconditional; the banner is screen state.
+      if (mountedRef.current) {
+        if (e instanceof QuotaExceededError) {
+          // instanceof applies to the upload path; createNewThread is JSON-only and never 413s
+          setError(e.message);
+        } else if (e instanceof ConflictError && stage === 'thread-create') {
+          // 409 on a reused post: the media was already attached, which is
+          // near-proof the previous create committed. The cache is kept on
+          // purpose, so a repeat press draws another 409 rather than a
+          // duplicate post. Stage-gated: the backend maps every unique-key
+          // violation to 409, so only a create-stage 409 carries that meaning.
+          setError(
+            `This may already have been posted. Check the ${isDm ? 'chat' : 'orbit'} before posting again.`,
+          );
+        } else {
+          setError('Failed to create thread. Please try again.');
+        }
+      }
     } finally {
-      setLoading(false);
+      if (mountedRef.current) setLoading(false);
     }
-  }, [canSubmit, userId, username, groupId, isDm, title, body, navigation, selectedMedia, uploadBatch]);
+  }, [canSubmit, userId, username, groupId, isDm, title, body, navigation, selectedMedia, uploadBatch, clearUploadCache]);
 
   const handlePost = useCallback(() => {
     if (isDm && contact?.verifiedStatus === VerifiedStatus.Unverified) {

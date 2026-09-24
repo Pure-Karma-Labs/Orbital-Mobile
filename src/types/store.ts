@@ -20,6 +20,14 @@ import { VerifiedStatus } from './database';
 // Shared
 // ============================================================
 
+/**
+ * Optimistic-write state of a store row.
+ *
+ * `'failed'` has no production writer since #749: both failure paths in
+ * threadService now remove the optimistic row instead of marking it. The member
+ * (and `update*SyncStatus`) are kept because the suites still build full store
+ * shapes around them; they can go once those stop mocking the whole slice.
+ */
 export type SyncStatus = 'synced' | 'pending' | 'syncing' | 'failed';
 
 // ============================================================
@@ -256,7 +264,13 @@ export interface ThreadsActions {
   removeReply: (id: string) => void;
   addOptimisticThread: (thread: Thread) => void;
   addOptimisticReply: (reply: Reply) => void;
+  /**
+   * Retained slice API with no production caller since #749 (failures remove
+   * the optimistic row). Kept for the store-shape mocks in the suites -- see
+   * the note on {@link SyncStatus}.
+   */
   updateThreadSyncStatus: (id: string, status: SyncStatus) => void;
+  /** See {@link ThreadsActions.updateThreadSyncStatus} -- retained, uncalled. */
   updateReplySyncStatus: (id: string, status: SyncStatus) => void;
   /** Record the user's last view time for a thread (for per-thread unread) */
   markThreadViewed: (threadId: string) => void;

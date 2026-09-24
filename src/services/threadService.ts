@@ -866,7 +866,12 @@ export async function loadReplies(
  * 1. Encrypts the body with the group key.
  * 2. Adds an optimistic reply to the store immediately.
  * 3. Sends the encrypted reply to the API.
- * 4. Updates sync status on success or failure.
+ * 4. On success, swaps the optimistic row for the confirmed one. On failure,
+ *    REMOVES the optimistic row (#749) and rethrows: the screen raises the
+ *    single "Reply Failed" alert, and a row that cannot be retried, dismissed
+ *    or used as a reply target is worse than no row. Nothing rehydrates it --
+ *    the optimistic reply lives only in the store, since dbSaveReply runs on
+ *    the success path only.
  *
  * @param threadId      - The thread to reply to.
  * @param groupId       - The group ID for encryption (AAD).
@@ -972,7 +977,11 @@ export async function postReply(
     if (__DEV__) {
       console.warn('[postReply]', e instanceof Error ? e.message : e);
     }
-    store.updateReplySyncStatus(clientId, 'failed');
+    // #749: drop the optimistic row rather than marking it 'failed'. The
+    // screen's alert is the one failure signal; a dead row would also survive
+    // as a tappable (and invalid) parentReplyId and make every retry look like
+    // a new lost reply.
+    store.removeReply(clientId);
     // #747: rethrow the original so telemetry sees the real class / status.
     // Everything thrown out of this function is reportable free text — never
     // interpolate ids, key material or native payloads into a message.
@@ -986,7 +995,10 @@ export async function postReply(
  * 1. Encrypts title and body with the group key.
  * 2. Adds an optimistic thread to the store immediately.
  * 3. Sends the encrypted thread to the API.
- * 4. Updates sync status on success or failure.
+ * 4. On success, swaps the optimistic row for the confirmed one. On failure,
+ *    REMOVES the optimistic row (#749) and rethrows; the composer shows the
+ *    error banner instead. Nothing rehydrates it -- dbSaveThread runs on the
+ *    success path only.
  *
  * @param groupId - The group to create the thread in.
  * @param title   - Plaintext thread title.
@@ -1082,7 +1094,10 @@ export async function createNewThread(
     if (__DEV__) {
       console.warn('[createNewThread]', e instanceof Error ? e.message : e);
     }
-    store.updateThreadSyncStatus(clientId, 'failed');
+    // #749: drop the optimistic row rather than marking it 'failed' -- the
+    // composer's error banner is the failure signal, and a ghost thread row in
+    // the list has no retry affordance.
+    store.removeThread(clientId);
     // #747: rethrow the original so telemetry sees the real class / status.
     // Everything thrown out of this function is reportable free text — never
     // interpolate ids, key material or native payloads into a message.

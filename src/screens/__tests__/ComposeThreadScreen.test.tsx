@@ -11,6 +11,22 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../../theme';
 import { ComposeThreadScreen } from '../ComposeThreadScreen';
 
+// ---------------------------------------------------------------------------
+// @react-navigation/native — ComposeThreadScreen mounts useDiscardUploadGuard,
+// which calls useNavigation() and usePreventRemove(). Without this mock every
+// render throws "Couldn't find a navigation object." The spread keeps every
+// other export the screen tree pulls from the real module; the guard's
+// navigation is the SAME mockNavigation the screen gets as a prop, so a
+// dispatch() from Discard is observable on it.
+// ---------------------------------------------------------------------------
+const mockUsePreventRemove = jest.fn();
+jest.mock('@react-navigation/native', () => ({
+  ...jest.requireActual('@react-navigation/native'),
+  usePreventRemove: (preventRemove: boolean, cb: unknown) =>
+    mockUsePreventRemove(preventRemove, cb),
+  useNavigation: () => mockNavigation,
+}));
+
 jest.mock('@sentry/react-native', () => ({
   captureException: jest.fn(),
   addBreadcrumb: jest.fn(),
@@ -66,7 +82,7 @@ jest.mock('../../stores', () => ({
 
 import * as Sentry from '@sentry/react-native';
 import { createNewThread } from '../../services/threadService';
-import { NetworkError, QuotaExceededError, ServerError } from '../../services/api/errors';
+import { ConflictError, NetworkError, QuotaExceededError, ServerError } from '../../services/api/errors';
 import { UPLOAD_CANCELLED_MESSAGE } from '../../services/media/uploadCancellation';
 import type { BatchUploadProgressEvent } from '../../services/mediaUploadService';
 const mockCreateNewThread = createNewThread as jest.Mock;
@@ -156,6 +172,10 @@ function findPostButton(root: ReactTestInstance): ReactTestInstance {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  // clearAllMocks only clears call history: an unconsumed *Once queue would
+  // leak into the next test, so the create seam is reset outright.
+  mockCreateNewThread.mockReset();
+  mockUsePreventRemove.mockClear();
   mockSelectedMedia = [];
   mockUploadMediaBatch.mockResolvedValue(['media-id-1']);
 });
@@ -645,5 +665,295 @@ describe('ComposeThreadScreen — upload progress', () => {
     expect(errorText).toBeUndefined();
 
     expect(findByTestId(renderer.root, 'compose-body-input').props.value).toBe('Some body text');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Upload reuse cache, ConflictError copy and the unmount guards (#749/#722)
+// ---------------------------------------------------------------------------
+
+describe('ComposeThreadScreen — upload reuse cache and unmount safety', () => {
+  const oneImage = [
+    {
+      uri: 'file:///photo1.jpg',
+      type: 'image/jpeg',
+      fileName: 'photo1.jpg',
+      fileSize: 100,
+      width: 50,
+      height: 50,
+    },
+  ];
+
+  const fakeThread = {
+    id: 'thread-123',
+    conversationId: 'group-1',
+    authorId: 'user-1',
+    authorUsername: 'alice',
+    title: 'My Title',
+    body: 'Some body text',
+    contentType: 'text' as const,
+    pinned: false,
+    replyCount: 0,
+    lastReplyAt: null,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    syncStatus: 'synced' as const,
+  };
+
+  /** Fill both inputs and press Post, flushing the async handler. */
+  async function fillAndPost(renderer: ReactTestRenderer): Promise<void> {
+    act(() => {
+      findByTestId(renderer.root, 'compose-title-input').props.onChangeText('My Title');
+      findByTestId(renderer.root, 'compose-body-input').props.onChangeText('Some body text');
+    });
+    await act(async () => {
+      findPostButton(renderer.root).props.onPress();
+    });
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  /** Every string rendered inside a <Text>, for banner assertions. */
+  function textContents(renderer: ReactTestRenderer): string[] {
+    return renderer.root
+      .findAllByType('Text' as unknown as React.ComponentType)
+      .map((node) => node.props.children)
+      .filter((c): c is string => typeof c === 'string');
+  }
+
+  it('reuses the uploaded media ids on a second post after a create failure', async () => {
+    // mockSelectedMedia is a module-level array and useMediaPicker returns that
+    // same reference every render, so the cache's `source === items` identity
+    // check holds across the two presses — exactly the device case where the
+    // user just presses Post again after a failure.
+    mockSelectedMedia = oneImage;
+    mockCreateNewThread
+      .mockRejectedValueOnce(new ServerError(500))
+      .mockResolvedValueOnce(fakeThread);
+
+    const renderer = renderScreen();
+    await fillAndPost(renderer);
+    expect(mockUploadMediaBatch).toHaveBeenCalledTimes(1);
+
+    await fillAndPost(renderer);
+    // Second press: cache hit, so no second upload, and the same ids are posted.
+    expect(mockUploadMediaBatch).toHaveBeenCalledTimes(1);
+    expect(mockCreateNewThread.mock.calls[1][4]).toEqual({ mediaIds: ['media-id-1'] });
+    expect(mockCreateNewThread.mock.calls[1][4]).toEqual(mockCreateNewThread.mock.calls[0][4]);
+  });
+
+  it('shows the orbit conflict copy on a ConflictError and keeps the cache', async () => {
+    mockSelectedMedia = oneImage;
+    mockCreateNewThread.mockRejectedValue(new ConflictError());
+
+    const renderer = renderScreen();
+    await fillAndPost(renderer);
+
+    expect(textContents(renderer)).toContain(
+      'This may already have been posted. Check the orbit before posting again.',
+    );
+    expect(textContents(renderer)).not.toContain('Failed to create thread. Please try again.');
+    expect(mockUploadMediaBatch).toHaveBeenCalledTimes(1);
+
+    // A 409 deliberately does NOT drop the cache: re-pressing must draw another
+    // 409 rather than upload a duplicate set behind a post that already exists.
+    await fillAndPost(renderer);
+    expect(mockUploadMediaBatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('says "chat" instead of "orbit" in the DM conflict copy', async () => {
+    mockCreateNewThread.mockRejectedValue(new ConflictError());
+
+    const renderer = renderScreen({ groupId: 'group-1', isDm: true });
+    act(() => {
+      findByTestId(renderer.root, 'compose-body-input').props.onChangeText('Some body text');
+    });
+    const sendBtn = renderer.root.findAll(
+      (node) => node.props.accessibilityLabel === 'Send message',
+    );
+    await act(async () => {
+      sendBtn[0].props.onPress();
+    });
+
+    expect(textContents(renderer)).toContain(
+      'This may already have been posted. Check the chat before posting again.',
+    );
+  });
+
+  it('aborts the in-flight upload when the screen unmounts', async () => {
+    mockSelectedMedia = oneImage;
+    let capturedSignal: AbortSignal | undefined;
+    mockUploadMediaBatch.mockImplementation(
+      (_items: unknown, _groupId: unknown, opts: { signal: AbortSignal }) => {
+        capturedSignal = opts.signal;
+        return new Promise(() => {});
+      },
+    );
+
+    const renderer = renderScreen();
+    act(() => {
+      findByTestId(renderer.root, 'compose-title-input').props.onChangeText('My Title');
+      findByTestId(renderer.root, 'compose-body-input').props.onChangeText('Some body text');
+    });
+    act(() => {
+      findPostButton(renderer.root).props.onPress();
+    });
+
+    expect(capturedSignal!.aborted).toBe(false);
+    act(() => {
+      renderer.unmount();
+    });
+    expect(capturedSignal!.aborted).toBe(true);
+  });
+
+  it('does not navigate or set state when createNewThread resolves after unmount', async () => {
+    let resolveCreate: (t: unknown) => void = () => {};
+    mockCreateNewThread.mockImplementation(
+      () => new Promise((resolve) => { resolveCreate = resolve; }),
+    );
+
+    const renderer = renderScreen();
+    act(() => {
+      findByTestId(renderer.root, 'compose-title-input').props.onChangeText('My Title');
+      findByTestId(renderer.root, 'compose-body-input').props.onChangeText('Some body text');
+    });
+    act(() => {
+      findPostButton(renderer.root).props.onPress();
+    });
+
+    act(() => {
+      renderer.unmount();
+    });
+
+    // postReply's compose twin is not abortable, so the create resolves on a
+    // dead screen — the mountedRef gate must swallow the navigation.
+    await act(async () => {
+      resolveCreate(fakeThread);
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(mockNavigation.replace).not.toHaveBeenCalled();
+    expect(mockNavigation.goBack).not.toHaveBeenCalled();
+  });
+
+  it('does not navigate when createNewThread rejects after unmount', async () => {
+    let rejectCreate: (e: unknown) => void = () => {};
+    mockCreateNewThread.mockImplementation(
+      () => new Promise((_resolve, reject) => { rejectCreate = reject; }),
+    );
+
+    const renderer = renderScreen();
+    act(() => {
+      findByTestId(renderer.root, 'compose-title-input').props.onChangeText('My Title');
+      findByTestId(renderer.root, 'compose-body-input').props.onChangeText('Some body text');
+    });
+    act(() => {
+      findPostButton(renderer.root).props.onPress();
+    });
+
+    act(() => {
+      renderer.unmount();
+    });
+
+    await act(async () => {
+      rejectCreate(new ServerError(500));
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+
+    // Telemetry still fires (it is not mount-gated); only screen state is.
+    expect(Sentry.captureException as unknown as jest.Mock).toHaveBeenCalledTimes(1);
+    expect(mockNavigation.replace).not.toHaveBeenCalled();
+  });
+
+  it('arms the discard guard while an upload is in flight and disarms it after', async () => {
+    mockSelectedMedia = oneImage;
+    let resolveUpload: (ids: string[]) => void = () => {};
+    mockUploadMediaBatch.mockImplementation(
+      () => new Promise((resolve) => { resolveUpload = resolve; }),
+    );
+    mockCreateNewThread.mockResolvedValue(fakeThread);
+
+    const renderer = renderScreen();
+    act(() => {
+      findByTestId(renderer.root, 'compose-title-input').props.onChangeText('My Title');
+      findByTestId(renderer.root, 'compose-body-input').props.onChangeText('Some body text');
+    });
+    act(() => {
+      findPostButton(renderer.root).props.onPress();
+    });
+
+    // usePreventRemove is called on every render; the latest call reflects the
+    // current arm state.
+    const armedDuring = mockUsePreventRemove.mock.calls.at(-1)?.[0];
+    expect(armedDuring).toBe(true);
+
+    await act(async () => {
+      resolveUpload(['media-id-1']);
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+
+    // Success clears the reuse cache, so neither arm is live any more.
+    expect(mockUsePreventRemove.mock.calls.at(-1)?.[0]).toBe(false);
+  });
+
+  it('keeps the guard off the success navigation while the create is in flight (PR #839 review)', async () => {
+    // usePreventRemove reads the last COMMITTED render. With a slow create, a
+    // render commits after the upload lands (hasUnsentUpload=true) and before
+    // replace() dispatches -- the guard must not be armed on that frame, or a
+    // successful post gets intercepted by "Discard unsent post?".
+    mockSelectedMedia = oneImage;
+    mockUploadMediaBatch.mockResolvedValue(['media-id-1']);
+    let resolveCreate: (t: unknown) => void = () => {};
+    mockCreateNewThread.mockImplementation(
+      () => new Promise((resolve) => { resolveCreate = resolve; }),
+    );
+    let armedAtReplace: unknown = 'not-called';
+    mockNavigation.replace.mockImplementation(() => {
+      armedAtReplace = mockUsePreventRemove.mock.calls.at(-1)?.[0];
+    });
+
+    const renderer = renderScreen();
+    act(() => {
+      findByTestId(renderer.root, 'compose-title-input').props.onChangeText('My Title');
+      findByTestId(renderer.root, 'compose-body-input').props.onChangeText('Some body text');
+    });
+    await act(async () => {
+      findPostButton(renderer.root).props.onPress();
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+    // Upload landed, create still pending: not armed.
+    expect(mockUsePreventRemove.mock.calls.at(-1)?.[0]).toBe(false);
+
+    await act(async () => {
+      resolveCreate(fakeThread);
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+    expect(mockNavigation.replace).toHaveBeenCalled();
+    expect(armedAtReplace).toBe(false);
+  });
+
+  it('arms the unsent guard after a failed create with media selected, and disarms when the strip is cleared', async () => {
+    mockSelectedMedia = oneImage;
+    mockUploadMediaBatch.mockResolvedValue(['media-id-1']);
+    mockCreateNewThread.mockRejectedValue(new Error('network down'));
+
+    const renderer = renderScreen();
+    act(() => {
+      findByTestId(renderer.root, 'compose-title-input').props.onChangeText('My Title');
+      findByTestId(renderer.root, 'compose-body-input').props.onChangeText('Some body text');
+    });
+    await act(async () => {
+      findPostButton(renderer.root).props.onPress();
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+    expect(mockUsePreventRemove.mock.calls.at(-1)?.[0]).toBe(true);
+
+    // useMediaPicker hands back a new (empty) array when the strip is cleared.
+    mockSelectedMedia = [];
+    act(() => {
+      findByTestId(renderer.root, 'compose-body-input').props.onChangeText('Some body text!');
+    });
+    expect(mockUsePreventRemove.mock.calls.at(-1)?.[0]).toBe(false);
   });
 });

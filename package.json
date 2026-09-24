@@ -11,7 +11,7 @@
     "android": "react-native run-android",
     "android:smoke": "ENVFILE=.env.smoke.android react-native run-android",
     "ios": "react-native run-ios",
-    "ios:smoke": "rm -f /tmp/envfile && ENVFILE=.env.smoke.ios react-native run-ios --simulator \"iPhone 17 Pro\"",
+    "ios:smoke": "rm -f /tmp/envfile && ENVFILE=.env.smoke.ios react-native run-ios --simulator \"iPhone 18 Pro\"",
     "comment:gut-check": "READ-ONLY checks only. Consumed by .claude/scripts/gut-check.sh. Never add anything that writes to the tree: build:rust:*, generate:emoji, and BOTH test:rust-gate:* scripts mutate despite their names.",
     "gut-check": "npm run lint && npm run typecheck && npm test && npm run security:invariants",
     "lint": "eslint .",

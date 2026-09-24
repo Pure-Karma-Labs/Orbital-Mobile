@@ -798,6 +798,37 @@ describe('ThreadDetailScreen — media send', () => {
 
     expect(mockClearMedia).not.toHaveBeenCalled();
   });
+
+  it('keeps the unsent guard off while postReply is in flight and arms it after a failure (PR #839 review)', async () => {
+    let rejectReply: (e: Error) => void = () => {};
+    mockPostReply.mockImplementation(
+      () => new Promise((_resolve, reject) => { rejectReply = reject; }),
+    );
+    mockSelectedMedia = [
+      { uri: 'file:///photo1.jpg', type: 'image/jpeg', fileName: 'photo1.jpg', fileSize: 100 },
+    ];
+
+    const renderer = await renderScreen();
+    const input = renderer.root.findAll((node) => node.props.testID === 'reply-input');
+    await act(async () => {
+      input[0].props.onChangeText('will fail');
+    });
+    const sendBtn = renderer.root.findAll((node) => node.props.testID === 'send-button');
+    await act(async () => {
+      sendBtn[0].props.onPress();
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+    // Upload landed, reply-create pending: the unabortable create is not guarded.
+    expect(mockPostReply).toHaveBeenCalled();
+    expect(mockUsePreventRemove.mock.calls.at(-1)?.[0]).toBe(false);
+
+    await act(async () => {
+      rejectReply(new Error('Server error'));
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+    // Failed with media still selected: the unsent arm is live.
+    expect(mockUsePreventRemove.mock.calls.at(-1)?.[0]).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

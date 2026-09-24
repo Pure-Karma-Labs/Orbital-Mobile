@@ -192,10 +192,16 @@ export function ThreadDetailScreen({
 
   useDiscardUploadGuard({
     uploading: uploadProgress != null && !uploadProgress.cancelling,
-    // Only while media is still selected: clearing the strip after a failed send
-    // leaves nothing the prompt could be about (the stale cache misses on the
-    // next send anyway).
-    unsent: hasUnsentUpload && selectedMedia.length > 0,
+    // Only while media is still selected (clearing the strip after a failed
+    // send leaves nothing the prompt could be about), and never while a send is
+    // in flight. `hasUnsentUpload` turns true the moment the batch lands, i.e.
+    // BEFORE the unabortable create call; and on success clearUploadCache()'s
+    // setState is not yet committed when a navigation dispatches, while
+    // usePreventRemove reads the last COMMITTED render. `sending` is still true on
+    // that frame, so gating on it keeps the guard off the composer's own
+    // success navigation (PR #839 review). The finally flips it false after a
+    // failure, so the post-failure state still arms.
+    unsent: hasUnsentUpload && selectedMedia.length > 0 && !sending,
     noun: 'reply',
     onDiscard: handleDiscardUpload,
   });
@@ -585,11 +591,13 @@ export function ThreadDetailScreen({
           if (mountedRef.current) {
             if (e instanceof QuotaExceededError) {
               Alert.alert('Upload Failed', e.message);
-            } else if (e instanceof ConflictError) {
+            } else if (e instanceof ConflictError && stage === 'reply-create') {
               // 409 on a reused send: the media was already attached, which is
               // near-proof that the previous create committed. Never invite a
               // blind retry here -- the cache is deliberately kept so a repeat
               // press draws another 409 instead of posting a duplicate.
+              // Stage-gated: the backend maps every unique-key violation to
+              // 409, so only a create-stage 409 carries that meaning.
               Alert.alert(
                 'Reply May Have Been Sent',
                 'Your reply may already have been sent. Pull to refresh before sending again.',

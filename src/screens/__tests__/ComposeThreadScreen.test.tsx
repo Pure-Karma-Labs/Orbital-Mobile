@@ -896,4 +896,64 @@ describe('ComposeThreadScreen — upload reuse cache and unmount safety', () => 
     // Success clears the reuse cache, so neither arm is live any more.
     expect(mockUsePreventRemove.mock.calls.at(-1)?.[0]).toBe(false);
   });
+
+  it('keeps the guard off the success navigation while the create is in flight (PR #839 review)', async () => {
+    // usePreventRemove reads the last COMMITTED render. With a slow create, a
+    // render commits after the upload lands (hasUnsentUpload=true) and before
+    // replace() dispatches -- the guard must not be armed on that frame, or a
+    // successful post gets intercepted by "Discard unsent post?".
+    mockSelectedMedia = oneImage;
+    mockUploadMediaBatch.mockResolvedValue(['media-id-1']);
+    let resolveCreate: (t: unknown) => void = () => {};
+    mockCreateNewThread.mockImplementation(
+      () => new Promise((resolve) => { resolveCreate = resolve; }),
+    );
+    let armedAtReplace: unknown = 'not-called';
+    mockNavigation.replace.mockImplementation(() => {
+      armedAtReplace = mockUsePreventRemove.mock.calls.at(-1)?.[0];
+    });
+
+    const renderer = renderScreen();
+    act(() => {
+      findByTestId(renderer.root, 'compose-title-input').props.onChangeText('My Title');
+      findByTestId(renderer.root, 'compose-body-input').props.onChangeText('Some body text');
+    });
+    await act(async () => {
+      findPostButton(renderer.root).props.onPress();
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+    // Upload landed, create still pending: not armed.
+    expect(mockUsePreventRemove.mock.calls.at(-1)?.[0]).toBe(false);
+
+    await act(async () => {
+      resolveCreate(fakeThread);
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+    expect(mockNavigation.replace).toHaveBeenCalled();
+    expect(armedAtReplace).toBe(false);
+  });
+
+  it('arms the unsent guard after a failed create with media selected, and disarms when the strip is cleared', async () => {
+    mockSelectedMedia = oneImage;
+    mockUploadMediaBatch.mockResolvedValue(['media-id-1']);
+    mockCreateNewThread.mockRejectedValue(new Error('network down'));
+
+    const renderer = renderScreen();
+    act(() => {
+      findByTestId(renderer.root, 'compose-title-input').props.onChangeText('My Title');
+      findByTestId(renderer.root, 'compose-body-input').props.onChangeText('Some body text');
+    });
+    await act(async () => {
+      findPostButton(renderer.root).props.onPress();
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+    expect(mockUsePreventRemove.mock.calls.at(-1)?.[0]).toBe(true);
+
+    // useMediaPicker hands back a new (empty) array when the strip is cleared.
+    mockSelectedMedia = [];
+    act(() => {
+      findByTestId(renderer.root, 'compose-body-input').props.onChangeText('Some body text!');
+    });
+    expect(mockUsePreventRemove.mock.calls.at(-1)?.[0]).toBe(false);
+  });
 });

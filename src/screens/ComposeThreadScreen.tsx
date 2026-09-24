@@ -83,10 +83,16 @@ export function ComposeThreadScreen({
 
   useDiscardUploadGuard({
     uploading: uploadProgress != null && !uploadProgress.cancelling,
-    // Only while media is still selected: clearing the strip after a failed send
-    // leaves nothing the prompt could be about (the stale cache misses on the
-    // next send anyway).
-    unsent: hasUnsentUpload && selectedMedia.length > 0,
+    // Only while media is still selected (clearing the strip after a failed
+    // send leaves nothing the prompt could be about), and never while a send is
+    // in flight. `hasUnsentUpload` turns true the moment the batch lands, i.e.
+    // BEFORE the unabortable create call; and on success clearUploadCache()'s
+    // setState is not yet committed when replace()/goBack() dispatches, while
+    // usePreventRemove reads the last COMMITTED render. `loading` is still true on
+    // that frame, so gating on it keeps the guard off the composer's own
+    // success navigation (PR #839 review). The finally flips it false after a
+    // failure, so the post-failure state still arms.
+    unsent: hasUnsentUpload && selectedMedia.length > 0 && !loading,
     noun: isDm ? 'message' : 'post',
     onDiscard: handleDiscardUpload,
   });
@@ -191,11 +197,12 @@ export function ComposeThreadScreen({
         if (e instanceof QuotaExceededError) {
           // instanceof applies to the upload path; createNewThread is JSON-only and never 413s
           setError(e.message);
-        } else if (e instanceof ConflictError) {
+        } else if (e instanceof ConflictError && stage === 'thread-create') {
           // 409 on a reused post: the media was already attached, which is
           // near-proof the previous create committed. The cache is kept on
           // purpose, so a repeat press draws another 409 rather than a
-          // duplicate post.
+          // duplicate post. Stage-gated: the backend maps every unique-key
+          // violation to 409, so only a create-stage 409 carries that meaning.
           setError(
             `This may already have been posted. Check the ${isDm ? 'chat' : 'orbit'} before posting again.`,
           );

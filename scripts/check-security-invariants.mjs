@@ -738,6 +738,121 @@ try {
 }
 
 // ---------------------------------------------------------------------------
+// 15. Sentry privacy hooks (#746)
+// ---------------------------------------------------------------------------
+
+// The Sentry payload boundary is four plain-text facts spread over four files,
+// and three of them are unobservable from a unit test: an option the SDK only
+// forwards to native, a breadcrumb category drop, and a prop on a wrapper the
+// test renderer never mounts. If any one is reverted the app keeps working and
+// keeps reporting — it just starts shipping request URLs, touch labels
+// (`Thread: ${title}` and friends, i.e. DECRYPTED content), console arguments
+// or the thrower's own error object to a server we do not control.
+//
+// Each check locates a WINDOW (the options literal, the drop block, the wrap
+// call, the capture call) and strips comment lines before matching. Whole-file
+// matching was satisfiable by a pin merely NAMED in a comment, which is
+// exactly the vacuity these rules exist to prevent. A missing window or a
+// missing file is itself a violation, so nothing here can pass vacuously.
+//
+// Every window regex is ^-anchored under /m. Without the anchor, commenting
+// out the window's opening line left the match STARTING mid-line, so the
+// comment-strip filter no longer saw a leading `//` and the pins on that line
+// still satisfied the rule — verified by mutation test.
+
+const SENTRY_INIT_FILE = join(SRC, 'sentryInit.ts');
+const TELEMETRY_SCRUB_FILE = join(SRC, 'services', 'telemetryScrub.ts');
+const TELEMETRY_FILE = join(SRC, 'services', 'telemetry.ts');
+const APP_FILE = join(SRC, 'App.tsx');
+
+/**
+ * Assert every pin appears inside a window of `file`, with comment lines
+ * stripped. A missing file or a window the regex cannot find is a violation.
+ */
+function checkWindowedPins(file, rule, windowRe, windowLabel, pins) {
+  let text;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch {
+    violations.push(
+      `  ${relative('.', file)}:0  [${rule}]  file not found — ${windowLabel} cannot be verified and the rule would pass vacuously`,
+    );
+    return;
+  }
+  const match = text.match(windowRe);
+  if (match === null) {
+    violations.push(
+      `  ${relative('.', file)}:0  [${rule}]  ${windowLabel} not found — the rule would pass vacuously`,
+    );
+    return;
+  }
+  const body = match[0]
+    .split('\n')
+    .filter((line) => !/^\s*(\/\/|\/\*|\*)/.test(line))
+    .join('\n');
+  for (const pin of pins) {
+    if (!body.includes(pin)) {
+      violations.push(
+        `  ${relative('.', file)}:0  [${rule}]  "${pin}" missing from ${windowLabel} (#746)`,
+      );
+    }
+  }
+}
+
+// The Sentry.init() options literal. `console: false` is the breadcrumbs
+// integration override; `enableNetworkBreadcrumbs: false` is the cocoa-only
+// flag that is the ONLY defence for hard native crash reports, because
+// wrapper.js strips beforeSend/beforeBreadcrumb from the native options.
+checkWindowedPins(
+  SENTRY_INIT_FILE,
+  'sentry-privacy-hooks',
+  /^const options:[\s\S]*?\n\};/m,
+  'the Sentry.init() options literal',
+  [
+    'beforeBreadcrumb: filterBreadcrumb',
+    'beforeSend: scrubEvent',
+    'enableNetworkBreadcrumbs: false',
+    'console: false',
+    'sendDefaultPii: false',
+    'enableMemoryIntrospection: false',
+    'maxBreadcrumbs:',
+  ],
+);
+
+// The breadcrumb drop block: the dropped-category set through the end of
+// filterBreadcrumb. This is the PRIMARY touch-label defence (App.tsx's props
+// are secondary) and the only thing that removes native http crumbs, which
+// are merged into the event after beforeBreadcrumb has already run.
+checkWindowedPins(
+  TELEMETRY_SCRUB_FILE,
+  'sentry-privacy-hooks',
+  /^const DROPPED_CATEGORIES[\s\S]*?\n^export function filterBreadcrumb[\s\S]*?\n\}/m,
+  'the filterBreadcrumb drop block',
+  ["'http'", "'touch'", "'ui.multiClick'", "'console'"],
+);
+
+// The single approved capture path. Without this pin the Semgrep allowlist
+// entry for telemetry.ts could sit over a function that captures the
+// thrower's own object.
+checkWindowedPins(
+  TELEMETRY_FILE,
+  'sentry-privacy-hooks',
+  /^export function captureError[\s\S]*?\n\}/m,
+  'the captureError body',
+  ['Sentry.captureException(toReportableError('],
+);
+
+// TouchEventBoundary props: secondary defence for labels that interpolate
+// decrypted titles, orbit names and display names.
+checkWindowedPins(
+  APP_FILE,
+  'sentry-privacy-hooks',
+  /^export default Sentry\.wrap\(App,[\s\S]*?\n\}\);/m,
+  'the Sentry.wrap(App, …) call',
+  ['extractTextFromChildren: false'],
+);
+
+// ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------
 

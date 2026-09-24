@@ -24,7 +24,7 @@ import { Header } from '../components/Header';
 import { OrbitalKeyboardAvoidingView } from '../components/OrbitalKeyboardAvoidingView';
 import { createOrbit, createInviteCode } from '../services/conversationService';
 import { ApiError, NetworkError } from '../services/api/errors';
-import * as Sentry from '@sentry/react-native';
+import { captureError } from '../services/telemetry';
 import { formatInviteCode } from '../services/crypto/inviteCrypto';
 import { RATE_LIMIT_MESSAGE } from '../utils/errorMessages';
 import type { ThreadsStackParamList } from '../navigation/types';
@@ -93,14 +93,8 @@ export function CreateOrbitScreen({
         // also catches local crypto faults (identity key, group key wrap), and
         // a permanent fault (#675 class) otherwise presents to the user as a
         // transient retry prompt with no telemetry at all.
-        Sentry.captureException(err instanceof Error ? err : new Error(String(err)), {
-          tags: {
-            feature: 'orbit-create',
-            ...(err instanceof ApiError
-              ? { status: String(err.statusCode), api_code: err.code }
-              : {}),
-          },
-        });
+        // captureError adds status/api_code for an ApiError (#746).
+        captureError(err, { tags: { feature: 'orbit-create' } });
         setBannerError('Could not create orbit — please try again');
       }
     } finally {

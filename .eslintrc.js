@@ -28,6 +28,7 @@ module.exports = {
           patterns: [
             { group: ['react-native-mmkv'], message: 'Import from src/stores/middleware/persistence.ts instead.' },
             { group: ['@sentry/*', '@sentry/react-native'], message: 'Sentry must not be imported in crypto/secure-storage/database paths to prevent key material leakage in error reports.' },
+            { group: ['**/uploadTelemetry', '**/telemetry'], message: 'Telemetry facades forward to Sentry; banned where Sentry is banned. src/services/telemetryScrub.ts is pure and stays allowed.' },
           ],
         }],
       },

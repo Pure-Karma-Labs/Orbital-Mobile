@@ -61,10 +61,41 @@ rules:
       # iOS: reads process memory near the crash site into native crash
       # reports; that memory holds the SQLCipher key and plaintext (#743).
       - pattern: "enableMemoryIntrospection: true"
+      # Serializes every own-enumerable property of the thrown object onto
+      # event.extra — exactly what toReportableError() exists to prevent
+      # (ApiError.serverMessage, QuotaExceededError.usage) (#746).
+      - pattern: extraErrorDataIntegration(...)
+      # Attaches the rendered native view tree, including decrypted thread
+      # titles, orbit names and message text (#746).
+      - pattern: "attachViewHierarchy: true"
     message: >
-      Sentry Session Replay, screenshot capture, network body capture and
-      crash-time memory introspection are forbidden — they could exfiltrate
-      encrypted API payloads, E2EE message content or key material. Requires
-      security review before enabling.
+      Sentry Session Replay, screenshot capture, view-hierarchy capture,
+      network body capture, error-object serialization and crash-time memory
+      introspection are forbidden — they could exfiltrate encrypted API
+      payloads, E2EE message content or key material. Requires security review
+      before enabling.
+    languages: [typescript, javascript]
+    severity: ERROR
+
+  - id: no-raw-sentry-capture
+    pattern-either:
+      - pattern: $X.captureException(...)
+      - pattern: captureException(...)
+      - pattern: $X.captureEvent(...)
+      - pattern: captureEvent(...)
+    paths:
+      exclude:
+        # The one approved capture path: it reports a rebuilt Error carrying
+        # only class name, scrubbed message and scrubbed frames.
+        - '**/src/services/telemetry.ts'
+        - "*__tests__*"
+        - '**/__mocks__/**'
+    message: >
+      Raw Sentry captures are forbidden — they hand Sentry the thrower's own
+      error object, whose custom fields (ApiError.serverMessage,
+      QuotaExceededError.usage) are one enabled integration away from being
+      serialized into the event. Use captureError() from
+      src/services/telemetry.ts, which reports a rebuilt, scrubbed copy (#746).
+      captureMessage() is unaffected: it takes a literal the call site controls.
     languages: [typescript, javascript]
     severity: ERROR

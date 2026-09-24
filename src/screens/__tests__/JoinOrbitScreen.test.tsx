@@ -336,8 +336,17 @@ describe('JoinOrbitScreen — error handling', () => {
 
     expect(mockCaptureException).toHaveBeenCalledTimes(1);
     const [reportedError, context] = mockCaptureException.mock.calls[0];
+    // #746: the screen reports through `captureError`, which sends a REBUILT
+    // Error — class name plus scrubbed message, nothing the thrower hung off
+    // the object. So this is deliberately NOT the instance we rejected with.
     expect(reportedError).toBeInstanceOf(Error);
-    expect((context as { tags: { feature: string } }).tags.feature).toBe('orbit-join');
+    expect(reportedError).not.toBe(err);
+    expect((reportedError as Error).name).toBe('Error');
+    expect((reportedError as Error).message).toBe('boom');
+    // Exact match, not objectContaining: `captureError` omits `level`/`extra`
+    // when the call site passed neither, and a non-ApiError adds no
+    // status/api_code tags (#746).
+    expect(context).toEqual({ tags: { feature: 'orbit-join' } });
   });
 
   it('shows the email-mismatch banner for a 403 AuthError, with no field error', async () => {

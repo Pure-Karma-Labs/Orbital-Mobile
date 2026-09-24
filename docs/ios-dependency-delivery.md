@@ -129,6 +129,50 @@ Any `@sentry/react-native` bump:
    pinned to `false` in `src/sentryInit.ts`) and for grouping changes that
    regroup existing issues (8.27: iOS native crashes set `mechanism.synthetic`).
 
+The next three items are the payload-boundary triggers from #746. They apply to
+any `@sentry/react-native` bump and to any sentry-cocoa bump underneath it
+(sentry-cocoa moves when `sentry_cocoa_version` in `RNSentry.podspec` moves).
+Each rests on undocumented internals of the installed package, so re-verify by
+reading the files named, not the release notes. Line numbers are 8.27.0 /
+sentry-cocoa 9.29.0.
+
+10. **`enableNetworkBreadcrumbs` still reaches native.** The option is a
+    sentry-cocoa one with no entry in the React Native typings; it only works
+    because `initNativeSdk`
+    (`node_modules/@sentry/react-native/dist/js/wrapper.js:162`) forwards
+    options to native through a DENY-list rest-destructure, currently stripping
+    only `beforeSend`, `beforeBreadcrumb`, `beforeSendTransaction`,
+    `beforeSendMetric`, `integrations`, `ignoreErrors`, `logsOrigin`,
+    `profilingOptions`, `androidProfilingOptions` and `onNativeLog`. If that
+    list gains the key, or the destructure becomes an allow-list, the flag
+    stops applying silently. On the cocoa side the dictionary is parsed by
+    `RNSentryInternal.options(fromDictionary:)`
+    (`node_modules/@sentry/react-native/ios/RNSentryInternal.swift:52`, called
+    from `ios/RNSentryStart.m:79`), so confirm the key still exists as an
+    `Options` property -- `@property (nonatomic) BOOL enableNetworkBreadcrumbs;`
+    in `Headers/Sentry-Swift.h:559` of the staged
+    `Sentry.xcframework/<slice>/Sentry.framework` -- and that the bare key
+    string is still in the binary:
+    `strings -a Sentry | grep -x enableNetworkBreadcrumbs`. Cocoa's documented
+    default is `true`, so a regression here puts request URLs back into native
+    crash reports.
+11. **`wrapper.js` still strips `beforeSend` / `beforeBreadcrumb` from the
+    native options** (same destructure, `wrapper.js:162`). This is why item 10
+    matters: native crash reports are assembled by sentry-cocoa with no JS
+    boundary in the path, so `scrubEvent` / `filterBreadcrumb`
+    (`src/services/telemetryScrub.ts`) never run on them. If a future version
+    forwards the hooks to native, re-read what the native side does with them
+    before relaxing anything.
+12. **Native breadcrumbs are still merged before `beforeSend`.**
+    `node_modules/@sentry/react-native/dist/js/integrations/devicecontext.js`
+    merges the native breadcrumb buffer inside a `processEvent` event processor
+    (declared at line 22, defined at line 25): deduplicate, `concat`, sort by
+    timestamp, `slice(-maxBreadcrumbs)` (lines 73-82). Event processors run
+    before `beforeSend` and after `beforeBreadcrumb`, which is the entire reason
+    `scrubEvent` re-filters breadcrumbs. If this moves out of `processEvent` (or
+    starts running after `beforeSend`), the re-filter no longer covers native
+    crumbs and `maxBreadcrumbs: 100` no longer bounds them.
+
 ---
 
 ## op-sqlite

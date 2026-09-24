@@ -1,9 +1,12 @@
 /**
- * Tests for uploadTelemetry (#738) — the privacy boundary between a failed
- * post and Sentry.
+ * Tests for uploadTelemetry (#738) — the compose → upload → post stage trail.
  *
  * The load-bearing assertions here are the negative ones: no path, file name,
- * URI or thrower-attached field may reach the captured event.
+ * URI or thrower-attached field may reach the captured event. Since #746 the
+ * scrub itself lives in telemetryScrub.ts and the capture in telemetry.ts;
+ * their unit tests are `telemetryScrub.test.ts` and `telemetry.test.ts`. These
+ * cases stay because they pin the property END TO END, through the real
+ * captureError, rather than trusting the seam.
  */
 
 jest.mock('@sentry/react-native', () => ({
@@ -12,11 +15,7 @@ jest.mock('@sentry/react-native', () => ({
 }));
 
 import * as Sentry from '@sentry/react-native';
-import {
-  addUploadBreadcrumb,
-  captureUploadFailure,
-  scrubErrorMessage,
-} from '../uploadTelemetry';
+import { addUploadBreadcrumb, captureUploadFailure } from '../uploadTelemetry';
 import { ApiError, NetworkError, QuotaExceededError } from '../api/errors';
 
 const mockCapture = Sentry.captureException as unknown as jest.Mock;
@@ -34,117 +33,6 @@ function capturedContext(): { level: string; tags: Record<string, string> } {
 
 beforeEach(() => {
   jest.clearAllMocks();
-});
-
-// ---------------------------------------------------------------------------
-// scrubErrorMessage
-// ---------------------------------------------------------------------------
-
-describe('scrubErrorMessage', () => {
-  it('strips file:// and content:// URIs', () => {
-    expect(scrubErrorMessage('ENOENT: file:///var/mobile/tmp/IMG_0042.HEIC missing')).not.toMatch(
-      /IMG_0042/,
-    );
-    expect(
-      scrubErrorMessage('open failed for content://media/external/images/media/1234'),
-    ).toBe('open failed for <uri>');
-  });
-
-  it('strips absolute filesystem paths', () => {
-    expect(
-      scrubErrorMessage('EACCES /var/mobile/Containers/Data/Application/photo.jpg'),
-    ).toBe('EACCES <path>');
-  });
-
-  it('strips bare media file names', () => {
-    expect(scrubErrorMessage('sanitize failed for vacation-2019.jpeg')).toBe(
-      'sanitize failed for <file>',
-    );
-    expect(scrubErrorMessage('could not read my movie.MOV')).toBe('could not read my <file>');
-  });
-
-  it('strips paths whose directory names contain spaces, keeping the trailing diagnostic', () => {
-    expect(
-      scrubErrorMessage('/storage/emulated/0/Pictures/Baby Photos/img_0042.jpg not found'),
-    ).toBe('<path> not found');
-    expect(scrubErrorMessage('EACCES: /storage/emulated/0/Download/Wedding Album/x.heic')).toBe(
-      'EACCES: <path>',
-    );
-  });
-
-  it('strips file names whose stem contains spaces', () => {
-    expect(scrubErrorMessage('failed: My Vacation Video.mp4')).toBe('failed: <file>');
-  });
-
-  it('strips picker-reachable container formats beyond the common ones', () => {
-    expect(scrubErrorMessage('sanitize failed for holiday.dng')).toBe(
-      'sanitize failed for <file>',
-    );
-    expect(scrubErrorMessage('transcode failed for holiday.mkv then holiday.webm')).toBe(
-      'transcode failed for <file> then <file>',
-    );
-  });
-
-  it('scrubs a spaced user file name with a hex stem as a whole file, not an id (#825)', () => {
-    // Regression: the <id> replace once ran before the filename patterns and
-    // the inserted angle brackets stopped them matching, leaking the stem
-    // (`Summer BBQ Grandma <id>.jpg`). Stem words must be capitalised for the
-    // spaced pattern, same as on main.
-    expect(
-      scrubErrorMessage('ENOENT: Summer BBQ Grandma 3f9a1c2e4b5d6e7f8a9b0c1d2e3f4a5b.jpg not found'),
-    ).toBe('ENOENT: <file> not found');
-    // PATH_PATTERN stops before a space-containing final segment; the spaced
-    // file name is then caught whole instead of leaking `Baby <id>.mp4`.
-    expect(
-      scrubErrorMessage('/storage/emulated/0/DCIM/Baby 3f9a1c2e4b5d6e7f8a9b0c1d2e3f4a5b.mp4 missing'),
-    ).toBe('<path> <file> missing');
-  });
-
-  it('scrubs ids glued to a word prefix and JWT-shaped tokens (#825)', () => {
-    expect(scrubErrorMessage('wrap missing for group_3f9a1c2e-4b5d-6e7f-8a9b-0c1d2e3f4a5b')).toBe(
-      'wrap missing for group_<id>',
-    );
-    // No leading word boundary, so a prefix's trailing hex letters are absorbed
-    // too (`media<hex>` -> `medi<id>`): over-eager by design, never under.
-    expect(scrubErrorMessage('no row for key3f9a1c2e4b5d6e7f8a9b0c1d2e3f4a5b')).toBe(
-      'no row for key<id>',
-    );
-    expect(scrubErrorMessage('no row for media3f9a1c2e4b5d6e7f8a9b0c1d2e3f4a5b')).toBe(
-      'no row for medi<id>',
-    );
-    expect(
-      scrubErrorMessage('401 for eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.abc-DEF_123 retry'),
-    ).toBe('401 for <token> retry');
-  });
-
-  it('replaces UUIDs and long hex runs with <id> (#747)', () => {
-    expect(
-      scrubErrorMessage('wrap missing for 3f9a1c2e-4b5d-6e7f-8a9b-0c1d2e3f4a5b'),
-    ).toBe('wrap missing for <id>');
-    expect(
-      scrubErrorMessage('digest 0123456789abcdef0123456789ABCDEF mismatch'),
-    ).toBe('digest <id> mismatch');
-  });
-
-  it('leaves short hex words and ordinary prose alone', () => {
-    expect(scrubErrorMessage('cache miss for deadbeef')).toBe('cache miss for deadbeef');
-    expect(scrubErrorMessage('transcode failed after 3 attempts')).toBe(
-      'transcode failed after 3 attempts',
-    );
-  });
-
-  it('leaves a content-free message untouched', () => {
-    expect(scrubErrorMessage('Cannot upload empty file.')).toBe('Cannot upload empty file.');
-    expect(scrubErrorMessage('File too large (240MB). Maximum is 50MB.')).toBe(
-      'File too large (240MB). Maximum is 50MB.',
-    );
-  });
-
-  it('truncates very long messages', () => {
-    const scrubbed = scrubErrorMessage('x'.repeat(5000));
-    expect(scrubbed.length).toBeLessThanOrEqual(201);
-    expect(scrubbed.endsWith('…')).toBe(true);
-  });
 });
 
 // ---------------------------------------------------------------------------

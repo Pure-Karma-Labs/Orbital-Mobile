@@ -28,6 +28,7 @@ import { clearAllArchiveConfirmations } from '../database/repositories/mediaRepo
 import { isDatabaseInitialized } from '../database/connection';
 import { clearConversationServiceState } from './conversationService';
 import { clearIdentityInflightState } from './crypto/identityKeyAccess';
+import { captureError } from './telemetry';
 import { clearMessageHandlerState } from './websocket/messageHandler';
 import { loadEciesLockState } from './crypto/downgradeProtection';
 import {
@@ -76,7 +77,7 @@ export { isRecoveryInitiator };
 function warnAndCapture(tag: string) {
   return (e: unknown) => {
     if (__DEV__) console.warn(tag, e instanceof Error ? e.message : e);
-    Sentry.captureException(e instanceof Error ? e : new Error(String(e)), {
+    captureError(e, {
       tags: { feature: 'key-recovery' },
       extra: { step: tag },
     });
@@ -129,9 +130,10 @@ export async function probeServerIdentityKey(userId: string): Promise<ServerProb
       });
       return 'unauthorized';
     }
-    // Capture the ORIGINAL exception here so its class and stack survive
-    // (DNS vs TLS vs unexpected error are indistinguishable from a wrapper).
-    Sentry.captureException(e instanceof Error ? e : new Error(String(e)), {
+    // captureError rebuilds the error, but keeps the class name and the frames
+    // — DNS vs TLS vs unexpected error stay distinguishable, which a fixed
+    // wrapper message would have destroyed.
+    captureError(e, {
       tags: { feature: 'key-recovery' },
       extra: { step: 'server-probe-unreachable', userId },
     });
@@ -384,14 +386,14 @@ async function doRecoverIdentityKeys(
             return { status: 'rate_limited' };
           }
           if (e instanceof NetworkError) {
-            Sentry.captureException(e, {
+            captureError(e, {
               tags: { feature: 'key-recovery' },
               extra: { step: 'server-reset' },
             });
             websocketManager.connect();
             return { status: 'error', message: 'Network error — please check your connection' };
           }
-          Sentry.captureException(e instanceof Error ? e : new Error(String(e)), {
+          captureError(e, {
             tags: { feature: 'key-recovery' },
             extra: { step: 'server-reset' },
           });
@@ -430,7 +432,7 @@ async function doRecoverIdentityKeys(
       try {
         await fullCryptoWipe();
       } catch (e: unknown) {
-        Sentry.captureException(e instanceof Error ? e : new Error(String(e)), {
+        captureError(e, {
           tags: { feature: 'key-recovery' },
           extra: { step: 'local-wipe' },
         });
@@ -498,7 +500,7 @@ async function doRecoverIdentityKeys(
     try {
       await loginForRecoveryWithRetry(email, password);
     } catch (e: unknown) {
-      Sentry.captureException(e instanceof Error ? e : new Error(String(e)), {
+      captureError(e, {
         tags: { feature: 'key-recovery' },
         extra: {
           step:
@@ -538,7 +540,7 @@ async function doRecoverIdentityKeys(
         } catch (e: unknown) {
           // Non-fatal — proceed on the still-valid JWT; the second-409 branch
           // below catches a still-present server key.
-          Sentry.captureException(e instanceof Error ? e : new Error(String(e)), {
+          captureError(e, {
             tags: { feature: 'key-recovery' },
             extra: { step: 'post-login-reset' },
           });
@@ -555,7 +557,7 @@ async function doRecoverIdentityKeys(
           try {
             await loginForRecoveryWithRetry(email, password);
           } catch (e: unknown) {
-            Sentry.captureException(e instanceof Error ? e : new Error(String(e)), {
+            captureError(e, {
               tags: { feature: 'key-recovery' },
               extra: { step: 'post-login-re-login' },
             });
@@ -580,7 +582,7 @@ async function doRecoverIdentityKeys(
     } catch (e: unknown) {
       if (e instanceof ConflictError) {
         // Second 409 — leave conflict flag true, abort recovery
-        Sentry.captureException(e, {
+        captureError(e, {
           tags: { feature: 'key-recovery' },
           extra: { step: 'second-409-conflict-persists' },
         });
@@ -591,7 +593,7 @@ async function doRecoverIdentityKeys(
           message: 'Key conflict persists after recovery — please try again',
         };
       }
-      Sentry.captureException(e instanceof Error ? e : new Error(String(e)), {
+      captureError(e, {
         tags: { feature: 'key-recovery' },
         extra: { step: 'key-init' },
       });

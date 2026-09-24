@@ -69,6 +69,7 @@ These data types are encrypted client-side before upload. The server stores only
 - **Is this data required for your app, or can users choose whether it's collected?** Collected automatically
 - **Why is this user data collected?** Analytics (app stability monitoring)
 - **Is this data shared with any third parties?** No (Sentry acts as a service provider / data processor on behalf of the developer — not considered "sharing" per Google's Data Safety policy)
+- **Payload note (2026-09-24, issue #746):** crash reports carry no network URLs, UI text, touch labels or console output. The client drops `http`, `touch`, `ui.multiClick` and `console` breadcrumbs before send, disables sentry-cocoa's network breadcrumbs so native crash reports carry no request URLs, and reports a rebuilt error carrying only the error class, a scrubbed message and scrubbed frames; message content, media and key material never reach the payload.
 
 ### App interactions (notification preferences)
 - **Is this data collected, shared, or both?** Collected

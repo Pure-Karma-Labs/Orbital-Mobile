@@ -89,6 +89,19 @@ const MAX_VIDEO_DIMENSION = 1280;
 const TARGET_VIDEO_BITRATE = 2_000_000;
 
 /**
+ * How long a cancelled native transcode is given to settle before JS stops
+ * waiting on it (#727).
+ *
+ * Precedent: NATIVE_SETTLE_GRACE_MS in `api/media.ts`. This one is four times
+ * longer because it bounds a whole encoder pipeline drain (the reader and
+ * writer sample loops have to finish their current buffers before the cancel
+ * settles), not a single fd close.
+ */
+const TRANSCODE_CANCEL_SETTLE_GRACE_MS = 1000;
+
+const noop = (): void => {};
+
+/**
  * Video MIME → file extension mapping for pass-through uploads.
  * Must stay in sync with ALLOWED_VIDEO_MIMES in src/hooks/useMediaPicker.ts.
  */
@@ -97,6 +110,78 @@ export const VIDEO_MIME_EXT: Record<string, string> = {
   'video/quicktime': 'mov',
   'video/x-m4v': 'm4v',
 };
+
+// ---------------------------------------------------------------------------
+// Cancel settlement backstop (#727)
+// ---------------------------------------------------------------------------
+
+/**
+ * Bound the native transcode await on the ABORT path only (#727).
+ *
+ * After #726 the iOS cancel settles only once the reader and writer sample
+ * loops drain. If they never drain, `transcodeVideo` never settles, the
+ * composer's `abortRef` stays pinned, and every later send in that screen
+ * fails with "An upload is already in progress." This races the native promise
+ * against a grace timer armed on abort, so the JS side always gets an answer.
+ *
+ * Load-bearing properties:
+ * 1. Native ECANCELLED normally WINS inside the grace period, so #726's rule —
+ *    the native writer is torn down before JS unlinks the dest file — is
+ *    preserved on every realistic cancel. The backstop is the pathological
+ *    case only.
+ * 2. The primary bound on a late write is still native: `-cancelTranscode:`
+ *    deletes `destPath` at cancel time (`OrbitalMediaTranscoder.mm` ~:639).
+ *    `onAbandoned`'s late unlink here, and `cleanupOrphanedChunks`, are
+ *    fallbacks behind that — not the guarantee.
+ * 3. On abandonment the native job STAYS REGISTERED and keeps its reader and
+ *    writer until it drains. JS cannot reclaim it; a subsequent transcode of
+ *    the same media id may therefore fail and degrade into the existing
+ *    pass-through branch. That is the accepted cost of not hanging the screen.
+ *
+ * With no signal the native promise is returned unchanged — there is no abort
+ * that could ever arm the timer, so no wrapper is warranted.
+ */
+function awaitTranscodeWithBackstop<T>(
+  native: Promise<T>,
+  signal: AbortSignal | undefined,
+  onAbandoned: () => void,
+): Promise<T> {
+  if (!signal) return native;
+
+  let abandoned = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let abortListener: (() => void) | null = null;
+
+  const backstop = new Promise<never>((_resolve, reject) => {
+    const arm = (): void => {
+      if (timer !== null) return;
+      timer = setTimeout(() => {
+        abandoned = true;
+        reject(new Error(UPLOAD_CANCELLED_MESSAGE));
+      }, TRANSCODE_CANCEL_SETTLE_GRACE_MS);
+    };
+    if (signal.aborted) {
+      arm();
+      return;
+    }
+    abortListener = arm;
+    signal.addEventListener('abort', abortListener);
+  });
+
+  // Attached unconditionally, even when native wins the race: a late REJECT of
+  // an abandoned transcode must not surface as an unhandled rejection, and a
+  // late RESOLVE means the writer finished a dest file no one will consume, so
+  // it needs the late unlink. The double `.then` is what swallows the settle
+  // before the abandonment check reads it.
+  native.then(noop, noop).then(() => {
+    if (abandoned) onAbandoned();
+  });
+
+  return Promise.race([native, backstop]).finally(() => {
+    if (timer !== null) clearTimeout(timer);
+    if (abortListener) signal.removeEventListener('abort', abortListener);
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Main function
@@ -153,10 +238,19 @@ export async function prepareVideoForUpload(
     //    aborts the upload.
     let transcodeFailed = false;
     try {
-      await transcodeVideo(mediaId, sourcePath, transcodePath, {
-        maxDimension: MAX_VIDEO_DIMENSION,
-        bitrate: TARGET_VIDEO_BITRATE,
-      });
+      await awaitTranscodeWithBackstop(
+        transcodeVideo(mediaId, sourcePath, transcodePath, {
+          maxDimension: MAX_VIDEO_DIMENSION,
+          bitrate: TARGET_VIDEO_BITRATE,
+        }),
+        options?.signal,
+        // The catch below has already unlinked transcodePath by the time an
+        // abandoned job drains, so this is the only sweep that can catch a
+        // dest file the native writer produced AFTER we stopped waiting.
+        () => {
+          unlink(transcodePath).catch(noop);
+        },
+      );
       transcodeWritten = true;
     } catch (e) {
       if (isCancellation(e) || options?.signal?.aborted) {

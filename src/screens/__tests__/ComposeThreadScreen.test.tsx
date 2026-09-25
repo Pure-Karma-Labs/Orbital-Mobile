@@ -43,10 +43,18 @@ jest.mock('../../services/threadService', () => ({
 }));
 
 const mockUploadMediaBatch = jest.fn();
+/**
+ * The REAL useMediaUploadProgress runs in this suite, so its #724b rollback
+ * seam has to exist in the factory: an omitted export is handed to the hook as
+ * `undefined`, and the fire-and-forget `.catch` would swallow the TypeError,
+ * making every rollback assertion vacuously pass.
+ */
+const mockRollbackUploadedMedia = jest.fn();
 
 jest.mock('../../services/mediaUploadService', () => ({
   uploadMedia: jest.fn(),
   uploadMediaBatch: (...args: unknown[]) => mockUploadMediaBatch(...args),
+  rollbackUploadedMedia: (...args: unknown[]) => mockRollbackUploadedMedia(...args),
   // Real implementation — the screen's catch calls this to decide whether the
   // failure was a self-cancel (no error banner) or a real error. A jest.fn()
   // returning undefined would make every error path look like a real error and
@@ -82,7 +90,14 @@ jest.mock('../../stores', () => ({
 
 import * as Sentry from '@sentry/react-native';
 import { createNewThread } from '../../services/threadService';
-import { ConflictError, NetworkError, QuotaExceededError, ServerError } from '../../services/api/errors';
+import { Alert } from 'react-native';
+import {
+  ConflictError,
+  NetworkError,
+  QuotaExceededError,
+  ServerError,
+  ValidationError,
+} from '../../services/api/errors';
 import { UPLOAD_CANCELLED_MESSAGE } from '../../services/media/uploadCancellation';
 import type { BatchUploadProgressEvent } from '../../services/mediaUploadService';
 const mockCreateNewThread = createNewThread as jest.Mock;
@@ -178,6 +193,7 @@ beforeEach(() => {
   mockUsePreventRemove.mockClear();
   mockSelectedMedia = [];
   mockUploadMediaBatch.mockResolvedValue(['media-id-1']);
+  mockRollbackUploadedMedia.mockResolvedValue(undefined);
 });
 
 // ---------------------------------------------------------------------------
@@ -955,5 +971,119 @@ describe('ComposeThreadScreen — upload reuse cache and unmount safety', () => 
       findByTestId(renderer.root, 'compose-body-input').props.onChangeText('Some body text!');
     });
     expect(mockUsePreventRemove.mock.calls.at(-1)?.[0]).toBe(false);
+  });
+
+  // -------------------------------------------------------------------------
+  // Uploaded-media rollback (#724b)
+  // -------------------------------------------------------------------------
+
+  /** Drive the discard guard: trigger the prevented-remove callback, press Discard. */
+  async function confirmDiscard(): Promise<void> {
+    const onPrevented = mockUsePreventRemove.mock.calls.at(-1)?.[1] as (
+      e: { data: { action: unknown } },
+    ) => void;
+    const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+    act(() => {
+      onPrevented({ data: { action: { type: 'POP' } } });
+    });
+    const buttons = alertSpy.mock.calls[0][2] as { text: string; onPress?: () => void }[];
+    const discard = buttons.find((b) => b.text === 'Discard');
+    await act(async () => {
+      discard?.onPress?.();
+      // The rollback is scheduled on a microtask, so it has to be flushed
+      // before the assertion.
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    alertSpy.mockRestore();
+  }
+
+  it('rolls the held media ids back when the user confirms Discard', async () => {
+    mockSelectedMedia = oneImage;
+    // 400 is a definitely-not-committed failure, so the cache stays
+    // rollback-eligible.
+    mockCreateNewThread.mockRejectedValue(new ValidationError(400));
+
+    const renderer = renderScreen();
+    await fillAndPost(renderer);
+    expect(mockUsePreventRemove.mock.calls.at(-1)?.[0]).toBe(true);
+
+    await confirmDiscard();
+
+    expect(mockRollbackUploadedMedia).toHaveBeenCalledWith(['media-id-1']);
+    expect(mockNavigation.dispatch).toHaveBeenCalled();
+  });
+
+  it('rolls nothing back on a successful post', async () => {
+    mockSelectedMedia = oneImage;
+    mockCreateNewThread.mockResolvedValue(fakeThread);
+
+    const renderer = renderScreen();
+    await fillAndPost(renderer);
+
+    expect(mockNavigation.replace).toHaveBeenCalled();
+    expect(mockRollbackUploadedMedia).not.toHaveBeenCalled();
+  });
+
+  it('after a 409 leaves the guard disarmed and never rolls the ids back', async () => {
+    mockSelectedMedia = oneImage;
+    mockCreateNewThread.mockRejectedValue(new ConflictError());
+
+    const renderer = renderScreen();
+    await fillAndPost(renderer);
+
+    // The post probably committed, so there is nothing left to protect: Back
+    // must navigate straight through with no "Discard unsent post?" prompt.
+    expect(mockUsePreventRemove.mock.calls.at(-1)?.[0]).toBe(false);
+
+    // And a Discard that arrives anyway (the guard's other arm, e.g. a later
+    // in-flight upload) must not delete media that is on a post.
+    await confirmDiscard();
+    expect(mockRollbackUploadedMedia).not.toHaveBeenCalled();
+  });
+
+  it('after a create-stage network failure leaves the guard disarmed and rolls nothing back', async () => {
+    mockSelectedMedia = oneImage;
+    mockCreateNewThread.mockRejectedValue(new NetworkError());
+
+    const renderer = renderScreen();
+    await fillAndPost(renderer);
+
+    // The request may have been processed with only its response lost.
+    expect(mockUsePreventRemove.mock.calls.at(-1)?.[0]).toBe(false);
+    await confirmDiscard();
+    expect(mockRollbackUploadedMedia).not.toHaveBeenCalled();
+  });
+
+  it('marks the cache from an unmounted screen when the 409 lands late', async () => {
+    // The mark sits OUTSIDE the `if (mountedRef.current)` UI block, so it runs
+    // on a dead screen. Nothing observable survives that screen, so what this
+    // pins is the negative: a post-unmount 409 neither rolls media back nor
+    // throws through the unguarded call.
+    mockSelectedMedia = oneImage;
+    let rejectCreate: (e: unknown) => void = () => {};
+    mockCreateNewThread.mockImplementation(
+      () => new Promise((_resolve, reject) => { rejectCreate = reject; }),
+    );
+
+    const renderer = renderScreen();
+    act(() => {
+      findByTestId(renderer.root, 'compose-title-input').props.onChangeText('My Title');
+      findByTestId(renderer.root, 'compose-body-input').props.onChangeText('Some body text');
+    });
+    await act(async () => {
+      findPostButton(renderer.root).props.onPress();
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+    act(() => {
+      renderer.unmount();
+    });
+
+    await act(async () => {
+      rejectCreate(new ConflictError());
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(mockRollbackUploadedMedia).not.toHaveBeenCalled();
   });
 });

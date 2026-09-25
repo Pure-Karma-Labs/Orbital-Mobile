@@ -26,24 +26,37 @@ jest.mock('../api/media', () => ({
 
 const mockGetMedia = jest.fn();
 const mockUpdateDownloadState = jest.fn();
+/** Used by the #724c thumbnail reaper through media/mediaTeardown. */
+const mockDeleteMedia = jest.fn();
 
 jest.mock('../../database/repositories/mediaRepository', () => ({
   getMedia: (...args: unknown[]) => mockGetMedia(...args),
   updateDownloadState: (...args: unknown[]) => mockUpdateDownloadState(...args),
+  deleteMedia: (...args: unknown[]) => mockDeleteMedia(...args),
+}));
+
+// mediaTeardown's DB guard. Defaults to "initialized" so the reaper's row
+// deletes actually run; a test that needs the opposite overrides it.
+jest.mock('../../database/connection', () => ({
+  isDatabaseInitialized: () => true,
 }));
 
 const mockUpdateMediaDownloadState = jest.fn();
+const mockRemoveMedia = jest.fn();
 
 jest.mock('../../stores/useAppStore', () => ({
   useAppStore: {
     getState: jest.fn(() => ({
       updateMediaDownloadState: mockUpdateMediaDownloadState,
+      removeMedia: mockRemoveMedia,
     })),
   },
 }));
 
+const mockQueryMany = jest.fn((..._args: unknown[]): unknown[] => []);
+
 jest.mock('../../database/queryHelpers', () => ({
-  queryMany: jest.fn(() => []),
+  queryMany: (...args: unknown[]) => mockQueryMany(...args),
 }));
 
 const mockConfirmArchived = jest.fn().mockResolvedValue('confirmed');
@@ -1013,5 +1026,124 @@ describe('cleanupOrphanedMedia', () => {
       'downloaded',
       FINAL_PATH,
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // Historical thumbnail orphan reaper (#724c)
+  // -------------------------------------------------------------------------
+
+  describe('thumbnail orphan reaper', () => {
+    const OLD_CHILD_PATH = `${MEDIA_DIR}/old-child.jpg`;
+
+    /**
+     * Arm the reaper's query with rows, and leave every OTHER queryMany call
+     * (pass 2's downloaded-row sweep) returning nothing.
+     *
+     * queryMany is mocked, so the WHERE clause is not executed here — the SQL
+     * itself is asserted as text below, and the age/reference/LIMIT semantics
+     * it encodes are SQLite's.
+     */
+    function armReaperRows(rows: unknown[]): void {
+      mockQueryMany.mockImplementation((...args: unknown[]) => {
+        const sql = args[0] as string;
+        return sql.includes('is_thumbnail = 1') ? rows : [];
+      });
+    }
+
+    beforeEach(() => {
+      const rnfs = require('@dr.pogodin/react-native-fs');
+      rnfs.readDir.mockResolvedValue([]);
+    });
+
+    it('deletes an unreferenced child row BEFORE unlinking its file', async () => {
+      fsFiles.set(OLD_CHILD_PATH, 1234);
+      armReaperRows([{ id: 'old-child', local_path: 'media/old-child.jpg' }]);
+
+      const rnfs = require('@dr.pogodin/react-native-fs');
+      await cleanupOrphanedMedia();
+
+      expect(mockDeleteMedia).toHaveBeenCalledWith('old-child');
+      expect(mockRemoveMedia).toHaveBeenCalledWith('old-child');
+      // The relative column went through resolveMediaPath: the raw value would
+      // have been a silent unlink no-op, leaving the plaintext frame on disk.
+      expect(rnfs.unlink).toHaveBeenCalledWith(OLD_CHILD_PATH);
+      expect(fsFiles.has(OLD_CHILD_PATH)).toBe(false);
+
+      // Order is load-bearing: unlink first would let pass 2 re-arm the
+      // surviving row as 'pending' and re-download the frame.
+      const unlinkIndex = (rnfs.unlink as jest.Mock).mock.calls.findIndex(
+        (c: unknown[]) => c[0] === OLD_CHILD_PATH,
+      );
+      expect(mockDeleteMedia.mock.invocationCallOrder[0]).toBeLessThan(
+        (rnfs.unlink as jest.Mock).mock.invocationCallOrder[unlinkIndex],
+      );
+    });
+
+    it('binds an age cut-off one hour in the past, in milliseconds', async () => {
+      armReaperRows([]);
+      const before = Date.now();
+
+      await cleanupOrphanedMedia();
+
+      const call = mockQueryMany.mock.calls.find((c) =>
+        (c[0] as string).includes('is_thumbnail = 1'),
+      );
+      expect(call).toBeDefined();
+      const sql = call![0] as string;
+      // The guards the reaper's safety rests on, pinned as text because
+      // queryMany is mocked here.
+      expect(sql).toContain('created_at < ?');
+      expect(sql).toContain('thumbnail_media_id IS NOT NULL');
+      expect(sql).toContain('LIMIT 200');
+
+      const [cutoff] = call![1] as number[];
+      // created_at is epoch MILLISECONDS (every writer stamps Date.now()).
+      expect(cutoff).toBeGreaterThanOrEqual(before - 3600_000 - 1000);
+      expect(cutoff).toBeLessThanOrEqual(Date.now() - 3600_000);
+    });
+
+    it('deletes the row and attempts no unlink when local_path is NULL', async () => {
+      armReaperRows([{ id: 'pathless-child', local_path: null }]);
+
+      const rnfs = require('@dr.pogodin/react-native-fs');
+      await cleanupOrphanedMedia();
+
+      expect(mockDeleteMedia).toHaveBeenCalledWith('pathless-child');
+      expect(mockRemoveMedia).toHaveBeenCalledWith('pathless-child');
+      expect(rnfs.unlink).not.toHaveBeenCalled();
+    });
+
+    it('still runs when the media directory does not exist', async () => {
+      // The reaper is pure DB work: it sits ahead of the MEDIA_DIR early
+      // return precisely so a device with no media dir still gets swept.
+      fsFiles.delete(MEDIA_DIR);
+      armReaperRows([{ id: 'old-child', local_path: null }]);
+
+      await cleanupOrphanedMedia();
+
+      expect(mockDeleteMedia).toHaveBeenCalledWith('old-child');
+    });
+
+    it('keeps sweeping when one row blows up', async () => {
+      armReaperRows([
+        { id: 'bad-child', local_path: null },
+        { id: 'good-child', local_path: null },
+      ]);
+      mockRemoveMedia.mockImplementationOnce(() => {
+        throw new Error('store exploded');
+      });
+
+      await cleanupOrphanedMedia();
+
+      expect(mockDeleteMedia).toHaveBeenCalledWith('good-child');
+    });
+
+    it('never throws when the query itself fails', async () => {
+      mockQueryMany.mockImplementation(() => {
+        throw new Error('database not initialized');
+      });
+
+      await expect(cleanupOrphanedMedia()).resolves.toBeUndefined();
+    });
   });
 });

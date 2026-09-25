@@ -16,14 +16,24 @@
  * upload succeeded but whose create call failed keeps its media ids, so pressing
  * Send again attaches the SAME ids instead of re-uploading the batch (#724
  * amplifier). The cache is deliberately narrow -- see `uploadBatch` for the
- * hit conditions and `clearUploadCache` for who drops it.
+ * hit conditions and `releaseUploadCache` for who drops it.
+ *
+ * #724b: ids that leave this hook without ever reaching a post are rolled back
+ * rather than abandoned. Uploaded media commits locally with a NULL parent, and
+ * FileLibrary surfaces every upload_state='done' row regardless of parent, so
+ * an abandoned id is a permanent ghost. Three paths produce them: an item
+ * deselected mid-upload, a cache entry superseded by a changed selection, and a
+ * discarded post. All three funnel through `rollbackUploadedMedia`, which skips
+ * anything that turns out to be attached.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   uploadMediaBatch,
+  rollbackUploadedMedia,
   type UploadPhase,
 } from '../services/mediaUploadService';
+import type { UploadCacheDisposition } from '../services/media/uploadCacheDisposition';
 import type { PickedMedia } from './useMediaPicker';
 
 export interface UploadProgressState {
@@ -69,12 +79,29 @@ export interface UseMediaUploadProgressResult {
     scopeKey?: string,
   ) => Promise<string[]>;
   /**
-   * Drop the reuse cache. Callers: the screen after a SUCCESSFUL create (the
-   * ids are attached now), the screen when it sends with an empty selection,
-   * and the discard guard. Notably NOT called for a 409 or a 404 -- see
-   * `uploadBatch`.
+   * Release the reuse cache, saying WHAT BECAME of the ids it holds. The
+   * argument is required precisely so that every call site has to answer that
+   * question (#724b): the previous `clearUploadCache()` dropped the ids
+   * silently, which is what stranded them.
+   *
+   * | disposition | cache | hasUnsentUpload | rollback |
+   * |---|---|---|---|
+   * | `attached` | dropped | false | none |
+   * | `discard` | dropped | false | yes, unless the entry is flagged may-be-attached |
+   * | `may-be-attached` | KEPT + flagged | false | none |
+   *
+   * `may-be-attached` clears `hasUnsentUpload` even though the cache survives:
+   * the media is probably already on a post, so there is nothing left for the
+   * discard guard to protect and it must not arm. The ids stay cached so a
+   * re-press draws another 409 instead of uploading duplicates.
+   *
+   * Rolling back an id that WAS attached without the client knowing is
+   * recoverable, but not free: `processMediaMetadata` re-materializes the row
+   * and its `attachment_key` from the metadata envelope on the next sync, so
+   * the media returns — the local plaintext copy has to be re-downloaded. The
+   * `may-be-attached` flag exists to avoid paying that.
    */
-  clearUploadCache: () => void;
+  releaseUploadCache: (disposition: UploadCacheDisposition) => void;
   /**
    * True while the cache holds uploaded-but-unattached media ids, i.e. the
    * post-failure state where leaving the screen would strand the upload. Drives
@@ -93,6 +120,27 @@ interface UploadCacheEntry {
   scopeKey: string | undefined;
   /** The POST-FILTER ids -- exactly what the previous send would have attached. */
   mediaIds: string[];
+  /**
+   * A create carrying these ids failed in a way that may still have committed
+   * (409 / network / 5xx). Suppresses the rollback on a later `discard`.
+   */
+  mayBeAttached?: boolean;
+}
+
+/**
+ * Fire-and-forget rollback of ids that will never reach a post.
+ *
+ * Isolated from the caller twice over: the `Promise.resolve().then(...)` means
+ * a SYNCHRONOUS throw from the service cannot unwind the send path, and the
+ * `.catch` means a rejection cannot either. `rollbackUploadedMedia` already
+ * swallows its own errors -- this is belt and braces on a path where a failure
+ * to clean up must never become a failure to post.
+ */
+function scheduleRollback(mediaIds: string[]): void {
+  if (mediaIds.length === 0) return;
+  Promise.resolve()
+    .then(() => rollbackUploadedMedia(mediaIds))
+    .catch(() => {});
 }
 
 export function useMediaUploadProgress(): UseMediaUploadProgressResult {
@@ -102,7 +150,7 @@ export function useMediaUploadProgress(): UseMediaUploadProgressResult {
   const mountedRef = useRef(true);
   /**
    * Reuse cache. Invalidated by a selection, uri, group or scope change (here),
-   * by a successful create and by Discard (both via `clearUploadCache`).
+   * by a successful create and by Discard (both via `releaseUploadCache`).
    * Deliberately NOT invalidated by a create failure: a 409 means the previous
    * create almost certainly committed, so a re-press must draw another 409
    * rather than upload a duplicate set, and a 404 means the thread is gone, so
@@ -147,9 +195,31 @@ export function useMediaUploadProgress(): UseMediaUploadProgressResult {
     controller.abort();
   }, []);
 
-  const clearUploadCache = useCallback(() => {
-    cacheRef.current = null;
-    if (mountedRef.current) setHasUnsentUpload(false);
+  const releaseUploadCache = useCallback((disposition: UploadCacheDisposition) => {
+    const entry = cacheRef.current;
+    // Every arm clears hasUnsentUpload: after any of the three there is nothing
+    // the discard guard could still be protecting.
+    switch (disposition) {
+      case 'attached':
+        cacheRef.current = null;
+        if (mountedRef.current) setHasUnsentUpload(false);
+        return;
+      case 'discard':
+        cacheRef.current = null;
+        if (mountedRef.current) setHasUnsentUpload(false);
+        // The flag is the whole reason `may-be-attached` exists: those ids are
+        // probably on a post the client never saw confirmed, so they are left
+        // alone rather than deleted and re-downloaded.
+        if (entry && !entry.mayBeAttached) {
+          scheduleRollback(entry.mediaIds);
+        }
+        return;
+      case 'may-be-attached':
+        // Cache KEPT -- a re-press must reuse these ids, not upload duplicates.
+        if (entry) entry.mayBeAttached = true;
+        if (mountedRef.current) setHasUnsentUpload(false);
+        return;
+    }
   }, []);
 
   const uploadBatch = useCallback(
@@ -175,8 +245,9 @@ export function useMediaUploadProgress(): UseMediaUploadProgressResult {
           return cached.mediaIds;
         }
         // Selection, uri, group or scope changed: the ids no longer describe
-        // what the user is about to post.
-        clearUploadCache();
+        // what the user is about to post, and nothing else can ever attach
+        // them -- so this is a discard, rollback included (#724b).
+        releaseUploadCache('discard');
       }
 
       // Nothing to upload: seeding progress here would divide by an itemCount of 0.
@@ -229,10 +300,18 @@ export function useMediaUploadProgress(): UseMediaUploadProgressResult {
         let result = ids;
         if (stillSelected) {
           const selectedUris = new Set(stillSelected.map((m) => m.uri));
-          result = ids.filter((_id, i) => {
+          const kept: string[] = [];
+          const dropped: string[] = [];
+          ids.forEach((id, i) => {
             const source = snapshot[i];
-            return source != null && selectedUris.has(source.uri);
+            const keep = source != null && selectedUris.has(source.uri);
+            (keep ? kept : dropped).push(id);
           });
+          result = kept;
+          // A dropped id was uploaded and committed locally, but the post it
+          // would have ridden on no longer references it -- nothing downstream
+          // will ever attach it, so roll it back now (#724b).
+          scheduleRollback(dropped);
         }
 
         // Cache the FILTERED ids: a retry must attach exactly what this send
@@ -258,8 +337,8 @@ export function useMediaUploadProgress(): UseMediaUploadProgressResult {
         }
       }
     },
-    [clearUploadCache],
+    [releaseUploadCache],
   );
 
-  return { progress, cancel, uploadBatch, clearUploadCache, hasUnsentUpload };
+  return { progress, cancel, uploadBatch, releaseUploadCache, hasUnsentUpload };
 }

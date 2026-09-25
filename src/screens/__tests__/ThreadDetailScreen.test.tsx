@@ -117,7 +117,13 @@ import * as Sentry from '@sentry/react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import { ThemeProvider } from '../../theme';
 import { ThreadDetailScreen } from '../ThreadDetailScreen';
-import { ConflictError, NetworkError, QuotaExceededError, ServerError } from '../../services/api/errors';
+import {
+  ConflictError,
+  NetworkError,
+  QuotaExceededError,
+  ServerError,
+  ValidationError,
+} from '../../services/api/errors';
 import { toggleMute } from '../../services/notificationSettingsSync';
 import { UPLOAD_CANCELLED_MESSAGE } from '../../services/media/uploadCancellation';
 import type { BatchUploadProgressEvent } from '../../services/mediaUploadService';
@@ -140,9 +146,17 @@ jest.mock('../../services/threadService', () => ({
 }));
 
 const mockUploadMediaBatch = jest.fn();
+/**
+ * The REAL useMediaUploadProgress runs in this suite, so its #724b rollback
+ * seam has to exist in the factory: an omitted export is handed to the hook as
+ * `undefined`, and the fire-and-forget `.catch` would swallow the TypeError,
+ * making every rollback assertion vacuously pass.
+ */
+const mockRollbackUploadedMedia = jest.fn();
 
 jest.mock('../../services/mediaUploadService', () => ({
   uploadMediaBatch: (...args: unknown[]) => mockUploadMediaBatch(...args),
+  rollbackUploadedMedia: (...args: unknown[]) => mockRollbackUploadedMedia(...args),
   // Real implementation — handleSend's catch uses it to suppress the Alert on a
   // self-cancel. A jest.fn() would silently route cancels into the error branch.
   isUploadCancellation: (e: unknown) =>
@@ -1608,9 +1622,9 @@ describe('ThreadDetailScreen — upload cache reuse', () => {
 
   it('alerts with the conflict copy and keeps the cache alive on a ConflictError (409)', async () => {
     mockSelectedMedia = oneImage;
-    // 409 deliberately does NOT clear the cache — see useMediaUploadProgress —
-    // so the second press re-attaches the same ids and draws another 409 rather
-    // than uploading a duplicate set.
+    // A 409 deliberately does NOT drop the cache — see releaseUploadCache's
+    // 'may-be-attached' arm — so the second press re-attaches the same ids and
+    // draws another 409 rather than uploading a duplicate set.
     mockPostReply.mockRejectedValue(new ConflictError());
 
     const renderer = await renderScreen();
@@ -1710,5 +1724,92 @@ describe('ThreadDetailScreen — upload cache reuse', () => {
       'Reply Failed',
       'Failed to send your reply. Please try again.',
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // Uploaded-media rollback (#724b)
+  // -------------------------------------------------------------------------
+
+  /** Drive the discard guard: trigger the prevented-remove callback, press Discard. */
+  async function confirmDiscard(): Promise<void> {
+    const onPrevented = mockUsePreventRemove.mock.calls.at(-1)?.[1] as (
+      e: { data: { action: unknown } },
+    ) => void;
+    act(() => {
+      onPrevented({ data: { action: { type: 'POP' } } });
+    });
+    const discardCall = alertSpy.mock.calls.find((c) =>
+      String(c[0]).startsWith('Discard'),
+    );
+    const buttons = discardCall?.[2] as { text: string; onPress?: () => void }[];
+    const discard = buttons.find((b) => b.text === 'Discard');
+    await act(async () => {
+      discard?.onPress?.();
+      // The rollback is scheduled on a microtask.
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  it('rolls the held media ids back when the user confirms Discard', async () => {
+    mockSelectedMedia = oneImage;
+    // 400 is a definitely-not-committed failure, so the cache stays
+    // rollback-eligible.
+    mockPostReply.mockRejectedValue(new ValidationError(400));
+
+    const renderer = await renderScreen();
+    await doSend(renderer);
+    expect(mockUsePreventRemove.mock.calls.at(-1)?.[0]).toBe(true);
+
+    await confirmDiscard();
+
+    expect(mockRollbackUploadedMedia).toHaveBeenCalledWith(['media-id-1']);
+  });
+
+  it('rolls nothing back on a successful send', async () => {
+    mockSelectedMedia = oneImage;
+    mockPostReply.mockResolvedValue({
+      id: 'reply-new',
+      threadId: 'thread-1',
+      authorId: 'user-1',
+      authorUsername: 'alice',
+      body: 'hello',
+      parentReplyId: null,
+      depth: 0,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      syncStatus: 'synced',
+    });
+
+    const renderer = await renderScreen();
+    await doSend(renderer);
+
+    expect(mockRollbackUploadedMedia).not.toHaveBeenCalled();
+  });
+
+  it('after a 409 leaves the guard disarmed and never rolls the ids back', async () => {
+    mockSelectedMedia = oneImage;
+    mockPostReply.mockRejectedValue(new ConflictError());
+
+    const renderer = await renderScreen();
+    await doSend(renderer);
+
+    // The reply probably committed, so Back must navigate with no prompt.
+    expect(mockUsePreventRemove.mock.calls.at(-1)?.[0]).toBe(false);
+
+    await confirmDiscard();
+    expect(mockRollbackUploadedMedia).not.toHaveBeenCalled();
+  });
+
+  it('after a create-stage network failure leaves the guard disarmed and rolls nothing back', async () => {
+    mockSelectedMedia = oneImage;
+    mockPostReply.mockRejectedValue(new NetworkError());
+
+    const renderer = await renderScreen();
+    await doSend(renderer);
+
+    expect(mockUsePreventRemove.mock.calls.at(-1)?.[0]).toBe(false);
+    await confirmDiscard();
+    expect(mockRollbackUploadedMedia).not.toHaveBeenCalled();
   });
 });

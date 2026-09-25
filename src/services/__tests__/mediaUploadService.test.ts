@@ -101,7 +101,13 @@ const mockRemoveMedia = jest.fn();
  */
 let mockMediaMap: Record<
   string,
-  { localPath: string | null; thumbnailMediaId?: string | null }
+  {
+    localPath: string | null;
+    thumbnailMediaId?: string | null;
+    /** Parent ids — read by rollbackUploadedMedia's attached check (#724b). */
+    threadId?: string | null;
+    replyId?: string | null;
+  }
 > = {};
 
 jest.mock('../../stores/useAppStore', () => ({
@@ -127,7 +133,7 @@ import {
   isUploadCancellation,
   type UploadProgressEvent,
   type BatchUploadProgressEvent,
-  type BatchUploadError,
+  rollbackUploadedMedia,
 } from '../mediaUploadService';
 import * as Sentry from '@sentry/react-native';
 import { QuotaExceededError, AuthError } from '../api/errors';
@@ -1207,7 +1213,7 @@ describe('uploadMediaBatch', () => {
     expect(mockUploadChunk).toHaveBeenCalledTimes(1);
   });
 
-  it('rolls back item 1 locally (delete + unlink) and reports it in uploadedMediaIds when the batch cancels before item 2', async () => {
+  it('rolls back item 1 locally (delete + unlink) when the batch cancels before item 2', async () => {
     mockGenerateUUID
       .mockReturnValueOnce('batch-id-1')
       .mockReturnValueOnce('batch-id-2');
@@ -1228,12 +1234,14 @@ describe('uploadMediaBatch', () => {
     const rnfs = require('@dr.pogodin/react-native-fs');
     const err = (await uploadMediaBatch(fakeItems, 'group-1', {
       signal: controller.signal,
-    }).catch((e) => e)) as BatchUploadError;
+    }).catch((e) => e)) as Error;
 
+    expect(isUploadCancellation(err)).toBe(true);
     expect(mockDeleteMedia).toHaveBeenCalledWith('batch-id-1');
     expect(mockRemoveMedia).toHaveBeenCalledWith('batch-id-1');
     expect(rnfs.unlink).toHaveBeenCalledWith(localPath);
-    expect(err.uploadedMediaIds).toContain('batch-id-1');
+    // Item 2 never started, so it has nothing to roll back.
+    expect(mockDeleteMedia).not.toHaveBeenCalledWith('batch-id-2');
   });
 
   it('cancels instead of completing when the abort lands after the final chunk POST (pre-completeUpload check)', async () => {
@@ -1277,13 +1285,12 @@ describe('uploadMediaBatch', () => {
     const rnfs = require('@dr.pogodin/react-native-fs');
     const err = (await uploadMediaBatch([fakeItems[0]], 'group-1', {
       signal: controller.signal,
-    }).catch((e) => e)) as BatchUploadError;
+    }).catch((e) => e)) as Error;
 
     expect(err.message).toContain('cancelled');
     expect(mockDeleteMedia).toHaveBeenCalledWith('tail-id-2');
     expect(mockRemoveMedia).toHaveBeenCalledWith('tail-id-2');
     expect(rnfs.unlink).toHaveBeenCalledWith(localPath);
-    expect(err.uploadedMediaIds).toContain('tail-id-2');
   });
 
   // A video item commits TWO local media: itself and its thumbnail child, under
@@ -1349,9 +1356,9 @@ describe('uploadMediaBatch', () => {
       mockMediaMap['thumb-media-id'] = { localPath: THUMB_LOCAL_PATH };
 
       const rnfs = require('@dr.pogodin/react-native-fs');
-      const err = (await uploadMediaBatch([videoItem], 'group-1', {
+      await uploadMediaBatch([videoItem], 'group-1', {
         signal: controller.signal,
-      }).catch((e) => e)) as BatchUploadError;
+      }).catch((e) => e);
 
       // Both canonical plaintext files are gone.
       expect(rnfs.unlink).toHaveBeenCalledWith(PARENT_LOCAL_PATH);
@@ -1361,12 +1368,10 @@ describe('uploadMediaBatch', () => {
       expect(mockDeleteMedia).toHaveBeenCalledWith('thumb-media-id');
       expect(mockRemoveMedia).toHaveBeenCalledWith('parent-media-id');
       expect(mockRemoveMedia).toHaveBeenCalledWith('thumb-media-id');
-      // uploadedMediaIds carries the SERVER-side ids the batch collected. The
-      // child never enters that array — which is precisely why the local rollback
-      // has to expand it, and why a caller cleaning up server-side must follow
-      // thumbnail_media_id rather than trusting this list.
-      expect(err.uploadedMediaIds).toContain('parent-media-id');
-      expect(err.uploadedMediaIds).not.toContain('thumb-media-id');
+      // The child id never enters the batch's own `ids` array — which is
+      // precisely why the local rollback has to expand it, and why a future
+      // server-side cleanup must follow thumbnail_media_id rather than the
+      // parent ids alone.
       // Without these two the rollback assertions above would pass against the
       // hand-seeded fixture alone, even if the service never actually produced
       // the parent -> child link.
@@ -1395,7 +1400,7 @@ describe('uploadMediaBatch', () => {
       const rnfs = require('@dr.pogodin/react-native-fs');
       const err = (await uploadMediaBatch([videoItem], 'group-1', {
         signal: controller.signal,
-      }).catch((e) => e)) as BatchUploadError;
+      }).catch((e) => e)) as Error;
 
       expect(mockDeleteMedia).toHaveBeenCalledWith('thumb-media-id');
       expect(rnfs.unlink).toHaveBeenCalledWith(THUMB_LOCAL_PATH);
@@ -1404,8 +1409,6 @@ describe('uploadMediaBatch', () => {
       // rollback of a media that does not exist.
       expect(mockDeleteMedia).not.toHaveBeenCalledWith('parent-media-id');
       expect(isUploadCancellation(err)).toBe(true);
-      // The item never reached `ids` — nothing was uploaded from the batch's view.
-      expect(err.uploadedMediaIds).toEqual([]);
     });
 
     it('resolves the thumbnail child through the DB when no store entry exists, and unlinks the ABSOLUTE path', async () => {
@@ -1452,6 +1455,166 @@ describe('uploadMediaBatch', () => {
       expect(mockDeleteMedia).toHaveBeenCalledWith('thumb-media-id');
       expect(mockRemoveMedia).toHaveBeenCalledWith('thumb-media-id');
     });
+
+    // #724a: before this, only CANCELLATION rolled siblings back. A plain
+    // failure left the completed video (and its thumbnail child) committed with
+    // a NULL parent — thread-less ghosts in FileLibrary, multiplied by every
+    // retry press.
+    it('rolls back a completed video AND its thumbnail child when a LATER item fails without cancellation', async () => {
+      // Third id, drawn after the parent and the thumbnail recursion.
+      mockGenerateUUID.mockReturnValueOnce('sibling-id-2');
+
+      mockMediaMap['parent-media-id'] = {
+        localPath: PARENT_LOCAL_PATH,
+        thumbnailMediaId: 'thumb-media-id',
+      };
+      mockMediaMap['thumb-media-id'] = { localPath: THUMB_LOCAL_PATH };
+
+      // 413 is non-retryable, so the item fails immediately — a retryable
+      // rejection would burn the real backoff (#836).
+      mockUploadChunk.mockImplementation((args: Record<string, unknown>) => {
+        if (args.mediaId === 'sibling-id-2') {
+          return Promise.reject(new QuotaExceededError());
+        }
+        return Promise.resolve({ uploadId: 'u1', received: 1, complete: false });
+      });
+
+      const imageItem: PickedMedia = {
+        uri: 'file:///photo2.png',
+        type: 'image/png',
+        fileName: 'photo2.png',
+        fileSize: 50,
+        width: 100,
+        height: 100,
+      };
+
+      const rnfs = require('@dr.pogodin/react-native-fs');
+      const err = (await uploadMediaBatch([videoItem, imageItem], 'group-1').catch(
+        (e) => e,
+      )) as Error;
+
+      // The original failure survives the rollback untouched — the composer
+      // classifies on it (QuotaExceededError gets its own banner).
+      expect(err).toBeInstanceOf(QuotaExceededError);
+      expect(isUploadCancellation(err)).toBe(false);
+
+      expect(mockDeleteMedia).toHaveBeenCalledWith('parent-media-id');
+      expect(mockDeleteMedia).toHaveBeenCalledWith('thumb-media-id');
+      expect(rnfs.unlink).toHaveBeenCalledWith(PARENT_LOCAL_PATH);
+      expect(rnfs.unlink).toHaveBeenCalledWith(THUMB_LOCAL_PATH);
+      expect(mockRemoveMedia).toHaveBeenCalledWith('parent-media-id');
+      expect(mockRemoveMedia).toHaveBeenCalledWith('thumb-media-id');
+    });
+  });
+
+  it('does not let a throwing rollback mask the original error (#724a)', async () => {
+    mockGenerateUUID
+      .mockReturnValueOnce('mask-id-1')
+      .mockReturnValueOnce('mask-id-2');
+
+    mockMediaMap['mask-id-1'] = { localPath: '/tmp/media/mask-id-1.jpg' };
+    // The store removal is the one step of the teardown that is NOT internally
+    // guarded, so throwing here is the realistic way the rollback blows up.
+    // Once, not permanently: clearAllMocks leaves a mockImplementation
+    // installed for every later test in the file.
+    mockRemoveMedia.mockImplementationOnce(() => {
+      throw new Error('store exploded');
+    });
+
+    mockUploadChunk.mockImplementation((args: Record<string, unknown>) => {
+      if (args.mediaId === 'mask-id-2') {
+        return Promise.reject(new QuotaExceededError());
+      }
+      return Promise.resolve({ uploadId: 'u1', received: 1, complete: false });
+    });
+
+    const err = (await uploadMediaBatch(fakeItems, 'group-1').catch((e) => e)) as Error;
+
+    expect(err).toBeInstanceOf(QuotaExceededError);
+    expect(err.message).not.toContain('store exploded');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rollbackUploadedMedia (#724b)
+// ---------------------------------------------------------------------------
+
+describe('rollbackUploadedMedia', () => {
+  it('tears down unattached ids, expanding a video parent to its thumbnail child', async () => {
+    mockMediaMap['drop-parent'] = {
+      localPath: '/tmp/media/drop-parent.mov',
+      thumbnailMediaId: 'drop-child',
+      threadId: null,
+      replyId: null,
+    };
+    mockMediaMap['drop-child'] = { localPath: '/tmp/media/drop-child.jpg' };
+
+    const rnfs = require('@dr.pogodin/react-native-fs');
+    await rollbackUploadedMedia(['drop-parent']);
+
+    expect(mockDeleteMedia).toHaveBeenCalledWith('drop-parent');
+    expect(mockDeleteMedia).toHaveBeenCalledWith('drop-child');
+    expect(rnfs.unlink).toHaveBeenCalledWith('/tmp/media/drop-parent.mov');
+    expect(rnfs.unlink).toHaveBeenCalledWith('/tmp/media/drop-child.jpg');
+  });
+
+  it('skips ids the store already shows as attached, counting empty strings as no parent', async () => {
+    // Attached via replyId even though thread_id is the empty string: an id is
+    // unattached only when ALL of its parent fields are empty.
+    mockMediaMap['attached-reply'] = {
+      localPath: '/tmp/media/attached-reply.jpg',
+      threadId: '',
+      replyId: 'reply-1',
+    };
+    mockMediaMap['attached-thread'] = {
+      localPath: '/tmp/media/attached-thread.jpg',
+      threadId: 'thread-1',
+      replyId: null,
+    };
+    mockMediaMap['unattached-id'] = {
+      localPath: '/tmp/media/unattached.jpg',
+      threadId: '',
+      replyId: '',
+    };
+
+    await rollbackUploadedMedia(['attached-reply', 'attached-thread', 'unattached-id']);
+
+    expect(mockDeleteMedia).not.toHaveBeenCalledWith('attached-reply');
+    expect(mockDeleteMedia).not.toHaveBeenCalledWith('attached-thread');
+    expect(mockDeleteMedia).toHaveBeenCalledWith('unattached-id');
+  });
+
+  it('falls back to the DB row when the store has no entry, honouring message_id', async () => {
+    // No store entries at all — the screen that uploaded these may be gone.
+    mockGetMedia.mockImplementation((...args: unknown[]) => {
+      const id = args[0] as string;
+      if (id === 'dm-attached') {
+        return { id, local_path: 'media/dm-attached.jpg', thread_id: '', reply_id: null, message_id: 'msg-1' };
+      }
+      if (id === 'db-unattached') {
+        return { id, local_path: 'media/db-unattached.jpg', thread_id: null, reply_id: null, message_id: null };
+      }
+      return null;
+    });
+
+    await rollbackUploadedMedia(['dm-attached', 'db-unattached']);
+
+    expect(mockDeleteMedia).not.toHaveBeenCalledWith('dm-attached');
+    expect(mockDeleteMedia).toHaveBeenCalledWith('db-unattached');
+  });
+
+  it('never rejects when the teardown itself throws', async () => {
+    mockMediaMap['boom-id'] = { localPath: '/tmp/media/boom-id.jpg' };
+    mockRemoveMedia.mockImplementationOnce(() => {
+      throw new Error('database not initialized');
+    });
+
+    await expect(rollbackUploadedMedia(['boom-id'])).resolves.toBeUndefined();
+  });
+
+  it('is a no-op for an empty list', async () => {
+    await rollbackUploadedMedia([]);
+    expect(mockDeleteMedia).not.toHaveBeenCalled();
   });
 });
 

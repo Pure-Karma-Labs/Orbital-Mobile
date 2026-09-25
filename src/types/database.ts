@@ -203,7 +203,12 @@ export interface OrbitalMediaRow {
   thumbnail_path: string | null;
   download_state: DownloadState;
   upload_state: UploadState;
-  /** Unix epoch seconds */
+  /**
+   * Unix epoch MILLISECONDS — not seconds, despite the file header. Every
+   * writer stamps Date.now() (mediaUploadService's buildMediaRow,
+   * threadService's two thumbnail materializers), and the #724c orphan reaper
+   * binds a Date.now() offset against it.
+   */
   created_at: number;
 }
 

@@ -174,6 +174,44 @@ RCT_EXPORT_MODULE()
   });
 }
 
+/**
+ * Scoped settle policy after invalidation (#727): invalidate means the JS
+ * runtime is being torn down. A callback that fires after that point must not
+ * settle — its promise blocks belong to a runtime that is going away — and it
+ * must remove any dest file it wrote, because nothing on the JS side is left to
+ * claim or clean it up.
+ *
+ * The block hops onto _queue and re-reads _invalidated there. That is what
+ * gives strict ordering against -invalidate's dispatch_sync and keeps the flag
+ * confined to a single queue, so it stays a plain BOOL rather than an atomic
+ * (unlike OrbitalTranscodeJob.cancelled, which the sample loops genuinely poll
+ * cross-queue). dispatch_async, never dispatch_sync: an async hop cannot
+ * deadlock against an -invalidate that is already inside its own
+ * dispatch_sync(_queue).
+ *
+ * Only the SETTLE moves onto _queue. The work that produced the result
+ * (-copyCGImageAtTime:, the JPEG write) stays on the AVFoundation handler queue
+ * it already ran on.
+ *
+ * Two settle paths are deliberately EXEMPT and must not be routed through here:
+ *   - -invalidate's own inline rejects of registered transcode jobs. The #727
+ *     JS-side settlement backstop depends on that native ECANCELLED still
+ *     arriving.
+ *   - the -transcodeVideo: / -startTranscode: entry rejects.
+ *
+ * `orphan` is the dest file this callback wrote, or nil when it wrote none.
+ */
+- (void)settleUnlessInvalidated:(dispatch_block_t)settle orphan:(nullable NSString *)orphan
+{
+  dispatch_async(_queue, ^{
+    if (self->_invalidated) {
+      [self removeFileAtPath:orphan];
+      return;
+    }
+    settle();
+  });
+}
+
 #pragma mark - transcodeVideo
 
 - (void)transcodeVideo:(NSString *)jobId
@@ -605,8 +643,17 @@ RCT_EXPORT_MODULE()
  * cancellation solely on the code ECANCELLED delivered through the transcode
  * promise, which still arrives — just after the drain rather than immediately.
  * The cancelling-label affordance in useMediaUploadProgress absorbs a
- * sub-second drain; that UI affordance IS the latency budget. (A JS-side
- * settlement backstop is tracked in #727.)
+ * sub-second drain; that UI affordance IS the latency budget.
+ *
+ * A JS-side settlement backstop now bounds that wait (#727):
+ * prepareVideoForUpload races this transcode promise against a 1000 ms
+ * TRANSCODE_CANCEL_SETTLE_GRACE_MS grace timer armed on abort
+ * (src/services/media/videoProcessing.ts). The native ECANCELLED normally wins
+ * inside that grace, and the cancel-time delete of destPath below remains the
+ * PRIMARY bound on a late write — the JS late unlink is only a fallback for the
+ * case where the drain outlives the grace. On abandonment the native job stays
+ * registered and keeps its reader/writer until it drains, exactly as above;
+ * the backstop changes what JS waits for, never what native tears down.
  */
 - (void)cancelTranscode:(NSString *)jobId
 {
@@ -669,45 +716,65 @@ RCT_EXPORT_MODULE()
                  resolve:(RCTPromiseResolveBlock)resolve
                   reject:(RCTPromiseRejectBlock)reject
 {
-  if (![[NSFileManager defaultManager] fileExistsAtPath:sourcePath]) {
-    reject(kOMTErrNotFound, @"source unavailable", nil);
-    return;
-  }
-  NSString *alias = OMTMovieAliasIfNeeded(sourcePath);
-  AVURLAsset *asset =
-      [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:alias ?: sourcePath] options:nil];
-  void (^cleanupAlias)(void) = ^{
-    if (alias != nil) {
-      [[NSFileManager defaultManager] removeItemAtPath:alias error:nil];
+  // Entry check (#727): hop onto _queue so the _invalidated read is ordered
+  // against -invalidate's dispatch_sync without ever blocking the caller's
+  // queue behind in-flight _queue work (e.g. a long -reencodeImage:). The
+  // work kicked off below is cheap (a hardlink + an async AVFoundation load).
+  dispatch_async(_queue, ^{
+    if (self->_invalidated) {
+      reject(kOMTErrCancelled, @"module invalidated", nil);
+      return;
     }
-  };
-  [asset loadTracksWithMediaType:AVMediaTypeVideo
-               completionHandler:^(NSArray<AVAssetTrack *> *_Nullable tracks,
-                                   NSError *_Nullable error) {
-                 AVAssetTrack *track = tracks.firstObject;
-                 if (error != nil || track == nil) {
-                   cleanupAlias();
-                   reject(kOMTErrMetadata, @"metadata unavailable", nil);
-                   return;
-                 }
+    if (![[NSFileManager defaultManager] fileExistsAtPath:sourcePath]) {
+      reject(kOMTErrNotFound, @"source unavailable", nil);
+      return;
+    }
+    NSString *alias = OMTMovieAliasIfNeeded(sourcePath);
+    AVURLAsset *asset =
+        [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:alias ?: sourcePath] options:nil];
+    void (^cleanupAlias)(void) = ^{
+      if (alias != nil) {
+        [[NSFileManager defaultManager] removeItemAtPath:alias error:nil];
+      }
+    };
+    [asset loadTracksWithMediaType:AVMediaTypeVideo
+                 completionHandler:^(NSArray<AVAssetTrack *> *_Nullable tracks,
+                                     NSError *_Nullable error) {
+                   AVAssetTrack *track = tracks.firstObject;
+                   if (error != nil || track == nil) {
+                     // The alias is OUR temp file: clean it up unconditionally,
+                     // invalidated or not. Only the settle is scoped.
+                     cleanupAlias();
+                     [self settleUnlessInvalidated:^{
+                       reject(kOMTErrMetadata, @"metadata unavailable", nil);
+                     }
+                                            orphan:nil];
+                     return;
+                   }
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-                 CGSize naturalSize = track.naturalSize;
-                 CGAffineTransform transform = track.preferredTransform;
-                 CMTime duration = asset.duration;
+                   CGSize naturalSize = track.naturalSize;
+                   CGAffineTransform transform = track.preferredTransform;
+                   CMTime duration = asset.duration;
 #pragma clang diagnostic pop
-                 CGSize display = CGSizeApplyAffineTransform(naturalSize, transform);
-                 double seconds = CMTIME_IS_NUMERIC(duration) ? CMTimeGetSeconds(duration) : 0;
-                 if (isnan(seconds) || seconds < 0) {
-                   seconds = 0;
-                 }
-                 cleanupAlias();
-                 resolve(@{
-                   @"width" : @(round(fabs(display.width))),
-                   @"height" : @(round(fabs(display.height))),
-                   @"duration" : @(seconds),
-                 });
-               }];
+                   CGSize display = CGSizeApplyAffineTransform(naturalSize, transform);
+                   double seconds = CMTIME_IS_NUMERIC(duration) ? CMTimeGetSeconds(duration) : 0;
+                   if (isnan(seconds) || seconds < 0) {
+                     seconds = 0;
+                   }
+                   cleanupAlias();
+                   NSDictionary *metadata = @{
+                     @"width" : @(round(fabs(display.width))),
+                     @"height" : @(round(fabs(display.height))),
+                     @"duration" : @(seconds),
+                   };
+                   // Reads no file of its own, so there is no orphan to remove.
+                   [self settleUnlessInvalidated:^{
+                     resolve(metadata);
+                   }
+                                          orphan:nil];
+                 }];
+  });
 }
 
 #pragma mark - extractThumbnail
@@ -720,64 +787,93 @@ RCT_EXPORT_MODULE()
                  resolve:(RCTPromiseResolveBlock)resolve
                   reject:(RCTPromiseRejectBlock)reject
 {
-  if (![[NSFileManager defaultManager] fileExistsAtPath:sourcePath]) {
-    reject(kOMTErrNotFound, @"source unavailable", nil);
-    return;
-  }
-  NSString *alias = OMTMovieAliasIfNeeded(sourcePath);
-  AVURLAsset *asset =
-      [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:alias ?: sourcePath] options:nil];
-  void (^cleanupAlias)(void) = ^{
-    if (alias != nil) {
-      [[NSFileManager defaultManager] removeItemAtPath:alias error:nil];
+  // Entry check (#727): hop onto _queue so the _invalidated read is ordered
+  // against -invalidate's dispatch_sync without ever blocking the caller's
+  // queue behind in-flight _queue work (e.g. a long -reencodeImage:). The
+  // work kicked off below is cheap (a hardlink + an async AVFoundation load).
+  dispatch_async(_queue, ^{
+    if (self->_invalidated) {
+      reject(kOMTErrCancelled, @"module invalidated", nil);
+      return;
     }
-  };
-  [asset loadTracksWithMediaType:AVMediaTypeVideo
-               completionHandler:^(NSArray<AVAssetTrack *> *_Nullable tracks,
-                                   NSError *_Nullable error) {
-                 if (error != nil || tracks.count == 0) {
-                   cleanupAlias();
-                   reject(kOMTErrThumbnail, @"no decodable video track", nil);
-                   return;
-                 }
-                 AVAssetImageGenerator *generator =
-                     [[AVAssetImageGenerator alloc] initWithAsset:asset];
-                 generator.appliesPreferredTrackTransform = YES;
-                 generator.maximumSize = CGSizeMake(maxDimension, maxDimension);
-                 generator.requestedTimeToleranceBefore = CMTimeMakeWithSeconds(0.5, 1000);
-                 generator.requestedTimeToleranceAfter = CMTimeMakeWithSeconds(0.5, 1000);
+    if (![[NSFileManager defaultManager] fileExistsAtPath:sourcePath]) {
+      reject(kOMTErrNotFound, @"source unavailable", nil);
+      return;
+    }
+    NSString *alias = OMTMovieAliasIfNeeded(sourcePath);
+    AVURLAsset *asset =
+        [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:alias ?: sourcePath] options:nil];
+    void (^cleanupAlias)(void) = ^{
+      if (alias != nil) {
+        [[NSFileManager defaultManager] removeItemAtPath:alias error:nil];
+      }
+    };
+    [asset loadTracksWithMediaType:AVMediaTypeVideo
+                 completionHandler:^(NSArray<AVAssetTrack *> *_Nullable tracks,
+                                     NSError *_Nullable error) {
+                   if (error != nil || tracks.count == 0) {
+                     // The alias is OUR temp file: clean it up unconditionally,
+                     // invalidated or not. Only the settle is scoped.
+                     cleanupAlias();
+                     [self settleUnlessInvalidated:^{
+                       reject(kOMTErrThumbnail, @"no decodable video track", nil);
+                     }
+                                            orphan:nil];
+                     return;
+                   }
+                   AVAssetImageGenerator *generator =
+                       [[AVAssetImageGenerator alloc] initWithAsset:asset];
+                   generator.appliesPreferredTrackTransform = YES;
+                   generator.maximumSize = CGSizeMake(maxDimension, maxDimension);
+                   generator.requestedTimeToleranceBefore = CMTimeMakeWithSeconds(0.5, 1000);
+                   generator.requestedTimeToleranceAfter = CMTimeMakeWithSeconds(0.5, 1000);
 
-                 CMTime requested = CMTimeMakeWithSeconds(MAX(0, atMs) / 1000.0, 1000);
+                   CMTime requested = CMTimeMakeWithSeconds(MAX(0, atMs) / 1000.0, 1000);
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-                 CMTime duration = asset.duration;
+                   CMTime duration = asset.duration;
 #pragma clang diagnostic pop
-                 if (CMTIME_IS_NUMERIC(duration) && CMTimeCompare(requested, duration) > 0) {
-                   requested = duration;
-                 }
+                   if (CMTIME_IS_NUMERIC(duration) && CMTimeCompare(requested, duration) > 0) {
+                     requested = duration;
+                   }
 
-                 NSError *frameError = nil;
-                 CGImageRef image = [generator copyCGImageAtTime:requested
-                                                     actualTime:NULL
-                                                          error:&frameError];
-                 if (image == NULL) {
+                   NSError *frameError = nil;
+                   CGImageRef image = [generator copyCGImageAtTime:requested
+                                                       actualTime:NULL
+                                                            error:&frameError];
+                   if (image == NULL) {
+                     cleanupAlias();
+                     [self settleUnlessInvalidated:^{
+                       reject(kOMTErrThumbnail, @"no decodable frame", nil);
+                     }
+                                            orphan:nil];
+                     return;
+                   }
+                   // -copyCGImageAtTime: and the JPEG write deliberately stay on
+                   // this handler queue; only the settle hops to _queue.
+                   BOOL written = [self writeImage:image
+                                            toPath:destPath
+                                              type:UTTypeJPEG
+                                           quality:@(quality)];
+                   CGImageRelease(image);
                    cleanupAlias();
-                   reject(kOMTErrThumbnail, @"no decodable frame", nil);
-                   return;
-                 }
-                 BOOL written = [self writeImage:image
-                                          toPath:destPath
-                                            type:UTTypeJPEG
-                                         quality:@(quality)];
-                 CGImageRelease(image);
-                 cleanupAlias();
-                 if (!written) {
-                   [self removeFileAtPath:destPath];
-                   reject(kOMTErrThumbnail, @"thumbnail encode failed", nil);
-                   return;
-                 }
-                 resolve(nil);
-               }];
+                   if (!written) {
+                     [self removeFileAtPath:destPath];
+                     [self settleUnlessInvalidated:^{
+                       reject(kOMTErrThumbnail, @"thumbnail encode failed", nil);
+                     }
+                                            orphan:nil];
+                     return;
+                   }
+                   // Success wrote destPath: if the runtime went away while the
+                   // JPEG was being encoded, that file is an orphan nobody will
+                   // ever read, so the helper removes it instead of settling.
+                   [self settleUnlessInvalidated:^{
+                     resolve(nil);
+                   }
+                                          orphan:destPath];
+                 }];
+  });
 }
 
 #pragma mark - reencodeImage
@@ -793,6 +889,16 @@ RCT_EXPORT_MODULE()
   NSString *format = options.format();
 
   dispatch_async(_queue, ^{
+    // Entry check only, and that is sufficient: unlike the AVFoundation paths,
+    // everything below runs to completion ON _queue, so -invalidate's
+    // dispatch_sync(_queue) cannot interleave with it. Either it ran before
+    // this block (and the flag is already set here), or it runs after the
+    // block's settle. No in-flight settle to scope — see
+    // -settleUnlessInvalidated:orphan: for the policy this mirrors.
+    if (self->_invalidated) {
+      reject(kOMTErrCancelled, @"module invalidated", nil);
+      return;
+    }
     if (![[NSFileManager defaultManager] fileExistsAtPath:sourcePath]) {
       reject(kOMTErrNotFound, @"source unavailable", nil);
       return;

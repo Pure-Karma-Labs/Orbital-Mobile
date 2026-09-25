@@ -21,7 +21,11 @@ import { VerifiedStatus } from '../types/database';
 import { createNewThread } from '../services/threadService';
 import { isUploadCancellation } from '../services/mediaUploadService';
 import { captureUploadFailure, type PostPipelineStage } from '../services/uploadTelemetry';
-import { ConflictError, QuotaExceededError } from '../services/api/errors';
+import { QuotaExceededError } from '../services/api/errors';
+import {
+  classifyCreateFailure,
+  dispositionForCreateFailure,
+} from '../services/media/uploadCacheDisposition';
 import { updateMediaParent } from '../database/repositories/mediaRepository';
 import { useMediaPicker } from '../hooks/useMediaPicker';
 import { useMediaUploadProgress } from '../hooks/useMediaUploadProgress';
@@ -57,7 +61,7 @@ export function ComposeThreadScreen({
     progress: uploadProgress,
     cancel: cancelUpload,
     uploadBatch,
-    clearUploadCache,
+    releaseUploadCache,
     hasUnsentUpload,
   } = useMediaUploadProgress();
 
@@ -78,15 +82,17 @@ export function ComposeThreadScreen({
   // media that only this screen session can still attach. Both get a confirm.
   const handleDiscardUpload = useCallback(() => {
     cancelUpload();
-    clearUploadCache();
-  }, [cancelUpload, clearUploadCache]);
+    // The user said the post is not happening, so any ids the cache still holds
+    // are rolled back rather than left as FileLibrary ghosts (#724b).
+    releaseUploadCache('discard');
+  }, [cancelUpload, releaseUploadCache]);
 
   useDiscardUploadGuard({
     uploading: uploadProgress != null && !uploadProgress.cancelling,
     // Only while media is still selected (clearing the strip after a failed
     // send leaves nothing the prompt could be about), and never while a send is
     // in flight. `hasUnsentUpload` turns true the moment the batch lands, i.e.
-    // BEFORE the unabortable create call; and on success clearUploadCache()'s
+    // BEFORE the unabortable create call; and on success releaseUploadCache()'s
     // setState is not yet committed when replace()/goBack() dispatches, while
     // usePreventRemove reads the last COMMITTED render. `loading` is still true on
     // that frame, so gating on it keeps the guard off the composer's own
@@ -135,8 +141,9 @@ export function ComposeThreadScreen({
           groupId,
         );
       } else {
-        // Nothing attached: any held ids are from an abandoned post.
-        clearUploadCache();
+        // Nothing attached: any held ids are from an abandoned post, so they
+        // are rolled back, not just forgotten (#724b).
+        releaseUploadCache('discard');
       }
 
       stage = 'thread-create';
@@ -167,7 +174,7 @@ export function ComposeThreadScreen({
 
       // The ids are attached now, so the reuse cache must not survive into the
       // next post (mount-guarded inside the hook).
-      clearUploadCache();
+      releaseUploadCache('attached');
 
       // Navigation is screen state: a create that resolves after the screen is
       // gone must not move whatever screen replaced it.
@@ -192,17 +199,30 @@ export function ComposeThreadScreen({
       // happen. Before #738 it existed only in a __DEV__ console.warn, which is
       // why the S24 sanitizer bug (#732) was invisible in release builds.
       captureUploadFailure(e, { stage, surface: 'compose-thread', dm: !!isDm });
+      // One classification drives both the cache and the banner, so the two can
+      // never disagree about whether the post may exist. Stage-gated: a
+      // media-stage failure never reached createNewThread, and the backend maps
+      // every unique-key violation to 409, so only a create-stage error carries
+      // this meaning.
+      const verdict = stage === 'thread-create' ? classifyCreateFailure(e) : 'no';
+      // Cache state, not screen state -- deliberately outside the mounted block
+      // below. 'committed'/'maybe-committed' flag the cached ids so a later
+      // Discard does not roll back media that is in fact on a post; a 'no'
+      // verdict keeps the cache too, it simply stays rollback-eligible (#724b).
+      const disposition = dispositionForCreateFailure(verdict);
+      if (disposition) {
+        releaseUploadCache(disposition);
+      }
       // Telemetry above is unconditional; the banner is screen state.
       if (mountedRef.current) {
         if (e instanceof QuotaExceededError) {
           // instanceof applies to the upload path; createNewThread is JSON-only and never 413s
           setError(e.message);
-        } else if (e instanceof ConflictError && stage === 'thread-create') {
-          // 409 on a reused post: the media was already attached, which is
-          // near-proof the previous create committed. The cache is kept on
-          // purpose, so a repeat press draws another 409 rather than a
-          // duplicate post. Stage-gated: the backend maps every unique-key
-          // violation to 409, so only a create-stage 409 carries that meaning.
+        } else if (verdict !== 'no') {
+          // The create may have landed: a 409 is near-proof of it, and a
+          // network or 5xx failure leaves it genuinely unknown. Never invite a
+          // blind retry — the cache is kept on purpose, so a repeat press draws
+          // another 409 rather than a duplicate post.
           setError(
             `This may already have been posted. Check the ${isDm ? 'chat' : 'orbit'} before posting again.`,
           );
@@ -213,7 +233,7 @@ export function ComposeThreadScreen({
     } finally {
       if (mountedRef.current) setLoading(false);
     }
-  }, [canSubmit, userId, username, groupId, isDm, title, body, navigation, selectedMedia, uploadBatch, clearUploadCache]);
+  }, [canSubmit, userId, username, groupId, isDm, title, body, navigation, selectedMedia, uploadBatch, releaseUploadCache]);
 
   const handlePost = useCallback(() => {
     if (isDm && contact?.verifiedStatus === VerifiedStatus.Unverified) {

@@ -414,6 +414,169 @@ describe('prepareVideoForUpload', () => {
     expect(cancelTranscode).toHaveBeenCalledWith('media-123');
   });
 
+  // -------------------------------------------------------------------------
+  // Cancel settlement backstop (#727)
+  // -------------------------------------------------------------------------
+
+  describe('cancel settlement backstop', () => {
+    /** Mirrors the private TRANSCODE_CANCEL_SETTLE_GRACE_MS. */
+    const GRACE_MS = 1000;
+
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      // Drain before restoring: a pending fake timer left behind hangs the
+      // worker once the real clock is back (#835).
+      jest.runOnlyPendingTimers();
+      jest.useRealTimers();
+    });
+
+    it('rejects with the cancellation sentinel when an aborted transcode never settles', async () => {
+      const remove = jest.fn();
+      (subscribeTranscodeProgress as jest.Mock).mockReturnValueOnce({ remove });
+      (transcodeVideo as jest.Mock).mockImplementationOnce(
+        () => new Promise(() => {}),
+      );
+
+      const controller = new AbortController();
+      const promise = prepareVideoForUpload(
+        '/gallery/source.mp4',
+        'video/mp4',
+        'media-123',
+        { signal: controller.signal },
+      );
+      // The handler is attached BEFORE the clock moves: an unhandled rejection
+      // between the grace timer firing and the assertion would fail the run.
+      const settled = promise.catch((e: unknown) => e);
+
+      controller.abort();
+      jest.advanceTimersByTime(GRACE_MS);
+      expect(await settled).toEqual(new Error(UPLOAD_CANCELLED_MESSAGE));
+
+      // The abort still reached native, and the failure path still cleaned up.
+      expect(cancelTranscode).toHaveBeenCalledWith('media-123');
+      expect(unlink).toHaveBeenCalledWith(TRANSCODE_PATH);
+      expect(unlink).toHaveBeenCalledWith(STAGING_PATH);
+      expect(remove).toHaveBeenCalled();
+    });
+
+    it('lets the native ECANCELLED win when it arrives inside the grace period', async () => {
+      const native = new MediaTranscoderError('ECANCELLED', 'transcode cancelled');
+      (transcodeVideo as jest.Mock).mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            setTimeout(() => reject(native), GRACE_MS / 2);
+          }),
+      );
+
+      const controller = new AbortController();
+      const promise = prepareVideoForUpload(
+        '/gallery/source.mp4',
+        'video/mp4',
+        'media-123',
+        { signal: controller.signal },
+      );
+      const settled = promise.catch((e: unknown) => e);
+
+      controller.abort();
+      jest.advanceTimersByTime(GRACE_MS / 2);
+      // The native rejection is what the caller sees -- #726's teardown
+      // ordering (native writer down before the JS unlink) is preserved.
+      expect(await settled).toBe(native);
+    });
+
+    it('unlinks the dest file when an abandoned transcode resolves late', async () => {
+      let resolveNative: () => void = () => {};
+      (transcodeVideo as jest.Mock).mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveNative = resolve;
+          }),
+      );
+
+      const controller = new AbortController();
+      const promise = prepareVideoForUpload(
+        '/gallery/source.mp4',
+        'video/mp4',
+        'media-123',
+        { signal: controller.signal },
+      );
+      const settled = promise.catch((e: unknown) => e);
+
+      controller.abort();
+      jest.advanceTimersByTime(GRACE_MS);
+      expect(await settled).toEqual(new Error(UPLOAD_CANCELLED_MESSAGE));
+
+      const unlinkMock = unlink as jest.Mock;
+      const before = unlinkMock.mock.calls.filter((c) => c[0] === TRANSCODE_PATH).length;
+
+      // The writer drained after we stopped waiting: whatever it produced is
+      // a file no one will ever consume.
+      resolveNative();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      const after = unlinkMock.mock.calls.filter((c) => c[0] === TRANSCODE_PATH).length;
+      expect(after).toBe(before + 1);
+    });
+
+    it('raises no unhandled rejection when an abandoned transcode rejects late', async () => {
+      let rejectNative: (e: Error) => void = () => {};
+      (transcodeVideo as jest.Mock).mockImplementationOnce(
+        () =>
+          new Promise<void>((_resolve, reject) => {
+            rejectNative = reject;
+          }),
+      );
+
+      const controller = new AbortController();
+      const promise = prepareVideoForUpload(
+        '/gallery/source.mp4',
+        'video/mp4',
+        'media-123',
+        { signal: controller.signal },
+      );
+      const settled = promise.catch((e: unknown) => e);
+
+      controller.abort();
+      jest.advanceTimersByTime(GRACE_MS);
+      expect(await settled).toEqual(new Error(UPLOAD_CANCELLED_MESSAGE));
+
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown): void => {
+        unhandled.push(reason);
+      };
+      process.on('unhandledRejection', onUnhandled);
+      rejectNative(new Error('late native failure'));
+      // Real clock + a real macrotask: Node only emits unhandledRejection once
+      // the microtask queue has drained, which a fake timer cannot simulate.
+      jest.useRealTimers();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      process.off('unhandledRejection', onUnhandled);
+      // Put the fake clock back before leaving: afterEach drains pending fake
+      // timers, and calling runOnlyPendingTimers on a real clock logs a
+      // "timers APIs are not replaced with fake timers" warning.
+      jest.useFakeTimers();
+
+      expect(unhandled).toHaveLength(0);
+    });
+
+    it('arms no timer at all when the caller passes no signal', async () => {
+      const result = await prepareVideoForUpload(
+        '/gallery/source.mp4',
+        'video/mp4',
+        'media-123',
+      );
+
+      expect(result.mimeType).toBe('video/mp4');
+      // No signal means no abort can ever arm the grace timer, so the native
+      // promise is awaited unwrapped.
+      expect(jest.getTimerCount()).toBe(0);
+    });
+  });
+
   it('subscribes to progress for its own jobId and removes the subscription', async () => {
     const remove = jest.fn();
     (subscribeTranscodeProgress as jest.Mock).mockReturnValueOnce({ remove });

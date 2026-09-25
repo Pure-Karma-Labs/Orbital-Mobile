@@ -95,6 +95,39 @@ class OrbitalMediaTranscoderModule(reactContext: ReactApplicationContext) :
     return e
   }
 
+  /**
+   * Scoped settle policy after invalidation (#727): invalidate means the JS
+   * runtime is being torn down. A callback that fires after that point must not
+   * settle — its Promise belongs to a runtime that is going away — and it must
+   * remove any dest file it wrote, because nothing on the JS side is left to
+   * claim or clean it up.
+   *
+   * Unlike iOS, the check and the settle are NOT atomic here: there is no
+   * serial queue that both this and [invalidate] fund through, so [invalidate]
+   * can flip the flag between the `get()` below and `settle()`. That residual
+   * race settles one promise into a dying runtime, which is exactly what the
+   * pre-#727 code did on every path — this narrows the window, it does not
+   * close it. Widening the guard to a lock would have to serialize against
+   * [invalidate]'s executor shutdown and risk deadlocking teardown, so it is
+   * deliberately not done.
+   *
+   * Two settle paths are deliberately EXEMPT and must not be routed through
+   * here:
+   *   - [cancelAllJobs]'s rejects of registered transcode jobs, driven by
+   *     [invalidate]. The #727 JS-side settlement backstop depends on that
+   *     native ECANCELLED still arriving.
+   *   - the [transcodeVideo] / [startTranscode] entry rejects.
+   *
+   * [destPath] is the dest file this callback wrote, or null when it wrote none.
+   */
+  private fun settleIfLive(destPath: String?, settle: () -> Unit) {
+    if (invalidated.get()) {
+      if (destPath != null) File(destPath).delete()
+      return
+    }
+    settle()
+  }
+
   // -------------------------------------------------------------------------
   // transcodeVideo
   // -------------------------------------------------------------------------
@@ -266,6 +299,13 @@ class OrbitalMediaTranscoderModule(reactContext: ReactApplicationContext) :
   // -------------------------------------------------------------------------
 
   override fun getVideoMetadata(sourcePath: String, promise: Promise) {
+    // Entry check MUST precede executor(): that factory re-creates the
+    // single-thread executor invalidate() shut down and nulled, leaking a
+    // thread for work whose result can never be delivered.
+    if (invalidated.get()) {
+      promise.reject("ECANCELLED", "module invalidated")
+      return
+    }
     executor().execute {
       try {
         val dims = readVideoDims(sourcePath)
@@ -273,11 +313,12 @@ class OrbitalMediaTranscoderModule(reactContext: ReactApplicationContext) :
         out.putDouble("width", dims.width.toDouble())
         out.putDouble("height", dims.height.toDouble())
         out.putDouble("duration", dims.durationMs / 1000.0)
-        promise.resolve(out)
+        // Writes no file of its own, so there is no orphan to remove.
+        settleIfLive(null) { promise.resolve(out) }
       } catch (e: FileNotFoundException) {
-        promise.reject("ENOENT", "source unavailable")
+        settleIfLive(null) { promise.reject("ENOENT", "source unavailable") }
       } catch (e: Exception) {
-        promise.reject("EMETADATA", "metadata unavailable")
+        settleIfLive(null) { promise.reject("EMETADATA", "metadata unavailable") }
       }
     }
   }
@@ -294,9 +335,14 @@ class OrbitalMediaTranscoderModule(reactContext: ReactApplicationContext) :
     quality: Double,
     promise: Promise,
   ) {
+    // Entry check MUST precede executor() — see getVideoMetadata.
+    if (invalidated.get()) {
+      promise.reject("ECANCELLED", "module invalidated")
+      return
+    }
     executor().execute {
       if (!File(sourcePath).exists()) {
-        promise.reject("ENOENT", "source unavailable")
+        settleIfLive(null) { promise.reject("ENOENT", "source unavailable") }
         return@execute
       }
       val retriever = MediaMetadataRetriever()
@@ -316,7 +362,7 @@ class OrbitalMediaTranscoderModule(reactContext: ReactApplicationContext) :
             ?: retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST)
             ?: retriever.frameAtTime
         if (bitmap == null) {
-          promise.reject("ETHUMBNAIL", "no decodable frame")
+          settleIfLive(null) { promise.reject("ETHUMBNAIL", "no decodable frame") }
           return@execute
         }
 
@@ -337,10 +383,12 @@ class OrbitalMediaTranscoderModule(reactContext: ReactApplicationContext) :
         bitmap = scaleToLongSide(bitmap, maxDimension.toInt())
 
         writeBitmap(bitmap, destPath, Bitmap.CompressFormat.JPEG, qualityPercent(quality))
-        promise.resolve(null)
+        // Success wrote destPath: if the runtime went away while the JPEG was
+        // being encoded, that file is an orphan nobody will ever read.
+        settleIfLive(destPath) { promise.resolve(null) }
       } catch (e: Exception) {
         File(destPath).delete()
-        promise.reject("ETHUMBNAIL", "thumbnail extraction failed")
+        settleIfLive(null) { promise.reject("ETHUMBNAIL", "thumbnail extraction failed") }
       } finally {
         bitmap?.recycle()
         try {
@@ -362,13 +410,18 @@ class OrbitalMediaTranscoderModule(reactContext: ReactApplicationContext) :
     options: ReadableMap,
     promise: Promise,
   ) {
+    // Entry check MUST precede executor() — see getVideoMetadata.
+    if (invalidated.get()) {
+      promise.reject("ECANCELLED", "module invalidated")
+      return
+    }
     val maxDimension = options.getDouble("maxDimension").toInt()
     val quality = options.getDouble("quality")
     val format = options.getString("format") ?: "jpeg"
 
     executor().execute {
       if (!File(sourcePath).exists()) {
-        promise.reject("ENOENT", "source unavailable")
+        settleIfLive(null) { promise.reject("ENOENT", "source unavailable") }
         return@execute
       }
       var bitmap: Bitmap? = null
@@ -383,10 +436,12 @@ class OrbitalMediaTranscoderModule(reactContext: ReactApplicationContext) :
           if (format == "png") Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG
         // Bitmap.compress writes no metadata for either format.
         writeBitmap(bitmap, destPath, compressFormat, qualityPercent(quality))
-        promise.resolve(null)
+        // Success wrote destPath: if the runtime went away while the image was
+        // being re-encoded, that file is an orphan nobody will ever read.
+        settleIfLive(destPath) { promise.resolve(null) }
       } catch (e: Exception) {
         File(destPath).delete()
-        promise.reject("EIMAGE", "image re-encode failed")
+        settleIfLive(null) { promise.reject("EIMAGE", "image re-encode failed") }
       } finally {
         bitmap?.recycle()
       }

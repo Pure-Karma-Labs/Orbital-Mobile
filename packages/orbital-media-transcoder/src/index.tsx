@@ -18,6 +18,17 @@
  *   deferred until the native sample loops drain (bounded in practice by the
  *   "Cancelling..." affordance in useMediaUploadProgress), while Android settles
  *   immediately. Never assume a cancel has settled the promise yet (#726/#727).
+ * - Module invalidation is scoped (#727): invalidate means the JS runtime is
+ *   being torn down. Calling getVideoMetadata, extractThumbnail or
+ *   reencodeImage after that point rejects immediately with ECANCELLED
+ *   ("module invalidated"), and a native callback that completes after
+ *   invalidation does NOT settle at all — it deletes any dest file it wrote
+ *   instead, because there is no runtime left to claim it. So in a torn-down
+ *   runtime these promises may simply never settle; that is deliberate, and it
+ *   is why nothing may treat "the promise settled" as a liveness signal.
+ *   In-flight transcode jobs are the one exception: invalidate still rejects
+ *   them inline with ECANCELLED, which the videoProcessing.ts cancel backstop
+ *   depends on.
  */
 
 import type { EventSubscription } from 'react-native';

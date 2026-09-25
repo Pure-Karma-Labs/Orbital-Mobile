@@ -67,6 +67,7 @@ import {
   STREAM_READ_SIZE_BYTES,
 } from './media/mediaLimits';
 import { MEDIA_DIR, toStoredMediaPath, resolveMediaPath } from './media/mediaPaths';
+import { teardownLocalMedia } from './media/mediaTeardown';
 import type { MediaRow } from '../database/repositories/mediaRepository';
 
 // ---------------------------------------------------------------------------
@@ -656,9 +657,69 @@ export async function isMediaCached(mediaId: string): Promise<boolean> {
 // ---------------------------------------------------------------------------
 
 /**
+ * Minimum age before a parentless thumbnail row may be reaped.
+ *
+ * Both writers commit the CHILD before its parent — `materializeThumbnailRow`
+ * and the upload path alike — so a freshly written child legitimately has no
+ * referrer for a moment. An hour is far past any such window.
+ */
+const ORPHAN_THUMB_MIN_AGE_MS = 3600_000;
+
+/** Cap on rows reaped per run, so a large backlog drains over several launches. */
+const ORPHAN_THUMB_REAP_LIMIT = 200;
+
+/**
+ * Reap thumbnail child rows no parent references (#724c).
+ *
+ * These are historical residue: before #721, a cancelled or failed video upload
+ * rolled back the parent and left the child behind, as a row plus a canonical
+ * PLAINTEXT frame on disk. Nothing has ever swept them — the `is_thumbnail`
+ * flag keeps them out of FileLibrary, so they are invisible bytes.
+ *
+ * BOOTSTRAP-ONLY INVOCATION IS THE REAL INVARIANT, which is why this is not
+ * exported. The age guard alone is not sufficient: a video upload still running
+ * after an hour would have a live child that matches this query. At bootstrap
+ * no upload is in flight, so the guard only has to cover the commit-order
+ * window described on ORPHAN_THUMB_MIN_AGE_MS.
+ *
+ * Runs FIRST in cleanupOrphanedMedia, and before its MEDIA_DIR early return:
+ * deleting the row first stops pass 2 from re-arming it as 'pending', and a
+ * failed unlink then heals itself through the SAME run's file-with-no-row sweep.
+ */
+async function reapOrphanedThumbnailRows(): Promise<void> {
+  const { queryMany } = await import('../database/queryHelpers');
+  // The uncorrelated NOT IN scans orbital_media twice — `thumbnail_media_id`
+  // has no index. Accepted: the table is small, this runs once per launch, and
+  // pass 2 below already does a full unindexed scan of the same table. The
+  // IS NOT NULL is not cosmetic: `x NOT IN (…NULL…)` is never true in SQL.
+  //
+  // created_at is epoch MILLISECONDS in every writer (mediaUploadService's
+  // buildMediaRow, threadService's two materializers), so the bind is a plain
+  // Date.now() offset. (Some migration comments still say seconds; they are
+  // wrong, and src/types/database.ts is corrected.)
+  const rows = queryMany<{ id: string; local_path: string | null }>(
+    `SELECT id, local_path FROM orbital_media
+       WHERE is_thumbnail = 1 AND created_at < ?
+         AND id NOT IN (SELECT thumbnail_media_id FROM orbital_media WHERE thumbnail_media_id IS NOT NULL)
+       LIMIT ${ORPHAN_THUMB_REAP_LIMIT}`,
+    [Date.now() - ORPHAN_THUMB_MIN_AGE_MS],
+  );
+
+  for (const row of rows) {
+    try {
+      // Shared teardown: row → file → store, in that order (mediaTeardown).
+      await teardownLocalMedia(row.id, resolveMediaPath(row.local_path));
+    } catch {
+      // Per-row resilience — one bad row must not stop the sweep
+    }
+  }
+}
+
+/**
  * Clean up orphaned media files and stale DB rows.
  *
  * Semantics (F7):
+ * 0. Reap thumbnail child rows with no referring parent (#724c)
  * 1. Sweep ${DocumentDirectoryPath}/media/ for files with no matching DB row → delete
  * 2. Sweep DB rows where local_path is set but file does not exist → reset to 'pending', clear local_path
  * 3. Sweep .tmp files older than 1 hour → delete
@@ -669,6 +730,14 @@ export async function isMediaCached(mediaId: string): Promise<boolean> {
  * Called from bootstrap.ts (mirrors cleanupOrphanedChunks pattern).
  */
 export async function cleanupOrphanedMedia(): Promise<void> {
+  // Own try, ahead of the MEDIA_DIR check: this pass is pure DB work and must
+  // still run on a device whose media directory does not exist yet.
+  try {
+    await reapOrphanedThumbnailRows();
+  } catch {
+    // Best-effort — a DB-less launch must not stop the file sweeps below
+  }
+
   try {
     const dirExists = await exists(MEDIA_DIR);
     if (!dirExists) return;

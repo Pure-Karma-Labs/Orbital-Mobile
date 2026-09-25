@@ -44,9 +44,12 @@ import { useAuth, useThreads } from '../stores';
 import { useAppStore } from '../stores/useAppStore';
 import { loadThread, loadReplies, postReply, hydrateRepliesFromLocal } from '../services/threadService';
 import { isUploadCancellation } from '../services/mediaUploadService';
-import { mayHaveCommitted } from '../services/media/uploadCacheDisposition';
+import {
+  classifyCreateFailure,
+  dispositionForCreateFailure,
+} from '../services/media/uploadCacheDisposition';
 import { captureUploadFailure, type PostPipelineStage } from '../services/uploadTelemetry';
-import { ConflictError, QuotaExceededError } from '../services/api/errors';
+import { QuotaExceededError } from '../services/api/errors';
 import { updateMediaParent } from '../database/repositories/mediaRepository';
 import { useMediaPicker } from '../hooks/useMediaPicker';
 import { useMediaUploadProgress } from '../hooks/useMediaUploadProgress';
@@ -588,14 +591,20 @@ export function ThreadDetailScreen({
           if (__DEV__) console.warn('[Reply] upload cancelled by user');
         } else {
           captureUploadFailure(e, { stage, surface: 'thread-reply', dm });
+          // One classification drives both the cache and the alert, so the two
+          // can never disagree about whether the reply may exist. Stage-gated:
+          // a media-stage failure never reached postReply, and the backend maps
+          // every unique-key violation to 409, so only a create-stage error
+          // carries this meaning.
+          const verdict = stage === 'reply-create' ? classifyCreateFailure(e) : 'no';
           // Cache state, not screen state -- deliberately outside the mounted
-          // block below. A create that may have committed (409, network/
-          // timeout, 5xx) leaves its ids flagged, so a later Discard does not
-          // roll back media that is in fact on a reply. A media-stage failure
-          // never reached postReply, so it is not marked. Unmarked failures
-          // keep the cache too; they simply stay rollback-eligible (#724b).
-          if (stage === 'reply-create' && mayHaveCommitted(e)) {
-            releaseUploadCache('may-be-attached');
+          // block below. 'committed'/'maybe-committed' flag the cached ids so a
+          // later Discard does not roll back media that is in fact on a reply;
+          // a 'no' verdict keeps the cache too, it simply stays
+          // rollback-eligible (#724b).
+          const disposition = dispositionForCreateFailure(verdict);
+          if (disposition) {
+            releaseUploadCache(disposition);
           }
           // Telemetry above fires unconditionally; the alerts must not —
           // postReply is not abortable, so a rejection can land after the user
@@ -604,23 +613,22 @@ export function ThreadDetailScreen({
           if (mountedRef.current) {
             if (e instanceof QuotaExceededError) {
               Alert.alert('Upload Failed', e.message);
-            } else if (e instanceof ConflictError && stage === 'reply-create') {
-              // 409 on a reused send: the media was already attached, which is
-              // near-proof that the previous create committed. Never invite a
-              // blind retry here -- the cache is deliberately kept so a repeat
-              // press draws another 409 instead of posting a duplicate.
-              // Stage-gated: the backend maps every unique-key violation to
-              // 409, so only a create-stage 409 carries that meaning.
+            } else if (verdict !== 'no') {
+              // The send may have landed: a 409 is near-proof of it, and a
+              // network or 5xx failure leaves it genuinely unknown. Never
+              // invite a blind retry here -- the cache is deliberately kept so
+              // a repeat press draws another 409 instead of posting a
+              // duplicate.
               Alert.alert(
                 'Reply May Have Been Sent',
                 'Your reply may already have been sent. Pull to refresh before sending again.',
               );
             } else {
-              // Every other failure (network loss, retry exhaustion, 5xx) used
-              // to just stop the spinner, leaving the user unsure whether the
-              // reply went out (#612). The draft, media and reply target all
-              // survive (the reset block runs on the success path only), so
-              // this is signal, not recovery.
+              // Every remaining failure (a local-pipeline error, a 4xx the
+              // server rejected outright) used to just stop the spinner,
+              // leaving the user unsure whether the reply went out (#612). The
+              // draft, media and reply target all survive (the reset block runs
+              // on the success path only), so this is signal, not recovery.
               Alert.alert('Reply Failed', 'Failed to send your reply. Please try again.');
             }
           }

@@ -1512,13 +1512,16 @@ describe('uploadMediaBatch', () => {
       .mockReturnValueOnce('mask-id-1')
       .mockReturnValueOnce('mask-id-2');
 
-    mockMediaMap['mask-id-1'] = { localPath: '/tmp/media/mask-id-1.jpg' };
-    // The store removal is the one step of the teardown that is NOT internally
-    // guarded, so throwing here is the realistic way the rollback blows up.
-    // Once, not permanently: clearAllMocks leaves a mockImplementation
-    // installed for every later test in the file.
-    mockRemoveMedia.mockImplementationOnce(() => {
-      throw new Error('store exploded');
+    // Blow up the rollback OUTSIDE teardownLocalMedia's own guards: every step
+    // of the teardown swallows its own failure, so the only way to exercise
+    // uploadMediaBatch's `try { rollback } catch` is to make the fact LOOKUP
+    // throw. A proxied store map throws exactly when the rollback reads the
+    // committed item's entry.
+    mockMediaMap = new Proxy({} as typeof mockMediaMap, {
+      get(target, prop: string | symbol) {
+        if (prop === 'mask-id-1') throw new Error('store exploded');
+        return Reflect.get(target, prop);
+      },
     });
 
     mockUploadChunk.mockImplementation((args: Record<string, unknown>) => {
@@ -1582,6 +1585,38 @@ describe('rollbackUploadedMedia', () => {
     expect(mockDeleteMedia).not.toHaveBeenCalledWith('attached-reply');
     expect(mockDeleteMedia).not.toHaveBeenCalledWith('attached-thread');
     expect(mockDeleteMedia).toHaveBeenCalledWith('unattached-id');
+  });
+
+  it('consults the DB even when a store entry says unattached', async () => {
+    // updateMediaParent writes the ROW ONLY — it never touches the Zustand
+    // entry — so a store entry still holding threadId: null is not evidence
+    // that the id is unattached. Trusting it alone deleted the local copy of
+    // media that was on a post (PR #840 review).
+    mockMediaMap['db-attached'] = {
+      localPath: '/tmp/media/db-attached.jpg',
+      threadId: null,
+      replyId: null,
+    };
+    mockGetMedia.mockImplementation((...args: unknown[]) => {
+      const id = args[0] as string;
+      if (id === 'db-attached') {
+        return {
+          id,
+          local_path: 'media/db-attached.jpg',
+          thread_id: 'thread-1',
+          reply_id: null,
+          message_id: null,
+        };
+      }
+      return null;
+    });
+
+    const rnfs = require('@dr.pogodin/react-native-fs');
+    await rollbackUploadedMedia(['db-attached']);
+
+    expect(mockDeleteMedia).not.toHaveBeenCalled();
+    expect(rnfs.unlink).not.toHaveBeenCalled();
+    expect(mockRemoveMedia).not.toHaveBeenCalled();
   });
 
   it('falls back to the DB row when the store has no entry, honouring message_id', async () => {

@@ -56,5 +56,11 @@ export async function teardownLocalMedia(
   if (localPath) {
     await unlink(localPath).catch(() => {});
   }
-  useAppStore.getState().removeMedia(id);
+  try {
+    useAppStore.getState().removeMedia(id);
+  } catch {
+    // Best-effort, like the two steps above: the row and the file are already
+    // gone, and a throwing store must not turn a cleanup into the caller's
+    // error. A stale entry is cosmetic and dies with the next hydration.
+  }
 }

@@ -21,8 +21,11 @@ import { VerifiedStatus } from '../types/database';
 import { createNewThread } from '../services/threadService';
 import { isUploadCancellation } from '../services/mediaUploadService';
 import { captureUploadFailure, type PostPipelineStage } from '../services/uploadTelemetry';
-import { ConflictError, QuotaExceededError } from '../services/api/errors';
-import { mayHaveCommitted } from '../services/media/uploadCacheDisposition';
+import { QuotaExceededError } from '../services/api/errors';
+import {
+  classifyCreateFailure,
+  dispositionForCreateFailure,
+} from '../services/media/uploadCacheDisposition';
 import { updateMediaParent } from '../database/repositories/mediaRepository';
 import { useMediaPicker } from '../hooks/useMediaPicker';
 import { useMediaUploadProgress } from '../hooks/useMediaUploadProgress';
@@ -196,26 +199,30 @@ export function ComposeThreadScreen({
       // happen. Before #738 it existed only in a __DEV__ console.warn, which is
       // why the S24 sanitizer bug (#732) was invisible in release builds.
       captureUploadFailure(e, { stage, surface: 'compose-thread', dm: !!isDm });
-      // Cache state, not screen state -- deliberately outside the mounted
-      // block below. A create that may have committed (409, network/timeout,
-      // 5xx) leaves its ids flagged, so a later Discard does not roll back
-      // media that is in fact on a post. A media-stage failure never reached
-      // the create call, so it is not marked. Failures that are unmarked keep
-      // the cache too; they simply stay rollback-eligible (#724b).
-      if (stage === 'thread-create' && mayHaveCommitted(e)) {
-        releaseUploadCache('may-be-attached');
+      // One classification drives both the cache and the banner, so the two can
+      // never disagree about whether the post may exist. Stage-gated: a
+      // media-stage failure never reached createNewThread, and the backend maps
+      // every unique-key violation to 409, so only a create-stage error carries
+      // this meaning.
+      const verdict = stage === 'thread-create' ? classifyCreateFailure(e) : 'no';
+      // Cache state, not screen state -- deliberately outside the mounted block
+      // below. 'committed'/'maybe-committed' flag the cached ids so a later
+      // Discard does not roll back media that is in fact on a post; a 'no'
+      // verdict keeps the cache too, it simply stays rollback-eligible (#724b).
+      const disposition = dispositionForCreateFailure(verdict);
+      if (disposition) {
+        releaseUploadCache(disposition);
       }
       // Telemetry above is unconditional; the banner is screen state.
       if (mountedRef.current) {
         if (e instanceof QuotaExceededError) {
           // instanceof applies to the upload path; createNewThread is JSON-only and never 413s
           setError(e.message);
-        } else if (e instanceof ConflictError && stage === 'thread-create') {
-          // 409 on a reused post: the media was already attached, which is
-          // near-proof the previous create committed. The cache is kept on
-          // purpose, so a repeat press draws another 409 rather than a
-          // duplicate post. Stage-gated: the backend maps every unique-key
-          // violation to 409, so only a create-stage 409 carries that meaning.
+        } else if (verdict !== 'no') {
+          // The create may have landed: a 409 is near-proof of it, and a
+          // network or 5xx failure leaves it genuinely unknown. Never invite a
+          // blind retry — the cache is kept on purpose, so a repeat press draws
+          // another 409 rather than a duplicate post.
           setError(
             `This may already have been posted. Check the ${isDm ? 'chat' : 'orbit'} before posting again.`,
           );

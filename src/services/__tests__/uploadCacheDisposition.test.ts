@@ -2,10 +2,14 @@
  * Tests for the shared create-failure classifier (#724b).
  *
  * Both composers route their create-stage failures through this predicate, so
- * a drift here silently changes whether uploaded media is rolled back or kept.
+ * a drift here silently changes whether uploaded media is rolled back, whether
+ * the discard prompt appears, and which copy the user reads.
  */
 
-import { mayHaveCommitted } from '../media/uploadCacheDisposition';
+import {
+  classifyCreateFailure,
+  dispositionForCreateFailure,
+} from '../media/uploadCacheDisposition';
 import {
   ApiError,
   AuthError,
@@ -17,35 +21,61 @@ import {
   ValidationError,
 } from '../api/errors';
 
-describe('mayHaveCommitted', () => {
-  it('treats a 409 as possibly committed', () => {
+describe('classifyCreateFailure', () => {
+  it('treats a 409 as committed', () => {
     // A create carrying already-attached media ids is near-proof the previous
     // call landed.
-    expect(mayHaveCommitted(new ConflictError())).toBe(true);
+    expect(classifyCreateFailure(new ConflictError())).toBe('committed');
   });
 
-  it('treats a network failure or timeout as possibly committed', () => {
-    expect(mayHaveCommitted(new NetworkError())).toBe(true);
+  it('treats a network failure or timeout as maybe', () => {
+    expect(classifyCreateFailure(new NetworkError())).toBe('maybe');
+    expect(classifyCreateFailure(new NetworkError('fetch failed'))).toBe('maybe');
   });
 
-  it('treats a 5xx as possibly committed', () => {
-    expect(mayHaveCommitted(new ServerError(500))).toBe(true);
-    expect(mayHaveCommitted(new ServerError(503))).toBe(true);
+  it('treats a rate-limit-backoff abort as definitely not committed', () => {
+    // neverSent: the 429 that forced the backoff wrote nothing and the retry
+    // was abandoned before it was issued. Without this the composer would flag
+    // media as possibly-attached on a request that never left the device.
+    expect(
+      classifyCreateFailure(
+        new NetworkError('Request aborted during rate-limit backoff', true),
+      ),
+    ).toBe('no');
   });
 
-  it('treats pre-commit rejections as definitely not committed', () => {
-    expect(mayHaveCommitted(new ValidationError(400))).toBe(false);
-    expect(mayHaveCommitted(new ValidationError(422))).toBe(false);
-    expect(mayHaveCommitted(new AuthError(401))).toBe(false);
-    expect(mayHaveCommitted(new AuthError(403))).toBe(false);
-    expect(mayHaveCommitted(new NotFoundError())).toBe(false);
-    expect(mayHaveCommitted(new QuotaExceededError())).toBe(false);
+  it('treats a 5xx as maybe', () => {
+    expect(classifyCreateFailure(new ServerError(500))).toBe('maybe');
+    expect(classifyCreateFailure(new ServerError(503))).toBe('maybe');
   });
 
-  it('treats a bare ApiError and non-API failures as not committed', () => {
-    expect(mayHaveCommitted(new ApiError('boom', 418, 'TEAPOT', false))).toBe(false);
-    expect(mayHaveCommitted(new Error('local crypto failed'))).toBe(false);
-    expect(mayHaveCommitted('not an error')).toBe(false);
-    expect(mayHaveCommitted(undefined)).toBe(false);
+  it('treats pre-commit rejections as no', () => {
+    expect(classifyCreateFailure(new ValidationError(400))).toBe('no');
+    expect(classifyCreateFailure(new ValidationError(422))).toBe('no');
+    expect(classifyCreateFailure(new AuthError(401))).toBe('no');
+    expect(classifyCreateFailure(new AuthError(403))).toBe('no');
+    expect(classifyCreateFailure(new NotFoundError())).toBe('no');
+    expect(classifyCreateFailure(new QuotaExceededError())).toBe('no');
+  });
+
+  it('treats a bare ApiError and non-API failures as no', () => {
+    expect(classifyCreateFailure(new ApiError('boom', 418, 'TEAPOT', false))).toBe('no');
+    expect(classifyCreateFailure(new Error('local crypto failed'))).toBe('no');
+    expect(classifyCreateFailure('not an error')).toBe('no');
+    expect(classifyCreateFailure(undefined)).toBe('no');
+  });
+});
+
+describe('dispositionForCreateFailure', () => {
+  it('maps committed to the guard-silencing disposition', () => {
+    expect(dispositionForCreateFailure('committed')).toBe('committed');
+  });
+
+  it('maps maybe to the disposition that KEEPS the discard prompt', () => {
+    expect(dispositionForCreateFailure('maybe')).toBe('maybe-committed');
+  });
+
+  it('maps no to null — the cache is left untouched and rollback-eligible', () => {
+    expect(dispositionForCreateFailure('no')).toBeNull();
   });
 });

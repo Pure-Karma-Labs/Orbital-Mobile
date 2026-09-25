@@ -1399,9 +1399,11 @@ describe('ThreadDetailScreen — send failure signal', () => {
 
     await sendReply();
 
+    // A create-stage 5xx may have committed before the handler failed, so the
+    // copy is the "may have been sent" one, not the generic failure (#840).
     expect(alertSpy).toHaveBeenCalledWith(
-      'Reply Failed',
-      'Failed to send your reply. Please try again.',
+      'Reply May Have Been Sent',
+      'Your reply may already have been sent. Pull to refresh before sending again.',
     );
     expect(captureTags()).toMatchObject({
       stage: 'reply-create',
@@ -1801,15 +1803,52 @@ describe('ThreadDetailScreen — upload cache reuse', () => {
     expect(mockRollbackUploadedMedia).not.toHaveBeenCalled();
   });
 
-  it('after a create-stage network failure leaves the guard disarmed and rolls nothing back', async () => {
+  it('after a create-stage network failure KEEPS the guard armed but still rolls nothing back', async () => {
     mockSelectedMedia = oneImage;
     mockPostReply.mockRejectedValue(new NetworkError());
 
     const renderer = await renderScreen();
     await doSend(renderer);
 
-    expect(mockUsePreventRemove.mock.calls.at(-1)?.[0]).toBe(false);
+    // Unlike a 409, a network failure leaves it genuinely unknown whether the
+    // reply exists, so the user may still be holding unattached media: the
+    // "Discard unsent reply?" prompt has to survive (Alex, PR #840 review).
+    expect(mockUsePreventRemove.mock.calls.at(-1)?.[0]).toBe(true);
+    // ...but the ids are flagged, so discarding must not delete media that may
+    // be on a reply.
     await confirmDiscard();
     expect(mockRollbackUploadedMedia).not.toHaveBeenCalled();
+  });
+
+  it('shows the "may have been sent" alert for a network failure, not just a 409', async () => {
+    mockSelectedMedia = oneImage;
+    mockPostReply.mockRejectedValue(new NetworkError());
+
+    const renderer = await renderScreen();
+    await doSend(renderer);
+
+    expect(alertSpy).toHaveBeenCalledWith(
+      'Reply May Have Been Sent',
+      'Your reply may already have been sent. Pull to refresh before sending again.',
+    );
+  });
+
+  it('keeps the generic alert, and the rollback, when the failure provably never committed', async () => {
+    mockSelectedMedia = oneImage;
+    // neverSent: the rate-limit backoff abort never issued the request, so
+    // nothing can have been sent and the media stays rollback-eligible.
+    mockPostReply.mockRejectedValue(
+      new NetworkError('Request aborted during rate-limit backoff', true),
+    );
+
+    const renderer = await renderScreen();
+    await doSend(renderer);
+
+    expect(alertSpy).toHaveBeenCalledWith(
+      'Reply Failed',
+      'Failed to send your reply. Please try again.',
+    );
+    await confirmDiscard();
+    expect(mockRollbackUploadedMedia).toHaveBeenCalledWith(['media-id-1']);
   });
 });

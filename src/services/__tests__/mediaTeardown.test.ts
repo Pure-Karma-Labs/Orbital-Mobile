@@ -85,6 +85,21 @@ describe('teardownLocalMedia', () => {
     expect(mockRemoveMedia).toHaveBeenCalledWith('media-4');
   });
 
+  it('swallows a removeMedia failure', async () => {
+    // The store is the last of the three steps and the only one whose failure
+    // could still reach the caller. A rollback that throws here would mask the
+    // original upload error the caller is about to classify.
+    mockRemoveMedia.mockImplementationOnce(() => {
+      throw new Error('store exploded');
+    });
+
+    await expect(
+      teardownLocalMedia('media-6', '/tmp/media/media-6.jpg'),
+    ).resolves.toBeUndefined();
+    expect(mockDeleteMedia).toHaveBeenCalledWith('media-6');
+    expect(rnfs.unlink).toHaveBeenCalledWith('/tmp/media/media-6.jpg');
+  });
+
   it('swallows an unlink failure and still clears the store', async () => {
     rnfs.unlink.mockRejectedValueOnce(new Error('ENOENT'));
 

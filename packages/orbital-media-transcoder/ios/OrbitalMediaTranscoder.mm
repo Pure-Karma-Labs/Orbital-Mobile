@@ -181,13 +181,31 @@ RCT_EXPORT_MODULE()
  * must remove any dest file it wrote, because nothing on the JS side is left to
  * claim or clean it up.
  *
- * The block hops onto _queue and re-reads _invalidated there. That is what
- * gives strict ordering against -invalidate's dispatch_sync and keeps the flag
- * confined to a single queue, so it stays a plain BOOL rather than an atomic
+ * The block hops onto _queue and re-reads _invalidated there. That buys
+ * ORDERING, not EXCLUSION, and the difference matters: the hop guarantees the
+ * read is never torn and never races -invalidate's write, but a settle block
+ * enqueued a moment BEFORE -invalidate's dispatch_sync still runs first on this
+ * serial queue and settles into a runtime that is already on its way out. This
+ * narrows the window; it does not close it — same honest caveat as Android's
+ * settleIfLive, reached by a different mechanism. Closing it would mean
+ * blocking teardown behind in-flight work, which is a worse trade.
+ *
+ * The residual loss is bounded: a settle that lands during teardown is exactly
+ * what the pre-#727 code did on EVERY path, and a dest file left behind by the
+ * losing race is staging residue, swept by the bootstrap orphan GC
+ * (cleanupOrphanedChunks / isStagingResidueName) on the next launch.
+ *
+ * Queue confinement is why the flag stays a plain BOOL rather than an atomic
  * (unlike OrbitalTranscodeJob.cancelled, which the sample loops genuinely poll
- * cross-queue). dispatch_async, never dispatch_sync: an async hop cannot
- * deadlock against an -invalidate that is already inside its own
- * dispatch_sync(_queue).
+ * cross-queue). One read is not self-synchronizing: -startTranscode: reads
+ * _invalidated directly, inheriting whatever queue its caller is on. That is
+ * safe today only because its single caller is -transcodeVideo:'s own
+ * dispatch_async(_queue) hop — a pre-existing, tolerated exception, not a
+ * property of the method. A second caller from the JS thread would make that
+ * read unsynchronized, so route any new one through a _queue hop.
+ *
+ * dispatch_async, never dispatch_sync: an async hop cannot deadlock against an
+ * -invalidate that is already inside its own dispatch_sync(_queue).
  *
  * Only the SETTLE moves onto _queue. The work that produced the result
  * (-copyCGImageAtTime:, the JPEG write) stays on the AVFoundation handler queue

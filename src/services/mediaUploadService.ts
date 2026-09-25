@@ -771,53 +771,124 @@ export type BatchUploadProgressEvent = UploadProgressEvent & {
   itemCount: number;
 };
 
-/** The two inputs a rollback needs for one media id. */
-interface RollbackInfo {
+/** Everything the rollback paths need to know about one media id. */
+interface MediaFacts {
   /** ABSOLUTE plaintext path, or null when nothing was written to disk. */
   localPath: string | null;
   /** Thumbnail child id, or null for images and thumbnails themselves. */
   thumbnailMediaId: string | null;
+  /** Already attached to a thread, reply or message — must not be rolled back. */
+  attached: boolean;
 }
 
 /** Read one media row, guarded. Narrow: only the getMedia call is in the try. */
-function readMediaRowForRollback(id: string): MediaRow | null {
+function readMediaRow(id: string): MediaRow | null {
   if (!isDatabaseInitialized()) return null;
   try {
     return getMedia(id);
   } catch (e) {
     if (__DEV__) {
-      console.warn('[rollbackLocalMedia] media row lookup failed:', e instanceof Error ? e.message : e);
+      console.warn('[mediaRollback] media row lookup failed:', e instanceof Error ? e.message : e);
     }
     return null;
   }
 }
 
 /**
- * Resolve a media id's rollback inputs, store-first.
+ * Resolve everything a rollback needs for one id, in ONE pass over both stores.
  *
- * Keyed on store-entry ABSENCE, never on field falsiness: an entry that is
- * present is authoritative, and it holds `thumbnailMediaId: null` explicitly for
- * every image. Gating on the field instead would send every non-video item
- * through a pointless DB read.
+ * Two different rules are at work here, and conflating them was a bug:
  *
- * The DB fallback runs local_path through resolveMediaPath — DB paths are stored
- * relative, and resolveMediaPath is the only sanctioned way to turn one into an
- * absolute path (it handles null/relative/legacy-absolute and asserts MEDIA_DIR
- * containment). The raw column must never reach unlink().
+ * PATH + CHILD are store-first, keyed on entry ABSENCE rather than field
+ * falsiness: a present entry is authoritative and holds `thumbnailMediaId: null`
+ * explicitly for every image, so gating on the field would send every non-video
+ * item through a pointless DB read. The DB fallback runs `local_path` through
+ * `resolveMediaPath` — DB paths are relative, and that is the only sanctioned
+ * way to make one absolute (it handles null/relative/legacy-absolute and
+ * asserts MEDIA_DIR containment). The raw column must never reach `unlink()`.
+ *
+ * ATTACHED is the union of both sources, because `updateMediaParent` writes the
+ * DB ROW ONLY — it never touches the Zustand entry. A store entry that still
+ * says `threadId: null` is therefore NOT evidence that the id is unattached,
+ * and trusting it alone would delete the local copy of media that is on a post
+ * (PR #840 review). An id counts as unattached only when every parent field in
+ * both sources is empty; `''` is treated as no parent, since `updateMediaParent`
+ * writes real ids.
  */
-function readRollbackInfo(id: string): RollbackInfo {
+function readMediaFacts(id: string): MediaFacts {
   const entry = useAppStore.getState().media[id];
+  // The store has no messageId field; DM media rows carry thread_id, so these
+  // two are the whole parent set on this side.
+  const storeAttached = entry ? !!entry.threadId || !!entry.replyId : false;
+
+  if (entry && storeAttached) {
+    // Attached per the store — the DB can only agree, so skip the read.
+    return {
+      localPath: entry.localPath ?? null,
+      thumbnailMediaId: entry.thumbnailMediaId ?? null,
+      attached: true,
+    };
+  }
+
+  const row = readMediaRow(id);
+  // message_id is forward-compat: nothing writes it today, but the column
+  // exists and a future DM-attachment path would use it, so a rollback must not
+  // delete a row that path had already claimed.
+  const attached = !!row && (!!row.thread_id || !!row.reply_id || !!row.message_id);
+
   if (entry) {
     return {
       localPath: entry.localPath ?? null,
       thumbnailMediaId: entry.thumbnailMediaId ?? null,
+      attached,
     };
   }
-  const row = readMediaRowForRollback(id);
   return {
     localPath: resolveMediaPath(row?.local_path),
     thumbnailMediaId: row?.thumbnail_media_id ?? null,
+    attached,
   };
+}
+
+/**
+ * Expand ids to the full teardown set, reading each id's facts EXACTLY ONCE.
+ *
+ * Expansion happens before any teardown: resolving a child id after its
+ * parent's row is already deleted would lose the link.
+ *
+ * A video's thumbnail child commits through the same uploadMedia tail as its
+ * parent but under an id that never enters a caller's array, and `deleteMedia`
+ * has no cascade on `thumbnail_media_id` — so the child is expanded here rather
+ * than inside `deleteMedia`, keeping the cascade scoped to the rollback paths
+ * instead of every deletion in the app (#721). A child follows its parent's
+ * verdict: it is never independently attached, and skipping an attached parent
+ * skips its child with it.
+ *
+ * @returns id -> absolute plaintext path (or null), in expansion order.
+ */
+function collectTeardownTargets(
+  mediaIds: string[],
+  skipAttached: boolean,
+): Map<string, string | null> {
+  const targets = new Map<string, string | null>();
+  for (const id of mediaIds) {
+    if (targets.has(id)) continue;
+    const facts = readMediaFacts(id);
+    if (skipAttached && facts.attached) continue;
+    targets.set(id, facts.localPath);
+    const childId = facts.thumbnailMediaId;
+    if (childId && !targets.has(childId)) {
+      targets.set(childId, readMediaFacts(childId).localPath);
+    }
+  }
+  return targets;
+}
+
+/** Tear down an expanded set, one id at a time. */
+async function teardownTargets(targets: Map<string, string | null>): Promise<void> {
+  for (const [id, localPath] of targets) {
+    await teardownLocalMedia(id, localPath);
+  }
 }
 
 /**
@@ -828,11 +899,14 @@ function readRollbackInfo(id: string): RollbackInfo {
  * the path RESOLUTION: it is read BEFORE the delete because on the DB-fallback
  * path the row is the only record of where the file lives.
  *
+ * Deliberately does NOT skip attached ids: the one caller is uploadMedia's own
+ * catch rolling back the thumbnail child it just committed, which by definition
+ * never reached a post.
+ *
  * Best-effort throughout: a rollback failure must never mask the original error.
  */
 async function rollbackOneMedia(id: string): Promise<void> {
-  const { localPath } = readRollbackInfo(id);
-  await teardownLocalMedia(id, localPath);
+  await teardownLocalMedia(id, readMediaFacts(id).localPath);
 }
 
 /**
@@ -845,28 +919,13 @@ async function rollbackOneMedia(id: string): Promise<void> {
  * in FileLibrary forever (its filter surfaces upload_state='done' rows regardless
  * of parent) and their bytes would count against local storage usage.
  *
- * A video's thumbnail child commits through the same tail but under an id that
- * never enters this array, and deleteMedia has no cascade on thumbnail_media_id
- * — so the child is expanded here rather than inside deleteMedia, keeping the
- * cascade scoped to this rollback path instead of every deletion in the app (#721).
+ * Attachment is NOT consulted: every id here came from a batch that never
+ * reached its create call.
  *
  * Best-effort throughout: a rollback failure must never mask the original error.
  */
 async function rollbackLocalMedia(mediaIds: string[]): Promise<void> {
-  // Expand FIRST, roll back second: resolving a child id after its parent's row
-  // is already deleted would lose the link.
-  const ids = new Set<string>();
-  for (const id of mediaIds) {
-    ids.add(id);
-    const childId = readRollbackInfo(id).thumbnailMediaId;
-    if (childId) {
-      ids.add(childId);
-    }
-  }
-
-  for (const id of ids) {
-    await rollbackOneMedia(id);
-  }
+  await teardownTargets(collectTeardownTargets(mediaIds, false));
 }
 
 /**
@@ -877,56 +936,25 @@ async function rollbackLocalMedia(mediaIds: string[]): Promise<void> {
  * replaced. Those ids reached 'done' locally with a NULL parent, so without
  * this they sit in FileLibrary forever as thread-less ghosts.
  *
- * ATTACHED IDS ARE SKIPPED. "Attached" is read store-first with a DB fallback,
- * the same shape as `readRollbackInfo`, because a screen that unmounted may no
- * longer have a store entry. If an id was attached WITHOUT this client knowing
- * (the create call committed server-side but its response was lost), rolling it
- * back is recoverable but not free: `processMediaMetadata` re-materializes the
- * row and its `attachment_key` from the metadata envelope on the next sync, so
- * the media comes back — the local plaintext copy has to be re-downloaded.
- * That is why the screens flag "may have committed" failures instead of
- * discarding them.
+ * ATTACHED IDS ARE SKIPPED (see `readMediaFacts`: store OR DB). If an id was
+ * attached WITHOUT this client knowing (the create call committed server-side
+ * but its response was lost), rolling it back is recoverable but not free:
+ * `processMediaMetadata` re-materializes the row and its `attachment_key` from
+ * the metadata envelope on the next sync, so the media comes back — the local
+ * plaintext copy has to be re-downloaded. That is why the screens flag
+ * "may have committed" failures instead of discarding them.
  *
  * NEVER THROWS: the whole body is guarded. Callers invoke this from a send
  * path where neither a synchronous throw nor a rejection may surface.
  */
 export async function rollbackUploadedMedia(mediaIds: string[]): Promise<void> {
   try {
-    const unattached = mediaIds.filter((id) => !isMediaAttached(id));
-    if (unattached.length === 0) return;
-    // Child-aware: a video's thumbnail id never appears in a composer's array.
-    await rollbackLocalMedia(unattached);
+    await teardownTargets(collectTeardownTargets(mediaIds, true));
   } catch (e) {
     if (__DEV__) {
       console.warn('[rollbackUploadedMedia] failed:', e instanceof Error ? e.message : e);
     }
   }
-}
-
-/**
- * Has this media id been attached to a thread, reply or message?
- *
- * Store-first, DB fallback — same shape as `readRollbackInfo`, keyed on entry
- * ABSENCE rather than field falsiness, because an attached row legitimately
- * holds `null` in two of the three columns.
- *
- * The empty string is treated as unattached: `updateMediaParent` writes real
- * ids, but a '' that survived from anywhere else describes no parent. An id
- * counts as unattached only when ALL of the parent fields are empty.
- */
-function isMediaAttached(id: string): boolean {
-  const entry = useAppStore.getState().media[id];
-  if (entry) {
-    // The store has no messageId field; DM media rows are written with
-    // thread_id set, so the two store fields are the whole parent set here.
-    return !!entry.threadId || !!entry.replyId;
-  }
-  const row = readMediaRowForRollback(id);
-  if (!row) return false;
-  // message_id is forward-compat: nothing writes it today, but the column
-  // exists and a future DM-attachment path would use it, so a rollback must
-  // not delete a row that path had already claimed.
-  return !!row.thread_id || !!row.reply_id || !!row.message_id;
 }
 
 /**
@@ -942,8 +970,6 @@ function isMediaAttached(id: string): boolean {
  * only known per item (and a video's source size is not its uploaded size), so
  * any up-front total would jump or regress mid-post.
  *
- * @param items - Array of PickedMedia from useMediaPicker.
- * @param groupId - The group to upload into.
  * The LOCAL half of every item that completed before a failure is rolled back
  * before the error is rethrown, on cancellation and on failure alike (#724a).
  * The SERVER-side rows persist until retention reaps them — there is no upload
@@ -953,6 +979,8 @@ function isMediaAttached(id: string): boolean {
  * `thumbnail_media_id` rather than treating the parent ids as the full set, or
  * it will leave the child's ciphertext behind.
  *
+ * @param items - Array of PickedMedia from useMediaPicker.
+ * @param groupId - The group to upload into.
  * @param opts - Abort signal and progress callback.
  * @returns Array of mediaIds in the same order as the input items.
  * @throws the original error, unwrapped — rollback never masks it.

@@ -1042,17 +1042,72 @@ describe('ComposeThreadScreen — upload reuse cache and unmount safety', () => 
     expect(mockRollbackUploadedMedia).not.toHaveBeenCalled();
   });
 
-  it('after a create-stage network failure leaves the guard disarmed and rolls nothing back', async () => {
+  it('after a create-stage network failure KEEPS the guard armed but still rolls nothing back', async () => {
     mockSelectedMedia = oneImage;
     mockCreateNewThread.mockRejectedValue(new NetworkError());
 
     const renderer = renderScreen();
     await fillAndPost(renderer);
 
-    // The request may have been processed with only its response lost.
-    expect(mockUsePreventRemove.mock.calls.at(-1)?.[0]).toBe(false);
+    // Unlike a 409, a network failure leaves it genuinely unknown whether the
+    // post exists, so the user may still be holding unattached media: the
+    // "Discard unsent post?" prompt has to survive (Alex, PR #840 review).
+    expect(mockUsePreventRemove.mock.calls.at(-1)?.[0]).toBe(true);
+    // ...but the ids are flagged, so discarding must not delete media that may
+    // be on a post.
     await confirmDiscard();
     expect(mockRollbackUploadedMedia).not.toHaveBeenCalled();
+  });
+
+  it('after a 5xx keeps the guard armed and rolls nothing back', async () => {
+    mockSelectedMedia = oneImage;
+    mockCreateNewThread.mockRejectedValue(new ServerError(500));
+
+    const renderer = renderScreen();
+    await fillAndPost(renderer);
+
+    expect(mockUsePreventRemove.mock.calls.at(-1)?.[0]).toBe(true);
+    await confirmDiscard();
+    expect(mockRollbackUploadedMedia).not.toHaveBeenCalled();
+  });
+
+  it('shows the "may already have been posted" banner for a network failure, not just a 409', async () => {
+    mockSelectedMedia = oneImage;
+    mockCreateNewThread.mockRejectedValue(new NetworkError());
+
+    const renderer = renderScreen();
+    await fillAndPost(renderer);
+
+    expect(textContents(renderer)).toContain(
+      'This may already have been posted. Check the orbit before posting again.',
+    );
+    expect(textContents(renderer)).not.toContain('Failed to create thread. Please try again.');
+  });
+
+  it('keeps the generic banner for a failure that provably never committed', async () => {
+    mockSelectedMedia = oneImage;
+    mockCreateNewThread.mockRejectedValue(new ValidationError(400));
+
+    const renderer = renderScreen();
+    await fillAndPost(renderer);
+
+    expect(textContents(renderer)).toContain('Failed to create thread. Please try again.');
+  });
+
+  it('keeps the generic banner when the rate-limit backoff abort never left the device', async () => {
+    mockSelectedMedia = oneImage;
+    // neverSent: the retry was abandoned before it was issued, so nothing can
+    // have been posted and the media is still rollback-eligible.
+    mockCreateNewThread.mockRejectedValue(
+      new NetworkError('Request aborted during rate-limit backoff', true),
+    );
+
+    const renderer = renderScreen();
+    await fillAndPost(renderer);
+
+    expect(textContents(renderer)).toContain('Failed to create thread. Please try again.');
+    await confirmDiscard();
+    expect(mockRollbackUploadedMedia).toHaveBeenCalledWith(['media-id-1']);
   });
 
   it('marks the cache from an unmounted screen when the 409 lands late', async () => {

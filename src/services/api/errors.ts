@@ -36,7 +36,27 @@ export class ApiError extends Error {
 
 /** Wraps fetch-level failures (no response received) and request timeouts. Retryable. */
 export class NetworkError extends ApiError {
-  constructor(serverMessage?: string) {
+  /**
+   * True only when the request PROVABLY never left the device, so it cannot
+   * have committed anything server-side.
+   *
+   * Set exclusively by the rate-limit backoff abort in `client.ts`: there, the
+   * previous attempt was rejected with a 429 (so it wrote nothing) and the
+   * retry was abandoned before it was issued. Every other NetworkError is
+   * ambiguous by construction — a fetch that throws on abort or timeout may
+   * have been fully processed with only its response lost — so this stays
+   * false there.
+   *
+   * A flag, not a subclass, deliberately: `instanceof NetworkError`, `.name`
+   * and `.code` are load-bearing for retry logic and Sentry tags, and none of
+   * them should shift for this distinction.
+   *
+   * Consumer: `media/uploadCacheDisposition.classifyCreateFailure` — a
+   * never-sent failure must not flag uploaded media as "may be attached".
+   */
+  readonly neverSent: boolean;
+
+  constructor(serverMessage?: string, neverSent = false) {
     super(
       'Network error — please check your connection',
       0,
@@ -45,6 +65,7 @@ export class NetworkError extends ApiError {
       serverMessage,
     );
     this.name = 'NetworkError';
+    this.neverSent = neverSent;
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }

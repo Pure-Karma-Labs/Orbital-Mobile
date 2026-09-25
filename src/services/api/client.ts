@@ -265,7 +265,9 @@ export async function delayForRateLimit(
   signal?: AbortSignal,
 ): Promise<void> {
   if (signal?.aborted) {
-    throw new NetworkError('Request aborted during rate-limit backoff');
+    // neverSent: the 429 that put us here wrote nothing, and this retry is
+    // abandoned before it is issued — see NetworkError.neverSent.
+    throw new NetworkError('Request aborted during rate-limit backoff', true);
   }
 
   const backoffMs = 1000 * Math.pow(2, attempt) + Math.random() * 500;
@@ -278,7 +280,7 @@ export async function delayForRateLimit(
       timer = setTimeout(resolve, delayMs);
       onAbort = () => {
         clearTimeout(timer);
-        reject(new NetworkError('Request aborted during rate-limit backoff'));
+        reject(new NetworkError('Request aborted during rate-limit backoff', true));
       };
       signal?.addEventListener('abort', onAbort, { once: true });
     });

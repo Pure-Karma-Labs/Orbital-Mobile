@@ -87,19 +87,25 @@ export interface UseMediaUploadProgressResult {
    * | disposition | cache | hasUnsentUpload | rollback |
    * |---|---|---|---|
    * | `attached` | dropped | false | none |
-   * | `discard` | dropped | false | yes, unless the entry is flagged may-be-attached |
-   * | `may-be-attached` | KEPT + flagged | false | none |
+   * | `discard` | dropped | false | yes, unless the entry is flagged |
+   * | `committed` | KEPT + flagged | false | none |
+   * | `maybe-committed` | KEPT + flagged | left as it was | none |
    *
-   * `may-be-attached` clears `hasUnsentUpload` even though the cache survives:
-   * the media is probably already on a post, so there is nothing left for the
-   * discard guard to protect and it must not arm. The ids stay cached so a
-   * re-press draws another 409 instead of uploading duplicates.
+   * The two "keep" arms differ ONLY in the guard, and that difference is the
+   * point (Alex, PR #840 review): a 409 (`committed`) means the post almost
+   * certainly exists, so there is nothing left for the discard guard to protect
+   * and prompting on Back would be noise. A network or 5xx failure
+   * (`maybe-committed`) leaves the user genuinely holding media that may never
+   * have been attached, so the prompt must still appear — `hasUnsentUpload` is
+   * left exactly as the batch set it rather than forced true, since a batch
+   * whose ids were all deselected has nothing to warn about either.
    *
-   * Rolling back an id that WAS attached without the client knowing is
-   * recoverable, but not free: `processMediaMetadata` re-materializes the row
-   * and its `attachment_key` from the metadata envelope on the next sync, so
-   * the media returns — the local plaintext copy has to be re-downloaded. The
-   * `may-be-attached` flag exists to avoid paying that.
+   * Both flag the entry, so a later `discard` drops the cache WITHOUT rolling
+   * the ids back. Rolling back an id that WAS attached without the client
+   * knowing is recoverable, but not free: `processMediaMetadata` re-materializes
+   * the row and its `attachment_key` from the metadata envelope on the next
+   * sync, so the media returns — the local plaintext copy has to be
+   * re-downloaded.
    */
   releaseUploadCache: (disposition: UploadCacheDisposition) => void;
   /**
@@ -197,8 +203,6 @@ export function useMediaUploadProgress(): UseMediaUploadProgressResult {
 
   const releaseUploadCache = useCallback((disposition: UploadCacheDisposition) => {
     const entry = cacheRef.current;
-    // Every arm clears hasUnsentUpload: after any of the three there is nothing
-    // the discard guard could still be protecting.
     switch (disposition) {
       case 'attached':
         cacheRef.current = null;
@@ -207,17 +211,25 @@ export function useMediaUploadProgress(): UseMediaUploadProgressResult {
       case 'discard':
         cacheRef.current = null;
         if (mountedRef.current) setHasUnsentUpload(false);
-        // The flag is the whole reason `may-be-attached` exists: those ids are
+        // The flag is the whole reason the two "keep" arms exist: those ids are
         // probably on a post the client never saw confirmed, so they are left
         // alone rather than deleted and re-downloaded.
         if (entry && !entry.mayBeAttached) {
           scheduleRollback(entry.mediaIds);
         }
         return;
-      case 'may-be-attached':
+      case 'committed':
         // Cache KEPT -- a re-press must reuse these ids, not upload duplicates.
+        // The post almost certainly exists, so the discard guard has nothing
+        // left to protect and must not prompt on the way out.
         if (entry) entry.mayBeAttached = true;
         if (mountedRef.current) setHasUnsentUpload(false);
+        return;
+      case 'maybe-committed':
+        // Same cache treatment, but hasUnsentUpload is left UNTOUCHED: the user
+        // may still be holding media nothing has attached, so leaving the
+        // screen must still raise "Discard unsent ...?".
+        if (entry) entry.mayBeAttached = true;
         return;
     }
   }, []);

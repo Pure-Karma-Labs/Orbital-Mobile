@@ -555,6 +555,10 @@ describe('prepareVideoForUpload', () => {
       jest.useRealTimers();
       await new Promise((resolve) => setTimeout(resolve, 10));
       process.off('unhandledRejection', onUnhandled);
+      // Put the fake clock back before leaving: afterEach drains pending fake
+      // timers, and calling runOnlyPendingTimers on a real clock logs a
+      // "timers APIs are not replaced with fake timers" warning.
+      jest.useFakeTimers();
 
       expect(unhandled).toHaveLength(0);
     });

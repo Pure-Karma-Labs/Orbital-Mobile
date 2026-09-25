@@ -218,16 +218,16 @@ describe('useMediaUploadProgress — releaseUploadCache dispositions', () => {
     expect(hookResult.hasUnsentUpload).toBe(false);
   });
 
-  it("'may-be-attached' keeps the cache, clears hasUnsentUpload, and suppresses a later discard's rollback", async () => {
+  it("'committed' keeps the cache, clears hasUnsentUpload, and suppresses a later discard's rollback", async () => {
     renderHook();
     await uploadOnce();
     expect(hookResult.hasUnsentUpload).toBe(true);
 
-    act(() => { hookResult.releaseUploadCache('may-be-attached'); });
+    act(() => { hookResult.releaseUploadCache('committed'); });
     await flushRollback();
 
-    // Nothing left to protect: the media is probably already on a post, so
-    // the discard guard must not arm.
+    // Nothing left to protect: the post almost certainly exists, so the
+    // discard guard must not arm.
     expect(hookResult.hasUnsentUpload).toBe(false);
     expect(mockRollbackUploadedMedia).not.toHaveBeenCalled();
 
@@ -241,6 +241,47 @@ describe('useMediaUploadProgress — releaseUploadCache dispositions', () => {
     await flushRollback();
 
     expect(mockRollbackUploadedMedia).not.toHaveBeenCalled();
+  });
+
+  it("'maybe-committed' keeps the cache AND leaves hasUnsentUpload true", async () => {
+    renderHook();
+    await uploadOnce();
+    expect(hookResult.hasUnsentUpload).toBe(true);
+
+    act(() => { hookResult.releaseUploadCache('maybe-committed'); });
+    await flushRollback();
+
+    // The create may never have attached anything, so leaving the screen must
+    // still prompt -- this is the one arm that does NOT silence the guard.
+    expect(hookResult.hasUnsentUpload).toBe(true);
+    expect(mockRollbackUploadedMedia).not.toHaveBeenCalled();
+
+    // Cache survived: a re-press reuses the ids instead of re-uploading.
+    let ids: string[] = [];
+    await act(async () => { ids = await hookResult.uploadBatch(items, 'group-1'); });
+    expect(ids).toEqual(['id-1']);
+    expect(mockUploadMediaBatch).toHaveBeenCalledTimes(1);
+
+    // ...and the flag still suppresses the rollback when the user discards.
+    act(() => { hookResult.releaseUploadCache('discard'); });
+    await flushRollback();
+
+    expect(mockRollbackUploadedMedia).not.toHaveBeenCalled();
+    expect(hookResult.hasUnsentUpload).toBe(false);
+  });
+
+  it("'maybe-committed' does not arm the guard for a batch that attached nothing", async () => {
+    renderHook();
+    mockUploadMediaBatch.mockResolvedValueOnce(['id-1']);
+    // Every item deselected mid-upload: the filter keeps nothing, so there is
+    // no unsent attachment to warn about even though the create failed.
+    await act(async () => { await hookResult.uploadBatch(items, 'group-1', () => []); });
+    expect(hookResult.hasUnsentUpload).toBe(false);
+
+    act(() => { hookResult.releaseUploadCache('maybe-committed'); });
+    await flushRollback();
+
+    expect(hookResult.hasUnsentUpload).toBe(false);
   });
 
   it('never lets a rollback failure reach the caller', async () => {

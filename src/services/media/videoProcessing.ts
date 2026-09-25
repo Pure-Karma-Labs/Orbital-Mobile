@@ -173,9 +173,15 @@ function awaitTranscodeWithBackstop<T>(
   // late RESOLVE means the writer finished a dest file no one will consume, so
   // it needs the late unlink. The double `.then` is what swallows the settle
   // before the abandonment check reads it.
-  native.then(noop, noop).then(() => {
-    if (abandoned) onAbandoned();
-  });
+  native
+    .then(noop, noop)
+    .then(() => {
+      if (abandoned) onAbandoned();
+    })
+    // onAbandoned is caller-supplied: a synchronous throw from it would surface
+    // as an unhandled rejection on this detached chain, which is exactly what
+    // the chain exists to prevent.
+    .catch(noop);
 
   return Promise.race([native, backstop]).finally(() => {
     if (timer !== null) clearTimeout(timer);

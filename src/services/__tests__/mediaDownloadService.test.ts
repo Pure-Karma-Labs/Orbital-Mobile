@@ -1089,12 +1089,18 @@ describe('cleanupOrphanedMedia', () => {
         (c[0] as string).includes('is_thumbnail = 1'),
       );
       expect(call).toBeDefined();
-      const sql = call![0] as string;
-      // The guards the reaper's safety rests on, pinned as text because
-      // queryMany is mocked here.
-      expect(sql).toContain('created_at < ?');
-      expect(sql).toContain('thumbnail_media_id IS NOT NULL');
-      expect(sql).toContain('LIMIT 200');
+      // The whole statement, whitespace-normalized: queryMany is mocked here,
+      // so the text IS the contract — every guard the reaper's safety rests on
+      // (the is_thumbnail filter, the age cut-off, the NOT IN with its
+      // IS NOT NULL, the LIMIT) has to be asserted together, or a rewrite could
+      // drop one and still satisfy a fragment check.
+      const sql = (call![0] as string).replace(/\s+/g, ' ').trim();
+      expect(sql).toBe(
+        'SELECT id, local_path FROM orbital_media'
+        + ' WHERE is_thumbnail = 1 AND created_at < ?'
+        + ' AND id NOT IN (SELECT thumbnail_media_id FROM orbital_media WHERE thumbnail_media_id IS NOT NULL)'
+        + ' LIMIT 200',
+      );
 
       const [cutoff] = call![1] as number[];
       // created_at is epoch MILLISECONDS (every writer stamps Date.now()).

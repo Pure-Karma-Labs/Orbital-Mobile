@@ -1,37 +1,33 @@
 /**
- * Tests for ReplyItem — useAuthorActions author-context wiring (#490).
+ * Tests for ReplyItem — useAuthorActions author-context wiring (#490), the
+ * #749 unsynced-row guard, and the #518 explicit reply arrow.
  */
 
 import React from 'react';
-import { act, create, type ReactTestRenderer } from 'react-test-renderer';
+import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import { ThemeProvider } from '../../../theme';
 import { ReplyItem } from '../ReplyItem';
 
-// Captures the onEnd callback so tests can fire the tap gesture manually.
-// The chainable shape mirrors the real API: Tap() → onEnd(cb) → runOnJS() → same handler.
-let capturedTapEndCallback: (() => void) | undefined;
+// ReplyItem itself no longer imports RNGH (#518 removed the container tap).
+// This mock stays purely as an import-safety net for anything else that the
+// render tree may pull in, and is local until #690 hoists a shared mock.
 jest.mock('react-native-gesture-handler', () => {
   const { View } = require('react-native');
   return {
-    Gesture: {
-      Tap: () => {
-        const handler: {
-          onEnd: (cb: () => void) => typeof handler;
-          runOnJS: () => typeof handler;
-        } = {
-          onEnd(cb: () => void) {
-            capturedTapEndCallback = cb;
-            return handler;
-          },
-          runOnJS() {
-            return handler;
-          },
-        };
-        return handler;
-      },
-    },
+    Gesture: { Tap: () => ({ onEnd: () => ({ runOnJS: () => ({}) }) }) },
     GestureDetector: ({ children }: { children: React.ReactNode }) => children,
     GestureHandlerRootView: View,
+  };
+});
+
+// Stub the emoji asset layer: the arrow's identity is asserted via the
+// `unified` code rather than a decoded WebP.
+jest.mock('../../../components/Emoji', () => {
+  const ReactModule = require('react');
+  const { View } = require('react-native');
+  return {
+    Emoji: (props: { unified: string; size?: number }) =>
+      ReactModule.createElement(View, { testID: `mock-emoji-${props.unified}` }),
   };
 });
 
@@ -92,7 +88,7 @@ function renderReplyItem(
           syncStatus: 'synced',
           parentAuthorId: null,
           parentAuthorUsername: null,
-          onPress: jest.fn(),
+          onReplyPress: jest.fn(),
           ...props,
         }),
       ),
@@ -101,30 +97,74 @@ function renderReplyItem(
   return renderer;
 }
 
+/** All nodes carrying a testID (host + composite duplicates included). */
+function nodesWithTestId(renderer: ReactTestRenderer, testID: string): ReactTestInstance[] {
+  return renderer.root.findAll((n) => n.props.testID === testID, { deep: true });
+}
+
+/**
+ * The pressable node for a testID. TouchableOpacity propagates its props down
+ * several composite layers before the host view, so match on the outermost
+ * one that still carries `onPress` — that's the node a test can invoke.
+ *
+ * Uniqueness is asserted on the HOST node instead (exactly one rendered
+ * element), since the composite layers are an implementation detail of
+ * TouchableOpacity.
+ */
+function pressableFor(renderer: ReactTestRenderer, testID: string): ReactTestInstance {
+  const tagged = nodesWithTestId(renderer, testID);
+  expect(tagged.filter((n) => typeof n.type === 'string')).toHaveLength(1);
+  const pressables = tagged.filter((n) => typeof n.props.onPress === 'function');
+  expect(pressables.length).toBeGreaterThan(0);
+  return pressables[0];
+}
+
+const REPLY_BUTTON = 'reply-item-r-1-reply-button';
+
 // ---------------------------------------------------------------------------
-// Tap gesture behaviour (#749)
+// Reply arrow — #749 unsynced guard
 // ---------------------------------------------------------------------------
 
-describe('ReplyItem — tap gesture syncStatus guard', () => {
-  beforeEach(() => {
-    capturedTapEndCallback = undefined;
-  });
+describe('ReplyItem — reply arrow syncStatus guard (#749)', () => {
+  it.each(['pending', 'syncing', 'failed'] as const)(
+    'renders the arrow disabled and does NOT call onReplyPress when syncStatus is "%s"',
+    (syncStatus) => {
+      const onReplyPress = jest.fn();
+      const renderer = renderReplyItem({ syncStatus, onReplyPress });
+      const btn = pressableFor(renderer, REPLY_BUTTON);
 
-  it('does NOT call onPress when syncStatus is "pending"', () => {
-    const mockOnPress = jest.fn();
-    renderReplyItem({ syncStatus: 'pending', onPress: mockOnPress });
-    expect(capturedTapEndCallback).toBeDefined();
-    capturedTapEndCallback!();
-    expect(mockOnPress).not.toHaveBeenCalled();
-  });
+      expect(btn.props.disabled).toBe(true);
+      expect(btn.props.accessibilityState).toEqual({ disabled: true });
 
-  it('DOES call onPress when syncStatus is "synced"', () => {
-    const mockOnPress = jest.fn();
-    renderReplyItem({ syncStatus: 'synced', replyId: 'r-1', authorUsername: 'bob', depth: 0, onPress: mockOnPress });
-    expect(capturedTapEndCallback).toBeDefined();
-    capturedTapEndCallback!();
+      // Invoking onPress directly bypasses `disabled` exactly the way a
+      // stale/mid-flight native press would: the in-handler guard is what
+      // has to hold.
+      act(() => {
+        btn.props.onPress();
+      });
+      expect(onReplyPress).not.toHaveBeenCalled();
+    },
+  );
+
+  it('calls onReplyPress with (replyId, displayName, depth) when synced', () => {
+    const onReplyPress = jest.fn();
+    const renderer = renderReplyItem({ syncStatus: 'synced', onReplyPress });
+    const btn = pressableFor(renderer, REPLY_BUTTON);
+
+    expect(btn.props.disabled).toBe(false);
+    expect(btn.props.accessibilityState).toEqual({ disabled: false });
+    expect(btn.props.accessibilityLabel).toBe('Reply to bob');
+
+    act(() => {
+      btn.props.onPress();
+    });
     // useDisplayName mock: (_authorId, fallback) => fallback, so displayName = 'bob'
-    expect(mockOnPress).toHaveBeenCalledWith('r-1', 'bob', 0);
+    expect(onReplyPress).toHaveBeenCalledWith('r-1', 'bob', 0);
+  });
+
+  it('keeps the arrow rendered (not hidden) on unsynced rows so sync causes no layout shift', () => {
+    expect(nodesWithTestId(renderReplyItem({ syncStatus: 'pending' }), REPLY_BUTTON).length)
+      .toBeGreaterThan(0);
   });
 
   it('renders no "Failed to send" text for syncStatus "failed"', () => {
@@ -136,6 +176,91 @@ describe('ReplyItem — tap gesture syncStatus guard', () => {
         node.props.children.toLowerCase().includes('failed to send'),
     );
     expect(failedLabel).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reply arrow on your own replies
+// ---------------------------------------------------------------------------
+
+describe('ReplyItem — reply arrow on own rows (isSelf)', () => {
+  it('stays enabled and fires when the author is the current user', () => {
+    const onReplyPress = jest.fn();
+    const renderer = renderReplyItem({
+      authorId: 'u-me',
+      currentUserId: 'u-me',
+      syncStatus: 'synced',
+      onReplyPress,
+    });
+    const btn = pressableFor(renderer, REPLY_BUTTON);
+
+    expect(btn.props.disabled).toBe(false);
+    act(() => {
+      btn.props.onPress();
+    });
+    expect(onReplyPress).toHaveBeenCalledWith('r-1', 'bob', 0);
+  });
+
+  it('does not nest the reply button inside the author touchable (which is disabled on own rows)', () => {
+    const renderer = renderReplyItem({ authorId: 'u-me', currentUserId: 'u-me' });
+    const authorTouchable = renderer.root.findAll(
+      (n) => typeof n.props.onPress === 'function' && n.props.disabled === true && n.props.testID == null,
+    );
+    expect(authorTouchable.length).toBeGreaterThan(0);
+    for (const node of authorTouchable) {
+      expect(node.findAll((c) => c.props.testID === REPLY_BUTTON)).toHaveLength(0);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Structural guard — the container tap is gone (#518)
+// ---------------------------------------------------------------------------
+
+describe('ReplyItem — structural #518 guard', () => {
+  it('leaves the row container passive: no accessibilityRole, onPress or responder handler', () => {
+    const renderer = renderReplyItem();
+    const containers = nodesWithTestId(renderer, 'reply-item-r-1');
+    expect(containers.length).toBeGreaterThan(0);
+    for (const node of containers) {
+      expect(node.props.accessibilityRole).toBeUndefined();
+      expect(node.props.accessibilityLabel).toBeUndefined();
+      expect(node.props.onPress).toBeUndefined();
+      expect(node.props.onStartShouldSetResponder).toBeUndefined();
+    }
+  });
+
+  it('renders exactly one reply control, carrying the OpenMoji hooked arrow', () => {
+    const renderer = renderReplyItem();
+    pressableFor(renderer, REPLY_BUTTON); // asserts exactly one pressable
+    expect(nodesWithTestId(renderer, 'mock-emoji-21A9-FE0F').length).toBeGreaterThan(0);
+  });
+
+  it('keeps the body selectable', () => {
+    const renderer = renderReplyItem({ body: 'hello' });
+    const selectable = renderer.root.findAll((n) => n.props.selectable === true);
+    expect(selectable.length).toBeGreaterThan(0);
+    const bodyNode = selectable.find((n) => n.props.children === 'hello');
+    expect(bodyNode).toBeDefined();
+  });
+
+  it('clamps the author name to one line so the arrow keeps its frame', () => {
+    const renderer = renderReplyItem();
+    const nameNode = renderer.root.findAll(
+      (n) => n.props.numberOfLines === 1 && n.props.children === 'bob',
+    );
+    expect(nameNode.length).toBeGreaterThan(0);
+  });
+
+  it('labels the author control "Actions for bob" on other people\'s replies', () => {
+    const renderer = renderReplyItem({ authorId: 'u-bob', currentUserId: 'u-me' });
+    const labelled = renderer.root.findAll(
+      (n) => n.props.accessibilityLabel === 'Actions for bob',
+    );
+    expect(labelled.length).toBeGreaterThan(0);
+    // ...and drops the label entirely on your own rows, where the control is inert.
+    const own = renderReplyItem({ authorId: 'u-me', currentUserId: 'u-me' });
+    expect(own.root.findAll((n) => n.props.accessibilityLabel === 'Actions for bob')).toHaveLength(0);
   });
 });
 

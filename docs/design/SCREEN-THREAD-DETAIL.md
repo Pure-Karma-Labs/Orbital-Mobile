@@ -97,17 +97,20 @@ The most complex screen. Displays a thread's original post and all nested replie
 | Gap: author → body | `spacing.xs` (4) |
 | Gap: body → media | `spacing.sm` (8) |
 
-### Message Action Bar
+### Reply Arrow
 
-Below each message, visible on tap or always visible (explore both in Figma):
+Each reply row (`ReplyItem`) carries one explicit reply control at the **top-right of its header row** — the same row as the avatar, author name, and timestamp. There is no action bar below the message, no whole-row tap, and no swipe gesture.
 
-| Action | Icon | Color |
-|---|---|---|
-| Reply | ↩️ | `colors.textSecondary` |
-| React | 😀 | `colors.textSecondary` |
-| More | ··· | `colors.textSecondary` |
+| Property | Value |
+|---|---|
+| Glyph | OpenMoji ↩️ (`21A9-FE0F`) at 16pt |
+| Position | Top-right of the header row (avatar · author name · timestamp) |
+| Touch target | 44 × 32pt minimum |
+| Action | Sets the reply context ("Replying to @name" above the composer) and focuses the composer text input, opening the keyboard |
+| Unsynced rows | Still rendered, but dimmed (`opacity` 0.5) and inert while the reply is pending / syncing / failed — so the row does not shift when it syncs |
+| Accessibility | Reads "Reply to [Author], button" |
 
-Touch target: 44 × 32pt per action. Font: `fontSize.sm` (11).
+The avatar / author name / timestamp remain a separate tappable control that opens the block/report action sheet — it reads "Actions for [Author], button" and is disabled on your own rows. The row container itself is not announced as a button.
 
 ## Reply Composer (Fixed at Bottom)
 
@@ -154,10 +157,10 @@ Native `RefreshControl` with `colors.blue` spinner for new replies.
 
 ## Interactions
 
-- **Tap reply action** → Sets reply context, focuses composer input
-- **Swipe right on message** → Quick reply (blue background reveal, haptic at threshold)
+- **Tap reply arrow (↩️, top-right of a reply's header row)** → Sets reply context, focuses composer input (keyboard opens). Dimmed and inert until the reply syncs. This is the only way to reply to a specific message — the reply row as a whole is not tappable, and there is no swipe gesture
+- **Tap avatar / author name / timestamp** → Block/report action sheet (disabled on your own replies)
 - **Tap media** → Opens media lightbox (full screen)
-- **Long press message** → Context menu (copy, reply, react)
+- **Long press reply body** → Native text selection; no reply action fires
 - **Pull down** → Refresh for new replies
 - **Scroll** → Thread scrolls vertically; deeply nested content wraps within its available width
 

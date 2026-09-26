@@ -10,7 +10,7 @@
  * can insert emoji characters from the EmojiPicker.
  */
 
-import React, { useCallback } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 import {
   Text,
   TextInput as RNTextInput,
@@ -81,6 +81,17 @@ export const ReplyComposer = React.memo(function ReplyComposer({
   onCancelUpload,
 }: ReplyComposerProps): React.JSX.Element {
   const theme = useTheme();
+  const inputRef = useRef<RNTextInput>(null);
+
+  // Pressing a reply arrow should land the caret in the composer (#518).
+  // Keyed on the replyTarget OBJECT identity, not its replyId: ThreadDetailScreen's
+  // handleReplyPress builds a fresh object on every press, so pressing the same
+  // row again after dismissing the keyboard re-runs this and re-focuses.
+  // Skipped while `sending`, when the input is not editable.
+  useEffect(() => {
+    if (replyTarget == null || sending) return;
+    inputRef.current?.focus();
+  }, [replyTarget, sending]);
 
   const hasContent = text.trim().length > 0 || (media?.length ?? 0) > 0;
   const canSend = hasContent && !sending;
@@ -247,6 +258,7 @@ export const ReplyComposer = React.memo(function ReplyComposer({
           </TouchableOpacity>
         )}
         <RNTextInput
+          ref={inputRef}
           style={inputStyle}
           value={text}
           onChangeText={onChangeText}

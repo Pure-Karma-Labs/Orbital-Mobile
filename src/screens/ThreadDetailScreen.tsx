@@ -660,7 +660,7 @@ export function ThreadDetailScreen({
           syncStatus={item.reply.syncStatus}
           parentAuthorId={item.parentAuthorId}
           parentAuthorUsername={item.parentAuthorUsername}
-          onPress={handleReplyPress}
+          onReplyPress={handleReplyPress}
           isHighlighted={highlightRef.current === item.reply.id}
         />
       );

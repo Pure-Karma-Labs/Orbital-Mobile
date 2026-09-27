@@ -15,22 +15,26 @@ The most complex screen. Displays a thread's original post and all nested replie
 │                              │
 │ ┌───────────────────────────┐│
 │ │ Level 0: Original Post    ││  ← White bg, gray border
-│ │ Author · 2:45 PM          ││
+│ │ Author · Sep 12, 2:45 PM  ││  ← Absolute, never "5m ago"
 │ │ Post body text here...    ││
 │ │ [📷 Photo Grid]           ││
 │ └───────────────────────────┘│
 │                              │
-│ ┃ Level 1: First reply       │  ← Blue 8% bg, blue border
-│ ┃ ↳ Replying to Author      │
-│ ┃ Reply body text here...   │
-│ ┃                            │
-│    ┃ Level 2: Nested reply   │  ← Purple 8% bg, purple border
-│    ┃ ↳ Replying to Replier   │
+│ ┃ ↳ Replying to @Author      │  ← Tap: jump + highlight
+│ ┃ Replier · Sep 12, 2:47 PM  │  ← Blue 8% bg, blue border
+│ ┃ Reply body text here...    │
+│ ┃ [–] hide 2 replies         │  ← Collapse toggle
+│                              │
+│    ┃ ↳ Replying to @Replier  │  ← Purple 8% bg, purple border
+│    ┃ Nester · Sep 12, 2:51PM │
 │    ┃ More text...            │
-│    ┃                         │
-│       ┃ Level 3: Deeper      │  ← Blue 12% bg, blue border
-│       ┃ ↳ Replying to...    │
-│       ┃ Even more text...   │
+│    ┃ [+] 3 replies           │  ← Collapsed branch
+│                              │
+│       ┃ ↳ Replying to a      │  ← Blue 12% bg, blue border
+│       ┃   hidden reply       │  ← Not touchable, names nobody
+│       ┃ Deeper               │  ← Depth ≥ 2: name line…
+│       ┃ Sep 12, 3:04 PM      │  ← …timestamp on line 2
+│       ┃ Even more text...    │
 │                              │
 ├─────────────────────────────┤
 │  [Type a reply...]    [Send] │  ← Fixed reply composer
@@ -90,12 +94,68 @@ The most complex screen. Displays a thread's original post and all nested replie
 | Element | Spec |
 |---|---|
 | Author name | `fontFamily.bodyBold`, `fontSize.base` (13), `colors.textPrimary` |
-| Timestamp | `fontFamily.mono`, `fontSize.xs` (10), `colors.textTertiary`, `letterSpacing.tight` (0.1) |
-| Reply context | "↳ Replying to [Author]" — `fontFamily.mono`, `fontSize.sm` (11), `colors.textTertiary` |
+| Timestamp | `fontFamily.mono`, `fontSize.xs` (10), `colors.textTertiary`, `letterSpacing.tight` (0.1) — absolute date + time, see Timestamps |
+| Reply context | "↳ Replying to @[Author]" — `fontFamily.mono`, `fontSize.xs` (10); `colors.blue` when it is a jump control, `colors.textTertiary` for the untouchable "earlier reply" / "hidden reply" variants |
+| Collapse toggle | "[–] hide N replies" / "[+] N replies" — `fontFamily.mono`, `fontSize.xs` (10), `colors.textTertiary` |
 | Body text | `fontFamily.body`, `fontSize.base` (13), `colors.textPrimary`, `lineHeight.relaxed` (1.5) |
 | Media | Photo grid below text (see SCREEN-MEDIA-GALLERY for grid layouts) |
 | Gap: author → body | `spacing.xs` (4) |
 | Gap: body → media | `spacing.sm` (8) |
+
+### Timestamps
+
+Both the original post and every reply show an **absolute** date + time. Nothing in the thread reads "5m ago" — relative times made an old reply and a fresh one look alike once a thread ran over days.
+
+| Property | Value |
+|---|---|
+| Current year | "Sep 12, 3:04 PM" |
+| Past years | "Sep 12, 2025, 3:04 PM" |
+| Source | Shared `src/utils/formatPostTimestamp.ts` — one visible formatter plus its spelled-out screen-reader variant, used by both `ThreadHeader` and `ReplyItem`, so the two can never drift apart |
+| Style | `fontFamily.mono`, `fontSize.xs` (10), `colors.textTertiary`, `letterSpacing.tight` (0.1) |
+| Depth 0–1 (Levels 1–2) | Inline on the header row, right of the author name |
+| Depth ≥ 2 (Level 3 and deeper) | Second line under the author name (still inside the author control) — an indented row keeps the name readable at 375pt instead of truncating it to fit the time |
+| Accessibility | The author control's label carries the long form: "Actions for [Author], posted September 12 at 3:04 PM" |
+
+`depth` here is the `ReplyItem` prop, not the visual level: depth 0 is a top-level reply (Level 1 in the layout mock), so the second line starts at Level 3. The original post always shows its timestamp inline.
+
+### Reply Context Line (Jump Control)
+
+The "↳ Replying to @[Author]" line is the row's first line, above the header row, and it is a `TouchableOpacity` whenever the parent reply is loaded and on screen. Pressing it scrolls the list to the parent row and briefly highlights it — the same highlight a notification deep link uses.
+
+| Property | Value |
+|---|---|
+| Text | "↳ Replying to @[Author]" — `fontFamily.mono`, `fontSize.xs` (10), `colors.blue` (the untouchable variants stay `colors.textTertiary`, so colour alone distinguishes a jumpable line) |
+| Position | First line of the reply row, directly above the header row (avatar · author name · timestamp) |
+| Touch target | Full line width × 32pt frame + `hitSlop` `{top: 8, bottom: 8, left: 0, right: 0}` = 48pt effective height. The frame holds an 8pt (`spacing.sm`) margin below it so the bottom band lands in empty space instead of on the author block |
+| Action | Scrolls the list to the parent row and briefly highlights it |
+| Accessibility | `accessibilityRole="button"`, label "Go to [Author]'s reply" — no `@`, since the label is spoken; the visible text keeps it. On arrival the screen announces "Showing reply from [Author]" (jump and deep link only — a landing needs no announcement) |
+
+The author control directly below it drops its `hitSlop.top` to 0 for exactly this reason: any top slop there would reach up under the context line, and a near-miss below the line would open the Block/Report sheet instead of jumping. (It keeps its usual 4pt when there is no jump control above — a top-level reply, or the untouchable variants.) A miss on this line must never open an action sheet.
+
+**Parent states** (computed in `replyTree.ts`, from the loaded tree — never from the row alone):
+
+| `parentState` | Line | Touchable |
+|---|---|---|
+| `none` | No context line — this is a top-level reply | — |
+| `jumpable` | "↳ Replying to @[Author]" — names the parent | Yes — jumps to the parent row |
+| `orphan` | "↳ Replying to an earlier reply" | No — the parent is not loaded (a later page, or deleted) |
+| `hidden` | "↳ Replying to a hidden reply" | No — the parent's author is blocked; the line never names them |
+
+### Collapse / Expand
+
+A reply with visible descendants renders a footer control below its body: `[–] hide N replies` when expanded, `[+] N replies` when collapsed. Collapsing skips the row's whole subtree in the list; the row itself stays.
+
+| Property | Value |
+|---|---|
+| Label | "[–] hide N replies" (expanded) / "[+] N replies" (collapsed); singular for one ("hide 1 reply") |
+| Type | `fontFamily.mono`, `fontSize.xs` (10), `colors.textTertiary` |
+| Position | Below the reply body and its media, inside the reply row |
+| Touch target | `minWidth` 44 × 32pt frame + 8pt vertical `hitSlop` = 44 × 48pt effective, with an 8pt (`spacing.sm`) top margin so the upper band clears the media gallery / link preview above |
+| Shown when | The row has at least one **visible** descendant. N counts the row's whole subtree with blocked authors excluded — a nested collapse does not reduce it, so the number says how much this toggle is responsible for, not how many rows are painted right now |
+| Persistence | Per-screen-session only. Collapse state is **not** persisted and resets when the screen unmounts |
+| Original post | Never collapsible — `ThreadHeader` carries no toggle |
+| Deep link | A deep link into a collapsed branch expands its ancestors so the target row is on screen |
+| Accessibility | `accessibilityRole="button"`, `accessibilityState={{ expanded }}`, label "Show N replies to [Author]" / "Hide N replies to [Author]" (the display name, no `@` — it is spoken, not read) |
 
 ### Reply Arrow
 
@@ -110,7 +170,7 @@ Each reply row (`ReplyItem`) carries one explicit reply control at the **top-rig
 | Unsynced rows | Still rendered, but dimmed (`opacity` 0.5) and inert while the reply is pending / syncing / failed — so the row does not shift when it syncs |
 | Accessibility | Reads "Reply to [Author], button" |
 
-The avatar / author name / timestamp remain a separate tappable control that opens the block/report action sheet — it reads "Actions for [Author], posted [time], button" (the timestamp lives inside the control, so the label carries it) and is disabled on your own rows. The row container itself is not announced as a button.
+The avatar / author name / timestamp remain a separate tappable control that opens the block/report action sheet — it reads "Actions for [Author], posted September 12 at 3:04 PM, button" (the timestamp lives inside the control, so the label carries it in long form) and is disabled on your own rows. Its `hitSlop` drops its top component to 0 under a jump control, so it cannot steal a tap aimed at that control. The row container itself is not announced as a button.
 
 ## Reply Composer (Fixed at Bottom)
 
@@ -158,6 +218,8 @@ Native `RefreshControl` with `colors.blue` spinner for new replies.
 ## Interactions
 
 - **Tap reply arrow (↩️, top-right of a reply's header row)** → Sets reply context, focuses composer input (keyboard opens). Dimmed and inert until the reply syncs. This is the only way to reply to a specific message — the reply row as a whole is not tappable, and there is no swipe gesture
+- **Tap the "↳ Replying to @name" context line** → Scrolls to the parent reply and briefly highlights it. Only when the parent is loaded and visible (`jumpable`); the "earlier reply" and "hidden reply" variants are plain text
+- **Tap the collapse toggle ([–] / [+], below a reply's body)** → Hides or shows that reply's subtree for this screen session — not persisted, and never offered on the original post
 - **Tap avatar / author name / timestamp** → Block/report action sheet (disabled on your own replies)
 - **Tap media** → Opens media lightbox (full screen)
 - **Long press reply body** → Native text selection; no reply action fires
@@ -168,11 +230,11 @@ Native `RefreshControl` with `colors.blue` spinner for new replies.
 
 **Realistic sample for Figma mockup:**
 
-- **Original post (Level 0):** "Has anyone tried the new farmer's market on Oak Street? Thinking of going this Saturday." — Mom, 10:30 AM
-- **Reply (Level 1):** "Yes! The honey vendor is amazing. Get the wildflower variety." — Sarah, 10:45 AM
-- **Reply (Level 2):** "Good call, I'll add it to the list. How's parking?" — Mom, 11:02 AM
-- **Reply (Level 3):** "Street parking on Elm is free on weekends. Get there before 10." — Alex, 11:15 AM
-- **Reply (Level 2):** "They also have fresh bread on Saturdays only." — Dad, 11:30 AM
+- **Original post (Level 0):** "Has anyone tried the new farmer's market on Oak Street? Thinking of going this Saturday." — Mom, Sep 12, 10:30 AM
+- **Reply (Level 1):** "Yes! The honey vendor is amazing. Get the wildflower variety." — Sarah, Sep 12, 10:45 AM
+- **Reply (Level 2):** "Good call, I'll add it to the list. How's parking?" — Mom, Sep 12, 11:02 AM
+- **Reply (Level 3):** "Street parking on Elm is free on weekends. Get there before 10." — Alex, Sep 12, 11:15 AM (depth 2 — timestamp on its own second line)
+- **Reply (Level 2):** "They also have fresh bread on Saturdays only." — Dad, Sep 12, 11:30 AM
 
 ## Light + Dark Mode
 

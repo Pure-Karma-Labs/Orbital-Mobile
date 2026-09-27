@@ -33,6 +33,7 @@ import {
   Text,
   TouchableOpacity,
   View,
+  type LayoutChangeEvent,
   type ListRenderItemInfo,
   type TextStyle,
   type ViewStyle,
@@ -66,6 +67,7 @@ import { OrbitalKeyboardAvoidingView } from '../components/OrbitalKeyboardAvoidi
 import { AsciiSection } from '../components/AsciiSeparator';
 import { ThreadHeader } from './threadDetail/ThreadHeader';
 import { ReplyItem } from './threadDetail/ReplyItem';
+import { useReplyFocus, makeExpandAncestors } from './threadDetail/useReplyFocus';
 import { ReplyComposer, type ReplyTarget } from './threadDetail/ReplyComposer';
 import { EmojiPicker } from '../components/EmojiPicker';
 import type { Reply, Thread } from '../types/store';
@@ -93,10 +95,15 @@ type ReplyRow = {
   reply: Reply;
   /** Display depth from the tree, never the stored `depth` hint (#821) */
   depth: number;
+  /** Normalized parent id — present even when the parent is not loaded */
+  parentId: string | null;
   parentState: ParentState;
   /** Parent author, carried only when the parent is loaded and visible */
   parentAuthorId: string | null;
   parentAuthorUsername: string | null;
+  /** Rendered descendants (blocked authors excluded) — drives the toggle */
+  visibleDescendants: number;
+  collapsed: boolean;
 };
 
 /**
@@ -105,6 +112,7 @@ type ReplyRow = {
  * pagination would stall; the loop keeps going, but never unbounded.
  */
 const MAX_FOLLOW_UP_PAGES = 5;
+
 
 // ---------------------------------------------------------------------------
 // Empty replies state
@@ -172,10 +180,41 @@ export function ThreadDetailScreen({
     return ids.map((id) => allReplies[id]).filter((r): r is Reply => r != null);
   }, [allReplies, replyIdsByThread, threadId]);
 
+  /**
+   * Collapsed subtrees, per screen session — deliberately NOT persisted and
+   * NOT in the store. Held as an immutable Set: the rows memo keys on its
+   * identity, so every update goes through the functional setter and returns a
+   * NEW Set (or, when nothing changed, the SAME one — see `expandAncestors`,
+   * which relies on that bail-out to avoid a resolve/render loop).
+   */
+  const [collapsedIds, setCollapsedIds] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
+  );
+
+  /**
+   * The full tree, independent of blocking and collapse. Kept separate from
+   * the rows so `byId` survives for ancestor walks on rows that are currently
+   * collapsed away (and so toggling collapse does not rebuild the tree).
+   */
+  const tree = useMemo(() => {
+    try {
+      return buildReplyTree(threadReplies);
+    } catch {
+      return null;
+    }
+  }, [threadReplies]);
+
+  const treeRef = useRef(tree);
+  treeRef.current = tree;
+
   const replyRows = useMemo((): ReplyRow[] => {
     try {
-      const { nodes } = buildReplyTree(threadReplies);
-      return visibleRows(nodes, { hiddenAuthorIds: blockedSet }).map((row) => {
+      if (!tree) throw new Error('no tree');
+      const { nodes } = tree;
+      return visibleRows(nodes, {
+        hiddenAuthorIds: blockedSet,
+        collapsedIds,
+      }).map((row) => {
         // Only a 'jumpable' parent may be named: 'hidden' means the author is
         // blocked, and naming them would put a blocked username back on screen.
         const parent =
@@ -185,9 +224,12 @@ export function ThreadDetailScreen({
         return {
           reply: row.reply,
           depth: row.depth,
+          parentId: row.parentId,
           parentState: row.parentState,
           parentAuthorId: parent?.authorId ?? null,
           parentAuthorUsername: parent?.authorUsername ?? null,
+          visibleDescendants: row.visibleDescendants,
+          collapsed: row.collapsed,
         };
       });
     } catch {
@@ -201,12 +243,25 @@ export function ThreadDetailScreen({
       return visible.map((r) => ({
         reply: r,
         depth: 0,
+        parentId: r.parentReplyId ?? null,
         parentState: (r.parentReplyId ? 'orphan' : 'none') as ParentState,
         parentAuthorId: null,
         parentAuthorUsername: null,
+        // A degraded flat list has no subtrees, so nothing is collapsible.
+        visibleDescendants: 0,
+        collapsed: false,
       }));
     }
-  }, [threadReplies, allReplies, blockedSet]);
+  }, [tree, threadReplies, allReplies, blockedSet, collapsedIds]);
+
+  // Render-synced mirrors for the async pagination loop: it runs across
+  // awaits, where the values captured in its closure are already stale.
+  const renderedCountRef = useRef(0);
+  renderedCountRef.current = replyRows.length;
+  const collapsedRef = useRef<ReadonlySet<string>>(collapsedIds);
+  collapsedRef.current = collapsedIds;
+  const blockedRef = useRef<ReadonlySet<string>>(blockedSet);
+  blockedRef.current = blockedSet;
 
   // Local state
   const [loading, setLoading] = useState(true);
@@ -298,116 +353,88 @@ export function ThreadDetailScreen({
   // ---------------------------------------------------------------------------
 
   const listRef = useRef<FlatList<ReplyRow>>(null);
-  const highlightRef = useRef<string | null>(targetReplyId ?? null);
-  const scrollAttemptedRef = useRef(false);
-  const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const highlightClearRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const retryClearRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const retryCountRef = useRef(0);
   const mountedRef = useRef(true);
-  const workingTargetRef = useRef<string | null>(null);
-  const [highlightTick, setHighlightTick] = useState(0);
 
-  // Centralized cleanup — cancels all pending scroll/highlight timeouts
-  const clearAllScrollTimeouts = useCallback(() => {
-    if (scrollTimeoutRef.current) {
-      clearTimeout(scrollTimeoutRef.current);
-      scrollTimeoutRef.current = undefined;
-    }
-    if (highlightClearRef.current) {
-      clearTimeout(highlightClearRef.current);
-      highlightClearRef.current = undefined;
-    }
-    if (retryClearRef.current) {
-      clearTimeout(retryClearRef.current);
-      retryClearRef.current = undefined;
-    }
-    retryCountRef.current = 0;
+  /**
+   * Header height, fed to the focus fallback. VirtualizedList's
+   * `averageItemLength * index` estimate measures CELLS only, so without this
+   * the fallback offset lands a whole original post short. Only committed when
+   * it actually moves — ThreadHeader relayouts as its media and link preview
+   * paint, and each commit re-renders the list.
+   */
+  const [headerHeight, setHeaderHeight] = useState(0);
+  const handleHeaderLayout = useCallback((event: LayoutChangeEvent) => {
+    const next = event.nativeEvent.layout.height;
+    setHeaderHeight((prev) => (Math.abs(prev - next) > 1 ? next : prev));
   }, []);
 
-  // Deep-link scroll: capture targetReplyId into workingTargetRef and set up
-  // a safety timeout. Uses scrollAttemptedRef as the idempotency guard —
-  // does NOT call navigation.setParams to avoid circular dependency.
-  useEffect(() => {
-    if (!targetReplyId || scrollAttemptedRef.current) return;
+  const handleToggleCollapse = useCallback((id: string) => {
+    setCollapsedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
 
-    // Capture into working ref for timeout/callback use
-    clearAllScrollTimeouts();
-    workingTargetRef.current = targetReplyId;
-    highlightRef.current = targetReplyId;
-    scrollAttemptedRef.current = false;
-    retryCountRef.current = 0;
-    setHighlightTick(n => n + 1);
-
-    // Safety timeout: give up after 10s
-    scrollTimeoutRef.current = setTimeout(() => {
-      if (!mountedRef.current) return;
-      workingTargetRef.current = null;
-      scrollAttemptedRef.current = true;
-      highlightRef.current = null;
-      setHighlightTick(n => n + 1);
-    }, 10000);
-
-    return () => {
-      clearAllScrollTimeouts();
-      scrollAttemptedRef.current = false;
-    };
-  }, [targetReplyId, clearAllScrollTimeouts]);
-
-  const handleContentSizeChange = useCallback(() => {
-    if (!mountedRef.current) return;
-    const target = workingTargetRef.current;
-    if (!target || scrollAttemptedRef.current || !listRef.current) return;
-    const idx = replyRows.findIndex(r => r.reply.id === target);
-    if (idx === -1) return;
-
-    scrollAttemptedRef.current = true;
-    if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
-    scrollTimeoutRef.current = undefined;
-
-    listRef.current.scrollToIndex({ index: idx, animated: true, viewPosition: 0.3 });
-
-    // Trigger highlight and clear after 2 seconds
-    highlightRef.current = target;
-    setHighlightTick(n => n + 1);
-    highlightClearRef.current = setTimeout(() => {
-      if (!mountedRef.current) return;
-      highlightRef.current = null;
-      workingTargetRef.current = null;
-      setHighlightTick(n => n + 1);
-    }, 2000);
-  }, [replyRows]);
-
-  const handleScrollToIndexFailed = useCallback(
-    (info: { index: number; averageItemLength: number }) => {
-      if (!mountedRef.current) return;
-      if (retryCountRef.current >= 3) {
-        workingTargetRef.current = null;
-        scrollAttemptedRef.current = true;
-        highlightRef.current = null;
-        setHighlightTick(n => n + 1);
-        return;
-      }
-      retryCountRef.current++;
-
-      listRef.current?.scrollToOffset({
-        offset: info.averageItemLength * info.index,
-        animated: true,
-      });
-
-      // Clear previous retry timeout before setting new one
-      if (retryClearRef.current) clearTimeout(retryClearRef.current);
-      retryClearRef.current = setTimeout(() => {
-        if (!mountedRef.current) return;
-        listRef.current?.scrollToIndex({
-          index: info.index,
-          animated: true,
-          viewPosition: 0.3,
-        });
-      }, 200);
-    },
+  /**
+   * Expand every collapsed ancestor of a focus target. Returns the SAME set
+   * when nothing was collapsed, so React bails out and the focus hook's
+   * resolve effect does not re-run on its own output.
+   */
+  const expandAncestors = useMemo(
+    () => makeExpandAncestors(() => treeRef.current?.byId ?? null, setCollapsedIds),
     [],
   );
+
+  const {
+    requestFocus,
+    cancelFocus,
+    highlightedId,
+    onContentSizeChange,
+    onScrollToIndexFailed,
+  } = useReplyFocus({
+      listRef,
+      rows: replyRows,
+      expandAncestors,
+      headerHeight,
+    });
+
+  /**
+   * Deep link from a push-notification tap. Keyed on the param, not on a
+   * one-shot boolean, so a second notification for a DIFFERENT reply while the
+   * screen is mounted still focuses — and does NOT call
+   * `navigation.setParams`, which would re-enter this effect.
+   */
+  const deepLinkRequestedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!targetReplyId) return;
+    if (deepLinkRequestedRef.current === targetReplyId) return;
+    deepLinkRequestedRef.current = targetReplyId;
+    requestFocus(targetReplyId, { source: 'deeplink' });
+  }, [targetReplyId, requestFocus]);
+
+  const handleParentPress = useCallback(
+    (parentId: string) => {
+      requestFocus(parentId, { source: 'jump' });
+    },
+    [requestFocus],
+  );
+
+  /**
+   * A params-in-place navigate to another thread keeps this screen — and all
+   * of this state — mounted (the same hazard paginationThreadRef guards). A
+   * collapsed id, a consumed deep link or an in-flight focus all belong to the
+   * thread that is going away.
+   */
+  const focusThreadRef = useRef(threadId);
+  useEffect(() => {
+    if (focusThreadRef.current === threadId) return;
+    focusThreadRef.current = threadId;
+    setCollapsedIds((prev) => (prev.size === 0 ? prev : new Set<string>()));
+    deepLinkRequestedRef.current = null;
+    cancelFocus();
+  }, [threadId, cancelFocus]);
 
   // ---------------------------------------------------------------------------
   // Keyboard coordination
@@ -572,12 +599,11 @@ export function ThreadDetailScreen({
     fetchData();
     return () => {
       mountedRef.current = false;
-      clearAllScrollTimeouts();
       // Mark viewed again on cleanup — captures replies streamed while reading
       markThreadViewed(threadId);
       setActiveThread(null);
     };
-  }, [threadId, setActiveThread, markThreadViewed, fetchData, clearAllScrollTimeouts]);
+  }, [threadId, setActiveThread, markThreadViewed, fetchData]);
 
   // Track which conversation the user is viewing (for foreground push suppression)
   const conversationId = thread?.conversationId;
@@ -620,12 +646,19 @@ export function ThreadDetailScreen({
           conversationId,
           offsetUsed > 0 ? offsetUsed : undefined,
         );
+        const renderedBefore = renderedCountRef.current;
         applyRepliesPage(offsetUsed, result);
-        // Stop at the end of the thread, or as soon as the list actually grew:
-        // new rows extend the content, so onEndReached fires again on its own.
-        // A page of nothing but already-known (or undecryptable) rows does not,
-        // which is what this loop exists to get past.
-        if (!hasMoreRef.current || result.newIdCount > 0) break;
+        if (!hasMoreRef.current) break;
+        // Stop as soon as the list actually GREW: new rendered rows extend the
+        // content, so onEndReached fires again on its own. Two things break
+        // that equivalence — new ids can land inside a collapsed subtree, or
+        // belong to a blocked author. Either way the content length is
+        // unchanged and onEndReached will never re-fire, so while a filter is
+        // active we require real rendered growth before trusting newIdCount
+        // and otherwise keep paging to the cap (#843 review).
+        const filtersActive = collapsedRef.current.size > 0 || blockedRef.current.size > 0;
+        const renderedGrew = renderedCountRef.current > renderedBefore;
+        if (result.newIdCount > 0 && (renderedGrew || !filtersActive)) break;
         if (!mountedRef.current) break;
       }
     } catch {
@@ -724,6 +757,14 @@ export function ThreadDetailScreen({
             }
           }
         }
+
+        // Land on the reply just sent (#821). Issued AFTER the media reparent
+        // loop on purpose: those rows are what make the gallery render, and
+        // the landing window re-resolves on each content-size change, so the
+        // row stays in view once the gallery paints. The keyboard stays up.
+        if (mountedRef.current) {
+          requestFocus(reply.id, { source: 'landing' });
+        }
       } catch (e) {
         // A self-cancel raises no Alert. The composer text, the selected media
         // and the reply target are all left untouched (the reset block above
@@ -779,7 +820,7 @@ export function ThreadDetailScreen({
         if (mountedRef.current) setSending(false);
       }
     },
-    [thread, threadId, userId, username, replyTarget, selectedMedia, clearMedia, uploadBatch, releaseUploadCache],
+    [thread, threadId, userId, username, replyTarget, selectedMedia, clearMedia, uploadBatch, releaseUploadCache, requestFocus],
   );
 
   // ---------------------------------------------------------------------------
@@ -800,33 +841,64 @@ export function ThreadDetailScreen({
           createdAt={item.reply.createdAt}
           syncStatus={item.reply.syncStatus}
           parentState={item.parentState}
+          parentId={item.parentId}
           parentAuthorId={item.parentAuthorId}
           parentAuthorUsername={item.parentAuthorUsername}
           onReplyPress={handleReplyPress}
-          isHighlighted={highlightRef.current === item.reply.id}
+          onParentPress={handleParentPress}
+          visibleDescendants={item.visibleDescendants}
+          collapsed={item.collapsed}
+          onToggleCollapse={handleToggleCollapse}
+          isHighlighted={highlightedId === item.reply.id}
         />
       );
     },
-    [handleReplyPress, userId, thread?.conversationId],
+    [
+      handleReplyPress,
+      handleParentPress,
+      handleToggleCollapse,
+      highlightedId,
+      userId,
+      thread?.conversationId,
+    ],
   );
 
   const keyExtractor = useCallback((item: ReplyRow) => item.reply.id, []);
 
+  /**
+   * `extraData` must be a PRIMITIVE: VirtualizedList compares it by identity,
+   * so a Set or an array would re-render every cell on every commit. Collapse
+   * state is folded in because it changes a row's rendered footer without
+   * changing the row object for rows that stayed visible.
+   */
+  const collapsedKey = useMemo(
+    () => Array.from(collapsedIds).sort().join(','),
+    [collapsedIds],
+  );
+  const listExtraData = useMemo(
+    () => `${highlightedId ?? ''}|${collapsedKey}`,
+    [highlightedId, collapsedKey],
+  );
+
   const listHeader = useMemo(() => {
     if (!thread) return null;
     return (
-      <ThreadHeader
-        threadId={threadId}
-        title={thread.title}
-        body={thread.body}
-        authorUsername={thread.authorUsername}
-        authorId={thread.authorId}
-        groupId={thread.conversationId}
-        currentUserId={userId}
-        createdAt={thread.createdAt}
-      />
+      // onLayout wrapper: the header's height is the offset correction the
+      // scroll fallback needs, and only this wrapper can measure it.
+      <View onLayout={handleHeaderLayout}>
+        <ThreadHeader
+          threadId={threadId}
+          title={thread.title}
+          body={thread.body}
+          authorUsername={thread.authorUsername}
+          authorId={thread.authorId}
+          groupId={thread.conversationId}
+          currentUserId={userId}
+          createdAt={thread.createdAt}
+        />
+      </View>
     );
-  }, [thread, threadId, userId]);
+  }, [thread, threadId, userId, handleHeaderLayout]);
 
   const listFooter = useMemo(() => {
     if (loadingMore) {
@@ -919,9 +991,15 @@ export function ThreadDetailScreen({
                 />
               }
               {...scrollProps}
+              // AFTER the spread on purpose. usePullToRefresh only supplies
+              // onScroll + scrollEventThrottle today, but if it ever grows an
+              // onScrollBeginDrag this must still win: once the user is
+              // dragging, a landing re-resolve would yank the list away from
+              // their thumb.
+              onScrollBeginDrag={cancelFocus}
               onEndReached={handleEndReached}
               onEndReachedThreshold={0.3}
-              onContentSizeChange={handleContentSizeChange}
+              onContentSizeChange={onContentSizeChange}
               // NO maintainVisibleContentPosition here, deliberately. Tree order
               // does insert mid-list, but RN 0.82.1's VirtualizedList adds +1 to
               // minIndexForVisible whenever a ListHeaderComponent exists, so even
@@ -930,8 +1008,8 @@ export function ThreadDetailScreen({
               // MediaGallery load late), and the anchor then scrolls the original
               // post off screen on open — a worse bug than the one this would fix.
               // Revisit only with on-device verification (#821).
-              onScrollToIndexFailed={handleScrollToIndexFailed}
-              extraData={highlightTick}
+              onScrollToIndexFailed={onScrollToIndexFailed}
+              extraData={listExtraData}
               initialNumToRender={20}
               maxToRenderPerBatch={10}
               windowSize={5}

@@ -17,6 +17,7 @@ import { MediaLightbox } from '../../components/MediaLightbox';
 import { useMediaForThread } from '../../stores';
 import { useAuthorActions } from '../../hooks/useAuthorActions';
 import { useDisplayName } from '../../hooks/useDisplayName';
+import { formatPostTimestamp, formatPostTimestampA11y } from '../../utils/formatPostTimestamp';
 
 export interface ThreadHeaderProps {
   threadId: string;
@@ -27,27 +28,6 @@ export interface ThreadHeaderProps {
   groupId: string;
   currentUserId: string | null;
   createdAt: number;
-}
-
-/** Format a timestamp as a relative or absolute time string */
-function formatTimestamp(timestamp: number): string {
-  const now = Date.now();
-  const diffMs = now - timestamp;
-  const diffMin = Math.floor(diffMs / 60000);
-
-  if (diffMin < 1) return 'just now';
-  if (diffMin < 60) return `${diffMin}m ago`;
-
-  const diffHours = Math.floor(diffMin / 60);
-  if (diffHours < 24) return `${diffHours}h ago`;
-
-  const date = new Date(timestamp);
-  return date.toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
 }
 
 export const ThreadHeader = React.memo(function ThreadHeader({
@@ -106,6 +86,10 @@ export const ThreadHeader = React.memo(function ThreadHeader({
     fontSize: theme.typography.fontSize.base,
     color: theme.colors.textPrimary,
     marginLeft: theme.spacing.sm,
+    // The name yields, the date does not: a display-name fallback can be a
+    // 64-char user id, and an absolute timestamp is always long enough that
+    // an unshrinkable name would push it off screen entirely (#843 review).
+    flexShrink: 1,
   };
 
   const timestampStyle: TextStyle = {
@@ -114,6 +98,7 @@ export const ThreadHeader = React.memo(function ThreadHeader({
     color: theme.colors.textTertiary,
     letterSpacing: theme.typography.letterSpacing.tight,
     marginLeft: theme.spacing.sm,
+    flexShrink: 0,
   };
 
   const titleStyle: TextStyle = {
@@ -140,11 +125,15 @@ export const ThreadHeader = React.memo(function ThreadHeader({
         activeOpacity={isSelf ? 1 : 0.7}
         disabled={isSelf}
         accessibilityRole={isSelf ? undefined : 'button'}
-        accessibilityLabel={isSelf ? undefined : `Actions for ${displayName}`}
+        // The timestamp lives inside this control, so a screen reader only
+        // reaches it through the label (#821).
+        accessibilityLabel={
+          isSelf ? undefined : `Actions for ${displayName}, posted ${formatPostTimestampA11y(createdAt)}`
+        }
       >
         <Avatar name={displayName} size={28} {...avatarProps} />
-        <EmojiText style={authorTextStyle}>{displayName}</EmojiText>
-        <Text style={timestampStyle}>{formatTimestamp(createdAt)}</Text>
+        <EmojiText style={authorTextStyle} numberOfLines={1}>{displayName}</EmojiText>
+        <Text style={timestampStyle}>{formatPostTimestamp(createdAt)}</Text>
       </TouchableOpacity>
       {title != null && title.length > 0 && (
         <EmojiText style={titleStyle} selectable>{title}</EmojiText>

@@ -349,19 +349,41 @@ const fakeReplies = [
 // first place — see the warm-up in beforeAll below.
 let currentRenderer: ReactTestRenderer | null = null;
 
-async function renderScreen(): Promise<ReactTestRenderer> {
+/** The screen element, with optional extra route params (e.g. targetReplyId). */
+function screenElement(extraParams: Record<string, unknown> = {}): React.ReactElement {
+  const route =
+    Object.keys(extraParams).length === 0
+      ? mockRoute
+      : { ...mockRoute, params: { ...mockRoute.params, ...extraParams } };
+  return React.createElement(
+    ThemeProvider,
+    { colorSchemeOverride: 'light' },
+    React.createElement(ThreadDetailScreen, {
+      navigation: mockNavigation as unknown as React.ComponentProps<typeof ThreadDetailScreen>['navigation'],
+      route: route as unknown as React.ComponentProps<typeof ThreadDetailScreen>['route'],
+    }),
+  );
+}
+
+/** Re-render in place with new route params — a params-in-place navigate. */
+async function updateScreen(
+  renderer: ReactTestRenderer,
+  extraParams: Record<string, unknown>,
+): Promise<void> {
+  await act(async () => {
+    renderer.update(screenElement(extraParams));
+  });
+  await act(async () => {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+async function renderScreen(
+  extraParams: Record<string, unknown> = {},
+): Promise<ReactTestRenderer> {
   let renderer!: ReactTestRenderer;
   await act(async () => {
-    renderer = create(
-      React.createElement(
-        ThemeProvider,
-        { colorSchemeOverride: 'light' },
-        React.createElement(ThreadDetailScreen, {
-          navigation: mockNavigation as unknown as React.ComponentProps<typeof ThreadDetailScreen>['navigation'],
-          route: mockRoute as unknown as React.ComponentProps<typeof ThreadDetailScreen>['route'],
-        }),
-      ),
-    );
+    renderer = create(screenElement(extraParams));
     // Register for teardown before the first await: see the note above.
     currentRenderer = renderer;
   });
@@ -2307,5 +2329,385 @@ describe('ThreadDetailScreen — pagination (#821)', () => {
     // screen on open. Deferred to a device-verified change (#821 PR review).
     const renderer = await renderScreen();
     expect(flatList(renderer).props.maintainVisibleContentPosition).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Jump, collapse and post-send landing (#821 PR2)
+//
+// REAL TIMERS, like the rest of this file: renderScreen's flush helper awaits a
+// setTimeout(0), so fake timers deadlock it. That means the 2s highlight clear
+// and the 3s focus windows are never reached here — they belong to
+// useReplyFocus.test.tsx, which owns the timing contract.
+// ---------------------------------------------------------------------------
+
+/** Spy on the imperative scroll the focus hook drives through the list ref. */
+function spyOnScrollToIndex(): jest.SpyInstance {
+  const { FlatList } = require('react-native');
+  return jest
+    .spyOn(FlatList.prototype, 'scrollToIndex')
+    .mockImplementation(() => {});
+}
+
+/** The pressable node for a testID (TouchableOpacity spreads props downward). */
+function pressable(renderer: ReactTestRenderer, testID: string): ReactTestInstance {
+  const tagged = renderer.root.findAll((n) => n.props.testID === testID, { deep: true });
+  const pressables = tagged.filter((n) => typeof n.props.onPress === 'function');
+  expect(pressables.length).toBeGreaterThan(0);
+  return pressables[0];
+}
+
+describe('ThreadDetailScreen — jump to parent (#821)', () => {
+  afterEach(resetThreadsStore);
+
+  it("scrolls to the parent's CURRENT index when the context line is pressed", async () => {
+    const scrollToIndex = spyOnScrollToIndex();
+    try {
+      // Rows render as A, A1, B — so A sits at index 0 and A1's jump must
+      // target 0, not the store position of its parent.
+      mockThreadsStore(
+        {
+          A: makeReply('A', null, now - 3000),
+          B: makeReply('B', null, now - 2000),
+          A1: makeReply('A1', 'A', now - 1000),
+        },
+        ['A', 'B', 'A1'],
+      );
+      const renderer = await renderScreen();
+      expect(listData(renderer).map((r) => r.reply.id)).toEqual(['A', 'A1', 'B']);
+
+      scrollToIndex.mockClear();
+      await act(async () => {
+        pressable(renderer, 'reply-item-A1-parent-jump').props.onPress();
+      });
+
+      expect(scrollToIndex).toHaveBeenCalledWith(
+        expect.objectContaining({ index: 0, viewPosition: 0.3 }),
+      );
+      // ...and the parent is highlighted, via the primitive extraData key.
+      expect(flatList(renderer).props.extraData).toBe('A|');
+    } finally {
+      scrollToIndex.mockRestore();
+    }
+  });
+
+  it('offers no jump control on an orphan row — there is nowhere to go', async () => {
+    mockThreadsStore({ X: makeReply('X', 'unloaded-parent', now - 1000) }, ['X']);
+    const renderer = await renderScreen();
+    expect(
+      renderer.root.findAll((n) => n.props.testID === 'reply-item-X-parent-jump'),
+    ).toHaveLength(0);
+  });
+});
+
+describe('ThreadDetailScreen — collapse (#821)', () => {
+  afterEach(resetThreadsStore);
+
+  it('hides the subtree and switches the toggle to "[+] N"', async () => {
+    mockThreadsStore(
+      {
+        A: makeReply('A', null, now - 4000),
+        A1: makeReply('A1', 'A', now - 3000),
+        A2: makeReply('A2', 'A1', now - 2000),
+        B: makeReply('B', null, now - 1000),
+      },
+      ['A', 'A1', 'A2', 'B'],
+    );
+    const renderer = await renderScreen();
+    expect(listData(renderer).map((r) => r.reply.id)).toEqual(['A', 'A1', 'A2', 'B']);
+
+    await act(async () => {
+      pressable(renderer, 'reply-item-A-collapse-toggle').props.onPress();
+    });
+
+    // The whole contiguous subtree goes, and the siblings stay.
+    expect(listData(renderer).map((r) => r.reply.id)).toEqual(['A', 'B']);
+    const toggle = pressable(renderer, 'reply-item-A-collapse-toggle');
+    expect(toggle.props.accessibilityState).toEqual({ expanded: false });
+    expect(toggle.props.accessibilityLabel).toBe('Show 2 replies to user-2');
+    expect(flatList(renderer).props.extraData).toBe('|A');
+
+    // ...and expanding again restores them.
+    await act(async () => {
+      pressable(renderer, 'reply-item-A-collapse-toggle').props.onPress();
+    });
+    expect(listData(renderer).map((r) => r.reply.id)).toEqual(['A', 'A1', 'A2', 'B']);
+    expect(flatList(renderer).props.extraData).toBe('|');
+  });
+
+  it('offers no toggle on a leaf row', async () => {
+    mockThreadsStore({ A: makeReply('A', null, now - 1000) }, ['A']);
+    const renderer = await renderScreen();
+    expect(
+      renderer.root.findAll((n) => n.props.testID === 'reply-item-A-collapse-toggle'),
+    ).toHaveLength(0);
+  });
+});
+
+describe('ThreadDetailScreen — landing after send (#821)', () => {
+  afterEach(resetThreadsStore);
+
+  it('focuses the CONFIRMED reply id once the row is in the list', async () => {
+    const scrollToIndex = spyOnScrollToIndex();
+    try {
+      // The store already carries the confirmed row (postReply resolves with
+      // 'reply-new', and the real service inserts it before returning).
+      mockThreadsStore(
+        {
+          A: makeReply('A', null, now - 3000),
+          'reply-new': makeReply('reply-new', null, now - 1000, 'user-1'),
+        },
+        ['A', 'reply-new'],
+      );
+      const renderer = await renderScreen();
+      scrollToIndex.mockClear();
+
+      const input = renderer.root.findAll((n) => n.props.testID === 'reply-input');
+      await act(async () => {
+        input[0].props.onChangeText('hello');
+      });
+      const sendBtn = renderer.root.findAll((n) => n.props.testID === 'send-button');
+      await act(async () => {
+        sendBtn[0].props.onPress();
+      });
+      await act(async () => {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(mockPostReply).toHaveBeenCalled();
+      expect(scrollToIndex).toHaveBeenCalledWith(
+        expect.objectContaining({ index: 1, viewPosition: 0.3 }),
+      );
+      expect(flatList(renderer).props.extraData).toBe('reply-new|');
+    } finally {
+      scrollToIndex.mockRestore();
+    }
+  });
+
+  it('requests no landing when the send fails', async () => {
+    const scrollToIndex = spyOnScrollToIndex();
+    try {
+      mockThreadsStore({ A: makeReply('A', null, now - 3000) }, ['A']);
+      mockPostReply.mockRejectedValueOnce(new ValidationError(400, 'nope'));
+      const renderer = await renderScreen();
+      scrollToIndex.mockClear();
+
+      const input = renderer.root.findAll((n) => n.props.testID === 'reply-input');
+      await act(async () => {
+        input[0].props.onChangeText('hello');
+      });
+      const sendBtn = renderer.root.findAll((n) => n.props.testID === 'send-button');
+      await act(async () => {
+        sendBtn[0].props.onPress();
+      });
+      await act(async () => {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(scrollToIndex).not.toHaveBeenCalled();
+      expect(flatList(renderer).props.extraData).toBe('|');
+    } finally {
+      scrollToIndex.mockRestore();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Deep-link focus via route params (#843 review)
+// ---------------------------------------------------------------------------
+
+describe('ThreadDetailScreen — targetReplyId deep link (#821)', () => {
+  afterEach(resetThreadsStore);
+
+  beforeEach(() => {
+    mockThreadsStore(
+      {
+        A: makeReply('A', null, now - 4000),
+        A1: makeReply('A1', 'A', now - 3000),
+        A2: makeReply('A2', 'A1', now - 2000),
+        B: makeReply('B', null, now - 1000),
+      },
+      ['A', 'A1', 'A2', 'B'],
+    );
+  });
+
+  it('scrolls to and highlights the reply named in the route params', async () => {
+    const scrollToIndex = spyOnScrollToIndex();
+    try {
+      const renderer = await renderScreen({ targetReplyId: 'B' });
+      // Rows are A, A1, A2, B — the target is the LAST row, index 3.
+      expect(scrollToIndex).toHaveBeenCalledWith(
+        expect.objectContaining({ index: 3, viewPosition: 0.3 }),
+      );
+      expect(flatList(renderer).props.extraData).toBe('B|');
+    } finally {
+      scrollToIndex.mockRestore();
+    }
+  });
+
+  it('focuses again when a second notification names a different reply', async () => {
+    const scrollToIndex = spyOnScrollToIndex();
+    try {
+      const renderer = await renderScreen({ targetReplyId: 'B' });
+      scrollToIndex.mockClear();
+
+      // A params-in-place navigate: the screen never unmounts, so the
+      // idempotency guard has to be keyed on the param VALUE, not on a
+      // one-shot boolean.
+      await updateScreen(renderer, { targetReplyId: 'A1' });
+
+      expect(scrollToIndex).toHaveBeenCalledWith(
+        expect.objectContaining({ index: 1, viewPosition: 0.3 }),
+      );
+      expect(flatList(renderer).props.extraData).toBe('A1|');
+    } finally {
+      scrollToIndex.mockRestore();
+    }
+  });
+
+  it('expands a collapsed ancestor so the target can be focused', async () => {
+    const scrollToIndex = spyOnScrollToIndex();
+    try {
+      const renderer = await renderScreen();
+
+      // Collapse A: A1 and A2 leave the list entirely.
+      await act(async () => {
+        pressable(renderer, 'reply-item-A-collapse-toggle').props.onPress();
+      });
+      expect(listData(renderer).map((r) => r.reply.id)).toEqual(['A', 'B']);
+      scrollToIndex.mockClear();
+
+      // Deep link into the collapsed branch.
+      await updateScreen(renderer, { targetReplyId: 'A2' });
+
+      expect(listData(renderer).map((r) => r.reply.id)).toEqual(['A', 'A1', 'A2', 'B']);
+      expect(scrollToIndex).toHaveBeenCalledTimes(1);
+      expect(scrollToIndex).toHaveBeenCalledWith(
+        expect.objectContaining({ index: 2, viewPosition: 0.3 }),
+      );
+      expect(flatList(renderer).props.extraData).toBe('A2|');
+    } finally {
+      scrollToIndex.mockRestore();
+    }
+  });
+
+  it('cancels the focus as soon as the user starts dragging', async () => {
+    const renderer = await renderScreen({ targetReplyId: 'B' });
+    expect(flatList(renderer).props.extraData).toBe('B|');
+
+    await act(async () => {
+      flatList(renderer).props.onScrollBeginDrag();
+    });
+    expect(flatList(renderer).props.extraData).toBe('|');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pagination when rows can't render (#843 review)
+// ---------------------------------------------------------------------------
+
+describe('ThreadDetailScreen — pagination under a collapse (#821)', () => {
+  afterEach(resetThreadsStore);
+
+  beforeEach(() => {
+    mockThreadsStore(
+      {
+        A: makeReply('A', null, now - 3000),
+        A1: makeReply('A1', 'A', now - 2000),
+      },
+      ['A', 'A1'],
+    );
+    mockLoadReplies.mockResolvedValue(
+      page({ rawCount: 2, serverIds: ['s1', 's2'], newIdCount: 2, hasMore: true }),
+    );
+  });
+
+  it('stops after one page while nothing is filtered out', async () => {
+    const renderer = await renderScreen();
+    mockLoadReplies.mockClear();
+    await act(async () => {
+      await flatList(renderer).props.onEndReached();
+    });
+    // New ids arrived and nothing can be hiding them, so the content grew and
+    // onEndReached will fire again on its own.
+    expect(mockLoadReplies).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps paging to the cap when a collapse can be swallowing the new rows', async () => {
+    const renderer = await renderScreen();
+    await act(async () => {
+      pressable(renderer, 'reply-item-A-collapse-toggle').props.onPress();
+    });
+    mockLoadReplies.mockClear();
+
+    await act(async () => {
+      await flatList(renderer).props.onEndReached();
+    });
+
+    // newIdCount > 0 every time, but rows landing inside the collapsed subtree
+    // add no rendered content, so onEndReached would never re-fire. The loop
+    // runs to MAX_FOLLOW_UP_PAGES instead of stalling.
+    expect(mockLoadReplies).toHaveBeenCalledTimes(5);
+  });
+
+  it('keeps paging to the cap when a block can be swallowing the new rows', async () => {
+    mockBlockedSet = new Set(['someone-blocked']);
+    const renderer = await renderScreen();
+    mockLoadReplies.mockClear();
+
+    await act(async () => {
+      await flatList(renderer).props.onEndReached();
+    });
+
+    expect(mockLoadReplies).toHaveBeenCalledTimes(5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Params-in-place thread switch (#843 review)
+// ---------------------------------------------------------------------------
+
+describe('ThreadDetailScreen — thread switch resets focus state (#821)', () => {
+  afterEach(resetThreadsStore);
+
+  it('drops collapse state, the consumed deep link and any in-flight focus', async () => {
+    mockThreadsStore(
+      {
+        A: makeReply('A', null, now - 3000),
+        A1: makeReply('A1', 'A', now - 2000),
+      },
+      ['A', 'A1'],
+    );
+    const renderer = await renderScreen({ targetReplyId: 'A1' });
+    await act(async () => {
+      pressable(renderer, 'reply-item-A-collapse-toggle').props.onPress();
+    });
+    expect(listData(renderer).map((r) => r.reply.id)).toEqual(['A']);
+    // Deep-link highlight on A1 (still inside its 2s window, real timers) plus
+    // the collapsed id — both are thread-1 state.
+    expect(flatList(renderer).props.extraData).toBe('A1|A');
+
+    // Same screen instance, different thread: none of that state belongs to
+    // the new thread.
+    await act(async () => {
+      renderer.update(
+        React.createElement(
+          ThemeProvider,
+          { colorSchemeOverride: 'light' },
+          React.createElement(ThreadDetailScreen, {
+            navigation: mockNavigation as unknown as React.ComponentProps<typeof ThreadDetailScreen>['navigation'],
+            route: {
+              ...mockRoute,
+              params: { threadId: 'thread-2', threadTitle: 'Other' },
+            } as unknown as React.ComponentProps<typeof ThreadDetailScreen>['route'],
+          }),
+        ),
+      );
+    });
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(flatList(renderer).props.extraData).toBe('|');
   });
 });

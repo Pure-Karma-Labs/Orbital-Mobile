@@ -19,6 +19,12 @@
  * Replying is an explicit ↩️ arrow at the right of the header row; the body
  * stays `selectable` with nothing competing for the long press, and a tap on
  * a link or an image no longer sets a reply target as a side effect.
+ *
+ * The row has exactly three touch targets (#821), stacked top to bottom with
+ * no overlap: the "↳ Replying to @x" jump control, the author control (block /
+ * report), and the reply arrow — plus the collapse toggle under the body when
+ * the row has descendants. The author control carries NO top slop, so a
+ * near-miss below the context line can never open the Block/Report sheet.
  */
 
 import React, { useCallback, useMemo, useState } from 'react';
@@ -35,6 +41,7 @@ import { useMediaForReply } from '../../stores';
 import { useAuthorActions } from '../../hooks/useAuthorActions';
 import { useContactAvatar } from '../../hooks/useContactAvatar';
 import { useDisplayName } from '../../hooks/useDisplayName';
+import { formatPostTimestamp, formatPostTimestampA11y } from '../../utils/formatPostTimestamp';
 import type { ParentState } from '../../utils/replyTree';
 
 
@@ -58,6 +65,8 @@ export interface ReplyItemProps {
    * - `hidden`   — the parent's author is blocked; never name them.
    */
   parentState: ParentState;
+  /** Parent reply id — only set (and only jumpable) when parentState is 'jumpable' */
+  parentId: string | null;
   /** ID of the parent reply author — only set when parentState is 'jumpable' */
   parentAuthorId: string | null;
   /** Username fallback of the parent reply author — 'jumpable' only */
@@ -68,28 +77,41 @@ export interface ReplyItemProps {
    * and only the explicit arrow control replies (#518).
    */
   onReplyPress: (replyId: string, authorUsername: string, depth: number) => void;
+  /** Called when the "↳ Replying to @x" control is pressed — scrolls to the parent. */
+  onParentPress: (parentId: string) => void;
+  /**
+   * Size of this row's WHOLE subtree, blocked authors excluded. It counts
+   * every descendant, not just the ones currently on screen: a nested
+   * collapse does not reduce it, so "hide 5 replies" stays 5 whether or not a
+   * child of this row is itself collapsed. That is deliberate — the number
+   * tells you how much this toggle is responsible for, not how many rows
+   * happen to be painted right now.
+   */
+  visibleDescendants: number;
+  /** True when this row's subtree is hidden by the collapse toggle. */
+  collapsed: boolean;
+  /** Called when the collapse toggle is pressed. */
+  onToggleCollapse: (replyId: string) => void;
   /** When true, renders a brief highlight overlay (notification deep-link target) */
   isHighlighted?: boolean;
 }
 
-/** Format a timestamp as a relative or absolute time string */
-function formatTimestamp(timestamp: number): string {
-  const now = Date.now();
-  const diffMs = now - timestamp;
-  const diffMin = Math.floor(diffMs / 60000);
-
-  if (diffMin < 1) return 'just now';
-  if (diffMin < 60) return `${diffMin}m ago`;
-
-  const diffHours = Math.floor(diffMin / 60);
-  if (diffHours < 24) return `${diffHours}h ago`;
-
-  const date = new Date(timestamp);
-  return date.toLocaleTimeString('en-US', {
-    hour: 'numeric',
-    minute: '2-digit',
-  });
-}
+/**
+ * Depth at which the timestamp moves to a second line under the author name.
+ *
+ * Measured against the real budget, not guessed. Usable row width is
+ * `W - 16 (left margin) - 24*min(depth,4) (indent) - 3 (border) - 24 (padding)
+ * - 16 (right margin)`, and the single-line header spends a fixed
+ * `20 (avatar) + 4 + 8 + 44 (reply arrow)` on chrome plus the timestamp.
+ * "Sep 12, 3:04 PM" is 15 mono-10 chars ≈ 92pt; a past-year stamp is ≈ 128pt.
+ * What is left for the name at 375pt: d0 148pt (~18 chars), d1 124pt (~15),
+ * d2 100pt (~12), d3 76pt (~9), d4 52pt (~6) — and 8 / 5 / 2 chars once the
+ * stamp carries a year. Depth 0-1 still fit a normal name on one line, so
+ * keeping the denser top of the thread compact is worth it; from depth 2 the
+ * name is being truncated to nothing, so the stamp gets its own line (which
+ * hands the name the full 100-152pt back).
+ */
+const TWO_LINE_TIMESTAMP_DEPTH = 2;
 
 export const ReplyItem = React.memo(function ReplyItem({
   replyId,
@@ -102,9 +124,14 @@ export const ReplyItem = React.memo(function ReplyItem({
   createdAt,
   syncStatus,
   parentState,
+  parentId,
   parentAuthorId,
   parentAuthorUsername,
   onReplyPress,
+  onParentPress,
+  visibleDescendants,
+  collapsed,
+  onToggleCollapse,
   isHighlighted,
 }: ReplyItemProps): React.JSX.Element {
   const theme = useTheme();
@@ -128,6 +155,17 @@ export const ReplyItem = React.memo(function ReplyItem({
     if (!canReply) return;
     onReplyPress(replyId, displayName, depth);
   }, [canReply, onReplyPress, replyId, displayName, depth]);
+
+  const handleParentPress = useCallback(() => {
+    // Mirrors the #749 guard on the arrow: the id is only a valid scroll target
+    // while the parent is loaded and rendered, which is exactly `jumpable`.
+    if (parentState !== 'jumpable' || !parentId) return;
+    onParentPress(parentId);
+  }, [parentState, parentId, onParentPress]);
+
+  const handleToggleCollapse = useCallback(() => {
+    onToggleCollapse(replyId);
+  }, [onToggleCollapse, replyId]);
 
   const handleMediaPress = useCallback((index: number) => {
     setLightboxIndex(index);
@@ -154,6 +192,15 @@ export const ReplyItem = React.memo(function ReplyItem({
   const leftMargin = theme.threadIndent.perLevel * Math.min(depth, 4);
   const isSelf = authorId === currentUserId;
 
+  // Absolute date + time everywhere (#821): "5m ago" on a reply you are
+  // reading three days later tells you nothing, and the thread tree is no
+  // longer chronological, so relative stamps actively mislead.
+  const timestampText = formatPostTimestamp(createdAt);
+  const timestampA11y = formatPostTimestampA11y(createdAt);
+
+  const canCollapse = visibleDescendants > 0;
+  const replyNoun = visibleDescendants === 1 ? 'reply' : 'replies';
+
   const containerStyle: ViewStyle = {
     backgroundColor: depthColor.background,
     borderLeftWidth: 3,
@@ -172,10 +219,20 @@ export const ReplyItem = React.memo(function ReplyItem({
     alignItems: 'center',
   };
 
+  const stackTimestamp = depth >= TWO_LINE_TIMESTAMP_DEPTH;
+
   const authorRowStyle: ViewStyle = {
     flexDirection: 'row',
-    alignItems: 'center',
+    // Stacked: the avatar aligns with the NAME, not with the centre of a
+    // two-line block, so it doesn't float beside the timestamp.
+    alignItems: stackTimestamp ? 'flex-start' : 'center',
     // Yield width to the fixed-size arrow instead of pushing it off-screen.
+    flexShrink: 1,
+    minWidth: 0,
+  };
+
+  const nameColumnStyle: ViewStyle = {
+    marginLeft: theme.spacing.xs,
     flexShrink: 1,
     minWidth: 0,
   };
@@ -206,8 +263,17 @@ export const ReplyItem = React.memo(function ReplyItem({
     fontSize: theme.typography.fontSize.xs,
     color: theme.colors.textTertiary,
     letterSpacing: theme.typography.letterSpacing.tight,
-    marginLeft: theme.spacing.sm,
+    // Stacked, the stamp sits under the name and needs no gutter; inline it
+    // needs one, and must never shrink (a clipped date is worse than a
+    // clipped name, which at least has an avatar next to it).
+    marginLeft: stackTimestamp ? 0 : theme.spacing.sm,
     flexShrink: 0,
+  };
+
+  const stackedAuthorTextStyle: TextStyle = {
+    ...authorTextStyle,
+    // The column owns the gutter now.
+    marginLeft: 0,
   };
 
   const bodyStyle: TextStyle = {
@@ -223,6 +289,47 @@ export const ReplyItem = React.memo(function ReplyItem({
     fontSize: theme.typography.fontSize.xs,
     color: theme.colors.textTertiary,
     marginBottom: theme.spacing.xs,
+  };
+
+  // Jumpable only. 32pt frame (the text itself is ~13pt tall) + 8pt vertical
+  // slop = a 48pt effective target. NO horizontal slop: left slop would hang
+  // outside the card, and right slop would reach across the row.
+  const replyContextButtonStyle: ViewStyle = {
+    minHeight: 32,
+    justifyContent: 'center',
+    // spacing.sm (8), matched to the 8pt bottom hitSlop below. Without it the
+    // slop band would have nothing to land in: the author control starts
+    // immediately underneath, it is the LATER sibling, and the later sibling
+    // wins an overlapping hit — so the bottom slop would be dead, and a tap
+    // 2-6pt under the line would open Block/Report instead of jumping
+    // (PR #843 review).
+    marginBottom: theme.spacing.sm,
+  };
+
+  const jumpableContextStyle: TextStyle = {
+    ...replyContextStyle,
+    color: theme.colors.blue,
+    marginBottom: 0,
+  };
+
+  const collapseToggleStyle: ViewStyle = {
+    // Same sizing rule as the reply arrow: a real frame, not slop. Slop does
+    // not enlarge the visual target and is clipped by overflow on Android.
+    minWidth: 44,
+    minHeight: 32,
+    justifyContent: 'center',
+    alignSelf: 'flex-start',
+    // spacing.sm (8), matched to the 8pt top hitSlop: at xs (4) the band
+    // reached into the bottom of the media gallery / link preview card above,
+    // which are themselves pressable (PR #843 review).
+    marginTop: theme.spacing.sm,
+  };
+
+  const collapseToggleTextStyle: TextStyle = {
+    fontFamily: theme.typography.fontFamily.mono,
+    fontSize: theme.typography.fontSize.xs,
+    color: theme.colors.textTertiary,
+    letterSpacing: theme.typography.letterSpacing.tight,
   };
 
   return (
@@ -242,19 +349,44 @@ export const ReplyItem = React.memo(function ReplyItem({
         />
       )}
       {/*
-        Text only in PR1 — the jump control lands in PR2. 'hidden' deliberately
-        names nobody: the parent's author is blocked, and the old
-        `@${parentDisplayName}` line leaked their username back onto the screen.
+        Only a 'jumpable' parent is touchable — the other two states name no
+        destination. 'hidden' also deliberately names nobody: the parent's
+        author is blocked, and the old `@${parentDisplayName}` line leaked
+        their username back onto the screen.
       */}
-      {parentState !== 'none' && (
+      {parentState === 'jumpable' && parentId ? (
+        <TouchableOpacity
+          style={replyContextButtonStyle}
+          onPress={handleParentPress}
+          // Vertical only. The author control below carries top: 0 slop for
+          // the same reason: these two stack with no gap, and whichever one
+          // reaches into the other would steal its taps — a near-miss here
+          // must never open the Block/Report sheet.
+          hitSlop={{ top: 8, bottom: 8, left: 0, right: 0 }}
+          accessibilityRole="button"
+          // No '@' — this string is SPOKEN. The visible text keeps it.
+          accessibilityLabel={`Go to ${parentDisplayName}'s reply`}
+          testID={`reply-item-${replyId}-parent-jump`}
+        >
+          <EmojiText
+            style={jumpableContextStyle}
+            numberOfLines={1}
+            testID={`reply-item-${replyId}-parent-context`}
+          >
+            {`↳ Replying to @${parentDisplayName}`}
+          </EmojiText>
+        </TouchableOpacity>
+      ) : parentState !== 'none' ? (
+        // Everything that is not a live jump target describes the parent
+        // WITHOUT naming them. 'hidden' means the author is blocked, and
+        // 'jumpable' without a parent id has no destination to offer — in
+        // both cases a name would be a leak or a lie, so neither gets one.
         <EmojiText style={replyContextStyle} testID={`reply-item-${replyId}-parent-context`}>
-          {parentState === 'orphan'
-            ? '↳ Replying to an earlier reply'
-            : parentState === 'hidden'
-              ? '↳ Replying to a hidden reply'
-              : `↳ Replying to @${parentDisplayName}`}
+          {parentState === 'hidden'
+            ? '↳ Replying to a hidden reply'
+            : '↳ Replying to an earlier reply'}
         </EmojiText>
-      )}
+      ) : null}
       <View style={headerRowStyle}>
         {/*
           Two SIBLING touchables. The arrow must never nest inside the author
@@ -271,17 +403,37 @@ export const ReplyItem = React.memo(function ReplyItem({
           // right: 0 — any right slop here reaches into the arrow's frame once
           // the name is long enough to close the gap, so a near-miss left of
           // the arrow would open the Block/Report sheet instead.
-          hitSlop={{ top: 4, bottom: 4, left: 4, right: 0 }}
+          // top: 0 ONLY under a jump control — its 8pt bottom slop sits just
+          // above this row (#821), and the destructive control must lose that
+          // argument by construction. With no jump control above (a top-level
+          // reply, or an orphan/hidden line, which are plain text) there is
+          // nothing to contest, so the author block keeps its 4pt.
+          hitSlop={{
+            top: parentState === 'jumpable' && parentId ? 0 : 4,
+            bottom: 4,
+            left: 4,
+            right: 0,
+          }}
           accessibilityRole={isSelf ? undefined : 'button'}
           // The timestamp is inside this control, so it is invisible to a
-          // screen reader unless the label carries it.
+          // screen reader unless the label carries it. Long form: "3:04 PM"
+          // read out of context is ambiguous, "September 12 at 3:04 PM" is not.
           accessibilityLabel={
-            isSelf ? undefined : `Actions for ${displayName}, posted ${formatTimestamp(createdAt)}`
+            isSelf ? undefined : `Actions for ${displayName}, posted ${timestampA11y}`
           }
         >
           <Avatar name={displayName} size={20} {...avatarProps} />
-          <EmojiText style={authorTextStyle} numberOfLines={1}>{displayName}</EmojiText>
-          <Text style={timestampStyle}>{formatTimestamp(createdAt)}</Text>
+          {stackTimestamp ? (
+            <View style={nameColumnStyle}>
+              <EmojiText style={stackedAuthorTextStyle} numberOfLines={1}>{displayName}</EmojiText>
+              <Text style={timestampStyle}>{timestampText}</Text>
+            </View>
+          ) : (
+            <>
+              <EmojiText style={authorTextStyle} numberOfLines={1}>{displayName}</EmojiText>
+              <Text style={timestampStyle}>{timestampText}</Text>
+            </>
+          )}
         </TouchableOpacity>
         <TouchableOpacity
           style={replyButtonStyle}
@@ -320,6 +472,23 @@ export const ReplyItem = React.memo(function ReplyItem({
           }
           onItemPress={handleMediaPress}
         />
+      )}
+      {canCollapse && (
+        <TouchableOpacity
+          style={collapseToggleStyle}
+          onPress={handleToggleCollapse}
+          hitSlop={{ top: 8, bottom: 8, left: 0, right: 0 }}
+          accessibilityRole="button"
+          accessibilityState={{ expanded: !collapsed }}
+          accessibilityLabel={`${collapsed ? 'Show' : 'Hide'} ${visibleDescendants} ${replyNoun} to ${displayName}`}
+          testID={`reply-item-${replyId}-collapse-toggle`}
+        >
+          <Text style={collapseToggleTextStyle}>
+            {collapsed
+              ? `[+] ${visibleDescendants} ${replyNoun}`
+              : `[–] hide ${visibleDescendants} ${replyNoun}`}
+          </Text>
+        </TouchableOpacity>
       )}
       {mediaItems.length > 0 && (
         <MediaLightbox

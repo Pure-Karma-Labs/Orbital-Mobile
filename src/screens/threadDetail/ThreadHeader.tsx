@@ -86,6 +86,10 @@ export const ThreadHeader = React.memo(function ThreadHeader({
     fontSize: theme.typography.fontSize.base,
     color: theme.colors.textPrimary,
     marginLeft: theme.spacing.sm,
+    // The name yields, the date does not: a display-name fallback can be a
+    // 64-char user id, and an absolute timestamp is always long enough that
+    // an unshrinkable name would push it off screen entirely (#843 review).
+    flexShrink: 1,
   };
 
   const timestampStyle: TextStyle = {
@@ -94,6 +98,7 @@ export const ThreadHeader = React.memo(function ThreadHeader({
     color: theme.colors.textTertiary,
     letterSpacing: theme.typography.letterSpacing.tight,
     marginLeft: theme.spacing.sm,
+    flexShrink: 0,
   };
 
   const titleStyle: TextStyle = {
@@ -127,7 +132,7 @@ export const ThreadHeader = React.memo(function ThreadHeader({
         }
       >
         <Avatar name={displayName} size={28} {...avatarProps} />
-        <EmojiText style={authorTextStyle}>{displayName}</EmojiText>
+        <EmojiText style={authorTextStyle} numberOfLines={1}>{displayName}</EmojiText>
         <Text style={timestampStyle}>{formatPostTimestamp(createdAt)}</Text>
       </TouchableOpacity>
       {title != null && title.length > 0 && (

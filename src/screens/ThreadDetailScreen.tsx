@@ -113,6 +113,7 @@ type ReplyRow = {
  */
 const MAX_FOLLOW_UP_PAGES = 5;
 
+
 // ---------------------------------------------------------------------------
 // Empty replies state
 // ---------------------------------------------------------------------------
@@ -253,6 +254,15 @@ export function ThreadDetailScreen({
     }
   }, [tree, threadReplies, allReplies, blockedSet, collapsedIds]);
 
+  // Render-synced mirrors for the async pagination loop: it runs across
+  // awaits, where the values captured in its closure are already stale.
+  const renderedCountRef = useRef(0);
+  renderedCountRef.current = replyRows.length;
+  const collapsedRef = useRef<ReadonlySet<string>>(collapsedIds);
+  collapsedRef.current = collapsedIds;
+  const blockedRef = useRef<ReadonlySet<string>>(blockedSet);
+  blockedRef.current = blockedSet;
+
   // Local state
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -377,8 +387,13 @@ export function ThreadDetailScreen({
     [],
   );
 
-  const { requestFocus, highlightedId, onContentSizeChange, onScrollToIndexFailed } =
-    useReplyFocus({
+  const {
+    requestFocus,
+    cancelFocus,
+    highlightedId,
+    onContentSizeChange,
+    onScrollToIndexFailed,
+  } = useReplyFocus({
       listRef,
       rows: replyRows,
       expandAncestors,
@@ -405,6 +420,21 @@ export function ThreadDetailScreen({
     },
     [requestFocus],
   );
+
+  /**
+   * A params-in-place navigate to another thread keeps this screen — and all
+   * of this state — mounted (the same hazard paginationThreadRef guards). A
+   * collapsed id, a consumed deep link or an in-flight focus all belong to the
+   * thread that is going away.
+   */
+  const focusThreadRef = useRef(threadId);
+  useEffect(() => {
+    if (focusThreadRef.current === threadId) return;
+    focusThreadRef.current = threadId;
+    setCollapsedIds((prev) => (prev.size === 0 ? prev : new Set<string>()));
+    deepLinkRequestedRef.current = null;
+    cancelFocus();
+  }, [threadId, cancelFocus]);
 
   // ---------------------------------------------------------------------------
   // Keyboard coordination
@@ -616,12 +646,19 @@ export function ThreadDetailScreen({
           conversationId,
           offsetUsed > 0 ? offsetUsed : undefined,
         );
+        const renderedBefore = renderedCountRef.current;
         applyRepliesPage(offsetUsed, result);
-        // Stop at the end of the thread, or as soon as the list actually grew:
-        // new rows extend the content, so onEndReached fires again on its own.
-        // A page of nothing but already-known (or undecryptable) rows does not,
-        // which is what this loop exists to get past.
-        if (!hasMoreRef.current || result.newIdCount > 0) break;
+        if (!hasMoreRef.current) break;
+        // Stop as soon as the list actually GREW: new rendered rows extend the
+        // content, so onEndReached fires again on its own. Two things break
+        // that equivalence — new ids can land inside a collapsed subtree, or
+        // belong to a blocked author. Either way the content length is
+        // unchanged and onEndReached will never re-fire, so while a filter is
+        // active we require real rendered growth before trusting newIdCount
+        // and otherwise keep paging to the cap (#843 review).
+        const filtersActive = collapsedRef.current.size > 0 || blockedRef.current.size > 0;
+        const renderedGrew = renderedCountRef.current > renderedBefore;
+        if (result.newIdCount > 0 && (renderedGrew || !filtersActive)) break;
         if (!mountedRef.current) break;
       }
     } catch {
@@ -954,6 +991,12 @@ export function ThreadDetailScreen({
                 />
               }
               {...scrollProps}
+              // AFTER the spread on purpose. usePullToRefresh only supplies
+              // onScroll + scrollEventThrottle today, but if it ever grows an
+              // onScrollBeginDrag this must still win: once the user is
+              // dragging, a landing re-resolve would yank the list away from
+              // their thumb.
+              onScrollBeginDrag={cancelFocus}
               onEndReached={handleEndReached}
               onEndReachedThreshold={0.3}
               onContentSizeChange={onContentSizeChange}

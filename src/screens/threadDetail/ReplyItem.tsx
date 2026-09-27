@@ -79,7 +79,14 @@ export interface ReplyItemProps {
   onReplyPress: (replyId: string, authorUsername: string, depth: number) => void;
   /** Called when the "↳ Replying to @x" control is pressed — scrolls to the parent. */
   onParentPress: (parentId: string) => void;
-  /** Descendants of this row that are actually rendered (blocked authors excluded). */
+  /**
+   * Size of this row's WHOLE subtree, blocked authors excluded. It counts
+   * every descendant, not just the ones currently on screen: a nested
+   * collapse does not reduce it, so "hide 5 replies" stays 5 whether or not a
+   * child of this row is itself collapsed. That is deliberate — the number
+   * tells you how much this toggle is responsible for, not how many rows
+   * happen to be painted right now.
+   */
   visibleDescendants: number;
   /** True when this row's subtree is hidden by the collapse toggle. */
   collapsed: boolean;
@@ -290,9 +297,13 @@ export const ReplyItem = React.memo(function ReplyItem({
   const replyContextButtonStyle: ViewStyle = {
     minHeight: 32,
     justifyContent: 'center',
-    // No extra bottom margin: the 32pt frame already centres ~13pt of text, so
-    // it contributes the gap the plain text variant gets from marginBottom.
-    marginBottom: 0,
+    // spacing.sm (8), matched to the 8pt bottom hitSlop below. Without it the
+    // slop band would have nothing to land in: the author control starts
+    // immediately underneath, it is the LATER sibling, and the later sibling
+    // wins an overlapping hit — so the bottom slop would be dead, and a tap
+    // 2-6pt under the line would open Block/Report instead of jumping
+    // (PR #843 review).
+    marginBottom: theme.spacing.sm,
   };
 
   const jumpableContextStyle: TextStyle = {
@@ -308,7 +319,10 @@ export const ReplyItem = React.memo(function ReplyItem({
     minHeight: 32,
     justifyContent: 'center',
     alignSelf: 'flex-start',
-    marginTop: theme.spacing.xs,
+    // spacing.sm (8), matched to the 8pt top hitSlop: at xs (4) the band
+    // reached into the bottom of the media gallery / link preview card above,
+    // which are themselves pressable (PR #843 review).
+    marginTop: theme.spacing.sm,
   };
 
   const collapseToggleTextStyle: TextStyle = {
@@ -350,7 +364,8 @@ export const ReplyItem = React.memo(function ReplyItem({
           // must never open the Block/Report sheet.
           hitSlop={{ top: 8, bottom: 8, left: 0, right: 0 }}
           accessibilityRole="button"
-          accessibilityLabel={`Go to @${parentDisplayName}'s reply`}
+          // No '@' — this string is SPOKEN. The visible text keeps it.
+          accessibilityLabel={`Go to ${parentDisplayName}'s reply`}
           testID={`reply-item-${replyId}-parent-jump`}
         >
           <EmojiText
@@ -362,12 +377,14 @@ export const ReplyItem = React.memo(function ReplyItem({
           </EmojiText>
         </TouchableOpacity>
       ) : parentState !== 'none' ? (
+        // Everything that is not a live jump target describes the parent
+        // WITHOUT naming them. 'hidden' means the author is blocked, and
+        // 'jumpable' without a parent id has no destination to offer — in
+        // both cases a name would be a leak or a lie, so neither gets one.
         <EmojiText style={replyContextStyle} testID={`reply-item-${replyId}-parent-context`}>
-          {parentState === 'orphan'
-            ? '↳ Replying to an earlier reply'
-            : parentState === 'hidden'
-              ? '↳ Replying to a hidden reply'
-              : `↳ Replying to @${parentDisplayName}`}
+          {parentState === 'hidden'
+            ? '↳ Replying to a hidden reply'
+            : '↳ Replying to an earlier reply'}
         </EmojiText>
       ) : null}
       <View style={headerRowStyle}>
@@ -386,10 +403,17 @@ export const ReplyItem = React.memo(function ReplyItem({
           // right: 0 — any right slop here reaches into the arrow's frame once
           // the name is long enough to close the gap, so a near-miss left of
           // the arrow would open the Block/Report sheet instead.
-          // top: 0 — the context line's own 8pt bottom slop sits directly
-          // above this row (#821); top slop here would contest it, and the
-          // destructive control must lose that argument by construction.
-          hitSlop={{ top: 0, bottom: 4, left: 4, right: 0 }}
+          // top: 0 ONLY under a jump control — its 8pt bottom slop sits just
+          // above this row (#821), and the destructive control must lose that
+          // argument by construction. With no jump control above (a top-level
+          // reply, or an orphan/hidden line, which are plain text) there is
+          // nothing to contest, so the author block keeps its 4pt.
+          hitSlop={{
+            top: parentState === 'jumpable' && parentId ? 0 : 4,
+            bottom: 4,
+            left: 4,
+            right: 0,
+          }}
           accessibilityRole={isSelf ? undefined : 'button'}
           // The timestamp is inside this control, so it is invisible to a
           // screen reader unless the label carries it. Long form: "3:04 PM"

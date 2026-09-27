@@ -22,6 +22,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { AccessibilityInfo } from 'react-native';
 import {
   ancestorIds,
   type ReplyTreeInput,
@@ -41,9 +42,13 @@ export interface ReplyFocusListHandle {
   scrollToOffset: (params: { offset: number; animated?: boolean | null }) => void;
 }
 
-/** Any row shape the thread list renders: all this hook needs is the id. */
+/**
+ * Any row shape the thread list renders. The id is what the hook resolves on;
+ * `authorUsername` is used ONLY for the screen-reader announcement, so a row
+ * type without it still works (the announcement just drops the name).
+ */
 export interface ReplyFocusRow {
-  reply: { id: string };
+  reply: { id: string; authorUsername?: string };
 }
 
 export interface UseReplyFocusOptions<Row extends ReplyFocusRow> {
@@ -64,6 +69,12 @@ export interface UseReplyFocusOptions<Row extends ReplyFocusRow> {
 export interface ReplyFocusApi {
   /** Focus a reply by id. A second call cancels whatever was in flight. */
   requestFocus: (id: string, options: { source: ReplyFocusSource }) => void;
+  /**
+   * Abandon the in-flight request and drop the highlight. Wired to
+   * `onScrollBeginDrag`: once the user is dragging, a landing re-scroll would
+   * yank the list out from under their thumb.
+   */
+  cancelFocus: () => void;
   /** The row currently painted with the highlight overlay. */
   highlightedId: string | null;
   /** Wire to `FlatList#onContentSizeChange`. */
@@ -103,6 +114,18 @@ const RETRY_DELAY_MS = 200;
 /** Where in the viewport a focused row lands (0 = top, 1 = bottom). */
 const VIEW_POSITION = 0.3;
 
+/**
+ * Fire-and-forget VoiceOver/TalkBack announcement. Wrapped because this is a
+ * native call on a purely cosmetic path: it must never take the screen down.
+ */
+function announce(message: string): void {
+  try {
+    AccessibilityInfo.announceForAccessibility(message);
+  } catch {
+    // no-op
+  }
+}
+
 export function useReplyFocus<Row extends ReplyFocusRow>({
   listRef,
   rows,
@@ -111,6 +134,11 @@ export function useReplyFocus<Row extends ReplyFocusRow>({
 }: UseReplyFocusOptions<Row>): ReplyFocusApi {
   const [activeRequest, setActiveRequest] = useState<FocusRequest | null>(null);
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
+  // Mirror, so cancelFocus can no-op when there is nothing to cancel without
+  // taking `highlightedId` as a dependency (its identity must stay stable:
+  // it is wired straight to the list's onScrollBeginDrag).
+  const highlightedIdRef = useRef<string | null>(highlightedId);
+  highlightedIdRef.current = highlightedId;
 
   // Render-synced mirrors. The list callbacks below fire from native layout
   // events and must see the CURRENT rows/request, not the ones captured when
@@ -181,6 +209,14 @@ export function useReplyFocus<Row extends ReplyFocusRow>({
     [clearAllScrollTimeouts],
   );
 
+  const cancelFocus = useCallback(() => {
+    if (!activeRequestRef.current && !highlightedIdRef.current) return;
+    clearAllScrollTimeouts();
+    activeRequestRef.current = null;
+    setActiveRequest(null);
+    setHighlightedId(null);
+  }, [clearAllScrollTimeouts]);
+
   /** Scroll to `index` and light the row. Shared by the effect and the retry. */
   const scrollTo = useCallback(
     (index: number) => {
@@ -219,6 +255,15 @@ export function useReplyFocus<Row extends ReplyFocusRow>({
 
     scrollTo(index);
     setHighlightedId(request.id);
+
+    // A jump or a deep link moves the list under the user with no other
+    // signal; a landing does not need one, because the user just pressed Send
+    // and the composer already announced itself. Name only — never an id, and
+    // never any body text: this string is spoken aloud.
+    if (request.source !== 'landing') {
+      const name = rowsRef.current[index]?.reply.authorUsername;
+      announce(name ? `Showing reply from ${name}` : 'Showing reply');
+    }
 
     if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
     highlightTimerRef.current = setTimeout(() => {
@@ -279,7 +324,13 @@ export function useReplyFocus<Row extends ReplyFocusRow>({
     [listRef, clearAllScrollTimeouts, scrollTo],
   );
 
-  return { requestFocus, highlightedId, onContentSizeChange, onScrollToIndexFailed };
+  return {
+    requestFocus,
+    cancelFocus,
+    highlightedId,
+    onContentSizeChange,
+    onScrollToIndexFailed,
+  };
 }
 
 /**

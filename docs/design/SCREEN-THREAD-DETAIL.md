@@ -126,11 +126,11 @@ The "↳ Replying to @[Author]" line is the row's first line, above the header r
 |---|---|
 | Text | "↳ Replying to @[Author]" — `fontFamily.mono`, `fontSize.xs` (10), `colors.blue` (the untouchable variants stay `colors.textTertiary`, so colour alone distinguishes a jumpable line) |
 | Position | First line of the reply row, directly above the header row (avatar · author name · timestamp) |
-| Touch target | Full line width × 32pt frame + `hitSlop` `{top: 8, bottom: 8, left: 0, right: 0}` = 48pt effective height |
+| Touch target | Full line width × 32pt frame + `hitSlop` `{top: 8, bottom: 8, left: 0, right: 0}` = 48pt effective height. The frame holds an 8pt (`spacing.sm`) margin below it so the bottom band lands in empty space instead of on the author block |
 | Action | Scrolls the list to the parent row and briefly highlights it |
-| Accessibility | `accessibilityRole="button"`, label "Go to @[Author]'s reply" |
+| Accessibility | `accessibilityRole="button"`, label "Go to [Author]'s reply" — no `@`, since the label is spoken; the visible text keeps it. On arrival the screen announces "Showing reply from [Author]" (jump and deep link only — a landing needs no announcement) |
 
-The author control directly below it carries `hitSlop.top` 0 for exactly this reason: any top slop there would reach up under the context line, and a near-miss below the line would open the Block/Report sheet instead of jumping. A miss on this line must never open an action sheet.
+The author control directly below it drops its `hitSlop.top` to 0 for exactly this reason: any top slop there would reach up under the context line, and a near-miss below the line would open the Block/Report sheet instead of jumping. (It keeps its usual 4pt when there is no jump control above — a top-level reply, or the untouchable variants.) A miss on this line must never open an action sheet.
 
 **Parent states** (computed in `replyTree.ts`, from the loaded tree — never from the row alone):
 
@@ -150,8 +150,8 @@ A reply with visible descendants renders a footer control below its body: `[–]
 | Label | "[–] hide N replies" (expanded) / "[+] N replies" (collapsed); singular for one ("hide 1 reply") |
 | Type | `fontFamily.mono`, `fontSize.xs` (10), `colors.textTertiary` |
 | Position | Below the reply body and its media, inside the reply row |
-| Touch target | `minWidth` 44 × 32pt frame + 8pt vertical `hitSlop` = 44 × 48pt effective |
-| Shown when | The row has at least one **visible** descendant — rows from blocked authors are not counted |
+| Touch target | `minWidth` 44 × 32pt frame + 8pt vertical `hitSlop` = 44 × 48pt effective, with an 8pt (`spacing.sm`) top margin so the upper band clears the media gallery / link preview above |
+| Shown when | The row has at least one **visible** descendant. N counts the row's whole subtree with blocked authors excluded — a nested collapse does not reduce it, so the number says how much this toggle is responsible for, not how many rows are painted right now |
 | Persistence | Per-screen-session only. Collapse state is **not** persisted and resets when the screen unmounts |
 | Original post | Never collapsible — `ThreadHeader` carries no toggle |
 | Deep link | A deep link into a collapsed branch expands its ancestors so the target row is on screen |
@@ -170,7 +170,7 @@ Each reply row (`ReplyItem`) carries one explicit reply control at the **top-rig
 | Unsynced rows | Still rendered, but dimmed (`opacity` 0.5) and inert while the reply is pending / syncing / failed — so the row does not shift when it syncs |
 | Accessibility | Reads "Reply to [Author], button" |
 
-The avatar / author name / timestamp remain a separate tappable control that opens the block/report action sheet — it reads "Actions for [Author], posted September 12 at 3:04 PM, button" (the timestamp lives inside the control, so the label carries it in long form) and is disabled on your own rows. Its `hitSlop` has no top component, so it cannot steal a tap aimed at the reply-context jump control above it. The row container itself is not announced as a button.
+The avatar / author name / timestamp remain a separate tappable control that opens the block/report action sheet — it reads "Actions for [Author], posted September 12 at 3:04 PM, button" (the timestamp lives inside the control, so the label carries it in long form) and is disabled on your own rows. Its `hitSlop` drops its top component to 0 under a jump control, so it cannot steal a tap aimed at that control. The row container itself is not announced as a button.
 
 ## Reply Composer (Fixed at Bottom)
 

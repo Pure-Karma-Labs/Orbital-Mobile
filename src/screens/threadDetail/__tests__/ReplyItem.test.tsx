@@ -307,8 +307,8 @@ describe('ReplyItem — structural #518 guard', () => {
       top: 8, bottom: 8, right: 8, left: 0,
     });
 
-    // Author: no RIGHT slop (the arrow's frame is to its right) and no TOP
-    // slop (the jump control sits directly above it, #821).
+    // Author: no RIGHT slop (the arrow's frame is to its right). With no jump
+    // control above (parentState 'none' here) it keeps its usual 4pt top.
     const authorControl = renderer.root
       .findAll(
         (n) =>
@@ -317,8 +317,40 @@ describe('ReplyItem — structural #518 guard', () => {
       )
       .find((n) => typeof n.props.onPress === 'function');
     expect(authorControl).toBeDefined();
-    expect(authorControl!.props.hitSlop).toEqual({ top: 0, bottom: 4, left: 4, right: 0 });
+    expect(authorControl!.props.hitSlop).toEqual({ top: 4, bottom: 4, left: 4, right: 0 });
   });
+
+  it.each([
+    ['none' as const, null, 4],
+    ['orphan' as const, 'r-parent', 4],
+    ['hidden' as const, 'r-parent', 4],
+    ['jumpable' as const, 'r-parent', 0],
+  ])(
+    'gives the author block hitSlop.top %s -> %s',
+    (parentState, parentId, expected) => {
+      // 0 ONLY under a live jump control, whose 8pt bottom slop reaches down
+      // to this edge; otherwise nothing is contesting it (#843 review).
+      const renderer = renderReplyItem({
+        parentState,
+        parentId,
+        parentAuthorId: 'u-ann',
+        parentAuthorUsername: 'ann',
+      });
+      const authorControl = renderer.root
+        .findAll(
+          (n) =>
+            typeof n.props.accessibilityLabel === 'string' &&
+            n.props.accessibilityLabel.startsWith('Actions for'),
+        )
+        .find((n) => typeof n.props.onPress === 'function');
+      expect(authorControl!.props.hitSlop).toEqual({
+        top: expected,
+        bottom: 4,
+        left: 4,
+        right: 0,
+      });
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -339,8 +371,10 @@ describe('ReplyItem — parentState context line (#821)', () => {
   });
 
   it('names the parent author when the parent is loaded and visible', () => {
+    // Naming the parent requires BOTH a jumpable state and an id to jump to.
     const renderer = renderReplyItem({
       parentState: 'jumpable',
+      parentId: 'r-parent',
       parentAuthorId: 'u-ann',
       parentAuthorUsername: 'ann',
     });
@@ -413,7 +447,9 @@ describe('ReplyItem — jumpable context line', () => {
   it('is a button labelled for the parent author', () => {
     const control = pressableFor(renderReplyItem(jumpableProps), JUMP);
     expect(control.props.accessibilityRole).toBe('button');
-    expect(control.props.accessibilityLabel).toBe("Go to @ann's reply");
+    // No '@' in the SPOKEN label; the visible line keeps it.
+    expect(control.props.accessibilityLabel).toBe("Go to ann's reply");
+    expect(control.props.accessibilityLabel).not.toContain('@');
   });
 
   it('carries vertical-only hitSlop so it cannot reach the author control', () => {
@@ -426,11 +462,18 @@ describe('ReplyItem — jumpable context line', () => {
     const frames = nodesWithTestId(renderReplyItem(jumpableProps), JUMP)
       .filter((n) => typeof n.type === 'string');
     expect(control.props.hitSlop).toBeDefined();
-    expect(frames[0].props.style).toEqual(expect.objectContaining({ minHeight: 32 }));
+    // The bottom margin is LOAD-BEARING: the author block starts right below
+    // and wins as the later sibling, so without an 8pt gap the 8pt bottom
+    // slop band would be dead and land on Block/Report (#843 review).
+    expect(frames[0].props.style).toEqual(
+      expect.objectContaining({ minHeight: 32, marginBottom: 8 }),
+    );
   });
 
-  it('does not fire when the parent id is missing, even if the state says jumpable', () => {
-    // Defence in depth: `jumpable` without an id would otherwise scroll nowhere.
+  it('falls back to the unnamed, untouchable line when the parent id is missing', () => {
+    // `jumpable` with no id has no destination, so it must not offer one —
+    // and must not name the parent either (the only non-jumpable path that
+    // still named one was removed in the #843 review).
     const onParentPress = jest.fn();
     const renderer = renderReplyItem({
       ...jumpableProps,
@@ -439,6 +482,14 @@ describe('ReplyItem — jumpable context line', () => {
     });
     expect(nodesWithTestId(renderer, JUMP)).toHaveLength(0);
     expect(onParentPress).not.toHaveBeenCalled();
+
+    const line = nodesWithTestId(renderer, 'reply-item-r-1-parent-context');
+    expect(line[0].props.children).toBe('↳ Replying to an earlier reply');
+    expect(
+      renderer.root.findAll(
+        (n) => typeof n.props.children === 'string' && n.props.children.includes('ann'),
+      ),
+    ).toHaveLength(0);
   });
 });
 
@@ -504,8 +555,10 @@ describe('ReplyItem — collapse toggle', () => {
     const control = pressableFor(renderer, TOGGLE);
     expect(control.props.hitSlop).toEqual({ top: 8, bottom: 8, left: 0, right: 0 });
     const host = nodesWithTestId(renderer, TOGGLE).filter((n) => typeof n.type === 'string');
+    // The top margin keeps the upper slop band off the media gallery / link
+    // preview card above, which are pressable themselves (#843 review).
     expect(host[0].props.style).toEqual(
-      expect.objectContaining({ minWidth: 44, minHeight: 32 }),
+      expect.objectContaining({ minWidth: 44, minHeight: 32, marginTop: 8 }),
     );
   });
 });

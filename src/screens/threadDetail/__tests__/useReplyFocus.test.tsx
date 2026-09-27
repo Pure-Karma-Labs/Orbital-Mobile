@@ -8,6 +8,7 @@
  */
 
 import React from 'react';
+import { AccessibilityInfo } from 'react-native';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import {
   useReplyFocus,
@@ -17,9 +18,11 @@ import {
 } from '../useReplyFocus';
 import type { ReplyTreeInput, ReplyTreeNode } from '../../../utils/replyTree';
 
-type Row = { reply: { id: string } };
+type Row = { reply: { id: string; authorUsername?: string } };
 
-const row = (id: string): Row => ({ reply: { id } });
+const row = (id: string, authorUsername?: string): Row => ({
+  reply: authorUsername ? { id, authorUsername } : { id },
+});
 
 interface Harness {
   api: { current: ReplyFocusApi };
@@ -478,5 +481,112 @@ describe('useReplyFocus — unmount', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cancellation on drag (#843 review)
+// ---------------------------------------------------------------------------
+
+describe('useReplyFocus — cancelFocus', () => {
+  it('stops a landing from re-scrolling once the user drags', () => {
+    const h = setup([row('a'), row('b')]);
+    request(h, 'b', 'landing');
+    expect(h.list.scrollToIndex).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      h.api.current.cancelFocus();
+    });
+    act(() => {
+      h.api.current.onContentSizeChange();
+    });
+    expect(h.list.scrollToIndex).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops the highlight and every pending timer', () => {
+    const h = setup([row('a'), row('b')]);
+    request(h, 'b', 'jump');
+    expect(h.api.current.highlightedId).toBe('b');
+
+    act(() => {
+      h.api.current.cancelFocus();
+    });
+    expect(h.api.current.highlightedId).toBeNull();
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it('abandons a request whose row has not arrived yet', () => {
+    const h = setup([row('a')]);
+    request(h, 'later', 'deeplink');
+    act(() => {
+      h.api.current.cancelFocus();
+    });
+    h.setRows([row('a'), row('later')]);
+    expect(h.list.scrollToIndex).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op when nothing is in flight, so it can sit on every drag', () => {
+    const h = setup([row('a')]);
+    const before = h.renders();
+    act(() => {
+      h.api.current.cancelFocus();
+    });
+    // No state write => no re-render: this runs on the scroll path.
+    expect(h.renders()).toBe(before);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Screen-reader announcement (#843 review)
+// ---------------------------------------------------------------------------
+
+describe('useReplyFocus — announcement', () => {
+  let announceSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    announceSpy = jest
+      .spyOn(AccessibilityInfo, 'announceForAccessibility')
+      .mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    announceSpy.mockRestore();
+  });
+
+  it.each(['jump', 'deeplink'] as const)(
+    'announces the author on a %s resolve',
+    (source) => {
+      const h = setup([row('a', 'ann'), row('b', 'bob')]);
+      request(h, 'b', source);
+      expect(announceSpy).toHaveBeenCalledWith('Showing reply from bob');
+    },
+  );
+
+  it('says nothing on a landing — the user just pressed Send', () => {
+    const h = setup([row('a', 'ann'), row('b', 'bob')]);
+    request(h, 'b', 'landing');
+    expect(announceSpy).not.toHaveBeenCalled();
+  });
+
+  it('never speaks an id or a body, only the name', () => {
+    const h = setup([row('reply-abc-123', 'ann')]);
+    request(h, 'reply-abc-123', 'jump');
+    expect(announceSpy).toHaveBeenCalledWith('Showing reply from ann');
+    for (const [message] of announceSpy.mock.calls as string[][]) {
+      expect(message).not.toContain('reply-abc-123');
+    }
+  });
+
+  it('falls back to an unnamed announcement when the row carries no username', () => {
+    const h = setup([row('a')]);
+    request(h, 'a', 'jump');
+    expect(announceSpy).toHaveBeenCalledWith('Showing reply');
+  });
+
+  it('announces once per request, not on every rows change', () => {
+    const h = setup([row('a', 'ann'), row('b', 'bob')]);
+    request(h, 'b', 'jump');
+    h.setRows([row('a', 'ann'), row('b', 'bob'), row('c', 'cid')]);
+    expect(announceSpy).toHaveBeenCalledTimes(1);
   });
 });

@@ -24,6 +24,21 @@ jest.mock('../../database/connection', () => ({
   isDatabaseInitialized: jest.fn(() => true),
 }));
 
+// Only the surface threadService imports. The real module would need a live
+// DB handle (connection is mocked above), so nothing here may hit SQLite.
+jest.mock('../../database/repositories/mediaRepository', () => ({
+  getMedia: jest.fn(() => null),
+  saveMedia: jest.fn(),
+  getThreadLevelMedia: jest.fn(() => []),
+  getMediaForReply: jest.fn(() => []),
+  getMediaForThreadReplies: jest.fn(() => []),
+  updateMediaParent: jest.fn(),
+}));
+
+jest.mock('../media/mediaTeardown', () => ({
+  teardownLocalMedia: jest.fn(() => Promise.resolve()),
+}));
+
 jest.mock('../api/threads', () => ({
   getThread: jest.fn(),
   getGroupThreads: jest.fn(),
@@ -96,6 +111,8 @@ import { loadThread, loadReplies, postReply, hydrateThreadsFromLocal, hydrateRep
 import { saveThread as dbSaveThread, saveThreadBatch, getThreadsForConversation } from '../../database/repositories/threadRepository';
 import { saveReply as dbSaveReply, saveReplyBatch, getRepliesForThread, deleteReply as dbDeleteReply } from '../../database/repositories/replyRepository';
 import { isDatabaseInitialized } from '../../database/connection';
+import { getMedia, getMediaForReply } from '../../database/repositories/mediaRepository';
+import { teardownLocalMedia } from '../media/mediaTeardown';
 import { ServerError } from '../api/errors';
 import { PendingWrapError } from '../crypto/contentCrypto';
 import { getThread, getGroupThreads, getThreadReplies, createReply, createThread } from '../api/threads';
@@ -122,6 +139,9 @@ const mockDbSaveReply = dbSaveReply as jest.MockedFunction<typeof dbSaveReply>;
 const mockSaveReplyBatch = saveReplyBatch as jest.MockedFunction<typeof saveReplyBatch>;
 const mockGetRepliesForThread = getRepliesForThread as jest.MockedFunction<typeof getRepliesForThread>;
 const mockDbDeleteReply = dbDeleteReply as jest.MockedFunction<typeof dbDeleteReply>;
+const mockGetMediaForReply = getMediaForReply as jest.MockedFunction<typeof getMediaForReply>;
+const mockGetMedia = getMedia as jest.MockedFunction<typeof getMedia>;
+const mockTeardownLocalMedia = teardownLocalMedia as jest.MockedFunction<typeof teardownLocalMedia>;
 const mockIsDatabaseInitialized = isDatabaseInitialized as jest.MockedFunction<typeof isDatabaseInitialized>;
 
 // ---------------------------------------------------------------------------
@@ -438,6 +458,30 @@ describe('loadReplies', () => {
     expect(result.newIdCount).toBe(1);
   });
 
+  it('throws on a malformed 200 instead of reading it as an empty thread', async () => {
+    // An empty `replies` array from a broken response would end the pass with
+    // an empty keep-set and hand every loaded reply to the reconcile.
+    mockGetThreadReplies.mockResolvedValue({
+      media: [],
+      totalCount: 0,
+      hasMore: false,
+    } as unknown as ListRepliesResponse);
+
+    await expect(loadReplies('thread-1', 'group-1')).rejects.toThrow(/malformed/i);
+    expect(mockAppendReplies).not.toHaveBeenCalled();
+  });
+
+  it('throws when hasMore is not a boolean', async () => {
+    mockGetThreadReplies.mockResolvedValue({
+      replies: [],
+      media: [],
+      totalCount: 0,
+    } as unknown as ListRepliesResponse);
+
+    await expect(loadReplies('thread-1', 'group-1')).rejects.toThrow(/malformed/i);
+    expect(mockAppendReplies).not.toHaveBeenCalled();
+  });
+
   it('maps reply fields correctly including authorUsername and level', async () => {
     const response: ListRepliesResponse = {
       replies: [
@@ -472,9 +516,13 @@ describe('reconcileThreadReplies', () => {
   it('removes dropped ids from the store and calls deleteReply for each', () => {
     mockReconcileReplies.mockReturnValue(['dropped-1', 'dropped-2']);
 
-    const dropped = reconcileThreadReplies('thread-1', ['keep-1']);
+    const dropped = reconcileThreadReplies('thread-1', ['keep-1'], ['keep-1', 'dropped-1', 'dropped-2']);
 
-    expect(mockReconcileReplies).toHaveBeenCalledWith('thread-1', ['keep-1']);
+    expect(mockReconcileReplies).toHaveBeenCalledWith(
+      'thread-1',
+      ['keep-1'],
+      ['keep-1', 'dropped-1', 'dropped-2'],
+    );
     expect(dropped).toEqual(['dropped-1', 'dropped-2']);
     expect(mockDbDeleteReply).toHaveBeenCalledTimes(2);
     expect(mockDbDeleteReply).toHaveBeenCalledWith('dropped-1');
@@ -487,7 +535,11 @@ describe('reconcileThreadReplies', () => {
     // called for it.
     mockReconcileReplies.mockReturnValue([]);
 
-    const dropped = reconcileThreadReplies('thread-1', ['decrypt-failed-id', 'keep-2']);
+    const dropped = reconcileThreadReplies(
+      'thread-1',
+      ['decrypt-failed-id', 'keep-2'],
+      ['decrypt-failed-id', 'keep-2'],
+    );
 
     expect(dropped).toEqual([]);
     expect(mockDbDeleteReply).not.toHaveBeenCalled();
@@ -498,7 +550,7 @@ describe('reconcileThreadReplies', () => {
     // what it drops; the service simply deletes whatever the store reports.
     mockReconcileReplies.mockReturnValue([]);
 
-    const dropped = reconcileThreadReplies('thread-1', []);
+    const dropped = reconcileThreadReplies('thread-1', [], ['pending-1']);
 
     expect(dropped).toEqual([]);
     expect(mockDbDeleteReply).not.toHaveBeenCalled();
@@ -507,16 +559,49 @@ describe('reconcileThreadReplies', () => {
   it('does not touch the DB when nothing drops', () => {
     mockReconcileReplies.mockReturnValue([]);
 
-    reconcileThreadReplies('thread-1', ['a', 'b']);
+    reconcileThreadReplies('thread-1', ['a', 'b'], ['a', 'b']);
 
     expect(mockDbDeleteReply).not.toHaveBeenCalled();
+  });
+
+  it('tears down the local media of every pruned reply, thumbnail child included', async () => {
+    mockReconcileReplies.mockReturnValue(['dropped-1']);
+    mockGetMediaForReply.mockReturnValue([
+      {
+        id: 'media-1',
+        local_path: 'file:///whatever/media/media-1.jpg',
+        thumbnail_media_id: 'thumb-1',
+      },
+    ] as unknown as ReturnType<typeof getMediaForReply>);
+    mockGetMedia.mockReturnValue({
+      id: 'thumb-1',
+      local_path: 'file:///whatever/media/thumb-1.jpg',
+    } as unknown as ReturnType<typeof getMedia>);
+
+    reconcileThreadReplies('thread-1', [], ['dropped-1']);
+    // Teardown is detached (async, best-effort) — flush the microtask queue.
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(mockGetMediaForReply).toHaveBeenCalledWith('dropped-1');
+    expect(mockTeardownLocalMedia).toHaveBeenCalledWith('media-1', expect.stringContaining('media-1.jpg'));
+    expect(mockTeardownLocalMedia).toHaveBeenCalledWith('thumb-1', expect.stringContaining('thumb-1.jpg'));
+  });
+
+  it('does not tear down media when nothing was pruned', async () => {
+    mockReconcileReplies.mockReturnValue([]);
+
+    reconcileThreadReplies('thread-1', ['a'], ['a']);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(mockGetMediaForReply).not.toHaveBeenCalled();
+    expect(mockTeardownLocalMedia).not.toHaveBeenCalled();
   });
 
   it('skips DB deletes when the database is not initialized', () => {
     mockIsDatabaseInitialized.mockReturnValue(false);
     mockReconcileReplies.mockReturnValue(['dropped-1']);
 
-    const dropped = reconcileThreadReplies('thread-1', []);
+    const dropped = reconcileThreadReplies('thread-1', [], ['dropped-1']);
 
     expect(dropped).toEqual(['dropped-1']);
     expect(mockDbDeleteReply).not.toHaveBeenCalled();

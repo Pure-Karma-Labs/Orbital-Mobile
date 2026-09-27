@@ -272,13 +272,16 @@ export interface ThreadsActions {
    */
   replaceReply: (oldId: string, confirmed: Reply) => void;
   /**
-   * Drop this thread's replies missing from `keepIds` (the raw server ids of a
-   * complete pagination pass), keeping `pending` rows. Returns the dropped ids
-   * so the caller can delete them from SQLite (#821).
+   * Drop this thread's replies that are in `candidateIds` (the ids present when
+   * the pagination pass started) but missing from `keepIds` (the raw server ids
+   * that pass saw), keeping `pending` rows. Rows that arrived mid-pass are never
+   * candidates. Returns the dropped ids so the caller can delete them from
+   * SQLite (#821).
    */
   reconcileReplies: (
     threadId: string,
     keepIds: ReadonlySet<string> | readonly string[],
+    candidateIds: ReadonlySet<string> | readonly string[],
   ) => string[];
   removeReply: (id: string) => void;
   addOptimisticThread: (thread: Thread) => void;

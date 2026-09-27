@@ -5,8 +5,10 @@
  * hydration and offline viewing. Encrypted blob columns are left NULL;
  * decryption happens in the service layer before data reaches here.
  *
- * Timestamps: DB stores epoch seconds, store uses epoch milliseconds.
- * Convert on write (/ 1000) and read (* 1000).
+ * Timestamps: THREAD rows still store epoch seconds (legacy) — convert on
+ * write (/ 1000) and read (* 1000). Only orbital_replies moved to epoch
+ * milliseconds (#821); do not copy that pattern here without a matching
+ * tolerant read.
  */
 
 import { queryOne, queryMany, execute } from '../queryHelpers';

@@ -276,6 +276,13 @@ export function ThreadDetailScreen({
   const loadingMoreRef = useRef(false);
   /** Raw server ids seen in the CURRENT pass — the reconcile keep-set. */
   const serverIdsSeenRef = useRef<Set<string>>(new Set());
+  /**
+   * Reply ids that existed when the current pass STARTED — the only ids the
+   * reconcile may delete. A WebSocket reply or the user's own confirmed send
+   * that lands mid-pass is newer than the server snapshot the pass compares
+   * against, so it is not evidence of a removal and must survive.
+   */
+  const candidatesRef = useRef<Set<string>>(new Set());
   /** Rows covered contiguously from offset 0 in the current pass. */
   const coveredRef = useRef(0);
   /**
@@ -475,6 +482,11 @@ export function ThreadDetailScreen({
       hasMoreRef.current = true;
     }
     serverIdsSeenRef.current = new Set();
+    // Read from the store, not from the render-time selector value: this runs
+    // inside an async load, where the captured value may already be a frame old.
+    candidatesRef.current = new Set(
+      useAppStore.getState().replyIdsByThread?.[threadId] ?? [],
+    );
     coveredRef.current = 0;
     passContiguousRef.current = true;
   }, [threadId]);
@@ -505,9 +517,20 @@ export function ThreadDetailScreen({
       offsetRef.current = Math.max(offsetRef.current, offsetUsed + result.rawCount);
       hasMoreRef.current = result.hasMore && result.rawCount > 0;
 
-      if (!hasMoreRef.current && passContiguousRef.current) {
+      // paginationThreadRef guards the in-place thread switch: a page that
+      // resolves after the screen re-pointed at another thread must not
+      // reconcile the new thread against the old thread's ids.
+      if (
+        !hasMoreRef.current &&
+        passContiguousRef.current &&
+        paginationThreadRef.current === threadId
+      ) {
         try {
-          reconcileThreadReplies(threadId, serverIdsSeenRef.current);
+          reconcileThreadReplies(
+            threadId,
+            serverIdsSeenRef.current,
+            candidatesRef.current,
+          );
         } catch (e) {
           if (__DEV__) console.warn('[ThreadDetail] reconcile failed:', e instanceof Error ? e.message : e);
         }
@@ -899,10 +922,14 @@ export function ThreadDetailScreen({
               onEndReached={handleEndReached}
               onEndReachedThreshold={0.3}
               onContentSizeChange={handleContentSizeChange}
-              // Tree order inserts mid-list (a reply to an early post lands
-              // under it, not at the end), which would otherwise shove the
-              // reader's viewport down by the new row's height.
-              maintainVisibleContentPosition={{ minIndexForVisible: 1 }}
+              // NO maintainVisibleContentPosition here, deliberately. Tree order
+              // does insert mid-list, but RN 0.82.1's VirtualizedList adds +1 to
+              // minIndexForVisible whenever a ListHeaderComponent exists, so even
+              // minIndexForVisible: 0 anchors on the FIRST REPLY, not on offset 0.
+              // ThreadHeader grows after its first layout (LinkPreviewCard and
+              // MediaGallery load late), and the anchor then scrolls the original
+              // post off screen on open — a worse bug than the one this would fix.
+              // Revisit only with on-device verification (#821).
               onScrollToIndexFailed={handleScrollToIndexFailed}
               extraData={highlightTick}
               initialNumToRender={20}

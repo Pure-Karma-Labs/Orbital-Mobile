@@ -163,9 +163,12 @@ export interface OrbitalReplyRow {
   body_iv: Uint8Array | null;
   /** Null for top-level replies */
   parent_reply_id: string | null;
-  /** Unix epoch seconds */
+  /**
+   * Unix epoch MILLISECONDS since #821. Rows written before that hold epoch
+   * seconds; replyRepository.mapRowToReply reads either (SECONDS_CEILING).
+   */
   created_at: number;
-  /** Unix epoch seconds */
+  /** Unix epoch MILLISECONDS since #821 — see created_at. */
   updated_at: number;
 }
 

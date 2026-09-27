@@ -209,26 +209,42 @@ export const createThreadsSlice: StateCreator<
   /**
    * Drop this thread's replies that the server no longer returns (#821).
    *
-   * The only client path that clears an admin-removed reply. `keepIds` are the
-   * RAW server ids of a complete pagination pass — raw so a row that failed to
-   * decrypt is never mistaken for a removal. Rows still `pending` are kept:
-   * they are optimistic sends the server has not acknowledged yet.
+   * The only client path that clears an admin-removed reply. An id is dropped
+   * only when ALL THREE hold:
+   * 1. it is in `candidateIds` — the ids present when the pagination pass
+   *    STARTED. Anything that arrived mid-pass (a WebSocket reply, the user's
+   *    own confirmed send) postdates the server snapshot the pass is comparing
+   *    against, so it can never be evidence of a removal;
+   * 2. it is absent from `keepIds` — the RAW server ids of the pass, raw so a
+   *    row that failed to decrypt is never mistaken for a removal;
+   * 3. it is not `pending` — an optimistic send the server has not acked.
+   *
+   * A row hydrated from SQLite is present at pass start, so an admin takedown
+   * still propagates on the next full pass.
    *
    * @returns the dropped ids, so the caller can delete them from SQLite too.
    */
-  reconcileReplies: (threadId: string, keepIds: ReadonlySet<string> | readonly string[]) => {
+  reconcileReplies: (
+    threadId: string,
+    keepIds: ReadonlySet<string> | readonly string[],
+    candidateIds: ReadonlySet<string> | readonly string[],
+  ) => {
     const { replies, replyIdsByThread } = get();
     const ids = replyIdsByThread[threadId];
     if (!ids || ids.length === 0) return [];
 
     const keep: ReadonlySet<string> =
       keepIds instanceof Set ? keepIds : new Set(keepIds as readonly string[]);
+    const candidates: ReadonlySet<string> =
+      candidateIds instanceof Set
+        ? candidateIds
+        : new Set(candidateIds as readonly string[]);
 
     const dropped: string[] = [];
     const remaining: string[] = [];
     for (const id of ids) {
       const reply = replies[id];
-      if (keep.has(id) || reply?.syncStatus === 'pending') {
+      if (!candidates.has(id) || keep.has(id) || reply?.syncStatus === 'pending') {
         remaining.push(id);
       } else {
         dropped.push(id);

@@ -33,6 +33,10 @@ jest.mock('react-native-gesture-handler', () => {
 });
 
 let mockBlockedSet = new Set<string>();
+
+// Backs useAppStore.getState().replyIdsByThread — the screen snapshots this at
+// the start of every pagination pass to build the reconcile candidate set.
+let mockStoreReplyIds: Record<string, string[]> = {};
 jest.mock('../../hooks/useBlockedSet', () => ({
   useBlockedSet: () => mockBlockedSet,
 }));
@@ -73,6 +77,9 @@ jest.mock('../../stores/useAppStore', () => ({
         setViewingConversation: jest.fn(),
         mutedTargets: mockMutedTargets,
         conversations: mockConversations,
+        // Read live: a test can mutate this mid-pass to simulate a WebSocket
+        // reply landing between the pass start and its terminal page.
+        replyIdsByThread: mockStoreReplyIds,
       })),
     },
   ),
@@ -373,6 +380,7 @@ function applyDefaultMocks(): void {
   jest.clearAllMocks();
   mockSelectedMedia = [];
   mockBlockedSet = new Set<string>();
+  mockStoreReplyIds = {};
   mockMutedTargets = {};
   mockConversations = {};
   // The guard mock has no implementation — clearAllMocks() above already resets
@@ -2058,6 +2066,7 @@ describe('ThreadDetailScreen — tree order (#821)', () => {
 
     const renderer = await renderScreen();
 
+    expect(listData(renderer)).toHaveLength(3);
     expect(listData(renderer).map((r) => [r.reply.id, r.depth])).toEqual([
       ['A', 0],
       ['A1', 1],
@@ -2179,6 +2188,7 @@ describe('ThreadDetailScreen — pagination (#821)', () => {
   });
 
   it('stops paging and reconciles when the server reports no more rows', async () => {
+    mockStoreReplyIds = { 'thread-1': ['s1', 'gone-1'] };
     mockLoadReplies.mockResolvedValueOnce(
       page({ rawCount: 2, serverIds: ['s1', 's2'], newIdCount: 2, hasMore: false }),
     );
@@ -2186,9 +2196,28 @@ describe('ThreadDetailScreen — pagination (#821)', () => {
     await renderScreen();
 
     expect(mockReconcileThreadReplies).toHaveBeenCalledTimes(1);
-    const [threadIdArg, keepIds] = mockReconcileThreadReplies.mock.calls[0];
+    const [threadIdArg, keepIds, candidateIds] = mockReconcileThreadReplies.mock.calls[0];
     expect(threadIdArg).toBe('thread-1');
     expect([...(keepIds as Set<string>)]).toEqual(['s1', 's2']);
+    // Candidates are the ids that existed when the pass began.
+    expect([...(candidateIds as Set<string>)].sort()).toEqual(['gone-1', 's1']);
+  });
+
+  it('never offers a mid-pass arrival as a deletion candidate (#821 review)', async () => {
+    mockStoreReplyIds = { 'thread-1': ['old-1'] };
+    mockLoadReplies.mockImplementationOnce(async () => {
+      // A WebSocket reply (or the user's own confirmed send) lands after the
+      // pass captured its candidate snapshot but before the page resolves.
+      mockStoreReplyIds = { 'thread-1': ['old-1', 'ws-1'] };
+      return page({ rawCount: 1, serverIds: ['s1'], newIdCount: 1, hasMore: false });
+    });
+
+    await renderScreen();
+
+    expect(mockReconcileThreadReplies).toHaveBeenCalledTimes(1);
+    const candidateIds = mockReconcileThreadReplies.mock.calls[0][2] as Set<string>;
+    expect([...candidateIds]).toEqual(['old-1']);
+    expect(candidateIds.has('ws-1')).toBe(false);
   });
 
   it('stops paging when a page comes back empty even though hasMore is true', async () => {
@@ -2270,10 +2299,13 @@ describe('ThreadDetailScreen — pagination (#821)', () => {
     expect(mockReconcileThreadReplies).not.toHaveBeenCalled();
   });
 
-  it('keeps the reader in place on a mid-list insert', async () => {
+  it('sets NO maintainVisibleContentPosition (it would scroll the OP away)', async () => {
+    // RN 0.82.1's VirtualizedList adds +1 to minIndexForVisible when a
+    // ListHeaderComponent exists, so even minIndexForVisible: 0 anchors on the
+    // first reply rather than offset 0. ThreadHeader grows after first layout
+    // (LinkPreviewCard/MediaGallery), which then pushes the original post off
+    // screen on open. Deferred to a device-verified change (#821 PR review).
     const renderer = await renderScreen();
-    expect(flatList(renderer).props.maintainVisibleContentPosition).toEqual({
-      minIndexForVisible: 1,
-    });
+    expect(flatList(renderer).props.maintainVisibleContentPosition).toBeUndefined();
   });
 });

@@ -44,7 +44,8 @@ function makeStore() {
         activeThreadId: null, threadLastViewedAt: {},
         setThreads: jest.fn(), upsertThread: jest.fn(), removeThread: jest.fn(),
         setActiveThread: jest.fn(), setReplies: jest.fn(), appendReplies: jest.fn(),
-        upsertReply: jest.fn(), removeReply: jest.fn(), addOptimisticThread: jest.fn(),
+        upsertReply: jest.fn(), replaceReply: jest.fn(), reconcileReplies: jest.fn(() => []),
+        removeReply: jest.fn(), addOptimisticThread: jest.fn(),
         addOptimisticReply: jest.fn(), updateThreadSyncStatus: jest.fn(),
         updateReplySyncStatus: jest.fn(), markThreadViewed: jest.fn(),
         // Contacts stubs

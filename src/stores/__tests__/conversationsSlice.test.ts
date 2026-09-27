@@ -53,6 +53,8 @@ function makeStore() {
     setReplies: jest.fn(),
     appendReplies: jest.fn(),
     upsertReply: jest.fn(),
+    replaceReply: jest.fn(),
+    reconcileReplies: jest.fn(() => []),
     removeReply: jest.fn(),
     addOptimisticThread: jest.fn(),
     addOptimisticReply: jest.fn(),

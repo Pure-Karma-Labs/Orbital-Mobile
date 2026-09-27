@@ -325,9 +325,11 @@ describe('threadsSlice — optimistic updates', () => {
     expect(store.getState().replies['reply-opt'].syncStatus).toBe('failed');
   });
 
-  it('addOptimisticReply inserts nested reply after parent descendants', () => {
+  it('addOptimisticReply is a plain append regardless of parent/depth (#821)', () => {
     const store = makeStore();
-    // Seed the store with tree-ordered replies: A (depth 0), A1 (depth 1), B (depth 0)
+    // Seed the store with replies in arbitrary (non-tree) order: A (depth 0),
+    // A1 (depth 1, child of A), B (depth 0). Store order carries NO display
+    // meaning since #821 — screens derive order from replyTree.ts.
     const replyA = makeReply({ id: 'A', depth: 0, parentReplyId: null });
     const replyA1 = makeReply({ id: 'A1', depth: 1, parentReplyId: 'A' });
     const replyB = makeReply({ id: 'B', depth: 0, parentReplyId: null });
@@ -342,14 +344,189 @@ describe('threadsSlice — optimistic updates', () => {
     });
     store.getState().addOptimisticReply(newReply);
 
-    // Should be inserted after A1 (the last descendant of A) but before B
+    // Plain append to the end — no positional splice based on parent/descendants.
     expect(store.getState().replyIdsByThread['thread-1']).toEqual([
       'A',
       'A1',
-      'A2',
       'B',
+      'A2',
     ]);
     expect(store.getState().replies.A2.syncStatus).toBe('pending');
+  });
+
+  it('addOptimisticReply does not duplicate an id already in the list', () => {
+    const store = makeStore();
+    const replyA = makeReply({ id: 'A', depth: 0, parentReplyId: null });
+    store.getState().setReplies('thread-1', [replyA]);
+
+    // Re-adding the same id optimistically must not duplicate it in the list.
+    store.getState().addOptimisticReply(makeReply({ id: 'A', syncStatus: 'synced', body: 'v2' }));
+
+    const state = store.getState();
+    expect(state.replyIdsByThread['thread-1']).toEqual(['A']);
+    // The replies map is overwritten with the new row, forced back to pending.
+    expect(state.replies.A.body).toBe('v2');
+    expect(state.replies.A.syncStatus).toBe('pending');
+    expect(Object.keys(state.replies)).toEqual(['A']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// replaceReply — atomic optimistic-to-confirmed swap (#821)
+// ---------------------------------------------------------------------------
+
+describe('threadsSlice — replaceReply', () => {
+  it('swaps the optimistic row for the confirmed one atomically', () => {
+    const store = makeStore();
+    const optimistic = makeReply({ id: 'client-1', syncStatus: 'pending' });
+    store.getState().addOptimisticReply(optimistic);
+
+    const confirmed = makeReply({ id: 'server-1', syncStatus: 'synced' });
+    store.getState().replaceReply('client-1', confirmed);
+
+    const state = store.getState();
+    // Old id gone from both maps
+    expect(state.replies['client-1']).toBeUndefined();
+    expect(state.replyIdsByThread['thread-1']).not.toContain('client-1');
+    // Confirmed present
+    expect(state.replies['server-1']).toEqual(confirmed);
+    expect(state.replyIdsByThread['thread-1']).toContain('server-1');
+    // Exactly one id in the list, list length unchanged (1 -> 1)
+    expect(state.replyIdsByThread['thread-1']).toHaveLength(1);
+  });
+
+  it('is an in-place update when oldId === confirmed.id (a re-confirm)', () => {
+    const store = makeStore();
+    const optimistic = makeReply({ id: 'same-1', syncStatus: 'pending', body: 'draft' });
+    store.getState().addOptimisticReply(optimistic);
+
+    const confirmed = makeReply({ id: 'same-1', syncStatus: 'synced', body: 'final' });
+    store.getState().replaceReply('same-1', confirmed);
+
+    const state = store.getState();
+    // The row must NOT be deleted by the self-swap, and must not duplicate.
+    expect(state.replies['same-1']).toEqual(confirmed);
+    expect(state.replies['same-1'].syncStatus).toBe('synced');
+    expect(state.replyIdsByThread['thread-1']).toEqual(['same-1']);
+  });
+
+  it('still inserts the confirmed reply when oldId is absent from the store', () => {
+    const store = makeStore();
+    // Seed an unrelated reply so the list is non-empty, but never add the
+    // optimistic row under 'client-missing' (e.g. it was already reconciled
+    // away by a WebSocket echo).
+    const other = makeReply({ id: 'other', syncStatus: 'synced' });
+    store.getState().setReplies('thread-1', [other]);
+
+    const confirmed = makeReply({ id: 'server-2', syncStatus: 'synced' });
+    store.getState().replaceReply('client-missing', confirmed);
+
+    const state = store.getState();
+    expect(state.replies['server-2']).toEqual(confirmed);
+    expect(state.replyIdsByThread['thread-1']).toEqual(['other', 'server-2']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// reconcileReplies — drop server-removed replies, keep pending rows (#821)
+// ---------------------------------------------------------------------------
+
+describe('threadsSlice — reconcileReplies', () => {
+  it('drops ids absent from keepIds and returns the dropped ids', () => {
+    const store = makeStore();
+    const r1 = makeReply({ id: 'reply-1' });
+    const r2 = makeReply({ id: 'reply-2' });
+    const r3 = makeReply({ id: 'reply-3' });
+    store.getState().setReplies('thread-1', [r1, r2, r3]);
+
+    const dropped = store
+      .getState()
+      .reconcileReplies('thread-1', ['reply-1', 'reply-3'], ['reply-1', 'reply-2', 'reply-3']);
+
+    expect(dropped).toEqual(['reply-2']);
+    const state = store.getState();
+    expect(state.replies['reply-2']).toBeUndefined();
+    expect(state.replyIdsByThread['thread-1']).toEqual(['reply-1', 'reply-3']);
+  });
+
+  it('keeps rows with syncStatus "pending" even when absent from keepIds', () => {
+    const store = makeStore();
+    const synced = makeReply({ id: 'synced-1', syncStatus: 'synced' });
+    const pending = makeReply({ id: 'pending-1', syncStatus: 'pending' });
+    store.getState().setReplies('thread-1', [synced, pending]);
+
+    // keepIds is empty — a complete pagination pass that saw neither id
+    const dropped = store
+      .getState()
+      .reconcileReplies('thread-1', [], ['synced-1', 'pending-1']);
+
+    expect(dropped).toEqual(['synced-1']);
+    const state = store.getState();
+    expect(state.replies['pending-1']).toBeDefined();
+    expect(state.replyIdsByThread['thread-1']).toEqual(['pending-1']);
+  });
+
+  it('accepts a Set for keepIds', () => {
+    const store = makeStore();
+    const r1 = makeReply({ id: 'reply-1' });
+    const r2 = makeReply({ id: 'reply-2' });
+    store.getState().setReplies('thread-1', [r1, r2]);
+
+    const dropped = store
+      .getState()
+      .reconcileReplies('thread-1', new Set(['reply-1']), new Set(['reply-1', 'reply-2']));
+
+    expect(dropped).toEqual(['reply-2']);
+  });
+
+  it('returns [] and does not change state when nothing drops', () => {
+    const store = makeStore();
+    const r1 = makeReply({ id: 'reply-1' });
+    store.getState().setReplies('thread-1', [r1]);
+    const stateBefore = store.getState();
+
+    const dropped = store
+      .getState()
+      .reconcileReplies('thread-1', ['reply-1'], ['reply-1']);
+
+    expect(dropped).toEqual([]);
+    // No set() occurred — state reference is unchanged
+    expect(store.getState()).toBe(stateBefore);
+  });
+
+  it('never drops a synced row that was not a candidate at pass start (#821 review)', () => {
+    // The WebSocket-delivered reply (and the user's own just-confirmed send)
+    // land AFTER the server produced the page this pass is comparing against,
+    // so they are not evidence of a removal.
+    const store = makeStore();
+    const atPassStart = makeReply({ id: 'old-1', syncStatus: 'synced' });
+    const arrivedMidPass = makeReply({ id: 'ws-1', syncStatus: 'synced' });
+    store.getState().setReplies('thread-1', [atPassStart, arrivedMidPass]);
+
+    // Pass saw neither id on the server; only 'old-1' existed when it began.
+    const dropped = store.getState().reconcileReplies('thread-1', [], ['old-1']);
+
+    expect(dropped).toEqual(['old-1']);
+    const state = store.getState();
+    expect(state.replies['ws-1']).toBeDefined();
+    expect(state.replyIdsByThread['thread-1']).toEqual(['ws-1']);
+  });
+
+  it('returns [] when the candidate set is empty, whatever keepIds says', () => {
+    const store = makeStore();
+    store.getState().setReplies('thread-1', [makeReply({ id: 'reply-1' })]);
+    const stateBefore = store.getState();
+
+    const dropped = store.getState().reconcileReplies('thread-1', [], []);
+
+    expect(dropped).toEqual([]);
+    expect(store.getState()).toBe(stateBefore);
+  });
+
+  it('returns [] for a thread with no replies tracked', () => {
+    const store = makeStore();
+    const dropped = store.getState().reconcileReplies('unknown-thread', ['x'], ['x']);
+    expect(dropped).toEqual([]);
   });
 });
 

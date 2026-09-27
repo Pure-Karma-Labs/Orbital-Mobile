@@ -21,12 +21,13 @@ import {
 import { useAppStore } from '../stores/useAppStore';
 import { generateUUID } from '../utils/uuid';
 import { base64ToArrayBuffer } from './crypto/utils';
-import { getMedia, saveMedia, getThreadLevelMedia, getMediaForThreadReplies, updateMediaParent } from '../database/repositories/mediaRepository';
+import { getMedia, saveMedia, getThreadLevelMedia, getMediaForReply, getMediaForThreadReplies, updateMediaParent } from '../database/repositories/mediaRepository';
 import { saveThread as dbSaveThread, saveThreadBatch, getThreadsForConversation } from '../database/repositories/threadRepository';
-import { saveReply as dbSaveReply, saveReplyBatch, getRepliesForThread } from '../database/repositories/replyRepository';
+import { saveReply as dbSaveReply, saveReplyBatch, getRepliesForThread, deleteReply as dbDeleteReply } from '../database/repositories/replyRepository';
 import { mediaRowToItem } from '../database/repositories/mediaMapper';
 import { isDatabaseInitialized } from '../database/connection';
 import { resolveMediaPath } from './media/mediaPaths';
+import { teardownLocalMedia } from './media/mediaTeardown';
 import type { Thread, Reply, MediaItem } from '../types/store';
 import type { MediaRow } from '../database/repositories/mediaRepository';
 import type { ThreadResponse, ThreadListItem, ReplyResponse, MediaMetadata } from '../types/api';
@@ -804,24 +805,54 @@ export async function loadThread(threadId: string): Promise<Thread> {
 /**
  * Fetch replies for a thread (paginated), decrypt content, and load into the store.
  *
- * First page (no cursor): uses setReplies() to replace all replies.
- * Subsequent pages (with cursor): uses appendReplies() to add without wiping.
+ * ALWAYS appends (#821). The store list is an unordered set — display order is
+ * derived per render by `replyTree.ts` — so page 1 no longer replaces the list.
+ * Removal reconciliation, which `setReplies` used to do as a side effect, is
+ * now explicit: see {@link reconcileThreadReplies}.
  *
  * @param threadId - The thread whose replies to load.
  * @param groupId  - The group ID for decryption (AAD).
- * @param cursor   - Pagination cursor from a previous call.
- * @returns Decrypted replies and the next pagination cursor.
+ * @param offset   - Row offset from a previous call, counted in RAW server rows.
+ * @returns
+ *  - `replies`    — the rows that decrypted.
+ *  - `rawCount`   — rows the server returned, decrypted or not. The only sound
+ *                   pagination offset increment: counting decrypted rows drifts
+ *                   past a failure and silently skips replies.
+ *  - `serverIds`  — RAW server ids, including rows that failed to decrypt, so a
+ *                   decrypt failure is never mistaken for a server-side removal.
+ *  - `newIdCount` — rows this page added to the store. Zero means the list
+ *                   length did not change, so `onEndReached` will not re-fire.
+ *  - `hasMore`    — the server's flag.
  */
 export async function loadReplies(
   threadId: string,
   groupId: string,
   offset?: number,
-): Promise<{ replies: Reply[]; hasMore: boolean }> {
+): Promise<{
+  replies: Reply[];
+  rawCount: number;
+  serverIds: string[];
+  newIdCount: number;
+  hasMore: boolean;
+}> {
   const response = await getThreadReplies(threadId, offset);
+
+  // A malformed 200 must NOT read as "the thread is empty": that would end the
+  // pass with an empty keep-set and hand every loaded reply to the reconcile.
+  // Throwing puts it on the caller's existing failure path, where no page is
+  // applied and no reconcile runs.
+  if (!Array.isArray(response.replies) || typeof response.hasMore !== 'boolean') {
+    throw new Error('[loadReplies] malformed replies response');
+  }
+
   const groupKey = await getOrFetchGroupKey(groupId);
 
+  const rawReplies = response.replies;
+  const rawCount = rawReplies.length;
+  const serverIds = rawReplies.map((r) => r.replyId);
+
   const results = await Promise.allSettled(
-    response.replies.map((r) => mapReplyResponse(r, groupKey, groupId)),
+    rawReplies.map((r) => mapReplyResponse(r, groupKey, groupId)),
   );
   const replies = results
     .filter((r): r is PromiseFulfilledResult<Reply> => r.status === 'fulfilled')
@@ -837,11 +868,16 @@ export async function loadReplies(
   }
 
   const store = getStoreActions();
-  if (!offset) {
-    store.setReplies(threadId, replies);
-  } else {
-    store.appendReplies(threadId, replies);
+  // Counted BEFORE the append, against the ids the store already holds.
+  // Counted over the DECRYPTED rows: it answers "did the rendered list grow",
+  // so a page that is entirely decrypt failures reports 0 and the caller keeps
+  // paging instead of waiting for an onEndReached that will never fire.
+  const knownIds = new Set(store.replyIdsByThread[threadId] ?? []);
+  let newIdCount = 0;
+  for (const reply of replies) {
+    if (!knownIds.has(reply.id)) newIdCount++;
   }
+  store.appendReplies(threadId, replies);
 
   // Process thread-level media from the replies response (TD-T7: both levels exist)
   if (response.media && response.media.length > 0) {
@@ -856,8 +892,102 @@ export async function loadReplies(
 
   return {
     replies,
+    rawCount,
+    serverIds,
+    newIdCount,
     hasMore: response.hasMore,
   };
+}
+
+/**
+ * Drop replies the server no longer returns, from the store AND from SQLite (#821).
+ *
+ * Call this only after a COMPLETE pagination pass (the page that returned
+ * `hasMore === false`), passing every RAW server id seen across that pass and
+ * the ids that existed when the pass STARTED. `setReplies` on page 1 used to be
+ * the only client path that cleared a reply removed server-side (admin takedowns
+ * run `DELETE FROM replies`, and the backend's `parent_reply_id` FK is
+ * `ON DELETE CASCADE` per migration 1730000000020 — `schema.sql` still says
+ * SET NULL and is stale); now that page 1 appends, this is that path.
+ *
+ * Three guards, all in `reconcileReplies`: raw ids (a decrypt failure is not a
+ * removal), pending rows survive, and only ids present at pass start are
+ * candidates (a WebSocket reply or a confirmed send that landed mid-pass
+ * postdates the server snapshot and must never be deleted).
+ *
+ * @returns the dropped ids.
+ */
+export function reconcileThreadReplies(
+  threadId: string,
+  serverIdsSeen: ReadonlySet<string> | readonly string[],
+  candidateIds: ReadonlySet<string> | readonly string[],
+): string[] {
+  const store = getStoreActions();
+  const dropped = store.reconcileReplies(threadId, serverIdsSeen, candidateIds);
+  if (dropped.length === 0) return dropped;
+
+  if (isDatabaseInitialized()) {
+    for (const id of dropped) {
+      try {
+        // Also fires the FTS delete trigger, so the row leaves search too.
+        dbDeleteReply(id);
+      } catch (e) {
+        if (__DEV__) console.warn('[reconcileThreadReplies] DB delete failed:', e instanceof Error ? e.message : e);
+      }
+    }
+    // A takedown of an image reply has to take the image with it, or the
+    // plaintext frame stays on disk and in FileLibrary. Detached: teardown is
+    // async and best-effort, and the store/DB prune above must not wait on it.
+    void teardownMediaForReplies(dropped);
+  }
+  return dropped;
+}
+
+/**
+ * Best-effort local media teardown for replies that were just pruned.
+ * Uses the shared `teardownLocalMedia` (row -> file -> store, in that order);
+ * a video's thumbnail child is torn down with its parent.
+ */
+async function teardownMediaForReplies(replyIds: readonly string[]): Promise<void> {
+  for (const replyId of replyIds) {
+    let rows: MediaRow[];
+    try {
+      rows = getMediaForReply(replyId);
+    } catch {
+      continue; // one unreadable reply must not stop the sweep
+    }
+    for (const row of rows) {
+      try {
+        await teardownLocalMedia(row.id, resolveMediaPath(row.local_path));
+        if (row.thumbnail_media_id) {
+          const thumb = getMedia(row.thumbnail_media_id);
+          await teardownLocalMedia(
+            row.thumbnail_media_id,
+            resolveMediaPath(thumb?.local_path ?? null),
+          );
+        }
+      } catch {
+        // Per-row resilience — the reply rows are already gone either way
+      }
+    }
+  }
+}
+
+/**
+ * Newest `createdAt` among the replies that would be this reply's siblings
+ * (same thread, same parent), or 0. Store-only: an unsaved sibling counts.
+ */
+function newestSiblingCreatedAt(threadId: string, parentReplyId: string | null): number {
+  const state = getStoreActions();
+  const ids = state.replyIdsByThread[threadId] ?? [];
+  let newest = 0;
+  for (const id of ids) {
+    const sibling = state.replies[id];
+    if (!sibling || sibling.parentReplyId !== parentReplyId) continue;
+    const at = sibling.createdAt;
+    if (typeof at === 'number' && Number.isFinite(at) && at > newest) newest = at;
+  }
+  return newest;
 }
 
 /**
@@ -892,7 +1022,12 @@ export async function postReply(
   options?: { mediaIds?: string[] },
 ): Promise<Reply> {
   const clientId = generateUUID();
-  const now = Date.now();
+  const store = getStoreActions();
+
+  // Clamp past the newest sibling (#821). Siblings sort by createdAt, so a
+  // device clock behind the server's would park the optimistic row ABOVE
+  // replies that already exist, and it would visibly jump on confirmation.
+  const now = Math.max(Date.now(), newestSiblingCreatedAt(threadId, parentReplyId) + 1);
 
   const optimisticReply: Reply = {
     id: clientId,
@@ -907,7 +1042,6 @@ export async function postReply(
     syncStatus: 'pending',
   };
 
-  const store = getStoreActions();
   store.addOptimisticReply(optimisticReply);
 
   try {
@@ -939,9 +1073,10 @@ export async function postReply(
     }
 
     // Replace the optimistic reply (client ID) with the server-confirmed reply
-    // so subsequent replies-to-this-reply use the real server ID.
-    store.removeReply(clientId);
-    store.upsertReply(confirmedReply);
+    // so subsequent replies-to-this-reply use the real server ID. ONE set():
+    // the old remove+upsert pair appended the confirmed row to the end of the
+    // list, which is exactly how a nested reply jumped to the bottom (#821).
+    store.replaceReply(clientId, confirmedReply);
 
     // Bump the parent thread so list rows stay live without a refetch (#329).
     // Mirrors the WS new_reply handler; without this the posting device's

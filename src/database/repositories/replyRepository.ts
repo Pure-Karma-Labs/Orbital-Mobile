@@ -5,8 +5,10 @@
  * hydration and offline viewing. Encrypted blob columns are left NULL;
  * decryption happens in the service layer before data reaches here.
  *
- * Timestamps: DB stores epoch seconds, store uses epoch milliseconds.
- * Convert on write (/ 1000) and read (* 1000).
+ * Timestamps: epoch MILLISECONDS in both the DB and the store since #821.
+ * Rows written before that hold epoch seconds; mapRowToReply reads either
+ * (see SECONDS_CEILING). No migration: the tolerant read covers old rows, and
+ * any row the server still returns is rewritten in ms on the next load.
  */
 
 import { queryMany, execute } from '../queryHelpers';
@@ -38,8 +40,8 @@ export function saveReply(reply: Reply): void {
     reply.authorUsername,
     reply.parentReplyId ?? null,
     reply.depth,
-    Math.floor(reply.createdAt / 1000),
-    Math.floor(reply.updatedAt / 1000),
+    Math.floor(reply.createdAt),
+    Math.floor(reply.updatedAt),
     reply.syncStatus,
   ];
 
@@ -85,6 +87,18 @@ interface ReplyRow {
   sync_status: string;
 }
 
+/**
+ * Epoch seconds and epoch milliseconds can be told apart for any date this app
+ * will ever see: 1e11 seconds is the year 5138, and 1e11 ms is 1973. Anything
+ * below the ceiling is a pre-#821 second-precision row.
+ */
+const SECONDS_CEILING = 1e11;
+
+function toMillis(value: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 0;
+  return value < SECONDS_CEILING ? value * 1000 : value;
+}
+
 function mapRowToReply(row: ReplyRow): Reply {
   return {
     id: row.id,
@@ -94,8 +108,8 @@ function mapRowToReply(row: ReplyRow): Reply {
     body: row.body,
     parentReplyId: row.parent_reply_id,
     depth: row.depth,
-    createdAt: row.created_at * 1000,
-    updatedAt: row.updated_at * 1000,
+    createdAt: toMillis(row.created_at),
+    updatedAt: toMillis(row.updated_at),
     syncStatus: (row.sync_status as Reply['syncStatus']) || 'synced',
   };
 }

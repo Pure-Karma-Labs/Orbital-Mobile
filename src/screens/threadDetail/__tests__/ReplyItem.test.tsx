@@ -5,29 +5,21 @@
 
 import React from 'react';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
-import { ThemeProvider } from '../../../theme';
+import { ThemeProvider, lightColors } from '../../../theme';
 import { ReplyItem } from '../ReplyItem';
 
-// ReplyItem itself no longer imports RNGH (#518 removed the container tap).
-// This mock stays purely as an import-safety net for anything else that the
-// render tree may pull in, and is local until #690 hoists a shared mock.
-jest.mock('react-native-gesture-handler', () => {
-  const { View } = require('react-native');
-  return {
-    Gesture: { Tap: () => ({ onEnd: () => ({ runOnJS: () => ({}) }) }) },
-    GestureDetector: ({ children }: { children: React.ReactNode }) => children,
-    GestureHandlerRootView: View,
-  };
-});
-
 // Stub the emoji asset layer: the arrow's identity is asserted via the
-// `unified` code rather than a decoded WebP.
+// `unified` code rather than a decoded WebP. `tintColor` is passed through so
+// the contrast fix stays observable.
 jest.mock('../../../components/Emoji', () => {
   const ReactModule = require('react');
   const { View } = require('react-native');
   return {
-    Emoji: (props: { unified: string; size?: number }) =>
-      ReactModule.createElement(View, { testID: `mock-emoji-${props.unified}` }),
+    Emoji: (props: { unified: string; size?: number; tintColor?: string }) =>
+      ReactModule.createElement(View, {
+        testID: `mock-emoji-${props.unified}`,
+        tintColor: props.tintColor,
+      }),
   };
 });
 
@@ -232,8 +224,17 @@ describe('ReplyItem — structural #518 guard', () => {
 
   it('renders exactly one reply control, carrying the OpenMoji hooked arrow', () => {
     const renderer = renderReplyItem();
-    pressableFor(renderer, REPLY_BUTTON); // asserts exactly one pressable
+    pressableFor(renderer, REPLY_BUTTON); // asserts exactly one host control
     expect(nodesWithTestId(renderer, 'mock-emoji-21A9-FE0F').length).toBeGreaterThan(0);
+  });
+
+  it('tints the arrow with textSecondary — the raster is all-black and would vanish on dark rows', () => {
+    const renderer = renderReplyItem();
+    const glyphs = nodesWithTestId(renderer, 'mock-emoji-21A9-FE0F');
+    expect(glyphs.length).toBeGreaterThan(0);
+    for (const glyph of glyphs) {
+      expect(glyph.props.tintColor).toBe(lightColors.textSecondary);
+    }
   });
 
   it('keeps the body selectable', () => {
@@ -252,15 +253,48 @@ describe('ReplyItem — structural #518 guard', () => {
     expect(nameNode.length).toBeGreaterThan(0);
   });
 
-  it('labels the author control "Actions for bob" on other people\'s replies', () => {
-    const renderer = renderReplyItem({ authorId: 'u-bob', currentUserId: 'u-me' });
+  it('folds the timestamp into the author control label on other people\'s replies', () => {
+    // The timestamp Text lives inside the author touchable, so it is invisible
+    // to a screen reader unless the label carries it.
+    const renderer = renderReplyItem({
+      authorId: 'u-bob',
+      currentUserId: 'u-me',
+      createdAt: Date.now() - 2 * 3600000,
+    });
     const labelled = renderer.root.findAll(
-      (n) => n.props.accessibilityLabel === 'Actions for bob',
+      (n) => n.props.accessibilityLabel === 'Actions for bob, posted 2h ago',
     );
     expect(labelled.length).toBeGreaterThan(0);
+
     // ...and drops the label entirely on your own rows, where the control is inert.
     const own = renderReplyItem({ authorId: 'u-me', currentUserId: 'u-me' });
-    expect(own.root.findAll((n) => n.props.accessibilityLabel === 'Actions for bob')).toHaveLength(0);
+    expect(
+      own.root.findAll(
+        (n) =>
+          typeof n.props.accessibilityLabel === 'string' &&
+          n.props.accessibilityLabel.startsWith('Actions for'),
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('keeps the author and arrow hit regions from overlapping', () => {
+    const renderer = renderReplyItem();
+
+    // Arrow: no LEFT slop, so it cannot cover the timestamp.
+    expect(pressableFor(renderer, REPLY_BUTTON).props.hitSlop).toEqual({
+      top: 8, bottom: 8, right: 8, left: 0,
+    });
+
+    // Author: no RIGHT slop, so it cannot reach into the arrow's frame.
+    const authorControl = renderer.root
+      .findAll(
+        (n) =>
+          typeof n.props.accessibilityLabel === 'string' &&
+          n.props.accessibilityLabel.startsWith('Actions for'),
+      )
+      .find((n) => typeof n.props.onPress === 'function');
+    expect(authorControl).toBeDefined();
+    expect(authorControl!.props.hitSlop).toEqual({ top: 4, bottom: 4, left: 4, right: 0 });
   });
 });
 

@@ -103,14 +103,14 @@ Each reply row (`ReplyItem`) carries one explicit reply control at the **top-rig
 
 | Property | Value |
 |---|---|
-| Glyph | OpenMoji ↩️ (`21A9-FE0F`) at 16pt |
+| Glyph | OpenMoji ↩️ (`21A9-FE0F`) at 16pt, tinted `colors.textSecondary` — the raster is all-black, so untinted it is invisible on dark rows |
 | Position | Top-right of the header row (avatar · author name · timestamp) |
-| Touch target | 44 × 32pt minimum |
+| Touch target | 44 × 32pt frame + 8pt vertical `hitSlop` = 44 × 48pt effective |
 | Action | Sets the reply context ("Replying to @name" above the composer) and focuses the composer text input, opening the keyboard |
 | Unsynced rows | Still rendered, but dimmed (`opacity` 0.5) and inert while the reply is pending / syncing / failed — so the row does not shift when it syncs |
 | Accessibility | Reads "Reply to [Author], button" |
 
-The avatar / author name / timestamp remain a separate tappable control that opens the block/report action sheet — it reads "Actions for [Author], button" and is disabled on your own rows. The row container itself is not announced as a button.
+The avatar / author name / timestamp remain a separate tappable control that opens the block/report action sheet — it reads "Actions for [Author], posted [time], button" (the timestamp lives inside the control, so the label carries it) and is disabled on your own rows. The row container itself is not announced as a button.
 
 ## Reply Composer (Fixed at Bottom)
 

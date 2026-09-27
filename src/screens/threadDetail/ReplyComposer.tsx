@@ -82,14 +82,24 @@ export const ReplyComposer = React.memo(function ReplyComposer({
 }: ReplyComposerProps): React.JSX.Element {
   const theme = useTheme();
   const inputRef = useRef<RNTextInput>(null);
+  const lastFocusedTargetRef = useRef<ReplyTarget | null>(null);
 
   // Pressing a reply arrow should land the caret in the composer (#518).
   // Keyed on the replyTarget OBJECT identity, not its replyId: ThreadDetailScreen's
   // handleReplyPress builds a fresh object on every press, so pressing the same
-  // row again after dismissing the keyboard re-runs this and re-focuses.
-  // Skipped while `sending`, when the input is not editable.
+  // row again after dismissing the keyboard re-focuses.
+  //
+  // The latch makes this fire exactly ONCE per target object. Without it, the
+  // `sending` true -> false edge after a FAILED send re-runs the effect while
+  // replyTarget is still set, animating the keyboard up behind the "Reply
+  // Failed" alert. A fresh object from a real press still clears the latch.
   useEffect(() => {
-    if (replyTarget == null || sending) return;
+    if (replyTarget == null) {
+      lastFocusedTargetRef.current = null;
+      return;
+    }
+    if (sending || lastFocusedTargetRef.current === replyTarget) return;
+    lastFocusedTargetRef.current = replyTarget;
     inputRef.current?.focus();
   }, [replyTarget, sending]);
 

@@ -240,6 +240,31 @@ describe('ReplyComposer — focus on reply target (#518)', () => {
     updateComposer(renderer, { replyTarget: target, sending: true });
     expect(focusSpy).not.toHaveBeenCalled();
   });
+
+  it('does not re-focus on the sending true->false edge of a FAILED send', () => {
+    // A failed send keeps replyTarget set and flips sending back to false.
+    // Without the per-target latch the effect re-fires here and animates the
+    // keyboard up behind the "Reply Failed" alert.
+    const renderer = renderComposer({ replyTarget: target, sending: false });
+    expect(focusSpy).toHaveBeenCalledTimes(1);
+
+    updateComposer(renderer, { replyTarget: target, sending: true });
+    updateComposer(renderer, { replyTarget: target, sending: false });
+    expect(focusSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-arms after the target is cleared, so the next press focuses again', () => {
+    const renderer = renderComposer({ replyTarget: target });
+    expect(focusSpy).toHaveBeenCalledTimes(1);
+
+    // Successful send clears the target...
+    updateComposer(renderer, { replyTarget: null });
+    expect(focusSpy).toHaveBeenCalledTimes(1);
+
+    // ...and the next press re-focuses even if it targets the same object.
+    updateComposer(renderer, { replyTarget: target });
+    expect(focusSpy).toHaveBeenCalledTimes(2);
+  });
 });
 
 // ---------------------------------------------------------------------------

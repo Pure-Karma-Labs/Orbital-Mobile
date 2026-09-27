@@ -91,16 +91,14 @@ Default iOS edge swipe for back navigation. No custom override.
 
 ---
 
-## Swipe Gestures
+## Reply Affordance (Thread Detail)
 
-### Reply (Thread Detail) — Tap, Not Swipe
-
-Reply rows have no swipe gesture. Swipe-to-reply was specified in an earlier draft of this document; the shipped affordance is an explicit **reply arrow** in each reply row's header. A visible control avoids a gesture collision with selectable text and with the iOS edge swipe-back, and it exposes a real target for VoiceOver/TalkBack. See `SCREEN-THREAD-DETAIL.md` → Reply Arrow.
+No swipe gestures ship anywhere in the app — the only horizontal gesture is the iOS edge swipe-back. Swipe-to-reply was specified in an earlier draft of this document; the shipped affordance is an explicit **reply arrow** in each reply row's header. A visible control avoids a gesture collision with selectable text and with the edge swipe-back, and it exposes a real target for VoiceOver/TalkBack. See `SCREEN-THREAD-DETAIL.md` → Reply Arrow.
 
 | Property | Value |
 |---|---|
-| Trigger | Tap the ↩️ arrow (OpenMoji `21A9-FE0F`, 16pt) at the top-right of a reply's header row |
-| Touch target | 44 × 32pt minimum |
+| Trigger | Tap the ↩️ arrow (OpenMoji `21A9-FE0F` tinted `colors.textSecondary`, 16pt) at the top-right of a reply's header row |
+| Touch target | 44 × 32pt frame + 8pt vertical `hitSlop` = 44 × 48pt effective |
 | Result | Sets "Replying to @name" context above the composer and focuses the composer input |
 | Unsynced rows | Arrow dimmed (`opacity` 0.5) and inert while pending / syncing / failed — no layout shift when the reply syncs |
 | Accessibility | "Reply to [Author], button"; the row container is not a button |
@@ -173,8 +171,8 @@ Used for: composer (new thread), media lightbox, create/join orbit.
 | Tab bar items | 44 × 49pt | Full tab width |
 | Thread list rows | Full width × 64pt min | Comfortable tap area |
 | Back button | 44 × 44pt | Including text label |
-| Message actions | 44 × 44pt | Reply arrow on a reply row is 44 × 32pt minimum (16pt glyph) |
-| Indented replies | Full remaining width | The reply row itself is **not** a tap target. Even at max indent, the reply arrow in the header row keeps its 44 × 32pt target, and the author block keeps its own |
+| Message actions | 44 × 48pt effective | Reply arrow on a reply row: 44 × 32pt frame + 8pt vertical `hitSlop` = 44 × 48pt effective (16pt glyph) |
+| Indented replies | Full remaining width | The reply row itself is **not** a tap target. Even at max indent, the reply arrow in the header row keeps its full target, and the author block keeps its own (no right `hitSlop`, so the two never overlap) |
 | DM message rows | Full width × 44pt min | Whole-row tap retained here — that tap is navigation (it opens the thread) |
 
 ---

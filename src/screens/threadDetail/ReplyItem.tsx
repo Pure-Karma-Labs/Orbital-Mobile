@@ -246,9 +246,16 @@ export const ReplyItem = React.memo(function ReplyItem({
           onPress={handleAuthorPress}
           activeOpacity={isSelf ? 1 : 0.7}
           disabled={isSelf}
-          hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
+          // right: 0 — any right slop here reaches into the arrow's frame once
+          // the name is long enough to close the gap, so a near-miss left of
+          // the arrow would open the Block/Report sheet instead.
+          hitSlop={{ top: 4, bottom: 4, left: 4, right: 0 }}
           accessibilityRole={isSelf ? undefined : 'button'}
-          accessibilityLabel={isSelf ? undefined : `Actions for ${displayName}`}
+          // The timestamp is inside this control, so it is invisible to a
+          // screen reader unless the label carries it.
+          accessibilityLabel={
+            isSelf ? undefined : `Actions for ${displayName}, posted ${formatTimestamp(createdAt)}`
+          }
         >
           <Avatar name={displayName} size={20} {...avatarProps} />
           <EmojiText style={authorTextStyle} numberOfLines={1}>{displayName}</EmojiText>
@@ -266,7 +273,12 @@ export const ReplyItem = React.memo(function ReplyItem({
           accessibilityState={{ disabled: !canReply }}
           testID={`reply-item-${replyId}-reply-button`}
         >
-          <Emoji unified="21A9-FE0F" size={16} />
+          {/*
+            The 21A9-FE0F raster is entirely black (max channel 77), so
+            untinted it sits at ~1.4:1 on a dark reply row. It is monochrome,
+            so tinting is lossless and gives the control a themed colour.
+          */}
+          <Emoji unified="21A9-FE0F" size={16} tintColor={theme.colors.textSecondary} />
         </TouchableOpacity>
       </View>
       {body != null && body.length > 0 && (

@@ -105,6 +105,20 @@ describe('Emoji', () => {
     expect(images[0].props.source).toBeDefined();
   });
 
+  it('applies tintColor to the Image style when provided (#518 dark-row contrast)', () => {
+    const renderer = renderEmoji({ unified: '21A9-FE0F', size: 16, tintColor: '#8A94A6' });
+    const images = renderer.root.findAllByType('Image' as unknown as React.ComponentType);
+    expect(images.length).toBe(1);
+    expect(images[0].props.style).toEqual({ width: 16, height: 16, tintColor: '#8A94A6' });
+  });
+
+  it('omits tintColor entirely when the prop is not given', () => {
+    const renderer = renderEmoji({ unified: '21A9-FE0F', size: 16 });
+    const images = renderer.root.findAllByType('Image' as unknown as React.ComponentType);
+    expect(images[0].props.style).toEqual({ width: 16, height: 16 });
+    expect('tintColor' in images[0].props.style).toBe(false);
+  });
+
   it('passes testID to the Image', () => {
     const renderer = renderEmoji({
       unified: '1F600',

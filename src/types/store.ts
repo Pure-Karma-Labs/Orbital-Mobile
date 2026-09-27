@@ -84,7 +84,12 @@ export interface Reply {
   /** Decrypted from body_encrypted + body_iv in database */
   body: string | null;
   parentReplyId: string | null;
-  /** Reply nesting depth (0 = top-level). Persisted to SQLCipher. */
+  /**
+   * LEGACY SERVER HINT, not display order (#821). Persisted to SQLCipher and
+   * written from the API `level` field (and hardcoded to 1 by the WebSocket
+   * handler), so it is unreliable. Display depth comes from `replyTree.ts`,
+   * which derives it from the parent chain. Nothing should render this.
+   */
   depth: number;
   createdAt: number;
   updatedAt: number;
@@ -261,6 +266,20 @@ export interface ThreadsActions {
   /** Append replies without replacing existing ones — used for pagination */
   appendReplies: (threadId: string, replies: Reply[]) => void;
   upsertReply: (reply: Reply) => void;
+  /**
+   * Atomically swap an optimistic reply for the server-confirmed one. Always
+   * inserts `confirmed`, even when `oldId` is already gone (#821).
+   */
+  replaceReply: (oldId: string, confirmed: Reply) => void;
+  /**
+   * Drop this thread's replies missing from `keepIds` (the raw server ids of a
+   * complete pagination pass), keeping `pending` rows. Returns the dropped ids
+   * so the caller can delete them from SQLite (#821).
+   */
+  reconcileReplies: (
+    threadId: string,
+    keepIds: ReadonlySet<string> | readonly string[],
+  ) => string[];
   removeReply: (id: string) => void;
   addOptimisticThread: (thread: Thread) => void;
   addOptimisticReply: (reply: Reply) => void;

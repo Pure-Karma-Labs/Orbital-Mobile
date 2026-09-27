@@ -42,7 +42,14 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useTheme } from '../theme';
 import { useAuth, useThreads } from '../stores';
 import { useAppStore } from '../stores/useAppStore';
-import { loadThread, loadReplies, postReply, hydrateRepliesFromLocal } from '../services/threadService';
+import {
+  loadThread,
+  loadReplies,
+  postReply,
+  hydrateRepliesFromLocal,
+  reconcileThreadReplies,
+} from '../services/threadService';
+import { buildReplyTree, visibleRows, type ParentState } from '../utils/replyTree';
 import { isUploadCancellation } from '../services/mediaUploadService';
 import {
   classifyCreateFailure,
@@ -81,13 +88,23 @@ export type ThreadDetailScreenProps = NativeStackScreenProps<
   'ThreadDetail'
 >;
 
-/** A row in the reply FlatList — a reply with parent context for display */
+/** A row in the reply FlatList — a reply with its computed tree context */
 type ReplyRow = {
   reply: Reply;
+  /** Display depth from the tree, never the stored `depth` hint (#821) */
+  depth: number;
+  parentState: ParentState;
+  /** Parent author, carried only when the parent is loaded and visible */
   parentAuthorId: string | null;
   parentAuthorUsername: string | null;
-  key: string;
 };
+
+/**
+ * Follow-up page cap for the zero-new-rows case. A page that adds no rows
+ * leaves content length unchanged, so onEndReached will not fire again and
+ * pagination would stall; the loop keeps going, but never unbounded.
+ */
+const MAX_FOLLOW_UP_PAGES = 5;
 
 // ---------------------------------------------------------------------------
 // Empty replies state
@@ -148,26 +165,48 @@ export function ThreadDetailScreen({
 
   const blockedSet = useBlockedSet();
 
-  // Derive reply list from store — ordered by replyIdsByThread, excluding blocked users
-  const replyList = useMemo((): Reply[] => {
+  // This thread's replies, in store (insertion) order. That order is NOT the
+  // display order — replyTree.ts derives that below (#821).
+  const threadReplies = useMemo((): Reply[] => {
     const ids = replyIdsByThread[threadId] ?? [];
-    const list = ids
-      .map((id) => allReplies[id])
-      .filter((r): r is Reply => r != null);
-    return blockedSet.size > 0 ? list.filter((r) => !blockedSet.has(r.authorId)) : list;
-  }, [allReplies, replyIdsByThread, threadId, blockedSet]);
+    return ids.map((id) => allReplies[id]).filter((r): r is Reply => r != null);
+  }, [allReplies, replyIdsByThread, threadId]);
 
   const replyRows = useMemo((): ReplyRow[] => {
-    return replyList.map((r) => {
-      const parent = r.parentReplyId ? allReplies[r.parentReplyId] : undefined;
-      return {
+    try {
+      const { nodes } = buildReplyTree(threadReplies);
+      return visibleRows(nodes, { hiddenAuthorIds: blockedSet }).map((row) => {
+        // Only a 'jumpable' parent may be named: 'hidden' means the author is
+        // blocked, and naming them would put a blocked username back on screen.
+        const parent =
+          row.parentState === 'jumpable' && row.parentId
+            ? allReplies[row.parentId]
+            : undefined;
+        return {
+          reply: row.reply,
+          depth: row.depth,
+          parentState: row.parentState,
+          parentAuthorId: parent?.authorId ?? null,
+          parentAuthorUsername: parent?.authorUsername ?? null,
+        };
+      });
+    } catch {
+      // The tree functions are total, so this should be unreachable — but the
+      // app has no ErrorBoundary, and a wrong ORDER is survivable where a blank
+      // thread screen is not. Degrade to flat store order, naming no parent.
+      const visible =
+        blockedSet.size > 0
+          ? threadReplies.filter((r) => !blockedSet.has(r.authorId))
+          : threadReplies;
+      return visible.map((r) => ({
         reply: r,
-        parentAuthorId: parent?.authorId ?? null,
-        parentAuthorUsername: parent?.authorUsername ?? null,
-        key: `reply-${r.id}`,
-      };
-    });
-  }, [replyList, allReplies]);
+        depth: 0,
+        parentState: (r.parentReplyId ? 'orphan' : 'none') as ParentState,
+        parentAuthorId: null,
+        parentAuthorUsername: null,
+      }));
+    }
+  }, [threadReplies, allReplies, blockedSet]);
 
   // Local state
   const [loading, setLoading] = useState(true);
@@ -229,10 +268,23 @@ export function ThreadDetailScreen({
   /** Whether we are waiting for keyboard to hide before showing the picker */
   const pendingPickerShow = useRef(false);
 
-  // Pagination offset (local — not stored in Zustand)
+  // Pagination state (local — not stored in Zustand). Offsets count RAW server
+  // rows, never decrypted ones: a row that fails to decrypt still occupies a
+  // slot in the server's window, so counting decrypted rows drifts and skips.
   const offsetRef = useRef(0);
   const hasMoreRef = useRef(true);
   const loadingMoreRef = useRef(false);
+  /** Raw server ids seen in the CURRENT pass — the reconcile keep-set. */
+  const serverIdsSeenRef = useRef<Set<string>>(new Set());
+  /** Rows covered contiguously from offset 0 in the current pass. */
+  const coveredRef = useRef(0);
+  /**
+   * False once a page is fetched at an offset beyond what this pass has
+   * covered (the refresh high-water jump). Such a pass has a HOLE in it, so
+   * its id set is not a complete picture and must never drive a reconcile —
+   * that would delete the rows sitting in the hole.
+   */
+  const passContiguousRef = useRef(true);
 
   // ---------------------------------------------------------------------------
   // Deep-link scroll + highlight
@@ -409,17 +461,72 @@ export function ThreadDetailScreen({
   // Data loading
   // ---------------------------------------------------------------------------
 
+  /** Thread the pagination refs belong to — a params-in-place navigate to
+   *  another thread keeps this screen (and its refs) mounted. */
+  const paginationThreadRef = useRef(threadId);
+
+  /** Start a fresh pagination pass: the keep-set only spans one pass. */
+  const beginPaginationPass = useCallback(() => {
+    if (paginationThreadRef.current !== threadId) {
+      // Different thread: the high-water offset would otherwise skip straight
+      // past the new thread's first pages.
+      paginationThreadRef.current = threadId;
+      offsetRef.current = 0;
+      hasMoreRef.current = true;
+    }
+    serverIdsSeenRef.current = new Set();
+    coveredRef.current = 0;
+    passContiguousRef.current = true;
+  }, [threadId]);
+
+  /**
+   * Fold one page into the pagination state.
+   *
+   * - The offset advances by RAW rows, as a high-water mark, so a refresh does
+   *   not re-download the pages already loaded.
+   * - `rawCount === 0` ends the pass: the server has nothing at this offset.
+   * - When the pass ends AND it was contiguous, its accumulated raw ids are a
+   *   complete picture of the thread, so anything else in the store was removed
+   *   server-side and is reconciled away (store + SQLite + FTS).
+   */
+  const applyRepliesPage = useCallback(
+    (
+      offsetUsed: number,
+      result: { rawCount: number; serverIds: string[]; hasMore: boolean },
+    ) => {
+      for (const id of result.serverIds) serverIdsSeenRef.current.add(id);
+
+      if (offsetUsed <= coveredRef.current) {
+        coveredRef.current = Math.max(coveredRef.current, offsetUsed + result.rawCount);
+      } else {
+        passContiguousRef.current = false;
+      }
+
+      offsetRef.current = Math.max(offsetRef.current, offsetUsed + result.rawCount);
+      hasMoreRef.current = result.hasMore && result.rawCount > 0;
+
+      if (!hasMoreRef.current && passContiguousRef.current) {
+        try {
+          reconcileThreadReplies(threadId, serverIdsSeenRef.current);
+        } catch (e) {
+          if (__DEV__) console.warn('[ThreadDetail] reconcile failed:', e instanceof Error ? e.message : e);
+        }
+      }
+    },
+    [threadId],
+  );
+
   const fetchData = useCallback(async () => {
     try {
       setError(null);
       const loadedThread = await loadThread(threadId);
       try {
+        beginPaginationPass();
         const result = await loadReplies(
           threadId,
           loadedThread.conversationId,
         );
-        offsetRef.current = result.replies.length;
-        hasMoreRef.current = result.hasMore;
+        applyRepliesPage(0, result);
       } catch (e) {
         if (__DEV__) console.warn('[ThreadDetail] replies failed:', e instanceof Error ? e.message : e);
         hasMoreRef.current = false;
@@ -430,7 +537,7 @@ export function ThreadDetailScreen({
     } finally {
       if (mountedRef.current) setLoading(false);
     }
-  }, [threadId]);
+  }, [threadId, beginPaginationPass, applyRepliesPage]);
 
   // Mount/unmount lifecycle
   useEffect(() => {
@@ -465,15 +572,15 @@ export function ThreadDetailScreen({
     setRefreshing(true);
     try {
       const loadedThread = await loadThread(threadId);
+      beginPaginationPass();
       const result = await loadReplies(threadId, loadedThread.conversationId);
-      offsetRef.current = result.replies.length;
-      hasMoreRef.current = result.hasMore;
+      applyRepliesPage(0, result);
     } catch {
       // Silently fail on refresh — stale data is still visible
     } finally {
       if (mountedRef.current) setRefreshing(false);
     }
-  }, [threadId]);
+  }, [threadId, beginPaginationPass, applyRepliesPage]);
 
   // Pagination — load more replies
   const handleEndReached = useCallback(async () => {
@@ -483,21 +590,28 @@ export function ThreadDetailScreen({
     loadingMoreRef.current = true;
     setLoadingMore(true);
     try {
-      const result = await loadReplies(
-        threadId,
-        conversationId,
-        offsetRef.current,
-      );
-      offsetRef.current += result.replies.length;
-      hasMoreRef.current = result.hasMore;
+      for (let page = 0; page < MAX_FOLLOW_UP_PAGES; page++) {
+        const offsetUsed = offsetRef.current;
+        const result = await loadReplies(
+          threadId,
+          conversationId,
+          offsetUsed > 0 ? offsetUsed : undefined,
+        );
+        applyRepliesPage(offsetUsed, result);
+        // Stop at the end of the thread, or as soon as the list actually grew:
+        // new rows extend the content, so onEndReached fires again on its own.
+        // A page of nothing but already-known (or undecryptable) rows does not,
+        // which is what this loop exists to get past.
+        if (!hasMoreRef.current || result.newIdCount > 0) break;
+        if (!mountedRef.current) break;
+      }
     } catch {
       hasMoreRef.current = false;
     } finally {
       loadingMoreRef.current = false;
       if (mountedRef.current) setLoadingMore(false);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- ref-based guard replaces loadingMore state dep
-  }, [threadId, conversationId]);
+  }, [threadId, conversationId, applyRepliesPage]);
 
   // ---------------------------------------------------------------------------
   // Reply handling
@@ -659,9 +773,10 @@ export function ThreadDetailScreen({
           authorId={item.reply.authorId}
           groupId={thread?.conversationId ?? null}
           currentUserId={userId}
-          depth={item.reply.depth}
+          depth={item.depth}
           createdAt={item.reply.createdAt}
           syncStatus={item.reply.syncStatus}
+          parentState={item.parentState}
           parentAuthorId={item.parentAuthorId}
           parentAuthorUsername={item.parentAuthorUsername}
           onReplyPress={handleReplyPress}
@@ -672,7 +787,7 @@ export function ThreadDetailScreen({
     [handleReplyPress, userId, thread?.conversationId],
   );
 
-  const keyExtractor = useCallback((item: ReplyRow) => item.key, []);
+  const keyExtractor = useCallback((item: ReplyRow) => item.reply.id, []);
 
   const listHeader = useMemo(() => {
     if (!thread) return null;
@@ -698,11 +813,11 @@ export function ThreadDetailScreen({
         </View>
       );
     }
-    if (replyList.length === 0 && !loading && !refreshing) {
+    if (replyRows.length === 0 && !loading && !refreshing) {
       return <EmptyReplies />;
     }
     return null;
-  }, [loadingMore, replyList.length, loading, refreshing, theme]);
+  }, [loadingMore, replyRows.length, loading, refreshing, theme]);
 
   // ---------------------------------------------------------------------------
   // Styles
@@ -784,6 +899,10 @@ export function ThreadDetailScreen({
               onEndReached={handleEndReached}
               onEndReachedThreshold={0.3}
               onContentSizeChange={handleContentSizeChange}
+              // Tree order inserts mid-list (a reply to an early post lands
+              // under it, not at the end), which would otherwise shove the
+              // reader's viewport down by the new row's height.
+              maintainVisibleContentPosition={{ minIndexForVisible: 1 }}
               onScrollToIndexFailed={handleScrollToIndexFailed}
               extraData={highlightTick}
               initialNumToRender={20}

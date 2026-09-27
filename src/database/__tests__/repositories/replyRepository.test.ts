@@ -42,7 +42,7 @@ describe('replyRepository', () => {
   // =========================================================================
 
   describe('saveReply', () => {
-    it('executes INSERT OR REPLACE with correct params and ms→s conversion', () => {
+    it('executes INSERT OR REPLACE with correct params, writing epoch MILLISECONDS (#821)', () => {
       const exec = jest.fn((_sql: string, _params?: unknown[]) => ({ rows: [], rowsAffected: 1 }));
       makeDb(exec);
 
@@ -63,10 +63,24 @@ describe('replyRepository', () => {
       expect(params[4]).toBe('alice');
       expect(params[5]).toBeNull();    // parentReplyId
       expect(params[6]).toBe(0);       // depth
-      // ms→s: 1700000000000 / 1000 = 1700000000
-      expect(params[7]).toBe(1700000000);
-      expect(params[8]).toBe(1700000000);
+      // #821: writes ms directly (Math.floor(reply.createdAt)), no /1000
+      expect(params[7]).toBe(1700000000000);
+      expect(params[8]).toBe(1700000000000);
       expect(params[9]).toBe('synced');
+    });
+
+    it('floors a fractional ms createdAt/updatedAt rather than dividing by 1000', () => {
+      const exec = jest.fn((_sql: string, _params?: unknown[]) => ({ rows: [], rowsAffected: 1 }));
+      makeDb(exec);
+
+      saveReply({ ...sampleReply, createdAt: 1758800000123.7, updatedAt: 1758800000456.2 });
+
+      const insertCall = exec.mock.calls.find(
+        (c) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT OR REPLACE'),
+      ) as unknown as [string, unknown[]];
+      expect(insertCall).toBeDefined();
+      expect(insertCall[1][7]).toBe(1758800000123);
+      expect(insertCall[1][8]).toBe(1758800000456);
     });
 
     it('writes null body when reply.body is null', () => {
@@ -181,7 +195,7 @@ describe('replyRepository', () => {
   // =========================================================================
 
   describe('getRepliesForThread', () => {
-    it('maps rows to Reply[] with s→ms timestamp conversion', () => {
+    it('tolerantly reads a legacy epoch-SECONDS row (< 1e11) as seconds, converting to ms', () => {
       const exec = jest.fn((sql: string) => {
         if (typeof sql === 'string' && sql.includes('SELECT')) {
           return {
@@ -208,13 +222,94 @@ describe('replyRepository', () => {
 
       const replies = getRepliesForThread('thread-1');
       expect(replies).toHaveLength(1);
-      // s→ms: 1700000000 * 1000 = 1700000000000
+      // < 1e11 -> treated as seconds: 1700000000 * 1000 = 1700000000000
       expect(replies[0].createdAt).toBe(1700000000000);
       expect(replies[0].updatedAt).toBe(1700000000000);
       expect(replies[0].authorUsername).toBe('alice');
       expect(replies[0].body).toBe('Hello');
       expect(replies[0].depth).toBe(0);
       expect(replies[0].syncStatus).toBe('synced');
+    });
+
+    it('reads a post-#821 epoch-MILLISECONDS row (>= 1e11) unchanged', () => {
+      const exec = jest.fn((sql: string) => {
+        if (typeof sql === 'string' && sql.includes('SELECT')) {
+          return {
+            rows: [
+              {
+                id: 'reply-ms',
+                thread_id: 'thread-1',
+                author_id: 'user-1',
+                body: 'Hello ms',
+                author_username: 'alice',
+                parent_reply_id: null,
+                depth: 0,
+                created_at: 1758800000123,
+                updated_at: 1758800000123,
+                sync_status: 'synced',
+              },
+            ],
+            rowsAffected: 0,
+          };
+        }
+        return { rows: [], rowsAffected: 0 };
+      });
+      makeDb(exec);
+
+      const replies = getRepliesForThread('thread-1');
+      expect(replies).toHaveLength(1);
+      // >= 1e11 -> already ms, used as-is
+      expect(replies[0].createdAt).toBe(1758800000123);
+      expect(replies[0].updatedAt).toBe(1758800000123);
+    });
+
+    it('maps a mixed-precision sibling pair to the correct chronological order', () => {
+      // reply-old was written before #821 (seconds); reply-new after (ms).
+      // reply-old's wall-clock time is earlier, and the mapped values must
+      // preserve that ordering despite the different raw precisions.
+      const exec = jest.fn((sql: string) => {
+        if (typeof sql === 'string' && sql.includes('SELECT')) {
+          return {
+            rows: [
+              {
+                id: 'reply-old',
+                thread_id: 'thread-1',
+                author_id: 'user-1',
+                body: 'Old (seconds row)',
+                author_username: 'alice',
+                parent_reply_id: null,
+                depth: 0,
+                created_at: 1758800000, // seconds: 2025-09-25T...Z
+                updated_at: 1758800000,
+                sync_status: 'synced',
+              },
+              {
+                id: 'reply-new',
+                thread_id: 'thread-1',
+                author_id: 'user-1',
+                body: 'New (ms row)',
+                author_username: 'bob',
+                parent_reply_id: null,
+                depth: 0,
+                created_at: 1758800000123, // ms: same second, 123ms later
+                updated_at: 1758800000123,
+                sync_status: 'synced',
+              },
+            ],
+            rowsAffected: 0,
+          };
+        }
+        return { rows: [], rowsAffected: 0 };
+      });
+      makeDb(exec);
+
+      const replies = getRepliesForThread('thread-1');
+      const older = replies.find((r) => r.id === 'reply-old')!;
+      const newer = replies.find((r) => r.id === 'reply-new')!;
+
+      expect(older.createdAt).toBe(1758800000000);
+      expect(newer.createdAt).toBe(1758800000123);
+      expect(older.createdAt).toBeLessThan(newer.createdAt);
     });
 
     it('returns empty array when no rows match', () => {

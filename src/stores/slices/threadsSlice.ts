@@ -100,7 +100,8 @@ export const createThreadsSlice: StateCreator<
     for (const r of replies) {
       updatedReplies[r.id] = r;
     }
-    // Preserve caller-supplied order (backend returns tree-order via recursive CTE)
+    // Insertion order only — replyIdsByThread carries NO display meaning since
+    // #821. Screens derive order from replyTree.ts (parentReplyId + createdAt).
     const ids = replies.map((r) => r.id);
     set(
       {
@@ -119,7 +120,8 @@ export const createThreadsSlice: StateCreator<
       updatedReplies[r.id] = r;
     }
     const existingIds = replyIdsByThread[threadId] ?? [];
-    // Append new IDs, preserving caller-supplied order and avoiding duplicates
+    // Deduplicated union. Position is meaningless (#821) — this is a set with a
+    // stable iteration order, not a render order.
     const existingIdSet = new Set(existingIds);
     const newIds = replies
       .map((r) => r.id)
@@ -155,6 +157,97 @@ export const createThreadsSlice: StateCreator<
       false,
       'threads/upsertReply',
     );
+  },
+
+  /**
+   * Swap an optimistic reply for its server-confirmed row in ONE set() (#821).
+   *
+   * The old remove+upsert pair was the whole bug: `upsertReply` appends, so a
+   * confirmed nested reply jumped to the bottom of the list. Order is now
+   * derived in `replyTree.ts`, so position is irrelevant — but the swap still
+   * has to be atomic (two set() calls render a frame with neither row) and it
+   * must ALWAYS insert: if `oldId` has already been dropped (a WebSocket echo,
+   * a reconcile), the confirmed reply still has to land.
+   */
+  replaceReply: (oldId: string, confirmed: Reply) => {
+    const { replies, replyIdsByThread } = get();
+    const previous = replies[oldId];
+
+    const updatedReplies = { ...replies };
+    if (oldId !== confirmed.id) delete updatedReplies[oldId];
+    updatedReplies[confirmed.id] = confirmed;
+
+    const updatedIdsByThread = { ...replyIdsByThread };
+    // The optimistic row can only ever be in its own thread's list.
+    if (previous && previous.threadId !== confirmed.threadId) {
+      updatedIdsByThread[previous.threadId] = (
+        updatedIdsByThread[previous.threadId] ?? []
+      ).filter((rid) => rid !== oldId);
+    }
+
+    const ids = [...(updatedIdsByThread[confirmed.threadId] ?? [])];
+    const oldIndex = ids.indexOf(oldId);
+    const newIndex = ids.indexOf(confirmed.id);
+    if (oldIndex !== -1) {
+      if (newIndex !== -1 && newIndex !== oldIndex) {
+        ids.splice(oldIndex, 1);
+      } else {
+        ids[oldIndex] = confirmed.id;
+      }
+    } else if (newIndex === -1) {
+      ids.push(confirmed.id);
+    }
+    updatedIdsByThread[confirmed.threadId] = ids;
+
+    set(
+      { replies: updatedReplies, replyIdsByThread: updatedIdsByThread },
+      false,
+      'threads/replaceReply',
+    );
+  },
+
+  /**
+   * Drop this thread's replies that the server no longer returns (#821).
+   *
+   * The only client path that clears an admin-removed reply. `keepIds` are the
+   * RAW server ids of a complete pagination pass — raw so a row that failed to
+   * decrypt is never mistaken for a removal. Rows still `pending` are kept:
+   * they are optimistic sends the server has not acknowledged yet.
+   *
+   * @returns the dropped ids, so the caller can delete them from SQLite too.
+   */
+  reconcileReplies: (threadId: string, keepIds: ReadonlySet<string> | readonly string[]) => {
+    const { replies, replyIdsByThread } = get();
+    const ids = replyIdsByThread[threadId];
+    if (!ids || ids.length === 0) return [];
+
+    const keep: ReadonlySet<string> =
+      keepIds instanceof Set ? keepIds : new Set(keepIds as readonly string[]);
+
+    const dropped: string[] = [];
+    const remaining: string[] = [];
+    for (const id of ids) {
+      const reply = replies[id];
+      if (keep.has(id) || reply?.syncStatus === 'pending') {
+        remaining.push(id);
+      } else {
+        dropped.push(id);
+      }
+    }
+    if (dropped.length === 0) return [];
+
+    const updatedReplies = { ...replies };
+    for (const id of dropped) delete updatedReplies[id];
+
+    set(
+      {
+        replies: updatedReplies,
+        replyIdsByThread: { ...replyIdsByThread, [threadId]: remaining },
+      },
+      false,
+      'threads/reconcileReplies',
+    );
+    return dropped;
   },
 
   removeReply: (id: string) => {
@@ -194,34 +287,22 @@ export const createThreadsSlice: StateCreator<
     );
   },
 
+  /**
+   * Add a reply optimistically. Its ONLY job is the `pending` flag (#821).
+   *
+   * It used to splice the row in after its parent's descendants, because the
+   * store list was the render order. It is not any more: `replyTree.ts` derives
+   * display order from parentReplyId + createdAt on every render, so a plain
+   * append is correct and the old splice was just a second, divergent ordering
+   * implementation. Do not reintroduce positional logic here.
+   */
   addOptimisticReply: (reply: Reply) => {
     const { replies, replyIdsByThread } = get();
     const optimistic: Reply = { ...reply, syncStatus: 'pending' };
     const existingIds = replyIdsByThread[reply.threadId] ?? [];
-
-    let insertIndex: number;
-    if (reply.parentReplyId == null) {
-      // Top-level reply: append to end
-      insertIndex = existingIds.length;
-    } else {
-      // Nested reply: find parent, walk forward past descendants, insert after
-      const parentIdx = existingIds.indexOf(reply.parentReplyId);
-      if (parentIdx === -1) {
-        insertIndex = existingIds.length;
-      } else {
-        const parentDepth = replies[reply.parentReplyId]?.depth ?? 0;
-        let i = parentIdx + 1;
-        while (i < existingIds.length) {
-          const sibling = replies[existingIds[i]];
-          if (!sibling || sibling.depth <= parentDepth) break;
-          i++;
-        }
-        insertIndex = i;
-      }
-    }
-
-    const updatedIds = [...existingIds];
-    updatedIds.splice(insertIndex, 0, reply.id);
+    const updatedIds = existingIds.includes(reply.id)
+      ? existingIds
+      : [...existingIds, reply.id];
 
     set(
       {

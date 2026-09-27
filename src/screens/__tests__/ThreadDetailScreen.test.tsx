@@ -137,11 +137,13 @@ const mockToggleMute = toggleMute as jest.Mock;
 const mockLoadThread = jest.fn();
 const mockLoadReplies = jest.fn();
 const mockPostReply = jest.fn();
+const mockReconcileThreadReplies = jest.fn();
 
 jest.mock('../../services/threadService', () => ({
   loadThread: (...args: unknown[]) => mockLoadThread(...args),
   loadReplies: (...args: unknown[]) => mockLoadReplies(...args),
   postReply: (...args: unknown[]) => mockPostReply(...args),
+  reconcileThreadReplies: (...args: unknown[]) => mockReconcileThreadReplies(...args),
   hydrateRepliesFromLocal: jest.fn(),
 }));
 
@@ -379,11 +381,16 @@ function applyDefaultMocks(): void {
   // Default: loadThread and loadReplies resolve but store stays empty
   // (store is mocked separately)
   mockLoadThread.mockResolvedValue(fakeThread);
+  // #821 shape: offsets and the reconcile keep-set are driven by the RAW
+  // server rows, so every stub has to carry rawCount/serverIds/newIdCount.
   mockLoadReplies.mockResolvedValue({
     replies: [],
-    nextCursor: null,
+    rawCount: 0,
+    serverIds: [],
+    newIdCount: 0,
     hasMore: false,
   });
+  mockReconcileThreadReplies.mockReturnValue([]);
   mockPostReply.mockResolvedValue({
     id: 'reply-new',
     threadId: 'thread-1',
@@ -1918,5 +1925,355 @@ describe('ThreadDetailScreen — upload cache reuse', () => {
     );
     await confirmDiscard();
     expect(mockRollbackUploadedMedia).toHaveBeenCalledWith(['media-id-1']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tree order + pagination (#821)
+// ---------------------------------------------------------------------------
+
+/** Store-shaped useThreads mock with an explicit reply set. */
+function mockThreadsStore(
+  replies: Record<string, (typeof fakeReplies)[number]>,
+  ids: string[],
+): void {
+  const storesMock = jest.requireMock('../../stores') as { useThreads: jest.Mock };
+  storesMock.useThreads.mockReturnValue({
+    threads: { 'thread-1': fakeThread },
+    threadIdsByConversation: { 'group-1': ['thread-1'] },
+    replies,
+    replyIdsByThread: { 'thread-1': ids },
+    activeThreadId: 'thread-1',
+    setThreads: jest.fn(),
+    upsertThread: jest.fn(),
+    removeThread: jest.fn(),
+    setActiveThread: mockSetActiveThread,
+    markThreadViewed: jest.fn(),
+    setReplies: jest.fn(),
+    appendReplies: jest.fn(),
+    upsertReply: jest.fn(),
+    replaceReply: jest.fn(),
+    reconcileReplies: jest.fn(() => []),
+    addOptimisticThread: jest.fn(),
+    addOptimisticReply: jest.fn(),
+    updateThreadSyncStatus: jest.fn(),
+    updateReplySyncStatus: jest.fn(),
+  });
+}
+
+function resetThreadsStore(): void {
+  const storesMock = jest.requireMock('../../stores') as { useThreads: jest.Mock };
+  storesMock.useThreads.mockReturnValue({
+    threads: {},
+    threadIdsByConversation: {},
+    replies: {},
+    replyIdsByThread: {},
+    activeThreadId: null,
+    setThreads: jest.fn(),
+    upsertThread: jest.fn(),
+    removeThread: jest.fn(),
+    setActiveThread: mockSetActiveThread,
+    markThreadViewed: jest.fn(),
+    setReplies: jest.fn(),
+    appendReplies: jest.fn(),
+    upsertReply: jest.fn(),
+    replaceReply: jest.fn(),
+    reconcileReplies: jest.fn(() => []),
+    addOptimisticThread: jest.fn(),
+    addOptimisticReply: jest.fn(),
+    updateThreadSyncStatus: jest.fn(),
+    updateReplySyncStatus: jest.fn(),
+  });
+}
+
+function makeReply(
+  id: string,
+  parentReplyId: string | null,
+  createdAt: number,
+  authorId = 'user-2',
+): (typeof fakeReplies)[number] {
+  return {
+    id,
+    threadId: 'thread-1',
+    authorId,
+    authorUsername: authorId,
+    body: `body of ${id}`,
+    parentReplyId,
+    // Deliberately wrong: the screen must take depth from the tree, never here.
+    depth: 9,
+    createdAt,
+    updatedAt: createdAt,
+    syncStatus: 'synced' as const,
+  };
+}
+
+/** The reply rows the FlatList was actually handed, in render order. */
+function listData(renderer: ReactTestRenderer): Array<{
+  reply: { id: string };
+  depth: number;
+  parentState: string;
+}> {
+  const list = renderer.root.find(
+    (n) => Array.isArray(n.props.data) && typeof n.props.onEndReached === 'function',
+  );
+  return list.props.data;
+}
+
+function flatList(renderer: ReactTestRenderer): ReactTestInstance {
+  return renderer.root.find(
+    (n) => Array.isArray(n.props.data) && typeof n.props.onEndReached === 'function',
+  );
+}
+
+function page(over: Partial<{
+  replies: unknown[];
+  rawCount: number;
+  serverIds: string[];
+  newIdCount: number;
+  hasMore: boolean;
+}>) {
+  return {
+    replies: [],
+    rawCount: 0,
+    serverIds: [],
+    newIdCount: 0,
+    hasMore: false,
+    ...over,
+  };
+}
+
+describe('ThreadDetailScreen — tree order (#821)', () => {
+  afterEach(resetThreadsStore);
+
+  it('renders store order A, B, A1 as A, A1, B with tree depths', async () => {
+    // Exactly the #821 shape: the confirmed nested reply was appended last.
+    mockThreadsStore(
+      {
+        A: makeReply('A', null, now - 3000),
+        B: makeReply('B', null, now - 2000),
+        A1: makeReply('A1', 'A', now - 1000),
+      },
+      ['A', 'B', 'A1'],
+    );
+
+    const renderer = await renderScreen();
+
+    expect(listData(renderer).map((r) => [r.reply.id, r.depth])).toEqual([
+      ['A', 0],
+      ['A1', 1],
+      ['B', 0],
+    ]);
+
+    // ...and the rendered rows follow that order, not the store's.
+    // Host nodes only: a testID also shows up on the composite wrappers above it.
+    const rendered = renderer.root
+      .findAll(
+        (n) =>
+          typeof n.type === 'string' &&
+          typeof n.props.testID === 'string' &&
+          /^reply-item-[A-Z0-9]+$/.test(n.props.testID),
+      )
+      .map((n) => n.props.testID as string);
+    expect(rendered.slice(0, 3)).toEqual([
+      'reply-item-A',
+      'reply-item-A1',
+      'reply-item-B',
+    ]);
+  });
+
+  it('renders a blocked parent\'s child with "a hidden reply"', async () => {
+    mockBlockedSet = new Set(['u-blocked']);
+    mockThreadsStore(
+      {
+        A: makeReply('A', null, now - 3000),
+        H: makeReply('H', 'A', now - 2000, 'u-blocked'),
+        C: makeReply('C', 'H', now - 1000),
+      },
+      ['A', 'H', 'C'],
+    );
+
+    const renderer = await renderScreen();
+
+    expect(listData(renderer).map((r) => [r.reply.id, r.parentState])).toEqual([
+      ['A', 'none'],
+      ['C', 'hidden'],
+    ]);
+
+    const context = renderer.root.findAll(
+      (n) => n.props.testID === 'reply-item-C-parent-context',
+    );
+    expect(context.length).toBeGreaterThan(0);
+    expect(context[0].props.children).toBe('↳ Replying to a hidden reply');
+
+    // The blocked author's name must not survive anywhere in the tree.
+    expect(
+      renderer.root.findAll(
+        (n) => typeof n.props.children === 'string' && n.props.children.includes('u-blocked'),
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('renders a reply whose parent is not loaded with "an earlier reply"', async () => {
+    mockThreadsStore(
+      { X: makeReply('X', 'parent-on-another-page', now - 1000) },
+      ['X'],
+    );
+
+    const renderer = await renderScreen();
+
+    expect(listData(renderer).map((r) => r.parentState)).toEqual(['orphan']);
+    const context = renderer.root.findAll(
+      (n) => n.props.testID === 'reply-item-X-parent-context',
+    );
+    expect(context[0].props.children).toBe('↳ Replying to an earlier reply');
+  });
+});
+
+describe('ThreadDetailScreen — pagination (#821)', () => {
+  afterEach(resetThreadsStore);
+
+  beforeEach(() => {
+    mockThreadsStore({ A: makeReply('A', null, now - 3000) }, ['A']);
+  });
+
+  it('advances the offset by rawCount, not by the decrypted row count', async () => {
+    // Page 1: 3 server rows, only 2 decrypted. Counting decrypted rows would
+    // ask for offset 2 and silently re-serve (then skip) a reply.
+    mockLoadReplies.mockResolvedValueOnce(
+      page({ rawCount: 3, serverIds: ['s1', 's2', 's3'], newIdCount: 2, hasMore: true }),
+    );
+    mockLoadReplies.mockResolvedValueOnce(
+      page({ rawCount: 1, serverIds: ['s4'], newIdCount: 1, hasMore: false }),
+    );
+
+    const renderer = await renderScreen();
+    await act(async () => {
+      await flatList(renderer).props.onEndReached();
+    });
+
+    expect(mockLoadReplies).toHaveBeenNthCalledWith(1, 'thread-1', 'group-1');
+    expect(mockLoadReplies).toHaveBeenNthCalledWith(2, 'thread-1', 'group-1', 3);
+  });
+
+  it('fetches the next page immediately when a page adds no new rows', async () => {
+    mockLoadReplies.mockResolvedValueOnce(
+      page({ rawCount: 2, serverIds: ['s1', 's2'], newIdCount: 2, hasMore: true }),
+    );
+    // A page of rows the store already has: content length does not change, so
+    // onEndReached will never fire again on its own.
+    mockLoadReplies.mockResolvedValueOnce(
+      page({ rawCount: 2, serverIds: ['s1', 's2'], newIdCount: 0, hasMore: true }),
+    );
+    mockLoadReplies.mockResolvedValueOnce(
+      page({ rawCount: 2, serverIds: ['s5', 's6'], newIdCount: 2, hasMore: true }),
+    );
+
+    const renderer = await renderScreen();
+    await act(async () => {
+      await flatList(renderer).props.onEndReached();
+    });
+
+    // 1 initial + the stalled page + its follow-up.
+    expect(mockLoadReplies).toHaveBeenCalledTimes(3);
+    expect(mockLoadReplies).toHaveBeenNthCalledWith(3, 'thread-1', 'group-1', 4);
+  });
+
+  it('stops paging and reconciles when the server reports no more rows', async () => {
+    mockLoadReplies.mockResolvedValueOnce(
+      page({ rawCount: 2, serverIds: ['s1', 's2'], newIdCount: 2, hasMore: false }),
+    );
+
+    await renderScreen();
+
+    expect(mockReconcileThreadReplies).toHaveBeenCalledTimes(1);
+    const [threadIdArg, keepIds] = mockReconcileThreadReplies.mock.calls[0];
+    expect(threadIdArg).toBe('thread-1');
+    expect([...(keepIds as Set<string>)]).toEqual(['s1', 's2']);
+  });
+
+  it('stops paging when a page comes back empty even though hasMore is true', async () => {
+    mockLoadReplies.mockResolvedValueOnce(
+      page({ rawCount: 0, serverIds: [], newIdCount: 0, hasMore: true }),
+    );
+
+    const renderer = await renderScreen();
+    await act(async () => {
+      await flatList(renderer).props.onEndReached();
+    });
+
+    expect(mockLoadReplies).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the offset high-water mark across a refresh', async () => {
+    mockLoadReplies
+      .mockResolvedValueOnce(
+        page({ rawCount: 2, serverIds: ['s1', 's2'], newIdCount: 2, hasMore: true }),
+      )
+      .mockResolvedValueOnce(
+        page({ rawCount: 2, serverIds: ['s3', 's4'], newIdCount: 2, hasMore: true }),
+      )
+      // Refresh — page 1 again.
+      .mockResolvedValueOnce(
+        page({ rawCount: 2, serverIds: ['s1', 's2'], newIdCount: 0, hasMore: true }),
+      )
+      .mockResolvedValueOnce(
+        page({ rawCount: 1, serverIds: ['s5'], newIdCount: 1, hasMore: false }),
+      );
+
+    const renderer = await renderScreen();
+    await act(async () => {
+      await flatList(renderer).props.onEndReached();
+    });
+    expect(mockLoadReplies).toHaveBeenNthCalledWith(2, 'thread-1', 'group-1', 2);
+
+    await act(async () => {
+      await flatList(renderer).props.refreshControl.props.onRefresh();
+    });
+    await act(async () => {
+      await flatList(renderer).props.onEndReached();
+    });
+
+    // Not 2: the refresh must not rewind past the pages already loaded.
+    expect(mockLoadReplies).toHaveBeenNthCalledWith(4, 'thread-1', 'group-1', 4);
+  });
+
+  it('does not reconcile after a pass that skipped a page (the refresh jump)', async () => {
+    mockLoadReplies
+      .mockResolvedValueOnce(
+        page({ rawCount: 2, serverIds: ['s1', 's2'], newIdCount: 2, hasMore: true }),
+      )
+      .mockResolvedValueOnce(
+        page({ rawCount: 2, serverIds: ['s3', 's4'], newIdCount: 2, hasMore: true }),
+      )
+      .mockResolvedValueOnce(
+        page({ rawCount: 2, serverIds: ['s1', 's2'], newIdCount: 0, hasMore: true }),
+      )
+      // Fetched at the high-water offset: rows 2-3 were never seen in THIS
+      // pass, so its id set is incomplete and must not drive a delete.
+      .mockResolvedValueOnce(
+        page({ rawCount: 0, serverIds: [], newIdCount: 0, hasMore: false }),
+      );
+
+    const renderer = await renderScreen();
+    await act(async () => {
+      await flatList(renderer).props.onEndReached();
+    });
+    mockReconcileThreadReplies.mockClear();
+
+    await act(async () => {
+      await flatList(renderer).props.refreshControl.props.onRefresh();
+    });
+    await act(async () => {
+      await flatList(renderer).props.onEndReached();
+    });
+
+    expect(mockReconcileThreadReplies).not.toHaveBeenCalled();
+  });
+
+  it('keeps the reader in place on a mid-list insert', async () => {
+    const renderer = await renderScreen();
+    expect(flatList(renderer).props.maintainVisibleContentPosition).toEqual({
+      minIndexForVisible: 1,
+    });
   });
 });

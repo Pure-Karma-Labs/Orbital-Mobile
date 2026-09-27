@@ -1,6 +1,7 @@
 /**
  * Tests for ReplyItem — useAuthorActions author-context wiring (#490), the
- * #749 unsynced-row guard, and the #518 explicit reply arrow.
+ * #749 unsynced-row guard, the #518 explicit reply arrow, and the #821
+ * parentState context line.
  */
 
 import React from 'react';
@@ -78,6 +79,7 @@ function renderReplyItem(
           depth: 0,
           createdAt: Date.now(),
           syncStatus: 'synced',
+          parentState: 'none' as const,
           parentAuthorId: null,
           parentAuthorUsername: null,
           onReplyPress: jest.fn(),
@@ -295,6 +297,75 @@ describe('ReplyItem — structural #518 guard', () => {
       .find((n) => typeof n.props.onPress === 'function');
     expect(authorControl).toBeDefined();
     expect(authorControl!.props.hitSlop).toEqual({ top: 4, bottom: 4, left: 4, right: 0 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Parent context line (#821)
+// ---------------------------------------------------------------------------
+
+describe('ReplyItem — parentState context line (#821)', () => {
+  const CONTEXT = 'reply-item-r-1-parent-context';
+
+  function contextText(renderer: ReactTestRenderer): string | undefined {
+    const nodes = nodesWithTestId(renderer, CONTEXT);
+    return nodes.length > 0 ? (nodes[0].props.children as string) : undefined;
+  }
+
+  it('renders no context line for a top-level reply', () => {
+    const renderer = renderReplyItem({ parentState: 'none' });
+    expect(nodesWithTestId(renderer, CONTEXT)).toHaveLength(0);
+  });
+
+  it('names the parent author when the parent is loaded and visible', () => {
+    const renderer = renderReplyItem({
+      parentState: 'jumpable',
+      parentAuthorId: 'u-ann',
+      parentAuthorUsername: 'ann',
+    });
+    expect(contextText(renderer)).toBe('↳ Replying to @ann');
+  });
+
+  it('says "an earlier reply" for an orphan (parent not loaded)', () => {
+    const renderer = renderReplyItem({
+      parentState: 'orphan',
+      parentAuthorId: null,
+      parentAuthorUsername: null,
+    });
+    expect(contextText(renderer)).toBe('↳ Replying to an earlier reply');
+  });
+
+  it('says "a hidden reply" and never names a blocked parent author', () => {
+    // The screen nulls the parent fields for a hidden parent; even if a stale
+    // name were passed, the hidden branch must not render it.
+    const renderer = renderReplyItem({
+      parentState: 'hidden',
+      parentAuthorId: 'u-blocked',
+      parentAuthorUsername: 'blockedname',
+    });
+    expect(contextText(renderer)).toBe('↳ Replying to a hidden reply');
+
+    const leaked = renderer.root.findAll(
+      (n) =>
+        typeof n.props.children === 'string' &&
+        n.props.children.includes('blockedname'),
+    );
+    expect(leaked).toHaveLength(0);
+  });
+
+  it('renders the context line above the author row, outside any touchable', () => {
+    const renderer = renderReplyItem({
+      parentState: 'jumpable',
+      parentAuthorId: 'u-ann',
+      parentAuthorUsername: 'ann',
+    });
+    const pressables = renderer.root.findAll(
+      (n) => typeof n.props.onPress === 'function',
+    );
+    // PR1 is text only — the jump control arrives in PR2.
+    for (const node of pressables) {
+      expect(node.findAll((c) => c.props.testID === CONTEXT)).toHaveLength(0);
+    }
   });
 });
 

@@ -17,6 +17,7 @@ jest.mock('../../database/repositories/replyRepository', () => ({
   saveReply: jest.fn(),
   saveReplyBatch: jest.fn(),
   getRepliesForThread: jest.fn(() => []),
+  deleteReply: jest.fn(),
 }));
 
 jest.mock('../../database/connection', () => ({
@@ -56,6 +57,8 @@ const mockAddOptimisticReply = jest.fn();
 const mockUpdateReplySyncStatus = jest.fn();
 const mockRemoveReply = jest.fn();
 const mockUpsertReply = jest.fn();
+const mockReplaceReply = jest.fn();
+const mockReconcileReplies = jest.fn(() => [] as string[]);
 const mockAddOptimisticThread = jest.fn();
 const mockRemoveThread = jest.fn();
 const mockSetThreads = jest.fn();
@@ -65,6 +68,8 @@ jest.mock('../../stores/useAppStore', () => ({
   useAppStore: {
     getState: jest.fn(() => ({
       threads: {},
+      replies: {},
+      replyIdsByThread: {},
       markThreadViewed: mockMarkThreadViewed,
       upsertThread: mockUpsertThread,
       setReplies: mockSetReplies,
@@ -73,6 +78,8 @@ jest.mock('../../stores/useAppStore', () => ({
       updateReplySyncStatus: mockUpdateReplySyncStatus,
       removeReply: mockRemoveReply,
       upsertReply: mockUpsertReply,
+      replaceReply: mockReplaceReply,
+      reconcileReplies: mockReconcileReplies,
       addOptimisticThread: mockAddOptimisticThread,
       removeThread: mockRemoveThread,
       setThreads: mockSetThreads,
@@ -85,9 +92,9 @@ jest.mock('../../stores/useAppStore', () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
-import { loadThread, loadReplies, postReply, hydrateThreadsFromLocal, hydrateRepliesFromLocal, loadThreadsForGroup, createNewThread } from '../threadService';
+import { loadThread, loadReplies, postReply, hydrateThreadsFromLocal, hydrateRepliesFromLocal, loadThreadsForGroup, createNewThread, reconcileThreadReplies } from '../threadService';
 import { saveThread as dbSaveThread, saveThreadBatch, getThreadsForConversation } from '../../database/repositories/threadRepository';
-import { saveReply as dbSaveReply, saveReplyBatch, getRepliesForThread } from '../../database/repositories/replyRepository';
+import { saveReply as dbSaveReply, saveReplyBatch, getRepliesForThread, deleteReply as dbDeleteReply } from '../../database/repositories/replyRepository';
 import { isDatabaseInitialized } from '../../database/connection';
 import { ServerError } from '../api/errors';
 import { PendingWrapError } from '../crypto/contentCrypto';
@@ -114,6 +121,7 @@ const mockGetThreadsForConversation = getThreadsForConversation as jest.MockedFu
 const mockDbSaveReply = dbSaveReply as jest.MockedFunction<typeof dbSaveReply>;
 const mockSaveReplyBatch = saveReplyBatch as jest.MockedFunction<typeof saveReplyBatch>;
 const mockGetRepliesForThread = getRepliesForThread as jest.MockedFunction<typeof getRepliesForThread>;
+const mockDbDeleteReply = dbDeleteReply as jest.MockedFunction<typeof dbDeleteReply>;
 const mockIsDatabaseInitialized = isDatabaseInitialized as jest.MockedFunction<typeof isDatabaseInitialized>;
 
 // ---------------------------------------------------------------------------
@@ -186,8 +194,12 @@ beforeEach(() => {
   const { useAppStore } = jest.requireMock('../../stores/useAppStore') as {
     useAppStore: { getState: jest.Mock };
   };
+  mockReconcileReplies.mockReset();
+  mockReconcileReplies.mockReturnValue([]);
   useAppStore.getState.mockReturnValue({
     threads: {},
+    replies: {},
+    replyIdsByThread: {},
     markThreadViewed: mockMarkThreadViewed,
     upsertThread: mockUpsertThread,
     setReplies: mockSetReplies,
@@ -196,6 +208,8 @@ beforeEach(() => {
     updateReplySyncStatus: mockUpdateReplySyncStatus,
     removeReply: mockRemoveReply,
     upsertReply: mockUpsertReply,
+    replaceReply: mockReplaceReply,
+    reconcileReplies: mockReconcileReplies,
     addOptimisticThread: mockAddOptimisticThread,
     removeThread: mockRemoveThread,
     setThreads: mockSetThreads,
@@ -288,7 +302,7 @@ describe('loadThread', () => {
 // ---------------------------------------------------------------------------
 
 describe('loadReplies', () => {
-  it('fetches replies, decrypts, and sets replies for first page', async () => {
+  it('fetches replies, decrypts, and ALWAYS appends — even for the first page (#821)', async () => {
     const response: ListRepliesResponse = {
       replies: [makeReplyResponse({ replyId: 'reply-1' }), makeReplyResponse({ replyId: 'reply-2' })],
       media: [],
@@ -303,8 +317,9 @@ describe('loadReplies', () => {
     expect(mockGetOrFetchGroupKey).toHaveBeenCalledWith('group-1');
     expect(mockDecryptContent).toHaveBeenCalledTimes(2);
 
-    expect(mockSetReplies).toHaveBeenCalledTimes(1);
-    expect(mockAppendReplies).not.toHaveBeenCalled();
+    // Page 1 no longer calls setReplies — appendReplies is the only path (#821)
+    expect(mockAppendReplies).toHaveBeenCalledTimes(1);
+    expect(mockSetReplies).not.toHaveBeenCalled();
 
     expect(result.replies).toHaveLength(2);
     expect(result.hasMore).toBe(true);
@@ -327,6 +342,100 @@ describe('loadReplies', () => {
     expect(mockSetReplies).not.toHaveBeenCalled();
 
     expect(result.hasMore).toBe(false);
+  });
+
+  it('returns rawCount and raw serverIds, including a reply that fails to decrypt', async () => {
+    mockDecryptContent.mockImplementation((ciphertext: string) => {
+      if (ciphertext === 'enc-reply-bad') {
+        throw new Error('decrypt failed');
+      }
+      if (ciphertext.includes('reply')) return 'Decrypted Reply Body';
+      return 'Decrypted Body';
+    });
+    const response: ListRepliesResponse = {
+      replies: [
+        makeReplyResponse({ replyId: 'reply-good' }),
+        makeReplyResponse({ replyId: 'reply-bad', encryptedBody: 'enc-reply-bad' }),
+      ],
+      media: [],
+      totalCount: 2,
+      hasMore: false,
+    };
+    mockGetThreadReplies.mockResolvedValue(response);
+
+    const result = await loadReplies('thread-1', 'group-1');
+
+    // rawCount counts ALL server rows, decrypted or not
+    expect(result.rawCount).toBe(2);
+    // serverIds is raw, in response order, including the decrypt failure
+    expect(result.serverIds).toEqual(['reply-good', 'reply-bad']);
+    // The failed row never makes it into the decrypted replies
+    expect(result.replies.map((r) => r.id)).toEqual(['reply-good']);
+    expect(result.replies.find((r) => r.id === 'reply-bad')).toBeUndefined();
+  });
+
+  it('newIdCount is 0 when the page only re-returns ids already in the store', async () => {
+    const { useAppStore } = jest.requireMock('../../stores/useAppStore') as {
+      useAppStore: { getState: jest.Mock };
+    };
+    useAppStore.getState.mockReturnValue({
+      threads: {},
+      replies: {},
+      replyIdsByThread: { 'thread-1': ['reply-1', 'reply-2'] },
+      markThreadViewed: mockMarkThreadViewed,
+      upsertThread: mockUpsertThread,
+      setReplies: mockSetReplies,
+      appendReplies: mockAppendReplies,
+      addOptimisticReply: mockAddOptimisticReply,
+      updateReplySyncStatus: mockUpdateReplySyncStatus,
+      removeReply: mockRemoveReply,
+      upsertReply: mockUpsertReply,
+      replaceReply: mockReplaceReply,
+      reconcileReplies: mockReconcileReplies,
+    });
+    const response: ListRepliesResponse = {
+      replies: [makeReplyResponse({ replyId: 'reply-1' }), makeReplyResponse({ replyId: 'reply-2' })],
+      media: [],
+      totalCount: 2,
+      hasMore: false,
+    };
+    mockGetThreadReplies.mockResolvedValue(response);
+
+    const result = await loadReplies('thread-1', 'group-1');
+
+    expect(result.newIdCount).toBe(0);
+  });
+
+  it('newIdCount counts only decrypted rows not already known to the store', async () => {
+    const { useAppStore } = jest.requireMock('../../stores/useAppStore') as {
+      useAppStore: { getState: jest.Mock };
+    };
+    useAppStore.getState.mockReturnValue({
+      threads: {},
+      replies: {},
+      replyIdsByThread: { 'thread-1': ['reply-1'] },
+      markThreadViewed: mockMarkThreadViewed,
+      upsertThread: mockUpsertThread,
+      setReplies: mockSetReplies,
+      appendReplies: mockAppendReplies,
+      addOptimisticReply: mockAddOptimisticReply,
+      updateReplySyncStatus: mockUpdateReplySyncStatus,
+      removeReply: mockRemoveReply,
+      upsertReply: mockUpsertReply,
+      replaceReply: mockReplaceReply,
+      reconcileReplies: mockReconcileReplies,
+    });
+    const response: ListRepliesResponse = {
+      replies: [makeReplyResponse({ replyId: 'reply-1' }), makeReplyResponse({ replyId: 'reply-2' })],
+      media: [],
+      totalCount: 2,
+      hasMore: false,
+    };
+    mockGetThreadReplies.mockResolvedValue(response);
+
+    const result = await loadReplies('thread-1', 'group-1');
+
+    expect(result.newIdCount).toBe(1);
   });
 
   it('maps reply fields correctly including authorUsername and level', async () => {
@@ -352,6 +461,65 @@ describe('loadReplies', () => {
     expect(reply.depth).toBe(2);
     expect(reply.parentReplyId).toBe('reply-parent');
     expect(reply.syncStatus).toBe('synced');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// reconcileThreadReplies
+// ---------------------------------------------------------------------------
+
+describe('reconcileThreadReplies', () => {
+  it('removes dropped ids from the store and calls deleteReply for each', () => {
+    mockReconcileReplies.mockReturnValue(['dropped-1', 'dropped-2']);
+
+    const dropped = reconcileThreadReplies('thread-1', ['keep-1']);
+
+    expect(mockReconcileReplies).toHaveBeenCalledWith('thread-1', ['keep-1']);
+    expect(dropped).toEqual(['dropped-1', 'dropped-2']);
+    expect(mockDbDeleteReply).toHaveBeenCalledTimes(2);
+    expect(mockDbDeleteReply).toHaveBeenCalledWith('dropped-1');
+    expect(mockDbDeleteReply).toHaveBeenCalledWith('dropped-2');
+  });
+
+  it('never deletes a decrypt-failed id that is in the keep set (store never drops it)', () => {
+    // A decrypt-failed id is still a raw serverId, so it is passed in keepIds
+    // and the store's reconcileReplies never drops it — deleteReply is never
+    // called for it.
+    mockReconcileReplies.mockReturnValue([]);
+
+    const dropped = reconcileThreadReplies('thread-1', ['decrypt-failed-id', 'keep-2']);
+
+    expect(dropped).toEqual([]);
+    expect(mockDbDeleteReply).not.toHaveBeenCalled();
+  });
+
+  it('never deletes a pending row (store keeps it, so it is never in the dropped list)', () => {
+    // reconcileReplies (the store action) already excludes pending rows from
+    // what it drops; the service simply deletes whatever the store reports.
+    mockReconcileReplies.mockReturnValue([]);
+
+    const dropped = reconcileThreadReplies('thread-1', []);
+
+    expect(dropped).toEqual([]);
+    expect(mockDbDeleteReply).not.toHaveBeenCalled();
+  });
+
+  it('does not touch the DB when nothing drops', () => {
+    mockReconcileReplies.mockReturnValue([]);
+
+    reconcileThreadReplies('thread-1', ['a', 'b']);
+
+    expect(mockDbDeleteReply).not.toHaveBeenCalled();
+  });
+
+  it('skips DB deletes when the database is not initialized', () => {
+    mockIsDatabaseInitialized.mockReturnValue(false);
+    mockReconcileReplies.mockReturnValue(['dropped-1']);
+
+    const dropped = reconcileThreadReplies('thread-1', []);
+
+    expect(dropped).toEqual(['dropped-1']);
+    expect(mockDbDeleteReply).not.toHaveBeenCalled();
   });
 });
 
@@ -395,10 +563,14 @@ describe('postReply', () => {
       parentReplyId: null,
     });
 
-    expect(mockRemoveReply).toHaveBeenCalledWith('client-uuid-000');
-    expect(mockUpsertReply).toHaveBeenCalledWith(
+    // #821: ONE atomic swap via replaceReply, not removeReply + upsertReply
+    expect(mockReplaceReply).toHaveBeenCalledTimes(1);
+    expect(mockReplaceReply).toHaveBeenCalledWith(
+      'client-uuid-000',
       expect.objectContaining({ id: 'server-reply-id', syncStatus: 'synced' }),
     );
+    expect(mockRemoveReply).not.toHaveBeenCalled();
+    expect(mockUpsertReply).not.toHaveBeenCalled();
 
     expect(result.syncStatus).toBe('synced');
     expect(result.id).toBe('server-reply-id');
@@ -463,6 +635,8 @@ describe('postReply', () => {
           syncStatus: 'synced',
         },
       },
+      replies: {},
+      replyIdsByThread: {},
       markThreadViewed: mockMarkThreadViewed,
       upsertThread: mockUpsertThread,
       setReplies: mockSetReplies,
@@ -471,6 +645,8 @@ describe('postReply', () => {
       updateReplySyncStatus: mockUpdateReplySyncStatus,
       removeReply: mockRemoveReply,
       upsertReply: mockUpsertReply,
+      replaceReply: mockReplaceReply,
+      reconcileReplies: mockReconcileReplies,
     });
     mockCreateReply.mockResolvedValue({
       replyId: 'server-reply-id',
@@ -540,6 +716,113 @@ describe('postReply', () => {
       bodyIv: 'encrypted-iv',
       parentReplyId: 'parent-reply-1',
     });
+  });
+
+  it('clamps the optimistic createdAt past the newest sibling when Date.now() is older (#821)', async () => {
+    const { useAppStore } = jest.requireMock('../../stores/useAppStore') as {
+      useAppStore: { getState: jest.Mock };
+    };
+    useAppStore.getState.mockReturnValue({
+      threads: {},
+      replies: {
+        'sib-1': {
+          id: 'sib-1',
+          threadId: 'thread-1',
+          parentReplyId: null,
+          createdAt: 5_000,
+        },
+        // A different parent — must NOT count as a sibling
+        'other-parent-1': {
+          id: 'other-parent-1',
+          threadId: 'thread-1',
+          parentReplyId: 'some-other-parent',
+          createdAt: 9_000,
+        },
+      },
+      replyIdsByThread: { 'thread-1': ['sib-1', 'other-parent-1'] },
+      markThreadViewed: mockMarkThreadViewed,
+      upsertThread: mockUpsertThread,
+      setReplies: mockSetReplies,
+      appendReplies: mockAppendReplies,
+      addOptimisticReply: mockAddOptimisticReply,
+      updateReplySyncStatus: mockUpdateReplySyncStatus,
+      removeReply: mockRemoveReply,
+      upsertReply: mockUpsertReply,
+      replaceReply: mockReplaceReply,
+      reconcileReplies: mockReconcileReplies,
+    });
+
+    const dateNowSpy = jest.spyOn(Date, 'now').mockReturnValue(1_000);
+    try {
+      mockCreateReply.mockResolvedValue({
+        replyId: 'server-reply-id',
+        threadId: 'thread-1',
+        createdAt: '2026-04-01T12:00:00Z',
+        media: [],
+      });
+
+      await postReply('thread-1', 'group-1', 'Hi', null, 0, {
+        authorId: 'user-1',
+        authorUsername: 'alice',
+      });
+
+      const optimistic = mockAddOptimisticReply.mock.calls[0][0];
+      // newestSiblingCreatedAt (same threadId + parentReplyId=null) is 5000,
+      // NOT 9000 (that row has a different parent) — clamp is 5000 + 1, not
+      // Date.now()'s 1000.
+      expect(optimistic.createdAt).toBe(5_001);
+      expect(optimistic.updatedAt).toBe(5_001);
+    } finally {
+      dateNowSpy.mockRestore();
+    }
+  });
+
+  it('uses Date.now() when it is newer than the newest sibling', async () => {
+    const { useAppStore } = jest.requireMock('../../stores/useAppStore') as {
+      useAppStore: { getState: jest.Mock };
+    };
+    useAppStore.getState.mockReturnValue({
+      threads: {},
+      replies: {
+        'sib-1': {
+          id: 'sib-1',
+          threadId: 'thread-1',
+          parentReplyId: null,
+          createdAt: 1_000,
+        },
+      },
+      replyIdsByThread: { 'thread-1': ['sib-1'] },
+      markThreadViewed: mockMarkThreadViewed,
+      upsertThread: mockUpsertThread,
+      setReplies: mockSetReplies,
+      appendReplies: mockAppendReplies,
+      addOptimisticReply: mockAddOptimisticReply,
+      updateReplySyncStatus: mockUpdateReplySyncStatus,
+      removeReply: mockRemoveReply,
+      upsertReply: mockUpsertReply,
+      replaceReply: mockReplaceReply,
+      reconcileReplies: mockReconcileReplies,
+    });
+
+    const dateNowSpy = jest.spyOn(Date, 'now').mockReturnValue(50_000);
+    try {
+      mockCreateReply.mockResolvedValue({
+        replyId: 'server-reply-id',
+        threadId: 'thread-1',
+        createdAt: '2026-04-01T12:00:00Z',
+        media: [],
+      });
+
+      await postReply('thread-1', 'group-1', 'Hi', null, 0, {
+        authorId: 'user-1',
+        authorUsername: 'alice',
+      });
+
+      const optimistic = mockAddOptimisticReply.mock.calls[0][0];
+      expect(optimistic.createdAt).toBe(50_000);
+    } finally {
+      dateNowSpy.mockRestore();
+    }
   });
 });
 
@@ -716,7 +999,10 @@ describe('persistence write-through', () => {
     const result = await postReply('thread-1', 'group-1', 'Hello', null, 0, { authorId: 'user-1', authorUsername: 'alice' });
 
     expect(result.id).toBe('server-reply-id');
-    expect(mockUpsertReply).toHaveBeenCalledWith(expect.objectContaining({ id: 'server-reply-id' }));
+    expect(mockReplaceReply).toHaveBeenCalledWith(
+      'client-uuid-000',
+      expect.objectContaining({ id: 'server-reply-id' }),
+    );
   });
 
   it('isDatabaseInitialized false — DB functions not called, store still updated (loadThread)', async () => {
@@ -744,7 +1030,7 @@ describe('persistence write-through', () => {
     await loadReplies('thread-1', 'group-1');
 
     expect(mockSaveReplyBatch).not.toHaveBeenCalled();
-    expect(mockSetReplies).toHaveBeenCalledTimes(1);
+    expect(mockAppendReplies).toHaveBeenCalledTimes(1);
   });
 
   it('loadThreadsForGroup calls saveThreadBatch with decrypted threads', async () => {

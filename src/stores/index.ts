@@ -70,6 +70,8 @@ export const useThreads = () =>
     setReplies: s.setReplies,
     appendReplies: s.appendReplies,
     upsertReply: s.upsertReply,
+    replaceReply: s.replaceReply,
+    reconcileReplies: s.reconcileReplies,
     removeReply: s.removeReply,
     addOptimisticThread: s.addOptimisticThread,
     addOptimisticReply: s.addOptimisticReply,

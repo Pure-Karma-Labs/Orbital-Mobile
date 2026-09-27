@@ -35,6 +35,7 @@ import { useMediaForReply } from '../../stores';
 import { useAuthorActions } from '../../hooks/useAuthorActions';
 import { useContactAvatar } from '../../hooks/useContactAvatar';
 import { useDisplayName } from '../../hooks/useDisplayName';
+import type { ParentState } from '../../utils/replyTree';
 
 
 
@@ -48,9 +49,18 @@ export interface ReplyItemProps {
   depth: number;
   createdAt: number;
   syncStatus: 'synced' | 'pending' | 'syncing' | 'failed';
-  /** ID of the parent reply author, or null for top-level replies */
+  /**
+   * What the "↳ Replying to …" context line should say (#821). Computed by
+   * `replyTree.ts` from the loaded tree, not from this row alone:
+   * - `none`     — top-level reply; no context line.
+   * - `jumpable` — the parent is loaded and on screen: show its name.
+   * - `orphan`   — the parent is not loaded (a later page, or removed).
+   * - `hidden`   — the parent's author is blocked; never name them.
+   */
+  parentState: ParentState;
+  /** ID of the parent reply author — only set when parentState is 'jumpable' */
   parentAuthorId: string | null;
-  /** Username fallback of the parent reply author, or null for top-level replies */
+  /** Username fallback of the parent reply author — 'jumpable' only */
   parentAuthorUsername: string | null;
   /**
    * Called when the row's reply arrow is pressed (to set this reply as the
@@ -91,6 +101,7 @@ export const ReplyItem = React.memo(function ReplyItem({
   depth,
   createdAt,
   syncStatus,
+  parentState,
   parentAuthorId,
   parentAuthorUsername,
   onReplyPress,
@@ -230,8 +241,19 @@ export const ReplyItem = React.memo(function ReplyItem({
           pointerEvents="none"
         />
       )}
-      {parentAuthorUsername != null && (
-        <EmojiText style={replyContextStyle}>{`↳ Replying to @${parentDisplayName}`}</EmojiText>
+      {/*
+        Text only in PR1 — the jump control lands in PR2. 'hidden' deliberately
+        names nobody: the parent's author is blocked, and the old
+        `@${parentDisplayName}` line leaked their username back onto the screen.
+      */}
+      {parentState !== 'none' && (
+        <EmojiText style={replyContextStyle} testID={`reply-item-${replyId}-parent-context`}>
+          {parentState === 'orphan'
+            ? '↳ Replying to an earlier reply'
+            : parentState === 'hidden'
+              ? '↳ Replying to a hidden reply'
+              : `↳ Replying to @${parentDisplayName}`}
+        </EmojiText>
       )}
       <View style={headerRowStyle}>
         {/*

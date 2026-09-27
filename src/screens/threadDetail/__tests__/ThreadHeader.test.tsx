@@ -1,11 +1,24 @@
 /**
- * Tests for ThreadHeader — useAuthorActions author-context wiring (#490).
+ * Tests for ThreadHeader — useAuthorActions author-context wiring (#490) and
+ * the shared absolute timestamp (#821).
  */
 
 import React from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { ThemeProvider } from '../../../theme';
 import { ThreadHeader } from '../ThreadHeader';
+import {
+  formatPostTimestamp,
+  formatPostTimestampA11y,
+} from '../../../utils/formatPostTimestamp';
+
+/**
+ * Fixed instant from LOCAL wall-clock parts, so the rendered string is the
+ * same in any zone CI runs in; January keeps it clear of DST. The year comes
+ * from the clock so the current-year (no-year) form is what is asserted.
+ */
+const POSTED_AT = new Date(new Date().getFullYear(), 0, 5, 15, 4).getTime();
+const LAST_YEAR = new Date(new Date().getFullYear() - 1, 0, 5, 15, 4).getTime();
 
 jest.mock('react-native-gesture-handler', () => {
   const { View } = require('react-native');
@@ -69,7 +82,7 @@ function renderHeader(
           authorId: 'u-alice',
           groupId: 'g-1',
           currentUserId: 'u-me',
-          createdAt: Date.now(),
+          createdAt: POSTED_AT,
           ...props,
         }),
       ),
@@ -102,5 +115,51 @@ describe('ThreadHeader — useAuthorActions context', () => {
       contentId: 't-2',
       groupId: 'g-2',
     });
+  });
+});
+
+describe('ThreadHeader — timestamp (#821)', () => {
+  /** Every Text node's string content. */
+  function texts(renderer: ReactTestRenderer): string[] {
+    return renderer.root
+      .findAll((n) => typeof n.type === 'string' && typeof n.props.children === 'string')
+      .map((n) => n.props.children as string);
+  }
+
+  it('renders the shared absolute format, not a relative one', () => {
+    const renderer = renderHeader({ createdAt: POSTED_AT });
+    expect(formatPostTimestamp(POSTED_AT)).toBe('Jan 5, 3:04 PM');
+    expect(texts(renderer)).toContain(formatPostTimestamp(POSTED_AT));
+    expect(texts(renderer).filter((t) => /(just now|\d+[mh] ago)/.test(t))).toHaveLength(0);
+  });
+
+  it('carries the year on an older post', () => {
+    const renderer = renderHeader({ createdAt: LAST_YEAR });
+    const rendered = formatPostTimestamp(LAST_YEAR);
+    expect(rendered).toContain(String(new Date(LAST_YEAR).getFullYear()));
+    expect(texts(renderer)).toContain(rendered);
+  });
+
+  it('folds the long-form timestamp into the author control label', () => {
+    // The stamp sits inside the author touchable, so a screen reader only
+    // reaches it through the label.
+    const renderer = renderHeader({ authorId: 'u-alice', currentUserId: 'u-me' });
+    const labelled = renderer.root.findAll(
+      (n) =>
+        n.props.accessibilityLabel ===
+        `Actions for alice, posted ${formatPostTimestampA11y(POSTED_AT)}`,
+    );
+    expect(labelled.length).toBeGreaterThan(0);
+  });
+
+  it('drops the label entirely on your own post, where the control is inert', () => {
+    const own = renderHeader({ authorId: 'u-me', currentUserId: 'u-me' });
+    expect(
+      own.root.findAll(
+        (n) =>
+          typeof n.props.accessibilityLabel === 'string' &&
+          n.props.accessibilityLabel.startsWith('Actions for'),
+      ),
+    ).toHaveLength(0);
   });
 });

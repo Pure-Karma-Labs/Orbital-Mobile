@@ -1,13 +1,25 @@
 /**
  * Tests for ReplyItem — useAuthorActions author-context wiring (#490), the
  * #749 unsynced-row guard, the #518 explicit reply arrow, and the #821
- * parentState context line.
+ * parentState context line, jump control, collapse toggle and absolute
+ * two-line timestamps.
  */
 
 import React from 'react';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import { ThemeProvider, lightColors } from '../../../theme';
 import { ReplyItem } from '../ReplyItem';
+import { formatPostTimestamp, formatPostTimestampA11y } from '../../../utils/formatPostTimestamp';
+
+/**
+ * Fixed instant, built from LOCAL wall-clock parts so the rendered string is
+ * the same in every zone CI might run in. January keeps it clear of DST.
+ * The year is taken from the clock so the "current year" (no-year) format is
+ * what the assertions see, whatever year the suite runs in.
+ */
+const POSTED_AT = new Date(new Date().getFullYear(), 0, 5, 15, 4).getTime();
+const POSTED_TEXT = formatPostTimestamp(POSTED_AT);
+const POSTED_A11Y = formatPostTimestampA11y(POSTED_AT);
 
 // Stub the emoji asset layer: the arrow's identity is asserted via the
 // `unified` code rather than a decoded WebP. `tintColor` is passed through so
@@ -77,12 +89,17 @@ function renderReplyItem(
           groupId: 'g-1',
           currentUserId: 'u-me',
           depth: 0,
-          createdAt: Date.now(),
+          createdAt: POSTED_AT,
           syncStatus: 'synced',
           parentState: 'none' as const,
+          parentId: null,
           parentAuthorId: null,
           parentAuthorUsername: null,
           onReplyPress: jest.fn(),
+          onParentPress: jest.fn(),
+          visibleDescendants: 0,
+          collapsed: false,
+          onToggleCollapse: jest.fn(),
           ...props,
         }),
       ),
@@ -261,10 +278,13 @@ describe('ReplyItem — structural #518 guard', () => {
     const renderer = renderReplyItem({
       authorId: 'u-bob',
       currentUserId: 'u-me',
-      createdAt: Date.now() - 2 * 3600000,
+      createdAt: POSTED_AT,
     });
+    // Long form, not the compact on-screen form: "3:04 PM" read out of
+    // context is ambiguous, "January 5 at 3:04 PM" is not.
+    expect(POSTED_A11Y).toBe('January 5 at 3:04 PM');
     const labelled = renderer.root.findAll(
-      (n) => n.props.accessibilityLabel === 'Actions for bob, posted 2h ago',
+      (n) => n.props.accessibilityLabel === `Actions for bob, posted ${POSTED_A11Y}`,
     );
     expect(labelled.length).toBeGreaterThan(0);
 
@@ -287,7 +307,8 @@ describe('ReplyItem — structural #518 guard', () => {
       top: 8, bottom: 8, right: 8, left: 0,
     });
 
-    // Author: no RIGHT slop, so it cannot reach into the arrow's frame.
+    // Author: no RIGHT slop (the arrow's frame is to its right) and no TOP
+    // slop (the jump control sits directly above it, #821).
     const authorControl = renderer.root
       .findAll(
         (n) =>
@@ -296,7 +317,7 @@ describe('ReplyItem — structural #518 guard', () => {
       )
       .find((n) => typeof n.props.onPress === 'function');
     expect(authorControl).toBeDefined();
-    expect(authorControl!.props.hitSlop).toEqual({ top: 4, bottom: 4, left: 4, right: 0 });
+    expect(authorControl!.props.hitSlop).toEqual({ top: 0, bottom: 4, left: 4, right: 0 });
   });
 });
 
@@ -353,19 +374,197 @@ describe('ReplyItem — parentState context line (#821)', () => {
     expect(leaked).toHaveLength(0);
   });
 
-  it('renders the context line above the author row, outside any touchable', () => {
-    const renderer = renderReplyItem({
-      parentState: 'jumpable',
-      parentAuthorId: 'u-ann',
-      parentAuthorUsername: 'ann',
+  it.each(['orphan', 'hidden'] as const)(
+    'leaves the %s context line untouchable — it names no destination',
+    (parentState) => {
+      const renderer = renderReplyItem({ parentState, parentId: 'r-parent' });
+      expect(nodesWithTestId(renderer, JUMP)).toHaveLength(0);
+      for (const node of renderer.root.findAll((n) => typeof n.props.onPress === 'function')) {
+        expect(node.findAll((c) => c.props.testID === CONTEXT)).toHaveLength(0);
+      }
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Jump control (#821 PR2)
+// ---------------------------------------------------------------------------
+
+const JUMP = 'reply-item-r-1-parent-jump';
+
+describe('ReplyItem — jumpable context line', () => {
+  const jumpableProps = {
+    parentState: 'jumpable' as const,
+    parentId: 'r-parent',
+    parentAuthorId: 'u-ann',
+    parentAuthorUsername: 'ann',
+  };
+
+  it('calls onParentPress with the parent id', () => {
+    const onParentPress = jest.fn();
+    const renderer = renderReplyItem({ ...jumpableProps, onParentPress });
+    const control = pressableFor(renderer, JUMP);
+    act(() => {
+      control.props.onPress();
     });
-    const pressables = renderer.root.findAll(
-      (n) => typeof n.props.onPress === 'function',
+    expect(onParentPress).toHaveBeenCalledWith('r-parent');
+  });
+
+  it('is a button labelled for the parent author', () => {
+    const control = pressableFor(renderReplyItem(jumpableProps), JUMP);
+    expect(control.props.accessibilityRole).toBe('button');
+    expect(control.props.accessibilityLabel).toBe("Go to @ann's reply");
+  });
+
+  it('carries vertical-only hitSlop so it cannot reach the author control', () => {
+    const control = pressableFor(renderReplyItem(jumpableProps), JUMP);
+    expect(control.props.hitSlop).toEqual({ top: 8, bottom: 8, left: 0, right: 0 });
+  });
+
+  it('gives the control a 32pt frame — slop alone is not a touch target', () => {
+    const control = pressableFor(renderReplyItem(jumpableProps), JUMP);
+    const frames = nodesWithTestId(renderReplyItem(jumpableProps), JUMP)
+      .filter((n) => typeof n.type === 'string');
+    expect(control.props.hitSlop).toBeDefined();
+    expect(frames[0].props.style).toEqual(expect.objectContaining({ minHeight: 32 }));
+  });
+
+  it('does not fire when the parent id is missing, even if the state says jumpable', () => {
+    // Defence in depth: `jumpable` without an id would otherwise scroll nowhere.
+    const onParentPress = jest.fn();
+    const renderer = renderReplyItem({
+      ...jumpableProps,
+      parentId: null,
+      onParentPress,
+    });
+    expect(nodesWithTestId(renderer, JUMP)).toHaveLength(0);
+    expect(onParentPress).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Collapse toggle (#821 PR2)
+// ---------------------------------------------------------------------------
+
+const TOGGLE = 'reply-item-r-1-collapse-toggle';
+
+describe('ReplyItem — collapse toggle', () => {
+  function toggleText(renderer: ReactTestRenderer): string | undefined {
+    const host = nodesWithTestId(renderer, TOGGLE).filter((n) => typeof n.type === 'string');
+    if (host.length === 0) return undefined;
+    const texts = host[0].findAll(
+      (n) => typeof n.type === 'string' && typeof n.props.children === 'string',
     );
-    // PR1 is text only — the jump control arrives in PR2.
-    for (const node of pressables) {
-      expect(node.findAll((c) => c.props.testID === CONTEXT)).toHaveLength(0);
-    }
+    return texts.length > 0 ? (texts[0].props.children as string) : undefined;
+  }
+
+  it('renders no toggle on a row with no visible descendants', () => {
+    expect(nodesWithTestId(renderReplyItem({ visibleDescendants: 0 }), TOGGLE)).toHaveLength(0);
+  });
+
+  it('reads "[-] hide N replies" while expanded', () => {
+    const renderer = renderReplyItem({ visibleDescendants: 3, collapsed: false });
+    expect(toggleText(renderer)).toBe('[\u2013] hide 3 replies');
+  });
+
+  it('reads "[+] N replies" while collapsed', () => {
+    const renderer = renderReplyItem({ visibleDescendants: 3, collapsed: true });
+    expect(toggleText(renderer)).toBe('[+] 3 replies');
+  });
+
+  it('singularizes a lone reply', () => {
+    expect(toggleText(renderReplyItem({ visibleDescendants: 1 }))).toBe('[\u2013] hide 1 reply');
+  });
+
+  it('announces expanded state and names the author', () => {
+    const expanded = pressableFor(renderReplyItem({ visibleDescendants: 2 }), TOGGLE);
+    expect(expanded.props.accessibilityRole).toBe('button');
+    expect(expanded.props.accessibilityState).toEqual({ expanded: true });
+    expect(expanded.props.accessibilityLabel).toBe('Hide 2 replies to bob');
+
+    const collapsed = pressableFor(
+      renderReplyItem({ visibleDescendants: 2, collapsed: true }),
+      TOGGLE,
+    );
+    expect(collapsed.props.accessibilityState).toEqual({ expanded: false });
+    expect(collapsed.props.accessibilityLabel).toBe('Show 2 replies to bob');
+  });
+
+  it('calls onToggleCollapse with this row id', () => {
+    const onToggleCollapse = jest.fn();
+    const renderer = renderReplyItem({ visibleDescendants: 2, onToggleCollapse });
+    act(() => {
+      pressableFor(renderer, TOGGLE).props.onPress();
+    });
+    expect(onToggleCollapse).toHaveBeenCalledWith('r-1');
+  });
+
+  it('gives the toggle a 44 x 32pt frame plus vertical slop', () => {
+    const renderer = renderReplyItem({ visibleDescendants: 2 });
+    const control = pressableFor(renderer, TOGGLE);
+    expect(control.props.hitSlop).toEqual({ top: 8, bottom: 8, left: 0, right: 0 });
+    const host = nodesWithTestId(renderer, TOGGLE).filter((n) => typeof n.type === 'string');
+    expect(host[0].props.style).toEqual(
+      expect.objectContaining({ minWidth: 44, minHeight: 32 }),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Absolute timestamps and the two-line threshold (#821 PR2)
+// ---------------------------------------------------------------------------
+
+describe('ReplyItem — timestamps', () => {
+  /** The timestamp Text node (it is the only one rendering POSTED_TEXT). */
+  function stampNode(renderer: ReactTestRenderer): ReactTestInstance {
+    const nodes = renderer.root.findAll(
+      (n) => typeof n.type === 'string' && n.props.children === POSTED_TEXT,
+    );
+    expect(nodes).toHaveLength(1);
+    return nodes[0];
+  }
+
+  it('renders an absolute date and time, never a relative one', () => {
+    const renderer = renderReplyItem({ createdAt: POSTED_AT });
+    expect(POSTED_TEXT).toBe('Jan 5, 3:04 PM');
+    expect(stampNode(renderer)).toBeDefined();
+    const relative = renderer.root.findAll(
+      (n) =>
+        typeof n.props.children === 'string' &&
+        /(just now|\d+[mh] ago)/.test(n.props.children),
+    );
+    expect(relative).toHaveLength(0);
+  });
+
+  it.each([0, 1])('keeps the timestamp inline at depth %i', (depth) => {
+    // Inline: it sits beside the name and needs the gutter.
+    expect(stampNode(renderReplyItem({ depth })).props.style).toEqual(
+      expect.objectContaining({ marginLeft: 8 }),
+    );
+  });
+
+  it.each([2, 3, 4])('moves the timestamp to its own line at depth %i', (depth) => {
+    // Stacked under the name inside the name column, so no gutter.
+    expect(stampNode(renderReplyItem({ depth })).props.style).toEqual(
+      expect.objectContaining({ marginLeft: 0 }),
+    );
+  });
+
+  it('keeps the stacked timestamp inside the author control, so one tap still opens actions', () => {
+    const renderer = renderReplyItem({ depth: 3, authorId: 'u-bob', currentUserId: 'u-me' });
+    const authorControl = renderer.root
+      .findAll(
+        (n) =>
+          typeof n.props.accessibilityLabel === 'string' &&
+          n.props.accessibilityLabel.startsWith('Actions for'),
+      )
+      .find((n) => typeof n.props.onPress === 'function');
+    expect(authorControl).toBeDefined();
+    expect(
+      authorControl!.findAll(
+        (n) => typeof n.type === 'string' && n.props.children === POSTED_TEXT,
+      ).length,
+    ).toBeGreaterThan(0);
   });
 });
 

@@ -2309,3 +2309,183 @@ describe('ThreadDetailScreen — pagination (#821)', () => {
     expect(flatList(renderer).props.maintainVisibleContentPosition).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Jump, collapse and post-send landing (#821 PR2)
+//
+// REAL TIMERS, like the rest of this file: renderScreen's flush helper awaits a
+// setTimeout(0), so fake timers deadlock it. That means the 2s highlight clear
+// and the 3s focus windows are never reached here — they belong to
+// useReplyFocus.test.tsx, which owns the timing contract.
+// ---------------------------------------------------------------------------
+
+/** Spy on the imperative scroll the focus hook drives through the list ref. */
+function spyOnScrollToIndex(): jest.SpyInstance {
+  const { FlatList } = require('react-native');
+  return jest
+    .spyOn(FlatList.prototype, 'scrollToIndex')
+    .mockImplementation(() => {});
+}
+
+/** The pressable node for a testID (TouchableOpacity spreads props downward). */
+function pressable(renderer: ReactTestRenderer, testID: string): ReactTestInstance {
+  const tagged = renderer.root.findAll((n) => n.props.testID === testID, { deep: true });
+  const pressables = tagged.filter((n) => typeof n.props.onPress === 'function');
+  expect(pressables.length).toBeGreaterThan(0);
+  return pressables[0];
+}
+
+describe('ThreadDetailScreen — jump to parent (#821)', () => {
+  afterEach(resetThreadsStore);
+
+  it("scrolls to the parent's CURRENT index when the context line is pressed", async () => {
+    const scrollToIndex = spyOnScrollToIndex();
+    try {
+      // Rows render as A, A1, B — so A sits at index 0 and A1's jump must
+      // target 0, not the store position of its parent.
+      mockThreadsStore(
+        {
+          A: makeReply('A', null, now - 3000),
+          B: makeReply('B', null, now - 2000),
+          A1: makeReply('A1', 'A', now - 1000),
+        },
+        ['A', 'B', 'A1'],
+      );
+      const renderer = await renderScreen();
+      expect(listData(renderer).map((r) => r.reply.id)).toEqual(['A', 'A1', 'B']);
+
+      scrollToIndex.mockClear();
+      await act(async () => {
+        pressable(renderer, 'reply-item-A1-parent-jump').props.onPress();
+      });
+
+      expect(scrollToIndex).toHaveBeenCalledWith(
+        expect.objectContaining({ index: 0, viewPosition: 0.3 }),
+      );
+      // ...and the parent is highlighted, via the primitive extraData key.
+      expect(flatList(renderer).props.extraData).toBe('A|');
+    } finally {
+      scrollToIndex.mockRestore();
+    }
+  });
+
+  it('offers no jump control on an orphan row — there is nowhere to go', async () => {
+    mockThreadsStore({ X: makeReply('X', 'unloaded-parent', now - 1000) }, ['X']);
+    const renderer = await renderScreen();
+    expect(
+      renderer.root.findAll((n) => n.props.testID === 'reply-item-X-parent-jump'),
+    ).toHaveLength(0);
+  });
+});
+
+describe('ThreadDetailScreen — collapse (#821)', () => {
+  afterEach(resetThreadsStore);
+
+  it('hides the subtree and switches the toggle to "[+] N"', async () => {
+    mockThreadsStore(
+      {
+        A: makeReply('A', null, now - 4000),
+        A1: makeReply('A1', 'A', now - 3000),
+        A2: makeReply('A2', 'A1', now - 2000),
+        B: makeReply('B', null, now - 1000),
+      },
+      ['A', 'A1', 'A2', 'B'],
+    );
+    const renderer = await renderScreen();
+    expect(listData(renderer).map((r) => r.reply.id)).toEqual(['A', 'A1', 'A2', 'B']);
+
+    await act(async () => {
+      pressable(renderer, 'reply-item-A-collapse-toggle').props.onPress();
+    });
+
+    // The whole contiguous subtree goes, and the siblings stay.
+    expect(listData(renderer).map((r) => r.reply.id)).toEqual(['A', 'B']);
+    const toggle = pressable(renderer, 'reply-item-A-collapse-toggle');
+    expect(toggle.props.accessibilityState).toEqual({ expanded: false });
+    expect(toggle.props.accessibilityLabel).toBe('Show 2 replies to user-2');
+    expect(flatList(renderer).props.extraData).toBe('|A');
+
+    // ...and expanding again restores them.
+    await act(async () => {
+      pressable(renderer, 'reply-item-A-collapse-toggle').props.onPress();
+    });
+    expect(listData(renderer).map((r) => r.reply.id)).toEqual(['A', 'A1', 'A2', 'B']);
+    expect(flatList(renderer).props.extraData).toBe('|');
+  });
+
+  it('offers no toggle on a leaf row', async () => {
+    mockThreadsStore({ A: makeReply('A', null, now - 1000) }, ['A']);
+    const renderer = await renderScreen();
+    expect(
+      renderer.root.findAll((n) => n.props.testID === 'reply-item-A-collapse-toggle'),
+    ).toHaveLength(0);
+  });
+});
+
+describe('ThreadDetailScreen — landing after send (#821)', () => {
+  afterEach(resetThreadsStore);
+
+  it('focuses the CONFIRMED reply id once the row is in the list', async () => {
+    const scrollToIndex = spyOnScrollToIndex();
+    try {
+      // The store already carries the confirmed row (postReply resolves with
+      // 'reply-new', and the real service inserts it before returning).
+      mockThreadsStore(
+        {
+          A: makeReply('A', null, now - 3000),
+          'reply-new': makeReply('reply-new', null, now - 1000, 'user-1'),
+        },
+        ['A', 'reply-new'],
+      );
+      const renderer = await renderScreen();
+      scrollToIndex.mockClear();
+
+      const input = renderer.root.findAll((n) => n.props.testID === 'reply-input');
+      await act(async () => {
+        input[0].props.onChangeText('hello');
+      });
+      const sendBtn = renderer.root.findAll((n) => n.props.testID === 'send-button');
+      await act(async () => {
+        sendBtn[0].props.onPress();
+      });
+      await act(async () => {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(mockPostReply).toHaveBeenCalled();
+      expect(scrollToIndex).toHaveBeenCalledWith(
+        expect.objectContaining({ index: 1, viewPosition: 0.3 }),
+      );
+      expect(flatList(renderer).props.extraData).toBe('reply-new|');
+    } finally {
+      scrollToIndex.mockRestore();
+    }
+  });
+
+  it('requests no landing when the send fails', async () => {
+    const scrollToIndex = spyOnScrollToIndex();
+    try {
+      mockThreadsStore({ A: makeReply('A', null, now - 3000) }, ['A']);
+      mockPostReply.mockRejectedValueOnce(new ValidationError(400, 'nope'));
+      const renderer = await renderScreen();
+      scrollToIndex.mockClear();
+
+      const input = renderer.root.findAll((n) => n.props.testID === 'reply-input');
+      await act(async () => {
+        input[0].props.onChangeText('hello');
+      });
+      const sendBtn = renderer.root.findAll((n) => n.props.testID === 'send-button');
+      await act(async () => {
+        sendBtn[0].props.onPress();
+      });
+      await act(async () => {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(scrollToIndex).not.toHaveBeenCalled();
+      expect(flatList(renderer).props.extraData).toBe('|');
+    } finally {
+      scrollToIndex.mockRestore();
+    }
+  });
+});

@@ -172,8 +172,12 @@ Used for: composer (new thread), media lightbox, create/join orbit.
 | Thread list rows | Full width × 64pt min | Comfortable tap area |
 | Back button | 44 × 44pt | Including text label |
 | Message actions | 44 × 48pt effective | Reply arrow on a reply row: 44 × 32pt frame + 8pt vertical `hitSlop` = 44 × 48pt effective (16pt glyph) |
+| Reply context jump | Full line width × 48pt effective | "↳ Replying to @name" line above the author row: 32pt frame + 8pt vertical `hitSlop` = 48pt effective. No horizontal slop — the line already spans the row's content width |
+| Collapse toggle | 44 × 48pt effective | "[–] hide N replies" / "[+] N replies" below a reply's body: 44 × 32pt frame (`minWidth` 44) + 8pt vertical `hitSlop` = 44 × 48pt effective |
 | Indented replies | Full remaining width | The reply row itself is **not** a tap target. Even at max indent, the reply arrow in the header row keeps its full target, and the author block keeps its own (no right `hitSlop`, so the two never overlap) |
 | DM message rows | Full width × 44pt min | Whole-row tap retained here — that tap is navigation (it opens the thread) |
+
+**Adjacent touchables:** slop never crosses into a neighbouring control, and where two controls sit side by side the more destructive one gives up the shared edge. The author block carries no right `hitSlop` — the reply arrow sits to its right — and no top `hitSlop`, because the "↳ Replying to @name" jump control sits directly above it: a near-miss below the context line must scroll to the parent, never open the Block/Report sheet. The context line's own vertical slop and the collapse toggle's point into the reply row's padding, not into each other.
 
 ---
 

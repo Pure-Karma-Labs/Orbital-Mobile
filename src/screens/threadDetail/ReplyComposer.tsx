@@ -10,7 +10,7 @@
  * can insert emoji characters from the EmojiPicker.
  */
 
-import React, { useCallback } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 import {
   Text,
   TextInput as RNTextInput,
@@ -81,6 +81,27 @@ export const ReplyComposer = React.memo(function ReplyComposer({
   onCancelUpload,
 }: ReplyComposerProps): React.JSX.Element {
   const theme = useTheme();
+  const inputRef = useRef<RNTextInput>(null);
+  const lastFocusedTargetRef = useRef<ReplyTarget | null>(null);
+
+  // Pressing a reply arrow should land the caret in the composer (#518).
+  // Keyed on the replyTarget OBJECT identity, not its replyId: ThreadDetailScreen's
+  // handleReplyPress builds a fresh object on every press, so pressing the same
+  // row again after dismissing the keyboard re-focuses.
+  //
+  // The latch makes this fire exactly ONCE per target object. Without it, the
+  // `sending` true -> false edge after a FAILED send re-runs the effect while
+  // replyTarget is still set, animating the keyboard up behind the "Reply
+  // Failed" alert. A fresh object from a real press still clears the latch.
+  useEffect(() => {
+    if (replyTarget == null) {
+      lastFocusedTargetRef.current = null;
+      return;
+    }
+    if (sending || lastFocusedTargetRef.current === replyTarget) return;
+    lastFocusedTargetRef.current = replyTarget;
+    inputRef.current?.focus();
+  }, [replyTarget, sending]);
 
   const hasContent = text.trim().length > 0 || (media?.length ?? 0) > 0;
   const canSend = hasContent && !sending;
@@ -247,6 +268,7 @@ export const ReplyComposer = React.memo(function ReplyComposer({
           </TouchableOpacity>
         )}
         <RNTextInput
+          ref={inputRef}
           style={inputStyle}
           value={text}
           onChangeText={onChangeText}

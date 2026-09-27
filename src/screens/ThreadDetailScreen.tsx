@@ -505,6 +505,10 @@ export function ThreadDetailScreen({
 
   const handleReplyPress = useCallback(
     (replyId: string, authorUsername: string, depth: number) => {
+      // LOAD-BEARING: a FRESH object every press. ReplyComposer keys its
+      // focus effect on replyTarget identity, so memoizing or reusing the
+      // object here would silently stop the composer re-focusing when the
+      // same row's arrow is pressed again after the keyboard was dismissed.
       setReplyTarget({ replyId, authorUsername, depth });
     },
     [],
@@ -660,7 +664,7 @@ export function ThreadDetailScreen({
           syncStatus={item.reply.syncStatus}
           parentAuthorId={item.parentAuthorId}
           parentAuthorUsername={item.parentAuthorUsername}
-          onPress={handleReplyPress}
+          onReplyPress={handleReplyPress}
           isHighlighted={highlightRef.current === item.reply.id}
         />
       );

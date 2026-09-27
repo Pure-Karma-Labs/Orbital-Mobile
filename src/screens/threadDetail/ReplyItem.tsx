@@ -14,14 +14,19 @@
  *
  * The original post (level 0) is rendered by ThreadHeader, so replies
  * use displayDepth = depth + 1 for color lookup (clamped to 4).
+ *
+ * Touch model (#518): the row container is passive — no tap, no a11y role.
+ * Replying is an explicit ↩️ arrow at the right of the header row; the body
+ * stays `selectable` with nothing competing for the long press, and a tap on
+ * a link or an image no longer sets a reply target as a side effect.
  */
 
 import React, { useCallback, useMemo, useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View, useWindowDimensions, type TextStyle, type ViewStyle } from 'react-native';
-import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { useTheme } from '../../theme';
 import { getReplyDepthColors } from '../../theme/colors';
 import { Avatar } from '../../components/Avatar';
+import { Emoji } from '../../components/Emoji';
 import { EmojiText } from '../../components/EmojiText';
 import { LinkPreviewCard } from '../../components/LinkPreviewCard';
 import { MediaGallery } from '../../components/MediaGallery';
@@ -47,8 +52,12 @@ export interface ReplyItemProps {
   parentAuthorId: string | null;
   /** Username fallback of the parent reply author, or null for top-level replies */
   parentAuthorUsername: string | null;
-  /** Called when the reply is tapped (to set it as reply-to target) */
-  onPress: (replyId: string, authorUsername: string, depth: number) => void;
+  /**
+   * Called when the row's reply arrow is pressed (to set this reply as the
+   * reply-to target). There is no whole-row tap: the body stays selectable
+   * and only the explicit arrow control replies (#518).
+   */
+  onReplyPress: (replyId: string, authorUsername: string, depth: number) => void;
   /** When true, renders a brief highlight overlay (notification deep-link target) */
   isHighlighted?: boolean;
 }
@@ -84,7 +93,7 @@ export const ReplyItem = React.memo(function ReplyItem({
   syncStatus,
   parentAuthorId,
   parentAuthorUsername,
-  onPress,
+  onReplyPress,
   isHighlighted,
 }: ReplyItemProps): React.JSX.Element {
   const theme = useTheme();
@@ -96,16 +105,18 @@ export const ReplyItem = React.memo(function ReplyItem({
   const [lightboxVisible, setLightboxVisible] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
 
-  const tapGesture = useMemo(
-    () => Gesture.Tap().onEnd(() => {
-      // A pending row is intentionally inert: its clientId is never a valid
-      // parentReplyId, so letting it become the reply target would post a reply
-      // parented to an id the server has never seen (#749).
-      if (syncStatus !== 'synced') return;
-      onPress(replyId, displayName, depth);
-    }).runOnJS(true),
-    [onPress, replyId, displayName, depth, syncStatus],
-  );
+  const canReply = syncStatus === 'synced';
+
+  const handleReplyPress = useCallback(() => {
+    // LOAD-BEARING: this in-handler check — not `disabled` — is the enforced
+    // #749 guard. A pending row is intentionally inert: its clientId is never a
+    // valid parentReplyId, so letting it become the reply target would post a
+    // reply parented to an id the server has never seen. Tests (and anything
+    // else that invokes props.onPress directly) bypass `disabled` entirely, so
+    // this must never be deleted as redundant with the prop.
+    if (!canReply) return;
+    onReplyPress(replyId, displayName, depth);
+  }, [canReply, onReplyPress, replyId, displayName, depth]);
 
   const handleMediaPress = useCallback((index: number) => {
     setLightboxIndex(index);
@@ -144,9 +155,31 @@ export const ReplyItem = React.memo(function ReplyItem({
     opacity: syncStatus === 'pending' || syncStatus === 'syncing' ? 0.7 : 1,
   };
 
+  // Outer header row: author control + reply arrow as SIBLINGS.
+  const headerRowStyle: ViewStyle = {
+    flexDirection: 'row',
+    alignItems: 'center',
+  };
+
   const authorRowStyle: ViewStyle = {
     flexDirection: 'row',
     alignItems: 'center',
+    // Yield width to the fixed-size arrow instead of pushing it off-screen.
+    flexShrink: 1,
+    minWidth: 0,
+  };
+
+  const replyButtonStyle: ViewStyle = {
+    // Sized by its own frame, not by slop: slop does not enlarge the visual
+    // target and does not survive overflow clipping on Android.
+    minWidth: 44,
+    minHeight: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 'auto',
+    flexShrink: 0,
+    // Stays rendered when it can't be used, so syncing causes no layout shift.
+    opacity: canReply ? 1 : 0.5,
   };
 
   const authorTextStyle: TextStyle = {
@@ -154,6 +187,7 @@ export const ReplyItem = React.memo(function ReplyItem({
     fontSize: theme.typography.fontSize.base,
     color: theme.colors.textPrimary,
     marginLeft: theme.spacing.xs,
+    flexShrink: 1,
   };
 
   const timestampStyle: TextStyle = {
@@ -162,6 +196,7 @@ export const ReplyItem = React.memo(function ReplyItem({
     color: theme.colors.textTertiary,
     letterSpacing: theme.typography.letterSpacing.tight,
     marginLeft: theme.spacing.sm,
+    flexShrink: 0,
   };
 
   const bodyStyle: TextStyle = {
@@ -180,13 +215,10 @@ export const ReplyItem = React.memo(function ReplyItem({
   };
 
   return (
-    <GestureDetector gesture={tapGesture}>
-      <View
-        style={containerStyle}
-        accessibilityRole="button"
-        accessibilityLabel={`Reply by ${displayName}`}
-        testID={`reply-item-${replyId}`}
-      >
+    // No container tap and no container a11y role (#518): the row is a passive
+    // surface so long-press text selection in the body is uncontested, and the
+    // only reply affordance is the explicit arrow below.
+    <View style={containerStyle} testID={`reply-item-${replyId}`}>
       {isHighlighted && (
         <View
           style={{
@@ -201,17 +233,54 @@ export const ReplyItem = React.memo(function ReplyItem({
       {parentAuthorUsername != null && (
         <EmojiText style={replyContextStyle}>{`↳ Replying to @${parentDisplayName}`}</EmojiText>
       )}
-      <TouchableOpacity
-        style={authorRowStyle}
-        onPress={handleAuthorPress}
-        activeOpacity={isSelf ? 1 : 0.7}
-        disabled={isSelf}
-        hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
-      >
-        <Avatar name={displayName} size={20} {...avatarProps} />
-        <EmojiText style={authorTextStyle}>{displayName}</EmojiText>
-        <Text style={timestampStyle}>{formatTimestamp(createdAt)}</Text>
-      </TouchableOpacity>
+      <View style={headerRowStyle}>
+        {/*
+          Two SIBLING touchables. The arrow must never nest inside the author
+          touchable, which is disabled={isSelf} — nesting would kill reply on
+          your own rows. The arrow also renders last on purpose: if the two
+          hit regions ever overlap, the later sibling wins and the benign
+          control (reply) takes the touch, not the block/report sheet.
+        */}
+        <TouchableOpacity
+          style={authorRowStyle}
+          onPress={handleAuthorPress}
+          activeOpacity={isSelf ? 1 : 0.7}
+          disabled={isSelf}
+          // right: 0 — any right slop here reaches into the arrow's frame once
+          // the name is long enough to close the gap, so a near-miss left of
+          // the arrow would open the Block/Report sheet instead.
+          hitSlop={{ top: 4, bottom: 4, left: 4, right: 0 }}
+          accessibilityRole={isSelf ? undefined : 'button'}
+          // The timestamp is inside this control, so it is invisible to a
+          // screen reader unless the label carries it.
+          accessibilityLabel={
+            isSelf ? undefined : `Actions for ${displayName}, posted ${formatTimestamp(createdAt)}`
+          }
+        >
+          <Avatar name={displayName} size={20} {...avatarProps} />
+          <EmojiText style={authorTextStyle} numberOfLines={1}>{displayName}</EmojiText>
+          <Text style={timestampStyle}>{formatTimestamp(createdAt)}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={replyButtonStyle}
+          onPress={handleReplyPress}
+          disabled={!canReply}
+          // No LEFT slop: slop on that edge would sit over the timestamp and
+          // steal taps meant for the author control.
+          hitSlop={{ top: 8, bottom: 8, right: 8, left: 0 }}
+          accessibilityRole="button"
+          accessibilityLabel={`Reply to ${displayName}`}
+          accessibilityState={{ disabled: !canReply }}
+          testID={`reply-item-${replyId}-reply-button`}
+        >
+          {/*
+            The 21A9-FE0F raster is entirely black (max channel 77), so
+            untinted it sits at ~1.4:1 on a dark reply row. It is monochrome,
+            so tinting is lossless and gives the control a themed colour.
+          */}
+          <Emoji unified="21A9-FE0F" size={16} tintColor={theme.colors.textSecondary} />
+        </TouchableOpacity>
+      </View>
       {body != null && body.length > 0 && (
         <EmojiText style={bodyStyle} selectable>{body}</EmojiText>
       )}
@@ -238,7 +307,6 @@ export const ReplyItem = React.memo(function ReplyItem({
           onClose={handleLightboxClose}
         />
       )}
-      </View>
-    </GestureDetector>
+    </View>
   );
 });

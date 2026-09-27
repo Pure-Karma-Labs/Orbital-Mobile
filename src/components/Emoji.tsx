@@ -20,6 +20,14 @@ export interface EmojiProps {
   unified: string;
   /** Display size in logical pixels (default 20) */
   size?: number;
+  /**
+   * Recolour the glyph (RN `Image` tintColor). Only meaningful for monochrome
+   * OpenMoji rasters — tinting a multi-colour glyph flattens it to one colour.
+   * Omit for normal emoji; use it when a glyph doubles as a UI control that
+   * has to meet contrast against a themed background (e.g. the all-black
+   * `21A9-FE0F` reply arrow on dark rows).
+   */
+  tintColor?: string;
   /** Optional testID for testing */
   testID?: string;
 }
@@ -31,6 +39,7 @@ export interface EmojiProps {
 export const Emoji = React.memo(function Emoji({
   unified,
   size = 20,
+  tintColor,
   testID,
 }: EmojiProps): React.JSX.Element | null {
   const data = getEmojiData(unified);
@@ -44,7 +53,9 @@ export const Emoji = React.memo(function Emoji({
     <Image
       source={source}
       resizeMode="contain"
-      style={{ width: size, height: size }}
+      // tintColor is omitted entirely when the prop is undefined, so every
+      // existing call site renders byte-identically to before.
+      style={tintColor != null ? { width: size, height: size, tintColor } : { width: size, height: size }}
       testID={testID}
     />
   );

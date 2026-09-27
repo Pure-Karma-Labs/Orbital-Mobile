@@ -7,10 +7,29 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { ThemeProvider } from '../../../theme';
 import { ChatMessageItem } from '../ChatMessageItem';
 
+// Captures the onEnd callback so tests can fire the row tap manually.
+// The chainable shape mirrors the real API: Tap() → onEnd(cb) → runOnJS() → same handler.
+let capturedTapEndCallback: (() => void) | undefined;
 jest.mock('react-native-gesture-handler', () => {
   const { View } = require('react-native');
   return {
-    Gesture: { Tap: () => ({ onEnd: () => ({ runOnJS: () => ({}) }) }) },
+    Gesture: {
+      Tap: () => {
+        const handler: {
+          onEnd: (cb: () => void) => typeof handler;
+          runOnJS: () => typeof handler;
+        } = {
+          onEnd(cb: () => void) {
+            capturedTapEndCallback = cb;
+            return handler;
+          },
+          runOnJS() {
+            return handler;
+          },
+        };
+        return handler;
+      },
+    },
     GestureDetector: ({ children }: { children: React.ReactNode }) => children,
     GestureHandlerRootView: View,
   };
@@ -91,6 +110,37 @@ describe('ChatMessageItem — useAuthorActions context', () => {
       contentId: 't-2',
       groupId: undefined,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Row tap + preview selection (#518)
+// ---------------------------------------------------------------------------
+
+describe('ChatMessageItem — navigation row model (#518)', () => {
+  beforeEach(() => {
+    capturedTapEndCallback = undefined;
+  });
+
+  it('renders the 4-line preview but does NOT make it selectable', () => {
+    const renderer = renderItem({ body: 'hello' });
+    const preview = renderer.root.findAll((n) => n.props.numberOfLines === 4);
+    expect(preview.length).toBeGreaterThan(0);
+    for (const node of preview) {
+      expect(node.props.selectable).toBeFalsy();
+    }
+    // Nothing else in the row is selectable either.
+    expect(renderer.root.findAll((n) => n.props.selectable === true)).toHaveLength(0);
+  });
+
+  it('keeps the whole-row tap: it is navigation, not a reply action', () => {
+    const onPress = jest.fn();
+    renderItem({ threadId: 't-1', onPress });
+    expect(capturedTapEndCallback).toBeDefined();
+    act(() => {
+      capturedTapEndCallback!();
+    });
+    expect(onPress).toHaveBeenCalledWith('t-1');
   });
 });
 

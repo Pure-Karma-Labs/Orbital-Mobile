@@ -621,6 +621,74 @@ describe('ThreadDetailScreen — with thread data', () => {
     expect(contextNode).toBeDefined();
   });
 
+  it('sets the composer reply target when a reply row\'s arrow is pressed (#518)', async () => {
+    const renderer = await renderScreen();
+
+    // No reply context before any press.
+    expect(
+      renderer.root.findAll((node) => node.props.testID === 'reply-context'),
+    ).toHaveLength(0);
+
+    const arrow = renderer.root
+      .findAll((node) => node.props.testID === 'reply-item-reply-1-reply-button')
+      .find((node) => typeof node.props.onPress === 'function');
+    expect(arrow).toBeDefined();
+
+    await act(async () => {
+      arrow!.props.onPress();
+    });
+
+    const context = renderer.root.findAll(
+      (node) => node.props.testID === 'reply-context',
+    );
+    expect(context.length).toBeGreaterThan(0);
+
+    const allText = renderer.root.findAllByType(
+      'Text' as unknown as React.ComponentType,
+    );
+    const contextLabel = allText.find(
+      (node) =>
+        Array.isArray(node.props.children) &&
+        node.props.children.join('') === 'Replying to @bob',
+    );
+    expect(contextLabel).toBeDefined();
+  });
+
+  it('hands ReplyComposer a FRESH replyTarget object on every arrow press (#518 re-focus)', async () => {
+    const renderer = await renderScreen();
+
+    const findComposerTarget = (): unknown => {
+      const composers = renderer.root.findAll(
+        (node) =>
+          node.props != null &&
+          'replyTarget' in node.props &&
+          typeof node.props.onClearReplyTarget === 'function',
+      );
+      expect(composers.length).toBeGreaterThan(0);
+      return composers[0].props.replyTarget;
+    };
+
+    const pressArrow = async (): Promise<void> => {
+      const arrow = renderer.root
+        .findAll((node) => node.props.testID === 'reply-item-reply-1-reply-button')
+        .find((node) => typeof node.props.onPress === 'function');
+      expect(arrow).toBeDefined();
+      await act(async () => {
+        arrow!.props.onPress();
+      });
+    };
+
+    await pressArrow();
+    const first = findComposerTarget();
+    await pressArrow();
+    const second = findComposerTarget();
+
+    // Same reply, but a NEW object each time — ReplyComposer's focus effect
+    // keys on identity, so memoizing this would kill re-focus.
+    expect(second).toEqual(first);
+    expect(second).not.toBe(first);
+  });
+
   it('does not show "Replying to" for top-level reply-1', async () => {
     const renderer = await renderScreen();
     const allText = renderer.root.findAllByType(

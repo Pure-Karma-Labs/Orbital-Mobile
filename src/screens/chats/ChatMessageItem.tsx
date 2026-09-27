@@ -150,7 +150,9 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
           )}
         </TouchableOpacity>
         {body ? (
-          <EmojiText style={bodyStyle} numberOfLines={4} selectable>
+          // Deliberately NOT selectable (#518): this row's tap is navigation, so
+          // a long press here would only contest it — copy the full text in ThreadDetail.
+          <EmojiText style={bodyStyle} numberOfLines={4}>
             {body}
           </EmojiText>
         ) : null}

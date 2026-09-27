@@ -30,6 +30,7 @@ jest.mock('../../../components/Emoji', () => {
 });
 
 import React from 'react';
+import { TextInput as RNTextInput } from 'react-native';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { ThemeProvider } from '../../../theme';
 import { ReplyComposer, type ReplyComposerProps } from '../ReplyComposer';
@@ -78,6 +79,21 @@ function renderComposer(
     );
   });
   return renderer;
+}
+
+function updateComposer(
+  renderer: ReactTestRenderer,
+  overrides?: Partial<ReplyComposerProps>,
+): void {
+  act(() => {
+    renderer.update(
+      React.createElement(
+        ThemeProvider,
+        { colorSchemeOverride: 'light' },
+        React.createElement(ReplyComposer, defaultProps(overrides)),
+      ),
+    );
+  });
 }
 
 function findByTestId(
@@ -165,6 +181,89 @@ describe('ReplyComposer — send behavior', () => {
     const renderer = renderComposer({ text: 'hello', sending: false });
     const sendBtn = findByTestId(renderer, 'send-button');
     expect(sendBtn[0].props.disabled).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Focus on reply target (#518)
+// ---------------------------------------------------------------------------
+
+describe('ReplyComposer — focus on reply target (#518)', () => {
+  // RN's jest mock renders TextInput as a class whose prototype carries the
+  // native methods, so the component's internal ref resolves to an instance
+  // and this spy observes the real focus() call the effect makes.
+  const focusSpy = jest.spyOn(RNTextInput.prototype, 'focus');
+
+  const target = { replyId: 'r-1', authorUsername: 'bob', depth: 0 };
+
+  beforeEach(() => {
+    focusSpy.mockClear();
+  });
+
+  afterAll(() => {
+    focusSpy.mockRestore();
+  });
+
+  it('does not focus while there is no reply target', () => {
+    renderComposer({ replyTarget: null });
+    expect(focusSpy).not.toHaveBeenCalled();
+  });
+
+  it('focuses the input when replyTarget goes from null to a target', () => {
+    const renderer = renderComposer({ replyTarget: null });
+    expect(focusSpy).not.toHaveBeenCalled();
+
+    updateComposer(renderer, { replyTarget: target });
+    expect(focusSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-focuses when the same row is pressed again (new target object identity)', () => {
+    const renderer = renderComposer({ replyTarget: target });
+    expect(focusSpy).toHaveBeenCalledTimes(1);
+
+    // handleReplyPress builds a fresh object on every press; keying the effect
+    // on identity is what lets a second press re-open a dismissed keyboard.
+    updateComposer(renderer, { replyTarget: { ...target } });
+    expect(focusSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not re-focus when an unrelated prop changes but the target is identical', () => {
+    const renderer = renderComposer({ replyTarget: target });
+    expect(focusSpy).toHaveBeenCalledTimes(1);
+
+    updateComposer(renderer, { replyTarget: target, text: 'typing' });
+    expect(focusSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not focus while sending, when the input is not editable', () => {
+    const renderer = renderComposer({ replyTarget: null, sending: true });
+    updateComposer(renderer, { replyTarget: target, sending: true });
+    expect(focusSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not re-focus on the sending true->false edge of a FAILED send', () => {
+    // A failed send keeps replyTarget set and flips sending back to false.
+    // Without the per-target latch the effect re-fires here and animates the
+    // keyboard up behind the "Reply Failed" alert.
+    const renderer = renderComposer({ replyTarget: target, sending: false });
+    expect(focusSpy).toHaveBeenCalledTimes(1);
+
+    updateComposer(renderer, { replyTarget: target, sending: true });
+    updateComposer(renderer, { replyTarget: target, sending: false });
+    expect(focusSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-arms after the target is cleared, so the next press focuses again', () => {
+    const renderer = renderComposer({ replyTarget: target });
+    expect(focusSpy).toHaveBeenCalledTimes(1);
+
+    // Successful send clears the target...
+    updateComposer(renderer, { replyTarget: null });
+    expect(focusSpy).toHaveBeenCalledTimes(1);
+
+    // ...and the next press re-focuses even if it targets the same object.
+    updateComposer(renderer, { replyTarget: target });
+    expect(focusSpy).toHaveBeenCalledTimes(2);
   });
 });
 

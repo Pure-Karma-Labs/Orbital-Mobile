@@ -91,17 +91,17 @@ Default iOS edge swipe for back navigation. No custom override.
 
 ---
 
-## Swipe Gestures
+## Reply Affordance (Thread Detail)
 
-### Swipe-to-Reply (Thread Detail)
+No swipe gestures ship anywhere in the app — the only horizontal gesture is the iOS edge swipe-back. Swipe-to-reply was specified in an earlier draft of this document; the shipped affordance is an explicit **reply arrow** in each reply row's header. A visible control avoids a gesture collision with selectable text and with the edge swipe-back, and it exposes a real target for VoiceOver/TalkBack. See `SCREEN-THREAD-DETAIL.md` → Reply Arrow.
 
 | Property | Value |
 |---|---|
-| Direction | Swipe right on a message |
-| Reveal | Reply icon on blue background |
-| Threshold | 80pt to trigger |
-| Haptic | Light impact at trigger threshold |
-| Result | Opens reply composer with "Replying to [Author]" context |
+| Trigger | Tap the ↩️ arrow (OpenMoji `21A9-FE0F` tinted `colors.textSecondary`, 16pt) at the top-right of a reply's header row |
+| Touch target | 44 × 32pt frame + 8pt vertical `hitSlop` = 44 × 48pt effective |
+| Result | Sets "Replying to @name" context above the composer and focuses the composer input |
+| Unsynced rows | Arrow dimmed (`opacity` 0.5) and inert while pending / syncing / failed — no layout shift when the reply syncs |
+| Accessibility | "Reply to [Author], button"; the row container is not a button |
 
 ---
 
@@ -119,7 +119,7 @@ Owner decision (2026-08-03): per-target notification muting is a **long-press** 
 | Muted indicator | OpenMoji `1F515` (🔕) in the row's meta line |
 | Accessibility | `accessibilityActions` exposes the same mute/unmute action; `accessibilityHint` announces that a long press opens notification options |
 | Detail-screen equivalent | Bell glyph in the navigation header right slot — `1F514` (🔔) unmuted, `1F515` (🔕) muted, 8pt `hitSlop` |
-| Not available on | Individual messages inside a DM (long press there collides with selectable text) — mute the thread from its detail header instead |
+| Not available on | Individual messages inside a DM — the whole row is a navigation tap and carries no long-press action; mute the thread from its detail header instead |
 
 ---
 
@@ -171,8 +171,9 @@ Used for: composer (new thread), media lightbox, create/join orbit.
 | Tab bar items | 44 × 49pt | Full tab width |
 | Thread list rows | Full width × 64pt min | Comfortable tap area |
 | Back button | 44 × 44pt | Including text label |
-| Message actions | 44 × 44pt | Reply, react, etc. |
-| Indented messages | Full remaining width | Even at max indent, the entire message row is tappable |
+| Message actions | 44 × 48pt effective | Reply arrow on a reply row: 44 × 32pt frame + 8pt vertical `hitSlop` = 44 × 48pt effective (16pt glyph) |
+| Indented replies | Full remaining width | The reply row itself is **not** a tap target. Even at max indent, the reply arrow in the header row keeps its full target, and the author block keeps its own (no right `hitSlop`, so the two never overlap) |
+| DM message rows | Full width × 44pt min | Whole-row tap retained here — that tap is navigation (it opens the thread) |
 
 ---
 
@@ -219,7 +220,6 @@ Use ASCII box art from the brand guide. Centered vertically in the content area.
 | Send message | Light impact | iOS: `UIImpactFeedbackGenerator(.light)` |
 | Pull-to-refresh complete | Notification (success) | iOS: `UINotificationFeedbackGenerator(.success)` |
 | Error (validation, network) | Notification (error) | iOS: `UINotificationFeedbackGenerator(.error)` |
-| Swipe-to-reply threshold | Light impact | iOS: `UIImpactFeedbackGenerator(.light)` |
 | Long press selection | Selection changed | iOS: `UISelectionFeedbackGenerator()` |
 
 Android: use `ReactNativeHapticFeedback` equivalents.

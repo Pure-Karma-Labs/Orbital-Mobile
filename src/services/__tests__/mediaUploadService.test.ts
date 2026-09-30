@@ -45,25 +45,17 @@ jest.mock('../crypto/contentCrypto', () => ({
 }));
 
 jest.mock('../crypto/utils', () => ({
-  arrayBufferToBase64: jest.fn((ab: ArrayBuffer) => {
-    const bytes = new Uint8Array(ab);
-    let binary = '';
-    for (let i = 0; i < bytes.length; i++) {
-      binary += String.fromCharCode(bytes[i]);
-    }
-    return btoa(binary);
-  }),
+  arrayBufferToBase64: jest.fn((ab: ArrayBuffer) =>
+    Buffer.from(ab).toString('base64'),
+  ),
   toArrayBuffer: jest.fn((u8: Uint8Array) =>
     u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength),
   ),
   // Promoted out of mediaUploadService into crypto/utils (#578) so the
   // download read loop can share one decode implementation.
-  base64ToUint8Array: jest.fn((b64: string) => {
-    const binary = atob(b64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    return bytes;
-  }),
+  base64ToUint8Array: jest.fn((b64: string) =>
+    new Uint8Array(Buffer.from(b64, 'base64')),
+  ),
 }));
 
 const mockUploadChunk = jest.fn();
@@ -155,17 +147,18 @@ const SMALL_CT_SIZE = 112; // 16 + (50 - 2 + 16) + 32
 /** Mirrors mediaUploadService's private CHUNK_SIZE_BYTES (5MB) for progress-math assertions. */
 const CHUNK_SIZE_BYTES = 5 * 1024 * 1024;
 
-/** Produce a base64 string that decodes to exactly `length` bytes. */
+/** Produce a base64 string that decodes to exactly `length` bytes. Memoized by length. */
+const _makeFakeBase64Cache = new Map<number, string>();
 function makeFakeBase64(length: number): string {
+  const cached = _makeFakeBase64Cache.get(length);
+  if (cached !== undefined) return cached;
   const bytes = new Uint8Array(length);
   for (let i = 0; i < length; i++) {
     bytes[i] = (i + 1) % 256; // avoid leading 0 for safety
   }
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
+  const result = Buffer.from(bytes.buffer, bytes.byteOffset, length).toString('base64');
+  _makeFakeBase64Cache.set(length, result);
+  return result;
 }
 
 /** Compute expected ciphertext length for a given plaintext size. */
@@ -510,13 +503,26 @@ describe('uploadMedia', () => {
   });
 
   it('saves failed row with archive_confirmed=0 (or absent) on failure', async () => {
-    mockUploadChunk.mockRejectedValue(new Error('Network error'));
+    jest.useFakeTimers();
+    try {
+      mockUploadChunk.mockRejectedValue(new Error('Network error'));
 
-    await expect(uploadMedia(baseOptions)).rejects.toThrow('Failed to upload media');
-    expect(mockSaveMedia).toHaveBeenCalledTimes(1);
-    const failedRow = mockSaveMedia.mock.calls[0][0];
-    // Failed rows default to 0
-    expect(failedRow.archive_confirmed ?? 0).toBe(0);
+      const p = uploadMedia(baseOptions);
+      // Attach catch before advancing so the rejection is never unhandled.
+      const settled = p.catch((e: Error) => e);
+      await jest.advanceTimersByTimeAsync(3000);
+      const err = await settled;
+
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toMatch(/Failed to upload media/);
+      expect(mockSaveMedia).toHaveBeenCalledTimes(1);
+      const failedRow = mockSaveMedia.mock.calls[0][0];
+      expect(failedRow.upload_state).toBe('failed');
+      expect(failedRow.archive_confirmed).toBe(0);
+    } finally {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    }
   });
 
   it('returns the media ID in result', async () => {
@@ -527,23 +533,54 @@ describe('uploadMedia', () => {
   });
 
   it('retries on transient upload failure', async () => {
-    mockUploadChunk
-      .mockRejectedValueOnce(new Error('Network error'))
-      .mockResolvedValueOnce({ uploadId: 'u1', received: 1, complete: false });
+    jest.useFakeTimers();
+    try {
+      mockUploadChunk
+        .mockRejectedValueOnce(new Error('Network error'))
+        .mockResolvedValueOnce({ uploadId: 'u1', received: 1, complete: false });
 
-    await uploadMedia(baseOptions);
+      const p = uploadMedia(baseOptions);
+      await jest.advanceTimersByTimeAsync(1000);
+      await p;
 
-    expect(mockUploadChunk).toHaveBeenCalledTimes(2);
+      expect(mockUploadChunk).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    }
   });
 
   it('throws after max retries exhausted and saves failure row', async () => {
-    mockUploadChunk.mockRejectedValue(new Error('Network error'));
+    jest.useFakeTimers();
+    try {
+      mockUploadChunk.mockRejectedValue(new Error('Network error'));
 
-    await expect(uploadMedia(baseOptions)).rejects.toThrow('Failed to upload media');
-    expect(mockUploadChunk).toHaveBeenCalledTimes(3);
-    expect(mockSaveMedia).toHaveBeenCalledTimes(1);
-    const failedRow = mockSaveMedia.mock.calls[0][0];
-    expect(failedRow.upload_state).toBe('failed');
+      const p = uploadMedia(baseOptions);
+      // Attach catch before advancing so the rejection is never unhandled.
+      const settled = p.catch((e: Error) => e);
+
+      // After 999 ms: first attempt has failed, backoff hasn't fired yet → 1 call.
+      await jest.advanceTimersByTimeAsync(999);
+      expect(mockUploadChunk).toHaveBeenCalledTimes(1);
+
+      // After 1 more ms (1000 ms total): first backoff fires → second attempt starts.
+      await jest.advanceTimersByTimeAsync(1);
+      expect(mockUploadChunk).toHaveBeenCalledTimes(2);
+
+      // After 2000 more ms: second backoff fires → third (final) attempt completes.
+      await jest.advanceTimersByTimeAsync(2000);
+      const err = await settled;
+
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toMatch(/Failed to upload media/);
+      expect(mockUploadChunk).toHaveBeenCalledTimes(3);
+      expect(mockSaveMedia).toHaveBeenCalledTimes(1);
+      const failedRow = mockSaveMedia.mock.calls[0][0];
+      expect(failedRow.upload_state).toBe('failed');
+    } finally {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    }
   });
 
   it('does not retry on 401 error', async () => {
@@ -881,28 +918,34 @@ describe('uploadMedia — video branch', () => {
     });
 
     it('captures a degrading thumbnail UPLOAD failure under the `thumbnail` stage', async () => {
-      // Pins the two thumbnail stages apart: this is the upload-side degradation
-      // ('thumbnail'); local poster-frame extraction reports 'thumbnail-extract'
-      // from videoProcessing (#748).
-      mockUploadChunk.mockImplementation((args: Record<string, unknown>) => {
-        if (args.mediaId === 'thumb-media-id') {
-          return Promise.reject(new Error('Network error'));
-        }
-        return Promise.resolve({ uploadId: 'u1', received: 1, complete: false });
-      });
+      jest.useFakeTimers();
+      try {
+        // Pins the two thumbnail stages apart: this is the upload-side degradation
+        // ('thumbnail'); local poster-frame extraction reports 'thumbnail-extract'
+        // from videoProcessing (#748).
+        mockUploadChunk.mockImplementation((args: Record<string, unknown>) => {
+          if (args.mediaId === 'thumb-media-id') {
+            return Promise.reject(new Error('Network error'));
+          }
+          return Promise.resolve({ uploadId: 'u1', received: 1, complete: false });
+        });
 
-      await uploadMedia(videoOptions);
+        const p = uploadMedia(videoOptions);
+        await jest.advanceTimersByTimeAsync(3000);
+        await p;
 
-      const capture = Sentry.captureException as unknown as jest.Mock;
-      const degradations = capture.mock.calls.filter(
-        (c: unknown[]) =>
-          (c[1] as { tags?: Record<string, string> })?.tags?.stage === 'thumbnail',
-      );
-      expect(degradations).toHaveLength(1);
-      expect((degradations[0][1] as { level: string }).level).toBe('warning');
-      // Real exponential backoff (1s + 2s) runs between the child's three
-      // chunk attempts, so this test needs more than the default 5s budget.
-    }, 15000);
+        const capture = Sentry.captureException as unknown as jest.Mock;
+        const degradations = capture.mock.calls.filter(
+          (c: unknown[]) =>
+            (c[1] as { tags?: Record<string, string> })?.tags?.stage === 'thumbnail',
+        );
+        expect(degradations).toHaveLength(1);
+        expect((degradations[0][1] as { level: string }).level).toBe('warning');
+      } finally {
+        jest.clearAllTimers();
+        jest.useRealTimers();
+      }
+    });
   });
 
   describe('video branch — progress + cancellation', () => {
@@ -1032,30 +1075,39 @@ describe('uploadMedia — video branch', () => {
       // JPEG is invisible to every other cleanup path, so uploadMedia's own catch
       // is the only thing that can remove it (#721).
       it('rolls back a committed thumbnail child when the PARENT fails, and rethrows the original error unchanged', async () => {
-        mockUploadChunk.mockImplementation((args: Record<string, unknown>) => {
-          if (args.mediaId === 'parent-media-id') {
-            return Promise.reject(new Error('Network error'));
-          }
-          return Promise.resolve({ uploadId: 'u1', received: 1, complete: false });
-        });
+        jest.useFakeTimers();
+        try {
+          mockUploadChunk.mockImplementation((args: Record<string, unknown>) => {
+            if (args.mediaId === 'parent-media-id') {
+              return Promise.reject(new Error('Network error'));
+            }
+            return Promise.resolve({ uploadId: 'u1', received: 1, complete: false });
+          });
 
-        // Seeded by hand: mockUpsertMedia is a bare spy, so the child's own
-        // commit never lands in the store map the rollback reads.
-        mockMediaMap['thumb-media-id'] = { localPath: '/tmp/test-docs/media/thumb-media-id.jpg' };
+          // Seeded by hand: mockUpsertMedia is a bare spy, so the child's own
+          // commit never lands in the store map the rollback reads.
+          mockMediaMap['thumb-media-id'] = { localPath: '/tmp/test-docs/media/thumb-media-id.jpg' };
 
-        const rnfs = require('@dr.pogodin/react-native-fs');
-        const err = await uploadMedia({ ...videoOptions }).catch((e) => e);
+          const rnfs = require('@dr.pogodin/react-native-fs');
+          const p = uploadMedia({ ...videoOptions });
+          // Attach catch before advancing so the rejection is never unhandled.
+          const settled = p.catch((e: Error) => e);
+          await jest.advanceTimersByTimeAsync(3000);
+          const err = await settled;
 
-        expect(mockDeleteMedia).toHaveBeenCalledWith('thumb-media-id');
-        expect(rnfs.unlink).toHaveBeenCalledWith('/tmp/test-docs/media/thumb-media-id.jpg');
-        expect(mockRemoveMedia).toHaveBeenCalledWith('thumb-media-id');
-        // The rollback is best-effort and must be invisible to the caller: the
-        // original retry-exhaustion error is what surfaces, neither masked by a
-        // rollback failure nor replaced by a cancellation sentinel.
-        expect(err.message).toMatch(/Failed to upload media/);
-        // Real exponential backoff (1s + 2s) runs between the parent's three
-        // chunk attempts, so this test needs more than the default 5s budget.
-      }, 15000);
+          expect(mockDeleteMedia).toHaveBeenCalledWith('thumb-media-id');
+          expect(rnfs.unlink).toHaveBeenCalledWith('/tmp/test-docs/media/thumb-media-id.jpg');
+          expect(mockRemoveMedia).toHaveBeenCalledWith('thumb-media-id');
+          // The rollback is best-effort and must be invisible to the caller: the
+          // original retry-exhaustion error is what surfaces, neither masked by a
+          // rollback failure nor replaced by a cancellation sentinel.
+          expect(err).toBeInstanceOf(Error);
+          expect((err as Error).message).toMatch(/Failed to upload media/);
+        } finally {
+          jest.clearAllTimers();
+          jest.useRealTimers();
+        }
+      });
 
       // W2-cancel at the unit level: same committed-child window as above, but
       // reached through an abort instead of a failure.

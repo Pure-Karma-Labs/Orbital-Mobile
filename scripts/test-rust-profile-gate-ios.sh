@@ -12,6 +12,9 @@
 
 set -euo pipefail
 
+# Pipe-free substring test (#790): `printf | grep -q` under pipefail SIGPIPEs on large output.
+contains() { [ -n "$2" ] && [[ "$1" == *"$2"* ]]; }  # empty needle never matches
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="${REPO_ROOT}/scripts/verify-rust-profile-ios.sh"
 PODFILE="${REPO_ROOT}/ios/Podfile"
@@ -53,7 +56,7 @@ run_test() {
   if [ "${exit_code}" -ne "${expected_exit}" ]; then
     ok=0
   fi
-  if [ -n "${expected_substring}" ] && ! printf '%s' "${output}" | grep -qF "${expected_substring}"; then
+  if [ -n "${expected_substring}" ] && ! contains "${output}" "${expected_substring}"; then
     ok=0
   fi
   if [ "${ok}" -eq 1 ]; then

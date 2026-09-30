@@ -20,6 +20,9 @@
 
 set -euo pipefail
 
+# Pipe-free substring test (#790): `printf | grep -q` under pipefail SIGPIPEs on large output.
+contains() { [ -n "$2" ] && [[ "$1" == *"$2"* ]]; }  # empty needle never matches
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MARKER="${REPO_ROOT}/packages/orbital-signal/android/src/main/jniLibs/rust-profile.txt"
 ARM64_LIB="${REPO_ROOT}/packages/orbital-signal/android/src/main/jniLibs/arm64-v8a/liborbital_signal.a"
@@ -75,7 +78,7 @@ expect_pass() {
   set -e
   local ok=1
   [ "${exit_code}" -ne 0 ] && ok=0
-  if [ -n "${req_substring}" ] && ! printf '%s' "${output}" | grep -qF "${req_substring}"; then
+  if [ -n "${req_substring}" ] && ! contains "${output}" "${req_substring}"; then
     ok=0
   fi
   if [ "${ok}" -eq 1 ]; then
@@ -102,7 +105,7 @@ expect_fail_with() {
   set -e
   local ok=1
   [ "${exit_code}" -eq 0 ] && ok=0
-  if ! printf '%s' "${output}" | grep -qF "${req_substring}"; then
+  if ! contains "${output}" "${req_substring}"; then
     ok=0
   fi
   if [ "${ok}" -eq 1 ]; then
@@ -151,8 +154,10 @@ exit_code=$?
 set -e
 ok=1
 [ "${exit_code}" -ne 0 ] && ok=0
-printf '%s' "${output}" | grep -qF '> Task :app:checkRustBinaries' || ok=0
-printf '%s' "${output}" | grep -qF 'Release build requires release-profile' && ok=0
+contains "${output}" '> Task :app:checkRustBinaries' || ok=0
+contains "${output}" 'rust-gate release probe executed' || ok=0
+# Negative check is meaningful only when both positive checks above hold.
+contains "${output}" 'Release build requires release-profile' && ok=0
 if [ "${ok}" -eq 1 ]; then
   echo "PASS A4 (Release+release+probe→pass, gate non-vacuous)"
   PASS=$((PASS + 1))

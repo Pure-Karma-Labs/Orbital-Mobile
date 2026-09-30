@@ -858,6 +858,50 @@ checkWindowedPins(
 );
 
 // ---------------------------------------------------------------------------
+// 16. No `| grep -q` pipelines in scripts/*.sh (#790)
+// ---------------------------------------------------------------------------
+
+// Under `set -euo pipefail`, a producer piped into an early-exiting consumer
+// (grep -q, -qF, -qE, etc.) returns SIGPIPE (141) once the output exceeds the
+// pipe buffer: 16 KB on macOS, 64 KB on Linux. That silently turns a pass into
+// a fail — or, for a negative check, a fail into a pass. The repo-wide fix
+// (#790) uses `contains "$output" "needle"` instead.
+//
+// Scope: guards the `| grep -q` shape only, on single lines, in *.sh files
+// under scripts/ (recursive), skipping `#` comment lines. `||` is not a pipe.
+// NOT covered: other early-exiting consumers (`| head`, `grep -m`), pipelines
+// continued onto the next line, and workflow run: blocks — those still need
+// review-time care.
+
+const SCRIPTS_DIR = 'scripts';
+const PIPE_GREP_Q_RE = /(?<!\|)\|(?!\|)[^#\n]*\bgrep\b[^#\n]*-[a-zA-Z]*q/;
+
+let shFiles = [];
+try {
+  shFiles = walkSync(SCRIPTS_DIR, ['.sh']);
+} catch {
+  violations.push(`  ${SCRIPTS_DIR}:0  [no-pipeline-grep-q]  scripts/ directory not found — cannot verify the no-pipeline-grep-q invariant`);
+}
+
+for (const file of shFiles) {
+  let lines;
+  try {
+    lines = readFileSync(file, 'utf8').split('\n');
+  } catch {
+    violations.push(`  ${file}:0  [no-pipeline-grep-q]  could not read file`);
+    continue;
+  }
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // Skip bash comment lines.
+    if (/^\s*#/.test(line)) continue;
+    if (PIPE_GREP_Q_RE.test(line)) {
+      report(file, i + 1, 'no-pipeline-grep-q', line.trim());
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------
 

@@ -11,6 +11,9 @@
 
 set -euo pipefail
 
+# Pipe-free substring test (#790): `printf | grep -q` under pipefail SIGPIPEs on large output.
+contains() { [ -n "$2" ] && [[ "$1" == *"$2"* ]]; }  # empty needle never matches
+
 PROFILE_SUFFIX=""
 if [ "${1:-}" = "--release" ]; then
     PROFILE_SUFFIX=":release"
@@ -34,7 +37,7 @@ if ! command -v cargo-ndk &>/dev/null; then
     cargo install cargo-ndk
 fi
 
-if ! rustup target list --installed | grep -q aarch64-linux-android; then
+if ! contains "$(rustup target list --installed)" aarch64-linux-android; then
     echo "Installing Android Rust targets..."
     rustup target add aarch64-linux-android x86_64-linux-android
 fi

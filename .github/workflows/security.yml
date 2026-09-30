@@ -269,8 +269,12 @@ jobs:
         run: |
           set -euo pipefail
           CRATE=packages/orbital-signal/rust/orbital_signal
+          # Every check below greps these files inside an `if`, where an
+          # unreadable file (grep exit 2) reads as "clean" — fail closed first.
+          for f in "$CRATE/Cargo.lock" "$CRATE/Cargo.toml"; do
+            [ -r "$f" ] || { echo "::error::cannot read $f"; exit 1; }
+          done
           COUNT=$(grep -c '^name = "curve25519-dalek"$' "$CRATE/Cargo.lock" || true)
-          if ! [ "$COUNT" -ge 0 ] 2>/dev/null; then echo "::error::could not read $CRATE/Cargo.lock"; exit 1; fi
           if [ "$COUNT" -ne 1 ]; then
             echo "::error::Cargo.lock resolves $COUNT curve25519-dalek packages (expected exactly 1)."
             grep -n -A2 '^name = "curve25519-dalek"$' "$CRATE/Cargo.lock" || true

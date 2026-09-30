@@ -21,7 +21,7 @@
 set -euo pipefail
 
 # Pipe-free substring test (#790): `printf | grep -q` under pipefail SIGPIPEs on large output.
-contains() { [[ "$1" == *"$2"* ]]; }
+contains() { [ -n "$2" ] && [[ "$1" == *"$2"* ]]; }  # empty needle never matches
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MARKER="${REPO_ROOT}/packages/orbital-signal/android/src/main/jniLibs/rust-profile.txt"

@@ -865,22 +865,20 @@ checkWindowedPins(
 // (grep -q, -qF, -qE, etc.) returns SIGPIPE (141) once the output exceeds the
 // pipe buffer: 16 KB on macOS, 64 KB on Linux. That silently turns a pass into
 // a fail — or, for a negative check, a fail into a pass. The repo-wide fix
-// (#790) uses `contains "$output" "needle"` instead. This invariant makes the
-// regression mechanically impossible to reintroduce.
+// (#790) uses `contains "$output" "needle"` instead.
 //
-// The check walks all *.sh files under scripts/ (not recursive into
-// subdirectories at this time — expand if a scripts/lib/ is added). It skips
-// lines that begin with # (bash comment lines), so the contains() helper's own
-// doc-comment does not trigger the rule.
+// Scope: guards the `| grep -q` shape only, on single lines, in *.sh files
+// under scripts/ (recursive), skipping `#` comment lines. `||` is not a pipe.
+// NOT covered: other early-exiting consumers (`| head`, `grep -m`), pipelines
+// continued onto the next line, and workflow run: blocks — those still need
+// review-time care.
 
 const SCRIPTS_DIR = 'scripts';
-const PIPE_GREP_Q_RE = /\|[^#\n]*\bgrep\b[^#\n]*-[a-zA-Z]*q/;
+const PIPE_GREP_Q_RE = /(?<!\|)\|(?!\|)[^#\n]*\bgrep\b[^#\n]*-[a-zA-Z]*q/;
 
 let shFiles = [];
 try {
-  shFiles = readdirSync(SCRIPTS_DIR)
-    .filter((f) => f.endsWith('.sh'))
-    .map((f) => join(SCRIPTS_DIR, f));
+  shFiles = walkSync(SCRIPTS_DIR, ['.sh']);
 } catch {
   violations.push(`  ${SCRIPTS_DIR}:0  [no-pipeline-grep-q]  scripts/ directory not found — cannot verify the no-pipeline-grep-q invariant`);
 }

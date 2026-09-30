@@ -56,8 +56,8 @@ jobs:
         run: npm run typecheck
 
       - name: Jest tests
-        # Green baseline: TBD-836 (re-measured from PR #836 CI run after
-        # mediaUploadService suite speed-up). Cap at 10 min is a hang
+        # Green baseline: ~60 s on PR #855 (run 36776309758); was 92–150 s before
+        # the #836 mediaUploadService speed-up. Cap at 10 min is a hang
         # detector (#834), NOT a performance budget. Any reduction to the
         # cap is a separate change after #834 closes and >=5 green main
         # runs establish a new stable range. A timed-out Jest step skips

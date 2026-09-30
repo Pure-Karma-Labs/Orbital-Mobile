@@ -147,6 +147,11 @@ const SMALL_CT_SIZE = 112; // 16 + (50 - 2 + 16) + 32
 /** Mirrors mediaUploadService's private CHUNK_SIZE_BYTES (5MB) for progress-math assertions. */
 const CHUNK_SIZE_BYTES = 5 * 1024 * 1024;
 
+/** Mirrors mediaUploadService's private BASE_RETRY_DELAY_MS (backoff = base * 2^attempt). */
+const BASE_RETRY_DELAY_MS = 1000;
+/** Total backoff across MAX_RETRIES=3 attempts (1 s + 2 s) — advance this far to exhaust retries. */
+const TOTAL_BACKOFF_MS = BASE_RETRY_DELAY_MS * (1 + 2);
+
 /** Produce a base64 string that decodes to exactly `length` bytes. Memoized by length. */
 const _makeFakeBase64Cache = new Map<number, string>();
 function makeFakeBase64(length: number): string {
@@ -502,7 +507,7 @@ describe('uploadMedia', () => {
     expect(row.archive_confirmed).toBe(1);
   });
 
-  it('saves failed row with archive_confirmed=0 (or absent) on failure', async () => {
+  it('saves failed row with archive_confirmed=0 on failure', async () => {
     jest.useFakeTimers();
     try {
       mockUploadChunk.mockRejectedValue(new Error('Network error'));
@@ -510,11 +515,12 @@ describe('uploadMedia', () => {
       const p = uploadMedia(baseOptions);
       // Attach catch before advancing so the rejection is never unhandled.
       const settled = p.catch((e: Error) => e);
-      await jest.advanceTimersByTimeAsync(3000);
+      await jest.advanceTimersByTimeAsync(TOTAL_BACKOFF_MS);
       const err = await settled;
 
       expect(err).toBeInstanceOf(Error);
       expect((err as Error).message).toMatch(/Failed to upload media/);
+      expect(mockUploadChunk).toHaveBeenCalledTimes(3);
       expect(mockSaveMedia).toHaveBeenCalledTimes(1);
       const failedRow = mockSaveMedia.mock.calls[0][0];
       expect(failedRow.upload_state).toBe('failed');
@@ -540,7 +546,7 @@ describe('uploadMedia', () => {
         .mockResolvedValueOnce({ uploadId: 'u1', received: 1, complete: false });
 
       const p = uploadMedia(baseOptions);
-      await jest.advanceTimersByTimeAsync(1000);
+      await jest.advanceTimersByTimeAsync(BASE_RETRY_DELAY_MS);
       await p;
 
       expect(mockUploadChunk).toHaveBeenCalledTimes(2);
@@ -559,16 +565,20 @@ describe('uploadMedia', () => {
       // Attach catch before advancing so the rejection is never unhandled.
       const settled = p.catch((e: Error) => e);
 
-      // After 999 ms: first attempt has failed, backoff hasn't fired yet → 1 call.
-      await jest.advanceTimersByTimeAsync(999);
+      // Just before the first backoff (1 s) fires → still 1 call.
+      await jest.advanceTimersByTimeAsync(BASE_RETRY_DELAY_MS - 1);
       expect(mockUploadChunk).toHaveBeenCalledTimes(1);
 
       // After 1 more ms (1000 ms total): first backoff fires → second attempt starts.
       await jest.advanceTimersByTimeAsync(1);
       expect(mockUploadChunk).toHaveBeenCalledTimes(2);
 
-      // After 2000 more ms: second backoff fires → third (final) attempt completes.
-      await jest.advanceTimersByTimeAsync(2000);
+      // Second backoff is exponential (2 s): 1 ms short → still 2 calls.
+      await jest.advanceTimersByTimeAsync(BASE_RETRY_DELAY_MS * 2 - 1);
+      expect(mockUploadChunk).toHaveBeenCalledTimes(2);
+
+      // Second backoff fires → third (final) attempt completes.
+      await jest.advanceTimersByTimeAsync(1);
       const err = await settled;
 
       expect(err).toBeInstanceOf(Error);
@@ -931,7 +941,7 @@ describe('uploadMedia — video branch', () => {
         });
 
         const p = uploadMedia(videoOptions);
-        await jest.advanceTimersByTimeAsync(3000);
+        await jest.advanceTimersByTimeAsync(TOTAL_BACKOFF_MS);
         await p;
 
         const capture = Sentry.captureException as unknown as jest.Mock;
@@ -1092,7 +1102,7 @@ describe('uploadMedia — video branch', () => {
           const p = uploadMedia({ ...videoOptions });
           // Attach catch before advancing so the rejection is never unhandled.
           const settled = p.catch((e: Error) => e);
-          await jest.advanceTimersByTimeAsync(3000);
+          await jest.advanceTimersByTimeAsync(TOTAL_BACKOFF_MS);
           const err = await settled;
 
           expect(mockDeleteMedia).toHaveBeenCalledWith('thumb-media-id');

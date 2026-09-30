@@ -11,6 +11,9 @@
 
 set -euo pipefail
 
+# Pipe-free substring test (#790): `printf | grep -q` under pipefail SIGPIPEs on large output.
+contains() { [[ "$1" == *"$2"* ]]; }
+
 PROFILE_SUFFIX=""
 if [ "${1:-}" = "--release" ]; then
     PROFILE_SUFFIX=":release"
@@ -29,7 +32,7 @@ if ! command -v cargo &>/dev/null; then
     exit 1
 fi
 
-if ! rustup target list --installed | grep -q aarch64-apple-ios; then
+if ! contains "$(rustup target list --installed)" aarch64-apple-ios; then
     echo "Installing iOS Rust targets..."
     rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
 fi

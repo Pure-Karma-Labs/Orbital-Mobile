@@ -270,6 +270,7 @@ jobs:
           set -euo pipefail
           CRATE=packages/orbital-signal/rust/orbital_signal
           COUNT=$(grep -c '^name = "curve25519-dalek"$' "$CRATE/Cargo.lock" || true)
+          if ! [ "$COUNT" -ge 0 ] 2>/dev/null; then echo "::error::could not read $CRATE/Cargo.lock"; exit 1; fi
           if [ "$COUNT" -ne 1 ]; then
             echo "::error::Cargo.lock resolves $COUNT curve25519-dalek packages (expected exactly 1)."
             grep -n -A2 '^name = "curve25519-dalek"$' "$CRATE/Cargo.lock" || true

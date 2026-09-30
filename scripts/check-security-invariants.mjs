@@ -858,6 +858,52 @@ checkWindowedPins(
 );
 
 // ---------------------------------------------------------------------------
+// 16. No `| grep -q` pipelines in scripts/*.sh (#790)
+// ---------------------------------------------------------------------------
+
+// Under `set -euo pipefail`, a producer piped into an early-exiting consumer
+// (grep -q, -qF, -qE, etc.) returns SIGPIPE (141) once the output exceeds the
+// pipe buffer: 16 KB on macOS, 64 KB on Linux. That silently turns a pass into
+// a fail — or, for a negative check, a fail into a pass. The repo-wide fix
+// (#790) uses `contains "$output" "needle"` instead. This invariant makes the
+// regression mechanically impossible to reintroduce.
+//
+// The check walks all *.sh files under scripts/ (not recursive into
+// subdirectories at this time — expand if a scripts/lib/ is added). It skips
+// lines that begin with # (bash comment lines), so the contains() helper's own
+// doc-comment does not trigger the rule.
+
+const SCRIPTS_DIR = 'scripts';
+const PIPE_GREP_Q_RE = /\|[^#\n]*\bgrep\b[^#\n]*-[a-zA-Z]*q/;
+
+let shFiles = [];
+try {
+  shFiles = readdirSync(SCRIPTS_DIR)
+    .filter((f) => f.endsWith('.sh'))
+    .map((f) => join(SCRIPTS_DIR, f));
+} catch {
+  violations.push(`  ${SCRIPTS_DIR}:0  [no-pipeline-grep-q]  scripts/ directory not found — cannot verify the no-pipeline-grep-q invariant`);
+}
+
+for (const file of shFiles) {
+  let lines;
+  try {
+    lines = readFileSync(file, 'utf8').split('\n');
+  } catch {
+    violations.push(`  ${file}:0  [no-pipeline-grep-q]  could not read file`);
+    continue;
+  }
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // Skip bash comment lines.
+    if (/^\s*#/.test(line)) continue;
+    if (PIPE_GREP_Q_RE.test(line)) {
+      report(file, i + 1, 'no-pipeline-grep-q', line.trim());
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------
 

@@ -306,6 +306,39 @@ describe('threadRepository', () => {
       makeDb(exec);
       expect(getThread('nonexistent')).toBeNull();
     });
+
+    it('tolerantly reads a legacy epoch-SECONDS row fetched by id as ms (#844)', () => {
+      const exec = jest.fn((sql: string) => {
+        if (typeof sql === 'string' && sql.includes('WHERE id = ?')) {
+          return {
+            rows: [{
+              id: 'thread-legacy',
+              conversation_id: 'conv-1',
+              author_id: 'user-1',
+              author_username: 'alice',
+              title: 'Old',
+              body: 'Row',
+              content_type: 'text',
+              pinned: 0,
+              reply_count: 0,
+              last_reply_at: 1700000000,
+              created_at: 1700000000,
+              updated_at: 1700000000,
+              sync_status: 'synced',
+            }],
+            rowsAffected: 0,
+          };
+        }
+        return { rows: [], rowsAffected: 0 };
+      });
+      makeDb(exec);
+
+      const thread = getThread('thread-legacy');
+      expect(thread).not.toBeNull();
+      expect(thread!.createdAt).toBe(1700000000000);
+      expect(thread!.updatedAt).toBe(1700000000000);
+      expect(thread!.lastReplyAt).toBe(1700000000000);
+    });
   });
 
   describe('getConversationIdsWithThreads', () => {

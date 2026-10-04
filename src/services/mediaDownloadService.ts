@@ -694,9 +694,9 @@ async function reapOrphanedThumbnailRows(): Promise<void> {
   // IS NOT NULL is not cosmetic: `x NOT IN (…NULL…)` is never true in SQL.
   //
   // created_at is epoch MILLISECONDS in every writer (mediaUploadService's
-  // buildMediaRow, threadService's two materializers), so the bind is a plain
-  // Date.now() offset. (Some migration comments still say seconds; they are
-  // wrong, and src/types/database.ts is corrected.)
+  // buildMediaRow stamps Date.now(); threadService's two materializers stamp
+  // Date.now() or new Date(serverIso).getTime()), so the bind is a plain
+  // Date.now() offset. Per-table units: src/database/timestampUnits.ts.
   const rows = queryMany<{ id: string; local_path: string | null }>(
     `SELECT id, local_path FROM orbital_media
        WHERE is_thumbnail = 1 AND created_at < ?

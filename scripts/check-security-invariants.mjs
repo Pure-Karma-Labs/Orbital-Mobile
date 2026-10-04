@@ -905,6 +905,50 @@ for (const file of shFiles) {
 // Summary
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// 17. timestampUnits imports confined to the two ms repositories (#844)
+// ---------------------------------------------------------------------------
+
+// src/database/timestampUnits.ts exports toMillis, the tolerant seconds-or-ms
+// read for orbital_threads/orbital_replies. The Signal key stores and the
+// items table hold epoch SECONDS (and the signed-pre-key rotation clock is a
+// seconds value compared in JS) — applying toMillis there would 1000x key
+// ages and force rotation on every launch. The JSDoc fence is not a guard;
+// this rule is. Tests are exempt.
+const TSU_ALLOWED_FILES = new Set([
+  join(SRC, 'database', 'repositories', 'threadRepository.ts'),
+  join(SRC, 'database', 'repositories', 'replyRepository.ts'),
+]);
+const TSU_IMPORT_RE = /from\s+['"][^'"]*timestampUnits['"]/;
+
+for (const file of allFiles) {
+  const rel = relative('.', file);
+  if (rel.includes('__tests__/') || rel.includes('.test.ts') || rel.includes('.test.tsx')) continue;
+  if (TSU_ALLOWED_FILES.has(file)) continue;
+
+  const lines = readFileSync(file, 'utf8').split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (TSU_IMPORT_RE.test(lines[i])) {
+      report(file, i + 1, 'timestamp-units-import-restricted', 'timestampUnits import outside threadRepository/replyRepository — seconds-unit tables must never pass through toMillis');
+    }
+  }
+}
+
+// Non-vacuity: both allowlisted repositories must still import the helper.
+for (const allowedFile of TSU_ALLOWED_FILES) {
+  try {
+    if (!TSU_IMPORT_RE.test(readFileSync(allowedFile, 'utf8'))) {
+      violations.push(
+        `  ${relative('.', allowedFile)}:0  [timestamp-units-import-restricted]  allowlisted repository no longer imports timestampUnits — update the allowlist instead of leaving a vacuous rule`,
+      );
+    }
+  } catch {
+    violations.push(
+      `  ${relative('.', allowedFile)}:0  [timestamp-units-import-restricted]  allowlisted repository not found — the confinement rule would pass vacuously`,
+    );
+  }
+}
+
 if (violations.length > 0) {
   console.error(`\nSecurity invariant violations (${violations.length}):\n`);
   for (const v of violations) {

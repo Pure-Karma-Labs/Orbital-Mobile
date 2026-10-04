@@ -19,6 +19,11 @@ describe('timestampUnits.toMillis', () => {
     expect(toMillis(SECONDS_CEILING - 1)).toBe((SECONDS_CEILING - 1) * 1000);
   });
 
+  it('passes 0 through as 0 (epoch origin, not a sentinel)', () => {
+    // No writer produces 0; pinned so a corrupt row reads as 1970, never NaN.
+    expect(toMillis(0)).toBe(0);
+  });
+
   it('maps non-finite and non-number input to 0', () => {
     expect(toMillis(NaN)).toBe(0);
     expect(toMillis(Infinity)).toBe(0);

@@ -130,7 +130,7 @@ Groups and DM metadata.
 #### `orbital_threads`
 Thread posts with encrypted title/body.
 
-Columns below predate migration 004 (plaintext `title`/`body`/`author_username`/`sync_status`, and `depth` on replies, are not listed).
+Columns below predate migration 004 (plaintext `title`/`body`/`author_username`/`sync_status` are not listed).
 
 | Column | Type | Notes |
 |--------|------|-------|
@@ -153,7 +153,7 @@ Columns below predate migration 004 (plaintext `title`/`body`/`author_username`/
 #### `orbital_replies`
 Thread replies.
 
-Columns below predate migration 004 (plaintext `title`/`body`/`author_username`/`sync_status`, and `depth` on replies, are not listed).
+Columns below predate migration 004 (plaintext `body`/`author_username`/`depth`/`sync_status` are not listed).
 
 | Column | Type | Notes |
 |--------|------|-------|

@@ -4,15 +4,25 @@
  * There is NO global timestamp unit in this schema. Per table:
  *   orbital_threads   epoch ms (#844; pre-#844 rows hold seconds — read via toMillis)
  *   orbital_replies   epoch ms (#821; pre-#821 rows hold seconds — read via toMillis)
- *   orbital_media     epoch ms (every writer stamps Date.now(); the orphan-thumbnail
- *                     reaper compares created_at against a Date.now() offset)
- *   conversations     epoch ms (sole writer conversationRepository stamps Date.now())
- *   signal_* / items  epoch seconds (Math.floor(Date.now() / 1000)) — do NOT
+ *   orbital_media     epoch ms (every writer stamps ms: Date.now(), or
+ *                     new Date(serverIso).getTime() in processMediaMetadata; the
+ *                     orphan-thumbnail reaper compares created_at against a
+ *                     Date.now() offset)
+ *   conversations     created_at/updated_at epoch ms (sole writer
+ *                     conversationRepository stamps Date.now());
+ *                     last_message_at/mute_until are never written or read —
+ *                     unit undefined, see types/database.ts
+ *   signal_*          epoch seconds (Math.floor(Date.now() / 1000)) — do NOT
  *                     apply toMillis or the Math.floor(ms) write idiom to the
  *                     Signal key stores (signal_signed_pre_keys, signal_pre_keys,
  *                     signal_kyber_pre_keys, signal_identity_keys.first_use);
  *                     their created_at is the only record of key age.
- * The owning repository module is authoritative for its table.
+ *   items             no timestamp column; seconds also appear as stringified
+ *                     VALUES there (LAST_SIGNED_PRE_KEY_ROTATION, compared in JS
+ *                     against a seconds constant) — toMillis must never touch them.
+ * The owning repository module is authoritative for its table. Importers of
+ * this module are confined to threadRepository and replyRepository by
+ * security invariant [timestamp-units-import-restricted].
  *
  * Legacy seconds rows in orbital_threads/orbital_replies were never migrated
  * and persist indefinitely (only the threads the server returns in its default

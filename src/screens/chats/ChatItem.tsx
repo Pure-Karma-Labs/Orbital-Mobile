@@ -21,6 +21,7 @@ import { Badge } from '../../components/Badge';
 import { Emoji } from '../../components/Emoji';
 import { EmojiText } from '../../components/EmojiText';
 import { useIsMuted } from '../../hooks/useIsMuted';
+import { formatCompactTimestamp } from '../../utils/formatPostTimestamp';
 
 export interface ChatItemProps {
   conversationId: string;
@@ -44,29 +45,6 @@ export interface ChatItemProps {
   avatarKeyIv?: string | null;
   /** SHA-256 digest of encrypted avatar blob (base64) */
   avatarDigest?: string | null;
-}
-
-function formatTime(timestamp: number | null): string {
-  if (timestamp == null) return '';
-  const date = new Date(timestamp);
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const messageDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-
-  if (messageDay.getTime() === today.getTime()) {
-    return date.toLocaleTimeString('en-US', {
-      hour: 'numeric',
-      minute: '2-digit',
-    });
-  }
-
-  const yesterday = new Date(today);
-  yesterday.setDate(today.getDate() - 1);
-  if (messageDay.getTime() === yesterday.getTime()) {
-    return 'Yesterday';
-  }
-
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
 export const ChatItem = React.memo(function ChatItem({
@@ -189,7 +167,7 @@ export const ChatItem = React.memo(function ChatItem({
         </View>
       </View>
       {lastMessageAt != null && (
-        <Text style={timeStyle}>{formatTime(lastMessageAt)}</Text>
+        <Text style={timeStyle}>{formatCompactTimestamp(lastMessageAt)}</Text>
       )}
       {unreadCount != null && unreadCount > 0 && (
         <Badge count={unreadCount} testID="unread-badge" />

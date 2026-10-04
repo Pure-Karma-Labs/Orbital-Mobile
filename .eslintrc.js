@@ -15,6 +15,19 @@ module.exports = {
         { group: ['react-native-mmkv'], message: 'Import from src/stores/middleware/persistence.ts instead. Direct MMKV usage bypasses encryption key management.' },
       ],
     }],
+    'no-restricted-syntax': ['error', {
+      selector:
+        "CallExpression[callee.property.name=/^toLocale(Date|Time)?String$/], " +
+        "CallExpression[callee.property.value=/^toLocale(Date|Time)?String$/], " +
+        // MemberExpression alone covers every Intl form, `new Intl.X()` included
+        // (the NewExpression callee IS that member expression), so a separate
+        // NewExpression selector would only double-report. Verified by probe.
+        "MemberExpression[object.name='Intl'], " +
+        "CallExpression[callee.property.name=/^to(Date|Time)String$/]",
+      message:
+        'Locale/implementation-dependent formatting (toLocale*, Intl.*, toDateString, toTimeString) drifts between Hermes (trimmed ICU) and Node. ' +
+        'Use the hand-built formatters in src/utils/formatPostTimestamp.ts, adding an export there if none fits (#845). toISOString/toUTCString/toJSON are spec-fixed and allowed.',
+    }],
   },
   overrides: [
     {

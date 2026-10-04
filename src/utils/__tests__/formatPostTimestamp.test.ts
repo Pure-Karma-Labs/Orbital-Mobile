@@ -17,9 +17,13 @@ process.env.TZ = 'America/New_York';
 // (new Date(year, monthIndex, day, hour, minute)), which yields exactly that
 // wall-clock reading in whatever zone the process is actually running in.
 // The expected strings therefore hold under the pinned zone and under any
-// host zone, and the suite stays deterministic either way. The dates chosen
-// (Jan 5, Sep 12) sit well clear of any DST transition, so the wall-clock
-// readings are unambiguous.
+// host zone, and the suite stays deterministic either way. The everyday
+// fixtures (Jan 5, Sep 12) sit well clear of any DST transition; the two
+// DST-boundary cases in formatDayLabel deliberately straddle the US spring-
+// forward and fall-back days, and read 20:00/08:00 — hours that exist exactly
+// once on a 23- or 25-hour day, so those wall-clock readings are unambiguous
+// too (and in a host zone that transitions elsewhere they are ordinary days,
+// which the same expectation covers).
 // ---------------------------------------------------------------------------
 
 import {
@@ -223,6 +227,20 @@ describe('formatDayLabel', () => {
     expect(formatDayLabel(dec31, jan1)).toBe('Yesterday');
   });
 
+  it('crosses a 25-hour day (US fall-back) by calendar day', () => {
+    // 2026-11-01 is the US DST end date: the local day is 25 hours long.
+    const nov1 = localTime(2026, 10, 1, 20, 0);
+    const nov2 = localTime(2026, 10, 2, 8, 0);
+    expect(formatDayLabel(nov1, nov2)).toBe('Yesterday');
+  });
+
+  it('crosses a 23-hour day (US spring-forward) by calendar day', () => {
+    // 2026-03-08 is the US DST start date: the local day is 23 hours long.
+    const mar7 = localTime(2026, 2, 7, 20, 0);
+    const mar8 = localTime(2026, 2, 8, 8, 0);
+    expect(formatDayLabel(mar7, mar8)).toBe('Yesterday');
+  });
+
   it('never shows a year, even for another year', () => {
     expect(formatDayLabel(SEP_12_2025, NOW_2026)).toBe('Sep 12');
   });
@@ -234,6 +252,10 @@ describe('formatDayLabel', () => {
   it('returns "" for an unrenderable timestamp and tolerates a bad now', () => {
     expect(formatDayLabel(NaN, NOW_2026)).toBe('');
     expect(() => formatDayLabel(SEP_12_2026, NaN)).not.toThrow();
+    // Finite but unrenderable: resolveNow passes it through, so no day matches
+    // and the label falls through to the short date rather than claiming 'Today'.
+    expect(() => formatDayLabel(SEP_12_2026, 1e20)).not.toThrow();
+    expect(formatDayLabel(SEP_12_2026, 1e20)).toBe('Sep 12');
   });
 
   it('defaults now to the real clock when it is omitted', () => {

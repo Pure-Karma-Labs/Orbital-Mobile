@@ -17,12 +17,20 @@ module.exports = {
     }],
     'no-restricted-syntax': ['error', {
       selector:
-        "CallExpression[callee.property.name=/^toLocale(Date|Time)?String$/], " +
-        "CallExpression[callee.property.value=/^toLocale(Date|Time)?String$/], " +
-        // MemberExpression alone covers every Intl form, `new Intl.X()` included
-        // (the NewExpression callee IS that member expression), so a separate
-        // NewExpression selector would only double-report. Verified by probe.
-        "MemberExpression[object.name='Intl'], " +
+        // /^toLocale/ covers the whole family, case methods included, so the
+        // message's "toLocale*" is literally true: toLocaleUpperCase and
+        // toLocaleLowerCase are the same ICU-dependent class. Both selectors
+        // exist so `x["toLocaleDateString"]()` is caught alongside `x.toLocale…()`.
+        "CallExpression[callee.property.name=/^toLocale/], " +
+        "CallExpression[callee.property.value=/^toLocale/], " +
+        // The bare Identifier catches every Intl form exactly once — `Intl.X`,
+        // `new Intl.X()`, `const { X } = Intl`, `globalThis.Intl.X`, `typeof
+        // Intl` — where MemberExpression missed destructuring and double-reported
+        // `new Intl.X()`. No identifier named Intl exists in src/. Probe-verified.
+        // An `as any` cast (`(Intl as any).X`, `(globalThis as any).Intl`) still
+        // escapes: that is deliberate circumvention, not an accident, and is not
+        // chased here.
+        "Identifier[name='Intl'], " +
         "CallExpression[callee.property.name=/^to(Date|Time)String$/]",
       message:
         'Locale/implementation-dependent formatting (toLocale*, Intl.*, toDateString, toTimeString) drifts between Hermes (trimmed ICU) and Node. ' +

@@ -77,22 +77,21 @@ function buildListRows(threads: Thread[]): ListRow[] {
   for (const thread of sorted) {
     const activityTime = thread.lastReplyAt ?? thread.createdAt;
     const dayKey = localDayKey(activityTime);
-    if (dayKey !== lastDayKey) {
+    // An unrenderable timestamp has no day, so it opens no group and closes
+    // none: it joins whatever group it lands in. Letting '' through would both
+    // render a bare `───  ───` and split a real day in two, re-emitting its
+    // `day-<key>` (a duplicate FlatList key) and an extra section row.
+    if (dayKey !== '' && dayKey !== lastDayKey) {
       // Insert section separator between day groups (not before first group)
       if (lastDayKey !== null) {
         rows.push({ type: 'section', key: `section-${groupIndex}` });
         groupIndex++;
       }
-      // An unrenderable timestamp has no day: skip the separator rather than
-      // render a bare `───  ───` (and avoid two NaN groups colliding on the
-      // key `day-`). The thread rows themselves are unaffected.
-      if (dayKey !== '') {
-        rows.push({
-          type: 'day',
-          label: formatDayLabel(activityTime),
-          key: `day-${dayKey}`,
-        });
-      }
+      rows.push({
+        type: 'day',
+        label: formatDayLabel(activityTime),
+        key: `day-${dayKey}`,
+      });
       lastDayKey = dayKey;
     }
     rows.push({ type: 'thread', thread, key: `thread-${thread.id}` });

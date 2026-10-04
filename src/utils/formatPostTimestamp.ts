@@ -14,10 +14,11 @@
  * everywhere, and the tests below pin the exact strings.
  *
  * That rule is enforced, not just documented: `no-restricted-syntax` in
- * .eslintrc.js bans `toLocale*`, `Intl.*`, `toDateString` and `toTimeString`
- * everywhere ESLint lints (`.js/.jsx/.ts/.tsx` under the repo root — note
- * `scripts/*.mjs` are outside the lint set entirely). A new display format
- * therefore has to be added here rather than inlined in a screen.
+ * .eslintrc.js bans every `toLocale*` method (case methods included), `Intl.*`,
+ * `toDateString` and `toTimeString` everywhere ESLint lints (`.js/.jsx/.ts/.tsx`
+ * under the repo root — note `scripts/*.mjs` are outside the lint set
+ * entirely). A new display format therefore has to be added here rather than
+ * inlined in a screen.
  *
  * All exports are total — a non-finite, NaN, or missing timestamp yields ''
  * rather than "Invalid Date", and none of them ever throws.
@@ -101,7 +102,9 @@ function toParts(timestamp: number): TimestampParts | null {
 
 /** True when `timestamp` falls in the same calendar year as `now`. */
 function isCurrentYear(year: number, now: number): boolean {
-  const reference = Number.isFinite(now) ? new Date(now) : new Date();
+  const reference = new Date(resolveNow(now));
+  // resolveNow only rules out non-finite values; a finite-but-unrenderable one
+  // (1e20) still yields a NaN year, which matches no year at all.
   const referenceYear = reference.getFullYear();
   if (Number.isNaN(referenceYear)) return false;
   return year === referenceYear;
@@ -118,7 +121,8 @@ function startOfPreviousLocalDay(ms: number): number {
 
 /**
  * `now` resolved to a usable instant; a non-finite value falls back to the
- * real clock (same tolerance as isCurrentYear).
+ * real clock. The single definition of that tolerance — every consumer of
+ * `now` goes through it.
  */
 function resolveNow(now: number): number {
   return Number.isFinite(now) ? now : Date.now();

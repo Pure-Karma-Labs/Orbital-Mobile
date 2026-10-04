@@ -12,7 +12,7 @@
 
 5. **Integer migration versioning** — `PRAGMA user_version` tracks the current schema version. Migration files named `001_*.sql`, `002_*.sql`, etc.
 
-6. **All timestamps** — Unix epoch seconds as `INTEGER`. Per-column documentation notes the unit.
+6. **Timestamp units vary per table.** `src/database/timestampUnits.ts` holds the per-table map and the tolerant `toMillis` read; the owning repository module is authoritative. Per-column notes below name the unit.
 
 ---
 
@@ -122,13 +122,15 @@ Groups and DM metadata.
 | `mute_until` | INTEGER | Unix epoch seconds |
 | `last_message_at` | INTEGER | Unix epoch seconds |
 | `unread_count` | INTEGER NOT NULL | |
-| `created_at` | INTEGER NOT NULL | Unix epoch seconds |
-| `updated_at` | INTEGER NOT NULL | Unix epoch seconds |
+| `created_at` | INTEGER NOT NULL | Unix epoch ms |
+| `updated_at` | INTEGER NOT NULL | Unix epoch ms |
 
 **Indexes:** `idx_conversations_last_message (last_message_at DESC)`, `idx_conversations_active (active, last_message_at DESC)`
 
 #### `orbital_threads`
 Thread posts with encrypted title/body.
+
+Columns below predate migration 004 (plaintext `title`/`body`/`author_username`/`sync_status`, and `depth` on replies, are not listed).
 
 | Column | Type | Notes |
 |--------|------|-------|
@@ -142,14 +144,16 @@ Thread posts with encrypted title/body.
 | `content_type` | TEXT NOT NULL | 'text', 'media', or 'link' |
 | `pinned` | INTEGER NOT NULL | |
 | `reply_count` | INTEGER NOT NULL | |
-| `last_reply_at` | INTEGER | Unix epoch seconds |
-| `created_at` | INTEGER NOT NULL | Unix epoch seconds |
-| `updated_at` | INTEGER NOT NULL | Unix epoch seconds |
+| `last_reply_at` | INTEGER | Unix epoch ms (legacy rows: seconds) |
+| `created_at` | INTEGER NOT NULL | Unix epoch ms (legacy rows: seconds) |
+| `updated_at` | INTEGER NOT NULL | Unix epoch ms (legacy rows: seconds) |
 
 **Indexes:** `idx_threads_conversation (conversation_id, created_at DESC)`, `idx_threads_author (author_id)`
 
 #### `orbital_replies`
 Thread replies.
+
+Columns below predate migration 004 (plaintext `title`/`body`/`author_username`/`sync_status`, and `depth` on replies, are not listed).
 
 | Column | Type | Notes |
 |--------|------|-------|
@@ -159,8 +163,8 @@ Thread replies.
 | `body_encrypted` | BLOB | AES-256-CBC encrypted |
 | `body_iv` | BLOB | 16-byte IV |
 | `parent_reply_id` | TEXT | Null for top-level |
-| `created_at` | INTEGER NOT NULL | Unix epoch seconds |
-| `updated_at` | INTEGER NOT NULL | Unix epoch seconds |
+| `created_at` | INTEGER NOT NULL | Unix epoch ms (legacy rows: seconds) |
+| `updated_at` | INTEGER NOT NULL | Unix epoch ms (legacy rows: seconds) |
 
 **Indexes:** `idx_replies_thread (thread_id, created_at ASC)`
 
@@ -187,7 +191,7 @@ Media metadata, attachment keys, download state.
 | `thumbnail_path` | TEXT | |
 | `download_state` | TEXT NOT NULL | 'pending', 'downloading', 'downloaded', 'failed' |
 | `upload_state` | TEXT NOT NULL | 'pending', 'uploading', 'done', 'failed' |
-| `created_at` | INTEGER NOT NULL | Unix epoch seconds |
+| `created_at` | INTEGER NOT NULL | Unix epoch ms |
 
 **Indexes:** `idx_media_thread (thread_id)`, `idx_media_download_state (download_state) WHERE download_state != 'downloaded'`
 

@@ -5,15 +5,18 @@
  * hydration and offline viewing. Encrypted blob columns are left NULL;
  * decryption happens in the service layer before data reaches here.
  *
- * Timestamps: THREAD rows still store epoch seconds (legacy) — convert on
- * write (/ 1000) and read (* 1000). Only orbital_replies moved to epoch
- * milliseconds (#821); do not copy that pattern here without a matching
- * tolerant read.
+ * Timestamps: epoch MILLISECONDS in both the DB and the store since #844
+ * (orbital_replies made the same move in #821). Rows written before that hold
+ * epoch seconds and persist indefinitely (no migration; only server-returned
+ * threads are rewritten); mapRowToThread reads either via toMillis (see
+ * ../timestampUnits). Never add a WHERE / LIMIT / OFFSET range predicate on
+ * these columns without a backfill migration first.
  */
 
 import { queryOne, queryMany, execute } from '../queryHelpers';
 import { getDatabase } from '../connection';
 import { isDatabaseInitialized } from '../connection';
+import { toMillis } from '../timestampUnits';
 import type { Thread } from '../../types/store';
 
 // ============================================================
@@ -43,9 +46,9 @@ export function saveThread(thread: Thread): void {
     thread.contentType,
     thread.pinned ? 1 : 0,
     thread.replyCount,
-    thread.lastReplyAt != null ? Math.floor(thread.lastReplyAt / 1000) : null,
-    Math.floor(thread.createdAt / 1000),
-    Math.floor(thread.updatedAt / 1000),
+    thread.lastReplyAt != null ? Math.floor(thread.lastReplyAt) : null,
+    Math.floor(thread.createdAt),
+    Math.floor(thread.updatedAt),
     thread.syncStatus,
   ];
 
@@ -88,8 +91,11 @@ interface ThreadRow {
   content_type: string;
   pinned: number;
   reply_count: number;
+  /** Epoch ms since #844; legacy rows hold seconds — read via toMillis. */
   last_reply_at: number | null;
+  /** Epoch ms since #844; legacy rows hold seconds — read via toMillis. */
   created_at: number;
+  /** Epoch ms since #844; legacy rows hold seconds — read via toMillis. */
   updated_at: number;
   sync_status: string;
 }
@@ -105,15 +111,21 @@ function mapRowToThread(row: ThreadRow): Thread {
     contentType: (row.content_type as Thread['contentType']) || 'text',
     pinned: row.pinned === 1,
     replyCount: row.reply_count,
-    lastReplyAt: row.last_reply_at != null ? row.last_reply_at * 1000 : null,
-    createdAt: row.created_at * 1000,
-    updatedAt: row.updated_at * 1000,
+    lastReplyAt: row.last_reply_at != null ? toMillis(row.last_reply_at) : null,
+    createdAt: toMillis(row.created_at),
+    updatedAt: toMillis(row.updated_at),
     syncStatus: (row.sync_status as Thread['syncStatus']) || 'synced',
   };
 }
 
 /**
- * Get all threads for a conversation, ordered by created_at descending.
+ * Get all threads for a conversation.
+ *
+ * Rows may mix legacy epoch-seconds with ms (#844), so this SQL order is only
+ * a hint — callers re-sort by the mapped ms value (threadsSlice.setThreads).
+ * Do NOT add LIMIT/OFFSET or any WHERE on created_at here without normalising
+ * the unit first.
+ *
  * Returns empty array if database is not initialized.
  */
 export function getThreadsForConversation(conversationId: string): Thread[] {

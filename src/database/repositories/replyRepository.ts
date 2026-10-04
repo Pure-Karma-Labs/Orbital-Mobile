@@ -7,13 +7,14 @@
  *
  * Timestamps: epoch MILLISECONDS in both the DB and the store since #821.
  * Rows written before that hold epoch seconds; mapRowToReply reads either
- * (see SECONDS_CEILING). No migration: the tolerant read covers old rows, and
- * any row the server still returns is rewritten in ms on the next load.
+ * (see ../timestampUnits). No migration: the tolerant read covers old rows,
+ * and any row the server still returns is rewritten in ms on the next load.
  */
 
 import { queryMany, execute } from '../queryHelpers';
 import { getDatabase } from '../connection';
 import { isDatabaseInitialized } from '../connection';
+import { toMillis } from '../timestampUnits';
 import type { Reply } from '../../types/store';
 
 // ============================================================
@@ -82,21 +83,11 @@ interface ReplyRow {
   author_username: string | null;
   parent_reply_id: string | null;
   depth: number;
+  /** Epoch ms since #821; legacy rows hold seconds — read via toMillis. */
   created_at: number;
+  /** Epoch ms since #821; legacy rows hold seconds — read via toMillis. */
   updated_at: number;
   sync_status: string;
-}
-
-/**
- * Epoch seconds and epoch milliseconds can be told apart for any date this app
- * will ever see: 1e11 seconds is the year 5138, and 1e11 ms is 1973. Anything
- * below the ceiling is a pre-#821 second-precision row.
- */
-const SECONDS_CEILING = 1e11;
-
-function toMillis(value: number): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return 0;
-  return value < SECONDS_CEILING ? value * 1000 : value;
 }
 
 function mapRowToReply(row: ReplyRow): Reply {
@@ -115,7 +106,13 @@ function mapRowToReply(row: ReplyRow): Reply {
 }
 
 /**
- * Get all replies for a thread, ordered by created_at ascending.
+ * Get all replies for a thread.
+ *
+ * Rows may mix legacy epoch-seconds with ms (#821), so this SQL order is only
+ * a hint — callers re-sort by the mapped ms value (replyTree). Do NOT add
+ * LIMIT/OFFSET or any WHERE on created_at here without normalising the unit
+ * first.
+ *
  * Returns empty array if database is not initialized.
  */
 export function getRepliesForThread(threadId: string): Reply[] {

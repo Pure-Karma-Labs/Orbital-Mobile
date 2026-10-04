@@ -37,6 +37,7 @@ import { useWebSocketSubscription } from '../hooks/useWebSocketSubscription';
 import { useBlockedSet } from '../hooks/useBlockedSet';
 import { useMuteActions } from '../hooks/useMuteActions';
 import { getThreadState } from '../utils/threadState';
+import { formatDayLabel, formatShortTime, localDayKey } from '../utils/formatPostTimestamp';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -52,32 +53,6 @@ type DaySeparatorRow = { type: 'day'; label: string; key: string };
 type SectionSeparatorRow = { type: 'section'; key: string };
 type ThreadRow = { type: 'thread'; thread: Thread; key: string };
 type ListRow = DaySeparatorRow | SectionSeparatorRow | ThreadRow;
-
-// ---------------------------------------------------------------------------
-// Date helpers
-// ---------------------------------------------------------------------------
-
-function getDayLabel(timestamp: number): string {
-  const date = new Date(timestamp);
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const yesterday = new Date(today);
-  yesterday.setDate(today.getDate() - 1);
-  const threadDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-
-  if (threadDay.getTime() === today.getTime()) {
-    return 'Today';
-  }
-  if (threadDay.getTime() === yesterday.getTime()) {
-    return 'Yesterday';
-  }
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-}
-
-function getDayKey(timestamp: number): string {
-  const d = new Date(timestamp);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
 
 // ---------------------------------------------------------------------------
 // Build flat list rows from threads, grouping by day
@@ -101,8 +76,12 @@ function buildListRows(threads: Thread[]): ListRow[] {
 
   for (const thread of sorted) {
     const activityTime = thread.lastReplyAt ?? thread.createdAt;
-    const dayKey = getDayKey(activityTime);
-    if (dayKey !== lastDayKey) {
+    const dayKey = localDayKey(activityTime);
+    // An unrenderable timestamp has no day, so it opens no group and closes
+    // none: it joins whatever group it lands in. Letting '' through would both
+    // render a bare `───  ───` and split a real day in two, re-emitting its
+    // `day-<key>` (a duplicate FlatList key) and an extra section row.
+    if (dayKey !== '' && dayKey !== lastDayKey) {
       // Insert section separator between day groups (not before first group)
       if (lastDayKey !== null) {
         rows.push({ type: 'section', key: `section-${groupIndex}` });
@@ -110,7 +89,7 @@ function buildListRows(threads: Thread[]): ListRow[] {
       }
       rows.push({
         type: 'day',
-        label: getDayLabel(activityTime),
+        label: formatDayLabel(activityTime),
         key: `day-${dayKey}`,
       });
       lastDayKey = dayKey;
@@ -355,10 +334,7 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
               title={t.title ?? '(no title)'}
               author={t.authorUsername}
               groupId={activeConversationId ?? null}
-              time={new Date(t.createdAt).toLocaleTimeString('en-US', {
-                hour: 'numeric',
-                minute: '2-digit',
-              })}
+              time={formatShortTime(t.createdAt)}
               replyCount={t.replyCount}
               hasMedia={t.contentType === 'media'}
               state={getThreadState(t, threadLastViewedAt, lastReadAtSnapshot)}

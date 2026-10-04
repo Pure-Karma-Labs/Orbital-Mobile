@@ -45,6 +45,7 @@ import { useBlockedSet } from '../hooks/useBlockedSet';
 import { useIsMuted } from '../hooks/useIsMuted';
 import { useMuteActions } from '../hooks/useMuteActions';
 import { Emoji } from '../components/Emoji';
+import { formatDayLabel, formatShortTime, localDayKey } from '../utils/formatPostTimestamp';
 
 export type ChatDetailScreenProps = NativeStackScreenProps<
   ChatsStackParamList,
@@ -56,24 +57,6 @@ type SectionSeparatorRow = { type: 'section'; key: string };
 type ThreadRow = { type: 'thread'; thread: Thread; key: string };
 type ListRow = DaySeparatorRow | SectionSeparatorRow | ThreadRow;
 
-function getDayLabel(timestamp: number): string {
-  const date = new Date(timestamp);
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const yesterday = new Date(today);
-  yesterday.setDate(today.getDate() - 1);
-  const threadDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-
-  if (threadDay.getTime() === today.getTime()) return 'Today';
-  if (threadDay.getTime() === yesterday.getTime()) return 'Yesterday';
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-}
-
-function getDayKey(timestamp: number): string {
-  const d = new Date(timestamp);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
 function buildListRows(threads: Thread[]): ListRow[] {
   if (threads.length === 0) return [];
 
@@ -83,15 +66,19 @@ function buildListRows(threads: Thread[]): ListRow[] {
   let groupIndex = 0;
 
   for (const thread of sorted) {
-    const dayKey = getDayKey(thread.createdAt);
-    if (dayKey !== lastDayKey) {
+    const dayKey = localDayKey(thread.createdAt);
+    // An unrenderable timestamp has no day, so it opens no group and closes
+    // none: it joins whatever group it lands in. Letting '' through would both
+    // render a bare `───  ───` and split a real day in two, re-emitting its
+    // `day-<key>` (a duplicate FlatList key) and an extra section row.
+    if (dayKey !== '' && dayKey !== lastDayKey) {
       if (lastDayKey !== null) {
         rows.push({ type: 'section', key: `section-${groupIndex}` });
         groupIndex++;
       }
       rows.push({
         type: 'day',
-        label: getDayLabel(thread.createdAt),
+        label: formatDayLabel(thread.createdAt),
         key: `day-${dayKey}`,
       });
       lastDayKey = dayKey;
@@ -291,10 +278,7 @@ export function ChatDetailScreen({
               body={t.body}
               author={t.authorUsername}
               groupId={conversationId}
-              time={new Date(t.createdAt).toLocaleTimeString('en-US', {
-                hour: 'numeric',
-                minute: '2-digit',
-              })}
+              time={formatShortTime(t.createdAt)}
               isOwn={isOwn}
               unread={getThreadState(t, threadLastViewedAt, lastReadAtSnapshot) === 'unread'}
               onPress={handleThreadPress}

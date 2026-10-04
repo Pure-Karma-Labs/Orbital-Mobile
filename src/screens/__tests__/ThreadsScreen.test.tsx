@@ -360,6 +360,41 @@ describe('ThreadsScreen — with thread data', () => {
     expect(dayNode).toBeDefined();
   });
 
+  // An unrenderable activity time gets no day row of its own and must not close
+  // the group it lands in: otherwise the real day re-opens, duplicating its
+  // `day-<key>` FlatList key and adding a stray section row (#845).
+  it('skips the day row for an unrenderable timestamp without splitting the day group', () => {
+    const storesMock = jest.requireMock('../../stores') as { useThreads: jest.Mock };
+    const base = storesMock.useThreads() as {
+      threads: Record<string, Thread>;
+    } & Record<string, unknown>;
+    const validId = 'thread-1';
+
+    storesMock.useThreads.mockReturnValue({
+      ...base,
+      threads: {
+        ...base.threads,
+        'thread-nan': {
+          ...base.threads[validId],
+          id: 'thread-nan',
+          title: 'Corrupt date',
+          createdAt: NaN,
+          lastReplyAt: NaN,
+        },
+      },
+      threadIdsByConversation: { 'group-1': [validId, 'thread-nan'] },
+    });
+
+    const renderer = renderThreadsScreen();
+    const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
+    const sectionGlyph = '·  ·  ·  ✦  ·  ·  ·';
+    const dayRows = allText.filter((node) => node.props.children === '─── Today ───');
+    const sectionRows = allText.filter((node) => node.props.children === sectionGlyph);
+
+    expect(dayRows).toHaveLength(1);
+    expect(sectionRows).toHaveLength(0);
+  });
+
   // -------------------------------------------------------------------------
   // Per-thread muting (#449)
   // -------------------------------------------------------------------------

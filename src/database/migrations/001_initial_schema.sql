@@ -1,3 +1,4 @@
+-- Historical baseline only — NOT executed; the live DDL is 001_initial_schema.ts as amended by 002-008 in migrations/*.ts.
 -- Migration 001: Initial Schema
 -- Orbital-Mobile database schema (17 tables)
 -- Compatible with Orbital-Desktop migration baseline v1513
@@ -6,7 +7,7 @@
 --   - Normalized columns (no JSON blobs)
 --   - Explicit typed columns instead of composite string PKs
 --   - BLOB for all key material (SQLCipher encrypts entire DB)
---   - All timestamps: Unix epoch seconds (INTEGER)
+--   - Timestamp units vary per table; see src/database/timestampUnits.ts (the owning repository is authoritative)
 --   - WAL mode set at connection time, not in migration
 
 -- ============================================================
@@ -96,8 +97,8 @@ CREATE TABLE conversations (
   mute_until        INTEGER,          -- Unix epoch seconds, NULL=not muted
   last_message_at   INTEGER,          -- Unix epoch seconds, for sort order
   unread_count      INTEGER NOT NULL DEFAULT 0,  -- RESERVED: not used by app; unread state lives in Zustand store sourced from server API
-  created_at        INTEGER NOT NULL,  -- Unix epoch seconds
-  updated_at        INTEGER NOT NULL,  -- Unix epoch seconds
+  created_at        INTEGER NOT NULL,  -- Unix epoch ms
+  updated_at        INTEGER NOT NULL,  -- Unix epoch ms
   PRIMARY KEY (id)
 );
 
@@ -116,9 +117,9 @@ CREATE TABLE orbital_threads (
   content_type      TEXT    NOT NULL DEFAULT 'text',  -- 'text' | 'media' | 'link'
   pinned            INTEGER NOT NULL DEFAULT 0,
   reply_count       INTEGER NOT NULL DEFAULT 0,
-  last_reply_at     INTEGER,          -- Unix epoch seconds
-  created_at        INTEGER NOT NULL,  -- Unix epoch seconds
-  updated_at        INTEGER NOT NULL,  -- Unix epoch seconds
+  last_reply_at     INTEGER,          -- Unix epoch ms (legacy rows: seconds; see timestampUnits.ts)
+  created_at        INTEGER NOT NULL,  -- Unix epoch ms (legacy rows: seconds; see timestampUnits.ts)
+  updated_at        INTEGER NOT NULL,  -- Unix epoch ms (legacy rows: seconds; see timestampUnits.ts)
   PRIMARY KEY (id)
 );
 
@@ -133,8 +134,8 @@ CREATE TABLE orbital_replies (
   body_encrypted    BLOB,             -- AES-256-CBC encrypted body
   body_iv           BLOB,             -- 16-byte IV for body
   parent_reply_id   TEXT,             -- NULL for top-level replies
-  created_at        INTEGER NOT NULL,  -- Unix epoch seconds
-  updated_at        INTEGER NOT NULL,  -- Unix epoch seconds
+  created_at        INTEGER NOT NULL,  -- Unix epoch ms (legacy rows: seconds; see timestampUnits.ts)
+  updated_at        INTEGER NOT NULL,  -- Unix epoch ms (legacy rows: seconds; see timestampUnits.ts)
   PRIMARY KEY (id)
 );
 
@@ -160,7 +161,7 @@ CREATE TABLE orbital_media (
   thumbnail_path    TEXT,             -- local file path for thumbnail
   download_state    TEXT    NOT NULL DEFAULT 'pending',  -- 'pending' | 'downloading' | 'downloaded' | 'failed'
   upload_state      TEXT    NOT NULL DEFAULT 'done',     -- 'pending' | 'uploading' | 'done' | 'failed'
-  created_at        INTEGER NOT NULL,  -- Unix epoch seconds
+  created_at        INTEGER NOT NULL,  -- Unix epoch ms
   PRIMARY KEY (id)
 );
 

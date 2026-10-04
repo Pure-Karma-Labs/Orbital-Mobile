@@ -69,8 +69,11 @@ export interface Thread {
   /** Converted from 0|1 integer in database */
   pinned: boolean;
   replyCount: number;
+  /** Epoch ms */
   lastReplyAt: number | null;
+  /** Epoch ms */
   createdAt: number;
+  /** Epoch ms */
   updatedAt: number;
   syncStatus: SyncStatus;
 }
@@ -91,7 +94,9 @@ export interface Reply {
    * which derives it from the parent chain. Nothing should render this.
    */
   depth: number;
+  /** Epoch ms */
   createdAt: number;
+  /** Epoch ms */
   updatedAt: number;
   syncStatus: SyncStatus;
 }

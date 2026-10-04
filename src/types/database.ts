@@ -125,9 +125,9 @@ export interface ConversationRow {
   /** Unix epoch seconds */
   last_message_at: number | null;
   unread_count: number;
-  /** Unix epoch seconds */
+  /** Unix epoch MILLISECONDS (conversationRepository stamps Date.now()) */
   created_at: number;
-  /** Unix epoch seconds */
+  /** Unix epoch MILLISECONDS (conversationRepository stamps Date.now()) */
   updated_at: number;
 }
 
@@ -146,11 +146,23 @@ export interface OrbitalThreadRow {
   content_type: ThreadContentType;
   pinned: number;
   reply_count: number;
-  /** Unix epoch seconds */
+  /**
+   * Unix epoch MILLISECONDS since #844. Rows written before that hold epoch
+   * seconds; threadRepository.mapRowToThread reads either
+   * (timestampUnits.toMillis).
+   */
   last_reply_at: number | null;
-  /** Unix epoch seconds */
+  /**
+   * Unix epoch MILLISECONDS since #844. Rows written before that hold epoch
+   * seconds; threadRepository.mapRowToThread reads either
+   * (timestampUnits.toMillis).
+   */
   created_at: number;
-  /** Unix epoch seconds */
+  /**
+   * Unix epoch MILLISECONDS since #844. Rows written before that hold epoch
+   * seconds; threadRepository.mapRowToThread reads either
+   * (timestampUnits.toMillis).
+   */
   updated_at: number;
 }
 
@@ -165,7 +177,7 @@ export interface OrbitalReplyRow {
   parent_reply_id: string | null;
   /**
    * Unix epoch MILLISECONDS since #821. Rows written before that hold epoch
-   * seconds; replyRepository.mapRowToReply reads either (SECONDS_CEILING).
+   * seconds; replyRepository.mapRowToReply reads either (timestampUnits.toMillis).
    */
   created_at: number;
   /** Unix epoch MILLISECONDS since #821 — see created_at. */

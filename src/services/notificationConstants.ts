@@ -15,7 +15,7 @@
  * this file and backgroundPush.ts and fails on such an import.
  */
 
-import { AndroidImportance, type Notification } from '@notifee/react-native';
+import { AndroidImportance, type AndroidChannel, type Notification } from '@notifee/react-native';
 
 import type { NotificationPrefs } from '../types/api';
 
@@ -32,6 +32,22 @@ export const NOTIFICATION_TITLES: Record<string, string> = {
 
 export const ANDROID_CHANNEL_ID = 'orbital-default';
 export const ANDROID_CHANNEL_NAME = 'Orbital';
+
+/**
+ * The one Android channel this app posts to.
+ *
+ * Created from three places — the pre-bootstrap background path
+ * (backgroundPush.ts), notificationService's native-bridge probe, and any
+ * later initNotifications work — and `createChannel` is idempotent, so the
+ * calls are safe to repeat. What is NOT safe is drift: a notification posted
+ * to a channel id that was never created, or created at a lower importance,
+ * is dropped or silenced by Android with no error. One literal, one id.
+ */
+export const DEFAULT_CHANNEL: AndroidChannel = {
+  id: ANDROID_CHANNEL_ID,
+  name: ANDROID_CHANNEL_NAME,
+  importance: AndroidImportance.HIGH,
+};
 
 // ---------------------------------------------------------------------------
 // Suppressible-type registry (#449, plan D0)

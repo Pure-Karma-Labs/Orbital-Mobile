@@ -7,7 +7,10 @@
  * @notifee/react-native kept compiling, and the wiring test still passed
  * because it read `mock.calls[0][1]`. The failure mode was a silent loss of
  * Android background notifications. Here, the typed RNFB mock contract (#667)
- * plus the derived handler types below make that a `tsc --noEmit` failure.
+ * plus the derived handler types below make an argument-order or handler-
+ * signature change a `tsc --noEmit` failure. They do NOT cover the message
+ * DATA shape — `remoteMessage.data` is cast below, exactly as the foreground
+ * handler casts it, so a payload-shape change stays a runtime concern.
  *
  * PRE-BOOTSTRAP PURITY — this module is loaded from index.js at bundle load,
  * BEFORE bootstrap and before encrypted MMKV is open, and the background
@@ -36,14 +39,13 @@
  * site rather than in a test.
  */
 
-import notifee, { AndroidImportance, EventType } from '@notifee/react-native';
+import notifee, { EventType } from '@notifee/react-native';
 import { getMessaging, setBackgroundMessageHandler } from '@react-native-firebase/messaging';
 
 import { setPendingNotificationPayload } from '../navigation/navigationRef';
 import {
   NOTIFICATION_TITLES,
-  ANDROID_CHANNEL_ID,
-  ANDROID_CHANNEL_NAME,
+  DEFAULT_CHANNEL,
   buildNotificationRequest,
   dedupKeyForPayload,
   collapseKeyForPayload,
@@ -52,8 +54,9 @@ import { LRUSet } from './websocket/lruSet';
 
 /**
  * The handler shape RNFB actually expects, derived from the real declaration
- * (a single, non-overloaded signature). If upstream changes the message shape
- * or the argument order, this file stops compiling.
+ * (a single, non-overloaded signature). If upstream changes the handler
+ * signature or the argument order, this file stops compiling. The fields
+ * INSIDE `remoteMessage.data` are not covered — see the header.
  */
 type BackgroundMessageHandler = Parameters<typeof setBackgroundMessageHandler>[1];
 
@@ -126,11 +129,7 @@ export function registerBackgroundPushHandlers(): void {
   // before auth and before initNotifications(). Displaying a notification
   // on a non-existent channel is silently dropped on Android.
   // This call is idempotent — calling it again in initNotifications() is harmless.
-  notifee.createChannel({
-    id: ANDROID_CHANNEL_ID,
-    name: ANDROID_CHANNEL_NAME,
-    importance: AndroidImportance.HIGH,
-  });
+  notifee.createChannel(DEFAULT_CHANNEL);
 
   // Must be registered at module top-level BEFORE AppRegistry.registerComponent.
   // Without this, Android data-only push payloads are silently consumed when the

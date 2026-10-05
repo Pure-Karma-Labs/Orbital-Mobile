@@ -27,7 +27,7 @@ import {
   handleBackgroundEvent,
   registerBackgroundPushHandlers,
 } from '../backgroundPush';
-import { buildNotificationRequest } from '../notificationConstants';
+import { DEFAULT_CHANNEL, buildNotificationRequest } from '../notificationConstants';
 
 jest.mock('../../navigation/navigationRef', () => ({
   setPendingNotificationPayload: jest.fn(),
@@ -148,6 +148,8 @@ describe('registerBackgroundPushHandlers — idempotence', () => {
     registerBackgroundPushHandlers();
 
     expect(notifee.createChannel).toHaveBeenCalledTimes(1);
+    // The shared channel constant, not a local literal.
+    expect(notifee.createChannel).toHaveBeenCalledWith(DEFAULT_CHANNEL);
     expect(setBackgroundMessageHandler).toHaveBeenCalledTimes(1);
     expect(notifee.onBackgroundEvent).toHaveBeenCalledTimes(1);
     // Identity, not shape: the exported handlers are what got registered.
@@ -183,6 +185,16 @@ describe('buildNotificationRequest', () => {
 
     // Not `id: undefined` — notifee must assign a fresh id so alerts stack.
     expect('id' in request).toBe(false);
+  });
+
+  it('targets the channel this app actually creates', () => {
+    // The drift that silently drops Android notifications: a request posted to
+    // a channelId that createChannel never created.
+    const android = buildNotificationRequest({ t: 'new_dm', gid: 'g1' }, 'New direct message', 'g1')
+      .android as Record<string, unknown>;
+
+    expect(android.channelId).toBe(DEFAULT_CHANNEL.id);
+    expect(DEFAULT_CHANNEL).toEqual({ id: 'orbital-default', name: 'Orbital', importance: 4 });
   });
 
   it('passes the payload through unchanged as the notification data', () => {

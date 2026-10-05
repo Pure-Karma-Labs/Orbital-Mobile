@@ -10,7 +10,7 @@
  */
 
 import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { exit } from 'node:process';
 
 const SRC = 'src';
@@ -1251,55 +1251,89 @@ try {
 // ---------------------------------------------------------------------------
 
 // index.js calls registerBackgroundPushHandlers() at bundle load, so
-// backgroundPush.ts and its one app-code dependency, notificationConstants.ts,
-// execute BEFORE bootstrap: encrypted MMKV is not open, the database is not
-// initialized, and on Android the background message handler can run in a
-// headless JS context where the React tree never mounts. A store, MMKV,
-// keychain, database, API or telemetry import there either throws at module
-// init (dropping every killed-state push, including the identity_key_reset
-// security tripwire) or silently reads uninitialized state and changes which
-// notifications display. The module headers say so; this rule is what enforces
-// it. Scoped to the two files by path — these are the only modules in the
-// pre-bootstrap entry path, and every other module in src/ is free to import
-// the store.
+// backgroundPush.ts and EVERYTHING IT REACHES synchronously execute BEFORE
+// bootstrap: encrypted MMKV is not open, the database is not initialized, and
+// on Android the background message handler can run in a headless JS context
+// where the React tree never mounts. A store, MMKV, keychain, database, API,
+// SQLCipher or telemetry import anywhere in that closure either throws at
+// module init (dropping every killed-state push, including the
+// identity_key_reset security tripwire) or — the quieter failure — reads
+// uninitialized state: zustand/persist hydrates from an empty MMKV, so the
+// module sees default prefs and can later clobber the real persisted state.
+// The module headers say so; this rule is what enforces it.
 //
-// KNOWN GAP, latent but not silent: the rule is DIRECT-import only, not
-// transitive. backgroundPush.ts imports exactly two app modules today
-// (notificationConstants.ts, allowlisted here, and websocket/lruSet.ts, a pure
-// data structure) plus navigationRef.ts, which holds only a module-level queue
-// and a consumer callback. A third module added to that graph must be added to
-// PRE_BOOTSTRAP_PURE as well — the import line in backgroundPush.ts is the
-// review trigger.
-const PRE_BOOTSTRAP_PURE = [
-  join(SRC, 'services', 'backgroundPush.ts'),
-  join(SRC, 'services', 'notificationConstants.ts'),
-];
+// The closure today is FOUR app modules:
+//   src/services/backgroundPush.ts        the entry point (root of the walk)
+//   src/services/notificationConstants.ts titles/channel + pure payload helpers
+//   src/navigation/navigationRef.ts       module-scope createNavigationContainerRef()
+//                                         plus the pending-payload queue
+//   src/services/websocket/lruSet.ts      a pure data structure, zero imports
+//
+// Rather than trust that list, the check WALKS the closure: starting at
+// backgroundPush.ts it follows first-party relative value imports
+// transitively, requires every reached src/ module to be in
+// PRE_BOOTSTRAP_PURE, and scans each one for forbidden imports. Both
+// directions fire: a module reached but not allowlisted is a violation (so
+// adding an import to this graph is a deliberate, reviewed act), and an
+// allowlisted module no longer reachable from the root is a violation too (so
+// the allowlist cannot rot into decoration).
+//
+// KNOWN GAPS, latent but not silent:
+//   - Third-party packages are judged by specifier only (PB_FORBIDDEN). A
+//     package that itself opens MMKV or SQLite is invisible here; the notifee,
+//     RNFB and @react-navigation imports in the closure today are native-module
+//     façades that touch neither.
+//   - A require()/import() with a non-literal specifier is invisible. There
+//     are none in the closure.
+//   - `import { type A } from 'x'` is treated as a value import — deliberately
+//     conservative; hoist it to `import type` to silence it.
 const PB_RULE = 'pre-bootstrap-pure';
-// Matched against the module specifier of every non-type import/require.
+const PB_ROOT = join(SRC, 'services', 'backgroundPush.ts');
+const PRE_BOOTSTRAP_PURE = new Set([
+  PB_ROOT,
+  join(SRC, 'services', 'notificationConstants.ts'),
+  join(SRC, 'navigation', 'navigationRef.ts'),
+  join(SRC, 'services', 'websocket', 'lruSet.ts'),
+]);
+
+// Matched against the module specifier of every executing import/require.
+// Each path pattern ends on slash-or-END so the barrel form ('../stores',
+// '../database', './api') cannot walk past it — that bypass was the blocking
+// finding on PR #860, and `from '../stores'` is the dominant idiom in this
+// repo. `api` is matched on any segment rather than as `services/api/` so the
+// intra-services relative form ('./api', './api/tokenManager') is covered too.
 const PB_FORBIDDEN = [
-  [/(^|\/)stores\//, 'a Zustand store module'],
+  [/(^|\/)stores(\/|$)/, 'a Zustand store module'],
   [/useAppStore/, 'the app store'],
-  [/(^|\/)database\//, 'the SQLCipher database layer'],
-  [/services\/api\//, 'the API client layer'],
+  [/(^|\/)database(\/|$)/, 'the SQLCipher database layer'],
+  [/(^|\/)api(\/|$)/, 'the API client layer'],
   [/^react-native-mmkv$/, 'encrypted MMKV'],
   [/^react-native-keychain$/, 'the keychain'],
+  [/^@op-engineering\/op-sqlite$/, 'SQLCipher via op-sqlite'],
   [/secure-storage/, 'secure storage'],
-  [/telemetry/, 'telemetry'],
-];
-// `import type … from 'x'` is erased, so it cannot execute anything. Every
-// other import form (value import, bare side-effect import, require, dynamic
-// import) can. A fully type-only named list (`import { type A } from 'x'`) is
-// erased too but is treated as a value import here — deliberately
-// conservative: the fix is to hoist it to `import type`.
-const PB_IMPORT_RES = [
-  /import\s+type\s[\s\S]*?from\s*['"]([^'"]+)['"]/g, // type-only (skipped)
-  /import\s[\s\S]*?from\s*['"]([^'"]+)['"]/g, // value import
-  /import\s*['"]([^'"]+)['"]/g, // bare side-effect import
-  /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g, // require
-  /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g, // dynamic import
+  [/telemetry/i, 'telemetry'], // case-insensitive: ./uploadTelemetry must fire
 ];
 
-// Blank out comments while preserving line numbering — both module headers
+// `import type … from 'x'` and `export type … from 'x'` are erased, so they
+// cannot execute anything. Every other form can — including `export { x } from
+// 'y'` and `export * from 'y'`, which evaluate the target module just as an
+// import does. Specifiers may be single-quoted, double-quoted or backticked.
+const PB_SPEC = String.raw`['"\x60]([^'"\x60]+)['"\x60]`;
+const pbRe = (body, flags = 'gm') => new RegExp(body, flags);
+const PB_IMPORT_RES = [
+  // [0] type-only import — recorded, then skipped.
+  pbRe(String.raw`^[ \t]*import\s+type\s[\s\S]*?from\s*` + PB_SPEC),
+  // executing forms
+  pbRe(String.raw`^[ \t]*import\s[\s\S]*?from\s*` + PB_SPEC),
+  pbRe(String.raw`^[ \t]*import\s*` + PB_SPEC),
+  // re-exports: only `export *`/`export * as ns`/`export { … }` forms, which
+  // excludes `export type { … } from` without needing a skip entry.
+  pbRe(String.raw`^[ \t]*export\s+(?:\*(?:\s+as\s+\w+)?|\{[\s\S]*?\})\s*from\s*` + PB_SPEC),
+  pbRe(String.raw`\brequire\s*\(\s*` + PB_SPEC + String.raw`\s*\)`, 'g'),
+  pbRe(String.raw`\bimport\s*\(\s*` + PB_SPEC + String.raw`\s*\)`, 'g'),
+];
+
+// Blank out comments while preserving line numbering — the module headers
 // discuss imports in prose (including the bare side-effect import form that
 // Metro's inlineRequires makes unsafe), and that prose must not be scanned as
 // code.
@@ -1309,37 +1343,60 @@ function blankComments(src) {
     .replace(/(^|[^:\\])\/\/[^\n]*/gm, (m, p1) => p1 + ' '.repeat(m.length - p1.length));
 }
 
-for (const file of PRE_BOOTSTRAP_PURE) {
-  let source;
-  try {
-    source = blankComments(readFileSync(file, 'utf8'));
-  } catch {
-    // Non-vacuity: a renamed or deleted allowlisted file must not make the
-    // purity rule pass by scanning nothing.
-    violations.push(
-      `  ${relative('.', file)}:0  [${PB_RULE}]  allowlisted pre-bootstrap module not found — update the allowlist instead of leaving a vacuous rule`,
-    );
-    continue;
-  }
-
-  // Specifier -> first line it was imported on, excluding type-only imports.
+/** Executing imports in `source` as specifier -> first line, type-only excluded. */
+function pbExecutingImports(source) {
   const typeOnly = new Set();
-  const valueImports = new Map();
+  const found = new Map();
   for (let r = 0; r < PB_IMPORT_RES.length; r++) {
-    const re = new RegExp(PB_IMPORT_RES[r].source, 'g');
+    const re = new RegExp(PB_IMPORT_RES[r].source, PB_IMPORT_RES[r].flags);
     let m;
     while ((m = re.exec(source)) !== null) {
       const spec = m[1];
       const line = source.slice(0, m.index).split('\n').length;
       if (r === 0) {
         typeOnly.add(`${spec}:${line}`);
-      } else if (!typeOnly.has(`${spec}:${line}`)) {
-        if (!valueImports.has(spec)) valueImports.set(spec, line);
+      } else if (!typeOnly.has(`${spec}:${line}`) && !found.has(spec)) {
+        found.set(spec, line);
       }
     }
   }
+  return found;
+}
 
-  for (const [spec, line] of valueImports) {
+/** Resolve a relative specifier to a .ts/.tsx file, or null. */
+function pbResolve(importer, spec) {
+  const base = join(dirname(importer), spec);
+  for (const cand of [base, `${base}.ts`, `${base}.tsx`, join(base, 'index.ts'), join(base, 'index.tsx')]) {
+    if (!/\.tsx?$/.test(cand)) continue;
+    try {
+      if (statSync(cand).isFile()) return cand;
+    } catch {
+      /* next candidate */
+    }
+  }
+  return null;
+}
+
+const pbSeen = new Set();
+const pbQueue = [PB_ROOT];
+while (pbQueue.length > 0) {
+  const file = pbQueue.shift();
+  if (pbSeen.has(file)) continue;
+  pbSeen.add(file);
+
+  let source;
+  try {
+    source = blankComments(readFileSync(file, 'utf8'));
+  } catch {
+    // Non-vacuity: a renamed or deleted module in the closure must not make
+    // the purity rule pass by scanning nothing.
+    violations.push(
+      `  ${relative('.', file)}:0  [${PB_RULE}]  pre-bootstrap module not found — update PRE_BOOTSTRAP_PURE instead of leaving a vacuous rule`,
+    );
+    continue;
+  }
+
+  for (const [spec, line] of pbExecutingImports(source)) {
     // First match only — several patterns can describe one specifier
     // ('../stores/useAppStore' is both), and one import is one violation.
     const hit = PB_FORBIDDEN.find(([re]) => re.test(spec));
@@ -1351,6 +1408,36 @@ for (const file of PRE_BOOTSTRAP_PURE) {
         `pre-bootstrap module imports ${hit[1]} ('${spec}') — it runs before bootstrap (no MMKV, no database) and may run headless`,
       );
     }
+    if (!spec.startsWith('.')) continue; // third-party: specifier check only
+
+    const target = pbResolve(file, spec);
+    if (target === null) {
+      report(
+        file,
+        line,
+        PB_RULE,
+        `first-party import '${spec}' does not resolve to a .ts/.tsx module — the pre-bootstrap closure cannot be verified through it`,
+      );
+    } else if (!PRE_BOOTSTRAP_PURE.has(target)) {
+      report(
+        file,
+        line,
+        PB_RULE,
+        `pulls ${relative('.', target)} into the pre-bootstrap closure but it is not in PRE_BOOTSTRAP_PURE — add it there (and keep it pure) or drop the import`,
+      );
+    } else {
+      pbQueue.push(target);
+    }
+  }
+}
+
+// Non-vacuity: every allowlisted module must still be reachable from the root,
+// so the allowlist cannot outlive the closure it describes.
+for (const file of PRE_BOOTSTRAP_PURE) {
+  if (!pbSeen.has(file)) {
+    violations.push(
+      `  ${relative('.', file)}:0  [${PB_RULE}]  allowlisted but no longer reachable from ${relative('.', PB_ROOT)} — prune the allowlist entry instead of leaving it as decoration`,
+    );
   }
 }
 

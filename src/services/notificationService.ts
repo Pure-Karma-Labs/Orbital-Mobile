@@ -22,7 +22,7 @@ import {
   getInitialNotification,
   type RemoteMessage,
 } from '@react-native-firebase/messaging';
-import notifee, { AndroidImportance, AuthorizationStatus, EventType, type Event as NotifeeEvent } from '@notifee/react-native';
+import notifee, { AuthorizationStatus, EventType, type Event as NotifeeEvent } from '@notifee/react-native';
 import { registerDevice, deregisterDevice } from './api/devices';
 import { getDeviceId } from './deviceId';
 import { useAppStore } from '../stores/useAppStore';
@@ -33,8 +33,7 @@ import {
 } from '../navigation/navigationRef';
 import {
   NOTIFICATION_TITLES,
-  ANDROID_CHANNEL_ID,
-  ANDROID_CHANNEL_NAME,
+  DEFAULT_CHANNEL,
   buildNotificationRequest,
   resolveAnchor,
   dedupKeyForPayload,
@@ -97,11 +96,7 @@ let notifeeAvailable = true;
 async function checkNotifeeAvailability(): Promise<boolean> {
   try {
     // createChannel is a lightweight call that exercises the native bridge
-    await notifee.createChannel({
-      id: ANDROID_CHANNEL_ID,
-      name: ANDROID_CHANNEL_NAME,
-      importance: AndroidImportance.HIGH,
-    });
+    await notifee.createChannel(DEFAULT_CHANNEL);
     return true;
   } catch {
     return false;

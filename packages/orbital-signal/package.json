@@ -14,9 +14,9 @@
   "source": "./src/index.tsx",
   "main": "./src/index.tsx",
   "scripts": {
-    "comment:marker": "build:ios[:release] write rust-profile-ios.txt as 'profile line + scripts/rust-input-digest.sh output', AFTER a successful ubrn build: ubrn runs an unlocked `cargo metadata` first and can rewrite Cargo.lock, so the digest must describe what was actually compiled. Staged via .tmp + mv so a digest failure leaves NO marker (scripts/verify-rust-profile-ios.sh fails closed on a missing or digest-less marker).",
-    "build:ios": "rm -f rust-profile-ios.txt rust-profile-ios.txt.tmp && ubrn build ios --config ubrn.config.yaml --and-generate && { echo debug && bash ../../scripts/rust-input-digest.sh; } > rust-profile-ios.txt.tmp && mv rust-profile-ios.txt.tmp rust-profile-ios.txt",
-    "build:ios:release": "rm -f rust-profile-ios.txt rust-profile-ios.txt.tmp && ubrn build ios --config ubrn.config.yaml --release --and-generate && { echo release && bash ../../scripts/rust-input-digest.sh; } > rust-profile-ios.txt.tmp && mv rust-profile-ios.txt.tmp rust-profile-ios.txt",
+    "comment:marker": "The marker is written by ONE script, scripts/write-rust-marker-ios.sh, which the harness also calls so writer drift shows up on a PR (build-ios is main-only). It runs AFTER a successful ubrn build: ubrn runs an unlocked `cargo metadata` first and can rewrite Cargo.lock, so the digest must describe what was actually compiled. The pre-build `rm -f rust-profile-ios.txt` is deliberate and fail-closed: if ubrn dies part-way through rewriting the xcframework, a surviving old marker could validate a half-written artefact.",
+    "build:ios": "rm -f rust-profile-ios.txt rust-profile-ios.txt.tmp && ubrn build ios --config ubrn.config.yaml --and-generate && bash ../../scripts/write-rust-marker-ios.sh debug",
+    "build:ios:release": "rm -f rust-profile-ios.txt rust-profile-ios.txt.tmp && ubrn build ios --config ubrn.config.yaml --release --and-generate && bash ../../scripts/write-rust-marker-ios.sh release",
     "build:android": "rm -f android/src/main/jniLibs/rust-profile.txt && ubrn build android --config ubrn.config.yaml --and-generate && echo debug > android/src/main/jniLibs/rust-profile.txt",
     "build:android:release": "rm -f android/src/main/jniLibs/rust-profile.txt && ubrn build android --config ubrn.config.yaml --release --and-generate && echo release > android/src/main/jniLibs/rust-profile.txt"
   },

@@ -34,9 +34,11 @@ fi
 
 if ! command -v cargo-ndk &>/dev/null; then
     echo "Installing cargo-ndk..."
-    # Pinned + --locked to match build.yml:249. This is the local path that
-    # cuts SHIPPED Android builds, so an unpinned install here could ship
-    # binaries from a cargo-ndk nobody tested (#812).
+    # Pinned + --locked to match the cargo-ndk install in the build-android
+    # job of .github/workflows/build.yml (no line number: it moves). This is
+    # the local path that cuts SHIPPED Android builds, so an unpinned install
+    # here could ship binaries from a cargo-ndk nobody tested (#812). Security
+    # invariant 18 asserts the two pins name the SAME version.
     cargo install cargo-ndk@4.1.2 --locked
 fi
 

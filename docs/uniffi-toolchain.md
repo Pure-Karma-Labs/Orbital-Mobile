@@ -172,11 +172,18 @@ Each build script writes a marker file recording the profile used:
 
 Both markers are gitignored (iOS explicitly, Android via the `jniLibs/` pattern).
 
-`build:ios` / `build:ios:release` write the iOS marker **after** a successful `ubrn build`,
-staged through a `.tmp` file and an atomic `mv`: ubrn runs an unlocked `cargo metadata`
-before compiling, which can itself rewrite `Cargo.lock`, so the digest has to be taken
-afterwards to describe what was actually compiled. If the digest script fails, no marker is
-written at all and the gate below fails closed.
+One script writes the iOS marker — `scripts/write-rust-marker-ios.sh <debug|release>` —
+called by `build:ios`, `build:ios:release` **and** the test harness, so writer drift shows
+up on a PR (`build-ios` only runs on main). It runs **after** a successful `ubrn build`:
+ubrn runs an unlocked `cargo metadata` before compiling, which can itself rewrite
+`Cargo.lock`, so the digest has to be taken afterwards to describe what was actually
+compiled. The write is staged through a `.tmp` file and an atomic `mv`, and the `.tmp` is
+removed on any failure, so a failed digest leaves no marker at all and the gate below fails
+closed.
+
+The npm scripts also `rm -f` the live marker *before* invoking ubrn. That is deliberate: if
+ubrn dies part-way through rewriting the xcframework, a surviving marker could validate a
+half-written artefact.
 
 ### Build Guards
 
@@ -192,12 +199,36 @@ detected:
 | Staleness check runs on | every Gradle build (`outputs.upToDateWhen { false }`) | every Xcode configuration |
 | Profile check runs on | Release variants only | `CONFIGURATION=Release` only |
 
-Shared freshness inputs: the crate's `src/**/*.rs`, `Cargo.toml`, `Cargo.lock`, and the root
-`rust-toolchain.toml`. `packages/orbital-signal/ubrn.config.yaml` is an **iOS-only** input —
-it selects the xcframework slices and Android has no equivalent. `tests/` is excluded on
-both platforms: it does not enter the compiled artefacts, so test-only churn must not
-invalidate a good binary. Security invariant 18 `[rust-provenance-locked]` asserts that both
-gates still name the shared inputs, so they cannot drift apart unnoticed.
+Freshness inputs:
+
+| Input | Android | iOS | Required? |
+|---|---|---|---|
+| crate `src/**/*.rs` | yes | yes | yes |
+| crate `Cargo.toml`, `Cargo.lock` | yes | yes | yes |
+| root `rust-toolchain.toml` | yes | yes | yes |
+| `packages/orbital-signal/ubrn.config.yaml` | — | yes | yes |
+| `packages/orbital-signal/package.json` | — | yes | yes |
+| crate `build.rs` | — | yes | optional |
+| crate `.cargo/config.toml` | — | yes | optional |
+
+The last four are iOS-only. `ubrn.config.yaml` selects the xcframework slices;
+`package.json` is both the sole pin of the ubrn toolchain version (an exact spec, so the
+root lockfile adds no pin of its own) and the home of the `build:ios` command lines, so a
+ubrn bump — which regenerates the C++/TS glue and its uniffi checksums without touching a
+single `.rs` file — or a new cargo `--features` flag invalidates the marker. Hashing the
+root `package-lock.json` instead would drag ~1 MB of unrelated JS churn into the digest and
+condemn a good xcframework on every Dependabot bump. The two **optional** inputs do not
+exist today; they are hashed when present, their absence is not an error, and adding or
+removing one changes the file set and so correctly invalidates the marker.
+
+`tests/` is excluded on both platforms, as is `.cargo/audit.toml` on iOS: neither enters the
+compiled artefacts, so that churn must not invalidate a good binary.
+
+Security invariant 18 `[rust-provenance-locked]` asserts that both gates still **name** the
+shared inputs in executable code (it strips comments first, so a gate's own header cannot
+satisfy it) and that each still contains its comparison machinery. That both gates actually
+**use** those inputs is proven behaviourally only on iOS, by the harness cases below; the
+Android harness is profile-only, so Android's use is asserted, not tested.
 
 1. **Android (Gradle):** The `checkRustBinaries` task in `android/check-rust-freshness.gradle`
    fails when either `.a` is missing, when any input's mtime is newer than the oldest `.a`,
@@ -234,13 +265,14 @@ gates still name the shared inputs, so they cannot drift apart unnoticed.
    `<sha256>  <relpath>` line per input, `LC_ALL=C`-sorted by path and relative to the repo
    root, using `shasum -a 256` (present on macOS and on the ubuntu runners). It fails closed
    — non-zero, message on stderr — when the crate `src` directory is missing or holds no
-   `*.rs` file, when a fixed input is missing, or when `find`/`sort`/`shasum` fails; the
+   `*.rs` file, when a REQUIRED input is missing, or when `find`/`sort`/`shasum` fails; the
    Xcode phase then refuses the build rather than linking an unverified xcframework.
 
    `npm run test:rust-gate:ios` (`scripts/test-rust-profile-gate-ios.sh`) unit-tests all four
-   checks. It is read-only — every case runs in a throwaway `mktemp -d` tree — which is why
-   it is part of `npm run gut-check`. The Android harness drives a real Gradle build and
-   stays out.
+   checks across 25 cases, including one content-change case per input and one for each
+   optional input appearing or changing. It is read-only — every case runs in a throwaway
+   `mktemp -d` tree, written by the real marker writer — which is why it is part of
+   `npm run gut-check`. The Android harness drives a real Gradle build and stays out.
 
    **One-time migration:** a marker written before the digest format existed holds only the
    profile line and fails check 2 once. A single `npm run build:rust:ios[:release]` rewrites

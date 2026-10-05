@@ -318,7 +318,6 @@ jobs:
           rustup component add clippy --toolchain 1.94.1
 
       - name: Rust cache
-        # SHA-pinned: c19371144df3bb44fab255c43d04cbc2ab54d1c4 = v2.9.1
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: packages/orbital-signal/rust/orbital_signal
@@ -474,9 +473,10 @@ jobs:
           Review checklist:
           - Read the libsignal changelog at https://github.com/signalapp/libsignal/releases between $PINNED_TAG and $LATEST_TAG
           - Check for security advisories or breaking API changes
-          - Update the tag field in packages/orbital-signal/rust/orbital_signal/Cargo.toml to $LATEST_TAG
+          - Update BOTH tag fields (libsignal-protocol and libsignal-core, kept in lockstep) in packages/orbital-signal/rust/orbital_signal/Cargo.toml to $LATEST_TAG
           - Regenerate and COMMIT Cargo.lock (every CI cargo invocation runs --locked since #812, so a stale lock is a hard failure)
           - Run cargo test --locked --features dev-roundtrip and cargo clippy --locked --all-targets --features dev-roundtrip in the crate directory
+          - Re-derive docs/encryption-export-compliance.md (Encryption Inventory versions) and append a Cargo.lock derivation entry to docs/compliance/bis-filing-2026.md
           - Verify iOS and Android builds succeed
 
           This issue was created automatically by the weekly security workflow.

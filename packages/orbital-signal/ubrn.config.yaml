@@ -3,8 +3,17 @@ rust:
   directory: ./rust/orbital_signal
   manifestPath: Cargo.toml
 
+# cargoExtras is appended to every `cargo build` ubrn runs per target
+# (ubrn_cli/src/jsi/{ios,android}/commands.rs). --locked makes a drifted
+# Cargo.lock a hard build failure instead of a silent re-resolve (#812).
+#
+# DEFENCE IN DEPTH ONLY: ubrn 0.31.0-2 runs an UNLOCKED `cargo metadata`
+# before this, which can itself rewrite Cargo.lock. The raw `cargo build/test/
+# clippy --locked` lines in .github/workflows/{build,security}.yml are the
+# actual gate; security invariant 18 polices both.
 ios:
   directory: ios
+  cargoExtras: ["--locked"]
   targets:
     - aarch64-apple-ios
     - aarch64-apple-ios-sim
@@ -12,6 +21,7 @@ ios:
 
 android:
   directory: android
+  cargoExtras: ["--locked"]
   targets:
     - arm64-v8a
     - x86_64

@@ -16,6 +16,8 @@ on:
       - 'rust-toolchain.toml'
       - '.github/workflows/build.yml'
       - 'scripts/verify-rust-profile-ios.sh'
+      - 'scripts/rust-input-digest.sh'
+      - 'scripts/write-rust-marker-ios.sh'
       - 'scripts/test-rust-profile-gate-ios.sh'
       - 'scripts/test-rust-profile-gate-android.sh'
       - 'scripts/rust-gate-probe.init.gradle'
@@ -37,6 +39,8 @@ on:
       - 'rust-toolchain.toml'
       - '.github/workflows/build.yml'
       - 'scripts/verify-rust-profile-ios.sh'
+      - 'scripts/rust-input-digest.sh'
+      - 'scripts/write-rust-marker-ios.sh'
       - 'scripts/test-rust-profile-gate-ios.sh'
       - 'scripts/test-rust-profile-gate-android.sh'
       - 'scripts/rust-gate-probe.init.gradle'
@@ -174,11 +178,11 @@ jobs:
       # (SIMD/intrinsic) breakage, which the dev profile surfaces fine.
       - name: Cross-compile aarch64-apple-ios (device, release profile)
         working-directory: packages/orbital-signal/rust/orbital_signal
-        run: cargo build --release --target aarch64-apple-ios
+        run: cargo build --locked --release --target aarch64-apple-ios
 
       - name: Cross-compile aarch64-apple-ios-sim (Apple Silicon simulator)
         working-directory: packages/orbital-signal/rust/orbital_signal
-        run: cargo build --target aarch64-apple-ios-sim
+        run: cargo build --locked --target aarch64-apple-ios-sim
 
   build-android:
     name: Android Debug Build
@@ -335,10 +339,16 @@ jobs:
         env:
           SENTRY_DISABLE_AUTO_UPLOAD: 'true'
 
-  # Validates the gate's bash logic (scripts/verify-rust-profile-ios.sh) and
-  # Podfile wiring on every PR. The Xcode -> /bin/sh -> exec bash delegation in
-  # project.pbxproj is deliberately NOT exercised here — that path runs in the
-  # build-ios job on main pushes (PR #556 review: accepted tradeoff).
+  # Validates the gate's bash logic (scripts/verify-rust-profile-ios.sh +
+  # scripts/rust-input-digest.sh) and the Podfile wiring on every PR. The
+  # Xcode -> /bin/sh -> exec bash delegation in project.pbxproj is deliberately
+  # NOT exercised here — that path runs in the build-ios job on main pushes
+  # (PR #556 review: accepted tradeoff).
+  #
+  # ubuntu-latest on purpose: it also proves `shasum -a 256` (the digest
+  # primitive, #813) exists on Linux, not just macOS. Case A0 runs the digest
+  # script against this checkout, so a relocated/empty crate fails here even
+  # though the job builds no artefacts.
   test-rust-gate-ios:
     name: iOS Rust Profile Gate Test
     runs-on: ubuntu-latest
@@ -346,7 +356,7 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-      - name: Test iOS release-profile gate (issue #550)
+      - name: Test iOS Rust provenance gate (issues #550, #813)
         run: bash scripts/test-rust-profile-gate-ios.sh
 
   build-ios:

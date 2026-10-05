@@ -902,10 +902,6 @@ for (const file of shFiles) {
 }
 
 // ---------------------------------------------------------------------------
-// Summary
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // 17. timestampUnits imports confined to the two ms repositories (#844)
 // ---------------------------------------------------------------------------
 
@@ -948,6 +944,311 @@ for (const allowedFile of TSU_ALLOWED_FILES) {
     );
   }
 }
+
+// ---------------------------------------------------------------------------
+// 18. Rust provenance: every cargo invocation is --locked, every cargo install
+//     is version-pinned, cargo audit reads the committed lock, and the two
+//     freshness gates share one input list (#812/#813)
+// ---------------------------------------------------------------------------
+
+// Cargo re-resolves a drifted Cargo.lock SILENTLY unless --locked is passed.
+// The lock is what anchors the single-curve25519-dalek provenance guard
+// (security.yml), `cargo audit --file Cargo.lock` and the BIS derivation log,
+// so a CI run on a re-resolved graph tests a dependency tree nobody reviewed.
+// `cargo install` without @<version> is the same hazard for the toolchain that
+// cuts shipped Android binaries (scripts/build-android.sh).
+//
+// TWO matching strengths, deliberately:
+//
+//   PERMISSIVE (CARGO_RE) decides the --locked and @<version> rules. It fires
+//   on any `cargo build|test|clippy|install` token in a non-comment segment,
+//   including prose such as the libsignal-bump issue body, because a runbook
+//   that tells a developer to run an unlocked cargo command is itself the bug.
+//
+//   EXECUTABLE (EXEC_CARGO_RE) decides the non-vacuity FLOORS and the
+//   `cargo audit --file` rule. It requires the segment to START with the cargo
+//   invocation (optionally behind a YAML `run:`), which is what a real command
+//   looks like after splitting on `&&`/`||`/`;`/`|`.
+//
+// The split is the PR #859 blocking fix. When the floors counted permissive
+// matches, the libsignal-bump issue body's "- Run cargo test --locked … and
+// cargo clippy --locked …" line supplied test +1 and clippy +1 all by itself,
+// so the entire rust-test job could be deleted and this invariant stayed
+// green. Mutation-proven: replacing the real :334/:341 `run:` steps with
+// `run: true` now fires two "found 0" violations.
+//
+// `cargo audit` is excluded from CARGO_RE on purpose — cargo-audit has no
+// --locked flag — and gets its own `--file Cargo.lock` clause instead. That
+// clause is EXECUTABLE-only because `- name: cargo audit (blocking)` is a step
+// label, not a command, and demanding a flag on it would be nonsense.
+//
+// KNOWN GAPS, all latent today, none silently:
+//   - `cargo ndk … build` (cargo-ndk's own subcommand wrapper) is invisible to
+//     both regexes: the token after `cargo` is `ndk`. scripts/build-android.sh
+//     drives cargo through ubrn today, so no such line exists; one added later
+//     would need its own clause. The cargo-ndk INSTALL is covered.
+//   - A cargo invocation continued onto the next line with a trailing `\` is
+//     seen only up to the break, so flags after it are invisible. There are
+//     none today.
+//   - A prose `cargo audit` escapes the --file clause (see above).
+
+const RUST_PROV = 'rust-provenance-locked';
+const CARGO_RE = /\bcargo(\s+\+[\w.-]+)?\s+(build|test|clippy|install)\b/g;
+const EXEC_CARGO_RE = /^\s*(?:run:\s*)?cargo(?:\s+\+[\w.-]+)?\s+(build|test|clippy|install|audit)\b/;
+const CARGO_INSTALL_PIN_RE = /\bcargo\s+install\s+([\w.-]+)@([\w.+-]+)/g;
+const PKG_REL = 'packages/orbital-signal';
+const CRATE_REL = 'packages/orbital-signal/rust/orbital_signal';
+
+function cargoSegments(rawLine) {
+  if (/^\s*#/.test(rawLine)) return [];
+  // Strip a trailing shell/YAML comment (` #…`), keeping `#` inside tokens.
+  const hashAt = rawLine.search(/\s#/);
+  const line = hashAt >= 0 ? rawLine.slice(0, hashAt) : rawLine;
+  return line.split(/&&|\|\||;|\|/);
+}
+
+// Collected across every scanned file so a crate pinned in two places can be
+// checked for version parity.
+const cargoInstallPins = new Map(); // crate -> Map<version, string[] sites>
+
+function checkCargoFile(file, label) {
+  const empty = { build: 0, test: 0, clippy: 0, install: 0, audit: 0 };
+  let lines;
+  try {
+    lines = readFileSync(file, 'utf8').split('\n');
+  } catch {
+    violations.push(`  ${file}:0  [${RUST_PROV}]  ${label} not found — the cargo --locked rule would pass vacuously`);
+    return empty;
+  }
+  const counts = { ...empty };
+  for (let i = 0; i < lines.length; i++) {
+    const snippet = lines[i].trim();
+    for (const segment of cargoSegments(lines[i])) {
+      const exec = EXEC_CARGO_RE.exec(segment);
+
+      // --- Non-vacuity floors: executable invocations only.
+      if (exec) counts[exec[1]] += 1;
+
+      // --- cargo audit must read the COMMITTED lock. cargo-audit has no
+      // --locked flag; without --file it generates a lock from Cargo.toml and
+      // audits a graph nobody tested.
+      if (exec && exec[1] === 'audit' && !/--file\s+Cargo\.lock\b/.test(segment)) {
+        report(file, i + 1, RUST_PROV, `\`cargo audit\` without \`--file Cargo.lock\`: ${snippet}`);
+      }
+
+      // --- --locked / @<version>: permissive, prose included.
+      CARGO_RE.lastIndex = 0;
+      let m;
+      while ((m = CARGO_RE.exec(segment)) !== null) {
+        const sub = m[2];
+        if (!/(^|\s)--locked(\s|$)/.test(segment)) {
+          report(file, i + 1, RUST_PROV, `\`cargo ${sub}\` without --locked: ${snippet}`);
+        }
+        if (sub === 'install' && !/\bcargo\s+install\s+[\w.-]+@\d/.test(segment)) {
+          report(file, i + 1, RUST_PROV, `\`cargo install\` without an @<version> pin: ${snippet}`);
+        }
+      }
+
+      // --- Record every pinned install for cross-file version parity.
+      CARGO_INSTALL_PIN_RE.lastIndex = 0;
+      let pin;
+      while ((pin = CARGO_INSTALL_PIN_RE.exec(segment)) !== null) {
+        const [, crate, version] = pin;
+        if (!cargoInstallPins.has(crate)) cargoInstallPins.set(crate, new Map());
+        const byVersion = cargoInstallPins.get(crate);
+        if (!byVersion.has(version)) byVersion.set(version, []);
+        byVersion.get(version).push(`${relative('.', file)}:${i + 1}`);
+      }
+    }
+  }
+  return counts;
+}
+
+const CARGO_SCAN_FILES = [];
+try {
+  for (const entry of readdirSync('.github/workflows')) {
+    if (entry.endsWith('.yml') || entry.endsWith('.yaml')) {
+      CARGO_SCAN_FILES.push(join('.github/workflows', entry));
+    }
+  }
+} catch {
+  violations.push(`  .github/workflows:0  [${RUST_PROV}]  workflows directory not found — the cargo --locked rule would pass vacuously`);
+}
+try {
+  CARGO_SCAN_FILES.push(...walkSync(SCRIPTS_DIR, ['.sh']));
+} catch {
+  violations.push(`  ${SCRIPTS_DIR}:0  [${RUST_PROV}]  scripts/ directory not found — the cargo --locked rule would pass vacuously`);
+}
+
+const cargoCounts = new Map();
+for (const file of CARGO_SCAN_FILES) {
+  cargoCounts.set(file, checkCargoFile(file, file));
+}
+
+// --- Per-file non-vacuity: the gating invocations must still EXIST as
+// commands. A coarse repo-wide "at least one cargo line" check would survive
+// deleting the whole rust-test job, which is the regression this guards.
+const CARGO_EXPECTED = [
+  ['.github/workflows/security.yml', 'test', 1, 'the rust-test job no longer runs cargo test'],
+  ['.github/workflows/security.yml', 'clippy', 1, 'the rust-test job no longer runs cargo clippy'],
+  ['.github/workflows/security.yml', 'audit', 1, 'the rust-audit job no longer runs cargo audit — the standing RUSTSEC gate'],
+  ['.github/workflows/build.yml', 'build', 2, 'rust-apple-targets no longer cross-compiles both Apple slices'],
+];
+for (const [file, sub, min, why] of CARGO_EXPECTED) {
+  const counts = cargoCounts.get(file);
+  if (!counts) {
+    violations.push(`  ${file}:0  [${RUST_PROV}]  expected cargo-bearing file was not scanned — ${why}`);
+  } else if (counts[sub] < min) {
+    violations.push(`  ${file}:0  [${RUST_PROV}]  expected >=${min} executable \`cargo ${sub}\` invocation(s), found ${counts[sub]} — ${why}`);
+  }
+}
+
+// --- A crate installed in more than one place must be pinned to ONE version.
+// cargo-ndk is installed by both build.yml (hosted Android job) and
+// scripts/build-android.sh (the local path that cuts SHIPPED builds); a split
+// would compile store binaries with a linker nobody tested in CI.
+for (const [crate, byVersion] of cargoInstallPins) {
+  if (byVersion.size > 1) {
+    const detail = [...byVersion.entries()]
+      .map(([version, sites]) => `${version} (${sites.join(', ')})`)
+      .join(' vs ');
+    violations.push(`  ${[...byVersion.values()][0][0]}  [${RUST_PROV}]  \`cargo install ${crate}\` is pinned to more than one version: ${detail}`);
+  }
+}
+
+// --- ubrn's own cargo passthrough must carry --locked on BOTH platforms.
+// Defence in depth: ubrn 0.31.0-2 runs an unlocked `cargo metadata` first, so
+// the raw workflow lines above remain the real gate.
+const UBRN_CONFIG = 'packages/orbital-signal/ubrn.config.yaml';
+try {
+  const ubrnText = readFileSync(UBRN_CONFIG, 'utf8');
+  for (const platform of ['ios', 'android']) {
+    // Platform block = from `^<platform>:` to the next top-level key, or to
+    // the absolute end of file — `(?![\s\S])`, since JS has no \Z and `$`
+    // under /m would stop at the first newline.
+    const block = new RegExp(`^${platform}:\\n([\\s\\S]*?)(?=^\\S|(?![\\s\\S]))`, 'm').exec(ubrnText);
+    if (!block) {
+      violations.push(`  ${UBRN_CONFIG}:0  [${RUST_PROV}]  no \`${platform}:\` block — cannot verify its cargoExtras`);
+      continue;
+    }
+    const extras = /^\s+cargoExtras:\s*(.+)$/m.exec(block[1]);
+    if (!extras) {
+      violations.push(`  ${UBRN_CONFIG}:0  [${RUST_PROV}]  \`${platform}:\` block has no cargoExtras — ubrn would cargo build unlocked`);
+    } else if (!extras[1].includes('--locked')) {
+      violations.push(`  ${UBRN_CONFIG}:0  [${RUST_PROV}]  \`${platform}: cargoExtras\` does not contain --locked: ${extras[1].trim()}`);
+    }
+  }
+} catch {
+  violations.push(`  ${UBRN_CONFIG}:0  [${RUST_PROV}]  ubrn config not found — cannot verify cargoExtras`);
+}
+
+// --- Freshness-input parity between the two staleness gates. They are
+// deliberately ASYMMETRIC in mechanism (Android: mtime vs the oldest .a, with
+// the `orbital.autoRebuildRust` auto-rebuild hatch; iOS: sha256 digest, fail
+// closed, no hatch) but must agree on WHICH inputs make a binary stale.
+// ubrn.config.yaml and packages/orbital-signal/package.json are iOS-only
+// inputs: they select the xcframework slices and pin the ubrn toolchain, and
+// Android has no equivalent, so neither is required on the Android side.
+//
+// Comments are stripped FIRST. Before that (PR #859 review) the raw-text
+// includes() was satisfied by each gate's own header comment, so deleting
+// `Cargo.lock` from the digest script's FIXED_INPUTS stayed green. The two
+// EXEC_ANCHORS below make the same point for the comparison code itself:
+// gutting the gradle gate's staleness arithmetic, or the digest script's
+// hashing, now fires even though the path literals survive.
+//
+// SCOPE: this proves both gates NAME the inputs in executable code. That they
+// USE them is proven behaviourally by scripts/test-rust-profile-gate-ios.sh
+// (F1-F7, F15-F18) on the iOS side; the Android harness is profile-only, so
+// Android's USE is unproven — see the follow-up candidate on PR #859.
+function stripShellComments(text) {
+  return text
+    .split('\n')
+    .filter((line) => !/^\s*#/.test(line))
+    .map((line) => {
+      const hashAt = line.search(/\s#/);
+      return hashAt >= 0 ? line.slice(0, hashAt) : line;
+    })
+    .join('\n');
+}
+
+function stripCStyleComments(text) {
+  return text
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .map((line) => line.replace(/\/\/.*$/, ''))
+    .join('\n');
+}
+
+const FRESHNESS_GATES = [
+  {
+    file: 'android/check-rust-freshness.gradle',
+    label: 'Android mtime gate',
+    strip: stripCStyleComments,
+    // The gradle gate composes its src path from a projectRoot variable, so
+    // match the tail rather than the full relpath.
+    names: ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'orbital_signal/src'],
+    execAnchors: [
+      ['staleFiles.add', 'it no longer records any stale input'],
+      ['lastModified', 'it no longer compares timestamps'],
+    ],
+  },
+  {
+    file: 'scripts/rust-input-digest.sh',
+    label: 'iOS digest gate',
+    strip: stripShellComments,
+    names: ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', `${CRATE_REL}/src`, 'ubrn.config.yaml', `${PKG_REL}/package.json`],
+    execAnchors: [['shasum -a 256', 'it no longer hashes anything']],
+  },
+];
+
+for (const gate of FRESHNESS_GATES) {
+  let text;
+  try {
+    text = readFileSync(gate.file, 'utf8');
+  } catch {
+    violations.push(`  ${gate.file}:0  [${RUST_PROV}]  ${gate.label} not found — freshness-input parity cannot be verified`);
+    continue;
+  }
+  const code = gate.strip(text);
+  for (const needle of gate.names) {
+    if (!code.includes(needle)) {
+      violations.push(`  ${gate.file}:0  [${RUST_PROV}]  ${gate.label} does not name the freshness input \`${needle}\` in executable code (comments stripped) — the two gates have drifted apart`);
+    }
+  }
+  for (const [anchor, why] of gate.execAnchors) {
+    if (!code.includes(anchor)) {
+      violations.push(`  ${gate.file}:0  [${RUST_PROV}]  ${gate.label} no longer contains \`${anchor}\` — ${why}, so its input list would be decorative`);
+    }
+  }
+}
+
+// --- One marker writer, exercised on a PR. The writer previously existed in
+// three copies (both npm scripts + the harness fake tree) and build-ios is
+// main-only, so drift between them was invisible until after merge.
+const MARKER_WRITER = 'scripts/write-rust-marker-ios.sh';
+const MARKER_WRITER_CALLERS = [
+  ['packages/orbital-signal/package.json', 'the build:ios[:release] scripts no longer call the shared marker writer'],
+  ['scripts/test-rust-profile-gate-ios.sh', 'the harness no longer exercises the real marker writer, so writer drift would not surface on a PR'],
+];
+try {
+  statSync(MARKER_WRITER);
+  for (const [caller, why] of MARKER_WRITER_CALLERS) {
+    try {
+      if (!readFileSync(caller, 'utf8').includes('write-rust-marker-ios.sh')) {
+        violations.push(`  ${caller}:0  [${RUST_PROV}]  does not reference ${MARKER_WRITER} — ${why}`);
+      }
+    } catch {
+      violations.push(`  ${caller}:0  [${RUST_PROV}]  expected marker-writer caller not found — ${why}`);
+    }
+  }
+} catch {
+  violations.push(`  ${MARKER_WRITER}:0  [${RUST_PROV}]  the shared iOS marker writer is missing — build:ios and the harness would each need their own copy again`);
+}
+
+// ---------------------------------------------------------------------------
+// Summary
+// ---------------------------------------------------------------------------
 
 if (violations.length > 0) {
   console.error(`\nSecurity invariant violations (${violations.length}):\n`);

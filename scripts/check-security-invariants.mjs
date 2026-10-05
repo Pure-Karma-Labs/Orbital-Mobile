@@ -1306,7 +1306,7 @@ const PB_FORBIDDEN = [
   [/(^|\/)stores(\/|$)/, 'a Zustand store module'],
   [/useAppStore/, 'the app store'],
   [/(^|\/)database(\/|$)/, 'the SQLCipher database layer'],
-  [/(^|\/)api(\/|$)/, 'the API client layer'],
+  [/(^|\/)(?<!types\/)api(\/|$)/, 'the API client layer'], // types/api.ts is the pure wire-type contract, not the client
   [/^react-native-mmkv$/, 'encrypted MMKV'],
   [/^react-native-keychain$/, 'the keychain'],
   [/^@op-engineering\/op-sqlite$/, 'SQLCipher via op-sqlite'],
@@ -1322,13 +1322,13 @@ const PB_SPEC = String.raw`['"\x60]([^'"\x60]+)['"\x60]`;
 const pbRe = (body, flags = 'gm') => new RegExp(body, flags);
 const PB_IMPORT_RES = [
   // [0] type-only import — recorded, then skipped.
-  pbRe(String.raw`^[ \t]*import\s+type\s[\s\S]*?from\s*` + PB_SPEC),
+  pbRe(String.raw`(?:^|;)[ \t]*import\s+type\s[\s\S]*?from\s*` + PB_SPEC),
   // executing forms
-  pbRe(String.raw`^[ \t]*import\s[\s\S]*?from\s*` + PB_SPEC),
-  pbRe(String.raw`^[ \t]*import\s*` + PB_SPEC),
+  pbRe(String.raw`(?:^|;)[ \t]*import\s[\s\S]*?from\s*` + PB_SPEC),
+  pbRe(String.raw`(?:^|;)[ \t]*import\s*` + PB_SPEC),
   // re-exports: only `export *`/`export * as ns`/`export { … }` forms, which
   // excludes `export type { … } from` without needing a skip entry.
-  pbRe(String.raw`^[ \t]*export\s+(?:\*(?:\s+as\s+\w+)?|\{[\s\S]*?\})\s*from\s*` + PB_SPEC),
+  pbRe(String.raw`(?:^|;)[ \t]*export\s+(?:\*(?:\s+as\s+\w+)?|\{[\s\S]*?\})\s*from\s*` + PB_SPEC),
   pbRe(String.raw`\brequire\s*\(\s*` + PB_SPEC + String.raw`\s*\)`, 'g'),
   pbRe(String.raw`\bimport\s*\(\s*` + PB_SPEC + String.raw`\s*\)`, 'g'),
 ];

@@ -18,6 +18,10 @@
 # script, which means scripts/test-rust-profile-gate-ios.sh exercises the real
 # writer on every PR.
 #
+# The npm scripts' pre-build `rm -f rust-profile-ios.txt` is deliberate and
+# fail-closed: if ubrn dies part-way through rewriting the xcframework, a
+# surviving old marker could validate a half-written artefact.
+#
 # Staged through a .tmp file and an atomic mv so a digest failure leaves NO
 # marker at all, rather than a profile-only one: verify-rust-profile-ios.sh
 # fails closed on both, but "no marker" is the honest state after a failed

@@ -211,13 +211,20 @@ Freshness inputs:
 | crate `build.rs` | — | yes | optional |
 | crate `.cargo/config.toml` | — | yes | optional |
 
-The last four are iOS-only. `ubrn.config.yaml` selects the xcframework slices;
+The last four are gated on iOS only. Only `ubrn.config.yaml` is genuinely iOS-specific;
+`package.json`, `build.rs` and `.cargo/config.toml` affect the Android `.a` identically,
+but Android's mtime gate does not watch them yet — that coverage is deliberately deferred
+with the Android-digest follow-up, not an assertion that they are iOS-specific.
+`ubrn.config.yaml` selects the xcframework slices;
 `package.json` is both the sole pin of the ubrn toolchain version (an exact spec, so the
 root lockfile adds no pin of its own) and the home of the `build:ios` command lines, so a
 ubrn bump — which regenerates the C++/TS glue and its uniffi checksums without touching a
 single `.rs` file — or a new cargo `--features` flag invalidates the marker. Hashing the
 root `package-lock.json` instead would drag ~1 MB of unrelated JS churn into the digest and
-condemn a good xcframework on every Dependabot bump. The two **optional** inputs do not
+condemn a good xcframework on every Dependabot bump. The file is hashed whole, so an edit
+that touches only its Android scripts or comment fields also invalidates the iOS marker.
+That over-triggering is expected; the response is a rebuild, never removing the input.
+The two **optional** inputs do not
 exist today; they are hashed when present, their absence is not an error, and adding or
 removing one changes the file set and so correctly invalidates the marker.
 

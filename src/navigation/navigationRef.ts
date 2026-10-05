@@ -40,7 +40,7 @@ let payloadConsumer: PayloadConsumer | null = null;
 /**
  * Queue a notification payload for deferred navigation.
  * Called by notificationService when the nav tree is not ready yet,
- * or by index.js onBackgroundEvent.
+ * or by handleBackgroundEvent in src/services/backgroundPush.ts.
  *
  * If a consumer is registered and navigation is already ready (background tap
  * scenario), the payload is delivered immediately rather than queued. This

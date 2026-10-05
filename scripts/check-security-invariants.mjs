@@ -1247,6 +1247,131 @@ try {
 }
 
 // ---------------------------------------------------------------------------
+// 19. Pre-bootstrap modules stay pure (#771)
+// ---------------------------------------------------------------------------
+
+// index.js calls registerBackgroundPushHandlers() at bundle load, so
+// backgroundPush.ts and its one app-code dependency, notificationConstants.ts,
+// execute BEFORE bootstrap: encrypted MMKV is not open, the database is not
+// initialized, and on Android the background message handler can run in a
+// headless JS context where the React tree never mounts. A store, MMKV,
+// keychain, database, API or telemetry import there either throws at module
+// init (dropping every killed-state push, including the identity_key_reset
+// security tripwire) or silently reads uninitialized state and changes which
+// notifications display. The module headers say so; this rule is what enforces
+// it. Scoped to the two files by path — these are the only modules in the
+// pre-bootstrap entry path, and every other module in src/ is free to import
+// the store.
+//
+// KNOWN GAP, latent but not silent: the rule is DIRECT-import only, not
+// transitive. backgroundPush.ts imports exactly two app modules today
+// (notificationConstants.ts, allowlisted here, and websocket/lruSet.ts, a pure
+// data structure) plus navigationRef.ts, which holds only a module-level queue
+// and a consumer callback. A third module added to that graph must be added to
+// PRE_BOOTSTRAP_PURE as well — the import line in backgroundPush.ts is the
+// review trigger.
+const PRE_BOOTSTRAP_PURE = [
+  join(SRC, 'services', 'backgroundPush.ts'),
+  join(SRC, 'services', 'notificationConstants.ts'),
+];
+const PB_RULE = 'pre-bootstrap-pure';
+// Matched against the module specifier of every non-type import/require.
+const PB_FORBIDDEN = [
+  [/(^|\/)stores\//, 'a Zustand store module'],
+  [/useAppStore/, 'the app store'],
+  [/(^|\/)database\//, 'the SQLCipher database layer'],
+  [/services\/api\//, 'the API client layer'],
+  [/^react-native-mmkv$/, 'encrypted MMKV'],
+  [/^react-native-keychain$/, 'the keychain'],
+  [/secure-storage/, 'secure storage'],
+  [/telemetry/, 'telemetry'],
+];
+// `import type … from 'x'` is erased, so it cannot execute anything. Every
+// other import form (value import, bare side-effect import, require, dynamic
+// import) can. A fully type-only named list (`import { type A } from 'x'`) is
+// erased too but is treated as a value import here — deliberately
+// conservative: the fix is to hoist it to `import type`.
+const PB_IMPORT_RES = [
+  /import\s+type\s[\s\S]*?from\s*['"]([^'"]+)['"]/g, // type-only (skipped)
+  /import\s[\s\S]*?from\s*['"]([^'"]+)['"]/g, // value import
+  /import\s*['"]([^'"]+)['"]/g, // bare side-effect import
+  /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g, // require
+  /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g, // dynamic import
+];
+
+// Blank out comments while preserving line numbering — both module headers
+// discuss imports in prose (including the bare side-effect import form that
+// Metro's inlineRequires makes unsafe), and that prose must not be scanned as
+// code.
+function blankComments(src) {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+    .replace(/(^|[^:\\])\/\/[^\n]*/gm, (m, p1) => p1 + ' '.repeat(m.length - p1.length));
+}
+
+for (const file of PRE_BOOTSTRAP_PURE) {
+  let source;
+  try {
+    source = blankComments(readFileSync(file, 'utf8'));
+  } catch {
+    // Non-vacuity: a renamed or deleted allowlisted file must not make the
+    // purity rule pass by scanning nothing.
+    violations.push(
+      `  ${relative('.', file)}:0  [${PB_RULE}]  allowlisted pre-bootstrap module not found — update the allowlist instead of leaving a vacuous rule`,
+    );
+    continue;
+  }
+
+  // Specifier -> first line it was imported on, excluding type-only imports.
+  const typeOnly = new Set();
+  const valueImports = new Map();
+  for (let r = 0; r < PB_IMPORT_RES.length; r++) {
+    const re = new RegExp(PB_IMPORT_RES[r].source, 'g');
+    let m;
+    while ((m = re.exec(source)) !== null) {
+      const spec = m[1];
+      const line = source.slice(0, m.index).split('\n').length;
+      if (r === 0) {
+        typeOnly.add(`${spec}:${line}`);
+      } else if (!typeOnly.has(`${spec}:${line}`)) {
+        if (!valueImports.has(spec)) valueImports.set(spec, line);
+      }
+    }
+  }
+
+  for (const [spec, line] of valueImports) {
+    // First match only — several patterns can describe one specifier
+    // ('../stores/useAppStore' is both), and one import is one violation.
+    const hit = PB_FORBIDDEN.find(([re]) => re.test(spec));
+    if (hit) {
+      report(
+        file,
+        line,
+        PB_RULE,
+        `pre-bootstrap module imports ${hit[1]} ('${spec}') — it runs before bootstrap (no MMKV, no database) and may run headless`,
+      );
+    }
+  }
+}
+
+// Non-vacuity: the allowlist only describes reality while index.js still
+// reaches backgroundPush.ts at bundle load. If that call goes away, this rule
+// is guarding modules that are no longer pre-bootstrap, and the allowlist
+// should be deleted rather than left as decoration.
+try {
+  const entry = blankComments(readFileSync('index.js', 'utf8'));
+  if (!/registerBackgroundPushHandlers\s*\(\s*\)/.test(entry)) {
+    violations.push(
+      `  index.js:0  [${PB_RULE}]  index.js no longer calls registerBackgroundPushHandlers() — the pre-bootstrap purity allowlist no longer describes the entry path`,
+    );
+  }
+} catch {
+  violations.push(
+    `  index.js:0  [${PB_RULE}]  entry point not found — cannot verify the pre-bootstrap purity allowlist still describes the entry path`,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------
 

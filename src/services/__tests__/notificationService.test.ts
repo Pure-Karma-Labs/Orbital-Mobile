@@ -901,9 +901,10 @@ describe('setupNotificationTapHandler — onNotificationOpenedApp callback', () 
 // ---------------------------------------------------------------------------
 // #539: identity_key_reset — consuming a queued payload
 // (covers both the Android onBackgroundEvent flow, which queues the payload
-// directly via setPendingNotificationPayload in index.js, and the killed-state
-// getInitialNotification flow below — both funnel into the same
-// setPayloadConsumer callback once the nav tree is ready.)
+// directly via setPendingNotificationPayload in backgroundPush.ts
+// (handleBackgroundEvent), and the killed-state getInitialNotification flow
+// below — both funnel into the same setPayloadConsumer callback once the nav
+// tree is ready.)
 // ---------------------------------------------------------------------------
 
 describe('setupNotificationTapHandler — consuming a queued identity_key_reset payload', () => {

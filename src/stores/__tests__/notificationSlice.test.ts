@@ -256,8 +256,11 @@ describe('notificationSlice — notification settings defaults (#449)', () => {
    * assertion here would. What it cannot cover is drift between that compile-time
    * union and the runtime object above, which is what the pin catches. The check
    * lives here rather than in notificationConstants.ts, whose header constraint
-   * forbids importing the store: that module is loaded by index.js before MMKV is
-   * open.
+   * forbids importing the store: that module sits on the pre-bootstrap entry
+   * path (index.js → backgroundPush.ts → notificationConstants.ts), loaded
+   * before MMKV is open. That constraint is now enforced mechanically by
+   * invariant 19 [pre-bootstrap-pure] in scripts/check-security-invariants.mjs,
+   * not by the header comment alone.
    */
   it('pins the runtime pref-key set, and every PREF_KEY_BY_TYPE value is one of them', () => {
     expect(Object.keys(DEFAULT_NOTIFICATION_PREFS).sort()).toEqual([

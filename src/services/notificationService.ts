@@ -35,6 +35,7 @@ import {
   NOTIFICATION_TITLES,
   ANDROID_CHANNEL_ID,
   ANDROID_CHANNEL_NAME,
+  buildNotificationRequest,
   resolveAnchor,
   dedupKeyForPayload,
   collapseKeyForPayload,
@@ -390,19 +391,11 @@ export function setupForegroundHandler(): () => void {
       const collapseKey = collapseKeyForPayload(data as Record<string, string>);
 
       try {
-        await notifee.displayNotification({
-          title,
-          body: 'Tap to view',
-          data: data as Record<string, string>,
-          ...(collapseKey ? { id: collapseKey } : {}),
-          android: {
-            channelId: ANDROID_CHANNEL_ID,
-            smallIcon: 'ic_notification',
-            importance: AndroidImportance.HIGH,
-            pressAction: { id: 'default' },
-            onlyAlertOnce: true,
-          },
-        });
+        // Shared with the background handler (backgroundPush.ts) so the two
+        // tray entries cannot drift — see buildNotificationRequest.
+        await notifee.displayNotification(
+          buildNotificationRequest(data as Record<string, string>, title, collapseKey),
+        );
         if (__DEV__) console.warn(`[Push] Foreground notification displayed: ${type}`);
 
         // Increment badge count so the app icon reflects unread notifications.
@@ -506,7 +499,7 @@ function navigateFromNotification(data: Record<string, string>): void {
  * Four notification tap sources:
  * 1. **Foreground tap** — user taps a local notification displayed by Notifee
  * 2a. **Background tap (iOS)** — Firebase onNotificationOpenedApp for APNs alerts
- * 2b. **Background tap (Android)** — Notifee onBackgroundEvent in index.js
+ * 2b. **Background tap (Android)** — Notifee onBackgroundEvent in backgroundPush.ts
  * 3. **Killed-state tap** — app was terminated; Firebase getInitialNotification()
  *
  * Returns an unsubscribe function that removes all event listeners. The Notifee
@@ -541,9 +534,11 @@ export function setupNotificationTapHandler(): () => void {
     },
   );
 
-  // 2b. Background tap (Android) — handled by onBackgroundEvent in index.js
-  // (must be registered at module top-level per Notifee docs). Background taps
-  // queue the payload via setPendingNotificationPayload, flushed on nav onReady.
+  // 2b. Background tap (Android) — handled by onBackgroundEvent in
+  // backgroundPush.ts, where handleBackgroundEvent is the registered observer
+  // (still registered at module top-level, from index.js, per Notifee docs).
+  // Background taps queue the payload via setPendingNotificationPayload,
+  // flushed on nav onReady.
 
   // 3. Killed-state tap — Firebase getInitialNotification() is one-shot.
   // If the nav tree isn't ready yet, the payload is queued automatically

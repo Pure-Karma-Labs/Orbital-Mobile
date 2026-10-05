@@ -331,11 +331,14 @@ jobs:
         # dev-roundtrip enables the Issue #11 encrypt/decrypt PoC integration
         # tests (a no-dependency feature flag; tests are cfg-gated to keep
         # plain `cargo test` compiling)
-        run: cargo test --features dev-roundtrip
+        run: cargo test --locked --features dev-roundtrip
 
       - name: Cargo clippy (deny warnings)
         working-directory: packages/orbital-signal/rust/orbital_signal
-        run: cargo clippy -- -D warnings
+        # --all-targets also lints tests/ (~110 KB previously unlinted);
+        # --features dev-roundtrip lints the cfg-gated PoC code. Both scope
+        # expansions landed with #812.
+        run: cargo clippy --locked --all-targets --features dev-roundtrip -- -D warnings
 
   # ---------------------------------------------------------------------------
   # 7. cargo audit -- Rust dependency vulnerability check (RustSec advisory DB)
@@ -368,7 +371,11 @@ jobs:
 
       - name: cargo audit (blocking)
         working-directory: packages/orbital-signal/rust/orbital_signal
-        run: cargo audit
+        # cargo-audit has NO --locked flag. Without --file it will generate a
+        # lock from Cargo.toml, auditing a graph nobody tested; --file pins it
+        # to the committed lock (#812). Lock drift still fails the suite, via
+        # the sibling rust-test job's `cargo test --locked`.
+        run: cargo audit --file Cargo.lock
 
   # ---------------------------------------------------------------------------
   # 8. libsignal upstream version check -- create GH issue when behind
@@ -468,7 +475,8 @@ jobs:
           - Read the libsignal changelog at https://github.com/signalapp/libsignal/releases between $PINNED_TAG and $LATEST_TAG
           - Check for security advisories or breaking API changes
           - Update the tag field in packages/orbital-signal/rust/orbital_signal/Cargo.toml to $LATEST_TAG
-          - Run cargo test and cargo clippy in the crate directory
+          - Regenerate and COMMIT Cargo.lock (every CI cargo invocation runs --locked since #812, so a stale lock is a hard failure)
+          - Run cargo test --locked --features dev-roundtrip and cargo clippy --locked --all-targets --features dev-roundtrip in the crate directory
           - Verify iOS and Android builds succeed
 
           This issue was created automatically by the weekly security workflow.

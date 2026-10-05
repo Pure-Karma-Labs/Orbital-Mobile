@@ -1,14 +1,36 @@
 #!/usr/bin/env bash
-# Unit harness for the iOS Rust release-profile gate (issue #550).
+# Unit harness for the iOS Rust provenance gate (#550, #813).
 # Run from repo root: bash scripts/test-rust-profile-gate-ios.sh
 #   or via: npm run test:rust-gate:ios
 #
-# Tests:
-#   I0  Podfile wiring — Podfile delegates to verify-rust-profile-ios.sh
-#   I1  CONFIGURATION=Release, marker=debug  → exit 1 + error message
-#   I2  CONFIGURATION=Release, marker absent → exit 1 + 'profile missing'
-#   I3  CONFIGURATION=Release, marker=release→ exit 0
-#   I4  CONFIGURATION=Debug,   marker=debug  → exit 0 (gate inactive)
+# READ-ONLY against the real checkout. Every behavioural case runs in a
+# throwaway `mktemp -d` tree that mirrors the repo layout, with both
+# scripts/verify-rust-profile-ios.sh and scripts/rust-input-digest.sh copied
+# in (they derive all paths from their own location). Nothing under the real
+# packages/orbital-signal is created, moved or rewritten — which is why this
+# script is in `npm run gut-check` and the Android one is not.
+#
+# Cases:
+#   I0   Podfile wiring — Podfile delegates to verify-rust-profile-ios.sh and
+#        keeps the '[Orbital] Verify Rust release profile' phase name
+#   A0   Real-repo anchor — rust-input-digest.sh succeeds against THIS
+#        checkout and emits at least one .rs line (needs no build artefacts;
+#        catches a relocated/empty crate that would make the gate vacuous)
+#   P1   fresh Debug                              -> pass
+#   P2   fresh Release (release marker)           -> pass
+#   P3   tests/*.rs content change                -> pass (tests/ is excluded)
+#   P4   identical-content rewrite (touch only)   -> pass (content, not mtime)
+#   F1-F5  content change of src/*.rs, Cargo.toml, Cargo.lock,
+#          rust-toolchain.toml, ubrn.config.yaml -> fail, names the path
+#   F6   added src/*.rs                           -> fail, 'added'
+#   F7   removed src/*.rs                         -> fail, 'removed'
+#   F8   missing device slice                     -> fail, 'not found'
+#   F9   missing simulator slice                  -> fail, 'not found'
+#   F10  missing marker (Debug)                   -> fail, 'is missing'
+#   F11  profile-only marker, no digest (Debug)   -> fail, 'no input digest'
+#   F12  missing crate src dir                    -> fail, digest fails closed
+#   F13  src dir with zero *.rs                   -> fail, digest fails closed
+#   F14  Release with a debug marker              -> fail, profile message
 
 set -euo pipefail
 
@@ -17,90 +39,213 @@ contains() { [ -n "$2" ] && [[ "$1" == *"$2"* ]]; }  # empty needle never matche
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="${REPO_ROOT}/scripts/verify-rust-profile-ios.sh"
+DIGEST_SCRIPT="${REPO_ROOT}/scripts/rust-input-digest.sh"
 PODFILE="${REPO_ROOT}/ios/Podfile"
-MARKER="${REPO_ROOT}/packages/orbital-signal/rust-profile-ios.txt"
 
 PASS=0
 FAIL=0
 
-# --- Snapshot marker state (it may be gitignored and absent) ---
-if [ -f "${MARKER}" ]; then
-  MARKER_BACKUP=$(cat "${MARKER}")
-  MARKER_EXISTS=1
-else
-  MARKER_BACKUP=""
-  MARKER_EXISTS=0
-fi
+pass() { echo "PASS $1"; PASS=$((PASS + 1)); }
+failed() { echo "FAIL $1"; FAIL=$((FAIL + 1)); }
 
-restore_marker() {
-  if [ "${MARKER_EXISTS}" -eq 1 ]; then
-    printf '%s' "${MARKER_BACKUP}" > "${MARKER}"
-  else
-    rm -f "${MARKER}"
-  fi
+# --- Fake-tree builder ------------------------------------------------------
+# Creates a minimal mirror of the repo layout in $1 and writes a valid marker
+# for profile $2 using the real digest script.
+TMP_ROOTS=()
+cleanup() {
+  for t in ${TMP_ROOTS[@]+"${TMP_ROOTS[@]}"}; do
+    [ -n "${t}" ] && [ -d "${t}" ] && rm -rf "${t}"
+  done
 }
-trap restore_marker EXIT
+trap cleanup EXIT
 
-# --- Helper: run a command, assert exit code and optional substring ---
-run_test() {
-  local label="$1"
-  local expected_exit="$2"
-  local expected_substring="$3"
-  shift 3
-  local output exit_code
+make_tree() {
+  local profile="$1"
+  local t
+  t="$(mktemp -d)"
+  TMP_ROOTS+=("${t}")
+
+  local pkg="${t}/packages/orbital-signal"
+  local crate="${pkg}/rust/orbital_signal"
+  mkdir -p "${t}/scripts" "${crate}/src" "${crate}/tests" \
+    "${pkg}/OrbitalSignalFramework.xcframework/ios-arm64" \
+    "${pkg}/OrbitalSignalFramework.xcframework/ios-arm64_x86_64-simulator"
+
+  cp "${SCRIPT}" "${t}/scripts/verify-rust-profile-ios.sh"
+  cp "${DIGEST_SCRIPT}" "${t}/scripts/rust-input-digest.sh"
+
+  printf 'pub fn a() {}\n' > "${crate}/src/lib.rs"
+  printf 'pub fn b() {}\n' > "${crate}/src/keys.rs"
+  printf 'fn t() {}\n' > "${crate}/tests/integration_tests.rs"
+  printf '[package]\nname = "orbital_signal"\n' > "${crate}/Cargo.toml"
+  printf '# lock\nversion = 4\n' > "${crate}/Cargo.lock"
+  printf '[toolchain]\nchannel = "1.94.1"\n' > "${t}/rust-toolchain.toml"
+  # Heredoc, not printf: a format string starting with '-' is parsed as a flag.
+  cat > "${pkg}/ubrn.config.yaml" <<'YAML'
+---
+rust:
+  directory: ./rust/orbital_signal
+YAML
+  printf 'ar\n' > "${pkg}/OrbitalSignalFramework.xcframework/ios-arm64/liborbital_signal.a"
+  printf 'ar\n' > "${pkg}/OrbitalSignalFramework.xcframework/ios-arm64_x86_64-simulator/liborbital_signal.a"
+
+  # Marker = profile line + digest lines, exactly as package.json writes it.
+  {
+    echo "${profile}"
+    bash "${t}/scripts/rust-input-digest.sh"
+  } > "${pkg}/rust-profile-ios.txt"
+
+  printf '%s' "${t}"
+}
+
+# --- Case runner ------------------------------------------------------------
+# run_case <label> <CONFIGURATION> <tree> <expected_exit> [needle...]
+run_case() {
+  local label="$1" config="$2" tree="$3" expected_exit="$4"
+  shift 4
+  local output exit_code ok=1
   set +e
-  output=$("$@" 2>&1)
+  output=$(env CONFIGURATION="${config}" bash "${tree}/scripts/verify-rust-profile-ios.sh" 2>&1)
   exit_code=$?
   set -e
-  local ok=1
-  if [ "${exit_code}" -ne "${expected_exit}" ]; then
-    ok=0
-  fi
-  if [ -n "${expected_substring}" ] && ! contains "${output}" "${expected_substring}"; then
-    ok=0
-  fi
+  if [ "${exit_code}" -ne "${expected_exit}" ]; then ok=0; fi
+  local needle
+  for needle in "$@"; do
+    if ! contains "${output}" "${needle}"; then ok=0; fi
+  done
   if [ "${ok}" -eq 1 ]; then
-    echo "PASS ${label}"
-    PASS=$((PASS + 1))
+    pass "${label}"
   else
-    echo "FAIL ${label}: exit=${exit_code} (expected ${expected_exit})"
-    if [ -n "${expected_substring}" ]; then
-      echo "  expected substring: ${expected_substring}"
-      echo "  output: ${output}"
-    fi
-    FAIL=$((FAIL + 1))
+    failed "${label}: exit=${exit_code} (expected ${expected_exit})"
+    for needle in "$@"; do
+      echo "  expected substring: ${needle}"
+    done
+    echo "  output: ${output}"
   fi
 }
 
-# I0: Podfile must reference the external script and keep the phase name
+# ===========================================================================
+# I0: Podfile wiring — phase name and script delegation must both survive
+# ===========================================================================
 if grep -qF "verify-rust-profile-ios.sh" "${PODFILE}" && \
    grep -qF "[Orbital] Verify Rust release profile" "${PODFILE}"; then
-  echo "PASS I0 (Podfile wiring)"
-  PASS=$((PASS + 1))
+  pass "I0 (Podfile wiring)"
 else
-  echo "FAIL I0 (Podfile wiring): Podfile missing 'verify-rust-profile-ios.sh' or '[Orbital] Verify Rust release profile'"
-  FAIL=$((FAIL + 1))
+  failed "I0 (Podfile wiring): Podfile missing 'verify-rust-profile-ios.sh' or '[Orbital] Verify Rust release profile'"
 fi
 
-# I1: Release + marker=debug → fail, message names the wrong profile
-printf 'debug' > "${MARKER}"
-run_test "I1 (Release+debug→fail)" 1 "profile 'debug', not 'release'" \
-  env CONFIGURATION=Release bash "${SCRIPT}"
+# ===========================================================================
+# A0: real-repo anchor — the digest script must resolve THIS checkout's crate
+# ===========================================================================
+set +e
+ANCHOR_OUT=$(bash "${DIGEST_SCRIPT}" 2>&1)
+ANCHOR_EXIT=$?
+set -e
+ANCHOR_RS=0
+while IFS= read -r line; do
+  case "${line}" in *.rs) ANCHOR_RS=$((ANCHOR_RS + 1)) ;; esac
+done <<<"${ANCHOR_OUT}"
+if [ "${ANCHOR_EXIT}" -eq 0 ] && [ "${ANCHOR_RS}" -ge 1 ] && contains "${ANCHOR_OUT}" "src/lib.rs"; then
+  pass "A0 (real-repo digest anchor: ${ANCHOR_RS} .rs inputs)"
+else
+  failed "A0 (real-repo digest anchor): exit=${ANCHOR_EXIT}, .rs lines=${ANCHOR_RS}"
+  echo "  output: ${ANCHOR_OUT}"
+fi
 
-# I2: Release + missing marker → fail, message says 'missing'
-rm -f "${MARKER}"
-run_test "I2 (Release+missing→fail)" 1 "profile 'missing'" \
-  env CONFIGURATION=Release bash "${SCRIPT}"
+# ===========================================================================
+# Passing cases
+# ===========================================================================
+T="$(make_tree debug)"
+run_case "P1 (fresh Debug -> pass)" Debug "${T}" 0
 
-# I3: Release + marker=release → pass
-printf 'release' > "${MARKER}"
-run_test "I3 (Release+release→pass)" 0 "" \
-  env CONFIGURATION=Release bash "${SCRIPT}"
+T="$(make_tree release)"
+run_case "P2 (fresh Release -> pass)" Release "${T}" 0
 
-# I4: Debug + marker=debug → pass (gate is inactive for non-Release)
-printf 'debug' > "${MARKER}"
-run_test "I4 (Debug+debug→pass)" 0 "" \
-  env CONFIGURATION=Debug bash "${SCRIPT}"
+T="$(make_tree debug)"
+printf 'fn t() {}\nfn t2() {}\n' > "${T}/packages/orbital-signal/rust/orbital_signal/tests/integration_tests.rs"
+run_case "P3 (tests/*.rs change -> pass)" Debug "${T}" 0
+
+T="$(make_tree debug)"
+printf 'pub fn a() {}\n' > "${T}/packages/orbital-signal/rust/orbital_signal/src/lib.rs"  # identical bytes
+touch "${T}/packages/orbital-signal/rust/orbital_signal/src/lib.rs"
+touch "${T}/packages/orbital-signal/rust/orbital_signal/Cargo.lock"
+run_case "P4 (identical-content rewrite/touch -> pass)" Debug "${T}" 0
+
+# ===========================================================================
+# Content-change failures
+# ===========================================================================
+T="$(make_tree debug)"
+printf 'pub fn a() {}\n// edited\n' > "${T}/packages/orbital-signal/rust/orbital_signal/src/lib.rs"
+run_case "F1 (src/lib.rs content change -> fail)" Debug "${T}" 1 "STALE" "changed:" "src/lib.rs" "npm run build:rust:ios"
+
+T="$(make_tree debug)"
+printf '[package]\nname = "orbital_signal"\nversion = "0.0.2"\n' > "${T}/packages/orbital-signal/rust/orbital_signal/Cargo.toml"
+run_case "F2 (Cargo.toml content change -> fail)" Debug "${T}" 1 "STALE" "Cargo.toml"
+
+T="$(make_tree debug)"
+printf '# lock\nversion = 4\n# drift\n' > "${T}/packages/orbital-signal/rust/orbital_signal/Cargo.lock"
+run_case "F3 (Cargo.lock content change -> fail)" Debug "${T}" 1 "STALE" "Cargo.lock"
+
+T="$(make_tree release)"
+printf '[toolchain]\nchannel = "1.95.0"\n' > "${T}/rust-toolchain.toml"
+run_case "F4 (rust-toolchain.toml change -> fail)" Release "${T}" 1 "STALE" "rust-toolchain.toml" "npm run build:rust:ios:release"
+
+T="$(make_tree debug)"
+cat > "${T}/packages/orbital-signal/ubrn.config.yaml" <<'YAML'
+---
+rust:
+  directory: ./rust/orbital_signal
+ios:
+  targets: []
+YAML
+run_case "F5 (ubrn.config.yaml change -> fail)" Debug "${T}" 1 "STALE" "ubrn.config.yaml"
+
+# ===========================================================================
+# File-set-change failures
+# ===========================================================================
+T="$(make_tree debug)"
+printf 'pub fn c() {}\n' > "${T}/packages/orbital-signal/rust/orbital_signal/src/newmod.rs"
+run_case "F6 (added src/*.rs -> fail)" Debug "${T}" 1 "STALE" "added:" "newmod.rs"
+
+T="$(make_tree debug)"
+rm -f "${T}/packages/orbital-signal/rust/orbital_signal/src/keys.rs"
+run_case "F7 (removed src/*.rs -> fail)" Debug "${T}" 1 "STALE" "removed:" "keys.rs"
+
+# ===========================================================================
+# Missing-artefact failures
+# ===========================================================================
+T="$(make_tree debug)"
+rm -f "${T}/packages/orbital-signal/OrbitalSignalFramework.xcframework/ios-arm64/liborbital_signal.a"
+run_case "F8 (missing device slice -> fail)" Debug "${T}" 1 "xcframework not found" "missing device slice"
+
+T="$(make_tree debug)"
+rm -f "${T}/packages/orbital-signal/OrbitalSignalFramework.xcframework/ios-arm64_x86_64-simulator/liborbital_signal.a"
+run_case "F9 (missing simulator slice -> fail)" Debug "${T}" 1 "xcframework not found" "missing simulator slice"
+
+T="$(make_tree debug)"
+rm -f "${T}/packages/orbital-signal/rust-profile-ios.txt"
+run_case "F10 (missing marker, Debug -> fail)" Debug "${T}" 1 "marker" "is missing"
+
+T="$(make_tree debug)"
+printf 'debug\n' > "${T}/packages/orbital-signal/rust-profile-ios.txt"
+run_case "F11 (profile-only marker, Debug -> fail)" Debug "${T}" 1 "no input digest"
+
+# ===========================================================================
+# Bad-source-tree failures (digest fails closed, gate refuses to link)
+# ===========================================================================
+T="$(make_tree debug)"
+rm -rf "${T}/packages/orbital-signal/rust/orbital_signal/src"
+run_case "F12 (missing src dir -> fail)" Debug "${T}" 1 "crate source dir not found" "Refusing to link"
+
+T="$(make_tree debug)"
+rm -f "${T}/packages/orbital-signal/rust/orbital_signal/src"/*.rs
+run_case "F13 (src with zero *.rs -> fail)" Debug "${T}" 1 "no *.rs files" "Refusing to link"
+
+# ===========================================================================
+# Profile failure
+# ===========================================================================
+T="$(make_tree debug)"
+run_case "F14 (Release + debug marker -> fail)" Release "${T}" 1 "profile 'debug', not 'release'" "npm run build:rust:ios:release"
 
 echo ""
 echo "iOS gate results: ${PASS} passed, ${FAIL} failed"

@@ -902,10 +902,6 @@ for (const file of shFiles) {
 }
 
 // ---------------------------------------------------------------------------
-// Summary
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // 17. timestampUnits imports confined to the two ms repositories (#844)
 // ---------------------------------------------------------------------------
 
@@ -948,6 +944,160 @@ for (const allowedFile of TSU_ALLOWED_FILES) {
     );
   }
 }
+
+// ---------------------------------------------------------------------------
+// 18. Rust provenance: every cargo invocation is --locked, every cargo install
+//     is version-pinned, and the two freshness gates share one input list (#812/#813)
+// ---------------------------------------------------------------------------
+
+// Cargo re-resolves a drifted Cargo.lock SILENTLY unless --locked is passed.
+// The lock is what anchors the single-curve25519-dalek provenance guard
+// (security.yml), `cargo audit --file Cargo.lock` and the BIS derivation log,
+// so a CI run on a re-resolved graph tests a dependency tree nobody reviewed.
+// `cargo install` without @<version> is the same hazard for the toolchain that
+// cuts shipped Android binaries (scripts/build-android.sh).
+//
+// Matching: skip `#`-comment lines, strip a trailing ` #` comment, then split
+// on shell/YAML operators and decide per SEGMENT on the CAPTURED SUBCOMMAND —
+// never on a substring of the whole line, which fails open (e.g. a prose line
+// mentioning "cargo test" or a path containing "cargo-audit").
+// NOT covered: a cargo invocation continued onto a following line.
+
+const RUST_PROV = 'rust-provenance-locked';
+const CARGO_RE = /\bcargo(\s+\+[\w.-]+)?\s+(build|test|clippy|install)\b/g;
+const CRATE_REL = 'packages/orbital-signal/rust/orbital_signal';
+
+function cargoSegments(rawLine) {
+  if (/^\s*#/.test(rawLine)) return [];
+  // Strip a trailing shell/YAML comment (` #…`), keeping `#` inside tokens.
+  const hashAt = rawLine.search(/\s#/);
+  const line = hashAt >= 0 ? rawLine.slice(0, hashAt) : rawLine;
+  return line.split(/&&|\|\||;|\|/);
+}
+
+function checkCargoFile(file, label) {
+  let lines;
+  try {
+    lines = readFileSync(file, 'utf8').split('\n');
+  } catch {
+    violations.push(`  ${file}:0  [${RUST_PROV}]  ${label} not found — the cargo --locked rule would pass vacuously`);
+    return { build: 0, test: 0, clippy: 0, install: 0 };
+  }
+  const counts = { build: 0, test: 0, clippy: 0, install: 0 };
+  for (let i = 0; i < lines.length; i++) {
+    for (const segment of cargoSegments(lines[i])) {
+      CARGO_RE.lastIndex = 0;
+      let m;
+      while ((m = CARGO_RE.exec(segment)) !== null) {
+        const sub = m[2];
+        counts[sub] += 1;
+        const snippet = lines[i].trim();
+        if (!/(^|\s)--locked(\s|$)/.test(segment)) {
+          report(file, i + 1, RUST_PROV, `\`cargo ${sub}\` without --locked: ${snippet}`);
+        }
+        if (sub === 'install' && !/\bcargo\s+install\s+[\w.-]+@\d/.test(segment)) {
+          report(file, i + 1, RUST_PROV, `\`cargo install\` without an @<version> pin: ${snippet}`);
+        }
+      }
+    }
+  }
+  return counts;
+}
+
+const CARGO_SCAN_FILES = [];
+try {
+  for (const entry of readdirSync('.github/workflows')) {
+    if (entry.endsWith('.yml')) CARGO_SCAN_FILES.push(join('.github/workflows', entry));
+  }
+} catch {
+  violations.push(`  .github/workflows:0  [${RUST_PROV}]  workflows directory not found — the cargo --locked rule would pass vacuously`);
+}
+try {
+  CARGO_SCAN_FILES.push(...walkSync(SCRIPTS_DIR, ['.sh']));
+} catch {
+  violations.push(`  ${SCRIPTS_DIR}:0  [${RUST_PROV}]  scripts/ directory not found — the cargo --locked rule would pass vacuously`);
+}
+
+const cargoCounts = new Map();
+for (const file of CARGO_SCAN_FILES) {
+  cargoCounts.set(file, checkCargoFile(file, file));
+}
+
+// --- Per-file non-vacuity: the gating invocations must still exist. A coarse
+// repo-wide "at least one cargo line" check would survive deleting the whole
+// rust-test job, which is exactly the regression this guards.
+const CARGO_EXPECTED = [
+  ['.github/workflows/security.yml', 'test', 1, 'the rust-test job no longer runs cargo test'],
+  ['.github/workflows/security.yml', 'clippy', 1, 'the rust-test job no longer runs cargo clippy'],
+  ['.github/workflows/build.yml', 'build', 2, 'rust-apple-targets no longer cross-compiles both Apple slices'],
+];
+for (const [file, sub, min, why] of CARGO_EXPECTED) {
+  const counts = cargoCounts.get(file);
+  if (!counts) {
+    violations.push(`  ${file}:0  [${RUST_PROV}]  expected cargo-bearing file was not scanned — ${why}`);
+  } else if (counts[sub] < min) {
+    violations.push(`  ${file}:0  [${RUST_PROV}]  expected >=${min} \`cargo ${sub}\` invocation(s), found ${counts[sub]} — ${why}`);
+  }
+}
+
+// --- ubrn's own cargo passthrough must carry --locked on BOTH platforms.
+// Defence in depth: ubrn 0.31.0-2 runs an unlocked `cargo metadata` first, so
+// the raw workflow lines above remain the real gate.
+const UBRN_CONFIG = 'packages/orbital-signal/ubrn.config.yaml';
+try {
+  const ubrnText = readFileSync(UBRN_CONFIG, 'utf8');
+  for (const platform of ['ios', 'android']) {
+    // Platform block = from `^<platform>:` to the next top-level key, or to
+    // the absolute end of file — `(?![\s\S])`, since JS has no \Z and `$`
+    // under /m would stop at the first newline.
+    const block = new RegExp(`^${platform}:\\n([\\s\\S]*?)(?=^\\S|(?![\\s\\S]))`, 'm').exec(ubrnText);
+    if (!block) {
+      violations.push(`  ${UBRN_CONFIG}:0  [${RUST_PROV}]  no \`${platform}:\` block — cannot verify its cargoExtras`);
+      continue;
+    }
+    const extras = /^\s+cargoExtras:\s*(.+)$/m.exec(block[1]);
+    if (!extras) {
+      violations.push(`  ${UBRN_CONFIG}:0  [${RUST_PROV}]  \`${platform}:\` block has no cargoExtras — ubrn would cargo build unlocked`);
+    } else if (!extras[1].includes('--locked')) {
+      violations.push(`  ${UBRN_CONFIG}:0  [${RUST_PROV}]  \`${platform}: cargoExtras\` does not contain --locked: ${extras[1].trim()}`);
+    }
+  }
+} catch {
+  violations.push(`  ${UBRN_CONFIG}:0  [${RUST_PROV}]  ubrn config not found — cannot verify cargoExtras`);
+}
+
+// --- Freshness-input parity between the two staleness gates. They are
+// deliberately ASYMMETRIC in mechanism (Android: mtime vs the oldest .a, with
+// the `orbital.autoRebuildRust` auto-rebuild hatch; iOS: sha256 digest, fail
+// closed, no hatch) but must agree on WHICH inputs make a binary stale.
+// ubrn.config.yaml is an iOS-only input: it selects the xcframework slices and
+// Android has no equivalent, so it is not required on the Android side.
+const FRESHNESS_GATES = [
+  ['android/check-rust-freshness.gradle', 'Android mtime gate'],
+  ['scripts/rust-input-digest.sh', 'iOS digest gate'],
+];
+const FRESHNESS_NAMES = ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', `${CRATE_REL}/src`];
+for (const [file, label] of FRESHNESS_GATES) {
+  let text;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch {
+    violations.push(`  ${file}:0  [${RUST_PROV}]  ${label} not found — freshness-input parity cannot be verified`);
+    continue;
+  }
+  for (const name of FRESHNESS_NAMES) {
+    // The gradle gate builds its src path from a projectRoot variable, so
+    // match the tail `orbital_signal/src` rather than the full relpath.
+    const needle = name.endsWith('/src') ? 'orbital_signal/src' : name;
+    if (!text.includes(needle)) {
+      violations.push(`  ${file}:0  [${RUST_PROV}]  ${label} does not name the freshness input \`${needle}\` — the two gates have drifted apart`);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Summary
+// ---------------------------------------------------------------------------
 
 if (violations.length > 0) {
   console.error(`\nSecurity invariant violations (${violations.length}):\n`);

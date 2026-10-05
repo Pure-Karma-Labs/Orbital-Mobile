@@ -2,8 +2,10 @@
 OrbitalSignalFramework.xcframework/
 android/src/main/jniLibs/
 
-# Profile marker written by build:ios / build:ios:release (local only)
-rust-profile-ios.txt
+# Provenance marker written by build:ios / build:ios:release (local only):
+# profile line + the scripts/rust-input-digest.sh output. The glob also covers
+# the .tmp staging file those scripts write to before the atomic mv (#813).
+rust-profile-ios.txt*
 
 # No lockfile here on purpose (removed in #798). This package is a `file:`
 # dependency of the app root, so its one dependency (uniffi-bindgen-react-native)

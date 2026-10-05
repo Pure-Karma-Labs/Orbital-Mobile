@@ -105,15 +105,40 @@ Any `@sentry/react-native` bump:
 5. Update the Version record table above.
 6. Confirm `ios/OrbitalMobile/PrivacyInfo.xcprivacy` still covers the SDK's
    `NSPrivacyAccessedAPITypes` (the app manifest is the only carrier now).
-7. CI's `Cache CocoaPods` step has `restore-keys: pods-<os>-`, so when
+7. Stale staged versions under `ios/Pods/sentry-xcframeworks` are pruned
+   upstream, **conditionally**. Since `@sentry/react-native` **8.22.0**
+   (getsentry/sentry-react-native PR **6534**, undocumented in Sentry's
+   changelog; we are on 8.27.0), `stage_sentry_xcframework_in_pods` deletes
+   every directory under the staging root whose basename is not the current
+   sentry-cocoa version — `node_modules/@sentry/react-native/scripts/sentry_utils.rb:221-225`.
+   It runs during **podspec evaluation**, i.e. before the Issue #768
+   `post_install` guard, so the old CI failure mode is pre-empted: CI's
+   `Cache CocoaPods` step has `restore-keys: pods-<os>-`, so when
    `Podfile.lock`/`Podfile` change the exact key misses and the prefix key
    restores an OLD `ios/Pods` that still holds `sentry-xcframeworks/<old>`
-   beside the new one; the guard fails on two versions, and it fails the same
-   way on every re-run (`actions/cache` never saves on a failed job). Before
-   pushing the bump, delete the stale entries:
+   beside the new one — the prune removes it before the guard counts versions.
+   No workflow step exists (or is needed) for this.
+
+   Treat the prune as conditional, not guaranteed: the method returns `nil`
+   without pruning behind an early `podfile_path` guard, and its blanket
+   `rescue StandardError, NotImplementedError` only warns. So the `post_install`
+   guard — which fails on two staged versions — remains the fail-closed
+   detector, and this is an upstream-contract item to re-check on **every**
+   Sentry bump, by reading the file named rather than the release notes.
+
+   Probe (2026-10-05, main checkout): seeded a fake
+   `ios/Pods/sentry-xcframeworks/9.19.1/marker` beside the real `9.29.0`, ran
+   `pod install` → exit 0, `Pod installation complete! … 96 total pods`, and the
+   directory afterwards held only `9.29.0`; `git status --porcelain` was clean.
+   A fake directory is a faithful stand-in because the prune `rm_rf`s every
+   non-current entry regardless of contents.
+
+   If the guard does fail on two versions: locally `rm -rf ios/Pods/sentry-xcframeworks`
+   and re-run `pod install`. In CI, delete the stale cache entries before
+   pushing the bump — `actions/cache` never saves on a failed job, so the same
+   failure repeats on every re-run:
    `gh cache list --repo Pure-Karma-Labs/Orbital-Mobile --key pods-macOS-` →
-   `gh cache delete <id>` for each. Locally, `rm -rf ios/Pods/sentry-xcframeworks`
-   and re-run `pod install` if the previous version is still staged.
+   `gh cache delete <key>` for each.
 8. Check the `-force_load` placement after `pod install`, before committing.
    CocoaPods emits the flags as per-SDK `OTHER_LDFLAGS[sdk=...]` lines, one per
    xcframework slice (e.g. `ios-arm64_arm64e` for `iphoneos*`), so check for

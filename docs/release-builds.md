@@ -19,11 +19,25 @@ the Sentry SDK silently — the archive succeeds but crash reporting is off.
    ```bash
    npm run build:rust:ios:release
    ```
-   This writes `release` to `packages/orbital-signal/rust-profile-ios.txt`. The Xcode build
-   includes an **[Orbital] Verify Rust release profile** script phase that checks this marker
-   and fails the build if it reads anything other than `release`. Skipping this step will cause
+   This writes `packages/orbital-signal/rust-profile-ios.txt`: `release` on line 1, then a
+   sha256 digest of the Rust inputs. The Xcode build includes an **[Orbital] Verify Rust
+   release profile** script phase that checks this marker. Skipping this step will cause
    Archive (and any Release configuration build) to fail with:
    `error: OrbitalSignal xcframework was built with Rust profile '<profile>', not 'release'.`
+
+   The same phase runs on **every** configuration and also fails when the Rust inputs changed
+   after the xcframework was built:
+
+   ```
+   error: OrbitalSignal xcframework is STALE — Rust inputs changed since it was built (profile 'release').
+       changed: packages/orbital-signal/rust/orbital_signal/src/lib.rs
+   Run: npm run build:rust:ios:release
+   ```
+
+   `added:` / `removed:` lines appear for new and deleted inputs, and the `Run:` line names
+   the marker's own profile. A missing or profile-only marker — a raw `npx ubrn build ios`
+   writes none — fails the same phase; rebuild through the npm script. See
+   [uniffi-toolchain.md](uniffi-toolchain.md) ("Build Guards") for the full check order.
 
 2. Open `ios/OrbitalMobile.xcworkspace` in Xcode
 3. Select the **OrbitalMobile** target, verify signing shows your team under **Signing & Capabilities**

@@ -6,11 +6,11 @@
  *
  * The four user-initiated routes here set retryOn429: false. They sit behind
  * the backend's IP-keyed `authLimiter` — a FIXED window of 10 requests per 15
- * minutes shared across every auth route — so an automatic retry does not wait
- * out the limit, it spends three more of the user's ten slots and then reports
- * the same failure ~7 seconds later. verifyToken keeps the default retry: it is
- * a background token check, not a tap, and a transient 429 there should not
- * look like a logout.
+ * minutes (see RequestOptions.retryOn429 for the six routes it guards) — so an
+ * automatic retry cannot outwait the limit; it only reports the same failure
+ * ~7 seconds later. verifyToken keeps the default retry: it is a background
+ * token check, not a tap, and a transient 429 there should not look like a
+ * logout. deleteAccount (users.ts) is the sixth route and also opts out.
  */
 
 import { request } from './client';

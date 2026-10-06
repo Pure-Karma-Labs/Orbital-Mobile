@@ -166,7 +166,9 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
       } else if (e instanceof NetworkError) {
         setError(e.message);
       } else {
-        captureError(e, { tags: { feature: 'signup', validation_reason_known: 'false' } });
+        // Not a validation outcome (5xx, crypto, unexpected throw): feature tag
+        // only, so validation_reason_known:'false' stays a clean drift signal.
+        captureError(e, { tags: { feature: 'signup' } });
         setError('Server error — please try again');
       }
     } finally {

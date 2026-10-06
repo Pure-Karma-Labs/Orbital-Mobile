@@ -88,11 +88,12 @@ export function ResetPasswordScreen({
     } catch (e) {
       if (e instanceof ApiError && e.code === 'RATE_LIMITED') {
         setError('Too many attempts — please request a new code');
-      } else if (e instanceof ValidationError && e.reason === 'EMAIL_FORMAT') {
-        // Not reachable in practice: `email` is a non-editable prop that
-        // ForgotPassword already format-checked. The branch exists so the
-        // comment below stays honest — a reasoned email rejection is not the
-        // code, and must not be misattributed to the code field.
+      } else if (e instanceof ValidationError && e.reason !== undefined) {
+        // Any reason the backend named (today only EMAIL_FORMAT can reach this
+        // route, and not in practice: `email` is a non-editable prop that
+        // ForgotPassword already format-checked) is not the code, so it goes to
+        // the banner with its curated copy — never misattributed to the code
+        // field, including codes appended to the allowlist later.
         setError(e.message);
       } else if (e instanceof ValidationError) {
         // The only *unreasoned* server outcome attributable to a field on this
@@ -211,7 +212,7 @@ export function ResetPasswordScreen({
             testID="reset-confirm-password-input"
           />
 
-          <ErrorBanner message={error} />
+          <ErrorBanner message={error} testID="reset-password-error-banner" />
 
           <Button
             title="Reset Password"

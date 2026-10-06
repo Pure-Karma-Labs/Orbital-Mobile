@@ -61,6 +61,19 @@ function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstanc
   return found[0];
 }
 
+/**
+ * The exact string the error banner renders, or undefined when no banner is in
+ * the output. Host nodes only: ErrorBanner keeps its testID prop on the render
+ * that returns null, so a plain testID lookup would find a hidden banner.
+ */
+function errorBannerMessage(root: ReactTestInstance): unknown {
+  const host = root.findAll(
+    (node) => typeof node.type === 'string' && node.props.testID === 'reset-password-error-banner',
+  );
+  if (host.length === 0) return undefined;
+  return host[0].findByType('Text' as unknown as React.ComponentType).props.children;
+}
+
 /** react-test-renderer equivalent of `queryByText` — undefined when absent. */
 function queryByText(root: ReactTestInstance, text: string): ReactTestInstance | undefined {
   return root
@@ -378,8 +391,31 @@ describe('ResetPasswordScreen — error handling', () => {
       findByTestId(root, 'reset-submit-button').props.onPress();
     });
 
-    expect(queryByText(root, 'Please enter a valid email address')).toBeDefined();
+    expect(errorBannerMessage(root)).toBe('Please enter a valid email address');
     expect(queryByText(root, 'Invalid or expired code')).toBeUndefined();
+    expect(() => findByTestId(root, 'reset-code-input-error')).toThrow();
+  });
+
+  it('routes any reasoned ValidationError to the banner, never blaming the code field', async () => {
+    mockResetPassword.mockRejectedValue(
+      new ValidationError(
+        400,
+        JSON.stringify({
+          error: 'VALIDATION_ERROR',
+          message: 'x',
+          details: { code: 'INVITE_EXPIRED' },
+        }),
+      ),
+    );
+    const renderer = renderResetPasswordScreen();
+    const root = renderer.root;
+    fillValidFields(root);
+
+    await act(async () => {
+      findByTestId(root, 'reset-submit-button').props.onPress();
+    });
+
+    expect(errorBannerMessage(root)).toBe('This invite code has expired — ask for a new invite');
     expect(() => findByTestId(root, 'reset-code-input-error')).toThrow();
   });
 

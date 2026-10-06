@@ -781,6 +781,16 @@ describe('SignupScreen — server validation reasons (#783)', () => {
     expect(JSON.stringify(mockCaptureException.mock.calls[0])).not.toContain('SECRET');
   });
 
+  it('reports a non-API failure with the feature tag only, not as a validation-reason miss', async () => {
+    const root = await submitWith(new Error('keychain unavailable'));
+
+    expect(hasErrorBanner(root)).toBe(true);
+    expect(findTextWithChildren(root, 'Server error — please try again')).toBeDefined();
+    expect(mockCaptureException).toHaveBeenCalledTimes(1);
+    const [, context] = mockCaptureException.mock.calls[0];
+    expect(context).toEqual({ tags: { feature: 'signup' } });
+  });
+
   it('clears a server invite error when the invite code is edited', async () => {
     const root = await submitWith(reasonedValidationError('INVITE_EXPIRED'));
 

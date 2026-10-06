@@ -58,10 +58,11 @@ export function ForgotPasswordScreen({
       if (e instanceof ApiError && e.code === 'RATE_LIMITED') {
         setError(RATE_LIMIT_MESSAGE);
       } else if (e instanceof ValidationError) {
-        // Curated copy for a known reason (EMAIL_FORMAT is the one this route
-        // can emit, via normalizeEmail), 'Invalid request' otherwise — either
-        // way more honest than the generic server-error line below.
-        setError(e.message);
+        // EMAIL_FORMAT is the one reason this route can emit (via
+        // normalizeEmail). Any other reason — e.g. a code appended to the
+        // allowlist later — gets the generic copy rather than another route's
+        // curated text. Either way more honest than the server-error line below.
+        setError(e.reason === 'EMAIL_FORMAT' ? e.message : 'Invalid request');
       } else if (e instanceof NetworkError) {
         setError(e.message);
       } else {

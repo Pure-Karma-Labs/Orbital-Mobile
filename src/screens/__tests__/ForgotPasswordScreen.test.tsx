@@ -231,6 +231,31 @@ describe('ForgotPasswordScreen — error handling', () => {
     expect(errorBannerMessage(root)).toBe('Please enter a valid email address');
   });
 
+  it('shows generic copy for a reason this route cannot emit, not another route\'s curated text', async () => {
+    mockRequestPasswordReset.mockRejectedValue(
+      new ValidationError(
+        400,
+        JSON.stringify({
+          error: 'VALIDATION_ERROR',
+          message: 'x',
+          details: { code: 'INVITE_EXPIRED' },
+        }),
+      ),
+    );
+    const renderer = renderForgotPasswordScreen();
+    const root = renderer.root;
+
+    act(() => {
+      findByTestId(root, 'forgot-email-input').props.onChangeText('alice@example.com');
+    });
+
+    await act(async () => {
+      findByTestId(root, 'forgot-submit-button').props.onPress();
+    });
+
+    expect(errorBannerMessage(root)).toBe('Invalid request');
+  });
+
   it('shows the generic validation copy, not the server error, on an unreasoned ValidationError', async () => {
     mockRequestPasswordReset.mockRejectedValue(
       new ValidationError(

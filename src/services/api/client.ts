@@ -307,10 +307,12 @@ export interface RequestOptions {
   /**
    * Whether a 429 is retried with backoff. Default: true.
    *
-   * Set false on routes behind a *fixed-window* limiter where each retry spends
-   * another slot the user cannot get back — the five auth routes share one
-   * IP-keyed 10-per-15-minutes bucket, so one tap past the limit burns 4 of 10
-   * slots and reports the limit ~7s late. Retrying is right for user-keyed
+   * Set false on user-initiated calls behind the backend's `authLimiter`: a
+   * FIXED window of 10 requests per 15 minutes, IP-keyed, guarding six routes
+   * (signup, login, verify-token, forgot-password, reset-password-with-code and
+   * DELETE /api/users/:id). Once it answers 429 the window is spent and its reset
+   * time is fixed, so a ~7s backoff can never outwait it — retrying only delays
+   * honest feedback by ~7s and adds load. Retrying is right for user-keyed
    * limiters with large buckets (media, content), where the backoff is the
    * difference between a transient hiccup and a visible failure.
    */

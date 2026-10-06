@@ -1516,14 +1516,19 @@ const VMP_ISSUE = '#783';
 // must be chosen by indexing the client's own map, and the no-code fallback
 // must still be the generic string. Forbidden: any body parsing or message
 // assignment inside the class (parsing belongs to parseValidationReason, which
-// returns an allowlisted enum, not text), and any `serverMessage ?` expression.
+// returns an allowlisted enum, not text), and any expression that could put the
+// raw body in the message position. The constructor parameter is `rawBody`, so
+// the forbidden list names that identifier: `rawBody ?? 'Invalid request'` and
+// `cond ? rawBody : …` are the realistic one-line leaks. The legitimate uses —
+// `rawBody?: string`, `parseValidationReason(rawBody)` and the bare `rawBody,`
+// pass-through to ApiError — contain none of these substrings.
 checkWindowedPins(
   ERRORS_FILE,
   VMP_RULE,
   /^export class ValidationError extends ApiError \{[\s\S]*?\n\}/m,
   'the ValidationError class',
   ['VALIDATION_REASON_MESSAGES[', "'Invalid request'"],
-  ['.message =', 'JSON.parse(', 'serverMessage ?'],
+  ['.message =', 'JSON.parse(', 'rawBody ?', 'rawBody |', '? rawBody', ': rawBody'],
   VMP_ISSUE,
 );
 
@@ -1564,14 +1569,17 @@ checkWindowedPins(
   VMP_ISSUE,
 );
 
-// Cross-file clause — `.serverMessage` is readable only inside errors.ts.
+// Cross-file clause — `serverMessage` is readable only inside errors.ts. The
+// bare identifier is matched (not just `.serverMessage`) so destructuring
+// (`const { serverMessage } = e`) and bracket access (`e['serverMessage']`)
+// are caught too.
 // Comments are blanked first (not skipped by line) because three modules
 // discuss the field in prose: telemetry.ts, telemetryScrub.ts and
 // notificationSettingsSync.ts all name `ApiError.serverMessage` while
 // explaining why they do not read it, and that prose must not be scanned as
 // code. Tests are out of scope: they assert the __DEV__ behaviour, which means
 // reading the field is their job.
-const VMP_SERVER_MESSAGE_RE = /\.serverMessage\b/;
+const VMP_SERVER_MESSAGE_RE = /\bserverMessage\b/;
 
 for (const file of allFiles) {
   if (file === ERRORS_FILE) continue;

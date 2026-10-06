@@ -338,6 +338,13 @@ fn golden_ecies_open() {
 /// `curve25519-dalek` stays at stock 5.0.0 from crates.io (only its unrelated
 /// `rand_core` feature left the graph when spqr 1.6.0 moved dalek to a
 /// dev-dependency). The sealing path is provably untouched.
+///
+/// v0.104.0 (#858, also covers v0.103.1 / #846): replay skipped — across
+/// `rust/protocol`, `rust/core` and `rust/crypto` the only change
+/// v0.103.0..v0.104.0 is `rust/core/src/version.rs` (the `VERSION` string
+/// const); spqr stays at v1.6.0, `curve25519-dalek` stays at stock 5.0.0 from
+/// crates.io, and the resolved `cargo tree -f '{p} {f}'` feature set is
+/// identical before and after. The sealing path is provably untouched.
 #[test]
 fn golden_ecies_open_sealed_under_stock_dalek() {
     // TEST VECTOR — synthetic sender public key, never used outside this test

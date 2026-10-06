@@ -339,10 +339,14 @@ fn golden_ecies_open() {
 /// `rand_core` feature left the graph when spqr 1.6.0 moved dalek to a
 /// dev-dependency). The sealing path is provably untouched.
 ///
-/// v0.104.0 (#858, also covers v0.103.1 / #846): replay skipped — across
-/// `rust/protocol`, `rust/core` and `rust/crypto` the only change
-/// v0.103.0..v0.104.0 is `rust/core/src/version.rs` (the `VERSION` string
-/// const); spqr stays at v1.6.0, `curve25519-dalek` stays at stock 5.0.0 from
+/// v0.104.0 (#858, also covers v0.103.1 / #846): replay skipped — the
+/// `rust/core` trigger fired only on `rust/core/src/version.rs` (the `VERSION`
+/// string const). That is the only change v0.103.0..v0.104.0 across all FOUR
+/// dirs our lock compiles from the libsignal git repo (`rust/protocol`,
+/// `rust/core`, `rust/crypto`, `rust/debug` — derive this set from the lock's
+/// `source = "git+…libsignal"` entries on every bump, not from the prior
+/// entry); the upstream root `Cargo.toml` moved only its own version and
+/// `rustls-platform-verifier` (absent from our lock); spqr stays at v1.6.0, `curve25519-dalek` stays at stock 5.0.0 from
 /// crates.io, and the resolved `cargo tree -f '{p} {f}'` feature set is
 /// identical before and after. The sealing path is provably untouched.
 #[test]

@@ -60,6 +60,9 @@
 //! fixtures, and there is no libsignal-level API to forge a higher SPQR version,
 //! so 1.6.0 is covered here only for state compatibility, not for negotiation.
 //!
+//! libsignal v0.104.0 (#858): nothing owed — spqr unchanged at v1.6.0 and all
+//! `rust/protocol/src/proto/*.proto` files are blob-identical to v0.103.0.
+//!
 //! ## How to regenerate
 //!
 //! ```sh

@@ -304,6 +304,17 @@ export interface RequestOptions {
   timeout?: number;
   /** AbortSignal for caller-driven cancellation (e.g., on navigation away). */
   signal?: AbortSignal;
+  /**
+   * Whether a 429 is retried with backoff. Default: true.
+   *
+   * Set false on routes behind a *fixed-window* limiter where each retry spends
+   * another slot the user cannot get back — the five auth routes share one
+   * IP-keyed 10-per-15-minutes bucket, so one tap past the limit burns 4 of 10
+   * slots and reports the limit ~7s late. Retrying is right for user-keyed
+   * limiters with large buckets (media, content), where the backoff is the
+   * difference between a transient hiccup and a visible failure.
+   */
+  retryOn429?: boolean;
 }
 
 // ============================================================
@@ -332,6 +343,7 @@ async function _executeRequest(options: RequestOptions): Promise<Response> {
     skipAuth = false,
     timeout = DEFAULT_TIMEOUT_MS,
     signal: callerSignal,
+    retryOn429 = true,
   } = options;
 
   const url = `${API_BASE_URL}${path}`;
@@ -421,8 +433,8 @@ async function _executeRequest(options: RequestOptions): Promise<Response> {
       }
     }
 
-    // 429 retry with exponential backoff
-    if (response.status === 429 && attempt < MAX_429_RETRIES) {
+    // 429 retry with exponential backoff (opt-out per request: retryOn429)
+    if (response.status === 429 && retryOn429 && attempt < MAX_429_RETRIES) {
       if (__DEV__) {
         console.warn(`[API] 429 on ${method} ${path} — retry ${attempt + 1}/${MAX_429_RETRIES}`);
       }

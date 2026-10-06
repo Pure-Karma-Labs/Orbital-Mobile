@@ -4,10 +4,18 @@
  * ApiError.message is always user-friendly — it is safe to display.
  * ApiError.serverMessage holds the raw server response string, only populated
  * in __DEV__ mode to prevent leaking server internals to production.
+ *
+ * Where a 4xx carries a machine-readable reason, this layer turns that reason
+ * into curated client copy rather than echoing the server's text: see
+ * `VALIDATION_REASON_MESSAGES` below (Mobile #783). The rule is the same for
+ * every subclass — server *codes* may select a message, server *strings* never
+ * become one, so un-gating `serverMessage` is never the fix for "the UI shows
+ * the wrong error".
  */
 
 import type { QuotaUsage } from '../../types/api';
 import { formatMB } from '../../utils/formatBytes';
+import { INVALID_EMAIL_MESSAGE } from '../../utils/validateEmail';
 
 export class ApiError extends Error {
   readonly statusCode: number;
@@ -85,17 +93,96 @@ export class AuthError extends ApiError {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 400/422 VALIDATION_ERROR — curated copy for allowlisted backend reasons
+// ---------------------------------------------------------------------------
+
+/**
+ * The single list of validation reasons this client is willing to show a user,
+ * and the exact copy it shows for each.
+ *
+ * The keys mirror `VALIDATION_CODES` in `Orbital-Backend/src/middleware/errorHandler.js`,
+ * which is append-only and never renamed — that object, delivered as
+ * `details.code`, is the contract. The backend's `message` text is NOT a
+ * contract and is never displayed: it stays in the `__DEV__`-only
+ * `serverMessage`. A code that is missing, unknown, non-string or a prototype
+ * key falls back to the generic 'Invalid request', so an older backend, a
+ * newer backend and a malformed body are all safe.
+ *
+ * Module-private on purpose: screens route on `ValidationError.reason` and
+ * render `e.message`. Nothing outside this file indexes the map, so the copy
+ * for a reason cannot be forked per screen.
+ */
+const VALIDATION_REASON_MESSAGES = Object.freeze({
+  INVITE_INVALID: 'This invite code is not valid — check it and try again',
+  INVITE_USED: 'This invite code has already been used — ask for a new invite',
+  INVITE_CANCELLED: 'This invite code has been cancelled — ask for a new invite',
+  INVITE_EXPIRED: 'This invite code has expired — ask for a new invite',
+  INVITE_EMAIL_MISMATCH:
+    'This invite code was sent to a different email address — sign up with that address',
+  EMAIL_FORMAT: INVALID_EMAIL_MESSAGE,
+});
+
+/** Derived from the map, so adding a reason cannot forget the copy. */
+export type ValidationReason = keyof typeof VALIDATION_REASON_MESSAGES;
+
+/**
+ * Allowlist membership test for a parsed `details.code`.
+ *
+ * `hasOwnProperty.call` rather than `in` or a truthy lookup: the latter two
+ * would accept `__proto__`, `constructor` and `toString` and then index the
+ * map with them. The `typeof` guard keeps numbers, arrays and objects out
+ * before the lookup.
+ */
+function isValidationReason(c: unknown): c is ValidationReason {
+  return (
+    typeof c === 'string' &&
+    Object.prototype.hasOwnProperty.call(VALIDATION_REASON_MESSAGES, c)
+  );
+}
+
+/**
+ * Extract an allowlisted reason from a 400/422 body, or undefined.
+ *
+ * Top-level rather than a method so the parse is testable and so the
+ * `ValidationError` constructor itself holds no body parsing — the invariant
+ * check forbids `JSON.parse(` inside the class for exactly that reason.
+ */
+function parseValidationReason(rawBody?: string): ValidationReason | undefined {
+  if (!rawBody) return undefined;
+  try {
+    const parsed = JSON.parse(rawBody);
+    const code: unknown = parsed?.details?.code;
+    if (isValidationReason(code)) return code;
+  } catch {
+    // Malformed body — fall through to the generic message
+  }
+  return undefined;
+}
+
 /** HTTP 400 or 422 — malformed request or failed validation. Not retryable. */
 export class ValidationError extends ApiError {
-  constructor(statusCode: 400 | 422, serverMessage?: string) {
+  /**
+   * The allowlisted backend reason, or undefined when the body carried none.
+   *
+   * Retained in release builds (unlike `serverMessage`) because it is one of a
+   * fixed set of client-defined enum values, not server text. Screens branch on
+   * this to pick a channel — a field error vs the banner — and render
+   * `e.message` for the words.
+   */
+  readonly reason: ValidationReason | undefined;
+
+  constructor(statusCode: 400 | 422, rawBody?: string) {
+    const reason = parseValidationReason(rawBody);
     super(
-      'Invalid request',
+      reason === undefined ? 'Invalid request' : VALIDATION_REASON_MESSAGES[reason],
       statusCode,
       'VALIDATION_ERROR',
       false,
-      serverMessage,
+      rawBody,
     );
     this.name = 'ValidationError';
+    this.reason = reason;
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }

@@ -340,7 +340,7 @@ orbital_signal (Rust static lib)
     |
     | uniffi proc macros
     v
-libsignal-protocol v0.103.0
+libsignal-protocol v0.104.0
 ```
 
 ## References

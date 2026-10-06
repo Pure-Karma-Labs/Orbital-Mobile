@@ -81,7 +81,7 @@
     "openmoji": "^17.0.0",
     "prettier": "3.9.9",
     "react-test-renderer": "19.1.1",
-    "sharp": "^0.35.4",
+    "sharp": "^0.35.5",
     "typescript": "^6.0.3"
   },
   "engines": {

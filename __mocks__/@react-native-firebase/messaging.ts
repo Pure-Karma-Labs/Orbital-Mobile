@@ -28,6 +28,8 @@ export const onNotificationOpenedApp: jest.MockedFunction<typeof RNFBMessaging.o
   jest.fn<ReturnType<typeof RNFBMessaging.onNotificationOpenedApp>, Parameters<typeof RNFBMessaging.onNotificationOpenedApp>>().mockReturnValue(jest.fn()); // returns unsubscribe
 export const getInitialNotification: jest.MockedFunction<typeof RNFBMessaging.getInitialNotification> =
   jest.fn<ReturnType<typeof RNFBMessaging.getInitialNotification>, Parameters<typeof RNFBMessaging.getInitialNotification>>().mockResolvedValue(null);
-// Registered at bundle load in index.js (background push display path).
+// Registered at bundle load by registerBackgroundPushHandlers() in
+// src/services/backgroundPush.ts (the background push display path), which
+// index.js calls.
 export const setBackgroundMessageHandler: jest.MockedFunction<typeof RNFBMessaging.setBackgroundMessageHandler> =
   jest.fn<ReturnType<typeof RNFBMessaging.setBackgroundMessageHandler>, Parameters<typeof RNFBMessaging.setBackgroundMessageHandler>>();

@@ -1,15 +1,21 @@
 /**
  * Shared notification constants and pure functions.
  *
- * Used by both the foreground notification service and the background
- * message handler in index.js. Extracting these avoids duplicating the
- * titles map and channel config across two entry points.
+ * Used by both the foreground notification service (notificationService.ts)
+ * and the background display path (backgroundPush.ts). Extracting these
+ * avoids duplicating the titles map, channel config and display payload
+ * across two entry points.
  *
- * IMPORTANT: this module is imported by index.js at bundle load — BEFORE
- * bootstrap, before encrypted MMKV is open. It must stay free of store,
- * MMKV, database, and API imports, and every export must be a constant or a
- * pure function of its arguments. Type-only imports are fine (erased).
+ * IMPORTANT: this module is reached from index.js at bundle load (via
+ * backgroundPush.ts) — BEFORE bootstrap, before encrypted MMKV is open. It
+ * must stay free of store, MMKV, database, and API imports, and every export
+ * must be a constant or a pure function of its arguments. Type-only imports
+ * are fine (erased). This is mechanically enforced: invariant 19
+ * [pre-bootstrap-pure] in scripts/check-security-invariants.mjs allowlists
+ * this file and backgroundPush.ts and fails on such an import.
  */
+
+import { AndroidImportance, type AndroidChannel, type Notification } from '@notifee/react-native';
 
 import type { NotificationPrefs } from '../types/api';
 
@@ -26,6 +32,22 @@ export const NOTIFICATION_TITLES: Record<string, string> = {
 
 export const ANDROID_CHANNEL_ID = 'orbital-default';
 export const ANDROID_CHANNEL_NAME = 'Orbital';
+
+/**
+ * The one Android channel this app posts to.
+ *
+ * Created from three places — the pre-bootstrap background path
+ * (backgroundPush.ts), notificationService's native-bridge probe, and any
+ * later initNotifications work — and `createChannel` is idempotent, so the
+ * calls are safe to repeat. What is NOT safe is drift: a notification posted
+ * to a channel id that was never created, or created at a lower importance,
+ * is dropped or silenced by Android with no error. One literal, one id.
+ */
+export const DEFAULT_CHANNEL: AndroidChannel = {
+  id: ANDROID_CHANNEL_ID,
+  name: ANDROID_CHANNEL_NAME,
+  importance: AndroidImportance.HIGH,
+};
 
 // ---------------------------------------------------------------------------
 // Suppressible-type registry (#449, plan D0)
@@ -102,6 +124,46 @@ export function collapseKeyForPayload(data: Record<string, string>): string | nu
       // identity_key_reset (must stack), orbit_invite, unknown types.
       return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Display request builder
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the notifee display request for a push payload.
+ *
+ * The foreground handler (notificationService.ts) and the background handler
+ * (backgroundPush.ts) display the SAME tray entry; the only difference between
+ * them is the suppression/dedup logic that runs before this call. Keeping one
+ * builder means a channel, icon or importance change cannot drift between
+ * them — a drifted channelId on the background copy is a silent drop (Android
+ * discards a notification posted to a channel that does not exist).
+ *
+ * Pure function of its arguments: safe in the pre-bootstrap background path.
+ *
+ * `collapseKey` null omits `id` entirely rather than passing `id: undefined`,
+ * so notifee assigns a fresh auto id and the notifications stack (#449 D9 —
+ * required for identity_key_reset security alerts).
+ */
+export function buildNotificationRequest(
+  data: Record<string, string>,
+  title: string,
+  collapseKey: string | null,
+): Notification {
+  return {
+    title,
+    body: 'Tap to view',
+    data,
+    ...(collapseKey ? { id: collapseKey } : {}),
+    android: {
+      channelId: ANDROID_CHANNEL_ID,
+      smallIcon: 'ic_notification',
+      importance: AndroidImportance.HIGH,
+      pressAction: { id: 'default' },
+      onlyAlertOnce: true,
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

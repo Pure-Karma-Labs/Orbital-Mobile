@@ -61,6 +61,13 @@ function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstanc
   return found[0];
 }
 
+/** react-test-renderer equivalent of `queryByText` — undefined when absent. */
+function queryByText(root: ReactTestInstance, text: string): ReactTestInstance | undefined {
+  return root
+    .findAllByType('Text' as unknown as React.ComponentType)
+    .find((node) => node.props.children === text);
+}
+
 function fillValidFields(root: ReactTestInstance): void {
   act(() => {
     findByTestId(root, 'reset-code-input').props.onChangeText('ABCD1234');
@@ -350,6 +357,30 @@ describe('ResetPasswordScreen — error handling', () => {
     expect(findByTestId(root, 'reset-code-input-error').props.children).toBe(
       'Invalid or expired code',
     );
+  });
+
+  it('routes a coded EMAIL_FORMAT ValidationError to the banner, not the code field', async () => {
+    mockResetPassword.mockRejectedValue(
+      new ValidationError(
+        400,
+        JSON.stringify({
+          error: 'VALIDATION_ERROR',
+          message: 'Invalid email format',
+          details: { code: 'EMAIL_FORMAT' },
+        }),
+      ),
+    );
+    const renderer = renderResetPasswordScreen();
+    const root = renderer.root;
+    fillValidFields(root);
+
+    await act(async () => {
+      findByTestId(root, 'reset-submit-button').props.onPress();
+    });
+
+    expect(queryByText(root, 'Please enter a valid email address')).toBeDefined();
+    expect(queryByText(root, 'Invalid or expired code')).toBeUndefined();
+    expect(() => findByTestId(root, 'reset-code-input-error')).toThrow();
   });
 
   it('clears the code field error when the code is edited', async () => {

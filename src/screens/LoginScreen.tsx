@@ -15,7 +15,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../theme';
 import { TextInput, Button, ErrorBanner, SuccessBanner, OrbitalLoader, AsciiBanner } from '../components';
 import { loginUser } from '../services/authService';
-import { AccountSwitchError, AuthError, ConflictError, NetworkError, ValidationError } from '../services/api/errors';
+import { AccountSwitchError, ApiError, AuthError, ConflictError, NetworkError, ValidationError } from '../services/api/errors';
+import { RATE_LIMIT_MESSAGE } from '../utils/errorMessages';
+import { validateEmail } from '../utils/validateEmail';
 import type { OnPreAuthNavigate } from '../navigation/preAuthTypes';
 
 export interface LoginScreenProps {
@@ -39,6 +41,14 @@ export function LoginScreen({ onNavigate, successMessage }: LoginScreenProps): R
       return;
     }
 
+    // Format-only pre-flight: it discloses nothing about whether an account
+    // exists, and it keeps a knowable failure out of the shared auth limiter.
+    const emailRuleError = validateEmail(email.trim());
+    if (emailRuleError !== null) {
+      setError(emailRuleError);
+      return;
+    }
+
     setError(null);
     setLoading(true);
     try {
@@ -47,6 +57,8 @@ export function LoginScreen({ onNavigate, successMessage }: LoginScreenProps): R
     } catch (e) {
       if (e instanceof AccountSwitchError) {
         setError(e.message);
+      } else if (e instanceof ApiError && e.code === 'RATE_LIMITED') {
+        setError(RATE_LIMIT_MESSAGE);
       } else if (e instanceof AuthError || e instanceof ValidationError || e instanceof ConflictError) {
         setError('Invalid email or password');
       } else if (e instanceof NetworkError) {
@@ -150,7 +162,7 @@ export function LoginScreen({ onNavigate, successMessage }: LoginScreenProps): R
             testID="login-password-input"
           />
 
-          <ErrorBanner message={error} />
+          <ErrorBanner message={error} testID="login-error-banner" />
 
           <Button
             title="Log In"

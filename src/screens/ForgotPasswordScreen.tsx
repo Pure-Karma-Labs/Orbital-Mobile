@@ -15,8 +15,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../theme';
 import { TextInput, Button, ErrorBanner, OrbitalLoader, AsciiBanner } from '../components';
 import { requestPasswordReset } from '../services/authService';
-import { ApiError, NetworkError } from '../services/api/errors';
+import { ApiError, NetworkError, ValidationError } from '../services/api/errors';
 import { RATE_LIMIT_MESSAGE } from '../utils/errorMessages';
+import { validateEmail } from '../utils/validateEmail';
 import type { OnPreAuthNavigate } from '../navigation/preAuthTypes';
 
 export interface ForgotPasswordScreenProps {
@@ -37,8 +38,14 @@ export function ForgotPasswordScreen({
 
   async function handleSubmit(): Promise<void> {
     const trimmed = email.trim();
-    if (trimmed.length === 0 || !trimmed.includes('@')) {
-      setError('Please enter a valid email address');
+    if (trimmed.length === 0) {
+      setError('Please enter your email address');
+      return;
+    }
+
+    const emailRuleError = validateEmail(trimmed);
+    if (emailRuleError !== null) {
+      setError(emailRuleError);
       return;
     }
 
@@ -50,6 +57,11 @@ export function ForgotPasswordScreen({
     } catch (e) {
       if (e instanceof ApiError && e.code === 'RATE_LIMITED') {
         setError(RATE_LIMIT_MESSAGE);
+      } else if (e instanceof ValidationError) {
+        // Curated copy for a known reason (EMAIL_FORMAT is the one this route
+        // can emit, via normalizeEmail), 'Invalid request' otherwise — either
+        // way more honest than the generic server-error line below.
+        setError(e.message);
       } else if (e instanceof NetworkError) {
         setError(e.message);
       } else {
@@ -129,7 +141,7 @@ export function ForgotPasswordScreen({
             testID="forgot-email-input"
           />
 
-          <ErrorBanner message={error} />
+          <ErrorBanner message={error} testID="forgot-password-error-banner" />
 
           <Button
             title="Send Reset Code"

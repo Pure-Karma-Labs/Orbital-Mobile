@@ -7,7 +7,9 @@ import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'rea
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../../theme';
 import { LoginScreen } from '../LoginScreen';
-import { AuthError, NetworkError } from '../../services/api/errors';
+import { ApiError, AuthError, NetworkError } from '../../services/api/errors';
+import { RATE_LIMIT_MESSAGE } from '../../utils/errorMessages';
+import { INVALID_EMAIL_MESSAGE } from '../../utils/validateEmail';
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -58,6 +60,23 @@ function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstanc
   const found = root.findAll((node) => node.props.testID === testID);
   if (found.length === 0) throw new Error(`No element with testID "${testID}"`);
   return found[0];
+}
+
+/**
+ * The exact string the error banner is rendering, read through the banner's own
+ * testID so a matching string elsewhere on the screen cannot satisfy it.
+ */
+function errorBannerMessage(root: ReactTestInstance): unknown {
+  return findByTestId(root, 'login-error-banner').findByType(
+    'Text' as unknown as React.ComponentType,
+  ).props.children;
+}
+
+/** react-test-renderer equivalent of `queryByText` — undefined when absent. */
+function queryByText(root: ReactTestInstance, text: string): ReactTestInstance | undefined {
+  return root
+    .findAllByType('Text' as unknown as React.ComponentType)
+    .find((node) => node.props.children === text);
 }
 
 // ---------------------------------------------------------------------------
@@ -114,6 +133,23 @@ describe('LoginScreen — validation', () => {
     expect(errorText).toBeDefined();
     expect(mockLoginUser).not.toHaveBeenCalled();
   });
+
+  it('blocks a malformed email pre-flight without calling loginUser', async () => {
+    const renderer = renderLoginScreen();
+    const root = renderer.root;
+
+    act(() => {
+      findByTestId(root, 'login-email-input').props.onChangeText('a@b');
+      findByTestId(root, 'login-password-input').props.onChangeText('mypassword');
+    });
+
+    await act(async () => {
+      findByTestId(root, 'login-submit-button').props.onPress();
+    });
+
+    expect(errorBannerMessage(root)).toBe(INVALID_EMAIL_MESSAGE);
+    expect(mockLoginUser).not.toHaveBeenCalled();
+  });
 });
 
 describe('LoginScreen — submit enabled', () => {
@@ -158,7 +194,7 @@ describe('LoginScreen — error handling', () => {
     const root = renderer.root;
 
     act(() => {
-      findByTestId(root, 'login-email-input').props.onChangeText('user');
+      findByTestId(root, 'login-email-input').props.onChangeText('user@example.com');
       findByTestId(root, 'login-password-input').props.onChangeText('pass');
     });
 
@@ -181,7 +217,7 @@ describe('LoginScreen — error handling', () => {
     const root = renderer.root;
 
     act(() => {
-      findByTestId(root, 'login-email-input').props.onChangeText('user');
+      findByTestId(root, 'login-email-input').props.onChangeText('user@example.com');
       findByTestId(root, 'login-password-input').props.onChangeText('pass');
     });
 
@@ -203,7 +239,7 @@ describe('LoginScreen — error handling', () => {
     const root = renderer.root;
 
     act(() => {
-      findByTestId(root, 'login-email-input').props.onChangeText('user');
+      findByTestId(root, 'login-email-input').props.onChangeText('user@example.com');
       findByTestId(root, 'login-password-input').props.onChangeText('pass');
     });
 
@@ -217,6 +253,26 @@ describe('LoginScreen — error handling', () => {
       node.props.children.toLowerCase().includes('server error'),
     );
     expect(errorText).toBeDefined();
+  });
+
+  it('shows the shared rate-limit message, not the generic server error, on a 429', async () => {
+    mockLoginUser.mockRejectedValue(
+      new ApiError('Too many requests', 429, 'RATE_LIMITED', true),
+    );
+    const renderer = renderLoginScreen();
+    const root = renderer.root;
+
+    act(() => {
+      findByTestId(root, 'login-email-input').props.onChangeText('user@example.com');
+      findByTestId(root, 'login-password-input').props.onChangeText('pass');
+    });
+
+    await act(async () => {
+      findByTestId(root, 'login-submit-button').props.onPress();
+    });
+
+    expect(errorBannerMessage(root)).toBe(RATE_LIMIT_MESSAGE);
+    expect(queryByText(root, 'Server error — please try again')).toBeUndefined();
   });
 });
 
@@ -262,7 +318,7 @@ describe('LoginScreen — success banner', () => {
 
     // User starts typing
     act(() => {
-      findByTestId(root, 'login-email-input').props.onChangeText('a');
+      findByTestId(root, 'login-email-input').props.onChangeText('user@example.com');
     });
 
     // Banner should be gone

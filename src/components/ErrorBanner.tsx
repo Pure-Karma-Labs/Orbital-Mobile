@@ -8,9 +8,14 @@ import { useTheme } from '../theme';
 
 export interface ErrorBannerProps {
   message: string | null;
+  /**
+   * Optional hook for tests that must assert the banner is *absent* — a query
+   * by text can only prove one string is gone, not that the banner cleared.
+   */
+  testID?: string;
 }
 
-export function ErrorBanner({ message }: ErrorBannerProps): React.JSX.Element | null {
+export function ErrorBanner({ message, testID }: ErrorBannerProps): React.JSX.Element | null {
   const theme = useTheme();
 
   if (message === null) return null;
@@ -33,7 +38,7 @@ export function ErrorBanner({ message }: ErrorBannerProps): React.JSX.Element | 
   };
 
   return (
-    <View style={containerStyle}>
+    <View style={containerStyle} testID={testID}>
       <Text style={textStyle}>{message}</Text>
     </View>
   );

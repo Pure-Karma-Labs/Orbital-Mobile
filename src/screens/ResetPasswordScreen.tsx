@@ -88,10 +88,16 @@ export function ResetPasswordScreen({
     } catch (e) {
       if (e instanceof ApiError && e.code === 'RATE_LIMITED') {
         setError('Too many attempts — please request a new code');
+      } else if (e instanceof ValidationError && e.reason === 'EMAIL_FORMAT') {
+        // Not reachable in practice: `email` is a non-editable prop that
+        // ForgotPassword already format-checked. The branch exists so the
+        // comment below stays honest — a reasoned email rejection is not the
+        // code, and must not be misattributed to the code field.
+        setError(e.message);
       } else if (e instanceof ValidationError) {
-        // The only server outcome attributable to a field on this screen: the
-        // password already passed the client rules, so a 400/422 here is the
-        // code. ("Didn't receive it?" below is the request-a-new-code path.)
+        // The only *unreasoned* server outcome attributable to a field on this
+        // screen: the password already passed the client rules, so a 400/422
+        // here is the code. ("Didn't receive it?" is the new-code path.)
         setCodeError('Invalid or expired code');
       } else if (e instanceof NetworkError) {
         setError(e.message);

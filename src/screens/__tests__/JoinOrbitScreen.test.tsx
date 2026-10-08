@@ -3,7 +3,7 @@
  */
 
 import React from 'react';
-import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'react-test-renderer';
+import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../../theme';
 import { JoinOrbitScreen } from '../JoinOrbitScreen';
@@ -16,6 +16,8 @@ import {
   ValidationError,
 } from '../../services/api/errors';
 import { RATE_LIMIT_MESSAGE } from '../../utils/errorMessages';
+import { findByTestId, hasHostTestId, queryByText } from '../../testUtils/rtr';
+import { reasonedValidationError } from '../../testUtils/apiErrorFixtures';
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -106,46 +108,6 @@ function renderScreen(): ReactTestRenderer {
     );
   });
   return renderer;
-}
-
-function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstance {
-  const found = root.findAll((node) => node.props.testID === testID);
-  if (found.length === 0) throw new Error(`No element with testID "${testID}"`);
-  return found[0];
-}
-
-function findTextWithChildren(
-  root: ReactTestInstance,
-  children: string,
-): ReactTestInstance | undefined {
-  return root
-    .findAllByType('Text' as unknown as React.ComponentType)
-    .find((node) => node.props.children === children);
-}
-
-/**
- * Host-node filter, NOT `findByTestId`: `ErrorBanner` carries the testID on its
- * own component node even on the render where it returns `null`, so the
- * unfiltered helper would make every presence/absence check vacuous.
- */
-function hasErrorBanner(root: ReactTestInstance): boolean {
-  return (
-    root.findAll(
-      (n) => typeof n.type === 'string' && n.props.testID === 'join-orbit-error-banner',
-    ).length > 0
-  );
-}
-
-/**
- * A real `ValidationError` built from a backend-shaped VALIDATION_ERROR body,
- * so the `details.code` → copy mapping under test is the production parse and
- * not a hand-set field.
- */
-function reasonedValidationError(code: string, message = 'server text'): ValidationError {
-  return new ValidationError(
-    400,
-    JSON.stringify({ error: 'VALIDATION_ERROR', message, details: { code } }),
-  );
 }
 
 /** Copy literals, written out rather than imported — see client.test.ts. */
@@ -266,7 +228,7 @@ describe('JoinOrbitScreen — error handling', () => {
       findByTestId(renderer.root, 'join-orbit-button').props.onPress();
     });
 
-    expect(findTextWithChildren(renderer.root, netErr.message)).toBeDefined();
+    expect(queryByText(renderer.root, netErr.message)).toBeDefined();
     expect(() => findByTestId(renderer.root, 'invite-code-input-error')).toThrow();
     expect(mockNavigation.goBack).not.toHaveBeenCalled();
     expect(mockCaptureException).not.toHaveBeenCalled();
@@ -286,7 +248,7 @@ describe('JoinOrbitScreen — error handling', () => {
       findByTestId(renderer.root, 'join-orbit-button').props.onPress();
     });
 
-    expect(findTextWithChildren(renderer.root, RATE_LIMIT_MESSAGE)).toBeDefined();
+    expect(queryByText(renderer.root, RATE_LIMIT_MESSAGE)).toBeDefined();
     expect(() => findByTestId(renderer.root, 'invite-code-input-error')).toThrow();
   });
 
@@ -304,10 +266,10 @@ describe('JoinOrbitScreen — error handling', () => {
 
     // The whole point of #271: a valid code for a full orbit must not be
     // reported as a bad code.
-    expect(hasErrorBanner(renderer.root)).toBe(true);
-    expect(findTextWithChildren(renderer.root, GROUP_FULL_COPY)).toBeDefined();
+    expect(hasHostTestId(renderer.root, 'join-orbit-error-banner')).toBe(true);
+    expect(queryByText(renderer.root, GROUP_FULL_COPY)).toBeDefined();
     expect(() => findByTestId(renderer.root, 'invite-code-input-error')).toThrow();
-    expect(findTextWithChildren(renderer.root, UNREASONED_COPY)).toBeUndefined();
+    expect(queryByText(renderer.root, UNREASONED_COPY)).toBeUndefined();
     expect(mockNavigation.goBack).not.toHaveBeenCalled();
     expect(mockCaptureException).not.toHaveBeenCalled();
   });
@@ -330,8 +292,8 @@ describe('JoinOrbitScreen — error handling', () => {
     // Negative control for the GROUP_FULL case above: the banner channel is
     // genuinely unused here, so these two codes cannot both be passing on a
     // screen that shows everything everywhere.
-    expect(hasErrorBanner(renderer.root)).toBe(false);
-    expect(findTextWithChildren(renderer.root, GROUP_FULL_COPY)).toBeUndefined();
+    expect(hasHostTestId(renderer.root, 'join-orbit-error-banner')).toBe(false);
+    expect(queryByText(renderer.root, GROUP_FULL_COPY)).toBeUndefined();
     expect(mockCaptureException).not.toHaveBeenCalled();
   });
 
@@ -399,7 +361,7 @@ describe('JoinOrbitScreen — error handling', () => {
     });
 
     expect(
-      findTextWithChildren(renderer.root, 'You are already a member of this orbit'),
+      queryByText(renderer.root, 'You are already a member of this orbit'),
     ).toBeDefined();
     expect(() => findByTestId(renderer.root, 'invite-code-input-error')).toThrow();
   });
@@ -418,10 +380,10 @@ describe('JoinOrbitScreen — error handling', () => {
     });
 
     expect(
-      findTextWithChildren(renderer.root, 'Could not join orbit — please try again'),
+      queryByText(renderer.root, 'Could not join orbit — please try again'),
     ).toBeDefined();
     expect(() => findByTestId(renderer.root, 'invite-code-input-error')).toThrow();
-    expect(findTextWithChildren(renderer.root, 'boom')).toBeUndefined();
+    expect(queryByText(renderer.root, 'boom')).toBeUndefined();
 
     expect(mockCaptureException).toHaveBeenCalledTimes(1);
     const [reportedError, context] = mockCaptureException.mock.calls[0];
@@ -451,7 +413,7 @@ describe('JoinOrbitScreen — error handling', () => {
     });
 
     expect(
-      findTextWithChildren(
+      queryByText(
         renderer.root,
         'This invite is not for this account — check you are signed in with the invited email',
       ),
@@ -473,7 +435,7 @@ describe('JoinOrbitScreen — error handling', () => {
     });
 
     expect(
-      findTextWithChildren(renderer.root, 'Could not join orbit — please try again'),
+      queryByText(renderer.root, 'Could not join orbit — please try again'),
     ).toBeDefined();
   });
 
@@ -532,7 +494,7 @@ describe('JoinOrbitScreen — error handling', () => {
       findByTestId(renderer.root, 'join-orbit-button').props.onPress();
     });
 
-    expect(findTextWithChildren(renderer.root, netErr.message)).toBeDefined();
+    expect(queryByText(renderer.root, netErr.message)).toBeDefined();
 
     act(() => {
       findByTestId(renderer.root, 'invite-code-input').props.onChangeText(
@@ -540,7 +502,7 @@ describe('JoinOrbitScreen — error handling', () => {
       );
     });
 
-    expect(findTextWithChildren(renderer.root, netErr.message)).toBeUndefined();
+    expect(queryByText(renderer.root, netErr.message)).toBeUndefined();
   });
 });
 

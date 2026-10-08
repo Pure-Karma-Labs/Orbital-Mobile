@@ -9,6 +9,7 @@ import { ThemeProvider } from '../../theme';
 import { ResetPasswordScreen } from '../ResetPasswordScreen';
 import { ApiError, NetworkError, ValidationError } from '../../services/api/errors';
 import { PASSWORD_RULE_HINT } from '../../utils/validatePassword';
+import { bannerMessage, findByTestId, queryByText } from '../../testUtils/rtr';
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -55,32 +56,6 @@ function renderResetPasswordScreen(
   return renderer;
 }
 
-function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstance {
-  const found = root.findAll((node) => node.props.testID === testID);
-  if (found.length === 0) throw new Error(`No element with testID "${testID}"`);
-  return found[0];
-}
-
-/**
- * The exact string the error banner renders, or undefined when no banner is in
- * the output. Host nodes only: ErrorBanner keeps its testID prop on the render
- * that returns null, so a plain testID lookup would find a hidden banner.
- */
-function errorBannerMessage(root: ReactTestInstance): unknown {
-  const host = root.findAll(
-    (node) => typeof node.type === 'string' && node.props.testID === 'reset-password-error-banner',
-  );
-  if (host.length === 0) return undefined;
-  return host[0].findByType('Text' as unknown as React.ComponentType).props.children;
-}
-
-/** react-test-renderer equivalent of `queryByText` — undefined when absent. */
-function queryByText(root: ReactTestInstance, text: string): ReactTestInstance | undefined {
-  return root
-    .findAllByType('Text' as unknown as React.ComponentType)
-    .find((node) => node.props.children === text);
-}
-
 function fillValidFields(root: ReactTestInstance): void {
   act(() => {
     findByTestId(root, 'reset-code-input').props.onChangeText('ABCD1234');
@@ -104,6 +79,10 @@ describe('ResetPasswordScreen — rendering', () => {
     expect(() => findByTestId(root, 'reset-code-input')).not.toThrow();
     expect(() => findByTestId(root, 'reset-new-password-input')).not.toThrow();
     expect(() => findByTestId(root, 'reset-confirm-password-input')).not.toThrow();
+    // No banner on first render — the never-set path. Pins `bannerMessage`'s
+    // host filter: `ErrorBanner` still carries its testID on the render that
+    // returns null, so an unfiltered lookup would find a hidden banner (#872).
+    expect(bannerMessage(root, 'reset-password-error-banner')).toBeUndefined();
   });
 
   it('renders the submit button', () => {
@@ -391,7 +370,7 @@ describe('ResetPasswordScreen — error handling', () => {
       findByTestId(root, 'reset-submit-button').props.onPress();
     });
 
-    expect(errorBannerMessage(root)).toBe('Please enter a valid email address');
+    expect(bannerMessage(root, 'reset-password-error-banner')).toBe('Please enter a valid email address');
     expect(queryByText(root, 'Invalid or expired code')).toBeUndefined();
     expect(() => findByTestId(root, 'reset-code-input-error')).toThrow();
   });
@@ -415,7 +394,7 @@ describe('ResetPasswordScreen — error handling', () => {
       findByTestId(root, 'reset-submit-button').props.onPress();
     });
 
-    expect(errorBannerMessage(root)).toBe('This invite code has expired — ask for a new invite');
+    expect(bannerMessage(root, 'reset-password-error-banner')).toBe('This invite code has expired — ask for a new invite');
     expect(() => findByTestId(root, 'reset-code-input-error')).toThrow();
   });
 

@@ -11,6 +11,8 @@ import { SignupScreen } from '../SignupScreen';
 import { ApiError, AuthError, NetworkError, ValidationError } from '../../services/api/errors';
 import { PASSWORD_RULE_HINT } from '../../utils/validatePassword';
 import { RATE_LIMIT_MESSAGE } from '../../utils/errorMessages';
+import { findByTestId, hasHostTestId, queryByText } from '../../testUtils/rtr';
+import { reasonedValidationError } from '../../testUtils/apiErrorFixtures';
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -60,14 +62,6 @@ const REASON_COPY = {
   EMAIL_FORMAT: 'Please enter a valid email address',
 } as const;
 
-/** A 400 shaped exactly like the backend's: top-level error, message, details.code. */
-function reasonedValidationError(code: string, message = 'server-side wording'): ValidationError {
-  return new ValidationError(
-    400,
-    JSON.stringify({ error: 'VALIDATION_ERROR', message, details: { code } }),
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -93,35 +87,6 @@ function renderSignupScreen(onNavigate = jest.fn()): ReactTestRenderer {
     );
   });
   return renderer;
-}
-
-function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstance {
-  const found = root.findAll((node) => node.props.testID === testID);
-  if (found.length === 0) throw new Error(`No element with testID "${testID}"`);
-  return found[0];
-}
-
-/**
- * True when the banner is actually in the rendered output. Deliberately filtered
- * to host nodes: `ErrorBanner` carries `testID` as a prop even on the render
- * that returns null, so a plain testID lookup would "find" a hidden banner and
- * make every absence assertion vacuous.
- */
-function hasErrorBanner(root: ReactTestInstance): boolean {
-  return (
-    root.findAll(
-      (node) => typeof node.type === 'string' && node.props.testID === 'signup-error-banner',
-    ).length > 0
-  );
-}
-
-function findTextWithChildren(
-  root: ReactTestInstance,
-  text: string,
-): ReactTestInstance | undefined {
-  return root
-    .findAllByType('Text' as unknown as React.ComponentType)
-    .find((node) => node.props.children === text);
 }
 
 function findCheckbox(root: ReactTestInstance): ReactTestInstance {
@@ -197,7 +162,7 @@ describe('SignupScreen — validation', () => {
     expect(findByTestId(root, 'signup-email-input-error').props.children).toBe(
       'Please enter a valid email address',
     );
-    expect(hasErrorBanner(root)).toBe(false);
+    expect(hasHostTestId(root, 'signup-error-banner')).toBe(false);
     expect(mockSignupUser).not.toHaveBeenCalled();
   });
 
@@ -497,8 +462,8 @@ describe('SignupScreen — field-level validation errors', () => {
       findByTestId(root, 'signup-submit-button').props.onPress();
     });
 
-    expect(hasErrorBanner(root)).toBe(true);
-    expect(findTextWithChildren(root, 'All fields are required')).toBeDefined();
+    expect(hasHostTestId(root, 'signup-error-banner')).toBe(true);
+    expect(queryByText(root, 'All fields are required')).toBeDefined();
 
     act(() => {
       findByTestId(root, 'signup-username-input').props.onChangeText('alice');
@@ -513,7 +478,7 @@ describe('SignupScreen — field-level validation errors', () => {
 
     // The banner itself is gone — not merely this one string — so a stale
     // guard message can never sit beside a fresh field error (#777).
-    expect(hasErrorBanner(root)).toBe(false);
+    expect(hasHostTestId(root, 'signup-error-banner')).toBe(false);
     expect(findByTestId(root, 'signup-password-input-error').props.children).toBe(
       'Password must be at least 12 characters',
     );
@@ -538,7 +503,7 @@ describe('SignupScreen — field-level validation errors', () => {
     expect(findByTestId(root, 'signup-email-input-error').props.children).toBe(
       'Please enter a valid email address',
     );
-    expect(hasErrorBanner(root)).toBe(false);
+    expect(hasHostTestId(root, 'signup-error-banner')).toBe(false);
     expect(() => findByTestId(root, 'signup-password-input-error')).toThrow();
     expect(mockSignupUser).not.toHaveBeenCalled();
   });
@@ -721,15 +686,15 @@ describe('SignupScreen — server validation reasons (#783)', () => {
     const root = await submitWith(reasonedValidationError(code));
 
     expect(findByTestId(root, 'signup-invite-code-input-error').props.children).toBe(copy);
-    expect(hasErrorBanner(root)).toBe(false);
+    expect(hasHostTestId(root, 'signup-error-banner')).toBe(false);
     expect(() => findByTestId(root, 'signup-email-input-error')).toThrow();
   });
 
   it('routes INVITE_EMAIL_MISMATCH to the banner — the pair is wrong, not one field', async () => {
     const root = await submitWith(reasonedValidationError('INVITE_EMAIL_MISMATCH'));
 
-    expect(hasErrorBanner(root)).toBe(true);
-    expect(findTextWithChildren(root, REASON_COPY.INVITE_EMAIL_MISMATCH)).toBeDefined();
+    expect(hasHostTestId(root, 'signup-error-banner')).toBe(true);
+    expect(queryByText(root, REASON_COPY.INVITE_EMAIL_MISMATCH)).toBeDefined();
     expect(() => findByTestId(root, 'signup-invite-code-input-error')).toThrow();
     expect(() => findByTestId(root, 'signup-email-input-error')).toThrow();
   });
@@ -740,14 +705,14 @@ describe('SignupScreen — server validation reasons (#783)', () => {
     expect(findByTestId(root, 'signup-email-input-error').props.children).toBe(
       REASON_COPY.EMAIL_FORMAT,
     );
-    expect(hasErrorBanner(root)).toBe(false);
+    expect(hasHostTestId(root, 'signup-error-banner')).toBe(false);
   });
 
   it('never renders the generic copy for a reasoned error', async () => {
     const root = await submitWith(reasonedValidationError('INVITE_EXPIRED'));
 
-    expect(findTextWithChildren(root, 'Invalid request')).toBeUndefined();
-    expect(findTextWithChildren(root, 'Signup failed')).toBeUndefined();
+    expect(queryByText(root, 'Invalid request')).toBeUndefined();
+    expect(queryByText(root, 'Signup failed')).toBeUndefined();
     expect(mockCaptureException).not.toHaveBeenCalled();
   });
 
@@ -756,8 +721,8 @@ describe('SignupScreen — server validation reasons (#783)', () => {
       reasonedValidationError('SOME_FUTURE_CODE', 'SECRET-server-text'),
     );
 
-    expect(hasErrorBanner(root)).toBe(true);
-    expect(findTextWithChildren(root, 'Invalid request')).toBeDefined();
+    expect(hasHostTestId(root, 'signup-error-banner')).toBe(true);
+    expect(queryByText(root, 'Invalid request')).toBeDefined();
 
     // Nothing the server wrote reaches the screen, on any node.
     const rendered = root
@@ -784,8 +749,8 @@ describe('SignupScreen — server validation reasons (#783)', () => {
   it('reports a non-API failure with the feature tag only, not as a validation-reason miss', async () => {
     const root = await submitWith(new Error('keychain unavailable'));
 
-    expect(hasErrorBanner(root)).toBe(true);
-    expect(findTextWithChildren(root, 'Server error — please try again')).toBeDefined();
+    expect(hasHostTestId(root, 'signup-error-banner')).toBe(true);
+    expect(queryByText(root, 'Server error — please try again')).toBeDefined();
     expect(mockCaptureException).toHaveBeenCalledTimes(1);
     const [, context] = mockCaptureException.mock.calls[0];
     expect(context).toEqual({ tags: { feature: 'signup' } });
@@ -806,7 +771,7 @@ describe('SignupScreen — server validation reasons (#783)', () => {
   it('clears the stale server banner and shows the email field error on the next submit', async () => {
     const root = await submitWith(reasonedValidationError('INVITE_EMAIL_MISMATCH'));
 
-    expect(hasErrorBanner(root)).toBe(true);
+    expect(hasHostTestId(root, 'signup-error-banner')).toBe(true);
 
     act(() => {
       findByTestId(root, 'signup-email-input').props.onChangeText('a@b');
@@ -816,7 +781,7 @@ describe('SignupScreen — server validation reasons (#783)', () => {
       findByTestId(root, 'signup-submit-button').props.onPress();
     });
 
-    expect(hasErrorBanner(root)).toBe(false);
+    expect(hasHostTestId(root, 'signup-error-banner')).toBe(false);
     expect(findByTestId(root, 'signup-email-input-error').props.children).toBe(
       REASON_COPY.EMAIL_FORMAT,
     );

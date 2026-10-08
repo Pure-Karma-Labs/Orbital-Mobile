@@ -10,6 +10,14 @@ import { ThemeProvider } from '../../theme';
 import { ManageOrbitsScreen } from '../ManageOrbitsScreen';
 import { ApiError, AuthError, NotFoundError, ValidationError } from '../../services/api/errors';
 import { RATE_LIMIT_MESSAGE } from '../../utils/errorMessages';
+import {
+  findAllByTestId,
+  findByTestId,
+  findHostByTestId,
+  hasHostTestId,
+  queryByText,
+} from '../../testUtils/rtr';
+import { reasonedValidationError } from '../../testUtils/apiErrorFixtures';
 import * as Sentry from '@sentry/react-native';
 
 // ---------------------------------------------------------------------------
@@ -180,16 +188,6 @@ const mockRoute = {
   name: 'ManageOrbits' as const,
   params: undefined,
 };
-
-function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstance {
-  const found = root.findAll((node) => node.props.testID === testID);
-  if (found.length === 0) throw new Error(`No element with testID "${testID}"`);
-  return found[0];
-}
-
-function findAllByTestId(root: ReactTestInstance, testID: string): ReactTestInstance[] {
-  return root.findAll((node) => node.props.testID === testID);
-}
 
 /**
  * Helper to extract a button from an Alert.alert spy.
@@ -858,9 +856,7 @@ describe('ManageOrbitsScreen — rewrap key', () => {
     const renderer = await renderAndExpand();
 
     // user-2 is pending — rewrap button should exist
-    expect(findAllByTestId(renderer.root, 'rewrap-member-user-2').filter(
-      (n) => typeof n.type === 'string',
-    ).length).toBeGreaterThanOrEqual(1);
+    expect(hasHostTestId(renderer.root, 'rewrap-member-user-2')).toBe(true);
 
     // current-user-id is not pending and is self — no rewrap button
     expect(findAllByTestId(renderer.root, 'rewrap-member-current-user-id')).toHaveLength(0);
@@ -887,9 +883,7 @@ describe('ManageOrbitsScreen — rewrap key', () => {
     // user-3 not pending — no rewrap button
     expect(findAllByTestId(renderer.root, 'rewrap-member-user-3')).toHaveLength(0);
     // user-2 is pending — rewrap button present
-    expect(findAllByTestId(renderer.root, 'rewrap-member-user-2').filter(
-      (n) => typeof n.type === 'string',
-    ).length).toBeGreaterThanOrEqual(1);
+    expect(hasHostTestId(renderer.root, 'rewrap-member-user-2')).toBe(true);
   });
 
   it('shows busy label while rewrapping', async () => {
@@ -933,9 +927,7 @@ describe('ManageOrbitsScreen — rewrap key', () => {
     const renderer = await renderAndExpand();
 
     // Rewrap button should be present before action
-    expect(findAllByTestId(renderer.root, 'rewrap-member-user-2').filter(
-      (n) => typeof n.type === 'string',
-    ).length).toBeGreaterThanOrEqual(1);
+    expect(hasHostTestId(renderer.root, 'rewrap-member-user-2')).toBe(true);
 
     // Press rewrap
     await act(async () => {
@@ -986,9 +978,7 @@ describe('ManageOrbitsScreen — rewrap key', () => {
     });
 
     // Button should still be present
-    expect(findAllByTestId(renderer.root, 'rewrap-member-user-2').filter(
-      (n) => typeof n.type === 'string',
-    ).length).toBeGreaterThanOrEqual(1);
+    expect(hasHostTestId(renderer.root, 'rewrap-member-user-2')).toBe(true);
 
     // Alert should have been called with the error message
     expect(alertSpy).toHaveBeenCalledWith(
@@ -1014,50 +1004,6 @@ describe('ManageOrbitsScreen — rewrap key', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Helpers for invite email routing tests
-//
-// Duplicated from JoinOrbitScreen.test.tsx — extraction to
-// src/screens/__tests__/helpers.ts is tracked in Mobile #872.
-// ---------------------------------------------------------------------------
-
-/**
- * Host-node filter, NOT `findByTestId`: `ErrorBanner` carries the testID on its
- * own component node even on the render where it returns `null`, so the
- * unfiltered helper would make every presence/absence check vacuous.
- */
-function hasGenerateCodeErrorBanner(root: ReactTestInstance): boolean {
-  return (
-    root.findAll(
-      (n) => typeof n.type === 'string' && n.props.testID === 'generate-code-error-banner',
-    ).length > 0
-  );
-}
-
-/**
- * A real `ValidationError` built from a backend-shaped VALIDATION_ERROR body,
- * so the `details.code` → copy mapping under test is the production parse and
- * not a hand-set field.
- */
-function reasonedValidationError(code: string, message = 'server text'): ValidationError {
-  return new ValidationError(
-    400,
-    JSON.stringify({ error: 'VALIDATION_ERROR', message, details: { code } }),
-  );
-}
-
-/**
- * Host-node finder for asserting keyboard props.
- * Asserting on the component node would be near-vacuous (same prop names).
- */
-function findHostByTestId(root: ReactTestInstance, testID: string): ReactTestInstance {
-  const found = root.findAll(
-    (n) => typeof n.type === 'string' && n.props.testID === testID,
-  );
-  if (found.length === 0) throw new Error(`No HOST element with testID "${testID}"`);
-  return found[0];
-}
-
-// ---------------------------------------------------------------------------
 // Copy literals (written out as consts — not imported from source to avoid
 // coupling test failure modes to source refactors of unrelated copy).
 // ---------------------------------------------------------------------------
@@ -1068,9 +1014,7 @@ const INVITE_GENERIC_FAILURE_COPY = 'Failed to generate invite code. Please try 
 
 /** True when some rendered Text has exactly these children. */
 function hasText(root: ReactTestInstance, children: string): boolean {
-  return root
-    .findAllByType('Text' as unknown as React.ComponentType)
-    .some((n) => n.props.children === children);
+  return queryByText(root, children) !== undefined;
 }
 
 describe('ManageOrbitsScreen — invite email routing', () => {
@@ -1121,7 +1065,7 @@ describe('ManageOrbitsScreen — invite email routing', () => {
     const errorNode = findHostByTestId(renderer.root, 'email-input-error');
     expect(errorNode.props.children).toBe(INVITE_INVALID_EMAIL_MESSAGE);
     expect(mockCreateInviteCode).not.toHaveBeenCalled();
-    expect(hasGenerateCodeErrorBanner(renderer.root)).toBe(false);
+    expect(hasHostTestId(renderer.root, 'generate-code-error-banner')).toBe(false);
     expect(mockCaptureException).not.toHaveBeenCalled();
   });
 
@@ -1141,7 +1085,7 @@ describe('ManageOrbitsScreen — invite email routing', () => {
     expect(mockCreateInviteCode).toHaveBeenCalled();
     const errorNode = findHostByTestId(renderer.root, 'email-input-error');
     expect(errorNode.props.children).toBe(INVITE_INVALID_EMAIL_MESSAGE);
-    expect(hasGenerateCodeErrorBanner(renderer.root)).toBe(false);
+    expect(hasHostTestId(renderer.root, 'generate-code-error-banner')).toBe(false);
     expect(mockCaptureException).not.toHaveBeenCalled();
   });
 
@@ -1159,7 +1103,7 @@ describe('ManageOrbitsScreen — invite email routing', () => {
       findByTestId(renderer.root, 'generate-button').props.onPress();
     });
 
-    expect(hasGenerateCodeErrorBanner(renderer.root)).toBe(true);
+    expect(hasHostTestId(renderer.root, 'generate-code-error-banner')).toBe(true);
     // The banner's words, not just its presence: the legacy retry copy, and
     // never the raw server text (which rides only in __DEV__ serverMessage).
     expect(hasText(renderer.root, INVITE_GENERIC_FAILURE_COPY)).toBe(true);
@@ -1196,7 +1140,7 @@ describe('ManageOrbitsScreen — invite email routing', () => {
       findByTestId(renderer.root, 'generate-button').props.onPress();
     });
 
-    expect(hasGenerateCodeErrorBanner(renderer.root)).toBe(true);
+    expect(hasHostTestId(renderer.root, 'generate-code-error-banner')).toBe(true);
     // The screen renders its own legacy copy, NOT the GROUP_FULL copy that
     // errors.ts selected for the reason — this screen does not route it.
     expect(hasText(renderer.root, INVITE_GENERIC_FAILURE_COPY)).toBe(true);
@@ -1237,7 +1181,7 @@ describe('ManageOrbitsScreen — invite email routing', () => {
       findByTestId(renderer.root, 'generate-button').props.onPress();
     });
 
-    expect(hasGenerateCodeErrorBanner(renderer.root)).toBe(true);
+    expect(hasHostTestId(renderer.root, 'generate-code-error-banner')).toBe(true);
     expect(
       renderer.root
         .findAllByType('Text' as unknown as React.ComponentType)
@@ -1263,7 +1207,7 @@ describe('ManageOrbitsScreen — invite email routing', () => {
       findByTestId(renderer.root, 'generate-button').props.onPress();
     });
 
-    expect(hasGenerateCodeErrorBanner(renderer.root)).toBe(true);
+    expect(hasHostTestId(renderer.root, 'generate-code-error-banner')).toBe(true);
     expect(
       renderer.root
         .findAllByType('Text' as unknown as React.ComponentType)
@@ -1329,7 +1273,7 @@ describe('ManageOrbitsScreen — invite email routing', () => {
       findByTestId(renderer.root, 'generate-button').props.onPress();
     });
 
-    expect(hasGenerateCodeErrorBanner(renderer.root)).toBe(true);
+    expect(hasHostTestId(renderer.root, 'generate-code-error-banner')).toBe(true);
     expect(
       renderer.root
         .findAllByType('Text' as unknown as React.ComponentType)

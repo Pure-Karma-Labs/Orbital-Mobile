@@ -3,12 +3,19 @@
  */
 
 import React from 'react';
-import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'react-test-renderer';
+import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../../theme';
 import { CreateOrbitScreen } from '../CreateOrbitScreen';
 import { ApiError, AuthError, NetworkError, ValidationError } from '../../services/api/errors';
 import { RATE_LIMIT_MESSAGE } from '../../utils/errorMessages';
+import {
+  findByTestId,
+  findHostByTestId,
+  hasHostTestId,
+  queryByText,
+} from '../../testUtils/rtr';
+import { reasonedValidationError } from '../../testUtils/apiErrorFixtures';
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -93,65 +100,6 @@ function renderScreen(): ReactTestRenderer {
     );
   });
   return renderer;
-}
-
-function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstance {
-  const found = root.findAll((node) => node.props.testID === testID);
-  if (found.length === 0) throw new Error(`No element with testID "${testID}"`);
-  return found[0];
-}
-
-function findTextWithChildren(
-  root: ReactTestInstance,
-  children: string,
-): ReactTestInstance | undefined {
-  return root
-    .findAllByType('Text' as unknown as React.ComponentType)
-    .find((node) => node.props.children === children);
-}
-
-// ---------------------------------------------------------------------------
-// Helpers for invite email routing tests
-//
-// Duplicated from JoinOrbitScreen.test.tsx — extraction to
-// src/screens/__tests__/helpers.ts is tracked in Mobile #872.
-// ---------------------------------------------------------------------------
-
-/**
- * Host-node filter, NOT `findByTestId`: `ErrorBanner` carries the testID on its
- * own component node even on the render where it returns `null`, so the
- * unfiltered helper would make every presence/absence check vacuous.
- */
-function hasErrorBanner(root: ReactTestInstance): boolean {
-  return (
-    root.findAll(
-      (n) => typeof n.type === 'string' && n.props.testID === 'invite-error-banner',
-    ).length > 0
-  );
-}
-
-/**
- * A real `ValidationError` built from a backend-shaped VALIDATION_ERROR body,
- * so the `details.code` → copy mapping under test is the production parse and
- * not a hand-set field.
- */
-function reasonedValidationError(code: string, message = 'server text'): ValidationError {
-  return new ValidationError(
-    400,
-    JSON.stringify({ error: 'VALIDATION_ERROR', message, details: { code } }),
-  );
-}
-
-/**
- * Host-node finder for asserting keyboard props.
- * Asserting on the component node would be near-vacuous (same prop names).
- */
-function findHostByTestId(root: ReactTestInstance, testID: string): ReactTestInstance {
-  const found = root.findAll(
-    (n) => typeof n.type === 'string' && n.props.testID === testID,
-  );
-  if (found.length === 0) throw new Error(`No HOST element with testID "${testID}"`);
-  return found[0];
 }
 
 // ---------------------------------------------------------------------------
@@ -350,7 +298,7 @@ describe('CreateOrbitScreen — invite generation', () => {
       findByTestId(renderer.root, 'generate-invite-button').props.onPress();
     });
 
-    expect(findTextWithChildren(renderer.root, netErr.message)).toBeDefined();
+    expect(queryByText(renderer.root, netErr.message)).toBeDefined();
   });
 
   it('shows RATE_LIMIT_MESSAGE on the invite banner for a RATE_LIMITED ApiError from createInviteCode', async () => {
@@ -377,7 +325,7 @@ describe('CreateOrbitScreen — invite generation', () => {
       findByTestId(renderer.root, 'generate-invite-button').props.onPress();
     });
 
-    expect(findTextWithChildren(renderer.root, RATE_LIMIT_MESSAGE)).toBeDefined();
+    expect(queryByText(renderer.root, RATE_LIMIT_MESSAGE)).toBeDefined();
   });
 
   it('shows the generic invite-failure copy for an unrecognized error, and never the raw server message', async () => {
@@ -403,9 +351,9 @@ describe('CreateOrbitScreen — invite generation', () => {
     });
 
     expect(
-      findTextWithChildren(renderer.root, 'Failed to generate invite code. Please try again.'),
+      queryByText(renderer.root, 'Failed to generate invite code. Please try again.'),
     ).toBeDefined();
-    expect(findTextWithChildren(renderer.root, 'boom')).toBeUndefined();
+    expect(queryByText(renderer.root, 'boom')).toBeUndefined();
   });
 });
 
@@ -423,9 +371,9 @@ describe('CreateOrbitScreen — error handling', () => {
       findByTestId(renderer.root, 'create-orbit-button').props.onPress();
     });
 
-    expect(findTextWithChildren(renderer.root, 'Could not create orbit — please try again')).toBeDefined();
+    expect(queryByText(renderer.root, 'Could not create orbit — please try again')).toBeDefined();
     expect(() => findByTestId(renderer.root, 'orbit-name-input-error')).toThrow();
-    expect(findTextWithChildren(renderer.root, 'Server error')).toBeUndefined();
+    expect(queryByText(renderer.root, 'Server error')).toBeUndefined();
 
     expect(mockCaptureException).toHaveBeenCalledTimes(1);
     const [reportedError, context] = mockCaptureException.mock.calls[0];
@@ -455,7 +403,7 @@ describe('CreateOrbitScreen — error handling', () => {
       findByTestId(renderer.root, 'create-orbit-button').props.onPress();
     });
 
-    expect(findTextWithChildren(renderer.root, netErr.message)).toBeDefined();
+    expect(queryByText(renderer.root, netErr.message)).toBeDefined();
     expect(mockCaptureException).not.toHaveBeenCalled();
   });
 
@@ -473,7 +421,7 @@ describe('CreateOrbitScreen — error handling', () => {
       findByTestId(renderer.root, 'create-orbit-button').props.onPress();
     });
 
-    expect(findTextWithChildren(renderer.root, RATE_LIMIT_MESSAGE)).toBeDefined();
+    expect(queryByText(renderer.root, RATE_LIMIT_MESSAGE)).toBeDefined();
     expect(mockCaptureException).not.toHaveBeenCalled();
   });
 
@@ -489,13 +437,13 @@ describe('CreateOrbitScreen — error handling', () => {
       findByTestId(renderer.root, 'create-orbit-button').props.onPress();
     });
 
-    expect(findTextWithChildren(renderer.root, 'Could not create orbit — please try again')).toBeDefined();
+    expect(queryByText(renderer.root, 'Could not create orbit — please try again')).toBeDefined();
 
     act(() => {
       findByTestId(renderer.root, 'orbit-name-input').props.onChangeText('My Orbit 2');
     });
 
-    expect(findTextWithChildren(renderer.root, 'Could not create orbit — please try again')).toBeUndefined();
+    expect(queryByText(renderer.root, 'Could not create orbit — please try again')).toBeUndefined();
   });
 });
 
@@ -555,7 +503,7 @@ describe('CreateOrbitScreen — invite email routing', () => {
     const errorNode = findHostByTestId(renderer.root, 'invite-email-input-error');
     expect(errorNode.props.children).toBe(INVALID_EMAIL_MESSAGE);
     expect(mockCreateInviteCode).not.toHaveBeenCalled();
-    expect(hasErrorBanner(renderer.root)).toBe(false);
+    expect(hasHostTestId(renderer.root, 'invite-error-banner')).toBe(false);
     expect(mockCaptureException).not.toHaveBeenCalled();
   });
 
@@ -575,7 +523,7 @@ describe('CreateOrbitScreen — invite email routing', () => {
     expect(mockCreateInviteCode).toHaveBeenCalled();
     const errorNode = findHostByTestId(renderer.root, 'invite-email-input-error');
     expect(errorNode.props.children).toBe(INVALID_EMAIL_MESSAGE);
-    expect(hasErrorBanner(renderer.root)).toBe(false);
+    expect(hasHostTestId(renderer.root, 'invite-error-banner')).toBe(false);
     expect(mockCaptureException).not.toHaveBeenCalled();
   });
 
@@ -592,10 +540,10 @@ describe('CreateOrbitScreen — invite email routing', () => {
       findByTestId(renderer.root, 'generate-invite-button').props.onPress();
     });
 
-    expect(hasErrorBanner(renderer.root)).toBe(true);
-    expect(findTextWithChildren(renderer.root, GENERIC_INVITE_FAILURE_COPY)).toBeDefined();
+    expect(hasHostTestId(renderer.root, 'invite-error-banner')).toBe(true);
+    expect(queryByText(renderer.root, GENERIC_INVITE_FAILURE_COPY)).toBeDefined();
     // Never the raw server text — that rides only in the __DEV__ serverMessage.
-    expect(findTextWithChildren(renderer.root, 'some server text')).toBeUndefined();
+    expect(queryByText(renderer.root, 'some server text')).toBeUndefined();
     expect(
       renderer.root.findAll(
         (n) => typeof n.type === 'string' && n.props.testID === 'invite-email-input-error',
@@ -624,12 +572,12 @@ describe('CreateOrbitScreen — invite email routing', () => {
       findByTestId(renderer.root, 'generate-invite-button').props.onPress();
     });
 
-    expect(hasErrorBanner(renderer.root)).toBe(true);
-    expect(findTextWithChildren(renderer.root, GENERIC_INVITE_FAILURE_COPY)).toBeDefined();
+    expect(hasHostTestId(renderer.root, 'invite-error-banner')).toBe(true);
+    expect(queryByText(renderer.root, GENERIC_INVITE_FAILURE_COPY)).toBeDefined();
     // The screen renders its own legacy copy, NOT the GROUP_FULL copy that
     // errors.ts selected for the reason — this screen does not route it.
     expect(
-      findTextWithChildren(
+      queryByText(
         renderer.root,
         'This orbit is full — ask the orbit admin to make room',
       ),
@@ -666,8 +614,8 @@ describe('CreateOrbitScreen — invite email routing', () => {
       findByTestId(renderer.root, 'generate-invite-button').props.onPress();
     });
 
-    expect(hasErrorBanner(renderer.root)).toBe(true);
-    expect(findTextWithChildren(renderer.root, NOT_ALLOWED_COPY)).toBeDefined();
+    expect(hasHostTestId(renderer.root, 'invite-error-banner')).toBe(true);
+    expect(queryByText(renderer.root, NOT_ALLOWED_COPY)).toBeDefined();
     expect(
       renderer.root.findAll(
         (n) => typeof n.type === 'string' && n.props.testID === 'invite-email-input-error',

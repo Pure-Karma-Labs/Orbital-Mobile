@@ -8,7 +8,6 @@ import {
   Alert,
   Share,
   Text,
-  TextInput as RNTextInput,
   View,
   type TextStyle,
   type ViewStyle,
@@ -23,11 +22,52 @@ import { ErrorBanner } from '../components/ErrorBanner';
 import { Header } from '../components/Header';
 import { OrbitalKeyboardAvoidingView } from '../components/OrbitalKeyboardAvoidingView';
 import { createOrbit, createInviteCode } from '../services/conversationService';
-import { ApiError, NetworkError } from '../services/api/errors';
+import {
+  ApiError,
+  AuthError,
+  NetworkError,
+  NotFoundError,
+  ValidationError,
+} from '../services/api/errors';
 import { captureError } from '../services/telemetry';
 import { formatInviteCode } from '../services/crypto/inviteCrypto';
 import { RATE_LIMIT_MESSAGE } from '../utils/errorMessages';
+import { validateEmail } from '../utils/validateEmail';
 import type { ThreadsStackParamList } from '../navigation/types';
+
+// ---------------------------------------------------------------------------
+// Invite-generation copy
+// ---------------------------------------------------------------------------
+
+/**
+ * Permanent refusals: the orbit, not the email, is the problem, and no retry
+ * will change the answer. 403 covers both of the route's forbiddenError cases
+ * (not the creator, and the demo-account boundary) — a 403 body is never
+ * parsed by this client, so they share one message.
+ */
+const NOT_ALLOWED_COPY = "You can't create invites for this orbit";
+const ORBIT_GONE_COPY = 'This orbit no longer exists';
+
+/**
+ * Transient / unattributable: retrying is honest advice. Also the copy for a
+ * pending group-key wrap, which resolves on its own once another key holder
+ * delivers the wrap.
+ */
+const GENERIC_INVITE_FAILURE_COPY =
+  'Failed to generate invite code. Please try again.';
+
+/**
+ * `PendingWrapError` (services/crypto/contentCrypto) matched by `name` rather
+ * than `instanceof`: importing the class drags contentCrypto's module graph —
+ * orbital-signal, the conversation repository and `useAppStore` (→ MMKV via
+ * nitro) — into a screen that touches none of it, for one branch whose only
+ * effect is to suppress a Sentry capture. `name` is assigned in the
+ * constructor and is already the load-bearing discriminator for this class
+ * across the service suites.
+ */
+function isPendingWrapError(err: unknown): boolean {
+  return err instanceof Error && err.name === 'PendingWrapError';
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -61,6 +101,14 @@ export function CreateOrbitScreen({
   const [createdName, setCreatedName] = useState('');
   const [email, setEmail] = useState('');
   const [generatingInvite, setGeneratingInvite] = useState(false);
+  // Two channels for the invite step. `inviteEmailError` is the ONE verdict on
+  // the address typed above — the client's own format check, or the backend's
+  // `EMAIL_FORMAT` reason, which on this route is emitted by
+  // `normalizeEmail(target_email)` before any DB access and so judges nothing
+  // but the invitee email (Backend #294). `inviteError` is the banner: every
+  // other outcome is about the orbit, the network or this device, and pinning
+  // any of them under the field would accuse a correct address.
+  const [inviteEmailError, setInviteEmailError] = useState<string | null>(null);
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [generatedCode, setGeneratedCode] = useState<string | null>(null);
 
@@ -70,6 +118,13 @@ export function CreateOrbitScreen({
   const handleNameChange = useCallback((text: string) => {
     setName(text);
     setBannerError(null);
+  }, []);
+
+  const handleEmailChange = useCallback((text: string) => {
+    setEmail(text);
+    // Clear both slots: whichever one is showing, the user is now acting on it.
+    setInviteEmailError(null);
+    setInviteError(null);
   }, []);
 
   const handleCreate = useCallback(async () => {
@@ -103,23 +158,61 @@ export function CreateOrbitScreen({
   }, [isValid, loading, trimmedName]);
 
   const handleGenerateInvite = useCallback(async () => {
-    if (!createdGroupId || !email.trim()) return;
+    const trimmedEmail = email.trim();
+    if (!createdGroupId || !trimmedEmail) return;
+    setInviteEmailError(null);
     setInviteError(null);
+
+    // Pre-flight, before the spinner: the rule is byte-identical to the
+    // backend's `isValidEmail` (see utils/validateEmail.ts), and every request
+    // — rejected ones included — spends one of this user's 20 `inviteLimiter`
+    // slots per 15 minutes, so a typo must not cost invite headroom. The
+    // backend's own `EMAIL_FORMAT` reason is still routed below, as the safety
+    // net for any divergence between the two rules (#786).
+    const emailProblem = validateEmail(trimmedEmail);
+    if (emailProblem !== null) {
+      setInviteEmailError(emailProblem);
+      return;
+    }
+
     setGeneratingInvite(true);
     try {
-      const rawCode = await createInviteCode(createdGroupId, email.trim());
+      const rawCode = await createInviteCode(createdGroupId, trimmedEmail);
       setGeneratedCode(rawCode);
     } catch (err) {
-      // Same split as handleCreate: no outcome here is a verdict on the email
-      // typed above (the server validates it only for shape), so everything
-      // lands on the banner — but transport and throttling still say what
-      // actually happened.
       if (err instanceof NetworkError) {
         setInviteError(err.message);
       } else if (err instanceof ApiError && err.code === 'RATE_LIMITED') {
         setInviteError(RATE_LIMIT_MESSAGE);
+      } else if (err instanceof ValidationError && err.reason === 'EMAIL_FORMAT') {
+        // The only server outcome that is a verdict on the address.
+        // `err.message` is client copy selected by the code (errors.ts), never
+        // server text.
+        setInviteEmailError(err.message);
+      } else if (err instanceof AuthError && err.statusCode === 403) {
+        setInviteError(NOT_ALLOWED_COPY);
+      } else if (err instanceof NotFoundError) {
+        setInviteError(ORBIT_GONE_COPY);
+      } else if (isPendingWrapError(err)) {
+        // A modelled transient state, not a fault: the group key wrap for this
+        // device has not been delivered yet. Retrying is the right advice and
+        // there is nothing to report.
+        setInviteError(GENERIC_INVITE_FAILURE_COPY);
       } else {
-        setInviteError('Failed to generate invite code. Please try again.');
+        // Everything unattributable: 401, 5xx, an uncoded 400 (a client-contract
+        // bug on this route), a code hash collision, and local crypto faults.
+        // Silent before #871 — a permanent identity-key fault (#675 class)
+        // presented to the user as a transient retry prompt with no telemetry.
+        // captureError adds status/api_code for an ApiError (#746); `api_code`
+        // is `VALIDATION_ERROR` for every 400 and `reason` is never sent, so
+        // without the content-free flag below a future reason this build does
+        // not route would be invisible in Sentry.
+        const tags: Record<string, string> = { feature: 'orbit-invite-create' };
+        if (err instanceof ValidationError && err.reason !== undefined) {
+          tags.validation_reason_routed = 'false';
+        }
+        captureError(err, { tags });
+        setInviteError(GENERIC_INVITE_FAILURE_COPY);
       }
     } finally {
       setGeneratingInvite(false);
@@ -148,6 +241,7 @@ export function CreateOrbitScreen({
           onPress: () => {
             setGeneratedCode(null);
             setEmail('');
+            setInviteEmailError(null);
             setInviteError(null);
           },
         },
@@ -158,6 +252,8 @@ export function CreateOrbitScreen({
   const handleBack = useCallback(() => {
     setGeneratedCode(null);
     setEmail('');
+    setInviteEmailError(null);
+    setInviteError(null);
     navigation.goBack();
   }, [navigation]);
 
@@ -208,21 +304,6 @@ export function CreateOrbitScreen({
     fontSize: theme.typography.fontSize['2xl'],
     color: theme.colors.textPrimary,
     letterSpacing: 4,
-  };
-
-  const emailInputStyle: ViewStyle = {
-    borderWidth: 1,
-    borderColor: theme.colors.borderSubtle,
-    borderRadius: theme.borderRadius.base,
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.sm,
-    marginBottom: theme.spacing.lg,
-  };
-
-  const emailInputTextStyle: TextStyle = {
-    fontFamily: theme.typography.fontFamily.body,
-    fontSize: theme.typography.fontSize.base,
-    color: theme.colors.textPrimary,
   };
 
   const warningStyle: TextStyle = {
@@ -283,26 +364,28 @@ export function CreateOrbitScreen({
           <View style={contentStyle}>
             <EmojiText style={successTitleStyle}>{createdName}</EmojiText>
             <Text style={successSubtitleStyle}>Invite your first member</Text>
-            <Text style={{
-              fontFamily: theme.typography.fontFamily.body,
-              fontSize: theme.typography.fontSize.sm,
-              color: theme.colors.textSecondary,
-              marginBottom: theme.spacing.sm,
-            }}>
-              Invitee's email:
-            </Text>
-            <RNTextInput
-              style={[emailInputStyle, emailInputTextStyle]}
+            {/*
+              Shared TextInput, so a bad address gets a red border, an
+              `accessibilityHint` carrying the message and a
+              `invite-email-input-error` node. Its defaults are wrong for an
+              email field (sentences-casing, autocorrect on, default keyboard),
+              so all four keyboard props are carried over explicitly;
+              `textContentType` stays unset because `emailAddress` would offer
+              the inviter their OWN address into an invitee field.
+            */}
+            <TextInput
+              label="Invitee's Email"
               value={email}
-              onChangeText={setEmail}
+              onChangeText={handleEmailChange}
               placeholder="email@example.com"
-              placeholderTextColor={theme.colors.textTertiary}
               keyboardType="email-address"
               autoCapitalize="none"
               autoCorrect={false}
+              maxLength={256}
+              error={inviteEmailError}
               testID="invite-email-input"
             />
-            <ErrorBanner message={inviteError} />
+            <ErrorBanner message={inviteError} testID="invite-error-banner" />
             <Button
               title={generatingInvite ? 'Generating...' : 'Generate Invite Code'}
               onPress={handleGenerateInvite}

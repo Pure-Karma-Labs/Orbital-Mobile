@@ -23,15 +23,15 @@ import { RATE_LIMIT_MESSAGE } from './errorMessages';
  * (not the creator, and the demo-account boundary); a 403 body is never parsed
  * by this client, so they share one message.
  */
-export const INVITE_NOT_ALLOWED_MESSAGE = "You can't create invites for this orbit";
-export const INVITE_ORBIT_GONE_MESSAGE = 'This orbit no longer exists';
+const INVITE_NOT_ALLOWED_MESSAGE = "You can't create invites for this orbit";
+const INVITE_ORBIT_GONE_MESSAGE = 'This orbit no longer exists';
 
 /**
  * Transient or unattributable: retrying is honest advice. Also the copy for a
  * pending group-key wrap, which resolves on its own once another key holder
  * delivers the wrap.
  */
-export const INVITE_GENERIC_FAILURE_MESSAGE =
+const INVITE_GENERIC_FAILURE_MESSAGE =
   'Failed to generate invite code. Please try again.';
 
 export interface InviteCreateErrorRoute {

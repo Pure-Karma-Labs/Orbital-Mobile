@@ -37,16 +37,9 @@ import {
 } from '../services/conversationService';
 import type { DecryptedGroup } from '../services/conversationService';
 import { getGroupMembers, listInviteHistory, removeMember, cancelInvite } from '../services/api/groups';
-import {
-  ApiError,
-  AuthError,
-  NetworkError,
-  NotFoundError,
-  ValidationError,
-} from '../services/api/errors';
 import { captureError } from '../services/telemetry';
 import { formatInviteCode } from '../services/crypto/inviteCrypto';
-import { RATE_LIMIT_MESSAGE } from '../utils/errorMessages';
+import { routeInviteCreateError } from '../utils/inviteCreateErrors';
 import { validateEmail } from '../utils/validateEmail';
 import { useAuth, useConversations } from '../stores';
 import type { GroupMember, InviteListItem } from '../types/api';
@@ -55,36 +48,6 @@ import { OrbitAdminActions } from './settings/OrbitAdminActions';
 
 /** Narrow-screen breakpoint (SE-class devices, 320pt logical width). */
 const NARROW_BREAKPOINT = 360;
-
-// ---------------------------------------------------------------------------
-// Invite-generation copy
-//
-// Kept verbatim in step with CreateOrbitScreen: the same route, the same
-// outcomes, so the two entry points must not word them differently.
-// ---------------------------------------------------------------------------
-
-/**
- * Permanent refusals. 403 covers both of the route's forbiddenError cases (not
- * the creator, and the demo-account boundary) — a 403 body is never parsed by
- * this client, so they share one message.
- */
-const NOT_ALLOWED_COPY = "You can't create invites for this orbit";
-const ORBIT_GONE_COPY = 'This orbit no longer exists';
-
-/** Transient / unattributable: retrying is honest advice. */
-const GENERIC_INVITE_FAILURE_COPY =
-  'Failed to generate invite code. Please try again.';
-
-/**
- * `PendingWrapError` (services/crypto/contentCrypto) matched by `name` rather
- * than `instanceof` — see the identical note in CreateOrbitScreen: importing
- * the class drags contentCrypto's module graph (orbital-signal, the
- * conversation repository, `useAppStore` → MMKV) into a screen that touches
- * none of it, for one branch whose only effect is to suppress a capture.
- */
-function isPendingWrapError(err: unknown): boolean {
-  return err instanceof Error && err.name === 'PendingWrapError';
-}
 
 type Props = NativeStackScreenProps<SettingsStackParamList, 'ManageOrbits'>;
 
@@ -345,37 +308,13 @@ export function ManageOrbitsScreen({ navigation }: Props): React.JSX.Element {
         // caught separately: a stale list must never read as a failed invite.
       }
     } catch (err) {
-      if (err instanceof NetworkError) {
-        setInviteBannerError(err.message);
-      } else if (err instanceof ApiError && err.code === 'RATE_LIMITED') {
-        setInviteBannerError(RATE_LIMIT_MESSAGE);
-      } else if (err instanceof ValidationError && err.reason === 'EMAIL_FORMAT') {
-        // The only server outcome that is a verdict on the address.
-        // `err.message` is client copy selected by the code (errors.ts), never
-        // server text.
-        setInviteEmailError(err.message);
-      } else if (err instanceof AuthError && err.statusCode === 403) {
-        setInviteBannerError(NOT_ALLOWED_COPY);
-      } else if (err instanceof NotFoundError) {
-        setInviteBannerError(ORBIT_GONE_COPY);
-      } else if (isPendingWrapError(err)) {
-        // A modelled transient state, not a fault: the group key wrap for this
-        // device has not been delivered yet. Nothing to report.
-        setInviteBannerError(GENERIC_INVITE_FAILURE_COPY);
-      } else {
-        // Everything unattributable: 401, 5xx, an uncoded 400 (a client-contract
-        // bug on this route), a code hash collision, and local crypto faults.
-        // captureError adds status/api_code for an ApiError (#746); `api_code`
-        // is `VALIDATION_ERROR` for every 400 and `reason` is never sent, so
-        // without the content-free flag below a future reason this build does
-        // not route would be invisible in Sentry.
-        const tags: Record<string, string> = { feature: 'orbit-invite-create' };
-        if (err instanceof ValidationError && err.reason !== undefined) {
-          tags.validation_reason_routed = 'false';
-        }
-        captureError(err, { tags });
-        setInviteBannerError(GENERIC_INVITE_FAILURE_COPY);
-      }
+      // One router for both invite entry points (utils/inviteCreateErrors.ts):
+      // the field error is the only verdict on the typed address; everything
+      // else is about the orbit, the network or this device.
+      const route = routeInviteCreateError(err);
+      if (route.fieldError !== undefined) setInviteEmailError(route.fieldError);
+      if (route.bannerError !== undefined) setInviteBannerError(route.bannerError);
+      if (route.captureTags !== undefined) captureError(err, { tags: route.captureTags });
     } finally {
       setGeneratingCode(false);
     }

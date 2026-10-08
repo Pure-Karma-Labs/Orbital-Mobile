@@ -22,52 +22,13 @@ import { ErrorBanner } from '../components/ErrorBanner';
 import { Header } from '../components/Header';
 import { OrbitalKeyboardAvoidingView } from '../components/OrbitalKeyboardAvoidingView';
 import { createOrbit, createInviteCode } from '../services/conversationService';
-import {
-  ApiError,
-  AuthError,
-  NetworkError,
-  NotFoundError,
-  ValidationError,
-} from '../services/api/errors';
+import { ApiError, NetworkError } from '../services/api/errors';
 import { captureError } from '../services/telemetry';
 import { formatInviteCode } from '../services/crypto/inviteCrypto';
 import { RATE_LIMIT_MESSAGE } from '../utils/errorMessages';
+import { routeInviteCreateError } from '../utils/inviteCreateErrors';
 import { validateEmail } from '../utils/validateEmail';
 import type { ThreadsStackParamList } from '../navigation/types';
-
-// ---------------------------------------------------------------------------
-// Invite-generation copy
-// ---------------------------------------------------------------------------
-
-/**
- * Permanent refusals: the orbit, not the email, is the problem, and no retry
- * will change the answer. 403 covers both of the route's forbiddenError cases
- * (not the creator, and the demo-account boundary) — a 403 body is never
- * parsed by this client, so they share one message.
- */
-const NOT_ALLOWED_COPY = "You can't create invites for this orbit";
-const ORBIT_GONE_COPY = 'This orbit no longer exists';
-
-/**
- * Transient / unattributable: retrying is honest advice. Also the copy for a
- * pending group-key wrap, which resolves on its own once another key holder
- * delivers the wrap.
- */
-const GENERIC_INVITE_FAILURE_COPY =
-  'Failed to generate invite code. Please try again.';
-
-/**
- * `PendingWrapError` (services/crypto/contentCrypto) matched by `name` rather
- * than `instanceof`: importing the class drags contentCrypto's module graph —
- * orbital-signal, the conversation repository and `useAppStore` (→ MMKV via
- * nitro) — into a screen that touches none of it, for one branch whose only
- * effect is to suppress a Sentry capture. `name` is assigned in the
- * constructor and is already the load-bearing discriminator for this class
- * across the service suites.
- */
-function isPendingWrapError(err: unknown): boolean {
-  return err instanceof Error && err.name === 'PendingWrapError';
-}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -180,40 +141,13 @@ export function CreateOrbitScreen({
       const rawCode = await createInviteCode(createdGroupId, trimmedEmail);
       setGeneratedCode(rawCode);
     } catch (err) {
-      if (err instanceof NetworkError) {
-        setInviteError(err.message);
-      } else if (err instanceof ApiError && err.code === 'RATE_LIMITED') {
-        setInviteError(RATE_LIMIT_MESSAGE);
-      } else if (err instanceof ValidationError && err.reason === 'EMAIL_FORMAT') {
-        // The only server outcome that is a verdict on the address.
-        // `err.message` is client copy selected by the code (errors.ts), never
-        // server text.
-        setInviteEmailError(err.message);
-      } else if (err instanceof AuthError && err.statusCode === 403) {
-        setInviteError(NOT_ALLOWED_COPY);
-      } else if (err instanceof NotFoundError) {
-        setInviteError(ORBIT_GONE_COPY);
-      } else if (isPendingWrapError(err)) {
-        // A modelled transient state, not a fault: the group key wrap for this
-        // device has not been delivered yet. Retrying is the right advice and
-        // there is nothing to report.
-        setInviteError(GENERIC_INVITE_FAILURE_COPY);
-      } else {
-        // Everything unattributable: 401, 5xx, an uncoded 400 (a client-contract
-        // bug on this route), a code hash collision, and local crypto faults.
-        // Silent before #871 — a permanent identity-key fault (#675 class)
-        // presented to the user as a transient retry prompt with no telemetry.
-        // captureError adds status/api_code for an ApiError (#746); `api_code`
-        // is `VALIDATION_ERROR` for every 400 and `reason` is never sent, so
-        // without the content-free flag below a future reason this build does
-        // not route would be invisible in Sentry.
-        const tags: Record<string, string> = { feature: 'orbit-invite-create' };
-        if (err instanceof ValidationError && err.reason !== undefined) {
-          tags.validation_reason_routed = 'false';
-        }
-        captureError(err, { tags });
-        setInviteError(GENERIC_INVITE_FAILURE_COPY);
-      }
+      // One router for both invite entry points (utils/inviteCreateErrors.ts):
+      // the field error is the only verdict on the typed address; everything
+      // else is about the orbit, the network or this device.
+      const route = routeInviteCreateError(err);
+      if (route.fieldError !== undefined) setInviteEmailError(route.fieldError);
+      if (route.bannerError !== undefined) setInviteError(route.bannerError);
+      if (route.captureTags !== undefined) captureError(err, { tags: route.captureTags });
     } finally {
       setGeneratingInvite(false);
     }

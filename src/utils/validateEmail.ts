@@ -1,6 +1,8 @@
 /**
- * Client-side email format check, run before any auth request that carries an
- * email (signup, login, forgot-password).
+ * Client-side email format check, run before any request that carries an email
+ * address: the auth screens (signup, login, forgot-password) and the
+ * invite-creation screens (CreateOrbit, ManageOrbits), where it judges a third
+ * party's address.
  *
  * Rules:
  * - At most 254 characters (RFC 5321)

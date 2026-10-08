@@ -47,6 +47,10 @@ const REASON_CHANNEL: Record<ValidationReason, 'email' | 'invite' | 'banner'> = 
   INVITE_CANCELLED: 'invite',
   INVITE_EXPIRED: 'invite',
   INVITE_EMAIL_MISMATCH: 'banner',
+  // /api/signup does not emit GROUP_FULL today (only POST /api/groups/join
+  // does), but the Record must route it: if it ever arrives, the orbit, not
+  // any field the user typed, is what is wrong.
+  GROUP_FULL: 'banner',
 };
 
 export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Element {

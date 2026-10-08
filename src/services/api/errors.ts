@@ -121,6 +121,9 @@ const VALIDATION_REASON_MESSAGES = Object.freeze({
   INVITE_EMAIL_MISMATCH:
     'This invite code was sent to a different email address — sign up with that address',
   EMAIL_FORMAT: INVALID_EMAIL_MESSAGE,
+  // Named by the orbit-join route (Backend #271). No member count in the copy:
+  // `max_members` is per-group, so any number here would be a guess.
+  GROUP_FULL: 'This orbit is full — ask the orbit admin to make room',
 });
 
 /** Derived from the map, so adding a reason cannot forget the copy. */

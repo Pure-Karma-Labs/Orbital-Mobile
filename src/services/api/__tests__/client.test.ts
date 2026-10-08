@@ -756,6 +756,7 @@ describe('ValidationError — reason parsing', () => {
       'This invite code was sent to a different email address — sign up with that address',
     ],
     ['EMAIL_FORMAT', 'Please enter a valid email address'],
+    ['GROUP_FULL', 'This orbit is full — ask the orbit admin to make room'],
   ])('maps details.code %s to its curated copy', async (code, copy) => {
     const err = await validationErrorFor(400, codedBody(code));
 

@@ -123,6 +123,36 @@ function findTextWithChildren(
     .find((node) => node.props.children === children);
 }
 
+/**
+ * Host-node filter, NOT `findByTestId`: `ErrorBanner` carries the testID on its
+ * own component node even on the render where it returns `null`, so the
+ * unfiltered helper would make every presence/absence check vacuous.
+ */
+function hasErrorBanner(root: ReactTestInstance): boolean {
+  return (
+    root.findAll(
+      (n) => typeof n.type === 'string' && n.props.testID === 'join-orbit-error-banner',
+    ).length > 0
+  );
+}
+
+/**
+ * A real `ValidationError` built from a backend-shaped VALIDATION_ERROR body,
+ * so the `details.code` → copy mapping under test is the production parse and
+ * not a hand-set field.
+ */
+function reasonedValidationError(code: string, message = 'server text'): ValidationError {
+  return new ValidationError(
+    400,
+    JSON.stringify({ error: 'VALIDATION_ERROR', message, details: { code } }),
+  );
+}
+
+/** Copy literals, written out rather than imported — see client.test.ts. */
+const GROUP_FULL_COPY = 'This orbit is full — ask the orbit admin to make room';
+const CANCELLED_COPY = 'This invite code has been cancelled — ask for a new invite';
+const UNREASONED_COPY = 'Invalid or expired invite code';
+
 // ---------------------------------------------------------------------------
 // Setup
 // ---------------------------------------------------------------------------
@@ -260,7 +290,52 @@ describe('JoinOrbitScreen — error handling', () => {
     expect(() => findByTestId(renderer.root, 'invite-code-input-error')).toThrow();
   });
 
-  it('shows the field error for a ValidationError', async () => {
+  it('routes GROUP_FULL to the banner, not the code field (Backend #271)', async () => {
+    mockJoinOrbit.mockRejectedValue(reasonedValidationError('GROUP_FULL'));
+    const renderer = renderScreen();
+
+    act(() => {
+      findByTestId(renderer.root, 'invite-code-input').props.onChangeText(VALID_CODE);
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'join-orbit-button').props.onPress();
+    });
+
+    // The whole point of #271: a valid code for a full orbit must not be
+    // reported as a bad code.
+    expect(hasErrorBanner(renderer.root)).toBe(true);
+    expect(findTextWithChildren(renderer.root, GROUP_FULL_COPY)).toBeDefined();
+    expect(() => findByTestId(renderer.root, 'invite-code-input-error')).toThrow();
+    expect(findTextWithChildren(renderer.root, UNREASONED_COPY)).toBeUndefined();
+    expect(mockNavigation.goBack).not.toHaveBeenCalled();
+    expect(mockCaptureException).not.toHaveBeenCalled();
+  });
+
+  it('routes INVITE_CANCELLED to the code field with the cancelled copy', async () => {
+    mockJoinOrbit.mockRejectedValue(reasonedValidationError('INVITE_CANCELLED'));
+    const renderer = renderScreen();
+
+    act(() => {
+      findByTestId(renderer.root, 'invite-code-input').props.onChangeText(VALID_CODE);
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'join-orbit-button').props.onPress();
+    });
+
+    expect(findByTestId(renderer.root, 'invite-code-input-error').props.children).toBe(
+      CANCELLED_COPY,
+    );
+    // Negative control for the GROUP_FULL case above: the banner channel is
+    // genuinely unused here, so these two codes cannot both be passing on a
+    // screen that shows everything everywhere.
+    expect(hasErrorBanner(renderer.root)).toBe(false);
+    expect(findTextWithChildren(renderer.root, GROUP_FULL_COPY)).toBeUndefined();
+    expect(mockCaptureException).not.toHaveBeenCalled();
+  });
+
+  it('shows the legacy field copy for an unreasoned 400 and reports the drift', async () => {
     mockJoinOrbit.mockRejectedValue(new ValidationError(400, 'used'));
     const renderer = renderScreen();
 
@@ -273,13 +348,25 @@ describe('JoinOrbitScreen — error handling', () => {
     });
 
     expect(findByTestId(renderer.root, 'invite-code-input-error').props.children).toBe(
-      'Invalid or expired invite code',
+      UNREASONED_COPY,
     );
     expect(mockNavigation.goBack).not.toHaveBeenCalled();
-    expect(mockCaptureException).not.toHaveBeenCalled();
+
+    // Content-free drift signal: the tag says only that the code was unknown.
+    // Exact match — captureError adds status/api_code for an ApiError (#746).
+    expect(mockCaptureException).toHaveBeenCalledTimes(1);
+    const [, context] = mockCaptureException.mock.calls[0];
+    expect(context).toEqual({
+      tags: {
+        feature: 'orbit-join',
+        validation_reason_known: 'false',
+        status: '400',
+        api_code: 'VALIDATION_ERROR',
+      },
+    });
   });
 
-  it('shows the field error for a NotFoundError', async () => {
+  it('shows the legacy field copy for a NotFoundError without reporting drift', async () => {
     mockJoinOrbit.mockRejectedValue(new NotFoundError());
     const renderer = renderScreen();
 
@@ -292,9 +379,11 @@ describe('JoinOrbitScreen — error handling', () => {
     });
 
     expect(findByTestId(renderer.root, 'invite-code-input-error').props.children).toBe(
-      'Invalid or expired invite code',
+      UNREASONED_COPY,
     );
     expect(mockNavigation.goBack).not.toHaveBeenCalled();
+    // The 404 carries no `details.code` by design, so it is not drift.
+    expect(mockCaptureException).not.toHaveBeenCalled();
   });
 
   it('shows the already-a-member banner for a ConflictError, with no field error', async () => {

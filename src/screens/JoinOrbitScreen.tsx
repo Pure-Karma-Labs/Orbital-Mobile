@@ -60,7 +60,9 @@ export type JoinOrbitScreenProps = NativeStackScreenProps<
  * fine and something else is in the way:
  * - `GROUP_FULL` — the orbit has no room; the admin has to act, not the user.
  * - `INVITE_EMAIL_MISMATCH` — it is the *pair* (this code, this account) that
- *   is wrong, so pinning it to the code field would misdirect the fix.
+ *   is wrong, so pinning it to the code field would misdirect the fix. The
+ *   join route actually delivers this outcome as an uncoded 403 (the AuthError
+ *   branch below), so this entry exists for Record exhaustiveness only.
  * - `EMAIL_FORMAT` — this form has no email input at all, so it is
  *   unattributable here (the join route does not emit it today).
  */

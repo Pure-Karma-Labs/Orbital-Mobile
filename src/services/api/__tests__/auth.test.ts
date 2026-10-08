@@ -32,6 +32,7 @@ describe('login', () => {
       path: '/api/login',
       body: data,
       skipAuth: true,
+      retryOn429: false,
     });
   });
 });
@@ -52,6 +53,7 @@ describe('signup', () => {
       path: '/api/signup',
       body: data,
       skipAuth: true,
+      retryOn429: false,
     });
   });
 });
@@ -79,6 +81,7 @@ describe('forgotPassword', () => {
       path: '/api/forgot-password',
       body: { email: 'alice@example.com' },
       skipAuth: true,
+      retryOn429: false,
     });
   });
 });
@@ -96,6 +99,7 @@ describe('resetPasswordWithCode', () => {
         newPassword: 'newS3cret!',
       },
       skipAuth: true,
+      retryOn429: false,
     });
   });
 });

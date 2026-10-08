@@ -17,15 +17,37 @@ import { TextInput, Button, ErrorBanner, OrbitalLoader, AsciiBanner } from '../c
 import { TermsCheckbox } from '../components/TermsCheckbox';
 import { signupUser } from '../services/authService';
 import { AccountSwitchError, ApiError, AuthError, ConflictError, NetworkError, ValidationError } from '../services/api/errors';
+import type { ValidationReason } from '../services/api/errors';
 import { formatInviteCode, stripInviteCode, hasV2InviteCodeLength } from '../services/crypto/inviteCrypto';
 import { validatePassword, PASSWORD_RULE_HINT } from '../utils/validatePassword';
 import { validateUsername } from '../utils/validateUsername';
 import { RATE_LIMIT_MESSAGE } from '../utils/errorMessages';
+import { validateEmail } from '../utils/validateEmail';
+import { captureError } from '../services/telemetry';
 import type { OnPreAuthNavigate } from '../navigation/preAuthTypes';
 
 export interface SignupScreenProps {
   onNavigate: OnPreAuthNavigate;
 }
+
+/**
+ * Where a server validation reason belongs on this form. Typed as an exhaustive
+ * `Record`, so adding a code to `ValidationReason` is a compile error here
+ * until it has been routed — a new reason can never silently fall through to
+ * the generic banner.
+ *
+ * `INVITE_EMAIL_MISMATCH` is a banner rather than a field error on purpose: it
+ * is the *pair* (this code, this email) that is wrong, so pinning it to either
+ * single field would misdirect the fix.
+ */
+const REASON_CHANNEL: Record<ValidationReason, 'email' | 'invite' | 'banner'> = {
+  EMAIL_FORMAT: 'email',
+  INVITE_INVALID: 'invite',
+  INVITE_USED: 'invite',
+  INVITE_CANCELLED: 'invite',
+  INVITE_EXPIRED: 'invite',
+  INVITE_EMAIL_MISMATCH: 'banner',
+};
 
 export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Element {
   const theme = useTheme();
@@ -37,6 +59,7 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
   const [inviteCode, setInviteCode] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [usernameError, setUsernameError] = useState<string | null>(null);
+  const [emailError, setEmailError] = useState<string | null>(null);
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [inviteCodeError, setInviteCodeError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -45,6 +68,11 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
   const handleUsernameChange = useCallback((text: string) => {
     setUsername(text);
     setUsernameError(null);
+  }, []);
+
+  const handleEmailChange = useCallback((text: string) => {
+    setEmail(text);
+    setEmailError(null);
   }, []);
 
   const handlePasswordChange = useCallback((text: string) => {
@@ -64,6 +92,7 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
     // beside a fresh field error is exactly the misdiagnosis #777 removes).
     setError(null);
     setUsernameError(null);
+    setEmailError(null);
     setPasswordError(null);
     setInviteCodeError(null);
 
@@ -79,8 +108,9 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
     }
 
     // Validate email format
-    if (!email.includes('@')) {
-      setError('Please enter a valid email address');
+    const emailRuleError = validateEmail(email.trim());
+    if (emailRuleError !== null) {
+      setEmailError(emailRuleError);
       return;
     }
 
@@ -113,11 +143,32 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
         setError(e.message);
       } else if (e instanceof ApiError && e.code === 'RATE_LIMITED') {
         setError(RATE_LIMIT_MESSAGE);
+      } else if (e instanceof ValidationError && e.reason !== undefined) {
+        // A reason the backend named: render the curated copy on the field the
+        // user can actually act on (#777 — an invite-state failure used to read
+        // as "Invalid request" beside four innocent fields).
+        const channel = REASON_CHANNEL[e.reason];
+        if (channel === 'email') {
+          setEmailError(e.message);
+        } else if (channel === 'invite') {
+          setInviteCodeError(e.message);
+        } else {
+          setError(e.message);
+        }
       } else if (e instanceof AuthError || e instanceof ValidationError || e instanceof ConflictError) {
+        if (e instanceof ValidationError) {
+          // Unreasoned 400: either an old backend or a code this build does not
+          // know. Content-free tag only — the raw code and server text never
+          // leave the device (matches JoinOrbitScreen's shape, #746).
+          captureError(e, { tags: { feature: 'signup', validation_reason_known: 'false' } });
+        }
         setError(e.message || 'Signup failed');
       } else if (e instanceof NetworkError) {
         setError(e.message);
       } else {
+        // Not a validation outcome (5xx, crypto, unexpected throw): feature tag
+        // only, so validation_reason_known:'false' stays a clean drift signal.
+        captureError(e, { tags: { feature: 'signup' } });
         setError('Server error — please try again');
       }
     } finally {
@@ -185,11 +236,12 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
           <TextInput
             label="Email"
             value={email}
-            onChangeText={setEmail}
+            onChangeText={handleEmailChange}
             autoCapitalize="none"
             autoCorrect={false}
             keyboardType="email-address"
             maxLength={256}
+            error={emailError}
             testID="signup-email-input"
           />
           <TextInput
@@ -217,7 +269,7 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
             testID="signup-invite-code-input"
           />
 
-          <ErrorBanner message={error} />
+          <ErrorBanner message={error} testID="signup-error-banner" />
 
           <TermsCheckbox
             checked={termsAccepted}

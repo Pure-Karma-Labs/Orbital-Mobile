@@ -88,10 +88,17 @@ export function ResetPasswordScreen({
     } catch (e) {
       if (e instanceof ApiError && e.code === 'RATE_LIMITED') {
         setError('Too many attempts — please request a new code');
+      } else if (e instanceof ValidationError && e.reason !== undefined) {
+        // Any reason the backend named (today only EMAIL_FORMAT can reach this
+        // route, and not in practice: `email` is a non-editable prop that
+        // ForgotPassword already format-checked) is not the code, so it goes to
+        // the banner with its curated copy — never misattributed to the code
+        // field, including codes appended to the allowlist later.
+        setError(e.message);
       } else if (e instanceof ValidationError) {
-        // The only server outcome attributable to a field on this screen: the
-        // password already passed the client rules, so a 400/422 here is the
-        // code. ("Didn't receive it?" below is the request-a-new-code path.)
+        // The only *unreasoned* server outcome attributable to a field on this
+        // screen: the password already passed the client rules, so a 400/422
+        // here is the code. ("Didn't receive it?" is the new-code path.)
         setCodeError('Invalid or expired code');
       } else if (e instanceof NetworkError) {
         setError(e.message);
@@ -205,7 +212,7 @@ export function ResetPasswordScreen({
             testID="reset-confirm-password-input"
           />
 
-          <ErrorBanner message={error} />
+          <ErrorBanner message={error} testID="reset-password-error-banner" />
 
           <Button
             title="Reset Password"

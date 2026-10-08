@@ -3,6 +3,14 @@
  *
  * signup and login use skipAuth: true — no token required.
  * verifyToken uses auth (validates the current token).
+ *
+ * The four user-initiated routes here set retryOn429: false. They sit behind
+ * the backend's IP-keyed `authLimiter` — a FIXED window of 10 requests per 15
+ * minutes (see RequestOptions.retryOn429 for the six routes it guards) — so an
+ * automatic retry cannot outwait the limit; it only reports the same failure
+ * ~7 seconds later. verifyToken keeps the default retry: it is a background
+ * token check, not a tap, and a transient 429 there should not look like a
+ * logout. deleteAccount (users.ts) is the sixth route and also opts out.
  */
 
 import { request } from './client';
@@ -24,6 +32,7 @@ export function signup(data: SignupRequest): Promise<SignupResponse> {
     path: '/api/signup',
     body: data,
     skipAuth: true,
+    retryOn429: false,
   });
 }
 
@@ -33,6 +42,7 @@ export function login(data: LoginRequest): Promise<LoginResponse> {
     path: '/api/login',
     body: data,
     skipAuth: true,
+    retryOn429: false,
   });
 }
 
@@ -51,6 +61,7 @@ export function forgotPassword(
     path: '/api/forgot-password',
     body: { email } as ForgotPasswordRequest,
     skipAuth: true,
+    retryOn429: false,
   });
 }
 
@@ -64,5 +75,6 @@ export function resetPasswordWithCode(
     path: '/api/reset-password-with-code',
     body: { email, code, newPassword } as ResetPasswordWithCodeRequest,
     skipAuth: true,
+    retryOn429: false,
   });
 }

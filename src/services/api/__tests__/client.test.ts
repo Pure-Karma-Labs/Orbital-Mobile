@@ -23,6 +23,7 @@ import {
   MEDIA_TRANSFER_MAX_TIMEOUT_MS,
 } from '../client';
 import {
+  ApiError,
   AuthError,
   ConflictError,
   NetworkError,
@@ -716,5 +717,171 @@ describe('mediaTransferTimeoutMs', () => {
       MEDIA_TRANSFER_MAX_TIMEOUT_MS,
     );
     expect(MEDIA_TRANSFER_MAX_TIMEOUT_MS).toBe(600_000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ValidationError (400/422) — details.code → curated copy
+// ---------------------------------------------------------------------------
+
+describe('ValidationError — reason parsing', () => {
+  /** Body shaped like the backend's errorHandler VALIDATION_ERROR response. */
+  function codedBody(code: unknown, message = 'server text'): string {
+    return JSON.stringify({
+      error: 'VALIDATION_ERROR',
+      message,
+      details: { code },
+    });
+  }
+
+  async function validationErrorFor(
+    status: number,
+    bodyText: string,
+  ): Promise<ValidationError> {
+    mockFetchError(status, bodyText);
+    return (await request({ method: 'POST', path: '/api/test' }).catch(
+      (e: unknown) => e,
+    )) as ValidationError;
+  }
+
+  // Codes and copy are written out literally on both sides — deriving the
+  // expectation from the map under test would assert nothing.
+  it.each([
+    ['INVITE_INVALID', 'This invite code is not valid — check it and try again'],
+    ['INVITE_USED', 'This invite code has already been used — ask for a new invite'],
+    ['INVITE_CANCELLED', 'This invite code has been cancelled — ask for a new invite'],
+    ['INVITE_EXPIRED', 'This invite code has expired — ask for a new invite'],
+    [
+      'INVITE_EMAIL_MISMATCH',
+      'This invite code was sent to a different email address — sign up with that address',
+    ],
+    ['EMAIL_FORMAT', 'Please enter a valid email address'],
+  ])('maps details.code %s to its curated copy', async (code, copy) => {
+    const err = await validationErrorFor(400, codedBody(code));
+
+    expect(err).toBeInstanceOf(ValidationError);
+    expect(err.reason).toBe(code);
+    expect(err.message).toBe(copy);
+    expect(err.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('falls back to generic copy for an unlisted code and never echoes server text', async () => {
+    const err = await validationErrorFor(
+      400,
+      codedBody('SOMETHING_NEW', 'SECRET-server-text'),
+    );
+
+    expect(err).toBeInstanceOf(ValidationError);
+    expect(err.reason).toBeUndefined();
+    expect(err.message).toBe('Invalid request');
+    expect(err.message).not.toContain('SECRET');
+  });
+
+  it('falls back to generic copy for an old backend body with no details key', async () => {
+    const err = await validationErrorFor(
+      400,
+      JSON.stringify({ error: 'VALIDATION_ERROR', message: 'Invalid email format' }),
+    );
+
+    expect(err).toBeInstanceOf(ValidationError);
+    expect(err.reason).toBeUndefined();
+    expect(err.message).toBe('Invalid request');
+  });
+
+  it.each([
+    ['a number code', codedBody(123)],
+    ['a null code', codedBody(null)],
+    ['an object code', codedBody({})],
+    ['an array code', codedBody(['INVITE_USED'])],
+    ['a lowercased code', codedBody('invite_used')],
+    ['a title-cased code', codedBody('Invite_Used')],
+    ['a body that is not JSON', 'not json at all'],
+    ['a truncated JSON body', '{"details":'],
+    ['an empty body', ''],
+  ])('yields generic copy and no reason for %s', async (_label, bodyText) => {
+    const err = await validationErrorFor(400, bodyText);
+
+    expect(err).toBeInstanceOf(ValidationError);
+    expect(err.reason).toBeUndefined();
+    expect(err.message).toBe('Invalid request');
+  });
+
+  // A truthy lookup (or `in`) would resolve these off Object.prototype and hand
+  // back a function or `Object`, so assert the message is the generic string.
+  it.each([['__proto__'], ['constructor'], ['toString']])(
+    'treats the prototype key %s as unknown',
+    async (code) => {
+      const err = await validationErrorFor(400, codedBody(code));
+
+      expect(err).toBeInstanceOf(ValidationError);
+      expect(err.reason).toBeUndefined();
+      expect(err.message).toBe('Invalid request');
+    },
+  );
+
+  it('parses details.code on a 422 as well as a 400', async () => {
+    const err = await validationErrorFor(422, codedBody('EMAIL_FORMAT'));
+
+    expect(err).toBeInstanceOf(ValidationError);
+    expect(err.statusCode).toBe(422);
+    expect(err.reason).toBe('EMAIL_FORMAT');
+    expect(err.message).toBe('Please enter a valid email address');
+  });
+
+  it('keeps the curated copy but drops serverMessage in release builds', async () => {
+    const g = globalThis as Record<string, unknown>;
+    const prev = g.__DEV__;
+    try {
+      g.__DEV__ = false;
+
+      const err = await validationErrorFor(400, codedBody('INVITE_EXPIRED'));
+
+      expect(err).toBeInstanceOf(ValidationError);
+      expect(err.reason).toBe('INVITE_EXPIRED');
+      expect(err.message).toBe('This invite code has expired — ask for a new invite');
+      expect(err.serverMessage).toBeUndefined();
+    } finally {
+      g.__DEV__ = prev;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 429 retry opt-out (retryOn429)
+// ---------------------------------------------------------------------------
+
+describe('retryOn429', () => {
+  it('surfaces RATE_LIMITED after exactly one fetch when retryOn429 is false', async () => {
+    mockFetchError(429, 'rate limited');
+
+    const err = await request({
+      method: 'POST',
+      path: '/api/login',
+      retryOn429: false,
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).code).toBe('RATE_LIMITED');
+    expect((globalThis as Record<string, unknown>).fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('still retries by default, surfacing RATE_LIMITED on the 4th consecutive 429', async () => {
+    jest.useFakeTimers();
+    try {
+      mockFetchError(429, 'rate limited');
+
+      const pending = request({ method: 'GET', path: '/api/test' }).catch(
+        (e: unknown) => e,
+      );
+      // Past the 1s + 2s + 4s backoffs (plus jitter) of MAX_429_RETRIES = 3.
+      await jest.advanceTimersByTimeAsync(30_000);
+      const err = await pending;
+
+      expect(err).toBeInstanceOf(ApiError);
+      expect((err as ApiError).code).toBe('RATE_LIMITED');
+      expect((globalThis as Record<string, unknown>).fetch).toHaveBeenCalledTimes(4);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

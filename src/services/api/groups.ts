@@ -138,6 +138,11 @@ export function generateInviteCode(
       code: options.code,
       encryptedGroupKey: options.encryptedGroupKey,
     },
+    // Single user tap behind the backend's `inviteLimiter` — 20 requests per 15
+    // minutes, keyed per user. The bucket is small enough that the default
+    // backoff would spend up to four slots on one tap and still report the
+    // same 429 ~7 seconds later (see RequestOptions.retryOn429).
+    retryOn429: false,
   });
 }
 

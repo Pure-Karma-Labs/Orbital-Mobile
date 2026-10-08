@@ -312,7 +312,10 @@ export interface RequestOptions {
    * (signup, login, verify-token, forgot-password, reset-password-with-code and
    * DELETE /api/users/:id). Once it answers 429 the window is spent and its reset
    * time is fixed, so a ~7s backoff can never outwait it — retrying only delays
-   * honest feedback by ~7s and adds load. Retrying is right for user-keyed
+   * honest feedback by ~7s and adds load. The same holds for any SMALL fixed
+   * window a ~7s backoff cannot outwait, whatever its key: `inviteLimiter`
+   * (20 per 15 minutes, user-keyed) guards POST /api/groups/:id/invite-codes,
+   * where each retry also spends a slot. Retrying is right for user-keyed
    * limiters with large buckets (media, content), where the backoff is the
    * difference between a transient hiccup and a visible failure.
    */

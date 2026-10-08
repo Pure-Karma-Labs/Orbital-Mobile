@@ -197,6 +197,7 @@ describe('generateInviteCode', () => {
       method: 'POST',
       path: '/api/groups/group-1/invite-codes',
       body: { targetEmail: 'test@example.com', code: 'ABCD1234EFGH5678JKMN', encryptedGroupKey: 'base64blob' },
+      retryOn429: false,
     });
   });
 
@@ -207,6 +208,29 @@ describe('generateInviteCode', () => {
       expect.objectContaining({
         path: '/api/groups/g%2F..%2Fadmin/invite-codes',
       }),
+    );
+  });
+
+  // #871: a 429 from `inviteLimiter` (20 per 15 min, per user) must surface
+  // immediately. Asserted as `false`, not just "not true": the default is
+  // retry, so an omitted flag would read as a pass under objectContaining.
+  it('opts out of the 429 retry', async () => {
+    await generateInviteCode('group-1', 'test@example.com', { code: 'ABCD1234EFGH5678JKMN', encryptedGroupKey: 'base64blob' });
+
+    expect(mockRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ retryOn429: false }),
+    );
+  });
+
+  // Negative control for the assertion above: a sibling call on the same
+  // module keeps the default, so `retryOn429: false` is a property of this
+  // route and not of the mock.
+  it('leaves the 429 retry default in place for getGroupMembers', async () => {
+    mockRequest.mockResolvedValueOnce({ members: [] });
+    await getGroupMembers('group-1');
+
+    expect(mockRequest).toHaveBeenCalledWith(
+      expect.not.objectContaining({ retryOn429: expect.anything() }),
     );
   });
 });

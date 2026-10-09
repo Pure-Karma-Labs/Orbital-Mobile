@@ -37,6 +37,7 @@ import { encryptContent, getOrFetchGroupKey } from './crypto/contentCrypto';
 import { arrayBufferToBase64, base64ToUint8Array, toArrayBuffer } from './crypto/utils';
 import { MAX_UPLOAD_SIZE_BYTES, STREAM_READ_SIZE_BYTES } from './media/mediaLimits';
 import { isStagingResidueName } from './media/stagingResidue';
+import { clearMediaExportStaging } from './mediaExportService';
 import { teardownLocalMedia } from './media/mediaTeardown';
 import { uploadChunk, completeUpload } from './api/media';
 import { QuotaExceededError, AuthError } from './api/errors';
@@ -1129,6 +1130,15 @@ export async function cleanupOrphanedChunks(): Promise<void> {
   } catch {
     // Best-effort -- failures are silently ignored
   }
+
+  // #878: the iOS document-export staging directory, Caches/orbital-export/.
+  // Native deletes each per-call subdirectory on every settle path, so this is
+  // the crash/jetsam backstop. It is also how BOOTSTRAP is covered: this
+  // reaper is the only sweep that runs at launch. No age guard is needed
+  // because this function is called at bootstrap, where no document picker can
+  // be presented, and the whole-directory unlink is the only shape that can
+  // reach a SUBDIRECTORY (the suffix sweep below is a non-recursive readDir).
+  await clearMediaExportStaging();
 
   try {
     const files = await readDir(CachesDirectoryPath);

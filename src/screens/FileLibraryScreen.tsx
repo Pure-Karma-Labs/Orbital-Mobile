@@ -388,6 +388,36 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
     setLightboxVisible(false);
   }, []);
 
+  /**
+   * Exportable ids for the loaded page (#878).
+   *
+   * This screen is the ONE lightbox host that has to supply `canExport`: it
+   * lists media from the whole library, including ORPHANS — leaving an orbit
+   * deletes its threads and replies but leaves `orbital_media` rows behind, so
+   * their resolved `conversation_id` is NULL and the grid still shows them
+   * under "All Orbits" (deliberate, Alex 2026-10-09: the grid is unchanged).
+   *
+   * Projected from the page rows already in hand plus the store's
+   * `conversations` keys — the store, not SQL, is the membership authority
+   * (DMs are threads and live in the same map; the SQLite `conversations`
+   * table is a group-key store that keeps rows for orbits you have left). So
+   * the lightbox gets a synchronous Set lookup and never queries the DB.
+   */
+  const exportableIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const row of mediaRows) {
+      if (row.conversation_id && conversations[row.conversation_id]) {
+        ids.add(row.id);
+      }
+    }
+    return ids;
+  }, [mediaRows, conversations]);
+
+  const canExportMedia = useCallback(
+    (mediaId: string) => exportableIds.has(mediaId),
+    [exportableIds],
+  );
+
   // ---------------------------------------------------------------------------
   // Render helpers
   // ---------------------------------------------------------------------------
@@ -644,6 +674,7 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
         mediaItems={lightboxItems}
         initialIndex={lightboxIndex}
         onClose={handleCloseLightbox}
+        canExport={canExportMedia}
       />
     </SafeAreaView>
   );

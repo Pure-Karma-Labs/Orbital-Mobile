@@ -1867,35 +1867,492 @@ try {
 }
 
 // ---------------------------------------------------------------------------
-// #878 INSERTION POINT for the media-export SERVICE invariants
+// 24. Media export: the service/UI half (#878) — rules 1, 2, 3 and 7
 // ---------------------------------------------------------------------------
 //
-// Rules 1, 2, 3 and 7 of the #878 plan land HERE, with the service/UI half of
-// PR 1 (they have nothing to assert until those files exist):
+// Kept as FOUR separate rules rather than folded into rule 21: the rule name is
+// what the violation line prints, and "native-pins" must not start meaning
+// "anything to do with export".
 //
 //   media-export-import-restricted  — only src/services/mediaExportService.ts
 //                                     imports 'orbital-media-export', plus a
 //                                     non-vacuity check that it still does.
-//   media-export-disclosure-gate    — performExport() is the only native-call
-//                                     site and calls assertDisclosureAcknowledged(
-//                                     first; every exported entry point calls
-//                                     ensureExportDisclosure( before its first
-//                                     await. Zero sites is a violation.
-//   media-export-no-name-logging    — the service, runner, sanitizer and the
-//                                     package's src/index.tsx +
+//   media-export-disclosure-gate    — performExport() is the only native-WRITE
+//                                     site, asserts the disclosure before that
+//                                     write, and every exported entry point's
+//                                     FIRST await is ensureExportDisclosure().
+//   media-export-no-name-logging    — the service, sanitizer, abort helper and
+//                                     the package's src/index.tsx +
 //                                     src/NativeOrbitalMediaExport.ts carry no
 //                                     file_name|fileName|displayName|localPath|
 //                                     sourcePath|mediaId on a log or Sentry
 //                                     line; the normalizer never interpolates
 //                                     the native message; the .mm/.kt contain
 //                                     no NSLog|os_log|android.util.Log.
-//   media-export-wipe-wired         — localWipe contains cancelAllExports( and
-//                                     the orbital-export unlink;
-//                                     cleanupOrphanedChunks contains the unlink.
+//   media-export-wipe-wired         — localWipe aborts exports before deleting
+//                                     MEDIA_DIR and sweeps the staging dir;
+//                                     cleanupOrphanedChunks sweeps it too.
+
+const ME_SERVICE = join(SRC, 'services', 'mediaExportService.ts');
+const ME_SANITIZER = join(SRC, 'services', 'media', 'exportFileName.ts');
+const ME_ABORTABLE = join(SRC, 'services', 'media', 'abortable.ts');
+const ME_PKG_INDEX = join(MEDIA_EXPORT_PKG, 'src', 'index.tsx');
+const ME_PKG_SPEC = join(MEDIA_EXPORT_PKG, 'src', 'NativeOrbitalMediaExport.ts');
+const ME_AUTH_SERVICE = join(SRC, 'services', 'authService.ts');
+const ME_UPLOAD_SERVICE = join(SRC, 'services', 'mediaUploadService.ts');
+
+/**
+ * PR 2 adds `src/services/media/bulkExportRunner.ts`. It is scanned by
+ * `media-export-no-name-logging` the moment it exists (see ME_OPTIONAL_LOG_FILES)
+ * and must be MOVED into the required list in that PR — a file that only
+ * exists in half the delivery cannot be a required file here without failing
+ * PR 1, and a rule that passes because its subject is absent is the vacuity
+ * these checks exist to prevent. The required list below is PR 1's complete
+ * set, so nothing is currently unguarded.
+ */
+const ME_OPTIONAL_LOG_FILES = [join(SRC, 'services', 'media', 'bulkExportRunner.ts')];
+
+/** Read a file, recording a violation and returning null when it is missing. */
+function meRead(file, rule, why) {
+  try {
+    return readFileSync(file, 'utf8');
+  } catch {
+    violations.push(
+      `  ${relative('.', file)}:0  [${rule}]  file not found — ${why} cannot be verified and the rule would pass vacuously (${ME_ISSUE})`,
+    );
+    return null;
+  }
+}
+
+/**
+ * Blank out comment lines and trailing `//` comments, PRESERVING line count
+ * and byte offsets so index comparisons below stay meaningful.
+ *
+ * This is what stops a pin from being satisfied by prose: every one of these
+ * files documents the very identifiers the rules forbid (this script does
+ * too), and a mention must never count as a call.
+ */
+function meStripComments(text) {
+  let inBlock = false;
+  return text
+    .split('\n')
+    .map((line) => {
+      if (inBlock) {
+        const end = line.indexOf('*/');
+        if (end === -1) return ' '.repeat(line.length);
+        inBlock = false;
+        return ' '.repeat(end + 2) + line.slice(end + 2);
+      }
+      const trimmed = line.trimStart();
+      if (trimmed.startsWith('//')) return ' '.repeat(line.length);
+      if (trimmed.startsWith('/*')) {
+        const end = line.indexOf('*/');
+        if (end === -1) {
+          inBlock = true;
+          return ' '.repeat(line.length);
+        }
+        return ' '.repeat(end + 2) + line.slice(end + 2);
+      }
+      if (trimmed.startsWith('*')) return ' '.repeat(line.length);
+      const slash = line.indexOf('//');
+      // Not inside a string literal: none of these files has a `//` in one
+      // (URLs live in config/env.ts), and over-stripping can only make a
+      // required pin fail, never make a forbidden one pass.
+      if (slash !== -1) return line.slice(0, slash) + ' '.repeat(line.length - slash);
+      return line;
+    })
+    .join('\n');
+}
+
+/** 1-based line number of a byte offset, for a useful violation line. */
+function meLineOf(text, index) {
+  return text.slice(0, index).split('\n').length;
+}
+
+// ---------------------------------------------------------------------------
+// 24a. media-export-import-restricted
+// ---------------------------------------------------------------------------
+
+// The package is the ONLY code in the app that writes decrypted bytes to a
+// destination outside the app's own sandbox. Keeping its import to one module
+// is what makes every other rule here checkable at all: the disclosure gate,
+// the name-logging ban and the wipe wiring all reason about ONE file. A second
+// importer — including a barrel re-export, which is why the pattern matches
+// `export … from` as well — would route around all three.
+
+const ME_IMPORT_RULE = 'media-export-import-restricted';
+const ME_PKG_SPECIFIER_RE =
+  /(?:\bfrom\s*|\brequire\s*\(\s*|\bimport\s*\(\s*)['"]orbital-media-export(?:\/[^'"]*)?['"]/;
+
+let meImporterSeen = false;
+for (const file of allFiles) {
+  const rel = relative('.', file);
+  // Test files may import the jest mock (the moduleNameMapper target) to drive
+  // error branches — the same test-path exemption rule 3 uses.
+  if (rel.includes('__tests__/') || rel.includes('.test.ts') || rel.includes('.test.tsx')) {
+    continue;
+  }
+
+  const lines = meStripComments(readFileSync(file, 'utf8')).split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (!ME_PKG_SPECIFIER_RE.test(lines[i])) continue;
+    if (file === ME_SERVICE) {
+      meImporterSeen = true;
+      continue;
+    }
+    report(file, i + 1, ME_IMPORT_RULE, lines[i].trim());
+  }
+}
+
+if (!meImporterSeen) {
+  violations.push(
+    `  ${relative('.', ME_SERVICE)}:0  [${ME_IMPORT_RULE}]  the one permitted importer no longer imports 'orbital-media-export' — the rule would pass vacuously (${ME_ISSUE})`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 24b. media-export-disclosure-gate
+// ---------------------------------------------------------------------------
+
+// Two properties, neither observable from a passing unit test:
 //
-// Keep them as SEPARATE rules rather than folding them into rule 21: the rule
-// name is what the violation line prints, and "native-pins" must not start
-// meaning "anything to do with export".
+//  1. There is exactly ONE place where decrypted bytes leave the app, and the
+//     disclosure acknowledgement is asserted there, synchronously, before the
+//     call. A second write site added anywhere else in the service would be
+//     reachable without the user ever having been told that a saved copy
+//     leaves end-to-end encryption, survives logout, and may be swept into
+//     their cloud backup.
+//  2. Every exported entry point ASKS first, before it does any work. Not just
+//     "somewhere in the function": its FIRST await must be the disclosure, so
+//     a download cannot start — and therefore plaintext cannot be written to
+//     MEDIA_DIR — on behalf of a save the user then cancels.
+//
+// `saveToPhotoLibrary(`/`exportFiles(` are the two native WRITES. The add-only
+// permission query (`requestPhotoAddPermission`) also reaches native and is
+// deliberately NOT in this set: it writes nothing, returns no user data, and
+// must run before the download so the user is never asked for photo access in
+// order to fetch a file they will not be allowed to save.
+
+const ME_GATE_RULE = 'media-export-disclosure-gate';
+const ME_NATIVE_WRITES = ['saveToPhotoLibrary(', 'exportFiles('];
+
+const meServiceRaw = meRead(ME_SERVICE, ME_GATE_RULE, 'the export disclosure gate');
+if (meServiceRaw !== null) {
+  const body = meStripComments(meServiceRaw);
+  const chokeRe = /^async function performExport\([\s\S]*?\n\}/m;
+  const choke = body.match(chokeRe);
+
+  if (choke === null) {
+    violations.push(
+      `  ${relative('.', ME_SERVICE)}:0  [${ME_GATE_RULE}]  performExport() not found — the native-write choke point is gone and the rule would pass vacuously (${ME_ISSUE})`,
+    );
+  } else {
+    const chokeStart = choke.index;
+    const chokeEnd = chokeStart + choke[0].length;
+    const chokeBody = choke[0];
+
+    const assertIdx = chokeBody.indexOf('assertDisclosureAcknowledged(');
+    if (assertIdx === -1) {
+      violations.push(
+        `  ${relative('.', ME_SERVICE)}:${meLineOf(body, chokeStart)}  [${ME_GATE_RULE}]  performExport() does not call assertDisclosureAcknowledged( (${ME_ISSUE})`,
+      );
+    }
+    // A prompt from inside the write path would be a modal in the wrong place
+    // AND would make the assertion above unreachable in practice.
+    if (chokeBody.includes('ensureExportDisclosure(')) {
+      violations.push(
+        `  ${relative('.', ME_SERVICE)}:${meLineOf(body, chokeStart)}  [${ME_GATE_RULE}]  performExport() must ASSERT the disclosure, never prompt for it (${ME_ISSUE})`,
+      );
+    }
+
+    for (const write of ME_NATIVE_WRITES) {
+      const inside = chokeBody.indexOf(write);
+      if (inside === -1) {
+        violations.push(
+          `  ${relative('.', ME_SERVICE)}:${meLineOf(body, chokeStart)}  [${ME_GATE_RULE}]  "${write}" missing from performExport() — the choke point no longer writes and the rule would pass vacuously (${ME_ISSUE})`,
+        );
+      } else if (assertIdx !== -1 && assertIdx > inside) {
+        violations.push(
+          `  ${relative('.', ME_SERVICE)}:${meLineOf(body, chokeStart)}  [${ME_GATE_RULE}]  assertDisclosureAcknowledged( must precede "${write}" in performExport() (${ME_ISSUE})`,
+        );
+      }
+
+      // Any occurrence OUTSIDE the choke point is a second write site. The
+      // import statement is excluded by construction: it has no `(`.
+      for (let at = body.indexOf(write); at !== -1; at = body.indexOf(write, at + 1)) {
+        if (at >= chokeStart && at < chokeEnd) continue;
+        report(ME_SERVICE, meLineOf(body, at), ME_GATE_RULE, `native write "${write}" outside performExport()`);
+      }
+    }
+  }
+
+  // Exported entry points = exported async callables that reach the choke
+  // point. Textual and mechanical on purpose: "contains performExport(" is a
+  // property a reviewer can check by eye, and a new entry point that forgets
+  // the disclosure necessarily contains it too.
+  //
+  // BOTH declaration forms are matched. The `export const … = async (…) =>`
+  // form was added after a mutation proof showed the function-declaration
+  // regex alone was blind to it: an arrow-const entry point that downloaded
+  // before asking passed silently, which is precisely the property this clause
+  // claims to enforce. (Converting the EXISTING entry point to an arrow would
+  // have failed closed through `entryCount === 0`, so the rule could only ever
+  // be extended past, never emptied — but "extended past" is enough.)
+  const entryRes = [
+    /^export async function (\w+)\([\s\S]*?\n\}/gm,
+    /^export const (\w+) = async \([\s\S]*?\n\};/gm,
+  ];
+  let entryCount = 0;
+  for (const entryRe of entryRes) {
+    let entry;
+    while ((entry = entryRe.exec(body)) !== null) {
+      const [text, name] = entry;
+      if (!text.includes('performExport(')) continue;
+      entryCount += 1;
+
+      const awaitIdx = text.search(/\bawait\b/);
+      if (awaitIdx === -1) {
+        violations.push(
+          `  ${relative('.', ME_SERVICE)}:${meLineOf(body, entry.index)}  [${ME_GATE_RULE}]  ${name}() reaches performExport( with no await — unreviewable shape (${ME_ISSUE})`,
+        );
+        continue;
+      }
+      // The LINE of the first await must be the disclosure call. Anything else
+      // awaited first (a download, a permission prompt, a DB round-trip) means
+      // work happened before the user was asked.
+      const lineStart = text.lastIndexOf('\n', awaitIdx) + 1;
+      const lineEnd = text.indexOf('\n', awaitIdx);
+      const firstAwaitLine = text.slice(lineStart, lineEnd === -1 ? undefined : lineEnd);
+      if (!firstAwaitLine.includes('ensureExportDisclosure(')) {
+        violations.push(
+          `  ${relative('.', ME_SERVICE)}:${meLineOf(body, entry.index + awaitIdx)}  [${ME_GATE_RULE}]  ${name}()'s first await is not ensureExportDisclosure( — it is "${firstAwaitLine.trim()}" (${ME_ISSUE})`,
+        );
+      }
+    }
+  }
+  if (entryCount === 0) {
+    violations.push(
+      `  ${relative('.', ME_SERVICE)}:0  [${ME_GATE_RULE}]  no exported entry point reaches performExport( — zero sites is a violation, not a pass (${ME_ISSUE})`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 24c. media-export-no-name-logging
+// ---------------------------------------------------------------------------
+
+// A peer supplies `file_name`, so an export file name is USER CONTENT from
+// another device, and the local path names a decrypted file. Neither may reach
+// a log line or Sentry: telemetryScrub is a safety net for messages we did not
+// author, not a licence to pass content in deliberately. The design is that
+// only the error CODE is ever reported — this rule is what keeps it that way
+// after the next debugging session.
+//
+// Files are read as NAMED files: a missing one is a violation. Matching is
+// line-windowed on the call, not whole-file, because every one of these files
+// legitimately handles `displayName` and `sourcePath` on non-logging lines.
+
+const ME_LOG_RULE = 'media-export-no-name-logging';
+const ME_FORBIDDEN_IN_LOGS = [
+  'file_name',
+  'fileName',
+  'displayName',
+  'localPath',
+  'sourcePath',
+  'mediaId',
+];
+const ME_LOG_CALL_RE = /\b(?:console\.(?:log|warn|error|info|debug|trace)|captureError|Sentry\.\w+)\s*\(/;
+
+const ME_REQUIRED_LOG_FILES = [
+  ME_SERVICE,
+  ME_SANITIZER,
+  ME_ABORTABLE,
+  ME_PKG_INDEX,
+  ME_PKG_SPEC,
+];
+
+for (const file of ME_REQUIRED_LOG_FILES.concat(
+  ME_OPTIONAL_LOG_FILES.filter((f) => {
+    try {
+      statSync(f);
+      return true;
+    } catch {
+      return false;
+    }
+  }),
+)) {
+  const raw = meRead(file, ME_LOG_RULE, 'its log and Sentry lines');
+  if (raw === null) continue;
+
+  const lines = meStripComments(raw).split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (!ME_LOG_CALL_RE.test(lines[i])) continue;
+    // Extend until the call's parens balance, so a multi-line captureError()
+    // cannot hide a name on its second line — or its fourteenth. Still capped,
+    // so an unbalanced paren (or a `(` inside a string) cannot make this
+    // quadratic; 40 lines is far past any realistic Sentry payload literal,
+    // and the cap was raised from 12 after a mutation proof slipped a name
+    // through on line 14.
+    let depth = 0;
+    let windowText = '';
+    for (let j = i; j < Math.min(lines.length, i + 40); j++) {
+      windowText += `${lines[j]}\n`;
+      for (const ch of lines[j]) {
+        if (ch === '(') depth += 1;
+        else if (ch === ')') depth -= 1;
+      }
+      if (j > i && depth <= 0) break;
+      if (j === i && depth <= 0) break;
+    }
+    for (const banned of ME_FORBIDDEN_IN_LOGS) {
+      if (windowText.includes(banned)) {
+        report(file, i + 1, ME_LOG_RULE, `"${banned}" on a log/Sentry line`);
+      }
+    }
+  }
+}
+
+// The rejection normalizer is the one function with a native Error in hand. If
+// it ever reads that error's message, every native diagnostic string — which
+// on both platforms can contain a path — starts flowing into JS errors, stack
+// traces and Sentry.
+checkWindowedPins(
+  ME_PKG_INDEX,
+  ME_LOG_RULE,
+  /^function toExportError\([\s\S]*?\n\}/m,
+  'the toExportError normalizer',
+  ['new MediaExportError(code)'],
+  // Spelled WITHOUT the bound identifier wherever possible. A mutation proof
+  // showed `String(e)`/`e.toString` were defeated by a TS cast — `String(e as
+  // Error)`, `(e as Error).toString()` — and by a template literal, all three
+  // of which leak the native reject message (Error.prototype.toString returns
+  // "Error: <message>"). `.message` needed no change: it carries no identifier
+  // and so already survived casting.
+  ['.message', 'String(', 'JSON.stringify', 'toString', '${e}'],
+  ME_ISSUE,
+);
+
+// The native halves are equally silent. os_log/NSLog write to the device
+// console (readable by anyone with the device plugged in), and android.util.Log
+// to logcat — both would carry the display name and the source path.
+checkWindowedPins(
+  MEDIA_EXPORT_MM,
+  ME_LOG_RULE,
+  /^#import "OrbitalMediaExport\.h"[\s\S]*/m,
+  'OrbitalMediaExport.mm (logging ban)',
+  [],
+  ['NSLog', 'os_log'],
+  ME_ISSUE,
+);
+
+checkWindowedPins(
+  MEDIA_EXPORT_KT,
+  ME_LOG_RULE,
+  /^package com\.orbital\.mediaexport[\s\S]*/m,
+  'OrbitalMediaExportModule.kt (logging ban)',
+  [],
+  ['android.util.Log', 'Log.d(', 'Log.e(', 'Log.i(', 'Log.w(', 'Log.v('],
+  ME_ISSUE,
+);
+
+// ---------------------------------------------------------------------------
+// 24d. media-export-wipe-wired
+// ---------------------------------------------------------------------------
+
+// Export is the only path that copies decrypted media to a destination a wipe
+// cannot reach. Two things therefore have to be true of localWipe:
+//
+//  - `cancelAllExports()` runs BEFORE the MEDIA_DIR deletion. An export that
+//    is mid-download when an account is deleted would otherwise finish, pass
+//    every `signal.aborted` check it already cleared, and write a decrypted
+//    file to the photo library of a device whose account no longer exists.
+//    (It is synchronous for the same reason: an await here hands control
+//    straight back to the export.)
+//  - `clearMediaExportStaging()` sweeps `Caches/orbital-export/`. That
+//    directory is the ONE media-pipeline residue in a SUBDIRECTORY, so the
+//    `isStagingResidueName` suffix sweep — a non-recursive readDir — cannot
+//    reach it no matter what the files are called.
+//
+// `cleanupOrphanedChunks` carries the same sweep, which is how BOOTSTRAP is
+// covered after a crash or jetsam mid-picker.
+
+const ME_WIPE_RULE = 'media-export-wipe-wired';
+
+const meAuthRaw = meRead(ME_AUTH_SERVICE, ME_WIPE_RULE, 'the localWipe export teardown');
+if (meAuthRaw !== null) {
+  const body = meStripComments(meAuthRaw);
+  const wipe = body.match(
+    /^export async function localWipe\(\{ preserveIdentity \}[\s\S]*?\n\}/m,
+  );
+  if (wipe === null) {
+    violations.push(
+      `  ${relative('.', ME_AUTH_SERVICE)}:0  [${ME_WIPE_RULE}]  localWipe() not found — the rule would pass vacuously (${ME_ISSUE})`,
+    );
+  } else {
+    const cancelIdx = wipe[0].indexOf('cancelAllExports(');
+    const sweepIdx = wipe[0].indexOf('clearMediaExportStaging(');
+    // The media-directory deletion, identified by the local it binds.
+    const mediaDirIdx = wipe[0].indexOf('mediaDirPath');
+    const at = meLineOf(body, wipe.index);
+
+    if (cancelIdx === -1) {
+      violations.push(
+        `  ${relative('.', ME_AUTH_SERVICE)}:${at}  [${ME_WIPE_RULE}]  localWipe() does not call cancelAllExports( (${ME_ISSUE})`,
+      );
+    }
+    if (sweepIdx === -1) {
+      violations.push(
+        `  ${relative('.', ME_AUTH_SERVICE)}:${at}  [${ME_WIPE_RULE}]  localWipe() does not call clearMediaExportStaging( (${ME_ISSUE})`,
+      );
+    }
+    if (mediaDirIdx === -1) {
+      violations.push(
+        `  ${relative('.', ME_AUTH_SERVICE)}:${at}  [${ME_WIPE_RULE}]  localWipe() no longer names mediaDirPath — the export-abort ORDERING check would pass vacuously (${ME_ISSUE})`,
+      );
+    } else if (cancelIdx !== -1 && cancelIdx > mediaDirIdx) {
+      violations.push(
+        `  ${relative('.', ME_AUTH_SERVICE)}:${at}  [${ME_WIPE_RULE}]  cancelAllExports( must run BEFORE the MEDIA_DIR deletion in localWipe() (${ME_ISSUE})`,
+      );
+    }
+    if (/\bawait\s+cancelAllExports\s*\(/.test(wipe[0])) {
+      violations.push(
+        `  ${relative('.', ME_AUTH_SERVICE)}:${at}  [${ME_WIPE_RULE}]  cancelAllExports( must not be awaited — the abort has to be synchronous (${ME_ISSUE})`,
+      );
+    }
+  }
+}
+
+checkWindowedPins(
+  ME_UPLOAD_SERVICE,
+  ME_WIPE_RULE,
+  /^export async function cleanupOrphanedChunks\(\)[\s\S]*?\n\}/m,
+  'the cleanupOrphanedChunks bootstrap reaper',
+  ['clearMediaExportStaging('],
+  [],
+  ME_ISSUE,
+);
+
+// The sweep itself: a named function that no longer deletes the directory
+// would satisfy every call-site pin above while leaving the residue in place.
+checkWindowedPins(
+  ME_SERVICE,
+  ME_WIPE_RULE,
+  /^export async function clearMediaExportStaging\(\)[\s\S]*?\n\}/m,
+  'the clearMediaExportStaging body',
+  ['EXPORT_STAGING_DIR', 'unlink('],
+  [],
+  ME_ISSUE,
+);
+
+checkWindowedPins(
+  ME_SERVICE,
+  ME_WIPE_RULE,
+  /^export const EXPORT_STAGING_DIR =[\s\S]*?;$/m,
+  'the EXPORT_STAGING_DIR definition',
+  ['orbital-export', 'CachesDirectoryPath'],
+  [],
+  ME_ISSUE,
+);
 
 // ---------------------------------------------------------------------------
 // Summary

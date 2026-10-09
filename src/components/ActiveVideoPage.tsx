@@ -116,6 +116,12 @@ export interface ActiveVideoPageProps {
    * VideoControls — see VideoControlsProps.scrollGesture. Undefined today.
    */
   scrollGesture?: GestureType;
+  /**
+   * Forwarded verbatim to VideoControls — see
+   * VideoControlsProps.registerControlStamp (#878). Lets MediaLightbox's Save
+   * press stamp the control-interaction suppression window.
+   */
+  registerControlStamp?: (stamp: (() => void) | null) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +136,7 @@ export function ActiveVideoPage({
   thumbnailMediaId,
   durationMs,
   scrollGesture,
+  registerControlStamp,
 }: ActiveVideoPageProps): React.JSX.Element {
   const theme = useTheme();
 
@@ -497,6 +504,7 @@ export function ActiveVideoPage({
             onSeek={handleSeek}
             onInteraction={notifyControls}
             scrollGesture={scrollGesture}
+            registerControlStamp={registerControlStamp}
           />
         )}
         {!ready && (

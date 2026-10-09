@@ -116,7 +116,13 @@ const inflight = new Map<string, Promise<string>>();
  */
 let reservedDiskBytes = 0;
 
-class InsufficientSpaceError extends Error {
+/**
+ * Thrown by the disk preflight. Exported for #878: a save that cannot even
+ * download its source is `noSpace`, not `failed` — the user frees space and
+ * retries, and the bulk runner stops the whole batch rather than failing every
+ * remaining item one by one.
+ */
+export class InsufficientSpaceError extends Error {
   constructor() {
     super('Not enough free space to download this file.');
     this.name = 'InsufficientSpaceError';

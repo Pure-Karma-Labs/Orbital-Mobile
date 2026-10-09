@@ -387,6 +387,52 @@ export function getLocalStorageUsage(): number {
   return row?.total ?? 0;
 }
 
+// ============================================================
+// Export access (#878)
+// ============================================================
+
+/**
+ * The three facts the export path needs to decide whether an item may be
+ * saved to the device.
+ *
+ * `conversation_id` is NULL for an orphan: leaving an orbit deletes its
+ * threads and replies but leaves `orbital_media` rows behind, so the JOIN
+ * resolves to nothing. It is also NULL for the uploader's own row before the
+ * post it belongs to exists.
+ *
+ * `author_id` resolves through whichever parent the row actually hangs off —
+ * a reply's author for reply media, the thread's author otherwise. It is only
+ * consumed by the bulk path (blocked authors are excluded from a batch but
+ * still saveable one at a time, Alex 2026-10-09).
+ */
+export interface MediaExportAccess {
+  conversation_id: string | null;
+  author_id: string | null;
+}
+
+/**
+ * Resolve one media row's export access facts, or null when the row does not
+ * exist (or the DB is not open).
+ *
+ * This is the SERVICE-SIDE re-check, run before and after the download. The
+ * lightbox does not call it — exportability reaches the lightbox as a
+ * host-supplied `canExport` prop, so there is no async DB query in the UI.
+ */
+export function getMediaExportAccess(id: string): MediaExportAccess | null {
+  if (!isDatabaseInitialized()) return null;
+
+  return queryOne<MediaExportAccess>(
+    `SELECT COALESCE(t.conversation_id, rt.conversation_id) as conversation_id,
+            CASE WHEN m.reply_id IS NOT NULL THEN r.author_id ELSE t.author_id END as author_id
+     FROM orbital_media m
+     LEFT JOIN orbital_threads t ON m.thread_id = t.id
+     LEFT JOIN orbital_replies r ON m.reply_id = r.id
+     LEFT JOIN orbital_threads rt ON r.thread_id = rt.id
+     WHERE m.id = ?`,
+    [id],
+  );
+}
+
 /**
  * Distinct conversation IDs that have at least one media item.
  *

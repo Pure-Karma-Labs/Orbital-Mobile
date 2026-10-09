@@ -104,6 +104,19 @@ export interface VideoControlsProps {
    * is the expensive part, not the one line below.
    */
   scrollGesture?: GestureType;
+  /**
+   * Hands this component's `stampControlInteraction` UP to the host (#878), so
+   * chrome OUTSIDE the player — MediaLightbox's Save button — can declare
+   * "that press was a control interaction" and have the full-page Tap ignore
+   * it for CONTROL_SUPPRESSION_MS.
+   *
+   * A registrar rather than a lifted timestamp: the suppression window is this
+   * component's own invariant, and lifting the ref would let a host change
+   * what counts as an interaction. Called with the stamp on mount and with
+   * `null` on unmount, so a host holding the reference can never stamp a
+   * player that is gone.
+   */
+  registerControlStamp?: (stamp: (() => void) | null) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -119,6 +132,7 @@ export function VideoControls({
   onSeek,
   onInteraction,
   scrollGesture,
+  registerControlStamp,
 }: VideoControlsProps): React.JSX.Element {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
@@ -189,6 +203,16 @@ export function VideoControls({
   const stampControlInteraction = useCallback(() => {
     lastControlInteractionRef.current = Date.now();
   }, []);
+
+  /**
+   * Publish the stamp to the host (#878) for the lifetime of this player, and
+   * retract it on unmount so a stale closure cannot stamp a dead window.
+   */
+  useEffect(() => {
+    if (!registerControlStamp) return;
+    registerControlStamp(stampControlInteraction);
+    return () => registerControlStamp(null);
+  }, [registerControlStamp, stampControlInteraction]);
 
   const handleTogglePlay = useCallback(() => {
     stampControlInteraction();

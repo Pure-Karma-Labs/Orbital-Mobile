@@ -33,6 +33,7 @@ import { clearIdentityInflightState } from './crypto/identityKeyAccess';
 import { clearAvatarServiceState, clearAvatarCache } from './avatarService';
 import { captureError } from './telemetry';
 import { isStagingResidueName } from './media/stagingResidue';
+import { cancelAllExports, clearMediaExportStaging } from './mediaExportService';
 import { clearMessageHandlerState } from './websocket/messageHandler';
 import { execute } from '../database/queryHelpers';
 import { isDatabaseInitialized, closeDatabase } from '../database/connection';
@@ -369,6 +370,18 @@ export async function localWipe({ preserveIdentity }: { preserveIdentity: boolea
   // --- Phase 1: Clear tokens and store state (best-effort per-step) ---
   // Each step is isolated so a failure in one (e.g., Keychain op) never
   // aborts the remaining cleanup steps or the destructive wipe that follows.
+  //
+  // #878: FIRST, and synchronously. An in-flight save is the one thing in the
+  // app that copies decrypted media OUT to a destination this wipe cannot
+  // reach — the photo library, or a folder the user picked. cancelAllExports()
+  // aborts every export controller and bumps an epoch that is re-checked
+  // immediately before each native write, so a save that is one microtask from
+  // writing cannot complete. It must run before the MEDIA_DIR deletion below,
+  // and it must not be awaited: an await here hands control straight back to
+  // the export we are trying to stop.
+  try { cancelAllExports(); } catch {
+    if (__DEV__) console.warn('[LocalWipe] cancelAllExports failed');
+  }
   try { await tokenManager.clearTokens(); } catch {
     if (__DEV__) console.warn('[LocalWipe] clearTokens failed');
   }
@@ -543,6 +556,15 @@ export async function localWipe({ preserveIdentity }: { preserveIdentity: boolea
     }
   } catch {
     if (__DEV__) console.warn('[LocalWipe] Failed to delete legacy thumbnail dir');
+  }
+  // #878: the iOS document-export staging directory, Caches/orbital-export/.
+  // It is the one media-pipeline residue that lives in a SUBDIRECTORY, so the
+  // suffix sweep below — a non-recursive readDir — structurally cannot reach
+  // it. Swept whole-directory, same shape as the legacy thumbnail dir above.
+  try {
+    await clearMediaExportStaging();
+  } catch {
+    if (__DEV__) console.warn('[LocalWipe] Failed to delete export staging dir');
   }
   try {
     const cacheFiles = await readDir(CachesDirectoryPath);

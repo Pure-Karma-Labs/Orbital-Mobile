@@ -1027,12 +1027,25 @@ describe('MediaLightbox — Save states', () => {
   // — a third press then produced a second copy. handleSave now drops the
   // badge (and so the timer) before it starts.
   //
-  // This is the ONE place in this file that touches fake timers: the bug is a
-  // timer deadline and nothing else can express it. Scoped to this test body
-  // with the drain -> clear -> restore discipline in a finally, never a
-  // describe-level afterEach (#834/#835).
+  // NO fake timers: installing them in this file poisons the jest worker for
+  // whichever suite it runs next, even with drain -> clear -> restore (#834 —
+  // reproduced 3/3 on this test, clean 3/3 without it). Instead, spy on the
+  // real setTimeout/clearTimeout and fire the badge timer by hand — but only if
+  // the component has not cleared it, which is exactly what a deadline does.
   it('a new save on the same item is not un-latched by the old badge timer', async () => {
-    jest.useFakeTimers();
+    const setTimeoutSpy = jest.spyOn(global, 'setTimeout');
+    const clearTimeoutSpy = jest.spyOn(global, 'clearTimeout');
+    /** Run every SAVED_BADGE_MS timer that is still armed, as its deadline would. */
+    const fireArmedBadgeTimers = (): void => {
+      const cleared = new Set(clearTimeoutSpy.mock.calls.map(([handle]) => handle));
+      setTimeoutSpy.mock.calls.forEach(([callback, delay], i) => {
+        const handle = setTimeoutSpy.mock.results[i]?.value;
+        if (delay === SAVED_BADGE_MS && !cleared.has(handle)) {
+          clearTimeout(handle);
+          (callback as () => void)();
+        }
+      });
+    };
     try {
       let settleSecond!: (result: unknown) => void;
       mockSaveMediaItem
@@ -1051,11 +1064,9 @@ describe('MediaLightbox — Save states', () => {
         saveButton(renderer).props.onPress();
       });
       expect(saveStatus(renderer)).toBe('STATUS:saved');
+      expect(setTimeoutSpy.mock.calls.some(([, delay]) => delay === SAVED_BADGE_MS)).toBe(true);
 
-      // 2. Second save starts well INSIDE the badge window.
-      act(() => {
-        jest.advanceTimersByTime(500);
-      });
+      // 2. Second save starts INSIDE the badge window.
       await act(async () => {
         saveButton(renderer).props.onPress();
       });
@@ -1064,7 +1075,7 @@ describe('MediaLightbox — Save states', () => {
 
       // 3. The OLD timer's deadline passes. It must not touch this save.
       act(() => {
-        jest.advanceTimersByTime(SAVED_BADGE_MS);
+        fireArmedBadgeTimers();
       });
       expect(saveStatus(renderer)).toBe('Downloading…');
       expect(saveButton(renderer).props.accessibilityState.busy).toBe(true);
@@ -1080,14 +1091,8 @@ describe('MediaLightbox — Save states', () => {
       });
       expect(saveStatus(renderer)).toBe('STATUS:saved');
     } finally {
-      try {
-        act(() => {
-          jest.runOnlyPendingTimers();
-        });
-      } finally {
-        jest.clearAllTimers();
-        jest.useRealTimers();
-      }
+      setTimeoutSpy.mockRestore();
+      clearTimeoutSpy.mockRestore();
     }
   });
 

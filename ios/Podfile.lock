@@ -99,6 +99,34 @@ PODS:
     - SocketRocket
     - Yoga
   - OpenSSL-Universal (3.6.2000)
+  - OrbitalMediaExport (0.0.1):
+    - boost
+    - DoubleConversion
+    - fast_float
+    - fmt
+    - glog
+    - hermes-engine
+    - RCT-Folly
+    - RCT-Folly/Fabric
+    - RCTRequired
+    - RCTTypeSafety
+    - React-Core
+    - React-debug
+    - React-Fabric
+    - React-featureflags
+    - React-graphics
+    - React-ImageManager
+    - React-jsi
+    - React-NativeModulesApple
+    - React-RCTFabric
+    - React-renderercss
+    - React-rendererdebug
+    - React-utils
+    - ReactCodegen
+    - ReactCommon/turbomodule/bridging
+    - ReactCommon/turbomodule/core
+    - SocketRocket
+    - Yoga
   - OrbitalMediaTranscoder (0.0.1):
     - boost
     - DoubleConversion
@@ -3007,6 +3035,7 @@ DEPENDENCIES:
   - NitroMmkv (from `../node_modules/react-native-mmkv`)
   - NitroModules (from `../node_modules/react-native-nitro-modules`)
   - "op-sqlite (from `../node_modules/@op-engineering/op-sqlite`)"
+  - OrbitalMediaExport (from `../node_modules/orbital-media-export`)
   - OrbitalMediaTranscoder (from `../node_modules/orbital-media-transcoder`)
   - OrbitalSignal (from `../node_modules/orbital-signal`)
   - RCT-Folly (from `../node_modules/react-native/third-party-podspecs/RCT-Folly.podspec`)
@@ -3121,6 +3150,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native-nitro-modules"
   op-sqlite:
     :path: "../node_modules/@op-engineering/op-sqlite"
+  OrbitalMediaExport:
+    :path: "../node_modules/orbital-media-export"
   OrbitalMediaTranscoder:
     :path: "../node_modules/orbital-media-transcoder"
   OrbitalSignal:
@@ -3299,6 +3330,7 @@ SPEC CHECKSUMS:
   NitroModules: d52aaa5db99af2be4c2b171460e3a7541d78fe4d
   op-sqlite: 302a5d22006bf71e51c3eb07a5758ec70c916910
   OpenSSL-Universal: ecee7b138fa75a74ecf00d7ffd248fb584739b9e
+  OrbitalMediaExport: 4eab66c8b96b4066745711c2212d4ca8b848c854
   OrbitalMediaTranscoder: 378293685f3cba3c504555724a88d928aa69baef
   OrbitalSignal: 9dc838a7d25d35b6f64d12d64435a19eb9e237e0
   RCT-Folly: 846fda9475e61ec7bcbf8a3fe81edfcaeb090669

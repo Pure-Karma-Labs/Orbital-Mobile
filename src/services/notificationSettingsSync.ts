@@ -79,10 +79,13 @@ const MUTE_TARGET_TYPES: MuteTargetType[] = ['thread', 'group'];
 /**
  * The only strings this module shows a user.
  *
- * ApiError.message is a hardcoded classifier string ("Not found",
- * "Authentication required") and serverMessage is __DEV__-only, so echoing an
- * error today leaks nothing — but it is a standing invitation to leak the
- * moment anyone enriches a classifier string from a response body.
+ * ApiError.message is never server text: it is either a hardcoded classifier
+ * string ("Not found", "Authentication required") or, for a 400/422 carrying an
+ * allowlisted `details.code`, client-authored copy selected by that code
+ * (Mobile #783). The raw body stays in serverMessage, which is __DEV__-only.
+ * So echoing an error here would leak nothing today — but these routes have no
+ * user-actionable 4xx, and a generic string is the right thing to show for a
+ * failed background sync regardless, so they keep their own copy.
  */
 const MUTE_FAILED_COPY = 'Could not update notifications for this. Please try again.';
 const PREF_FAILED_COPY = 'Could not save that setting. Please try again.';

@@ -11,10 +11,23 @@ import { SignupScreen } from '../SignupScreen';
 import { ApiError, AuthError, NetworkError, ValidationError } from '../../services/api/errors';
 import { PASSWORD_RULE_HINT } from '../../utils/validatePassword';
 import { RATE_LIMIT_MESSAGE } from '../../utils/errorMessages';
+import { findByTestId, hasHostTestId, queryByText } from '../../testUtils/rtr';
+import { reasonedValidationError } from '../../testUtils/apiErrorFixtures';
 
 // ---------------------------------------------------------------------------
 // Module mocks
 // ---------------------------------------------------------------------------
+
+// The screen reports unknown/absent validation reasons through the real
+// `captureError`, exactly as JoinOrbitScreen does (#746) — so Sentry is the
+// boundary that gets mocked, not our telemetry wrapper. That keeps the tag
+// shape under test instead of stubbing it out.
+jest.mock('@sentry/react-native', () => ({
+  captureException: jest.fn(),
+  addBreadcrumb: jest.fn(),
+  setUser: jest.fn(),
+  wrap: (c: unknown) => c,
+}));
 
 jest.mock('../../services/authService', () => ({
   signupUser: jest.fn(),
@@ -32,7 +45,22 @@ jest.mock('../../components/OrbitalLoader', () => ({
 }));
 
 import { signupUser } from '../../services/authService';
+import * as Sentry from '@sentry/react-native';
 const mockSignupUser = signupUser as jest.Mock;
+const mockCaptureException = Sentry.captureException as unknown as jest.Mock;
+
+// Curated client copy for each backend reason code. Spelled out as literals on
+// purpose: importing the map from errors.ts would make every assertion below a
+// tautology that could not catch a copy edit or a mis-routed channel.
+const REASON_COPY = {
+  INVITE_INVALID: 'This invite code is not valid — check it and try again',
+  INVITE_USED: 'This invite code has already been used — ask for a new invite',
+  INVITE_CANCELLED: 'This invite code has been cancelled — ask for a new invite',
+  INVITE_EXPIRED: 'This invite code has expired — ask for a new invite',
+  INVITE_EMAIL_MISMATCH:
+    'This invite code was sent to a different email address — sign up with that address',
+  EMAIL_FORMAT: 'Please enter a valid email address',
+} as const;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -59,12 +87,6 @@ function renderSignupScreen(onNavigate = jest.fn()): ReactTestRenderer {
     );
   });
   return renderer;
-}
-
-function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstance {
-  const found = root.findAll((node) => node.props.testID === testID);
-  if (found.length === 0) throw new Error(`No element with testID "${testID}"`);
-  return found[0];
 }
 
 function findCheckbox(root: ReactTestInstance): ReactTestInstance {
@@ -122,7 +144,7 @@ describe('SignupScreen — validation', () => {
     expect(mockSignupUser).not.toHaveBeenCalled();
   });
 
-  it('shows error when email does not contain @', async () => {
+  it('shows the exact email-format message on the email field for a malformed email', async () => {
     const renderer = renderSignupScreen();
     const root = renderer.root;
 
@@ -137,13 +159,31 @@ describe('SignupScreen — validation', () => {
       findByTestId(root, 'signup-submit-button').props.onPress();
     });
 
-    const allText = root.findAllByType('Text' as unknown as React.ComponentType);
-    const errorText = allText.find(
-      (node) =>
-        typeof node.props.children === 'string' &&
-        node.props.children.toLowerCase().includes('email'),
+    expect(findByTestId(root, 'signup-email-input-error').props.children).toBe(
+      'Please enter a valid email address',
     );
-    expect(errorText).toBeDefined();
+    expect(hasHostTestId(root, 'signup-error-banner')).toBe(false);
+    expect(mockSignupUser).not.toHaveBeenCalled();
+  });
+
+  it("blocks 'a@b' pre-flight — looser than includes('@') would be", async () => {
+    const renderer = renderSignupScreen();
+    const root = renderer.root;
+
+    act(() => {
+      findByTestId(root, 'signup-username-input').props.onChangeText('alice');
+      findByTestId(root, 'signup-email-input').props.onChangeText('a@b');
+      findByTestId(root, 'signup-password-input').props.onChangeText('StrongPass123');
+      findByTestId(root, 'signup-invite-code-input').props.onChangeText('ABCDEFGHJKMNPQRSTVW0');
+    });
+
+    await act(async () => {
+      findByTestId(root, 'signup-submit-button').props.onPress();
+    });
+
+    expect(findByTestId(root, 'signup-email-input-error').props.children).toBe(
+      'Please enter a valid email address',
+    );
     expect(mockSignupUser).not.toHaveBeenCalled();
   });
 
@@ -414,13 +454,20 @@ describe('SignupScreen — field-level validation errors', () => {
     expect(mockSignupUser).not.toHaveBeenCalled();
   });
 
-  it('clears the stale email banner and shows the password field error on a second submit, without ever calling signupUser', async () => {
+  it('clears the stale required-fields banner and shows the password field error on a second submit, without ever calling signupUser', async () => {
     const renderer = renderSignupScreen();
     const root = renderer.root;
 
+    await act(async () => {
+      findByTestId(root, 'signup-submit-button').props.onPress();
+    });
+
+    expect(hasHostTestId(root, 'signup-error-banner')).toBe(true);
+    expect(queryByText(root, 'All fields are required')).toBeDefined();
+
     act(() => {
       findByTestId(root, 'signup-username-input').props.onChangeText('alice');
-      findByTestId(root, 'signup-email-input').props.onChangeText('notanemail');
+      findByTestId(root, 'signup-email-input').props.onChangeText('alice@example.com');
       findByTestId(root, 'signup-password-input').props.onChangeText('short');
       findByTestId(root, 'signup-invite-code-input').props.onChangeText('ABCDEFGHJKMNPQRSTVW0');
     });
@@ -429,33 +476,16 @@ describe('SignupScreen — field-level validation errors', () => {
       findByTestId(root, 'signup-submit-button').props.onPress();
     });
 
-    const findEmailBanner = () =>
-      root
-        .findAllByType('Text' as unknown as React.ComponentType)
-        .find(
-          (node) =>
-            typeof node.props.children === 'string' &&
-            node.props.children === 'Please enter a valid email address',
-        );
-
-    expect(findEmailBanner()).toBeDefined();
-
-    act(() => {
-      findByTestId(root, 'signup-email-input').props.onChangeText('alice@example.com');
-    });
-
-    await act(async () => {
-      findByTestId(root, 'signup-submit-button').props.onPress();
-    });
-
-    expect(findEmailBanner()).toBeUndefined();
+    // The banner itself is gone — not merely this one string — so a stale
+    // guard message can never sit beside a fresh field error (#777).
+    expect(hasHostTestId(root, 'signup-error-banner')).toBe(false);
     expect(findByTestId(root, 'signup-password-input-error').props.children).toBe(
       'Password must be at least 12 characters',
     );
     expect(mockSignupUser).not.toHaveBeenCalled();
   });
 
-  it('surfaces the email guard on the banner ahead of the password field error', async () => {
+  it('surfaces the email guard as a field error ahead of the password rule check', async () => {
     const renderer = renderSignupScreen();
     const root = renderer.root;
 
@@ -470,13 +500,10 @@ describe('SignupScreen — field-level validation errors', () => {
       findByTestId(root, 'signup-submit-button').props.onPress();
     });
 
-    const allText = root.findAllByType('Text' as unknown as React.ComponentType);
-    const errorText = allText.find(
-      (node) =>
-        typeof node.props.children === 'string' &&
-        node.props.children === 'Please enter a valid email address',
+    expect(findByTestId(root, 'signup-email-input-error').props.children).toBe(
+      'Please enter a valid email address',
     );
-    expect(errorText).toBeDefined();
+    expect(hasHostTestId(root, 'signup-error-banner')).toBe(false);
     expect(() => findByTestId(root, 'signup-password-input-error')).toThrow();
     expect(mockSignupUser).not.toHaveBeenCalled();
   });
@@ -625,6 +652,141 @@ describe('SignupScreen — error handling', () => {
         node.props.children === RATE_LIMIT_MESSAGE,
     );
     expect(errorText).toBeDefined();
+  });
+});
+
+describe('SignupScreen — server validation reasons (#783)', () => {
+  function fillValidFields(root: ReactTestInstance): void {
+    act(() => {
+      findByTestId(root, 'signup-username-input').props.onChangeText('alice');
+      findByTestId(root, 'signup-email-input').props.onChangeText('alice@example.com');
+      findByTestId(root, 'signup-password-input').props.onChangeText('StrongPass123');
+      findByTestId(root, 'signup-invite-code-input').props.onChangeText('ABCDEFGHJKMNPQRSTVW0');
+      findCheckbox(root).props.onPress();
+    });
+  }
+
+  async function submitWith(error: unknown): Promise<ReactTestInstance> {
+    mockSignupUser.mockRejectedValue(error);
+    const renderer = renderSignupScreen();
+    const root = renderer.root;
+    fillValidFields(root);
+    await act(async () => {
+      findByTestId(root, 'signup-submit-button').props.onPress();
+    });
+    return root;
+  }
+
+  it.each([
+    ['INVITE_EXPIRED', REASON_COPY.INVITE_EXPIRED],
+    ['INVITE_USED', REASON_COPY.INVITE_USED],
+    ['INVITE_CANCELLED', REASON_COPY.INVITE_CANCELLED],
+    ['INVITE_INVALID', REASON_COPY.INVITE_INVALID],
+  ])('routes %s to the invite field with its curated copy and no banner', async (code, copy) => {
+    const root = await submitWith(reasonedValidationError(code));
+
+    expect(findByTestId(root, 'signup-invite-code-input-error').props.children).toBe(copy);
+    expect(hasHostTestId(root, 'signup-error-banner')).toBe(false);
+    expect(() => findByTestId(root, 'signup-email-input-error')).toThrow();
+  });
+
+  it('routes INVITE_EMAIL_MISMATCH to the banner — the pair is wrong, not one field', async () => {
+    const root = await submitWith(reasonedValidationError('INVITE_EMAIL_MISMATCH'));
+
+    expect(hasHostTestId(root, 'signup-error-banner')).toBe(true);
+    expect(queryByText(root, REASON_COPY.INVITE_EMAIL_MISMATCH)).toBeDefined();
+    expect(() => findByTestId(root, 'signup-invite-code-input-error')).toThrow();
+    expect(() => findByTestId(root, 'signup-email-input-error')).toThrow();
+  });
+
+  it('routes EMAIL_FORMAT to the email field', async () => {
+    const root = await submitWith(reasonedValidationError('EMAIL_FORMAT'));
+
+    expect(findByTestId(root, 'signup-email-input-error').props.children).toBe(
+      REASON_COPY.EMAIL_FORMAT,
+    );
+    expect(hasHostTestId(root, 'signup-error-banner')).toBe(false);
+  });
+
+  it('never renders the generic copy for a reasoned error', async () => {
+    const root = await submitWith(reasonedValidationError('INVITE_EXPIRED'));
+
+    expect(queryByText(root, 'Invalid request')).toBeUndefined();
+    expect(queryByText(root, 'Signup failed')).toBeUndefined();
+    expect(mockCaptureException).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the generic banner for an unknown code, leaking no server text', async () => {
+    const root = await submitWith(
+      reasonedValidationError('SOME_FUTURE_CODE', 'SECRET-server-text'),
+    );
+
+    expect(hasHostTestId(root, 'signup-error-banner')).toBe(true);
+    expect(queryByText(root, 'Invalid request')).toBeDefined();
+
+    // Nothing the server wrote reaches the screen, on any node.
+    const rendered = root
+      .findAllByType('Text' as unknown as React.ComponentType)
+      .map((node) => String(node.props.children))
+      .join('\u0000');
+    expect(rendered).not.toContain('SECRET');
+    expect(rendered).not.toContain('SOME_FUTURE_CODE');
+
+    // Reported, but content-free: the tag says only that the code was unknown.
+    expect(mockCaptureException).toHaveBeenCalledTimes(1);
+    const [, context] = mockCaptureException.mock.calls[0];
+    expect(context).toEqual({
+      tags: {
+        feature: 'signup',
+        validation_reason_known: 'false',
+        status: '400',
+        api_code: 'VALIDATION_ERROR',
+      },
+    });
+    expect(JSON.stringify(mockCaptureException.mock.calls[0])).not.toContain('SECRET');
+  });
+
+  it('reports a non-API failure with the feature tag only, not as a validation-reason miss', async () => {
+    const root = await submitWith(new Error('keychain unavailable'));
+
+    expect(hasHostTestId(root, 'signup-error-banner')).toBe(true);
+    expect(queryByText(root, 'Server error — please try again')).toBeDefined();
+    expect(mockCaptureException).toHaveBeenCalledTimes(1);
+    const [, context] = mockCaptureException.mock.calls[0];
+    expect(context).toEqual({ tags: { feature: 'signup' } });
+  });
+
+  it('clears a server invite error when the invite code is edited', async () => {
+    const root = await submitWith(reasonedValidationError('INVITE_EXPIRED'));
+
+    expect(() => findByTestId(root, 'signup-invite-code-input-error')).not.toThrow();
+
+    act(() => {
+      findByTestId(root, 'signup-invite-code-input').props.onChangeText('ZYXWVTSRQPNMKJHGFEDC');
+    });
+
+    expect(() => findByTestId(root, 'signup-invite-code-input-error')).toThrow();
+  });
+
+  it('clears the stale server banner and shows the email field error on the next submit', async () => {
+    const root = await submitWith(reasonedValidationError('INVITE_EMAIL_MISMATCH'));
+
+    expect(hasHostTestId(root, 'signup-error-banner')).toBe(true);
+
+    act(() => {
+      findByTestId(root, 'signup-email-input').props.onChangeText('a@b');
+    });
+
+    await act(async () => {
+      findByTestId(root, 'signup-submit-button').props.onPress();
+    });
+
+    expect(hasHostTestId(root, 'signup-error-banner')).toBe(false);
+    expect(findByTestId(root, 'signup-email-input-error').props.children).toBe(
+      REASON_COPY.EMAIL_FORMAT,
+    );
+    // Blocked pre-flight: the one call is the first submit, not this one.
+    expect(mockSignupUser).toHaveBeenCalledTimes(1);
   });
 });
 

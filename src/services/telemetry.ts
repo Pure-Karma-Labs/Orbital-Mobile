@@ -27,6 +27,19 @@ import type { SeverityLevel } from '@sentry/react-native';
 import { ApiError } from './api/errors';
 import { toReportableError } from './telemetryScrub';
 
+/**
+ * Validation-reason tag vocabulary. `api_code` is `VALIDATION_ERROR` for every
+ * 400, so these two content-free flags are the only way to tell routing gaps
+ * apart. Use the one that matches the route; do not invent a third.
+ *
+ * - `validation_reason_known: 'false'` — a 400 that carried NO allowlisted
+ *   reason, on a route where every 400 is coded, so its absence means
+ *   backend/client drift (SignupScreen, JoinOrbitScreen).
+ * - `validation_reason_routed: 'false'` — a 400 whose reason IS on the client
+ *   allowlist but which the screen's routing does not handle, on a route with
+ *   legitimate uncoded 400s, where `known` would be noise
+ *   (utils/inviteCreateErrors.ts).
+ */
 export interface CaptureContext {
   /** Indexed, low-cardinality facets. `status`/`api_code` are added for you. */
   tags?: Record<string, string>;

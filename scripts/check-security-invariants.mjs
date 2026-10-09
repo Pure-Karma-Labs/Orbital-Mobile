@@ -768,8 +768,24 @@ const APP_FILE = join(SRC, 'App.tsx');
 /**
  * Assert every pin appears inside a window of `file`, with comment lines
  * stripped. A missing file or a window the regex cannot find is a violation.
+ *
+ * @param forbidden - Substrings that must NOT appear in the comment-stripped
+ *   window. Required pins say "this defence is present"; forbidden substrings
+ *   say "this bypass is absent", which is what catches a defence that is kept
+ *   AND then overridden on the next line (#783).
+ * @param issue - Issue suffix on the violation line. Defaults to the Sentry
+ *   privacy-hook issue the helper was written for, so existing callers are
+ *   unchanged.
  */
-function checkWindowedPins(file, rule, windowRe, windowLabel, pins) {
+function checkWindowedPins(
+  file,
+  rule,
+  windowRe,
+  windowLabel,
+  pins,
+  forbidden = [],
+  issue = '#746',
+) {
   let text;
   try {
     text = readFileSync(file, 'utf8');
@@ -797,7 +813,14 @@ function checkWindowedPins(file, rule, windowRe, windowLabel, pins) {
   for (const pin of pins) {
     if (!body.includes(pin)) {
       violations.push(
-        `  ${relative('.', file)}:0  [${rule}]  "${pin}" missing from ${windowLabel} (#746)`,
+        `  ${relative('.', file)}:0  [${rule}]  "${pin}" missing from ${windowLabel} (${issue})`,
+      );
+    }
+  }
+  for (const banned of forbidden) {
+    if (body.includes(banned)) {
+      violations.push(
+        `  ${relative('.', file)}:0  [${rule}]  "${banned}" must not appear in ${windowLabel} (${issue})`,
       );
     }
   }
@@ -1455,6 +1478,144 @@ try {
 } catch {
   violations.push(
     `  index.js:0  [${PB_RULE}]  entry point not found — cannot verify the pre-bootstrap purity allowlist still describes the entry path`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 20. Validation messages come from the client's allowlist, never the server
+//     (#783)
+// ---------------------------------------------------------------------------
+
+// A 400/422 body carries both a machine-readable `details.code` and a free-text
+// `message` written for developers. The client shows copy IT owns, selected by
+// the code; the server's text stays in `serverMessage`, which is __DEV__-only.
+//
+// Every plausible regression here is a one-line edit that leaves the app
+// working and the tests mostly green, while putting server text — or a value
+// reached through the prototype chain — on a user's screen:
+//   - `super(JSON.parse(rawBody).message, …)` or a later `this.message = …`
+//     override: the specific error now shows, so the feature looks MORE
+//     correct, which is exactly why no screen test catches it.
+//   - an allowlist weakened to `typeof code === 'string'`, or a truthy
+//     `MESSAGES[code]` lookup: `__proto__`/`constructor`/`toString` then index
+//     the map and render `[object Object]` or a function body.
+//   - `serverMessage ?? message` anywhere on the path, which re-opens the
+//     __DEV__ gate for the one error class a user sees most often.
+//   - a screen reading `e.serverMessage` directly, bypassing this layer.
+//
+// The first four are window pins on errors.ts; the last is a cross-file scan.
+// Unit tests cover the behaviour for inputs we thought of — these pins cover
+// the SHAPE, so a future edit cannot quietly reintroduce the 2026-09-06 class
+// of bug (#777) by a different route.
+
+const VMP_RULE = 'validation-message-provenance';
+const ERRORS_FILE = join(SRC, 'services', 'api', 'errors.ts');
+const VMP_ISSUE = '#783';
+
+// Window A — the ValidationError class. Short, independent pins: the message
+// must be chosen by indexing the client's own map, and the no-code fallback
+// must still be the generic string. Forbidden: any body parsing or message
+// assignment inside the class (parsing belongs to parseValidationReason, which
+// returns an allowlisted enum, not text), and any expression that could put the
+// raw body in the message position. The constructor parameter is `rawBody`, so
+// the forbidden list names that identifier: `rawBody ?? 'Invalid request'` and
+// `cond ? rawBody : …` are the realistic one-line leaks. The legitimate uses —
+// `rawBody?: string`, `parseValidationReason(rawBody)` and the bare `rawBody,`
+// pass-through to ApiError — contain none of these substrings.
+checkWindowedPins(
+  ERRORS_FILE,
+  VMP_RULE,
+  /^export class ValidationError extends ApiError \{[\s\S]*?\n\}/m,
+  'the ValidationError class',
+  ['VALIDATION_REASON_MESSAGES[', "'Invalid request'"],
+  ['.message =', 'JSON.parse(', 'rawBody ?', 'rawBody |', '? rawBody', ': rawBody'],
+  VMP_ISSUE,
+);
+
+// Window B — the body parser. It may parse, but every candidate code must pass
+// the allowlist before it can be returned.
+checkWindowedPins(
+  ERRORS_FILE,
+  VMP_RULE,
+  /^function parseValidationReason[\s\S]*?\n\}/m,
+  'the parseValidationReason body',
+  ['isValidationReason('],
+  [],
+  VMP_ISSUE,
+);
+
+// Window B2 — the allowlist test itself. `hasOwnProperty.call` on the map is
+// the whole defence: `in`, a truthy lookup, or a bare typeof check all accept
+// prototype keys.
+checkWindowedPins(
+  ERRORS_FILE,
+  VMP_RULE,
+  /^function isValidationReason[\s\S]*?\n\}/m,
+  'the isValidationReason body',
+  ['hasOwnProperty.call(VALIDATION_REASON_MESSAGES'],
+  [],
+  VMP_ISSUE,
+);
+
+// Window C — the __DEV__ gate on the raw body, for every error class. Curated
+// copy is only safe to show because the server's own text never leaves dev.
+checkWindowedPins(
+  ERRORS_FILE,
+  VMP_RULE,
+  /^export class ApiError extends Error \{[\s\S]*?\n\}/m,
+  'the ApiError class (serverMessage __DEV__ gate)',
+  ['this.serverMessage = __DEV__ ? serverMessage : undefined'],
+  [],
+  VMP_ISSUE,
+);
+
+// Cross-file clause — `serverMessage` is readable only inside errors.ts. The
+// bare identifier is matched (not just `.serverMessage`) so destructuring
+// (`const { serverMessage } = e`) and bracket access (`e['serverMessage']`)
+// are caught too.
+// Comments are blanked first (not skipped by line) because three modules
+// discuss the field in prose: telemetry.ts, telemetryScrub.ts and
+// notificationSettingsSync.ts all name `ApiError.serverMessage` while
+// explaining why they do not read it, and that prose must not be scanned as
+// code. Tests are out of scope: they assert the __DEV__ behaviour, which means
+// reading the field is their job.
+const VMP_SERVER_MESSAGE_RE = /\bserverMessage\b/;
+
+for (const file of allFiles) {
+  if (file === ERRORS_FILE) continue;
+  if (file.includes('__tests__') || file.includes('.test.')) continue;
+
+  let lines;
+  try {
+    lines = blankComments(readFileSync(file, 'utf8')).split('\n');
+  } catch {
+    violations.push(`  ${relative('.', file)}:0  [${VMP_RULE}]  could not read file`);
+    continue;
+  }
+  for (let i = 0; i < lines.length; i++) {
+    if (VMP_SERVER_MESSAGE_RE.test(lines[i])) {
+      report(
+        file,
+        i + 1,
+        VMP_RULE,
+        `reads ApiError.serverMessage outside errors.ts — it holds raw server text and is __DEV__-only, so this is empty in release builds; route on the error class (or ValidationError.reason) and render e.message instead (${VMP_ISSUE})`,
+      );
+    }
+  }
+}
+
+// Non-vacuity anchor for the scan: the one allowed reader must still exist and
+// must still hold the assignment. Without this, deleting or renaming errors.ts
+// would make the cross-file clause pass by scanning a field nobody sets.
+try {
+  if (!VMP_SERVER_MESSAGE_RE.test(blankComments(readFileSync(ERRORS_FILE, 'utf8')))) {
+    violations.push(
+      `  ${relative('.', ERRORS_FILE)}:0  [${VMP_RULE}]  no serverMessage assignment left in errors.ts — the "only errors.ts may read it" carve-out describes nothing and the cross-file scan would pass vacuously (${VMP_ISSUE})`,
+    );
+  }
+} catch {
+  violations.push(
+    `  ${relative('.', ERRORS_FILE)}:0  [${VMP_RULE}]  errors.ts not found — the validation-message provenance rules cannot be verified (${VMP_ISSUE})`,
   );
 }
 

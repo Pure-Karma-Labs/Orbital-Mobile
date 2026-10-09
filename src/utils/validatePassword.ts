@@ -19,11 +19,13 @@
  * - The backend sets no explicit maximum but hashes with bcrypt, whose
  *   effective input ceiling is 72 bytes. The client's `maxLength={128}` on the
  *   password fields is therefore a UI bound, not a contract bound.
- * - `ResetPasswordScreen` maps any server `ValidationError` to "Invalid or
- *   expired code", and `ValidationError` hardcodes its message anyway
- *   (Orbital-Mobile #783), so a backend rule tightened without a matching
- *   client update will surface there as a bogus code error, not a password
- *   error.
+ * - `ResetPasswordScreen` maps a reason-less server `ValidationError` to
+ *   "Invalid or expired code". Since Orbital-Mobile #783, `ValidationError`
+ *   carries `reason` (an allowlisted `details.code`), and that is how the two
+ *   cases are split — but the backend's password rules are uncoded, so a rule
+ *   tightened there without a matching client update still surfaces as a bogus
+ *   code error rather than a password error. Giving the password branch its own
+ *   reason code is the fix if that ever bites.
  *
  * The backend's leading `'Password is required'` branch is deliberately not
  * mirrored: both call sites guard emptiness before calling this, and `''`

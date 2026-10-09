@@ -8,6 +8,17 @@ import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'rea
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../../theme';
 import { ManageOrbitsScreen } from '../ManageOrbitsScreen';
+import { ApiError, AuthError, NotFoundError, ValidationError } from '../../services/api/errors';
+import { RATE_LIMIT_MESSAGE } from '../../utils/errorMessages';
+import {
+  findAllByTestId,
+  findByTestId,
+  findHostByTestId,
+  hasHostTestId,
+  queryByText,
+} from '../../testUtils/rtr';
+import { reasonedValidationError } from '../../testUtils/apiErrorFixtures';
+import * as Sentry from '@sentry/react-native';
 
 // ---------------------------------------------------------------------------
 // Stable mock references (hoisted for assertion)
@@ -91,6 +102,7 @@ const mockGetPendingWraps = getPendingWrapsForGroup as jest.Mock;
 const mockCreateInviteCode = createInviteCode as jest.Mock;
 const mockTransfer = transferOrbitOwner as jest.Mock;
 const mockDissolve = dissolveOrbit as jest.Mock;
+const mockCaptureException = Sentry.captureException as unknown as jest.Mock;
 
 // ---------------------------------------------------------------------------
 // Test data
@@ -176,16 +188,6 @@ const mockRoute = {
   name: 'ManageOrbits' as const,
   params: undefined,
 };
-
-function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstance {
-  const found = root.findAll((node) => node.props.testID === testID);
-  if (found.length === 0) throw new Error(`No element with testID "${testID}"`);
-  return found[0];
-}
-
-function findAllByTestId(root: ReactTestInstance, testID: string): ReactTestInstance[] {
-  return root.findAll((node) => node.props.testID === testID);
-}
 
 /**
  * Helper to extract a button from an Alert.alert spy.
@@ -854,9 +856,7 @@ describe('ManageOrbitsScreen — rewrap key', () => {
     const renderer = await renderAndExpand();
 
     // user-2 is pending — rewrap button should exist
-    expect(findAllByTestId(renderer.root, 'rewrap-member-user-2').filter(
-      (n) => typeof n.type === 'string',
-    ).length).toBeGreaterThanOrEqual(1);
+    expect(hasHostTestId(renderer.root, 'rewrap-member-user-2')).toBe(true);
 
     // current-user-id is not pending and is self — no rewrap button
     expect(findAllByTestId(renderer.root, 'rewrap-member-current-user-id')).toHaveLength(0);
@@ -883,9 +883,7 @@ describe('ManageOrbitsScreen — rewrap key', () => {
     // user-3 not pending — no rewrap button
     expect(findAllByTestId(renderer.root, 'rewrap-member-user-3')).toHaveLength(0);
     // user-2 is pending — rewrap button present
-    expect(findAllByTestId(renderer.root, 'rewrap-member-user-2').filter(
-      (n) => typeof n.type === 'string',
-    ).length).toBeGreaterThanOrEqual(1);
+    expect(hasHostTestId(renderer.root, 'rewrap-member-user-2')).toBe(true);
   });
 
   it('shows busy label while rewrapping', async () => {
@@ -929,9 +927,7 @@ describe('ManageOrbitsScreen — rewrap key', () => {
     const renderer = await renderAndExpand();
 
     // Rewrap button should be present before action
-    expect(findAllByTestId(renderer.root, 'rewrap-member-user-2').filter(
-      (n) => typeof n.type === 'string',
-    ).length).toBeGreaterThanOrEqual(1);
+    expect(hasHostTestId(renderer.root, 'rewrap-member-user-2')).toBe(true);
 
     // Press rewrap
     await act(async () => {
@@ -982,9 +978,7 @@ describe('ManageOrbitsScreen — rewrap key', () => {
     });
 
     // Button should still be present
-    expect(findAllByTestId(renderer.root, 'rewrap-member-user-2').filter(
-      (n) => typeof n.type === 'string',
-    ).length).toBeGreaterThanOrEqual(1);
+    expect(hasHostTestId(renderer.root, 'rewrap-member-user-2')).toBe(true);
 
     // Alert should have been called with the error message
     expect(alertSpy).toHaveBeenCalledWith(
@@ -1006,5 +1000,262 @@ describe('ManageOrbitsScreen — rewrap key', () => {
     // No rewrap buttons should exist for any user
     expect(findAllByTestId(renderer.root, 'rewrap-member-user-2')).toHaveLength(0);
     expect(findAllByTestId(renderer.root, 'rewrap-member-current-user-id')).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Copy literals (written out as consts — not imported from source to avoid
+// coupling test failure modes to source refactors of unrelated copy).
+// ---------------------------------------------------------------------------
+const INVITE_INVALID_EMAIL_MESSAGE = 'Please enter a valid email address';
+const INVITE_NOT_ALLOWED_COPY = "You can't create invites for this orbit";
+const INVITE_ORBIT_GONE_COPY = 'This orbit no longer exists';
+const INVITE_GENERIC_FAILURE_COPY = 'Failed to generate invite code. Please try again.';
+
+/** True when some rendered Text has exactly these children. */
+function hasText(root: ReactTestInstance, children: string): boolean {
+  return queryByText(root, children) !== undefined;
+}
+
+describe('ManageOrbitsScreen — invite email routing', () => {
+  /**
+   * Helper: render the screen, expand the orbit, and open the email modal.
+   */
+  async function renderAndOpenModal(): Promise<ReactTestRenderer> {
+    mockFetchGroups.mockResolvedValue([
+      { groupId: 'g-1', name: 'Family Orbit', memberCount: 3, isCreator: true },
+    ]);
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        React.createElement(
+          SafeAreaProvider,
+          { initialMetrics: safeAreaMetrics },
+          React.createElement(
+            ThemeProvider,
+            { colorSchemeOverride: 'light' },
+            React.createElement(ManageOrbitsScreen, {
+              navigation: mockNavigation as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['navigation'],
+              route: mockRoute as unknown as React.ComponentProps<typeof ManageOrbitsScreen>['route'],
+            }),
+          ),
+        ),
+      );
+    });
+    await act(async () => {
+      findByTestId(renderer.root, 'orbit-header-g-1').props.onPress();
+    });
+    await act(async () => {
+      findByTestId(renderer.root, 'new-code-button-g-1').props.onPress();
+    });
+    return renderer;
+  }
+
+  it('case 1: pre-flight rejects a malformed address without calling createInviteCode', async () => {
+    const renderer = await renderAndOpenModal();
+
+    act(() => {
+      findByTestId(renderer.root, 'email-input').props.onChangeText('a@b');
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'generate-button').props.onPress();
+    });
+
+    const errorNode = findHostByTestId(renderer.root, 'email-input-error');
+    expect(errorNode.props.children).toBe(INVITE_INVALID_EMAIL_MESSAGE);
+    expect(mockCreateInviteCode).not.toHaveBeenCalled();
+    expect(hasHostTestId(renderer.root, 'generate-code-error-banner')).toBe(false);
+    expect(mockCaptureException).not.toHaveBeenCalled();
+  });
+
+  it('case 2: coded EMAIL_FORMAT from server → field error, no banner, no capture', async () => {
+    mockCreateInviteCode.mockRejectedValue(reasonedValidationError('EMAIL_FORMAT'));
+    const renderer = await renderAndOpenModal();
+
+    // A well-formed address bypasses the pre-flight so the request is genuinely issued
+    act(() => {
+      findByTestId(renderer.root, 'email-input').props.onChangeText('member@example.com');
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'generate-button').props.onPress();
+    });
+
+    expect(mockCreateInviteCode).toHaveBeenCalled();
+    const errorNode = findHostByTestId(renderer.root, 'email-input-error');
+    expect(errorNode.props.children).toBe(INVITE_INVALID_EMAIL_MESSAGE);
+    expect(hasHostTestId(renderer.root, 'generate-code-error-banner')).toBe(false);
+    expect(mockCaptureException).not.toHaveBeenCalled();
+  });
+
+  it('case 3: uncoded 400 → generic banner, no field error, one capture, no Alert', async () => {
+    const alertSpy = jest.spyOn(Alert, 'alert');
+    const thrown = new ValidationError(400, 'some server text');
+    mockCreateInviteCode.mockRejectedValue(thrown);
+    const renderer = await renderAndOpenModal();
+
+    act(() => {
+      findByTestId(renderer.root, 'email-input').props.onChangeText('member@example.com');
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'generate-button').props.onPress();
+    });
+
+    expect(hasHostTestId(renderer.root, 'generate-code-error-banner')).toBe(true);
+    // The banner's words, not just its presence: the legacy retry copy, and
+    // never the raw server text (which rides only in __DEV__ serverMessage).
+    expect(hasText(renderer.root, INVITE_GENERIC_FAILURE_COPY)).toBe(true);
+    expect(hasText(renderer.root, 'some server text')).toBe(false);
+    expect(hasHostTestId(renderer.root, 'email-input-error')).toBe(false);
+    // Alert must NOT be called — the old Alert.alert on failure is gone
+    expect(alertSpy).not.toHaveBeenCalled();
+
+    expect(mockCaptureException).toHaveBeenCalledTimes(1);
+    const [reportedError, context] = mockCaptureException.mock.calls[0];
+    expect(reportedError).toBeInstanceOf(Error);
+    expect(reportedError).not.toBe(thrown);
+    expect(context).toEqual({
+      tags: { feature: 'orbit-invite-create', status: '400', api_code: 'VALIDATION_ERROR' },
+    });
+
+    alertSpy.mockRestore();
+  });
+
+  it('case 4: coded but unrouted reason → generic banner, no field error, capture with validation_reason_routed:false', async () => {
+    const thrown = reasonedValidationError('GROUP_FULL');
+    mockCreateInviteCode.mockRejectedValue(thrown);
+    const renderer = await renderAndOpenModal();
+
+    act(() => {
+      findByTestId(renderer.root, 'email-input').props.onChangeText('member@example.com');
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'generate-button').props.onPress();
+    });
+
+    expect(hasHostTestId(renderer.root, 'generate-code-error-banner')).toBe(true);
+    // The screen renders its own legacy copy, NOT the GROUP_FULL copy that
+    // errors.ts selected for the reason — this screen does not route it.
+    expect(hasText(renderer.root, INVITE_GENERIC_FAILURE_COPY)).toBe(true);
+    expect(
+      hasText(renderer.root, 'This orbit is full — ask the orbit admin to make room'),
+    ).toBe(false);
+    expect(hasHostTestId(renderer.root, 'email-input-error')).toBe(false);
+
+    expect(mockCaptureException).toHaveBeenCalledTimes(1);
+    const [reportedError, context] = mockCaptureException.mock.calls[0];
+    expect(reportedError).toBeInstanceOf(Error);
+    expect(reportedError).not.toBe(thrown);
+    expect(context).toEqual({
+      tags: {
+        feature: 'orbit-invite-create',
+        validation_reason_routed: 'false',
+        status: '400',
+        api_code: 'VALIDATION_ERROR',
+      },
+    });
+  });
+
+  it('case RATE_LIMITED: rate limit error → banner with RATE_LIMIT_MESSAGE, no capture', async () => {
+    mockCreateInviteCode.mockRejectedValue(
+      new ApiError('Too many requests', 429, 'RATE_LIMITED', false),
+    );
+    const renderer = await renderAndOpenModal();
+
+    act(() => {
+      findByTestId(renderer.root, 'email-input').props.onChangeText('member@example.com');
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'generate-button').props.onPress();
+    });
+
+    expect(hasHostTestId(renderer.root, 'generate-code-error-banner')).toBe(true);
+    expect(
+      renderer.root
+        .findAllByType('Text' as unknown as React.ComponentType)
+        .some((n) => n.props.children === RATE_LIMIT_MESSAGE),
+    ).toBe(true);
+    expect(hasHostTestId(renderer.root, 'email-input-error')).toBe(false);
+    expect(mockCaptureException).not.toHaveBeenCalled();
+  });
+
+  it('case 404: orbit gone → not-found banner, no field error, no capture', async () => {
+    mockCreateInviteCode.mockRejectedValue(new NotFoundError());
+    const renderer = await renderAndOpenModal();
+
+    act(() => {
+      findByTestId(renderer.root, 'email-input').props.onChangeText('member@example.com');
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'generate-button').props.onPress();
+    });
+
+    expect(hasHostTestId(renderer.root, 'generate-code-error-banner')).toBe(true);
+    expect(
+      renderer.root
+        .findAllByType('Text' as unknown as React.ComponentType)
+        .some((n) => n.props.children === INVITE_ORBIT_GONE_COPY),
+    ).toBe(true);
+    expect(hasHostTestId(renderer.root, 'email-input-error')).toBe(false);
+    expect(mockCaptureException).not.toHaveBeenCalled();
+  });
+
+  it('case 7: host input node carries correct keyboard props', async () => {
+    const renderer = await renderAndOpenModal();
+
+    const hostInput = findHostByTestId(renderer.root, 'email-input');
+    expect(hostInput.props.keyboardType).toBe('email-address');
+    expect(hostInput.props.autoCapitalize).toBe('none');
+    expect(hostInput.props.autoCorrect).toBe(false);
+    expect(hostInput.props.maxLength).toBe(256);
+    expect(hostInput.props.textContentType).toBeUndefined();
+  });
+
+  it('case 6: retyping the email after a field error clears the field error node', async () => {
+    const renderer = await renderAndOpenModal();
+
+    // Trigger pre-flight field error
+    act(() => {
+      findByTestId(renderer.root, 'email-input').props.onChangeText('a@b');
+    });
+    await act(async () => {
+      findByTestId(renderer.root, 'generate-button').props.onPress();
+    });
+
+    expect(hasHostTestId(renderer.root, 'email-input-error')).toBe(true);
+
+    // User retypes — error should clear
+    act(() => {
+      findByTestId(renderer.root, 'email-input').props.onChangeText('member@example.com');
+    });
+
+    expect(hasHostTestId(renderer.root, 'email-input-error')).toBe(false);
+  });
+
+  it('case 5: 403 AuthError → not-allowed banner, no field error, no capture', async () => {
+    mockCreateInviteCode.mockRejectedValue(new AuthError(403, 'not creator'));
+    const renderer = await renderAndOpenModal();
+
+    act(() => {
+      findByTestId(renderer.root, 'email-input').props.onChangeText('member@example.com');
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'generate-button').props.onPress();
+    });
+
+    expect(hasHostTestId(renderer.root, 'generate-code-error-banner')).toBe(true);
+    expect(
+      renderer.root
+        .findAllByType('Text' as unknown as React.ComponentType)
+        .some((n) => n.props.children === INVITE_NOT_ALLOWED_COPY),
+    ).toBe(true);
+    expect(hasHostTestId(renderer.root, 'email-input-error')).toBe(false);
+    expect(mockCaptureException).not.toHaveBeenCalled();
   });
 });

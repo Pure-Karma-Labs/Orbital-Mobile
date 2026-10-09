@@ -9,6 +9,7 @@ import { ThemeProvider } from '../../theme';
 import { ResetPasswordScreen } from '../ResetPasswordScreen';
 import { ApiError, NetworkError, ValidationError } from '../../services/api/errors';
 import { PASSWORD_RULE_HINT } from '../../utils/validatePassword';
+import { bannerMessage, findByTestId, queryByText } from '../../testUtils/rtr';
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -55,12 +56,6 @@ function renderResetPasswordScreen(
   return renderer;
 }
 
-function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstance {
-  const found = root.findAll((node) => node.props.testID === testID);
-  if (found.length === 0) throw new Error(`No element with testID "${testID}"`);
-  return found[0];
-}
-
 function fillValidFields(root: ReactTestInstance): void {
   act(() => {
     findByTestId(root, 'reset-code-input').props.onChangeText('ABCD1234');
@@ -84,6 +79,10 @@ describe('ResetPasswordScreen — rendering', () => {
     expect(() => findByTestId(root, 'reset-code-input')).not.toThrow();
     expect(() => findByTestId(root, 'reset-new-password-input')).not.toThrow();
     expect(() => findByTestId(root, 'reset-confirm-password-input')).not.toThrow();
+    // No banner on first render — the never-set path. Pins `bannerMessage`'s
+    // host filter: `ErrorBanner` still carries its testID on the render that
+    // returns null, so an unfiltered lookup would find a hidden banner (#872).
+    expect(bannerMessage(root, 'reset-password-error-banner')).toBeUndefined();
   });
 
   it('renders the submit button', () => {
@@ -251,16 +250,7 @@ describe('ResetPasswordScreen — validation', () => {
       findByTestId(root, 'reset-submit-button').props.onPress();
     });
 
-    const findMismatchBanner = () =>
-      root
-        .findAllByType('Text' as unknown as React.ComponentType)
-        .find(
-          (node) =>
-            typeof node.props.children === 'string' &&
-            node.props.children === 'Passwords do not match',
-        );
-
-    expect(findMismatchBanner()).toBeDefined();
+    expect(queryByText(root, 'Passwords do not match')).toBeDefined();
 
     act(() => {
       findByTestId(root, 'reset-new-password-input').props.onChangeText('short');
@@ -271,7 +261,7 @@ describe('ResetPasswordScreen — validation', () => {
       findByTestId(root, 'reset-submit-button').props.onPress();
     });
 
-    expect(findMismatchBanner()).toBeUndefined();
+    expect(queryByText(root, 'Passwords do not match')).toBeUndefined();
     expect(findByTestId(root, 'reset-new-password-input-error').props.children).toBe(
       'Password must be at least 12 characters',
     );
@@ -350,6 +340,57 @@ describe('ResetPasswordScreen — error handling', () => {
     expect(findByTestId(root, 'reset-code-input-error').props.children).toBe(
       'Invalid or expired code',
     );
+  });
+
+  it('routes a coded EMAIL_FORMAT ValidationError to the banner, not the code field', async () => {
+    mockResetPassword.mockRejectedValue(
+      new ValidationError(
+        400,
+        JSON.stringify({
+          error: 'VALIDATION_ERROR',
+          message: 'Invalid email format',
+          details: { code: 'EMAIL_FORMAT' },
+        }),
+      ),
+    );
+    const renderer = renderResetPasswordScreen();
+    const root = renderer.root;
+    fillValidFields(root);
+
+    await act(async () => {
+      findByTestId(root, 'reset-submit-button').props.onPress();
+    });
+
+    expect(bannerMessage(root, 'reset-password-error-banner')).toBe(
+      'Please enter a valid email address',
+    );
+    expect(queryByText(root, 'Invalid or expired code')).toBeUndefined();
+    expect(() => findByTestId(root, 'reset-code-input-error')).toThrow();
+  });
+
+  it('routes any reasoned ValidationError to the banner, never blaming the code field', async () => {
+    mockResetPassword.mockRejectedValue(
+      new ValidationError(
+        400,
+        JSON.stringify({
+          error: 'VALIDATION_ERROR',
+          message: 'x',
+          details: { code: 'INVITE_EXPIRED' },
+        }),
+      ),
+    );
+    const renderer = renderResetPasswordScreen();
+    const root = renderer.root;
+    fillValidFields(root);
+
+    await act(async () => {
+      findByTestId(root, 'reset-submit-button').props.onPress();
+    });
+
+    expect(bannerMessage(root, 'reset-password-error-banner')).toBe(
+      'This invite code has expired — ask for a new invite',
+    );
+    expect(() => findByTestId(root, 'reset-code-input-error')).toThrow();
   });
 
   it('clears the code field error when the code is edited', async () => {

@@ -3,12 +3,13 @@
  */
 
 import React from 'react';
-import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'react-test-renderer';
+import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../../theme';
 import { ForgotPasswordScreen } from '../ForgotPasswordScreen';
-import { ApiError, NetworkError } from '../../services/api/errors';
+import { ApiError, NetworkError, ValidationError } from '../../services/api/errors';
 import { RATE_LIMIT_MESSAGE } from '../../utils/errorMessages';
+import { bannerMessage, findByTestId, queryByText } from '../../testUtils/rtr';
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -55,12 +56,6 @@ function renderForgotPasswordScreen(
   return renderer;
 }
 
-function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstance {
-  const found = root.findAll((node) => node.props.testID === testID);
-  if (found.length === 0) throw new Error(`No element with testID "${testID}"`);
-  return found[0];
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -75,6 +70,9 @@ describe('ForgotPasswordScreen — rendering', () => {
     const root = renderer.root;
     expect(() => findByTestId(root, 'forgot-email-input')).not.toThrow();
     expect(() => findByTestId(root, 'forgot-submit-button')).not.toThrow();
+    // No banner on first render — pins `bannerMessage`'s host filter here as
+    // in Login and ResetPassword (#872).
+    expect(bannerMessage(root, 'forgot-password-error-banner')).toBeUndefined();
   });
 
   it('renders the back link', () => {
@@ -101,7 +99,7 @@ describe('ForgotPasswordScreen — rendering', () => {
 });
 
 describe('ForgotPasswordScreen — validation', () => {
-  it('shows error when email is empty on submit', async () => {
+  it('shows the empty-field message when email is empty on submit', async () => {
     const renderer = renderForgotPasswordScreen();
     const root = renderer.root;
 
@@ -109,17 +107,13 @@ describe('ForgotPasswordScreen — validation', () => {
       findByTestId(root, 'forgot-submit-button').props.onPress();
     });
 
-    const allText = root.findAllByType('Text' as unknown as React.ComponentType);
-    const errorText = allText.find(
-      (node) =>
-        typeof node.props.children === 'string' &&
-        node.props.children.toLowerCase().includes('email'),
+    expect(bannerMessage(root, 'forgot-password-error-banner')).toBe(
+      'Please enter your email address',
     );
-    expect(errorText).toBeDefined();
     expect(mockRequestPasswordReset).not.toHaveBeenCalled();
   });
 
-  it('shows error when email has no @ symbol', async () => {
+  it('shows the invalid-format message when email has no @ symbol', async () => {
     const renderer = renderForgotPasswordScreen();
     const root = renderer.root;
 
@@ -131,13 +125,27 @@ describe('ForgotPasswordScreen — validation', () => {
       findByTestId(root, 'forgot-submit-button').props.onPress();
     });
 
-    const allText = root.findAllByType('Text' as unknown as React.ComponentType);
-    const errorText = allText.find(
-      (node) =>
-        typeof node.props.children === 'string' &&
-        node.props.children.toLowerCase().includes('email'),
+    expect(bannerMessage(root, 'forgot-password-error-banner')).toBe(
+      'Please enter a valid email address',
     );
-    expect(errorText).toBeDefined();
+    expect(mockRequestPasswordReset).not.toHaveBeenCalled();
+  });
+
+  it('blocks a dotless domain pre-flight without calling requestPasswordReset', async () => {
+    const renderer = renderForgotPasswordScreen();
+    const root = renderer.root;
+
+    act(() => {
+      findByTestId(root, 'forgot-email-input').props.onChangeText('a@b');
+    });
+
+    await act(async () => {
+      findByTestId(root, 'forgot-submit-button').props.onPress();
+    });
+
+    expect(bannerMessage(root, 'forgot-password-error-banner')).toBe(
+      'Please enter a valid email address',
+    );
     expect(mockRequestPasswordReset).not.toHaveBeenCalled();
   });
 });
@@ -183,6 +191,80 @@ describe('ForgotPasswordScreen — error handling', () => {
       (node) => node.props.children === RATE_LIMIT_MESSAGE,
     );
     expect(errorText).toBeDefined();
+  });
+
+  it('shows the curated email copy on a coded EMAIL_FORMAT ValidationError', async () => {
+    mockRequestPasswordReset.mockRejectedValue(
+      new ValidationError(
+        400,
+        JSON.stringify({
+          error: 'VALIDATION_ERROR',
+          message: 'Invalid email format',
+          details: { code: 'EMAIL_FORMAT' },
+        }),
+      ),
+    );
+    const renderer = renderForgotPasswordScreen();
+    const root = renderer.root;
+
+    act(() => {
+      findByTestId(root, 'forgot-email-input').props.onChangeText('alice@example.com');
+    });
+
+    await act(async () => {
+      findByTestId(root, 'forgot-submit-button').props.onPress();
+    });
+
+    expect(bannerMessage(root, 'forgot-password-error-banner')).toBe(
+      'Please enter a valid email address',
+    );
+  });
+
+  it('shows generic copy for a reason this route cannot emit, not another route\'s curated text', async () => {
+    mockRequestPasswordReset.mockRejectedValue(
+      new ValidationError(
+        400,
+        JSON.stringify({
+          error: 'VALIDATION_ERROR',
+          message: 'x',
+          details: { code: 'INVITE_EXPIRED' },
+        }),
+      ),
+    );
+    const renderer = renderForgotPasswordScreen();
+    const root = renderer.root;
+
+    act(() => {
+      findByTestId(root, 'forgot-email-input').props.onChangeText('alice@example.com');
+    });
+
+    await act(async () => {
+      findByTestId(root, 'forgot-submit-button').props.onPress();
+    });
+
+    expect(bannerMessage(root, 'forgot-password-error-banner')).toBe('Invalid request');
+  });
+
+  it('shows the generic validation copy, not the server error, on an unreasoned ValidationError', async () => {
+    mockRequestPasswordReset.mockRejectedValue(
+      new ValidationError(
+        400,
+        JSON.stringify({ error: 'VALIDATION_ERROR', message: 'email must be a string' }),
+      ),
+    );
+    const renderer = renderForgotPasswordScreen();
+    const root = renderer.root;
+
+    act(() => {
+      findByTestId(root, 'forgot-email-input').props.onChangeText('alice@example.com');
+    });
+
+    await act(async () => {
+      findByTestId(root, 'forgot-submit-button').props.onPress();
+    });
+
+    expect(bannerMessage(root, 'forgot-password-error-banner')).toBe('Invalid request');
+    expect(queryByText(root, 'Server error — please try again')).toBeUndefined();
   });
 
   it('shows network error message on NetworkError', async () => {

@@ -3,6 +3,35 @@
   <uses-permission android:name="android.permission.INTERNET" />
   <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+  <!--
+    Issue #878 (save media to the device). Both storage permissions are scoped
+    to API 24-28, where MediaStore has no usable insert API and a gallery save
+    has to go through Environment.getExternalStoragePublicDirectory(). On API
+    29+ the app writes its own MediaStore rows with no permission at all.
+
+    WRITE: @dr.pogodin/react-native-fs declares this UNSCOPED, so
+    tools:replace is what keeps our maxSdkVersion in the merged manifest
+    instead of the library's "every API level".
+
+    READ: declared only to SUPPRESS the merger's implied unscoped
+    READ_EXTERNAL_STORAGE (which it synthesises from a WRITE declaration and
+    which was present in the 1.7.6 merged manifest). We never read shared
+    storage. Note that on API 24-28 a WRITE grant implies read access anyway —
+    that is the accepted trade-off for gallery placement on Android 7-9.
+
+    Enforced by `android-storage-scoped` in
+    scripts/check-security-invariants.mjs (source) and by the merged-manifest
+    gate in .github/workflows/build.yml (shipped artefact).
+  -->
+  <uses-permission
+    android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+    android:maxSdkVersion="28"
+    tools:replace="android:maxSdkVersion" />
+  <uses-permission
+    android:name="android.permission.READ_EXTERNAL_STORAGE"
+    android:maxSdkVersion="28"
+    tools:replace="android:maxSdkVersion" />
+
   <application
     android:name=".MainApplication"
     android:label="@string/app_name"

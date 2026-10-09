@@ -1620,6 +1620,284 @@ try {
 }
 
 // ---------------------------------------------------------------------------
+// 21. Media export: native write pins (#878)
+// ---------------------------------------------------------------------------
+
+// packages/orbital-media-export writes decrypted media OUT of the app, to the
+// photo library and to a user-chosen destination. Four properties of that
+// writer are plain text in two native files, are invisible to every JS test,
+// and each one fails SILENTLY (the save still works) while changing what the
+// app does to user data or to its App Store privacy posture:
+//
+//   1. `asCopy:YES` on the document picker. With asCopy:NO the picker hands
+//      the FILE to the destination provider instead of a copy, and a provider
+//      may move it — out of MEDIA_DIR, which is the app's durable archive
+//      because the server may evict the ciphertext after confirmArchived.
+//   2. Add-only photo access. PHAccessLevelReadWrite (or the deprecated
+//      no-argument -authorizationStatus / -requestAuthorization:) prompts for
+//      FULL library access: read of every photo the user owns, for a feature
+//      that only ever adds. That is also the difference between needing
+//      NSPhotoLibraryAddUsageDescription and needing the read usage string.
+//   3. `shouldMoveFile`. PHAssetResourceCreationOptions can MOVE the source
+//      into the library, deleting it. One line, no error, archive gone.
+//   4. Required-reason APIs. The module calls none, which is the entire
+//      argument for leaving ios/OrbitalMobile/PrivacyInfo.xcprivacy alone
+//      (plan-review finding 7). A single -attributesOfItemAtPath: or statfs()
+//      added later would make the shipped privacy manifest wrong, and App
+//      Review catches that at submission, not here.
+//
+// On Android the property is "never touch the source": the writer copies into
+// MediaStore (or the public directory on API 24-28) and must not delete or
+// rename what it read.
+//
+// Both files are read as NAMED files — a missing one is a violation, not a
+// pass — and the window is anchored on the file's own first line so that
+// EVERY function, including the static helpers above @implementation, is
+// scanned. checkWindowedPins strips comment lines and trailing comments, so a
+// pin can never be satisfied by prose (this file's own header comment names
+// every forbidden API, and that must not count as calling one).
+
+const MEDIA_EXPORT_PKG = join('packages', 'orbital-media-export');
+const MEDIA_EXPORT_MM = join(MEDIA_EXPORT_PKG, 'ios', 'OrbitalMediaExport.mm');
+const MEDIA_EXPORT_KT = join(
+  MEDIA_EXPORT_PKG,
+  'android',
+  'src',
+  'main',
+  'java',
+  'com',
+  'orbital',
+  'mediaexport',
+  'OrbitalMediaExportModule.kt',
+);
+const ME_ISSUE = '#878';
+const ME_NATIVE_RULE = 'media-export-native-pins';
+
+checkWindowedPins(
+  MEDIA_EXPORT_MM,
+  ME_NATIVE_RULE,
+  /^#import "OrbitalMediaExport\.h"[\s\S]*/m,
+  'OrbitalMediaExport.mm',
+  [
+    // The picker exports COPIES.
+    'asCopy:YES',
+    // Add-only on both the query and the request. Pinning the level to each
+    // call site is what stops a decorative PHAccessLevelAddOnly elsewhere in
+    // the file from satisfying the rule while the real call asks for more.
+    'authorizationStatusForAccessLevel:PHAccessLevelAddOnly',
+    'requestAuthorizationForAccessLevel:PHAccessLevelAddOnly',
+    // The add path stays PhotoKit asset CREATION (no library mutation API).
+    'PHAssetCreationRequest',
+    // Aliasing is copy-on-write, not a byte copy of up to 50 MB per item.
+    'clonefile(',
+    // The picker is presented from RN's own top-most controller, which is what
+    // lets it appear over the lightbox Modal.
+    'RCTPresentedViewController()',
+  ],
+  [
+    // 1-3 above. `setShouldMoveFile` is a SEPARATE pin because `includes()` is
+    // case-sensitive: `[options setShouldMoveFile:YES]` is the exact semantic
+    // equivalent of `options.shouldMoveFile = YES`, and the capital S after
+    // `set` means the property-form pin does not match it. Found by mutation
+    // test (case 5), not by reading the code — the same trap applies to every
+    // ObjC property below.
+    'shouldMoveFile',
+    'setShouldMoveFile',
+    'PHAccessLevelReadWrite',
+    'requestAuthorization:',
+    'authorizationStatus]',
+    // 4: the required-reason API list from Apple's "File timestamp",
+    // "Disk space", "System boot time" and "User defaults" categories that a
+    // file writer would plausibly reach for. `stat(` also covers fstat(/lstat(
+    // and `getattrlist` covers getattrlistbulk/fgetattrlist. The NSURL*Key
+    // spellings are the -getResourceValue:forKey: route to the same data, and
+    // the capitalised `VolumeAvailableCapacity` catches
+    // NSURLVolumeAvailableCapacityKey (and the …ForImportantUsage variant),
+    // which the camelCase pin alone would miss.
+    'attributesOfItemAtPath',
+    'NSFileSize',
+    'NSFileCreationDate',
+    'NSFileModificationDate',
+    'NSURLCreationDateKey',
+    'NSURLContentModificationDateKey',
+    'getattrlist',
+    'statfs',
+    'statvfs',
+    'NSFileSystemFreeSize',
+    'volumeAvailableCapacity',
+    'VolumeAvailableCapacity',
+    'NSUserDefaults',
+    'stat(',
+  ],
+  ME_ISSUE,
+);
+
+checkWindowedPins(
+  MEDIA_EXPORT_KT,
+  ME_NATIVE_RULE,
+  /^package com\.orbital\.mediaexport[\s\S]*/m,
+  'OrbitalMediaExportModule.kt',
+  [
+    // The three destinations the plan committed to: Pictures/Orbital,
+    // Movies/Orbital, Download/Orbital (never DCIM, which is what
+    // @react-native-camera-roll/camera-roll does on API 29+).
+    'Environment.DIRECTORY_PICTURES',
+    'Environment.DIRECTORY_MOVIES',
+    'Environment.DIRECTORY_DOWNLOADS',
+    // A half-written export is never visible in the gallery.
+    'IS_PENDING',
+    // API 24-28 placement depends on the scanner; without it the file exists
+    // but no gallery shows it.
+    'MediaScannerConnection.scanFile',
+  ],
+  [
+    // Never delete or rename the source. Scope is honest: this catches the
+    // realistic one-liners on the variable the writer actually holds
+    // (`sourceFile`) and on a freshly constructed File(sourcePath). An alias
+    // through a third variable would evade it — the code review and the
+    // residue checks in the smoke matrix are the backstop there.
+    'sourceFile.delete(',
+    'sourceFile.renameTo(',
+    'File(sourcePath).delete(',
+    'File(sourcePath).renameTo(',
+  ],
+  ME_ISSUE,
+);
+
+// ---------------------------------------------------------------------------
+// 22. iOS photo-library ADD usage description (#878)
+// ---------------------------------------------------------------------------
+
+// Without NSPhotoLibraryAddUsageDescription, -requestAuthorizationForAccessLevel:
+// does not prompt — it CRASHES the app the first time a user taps Save. The
+// existing NSPhotoLibraryUsageDescription does not cover the add-only level.
+// Nothing in JS or in a unit test can observe the key, and CI never runs the
+// app, so this static check is the only PR-time detector.
+//
+// XML comments are stripped first: a commented-out key must not satisfy it.
+
+const ME_INFO_PLIST = join('ios', 'OrbitalMobile', 'Info.plist');
+const ME_PLIST_RULE = 'ios-photo-add-usage';
+const ME_PLIST_KEY = 'NSPhotoLibraryAddUsageDescription';
+
+try {
+  const plistText = readFileSync(ME_INFO_PLIST, 'utf8').replace(/<!--[\s\S]*?-->/g, '');
+  const usage = plistText.match(
+    new RegExp(`<key>${ME_PLIST_KEY}</key>\\s*<string>([\\s\\S]*?)</string>`),
+  );
+  if (usage === null) {
+    violations.push(
+      `  ${ME_INFO_PLIST}:0  [${ME_PLIST_RULE}]  no <key>${ME_PLIST_KEY}</key> followed by a <string> — the first add-only photo permission request crashes instead of prompting (${ME_ISSUE})`,
+    );
+  } else if (usage[1].trim().length === 0) {
+    violations.push(
+      `  ${ME_INFO_PLIST}:0  [${ME_PLIST_RULE}]  ${ME_PLIST_KEY} is empty — App Review rejects an empty purpose string, and iOS shows the user no reason (${ME_ISSUE})`,
+    );
+  }
+} catch {
+  violations.push(
+    `  ${ME_INFO_PLIST}:0  [${ME_PLIST_RULE}]  Info.plist not found — the photo-library add usage string cannot be verified and the rule would pass vacuously (${ME_ISSUE})`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 23. Android storage permissions stay scoped to API 24-28 (#878)
+// ---------------------------------------------------------------------------
+
+// The gallery save on Android 7-9 needs WRITE_EXTERNAL_STORAGE. Unscoped, that
+// same declaration on API 29+ is a Play Data Safety problem (broad access to
+// all shared storage) for a feature that only writes its own files, and the
+// implied READ it drags in would let the app read every photo on the device.
+// @dr.pogodin/react-native-fs declares WRITE unscoped, so the app manifest's
+// maxSdkVersion + tools:replace is the only thing keeping the shipped manifest
+// narrow — and a merge conflict there is silent.
+//
+// This rule reads the SOURCE manifest. The merged-manifest gate in
+// .github/workflows/build.yml is the shipped-artefact check (it also proves
+// the implied READ really was suppressed). Comments are stripped so a
+// commented-out declaration cannot satisfy the rule.
+
+const ME_APP_MANIFEST = join('android', 'app', 'src', 'main', 'AndroidManifest.xml');
+const ME_MANIFEST_RULE = 'android-storage-scoped';
+const ME_SCOPED_PERMISSIONS = [
+  'android.permission.WRITE_EXTERNAL_STORAGE',
+  'android.permission.READ_EXTERNAL_STORAGE',
+];
+// Permissions that must never be declared: each one widens the app past
+// "write the files the user asked us to save".
+const ME_FORBIDDEN_PERMISSIONS = [
+  'READ_MEDIA_IMAGES',
+  'READ_MEDIA_VIDEO',
+  'READ_MEDIA_VISUAL_USER_SELECTED',
+  'MANAGE_EXTERNAL_STORAGE',
+];
+
+try {
+  const manifestText = readFileSync(ME_APP_MANIFEST, 'utf8').replace(/<!--[\s\S]*?-->/g, '');
+  const elements = manifestText.match(/<uses-permission[\s\S]*?\/?>/g) ?? [];
+
+  for (const permission of ME_SCOPED_PERMISSIONS) {
+    const declarations = elements.filter((el) => el.includes(`"${permission}"`));
+    if (declarations.length === 0) {
+      violations.push(
+        `  ${ME_APP_MANIFEST}:0  [${ME_MANIFEST_RULE}]  ${permission} is not declared — the API 24-28 gallery save needs it, and declaring it only in a library manifest makes it UNSCOPED in the merged manifest (${ME_ISSUE})`,
+      );
+      continue;
+    }
+    for (const declaration of declarations) {
+      if (!/android:maxSdkVersion\s*=\s*"28"/.test(declaration)) {
+        violations.push(
+          `  ${ME_APP_MANIFEST}:0  [${ME_MANIFEST_RULE}]  ${permission} is declared without android:maxSdkVersion="28" — on API 29+ this is broad shared-storage access the app does not use (${ME_ISSUE})`,
+        );
+      }
+    }
+  }
+
+  for (const permission of ME_FORBIDDEN_PERMISSIONS) {
+    if (manifestText.includes(permission)) {
+      violations.push(
+        `  ${ME_APP_MANIFEST}:0  [${ME_MANIFEST_RULE}]  ${permission} must not be declared — saving writes only the app's own files and never reads shared storage (${ME_ISSUE})`,
+      );
+    }
+  }
+} catch {
+  violations.push(
+    `  ${ME_APP_MANIFEST}:0  [${ME_MANIFEST_RULE}]  app AndroidManifest.xml not found — the storage-permission scope cannot be verified and the rule would pass vacuously (${ME_ISSUE})`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// #878 INSERTION POINT for the media-export SERVICE invariants
+// ---------------------------------------------------------------------------
+//
+// Rules 1, 2, 3 and 7 of the #878 plan land HERE, with the service/UI half of
+// PR 1 (they have nothing to assert until those files exist):
+//
+//   media-export-import-restricted  — only src/services/mediaExportService.ts
+//                                     imports 'orbital-media-export', plus a
+//                                     non-vacuity check that it still does.
+//   media-export-disclosure-gate    — performExport() is the only native-call
+//                                     site and calls assertDisclosureAcknowledged(
+//                                     first; every exported entry point calls
+//                                     ensureExportDisclosure( before its first
+//                                     await. Zero sites is a violation.
+//   media-export-no-name-logging    — the service, runner, sanitizer and the
+//                                     package's src/index.tsx +
+//                                     src/NativeOrbitalMediaExport.ts carry no
+//                                     file_name|fileName|displayName|localPath|
+//                                     sourcePath|mediaId on a log or Sentry
+//                                     line; the normalizer never interpolates
+//                                     the native message; the .mm/.kt contain
+//                                     no NSLog|os_log|android.util.Log.
+//   media-export-wipe-wired         — localWipe contains cancelAllExports( and
+//                                     the orbital-export unlink;
+//                                     cleanupOrphanedChunks contains the unlink.
+//
+// Keep them as SEPARATE rules rather than folding them into rule 21: the rule
+// name is what the violation line prints, and "native-pins" must not start
+// meaning "anything to do with export".
+
+// ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------
 

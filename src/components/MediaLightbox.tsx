@@ -371,7 +371,20 @@ export function MediaLightbox({
       announce(NOT_SAVEABLE_MESSAGE);
       return;
     }
-    if (saveStatuses[mediaId]?.phase === 'saving') return;
+
+    // Double-press guard, read from a REF rather than from `saveStatuses`.
+    // Two presses in the same tick both see the pre-press state map — React
+    // has not re-rendered in between — so a state-based guard lets both
+    // through and two copies land in Photos. The ref is written below, before
+    // anything awaits, so the second press in the same tick sees it.
+    if (saveControllersRef.current.has(mediaId)) return;
+
+    // Drop any ✓ badge before starting. Its 2s timer is keyed on `savedId`,
+    // and left armed it fires MID-SAVE and deletes this save's 'saving'
+    // status — which, with the old state-based guard, un-latched it. The ref
+    // guard above now covers that, but a pill that vanishes while the save is
+    // still running is wrong on its own.
+    setSavedId(null);
 
     const controller = new AbortController();
     saveControllersRef.current.set(mediaId, controller);
@@ -406,7 +419,7 @@ export function MediaLightbox({
           [mediaId]: { phase: 'error', message: "Couldn't save" },
         }));
       });
-  }, [mediaItems, currentIndex, exportable, saveStatuses, announce, clearStatus]);
+  }, [mediaItems, currentIndex, exportable, announce, clearStatus]);
 
   /** iOS only — Modal.onDismiss fires after the dismiss animation completes. */
   const handleDismiss = useCallback(() => {

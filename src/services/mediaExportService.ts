@@ -61,8 +61,10 @@ import { useAppStore } from '../stores/useAppStore';
 import { captureError } from './telemetry';
 import {
   downloadAndDecryptMedia,
+  DOWNLOAD_ABORTED_MESSAGE,
   InsufficientSpaceError,
 } from './mediaDownloadService';
+import { AuthError, NotFoundError } from './api/errors';
 import { abortable, isExportAbortError } from './media/abortable';
 import {
   buildExportFileName,
@@ -388,20 +390,32 @@ function offerFilesInstead(title: string, body: string): Promise<PermissionDecis
 }
 
 /**
- * Acquire whatever the photo route needs on this platform.
+ * Acquire whatever THIS ROUTE needs on this platform.
  *
- * iOS: add-only PhotoKit authorization, requested through the module.
- * `.limited` cannot occur under add-only access and is mapped to granted
- * defensively by the native layer.
+ * **Android is route-independent below API 29.** Both destinations are shared
+ * storage there — `Pictures/Orbital` and `Movies/Orbital` for the gallery,
+ * `Download/Orbital` for documents — and all three need
+ * `WRITE_EXTERNAL_STORAGE`. Requesting it for the photo route only (as this
+ * did before the #879 review) turned a denied document save into a generic
+ * "Couldn't save" with no prompt and no route to Settings. API 29+ writes
+ * through MediaStore's own collections and needs nothing.
  *
- * Android 29+: no permission at all (MediaStore inserts into its own
- * collections). Android 24-28: WRITE_EXTERNAL_STORAGE, which on those versions
- * also grants read of shared storage — accepted, 2026-10-09, in exchange for
- * gallery placement on Android 7-9.
+ * The grant on API 24-28 also confers read of shared storage; accepted
+ * 2026-10-09 in exchange for gallery placement on Android 7-9.
  *
- * NEVER called outside a user-initiated save.
+ * There is no "Save to Files instead" offer on Android: the document
+ * destination needs the very permission that was just refused.
+ *
+ * **iOS** gates only the photo library — add-only PhotoKit authorization,
+ * requested through the module. `.limited` cannot occur under add-only access
+ * and is mapped to granted defensively by the native layer. The document
+ * picker is the user's own file chooser and needs no permission at all.
+ *
+ * NEVER called outside a user-initiated save, and always before any download.
  */
-async function ensurePhotoRouteAccess(): Promise<PermissionDecision> {
+async function ensureExportPermission(
+  route: ExportRoute & { kind: 'photo' | 'document' },
+): Promise<PermissionDecision> {
   if (Platform.OS === 'android') {
     if (Number(Platform.Version) > ANDROID_LEGACY_STORAGE_MAX_SDK) {
       return 'granted';
@@ -413,12 +427,16 @@ async function ensurePhotoRouteAccess(): Promise<PermissionDecision> {
     if (result === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN) {
       await openSettingsAlert(
         'Storage access needed',
-        'Orbital needs permission to save photos and videos to your gallery. You can turn it on in Settings.',
+        route.kind === 'photo'
+          ? 'Orbital needs permission to save photos and videos to your gallery. You can turn it on in Settings.'
+          : 'Orbital needs permission to save files to your device. You can turn it on in Settings.',
       );
       return 'denied';
     }
     return 'denied';
   }
+
+  if (route.kind === 'document') return 'granted';
 
   const status = await requestPhotoAddPermission();
   if (status === 'granted' || status === 'notRequired') return 'granted';
@@ -522,6 +540,20 @@ function outcomeForCode(code: MediaExportErrorCode): Exclude<ExportOutcome, 'sav
  * `EEXPORT` and the unclassifiable tail are the two cases worth a Sentry
  * event: they mean the writer broke in a way we did not design for. The event
  * carries a fixed Error plus the code as a tag — never a path, a name or an id.
+ *
+ * Everything the DOWNLOAD can legitimately fail with is classified ABOVE that
+ * tail, and none of it is captured. Each was reaching Sentry as a spurious
+ * `EUNKNOWN` before, which is noise that would have buried a real writer bug:
+ *  - `NotFoundError` (404) — the server evicted the ciphertext and there is no
+ *    local copy. Ordinary, expected, and already the download path's own
+ *    `unavailable` state.
+ *  - `DOWNLOAD_ABORTED_MESSAGE` — the shared download's OWNER walked away
+ *    while we were joined to it. `failed` (not `cancelled`), because WE did
+ *    not cancel and the user should be invited to retry; this is exactly the
+ *    "a joined abort that isn't ours is reported as failed" rule in
+ *    `media/abortable.ts`'s header, and the reason it has no retry-once.
+ *  - `AuthError` — the session died mid-save. The auth layer already handles
+ *    the 401; a second report of it here says nothing about export.
  */
 function resultForError(e: unknown): ExportResult {
   if (isExportAbortError(e)) {
@@ -531,6 +563,19 @@ function resultForError(e: unknown): ExportResult {
   if (e instanceof InsufficientSpaceError) {
     warnCode('ENOSPC');
     return { outcome: 'noSpace' };
+  }
+  if (e instanceof NotFoundError) {
+    warnCode('EEVICTED');
+    return { outcome: 'unavailable' };
+  }
+  if (e instanceof AuthError) {
+    warnCode('EAUTH');
+    return { outcome: 'failed' };
+  }
+  if (e instanceof Error && e.message === DOWNLOAD_ABORTED_MESSAGE) {
+    // Distinct from ExportAbortError: that one is OUR signal firing.
+    warnCode('EJOINEDABORT');
+    return { outcome: 'failed' };
   }
   if (isMediaExportError(e)) {
     const code = e.code;
@@ -616,17 +661,18 @@ export async function saveMediaItem(
   }
 
   // --- Gate 2: permission, still before any download ----------------------
-  if (route.kind === 'photo') {
-    const decision = await ensurePhotoRouteAccess();
-    if (decision === 'denied') {
-      warnCode('EPERMISSION');
-      return { outcome: 'permission' };
-    }
-    if (decision === 'useFiles') {
-      // The user chose the Files destination. The extension stays the photo
-      // one — it describes the bytes, not the destination.
-      route = { kind: 'document', extension: route.extension };
-    }
+  // Unconditional: which permission (if any) a route needs is the callee's
+  // decision, not this call site's. Branching here is what left the Android
+  // document route unpermissioned on API 24-28 (#879 review).
+  const decision = await ensureExportPermission(route);
+  if (decision === 'denied') {
+    warnCode('EPERMISSION');
+    return { outcome: 'permission' };
+  }
+  if (decision === 'useFiles') {
+    // The user chose the Files destination. The extension stays the photo
+    // one — it describes the bytes, not the destination.
+    route = { kind: 'document', extension: route.extension };
   }
 
   // --- Gate 3: access ------------------------------------------------------

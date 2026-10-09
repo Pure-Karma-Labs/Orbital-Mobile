@@ -29,7 +29,7 @@ import React from 'react';
 import { Platform, Dimensions } from 'react-native';
 import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'react-test-renderer';
 import { ThemeProvider } from '../../theme';
-import { MediaLightbox } from '../MediaLightbox';
+import { MediaLightbox, SAVED_BADGE_MS } from '../MediaLightbox';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -1002,6 +1002,93 @@ describe('MediaLightbox — Save states', () => {
     await pressSave(renderer);
 
     expect(mockSaveMediaItem).toHaveBeenCalledTimes(1);
+  });
+
+  // #879 review: the double-press guard used to read `saveStatuses`, which is
+  // STATE. Two presses in one tick both see the pre-press map (React has not
+  // re-rendered in between), so both started a save and two copies landed in
+  // Photos. The guard is now a ref, written before anything awaits.
+  it('starts ONE save when the button is pressed twice in the same tick', async () => {
+    mockSaveMediaItem.mockImplementation(() => new Promise(() => {}));
+    const renderer = renderLightbox();
+
+    await act(async () => {
+      const onPress = saveButton(renderer).props.onPress;
+      onPress();
+      onPress();
+    });
+
+    expect(mockSaveMediaItem).toHaveBeenCalledTimes(1);
+  });
+
+  // #879 review: the previous success's 2s badge timer is keyed on `savedId`.
+  // Left armed across a NEW save on the same item it fired mid-save and
+  // deleted that save's 'saving' status, un-latching the old state-based guard
+  // — a third press then produced a second copy. handleSave now drops the
+  // badge (and so the timer) before it starts.
+  //
+  // This is the ONE place in this file that touches fake timers: the bug is a
+  // timer deadline and nothing else can express it. Scoped to this test body
+  // with the drain -> clear -> restore discipline in a finally, never a
+  // describe-level afterEach (#834/#835).
+  it('a new save on the same item is not un-latched by the old badge timer', async () => {
+    jest.useFakeTimers();
+    try {
+      let settleSecond!: (result: unknown) => void;
+      mockSaveMediaItem
+        .mockResolvedValueOnce({ outcome: 'saved', destination: 'photos' })
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              settleSecond = resolve;
+            }),
+        );
+
+      const renderer = renderLightbox();
+
+      // 1. First save succeeds; the badge (and its 2s timer) is up.
+      await act(async () => {
+        saveButton(renderer).props.onPress();
+      });
+      expect(saveStatus(renderer)).toBe('STATUS:saved');
+
+      // 2. Second save starts well INSIDE the badge window.
+      act(() => {
+        jest.advanceTimersByTime(500);
+      });
+      await act(async () => {
+        saveButton(renderer).props.onPress();
+      });
+      expect(mockSaveMediaItem).toHaveBeenCalledTimes(2);
+      expect(saveStatus(renderer)).toBe('Downloading…');
+
+      // 3. The OLD timer's deadline passes. It must not touch this save.
+      act(() => {
+        jest.advanceTimersByTime(SAVED_BADGE_MS);
+      });
+      expect(saveStatus(renderer)).toBe('Downloading…');
+      expect(saveButton(renderer).props.accessibilityState.busy).toBe(true);
+
+      // 4. ...and the guard is still latched, so no third save can start.
+      await act(async () => {
+        saveButton(renderer).props.onPress();
+      });
+      expect(mockSaveMediaItem).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        settleSecond({ outcome: 'saved', destination: 'photos' });
+      });
+      expect(saveStatus(renderer)).toBe('STATUS:saved');
+    } finally {
+      try {
+        act(() => {
+          jest.runOnlyPendingTimers();
+        });
+      } finally {
+        jest.clearAllTimers();
+        jest.useRealTimers();
+      }
+    }
   });
 
   it('passes an AbortSignal and aborts it when the lightbox closes', async () => {

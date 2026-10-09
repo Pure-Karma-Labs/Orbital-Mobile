@@ -17,6 +17,7 @@ import {
   requestPhotoAddPermission,
   saveToPhotoLibrary,
 } from 'orbital-media-export';
+import { AuthError, NotFoundError } from '../api/errors';
 import type { MediaRow } from '../../database/repositories/mediaRepository';
 
 // ---------------------------------------------------------------------------
@@ -56,6 +57,11 @@ jest.mock('../mediaDownloadService', () => {
   }
   return {
     InsufficientSpaceError,
+    // The real sentinel string: mediaDownloadService normalizes every
+    // abort-path rejection to `new Error(DOWNLOAD_ABORTED_MESSAGE)`, and the
+    // export error mapping recognises it BY MESSAGE, so the test must use the
+    // same constant the service imports.
+    DOWNLOAD_ABORTED_MESSAGE: 'Download aborted',
     downloadAndDecryptMedia: jest.fn(),
   };
 });
@@ -585,6 +591,82 @@ describe('permission gate', () => {
     openSettings.mockRestore();
   });
 
+  // -------------------------------------------------------------------------
+  // #879 review: on API 24-28 BOTH destinations are shared storage —
+  // Pictures/Movies for the gallery, Download/Orbital for documents — so both
+  // need WRITE_EXTERNAL_STORAGE. Requesting it for the photo route only turned
+  // a denied document save into a generic "Couldn't save" with no prompt.
+  // -------------------------------------------------------------------------
+
+  it('Android 28: a DOCUMENT save requests storage permission before downloading', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath({ content_type: 'application/pdf', file_name: 'Statement.pdf' });
+    setAndroid(28);
+    const order: string[] = [];
+    const request = jest.spyOn(PermissionsAndroid, 'request').mockImplementation(async () => {
+      order.push('permission');
+      return 'granted' as never;
+    });
+    mockDownload.mockImplementation(async () => {
+      order.push('download');
+      return '/media/media-1.jpg';
+    });
+
+    expect(await saveMediaItem('media-1')).toEqual({
+      outcome: 'saved',
+      destination: 'files',
+    });
+    expect(request).toHaveBeenCalledWith(PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE);
+    expect(order).toEqual(['permission', 'download']);
+    request.mockRestore();
+  });
+
+  it('Android 28: a DENIED document save reports permission and downloads nothing', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath({ content_type: 'application/pdf', file_name: 'Statement.pdf' });
+    setAndroid(28);
+    const request = jest.spyOn(PermissionsAndroid, 'request').mockResolvedValue('denied' as never);
+
+    expect(await saveMediaItem('media-1')).toEqual({ outcome: 'permission' });
+    expect(mockDownload).not.toHaveBeenCalled();
+    expect(mockExportFiles).not.toHaveBeenCalled();
+    request.mockRestore();
+  });
+
+  it('Android 28: never_ask_again on a document save routes to Settings with file copy', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath({ content_type: 'application/pdf', file_name: 'Statement.pdf' });
+    setAndroid(28);
+    const request = jest
+      .spyOn(PermissionsAndroid, 'request')
+      .mockResolvedValue('never_ask_again' as never);
+    const openSettings = jest.spyOn(Linking, 'openSettings').mockResolvedValue();
+    answerAlert('Open Settings');
+
+    expect(await saveMediaItem('media-1')).toEqual({ outcome: 'permission' });
+    expect(alertSpy.mock.calls[0][0]).toBe('Storage access needed');
+    // Route-aware copy: a document save must not talk about "your gallery".
+    expect(alertSpy.mock.calls[0][1]).toContain('save files to your device');
+    expect(openSettings).toHaveBeenCalled();
+    request.mockRestore();
+    openSettings.mockRestore();
+  });
+
+  it('Android 29+: a document save requests nothing at all', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath({ content_type: 'application/pdf', file_name: 'Statement.pdf' });
+    setAndroid(33);
+    const request = jest.spyOn(PermissionsAndroid, 'request');
+
+    expect(await saveMediaItem('media-1')).toEqual({
+      outcome: 'saved',
+      destination: 'files',
+    });
+    expect(request).not.toHaveBeenCalled();
+    expect(mockRequestPhotoPermission).not.toHaveBeenCalled();
+    request.mockRestore();
+  });
+
   it('never requests storage permission outside a save', async () => {
     const request = jest.spyOn(PermissionsAndroid, 'request');
     acknowledgeDisclosure();
@@ -702,6 +784,64 @@ describe('source guards', () => {
     mockDownload.mockRejectedValue(new Error('No attachment keys available'));
 
     expect(await saveMediaItem('media-1')).toEqual({ outcome: 'failed' });
+  });
+
+  // -------------------------------------------------------------------------
+  // #879 review: three EXPECTED download failures were landing on the
+  // unclassifiable tail — `failed` plus a spurious `EUNKNOWN` Sentry event.
+  // Noise there is not harmless: it is what buries a real writer bug.
+  // -------------------------------------------------------------------------
+
+  it('maps evicted media (NotFoundError) to unavailable with NO Sentry event', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath();
+    mockDownload.mockRejectedValue(new NotFoundError());
+
+    expect(await saveMediaItem('media-1')).toEqual({ outcome: 'unavailable' });
+    expect(mockCaptureError).not.toHaveBeenCalled();
+  });
+
+  it('maps a dead session (AuthError) to failed with NO Sentry event', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath();
+    mockDownload.mockRejectedValue(new AuthError(401));
+
+    expect(await saveMediaItem('media-1')).toEqual({ outcome: 'failed' });
+    expect(mockCaptureError).not.toHaveBeenCalled();
+  });
+
+  it('maps a JOINED abort (the shared download owner walked away) to failed, no Sentry', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath();
+    // Not OUR signal: mediaDownloadService normalizes the owner's abort to
+    // this sentinel. `failed`, not `cancelled`, is deliberate — the user did
+    // not cancel, so they should be invited to retry (media/abortable.ts
+    // header, and the reason it has no retry-once rule).
+    mockDownload.mockRejectedValue(new Error('Download aborted'));
+
+    expect(await saveMediaItem('media-1')).toEqual({ outcome: 'failed' });
+    expect(mockCaptureError).not.toHaveBeenCalled();
+  });
+
+  it('still distinguishes OUR abort (cancelled) from a joined one (failed)', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath();
+    const controller = new AbortController();
+    let settleDownload!: (path: string) => void;
+    mockDownload.mockImplementation(
+      () =>
+        new Promise<string>((resolve) => {
+          settleDownload = resolve;
+        }),
+    );
+
+    const pending = saveMediaItem('media-1', controller.signal);
+    await flush();
+    controller.abort();
+
+    expect(await pending).toEqual({ outcome: 'cancelled' });
+    expect(mockCaptureError).not.toHaveBeenCalled();
+    settleDownload('/media/media-1.jpg');
   });
 });
 

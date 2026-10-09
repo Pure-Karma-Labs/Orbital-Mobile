@@ -1001,6 +1001,41 @@ describe('logout', () => {
     }
   });
 
+  // #879 review: the export teardown was pinned by a static invariant but
+  // never exercised at runtime. These drive the REAL mediaExportService (it is
+  // deliberately not mocked in this file) through the real logout.
+  it('aborts in-flight exports and sweeps the export staging dir (localWipe)', async () => {
+    const {
+      registerExportAbort,
+      currentExportEpoch,
+      EXPORT_STAGING_DIR,
+    } = require('../mediaExportService');
+
+    const controller = new AbortController();
+    const unregister = registerExportAbort(controller);
+    const epochBefore = currentExportEpoch();
+    mockExists.mockImplementation(async (path: string) => path === EXPORT_STAGING_DIR);
+    mockUnlink.mockResolvedValue(undefined);
+    mockReadDir.mockResolvedValue([]);
+
+    try {
+      await logout();
+
+      // cancelAllExports(): both halves — the registered controller and the
+      // epoch that performExport re-checks immediately before a native write.
+      expect(controller.signal.aborted).toBe(true);
+      expect(currentExportEpoch()).toBe(epochBefore + 1);
+      // clearMediaExportStaging(): the whole-directory sweep. The suffix sweep
+      // is a non-recursive readDir and structurally cannot reach in here.
+      expect(mockExists).toHaveBeenCalledWith(EXPORT_STAGING_DIR);
+      expect(mockUnlink).toHaveBeenCalledWith(EXPORT_STAGING_DIR);
+    } finally {
+      unregister();
+      mockExists.mockReset();
+      mockReadDir.mockReset();
+    }
+  });
+
   // #678: the epoch must bump BEFORE the store reset, or an in-flight mute
   // runner's rollback writes this account's target ids into the cleared store.
   it('bumps the notification sync epoch before resetting the store (localWipe)', async () => {
@@ -1164,6 +1199,50 @@ describe('deleteAccount', () => {
     }
     // ...and the unrelated cached file must survive
     expect(mockUnlink).not.toHaveBeenCalledWith('/mock/caches/photo.jpg');
+  });
+
+  // #879 review, and the ordering that matters most: an export that is
+  // mid-download when an account is deleted must be aborted BEFORE MEDIA_DIR
+  // goes, or it finishes, clears every `signal.aborted` check it already
+  // passed, and writes a decrypted copy to the photo library of a device whose
+  // account no longer exists.
+  it('on success: aborts exports BEFORE the MEDIA_DIR deletion, and sweeps the staging dir', async () => {
+    const { registerExportAbort, EXPORT_STAGING_DIR } = require('../mediaExportService');
+
+    // A jest.fn in the abort listener gives the synchronous abort an
+    // invocationCallOrder to compare against mockUnlink's.
+    const abortMarker = jest.fn();
+    const controller = new AbortController();
+    controller.signal.addEventListener('abort', () => abortMarker(), { once: true });
+    const unregister = registerExportAbort(controller);
+
+    const mediaFile = `${MOCK_DOC_DIR}/media/photo.jpg`;
+    mockExists.mockImplementation(
+      async (path: string) => path === `${MOCK_DOC_DIR}/media` || path === EXPORT_STAGING_DIR,
+    );
+    mockReadDir.mockImplementation(async (path: string) =>
+      path === `${MOCK_DOC_DIR}/media` ? [{ path: mediaFile, name: 'photo.jpg' }] : [],
+    );
+    mockUnlink.mockResolvedValue(undefined);
+
+    try {
+      expect(await deleteAccount('pw')).toEqual({ status: 'success' });
+
+      expect(abortMarker).toHaveBeenCalledTimes(1);
+      expect(mockUnlink).toHaveBeenCalledWith(EXPORT_STAGING_DIR);
+
+      const mediaUnlinkIndex = mockUnlink.mock.calls.findIndex(
+        (c: unknown[]) => c[0] === mediaFile,
+      );
+      expect(mediaUnlinkIndex).toBeGreaterThanOrEqual(0);
+      expect(abortMarker.mock.invocationCallOrder[0]).toBeLessThan(
+        mockUnlink.mock.invocationCallOrder[mediaUnlinkIndex],
+      );
+    } finally {
+      unregister();
+      mockExists.mockReset();
+      mockReadDir.mockReset();
+    }
   });
 
   it('on success: clears the avatar cache directory (#646)', async () => {

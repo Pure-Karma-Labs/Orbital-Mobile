@@ -1693,6 +1693,14 @@ checkWindowedPins(
     // The picker is presented from RN's own top-most controller, which is what
     // lets it appear over the lightbox Modal.
     'RCTPresentedViewController()',
+    // The staging directory NAME, pinned on the native side too (#879 review).
+    // JS owns the sweep — localWipe and cleanupOrphanedChunks delete
+    // `Caches/orbital-export` whole, pinned by `media-export-wipe-wired` — but
+    // NATIVE owns the writes into it. Renaming it here alone would leave every
+    // aliased plaintext copy in a directory no sweep looks at, surviving
+    // logout and account deletion, and nothing else in the tree would notice.
+    // checkWindowedPins strips comments, so the prose above cannot satisfy it.
+    'orbital-export',
   ],
   [
     // 1-3 above. `setShouldMoveFile` is a SEPARATE pin because `includes()` is
@@ -1940,40 +1948,80 @@ function meRead(file, rule, why) {
 }
 
 /**
- * Blank out comment lines and trailing `//` comments, PRESERVING line count
- * and byte offsets so index comparisons below stay meaningful.
+ * Blank out comments, PRESERVING line count and byte offsets so the index
+ * comparisons below stay meaningful.
  *
  * This is what stops a pin from being satisfied by prose: every one of these
  * files documents the very identifiers the rules forbid (this script does
  * too), and a mention must never count as a call.
+ *
+ * STRING-AWARE, and that is not cosmetic. The previous version blanked from
+ * the first `//` ANYWHERE on a line, which is NOT fail-safe in the direction
+ * its comment claimed: over-stripping also hides a FORBIDDEN substring, so
+ *
+ *     console.warn('[mediaExport]', 'file://' + fileName);
+ *
+ * had everything from `file://` onwards blanked and
+ * `media-export-no-name-logging` passed on a line that logs a user's file
+ * name. `file://` is the repo's own idiom for every local media URI, so this
+ * was reachable, not theoretical (#879 review; proven below in the mutation
+ * matrix). The scanner now tracks `'`, `"` and backtick state and only treats
+ * `//` or an inline block comment as a comment outside a string.
+ *
+ * HONEST SCOPE: quote state does not carry ACROSS lines, so a multi-line
+ * template literal containing `//` would still be mis-scanned. None of the
+ * named files has one, and the failure mode there is over-stripping within
+ * that literal only. Escapes are honoured (`'a\\'b'`), regex literals are not
+ * parsed (a `//` cannot appear in one — an empty regex is not valid syntax).
  */
 function meStripComments(text) {
   let inBlock = false;
   return text
     .split('\n')
-    .map((line) => {
+    .map((rawLine) => {
+      let line = rawLine;
       if (inBlock) {
         const end = line.indexOf('*/');
         if (end === -1) return ' '.repeat(line.length);
         inBlock = false;
-        return ' '.repeat(end + 2) + line.slice(end + 2);
+        line = ' '.repeat(end + 2) + line.slice(end + 2);
       }
-      const trimmed = line.trimStart();
-      if (trimmed.startsWith('//')) return ' '.repeat(line.length);
-      if (trimmed.startsWith('/*')) {
-        const end = line.indexOf('*/');
-        if (end === -1) {
-          inBlock = true;
-          return ' '.repeat(line.length);
+
+      let quote = null;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+
+        if (quote !== null) {
+          if (ch === '\\') {
+            i += 1;
+            continue;
+          }
+          if (ch === quote) quote = null;
+          continue;
         }
-        return ' '.repeat(end + 2) + line.slice(end + 2);
+
+        if (ch === "'" || ch === '"' || ch === '`') {
+          quote = ch;
+          continue;
+        }
+
+        if (ch === '/' && line[i + 1] === '/') {
+          return line.slice(0, i) + ' '.repeat(line.length - i);
+        }
+
+        if (ch === '/' && line[i + 1] === '*') {
+          const end = line.indexOf('*/', i + 2);
+          if (end === -1) {
+            inBlock = true;
+            return line.slice(0, i) + ' '.repeat(line.length - i);
+          }
+          // Blank the inline block comment in place; length is unchanged, so
+          // every offset after it still lines up with the raw file.
+          line = line.slice(0, i) + ' '.repeat(end + 2 - i) + line.slice(end + 2);
+          i = end + 1;
+          continue;
+        }
       }
-      if (trimmed.startsWith('*')) return ' '.repeat(line.length);
-      const slash = line.indexOf('//');
-      // Not inside a string literal: none of these files has a `//` in one
-      // (URLs live in config/env.ts), and over-stripping can only make a
-      // required pin fail, never make a forbidden one pass.
-      if (slash !== -1) return line.slice(0, slash) + ' '.repeat(line.length - slash);
       return line;
     })
     .join('\n');

@@ -3,12 +3,13 @@
  */
 
 import React from 'react';
-import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'react-test-renderer';
+import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../../theme';
 import { ForgotPasswordScreen } from '../ForgotPasswordScreen';
 import { ApiError, NetworkError, ValidationError } from '../../services/api/errors';
 import { RATE_LIMIT_MESSAGE } from '../../utils/errorMessages';
+import { bannerMessage, findByTestId, queryByText } from '../../testUtils/rtr';
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -55,29 +56,6 @@ function renderForgotPasswordScreen(
   return renderer;
 }
 
-function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstance {
-  const found = root.findAll((node) => node.props.testID === testID);
-  if (found.length === 0) throw new Error(`No element with testID "${testID}"`);
-  return found[0];
-}
-
-/**
- * The exact string the error banner is rendering, read through the banner's own
- * testID so a matching string elsewhere on the screen cannot satisfy it.
- */
-function errorBannerMessage(root: ReactTestInstance): unknown {
-  return findByTestId(root, 'forgot-password-error-banner').findByType(
-    'Text' as unknown as React.ComponentType,
-  ).props.children;
-}
-
-/** react-test-renderer equivalent of `queryByText` — undefined when absent. */
-function queryByText(root: ReactTestInstance, text: string): ReactTestInstance | undefined {
-  return root
-    .findAllByType('Text' as unknown as React.ComponentType)
-    .find((node) => node.props.children === text);
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -92,6 +70,9 @@ describe('ForgotPasswordScreen — rendering', () => {
     const root = renderer.root;
     expect(() => findByTestId(root, 'forgot-email-input')).not.toThrow();
     expect(() => findByTestId(root, 'forgot-submit-button')).not.toThrow();
+    // No banner on first render — pins `bannerMessage`'s host filter here as
+    // in Login and ResetPassword (#872).
+    expect(bannerMessage(root, 'forgot-password-error-banner')).toBeUndefined();
   });
 
   it('renders the back link', () => {
@@ -126,7 +107,9 @@ describe('ForgotPasswordScreen — validation', () => {
       findByTestId(root, 'forgot-submit-button').props.onPress();
     });
 
-    expect(errorBannerMessage(root)).toBe('Please enter your email address');
+    expect(bannerMessage(root, 'forgot-password-error-banner')).toBe(
+      'Please enter your email address',
+    );
     expect(mockRequestPasswordReset).not.toHaveBeenCalled();
   });
 
@@ -142,7 +125,9 @@ describe('ForgotPasswordScreen — validation', () => {
       findByTestId(root, 'forgot-submit-button').props.onPress();
     });
 
-    expect(errorBannerMessage(root)).toBe('Please enter a valid email address');
+    expect(bannerMessage(root, 'forgot-password-error-banner')).toBe(
+      'Please enter a valid email address',
+    );
     expect(mockRequestPasswordReset).not.toHaveBeenCalled();
   });
 
@@ -158,7 +143,9 @@ describe('ForgotPasswordScreen — validation', () => {
       findByTestId(root, 'forgot-submit-button').props.onPress();
     });
 
-    expect(errorBannerMessage(root)).toBe('Please enter a valid email address');
+    expect(bannerMessage(root, 'forgot-password-error-banner')).toBe(
+      'Please enter a valid email address',
+    );
     expect(mockRequestPasswordReset).not.toHaveBeenCalled();
   });
 });
@@ -228,7 +215,9 @@ describe('ForgotPasswordScreen — error handling', () => {
       findByTestId(root, 'forgot-submit-button').props.onPress();
     });
 
-    expect(errorBannerMessage(root)).toBe('Please enter a valid email address');
+    expect(bannerMessage(root, 'forgot-password-error-banner')).toBe(
+      'Please enter a valid email address',
+    );
   });
 
   it('shows generic copy for a reason this route cannot emit, not another route\'s curated text', async () => {
@@ -253,7 +242,7 @@ describe('ForgotPasswordScreen — error handling', () => {
       findByTestId(root, 'forgot-submit-button').props.onPress();
     });
 
-    expect(errorBannerMessage(root)).toBe('Invalid request');
+    expect(bannerMessage(root, 'forgot-password-error-banner')).toBe('Invalid request');
   });
 
   it('shows the generic validation copy, not the server error, on an unreasoned ValidationError', async () => {
@@ -274,7 +263,7 @@ describe('ForgotPasswordScreen — error handling', () => {
       findByTestId(root, 'forgot-submit-button').props.onPress();
     });
 
-    expect(errorBannerMessage(root)).toBe('Invalid request');
+    expect(bannerMessage(root, 'forgot-password-error-banner')).toBe('Invalid request');
     expect(queryByText(root, 'Server error — please try again')).toBeUndefined();
   });
 

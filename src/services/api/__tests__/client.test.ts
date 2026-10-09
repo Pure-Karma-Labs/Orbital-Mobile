@@ -33,6 +33,7 @@ import {
   ValidationError,
 } from '../errors';
 import { tokenManager } from '../tokenManager';
+import { codedValidationBody } from '../../../testUtils/apiErrorFixtures';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -725,15 +726,6 @@ describe('mediaTransferTimeoutMs', () => {
 // ---------------------------------------------------------------------------
 
 describe('ValidationError — reason parsing', () => {
-  /** Body shaped like the backend's errorHandler VALIDATION_ERROR response. */
-  function codedBody(code: unknown, message = 'server text'): string {
-    return JSON.stringify({
-      error: 'VALIDATION_ERROR',
-      message,
-      details: { code },
-    });
-  }
-
   async function validationErrorFor(
     status: number,
     bodyText: string,
@@ -758,7 +750,7 @@ describe('ValidationError — reason parsing', () => {
     ['EMAIL_FORMAT', 'Please enter a valid email address'],
     ['GROUP_FULL', 'This orbit is full — ask the orbit admin to make room'],
   ])('maps details.code %s to its curated copy', async (code, copy) => {
-    const err = await validationErrorFor(400, codedBody(code));
+    const err = await validationErrorFor(400, codedValidationBody(code));
 
     expect(err).toBeInstanceOf(ValidationError);
     expect(err.reason).toBe(code);
@@ -769,7 +761,7 @@ describe('ValidationError — reason parsing', () => {
   it('falls back to generic copy for an unlisted code and never echoes server text', async () => {
     const err = await validationErrorFor(
       400,
-      codedBody('SOMETHING_NEW', 'SECRET-server-text'),
+      codedValidationBody('SOMETHING_NEW', 'SECRET-server-text'),
     );
 
     expect(err).toBeInstanceOf(ValidationError);
@@ -790,12 +782,12 @@ describe('ValidationError — reason parsing', () => {
   });
 
   it.each([
-    ['a number code', codedBody(123)],
-    ['a null code', codedBody(null)],
-    ['an object code', codedBody({})],
-    ['an array code', codedBody(['INVITE_USED'])],
-    ['a lowercased code', codedBody('invite_used')],
-    ['a title-cased code', codedBody('Invite_Used')],
+    ['a number code', codedValidationBody(123)],
+    ['a null code', codedValidationBody(null)],
+    ['an object code', codedValidationBody({})],
+    ['an array code', codedValidationBody(['INVITE_USED'])],
+    ['a lowercased code', codedValidationBody('invite_used')],
+    ['a title-cased code', codedValidationBody('Invite_Used')],
     ['a body that is not JSON', 'not json at all'],
     ['a truncated JSON body', '{"details":'],
     ['an empty body', ''],
@@ -812,7 +804,7 @@ describe('ValidationError — reason parsing', () => {
   it.each([['__proto__'], ['constructor'], ['toString']])(
     'treats the prototype key %s as unknown',
     async (code) => {
-      const err = await validationErrorFor(400, codedBody(code));
+      const err = await validationErrorFor(400, codedValidationBody(code));
 
       expect(err).toBeInstanceOf(ValidationError);
       expect(err.reason).toBeUndefined();
@@ -821,7 +813,7 @@ describe('ValidationError — reason parsing', () => {
   );
 
   it('parses details.code on a 422 as well as a 400', async () => {
-    const err = await validationErrorFor(422, codedBody('EMAIL_FORMAT'));
+    const err = await validationErrorFor(422, codedValidationBody('EMAIL_FORMAT'));
 
     expect(err).toBeInstanceOf(ValidationError);
     expect(err.statusCode).toBe(422);
@@ -835,7 +827,7 @@ describe('ValidationError — reason parsing', () => {
     try {
       g.__DEV__ = false;
 
-      const err = await validationErrorFor(400, codedBody('INVITE_EXPIRED'));
+      const err = await validationErrorFor(400, codedValidationBody('INVITE_EXPIRED'));
 
       expect(err).toBeInstanceOf(ValidationError);
       expect(err.reason).toBe('INVITE_EXPIRED');

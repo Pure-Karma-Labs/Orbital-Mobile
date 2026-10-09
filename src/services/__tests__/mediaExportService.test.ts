@@ -87,6 +87,7 @@ import {
 import {
   EXPORT_STAGING_DIR,
   cancelAllExports,
+  clearExportDisclosureCache,
   clearMediaExportStaging,
   currentExportEpoch,
   describeExportOutcome,
@@ -396,17 +397,22 @@ describe('disclosure gate', () => {
     expect(mockSaveToPhotoLibrary).toHaveBeenCalledTimes(2);
   });
 
-  it('is shown again after a logout clears MMKV', async () => {
+  it('is shown again after a logout clears MMKV and the in-memory mirror', async () => {
     arrangeHappyPath();
     answerAlert('Continue');
     await saveMediaItem('media-1');
     expect(alertSpy).toHaveBeenCalledTimes(1);
 
-    // localWipe -> clearAll(); a fresh module state is the next launch.
+    // Logout does not reload the bundle. Clearing MMKV alone leaves the
+    // mirror set — which is why localWipe must also drop it.
     mockMMKV.store.clear();
-    resetMediaExportForTesting();
     await saveMediaItem('media-1');
+    expect(alertSpy).toHaveBeenCalledTimes(1);
 
+    // What localWipe does after clearAll(): the production reset, not the
+    // test seam. The next save is asked again.
+    clearExportDisclosureCache();
+    await saveMediaItem('media-1');
     expect(alertSpy).toHaveBeenCalledTimes(2);
   });
 

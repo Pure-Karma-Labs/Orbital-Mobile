@@ -3,6 +3,7 @@
  */
 
 import * as Sentry from '@sentry/react-native';
+import { Alert } from 'react-native';
 
 import { loginUser, signupUser, restoreSession, logout, deleteAccount, acceptCurrentTerms, checkAccountSwitch, loginForRecovery } from '../authService';
 import { clearAvatarCache } from '../avatarService';
@@ -958,6 +959,46 @@ describe('logout', () => {
     await logout();
 
     expect(mockResetNotificationSettings).toHaveBeenCalledTimes(1);
+  });
+
+  // #878: the export-disclosure acknowledgement lives in MMKV AND an in-memory
+  // mirror. Logout clears MMKV but does not reload the JS bundle, so without
+  // the mirror reset the next account on this device saves without ever being
+  // told that saved copies leave end-to-end encryption. Real service, real wipe.
+  it('makes the next account acknowledge the export disclosure again (localWipe)', async () => {
+    const {
+      assertDisclosureAcknowledged,
+      ensureExportDisclosure,
+      resetMediaExportForTesting,
+    } = require('../mediaExportService');
+    const { getMMKVInstance } = require('../../stores/middleware/persistence');
+    const store = new Map<string, boolean>();
+    const fakeMMKV = {
+      getBoolean: (key: string) => store.get(key),
+      set: (key: string, value: boolean) => store.set(key, value),
+      clearAll: () => store.clear(),
+    };
+    (getMMKVInstance as jest.Mock).mockImplementation(() => fakeMMKV);
+    const alertSpy = jest
+      .spyOn(Alert, 'alert')
+      .mockImplementation((_title, _body, buttons) => {
+        buttons?.find((b) => b.text === 'Continue')?.onPress?.();
+      });
+    try {
+      resetMediaExportForTesting();
+      await expect(ensureExportDisclosure()).resolves.toBe(true);
+      expect(() => assertDisclosureAcknowledged()).not.toThrow();
+
+      await logout();
+
+      expect(() => assertDisclosureAcknowledged()).toThrow();
+      await ensureExportDisclosure();
+      expect(alertSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      alertSpy.mockRestore();
+      (getMMKVInstance as jest.Mock).mockImplementation(() => ({ clearAll: jest.fn() }));
+      resetMediaExportForTesting();
+    }
   });
 
   // #678: the epoch must bump BEFORE the store reset, or an in-flight mute

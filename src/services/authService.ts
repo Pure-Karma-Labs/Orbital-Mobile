@@ -33,7 +33,11 @@ import { clearIdentityInflightState } from './crypto/identityKeyAccess';
 import { clearAvatarServiceState, clearAvatarCache } from './avatarService';
 import { captureError } from './telemetry';
 import { isStagingResidueName } from './media/stagingResidue';
-import { cancelAllExports, clearMediaExportStaging } from './mediaExportService';
+import {
+  cancelAllExports,
+  clearExportDisclosureCache,
+  clearMediaExportStaging,
+} from './mediaExportService';
 import { clearMessageHandlerState } from './websocket/messageHandler';
 import { execute } from '../database/queryHelpers';
 import { isDatabaseInitialized, closeDatabase } from '../database/connection';
@@ -537,6 +541,13 @@ export async function localWipe({ preserveIdentity }: { preserveIdentity: boolea
     getMMKVInstance().clearAll();
   } catch {
     // MMKV may not be initialized in tests or if bootstrap hasn't run
+  }
+  // #878: the export-disclosure acknowledgement has an in-memory mirror that
+  // clearAll() cannot reach, and logout does not reload the bundle. Drop it
+  // AFTER clearAll(), so a read mid-wipe cannot re-cache the old account's
+  // acknowledgement — the next account must be asked again.
+  try { clearExportDisclosureCache(); } catch {
+    if (__DEV__) console.warn('[LocalWipe] clearExportDisclosureCache failed');
   }
 
   // --- Plaintext-adjacent media staging residue in Caches (both paths) ---

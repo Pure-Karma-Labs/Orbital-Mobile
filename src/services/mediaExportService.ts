@@ -233,7 +233,9 @@ export function cancelAllExports(): void {
  *
  * `localWipe` calls `clearAll()`, so the acknowledgement resets on logout.
  * That is deliberate: consent to leak plaintext belongs to the signed-in user,
- * not to the device.
+ * not to the device. Clearing MMKV is not enough on its own — logout does not
+ * reload the JS bundle, so `localWipe` also calls `clearExportDisclosureCache()`
+ * to drop the in-memory mirror below.
  */
 const DISCLOSURE_KEY = 'orbital:media-export-disclosure-ack';
 
@@ -251,6 +253,16 @@ function readDisclosureAck(): boolean {
     return false;
   }
   return disclosureAcked;
+}
+
+/**
+ * Forget the in-memory acknowledgement. Called from `localWipe` phase 1: the
+ * mirror outlives logout (the JS runtime keeps running), so without this the
+ * next account to sign in on this device would save without ever seeing the
+ * disclosure. Synchronous, like `cancelAllExports()`, for the same reason.
+ */
+export function clearExportDisclosureCache(): void {
+  disclosureAcked = null;
 }
 
 function writeDisclosureAck(): void {

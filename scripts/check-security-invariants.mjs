@@ -1776,12 +1776,27 @@ checkWindowedPins(
 //
 // XML comments are stripped first: a commented-out key must not satisfy it.
 
+/**
+ * Strip XML comments until none are left. One pass is not enough: removing
+ * `<!-- a -->` from `<!<!-- a -->-- key -->` leaves a fresh `<!-- key -->`,
+ * so a single replace can surface a comment it was meant to remove
+ * (CodeQL js/incomplete-multi-character-sanitization). Shared by rules 22-23.
+ */
+function meStripXmlComments(text) {
+  let previous;
+  do {
+    previous = text;
+    text = text.replace(/<!--[\s\S]*?-->/g, '');
+  } while (text !== previous);
+  return text;
+}
+
 const ME_INFO_PLIST = join('ios', 'OrbitalMobile', 'Info.plist');
 const ME_PLIST_RULE = 'ios-photo-add-usage';
 const ME_PLIST_KEY = 'NSPhotoLibraryAddUsageDescription';
 
 try {
-  const plistText = readFileSync(ME_INFO_PLIST, 'utf8').replace(/<!--[\s\S]*?-->/g, '');
+  const plistText = meStripXmlComments(readFileSync(ME_INFO_PLIST, 'utf8'));
   const usage = plistText.match(
     new RegExp(`<key>${ME_PLIST_KEY}</key>\\s*<string>([\\s\\S]*?)</string>`),
   );
@@ -1833,7 +1848,7 @@ const ME_FORBIDDEN_PERMISSIONS = [
 ];
 
 try {
-  const manifestText = readFileSync(ME_APP_MANIFEST, 'utf8').replace(/<!--[\s\S]*?-->/g, '');
+  const manifestText = meStripXmlComments(readFileSync(ME_APP_MANIFEST, 'utf8'));
   const elements = manifestText.match(/<uses-permission[\s\S]*?\/?>/g) ?? [];
 
   for (const permission of ME_SCOPED_PERMISSIONS) {
@@ -2268,6 +2283,10 @@ checkWindowedPins(
 //    file to the photo library of a device whose account no longer exists.
 //    (It is synchronous for the same reason: an await here hands control
 //    straight back to the export.)
+//  - `clearExportDisclosureCache()` drops the in-memory disclosure mirror,
+//    AFTER MMKV `clearAll()`. Logout clears MMKV but does not reload the JS
+//    bundle, so without it the next account on the device saves without ever
+//    seeing the disclosure; before clearAll(), a read could re-cache it.
 //  - `clearMediaExportStaging()` sweeps `Caches/orbital-export/`. That
 //    directory is the ONE media-pipeline residue in a SUBDIRECTORY, so the
 //    `isStagingResidueName` suffix sweep — a non-recursive readDir — cannot
@@ -2291,6 +2310,7 @@ if (meAuthRaw !== null) {
   } else {
     const cancelIdx = wipe[0].indexOf('cancelAllExports(');
     const sweepIdx = wipe[0].indexOf('clearMediaExportStaging(');
+    const disclosureIdx = wipe[0].indexOf('clearExportDisclosureCache(');
     // The media-directory deletion, identified by the local it binds.
     const mediaDirIdx = wipe[0].indexOf('mediaDirPath');
     const at = meLineOf(body, wipe.index);
@@ -2298,6 +2318,20 @@ if (meAuthRaw !== null) {
     if (cancelIdx === -1) {
       violations.push(
         `  ${relative('.', ME_AUTH_SERVICE)}:${at}  [${ME_WIPE_RULE}]  localWipe() does not call cancelAllExports( (${ME_ISSUE})`,
+      );
+    }
+    const mmkvClearIdx = wipe[0].indexOf('getMMKVInstance().clearAll(');
+    if (disclosureIdx === -1) {
+      violations.push(
+        `  ${relative('.', ME_AUTH_SERVICE)}:${at}  [${ME_WIPE_RULE}]  localWipe() does not call clearExportDisclosureCache( — the disclosure acknowledgement would carry over to the next account (${ME_ISSUE})`,
+      );
+    } else if (mmkvClearIdx === -1) {
+      violations.push(
+        `  ${relative('.', ME_AUTH_SERVICE)}:${at}  [${ME_WIPE_RULE}]  localWipe() no longer calls getMMKVInstance().clearAll( — the disclosure-cache ORDERING check would pass vacuously (${ME_ISSUE})`,
+      );
+    } else if (disclosureIdx < mmkvClearIdx) {
+      violations.push(
+        `  ${relative('.', ME_AUTH_SERVICE)}:${at}  [${ME_WIPE_RULE}]  clearExportDisclosureCache( must run AFTER getMMKVInstance().clearAll( — a read in between re-caches the old acknowledgement (${ME_ISSUE})`,
       );
     }
     if (sweepIdx === -1) {
@@ -2328,6 +2362,18 @@ checkWindowedPins(
   /^export async function cleanupOrphanedChunks\(\)[\s\S]*?\n\}/m,
   'the cleanupOrphanedChunks bootstrap reaper',
   ['clearMediaExportStaging('],
+  [],
+  ME_ISSUE,
+);
+
+// The disclosure reset itself: an emptied function would satisfy the call-site
+// pin above while the acknowledgement stayed cached.
+checkWindowedPins(
+  ME_SERVICE,
+  ME_WIPE_RULE,
+  /^export function clearExportDisclosureCache\(\)[\s\S]*?\n\}/m,
+  'the clearExportDisclosureCache body',
+  ['disclosureAcked = null'],
   [],
   ME_ISSUE,
 );

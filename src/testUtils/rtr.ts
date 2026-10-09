@@ -38,16 +38,18 @@
  * Roughly thirty other suites still define their own walkers. When one is
  * touched, map it by BEHAVIOUR, not by name:
  * - a local copy that already filters to host nodes (e.g. `MediaItemView`,
- *   `ProgressBar`) → **`findHostByTestId`** / `hasHostTestId`;
+ *   `MediaThumbnailStrip`, `ProgressBar`) → **`findHostByTestId`** /
+ *   `hasHostTestId`. A host-filtered ARRAY copy (`MediaThumbnailStrip`'s
+ *   `findAllByTestId`) has no shared counterpart yet — keep it local;
  * - an UNFILTERED copy that backs a presence/absence assertion on a
  *   null-returning component (the pre-#872 Login/ForgotPassword banner case)
  *   → `hasHostTestId` / `bannerMessage`, and expect assertions to change;
- * - an unfiltered copy used only to drive props → `findByTestId`;
- * - an array-returning copy (e.g. `ReplyComposer`) → `findAllByTestId`;
+ * - an unfiltered copy used only to drive props (including
+ *   `MediaThumbnailStrip`'s `findComponentByTestId`) → `findByTestId`;
+ * - an UNFILTERED array-returning copy (e.g. `ReplyComposer`) →
+ *   `findAllByTestId`;
  * - a null-returning copy (e.g. `MediaItemView.unavailable`) → rewrite the
- *   call sites onto `hasHostTestId`;
- * - a deliberately composite-matching copy (`MediaThumbnailStrip`'s
- *   `findComponentByTestId`) stays local.
+ *   call sites onto `hasHostTestId`.
  *
  * Swapping a host-filtered local copy onto the same-named `findByTestId` would
  * silently widen matching back to component nodes and re-introduce the vacuity

@@ -24,6 +24,7 @@ import {
   NetworkError,
   NotFoundError,
   ValidationError,
+  type ValidationReason,
 } from '../services/api/errors';
 import {
   stripInviteCode,
@@ -42,6 +43,45 @@ export type JoinOrbitScreenProps = NativeStackScreenProps<
   ThreadsStackParamList,
   'JoinOrbit'
 >;
+
+// ---------------------------------------------------------------------------
+// Reason routing
+// ---------------------------------------------------------------------------
+
+/**
+ * Where a server validation reason belongs on this form. Typed as an
+ * exhaustive `Record`, so `tsc --noEmit` IS the routing proof: adding a code
+ * to `ValidationReason` is a compile error here until it has been routed, and
+ * a new reason can never silently fall through to the legacy "invalid code"
+ * field copy — which is precisely how a valid code for a full orbit used to
+ * read as a typo (Backend #271).
+ *
+ * `code` means "the code you typed is the problem"; `banner` means the code is
+ * fine and something else is in the way:
+ * - `GROUP_FULL` — the orbit has no room; the admin has to act, not the user.
+ * - `INVITE_EMAIL_MISMATCH` — it is the *pair* (this code, this account) that
+ *   is wrong, so pinning it to the code field would misdirect the fix. The
+ *   join route actually delivers this outcome as an uncoded 403 (the AuthError
+ *   branch below), so this entry exists for Record exhaustiveness only.
+ * - `EMAIL_FORMAT` — this form has no email input at all, so it is
+ *   unattributable here (the join route does not emit it today).
+ */
+const REASON_CHANNEL: Record<ValidationReason, 'code' | 'banner'> = {
+  INVITE_INVALID: 'code',
+  INVITE_USED: 'code',
+  INVITE_CANCELLED: 'code',
+  INVITE_EXPIRED: 'code',
+  GROUP_FULL: 'banner',
+  INVITE_EMAIL_MISMATCH: 'banner',
+  EMAIL_FORMAT: 'banner',
+};
+
+/**
+ * Pre-#271 copy, still correct for the two outcomes that genuinely carry no
+ * machine-readable reason: the 404 (unknown code) and an unreasoned 400 from
+ * an older backend.
+ */
+const UNREASONED_CODE_ERROR = 'Invalid or expired invite code';
 
 // ---------------------------------------------------------------------------
 // Screen
@@ -96,22 +136,41 @@ export function JoinOrbitScreen({
         setBannerError(err.message);
       } else if (err instanceof ApiError && err.code === 'RATE_LIMITED') {
         setBannerError(RATE_LIMIT_MESSAGE);
-      } else if (err instanceof ValidationError || err instanceof NotFoundError) {
-        // 400 (used / expired / DM code) and 404 (unknown code) are verdicts on
-        // this code — Orbital-Backend/src/routes/groups.js:263-271.
-        // KNOWN MISROUTE: groups.js:275 answers GROUP_FULL with the same 400,
-        // which is indistinguishable client-side, so a valid code for a full
-        // orbit reads here as "invalid or expired". Fixing it needs a
-        // machine-readable reason on the 400 (backend follow-up pending).
-        setCodeError('Invalid or expired invite code');
+      } else if (err instanceof ValidationError && err.reason !== undefined) {
+        // A reason the backend named on its 400 (Orbital-Backend
+        // POST /api/groups/join — see tests/joinValidationCodes.test.js for the
+        // full sentinel → code table). Render the curated copy on the channel
+        // that matches what is actually wrong; `e.message` is client copy
+        // selected by the code, never server text.
+        if (REASON_CHANNEL[err.reason] === 'code') {
+          setCodeError(err.message);
+        } else {
+          setBannerError(err.message);
+        }
+      } else if (err instanceof ValidationError) {
+        // Unreasoned 400: either a backend older than Backend #271 or a code
+        // this build does not know. Show the legacy copy, and report the drift
+        // with content-free tags only — never the code or the server text
+        // (SignupScreen precedent, #746).
+        setCodeError(UNREASONED_CODE_ERROR);
+        captureError(err, {
+          tags: { feature: 'orbit-join', validation_reason_known: 'false' },
+        });
+      } else if (err instanceof NotFoundError) {
+        // 404 — no such invite code. This one legitimately carries no
+        // `details.code`, so it is NOT drift and must not be captured.
+        setCodeError(UNREASONED_CODE_ERROR);
       } else if (err instanceof ConflictError) {
-        // The join route's only 409 — groups.js:273.
+        // The join route's only 409 — already a member.
         setBannerError('You are already a member of this orbit');
       } else if (err instanceof AuthError && err.statusCode === 403) {
-        // Both of the join route's forbiddenError cases — DEMO_BOUNDARY
-        // (groups.js:265) and EMAIL_MISMATCH (groups.js:277). Invites minted from
-        // CreateOrbit are always email-bound, so this is a likely legitimate
-        // failure and the user can act on it.
+        // Both of the join route's forbiddenError cases — DEMO_BOUNDARY and
+        // EMAIL_MISMATCH. Deliberately uncoded on the backend (no client parses
+        // a 403 body: client.ts maps every 401/403 to AuthError and discards
+        // it), so they share one message. Invites minted from CreateOrbit are
+        // always email-bound, so this is a likely legitimate failure and the
+        // user can act on it. Residue: a demo-boundary refusal reads as an
+        // email mismatch — demo accounts only.
         setBannerError(
           'This invite is not for this account — check you are signed in with the invited email',
         );
@@ -170,7 +229,7 @@ export function JoinOrbitScreen({
             testID="invite-code-input"
           />
 
-          <ErrorBanner message={bannerError} />
+          <ErrorBanner message={bannerError} testID="join-orbit-error-banner" />
 
           <Button
             title="Join"

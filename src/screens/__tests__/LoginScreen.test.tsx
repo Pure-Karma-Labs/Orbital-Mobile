@@ -3,11 +3,14 @@
  */
 
 import React from 'react';
-import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'react-test-renderer';
+import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../../theme';
 import { LoginScreen } from '../LoginScreen';
-import { AuthError, NetworkError } from '../../services/api/errors';
+import { ApiError, AuthError, NetworkError } from '../../services/api/errors';
+import { RATE_LIMIT_MESSAGE } from '../../utils/errorMessages';
+import { INVALID_EMAIL_MESSAGE } from '../../utils/validateEmail';
+import { bannerMessage, findByTestId, hasHostTestId, queryByText } from '../../testUtils/rtr';
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -54,12 +57,6 @@ function renderLoginScreen(
   return renderer;
 }
 
-function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstance {
-  const found = root.findAll((node) => node.props.testID === testID);
-  if (found.length === 0) throw new Error(`No element with testID "${testID}"`);
-  return found[0];
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -74,6 +71,11 @@ describe('LoginScreen — rendering', () => {
     const root = renderer.root;
     expect(() => findByTestId(root, 'login-email-input')).not.toThrow();
     expect(() => findByTestId(root, 'login-password-input')).not.toThrow();
+    // No banner on first render. This is the assertion that makes
+    // `bannerMessage`'s host filter load-bearing: `ErrorBanner` keeps its
+    // testID on the component node while it returns null, so without the
+    // filter this would throw rather than report absence (#872).
+    expect(bannerMessage(root, 'login-error-banner')).toBeUndefined();
   });
 
   it('renders the Log In button', () => {
@@ -112,6 +114,23 @@ describe('LoginScreen — validation', () => {
       node.props.children.toLowerCase().includes('email'),
     );
     expect(errorText).toBeDefined();
+    expect(mockLoginUser).not.toHaveBeenCalled();
+  });
+
+  it('blocks a malformed email pre-flight without calling loginUser', async () => {
+    const renderer = renderLoginScreen();
+    const root = renderer.root;
+
+    act(() => {
+      findByTestId(root, 'login-email-input').props.onChangeText('a@b');
+      findByTestId(root, 'login-password-input').props.onChangeText('mypassword');
+    });
+
+    await act(async () => {
+      findByTestId(root, 'login-submit-button').props.onPress();
+    });
+
+    expect(bannerMessage(root, 'login-error-banner')).toBe(INVALID_EMAIL_MESSAGE);
     expect(mockLoginUser).not.toHaveBeenCalled();
   });
 });
@@ -158,7 +177,7 @@ describe('LoginScreen — error handling', () => {
     const root = renderer.root;
 
     act(() => {
-      findByTestId(root, 'login-email-input').props.onChangeText('user');
+      findByTestId(root, 'login-email-input').props.onChangeText('user@example.com');
       findByTestId(root, 'login-password-input').props.onChangeText('pass');
     });
 
@@ -181,7 +200,7 @@ describe('LoginScreen — error handling', () => {
     const root = renderer.root;
 
     act(() => {
-      findByTestId(root, 'login-email-input').props.onChangeText('user');
+      findByTestId(root, 'login-email-input').props.onChangeText('user@example.com');
       findByTestId(root, 'login-password-input').props.onChangeText('pass');
     });
 
@@ -203,7 +222,7 @@ describe('LoginScreen — error handling', () => {
     const root = renderer.root;
 
     act(() => {
-      findByTestId(root, 'login-email-input').props.onChangeText('user');
+      findByTestId(root, 'login-email-input').props.onChangeText('user@example.com');
       findByTestId(root, 'login-password-input').props.onChangeText('pass');
     });
 
@@ -217,6 +236,26 @@ describe('LoginScreen — error handling', () => {
       node.props.children.toLowerCase().includes('server error'),
     );
     expect(errorText).toBeDefined();
+  });
+
+  it('shows the shared rate-limit message, not the generic server error, on a 429', async () => {
+    mockLoginUser.mockRejectedValue(
+      new ApiError('Too many requests', 429, 'RATE_LIMITED', true),
+    );
+    const renderer = renderLoginScreen();
+    const root = renderer.root;
+
+    act(() => {
+      findByTestId(root, 'login-email-input').props.onChangeText('user@example.com');
+      findByTestId(root, 'login-password-input').props.onChangeText('pass');
+    });
+
+    await act(async () => {
+      findByTestId(root, 'login-submit-button').props.onPress();
+    });
+
+    expect(bannerMessage(root, 'login-error-banner')).toBe(RATE_LIMIT_MESSAGE);
+    expect(queryByText(root, 'Server error — please try again')).toBeUndefined();
   });
 });
 
@@ -250,7 +289,7 @@ describe('LoginScreen — success banner', () => {
   it('renders success banner when successMessage is provided', () => {
     const renderer = renderLoginScreen(jest.fn(), 'Password reset successfully. Please log in.');
     const root = renderer.root;
-    expect(() => findByTestId(root, 'login-success-banner')).not.toThrow();
+    expect(hasHostTestId(root, 'login-success-banner')).toBe(true);
   });
 
   it('hides success banner when user starts typing', () => {
@@ -258,22 +297,20 @@ describe('LoginScreen — success banner', () => {
     const root = renderer.root;
 
     // Banner is visible initially
-    expect(() => findByTestId(root, 'login-success-banner')).not.toThrow();
+    expect(hasHostTestId(root, 'login-success-banner')).toBe(true);
 
     // User starts typing
     act(() => {
-      findByTestId(root, 'login-email-input').props.onChangeText('a');
+      findByTestId(root, 'login-email-input').props.onChangeText('user@example.com');
     });
 
     // Banner should be gone
-    const found = root.findAll((node) => node.props.testID === 'login-success-banner');
-    expect(found.length).toBe(0);
+    expect(hasHostTestId(root, 'login-success-banner')).toBe(false);
   });
 
   it('does not render success banner when no successMessage', () => {
     const renderer = renderLoginScreen();
     const root = renderer.root;
-    const found = root.findAll((node) => node.props.testID === 'login-success-banner');
-    expect(found.length).toBe(0);
+    expect(hasHostTestId(root, 'login-success-banner')).toBe(false);
   });
 });

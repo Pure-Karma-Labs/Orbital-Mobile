@@ -55,6 +55,9 @@ export function deleteAccount(userId: string, password: string): Promise<void> {
     method: 'DELETE',
     path: `/api/users/${encodeURIComponent(userId)}`,
     body: { password },
+    // authLimiter-guarded user tap: a retry cannot outwait the fixed window
+    // (see RequestOptions.retryOn429).
+    retryOn429: false,
   });
 }
 

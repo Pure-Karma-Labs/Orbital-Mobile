@@ -77,6 +77,7 @@ describe('deleteAccount', () => {
       method: 'DELETE',
       path: '/api/users/user-123',
       body: { password: 's3cret' },
+      retryOn429: false,
     });
   });
 
@@ -87,6 +88,7 @@ describe('deleteAccount', () => {
       method: 'DELETE',
       path: '/api/users/user%2Fwith%20special',
       body: { password: 'pw' },
+      retryOn429: false,
     });
   });
 });

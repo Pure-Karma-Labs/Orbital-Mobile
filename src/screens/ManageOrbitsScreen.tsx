@@ -12,7 +12,6 @@ import {
   Modal,
   Share,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
   useWindowDimensions,
@@ -28,6 +27,7 @@ import { OrbitalSpinner } from '../components/OrbitalSpinner';
 import { ErrorBanner } from '../components/ErrorBanner';
 import { EmojiText } from '../components/EmojiText';
 import { Emoji } from '../components/Emoji';
+import { TextInput } from '../components/TextInput';
 import {
   fetchCreatorOrbitsDecrypted,
   createInviteCode,
@@ -37,7 +37,10 @@ import {
 } from '../services/conversationService';
 import type { DecryptedGroup } from '../services/conversationService';
 import { getGroupMembers, listInviteHistory, removeMember, cancelInvite } from '../services/api/groups';
+import { captureError } from '../services/telemetry';
 import { formatInviteCode } from '../services/crypto/inviteCrypto';
+import { routeInviteCreateError } from '../utils/inviteCreateErrors';
+import { validateEmail } from '../utils/validateEmail';
 import { useAuth, useConversations } from '../stores';
 import type { GroupMember, InviteListItem } from '../types/api';
 import type { SettingsStackParamList } from '../navigation/types';
@@ -63,6 +66,18 @@ export function ManageOrbitsScreen({ navigation }: Props): React.JSX.Element {
   const [emailModalVisible, setEmailModalVisible] = useState(false);
   const [emailModalGroupId, setEmailModalGroupId] = useState<string | null>(null);
   const [emailInput, setEmailInput] = useState('');
+  // Error-channel inventory for this screen, so nothing new lands on the wrong
+  // one:
+  //   `inviteEmailError`  — field error under the modal's email input: the one
+  //                         verdict on the address the user typed.
+  //   `inviteBannerError` — banner inside the modal: generate failures that the
+  //                         address is not responsible for.
+  //   `error`             — screen banner above the list: the orbit LOAD
+  //                         failure only.
+  //   `Alert`             — row actions (remove member, cancel invite, rewrap,
+  //                         transfer/dissolve), which have no inline slot.
+  const [inviteEmailError, setInviteEmailError] = useState<string | null>(null);
+  const [inviteBannerError, setInviteBannerError] = useState<string | null>(null);
   const [invitesByGroupId, setInvitesByGroupId] = useState<Record<string, InviteListItem[]>>({});
   const [loadingInvites, setLoadingInvites] = useState<Record<string, boolean>>({});
   const [generatedCode, setGeneratedCode] = useState<string | null>(null);
@@ -250,25 +265,56 @@ export function ManageOrbitsScreen({ navigation }: Props): React.JSX.Element {
   const handleOpenEmailModal = useCallback((groupId: string) => {
     setEmailModalGroupId(groupId);
     setEmailInput('');
+    setInviteEmailError(null);
+    setInviteBannerError(null);
     setEmailModalVisible(true);
   }, []);
 
+  const handleEmailInputChange = useCallback((text: string) => {
+    setEmailInput(text);
+    // Clear both slots: whichever one is showing, the user is now acting on it.
+    setInviteEmailError(null);
+    setInviteBannerError(null);
+  }, []);
+
   const handleGenerateCode = useCallback(async () => {
-    if (!emailModalGroupId || !emailInput.trim()) return;
+    const trimmedEmail = emailInput.trim();
+    if (!emailModalGroupId || !trimmedEmail) return;
+    setInviteEmailError(null);
+    setInviteBannerError(null);
+
+    // Pre-flight, before the spinner: the rule is byte-identical to the
+    // backend's `isValidEmail` (see utils/validateEmail.ts), and every request
+    // — rejected ones included — spends one of this user's 20 `inviteLimiter`
+    // slots per 15 minutes, so a typo must not cost invite headroom. The
+    // backend's own `EMAIL_FORMAT` reason is still routed below, as the safety
+    // net for any divergence between the two rules (#786).
+    const emailProblem = validateEmail(trimmedEmail);
+    if (emailProblem !== null) {
+      setInviteEmailError(emailProblem);
+      return;
+    }
 
     setGeneratingCode(true);
     try {
-      const rawCode = await createInviteCode(emailModalGroupId, emailInput.trim());
+      const rawCode = await createInviteCode(emailModalGroupId, trimmedEmail);
       setGeneratedCode(rawCode);
       // Refresh invite list for this group
       try {
         const invites = await listInviteHistory(emailModalGroupId);
         setInvitesByGroupId((prev) => ({ ...prev, [emailModalGroupId]: invites }));
       } catch {
-        // Silently fail — invite list refresh is best-effort
+        // Silently fail — invite list refresh is best-effort. Deliberately
+        // caught separately: a stale list must never read as a failed invite.
       }
-    } catch {
-      Alert.alert('Error', 'Failed to generate invite code. Please try again.');
+    } catch (err) {
+      // One router for both invite entry points (utils/inviteCreateErrors.ts):
+      // the field error is the only verdict on the typed address; everything
+      // else is about the orbit, the network or this device.
+      const route = routeInviteCreateError(err);
+      if (route.fieldError !== undefined) setInviteEmailError(route.fieldError);
+      if (route.bannerError !== undefined) setInviteBannerError(route.bannerError);
+      if (route.captureTags !== undefined) captureError(err, { tags: route.captureTags });
     } finally {
       setGeneratingCode(false);
     }
@@ -291,6 +337,8 @@ export function ManageOrbitsScreen({ navigation }: Props): React.JSX.Element {
     setGeneratedCode(null);
     setEmailModalVisible(false);
     setEmailInput('');
+    setInviteEmailError(null);
+    setInviteBannerError(null);
   }, []);
 
   const handleBack = useCallback(() => {
@@ -503,34 +551,35 @@ export function ManageOrbitsScreen({ navigation }: Props): React.JSX.Element {
                 }}>
                   Generate Invite Code
                 </Text>
-                <Text style={{
-                  fontFamily: theme.typography.fontFamily.body,
-                  fontSize: theme.typography.fontSize.sm,
-                  color: theme.colors.textSecondary,
-                  marginBottom: theme.spacing.sm,
-                }}>
-                  Invitee's email:
-                </Text>
+                {/*
+                  Shared TextInput, so a bad address gets a red border, an
+                  `accessibilityHint` carrying the message and an
+                  `email-input-error` node. Its defaults are wrong for an email
+                  field (sentences-casing, autocorrect on, default keyboard), so
+                  all four keyboard props are carried over explicitly;
+                  `textContentType` stays unset because `emailAddress` would
+                  offer the inviter their OWN address into an invitee field.
+                */}
                 <TextInput
-                  style={{
-                    borderWidth: 1,
-                    borderColor: theme.colors.borderSubtle,
-                    borderRadius: theme.borderRadius.base,
-                    paddingHorizontal: theme.spacing.md,
-                    paddingVertical: theme.spacing.sm,
-                    fontFamily: theme.typography.fontFamily.body,
-                    fontSize: theme.typography.fontSize.base,
-                    color: theme.colors.textPrimary,
-                    marginBottom: theme.spacing.lg,
-                  }}
+                  label="Invitee's Email"
                   value={emailInput}
-                  onChangeText={setEmailInput}
+                  onChangeText={handleEmailInputChange}
                   placeholder="email@example.com"
-                  placeholderTextColor={theme.colors.textTertiary}
                   keyboardType="email-address"
                   autoCapitalize="none"
                   autoCorrect={false}
+                  maxLength={256}
+                  error={inviteEmailError}
                   testID="email-input"
+                />
+                {/*
+                  Field error and banner are mutually exclusive by construction
+                  (every branch of handleGenerateCode sets exactly one), so the
+                  dialog grows by at most one row with the keyboard up.
+                */}
+                <ErrorBanner
+                  message={inviteBannerError}
+                  testID="generate-code-error-banner"
                 />
                 <View style={{
                   flexDirection: 'row',

@@ -53,10 +53,10 @@ decision, not a build one.
 
 | What | Value | Where it lives |
 |---|---|---|
-| `@sentry/react-native` | 8.27.0 | `package.json` / `package-lock.json`; `RNSentry (8.27.0)` in `ios/Podfile.lock` |
-| sentry-cocoa | 9.29.0 | **Enforced:** `expected_sentry_cocoa` in the Issue #768 guard in `ios/Podfile` (pod install fails if the staged version differs). Upstream source: `sentry_cocoa_version` in `node_modules/@sentry/react-native/RNSentry.podspec` |
-| `Sentry.xcframework.zip` SHA256 | `63fe5a7258097fded9ef485bbb1d8e80e1e91d419ee6d8a6ad405454b5b50fef` | `SENTRY_COCOA_XCFRAMEWORK_CHECKSUMS['9.29.0']['Sentry']` in `sentry_utils.rb`; independently matched against sentry-cocoa's `Package.swift` binary-target checksum at tag 9.29.0 |
-| Local cache | `~/Library/Caches/sentry-react-native/xcframeworks/9.29.0/` | Build machine; CI cache key `sentry-xcframework-<os>-<hash of podspec + sentry_utils.rb>` |
+| `@sentry/react-native` | 8.29.0 | `package.json` / `package-lock.json`; `RNSentry (8.29.0)` in `ios/Podfile.lock` |
+| sentry-cocoa | 9.30.0 | **Enforced:** `expected_sentry_cocoa` in the Issue #768 guard in `ios/Podfile` (pod install fails if the staged version differs). Upstream source: `sentry_cocoa_version` in `node_modules/@sentry/react-native/RNSentry.podspec` |
+| `Sentry.xcframework.zip` SHA256 | `46f659ad81a4a53db82f263d5ce5a3d704e6b7f6625518b175a4d1b630cd90a9` | `SENTRY_COCOA_XCFRAMEWORK_CHECKSUMS['9.30.0']['Sentry']` in `sentry_utils.rb`; independently matched against sentry-cocoa's `Package.swift` binary-target checksum at tag 9.30.0 |
+| Local cache | `~/Library/Caches/sentry-react-native/xcframeworks/9.30.0/` | Build machine; CI cache key `sentry-xcframework-<os>-<hash of podspec + sentry_utils.rb>` |
 
 **Note:** nothing verifies the SHA256 row against `node_modules` at install
 time; the Podfile literal enforces the version row. Any bump must update this
@@ -108,9 +108,9 @@ Any `@sentry/react-native` bump:
 7. Stale staged versions under `ios/Pods/sentry-xcframeworks` are pruned
    upstream, **conditionally**. Since `@sentry/react-native` **8.22.0**
    (getsentry/sentry-react-native PR **6534**, undocumented in Sentry's
-   changelog; we are on 8.27.0), `stage_sentry_xcframework_in_pods` deletes
+   changelog; we are on 8.29.0), `stage_sentry_xcframework_in_pods` deletes
    every directory under the staging root whose basename is not the current
-   sentry-cocoa version — `node_modules/@sentry/react-native/scripts/sentry_utils.rb:221-225`.
+   sentry-cocoa version — `node_modules/@sentry/react-native/scripts/sentry_utils.rb:227-231`.
    It runs during **podspec evaluation**, i.e. before the Issue #768
    `post_install` guard, so the old CI failure mode is pre-empted: CI's
    `Cache CocoaPods` step has `restore-keys: pods-<os>-`, so when
@@ -153,13 +153,19 @@ Any `@sentry/react-native` bump:
    privacy-relevant native options (8.26 added `enableMemoryIntrospection`,
    pinned to `false` in `src/sentryInit.ts`) and for grouping changes that
    regroup existing issues (8.27: iOS native crashes set `mechanism.synthetic`).
+   8.28 typed `enableNetworkBreadcrumbs` and added `reportAccessibilityIdentifier`
+   (default `true`, ignores `sendDefaultPii`; inert while `attachViewHierarchy`
+   stays at its `false` default) and `enableMetricKitRawPayload` (default `false`).
+   8.29 changed `-force_load` emission to a private `SENTRY_FORCE_LOAD_LDFLAGS[sdk=…]`
+   var plus a plain `OTHER_LDFLAGS`; item 8's greps still hold (the var's value
+   carries the `-force_load` literal).
 
 The next three items are the payload-boundary triggers from #746. They apply to
 any `@sentry/react-native` bump and to any sentry-cocoa bump underneath it
 (sentry-cocoa moves when `sentry_cocoa_version` in `RNSentry.podspec` moves).
 Each rests on undocumented internals of the installed package, so re-verify by
-reading the files named, not the release notes. Line numbers are 8.27.0 /
-sentry-cocoa 9.29.0.
+reading the files named, not the release notes. Line numbers are 8.29.0 /
+sentry-cocoa 9.30.0.
 
 10. **`enableNetworkBreadcrumbs` still reaches native.** The option is a
     sentry-cocoa one with no entry in the React Native typings; it only works
@@ -172,10 +178,10 @@ sentry-cocoa 9.29.0.
     list gains the key, or the destructure becomes an allow-list, the flag
     stops applying silently. On the cocoa side the dictionary is parsed by
     `RNSentryInternal.options(fromDictionary:)`
-    (`node_modules/@sentry/react-native/ios/RNSentryInternal.swift:52`, called
-    from `ios/RNSentryStart.m:79`), so confirm the key still exists as an
+    (`node_modules/@sentry/react-native/ios/Swift/RNSentryInternal.swift:52`, called
+    from `ios/RNSentryStart.m:75`), so confirm the key still exists as an
     `Options` property -- `@property (nonatomic) BOOL enableNetworkBreadcrumbs;`
-    in `Headers/Sentry-Swift.h:559` of the staged
+    in `Headers/Sentry-Swift.h:560` of the staged
     `Sentry.xcframework/<slice>/Sentry.framework` -- and that the bare key
     string is still in the binary:
     `strings -a Sentry | grep -x enableNetworkBreadcrumbs`. Cocoa's documented

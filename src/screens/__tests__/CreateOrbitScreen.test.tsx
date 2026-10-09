@@ -544,11 +544,7 @@ describe('CreateOrbitScreen — invite email routing', () => {
     expect(queryByText(renderer.root, GENERIC_INVITE_FAILURE_COPY)).toBeDefined();
     // Never the raw server text — that rides only in the __DEV__ serverMessage.
     expect(queryByText(renderer.root, 'some server text')).toBeUndefined();
-    expect(
-      renderer.root.findAll(
-        (n) => typeof n.type === 'string' && n.props.testID === 'invite-email-input-error',
-      ),
-    ).toHaveLength(0);
+    expect(hasHostTestId(renderer.root, 'invite-email-input-error')).toBe(false);
 
     expect(mockCaptureException).toHaveBeenCalledTimes(1);
     const [reportedError, context] = mockCaptureException.mock.calls[0];
@@ -582,11 +578,7 @@ describe('CreateOrbitScreen — invite email routing', () => {
         'This orbit is full — ask the orbit admin to make room',
       ),
     ).toBeUndefined();
-    expect(
-      renderer.root.findAll(
-        (n) => typeof n.type === 'string' && n.props.testID === 'invite-email-input-error',
-      ),
-    ).toHaveLength(0);
+    expect(hasHostTestId(renderer.root, 'invite-email-input-error')).toBe(false);
 
     expect(mockCaptureException).toHaveBeenCalledTimes(1);
     const [reportedError, context] = mockCaptureException.mock.calls[0];
@@ -616,11 +608,7 @@ describe('CreateOrbitScreen — invite email routing', () => {
 
     expect(hasHostTestId(renderer.root, 'invite-error-banner')).toBe(true);
     expect(queryByText(renderer.root, NOT_ALLOWED_COPY)).toBeDefined();
-    expect(
-      renderer.root.findAll(
-        (n) => typeof n.type === 'string' && n.props.testID === 'invite-email-input-error',
-      ),
-    ).toHaveLength(0);
+    expect(hasHostTestId(renderer.root, 'invite-email-input-error')).toBe(false);
     expect(mockCaptureException).not.toHaveBeenCalled();
   });
 
@@ -635,22 +623,14 @@ describe('CreateOrbitScreen — invite email routing', () => {
       findByTestId(renderer.root, 'generate-invite-button').props.onPress();
     });
 
-    expect(
-      renderer.root.findAll(
-        (n) => typeof n.type === 'string' && n.props.testID === 'invite-email-input-error',
-      ).length,
-    ).toBeGreaterThan(0);
+    expect(hasHostTestId(renderer.root, 'invite-email-input-error')).toBe(true);
 
     // User retypes — error should clear
     act(() => {
       findByTestId(renderer.root, 'invite-email-input').props.onChangeText('member@example.com');
     });
 
-    expect(
-      renderer.root.findAll(
-        (n) => typeof n.type === 'string' && n.props.testID === 'invite-email-input-error',
-      ),
-    ).toHaveLength(0);
+    expect(hasHostTestId(renderer.root, 'invite-email-input-error')).toBe(false);
   });
 
   it('case 7: host input node carries correct keyboard props', async () => {

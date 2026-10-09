@@ -19,6 +19,12 @@
  * tautology. Filtering to `typeof node.type === 'string'` (host nodes only) is
  * what makes those assertions real.
  *
+ * The hazard is specific to a component that RETURNS null while mounted
+ * (`ErrorBanner`, `SuccessBanner`). An element the parent creates
+ * conditionally (`{cond && <X testID=… />}`, or `TextInput`'s `${testID}-error`
+ * Text) leaves no node at all when hidden, so an unfiltered lookup is honest
+ * there — but the host helpers are correct in both cases, so prefer them.
+ *
  * So:
  * - `findByTestId` is ONLY for driving props on a node already known to be
  *   rendered — typically `.props.onChangeText(...)` / `.props.onPress()`, which
@@ -29,15 +35,29 @@
  *
  * ## Migrating the remaining local copies
  *
- * Roughly two dozen other suites still define their own walkers. When one is
+ * Roughly thirty other suites still define their own walkers. When one is
  * touched, map it by BEHAVIOUR, not by name:
  * - a local copy that already filters to host nodes (e.g. `MediaItemView`,
- *   `MediaThumbnailStrip`, `ProgressBar`) → **`findHostByTestId`**;
- * - only an UNFILTERED local copy → `findByTestId`.
+ *   `ProgressBar`) → **`findHostByTestId`** / `hasHostTestId`;
+ * - an UNFILTERED copy that backs a presence/absence assertion on a
+ *   null-returning component (the pre-#872 Login/ForgotPassword banner case)
+ *   → `hasHostTestId` / `bannerMessage`, and expect assertions to change;
+ * - an unfiltered copy used only to drive props → `findByTestId`;
+ * - an array-returning copy (e.g. `ReplyComposer`) → `findAllByTestId`;
+ * - a null-returning copy (e.g. `MediaItemView.unavailable`) → rewrite the
+ *   call sites onto `hasHostTestId`;
+ * - a deliberately composite-matching copy (`MediaThumbnailStrip`'s
+ *   `findComponentByTestId`) stays local.
  *
  * Swapping a host-filtered local copy onto the same-named `findByTestId` would
  * silently widen matching back to component nodes and re-introduce the vacuity
  * this module exists to prevent.
+ *
+ * ## Placement
+ *
+ * Helpers used across layers (screens, components, services) live here in
+ * `src/testUtils/`; single-layer helpers live in that layer's own `testUtils/`
+ * (`src/database/testUtils/`, `src/services/testUtils/`).
  *
  * ## Import fence
  *
@@ -45,9 +65,13 @@
  * import of it and has NO runtime imports at all. It must stay that way: this
  * file lives under `src/` and is reachable from production code by import.
  *
- * It is also scanned as production code by the security invariants (invariant
- * 20's cross-file scan), whose `testUtils/` exemption must not be widened to
- * accommodate anything added here.
+ * `scripts/check-security-invariants.mjs` treats `src/testUtils/` as
+ * production code for invariant 20's cross-file scan, which exempts only
+ * `errors.ts` itself and `__tests__/` / `.test.` paths — so code here may not
+ * name `serverMessage`;
+ * a fixture that needs it belongs in a `__tests__/` file. The only
+ * `testUtils/` exemption in that script is invariant 3's (test-only imports);
+ * do not add one to invariant 20.
  */
 
 import type { ReactTestInstance } from 'react-test-renderer';

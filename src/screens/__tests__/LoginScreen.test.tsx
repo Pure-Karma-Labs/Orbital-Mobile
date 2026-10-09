@@ -10,7 +10,7 @@ import { LoginScreen } from '../LoginScreen';
 import { ApiError, AuthError, NetworkError } from '../../services/api/errors';
 import { RATE_LIMIT_MESSAGE } from '../../utils/errorMessages';
 import { INVALID_EMAIL_MESSAGE } from '../../utils/validateEmail';
-import { bannerMessage, findByTestId, queryByText } from '../../testUtils/rtr';
+import { bannerMessage, findByTestId, hasHostTestId, queryByText } from '../../testUtils/rtr';
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -289,7 +289,7 @@ describe('LoginScreen — success banner', () => {
   it('renders success banner when successMessage is provided', () => {
     const renderer = renderLoginScreen(jest.fn(), 'Password reset successfully. Please log in.');
     const root = renderer.root;
-    expect(() => findByTestId(root, 'login-success-banner')).not.toThrow();
+    expect(hasHostTestId(root, 'login-success-banner')).toBe(true);
   });
 
   it('hides success banner when user starts typing', () => {
@@ -297,7 +297,7 @@ describe('LoginScreen — success banner', () => {
     const root = renderer.root;
 
     // Banner is visible initially
-    expect(() => findByTestId(root, 'login-success-banner')).not.toThrow();
+    expect(hasHostTestId(root, 'login-success-banner')).toBe(true);
 
     // User starts typing
     act(() => {
@@ -305,14 +305,12 @@ describe('LoginScreen — success banner', () => {
     });
 
     // Banner should be gone
-    const found = root.findAll((node) => node.props.testID === 'login-success-banner');
-    expect(found.length).toBe(0);
+    expect(hasHostTestId(root, 'login-success-banner')).toBe(false);
   });
 
   it('does not render success banner when no successMessage', () => {
     const renderer = renderLoginScreen();
     const root = renderer.root;
-    const found = root.findAll((node) => node.props.testID === 'login-success-banner');
-    expect(found.length).toBe(0);
+    expect(hasHostTestId(root, 'login-success-banner')).toBe(false);
   });
 });

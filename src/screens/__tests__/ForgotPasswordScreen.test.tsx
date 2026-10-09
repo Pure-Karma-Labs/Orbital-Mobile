@@ -70,6 +70,9 @@ describe('ForgotPasswordScreen — rendering', () => {
     const root = renderer.root;
     expect(() => findByTestId(root, 'forgot-email-input')).not.toThrow();
     expect(() => findByTestId(root, 'forgot-submit-button')).not.toThrow();
+    // No banner on first render — pins `bannerMessage`'s host filter here as
+    // in Login and ResetPassword (#872).
+    expect(bannerMessage(root, 'forgot-password-error-banner')).toBeUndefined();
   });
 
   it('renders the back link', () => {
@@ -104,7 +107,9 @@ describe('ForgotPasswordScreen — validation', () => {
       findByTestId(root, 'forgot-submit-button').props.onPress();
     });
 
-    expect(bannerMessage(root, 'forgot-password-error-banner')).toBe('Please enter your email address');
+    expect(bannerMessage(root, 'forgot-password-error-banner')).toBe(
+      'Please enter your email address',
+    );
     expect(mockRequestPasswordReset).not.toHaveBeenCalled();
   });
 
@@ -120,7 +125,9 @@ describe('ForgotPasswordScreen — validation', () => {
       findByTestId(root, 'forgot-submit-button').props.onPress();
     });
 
-    expect(bannerMessage(root, 'forgot-password-error-banner')).toBe('Please enter a valid email address');
+    expect(bannerMessage(root, 'forgot-password-error-banner')).toBe(
+      'Please enter a valid email address',
+    );
     expect(mockRequestPasswordReset).not.toHaveBeenCalled();
   });
 
@@ -136,7 +143,9 @@ describe('ForgotPasswordScreen — validation', () => {
       findByTestId(root, 'forgot-submit-button').props.onPress();
     });
 
-    expect(bannerMessage(root, 'forgot-password-error-banner')).toBe('Please enter a valid email address');
+    expect(bannerMessage(root, 'forgot-password-error-banner')).toBe(
+      'Please enter a valid email address',
+    );
     expect(mockRequestPasswordReset).not.toHaveBeenCalled();
   });
 });
@@ -206,7 +215,9 @@ describe('ForgotPasswordScreen — error handling', () => {
       findByTestId(root, 'forgot-submit-button').props.onPress();
     });
 
-    expect(bannerMessage(root, 'forgot-password-error-banner')).toBe('Please enter a valid email address');
+    expect(bannerMessage(root, 'forgot-password-error-banner')).toBe(
+      'Please enter a valid email address',
+    );
   });
 
   it('shows generic copy for a reason this route cannot emit, not another route\'s curated text', async () => {

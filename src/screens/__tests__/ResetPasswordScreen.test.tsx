@@ -250,16 +250,7 @@ describe('ResetPasswordScreen — validation', () => {
       findByTestId(root, 'reset-submit-button').props.onPress();
     });
 
-    const findMismatchBanner = () =>
-      root
-        .findAllByType('Text' as unknown as React.ComponentType)
-        .find(
-          (node) =>
-            typeof node.props.children === 'string' &&
-            node.props.children === 'Passwords do not match',
-        );
-
-    expect(findMismatchBanner()).toBeDefined();
+    expect(queryByText(root, 'Passwords do not match')).toBeDefined();
 
     act(() => {
       findByTestId(root, 'reset-new-password-input').props.onChangeText('short');
@@ -270,7 +261,7 @@ describe('ResetPasswordScreen — validation', () => {
       findByTestId(root, 'reset-submit-button').props.onPress();
     });
 
-    expect(findMismatchBanner()).toBeUndefined();
+    expect(queryByText(root, 'Passwords do not match')).toBeUndefined();
     expect(findByTestId(root, 'reset-new-password-input-error').props.children).toBe(
       'Password must be at least 12 characters',
     );
@@ -370,7 +361,9 @@ describe('ResetPasswordScreen — error handling', () => {
       findByTestId(root, 'reset-submit-button').props.onPress();
     });
 
-    expect(bannerMessage(root, 'reset-password-error-banner')).toBe('Please enter a valid email address');
+    expect(bannerMessage(root, 'reset-password-error-banner')).toBe(
+      'Please enter a valid email address',
+    );
     expect(queryByText(root, 'Invalid or expired code')).toBeUndefined();
     expect(() => findByTestId(root, 'reset-code-input-error')).toThrow();
   });
@@ -394,7 +387,9 @@ describe('ResetPasswordScreen — error handling', () => {
       findByTestId(root, 'reset-submit-button').props.onPress();
     });
 
-    expect(bannerMessage(root, 'reset-password-error-banner')).toBe('This invite code has expired — ask for a new invite');
+    expect(bannerMessage(root, 'reset-password-error-banner')).toBe(
+      'This invite code has expired — ask for a new invite',
+    );
     expect(() => findByTestId(root, 'reset-code-input-error')).toThrow();
   });
 

@@ -1108,11 +1108,7 @@ describe('ManageOrbitsScreen — invite email routing', () => {
     // never the raw server text (which rides only in __DEV__ serverMessage).
     expect(hasText(renderer.root, INVITE_GENERIC_FAILURE_COPY)).toBe(true);
     expect(hasText(renderer.root, 'some server text')).toBe(false);
-    expect(
-      renderer.root.findAll(
-        (n) => typeof n.type === 'string' && n.props.testID === 'email-input-error',
-      ),
-    ).toHaveLength(0);
+    expect(hasHostTestId(renderer.root, 'email-input-error')).toBe(false);
     // Alert must NOT be called — the old Alert.alert on failure is gone
     expect(alertSpy).not.toHaveBeenCalled();
 
@@ -1147,11 +1143,7 @@ describe('ManageOrbitsScreen — invite email routing', () => {
     expect(
       hasText(renderer.root, 'This orbit is full — ask the orbit admin to make room'),
     ).toBe(false);
-    expect(
-      renderer.root.findAll(
-        (n) => typeof n.type === 'string' && n.props.testID === 'email-input-error',
-      ),
-    ).toHaveLength(0);
+    expect(hasHostTestId(renderer.root, 'email-input-error')).toBe(false);
 
     expect(mockCaptureException).toHaveBeenCalledTimes(1);
     const [reportedError, context] = mockCaptureException.mock.calls[0];
@@ -1187,11 +1179,7 @@ describe('ManageOrbitsScreen — invite email routing', () => {
         .findAllByType('Text' as unknown as React.ComponentType)
         .some((n) => n.props.children === RATE_LIMIT_MESSAGE),
     ).toBe(true);
-    expect(
-      renderer.root.findAll(
-        (n) => typeof n.type === 'string' && n.props.testID === 'email-input-error',
-      ),
-    ).toHaveLength(0);
+    expect(hasHostTestId(renderer.root, 'email-input-error')).toBe(false);
     expect(mockCaptureException).not.toHaveBeenCalled();
   });
 
@@ -1213,11 +1201,7 @@ describe('ManageOrbitsScreen — invite email routing', () => {
         .findAllByType('Text' as unknown as React.ComponentType)
         .some((n) => n.props.children === INVITE_ORBIT_GONE_COPY),
     ).toBe(true);
-    expect(
-      renderer.root.findAll(
-        (n) => typeof n.type === 'string' && n.props.testID === 'email-input-error',
-      ),
-    ).toHaveLength(0);
+    expect(hasHostTestId(renderer.root, 'email-input-error')).toBe(false);
     expect(mockCaptureException).not.toHaveBeenCalled();
   });
 
@@ -1243,22 +1227,14 @@ describe('ManageOrbitsScreen — invite email routing', () => {
       findByTestId(renderer.root, 'generate-button').props.onPress();
     });
 
-    expect(
-      renderer.root.findAll(
-        (n) => typeof n.type === 'string' && n.props.testID === 'email-input-error',
-      ).length,
-    ).toBeGreaterThan(0);
+    expect(hasHostTestId(renderer.root, 'email-input-error')).toBe(true);
 
     // User retypes — error should clear
     act(() => {
       findByTestId(renderer.root, 'email-input').props.onChangeText('member@example.com');
     });
 
-    expect(
-      renderer.root.findAll(
-        (n) => typeof n.type === 'string' && n.props.testID === 'email-input-error',
-      ),
-    ).toHaveLength(0);
+    expect(hasHostTestId(renderer.root, 'email-input-error')).toBe(false);
   });
 
   it('case 5: 403 AuthError → not-allowed banner, no field error, no capture', async () => {
@@ -1279,11 +1255,7 @@ describe('ManageOrbitsScreen — invite email routing', () => {
         .findAllByType('Text' as unknown as React.ComponentType)
         .some((n) => n.props.children === INVITE_NOT_ALLOWED_COPY),
     ).toBe(true);
-    expect(
-      renderer.root.findAll(
-        (n) => typeof n.type === 'string' && n.props.testID === 'email-input-error',
-      ),
-    ).toHaveLength(0);
+    expect(hasHostTestId(renderer.root, 'email-input-error')).toBe(false);
     expect(mockCaptureException).not.toHaveBeenCalled();
   });
 });

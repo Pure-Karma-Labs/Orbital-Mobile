@@ -15,6 +15,7 @@ import {
   scrubEvent,
   toReportableError,
 } from '../telemetryScrub';
+import { EXPORT_EXTENSIONS } from '../media/exportFileName';
 
 /** A minimal but type-correct error event. */
 function makeEvent(partial: Partial<ErrorEvent> = {}): ErrorEvent {
@@ -46,6 +47,38 @@ describe('scrubErrorMessage', () => {
       'sanitize failed for <file>',
     );
     expect(scrubErrorMessage('could not read my movie.MOV')).toBe('could not read my <file>');
+  });
+
+  // -------------------------------------------------------------------------
+  // #878: the export routes' extensions
+  //
+  // `EXPORT_EXTENSIONS` is every extension `media/exportFileName.ts` can
+  // WRITE. The name it writes is derived from the peer-supplied `file_name`,
+  // so a save failure that an RNFS or MediaStore error message names must
+  // scrub exactly like a photo name does. Enumerating the map rather than
+  // listing extensions by hand is the point: adding a content type to the
+  // export map without widening MEDIA_EXTENSIONS fails HERE, at the extension
+  // the map just gained, instead of silently leaking the next file name.
+  // -------------------------------------------------------------------------
+
+  describe.each(EXPORT_EXTENSIONS)('export extension .%s', (ext) => {
+    it('scrubs a bare exported file name', () => {
+      expect(scrubErrorMessage(`write failed for Statement-2026.${ext}`)).toBe(
+        'write failed for <file>',
+      );
+    });
+
+    it('scrubs an exported file name with spaces in the stem', () => {
+      expect(scrubErrorMessage(`write failed for My Tax Return.${ext}`)).toBe(
+        'write failed for <file>',
+      );
+    });
+
+    it('scrubs the fallback stem shape', () => {
+      expect(scrubErrorMessage(`write failed for Orbital-20261009-120000.${ext}`)).toBe(
+        'write failed for <file>',
+      );
+    });
   });
 
   it('strips paths whose directory names contain spaces, keeping the trailing diagnostic', () => {

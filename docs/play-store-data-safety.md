@@ -79,6 +79,21 @@ These data types are encrypted client-side before upload. The server stores only
 - **Is this data shared with any third parties?** No
 - **Decision record (2026-08-03, issue #449):** stored as bare IDs and booleans only — no content, titles, or names; deleted via user-account CASCADE; declared because muted-conversation IDs are server-readable behavioural metadata.
 
+### Saving media and files to the device (no declaration change)
+
+The in-app Save feature lets a user write a decrypted copy of a photo, video or file they can already open out of Orbital and onto their own device (iOS: the photo library via add-only PhotoKit access, or the Files document picker; Android: MediaStore `Pictures/Orbital`, `Movies/Orbital` or `Download/Orbital`, or the matching public directory on API 24-28). It changes **no** answer in this form.
+
+- **Is this data collected, shared, or both?** Neither. Nothing new is collected and nothing new is shared.
+- **Is any new data type introduced?** No. The source bytes are the already-declared E2EE media and files, which the server holds only as ciphertext.
+- **Does saving transmit anything off the device?** No. The copy is written locally and never sent to the developer, the Orbital server, or any third party.
+- **Who initiates it?** The user, per item, with an explicit in-app Save action in the full-screen media viewer. There is no automatic, background or bulk save.
+- **Decision record (2026-10-09, issue #878):** the Save feature requires no Data Safety change, on three independent grounds.
+  1. **The "data that never leaves the device" collection exemption.** Google's Data Safety guidance treats data as *collected* only when it is transmitted off the device. The saved copy is written to the user's own device, by the user's own action, and is never transmitted to the developer or to anyone else — so it is not collected, and no new data type is declared.
+  2. **The user-initiated sharing / transfer exemption.** Google's guidance does not treat data that the user chooses to transfer with an explicit in-app action — a system share or save sheet, or a document picker — as *shared* by the app. Each save is one deliberate, per-item user action through the OS's own save surface, so the "Shared" column stays No for every declared type.
+  3. **The user's own cloud account is not a developer transfer.** If a saved copy is subsequently backed up to Google Photos, Google Drive or iCloud, that happens in the user's own account under their own OS-level backup setting, after the file has left the app. It is not a transfer by or to the developer and is likewise outside this app's declaration.
+- **Permission note (2026-10-09, issue #878):** the feature declares `WRITE_EXTERNAL_STORAGE` and `READ_EXTERNAL_STORAGE`, both scoped `android:maxSdkVersion="28"` (API 29+ writes through MediaStore and needs neither). They are requested only inside a user-initiated save, are never requested at launch or in the background, and grant the app no new data collection — they exist solely so the user's chosen copy can be written to shared storage on Android 7-9.
+- **Disclosure note (2026-10-09, issue #878):** before the first save ever happens, the app shows a one-time in-app disclosure stating that saved copies are stored on the device without end-to-end encryption, may be backed up to the user's own cloud service (Google Photos on Android, iCloud Photos on iOS), can be read by other apps with photo or file access, and remain on the device after logout or account deletion. The original stays in Orbital's encrypted archive; saving is a copy.
+
 ## Security Practices
 
 - **Is all of the user data collected by your app encrypted in transit?** Yes
@@ -87,7 +102,7 @@ These data types are encrypted client-side before upload. The server stores only
 ## App Audience and Access
 
 - **Is this app directed at children?** No
-- **Target age group:** 13+
+- **Target age group:** 18+ (deliberate on both stores — a defensive posture for a user-generated-content app, not an accident; do not lower it without the owner's decision)
 
 ## Cross-Reference
 

@@ -5,9 +5,17 @@ on:
     branches: [main]
     paths:
       - 'packages/orbital-signal/**'
+      - 'packages/orbital-media-transcoder/*.podspec'
       - 'packages/orbital-media-transcoder/android/**'
+      - 'packages/orbital-media-transcoder/ios/**'
       - 'packages/orbital-media-transcoder/package.json'
       - 'packages/orbital-media-transcoder/src/NativeOrbitalMediaTranscoder.ts'
+      # Issue #878: orbital-media-export TurboModule (photo library / files save)
+      - 'packages/orbital-media-export/*.podspec'
+      - 'packages/orbital-media-export/android/**'
+      - 'packages/orbital-media-export/ios/**'
+      - 'packages/orbital-media-export/package.json'
+      - 'packages/orbital-media-export/src/Native*.ts'
       - 'android/**'
       - 'ios/**'
       - 'src/config/**'
@@ -28,9 +36,17 @@ on:
   pull_request:
     paths:
       - 'packages/orbital-signal/**'
+      - 'packages/orbital-media-transcoder/*.podspec'
       - 'packages/orbital-media-transcoder/android/**'
+      - 'packages/orbital-media-transcoder/ios/**'
       - 'packages/orbital-media-transcoder/package.json'
       - 'packages/orbital-media-transcoder/src/NativeOrbitalMediaTranscoder.ts'
+      # Issue #878: orbital-media-export TurboModule (photo library / files save)
+      - 'packages/orbital-media-export/*.podspec'
+      - 'packages/orbital-media-export/android/**'
+      - 'packages/orbital-media-export/ios/**'
+      - 'packages/orbital-media-export/package.json'
+      - 'packages/orbital-media-export/src/Native*.ts'
       - 'android/**'
       - 'ios/**'
       - 'src/config/**'
@@ -321,7 +337,7 @@ jobs:
           path: |
             ~/.gradle/caches/modules-2
             ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('android/gradle/wrapper/gradle-wrapper.properties', 'android/build.gradle', 'android/app/build.gradle', 'packages/orbital-media-transcoder/android/build.gradle') }}
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/gradle/wrapper/gradle-wrapper.properties', 'android/build.gradle', 'android/app/build.gradle', 'packages/orbital-media-transcoder/android/build.gradle', 'packages/orbital-media-export/android/build.gradle') }}
           restore-keys: |
             gradle-${{ runner.os }}-
 
@@ -330,6 +346,81 @@ jobs:
         run: ./gradlew assembleDebug --no-daemon
         env:
           SENTRY_DISABLE_AUTO_UPLOAD: 'true'
+
+      # Issue #878: Merged-manifest gate for Android storage permissions.
+      #
+      # Why the source-manifest invariant (android-storage-scoped in
+      # scripts/check-security-invariants.mjs) is not sufficient:
+      # check-security-invariants.mjs reads the SOURCE manifest — it proves we
+      # declared the right thing. AGP's manifest merger then resolves conflicting
+      # declarations from all dependencies: @dr.pogodin/react-native-fs declares
+      # WRITE_EXTERNAL_STORAGE UNSCOPED in its own AndroidManifest.xml, and AGP
+      # synthesises an implied unscoped READ_EXTERNAL_STORAGE from any WRITE
+      # declaration. The tools:replace attribute suppresses both, but a merge
+      # conflict, a tools namespace omission, or a future library re-declaring
+      # the permission can silently drop the maxSdkVersion="28" cap from the
+      # shipped artefact even when the source manifest looks correct. This step
+      # checks the MERGED output that AGP writes after resolving all libraries.
+      - name: Verify merged manifest storage-permission scope (issue #878)
+        shell: bash
+        run: |
+          set -euo pipefail
+          MANIFEST="android/app/build/intermediates/merged_manifests/debug/processDebugManifest/AndroidManifest.xml"
+          if [ ! -f "$MANIFEST" ]; then
+            echo "ERROR: merged manifest not found at $MANIFEST"
+            echo "AGP may have changed its output layout — update this step's MANIFEST path."
+            exit 1
+          fi
+
+          # AGP pretty-prints the merged manifest with each attribute on its own
+          # line. Collapse to a single line so grep -o can extract complete
+          # <uses-permission ...> elements in one pass.
+          FLAT=$(tr '\n' ' ' < "$MANIFEST")
+
+          # Extract every <uses-permission ...> element (self-closing or not).
+          # [^>]* stops at the first >, which is the element's closing > or />.
+          # `|| true` + the explicit emptiness check: grep exits 1 on no match,
+          # which under `set -e` would kill the step with no diagnostic at all.
+          PERMS=$(echo "$FLAT" | grep -o '<uses-permission[^>]*>' || true)
+          if [ -z "$PERMS" ]; then
+            echo "ERROR: no <uses-permission> element found in the merged manifest."
+            echo "The app declares INTERNET and POST_NOTIFICATIONS at minimum, so this means"
+            echo "the file was parsed wrongly (format change?), not that permissions are absent."
+            exit 1
+          fi
+
+          # ---- REQUIRED: both storage permissions must carry maxSdkVersion="28" ----
+          for PERM in "android.permission.WRITE_EXTERNAL_STORAGE" "android.permission.READ_EXTERNAL_STORAGE"; do
+            MATCHES=$(echo "$PERMS" | grep -F "$PERM" || true)
+            if [ -z "$MATCHES" ]; then
+              echo "ERROR: $PERM is absent from the merged manifest."
+              echo "Expected: <uses-permission android:name=\"$PERM\" android:maxSdkVersion=\"28\" />"
+              echo "Likely cause: the declaration was dropped during manifest merging."
+              exit 1
+            fi
+            UNSCOPED=$(echo "$MATCHES" | grep -vF 'maxSdkVersion="28"' || true)
+            if [ -n "$UNSCOPED" ]; then
+              echo "ERROR: $PERM is present without android:maxSdkVersion=\"28\":"
+              echo "$UNSCOPED"
+              echo "Likely cause: @dr.pogodin/react-native-fs or another library declared"
+              echo "$PERM unscoped and the tools:replace attribute was lost during merging."
+              exit 1
+            fi
+          done
+
+          # ---- FORBIDDEN: broad media/storage permissions must not appear ----
+          for FORBIDDEN in "READ_MEDIA_IMAGES" "READ_MEDIA_VIDEO" "READ_MEDIA_VISUAL_USER_SELECTED" "MANAGE_EXTERNAL_STORAGE"; do
+            MATCHES=$(echo "$PERMS" | grep -F "$FORBIDDEN" || true)
+            if [ -n "$MATCHES" ]; then
+              echo "ERROR: $FORBIDDEN must not appear in the merged manifest:"
+              echo "$MATCHES"
+              echo "Likely cause: a library declared this permission unscoped."
+              echo "Suppress it with a tools:remove attribute in the app manifest."
+              exit 1
+            fi
+          done
+
+          echo "Merged manifest storage-permission scope: OK"
 
       # Must stay after assembleDebug: needs the debug-profile Rust binaries +
       # marker it produces. The harness starts its own Gradle daemon (scoped to

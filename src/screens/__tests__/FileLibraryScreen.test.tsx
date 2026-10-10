@@ -148,14 +148,22 @@ jest.mock('../../services/mediaDownloadService', () => ({
   recoverStalePaths: jest.fn().mockResolvedValue([]),
 }));
 
-// Mock MediaLightbox to avoid pulling in useMediaDownload
+/**
+ * Mock MediaLightbox to avoid pulling in useMediaDownload — and to capture the
+ * props this screen hands it. #878: `canExport` is the one prop this screen
+ * supplies that no other lightbox host does, so the capture is how the wiring
+ * is asserted without rendering the real lightbox.
+ */
+const mockLightboxProps: Array<Record<string, unknown>> = [];
 jest.mock('../../components/MediaLightbox', () => {
   const { createElement } = require('react');
   return {
-    MediaLightbox: (props: { visible: boolean; testID?: string }) =>
-      props.visible
+    MediaLightbox: (props: { visible: boolean; testID?: string }) => {
+      mockLightboxProps.push(props as unknown as Record<string, unknown>);
+      return props.visible
         ? createElement('View', { testID: 'media-lightbox' })
-        : null,
+        : null;
+    },
   };
 });
 
@@ -231,6 +239,7 @@ function findAllByTestId(root: ReactTestInstance, testID: string): ReactTestInst
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockLightboxProps.length = 0;
 });
 
 describe('FileLibraryScreen — rendering', () => {
@@ -447,5 +456,79 @@ describe('FileLibraryScreen — empty state', () => {
 
     const renderer = renderScreen();
     expect(() => findByTestId(renderer.root, 'empty-state')).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// canExport wiring (#878)
+//
+// This screen is the ONE lightbox host that supplies `canExport`, because it
+// is the only one that can list ORPHANS: leaving an orbit deletes its threads
+// and replies but leaves `orbital_media` rows behind, so their resolved
+// conversation_id is NULL and the grid still shows them under "All Orbits"
+// (deliberate — the grid is unchanged). Everything else about Save is covered
+// in MediaLightbox.test.tsx; this block asserts the projection only.
+// ---------------------------------------------------------------------------
+
+describe('FileLibraryScreen — canExport wiring', () => {
+  // The "empty state" block above leaves getAllMedia pinned to [] (jest's
+  // clearAllMocks does not remove an implementation), so each test here states
+  // its own page explicitly rather than inheriting the factory default.
+  beforeEach(() => {
+    const repo = jest.requireMock('../../database/repositories/mediaRepository');
+    (repo.getAllMedia as jest.Mock).mockReturnValue(mockMediaRows);
+  });
+
+  /** The props from the most recent MediaLightbox render. */
+  function lastLightboxProps(): Record<string, unknown> {
+    expect(mockLightboxProps.length).toBeGreaterThan(0);
+    return mockLightboxProps[mockLightboxProps.length - 1];
+  }
+
+  function canExport(): (id: string) => boolean {
+    const fn = lastLightboxProps().canExport;
+    expect(typeof fn).toBe('function');
+    return fn as (id: string) => boolean;
+  }
+
+  it('supplies a canExport predicate to the lightbox', () => {
+    renderScreen();
+    expect(canExport()).toBeInstanceOf(Function);
+  });
+
+  it('allows rows whose conversation is in the store', () => {
+    renderScreen();
+    // Both default rows resolve to conversations the user is in.
+    expect(canExport()('media-1')).toBe(true);
+    expect(canExport()('media-2')).toBe(true);
+  });
+
+  it('refuses an ORPHAN row (conversation_id is NULL)', () => {
+    const repo = jest.requireMock('../../database/repositories/mediaRepository');
+    (repo.getAllMedia as jest.Mock).mockReturnValue([
+      { ...mockMediaRows[0], id: 'orphan-1', conversation_id: null },
+      { ...mockMediaRows[1], id: 'kept-1', conversation_id: 'conv-1' },
+    ]);
+
+    renderScreen();
+
+    expect(canExport()('orphan-1')).toBe(false);
+    expect(canExport()('kept-1')).toBe(true);
+  });
+
+  it('refuses a row from a conversation the user has left', () => {
+    const repo = jest.requireMock('../../database/repositories/mediaRepository');
+    (repo.getAllMedia as jest.Mock).mockReturnValue([
+      { ...mockMediaRows[0], id: 'left-1', conversation_id: 'conv-gone' },
+    ]);
+
+    renderScreen();
+
+    expect(canExport()('left-1')).toBe(false);
+  });
+
+  it('refuses an id that is not on the loaded page at all', () => {
+    renderScreen();
+    expect(canExport()('never-loaded')).toBe(false);
   });
 });

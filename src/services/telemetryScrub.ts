@@ -72,8 +72,23 @@ const JWT_PATTERN = /eyJ[\w-]+\.[\w-]+\.[\w-]+/g;
  * identifying — unlike the opaque ids the other patterns cover.
  */
 const EMAIL_PATTERN = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g;
+/**
+ * Extensions a leaked file name could carry.
+ *
+ * The media-pipeline set (image/video/audio plus our own staging suffixes) and
+ * the DOCUMENT-route set from #878's export map
+ * (`media/exportFileName.ts: DOCUMENT_EXTENSIONS`). An exported document's
+ * name is peer-supplied and is exactly the kind of string an RNFS error
+ * message names, so it must scrub like a photo name does. `docx?`/`xlsx?`/
+ * `pptx?` cover both the legacy and OOXML spellings in one alternative.
+ *
+ * KEEP IN STEP: any extension `exportFileName.ts` can WRITE must appear here,
+ * or a save failure can name the file in a Sentry event. There is a test per
+ * extension in `__tests__/telemetryScrub.test.ts` that enumerates the export
+ * map, so adding to the map without adding here fails the suite.
+ */
 const MEDIA_EXTENSIONS =
-  'jpe?g|png|heic|heif|gif|webp|avif|bmp|tiff?|dng|jfif|mp4|mov|m4v|3gp|mkv|webm|avi|mpe?g|wav|aac|bin|dat|tmp';
+  'jpe?g|png|heic|heif|gif|webp|avif|bmp|tiff?|dng|jfif|ico|mp4|mov|m4v|3gp|mkv|webm|avi|mpe?g|wav|aac|bin|dat|tmp|pdf|txt|csv|rtf|docx?|xlsx?|pptx?';
 /** Bare file names — an RNFS error can name the file without any directory. */
 const FILENAME_PATTERN = new RegExp(
   String.raw`\b[\w.\-()]+\.(?:${MEDIA_EXTENSIONS})\b`,

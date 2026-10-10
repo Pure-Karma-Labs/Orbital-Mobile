@@ -40,6 +40,14 @@ export interface LightboxVideoPageProps {
    * See VideoControlsProps.scrollGesture (A4 tier (iii), unwired today).
    */
   scrollGesture?: GestureType;
+  /**
+   * Pass-through only: MediaLightbox -> ActiveVideoPage -> VideoControls.
+   * See VideoControlsProps.registerControlStamp (#878) — it lets the Save
+   * button stamp the control-interaction suppression window so a Save tap
+   * cannot also toggle the video chrome. Only the ACTIVE branch registers:
+   * VideoPoster has no controls and no suppression window.
+   */
+  registerControlStamp?: (stamp: (() => void) | null) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -55,6 +63,7 @@ export const LightboxVideoPage = React.memo(function LightboxVideoPage({
   durationMs,
   isActive,
   scrollGesture,
+  registerControlStamp,
 }: LightboxVideoPageProps): React.JSX.Element {
   const pageStyle: ViewStyle = {
     width: pageWidth,
@@ -74,6 +83,7 @@ export const LightboxVideoPage = React.memo(function LightboxVideoPage({
           thumbnailMediaId={thumbnailMediaId}
           durationMs={durationMs}
           scrollGesture={scrollGesture}
+          registerControlStamp={registerControlStamp}
         />
       ) : (
         <VideoPoster

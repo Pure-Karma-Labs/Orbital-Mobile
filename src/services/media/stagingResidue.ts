@@ -18,6 +18,18 @@
  * file in a subdirectory is structurally unreachable no matter what it is
  * named.
  *
+ * ONE DOCUMENTED EXCEPTION (#878): the iOS document-export staging directory
+ * `Caches/orbital-export/`, whose per-call `<uuid>/<name>` layout is forced by
+ * UIDocumentPickerViewController — the picker exports a URL list, so each file
+ * must keep its real display name and therefore needs its own directory. It is
+ * deliberately NOT matched by the predicate below, because a suffix match
+ * could never reach it. Instead `clearMediaExportStaging()`
+ * (`mediaExportService.ts`) deletes the WHOLE directory, and it is wired into
+ * both of this module's consumers next to their existing
+ * `Caches/thumbnails` directory unlink. A new staging path that cannot sit at
+ * the top level must follow that pattern: a named whole-directory sweep in
+ * both consumers, never a new suffix here.
+ *
  * DELIBERATELY EXCLUDED (each tracked separately, not an oversight):
  *   - `rn_image_picker_lib_temp_*` — Android picker temps: third-party naming,
  *     pre-sanitizer originals (#700).

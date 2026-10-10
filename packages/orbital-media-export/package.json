@@ -1,0 +1,28 @@
+{
+  "name": "orbital-media-export",
+  "version": "0.0.1",
+  "private": true,
+  "description": "First-party writer that saves decrypted media to the photo library and files to a user-chosen destination for Orbital-Mobile",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Pure-Karma-Labs/Orbital-Mobile.git",
+    "directory": "packages/orbital-media-export"
+  },
+  "author": "Pure Karma Labs",
+  "license": "UNLICENSED",
+  "homepage": "https://github.com/Pure-Karma-Labs/Orbital-Mobile#readme",
+  "source": "./src/index.tsx",
+  "main": "./src/index.tsx",
+  "peerDependencies": {
+    "react": "*",
+    "react-native": "*"
+  },
+  "codegenConfig": {
+    "name": "OrbitalMediaExportSpec",
+    "type": "modules",
+    "jsSrcsDir": "src",
+    "android": {
+      "javaPackageName": "com.orbital.mediaexport"
+    }
+  }
+}

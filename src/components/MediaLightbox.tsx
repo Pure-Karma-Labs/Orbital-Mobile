@@ -17,10 +17,25 @@
  * GestureHandlerRootView is mounted INSIDE the Modal: on Android a Modal is a
  * separate window, and the app-root GestureHandlerRootView in App.tsx does not
  * reach into it, so the scrubber pan and the tap-to-show layer would be dead.
+ *
+ * SAVE (#878): the Save button copies the current item out of the app through
+ * `mediaExportService`. Three things about it are deliberate:
+ *  - Feedback is an INLINE PILL, never a nested Modal. A second Modal over
+ *    this one is the stacking bug `handleReport` exists to work around, and on
+ *    iOS the document picker has to present over THIS Modal from
+ *    `RCTPresentedViewController()`.
+ *  - Exportability arrives as the host-supplied `canExport` prop. There is no
+ *    async DB query in the lightbox: ThreadHeader and ReplyItem pass nothing
+ *    (their conversation is current by definition) and FileLibraryScreen hands
+ *    in a Set lookup projected from its page query.
+ *  - The press STAMPS the video controls' control-interaction timestamp, so a
+ *    Save tap over a playing video cannot also satisfy VideoControls'
+ *    full-page Tap and toggle the chrome (#518's suppression window).
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  AccessibilityInfo,
   Image,
   InteractionManager,
   Modal,
@@ -43,6 +58,7 @@ import { useMediaDownload } from '../hooks/useMediaDownload';
 import { OrbitalSpinner } from './OrbitalSpinner';
 import { LightboxVideoPage } from './LightboxVideoPage';
 import { useAppStore } from '../stores/useAppStore';
+import { describeExportOutcome, saveMediaItem } from '../services/mediaExportService';
 import type { MediaItem } from '../types/store';
 import type { ReportTarget } from '../types/store';
 
@@ -55,6 +71,13 @@ export interface MediaLightboxProps {
   mediaItems: MediaItem[];
   initialIndex: number;
   onClose: () => void;
+  /**
+   * Whether this item may be saved to the device. Defaults to TRUE: a host
+   * that shows media from the conversation the user is currently in has no
+   * decision to make. Only FileLibraryScreen, which can list media from orbits
+   * the user has left, supplies one.
+   */
+  canExport?: (mediaId: string) => boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -63,6 +86,23 @@ export interface MediaLightboxProps {
 
 const CLOSE_BUTTON_SIZE = 40;
 const NAV_BUTTON_SIZE = 44;
+
+/** How long the ✓ stays up after a successful save. */
+export const SAVED_BADGE_MS = 2000;
+
+/** Save-button glyphs. None is emoji-eligible, so none needs U+FE0E. */
+const SAVE_GLYPH = '⤓';
+const SAVED_GLYPH = '✓';
+const SAVE_ERROR_GLYPH = '⚠';
+
+/** Per-item save state. Absent from the map === idle. */
+type SaveStatus =
+  | { phase: 'saving' }
+  | { phase: 'saved'; message: string }
+  | { phase: 'error'; message: string }
+  | { phase: 'blocked' };
+
+const NOT_SAVEABLE_MESSAGE = 'Not available to save';
 
 // ---------------------------------------------------------------------------
 // Single image page component — isolates useMediaDownload per item.
@@ -139,12 +179,41 @@ export function MediaLightbox({
   mediaItems,
   initialIndex,
   onClose,
+  canExport,
 }: MediaLightboxProps): React.JSX.Element {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const scrollRef = useRef<ScrollView>(null);
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
   const pendingReportRef = useRef<ReportTarget | null>(null);
+
+  // --- Save state ----------------------------------------------------------
+  const [saveStatuses, setSaveStatuses] = useState<Record<string, SaveStatus>>({});
+  /** The id whose ✓ is currently up — the ONLY key of the badge timer effect. */
+  const [savedId, setSavedId] = useState<string | null>(null);
+  const saveControllersRef = useRef<Map<string, AbortController>>(new Map());
+  /** Post-await UI writes are guarded by this (house rule: mountedRef). */
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  /**
+   * VideoControls' `stampControlInteraction`, registered from the active video
+   * page while one is mounted. Null when the current page is an image.
+   *
+   * Threaded DOWN as a registrar (MediaLightbox -> LightboxVideoPage ->
+   * ActiveVideoPage -> VideoControls) rather than lifting the timestamp up,
+   * because VideoControls owns the suppression window and must stay the one
+   * place that decides what counts as a control interaction.
+   */
+  const controlStampRef = useRef<(() => void) | null>(null);
+  const registerControlStamp = useCallback((stamp: (() => void) | null) => {
+    controlStampRef.current = stamp;
+  }, []);
 
   // Render-time index reset: MediaLightbox stays mounted across open/close,
   // so currentIndex is stale on reopen. Reset synchronously during render
@@ -219,6 +288,139 @@ export function MediaLightbox({
     }
   }, [mediaItems, currentIndex, onClose]);
 
+  // ---------------------------------------------------------------------------
+  // Save (#878)
+  // ---------------------------------------------------------------------------
+
+  const activeItem = mediaItems[currentIndex];
+  const currentId = activeItem?.id ?? null;
+  const currentStatus = currentId ? saveStatuses[currentId] : undefined;
+
+  /**
+   * The store's own download state for the current item, so a save that has to
+   * fetch the file first reads as "Downloading…" rather than a silent spinner.
+   * Primitive selector only — a derived object here re-renders on every write.
+   */
+  const currentDownloadState = useAppStore((state) =>
+    currentId ? state.media[currentId]?.downloadState : undefined,
+  );
+
+  const exportable = currentId === null ? false : (canExport?.(currentId) ?? true);
+
+  const announce = useCallback((message: string) => {
+    // iOS has no live region (accessibilityLiveRegion is Android-only), so the
+    // announcement is the only channel on both platforms. Transitions only —
+    // announcing every render would talk over the user.
+    AccessibilityInfo.announceForAccessibility(message);
+  }, []);
+
+  const clearStatus = useCallback((mediaId: string) => {
+    setSaveStatuses((prev) => {
+      if (prev[mediaId] === undefined) return prev;
+      const next = { ...prev };
+      delete next[mediaId];
+      return next;
+    });
+  }, []);
+
+  /**
+   * The ✓ badge timer. ONE effect, keyed on the saved id and the current id,
+   * so its cleanup runs on unmount AND whenever the page changes — a swipe
+   * must not leave a timer that later clears a badge for a different item, and
+   * swiping back must not find a stale ✓.
+   */
+  useEffect(() => {
+    if (savedId === null) return;
+    if (savedId !== currentId) {
+      setSavedId(null);
+      clearStatus(savedId);
+      return;
+    }
+    const timer = setTimeout(() => {
+      setSavedId(null);
+      clearStatus(savedId);
+    }, SAVED_BADGE_MS);
+    return () => clearTimeout(timer);
+  }, [savedId, currentId, clearStatus]);
+
+  /** Closing the lightbox aborts an in-flight save and drops every pill. */
+  useEffect(() => {
+    if (visible) return;
+    for (const controller of saveControllersRef.current.values()) {
+      controller.abort();
+    }
+    saveControllersRef.current.clear();
+    setSaveStatuses({});
+    setSavedId(null);
+  }, [visible]);
+
+  const handleSave = useCallback(() => {
+    // FIRST: a press on this button can also satisfy VideoControls' full-page
+    // Tap (RNGH handlers do not take part in the JS responder system), which
+    // would toggle the chrome off under the user's finger.
+    controlStampRef.current?.();
+
+    const item = mediaItems[currentIndex];
+    if (!item) return;
+    const mediaId = item.id;
+
+    // Same predicate the button's disabled state is drawn from, so what the
+    // user sees and what the press does cannot disagree.
+    if (!exportable) {
+      setSaveStatuses((prev) => ({ ...prev, [mediaId]: { phase: 'blocked' } }));
+      announce(NOT_SAVEABLE_MESSAGE);
+      return;
+    }
+
+    // Double-press guard, read from a REF rather than from `saveStatuses`.
+    // Two presses in the same tick both see the pre-press state map — React
+    // has not re-rendered in between — so a state-based guard lets both
+    // through and two copies land in Photos. The ref is written below, before
+    // anything awaits, so the second press in the same tick sees it.
+    if (saveControllersRef.current.has(mediaId)) return;
+
+    // Drop any ✓ badge before starting. Its 2s timer is keyed on `savedId`,
+    // and left armed it fires MID-SAVE and deletes this save's 'saving'
+    // status — which, with the old state-based guard, un-latched it. The ref
+    // guard above now covers that, but a pill that vanishes while the save is
+    // still running is wrong on its own.
+    setSavedId(null);
+
+    const controller = new AbortController();
+    saveControllersRef.current.set(mediaId, controller);
+    setSaveStatuses((prev) => ({ ...prev, [mediaId]: { phase: 'saving' } }));
+    announce('Saving');
+
+    saveMediaItem(mediaId, controller.signal)
+      .then((result) => {
+        saveControllersRef.current.delete(mediaId);
+        if (!mountedRef.current) return;
+        const message = describeExportOutcome(result);
+        if (result.outcome === 'saved') {
+          setSaveStatuses((prev) => ({ ...prev, [mediaId]: { phase: 'saved', message } }));
+          setSavedId(mediaId);
+          announce(message);
+          return;
+        }
+        if (result.outcome === 'cancelled') {
+          clearStatus(mediaId);
+          return;
+        }
+        setSaveStatuses((prev) => ({ ...prev, [mediaId]: { phase: 'error', message } }));
+        announce(message);
+      })
+      .catch(() => {
+        // saveMediaItem never throws; this is belt and braces so a rejection
+        // can never leave the button stuck on "saving".
+        saveControllersRef.current.delete(mediaId);
+        if (!mountedRef.current) return;
+        setSaveStatuses((prev) => ({
+          ...prev,
+          [mediaId]: { phase: 'error', message: "Couldn't save" },
+        }));
+      });
+  }, [mediaItems, currentIndex, exportable, announce, clearStatus]);
+
   /** iOS only — Modal.onDismiss fires after the dismiss animation completes. */
   const handleDismiss = useCallback(() => {
     if (pendingReportRef.current) {
@@ -254,6 +456,39 @@ export function MediaLightbox({
     color: '#FFFFFF',
     fontSize: theme.typography.fontSize.lg,
     fontFamily: theme.typography.fontFamily.body,
+  };
+
+  /**
+   * Save sits immediately LEFT of Close, one `spacing.base` gutter away:
+   *   right = spacing.base (Close's own inset)
+   *         + CLOSE_BUTTON_SIZE (Close's width)
+   *         + spacing.base (the gutter between them)
+   * Written out rather than hard-coded so it tracks Close if either changes.
+   * It never auto-hides — unlike the video chrome, this is app chrome.
+   */
+  const saveButtonStyle: ViewStyle = {
+    position: 'absolute',
+    top: insets.top + theme.spacing.sm,
+    right: theme.spacing.base + CLOSE_BUTTON_SIZE + theme.spacing.base,
+    width: CLOSE_BUTTON_SIZE,
+    height: CLOSE_BUTTON_SIZE,
+    borderRadius: CLOSE_BUTTON_SIZE / 2,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 10,
+    // Non-exportable: dimmed rather than removed, so the affordance's absence
+    // is explained by a tap instead of being a mystery.
+    opacity: exportable ? 1 : 0.4,
+  };
+
+  const statusPillContainerStyle: ViewStyle = {
+    position: 'absolute',
+    top: insets.top + theme.spacing.sm + CLOSE_BUTTON_SIZE + theme.spacing.sm,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    zIndex: 10,
   };
 
   const counterContainerStyle: ViewStyle = {
@@ -298,6 +533,38 @@ export function MediaLightbox({
   const showNav = mediaItems.length > 1;
   const navVerticalCenter = screenHeight / 2 - NAV_BUTTON_SIZE / 2;
   const currentIsVideo = mediaItems[currentIndex]?.contentType?.startsWith('video/') ?? false;
+  const currentIsImage = mediaItems[currentIndex]?.contentType?.startsWith('image/') ?? false;
+
+  // --- Save button presentation -------------------------------------------
+
+  const saveGlyph =
+    currentStatus?.phase === 'saved'
+      ? SAVED_GLYPH
+      : currentStatus?.phase === 'error'
+        ? SAVE_ERROR_GLYPH
+        : SAVE_GLYPH;
+
+  const saveAccessibilityLabel = currentIsVideo
+    ? 'Save video'
+    : currentIsImage
+      ? 'Save photo'
+      : 'Save file';
+
+  /**
+   * The pill's text. `waiting` is not a separate status: a save whose source
+   * is still being fetched reads the STORE's download state, which is the one
+   * place that knows how far along the transfer is.
+   */
+  const statusMessage: string | null =
+    currentStatus === undefined
+      ? null
+      : currentStatus.phase === 'saving'
+        ? currentDownloadState === 'downloaded'
+          ? 'Saving…'
+          : 'Downloading…'
+        : currentStatus.phase === 'blocked'
+          ? NOT_SAVEABLE_MESSAGE
+          : currentStatus.message;
 
   return (
     <Modal
@@ -336,6 +603,38 @@ export function MediaLightbox({
         >
           <Text style={closeTextStyle}>{'⚑'}</Text>
         </TouchableOpacity>
+
+        {/* Save button — see saveButtonStyle for the geometry derivation. */}
+        <TouchableOpacity
+          style={saveButtonStyle}
+          onPress={handleSave}
+          // right: 0 — Close owns the shared edge, so the two 40px circles
+          // separated by one gutter never claim the same pixels.
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 0 }}
+          accessibilityRole="button"
+          accessibilityLabel={saveAccessibilityLabel}
+          // `disabled` is reported but the press still lands: a tap on a
+          // non-exportable item must EXPLAIN itself ("Not available to save"),
+          // and a truly disabled TouchableOpacity swallows the press.
+          accessibilityState={{
+            disabled: !exportable,
+            busy: currentStatus?.phase === 'saving',
+          }}
+          testID="lightbox-save"
+        >
+          <Text style={closeTextStyle}>{saveGlyph}</Text>
+        </TouchableOpacity>
+
+        {/* Inline save status — a PILL, never a nested Modal (see header). */}
+        {statusMessage !== null && (
+          <View style={statusPillContainerStyle} pointerEvents="none">
+            <View style={counterPillStyle}>
+              <Text style={counterTextStyle} testID="lightbox-save-status">
+                {statusMessage}
+              </Text>
+            </View>
+          </View>
+        )}
 
         {/* Close button */}
         <TouchableOpacity
@@ -407,6 +706,9 @@ export function MediaLightbox({
                   // close commit — iOS Modal keeps children mounted until
                   // onDismiss, which would otherwise leave audio playing.
                   isActive={visible && index === currentIndex}
+                  // Lets the Save press stamp the controls' suppression
+                  // window — see the module header and handleSave.
+                  registerControlStamp={registerControlStamp}
                 />
               );
             }

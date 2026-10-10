@@ -335,3 +335,62 @@ exactly two checks (reference missing, `Package.resolved` missing) to warnings; 
 - **Privacy manifests** now travel as SPM resource bundles; their presence in the Release archive is a merge-gate check, not an assumption (see the plan's gate list).
 - **SPM network dependency:** every fresh clone (new machine, CI cache miss, `rm -rf` of the clone cache) fetches 1.2 GB from github.com and dl.google.com. CocoaPods already required github.com for pod sources; the delta is size, not a new origin.
 - **Floating requirement in Pods.xcodeproj** is untracked (gitignored) and re-created each install; it cannot widen the resolved version past the app project's exact pin, and `-disableAutomaticPackageResolution` in both workflows fails loudly if anything tries.
+
+---
+
+## orbital-media-export (first-party, #878)
+
+`packages/orbital-media-export` is a **first-party pod built from source in this
+repository** — there is no prebuilt binary, no upstream, and nothing for Dependabot to
+move. It reaches the iOS build the same way `OrbitalMediaTranscoder` does: a `file:`
+dependency in the root `package.json`, a `react-native.config.js` so RN autolinking finds
+it, and `OrbitalMediaExport.podspec` with `install_modules_dependencies(s)` for
+React-Core / ReactCommon / the generated codegen spec target.
+
+| Item | Value |
+|---|---|
+| Pod | `OrbitalMediaExport` 0.0.1 (`:path` → `../node_modules/orbital-media-export`) |
+| Source | `packages/orbital-media-export/ios/OrbitalMediaExport.{h,mm}` |
+| System frameworks | `Photos`, `UIKit`, `UniformTypeIdentifiers` |
+| Codegen | `OrbitalMediaExportSpec` → protocol `NativeOrbitalMediaExportSpec`, base `NativeOrbitalMediaExportSpecBase`, JSI `NativeOrbitalMediaExportSpecJSI` |
+| Deployment target | inherited `min_ios_version_supported` (15.1); every Photos/UTType/picker API used is iOS 15-or-earlier |
+
+### No privacy manifest
+
+The pod ships **no `PrivacyInfo.xcprivacy`**, and the app's
+`ios/OrbitalMobile/PrivacyInfo.xcprivacy` is unchanged, because the module calls **zero
+required-reason APIs**: no `-attributesOfItemAtPath:`, `NSFileSize`,
+`NSFileCreationDate`/`NSFileModificationDate`, `getattrlist`, `statfs`/`statvfs`,
+`NSFileSystemFreeSize`, `volumeAvailableCapacity`, `NSUserDefaults`, or
+`stat`/`fstat`/`lstat`. File size, existence and free-space checks stay in JS (RNFS, which
+already carries those declarations). Existence is detected instead by `clonefile(2)` /
+`link(2)` returning `ENOENT`.
+
+That is a property of the source, so it is pinned rather than remembered:
+`media-export-native-pins` in `scripts/check-security-invariants.mjs` reads the `.mm` as a
+named file (a missing file is a violation) and fails on any of those API names, on
+`shouldMoveFile`, on `PHAccessLevelReadWrite` and on the deprecated
+`-requestAuthorization:` / `-authorizationStatus` overloads. **If that rule is ever
+relaxed, this row of the privacy manifest has to be re-derived before the next Archive.**
+
+`Info.plist` gains `NSPhotoLibraryAddUsageDescription` (add-only access). Without it the
+first `requestAuthorizationForAccessLevel:` call does not prompt — it crashes — which is
+why `ios-photo-add-usage` pins the key and its non-empty string.
+
+### Guards
+
+| Guard | Where it runs | What it checks |
+|---|---|---|
+| `Compile OrbitalMediaExport (iOS)` | `ci.yml`, its own job (not the 40-minute lint job, per #769) | `xcodebuild -scheme OrbitalMediaExport` through the workspace on every PR touching the podspec, `ios/**`, `src/Native*.ts`, `package.json`/lock or `ios/**` of the app |
+| `media-export-native-pins`, `ios-photo-add-usage` | `security.yml` | add-only access, `asCopy:YES`, no `shouldMoveFile`, no required-reason API, the usage string |
+| `Podfile.lock` consistency + tree-clean diffs | `ci.yml` (`lint-typecheck-test`), `build.yml` | unchanged — this job deliberately does not duplicate them |
+
+### Pod install procedure
+
+`pod install` for this pod runs **from the main checkout only**. A `pod install` inside a
+`.claude/worktrees/` checkout rewrites the `ReactCodegen` spec checksum against the
+worktree's own generated artefacts and poisons `ios/Podfile.lock` for every other
+checkout; the recovery is to restore main's hash. So: merge/stage the package, then from
+`/Orbital-Mobile` run `npm install && cd ios && pod install`, and commit the resulting
+`Podfile.lock` (one new `OrbitalMediaExport (0.0.1)` entry plus its `SPEC CHECKSUM`) with
+the package itself.

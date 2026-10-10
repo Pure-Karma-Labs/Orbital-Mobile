@@ -1,0 +1,9 @@
+<!--
+  Intentionally empty. This library declares NO permissions: the API 24-28
+  storage grant is declared by the app manifest with android:maxSdkVersion="28"
+  (android/app/src/main/AndroidManifest.xml, enforced by the
+  `android-storage-scoped` invariant and the merged-manifest CI gate), so a
+  permission declared here could only widen that scope.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+</manifest>

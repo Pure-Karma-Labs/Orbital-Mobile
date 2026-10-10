@@ -152,6 +152,12 @@ jobs:
               - 'packages/orbital-media-transcoder/*.podspec'
               - 'packages/orbital-media-transcoder/ios/**'
               - 'packages/orbital-media-transcoder/src/Native*.ts'
+              # #878. No android/** entry: an Android-only change cannot alter
+              # pod resolution, and build.yml's own paths list carries the
+              # Android half of this package.
+              - 'packages/orbital-media-export/*.podspec'
+              - 'packages/orbital-media-export/ios/**'
+              - 'packages/orbital-media-export/src/Native*.ts'
               - '.github/workflows/ci.yml'                        # edits to this gate must exercise the gate (#767)
               - 'scripts/assert-no-absolute-pod-paths.sh'         # #767
               - 'scripts/test-assert-no-absolute-pod-paths.sh'    # #767
@@ -351,6 +357,159 @@ jobs:
           xcodebuild \
             -workspace OrbitalMobile.xcworkspace \
             -scheme OrbitalMediaTranscoder \
+            -sdk iphonesimulator \
+            -configuration Debug \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            -clonedSourcePackagesDirPath ~/Library/Caches/orbital-spm \
+            -disableAutomaticPackageResolution \
+            build \
+            CODE_SIGNING_ALLOWED=NO
+
+  # ---------------------------------------------------------------------------
+  # Issue #878: PR-time compile of the OrbitalMediaExport pod.
+  #
+  # A SEPARATE JOB, not another step in lint-typecheck-test, on that job's own
+  # instruction (#769): its 40-minute budget already absorbed one 18m57s pod
+  # compile on a slow runner, and the fix agreed there was to split rather than
+  # raise the cap again. Running in parallel also means a native-only PR gets
+  # its ObjC++ verdict without waiting for 161 Jest suites.
+  #
+  # Scope is deliberately COMPILE ONLY. The Podfile.lock/pbxproj tree-clean
+  # diffs, the absolute-pod-path assertion and the Firebase SPM assertions all
+  # live in lint-typecheck-test and must not be duplicated here — two jobs
+  # asserting the same thing means two places to update and a silent drift when
+  # only one is changed.
+  #
+  # This job is what makes the ObjC++ in packages/orbital-media-export a
+  # PR-time gate at all: nothing else in PR CI compiles it (build.yml's
+  # build-ios is main/dispatch-only because it must cross-compile Rust first),
+  # and the module's security-relevant properties (add-only access, asCopy:YES,
+  # no required-reason APIs) are statically pinned but cannot be pinned if the
+  # file does not build.
+  # ---------------------------------------------------------------------------
+  compile-media-export-ios:
+    name: Compile OrbitalMediaExport (iOS)
+    runs-on: macos-latest
+    # pod install + a cold SPM resolve + the pod's React dependency graph.
+    # Measured upper bound for the comparable transcoder compile: 18m57s on a
+    # slow runner; 45 leaves room for a cold Pods and SPM cache on top.
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Own filter: paths-filter outputs do not cross job boundaries. Same
+      # filter set as lint-typecheck-test's pod-filter, for the same reason —
+      # pod resolution and this pod's sources are the only inputs that can
+      # change the result. Push builds on main always compile (event gate
+      # below), so a filter miss can never let a broken pod reach main.
+      - name: iOS pod filter
+        id: pod-filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          filters: |
+            ios-native:
+              - 'package.json'
+              - 'package-lock.json'
+              - 'ios/**'
+              - 'packages/orbital-signal/*.podspec'
+              - 'packages/orbital-media-transcoder/*.podspec'
+              - 'packages/orbital-media-transcoder/ios/**'
+              - 'packages/orbital-media-transcoder/src/Native*.ts'
+              - 'packages/orbital-media-export/*.podspec'
+              - 'packages/orbital-media-export/ios/**'
+              - 'packages/orbital-media-export/src/Native*.ts'
+              - '.github/workflows/ci.yml'
+
+      - name: Setup Node.js
+        if: github.event_name != 'pull_request' || steps.pod-filter.outputs.ios-native == 'true'
+        uses: actions/setup-node@v7
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        if: github.event_name != 'pull_request' || steps.pod-filter.outputs.ios-native == 'true'
+        run: npm ci
+
+      # react-native-config reads .env during the pod/codegen phase; an absent
+      # file fails the install rather than the build.
+      - name: Create .env from secrets
+        if: github.event_name != 'pull_request' || steps.pod-filter.outputs.ios-native == 'true'
+        run: |
+          cat > .env <<'ENVEOF'
+          SENTRY_DSN=${{ secrets.SENTRY_DSN }}
+          API_URL=${{ secrets.API_URL }}
+          ENVEOF
+
+      # The three cache steps below are value-identical to lint-typecheck-test's
+      # (and build.yml's), so both jobs hit the same entries. Their NAMES carry
+      # a suffix on purpose: the `ios-cache-parity` rule in
+      # scripts/check-security-invariants.mjs resolves a step by its first
+      # exact name match per file, and a second "Cache CocoaPods" in this file
+      # would make which pair it compares depend on job order. If you change a
+      # path or key here, change it in the canonical steps too — the rule
+      # cannot see these.
+      - name: Cache CocoaPods (media-export compile job)
+        if: github.event_name != 'pull_request' || steps.pod-filter.outputs.ios-native == 'true'
+        uses: actions/cache@v6
+        with:
+          path: |
+            ios/Pods
+            ~/Library/Caches/CocoaPods
+          key: pods-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock', 'ios/Podfile') }}
+          restore-keys: |
+            pods-${{ runner.os }}-
+
+      - name: Cache Sentry xcframework download (media-export compile job)
+        if: github.event_name != 'pull_request' || steps.pod-filter.outputs.ios-native == 'true'
+        uses: actions/cache@v6
+        with:
+          path: ~/Library/Caches/sentry-react-native
+          key: sentry-xcframework-${{ runner.os }}-${{ hashFiles('node_modules/@sentry/react-native/RNSentry.podspec', 'node_modules/@sentry/react-native/scripts/sentry_utils.rb') }}
+
+      - name: Cache Swift package clones (media-export compile job)
+        if: github.event_name != 'pull_request' || steps.pod-filter.outputs.ios-native == 'true'
+        uses: actions/cache@v6
+        with:
+          path: ~/Library/Caches/orbital-spm
+          key: spm-${{ runner.os }}-${{ hashFiles('ios/OrbitalMobile.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: |
+            spm-${{ runner.os }}-
+
+      # --deployment: this job must never be the thing that mutates a lockfile.
+      # The lockfile VERDICT belongs to lint-typecheck-test; here it is just the
+      # cheapest honest way to get a Pods tree.
+      - name: Install CocoaPods
+        if: github.event_name != 'pull_request' || steps.pod-filter.outputs.ios-native == 'true'
+        working-directory: ios
+        shell: bash
+        run: pod install --deployment
+
+      # The compile below runs with -disableAutomaticPackageResolution, so the
+      # firebase-ios-sdk clones must already be on disk. On a cold SPM cache
+      # this is the 1.2 GB fetch; on a hit it is seconds.
+      - name: Resolve Swift packages
+        if: github.event_name != 'pull_request' || steps.pod-filter.outputs.ios-native == 'true'
+        working-directory: ios
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -workspace OrbitalMobile.xcworkspace \
+            -scheme OrbitalMobile \
+            -clonedSourcePackagesDirPath ~/Library/Caches/orbital-spm
+
+      # Must go through the workspace: a package-bearing Pods.xcodeproj cannot
+      # be built with -project ("Packages are not supported when using legacy
+      # build locations"). CODE_SIGNING_ALLOWED=NO is safe here — this builds a
+      # static pod, never an app bundle that has to reach the Keychain.
+      - name: Compile OrbitalMediaExport (PR-time iOS gate)
+        if: github.event_name != 'pull_request' || steps.pod-filter.outputs.ios-native == 'true'
+        working-directory: ios
+        run: |
+          xcodebuild \
+            -workspace OrbitalMobile.xcworkspace \
+            -scheme OrbitalMediaExport \
             -sdk iphonesimulator \
             -configuration Debug \
             -derivedDataPath "$RUNNER_TEMP/dd" \

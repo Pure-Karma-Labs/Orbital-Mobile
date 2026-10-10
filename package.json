@@ -43,6 +43,7 @@
     "@sentry/react-native": "^8.29.0",
     "emoji-datasource": "^16.0.0",
     "fuse.js": "^7.5.0",
+    "orbital-media-export": "file:./packages/orbital-media-export",
     "orbital-media-transcoder": "file:./packages/orbital-media-transcoder",
     "orbital-signal": "file:./packages/orbital-signal",
     "react": "19.1.1",

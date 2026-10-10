@@ -1,0 +1,59 @@
+// Written from scratch, modelled on packages/orbital-media-transcoder (NOT on
+// packages/orbital-signal, whose build.gradle is uniffi-generated and carries
+// an AGP 7.2.1 buildscript pin, a `package=` manifest attribute AGP 8 rejects,
+// and conditional new-arch wiring this module does not need).
+
+apply plugin: "com.android.library"
+apply plugin: "org.jetbrains.kotlin.android"
+apply plugin: "com.facebook.react"
+
+def getExtOrDefault(name, fallback) {
+  return rootProject.ext.has(name) ? rootProject.ext.get(name) : fallback
+}
+
+android {
+  namespace "com.orbital.mediaexport"
+
+  compileSdk getExtOrDefault("compileSdkVersion", 36)
+
+  defaultConfig {
+    minSdk getExtOrDefault("minSdkVersion", 24)
+    consumerProguardFiles "proguard-rules.pro"
+  }
+
+  buildTypes {
+    release {
+      minifyEnabled false
+    }
+  }
+
+  // Explicit 17 on both halves: inheriting the AGP default (1.8) fails to
+  // link against recent androidx bytecode under the CI Java 17 toolchain.
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_17
+    targetCompatibility JavaVersion.VERSION_17
+  }
+
+  kotlinOptions {
+    jvmTarget = "17"
+  }
+}
+
+react {
+  jsRootDir = file("../src/")
+  libraryName = "OrbitalMediaExport"
+  codegenJavaPackageName = "com.orbital.mediaexport"
+}
+
+repositories {
+  google()
+  mavenCentral()
+}
+
+// Deliberately ONE dependency: everything this module needs (MediaStore,
+// Environment, MediaScannerConnection, androidx.annotation) is either in the
+// platform or already exposed by react-android. No third-party media library,
+// so there is no new CVE surface and nothing for Dependabot to move.
+dependencies {
+  implementation "com.facebook.react:react-android"
+}

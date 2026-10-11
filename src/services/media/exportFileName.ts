@@ -1,10 +1,10 @@
 /**
  * Export routing and filename sanitation for #878 "Save to device".
  *
- * PURE: this module imports nothing (the `mediaLimits.ts` precedent), so the
- * service, the lightbox and the bulk runner can all share one definition of
- * "what may be saved and under what name" without dragging in the native
- * TurboModule, RNFS or the store.
+ * PURE: this module imports nothing but the equally pure `contentType.ts`
+ * (the `mediaLimits.ts` precedent), so the service, the lightbox and the bulk
+ * runner can all share one definition of "what may be saved and under what
+ * name" without dragging in the native TurboModule, RNFS or the store.
  *
  * ## Why routing is a CLOSED allowlist
  *
@@ -22,7 +22,14 @@
  * one offers to install an MDM payload), and apk/dex/jar/exe/sh. A closed
  * allowlist refuses all of them without naming them, and refuses the next one
  * nobody thought of too.
+ *
+ * The allowlist is applied to the DECLARED type, before the disclosure and the
+ * permission prompt — a byte check can never rescue a refused type, and the
+ * user must not be asked for photo access to save something we will refuse.
+ * `reconcileExportLabel` runs later and only corrects the LABEL.
  */
+
+import { normalizeContentType, splitTrailingExtension } from './contentType';
 
 // ---------------------------------------------------------------------------
 // Routing
@@ -97,18 +104,6 @@ export const EXPORT_EXTENSIONS: readonly string[] = Array.from(
 ).sort();
 
 /**
- * Normalize a wire content type for map lookup: lower-cased, parameters
- * (`; charset=utf-8`) dropped, surrounding space trimmed.
- */
-function normalizeContentType(contentType: string | null | undefined): string {
-  if (typeof contentType !== 'string') return '';
-  const semi = contentType.indexOf(';');
-  return (semi === -1 ? contentType : contentType.slice(0, semi))
-    .trim()
-    .toLowerCase();
-}
-
-/**
  * Route one item by content type. `refused` is the default for everything
  * outside both maps — see the module header.
  */
@@ -126,6 +121,70 @@ export function resolveExportRoute(
     return { kind: 'document', extension: DOCUMENT_EXTENSIONS[type] };
   }
   return { kind: 'refused' };
+}
+
+/** The content type an exported copy is labelled with, and its extension. */
+export interface ExportLabel {
+  contentType: string;
+  extension: string;
+}
+
+/**
+ * Reconcile the row's DECLARED content type with what the decrypted bytes say,
+ * returning the label the copy is written with.
+ *
+ * The two outputs come from ONE route lookup, so the extension can never
+ * disagree with the content type it was derived from.
+ *
+ * Rules:
+ *  1. A refused declared type THROWS. Refusal happens before the download and
+ *     before the disclosure (see the module header), so reaching here with one
+ *     means a caller skipped that gate — which must be loud, not silently
+ *     relabelled into something saveable.
+ *  2. HEIC and HEIF are kept as DECLARED when the bytes are the other one of
+ *     the pair. They are the same container with different brands, both go to
+ *     the same destination, and the brands in a short head are not a strong
+ *     enough signal to rename a user's file over.
+ *  3. Otherwise an ALLOWED sniffed type wins — but a PHOTO-route row may only
+ *     be relabelled to another photo-route type. `image/avif` is on the
+ *     DOCUMENT list, so AVIF bytes under a declared `image/heic` would
+ *     otherwise hand the photo library a resource type it is not documented to
+ *     accept, on a permission acquired for a photo save. A document-route row
+ *     has no such constraint: its destination takes anything.
+ *     Within that limit the bytes are the only honest description of a file.
+ *  4. A sniffed type that is null or refused leaves the declared type. The
+ *     sniff is advisory, and the declared type has already passed the
+ *     allowlist.
+ *
+ * Never returns a refused type, so the caller always has an extension.
+ */
+export function reconcileExportLabel(
+  declared: string | null | undefined,
+  sniffed: string | null,
+): ExportLabel {
+  const declaredType = normalizeContentType(declared);
+  const declaredRoute = resolveExportRoute(declaredType);
+  if (declaredRoute.kind === 'refused') {
+    throw new Error('reconcileExportLabel: declared content type is refused');
+  }
+
+  if (sniffed !== null) {
+    const sniffedType = normalizeContentType(sniffed);
+    const bothHeifFamily = isHeifFamily(declaredType) && isHeifFamily(sniffedType);
+    if (!bothHeifFamily) {
+      const sniffedRoute = resolveExportRoute(sniffedType);
+      const crossesOutOfPhoto = declaredRoute.kind === 'photo' && sniffedRoute.kind !== 'photo';
+      if (sniffedRoute.kind !== 'refused' && !crossesOutOfPhoto) {
+        return { contentType: sniffedType, extension: sniffedRoute.extension };
+      }
+    }
+  }
+
+  return { contentType: declaredType, extension: declaredRoute.extension };
+}
+
+function isHeifFamily(type: string): boolean {
+  return type === 'image/heic' || type === 'image/heif';
 }
 
 // ---------------------------------------------------------------------------
@@ -192,16 +251,9 @@ export function buildExportFileName(
 
   stem = stem.replace(STRIP_RE, '').replace(UNSAFE_RE, '-');
 
-  // Drop a trailing extension so `photo.jpg` does not become `photo.jpg.jpg`
-  // and `photo.exe` does not keep a second, misleading extension.
-  //
-  // Only the LAST segment, and only when it LOOKS like an extension: 2-5
-  // alphanumerics. The lower bound of 2 is load-bearing — no extension either
-  // map can produce is one character, while `Report v1.2` must keep its `.2`.
-  const dot = stem.lastIndexOf('.');
-  if (dot > 0 && /^[A-Za-z0-9]{2,5}$/.test(stem.slice(dot + 1))) {
-    stem = stem.slice(0, dot);
-  }
+  // Drop a trailing extension — see `splitTrailingExtension`'s docblock for
+  // what counts as one and why the bound is {2,5}.
+  stem = splitTrailingExtension(stem).stem;
 
   // Collapse runs of dots (kills every `..` segment, not just the first) and
   // trim leading/trailing dots and whitespace — a leading dot is a hidden

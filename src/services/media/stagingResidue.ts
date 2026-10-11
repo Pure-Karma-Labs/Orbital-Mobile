@@ -18,10 +18,13 @@
  * file in a subdirectory is structurally unreachable no matter what it is
  * named.
  *
- * ONE DOCUMENTED EXCEPTION (#878): the iOS document-export staging directory
+ * ONE DOCUMENTED EXCEPTION (#878): the iOS export staging directory
  * `Caches/orbital-export/`, whose per-call `<uuid>/<name>` layout is forced by
  * UIDocumentPickerViewController — the picker exports a URL list, so each file
- * must keep its real display name and therefore needs its own directory. It is
+ * must keep its real display name and therefore needs its own directory. The
+ * PHOTO route aliases in there too whenever the on-disk extension differs from
+ * the display name's, which since #880 is the common case rather than a corner
+ * (a canonical `{id}.HEIC` holding JPEG bytes is now named `*.jpg`). It is
  * deliberately NOT matched by the predicate below, because a suffix match
  * could never reach it. Instead `clearMediaExportStaging()`
  * (`mediaExportService.ts`) deletes the WHOLE directory, and it is wired into

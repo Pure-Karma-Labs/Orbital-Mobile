@@ -69,6 +69,7 @@ import {
   unlink,
   CachesDirectoryPath,
 } from '@dr.pogodin/react-native-fs';
+import { hasPngSignature, sniffContentType } from './contentType';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -222,8 +223,6 @@ function pushRange(output: number[], data: Uint8Array, start: number, end: numbe
 }
 
 // PNG constants
-const PNG_SIGNATURE = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
-
 // Chunks to strip from PNG
 const PNG_STRIP_CHUNKS = new Set(['eXIf', 'tEXt', 'zTXt', 'iTXt', 'tIME']);
 
@@ -710,11 +709,9 @@ export function stripPngMetadata(data: Uint8Array): Uint8Array {
     throw new Error('Input too small to be a valid PNG');
   }
 
-  // Verify PNG signature
-  for (let i = 0; i < 8; i++) {
-    if (data[i] !== PNG_SIGNATURE[i]) {
-      throw new Error('Not a valid PNG (bad signature)');
-    }
+  // Verify PNG signature (shared with the sniffer — one definition of "PNG")
+  if (!hasPngSignature(data)) {
+    throw new Error('Not a valid PNG (bad signature)');
   }
 
   const output: number[] = [];
@@ -911,7 +908,7 @@ export function hasExif(data: Uint8Array): boolean {
   }
 
   // PNG
-  if (data.length >= 8 && isPngSignature(data)) {
+  if (hasPngSignature(data)) {
     let pos = 8;
 
     while (pos + 12 <= data.length) {
@@ -998,6 +995,9 @@ async function readSourceOrientation(filePath: string): Promise<number | null> {
   }
 }
 
+/** What `sanitizeStillImage` wrote — it only ever emits JPEG or PNG. */
+export type SanitizedImageFormat = 'jpeg' | 'png';
+
 /**
  * Sanitize a still image file, stripping all EXIF/GPS/XMP metadata.
  *
@@ -1015,6 +1015,12 @@ async function readSourceOrientation(filePath: string): Promise<number | null> {
  *
  * Always verifies the output is clean; throws if metadata persists (fail-closed).
  *
+ * Returns the format of the bytes it actually WROTE (#880). The output is
+ * always JPEG or PNG — a non-JPEG source is re-encoded to JPEG, and the
+ * fallback strip branch below throws on anything that is neither — so the
+ * caller can relabel the upload's content type and file name from it instead
+ * of carrying the picker's label around re-encoded bytes.
+ *
  * @param sourcePath Absolute path to the source image
  * @param mimeType MIME type of the source image
  * @param outPath Absolute path for the sanitized output
@@ -1024,7 +1030,7 @@ export async function sanitizeStillImage(
   sourcePath: string,
   mimeType: string,
   outPath: string,
-): Promise<void> {
+): Promise<{ format: SanitizedImageFormat }> {
   const isJpeg = mimeType === 'image/jpeg' || mimeType === 'image/jpg';
   const isPng = mimeType === 'image/png';
   const isDirectlyStrippable = isJpeg || isPng;
@@ -1081,7 +1087,7 @@ export async function sanitizeStillImage(
     if (data.length >= 2 && data[0] === 0xFF && data[1] === 0xD8) {
       // JPEG
       stripped = stripJpegMetadata(data);
-    } else if (data.length >= 8 && isPngSignature(data)) {
+    } else if (hasPngSignature(data)) {
       // PNG
       stripped = stripPngMetadata(data);
     } else {
@@ -1095,6 +1101,20 @@ export async function sanitizeStillImage(
 
     // Fail-closed verification: re-read and check
     await verifyNoImageMetadata(outPath);
+
+    // The format of the bytes we WROTE, from the shared sniffer — not a second
+    // byte-format decider, and not the caller's `mimeType`, which is the
+    // picker's claim about the SOURCE.
+    //
+    // TOTAL, not defaulted: anything that is neither JPEG nor PNG is a strip
+    // that produced something we cannot describe, and the caller labels a whole
+    // upload from this answer. Failing closed here is the same posture as
+    // verifyNoImageMetadata above — we do not send what we cannot vouch for.
+    const written = sniffContentType(stripped);
+    if (written !== 'image/jpeg' && written !== 'image/png') {
+      throw new Error('Could not process this image. The image cannot be sent.');
+    }
+    return { format: written === 'image/png' ? 'png' : 'jpeg' };
   } finally {
     // Clean up temp compress file if created
     if (tempCompressPath) {
@@ -1142,9 +1162,3 @@ function endsWithSefTrailer(data: Uint8Array): boolean {
   );
 }
 
-function isPngSignature(data: Uint8Array): boolean {
-  for (let i = 0; i < 8; i++) {
-    if (data[i] !== PNG_SIGNATURE[i]) return false;
-  }
-  return true;
-}

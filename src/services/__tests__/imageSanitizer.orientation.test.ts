@@ -449,4 +449,89 @@ describe('sanitizeStillImage orientation routing', () => {
     expect(reencodeImage).not.toHaveBeenCalled();
     expect(hasExif(files[OUT])).toBe(false);
   });
+
+  // -------------------------------------------------------------------------
+  // Returned format (#880)
+  //
+  // The upload service relabels the whole row from this value, so it must
+  // describe the bytes WRITTEN, never the caller's mimeType — which is the
+  // picker's claim about a source that may have been re-encoded away.
+  // -------------------------------------------------------------------------
+
+  describe('returned format', () => {
+    it('reports jpeg for a directly stripped JPEG', async () => {
+      const files: Record<string, Uint8Array> = {
+        [SOURCE]: buildJpegWithExif({ orientation: 1 }),
+      };
+      mockFs(files, 1024);
+
+      await expect(sanitizeStillImage(SOURCE, 'image/jpeg', OUT)).resolves.toEqual({
+        format: 'jpeg',
+      });
+    });
+
+    it('reports png for a directly stripped PNG', async () => {
+      const files: Record<string, Uint8Array> = { [SOURCE]: buildPng() };
+      mockFs(files, 1024);
+
+      await expect(sanitizeStillImage(SOURCE, 'image/png', OUT)).resolves.toEqual({
+        format: 'png',
+      });
+    });
+
+    it('reports jpeg for a HEIC source, which the pre-encode turns into JPEG', async () => {
+      // The #880 bug in one test: the caller says image/heic, the bytes are
+      // JPEG, and the return value is what lets the caller say so.
+      const files: Record<string, Uint8Array> = {
+        [SOURCE]: new Uint8Array([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70]),
+        [PREENCODE]: buildJpegWithExif({ omitExifApp1: true }),
+      };
+      mockFs(files, 1024);
+
+      await expect(sanitizeStillImage(SOURCE, 'image/heic', OUT)).resolves.toEqual({
+        format: 'jpeg',
+      });
+      expect(reencodeImage).toHaveBeenCalledTimes(1);
+    });
+
+    it('reports jpeg for a rotated JPEG that went through the re-encode', async () => {
+      const files: Record<string, Uint8Array> = {
+        [SOURCE]: buildJpegWithExif({ orientation: 6 }),
+        [PREENCODE]: buildJpegWithExif({ omitExifApp1: true }),
+      };
+      mockFs(files, 1024);
+
+      await expect(sanitizeStillImage(SOURCE, 'image/jpeg', OUT)).resolves.toEqual({
+        format: 'jpeg',
+      });
+    });
+
+    it('reports png for a PNG over 8MB, which pre-encodes as PNG', async () => {
+      const files: Record<string, Uint8Array> = {
+        [SOURCE]: buildPng(),
+        [PREENCODE]: buildPng(),
+      };
+      mockFs(files, 9 * 1024 * 1024);
+
+      await expect(sanitizeStillImage(SOURCE, 'image/png', OUT)).resolves.toEqual({
+        format: 'png',
+      });
+      expect(reencodeImage).toHaveBeenCalledWith(SOURCE, PREENCODE, {
+        maxDimension: 2048,
+        quality: 0.9,
+        format: 'png',
+      });
+    });
+
+    it('reports the BYTES, not the label, for JPEG bytes labelled image/png', async () => {
+      const files: Record<string, Uint8Array> = {
+        [SOURCE]: buildJpegWithExif({ orientation: 1 }),
+      };
+      mockFs(files, 1024);
+
+      await expect(sanitizeStillImage(SOURCE, 'image/png', OUT)).resolves.toEqual({
+        format: 'jpeg',
+      });
+    });
+  });
 });

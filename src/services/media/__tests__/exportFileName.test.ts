@@ -13,6 +13,7 @@ import {
   PHOTO_LIBRARY_EXTENSIONS,
   buildExportFileName,
   fallbackExportStem,
+  reconcileExportLabel,
   resolveExportRoute,
 } from '../exportFileName';
 
@@ -211,5 +212,115 @@ describe('fallbackExportStem', () => {
   it('uses now for a missing or nonsense timestamp', () => {
     expect(fallbackExportStem(0)).toMatch(/^Orbital-\d{8}-\d{6}$/);
     expect(fallbackExportStem(Number.NaN)).toMatch(/^Orbital-\d{8}-\d{6}$/);
+  });
+});
+
+describe('resolveExportRoute — audited aliases (#880)', () => {
+  // react-native-image-picker labels every JPEG it hands back on iOS
+  // `image/jpg`, so before the alias existed save-to-device refused EVERY
+  // iOS-posted photo.
+  it('routes image/jpg as a JPEG', () => {
+    expect(resolveExportRoute('image/jpg')).toEqual({ kind: 'photo', extension: 'jpg' });
+  });
+
+  it('aliases through case and parameters', () => {
+    expect(resolveExportRoute('IMAGE/JPG; q=1')).toEqual({ kind: 'photo', extension: 'jpg' });
+  });
+
+  it('gives an image/jpg row a .jpg name', () => {
+    const route = resolveExportRoute('image/jpg');
+    if (route.kind === 'refused') {
+      throw new Error('image/jpg must alias to image/jpeg');
+    }
+    expect(
+      buildExportFileName('iOS photo.jpg', route.extension, Date.UTC(2026, 9, 9, 12, 0, 0)),
+    ).toBe('iOS photo.jpg');
+  });
+
+  it('still refuses image/pjpeg', () => {
+    // Deliberately NOT an alias: the bar for one is "a real client emits this
+    // on the wire", and nothing in our pipeline does.
+    expect(resolveExportRoute('image/pjpeg')).toEqual({ kind: 'refused' });
+  });
+});
+
+describe('reconcileExportLabel', () => {
+  it.each([
+    // [declared, sniffed, contentType, extension]
+    // The bytes are the only honest description of a file: the upload pipeline
+    // re-encodes stills, so an `image/heic` row routinely names JPEG bytes.
+    ['image/heic', 'image/jpeg', 'image/jpeg', 'jpg'],
+    // The sniff is advisory — null leaves the declared type, which has already
+    // been through the allowlist.
+    ['image/heic', null, 'image/heic', 'heic'],
+    ['image/jpg', null, 'image/jpeg', 'jpg'],
+    ['application/pdf', 'image/png', 'image/png', 'png'],
+    ['video/mp4', 'video/quicktime', 'video/quicktime', 'mov'],
+    // A refused sniff never wins: text/html is exactly what a hostile peer
+    // would want written to disk, and the declared type is already safe.
+    ['image/heic', 'text/html', 'image/heic', 'heic'],
+    // HEIC and HEIF are one container with different brands and one
+    // destination; the brands in a short head are not enough to rename a
+    // user's file over, so the declared spelling is kept BOTH ways.
+    ['image/heic', 'image/heif', 'image/heic', 'heic'],
+    ['image/heif', 'image/heic', 'image/heif', 'heif'],
+    // ...and the family rule needs BOTH sides in the family, so a JPEG row
+    // whose bytes are really HEIC is still corrected.
+    ['image/jpeg', 'image/heic', 'image/heic', 'heic'],
+    // A PHOTO-route row may only move to another photo-route type. image/avif
+    // is DOCUMENT-kind, so AVIF bytes under a declared image/heic keep the
+    // declared label rather than handing the photo library a .avif resource on
+    // a permission acquired for a photo save.
+    ['image/heic', 'image/avif', 'image/heic', 'heic'],
+    ['image/jpeg', 'image/tiff', 'image/jpeg', 'jpg'],
+    // A DOCUMENT-route row has no such limit — its destination takes anything,
+    // in either direction.
+    ['image/tiff', 'image/avif', 'image/avif', 'avif'],
+    ['application/pdf', 'image/jpeg', 'image/jpeg', 'jpg'],
+  ] as [string, string | null, string, string][])(
+    'labels a %s row sniffed as %s with %s/.%s',
+    (declared, sniffed, contentType, extension) => {
+      expect(reconcileExportLabel(declared, sniffed)).toEqual({ contentType, extension });
+    },
+  );
+
+  it.each([['text/html'], ['constructor']])(
+    'throws for the refused declared type %s',
+    (declared) => {
+      // Refusal happens before the download and before the disclosure, so
+      // reaching here with a refused type means a caller skipped that gate —
+      // which must be loud, not silently relabelled into something saveable.
+      expect(() => reconcileExportLabel(declared, 'image/jpeg')).toThrow();
+    },
+  );
+
+  it('never moves a photo-route row off the photo route', () => {
+    for (const declared of Object.keys(PHOTO_LIBRARY_EXTENSIONS)) {
+      for (const sniffed of ['image/avif', 'image/tiff', 'video/webm', 'application/pdf']) {
+        const result = reconcileExportLabel(declared, sniffed);
+        expect(resolveExportRoute(result.contentType).kind).toBe('photo');
+      }
+    }
+  });
+
+  describe('never returns a refused label', () => {
+    const DECLARED = [
+      ...Object.keys(PHOTO_LIBRARY_EXTENSIONS),
+      ...Object.keys(DOCUMENT_EXTENSIONS),
+    ];
+    const SNIFFED: (string | null)[] = [null, 'image/jpeg', 'text/html', 'who-knows/what'];
+
+    const ROWS: [string, string | null][] = DECLARED.flatMap((declared) =>
+      SNIFFED.map((sniffed): [string, string | null] => [declared, sniffed]),
+    );
+
+    it.each(ROWS)('%s sniffed as %s stays saveable', (declared, sniffed) => {
+      const result = reconcileExportLabel(declared, sniffed);
+      const route = resolveExportRoute(result.contentType);
+      expect(route.kind).not.toBe('refused');
+      if (route.kind === 'refused') return;
+      // The pair comes from ONE route lookup, so it can never disagree.
+      expect(result.extension).toBe(route.extension);
+    });
   });
 });

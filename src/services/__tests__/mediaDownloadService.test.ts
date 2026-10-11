@@ -723,6 +723,11 @@ describe('downloadAndDecryptMedia — cache and metadata', () => {
     ['image/png', 'png'],
     ['video/quicktime', 'mov'],
     ['video/x-m4v', 'm4v'],
+    // `image/jpg` is what every iOS-posted photo carries. It landed on `.dat`
+    // before #880; the alias map in media/contentType.ts now canonicalizes it
+    // here as it does everywhere else.
+    ['image/jpg', 'jpg'],
+    ['IMAGE/JPG; q=1', 'jpg'],
   ])('derives the extension from content type %s', async (mime, ext) => {
     mockGetMedia.mockReturnValue(
       makeMediaRow({ file_name: null, content_type: mime }),
@@ -754,6 +759,22 @@ describe('downloadAndDecryptMedia — cache and metadata', () => {
 
     expect(await downloadAndDecryptMedia(FAKE_MEDIA_ID)).toBe(
       `${MEDIA_DIR}/${FAKE_MEDIA_ID}.png`,
+    );
+  });
+
+  // Structural sync guard (#881 review): every IMAGE type the export path can
+  // write must resolve to the SAME extension here, or a dot-less row caches as
+  // `{id}.dat` (or worse, `{id}.heic` over JPEG bytes) while the exported copy
+  // is named something else.
+  it.each(
+    Object.entries(
+      require('../media/exportFileName').PHOTO_LIBRARY_EXTENSIONS as Record<string, string>,
+    ).filter(([mime]) => mime.startsWith('image/')),
+  )('getExtension matches the export extension for %s -> .%s', async (mime, ext) => {
+    mockGetMedia.mockReturnValue(makeMediaRow({ file_name: null, content_type: mime }));
+
+    expect(await downloadAndDecryptMedia(FAKE_MEDIA_ID)).toBe(
+      `${MEDIA_DIR}/${FAKE_MEDIA_ID}.${ext}`,
     );
   });
 

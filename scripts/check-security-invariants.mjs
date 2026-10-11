@@ -1893,7 +1893,7 @@ try {
 // 24. Media export: the service/UI half (#878) — rules 1, 2, 3 and 7
 // ---------------------------------------------------------------------------
 //
-// Kept as FOUR separate rules rather than folded into rule 21: the rule name is
+// Kept as FIVE separate rules rather than folded into rule 21: the rule name is
 // what the violation line prints, and "native-pins" must not start meaning
 // "anything to do with export".
 //
@@ -1904,21 +1904,33 @@ try {
 //                                     site, asserts the disclosure before that
 //                                     write, and every exported entry point's
 //                                     FIRST await is ensureExportDisclosure().
-//   media-export-no-name-logging    — the service, sanitizer, abort helper and
-//                                     the package's src/index.tsx +
+//   media-export-no-name-logging    — the service, the two pure leaves
+//                                     (media/exportFileName.ts,
+//                                     media/contentType.ts), the abort helper
+//                                     (media/abortable.ts) and the package's
+//                                     src/index.tsx +
 //                                     src/NativeOrbitalMediaExport.ts carry no
 //                                     file_name|fileName|displayName|localPath|
 //                                     sourcePath|mediaId on a log or Sentry
-//                                     line; the normalizer never interpolates
+//                                     line; the two pure leaves carry no
+//                                     console/captureError/Sentry call AT ALL;
+//                                     the normalizer never interpolates
 //                                     the native message; the .mm/.kt contain
 //                                     no NSLog|os_log|android.util.Log.
 //   media-export-wipe-wired         — localWipe aborts exports before deleting
 //                                     MEDIA_DIR and sweeps the staging dir;
 //                                     cleanupOrphanedChunks sweeps it too.
+//   media-export-single-label-site  — buildExportFileName(, reconcileExportLabel(
+//                                     and sniffExportHead( appear EXACTLY once
+//                                     in mediaExportService.ts, all three inside
+//                                     resolveExportLabel(), and none inside
+//                                     performExport().
 
 const ME_SERVICE = join(SRC, 'services', 'mediaExportService.ts');
-const ME_SANITIZER = join(SRC, 'services', 'media', 'exportFileName.ts');
+const ME_EXPORT_NAMES = join(SRC, 'services', 'media', 'exportFileName.ts');
+const ME_CONTENT_TYPE = join(SRC, 'services', 'media', 'contentType.ts');
 const ME_ABORTABLE = join(SRC, 'services', 'media', 'abortable.ts');
+const ME_IMAGE_SANITIZER = join(SRC, 'services', 'media', 'imageSanitizer.ts');
 const ME_PKG_INDEX = join(MEDIA_EXPORT_PKG, 'src', 'index.tsx');
 const ME_PKG_SPEC = join(MEDIA_EXPORT_PKG, 'src', 'NativeOrbitalMediaExport.ts');
 const ME_AUTH_SERVICE = join(SRC, 'services', 'authService.ts');
@@ -2228,11 +2240,49 @@ const ME_LOG_CALL_RE = /\b(?:console\.(?:log|warn|error|info|debug|trace)|captur
 
 const ME_REQUIRED_LOG_FILES = [
   ME_SERVICE,
-  ME_SANITIZER,
+  ME_EXPORT_NAMES,
+  ME_CONTENT_TYPE,
   ME_ABORTABLE,
   ME_PKG_INDEX,
   ME_PKG_SPEC,
 ];
+
+/**
+ * The two PURE leaves (#880). Every export label — the MIME, the extension and
+ * the display name — is computed in these two modules from a peer-supplied
+ * content type, a peer-supplied file name and the first bytes of a DECRYPTED
+ * file. All three are user content, and none of them has a code to log in
+ * place of itself, so the rule here is absolute rather than windowed: these
+ * files contain NO console, captureError or Sentry call at all.
+ *
+ * This is what the windowed name check cannot do. A debugging line like
+ * `console.warn('[sniff]', head)` carries none of the forbidden identifiers —
+ * `head`, `stem`, `brand`, `data` are these modules' own idioms — so it would
+ * pass the windowed check while printing the leading bytes of a decrypted
+ * photo. Zero calls is the only form of this rule that binds.
+ *
+ * `media/imageSanitizer.ts` is held to the same bar for the same reason, even
+ * though it is an UPLOAD module: it materializes whole images in memory as
+ * `data` / `stripped` Uint8Arrays, and it is the one file in the media pipeline
+ * where a debugging session is most tempting. It has no log call today, and
+ * this is what keeps it that way.
+ */
+const ME_SILENT_FILES = [ME_EXPORT_NAMES, ME_CONTENT_TYPE, ME_IMAGE_SANITIZER];
+
+for (const file of ME_SILENT_FILES) {
+  const raw = meRead(file, ME_LOG_RULE, 'that it logs nothing at all');
+  if (raw === null) continue;
+  const lines = meStripComments(raw).split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (!ME_LOG_CALL_RE.test(lines[i])) continue;
+    report(
+      file,
+      i + 1,
+      ME_LOG_RULE,
+      'a console/captureError/Sentry call in a module that handles peer file names or decrypted image bytes — these files must log nothing at all',
+    );
+  }
+}
 
 for (const file of ME_REQUIRED_LOG_FILES.concat(
   ME_OPTIONAL_LOG_FILES.filter((f) => {
@@ -2319,7 +2369,71 @@ checkWindowedPins(
 );
 
 // ---------------------------------------------------------------------------
-// 24d. media-export-wipe-wired
+// 24d. media-export-single-label-site
+// ---------------------------------------------------------------------------
+
+// A second place that builds an export label is how `image/heic` ended up on
+// JPEG bytes in the first place (#880): the upload branch relabelled, the
+// export branch did not, and nothing failed. `resolveExportLabel()` is now the
+// only labeller, and the kind is deliberately NOT one of its inputs — so a new
+// entry point (PR 2's bulk runner) that builds its own name, or a label step
+// that creeps into the native-write choke point where the kind is still in
+// scope, is exactly what this rule refuses.
+//
+// Textual and mechanical, like the disclosure gate: "appears once, inside this
+// function" is a property a reviewer can check by eye.
+
+const ME_LABEL_RULE = 'media-export-single-label-site';
+const ME_LABEL_CALLS = ['buildExportFileName(', 'reconcileExportLabel(', 'sniffExportHead('];
+
+{
+  const raw = meRead(ME_SERVICE, ME_LABEL_RULE, 'that it labels in exactly one place');
+  if (raw !== null) {
+    const body = meStripComments(raw);
+    const labelRe = /^async function resolveExportLabel\([\s\S]*?\n\}/m;
+    const label = body.match(labelRe);
+    const choke = body.match(/^async function performExport\([\s\S]*?\n\}/m);
+
+    if (label === null) {
+      violations.push(
+        `  ${relative('.', ME_SERVICE)}:0  [${ME_LABEL_RULE}]  resolveExportLabel() not found — the single label site is gone and the rule would pass vacuously (${ME_ISSUE})`,
+      );
+    } else {
+      const labelStart = label.index;
+      const labelEnd = labelStart + label[0].length;
+
+      for (const call of ME_LABEL_CALLS) {
+        // Occurrences of the CALL, never the declaration: `function sniffExportHead(`
+        // is the definition, and an import line carries no `(` at all.
+        const sites = [];
+        for (let at = body.indexOf(call); at !== -1; at = body.indexOf(call, at + 1)) {
+          const before = body.slice(Math.max(0, at - 9), at);
+          if (before.endsWith('function ')) continue;
+          sites.push(at);
+        }
+
+        if (sites.length !== 1) {
+          violations.push(
+            `  ${relative('.', ME_SERVICE)}:${sites.length ? meLineOf(body, sites[0]) : 0}  [${ME_LABEL_RULE}]  "${call}" is called ${sites.length} time(s) — exactly one call, inside resolveExportLabel(), is the whole rule (${ME_ISSUE})`,
+          );
+        }
+        for (const at of sites) {
+          if (at < labelStart || at >= labelEnd) {
+            const why = `"${call}" called outside resolveExportLabel()`;
+            report(ME_SERVICE, meLineOf(body, at), ME_LABEL_RULE, why);
+          }
+          if (choke !== null && at >= choke.index && at < choke.index + choke[0].length) {
+            const why = `"${call}" called inside performExport() — the write path must not relabel`;
+            report(ME_SERVICE, meLineOf(body, at), ME_LABEL_RULE, why);
+          }
+        }
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 24e. media-export-wipe-wired
 // ---------------------------------------------------------------------------
 
 // Export is the only path that copies decrypted media to a destination a wipe

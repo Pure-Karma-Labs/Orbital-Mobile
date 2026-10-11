@@ -4,8 +4,15 @@
 
 jest.mock('@dr.pogodin/react-native-fs');
 
+/**
+ * The sanitizer now reports the format it WROTE (#880), and the upload service
+ * relabels the row from it — so this mock has to return one, and tests that
+ * care drive the relabel through it.
+ */
+const mockSanitizeStillImage = jest.fn();
+
 jest.mock('../media/imageSanitizer', () => ({
-  sanitizeStillImage: jest.fn().mockResolvedValue(undefined),
+  sanitizeStillImage: (...args: unknown[]) => mockSanitizeStillImage(...args),
 }));
 
 jest.mock('../media/videoProcessing', () => ({
@@ -119,6 +126,7 @@ jest.mock('../../utils/uuid', () => ({
 }));
 
 import {
+  SANITIZED_IMAGE_LABELS,
   uploadMedia,
   uploadMediaBatch,
   cleanupOrphanedChunks,
@@ -243,6 +251,9 @@ beforeEach(() => {
   // mockImplementation installed, so re-arm the DB-fallback lookup to "no row".
   mockGetMedia.mockReset();
   mockGetMedia.mockImplementation(() => null);
+  // Same hazard again: a test that arms a png format must not leak it.
+  mockSanitizeStillImage.mockReset();
+  mockSanitizeStillImage.mockResolvedValue({ format: 'jpeg' });
   mockMediaMap = {};
 
   setupMockEncryptor();
@@ -1885,5 +1896,170 @@ describe('cleanupOrphanedChunks', () => {
     await cleanupOrphanedChunks();
 
     expect(rnfs.unlink).not.toHaveBeenCalledWith('/tmp/test-cache/thumbnails');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Sanitized-image relabel (#880)
+// ---------------------------------------------------------------------------
+
+/**
+ * The sanitizer re-encodes every still image that is not already JPEG or PNG,
+ * so the picker's label described bytes that no longer existed: `image/heic`
+ * rode along on JPEG bytes into the envelope, the DB row, the store item and
+ * the canonical `{id}.HEIC` file. On the receiving device that label is what
+ * save-to-device handed the gallery, which refused the file.
+ *
+ * These tests assert ALL FOUR surfaces, because each one is read by a
+ * different consumer and three of them are append-only once posted.
+ */
+describe('uploadMedia — relabels a sanitized image from the bytes written', () => {
+  function envelope(): { contentType: string; fileName: string } {
+    const [metadataJson] = mockEncryptContent.mock.calls[0];
+    return JSON.parse(metadataJson as string);
+  }
+
+  function canonicalCopyTarget(): string {
+    const rnfs = require('@dr.pogodin/react-native-fs');
+    const call = rnfs.copyFile.mock.calls.find((c: unknown[]) =>
+      (c[1] as string).includes('/media/test-media-id.'),
+    );
+    expect(call).toBeDefined();
+    return call![1] as string;
+  }
+
+  it('rewrites all four surfaces for a HEIC source re-encoded to JPEG', async () => {
+    await uploadMedia({
+      ...baseOptions,
+      mimeType: 'image/heic',
+      fileName: 'IMG_0042.HEIC',
+    });
+
+    expect(envelope()).toMatchObject({
+      contentType: 'image/jpeg',
+      fileName: 'IMG_0042.jpg',
+    });
+    const row = mockSaveMedia.mock.calls[0][0];
+    expect(row.content_type).toBe('image/jpeg');
+    expect(row.file_name).toBe('IMG_0042.jpg');
+    const storeItem = mockUpsertMedia.mock.calls[0][0];
+    expect(storeItem.contentType).toBe('image/jpeg');
+    expect(storeItem.fileName).toBe('IMG_0042.jpg');
+    expect(canonicalCopyTarget()).toContain('/media/test-media-id.jpg');
+  });
+
+  it.each([
+    // [declared mime, declared name, sanitizer format, expected mime, expected name]
+    ['image/webp', 'sticker.webp', 'jpeg', 'image/jpeg', 'sticker.jpg'],
+    ['image/gif', 'cat.gif', 'jpeg', 'image/jpeg', 'cat.jpg'],
+    // The iOS picker's spelling. Only the MIME is canonicalized; the name is
+    // already right, so it must not be rewritten.
+    ['image/jpg', 'abc.jpg', 'jpeg', 'image/jpeg', 'abc.jpg'],
+    ['image/jpeg', 'photo.JPEG', 'jpeg', 'image/jpeg', 'photo.JPEG'],
+    ['image/png', 'chart.png', 'png', 'image/png', 'chart.png'],
+    // No extension to replace — one is appended.
+    ['image/heic', 'IMG', 'jpeg', 'image/jpeg', 'IMG.jpg'],
+    // `.2` is one character, so it is not an extension: the same {2,5} bound
+    // exportFileName.ts uses, for the same reason.
+    ['image/heic', 'Report v1.2', 'jpeg', 'image/jpeg', 'Report v1.2.jpg'],
+    // A PNG that the picker mislabelled: the bytes win.
+    ['image/jpeg', 'mislabelled.jpg', 'png', 'image/png', 'mislabelled.png'],
+  ] as const)(
+    'labels %s/%s written as %s as %s/%s',
+    async (mimeType, fileName, format, expectedMime, expectedName) => {
+      mockSanitizeStillImage.mockResolvedValue({ format });
+
+      await uploadMedia({ ...baseOptions, mimeType, fileName });
+
+      expect(envelope()).toMatchObject({
+        contentType: expectedMime,
+        fileName: expectedName,
+      });
+      expect(mockSaveMedia.mock.calls[0][0].file_name).toBe(expectedName);
+    },
+  );
+
+  it('keeps deriving content_class from the ORIGINAL mime type', async () => {
+    // contentClass drives the server's retention policy and is derived once
+    // from options.mimeType (#707). A relabel must not disturb it.
+    await uploadMedia({
+      ...baseOptions,
+      mimeType: 'image/heic',
+      fileName: 'IMG_0042.HEIC',
+    });
+
+    const firstChunk = mockUploadChunk.mock.calls[0][0] as Record<string, unknown>;
+    expect(firstChunk.contentClass).toBe('image');
+  });
+
+  it('does not relabel — or upload — when the sanitizer rejects', async () => {
+    mockSanitizeStillImage.mockRejectedValue(
+      new Error('Could not remove metadata from this image.'),
+    );
+
+    await expect(
+      uploadMedia({ ...baseOptions, mimeType: 'image/heic', fileName: 'IMG_0042.HEIC' }),
+    ).rejects.toThrow('Could not remove metadata');
+
+    expect(mockEncryptContent).not.toHaveBeenCalled();
+    expect(mockUploadChunk).not.toHaveBeenCalled();
+    expect(mockSaveMedia).not.toHaveBeenCalled();
+  });
+
+  it('leaves a VIDEO upload untouched (the sanitizer never runs for it)', async () => {
+    const rnfs = require('@dr.pogodin/react-native-fs');
+    const { prepareVideoForUpload } = require('../media/videoProcessing');
+    prepareVideoForUpload.mockResolvedValue({
+      videoPath: '/tmp/test-cache/test-media-id-transcode-staging.mp4',
+      mimeType: 'video/mp4',
+      fileName: 'test-media-id.mp4',
+      width: 1920,
+      height: 1080,
+      duration: 3,
+      fileSize: SMALL_PLAINTEXT_SIZE,
+      thumbnailPath: null,
+    });
+    rnfs.stat.mockImplementation((path: string) =>
+      Promise.resolve(
+        makeStat(path.includes('-cipher.bin') ? SMALL_CT_SIZE : SMALL_PLAINTEXT_SIZE),
+      ),
+    );
+
+    await uploadMedia({
+      ...baseOptions,
+      fileUri: 'file:///tmp/clip.mov',
+      mimeType: 'video/quicktime',
+      fileName: 'clip.mov',
+    });
+
+    expect(mockSanitizeStillImage).not.toHaveBeenCalled();
+    expect(envelope()).toMatchObject({
+      contentType: 'video/mp4',
+      fileName: 'test-media-id.mp4',
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Label/allowlist sync guard (#881 review)
+// ---------------------------------------------------------------------------
+
+describe('SANITIZED_IMAGE_LABELS stays in step with the export allowlist', () => {
+  const { PHOTO_LIBRARY_EXTENSIONS } = require('../media/exportFileName');
+
+  it.each(Object.entries(SANITIZED_IMAGE_LABELS))(
+    '%s labels uploads with a type and extension the export path writes identically',
+    (_format, label) => {
+      // Drift here means this client stamps a label that its OWN save-to-device
+      // would refuse (type absent) or rename (extension disagrees) — the exact
+      // class of bug #880 fixed, re-introduced from the upload side.
+      expect(PHOTO_LIBRARY_EXTENSIONS[label.mimeType]).toBe(label.extension);
+    },
+  );
+
+  it('keeps every "already correct" extension pointing at its own mime type', () => {
+    for (const label of Object.values(SANITIZED_IMAGE_LABELS)) {
+      expect(label.keepExtensions).toContain(label.extension);
+    }
   });
 });

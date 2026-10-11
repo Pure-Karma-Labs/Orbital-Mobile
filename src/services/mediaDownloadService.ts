@@ -66,6 +66,7 @@ import {
   MAX_CIPHERTEXT_BYTES,
   STREAM_READ_SIZE_BYTES,
 } from './media/mediaLimits';
+import { normalizeContentType } from './media/contentType';
 import { MEDIA_DIR, toStoredMediaPath, resolveMediaPath } from './media/mediaPaths';
 import { teardownLocalMedia } from './media/mediaTeardown';
 import type { MediaRow } from '../database/repositories/mediaRepository';
@@ -216,10 +217,14 @@ function getExtension(row: MediaRow): string {
       if (named.toLowerCase() !== 'tmp') return named;
     }
   }
-  // Fallback: derive from content type
-  const ct = row.content_type;
+  // Fallback: derive from content type. Normalized first, so the alias map in
+  // `media/contentType.ts` is the one place a non-canonical spelling is
+  // handled — `image/jpg` (every iOS-posted photo) reached `dat` before #880.
+  const ct = normalizeContentType(row.content_type);
   if (ct.startsWith('image/jpeg')) return 'jpg';
   if (ct.startsWith('image/png')) return 'png';
+  if (ct.startsWith('image/heic')) return 'heic';
+  if (ct.startsWith('image/heif')) return 'heif';
   if (ct.startsWith('image/gif')) return 'gif';
   if (ct.startsWith('image/webp')) return 'webp';
   if (ct.startsWith('video/mp4')) return 'mp4';

@@ -14,8 +14,10 @@
 import {
   CONTENT_TYPE_ALIASES,
   SNIFF_HEAD_BYTES,
+  hasPngSignature,
   normalizeContentType,
   sniffContentType,
+  splitTrailingExtension,
 } from '../contentType';
 import { resolveExportRoute } from '../exportFileName';
 
@@ -206,14 +208,53 @@ describe('sniffContentType — short and truncated heads', () => {
 describe('sniffContentType — only ever names a saveable type', () => {
   const SNIFFED_TYPES = Array.from(new Set(POSITIVES.map(([, , expected]) => expected)));
 
+  /**
+   * Every type the sniff can name, pinned to the route it resolves to.
+   *
+   * Almost all of them are PHOTO-route, which is what lets a relabel stay
+   * inside the kind the permission was acquired for. `image/avif` is the one
+   * exception: it sits on the DOCUMENT list (PhotoKit's AVIF support is not
+   * something we want to bet a save on), so a photo-declared row whose bytes
+   * are AVIF keeps its declared label — asserted on the reconcile side in
+   * exportFileName.test.ts. A new sniffable type landing on `document` has to
+   * come here and say so deliberately.
+   */
+  const EXPECTED_KIND: Record<string, 'photo' | 'document'> = {
+    'image/jpeg': 'photo',
+    'image/png': 'photo',
+    'image/gif': 'photo',
+    'image/webp': 'photo',
+    'image/heic': 'photo',
+    'image/heif': 'photo',
+    'video/mp4': 'photo',
+    'video/quicktime': 'photo',
+    'video/x-m4v': 'photo',
+    'image/avif': 'document',
+  };
+
   it('covers every positive expectation', () => {
     expect(SNIFFED_TYPES.length).toBeGreaterThan(0);
   });
 
-  it.each(SNIFFED_TYPES)('%s is accepted by the export allowlist', (contentType) => {
+  it.each(SNIFFED_TYPES)('%s routes to its pinned kind', (contentType) => {
     // The sniff corrects a LABEL; it must never produce a type that
-    // `reconcileExportLabel` would then have to refuse.
-    expect(resolveExportRoute(contentType).kind).not.toBe('refused');
+    // `reconcileExportLabel` would then have to refuse — and the KIND it lands
+    // on decides whether a photo-route row may adopt it at all.
+    const expected = EXPECTED_KIND[contentType];
+    expect(expected).toBeDefined();
+    expect(resolveExportRoute(contentType).kind).toBe(expected);
+  });
+});
+
+describe('hasPngSignature', () => {
+  it('accepts the signature and rejects a short or altered head', () => {
+    const sig = bytes(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a);
+    expect(hasPngSignature(sig)).toBe(true);
+    expect(hasPngSignature(concat(sig, bytes(0, 0, 0, 13)))).toBe(true);
+    // Length-safe on its own: the sanitizer's strip dispatch relies on that.
+    expect(hasPngSignature(sig.subarray(0, 7))).toBe(false);
+    expect(hasPngSignature(new Uint8Array(0))).toBe(false);
+    expect(hasPngSignature(bytes(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0b))).toBe(false);
   });
 });
 
@@ -271,5 +312,29 @@ describe('normalizeContentType', () => {
     // An alias that is not itself on an allowlist would admit a spelling the
     // export then refuses.
     expect(resolveExportRoute(canonical).kind).not.toBe('refused');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// splitTrailingExtension
+// ---------------------------------------------------------------------------
+
+describe('splitTrailingExtension', () => {
+  it.each([
+    ['IMG_0042.HEIC', 'IMG_0042', 'HEIC'],
+    ['photo.jpg', 'photo', 'jpg'],
+    ['photo.JPEG', 'photo', 'JPEG'],
+    ['archive.tar.gz', 'archive.tar', 'gz'],
+    // 2-5 alphanumerics only. `.2` is one character — `Report v1.2` keeps it —
+    // and `.config` is six, so neither is an extension.
+    ['Report v1.2', 'Report v1.2', ''],
+    ['notes.config', 'notes.config', ''],
+    ['a.b-c', 'a.b-c', ''],
+    // A leading dot is a hidden file, not an extension.
+    ['.profile', '.profile', ''],
+    ['IMG', 'IMG', ''],
+    ['', '', ''],
+  ])('splits %s into %s + %s', (name, stem, ext) => {
+    expect(splitTrailingExtension(name)).toEqual({ stem, ext });
   });
 });

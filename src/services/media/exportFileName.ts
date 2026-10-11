@@ -29,9 +29,7 @@
  * `reconcileExportLabel` runs later and only corrects the LABEL.
  */
 
-import { normalizeContentType } from './contentType';
-
-export { normalizeContentType };
+import { normalizeContentType, splitTrailingExtension } from './contentType';
 
 // ---------------------------------------------------------------------------
 // Routing
@@ -147,8 +145,13 @@ export interface ExportLabel {
  *     the pair. They are the same container with different brands, both go to
  *     the same destination, and the brands in a short head are not a strong
  *     enough signal to rename a user's file over.
- *  3. Otherwise an ALLOWED sniffed type wins: the bytes are the only honest
- *     description of a file.
+ *  3. Otherwise an ALLOWED sniffed type wins — but a PHOTO-route row may only
+ *     be relabelled to another photo-route type. `image/avif` is on the
+ *     DOCUMENT list, so AVIF bytes under a declared `image/heic` would
+ *     otherwise hand the photo library a resource type it is not documented to
+ *     accept, on a permission acquired for a photo save. A document-route row
+ *     has no such constraint: its destination takes anything.
+ *     Within that limit the bytes are the only honest description of a file.
  *  4. A sniffed type that is null or refused leaves the declared type. The
  *     sniff is advisory, and the declared type has already passed the
  *     allowlist.
@@ -170,7 +173,8 @@ export function reconcileExportLabel(
     const bothHeifFamily = isHeifFamily(declaredType) && isHeifFamily(sniffedType);
     if (!bothHeifFamily) {
       const sniffedRoute = resolveExportRoute(sniffedType);
-      if (sniffedRoute.kind !== 'refused') {
+      const crossesOutOfPhoto = declaredRoute.kind === 'photo' && sniffedRoute.kind !== 'photo';
+      if (sniffedRoute.kind !== 'refused' && !crossesOutOfPhoto) {
         return { contentType: sniffedType, extension: sniffedRoute.extension };
       }
     }
@@ -247,16 +251,9 @@ export function buildExportFileName(
 
   stem = stem.replace(STRIP_RE, '').replace(UNSAFE_RE, '-');
 
-  // Drop a trailing extension so `photo.jpg` does not become `photo.jpg.jpg`
-  // and `photo.exe` does not keep a second, misleading extension.
-  //
-  // Only the LAST segment, and only when it LOOKS like an extension: 2-5
-  // alphanumerics. The lower bound of 2 is load-bearing — no extension either
-  // map can produce is one character, while `Report v1.2` must keep its `.2`.
-  const dot = stem.lastIndexOf('.');
-  if (dot > 0 && /^[A-Za-z0-9]{2,5}$/.test(stem.slice(dot + 1))) {
-    stem = stem.slice(0, dot);
-  }
+  // Drop a trailing extension — see `splitTrailingExtension`'s docblock for
+  // what counts as one and why the bound is {2,5}.
+  stem = splitTrailingExtension(stem).stem;
 
   // Collapse runs of dots (kills every `..` segment, not just the first) and
   // trim leading/trailing dots and whitespace — a leading dot is a hidden

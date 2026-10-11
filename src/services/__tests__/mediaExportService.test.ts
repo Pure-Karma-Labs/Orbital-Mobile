@@ -582,7 +582,7 @@ describe('labelling from the decrypted bytes', () => {
   // has to argue with a test rather than quietly alter the behaviour.
   // -------------------------------------------------------------------------
 
-  it('AVIF bytes under an image/heic label go to Photos as AVIF, with ONE permission ask', async () => {
+  it('keeps the declared label when AVIF bytes would leave the photo route', async () => {
     acknowledgeDisclosure();
     arrangeHappyPath({ content_type: 'image/heic', file_name: 'IMG_0042.HEIC' });
     arrangeHead(ftypHead('avif', ['avif', 'mif1', 'miaf']));
@@ -591,13 +591,28 @@ describe('labelling from the decrypted bytes', () => {
       outcome: 'saved',
       destination: 'photos',
     });
+    // image/avif is on the DOCUMENT allowlist, and the permission in hand is a
+    // photo-library one. Relabelling would hand PhotoKit a .avif resource on a
+    // grant acquired for a photo save, so the declared label stands.
     expect(mockSaveToPhotoLibrary).toHaveBeenCalledWith(
-      expect.objectContaining({ mimeType: 'image/avif', displayName: 'IMG_0042.avif' }),
+      expect.objectContaining({ mimeType: 'image/heic', displayName: 'IMG_0042.heic' }),
     );
-    // PhotoKit may still refuse it, which lands on the existing Files offer —
-    // what must NOT happen is a second permission prompt or a reroute here.
     expect(mockRequestPhotoPermission).toHaveBeenCalledTimes(1);
     expect(mockExportFiles).not.toHaveBeenCalled();
+  });
+
+  it('DOES relabel a document-route row to AVIF (its destination takes anything)', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath({ content_type: 'image/tiff', file_name: 'scan.tiff' });
+    arrangeHead(ftypHead('avif', ['avif', 'mif1']));
+
+    expect(await saveMediaItem('media-1')).toEqual({
+      outcome: 'saved',
+      destination: 'files',
+    });
+    expect(mockExportFiles).toHaveBeenCalledWith([
+      expect.objectContaining({ mimeType: 'image/avif', displayName: 'scan.avif' }),
+    ]);
   });
 
   it('MP4 bytes under an image/jpeg label stay on the photo route as video/mp4', async () => {

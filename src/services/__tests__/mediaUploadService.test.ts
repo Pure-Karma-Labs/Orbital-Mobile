@@ -126,6 +126,7 @@ jest.mock('../../utils/uuid', () => ({
 }));
 
 import {
+  SANITIZED_IMAGE_LABELS,
   uploadMedia,
   uploadMediaBatch,
   cleanupOrphanedChunks,
@@ -2036,5 +2037,29 @@ describe('uploadMedia — relabels a sanitized image from the bytes written', ()
       contentType: 'video/mp4',
       fileName: 'test-media-id.mp4',
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Label/allowlist sync guard (#881 review)
+// ---------------------------------------------------------------------------
+
+describe('SANITIZED_IMAGE_LABELS stays in step with the export allowlist', () => {
+  const { PHOTO_LIBRARY_EXTENSIONS } = require('../media/exportFileName');
+
+  it.each(Object.entries(SANITIZED_IMAGE_LABELS))(
+    '%s labels uploads with a type and extension the export path writes identically',
+    (_format, label) => {
+      // Drift here means this client stamps a label that its OWN save-to-device
+      // would refuse (type absent) or rename (extension disagrees) — the exact
+      // class of bug #880 fixed, re-introduced from the upload side.
+      expect(PHOTO_LIBRARY_EXTENSIONS[label.mimeType]).toBe(label.extension);
+    },
+  );
+
+  it('keeps every "already correct" extension pointing at its own mime type', () => {
+    for (const label of Object.values(SANITIZED_IMAGE_LABELS)) {
+      expect(label.keepExtensions).toContain(label.extension);
+    }
   });
 });

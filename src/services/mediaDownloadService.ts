@@ -223,6 +223,8 @@ function getExtension(row: MediaRow): string {
   const ct = normalizeContentType(row.content_type);
   if (ct.startsWith('image/jpeg')) return 'jpg';
   if (ct.startsWith('image/png')) return 'png';
+  if (ct.startsWith('image/heic')) return 'heic';
+  if (ct.startsWith('image/heif')) return 'heif';
   if (ct.startsWith('image/gif')) return 'gif';
   if (ct.startsWith('image/webp')) return 'webp';
   if (ct.startsWith('video/mp4')) return 'mp4';

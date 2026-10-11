@@ -762,6 +762,22 @@ describe('downloadAndDecryptMedia — cache and metadata', () => {
     );
   });
 
+  // Structural sync guard (#881 review): every IMAGE type the export path can
+  // write must resolve to the SAME extension here, or a dot-less row caches as
+  // `{id}.dat` (or worse, `{id}.heic` over JPEG bytes) while the exported copy
+  // is named something else.
+  it.each(
+    Object.entries(
+      require('../media/exportFileName').PHOTO_LIBRARY_EXTENSIONS as Record<string, string>,
+    ).filter(([mime]) => mime.startsWith('image/')),
+  )('getExtension matches the export extension for %s -> .%s', async (mime, ext) => {
+    mockGetMedia.mockReturnValue(makeMediaRow({ file_name: null, content_type: mime }));
+
+    expect(await downloadAndDecryptMedia(FAKE_MEDIA_ID)).toBe(
+      `${MEDIA_DIR}/${FAKE_MEDIA_ID}.${ext}`,
+    );
+  });
+
   // Structural sync guard: every upload-side pass-through MIME must resolve to
   // its extension here too, or it would fall back to '.dat'.
   it.each(Object.entries(VIDEO_MIME_EXT))(

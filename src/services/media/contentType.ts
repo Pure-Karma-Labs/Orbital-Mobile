@@ -60,6 +60,34 @@ export function normalizeContentType(contentType: string | null | undefined): st
     : type;
 }
 
+/**
+ * Split a trailing file extension off a name: `{ stem, ext }`.
+ *
+ * Only the LAST dot-segment, and only when it LOOKS like an extension: 2-5
+ * alphanumerics. The lower bound of 2 is load-bearing — no extension this app
+ * writes is one character, while `Report v1.2` must keep its `.2`. The dot
+ * must be at index > 0, so a leading dot is never an extension (`.profile` is
+ * a hidden file).
+ *
+ * `ext` comes back AS WRITTEN — callers lower-case it to compare — and is the
+ * empty string when the name carries nothing extension-shaped, in which case
+ * `stem` is the whole name.
+ *
+ * Shared by the export filename builder (which DROPS the extension so
+ * `photo.jpg` does not become `photo.jpg.jpg`, and `photo.exe` does not keep a
+ * second, misleading one) and by the upload relabel (which REPLACES it when the
+ * sanitizer re-encoded the bytes). Both need the same answer to "is this an
+ * extension", which is why the rule lives here once.
+ */
+export function splitTrailingExtension(name: string): { stem: string; ext: string } {
+  const dot = name.lastIndexOf('.');
+  if (dot > 0) {
+    const ext = name.slice(dot + 1);
+    if (/^[A-Za-z0-9]{2,5}$/.test(ext)) return { stem: name.slice(0, dot), ext };
+  }
+  return { stem: name, ext: '' };
+}
+
 // ---------------------------------------------------------------------------
 // Byte-level sniff
 // ---------------------------------------------------------------------------
@@ -122,9 +150,17 @@ function ascii(bytes: Uint8Array, offset: number, length: number): string {
   return out;
 }
 
-function hasPngSignature(head: Uint8Array): boolean {
+/**
+ * True when these bytes START with the 8-byte PNG signature.
+ *
+ * Exported because the upload sanitizer dispatches its strip on the same
+ * question (`imageSanitizer.ts`), and two copies of a format check are two
+ * things that can disagree about what a PNG is.
+ */
+export function hasPngSignature(bytes: Uint8Array): boolean {
+  if (bytes.length < PNG_SIGNATURE.length) return false;
   for (let i = 0; i < PNG_SIGNATURE.length; i++) {
-    if (head[i] !== PNG_SIGNATURE[i]) return false;
+    if (bytes[i] !== PNG_SIGNATURE[i]) return false;
   }
   return true;
 }
@@ -191,7 +227,7 @@ export function sniffContentType(head: Uint8Array): string | null {
   if (len >= 3 && head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) {
     return 'image/jpeg';
   }
-  if (len >= 8 && hasPngSignature(head)) return 'image/png';
+  if (hasPngSignature(head)) return 'image/png';
   if (len >= 6) {
     const gif = ascii(head, 0, 6);
     if (gif === 'GIF87a' || gif === 'GIF89a') return 'image/gif';

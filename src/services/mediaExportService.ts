@@ -88,7 +88,6 @@ import {
   buildExportFileName,
   reconcileExportLabel,
   resolveExportRoute,
-  type ExportRoute,
 } from './media/exportFileName';
 import { SNIFF_HEAD_BYTES, sniffContentType } from './media/contentType';
 import { base64ToUint8Array } from './crypto/utils';
@@ -440,9 +439,7 @@ function offerFilesInstead(title: string, body: string): Promise<PermissionDecis
  *
  * NEVER called outside a user-initiated save, and always before any download.
  */
-async function ensureExportPermission(
-  route: ExportRoute & { kind: 'photo' | 'document' },
-): Promise<PermissionDecision> {
+async function ensureExportPermission(kind: 'photo' | 'document'): Promise<PermissionDecision> {
   if (Platform.OS === 'android') {
     if (Number(Platform.Version) > ANDROID_LEGACY_STORAGE_MAX_SDK) {
       return 'granted';
@@ -454,7 +451,7 @@ async function ensureExportPermission(
     if (result === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN) {
       await openSettingsAlert(
         'Storage access needed',
-        route.kind === 'photo'
+        kind === 'photo'
           ? 'Orbital needs permission to save photos and videos to your gallery. You can turn it on in Settings.'
           : 'Orbital needs permission to save files to your device. You can turn it on in Settings.',
       );
@@ -463,7 +460,7 @@ async function ensureExportPermission(
     return 'denied';
   }
 
-  if (route.kind === 'document') return 'granted';
+  if (kind === 'document') return 'granted';
 
   const status = await requestPhotoAddPermission();
   if (status === 'granted' || status === 'notRequired') return 'granted';
@@ -483,7 +480,13 @@ async function ensureExportPermission(
 // ---------------------------------------------------------------------------
 
 interface ExportRequest {
-  route: ExportRoute & { kind: 'photo' | 'document' };
+  /**
+   * WHERE this goes, and the only part of the route the native layer reads:
+   * the extension travels inside `displayName`, which is what both platforms
+   * derive the file's type and name from. Fixed before the download, because
+   * the permission was acquired for it — see `resolveExportLabel`.
+   */
+  kind: 'photo' | 'document';
   sourcePath: string;
   mimeType: string;
   displayName: string;
@@ -512,7 +515,7 @@ async function performExport(request: ExportRequest): Promise<ExportResult> {
     return { outcome: 'cancelled' };
   }
 
-  if (request.route.kind === 'photo') {
+  if (request.kind === 'photo') {
     await saveToPhotoLibrary({
       sourcePath: request.sourcePath,
       mimeType: request.mimeType,
@@ -738,7 +741,7 @@ export async function saveMediaItem(
     warnCode('EUNSUPPORTED');
     return { outcome: 'unsupported' };
   }
-  let route: ExportRoute & { kind: 'photo' | 'document' } = routed;
+  let kind: 'photo' | 'document' = routed.kind;
 
   // --- Gate 1: disclosure, before any download ----------------------------
   if (!(await ensureExportDisclosure())) {
@@ -749,15 +752,15 @@ export async function saveMediaItem(
   // Unconditional: which permission (if any) a route needs is the callee's
   // decision, not this call site's. Branching here is what left the Android
   // document route unpermissioned on API 24-28 (#879 review).
-  const decision = await ensureExportPermission(route);
+  const decision = await ensureExportPermission(kind);
   if (decision === 'denied') {
     warnCode('EPERMISSION');
     return { outcome: 'permission' };
   }
   if (decision === 'useFiles') {
-    // The user chose the Files destination. The extension stays the photo
-    // one — it describes the bytes, not the destination.
-    route = { kind: 'document', extension: route.extension };
+    // The user chose the Files destination. The LABEL is unaffected: it
+    // describes the bytes, not the destination.
+    kind = 'document';
   }
 
   // --- Gate 3: access ------------------------------------------------------
@@ -817,11 +820,20 @@ export async function saveMediaItem(
     }
 
     // --- Label from the BYTES, not from the peer's content_type (#880) ----
-    const { mimeType, displayName, extension } = await resolveExportLabel(row, sourcePath);
-    // Only the extension follows the bytes. The KIND is fixed: the permission
-    // for it was acquired before the download, so a byte check must never
-    // escalate a document save into a photo-library write.
-    route = { kind: route.kind, extension };
+    // The KIND is NOT revisited: the permission for it was acquired before the
+    // download, so a byte check must never escalate a document save into a
+    // photo-library write.
+    let mimeType: string;
+    let displayName: string;
+    try {
+      ({ mimeType, displayName } = await resolveExportLabel(row, sourcePath));
+    } catch (e) {
+      // `reconcileExportLabel` throws on a REFUSED declared type, which the
+      // gate at the top of this function already returned on — so this is a
+      // programming error, not a user state. It is caught anyway because
+      // saveMediaItem never throws: the UI gets a result, not a rejection.
+      return resultForError(e);
+    }
 
     // The label step awaits (a file read), which is long enough for the
     // lightbox to close or for a wipe to land. Mirrors the post-download check
@@ -832,7 +844,7 @@ export async function saveMediaItem(
 
     try {
       return await performExport({
-        route,
+        kind,
         sourcePath,
         mimeType,
         displayName,
@@ -842,17 +854,13 @@ export async function saveMediaItem(
     } catch (e) {
       // EUNSUPPORTED from Photos is recoverable: the same bytes can go to
       // Files. Offered only on a single-item save — a batch cannot stop to ask.
-      if (
-        route.kind === 'photo' &&
-        isMediaExportError(e) &&
-        e.code === 'EUNSUPPORTED'
-      ) {
+      if (kind === 'photo' && isMediaExportError(e) && e.code === 'EUNSUPPORTED') {
         warnCode('EUNSUPPORTED');
         const useFiles = await offerFilesFallback();
         if (!useFiles) return { outcome: 'unsupported' };
         try {
           return await performExport({
-            route: { kind: 'document', extension: route.extension },
+            kind: 'document',
             sourcePath,
             mimeType,
             displayName,

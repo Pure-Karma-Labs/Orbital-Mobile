@@ -267,6 +267,16 @@ describe('reconcileExportLabel', () => {
     // ...and the family rule needs BOTH sides in the family, so a JPEG row
     // whose bytes are really HEIC is still corrected.
     ['image/jpeg', 'image/heic', 'image/heic', 'heic'],
+    // A PHOTO-route row may only move to another photo-route type. image/avif
+    // is DOCUMENT-kind, so AVIF bytes under a declared image/heic keep the
+    // declared label rather than handing the photo library a .avif resource on
+    // a permission acquired for a photo save.
+    ['image/heic', 'image/avif', 'image/heic', 'heic'],
+    ['image/jpeg', 'image/tiff', 'image/jpeg', 'jpg'],
+    // A DOCUMENT-route row has no such limit — its destination takes anything,
+    // in either direction.
+    ['image/tiff', 'image/avif', 'image/avif', 'avif'],
+    ['application/pdf', 'image/jpeg', 'image/jpeg', 'jpg'],
   ] as [string, string | null, string, string][])(
     'labels a %s row sniffed as %s with %s/.%s',
     (declared, sniffed, contentType, extension) => {
@@ -283,6 +293,15 @@ describe('reconcileExportLabel', () => {
       expect(() => reconcileExportLabel(declared, 'image/jpeg')).toThrow();
     },
   );
+
+  it('never moves a photo-route row off the photo route', () => {
+    for (const declared of Object.keys(PHOTO_LIBRARY_EXTENSIONS)) {
+      for (const sniffed of ['image/avif', 'image/tiff', 'video/webm', 'application/pdf']) {
+        const result = reconcileExportLabel(declared, sniffed);
+        expect(resolveExportRoute(result.contentType).kind).toBe('photo');
+      }
+    }
+  });
 
   describe('never returns a refused label', () => {
     const DECLARED = [

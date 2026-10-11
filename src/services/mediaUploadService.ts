@@ -48,6 +48,7 @@ import { saveMedia, getMedia } from '../database/repositories/mediaRepository';
 // imports only RNFS, so there is no cycle — mediaDownloadService and threadService
 // already import it statically. The rollback path below needs it synchronously.
 import { MEDIA_DIR, toStoredMediaPath, resolveMediaPath } from './media/mediaPaths';
+import { splitTrailingExtension } from './media/contentType';
 import { isDatabaseInitialized } from '../database/connection';
 import { useAppStore } from '../stores/useAppStore';
 import { generateUUID } from '../utils/uuid';
@@ -231,8 +232,12 @@ function isVideoMime(mimeType: string): boolean {
 /**
  * The content type and extension a sanitized still image is labelled with,
  * plus the source extensions that already describe those bytes correctly.
+ *
+ * Exported for its sync test: both tuples must match
+ * `PHOTO_LIBRARY_EXTENSIONS` in `media/exportFileName.ts`, or this client would
+ * write a label its own export path then refuses or renames.
  */
-const SANITIZED_IMAGE_LABELS: Readonly<
+export const SANITIZED_IMAGE_LABELS: Readonly<
   Record<
     SanitizedImageFormat,
     { mimeType: string; extension: string; keepExtensions: readonly string[] }
@@ -260,17 +265,13 @@ function relabelSanitizedImage(
   format: SanitizedImageFormat,
 ): { mimeType: string; fileName: string } {
   const label = SANITIZED_IMAGE_LABELS[format];
-  const dot = fileName.lastIndexOf('.');
-  const suffix = dot > 0 ? fileName.slice(dot + 1) : '';
+  // One definition of "trailing extension", shared with the export filename
+  // builder — see `splitTrailingExtension`'s docblock.
+  const { stem, ext } = splitTrailingExtension(fileName);
 
-  if (label.keepExtensions.includes(suffix.toLowerCase())) {
+  if (label.keepExtensions.includes(ext.toLowerCase())) {
     return { mimeType: label.mimeType, fileName };
   }
-
-  // Replace only a trailing `.<2-5 alphanumerics>`, the same bound and for the
-  // same reason as `media/exportFileName.ts` ("Drop a trailing extension"): no
-  // extension we emit is one character, while `Report v1.2` must keep its `.2`.
-  const stem = dot > 0 && /^[A-Za-z0-9]{2,5}$/.test(suffix) ? fileName.slice(0, dot) : fileName;
 
   return {
     mimeType: label.mimeType,

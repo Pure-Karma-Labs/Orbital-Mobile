@@ -69,7 +69,7 @@ import {
   unlink,
   CachesDirectoryPath,
 } from '@dr.pogodin/react-native-fs';
-import { sniffContentType } from './contentType';
+import { hasPngSignature, sniffContentType } from './contentType';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -223,8 +223,6 @@ function pushRange(output: number[], data: Uint8Array, start: number, end: numbe
 }
 
 // PNG constants
-const PNG_SIGNATURE = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
-
 // Chunks to strip from PNG
 const PNG_STRIP_CHUNKS = new Set(['eXIf', 'tEXt', 'zTXt', 'iTXt', 'tIME']);
 
@@ -711,11 +709,9 @@ export function stripPngMetadata(data: Uint8Array): Uint8Array {
     throw new Error('Input too small to be a valid PNG');
   }
 
-  // Verify PNG signature
-  for (let i = 0; i < 8; i++) {
-    if (data[i] !== PNG_SIGNATURE[i]) {
-      throw new Error('Not a valid PNG (bad signature)');
-    }
+  // Verify PNG signature (shared with the sniffer — one definition of "PNG")
+  if (!hasPngSignature(data)) {
+    throw new Error('Not a valid PNG (bad signature)');
   }
 
   const output: number[] = [];
@@ -912,7 +908,7 @@ export function hasExif(data: Uint8Array): boolean {
   }
 
   // PNG
-  if (data.length >= 8 && isPngSignature(data)) {
+  if (hasPngSignature(data)) {
     let pos = 8;
 
     while (pos + 12 <= data.length) {
@@ -1091,7 +1087,7 @@ export async function sanitizeStillImage(
     if (data.length >= 2 && data[0] === 0xFF && data[1] === 0xD8) {
       // JPEG
       stripped = stripJpegMetadata(data);
-    } else if (data.length >= 8 && isPngSignature(data)) {
+    } else if (hasPngSignature(data)) {
       // PNG
       stripped = stripPngMetadata(data);
     } else {
@@ -1108,11 +1104,17 @@ export async function sanitizeStillImage(
 
     // The format of the bytes we WROTE, from the shared sniffer — not a second
     // byte-format decider, and not the caller's `mimeType`, which is the
-    // picker's claim about the SOURCE. Only JPEG and PNG can reach here: the
-    // fallback branch above throws on anything else.
-    return {
-      format: sniffContentType(stripped) === 'image/png' ? 'png' : 'jpeg',
-    };
+    // picker's claim about the SOURCE.
+    //
+    // TOTAL, not defaulted: anything that is neither JPEG nor PNG is a strip
+    // that produced something we cannot describe, and the caller labels a whole
+    // upload from this answer. Failing closed here is the same posture as
+    // verifyNoImageMetadata above — we do not send what we cannot vouch for.
+    const written = sniffContentType(stripped);
+    if (written !== 'image/jpeg' && written !== 'image/png') {
+      throw new Error('Could not process this image. The image cannot be sent.');
+    }
+    return { format: written === 'image/png' ? 'png' : 'jpeg' };
   } finally {
     // Clean up temp compress file if created
     if (tempCompressPath) {
@@ -1160,9 +1162,3 @@ function endsWithSefTrailer(data: Uint8Array): boolean {
   );
 }
 
-function isPngSignature(data: Uint8Array): boolean {
-  for (let i = 0; i < 8; i++) {
-    if (data[i] !== PNG_SIGNATURE[i]) return false;
-  }
-  return true;
-}

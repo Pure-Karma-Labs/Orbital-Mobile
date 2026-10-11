@@ -34,17 +34,35 @@
  * REFUSED. Our composer only posts photos and videos, so any other type on a
  * row is peer-crafted — see that module's header.
  *
+ * ## Labelling: declared type routes, bytes label (#880)
+ *
+ * Routing, refusal and the permission prompt all run on the DECLARED
+ * `content_type`, before the download. The copy's MIME and extension are then
+ * corrected from the decrypted bytes by `resolveExportLabel` below, which is
+ * the ONLY place a label is computed: ANY entry point that reaches
+ * `performExport` — `saveMediaItem` today, the bulk runner in PR 2 — must
+ * label through it. The kind (`photo` vs `document`) stays fixed, because the
+ * permission was acquired for that kind.
+ *
+ * The byte check is PERMANENT, not a migration. `content_type` is
+ * peer-supplied, so a wrong label can arrive from any client at any time; the
+ * upload-side relabel in `mediaUploadService` only keeps THIS client's future
+ * rows honest.
+ *
  * ## Logging
  *
  * `if (__DEV__) console.warn('[mediaExport]', code)` and nothing else. No
  * file name, display name, path or media id is ever logged or sent to Sentry;
  * `captureError` receives a fixed Error plus the error CODE as a tag. Pinned
  * by the `media-export-no-name-logging` invariant, which reads this file, the
- * sanitizer, and the package's own two TS files.
+ * two pure leaves it labels through (`media/exportFileName.ts` and
+ * `media/contentType.ts`, which must contain NO log or Sentry call at all),
+ * `media/abortable.ts`, and the package's own two TS files
+ * (`src/index.tsx`, `src/NativeOrbitalMediaExport.ts`).
  */
 
 import { Alert, Linking, PermissionsAndroid, Platform } from 'react-native';
-import { CachesDirectoryPath, exists, stat, unlink } from '@dr.pogodin/react-native-fs';
+import { CachesDirectoryPath, exists, read, stat, unlink } from '@dr.pogodin/react-native-fs';
 import {
   exportFiles,
   isMediaExportError,
@@ -68,9 +86,12 @@ import { AuthError, NotFoundError } from './api/errors';
 import { abortable, isExportAbortError } from './media/abortable';
 import {
   buildExportFileName,
+  reconcileExportLabel,
   resolveExportRoute,
   type ExportRoute,
 } from './media/exportFileName';
+import { SNIFF_HEAD_BYTES, sniffContentType } from './media/contentType';
+import { base64ToUint8Array } from './crypto/utils';
 
 // ---------------------------------------------------------------------------
 // Public result type
@@ -138,9 +159,15 @@ export function describeExportOutcome(result: ExportResult): string {
 // ---------------------------------------------------------------------------
 
 /**
- * iOS staging directory for the document route: the native module aliases each
- * file into `orbital-export/<uuid>/<name>` (clonefile, so no byte copy) and
- * deletes the per-call directory on every settle path.
+ * iOS staging directory: the native module aliases a file into
+ * `orbital-export/<uuid>/<name>` (clonefile, so no byte copy) and deletes the
+ * per-call directory on every settle path.
+ *
+ * BOTH iOS routes stage here. The document route always does; the PHOTO route
+ * does whenever the on-disk extension differs from the display name's, which
+ * is the COMMON case since #880 — a canonical `{id}.HEIC` file whose JPEG
+ * bytes are now correctly named `*.jpg` is exactly that mismatch. Either way
+ * the residue is swept by the same whole-directory unlink below.
  *
  * This is the ONE media-pipeline path that writes plaintext-adjacent residue
  * into a SUBDIRECTORY of Caches rather than the top level, which is why it is
@@ -591,6 +618,64 @@ function resultForError(e: unknown): ExportResult {
 }
 
 // ---------------------------------------------------------------------------
+// Labelling (#880)
+// ---------------------------------------------------------------------------
+
+/**
+ * Post date carried onto the copy, so a saved photo sorts into the gallery
+ * where the user remembers it rather than at today (Alex, 2026-10-09). 0 means
+ * "unknown" to the native layer, which then omits the attribute.
+ */
+function exportCreatedAtMs(row: MediaRow): number {
+  return Number.isFinite(row.created_at) ? row.created_at : 0;
+}
+
+/**
+ * Read the head of the decrypted file and identify its format, or null.
+ *
+ * Advisory: every failure path returns null and the declared type stands. The
+ * warning carries the CODE only — never the path (`media-export-no-name-logging`).
+ */
+async function sniffExportHead(sourcePath: string): Promise<string | null> {
+  try {
+    const headBase64 = await read(sourcePath, SNIFF_HEAD_BYTES, 0, 'base64');
+    return sniffContentType(base64ToUint8Array(headBase64));
+  } catch {
+    warnCode('ESNIFF');
+    return null;
+  }
+}
+
+/**
+ * THE ONLY PLACE AN EXPORT LABEL IS COMPUTED.
+ *
+ * Reads the file's head, reconciles it against the row's declared type and
+ * builds the display name. Every entry point that reaches `performExport` must
+ * go through here — a second labeller is how `image/heic` ended up on JPEG
+ * bytes in the first place.
+ *
+ * Deliberately does NOT take the route kind. The kind is fixed before the
+ * download because the permission was acquired for it, and the byte check may
+ * only change the extension and the MIME — so there is nothing here for the
+ * kind to decide, and taking it would invite a future change that reroutes.
+ *
+ * Call AFTER the download: it needs the plaintext. The caller must re-check
+ * abort afterwards, since this awaits.
+ */
+async function resolveExportLabel(
+  row: MediaRow,
+  sourcePath: string,
+): Promise<{ mimeType: string; displayName: string; extension: string }> {
+  const sniffed = await sniffExportHead(sourcePath);
+  const label = reconcileExportLabel(row.content_type, sniffed);
+  return {
+    mimeType: label.contentType,
+    extension: label.extension,
+    displayName: buildExportFileName(row.file_name, label.extension, exportCreatedAtMs(row)),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Access
 // ---------------------------------------------------------------------------
 
@@ -682,16 +767,7 @@ export async function saveMediaItem(
     return { outcome: 'notAllowed' };
   }
 
-  const mimeType = normalizeMimeType(row.content_type);
-  // Saved items keep their POST date (Alex, 2026-10-09), so a saved photo
-  // sorts into the gallery where the user remembers it rather than at today.
-  // 0 means "unknown" to the native layer, which then omits the attribute.
-  const createdAtMs = Number.isFinite(row.created_at) ? row.created_at : 0;
-  const displayName = buildExportFileName(
-    row.file_name,
-    route.extension,
-    createdAtMs,
-  );
+  const createdAtMs = exportCreatedAtMs(row);
 
   const epoch = exportEpoch;
   const controller = new AbortController();
@@ -738,6 +814,20 @@ export async function saveMediaItem(
     } catch {
       warnCode('ENOENT');
       return { outcome: 'unavailable' };
+    }
+
+    // --- Label from the BYTES, not from the peer's content_type (#880) ----
+    const { mimeType, displayName, extension } = await resolveExportLabel(row, sourcePath);
+    // Only the extension follows the bytes. The KIND is fixed: the permission
+    // for it was acquired before the download, so a byte check must never
+    // escalate a document save into a photo-library write.
+    route = { kind: route.kind, extension };
+
+    // The label step awaits (a file read), which is long enough for the
+    // lightbox to close or for a wipe to land. Mirrors the post-download check
+    // above: the native write is the one step that must not happen anyway.
+    if (controller.signal.aborted || epoch !== exportEpoch) {
+      return { outcome: 'cancelled' };
     }
 
     try {
@@ -794,12 +884,6 @@ function offerFilesFallback(): Promise<boolean> {
       { onDismiss: () => resolve(false) },
     );
   });
-}
-
-/** Lower-cased, parameter-free content type for the native layer. */
-function normalizeMimeType(contentType: string): string {
-  const semi = contentType.indexOf(';');
-  return (semi === -1 ? contentType : contentType.slice(0, semi)).trim().toLowerCase();
 }
 
 // ---------------------------------------------------------------------------

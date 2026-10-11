@@ -10,7 +10,7 @@
  */
 
 import { Alert, Linking, PermissionsAndroid, Platform } from 'react-native';
-import { exists, stat, unlink } from '@dr.pogodin/react-native-fs';
+import { exists, read, stat, unlink } from '@dr.pogodin/react-native-fs';
 import {
   MediaExportError,
   exportFiles,
@@ -118,6 +118,7 @@ const mockRequestPhotoPermission = requestPhotoAddPermission as jest.MockedFunct
 const mockStat = stat as jest.MockedFunction<typeof stat>;
 const mockExists = exists as jest.MockedFunction<typeof exists>;
 const mockUnlink = unlink as jest.MockedFunction<typeof unlink>;
+const mockRead = read as jest.MockedFunction<typeof read>;
 
 /**
  * Drain the microtask queue. `saveMediaItem` awaits the disclosure and the
@@ -211,6 +212,46 @@ function arrangeHappyPath(overrides: Partial<MediaRow> = {}): void {
   mockState.conversations = { 'conv-1': { id: 'conv-1' } };
   mockDownload.mockResolvedValue('/media/media-1.jpg');
   mockStat.mockResolvedValue({ size: 1024 } as unknown as Awaited<ReturnType<typeof stat>>);
+  // RE-ARM the head read to "nothing recognizable" (#880). jest.clearAllMocks()
+  // keeps implementations, but an earlier test's `arrangeHead` would otherwise
+  // leak a JPEG head into every later save in the file. Opting IN to a head is
+  // what makes the sniff assertions mean something.
+  mockRead.mockResolvedValue('');
+}
+
+/** Base64 of raw bytes, the way RNFS hands a head read back. */
+function toBase64(bytes: readonly number[]): string {
+  const g = globalThis as unknown as { btoa: (s: string) => string };
+  return g.btoa(String.fromCharCode(...bytes));
+}
+
+/** Make the decrypted file's head read as exactly these bytes. */
+function arrangeHead(bytes: readonly number[]): void {
+  mockRead.mockResolvedValue(toBase64(bytes));
+}
+
+function asciiBytes(s: string): number[] {
+  return Array.from(s, (c) => c.charCodeAt(0));
+}
+
+/** `FF D8 FF` plus enough of a real JFIF header to look like a file. */
+const JPEG_HEAD: readonly number[] = [
+  0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01,
+];
+
+/** An ISO-BMFF `ftyp` box: size, 'ftyp', major brand, minor version, brands. */
+function ftypHead(major: string, compatible: readonly string[] = []): number[] {
+  const body = [
+    ...asciiBytes('ftyp'),
+    ...asciiBytes(major),
+    0x00,
+    0x00,
+    0x02,
+    0x00, // minor version
+    ...compatible.flatMap(asciiBytes),
+  ];
+  const size = 4 + body.length;
+  return [(size >>> 24) & 0xff, (size >>> 16) & 0xff, (size >>> 8) & 0xff, size & 0xff, ...body];
 }
 
 /** Pre-acknowledge the disclosure so a test can target a later gate. */
@@ -249,6 +290,8 @@ afterEach(() => {
 describe('saveMediaItem — routing', () => {
   it('sends a photo-library type to the photo library with the mapped extension', async () => {
     acknowledgeDisclosure();
+    // No recognizable head: the declared type stands, which is what every
+    // unreadable, short or unknown-format file falls back to.
     arrangeHappyPath({ content_type: 'image/heic', file_name: 'IMG_0042.HEIC' });
 
     const result = await saveMediaItem('media-1');
@@ -261,6 +304,26 @@ describe('saveMediaItem — routing', () => {
       createdAtMs: Date.UTC(2026, 4, 1, 10, 0, 0),
     });
     expect(mockExportFiles).not.toHaveBeenCalled();
+  });
+
+  it('labels an image/heic row holding JPEG bytes as a JPEG (#880)', async () => {
+    acknowledgeDisclosure();
+    // The bug this issue is about: the upload pipeline re-encodes every still
+    // image that is not already JPEG/PNG, so an Android `image/heic` row names
+    // JPEG bytes. MediaStore then advertised `image/heic` over a JPEG and the
+    // gallery reported the saved file as incompatible.
+    arrangeHappyPath({ content_type: 'image/heic', file_name: 'IMG_0042.HEIC' });
+    arrangeHead(JPEG_HEAD);
+
+    const result = await saveMediaItem('media-1');
+
+    expect(result).toEqual({ outcome: 'saved', destination: 'photos' });
+    expect(mockSaveToPhotoLibrary).toHaveBeenCalledWith({
+      sourcePath: '/media/media-1.jpg',
+      mimeType: 'image/jpeg',
+      displayName: 'IMG_0042.jpg',
+      createdAtMs: Date.UTC(2026, 4, 1, 10, 0, 0),
+    });
   });
 
   it('sends a document type through the file picker', async () => {
@@ -328,6 +391,229 @@ describe('saveMediaItem — routing', () => {
     });
 
     expect(await saveMediaItem('media-1')).toEqual({ outcome: 'unavailable' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Byte-level labelling (#880)
+// ---------------------------------------------------------------------------
+
+describe('labelling from the decrypted bytes', () => {
+  it('accepts image/jpg, the type EVERY iOS-posted photo carries', async () => {
+    acknowledgeDisclosure();
+    // Before #880 this matched no entry in either export map, so save-to-device
+    // refused every photo posted from an iPhone.
+    arrangeHappyPath({ content_type: 'image/jpg', file_name: 'IMG_1001.jpg' });
+
+    const result = await saveMediaItem('media-1');
+
+    expect(result).toEqual({ outcome: 'saved', destination: 'photos' });
+    expect(mockSaveToPhotoLibrary).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mimeType: 'image/jpeg',
+        displayName: 'IMG_1001.jpg',
+      }),
+    );
+  });
+
+  it('reads the head with (path, SNIFF_HEAD_BYTES, 0, base64) after the download and stat, before the write', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath({ content_type: 'image/heic', file_name: 'IMG_0042.HEIC' });
+    const order: string[] = [];
+    mockDownload.mockImplementation(async () => {
+      order.push('download');
+      return '/media/media-1.jpg';
+    });
+    mockStat.mockImplementation(async () => {
+      order.push('stat');
+      return { size: 1024 } as unknown as Awaited<ReturnType<typeof stat>>;
+    });
+    mockRead.mockImplementation(async () => {
+      order.push('read');
+      return toBase64(JPEG_HEAD);
+    });
+    mockSaveToPhotoLibrary.mockImplementation(async () => {
+      order.push('write');
+    });
+
+    await saveMediaItem('media-1');
+
+    expect(order).toEqual(['download', 'stat', 'read', 'write']);
+    expect(mockRead).toHaveBeenCalledWith('/media/media-1.jpg', 128, 0, 'base64');
+  });
+
+  it('keeps the declared type when the head is too short to identify, with no ESNIFF', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath({ content_type: 'image/heic', file_name: 'IMG_0042.HEIC' });
+    // A 4-byte read is a SHORT read, not a failure: the sniff is advisory.
+    arrangeHead([0x00, 0x01, 0x02, 0x03]);
+
+    await saveMediaItem('media-1');
+
+    expect(mockSaveToPhotoLibrary).toHaveBeenCalledWith(
+      expect.objectContaining({ mimeType: 'image/heic', displayName: 'IMG_0042.heic' }),
+    );
+    expect(warnSpy.mock.calls.map((c) => c[1])).not.toContain('ESNIFF');
+  });
+
+  it('falls back to the declared type when the head read FAILS, logging a code only', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath({ content_type: 'image/heic', file_name: 'IMG_0042.HEIC' });
+    // A real EACCES/EPERM message carries the path. It must not reach a log.
+    mockRead.mockRejectedValue(new Error('EACCES open /media/media-1.jpg'));
+
+    const result = await saveMediaItem('media-1');
+
+    expect(result).toEqual({ outcome: 'saved', destination: 'photos' });
+    expect(mockSaveToPhotoLibrary).toHaveBeenCalledWith(
+      expect.objectContaining({ mimeType: 'image/heic', displayName: 'IMG_0042.heic' }),
+    );
+    expect(warnSpy).toHaveBeenCalledWith('[mediaExport]', 'ESNIFF');
+    for (const call of warnSpy.mock.calls) {
+      const serialized = JSON.stringify(call);
+      expect(serialized).not.toContain('/media/media-1.jpg');
+      expect(serialized).not.toContain('IMG_0042');
+    }
+    expect(mockCaptureError).not.toHaveBeenCalled();
+  });
+
+  it('does not read the file at all when the disclosure is cancelled', async () => {
+    arrangeHappyPath();
+    answerAlert('Cancel');
+
+    expect(await saveMediaItem('media-1')).toEqual({ outcome: 'cancelled' });
+    expect(mockRead).not.toHaveBeenCalled();
+  });
+
+  it('does not read the file at all for a REFUSED declared type', async () => {
+    acknowledgeDisclosure();
+    // A byte check can never rescue a refused type, and the bytes here are a
+    // perfectly good JPEG — refusal still wins, before any download.
+    arrangeHappyPath({ content_type: 'text/html', file_name: 'page.html' });
+    arrangeHead(JPEG_HEAD);
+
+    expect(await saveMediaItem('media-1')).toEqual({ outcome: 'unsupported' });
+    expect(mockRead).not.toHaveBeenCalled();
+    expect(mockDownload).not.toHaveBeenCalled();
+  });
+
+  it('corrects the label on the Files route after a permission denial', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath({ content_type: 'image/heic', file_name: 'IMG_0042.HEIC' });
+    arrangeHead(JPEG_HEAD);
+    mockRequestPhotoPermission.mockResolvedValue('denied');
+    answerAlert('Save to Files instead');
+
+    expect(await saveMediaItem('media-1')).toEqual({
+      outcome: 'saved',
+      destination: 'files',
+    });
+    expect(mockExportFiles).toHaveBeenCalledWith([
+      {
+        sourcePath: '/media/media-1.jpg',
+        mimeType: 'image/jpeg',
+        displayName: 'IMG_0042.jpg',
+      },
+    ]);
+  });
+
+  it('carries the corrected label into the EUNSUPPORTED Files retry', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath({ content_type: 'image/heic', file_name: 'IMG_0042.HEIC' });
+    arrangeHead(JPEG_HEAD);
+    mockSaveToPhotoLibrary.mockRejectedValue(new MediaExportError('EUNSUPPORTED'));
+    answerAlert('Save to Files instead');
+
+    expect(await saveMediaItem('media-1')).toEqual({
+      outcome: 'saved',
+      destination: 'files',
+    });
+    expect(mockExportFiles).toHaveBeenCalledWith([
+      expect.objectContaining({ mimeType: 'image/jpeg', displayName: 'IMG_0042.jpg' }),
+    ]);
+    // One download, one head read — the retry reuses both.
+    expect(mockDownload).toHaveBeenCalledTimes(1);
+    expect(mockRead).toHaveBeenCalledTimes(1);
+  });
+
+  it('never escalates a DOCUMENT save into a photo-library write', async () => {
+    acknowledgeDisclosure();
+    // image/tiff is a document type. JPEG bytes correct the extension, but the
+    // KIND was fixed before the download — the permission was acquired for it.
+    arrangeHappyPath({ content_type: 'image/tiff', file_name: 'scan.tiff' });
+    arrangeHead(JPEG_HEAD);
+
+    expect(await saveMediaItem('media-1')).toEqual({
+      outcome: 'saved',
+      destination: 'files',
+    });
+    expect(mockExportFiles).toHaveBeenCalledWith([
+      expect.objectContaining({ mimeType: 'image/jpeg', displayName: 'scan.jpg' }),
+    ]);
+    expect(mockSaveToPhotoLibrary).not.toHaveBeenCalled();
+    expect(mockRequestPhotoPermission).not.toHaveBeenCalled();
+  });
+
+  it('does not write after an abort that lands while the head read is pending', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath({ content_type: 'image/heic', file_name: 'IMG_0042.HEIC' });
+    const controller = new AbortController();
+    let settleRead!: (b64: string) => void;
+    mockRead.mockImplementation(
+      () =>
+        new Promise<string>((resolve) => {
+          settleRead = resolve;
+        }),
+    );
+
+    const pending = saveMediaItem('media-1', controller.signal);
+    await flush();
+    // Proof the abort lands DURING the label step, not before it.
+    expect(mockRead).toHaveBeenCalled();
+    controller.abort();
+    settleRead(toBase64(JPEG_HEAD));
+
+    expect(await pending).toEqual({ outcome: 'cancelled' });
+    expect(mockSaveToPhotoLibrary).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // Accepted edges (plan "Risks / accepted edges"), pinned so a later change
+  // has to argue with a test rather than quietly alter the behaviour.
+  // -------------------------------------------------------------------------
+
+  it('AVIF bytes under an image/heic label go to Photos as AVIF, with ONE permission ask', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath({ content_type: 'image/heic', file_name: 'IMG_0042.HEIC' });
+    arrangeHead(ftypHead('avif', ['avif', 'mif1', 'miaf']));
+
+    expect(await saveMediaItem('media-1')).toEqual({
+      outcome: 'saved',
+      destination: 'photos',
+    });
+    expect(mockSaveToPhotoLibrary).toHaveBeenCalledWith(
+      expect.objectContaining({ mimeType: 'image/avif', displayName: 'IMG_0042.avif' }),
+    );
+    // PhotoKit may still refuse it, which lands on the existing Files offer —
+    // what must NOT happen is a second permission prompt or a reroute here.
+    expect(mockRequestPhotoPermission).toHaveBeenCalledTimes(1);
+    expect(mockExportFiles).not.toHaveBeenCalled();
+  });
+
+  it('MP4 bytes under an image/jpeg label stay on the photo route as video/mp4', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath({ content_type: 'image/jpeg', file_name: 'Beach day.jpg' });
+    arrangeHead(ftypHead('isom', ['isom', 'iso2', 'avc1', 'mp41']));
+
+    expect(await saveMediaItem('media-1')).toEqual({
+      outcome: 'saved',
+      destination: 'photos',
+    });
+    // Cross-family within the same kind: the copy lands in the Movies bucket
+    // instead of Pictures. The permissions are identical, so this is accepted.
+    expect(mockSaveToPhotoLibrary).toHaveBeenCalledWith(
+      expect.objectContaining({ mimeType: 'video/mp4', displayName: 'Beach day.mp4' }),
+    );
   });
 });
 
@@ -1070,6 +1356,8 @@ describe('logging never carries names, paths or ids', () => {
       () => mockGetAccess.mockReturnValue({ conversation_id: null, author_id: null }),
       () => mockGetMedia.mockReturnValue(null),
       () => mockGetMedia.mockReturnValue(row({ content_type: 'text/html' })),
+      // ESNIFF: the rejection message of a real failed read carries the path.
+      () => mockRead.mockRejectedValue(new Error('EACCES open /media/media-1.jpg')),
     ];
     for (const arrange of branches) {
       acknowledgeDisclosure();

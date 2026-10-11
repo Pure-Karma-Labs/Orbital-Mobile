@@ -723,6 +723,11 @@ describe('downloadAndDecryptMedia — cache and metadata', () => {
     ['image/png', 'png'],
     ['video/quicktime', 'mov'],
     ['video/x-m4v', 'm4v'],
+    // `image/jpg` is what every iOS-posted photo carries. It landed on `.dat`
+    // before #880; the alias map in media/contentType.ts now canonicalizes it
+    // here as it does everywhere else.
+    ['image/jpg', 'jpg'],
+    ['IMAGE/JPG; q=1', 'jpg'],
   ])('derives the extension from content type %s', async (mime, ext) => {
     mockGetMedia.mockReturnValue(
       makeMediaRow({ file_name: null, content_type: mime }),

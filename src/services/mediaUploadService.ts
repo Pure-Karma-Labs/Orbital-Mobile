@@ -51,7 +51,7 @@ import { MEDIA_DIR, toStoredMediaPath, resolveMediaPath } from './media/mediaPat
 import { isDatabaseInitialized } from '../database/connection';
 import { useAppStore } from '../stores/useAppStore';
 import { generateUUID } from '../utils/uuid';
-import { sanitizeStillImage } from './media/imageSanitizer';
+import { sanitizeStillImage, type SanitizedImageFormat } from './media/imageSanitizer';
 import { prepareVideoForUpload, isCancellation } from './media/videoProcessing';
 import { UPLOAD_CANCELLED_MESSAGE } from './media/uploadCancellation';
 import { addUploadBreadcrumb, captureUploadFailure } from './uploadTelemetry';
@@ -228,6 +228,56 @@ function isVideoMime(mimeType: string): boolean {
   return mimeType.startsWith('video/');
 }
 
+/**
+ * The content type and extension a sanitized still image is labelled with,
+ * plus the source extensions that already describe those bytes correctly.
+ */
+const SANITIZED_IMAGE_LABELS: Readonly<
+  Record<
+    SanitizedImageFormat,
+    { mimeType: string; extension: string; keepExtensions: readonly string[] }
+  >
+> = {
+  jpeg: { mimeType: 'image/jpeg', extension: 'jpg', keepExtensions: ['jpg', 'jpeg'] },
+  png: { mimeType: 'image/png', extension: 'png', keepExtensions: ['png'] },
+};
+
+/**
+ * Relabel an image upload to match the bytes `sanitizeStillImage` actually
+ * wrote (#880).
+ *
+ * The sanitizer re-encodes every still image that is not already JPEG or PNG,
+ * so the picker's label is a claim about bytes that no longer exist. Leaving it
+ * in place put `image/heic` on JPEG bytes in the envelope, the DB row, the
+ * store item and the canonical `{id}.HEIC` file — which is what made the
+ * receiver's save-to-device hand the gallery a file it refused to open.
+ *
+ * Pure. The name is preserved whenever its extension already describes the
+ * bytes, so `abc.jpg` is untouched and only the MIME is canonicalized.
+ */
+function relabelSanitizedImage(
+  fileName: string,
+  format: SanitizedImageFormat,
+): { mimeType: string; fileName: string } {
+  const label = SANITIZED_IMAGE_LABELS[format];
+  const dot = fileName.lastIndexOf('.');
+  const suffix = dot > 0 ? fileName.slice(dot + 1) : '';
+
+  if (label.keepExtensions.includes(suffix.toLowerCase())) {
+    return { mimeType: label.mimeType, fileName };
+  }
+
+  // Replace only a trailing `.<2-5 alphanumerics>`, the same bound and for the
+  // same reason as `media/exportFileName.ts` ("Drop a trailing extension"): no
+  // extension we emit is one character, while `Report v1.2` must keep its `.2`.
+  const stem = dot > 0 && /^[A-Za-z0-9]{2,5}$/.test(suffix) ? fileName.slice(0, dot) : fileName;
+
+  return {
+    mimeType: label.mimeType,
+    fileName: `${stem.length > 0 ? stem : 'photo'}.${label.extension}`,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Main upload function
 // ---------------------------------------------------------------------------
@@ -397,8 +447,16 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
       // Sanitize still image (strip EXIF/GPS metadata, fail-closed verify)
       addUploadBreadcrumb('sanitize', { mime: mimeType });
       const targetPath = stagingPath ? stagingPath : sanitizedStagingPath;
-      await sanitizeStillImage(sourcePath, mimeType, targetPath);
+      const { format } = await sanitizeStillImage(sourcePath, mimeType, targetPath);
       sourcePath = targetPath;
+
+      // The sanitizer may have re-encoded (anything that is not already
+      // JPEG/PNG becomes JPEG), so the label follows the bytes from here on:
+      // the envelope, the DB row, the store item and the canonical
+      // `{id}.{ext}` file all read these two variables. `contentClass` and
+      // `progressBase` deliberately keep deriving from options.mimeType, so
+      // the server's retention class and the progress bar are unaffected.
+      ({ mimeType, fileName } = relabelSanitizedImage(fileName, format));
     }
     // -----------------------------------------------------------------------
     // Thumbnail branch (_isThumbnail) -- already sanitized by videoProcessing

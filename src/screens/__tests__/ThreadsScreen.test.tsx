@@ -8,6 +8,7 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { ThemeProvider } from '../../theme';
 import { ThreadsScreen } from '../ThreadsScreen';
 import { getThreadState } from '../../utils/threadState';
+import { formatDayLabel } from '../../utils/formatPostTimestamp';
 import type { Thread } from '../../types/store';
 
 // ---------------------------------------------------------------------------
@@ -536,7 +537,183 @@ describe('ThreadsScreen — focus lifecycle', () => {
 });
 
 // ---------------------------------------------------------------------------
-// getThreadState — per-thread unread rule (#329)
+// Activity ordering and day grouping (#883)
+// ---------------------------------------------------------------------------
+
+describe('ThreadsScreen — activity ordering', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const nowTs = Date.now();
+
+  const baseThread = {
+    id: 'thread-base',
+    conversationId: 'group-1',
+    authorId: 'user-1',
+    authorUsername: 'alice',
+    title: 'Base thread',
+    body: null,
+    contentType: 'text' as const,
+    pinned: false,
+    replyCount: 0,
+    lastReplyAt: null as number | null,
+    createdAt: nowTs,
+    updatedAt: nowTs,
+    syncStatus: 'synced' as const,
+  };
+
+  function setThreads(threads: Record<string, Thread>, ids: string[]): void {
+    const storesMock = jest.requireMock('../../stores') as { useThreads: jest.Mock };
+    storesMock.useThreads.mockReturnValue({
+      threads,
+      threadIdsByConversation: { 'group-1': ids },
+      threadLastViewedAt: {},
+      replies: {},
+      replyIdsByThread: {},
+      activeThreadId: null,
+      setThreads: jest.fn(),
+      upsertThread: jest.fn(),
+      removeThread: jest.fn(),
+      setActiveThread: jest.fn(),
+      markThreadViewed: jest.fn(),
+      setReplies: jest.fn(),
+      upsertReply: jest.fn(),
+      addOptimisticThread: jest.fn(),
+      addOptimisticReply: jest.fn(),
+      updateThreadSyncStatus: jest.fn(),
+      updateReplySyncStatus: jest.fn(),
+    });
+  }
+
+  function textIndex(renderer: ReactTestRenderer, value: string): number {
+    const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
+    return allText.findIndex((node) => node.props.children === value);
+  }
+
+  // A reply has to lift its thread back to the top — creation order would put
+  // the quiet thread first (#883).
+  it('sorts an old thread with a recent reply above a newer thread with none', () => {
+    setThreads(
+      {
+        'thread-old': {
+          ...baseThread,
+          id: 'thread-old',
+          title: 'Old thread with a new reply',
+          createdAt: nowTs - 5 * DAY,
+          lastReplyAt: nowTs,
+          replyCount: 1,
+        } as Thread,
+        'thread-new': {
+          ...baseThread,
+          id: 'thread-new',
+          title: 'Newer quiet thread',
+          createdAt: nowTs - 60_000,
+          lastReplyAt: null,
+        } as Thread,
+      },
+      // Store order deliberately favours the wrong answer.
+      ['thread-new', 'thread-old'],
+    );
+
+    const renderer = renderThreadsScreen();
+    const oldIndex = textIndex(renderer, 'Old thread with a new reply');
+    const newIndex = textIndex(renderer, 'Newer quiet thread');
+
+    expect(oldIndex).toBeGreaterThanOrEqual(0);
+    expect(newIndex).toBeGreaterThanOrEqual(0);
+    expect(oldIndex).toBeLessThan(newIndex);
+  });
+
+  // A corrupt lastReplyAt must not erase the thread's position or its day
+  // header: the previous `lastReplyAt ?? createdAt` read NaN as the activity,
+  // which made the sort comparator return NaN (spec-coerced to 0, so the rows
+  // kept store order) and the day key '' (no header at all).
+  it('falls back to createdAt when lastReplyAt is corrupt', () => {
+    const olderCreatedAt = nowTs - 2 * DAY;
+    setThreads(
+      {
+        'thread-corrupt': {
+          ...baseThread,
+          id: 'thread-corrupt',
+          title: 'Corrupt reply stamp',
+          createdAt: nowTs,
+          lastReplyAt: NaN,
+          replyCount: 1,
+        } as Thread,
+        'thread-older': {
+          ...baseThread,
+          id: 'thread-older',
+          title: 'Older plain thread',
+          createdAt: olderCreatedAt,
+          lastReplyAt: null,
+        } as Thread,
+      },
+      // Store order deliberately favours the wrong answer.
+      ['thread-older', 'thread-corrupt'],
+    );
+
+    const renderer = renderThreadsScreen();
+    const corruptIndex = textIndex(renderer, 'Corrupt reply stamp');
+    const olderIndex = textIndex(renderer, 'Older plain thread');
+
+    expect(corruptIndex).toBeGreaterThanOrEqual(0);
+    expect(olderIndex).toBeGreaterThanOrEqual(0);
+    expect(corruptIndex).toBeLessThan(olderIndex);
+
+    const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
+    const dayLabels = allText
+      .filter(
+        (node) =>
+          typeof node.props.children === 'string' && node.props.children.startsWith('─── '),
+      )
+      .map((node) => node.props.children as string);
+
+    expect(dayLabels).toEqual([
+      '─── Today ───',
+      `─── ${formatDayLabel(olderCreatedAt)} ───`,
+    ]);
+  });
+
+  // Grouped on ACTIVITY: a thread created days ago whose last reply landed
+  // today sits under "Today" — one header, and no section row, since there is
+  // only one group.
+  it('renders one activity-day header and no section row when activity and creation differ', () => {
+    const createdAt = nowTs - 3 * DAY;
+    setThreads(
+      {
+        'thread-bumped': {
+          ...baseThread,
+          id: 'thread-bumped',
+          title: 'Bumped thread',
+          createdAt,
+          lastReplyAt: nowTs,
+          replyCount: 1,
+        } as Thread,
+      },
+      ['thread-bumped'],
+    );
+
+    const renderer = renderThreadsScreen();
+    const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
+    const dayRows = allText.filter(
+      (node) =>
+        typeof node.props.children === 'string' && node.props.children.startsWith('─── '),
+    );
+    const sectionRows = allText.filter(
+      (node) => node.props.children === '·  ·  ·  ✦  ·  ·  ·',
+    );
+
+    expect(dayRows).toHaveLength(1);
+    expect(dayRows[0].props.children).toBe('─── Today ───');
+    // Not grouped on creation day.
+    expect(dayRows[0].props.children).not.toBe(`─── ${formatDayLabel(createdAt)} ───`);
+    expect(sectionRows).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getThreadState — per-thread unread rule (#329). The exhaustive unit coverage,
+// including the NaN/Infinity activity cases, lives in
+// src/utils/__tests__/threadState.test.ts; these keep the screen's own
+// expectation of the rule visible next to the rows that render it.
 // ---------------------------------------------------------------------------
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {

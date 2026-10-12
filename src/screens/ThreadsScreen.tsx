@@ -37,6 +37,7 @@ import { useWebSocketSubscription } from '../hooks/useWebSocketSubscription';
 import { useBlockedSet } from '../hooks/useBlockedSet';
 import { useMuteActions } from '../hooks/useMuteActions';
 import { getThreadState } from '../utils/threadState';
+import { compareThreadsByActivityDesc, threadActivityAt } from '../utils/threadActivity';
 import { formatDayLabel, formatShortTime, localDayKey } from '../utils/formatPostTimestamp';
 
 // ---------------------------------------------------------------------------
@@ -63,19 +64,20 @@ function buildListRows(threads: Thread[]): ListRow[] {
     return [];
   }
 
-  // Sort by most recent activity (lastReplyAt or createdAt) descending
-  const sorted = [...threads].sort((a, b) => {
-    const aTime = a.lastReplyAt ?? a.createdAt;
-    const bTime = b.lastReplyAt ?? b.createdAt;
-    return bTime - aTime;
-  });
+  // Sort by most recent activity (the newer of createdAt and lastReplyAt)
+  // descending. The shared comparator is total: it never returns NaN, it sorts
+  // a thread with no valid timestamp last, and it breaks ties on createdAt then
+  // id so the order is stable across re-sorts (#883).
+  const sorted = [...threads].sort(compareThreadsByActivityDesc);
 
   const rows: ListRow[] = [];
   let lastDayKey: string | null = null;
   let groupIndex = 0;
 
   for (const thread of sorted) {
-    const activityTime = thread.lastReplyAt ?? thread.createdAt;
+    // Group and label by activity, so the day headers agree with the row order.
+    // The row's own clock time still shows its creation time.
+    const activityTime = threadActivityAt(thread);
     const dayKey = localDayKey(activityTime);
     // An unrenderable timestamp has no day, so it opens no group and closes
     // none: it joins whatever group it lands in. Letting '' through would both

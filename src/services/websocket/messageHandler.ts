@@ -19,7 +19,7 @@ import { refreshAndCompareIdentityKey, compareAndPersistIdentityKey, normalizeId
 import { base64ToArrayBuffer } from '../crypto/utils';
 import { VerifiedStatus } from '../../types/database';
 import { submitWrappedKey } from '../api/groups';
-import { decryptThreadFields, decryptReplyBody, processMediaMetadata } from '../threadService';
+import { decryptThreadFields, decryptReplyBody, processMediaMetadata, applyReplyToParentThread } from '../threadService';
 import { ensureDmConversation, hydrateContactsFromOrbits, refreshContactAvatar, retryPendingNameDecrypt, retryAllPendingNameDecrypts, markConversationReadEverywhere } from '../conversationService';
 import { isDatabaseInitialized } from '../../database/connection';
 import { saveThread as dbSaveThread } from '../../database/repositories/threadRepository';
@@ -391,21 +391,12 @@ async function handleNewReply(data: NewReplyPayload): Promise<void> {
     const storeBeforeReply = useAppStore.getState();
     storeBeforeReply.upsertReply(reply);
 
-    // Bump the parent thread's replyCount and lastReplyAt
+    // Bump the parent thread's replyCount/lastReplyAt, persist it, and lift the
+    // conversation. One shared implementation with postReply since #883 — the
+    // two cloned copies had drifted (this one never persisted the parent, so a
+    // reply-driven bump was lost on the next cold start).
     const replyCreatedAt = new Date(data.createdAt).getTime();
-    const parentThread = storeBeforeReply.threads[data.threadId];
-    if (parentThread) {
-      useAppStore.getState().upsertThread({
-        ...parentThread,
-        replyCount: parentThread.replyCount + 1,
-        lastReplyAt: Math.max(parentThread.lastReplyAt ?? 0, replyCreatedAt),
-      });
-    }
-
-    useAppStore.getState().bumpLastMessageAt(
-      data.groupId,
-      replyCreatedAt,
-    );
+    applyReplyToParentThread(data.groupId, data.threadId, replyCreatedAt);
 
     const storeAfterBump = useAppStore.getState();
     if (data.groupId !== storeAfterBump.viewingConversationId) {

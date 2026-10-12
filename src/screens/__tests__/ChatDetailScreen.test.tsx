@@ -7,6 +7,7 @@ import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'rea
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../../theme';
 import { ChatDetailScreen } from '../ChatDetailScreen';
+import { formatDayLabel } from '../../utils/formatPostTimestamp';
 import type { Thread } from '../../types/store';
 
 // ---------------------------------------------------------------------------
@@ -354,6 +355,91 @@ describe('ChatDetailScreen — with thread data', () => {
     const sectionRows = allText.filter((node) => node.props.children === sectionGlyph);
 
     expect(dayRows).toHaveLength(1);
+    expect(sectionRows).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Activity ordering and day grouping (#883)
+// ---------------------------------------------------------------------------
+
+describe('ChatDetailScreen — activity ordering', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+
+  function textIndex(renderer: ReactTestRenderer, value: string): number {
+    const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
+    return allText.findIndex((node) => node.props.children === value);
+  }
+
+  // A reply has to bring its message back to the top of the DM, which is the
+  // whole point of #883 — creation order would put the quiet message first.
+  it('sorts an old message with a recent reply above a newer message with none', () => {
+    mockUseThreads.mockReturnValue({
+      ...emptyThreadsState,
+      threads: {
+        'thread-old': {
+          ...threadFixture,
+          id: 'thread-old',
+          body: 'Old message with a new reply',
+          createdAt: now - 5 * DAY,
+          lastReplyAt: now,
+          replyCount: 1,
+        },
+        'thread-new': {
+          ...threadFixture,
+          id: 'thread-new',
+          body: 'Newer quiet message',
+          createdAt: now - 60_000,
+          lastReplyAt: null,
+        },
+      },
+      // Store order deliberately favours the wrong answer.
+      threadIdsByConversation: { 'dm-conv-1': ['thread-new', 'thread-old'] },
+    });
+
+    const renderer = renderScreen('Bob');
+    const oldIndex = textIndex(renderer, 'Old message with a new reply');
+    const newIndex = textIndex(renderer, 'Newer quiet message');
+
+    expect(oldIndex).toBeGreaterThanOrEqual(0);
+    expect(newIndex).toBeGreaterThanOrEqual(0);
+    expect(oldIndex).toBeLessThan(newIndex);
+  });
+
+  // The day header is grouped on ACTIVITY, so a message created days ago whose
+  // last reply landed today sits under "Today" — one header, and no section
+  // separator, because there is only one group.
+  it('renders one activity-day header and no section row when activity and creation differ', () => {
+    const createdAt = now - 3 * DAY;
+    mockUseThreads.mockReturnValue({
+      ...emptyThreadsState,
+      threads: {
+        'thread-bumped': {
+          ...threadFixture,
+          id: 'thread-bumped',
+          body: 'Bumped message',
+          createdAt,
+          lastReplyAt: now,
+          replyCount: 1,
+        },
+      },
+      threadIdsByConversation: { 'dm-conv-1': ['thread-bumped'] },
+    });
+
+    const renderer = renderScreen('Bob');
+    const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
+    const dayRows = allText.filter(
+      (node) =>
+        typeof node.props.children === 'string' && node.props.children.startsWith('─── '),
+    );
+    const sectionRows = allText.filter(
+      (node) => node.props.children === '·  ·  ·  ✦  ·  ·  ·',
+    );
+
+    expect(dayRows).toHaveLength(1);
+    expect(dayRows[0].props.children).toBe('─── Today ───');
+    // Not grouped on creation day.
+    expect(dayRows[0].props.children).not.toBe(`─── ${formatDayLabel(createdAt)} ───`);
     expect(sectionRows).toHaveLength(0);
   });
 });

@@ -25,6 +25,7 @@ import { VerifiedStatus } from '../types/database';
 import { arrayBufferToBase64, toArrayBuffer, base64ToArrayBuffer } from './crypto/utils';
 import { ApiError } from './api/errors';
 import { generateUUID } from '../utils/uuid';
+import { maxTimestamp } from '../utils/threadActivity';
 import { useAppStore } from '../stores/useAppStore';
 import { isDatabaseInitialized, getDatabase } from '../database/connection';
 import { getConversationIdsWithThreads, deleteThreadsForConversation } from '../database/repositories/threadRepository';
@@ -349,6 +350,63 @@ function mapDmResponse(response: DmResponse): Conversation {
 }
 
 
+/**
+ * Merge a freshly mapped DM row over whatever is already in the store (#883).
+ *
+ * A DM list response is a SNAPSHOT: by the time it is applied, a WebSocket
+ * message or a local mark-read may already have moved this row forward. Writing
+ * the response wholesale — what `loadDmConversations` used to do — is what made
+ * refreshes move DMs backwards and restored a badge the user had just cleared.
+ *
+ * Recency takes the max of both sides via `maxTimestamp`, so it can only ever
+ * move forward and no NaN can enter a persisted field.
+ *
+ * Unread is server-authoritative EXCEPT when the response is demonstrably
+ * staler than local state, in this precedence:
+ *  1. local `lastMessageAt` is newer than the server's -> keep the LOCAL count.
+ *     The response predates a WS message that already incremented it; applying
+ *     the server's number would silently drop that increment.
+ *  2. local `lastReadAt` is newer than the server's -> force 0. The user read
+ *     the DM inside the 3 s mark-read debounce, so the server hasn't been told
+ *     yet and its count is about to be wrong.
+ *  3. otherwise the server count wins.
+ *
+ * Rule 1 is checked first on purpose: a message that arrives AFTER a local read
+ * must still badge. For the conversation the user is currently viewing both
+ * sides are 0 anyway — `mapDmResponse` zeroes the incoming count, focus runs
+ * `markConversationRead`, and the WS path skips increments for the viewed row.
+ *
+ * Pure: it reads no store state, so the merge rules are testable on their own.
+ */
+export function mergeDmRecency(
+  existing: Conversation | undefined,
+  incoming: Conversation,
+): Conversation {
+  if (!existing) return incoming;
+
+  const localMessageAt = maxTimestamp(existing.lastMessageAt, null) ?? 0;
+  const serverMessageAt = maxTimestamp(incoming.lastMessageAt, null) ?? 0;
+  const localReadAt = maxTimestamp(existing.lastReadAt, null) ?? 0;
+  const serverReadAt = maxTimestamp(incoming.lastReadAt, null) ?? 0;
+
+  let unreadCount: number;
+  if (localMessageAt > serverMessageAt) {
+    unreadCount = existing.unreadCount;
+  } else if (localReadAt > serverReadAt) {
+    unreadCount = 0;
+  } else {
+    unreadCount = incoming.unreadCount;
+  }
+
+  return {
+    ...incoming,
+    lastMessageAt: maxTimestamp(existing.lastMessageAt, incoming.lastMessageAt),
+    lastReadAt: maxTimestamp(existing.lastReadAt, incoming.lastReadAt),
+    updatedAt: maxTimestamp(existing.updatedAt, incoming.updatedAt) ?? incoming.updatedAt,
+    unreadCount,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Ensure a DM conversation exists in the store (on-demand, for WS handlers)
 // ---------------------------------------------------------------------------
@@ -386,7 +444,12 @@ export async function ensureDmConversation(groupId: string): Promise<Conversatio
       const conversation = mapDmResponse(dm);
       if (isSessionStale(session)) return null;
       const storeNow = useAppStore.getState();
-      storeNow.upsertConversation(conversation);
+      // The early return above means this is normally an insert. It is still
+      // merged (#883): `listDms` is awaited, so a WS bump or a mark-read can
+      // have created the row in the meantime, and this snapshot must not undo
+      // it. Merging an absent row returns `conversation` unchanged.
+      const merged = mergeDmRecency(storeNow.conversations[groupId], conversation);
+      storeNow.upsertConversation(merged);
 
       storeNow.mergeContacts([{
         id: dm.recipient.id,
@@ -399,7 +462,7 @@ export async function ensureDmConversation(groupId: string): Promise<Conversatio
         avatarDigest: dm.recipient.avatarDigest ?? null,
       }]);
 
-      return conversation;
+      return merged;
     } finally {
       ensureDmInflight.delete(groupId);
     }
@@ -454,7 +517,11 @@ export async function loadDmConversations(): Promise<void> {
   if (isSessionStale(session)) return;
   const store = useAppStore.getState();
   for (const conversation of conversations) {
-    store.upsertConversation(conversation);
+    // Merge, never overwrite (#883). State is re-read per row because each
+    // upsert replaces the map — `store.conversations` is a stale snapshot after
+    // the first iteration.
+    const existing = useAppStore.getState().conversations[conversation.id];
+    store.upsertConversation(mergeDmRecency(existing, conversation));
   }
 
   // Merge DM recipients into the contacts store so they're discoverable
@@ -539,18 +606,32 @@ export async function startDm(
 
   const now = Date.now();
   const store = useAppStore.getState();
-  store.upsertConversation({
-    id: response.groupId,
-    type: 'direct',
-    name: response.recipient.username,
-    memberCount: 2,
-    active: true,
-    lastMessageAt: null,
-    unreadCount: 0,
-    lastReadAt: now,
-    createdAt: now,
-    updatedAt: now,
-  });
+  const existing = store.conversations[response.groupId];
+  if (existing) {
+    // Starting a DM that already exists — picking an existing contact in New
+    // Chat — must not reset it (#883). The old unconditional literal below
+    // wrote lastMessageAt: null, lastReadAt/createdAt: now and unreadCount: 0,
+    // which dropped the DM to the bottom of Chats and erased its badge. Only
+    // the display name (it may have changed) and `active` are refreshed.
+    store.upsertConversation({
+      ...existing,
+      name: response.recipient.username,
+      active: true,
+    });
+  } else {
+    store.upsertConversation({
+      id: response.groupId,
+      type: 'direct',
+      name: response.recipient.username,
+      memberCount: 2,
+      active: true,
+      lastMessageAt: null,
+      unreadCount: 0,
+      lastReadAt: now,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
 
   return {
     conversationId: response.groupId,

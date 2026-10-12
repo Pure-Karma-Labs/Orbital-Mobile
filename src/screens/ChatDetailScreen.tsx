@@ -26,6 +26,7 @@ import { useAppStore } from '../stores';
 import { useAuth, useThreads, useContactForConversation } from '../stores';
 import type { Thread } from '../types/store';
 import { getThreadState } from '../utils/threadState';
+import { compareThreadsByActivityDesc, threadActivityAt } from '../utils/threadActivity';
 import { VerifiedStatus } from '../types/database';
 import type { ChatsStackParamList } from '../navigation/types';
 import { Button } from '../components/Button';
@@ -60,13 +61,19 @@ type ListRow = DaySeparatorRow | SectionSeparatorRow | ThreadRow;
 function buildListRows(threads: Thread[]): ListRow[] {
   if (threads.length === 0) return [];
 
-  const sorted = [...threads].sort((a, b) => b.createdAt - a.createdAt);
+  // Most recent activity first: a reply on an old message brings it back to the
+  // top of the DM, matching what the Chats list now does with the conversation
+  // itself (#883). The comparator is total and never returns NaN.
+  const sorted = [...threads].sort(compareThreadsByActivityDesc);
   const rows: ListRow[] = [];
   let lastDayKey: string | null = null;
   let groupIndex = 0;
 
   for (const thread of sorted) {
-    const dayKey = localDayKey(thread.createdAt);
+    // Group and label by activity, so the day headers agree with the order the
+    // rows are in. The row's own clock time still shows its creation time.
+    const activityTime = threadActivityAt(thread);
+    const dayKey = localDayKey(activityTime);
     // An unrenderable timestamp has no day, so it opens no group and closes
     // none: it joins whatever group it lands in. Letting '' through would both
     // render a bare `───  ───` and split a real day in two, re-emitting its
@@ -78,7 +85,7 @@ function buildListRows(threads: Thread[]): ListRow[] {
       }
       rows.push({
         type: 'day',
-        label: formatDayLabel(thread.createdAt),
+        label: formatDayLabel(activityTime),
         key: `day-${dayKey}`,
       });
       lastDayKey = dayKey;

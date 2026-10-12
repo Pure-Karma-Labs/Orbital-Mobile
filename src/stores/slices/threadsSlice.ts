@@ -1,4 +1,5 @@
 import type { StateCreator } from 'zustand';
+import { maxTimestamp } from '../../utils/threadActivity';
 import type {
   AppState,
   Reply,
@@ -6,6 +7,29 @@ import type {
   Thread,
   ThreadsSlice,
 } from '../../types/store';
+
+/**
+ * Thread recency never goes backwards (#883).
+ *
+ * `lastReplyAt` is the only field a write may LOWER by accident: `loadThread`,
+ * `loadThreadsForGroup`, the WS handlers and own-reply confirmation all build a
+ * fresh Thread from one server payload, and any payload that omits the field
+ * (or predates a reply) would otherwise erase a known-newer value and drop the
+ * row back down the activity order.
+ *
+ * Enforcing it HERE — at the single mutation boundary — covers all of those
+ * callers at once, instead of four call sites that each have to remember.
+ * `maxTimestamp` drops non-finite operands on both sides, so a NaN already in
+ * the store is healed by the next server value and a NaN in the payload can
+ * never latch (it never returns NaN).
+ *
+ * `replyCount` is deliberately NOT merged: it is server-authoritative and must
+ * be allowed to go down (an admin takedown).
+ */
+function withMergedRecency(incoming: Thread, existing: Thread | undefined): Thread {
+  const merged = maxTimestamp(existing?.lastReplyAt, incoming.lastReplyAt);
+  return merged === incoming.lastReplyAt ? incoming : { ...incoming, lastReplyAt: merged };
+}
 
 export const createThreadsSlice: StateCreator<
   AppState,
@@ -26,7 +50,7 @@ export const createThreadsSlice: StateCreator<
     const { threads: existingThreads, threadIdsByConversation } = get();
     const updatedThreads = { ...existingThreads };
     for (const t of threads) {
-      updatedThreads[t.id] = t;
+      updatedThreads[t.id] = withMergedRecency(t, existingThreads[t.id]);
     }
     // Order by createdAt descending (newest threads first)
     const ids = [...threads]
@@ -47,7 +71,10 @@ export const createThreadsSlice: StateCreator<
 
   upsertThread: (thread) => {
     const { threads, threadIdsByConversation } = get();
-    const updatedThreads = { ...threads, [thread.id]: thread };
+    const updatedThreads = {
+      ...threads,
+      [thread.id]: withMergedRecency(thread, threads[thread.id]),
+    };
     const existingIds = threadIdsByConversation[thread.conversationId] ?? [];
     const updatedIds = existingIds.includes(thread.id)
       ? existingIds

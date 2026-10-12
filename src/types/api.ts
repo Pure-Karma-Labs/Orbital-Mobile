@@ -336,6 +336,11 @@ export interface CreateDmResponse {
  * Backend returns per DM:
  * { group_id, recipient: { id, username, avatar_url }, wrapped_group_key,
  *   last_message_at, created_at }
+ *
+ * `last_message_at` and `unread_count` come from threads + replies (#883).
+ * Before that they were computed from `signal_messages`, which no client
+ * writes, so both were always null/0 — the Chats order fell back to
+ * `created_at` and the DM badge read 0 after every reload.
  */
 export interface DmResponse {
   groupId: string;
@@ -398,7 +403,7 @@ export interface CreateThreadResponse {
  *
  * Backend returns: { thread_id, group_id, author_id, author_username,
  *   author_display_name, encrypted_title, encrypted_body, title_iv, body_iv,
- *   reply_count, created_at, media }
+ *   reply_count, last_reply_at, created_at, media }
  */
 export interface ThreadResponse {
   threadId: string;
@@ -411,6 +416,14 @@ export interface ThreadResponse {
   encryptedBody: string | null;
   bodyIv: string | null;
   replyCount: number;
+  /**
+   * ISO timestamp of the most recent reply, null when there are none (#883).
+   *
+   * Optional on the type because a 1.7.6-era backend omits the field; absent
+   * and null are treated identically (no known recency), and the store-side
+   * max-merge keeps a previously known value from being erased either way.
+   */
+  lastReplyAt?: string | null;
   createdAt: string;
   /** Includes tombstoned (evicted/expired) media; detail views show unavailable tiles. */
   media: MediaMetadata[];
@@ -461,11 +474,17 @@ export interface ListThreadsResponse {
  * Query params for GET /api/groups/:groupId/threads.
  *
  * Backend accepts: { limit, offset, sort }
+ *
+ * `activity_desc` (#883) orders by GREATEST(thread.created_at, MAX reply
+ * created_at) DESC, so the 50-row page is the 50 MOST ACTIVE threads rather
+ * than the 50 newest. An older backend that doesn't know the value falls
+ * through its whitelist ternary to `created_desc`, which is the pre-#883
+ * behaviour — so sending it is safe against a not-yet-deployed server.
  */
 export interface GetGroupThreadsRequest {
   limit?: number;
   offset?: number;
-  sort?: 'created_asc' | 'created_desc';
+  sort?: 'created_asc' | 'created_desc' | 'activity_desc';
 }
 
 /**

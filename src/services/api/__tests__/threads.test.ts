@@ -70,6 +70,15 @@ describe('getGroupThreads', () => {
     expect(callArg.path).toContain('limit=20');
     expect(callArg.path).toContain('sort=created_desc');
   });
+
+  it('serializes the activity_desc sort (#883)', async () => {
+    await getGroupThreads('group-abc', { sort: 'activity_desc' });
+
+    expect(mockRequest).toHaveBeenCalledWith({
+      method: 'GET',
+      path: '/api/threads/groups/group-abc/threads?sort=activity_desc',
+    });
+  });
 });
 
 describe('getThread', () => {

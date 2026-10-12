@@ -6,12 +6,13 @@
  */
 
 import type { Thread } from '../types/store';
+import { threadActivityAt } from './threadActivity';
 
 /**
  * Compute per-thread unread state.
  *
- * A thread is 'unread' when its latest activity (createdAt or lastReplyAt) is
- * more recent than both:
+ * A thread is 'unread' when its latest activity (`threadActivityAt`: the newer
+ * of createdAt and lastReplyAt) is more recent than both:
  *   - the user's last view of that specific thread (threadLastViewedAt)
  *   - the server-side lastReadAt watermark for the conversation (snapshot)
  *
@@ -24,10 +25,18 @@ export function getThreadState(
   threadLastViewedAt: Record<string, number>,
   lastReadAtSnapshot: number | null,
 ): 'read' | 'active' | 'unread' {
-  const threadActivity = Math.max(thread.createdAt, thread.lastReplyAt ?? 0);
+  const threadActivity = threadActivityAt(thread);
   const viewedAt = threadLastViewedAt[thread.id] ?? 0;
   const watermark = Math.max(viewedAt, lastReadAtSnapshot ?? 0);
 
+  // A thread with NO valid timestamp has NaN activity, and `NaN > watermark` is
+  // false — so it reports 'read'. That is the deliberate choice: an
+  // unrenderable row already shows no day header and no clock time (#845), and
+  // a permanent unread dot that no amount of reading can clear is worse than a
+  // missed one. The inline `Math.max(createdAt, lastReplyAt ?? 0)` this
+  // replaced agreed on that case only because NaN poisons Math.max; it differed
+  // on the mixed ones (a NaN createdAt beside a real lastReplyAt was 'read',
+  // and an Infinity lastReplyAt was permanently 'unread').
   if (threadActivity > watermark) {
     return 'unread';
   }

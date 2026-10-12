@@ -344,6 +344,47 @@ describe('conversationsSlice — bumpLastMessageAt', () => {
     store.getState().bumpLastMessageAt('conv-1', 1000);
     expect(store.getState().conversations['conv-1'].lastMessageAt).toBe(1000);
   });
+
+  // #883: lastMessageAt is persisted and drives the Chats order, so a
+  // non-finite bump would latch the row — NaN defeats every later comparison
+  // and Infinity pins it to the top forever.
+  it.each([
+    ['NaN', NaN],
+    ['Infinity', Infinity],
+    ['-Infinity', -Infinity],
+    ['zero', 0],
+    ['negative', -1],
+  ])('ignores a %s timestamp (#883)', (_label, timestamp) => {
+    const store = makeStore();
+    const c1 = makeConversation({ id: 'conv-1', lastMessageAt: 2000, updatedAt: 2000 });
+    store.getState().setConversations([c1]);
+
+    store.getState().bumpLastMessageAt('conv-1', timestamp);
+
+    const unchanged = store.getState().conversations['conv-1'];
+    expect(unchanged.lastMessageAt).toBe(2000);
+    expect(unchanged.updatedAt).toBe(2000);
+  });
+
+  it('ignores a non-finite bump even when lastMessageAt is null (#883)', () => {
+    const store = makeStore();
+    const c1 = makeConversation({ id: 'conv-1', lastMessageAt: null });
+    store.getState().setConversations([c1]);
+
+    store.getState().bumpLastMessageAt('conv-1', NaN);
+
+    expect(store.getState().conversations['conv-1'].lastMessageAt).toBeNull();
+  });
+
+  it('heals a NaN already stored by a pre-#883 build', () => {
+    const store = makeStore();
+    const c1 = makeConversation({ id: 'conv-1', lastMessageAt: NaN });
+    store.getState().setConversations([c1]);
+
+    store.getState().bumpLastMessageAt('conv-1', 4000);
+
+    expect(store.getState().conversations['conv-1'].lastMessageAt).toBe(4000);
+  });
 });
 
 describe('conversationsSlice — incrementUnreadCount', () => {

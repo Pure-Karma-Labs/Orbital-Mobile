@@ -133,7 +133,8 @@ jest.mock('../../stores/useAppStore', () => ({
   },
 }));
 
-import { loadConversations, loadDmConversations, startDm, joinOrbit, fetchCreatorOrbitsDecrypted, hydrateContactsFromOrbits, ensureDmConversation, fulfillPendingWraps, wrapKeyForMember, getPendingWrapsForGroup, clearConversationServiceState, refreshContactAvatar, markConversationReadEverywhere, createInviteCode } from '../conversationService';
+import { loadConversations, loadDmConversations, startDm, joinOrbit, fetchCreatorOrbitsDecrypted, hydrateContactsFromOrbits, ensureDmConversation, fulfillPendingWraps, wrapKeyForMember, getPendingWrapsForGroup, clearConversationServiceState, refreshContactAvatar, markConversationReadEverywhere, createInviteCode, mergeDmRecency } from '../conversationService';
+import type { Conversation } from '../../types/store';
 import { listGroups, listDms, createDm, joinGroup, getGroupMembers, getPendingWraps, submitWrappedKey, markGroupRead, generateInviteCode as generateInviteCodeApi, selfWrapGroupKey } from '../api/groups';
 import * as inviteCrypto from '../crypto/inviteCrypto';
 import { useAppStore } from '../../stores/useAppStore';
@@ -2235,5 +2236,229 @@ describe('getPendingWrapsForGroup', () => {
     mockGetPendingWraps.mockRejectedValueOnce(new Error('forbidden'));
 
     await expect(getPendingWrapsForGroup('group-99')).rejects.toThrow('forbidden');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #883 — DM recency and unread never go backwards
+// ---------------------------------------------------------------------------
+
+function makeDmConversation(overrides: Partial<Conversation> = {}): Conversation {
+  return {
+    id: 'dm-1',
+    type: 'direct',
+    name: 'bob',
+    memberCount: 2,
+    active: true,
+    lastMessageAt: 1000,
+    unreadCount: 0,
+    lastReadAt: null,
+    createdAt: 900,
+    updatedAt: 1000,
+    ...overrides,
+  };
+}
+
+describe('mergeDmRecency (#883)', () => {
+  it('returns the incoming row unchanged when nothing is stored', () => {
+    const incoming = makeDmConversation();
+
+    expect(mergeDmRecency(undefined, incoming)).toBe(incoming);
+  });
+
+  it('keeps a newer local lastMessageAt', () => {
+    const merged = mergeDmRecency(
+      makeDmConversation({ lastMessageAt: 5000, updatedAt: 5000 }),
+      makeDmConversation({ lastMessageAt: 2000, updatedAt: 2000 }),
+    );
+
+    expect(merged.lastMessageAt).toBe(5000);
+    expect(merged.updatedAt).toBe(5000);
+  });
+
+  it('takes a newer server lastMessageAt', () => {
+    const merged = mergeDmRecency(
+      makeDmConversation({ lastMessageAt: 2000 }),
+      makeDmConversation({ lastMessageAt: 7000 }),
+    );
+
+    expect(merged.lastMessageAt).toBe(7000);
+  });
+
+  it('does not let a stale response erase a WebSocket unread increment', () => {
+    // The response was computed before the WS message landed: its
+    // lastMessageAt is older AND its count predates the increment.
+    const merged = mergeDmRecency(
+      makeDmConversation({ lastMessageAt: 9000, unreadCount: 3 }),
+      makeDmConversation({ lastMessageAt: 4000, unreadCount: 0 }),
+    );
+
+    expect(merged.unreadCount).toBe(3);
+  });
+
+  it('keeps 0 when the local lastReadAt is newer than the server one (inside the 3s debounce)', () => {
+    const merged = mergeDmRecency(
+      makeDmConversation({ lastMessageAt: 4000, unreadCount: 0, lastReadAt: 8000 }),
+      makeDmConversation({ lastMessageAt: 4000, unreadCount: 2, lastReadAt: 1000 }),
+    );
+
+    expect(merged.unreadCount).toBe(0);
+    // The newer local read watermark survives, so a second refresh inside the
+    // same debounce window stays cleared too.
+    expect(merged.lastReadAt).toBe(8000);
+  });
+
+  it('badges a message that arrived AFTER a local read', () => {
+    // Both staleness rules fire; the lastMessageAt rule must win, otherwise a
+    // reply received right after reading the DM would never badge.
+    const merged = mergeDmRecency(
+      makeDmConversation({ lastMessageAt: 9000, unreadCount: 1, lastReadAt: 8000 }),
+      makeDmConversation({ lastMessageAt: 4000, unreadCount: 0, lastReadAt: 1000 }),
+    );
+
+    expect(merged.unreadCount).toBe(1);
+  });
+
+  it('lets the server count win when the response is not stale', () => {
+    const merged = mergeDmRecency(
+      makeDmConversation({ lastMessageAt: 4000, unreadCount: 0, lastReadAt: 1000 }),
+      makeDmConversation({ lastMessageAt: 9000, unreadCount: 5, lastReadAt: 1000 }),
+    );
+
+    expect(merged.unreadCount).toBe(5);
+  });
+
+  it('drops non-finite values on both sides', () => {
+    const fromLocal = mergeDmRecency(
+      makeDmConversation({ lastMessageAt: NaN, lastReadAt: Infinity, updatedAt: NaN }),
+      makeDmConversation({ lastMessageAt: 3000, lastReadAt: 2000, updatedAt: 3000 }),
+    );
+    expect(fromLocal.lastMessageAt).toBe(3000);
+    expect(fromLocal.lastReadAt).toBe(2000);
+    expect(fromLocal.updatedAt).toBe(3000);
+
+    const fromServer = mergeDmRecency(
+      makeDmConversation({ lastMessageAt: 3000, updatedAt: 3000 }),
+      makeDmConversation({ lastMessageAt: Infinity, updatedAt: NaN }),
+    );
+    expect(fromServer.lastMessageAt).toBe(3000);
+    expect(fromServer.updatedAt).toBe(3000);
+  });
+
+  it('keeps the server name and type (the row is not frozen)', () => {
+    const merged = mergeDmRecency(
+      makeDmConversation({ name: 'old-name', lastMessageAt: 5000 }),
+      makeDmConversation({ name: 'new-name', lastMessageAt: 1000 }),
+    );
+
+    expect(merged.name).toBe('new-name');
+  });
+});
+
+describe('loadDmConversations — merge, not overwrite (#883)', () => {
+  function seedStore(conversations: Record<string, Conversation>): void {
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-self-user',
+      activeConversationId: null,
+      conversations,
+      contacts: {},
+      setConversations: mockSetConversations,
+      setGroupConversations: mockSetConversations,
+      setActiveConversation: mockSetActiveConversation,
+      upsertConversation: mockUpsertConversation,
+      mergeContacts: mockMergeContacts,
+      removeContact: jest.fn(),
+      setContactVerifiedStatus: mockSetContactVerifiedStatus,
+    });
+  }
+
+  it('keeps a newer local lastMessageAt when the list response is stale', async () => {
+    seedStore({
+      'dm-1': makeDmConversation({ lastMessageAt: Date.parse('2026-03-20T12:00:00.000Z') }),
+    });
+    mockListDms.mockResolvedValue([DM_RESPONSE]);
+
+    await loadDmConversations();
+
+    const upserted = mockUpsertConversation.mock.calls[0][0];
+    expect(upserted.lastMessageAt).toBe(Date.parse('2026-03-20T12:00:00.000Z'));
+  });
+
+  it('keeps a local unread increment the response predates', async () => {
+    seedStore({
+      'dm-1': makeDmConversation({
+        lastMessageAt: Date.parse('2026-03-20T12:00:00.000Z'),
+        unreadCount: 2,
+      }),
+    });
+    mockListDms.mockResolvedValue([{ ...DM_RESPONSE, unreadCount: 0 }]);
+
+    await loadDmConversations();
+
+    expect(mockUpsertConversation.mock.calls[0][0].unreadCount).toBe(2);
+  });
+
+  it('keeps the badge cleared when the local read is newer than the server watermark', async () => {
+    seedStore({
+      'dm-1': makeDmConversation({
+        lastMessageAt: Date.parse('2026-03-15T12:00:00.000Z'),
+        unreadCount: 0,
+        lastReadAt: Date.parse('2026-03-15T12:00:05.000Z'),
+      }),
+    });
+    mockListDms.mockResolvedValue([
+      {
+        ...DM_RESPONSE,
+        unreadCount: 3,
+        lastReadAt: '2026-03-10T00:00:00.000Z',
+      },
+    ]);
+
+    await loadDmConversations();
+
+    expect(mockUpsertConversation.mock.calls[0][0].unreadCount).toBe(0);
+  });
+});
+
+describe('startDm — existing DM is preserved (#883)', () => {
+  it('keeps lastMessageAt, createdAt, lastReadAt and unreadCount', async () => {
+    const existing = makeDmConversation({
+      id: 'dm-existing',
+      name: 'stale-name',
+      lastMessageAt: 5000,
+      unreadCount: 4,
+      lastReadAt: 4500,
+      createdAt: 100,
+      updatedAt: 5000,
+    });
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-self-user',
+      activeConversationId: null,
+      conversations: { 'dm-existing': existing },
+      contacts: {},
+      setConversations: mockSetConversations,
+      setGroupConversations: mockSetConversations,
+      setActiveConversation: mockSetActiveConversation,
+      upsertConversation: mockUpsertConversation,
+      mergeContacts: mockMergeContacts,
+      removeContact: jest.fn(),
+      setContactVerifiedStatus: mockSetContactVerifiedStatus,
+    });
+    mockCreateDm.mockResolvedValue({
+      groupId: 'dm-existing',
+      isNew: false,
+      wrappedGroupKey: 'server-existing-key',
+      wrappedBy: 'other-user',
+      recipient: { id: 'user-3', username: 'carol' },
+    });
+
+    await startDm('user-3');
+
+    expect(mockUpsertConversation).toHaveBeenCalledWith({
+      ...existing,
+      // The display name is still refreshed from the server.
+      name: 'carol',
+      active: true,
+    });
   });
 });

@@ -62,15 +62,25 @@ jest.mock('../../../components/MediaLightbox', () => ({
   MediaLightbox: () => null,
 }));
 
+// Hoisted, stable spies returned by every mock call so handle-press assertions
+// are unambiguous regardless of how many renders share a describe block.
+const handleAuthorPress = jest.fn();
+const handleReport = jest.fn();
+
 const mockUseAuthorActions = jest.fn(
   (..._args: unknown[]) => ({
-    handleAuthorPress: jest.fn(),
-    handleReport: jest.fn(),
+    handleAuthorPress,
+    handleReport,
   }),
 );
 jest.mock('../../../hooks/useAuthorActions', () => ({
   useAuthorActions: (...args: unknown[]) => mockUseAuthorActions(...args),
 }));
+
+beforeEach(() => {
+  handleAuthorPress.mockClear();
+  handleReport.mockClear();
+});
 
 function renderReplyItem(
   props: Partial<React.ComponentProps<typeof ReplyItem>> = {},
@@ -212,15 +222,11 @@ describe('ReplyItem — reply arrow on own rows (isSelf)', () => {
     expect(onReplyPress).toHaveBeenCalledWith('r-1', 'bob', 0);
   });
 
-  it('does not nest the reply button inside the author touchable (which is disabled on own rows)', () => {
+  it('does not nest the reply button inside the author handle (handle disabled on own rows)', () => {
     const renderer = renderReplyItem({ authorId: 'u-me', currentUserId: 'u-me' });
-    const authorTouchable = renderer.root.findAll(
-      (n) => typeof n.props.onPress === 'function' && n.props.disabled === true && n.props.testID == null,
-    );
-    expect(authorTouchable.length).toBeGreaterThan(0);
-    for (const node of authorTouchable) {
-      expect(node.findAll((c) => c.props.testID === REPLY_BUTTON)).toHaveLength(0);
-    }
+    const handle = pressableFor(renderer, 'reply-item-r-1-author-handle');
+    expect(handle.props.disabled).toBe(true);
+    expect(handle.findAll((c) => c.props.testID === REPLY_BUTTON)).toHaveLength(0);
   });
 });
 
@@ -272,9 +278,9 @@ describe('ReplyItem — structural #518 guard', () => {
     expect(nameNode.length).toBeGreaterThan(0);
   });
 
-  it('folds the timestamp into the author control label on other people\'s replies', () => {
-    // The timestamp Text lives inside the author touchable, so it is invisible
-    // to a screen reader unless the label carries it.
+  it('labels the author handle "Actions for bob" on other people\'s replies', () => {
+    // The label is now just the name — no timestamp suffix (#888). The timestamp
+    // lives on its own Text sibling and carries the long-form a11y label separately.
     const renderer = renderReplyItem({
       authorId: 'u-bob',
       currentUserId: 'u-me',
@@ -284,7 +290,7 @@ describe('ReplyItem — structural #518 guard', () => {
     // context is ambiguous, "January 5 at 3:04 PM" is not.
     expect(POSTED_A11Y).toBe('January 5 at 3:04 PM');
     const labelled = renderer.root.findAll(
-      (n) => n.props.accessibilityLabel === `Actions for bob, posted ${POSTED_A11Y}`,
+      (n) => n.props.accessibilityLabel === 'Actions for bob',
     );
     expect(labelled.length).toBeGreaterThan(0);
 
@@ -299,56 +305,49 @@ describe('ReplyItem — structural #518 guard', () => {
     ).toHaveLength(0);
   });
 
-  it('keeps the author and arrow hit regions from overlapping', () => {
+  it('arrow keeps its hitSlop; the author handle has no hitSlop and is sized by its frame', () => {
     const renderer = renderReplyItem();
 
-    // Arrow: no LEFT slop, so it cannot cover the timestamp.
+    // Arrow: vertical-only slop, never reaches left into the handle.
     expect(pressableFor(renderer, REPLY_BUTTON).props.hitSlop).toEqual({
       top: 8, bottom: 8, right: 8, left: 0,
     });
 
-    // Author: no RIGHT slop (the arrow's frame is to its right). With no jump
-    // control above (parentState 'none' here) it keeps its usual 4pt top.
-    const authorControl = renderer.root
-      .findAll(
-        (n) =>
-          typeof n.props.accessibilityLabel === 'string' &&
-          n.props.accessibilityLabel.startsWith('Actions for'),
-      )
-      .find((n) => typeof n.props.onPress === 'function');
-    expect(authorControl).toBeDefined();
-    expect(authorControl!.props.hitSlop).toEqual({ top: 4, bottom: 4, left: 4, right: 0 });
+    // Handle: no slop at all — it is sized by its own frame (#888).
+    const handle = pressableFor(renderer, 'reply-item-r-1-author-handle');
+    expect(handle.props.hitSlop).toBeUndefined();
+
+    // Frame gives the handle the 44pt minimum width.
+    const hostHandle = nodesWithTestId(renderer, 'reply-item-r-1-author-handle')
+      .filter((n) => typeof n.type === 'string');
+    expect(hostHandle[0].props.style).toEqual(
+      expect.objectContaining({ minWidth: 44, alignSelf: 'stretch' }),
+    );
   });
 
   it.each([
-    ['none' as const, null, 4],
-    ['orphan' as const, 'r-parent', 4],
-    ['hidden' as const, 'r-parent', 4],
-    ['jumpable' as const, 'r-parent', 0],
+    ['none' as const, null],
+    ['orphan' as const, 'r-parent'],
+    ['hidden' as const, 'r-parent'],
+    ['jumpable' as const, 'r-parent'],
   ])(
-    'gives the author block hitSlop.top %s -> %s',
-    (parentState, parentId, expected) => {
-      // 0 ONLY under a live jump control, whose 8pt bottom slop reaches down
-      // to this edge; otherwise nothing is contesting it (#843 review).
+    'handle has no hitSlop and has minWidth 44 regardless of parentState: %s',
+    (parentState, parentId) => {
+      // No slop at all means overlap is prevented by frame geometry (#888),
+      // not by tuning bands per neighbour.
       const renderer = renderReplyItem({
         parentState,
         parentId,
         parentAuthorId: 'u-ann',
         parentAuthorUsername: 'ann',
       });
-      const authorControl = renderer.root
-        .findAll(
-          (n) =>
-            typeof n.props.accessibilityLabel === 'string' &&
-            n.props.accessibilityLabel.startsWith('Actions for'),
-        )
-        .find((n) => typeof n.props.onPress === 'function');
-      expect(authorControl!.props.hitSlop).toEqual({
-        top: expected,
-        bottom: 4,
-        left: 4,
-        right: 0,
-      });
+      const handle = pressableFor(renderer, 'reply-item-r-1-author-handle');
+      expect(handle.props.hitSlop).toBeUndefined();
+      const hostHandle = nodesWithTestId(renderer, 'reply-item-r-1-author-handle')
+        .filter((n) => typeof n.type === 'string');
+      expect(hostHandle[0].props.style).toEqual(
+        expect.objectContaining({ minWidth: 44 }),
+      );
     },
   );
 });
@@ -603,21 +602,26 @@ describe('ReplyItem — timestamps', () => {
     );
   });
 
-  it('keeps the stacked timestamp inside the author control, so one tap still opens actions', () => {
+  it('stacked timestamp is OUTSIDE the author handle, and the stacked handle uses flex-start', () => {
+    // At depth >= 2 the timestamp moves to its own line as a sibling of the
+    // handle inside nameColumnStyle — tapping it no longer opens Block/Report (#888).
     const renderer = renderReplyItem({ depth: 3, authorId: 'u-bob', currentUserId: 'u-me' });
-    const authorControl = renderer.root
-      .findAll(
-        (n) =>
-          typeof n.props.accessibilityLabel === 'string' &&
-          n.props.accessibilityLabel.startsWith('Actions for'),
-      )
-      .find((n) => typeof n.props.onPress === 'function');
-    expect(authorControl).toBeDefined();
+    const handle = pressableFor(renderer, 'reply-item-r-1-author-handle');
+
+    // The timestamp is NOT inside the handle.
     expect(
-      authorControl!.findAll(
+      handle.findAll(
         (n) => typeof n.type === 'string' && n.props.children === POSTED_TEXT,
-      ).length,
-    ).toBeGreaterThan(0);
+      ),
+    ).toHaveLength(0);
+
+    // The stacked handle uses flex-start (not stretch) so only the name line
+    // is tappable, not the empty space beside the shorter timestamp below it.
+    const hostHandle = nodesWithTestId(renderer, 'reply-item-r-1-author-handle')
+      .filter((n) => typeof n.type === 'string');
+    expect(hostHandle[0].props.style).toEqual(
+      expect.objectContaining({ alignSelf: 'flex-start' }),
+    );
   });
 });
 
@@ -645,5 +649,114 @@ describe('ReplyItem — useAuthorActions context', () => {
       contentId: 'r-2',
       groupId: undefined,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Author handle (#888)
+// ---------------------------------------------------------------------------
+
+describe('ReplyItem — author handle (#888)', () => {
+  it('pressing the handle calls handleAuthorPress exactly once', () => {
+    const renderer = renderReplyItem();
+    const handle = pressableFor(renderer, 'reply-item-r-1-author-handle');
+    act(() => {
+      handle.props.onPress();
+    });
+    expect(handleAuthorPress).toHaveBeenCalledTimes(1);
+  });
+
+  it('inline handle frame: minWidth 44, alignSelf stretch, no hitSlop', () => {
+    // depth 0 = inline mode
+    const renderer = renderReplyItem({ depth: 0 });
+    const handle = pressableFor(renderer, 'reply-item-r-1-author-handle');
+    expect(handle.props.hitSlop).toBeUndefined();
+    const hostHandle = nodesWithTestId(renderer, 'reply-item-r-1-author-handle')
+      .filter((n) => typeof n.type === 'string');
+    expect(hostHandle[0].props.style).toEqual(
+      expect.objectContaining({ minWidth: 44, alignSelf: 'stretch' }),
+    );
+  });
+
+  it('isSelf: handle is disabled, accessibilityRole and accessibilityLabel are absent', () => {
+    const renderer = renderReplyItem({ authorId: 'u-me', currentUserId: 'u-me' });
+    const handle = pressableFor(renderer, 'reply-item-r-1-author-handle');
+    expect(handle.props.disabled).toBe(true);
+    expect(handle.props.accessibilityRole).toBeUndefined();
+    expect(handle.props.accessibilityLabel).toBeUndefined();
+  });
+
+  it('avatar wrapper is a11y-hidden so screen readers skip the avatar', () => {
+    const renderer = renderReplyItem();
+    const avatarWrapper = renderer.root.findAll(
+      (n) =>
+        n.props.accessibilityElementsHidden === true &&
+        n.props.importantForAccessibility === 'no-hide-descendants',
+    );
+    expect(avatarWrapper.length).toBeGreaterThan(0);
+  });
+
+  it('structural: the avatar wrapper and timestamp Text are not descendants of any onPress node', () => {
+    // Default: depth 0 (inline), parentState 'none', visibleDescendants 0
+    // => onPress nodes are the author handle and the reply button.
+    const renderer = renderReplyItem();
+
+    // (a) Positive control: there are onPress nodes in the tree.
+    const pressNodes = renderer.root.findAll((n) => typeof n.props.onPress === 'function');
+    expect(pressNodes.length).toBeGreaterThan(0);
+
+    // (b) Positive control: the avatar wrapper and the timestamp Text are
+    //     actually rendered — the check cannot pass vacuously.
+    const avatarWrappers = renderer.root.findAll(
+      (n) =>
+        n.props.accessibilityElementsHidden === true &&
+        n.props.importantForAccessibility === 'no-hide-descendants',
+    );
+    expect(avatarWrappers.length).toBeGreaterThan(0);
+    const timestampTexts = renderer.root.findAll(
+      (n) => typeof n.type === 'string' && n.props.children === POSTED_TEXT,
+    );
+    expect(timestampTexts.length).toBeGreaterThan(0);
+
+    // (c) No onPress node contains the avatar wrapper or timestamp as a descendant.
+    for (const pressNode of pressNodes) {
+      expect(
+        pressNode.findAll(
+          (n) =>
+            n.props.accessibilityElementsHidden === true &&
+            n.props.importantForAccessibility === 'no-hide-descendants',
+        ),
+      ).toHaveLength(0);
+      expect(
+        pressNode.findAll(
+          (n) => typeof n.type === 'string' && n.props.children === POSTED_TEXT,
+        ),
+      ).toHaveLength(0);
+    }
+  });
+
+  it('inline (depth 0–1) author row has alignSelf stretch; stacked (depth 2) has alignSelf undefined', () => {
+    // The inline handle's 32pt touch height depends on the author-row View
+    // (reply-item-r-1-author-row) having alignSelf: 'stretch'. If that style is
+    // deleted, the frame silently shrinks to the text box (~20pt) with nothing
+    // else in the tree changing (#890 review). This test pins the style so that
+    // deletion is caught before it ships.
+    function authorRowHostStyle(depth: number) {
+      const renderer = renderReplyItem({ depth });
+      const hosts = nodesWithTestId(renderer, 'reply-item-r-1-author-row')
+        .filter((n) => typeof n.type === 'string');
+      expect(hosts).toHaveLength(1);
+      return hosts[0].props.style as Record<string, unknown>;
+    }
+
+    // depth 0: inline — must stretch to the 32pt header row
+    expect(authorRowHostStyle(0)).toEqual(expect.objectContaining({ alignSelf: 'stretch' }));
+    // depth 1: still inline
+    expect(authorRowHostStyle(1)).toEqual(expect.objectContaining({ alignSelf: 'stretch' }));
+    // depth 2: stacked — `alignSelf` is the CROSS axis here (the header row is
+    // a row, so it governs height). Stretching the stacked block to the full
+    // 32pt would pull its two lines to the top of the row for no benefit: the
+    // stacked handle uses flex-start and does not stretch anyway.
+    expect(authorRowHostStyle(2).alignSelf).toBeUndefined();
   });
 });

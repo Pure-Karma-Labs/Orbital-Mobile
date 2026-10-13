@@ -83,7 +83,7 @@ import {
 } from './mediaDownloadService';
 import { AuthError, NotFoundError } from './api/errors';
 import { abortable, isExportAbortError } from './media/abortable';
-import { isExportableConversation } from './media/exportAccess';
+import { isBlockedAuthor, isExportableConversation } from './media/exportAccess';
 import {
   buildExportFileName,
   reconcileExportLabel,
@@ -497,6 +497,14 @@ interface ExportEntry {
 }
 
 /**
+ * A staged iOS document, plus the id needed to re-check its access at flush
+ * time. The id never leaves this module — the runner is handed counts.
+ */
+interface StagedDocument extends ExportEntry {
+  mediaId: string;
+}
+
+/**
  * WHERE this goes. Fixed before the download, because the permission was
  * acquired for it — see `resolveExportLabel`.
  *
@@ -512,11 +520,19 @@ type ExportRequest =
       createdAtMs: number;
       /** Epoch captured when this export started — a wipe since then voids it. */
       epoch: number;
+      /**
+       * The CALLER's cancellation, re-checked inside the write lock. The lock
+       * wait is unbounded (a document picker waits for a human), so a lightbox
+       * save queued behind a bulk run could otherwise write minutes after the
+       * user closed the lightbox (#889 review).
+       */
+      signal?: AbortSignal;
     } & ExportEntry)
   | {
       kind: 'document';
       documents: readonly ExportEntry[];
       epoch: number;
+      signal?: AbortSignal;
     };
 
 /**
@@ -553,9 +569,9 @@ async function performExport(request: ExportRequest): Promise<ExportResult> {
   await nativeWriteLock.acquire();
   try {
     // Re-checked INSIDE the lock: waiting for another item's write is
-    // unbounded (a document picker waits for the user), and a wipe landing in
-    // that window must still stop this write.
-    if (request.epoch !== exportEpoch) {
+    // unbounded (a document picker waits for the user), so BOTH a wipe and the
+    // caller walking away must still stop this write.
+    if (request.epoch !== exportEpoch || request.signal?.aborted === true) {
       return { outcome: 'cancelled' };
     }
 
@@ -594,6 +610,40 @@ async function performExport(request: ExportRequest): Promise<ExportResult> {
 
 function warnCode(code: string): void {
   if (__DEV__) console.warn('[mediaExport]', code);
+}
+
+/**
+ * Error codes already reported in the current capture WINDOW, or null when no
+ * window is open.
+ *
+ * A bulk run can touch `BULK_EXPORT_MAX_ITEMS` items, and a systemic writer
+ * failure fails all of them the same way — which was up to 500 identical
+ * Sentry events from one tap (#889 review). Inside a window each code is
+ * reported once; the second and later occurrences still reach `warnCode`, so
+ * nothing is hidden in a dev log.
+ *
+ * Null (the lightbox's single-item path) means no budget at all: one save, one
+ * event, exactly as before.
+ */
+let capturedExportCodes: Set<string> | null = null;
+
+/** Open the per-run capture budget. Called by the bulk runner at run start. */
+export function beginExportCaptureBudget(): void {
+  capturedExportCodes = new Set<string>();
+}
+
+/** Close it. Every later single-item save reports unconditionally again. */
+export function endExportCaptureBudget(): void {
+  capturedExportCodes = null;
+}
+
+/** Report a writer failure, at most once per code while a budget is open. */
+function captureExportFailure(code: string): void {
+  if (capturedExportCodes !== null) {
+    if (capturedExportCodes.has(code)) return;
+    capturedExportCodes.add(code);
+  }
+  captureError(new Error('media export failed'), { tags: { export_code: code } });
 }
 
 /** Map a native error code onto an outcome. */
@@ -662,12 +712,12 @@ function resultForError(e: unknown): ExportResult {
     const code = e.code;
     warnCode(code);
     if (code === 'EEXPORT' || code === 'EINVALIDNAME') {
-      captureError(new Error('media export failed'), { tags: { export_code: code } });
+      captureExportFailure(code);
     }
     return { outcome: outcomeForCode(code) };
   }
   warnCode('EUNKNOWN');
-  captureError(new Error('media export failed'), { tags: { export_code: 'EUNKNOWN' } });
+  captureExportFailure('EUNKNOWN');
   return { outcome: 'failed' };
 }
 
@@ -763,12 +813,17 @@ type PreparedWrite =
  *
  * Callers still own the gates BEFORE this — disclosure, permission, the first
  * access check — because bulk acquires those once for the whole run.
+ *
+ * `rejectBlockedAuthor` is the one behavioural difference between the two
+ * callers: a blocked author's media is refused in a BATCH and allowed one item
+ * at a time, so the single-item path passes false.
  */
 async function prepareWrite(
   row: MediaRow,
   mediaId: string,
   signal: AbortSignal,
   epoch: number,
+  options: { rejectBlockedAuthor: boolean },
 ): Promise<PreparedWrite> {
   // --- Download (joined, but abortable independently) ---------------------
   let sourcePath: string;
@@ -782,9 +837,14 @@ async function prepareWrite(
     return { ok: false, result: { outcome: 'cancelled' } };
   }
 
-  // --- Access re-check: a download is long enough to lose membership ------
+  // --- Access re-check: a download is long enough to lose membership, and
+  // long enough for the author to be blocked (bulk only) -------------------
   const after = getMediaExportAccess(mediaId);
-  if (after === null || !isExportableConversation(after.conversation_id)) {
+  if (
+    after === null ||
+    !isExportableConversation(after.conversation_id) ||
+    (options.rejectBlockedAuthor && isBlockedAuthor(after.author_id))
+  ) {
     warnCode('ENOACCESS');
     return { ok: false, result: { outcome: 'notAllowed' } };
   }
@@ -909,14 +969,16 @@ export async function saveMediaItem(
   }
 
   try {
-    const prepared = await prepareWrite(row, mediaId, controller.signal, epoch);
+    const prepared = await prepareWrite(row, mediaId, controller.signal, epoch, {
+      rejectBlockedAuthor: false,
+    });
     if (!prepared.ok) return prepared.result;
     const { entry } = prepared;
     try {
       return await performExport(
         kind === 'photo'
-          ? { kind: 'photo', ...entry, createdAtMs, epoch }
-          : { kind: 'document', documents: [entry], epoch },
+          ? { kind: 'photo', ...entry, createdAtMs, epoch, signal: controller.signal }
+          : { kind: 'document', documents: [entry], epoch, signal: controller.signal },
       );
     } catch (e) {
       // EUNSUPPORTED from Photos is recoverable: the same bytes can go to
@@ -926,7 +988,12 @@ export async function saveMediaItem(
         const useFiles = await offerFilesFallback();
         if (!useFiles) return { outcome: 'unsupported' };
         try {
-          return await performExport({ kind: 'document', documents: [entry], epoch });
+          return await performExport({
+            kind: 'document',
+            documents: [entry],
+            epoch,
+            signal: controller.signal,
+          });
         } catch (retryError) {
           return resultForError(retryError);
         }
@@ -1016,11 +1083,11 @@ export async function ensureBulkExportPermission(
  * iOS document entries staged by the running batch, presented through ONE
  * picker at the end of the run (plan §5).
  *
- * The list lives HERE, not in the runner: an entry carries a decrypted path
- * and a peer-supplied display name, and this module is the only one allowed to
- * hold either. The runner sees counts.
+ * The list lives HERE, not in the runner: an entry carries a decrypted path,
+ * a peer-supplied display name and a media id, and this module is the only one
+ * allowed to hold any of them. The runner sees counts.
  */
-let stagedBulkDocuments: ExportEntry[] = [];
+let stagedBulkDocuments: StagedDocument[] = [];
 
 /** How many document writes are waiting for the end-of-run picker. */
 export function stagedBulkDocumentCount(): number {
@@ -1093,8 +1160,15 @@ export async function exportMediaItemInBulk(
     return { outcome: 'cancelled' };
   }
 
+  // Access, plus the BULK-ONLY blocked-author rule. The snapshot already
+  // excluded blocked authors, but it was taken once and a run lasts minutes:
+  // blocking someone mid-batch has to stop the items still queued (#889).
   const access = getMediaExportAccess(mediaId);
-  if (access === null || !isExportableConversation(access.conversation_id)) {
+  if (
+    access === null ||
+    !isExportableConversation(access.conversation_id) ||
+    isBlockedAuthor(access.author_id)
+  ) {
     warnCode('ENOACCESS');
     return { outcome: 'notAllowed' };
   }
@@ -1102,20 +1176,22 @@ export async function exportMediaItemInBulk(
   const epoch = exportEpoch;
   if (signal.aborted) return { outcome: 'cancelled' };
 
-  const prepared = await prepareWrite(row, mediaId, signal, epoch);
+  const prepared = await prepareWrite(row, mediaId, signal, epoch, {
+    rejectBlockedAuthor: true,
+  });
   if (!prepared.ok) return prepared.result;
   const { entry } = prepared;
 
   if (kind === 'document' && options.batchDocuments) {
-    stagedBulkDocuments.push(entry);
+    stagedBulkDocuments.push({ ...entry, mediaId });
     return { outcome: 'deferred' };
   }
 
   try {
     return await performExport(
       kind === 'photo'
-        ? { kind: 'photo', ...entry, createdAtMs: prepared.createdAtMs, epoch }
-        : { kind: 'document', documents: [entry], epoch },
+        ? { kind: 'photo', ...entry, createdAtMs: prepared.createdAtMs, epoch, signal }
+        : { kind: 'document', documents: [entry], epoch, signal },
     );
   } catch (e) {
     return resultForError(e);
@@ -1131,23 +1207,48 @@ export interface BulkDocumentFlush {
 /**
  * Present the staged documents in ONE picker and clear the staging list.
  *
- * `cancelled` counts every staged item as skipped — the user dismissed the
+ * `cancelled` counts the presented items as skipped — the user dismissed the
  * picker, which is a decision about the whole batch, not a failure of any item.
- * The list is cleared on every path, including a throw: a staged entry points
- * at a decrypted file and must not survive the run that produced it.
+ *
+ * `count` is what was actually PRESENTED, which can be fewer than was staged:
+ * every entry is re-checked against the access predicate here, immediately
+ * before the write, because access is otherwise only checked at download time
+ * and a document can sit staged for the length of the whole run (#889 review).
+ * The caller treats the shortfall as skipped.
+ *
+ * The staging list is detached before anything can await, so no path — throw
+ * included — leaves a decrypted path behind for the next run to present. That
+ * covers the LIST; it does not and cannot recall a copy the picker already
+ * wrote.
  */
 export async function flushStagedBulkDocuments(): Promise<BulkDocumentFlush> {
-  const batch = stagedBulkDocuments;
+  // FIRST statement, before the detach and before any await: a wipe that lands
+  // in the window below must make this comparison fail, not pass. (The window
+  // is a few microtasks in practice — the disclosure read is cached by now —
+  // but the ordering is free and the review asked for it rather than for an
+  // argument about reachability.)
+  const epoch = exportEpoch;
+
+  const staged = stagedBulkDocuments;
   stagedBulkDocuments = [];
-  if (batch.length === 0) return { outcome: 'skipped', count: 0 };
+  if (staged.length === 0) return { outcome: 'skipped', count: 0 };
 
   if (!(await ensureExportDisclosure())) {
-    return { outcome: 'cancelled', count: batch.length };
+    return { outcome: 'cancelled', count: staged.length };
   }
 
-  const epoch = exportEpoch;
+  // Re-check every entry's access at WRITE time, not at download time.
+  const batch = staged.filter((entry) => isBulkExportAllowedAt(entry.mediaId));
+  if (batch.length === 0) return { outcome: 'skipped', count: 0 };
+
   try {
     const result = await performExport({ kind: 'document', documents: batch, epoch });
+    // The picker waits for a human, so a wipe is far likelier to land HERE
+    // than in the microtask window above. A copy may already exist on disk —
+    // this cannot undo that — but the outcome must not be reported as saved.
+    if (epoch !== exportEpoch) {
+      return { outcome: 'cancelled', count: batch.length };
+    }
     return {
       outcome: result.outcome === 'saved' ? 'saved' : 'cancelled',
       count: batch.length,
@@ -1159,6 +1260,17 @@ export async function flushStagedBulkDocuments(): Promise<BulkDocumentFlush> {
       count: batch.length,
     };
   }
+}
+
+/**
+ * Both bulk access rules for one id, from ONE query. A deleted row (null)
+ * is refused — there is nothing left to attribute the copy to.
+ */
+function isBulkExportAllowedAt(mediaId: string): boolean {
+  const access = getMediaExportAccess(mediaId);
+  if (access === null) return false;
+  if (!isExportableConversation(access.conversation_id)) return false;
+  return !isBlockedAuthor(access.author_id);
 }
 
 // ---------------------------------------------------------------------------

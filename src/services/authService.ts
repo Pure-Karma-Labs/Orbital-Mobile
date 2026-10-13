@@ -54,6 +54,7 @@ import {
 } from '@dr.pogodin/react-native-fs';
 import { clearAll as clearSecureStorage } from './secure-storage';
 import { syncBlockedUsers } from './blockedUsersSync';
+import { resetBulkExportState } from './media/bulkExportRunner';
 import { clearNotificationSyncState, syncNotificationSettings } from './notificationSettingsSync';
 import { clearPrefetchState } from './mediaPrefetchService';
 import { clearArchiveConfirmState } from './mediaArchiveConfirmService';
@@ -385,6 +386,13 @@ export async function localWipe({ preserveIdentity }: { preserveIdentity: boolea
   // the export we are trying to stop.
   try { cancelAllExports(); } catch {
     if (__DEV__) console.warn('[LocalWipe] cancelAllExports failed');
+  }
+  // The bulk runner's published state is module state and nothing reloads the
+  // JS bundle on logout, so without this the next account on this device is
+  // shown the previous account's summary card ("Saved 35 items to Photos" for
+  // photos it has never seen). Synchronous, for the same reason as above.
+  try { resetBulkExportState(); } catch {
+    if (__DEV__) console.warn('[LocalWipe] resetBulkExportState failed');
   }
   try { await tokenManager.clearTokens(); } catch {
     if (__DEV__) console.warn('[LocalWipe] clearTokens failed');

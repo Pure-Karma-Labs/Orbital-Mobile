@@ -1,26 +1,44 @@
 /**
- * The two cards File Library shows while (and after) a "Save all" run (#878).
+ * The "Save all" status UI for File Library (#878).
  *
- * Presentational only: every string is computed by `bulkExportRunner`'s
- * `describeBulk*` helpers, so the copy is asserted once, in that module's own
- * suite, and this file has nothing to keep in step.
+ * `BulkExportStatus` is the ONLY component subscribed to the whole run state,
+ * and that is the point (#889 review): the run emits up to four times a second
+ * for its whole duration, and FileLibraryScreen subscribing to all of it
+ * re-rendered the 3-column grid and the unmemoized `MediaLightbox` on every
+ * tick. The screen now watches `phase` alone — which changes a handful of
+ * times per run — and this child absorbs the progress churn.
+ *
+ * The two cards below it stay presentational: every string is computed by
+ * `bulkExportRunner`'s `describeBulk*` helpers, so the copy is asserted once,
+ * in that module's own suite, and this file has nothing to keep in step.
  *
  * `announceProgress` is deliberately left off the bar. A progressbar role with
  * a live value announces on every tick, and a batch of 400 items would talk
- * over the user for minutes; the screen announces once on start, once on pause
- * and once at the end instead.
+ * over the user for minutes; the announcements below go out on start, pause,
+ * resume and finish only.
  */
 
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import {
+  AccessibilityInfo,
   Pressable,
   Text,
   View,
   type TextStyle,
   type ViewStyle,
 } from 'react-native';
+import { useStore } from 'zustand';
 import { useTheme } from '../../theme';
 import { ProgressBar } from '../../components/ProgressBar';
+import {
+  bulkExportStore,
+  cancelBulkExport,
+  describeBulkProgress,
+  describeBulkSummary,
+  dismissBulkExportSummary,
+  pluralItems,
+  type BulkExportPhase,
+} from '../../services/media/bulkExportRunner';
 
 export interface BulkExportPanelProps {
   /** "12 of 37 items", from `describeBulkProgress`. */
@@ -166,4 +184,63 @@ export function BulkExportSummaryCard({
       </Pressable>
     </View>
   );
+}
+
+/**
+ * The run's whole state, in one place.
+ *
+ * Renders nothing while idle, but stays MOUNTED so the announcements below
+ * fire for a run the user started and then navigated away from and back to.
+ */
+export function BulkExportStatus(): React.JSX.Element | null {
+  const state = useStore(bulkExportStore);
+
+  /**
+   * The phase we last announced.
+   *
+   * Initialised from the store's CURRENT phase, not from 'idle': coming back
+   * to File Library mid-run would otherwise re-announce "Saving 37 items"
+   * every time the screen mounted (#889 review).
+   */
+  const announcedPhaseRef = useRef<BulkExportPhase>(bulkExportStore.getState().phase);
+
+  useEffect(() => {
+    const previous = announcedPhaseRef.current;
+    if (previous === state.phase) return;
+    announcedPhaseRef.current = state.phase;
+
+    if (state.phase === 'running') {
+      // Start vs resume: 'idle' -> 'running' is a new run, 'paused' ->
+      // 'running' is the app coming back to the foreground.
+      AccessibilityInfo.announceForAccessibility(
+        previous === 'paused' ? 'Saving resumed' : `Saving ${pluralItems(state.total)}`,
+      );
+    } else if (state.phase === 'paused') {
+      AccessibilityInfo.announceForAccessibility('Saving paused');
+    } else if (state.phase === 'done' && state.summary !== null) {
+      AccessibilityInfo.announceForAccessibility(describeBulkSummary(state.summary));
+    }
+  }, [state.phase, state.total, state.summary]);
+
+  if (state.phase === 'running' || state.phase === 'paused') {
+    return (
+      <BulkExportPanel
+        label={describeBulkProgress(state)}
+        progress={state.total > 0 ? state.completed / state.total : 0}
+        paused={state.phase === 'paused'}
+        onCancel={cancelBulkExport}
+      />
+    );
+  }
+
+  if (state.phase === 'done' && state.summary !== null) {
+    return (
+      <BulkExportSummaryCard
+        message={describeBulkSummary(state.summary)}
+        onDismiss={dismissBulkExportSummary}
+      />
+    );
+  }
+
+  return null;
 }

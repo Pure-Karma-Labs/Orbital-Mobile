@@ -36,3 +36,24 @@ export function isExportableConversation(conversationId: string | null | undefin
   if (conversations === null || typeof conversations !== 'object') return false;
   return Object.prototype.hasOwnProperty.call(conversations, conversationId);
 }
+
+/**
+ * True when this author is blocked. BULK ONLY — a blocked author's media stays
+ * saveable one item at a time (Alex 2026-10-09), so only the batch path asks.
+ *
+ * The snapshot SQL already excludes blocked authors, but a snapshot is taken
+ * once and a run can last minutes: blocking someone mid-batch has to stop
+ * their media from being saved by the items still queued (#889 review). So
+ * this is re-asked per item before the download, again after it, and once more
+ * for every staged iOS document immediately before the picker.
+ *
+ * A NULL author is NOT treated as blocked. That is the same deliberate
+ * trade-off as the SQL's `COALESCE(…, '')`: a deleted reply leaves its media
+ * with no resolvable author, and refusing those would make a blocked-user
+ * list silently un-saveable for unrelated rows.
+ */
+export function isBlockedAuthor(authorId: string | null | undefined): boolean {
+  if (!authorId) return false;
+  const { blockedUserIds } = useAppStore.getState();
+  return Array.isArray(blockedUserIds) && blockedUserIds.includes(authorId);
+}

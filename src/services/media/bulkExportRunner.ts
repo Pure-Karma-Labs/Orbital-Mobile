@@ -52,7 +52,9 @@ import {
 } from '../../database/repositories/mediaRepository';
 import { useAppStore } from '../../stores/useAppStore';
 import {
+  beginExportCaptureBudget,
   discardStagedBulkDocuments,
+  endExportCaptureBudget,
   exportMediaItemInBulk,
   flushStagedBulkDocuments,
   registerExportAbort,
@@ -90,6 +92,13 @@ export interface BulkExportSummary {
   stoppedForSpace: boolean;
   /** The user pressed Cancel, or a wipe aborted the run. */
   cancelled: boolean;
+  /**
+   * Cancel landed while the end-of-run document picker was already presented,
+   * so the OS may have written some copies before we stopped waiting. A copy
+   * cannot be recalled, and reporting those items as plainly "skipped" would
+   * tell the user nothing landed when something might have.
+   */
+  cancelledMidFlush: boolean;
 }
 
 export interface BulkExportState {
@@ -200,6 +209,12 @@ export interface BulkExportPlan {
   count: number;
   totalBytes: number;
   toDownloadBytes: number;
+  /**
+   * The largest single item still to be downloaded. Each in-flight download
+   * holds its ciphertext staging file AND its plaintext `.tmp` at once, so the
+   * run's transient peak is `2 x WORKER_COUNT x this`.
+   */
+  maxItemBytes: number;
   /** Server-evicted with no local copy: nothing to save, so never attempted. */
   unavailableCount: number;
   /** Orphaned, blocked-author, refused-type, or past the item bound. */
@@ -222,7 +237,8 @@ const HYDRATION_TIMEOUT_MS = 5000;
  *
  * MMKV is synchronous and `bootstrap.ts` awaits `persist.rehydrate()`, so in
  * practice this resolves on the first tick. It is also the awaited tick that
- * lets the tap paint a spinner before the DB work starts.
+ * lets the tap render its dimmed, disabled "Save all" button before the DB
+ * work starts — there is no spinner in that slot, just the disabled state.
  */
 async function waitForPersistedMembership(): Promise<boolean> {
   const persist = useAppStore.persist as typeof useAppStore.persist | undefined;
@@ -291,6 +307,7 @@ export async function prepareBulkExport(
   const needs: BulkExportNeeds = { photo: false, document: false };
   let totalBytes = 0;
   let toDownloadBytes = 0;
+  let maxItemBytes = 0;
   let unavailableCount = 0;
   let refusedCount = 0;
 
@@ -317,7 +334,10 @@ export async function prepareBulkExport(
     ids.push(row.id);
     const size = Number.isFinite(row.file_size) && row.file_size > 0 ? row.file_size : 0;
     totalBytes += size;
-    if (!hasLocal) toDownloadBytes += size;
+    if (!hasLocal) {
+      toDownloadBytes += size;
+      maxItemBytes = Math.max(maxItemBytes, size);
+    }
     if (route.kind === 'photo') needs.photo = true;
     else needs.document = true;
   }
@@ -330,6 +350,7 @@ export async function prepareBulkExport(
     count: ids.length,
     totalBytes,
     toDownloadBytes,
+    maxItemBytes,
     unavailableCount,
     excludedCount: excludedByAccess + refusedCount + pastBound,
     needs,
@@ -340,6 +361,10 @@ export async function prepareBulkExport(
 // Free space
 // ---------------------------------------------------------------------------
 
+/** Two: enough to hide one item's latency behind another's, few enough that
+ *  the JS thread still renders. Native writes are serialized downstream. */
+const WORKER_COUNT = 2;
+
 export interface BulkExportSpace {
   ok: boolean;
   requiredBytes: number;
@@ -349,21 +374,33 @@ export interface BulkExportSpace {
 /**
  * Is there room for this batch?
  *
- * The requirement is `toDownload + total + headroom`: every item that is not
- * already local is written into `MEDIA_DIR` first, and then EVERY item is
- * COPIED again by the OS (PhotoKit duplicates the asset into the library;
- * MediaStore streams a second file). Counting only the downloads would let a
- * run of already-downloaded media fill the device.
+ * Three terms, and each one is real:
+ *  - `toDownloadBytes` — every item not already local is written into
+ *    `MEDIA_DIR` and KEPT there (it is the app's durable archive).
+ *  - `totalBytes` — then EVERY item is COPIED again by the OS (PhotoKit
+ *    duplicates the asset into the library; MediaStore streams a second
+ *    file). Counting only the downloads would let a run of already-downloaded
+ *    media fill the device.
+ *  - `2 x WORKER_COUNT x maxItemBytes` — the TRANSIENT peak. Each in-flight
+ *    download holds its ciphertext staging file and its plaintext `.tmp`
+ *    simultaneously for the whole of decrypt pass 2, and two run at once.
+ *    Omitting it let an approved batch stop for space mid-run near the limit,
+ *    and a re-run duplicates everything already saved because add-only photo
+ *    access cannot detect duplicates (#889 review).
  *
  * A `getFSInfo` failure is not a refusal. The per-item download preflight does
  * its own space check and surfaces `noSpace`, which stops the batch — so the
  * worst case is the block arriving one item late instead of up front.
  */
 export async function checkBulkExportSpace(
-  plan: Pick<BulkExportPlan, 'toDownloadBytes' | 'totalBytes'>,
+  plan: Pick<BulkExportPlan, 'toDownloadBytes' | 'totalBytes' | 'maxItemBytes'>,
 ): Promise<BulkExportSpace> {
+  const transientPeak = 2 * WORKER_COUNT * Math.max(0, plan.maxItemBytes);
   const requiredBytes =
-    Math.max(0, plan.toDownloadBytes) + Math.max(0, plan.totalBytes) + DISK_HEADROOM_BYTES;
+    Math.max(0, plan.toDownloadBytes) +
+    Math.max(0, plan.totalBytes) +
+    transientPeak +
+    DISK_HEADROOM_BYTES;
   try {
     const { freeSpace } = await getFSInfo();
     const free = Number.isFinite(freeSpace) ? freeSpace : 0;
@@ -377,7 +414,8 @@ export async function checkBulkExportSpace(
 // Copy
 // ---------------------------------------------------------------------------
 
-function pluralItems(n: number): string {
+/** "1 item" / "37 items". Exported because the a11y announcements need it. */
+export function pluralItems(n: number): string {
   return n === 1 ? '1 item' : `${n} items`;
 }
 
@@ -431,6 +469,10 @@ export function describeBulkSummary(summary: BulkExportSummary): string {
   }
   if (summary.stoppedForSpace) {
     parts.push('Stopped — not enough storage.');
+  } else if (summary.cancelledMidFlush) {
+    // A picker that was already on screen may have written before we stopped
+    // waiting for it, and a copy cannot be recalled.
+    parts.push('Cancelled — some copies may already have been saved.');
   } else if (summary.cancelled) {
     parts.push('Cancelled.');
   }
@@ -441,10 +483,6 @@ export function describeBulkSummary(summary: BulkExportSummary): string {
 // ---------------------------------------------------------------------------
 // The run
 // ---------------------------------------------------------------------------
-
-/** Two: enough to hide one item's latency behind another's, few enough that
- *  the JS thread still renders. Native writes are serialized downstream. */
-const WORKER_COUNT = 2;
 
 interface ActiveRun {
   ids: readonly string[];
@@ -466,17 +504,14 @@ interface ActiveRun {
   cancelled: boolean;
   /** True while the end-of-run document picker is presented. */
   flushing: boolean;
+  /** Cancel landed while `flushing` was true. */
+  cancelledMidFlush: boolean;
   appActive: boolean;
   appStateSub: { remove: () => void } | null;
   resumeWaiters: Array<() => void>;
 }
 
 let run: ActiveRun | null = null;
-
-/** True while a batch is in flight — the header button is disabled on this. */
-export function isBulkExportRunning(): boolean {
-  return run !== null;
-}
 
 function completedCount(r: ActiveRun): number {
   return r.saved + r.skipped + r.failed + r.deferred;
@@ -643,11 +678,13 @@ function settleRun(r: ActiveRun): void {
     destinations: Array.from(r.destinations),
     stoppedForSpace: r.stoppedForSpace,
     cancelled: r.cancelled || r.controller.signal.aborted,
+    cancelledMidFlush: r.cancelledMidFlush,
   };
 
   detachAppState(r);
   releaseWaiters(r);
   r.unregisterAbort();
+  endExportCaptureBudget();
   run = null;
 
   update(
@@ -707,6 +744,13 @@ export function startBulkExport(
   if (plan.ids.length === 0) return false;
   if (!permission.granted) return false;
 
+  // A previous run that was cancelled mid-flush, or killed by a wipe, can have
+  // left entries staged. They point at decrypted files chosen under a
+  // different snapshot, so this run must never present them.
+  discardStagedBulkDocuments();
+  // One Sentry event per failure CODE for this whole run, not one per item.
+  beginExportCaptureBudget();
+
   const controller = new AbortController();
   const r: ActiveRun = {
     ids: plan.ids.slice(),
@@ -727,6 +771,7 @@ export function startBulkExport(
     stoppedForSpace: false,
     cancelled: false,
     flushing: false,
+    cancelledMidFlush: false,
     appActive: true,
     appStateSub: null,
     resumeWaiters: [],
@@ -775,8 +820,11 @@ export function cancelBulkExport(): void {
   if (r.flushing) {
     // The document picker is up, and nothing in JS can dismiss it. Settle the
     // run now rather than leaving the progress panel waiting on a promise that
-    // may never resolve; the staged entries were just discarded, so they are
-    // skipped. `finishRun` sees `r !== run` when (or if) the picker returns.
+    // may never resolve. `finishRun` sees `r !== run` when (or if) the picker
+    // returns. The entries are counted skipped because we stopped waiting for
+    // them — but the OS may already have written some, which is why the
+    // summary says so rather than claiming nothing landed.
+    r.cancelledMidFlush = true;
     r.skipped += r.deferred;
     r.deferred = 0;
     r.flushing = false;
@@ -791,17 +839,27 @@ export function dismissBulkExportSummary(): void {
 }
 
 // ---------------------------------------------------------------------------
-// Test seam
+// Teardown
 // ---------------------------------------------------------------------------
 
 /**
- * Reset every piece of module state (`resetXForTesting` convention).
+ * Drop every piece of run state, including the published store.
  *
- * Detaches the AppState subscription and aborts any run, so a leaked worker
- * from one test cannot fold a result into the next one — `worker` and
- * `finishRun` both re-check `r !== run` after every await for exactly that.
+ * PRODUCTION, not a test seam: `localWipe` phase 1 calls it beside
+ * `cancelAllExports()`. The store is module state that survives a logout
+ * (nothing reloads the JS bundle), so without this the next account to sign in
+ * on this device would be shown the previous account's summary card — "Saved
+ * 35 items to Photos" for photos it has never seen. Pinned by
+ * `media-export-wipe-wired`.
+ *
+ * Synchronous, for the same reason `cancelAllExports()` is: an await here
+ * hands control back to the run being torn down.
+ *
+ * Detaching AppState and nulling `run` before releasing the waiters is what
+ * makes a leaked worker harmless — `worker` and `finishRun` both re-check
+ * `r !== run` after every await.
  */
-export function resetBulkExportForTesting(): void {
+export function resetBulkExportState(): void {
   const r = run;
   run = null;
   if (r !== null) {
@@ -814,6 +872,7 @@ export function resetBulkExportForTesting(): void {
       // An AbortController that throws on abort is not worth failing a reset.
     }
   }
+  endExportCaptureBudget();
   discardStagedBulkDocuments();
   if (emitTimer !== null) {
     clearTimeout(emitTimer);
@@ -821,4 +880,9 @@ export function resetBulkExportForTesting(): void {
   }
   bulkExportStore.setState(INITIAL_STATE, true);
   draft = bulkExportStore.getState();
+}
+
+/** Test alias for the production reset (`resetXForTesting` convention). */
+export function resetBulkExportForTesting(): void {
+  resetBulkExportState();
 }

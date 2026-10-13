@@ -199,6 +199,9 @@ jest.mock('../../services/media/bulkExportRunner', () => {
       (s: { completed: number; total: number }) => `${s.completed} of ${s.total} items`,
     ),
     describeBulkSummary: jest.fn(() => 'SUMMARY_LINE'),
+    // Real, not a sentinel: the start announcement's pluralisation is one of
+    // the strings the #889 review asked for ("Saving 1 items").
+    pluralItems: (n: number) => (n === 1 ? '1 item' : `${n} items`),
   };
 });
 
@@ -330,6 +333,7 @@ interface BulkRunnerMock {
   describeBulkConfirm: jest.Mock;
   describeBulkProgress: jest.Mock;
   describeBulkSummary: jest.Mock;
+  pluralItems: (n: number) => string;
 }
 
 function bulkRunner(): BulkRunnerMock {
@@ -984,5 +988,105 @@ describe('FileLibraryScreen — Save all (#878)', () => {
     });
     expect(announceSpy).toHaveBeenCalledTimes(3);
     expect(announceSpy).toHaveBeenLastCalledWith('SUMMARY_LINE');
+  });
+
+  // -------------------------------------------------------------------------
+  // #889 review items
+  // -------------------------------------------------------------------------
+
+  it('pluralises the start announcement for a single item', () => {
+    renderScreen();
+
+    act(() => {
+      setBulkState({ phase: 'running', total: 1, completed: 0, summary: null });
+    });
+
+    expect(announceSpy).toHaveBeenLastCalledWith('Saving 1 item');
+  });
+
+  it('announces a RESUME, not another start, on paused → running', () => {
+    renderScreen();
+
+    act(() => {
+      setBulkState({ phase: 'running', total: 37, completed: 0, summary: null });
+    });
+    act(() => {
+      setBulkState({ phase: 'paused', total: 37, completed: 5, summary: null });
+    });
+    act(() => {
+      setBulkState({ phase: 'running', total: 37, completed: 5, summary: null });
+    });
+
+    expect(announceSpy).toHaveBeenLastCalledWith('Saving resumed');
+    expect(announceSpy).toHaveBeenCalledTimes(3);
+  });
+
+  it('does NOT re-announce the start when the screen remounts mid-run', () => {
+    // The run was started on a previous mount, so the store is already
+    // 'running' before this screen exists.
+    setBulkState({ phase: 'running', total: 37, completed: 12, summary: null });
+
+    renderScreen();
+
+    // The ref is seeded from the store's CURRENT phase, so coming back to File
+    // Library does not say "Saving 37 items" all over again.
+    expect(announceSpy).not.toHaveBeenCalled();
+  });
+
+  it('alerts instead of rejecting when the snapshot throws', async () => {
+    bulkRunner().prepareBulkExport.mockRejectedValue(new Error('db closed'));
+    const renderer = renderScreen();
+
+    await pressSaveAll(renderer);
+
+    // Nothing above is expected to throw; without a catch this was an
+    // unhandled rejection with no feedback at all.
+    expect(alertTitles()).toEqual(["Couldn't start saving"]);
+    expect(alertSpy.mock.calls[0][1]).toBe('Something went wrong. Please try again.');
+    // The copy names nothing: no path, no id, no driver message.
+    expect(String(alertSpy.mock.calls[0][1])).not.toContain('db closed');
+    expect(bulkRunner().startBulkExport).not.toHaveBeenCalled();
+  });
+
+  it('re-enables Save all after a throw, so the user can retry', async () => {
+    bulkRunner().prepareBulkExport.mockRejectedValue(new Error('db closed'));
+    const renderer = renderScreen();
+
+    await pressSaveAll(renderer);
+
+    expect(
+      findHostByTestId(renderer.root, 'save-all-button').props.accessibilityState.disabled,
+    ).toBe(false);
+  });
+
+  it('bounds the Save all label inside the header slot', () => {
+    const renderer = renderScreen();
+    const label = findHostByTestId(renderer.root, 'save-all-button').findByType(
+      'Text' as unknown as React.ComponentType,
+    );
+
+    // Header's right slot is a fixed 88x44 box.
+    expect(label.props.numberOfLines).toBe(1);
+    expect(label.props.maxFontSizeMultiplier).toBe(1.4);
+  });
+
+  it('keeps the grid out of the progress subscription', () => {
+    // The screen watches `phase`; BulkExportStatus owns the rest. A `completed`
+    // tick must therefore not re-render the screen at all — asserted through
+    // the cheapest observable proxy: the screen's own data read does not run
+    // again, and the panel label still updates.
+    setBulkState({ phase: 'running', total: 37, completed: 1, summary: null });
+    const renderer = renderScreen();
+    const repo = jest.requireMock('../../database/repositories/mediaRepository');
+    (repo.getAllMedia as jest.Mock).mockClear();
+
+    act(() => {
+      setBulkState({ phase: 'running', total: 37, completed: 2, summary: null });
+    });
+
+    expect(repo.getAllMedia).not.toHaveBeenCalled();
+    expect(findHostByTestId(renderer.root, 'bulk-export-label').props.children).toBe(
+      '2 of 37 items',
+    );
   });
 });

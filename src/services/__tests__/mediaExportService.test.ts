@@ -35,8 +35,11 @@ jest.mock('../../database/repositories/mediaRepository', () => ({
   getMediaExportAccess: (...args: [string]) => mockGetAccess(...args),
 }));
 
-const mockState: { conversations: Record<string, unknown>; media: Record<string, unknown> } =
-  { conversations: {}, media: {} };
+const mockState: {
+  conversations: Record<string, unknown>;
+  media: Record<string, unknown>;
+  blockedUserIds: string[];
+} = { conversations: {}, media: {}, blockedUserIds: [] };
 
 jest.mock('../../stores/useAppStore', () => ({
   useAppStore: { getState: () => mockState },
@@ -103,7 +106,9 @@ import {
   registerExportAbort,
   resetMediaExportForTesting,
   saveMediaItem,
+  beginExportCaptureBudget,
   discardStagedBulkDocuments,
+  endExportCaptureBudget,
   ensureBulkExportPermission,
   exportMediaItemInBulk,
   flushStagedBulkDocuments,
@@ -215,6 +220,7 @@ function arrangeHappyPath(overrides: Partial<MediaRow> = {}): void {
   mockGetMedia.mockReturnValue(row(overrides));
   mockGetAccess.mockReturnValue({ conversation_id: 'conv-1', author_id: 'u-2' });
   mockState.conversations = { 'conv-1': { id: 'conv-1' } };
+  mockState.blockedUserIds = [];
   mockDownload.mockResolvedValue('/media/media-1.jpg');
   mockStat.mockResolvedValue({ size: 1024 } as unknown as Awaited<ReturnType<typeof stat>>);
   // RE-ARM the head read to "nothing recognizable" (#880). jest.clearAllMocks()
@@ -273,6 +279,7 @@ beforeEach(() => {
   resetMediaExportForTesting();
   mockState.conversations = {};
   mockState.media = {};
+  mockState.blockedUserIds = [];
   (Platform as { OS: string }).OS = 'ios';
   Object.defineProperty(Platform, 'Version', { value: '18.0', configurable: true });
   mockRequestPhotoPermission.mockResolvedValue('granted');
@@ -1783,5 +1790,275 @@ describe('flushStagedBulkDocuments', () => {
     discardStagedBulkDocuments();
 
     expect(await flushStagedBulkDocuments()).toEqual({ outcome: 'skipped', count: 0 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #889 review hardening
+//
+// Three properties the first cut of PR 2 got wrong, all of them silent:
+// blocking an author mid-run did not stop their queued media, a staged iOS
+// document had its access checked at DOWNLOAD time only, and the write lock
+// re-checked the wipe epoch but not the caller's own cancellation.
+// ---------------------------------------------------------------------------
+
+describe('blocked authors are refused in BULK only', () => {
+  it('refuses a blocked author before any download', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath();
+    mockState.blockedUserIds = ['u-2'];
+
+    const result = await exportMediaItemInBulk(
+      'media-1',
+      new AbortController().signal,
+      BULK_PHOTO,
+    );
+
+    expect(result).toEqual({ outcome: 'notAllowed' });
+    expect(mockDownload).not.toHaveBeenCalled();
+  });
+
+  it('refuses an author blocked DURING the download', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath();
+    mockDownload.mockImplementation(() => {
+      // The user blocks them while the file is in flight.
+      mockState.blockedUserIds = ['u-2'];
+      return Promise.resolve('/media/media-1.jpg');
+    });
+
+    const result = await exportMediaItemInBulk(
+      'media-1',
+      new AbortController().signal,
+      BULK_PHOTO,
+    );
+
+    expect(result).toEqual({ outcome: 'notAllowed' });
+    expect(mockSaveToPhotoLibrary).not.toHaveBeenCalled();
+  });
+
+  it('still SAVES a blocked author one item at a time', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath();
+    (Platform as { OS: string }).OS = 'ios';
+    mockRequestPhotoPermission.mockResolvedValue('granted');
+    mockState.blockedUserIds = ['u-2'];
+
+    // Alex 2026-10-09: blocked authors are excluded from a BATCH and allowed
+    // per item. A single save is a deliberate act on one visible file.
+    const result = await saveMediaItem('media-1');
+
+    expect(result).toEqual({ outcome: 'saved', destination: 'photos' });
+  });
+
+  it('does not treat a NULL author as blocked', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath();
+    mockGetAccess.mockReturnValue({ conversation_id: 'conv-1', author_id: null });
+    mockState.blockedUserIds = ['u-2'];
+
+    const result = await exportMediaItemInBulk(
+      'media-1',
+      new AbortController().signal,
+      BULK_PHOTO,
+    );
+
+    // The same deliberate COALESCE trade-off the snapshot SQL makes: a deleted
+    // reply leaves its media with no resolvable author.
+    expect(result).toEqual({ outcome: 'saved', destination: 'photos' });
+  });
+});
+
+describe('flushStagedBulkDocuments re-checks access at WRITE time', () => {
+  async function stageOne(id: string): Promise<void> {
+    arrangeHappyPath({ id, content_type: 'application/pdf' });
+    await exportMediaItemInBulk(id, new AbortController().signal, BULK_IOS);
+  }
+
+  beforeEach(() => {
+    acknowledgeDisclosure();
+    (Platform as { OS: string }).OS = 'ios';
+  });
+
+  it('drops an entry whose author was blocked after it was staged', async () => {
+    await stageOne('media-0');
+    await stageOne('media-1');
+    expect(stagedBulkDocumentCount()).toBe(2);
+
+    mockState.blockedUserIds = ['u-2'];
+    mockExportFiles.mockResolvedValue('saved');
+
+    const outcome = await flushStagedBulkDocuments();
+
+    // Nothing is presented, and the caller counts the shortfall as skipped.
+    expect(outcome).toEqual({ outcome: 'skipped', count: 0 });
+    expect(mockExportFiles).not.toHaveBeenCalled();
+  });
+
+  it('drops an entry whose conversation was left after it was staged', async () => {
+    await stageOne('media-0');
+    mockState.conversations = {};
+    mockExportFiles.mockResolvedValue('saved');
+
+    expect(await flushStagedBulkDocuments()).toEqual({ outcome: 'skipped', count: 0 });
+    expect(mockExportFiles).not.toHaveBeenCalled();
+  });
+
+  it('drops an entry whose row was deleted after it was staged', async () => {
+    await stageOne('media-0');
+    mockGetAccess.mockReturnValue(null);
+    mockExportFiles.mockResolvedValue('saved');
+
+    expect(await flushStagedBulkDocuments()).toEqual({ outcome: 'skipped', count: 0 });
+    expect(mockExportFiles).not.toHaveBeenCalled();
+  });
+
+  it('presents only the entries that still pass, and reports that count', async () => {
+    await stageOne('media-keep');
+    await stageOne('media-drop');
+    mockExportFiles.mockResolvedValue('saved');
+    // Only the second id has lost access.
+    mockGetAccess.mockImplementation((id: string) =>
+      id === 'media-drop'
+        ? { conversation_id: 'conv-gone', author_id: 'u-2' }
+        : { conversation_id: 'conv-1', author_id: 'u-2' },
+    );
+
+    const outcome = await flushStagedBulkDocuments();
+
+    expect(outcome).toEqual({ outcome: 'saved', count: 1 });
+    expect(mockExportFiles.mock.calls[0][0]).toHaveLength(1);
+  });
+
+  it('does not present after a wipe that lands while it is awaiting', async () => {
+    await stageOne('media-0');
+    await stageOne('media-1');
+    mockExportFiles.mockResolvedValue('saved');
+    // The epoch is read as the FIRST statement, so a wipe anywhere after that
+    // — including during the disclosure await — voids the write.
+    const originalRead = mockGetAccess.getMockImplementation();
+    mockGetAccess.mockImplementation((id: string) => {
+      cancelAllExports();
+      return originalRead
+        ? originalRead(id)
+        : { conversation_id: 'conv-1', author_id: 'u-2' };
+    });
+
+    const outcome = await flushStagedBulkDocuments();
+
+    expect(mockExportFiles).not.toHaveBeenCalled();
+    expect(outcome.outcome).not.toBe('saved');
+  });
+
+  it('reports cancelled when a wipe lands while the picker is open', async () => {
+    await stageOne('media-0');
+    // The picker is a native modal that waits for a human, so this is the
+    // realistic window — far wider than the microtask hop before it.
+    mockExportFiles.mockImplementation(() => {
+      cancelAllExports();
+      return Promise.resolve('saved');
+    });
+
+    const outcome = await flushStagedBulkDocuments();
+
+    // A copy may already exist on disk; nothing can undo that. But the run
+    // must not report it as saved under an account that no longer exists.
+    expect(outcome).toEqual({ outcome: 'cancelled', count: 1 });
+  });
+});
+
+describe('the write lock re-checks the CALLER, not just the epoch', () => {
+  it('does not write after the caller aborted while waiting for the lock', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath();
+    (Platform as { OS: string }).OS = 'ios';
+
+    // Hold the lock with a first write that never settles, so the second save
+    // is parked inside performExport — exactly where a bulk run's open
+    // document picker parks a lightbox save.
+    let releaseFirst = (): void => {};
+    mockSaveToPhotoLibrary.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseFirst = resolve;
+        }),
+    );
+
+    const outer = new AbortController();
+    const first = exportMediaItemInBulk('media-1', new AbortController().signal, BULK_PHOTO);
+    await flush();
+    const second = exportMediaItemInBulk('media-1', outer.signal, BULK_PHOTO);
+    await flush();
+
+    // The lightbox closes (or the bulk run is cancelled) while queued.
+    outer.abort();
+    releaseFirst();
+
+    expect(await first).toEqual({ outcome: 'saved', destination: 'photos' });
+    expect(await second).toEqual({ outcome: 'cancelled' });
+    // One write, not two: the parked one was dropped at the lock.
+    expect(mockSaveToPhotoLibrary).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Sentry capture budget', () => {
+  afterEach(() => {
+    endExportCaptureBudget();
+  });
+
+  it('reports one event per CODE while a budget is open', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath();
+    mockSaveToPhotoLibrary.mockRejectedValue(new MediaExportError('EEXPORT'));
+    beginExportCaptureBudget();
+
+    for (let i = 0; i < 5; i++) {
+      await exportMediaItemInBulk('media-1', new AbortController().signal, BULK_PHOTO);
+    }
+
+    // A systemic writer failure fails every item the same way; 500 identical
+    // Sentry events from one tap is noise that buries the next real bug.
+    expect(mockCaptureError).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports each DISTINCT code once', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath();
+    beginExportCaptureBudget();
+
+    mockSaveToPhotoLibrary.mockRejectedValueOnce(new MediaExportError('EEXPORT'));
+    await exportMediaItemInBulk('media-1', new AbortController().signal, BULK_PHOTO);
+    mockSaveToPhotoLibrary.mockRejectedValueOnce(new MediaExportError('EINVALIDNAME'));
+    await exportMediaItemInBulk('media-1', new AbortController().signal, BULK_PHOTO);
+
+    expect(mockCaptureError).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports every time when no budget is open (the lightbox path)', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath();
+    (Platform as { OS: string }).OS = 'ios';
+    mockRequestPhotoPermission.mockResolvedValue('granted');
+    mockSaveToPhotoLibrary.mockRejectedValue(new MediaExportError('EEXPORT'));
+    answerAlert('Cancel');
+
+    await saveMediaItem('media-1');
+    await saveMediaItem('media-1');
+
+    expect(mockCaptureError).toHaveBeenCalledTimes(2);
+  });
+
+  it('closing the budget re-arms reporting', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath();
+    mockSaveToPhotoLibrary.mockRejectedValue(new MediaExportError('EEXPORT'));
+
+    beginExportCaptureBudget();
+    await exportMediaItemInBulk('media-1', new AbortController().signal, BULK_PHOTO);
+    endExportCaptureBudget();
+    beginExportCaptureBudget();
+    await exportMediaItemInBulk('media-1', new AbortController().signal, BULK_PHOTO);
+
+    expect(mockCaptureError).toHaveBeenCalledTimes(2);
   });
 });

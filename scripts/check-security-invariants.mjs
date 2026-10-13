@@ -1919,8 +1919,12 @@ try {
 //                                     the native message; the .mm/.kt contain
 //                                     no NSLog|os_log|android.util.Log.
 //   media-export-wipe-wired         — localWipe aborts exports before deleting
-//                                     MEDIA_DIR and sweeps the staging dir;
-//                                     cleanupOrphanedChunks sweeps it too.
+//                                     MEDIA_DIR, resets the bulk runner and
+//                                     sweeps the staging dir;
+//                                     cleanupOrphanedChunks sweeps it too; and
+//                                     the BODIES of cancelAllExports and
+//                                     resetBulkExportState are pinned, so an
+//                                     emptied one cannot satisfy a call site.
 //   media-export-single-label-site  — buildExportFileName(, reconcileExportLabel(
 //                                     and sniffExportHead( appear EXACTLY once
 //                                     in mediaExportService.ts, all three inside
@@ -2163,6 +2167,23 @@ if (meServiceRaw !== null) {
       }
     }
   }
+
+  // The WIPE guard inside the choke point, pinned separately from the
+  // disclosure assertion above because PR 2 made it load-bearing in a second
+  // way: the write lock is now contended, and a lock wait is unbounded (a
+  // document picker waits for a human). An epoch comparison that is present
+  // but only BEFORE the lock would satisfy a reader skimming the function and
+  // still let a wipe be followed by a write. `checkWindowedPins` reports a
+  // vacuity violation if performExport itself ever stops matching.
+  checkWindowedPins(
+    ME_SERVICE,
+    ME_GATE_RULE,
+    /^async function performExport\([\s\S]*?\n\}/m,
+    'the native-write epoch guard in performExport()',
+    ['epoch !== exportEpoch', 'nativeWriteLock.acquire('],
+    [],
+    ME_ISSUE,
+  );
 
   // Exported entry points = exported async callables that reach the choke
   // point. Textual and mechanical on purpose: "contains performExport(" is a
@@ -2555,6 +2576,17 @@ if (meAuthRaw !== null) {
         `  ${relative('.', ME_AUTH_SERVICE)}:${at}  [${ME_WIPE_RULE}]  localWipe() does not call clearMediaExportStaging( (${ME_ISSUE})`,
       );
     }
+    const runnerResetIdx = wipe[0].indexOf('resetBulkExportState(');
+    if (runnerResetIdx === -1) {
+      violations.push(
+        `  ${relative('.', ME_AUTH_SERVICE)}:${at}  [${ME_WIPE_RULE}]  localWipe() does not call resetBulkExportState( — the previous account's Save-all summary would greet the next one (${ME_ISSUE})`,
+      );
+    }
+    if (/\bawait\s+resetBulkExportState\s*\(/.test(wipe[0])) {
+      violations.push(
+        `  ${relative('.', ME_AUTH_SERVICE)}:${at}  [${ME_WIPE_RULE}]  resetBulkExportState( must not be awaited — it tears down a run that an await would hand control back to (${ME_ISSUE})`,
+      );
+    }
     if (mediaDirIdx === -1) {
       violations.push(
         `  ${relative('.', ME_AUTH_SERVICE)}:${at}  [${ME_WIPE_RULE}]  localWipe() no longer names mediaDirPath — the export-abort ORDERING check would pass vacuously (${ME_ISSUE})`,
@@ -2578,6 +2610,38 @@ checkWindowedPins(
   /^export async function cleanupOrphanedChunks\(\)[\s\S]*?\n\}/m,
   'the cleanupOrphanedChunks bootstrap reaper',
   ['clearMediaExportStaging('],
+  [],
+  ME_ISSUE,
+);
+
+// The CALL SITE pins above are satisfied by an emptied function, so the two
+// synchronous teardowns are pinned by BODY as well (#889 review).
+//
+// `cancelAllExports` has three jobs and each one alone is insufficient:
+// bumping the epoch stops a write that is already past every `signal.aborted`
+// check; aborting the controllers stops the downloads still in flight; and
+// discarding the staged list stops the end-of-run picker from presenting
+// decrypted paths that phase 2 is about to delete. A version that did two of
+// the three would pass every call-site check in this file.
+checkWindowedPins(
+  ME_SERVICE,
+  ME_WIPE_RULE,
+  /^export function cancelAllExports\(\): void \{[\s\S]*?\n\}/m,
+  'the cancelAllExports teardown body',
+  ['exportEpoch += 1', '.abort(', 'discardStagedBulkDocuments('],
+  [],
+  ME_ISSUE,
+);
+
+// The bulk runner's PUBLISHED state is module state that outlives a logout
+// (nothing reloads the JS bundle), so a finished run's summary card would
+// otherwise greet the next account on the device.
+checkWindowedPins(
+  ME_BULK_RUNNER,
+  ME_WIPE_RULE,
+  /^export function resetBulkExportState\(\): void \{[\s\S]*?\n\}/m,
+  'the bulk-runner wipe reset',
+  ['bulkExportStore.setState(', 'discardStagedBulkDocuments(', '.abort('],
   [],
   ME_ISSUE,
 );

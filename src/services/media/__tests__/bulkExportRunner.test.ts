@@ -61,6 +61,8 @@ jest.mock('../../../stores/useAppStore', () => ({
   },
 }));
 
+const mockBeginBudget = jest.fn();
+const mockEndBudget = jest.fn();
 const mockExportItem = jest.fn();
 const mockFlushDocuments = jest.fn();
 const mockDiscardDocuments = jest.fn();
@@ -69,6 +71,8 @@ const mockStagedCount = jest.fn((..._a: unknown[]) => 0);
 const mockRegistered: AbortController[] = [];
 const mockUnregisterCalls: AbortController[] = [];
 jest.mock('../../mediaExportService', () => ({
+  beginExportCaptureBudget: (...a: unknown[]) => mockBeginBudget(...a),
+  endExportCaptureBudget: (...a: unknown[]) => mockEndBudget(...a),
   exportMediaItemInBulk: (...a: unknown[]) => mockExportItem(...a),
   flushStagedBulkDocuments: (...a: unknown[]) => mockFlushDocuments(...a),
   discardStagedBulkDocuments: (...a: unknown[]) => mockDiscardDocuments(...a),
@@ -89,11 +93,11 @@ import {
   describeBulkProgress,
   describeBulkSummary,
   dismissBulkExportSummary,
-  isBulkExportRunning,
   prepareBulkExport,
   resetBulkExportForTesting,
   startBulkExport,
   type BulkExportPlan,
+  type BulkExportSummary,
 } from '../bulkExportRunner';
 
 // ---------------------------------------------------------------------------
@@ -126,9 +130,24 @@ function planFor(ids: string[]): BulkExportPlan {
     count: ids.length,
     totalBytes: 0,
     toDownloadBytes: 0,
+    maxItemBytes: 0,
     unavailableCount: 0,
     excludedCount: 0,
     needs: { photo: true, document: false },
+  };
+}
+
+/** A summary with every flag off, so a test states only what it is about. */
+function summaryWith(over: Partial<BulkExportSummary>): BulkExportSummary {
+  return {
+    saved: 0,
+    skipped: 0,
+    failed: 0,
+    destinations: [],
+    stoppedForSpace: false,
+    cancelled: false,
+    cancelledMidFlush: false,
+    ...over,
   };
 }
 
@@ -332,6 +351,48 @@ describe('prepareBulkExport', () => {
     });
   });
 
+  it('REFUSES the run when hydration never arrives (fails closed)', async () => {
+    mockHasHydrated = false;
+    mockGetExportSnapshot.mockReturnValue([row()]);
+
+    // Scoped fake timers: this file mounts no component, so the #834 hazard
+    // (an Animated chain surviving the environment teardown) does not apply.
+    // Restored in the finally so nothing after this test sees a fake clock.
+    jest.useFakeTimers();
+    try {
+      const pending = prepareBulkExport(FILTERS);
+      await Promise.resolve();
+      expect(mockGetExportSnapshot).not.toHaveBeenCalled();
+
+      jest.advanceTimersByTime(5000);
+      await expect(pending).resolves.toBeNull();
+
+      // Still no query: an empty blockedUserIds list fails OPEN, so refusing
+      // is the only safe answer. The screen turns null into "Can't save yet".
+      expect(mockGetExportSnapshot).not.toHaveBeenCalled();
+    } finally {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    }
+  });
+
+  it('a late hydration after the timeout cannot resolve the refusal twice', async () => {
+    mockHasHydrated = false;
+    jest.useFakeTimers();
+    try {
+      const pending = prepareBulkExport(FILTERS);
+      await Promise.resolve();
+      jest.advanceTimersByTime(5000);
+      await expect(pending).resolves.toBeNull();
+
+      // The listener was torn down by the timeout's own settle.
+      expect(mockHydrationListeners.length).toBe(0);
+    } finally {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    }
+  });
+
   it('unsubscribes from hydration once it has fired', async () => {
     mockHasHydrated = false;
     const pending = prepareBulkExport(FILTERS);
@@ -356,23 +417,53 @@ describe('checkBulkExportSpace', () => {
     const space = await checkBulkExportSpace({
       toDownloadBytes: 100 * MB,
       totalBytes: 200 * MB,
+      maxItemBytes: 50 * MB,
     });
 
-    // 100 (download) + 200 (the OS copies every item) + 64 (headroom).
-    expect(space.requiredBytes).toBe(364 * MB);
+    // 100 (download) + 200 (the OS copies every item)
+    // + 200 (2 x 2 workers x the 50 MB item each holds twice while decrypting)
+    // + 64 (headroom).
+    expect(space.requiredBytes).toBe(564 * MB);
     expect(space.ok).toBe(true);
+  });
+
+  it('counts the two-workers-times-2x transient peak', async () => {
+    mockGetFSInfo.mockResolvedValueOnce({ freeSpace: 1000 * MB });
+    const withPeak = await checkBulkExportSpace({
+      toDownloadBytes: 0,
+      totalBytes: 0,
+      maxItemBytes: 50 * MB,
+    });
+    mockGetFSInfo.mockResolvedValueOnce({ freeSpace: 1000 * MB });
+    const withoutPeak = await checkBulkExportSpace({
+      toDownloadBytes: 0,
+      totalBytes: 0,
+      maxItemBytes: 0,
+    });
+    // The difference is exactly 2 x WORKER_COUNT x maxItemBytes. Omitting it
+    // let an approved batch stop for space mid-run, and a re-run duplicates
+    // everything already saved.
+    expect(withPeak.requiredBytes - withoutPeak.requiredBytes).toBe(200 * MB);
   });
 
   it('blocks when free space is short of the requirement', async () => {
     mockGetFSInfo.mockResolvedValueOnce({ freeSpace: 10 * MB });
-    const space = await checkBulkExportSpace({ toDownloadBytes: 0, totalBytes: 0 });
+    const space = await checkBulkExportSpace({
+      toDownloadBytes: 0,
+      totalBytes: 0,
+      maxItemBytes: 0,
+    });
     expect(space.ok).toBe(false);
     expect(space.freeBytes).toBe(10 * MB);
   });
 
   it('does not block when the free-space read itself fails', async () => {
     mockGetFSInfo.mockRejectedValueOnce(new Error('nope'));
-    const space = await checkBulkExportSpace({ toDownloadBytes: 0, totalBytes: 0 });
+    const space = await checkBulkExportSpace({
+      toDownloadBytes: 0,
+      totalBytes: 0,
+      maxItemBytes: 0,
+    });
     expect(space.ok).toBe(true);
   });
 });
@@ -431,41 +522,42 @@ describe('copy helpers', () => {
 
   it('names both destinations when a run used both', () => {
     expect(
-      describeBulkSummary({
-        saved: 3,
-        skipped: 0,
-        failed: 0,
-        destinations: ['photos', 'files'],
-        stoppedForSpace: false,
-        cancelled: false,
-      }),
+      describeBulkSummary(summaryWith({ saved: 3, destinations: ['photos', 'files'] })),
     ).toBe('Saved 3 items to Photos and Files.');
   });
 
   it('reports skipped, failed, cancellation and the storage stop', () => {
     expect(
-      describeBulkSummary({
-        saved: 0,
-        skipped: 1,
-        failed: 2,
-        destinations: [],
-        stoppedForSpace: true,
-        cancelled: true,
-      }),
+      describeBulkSummary(
+        summaryWith({ skipped: 1, failed: 2, stoppedForSpace: true, cancelled: true }),
+      ),
     ).toBe("Nothing was saved. 1 item skipped. 2 items couldn't be saved. Stopped — not enough storage.");
   });
 
   it('says Cancelled when the user stopped it and space was not the reason', () => {
     expect(
-      describeBulkSummary({
-        saved: 1,
-        skipped: 0,
-        failed: 0,
-        destinations: ['photos'],
-        stoppedForSpace: false,
-        cancelled: true,
-      }),
+      describeBulkSummary(
+        summaryWith({ saved: 1, destinations: ['photos'], cancelled: true }),
+      ),
     ).toBe('Saved 1 item to Photos. Cancelled.');
+  });
+
+  it('warns that copies may have landed when cancel hit the open picker', () => {
+    expect(
+      describeBulkSummary(
+        summaryWith({ skipped: 2, cancelled: true, cancelledMidFlush: true }),
+      ),
+    ).toBe(
+      'Nothing was saved. 2 items skipped. Cancelled — some copies may already have been saved.',
+    );
+  });
+
+  it('prefers the storage stop over the mid-flush note', () => {
+    const copy = describeBulkSummary(
+      summaryWith({ stoppedForSpace: true, cancelled: true, cancelledMidFlush: true }),
+    );
+    expect(copy).toContain('Stopped — not enough storage.');
+    expect(copy).not.toContain('already have been saved');
   });
 });
 
@@ -539,22 +631,17 @@ describe('startBulkExport', () => {
       completed: 0,
       summary: null,
     });
-    expect(isBulkExportRunning()).toBe(true);
+    expect(bulkExportStore.getState().phase).toBe('running');
 
     await drain();
 
     const state = bulkExportStore.getState();
     expect(state.phase).toBe('done');
     expect(state.completed).toBe(3);
-    expect(state.summary).toEqual({
-      saved: 3,
-      skipped: 0,
-      failed: 0,
-      destinations: ['photos'],
-      stoppedForSpace: false,
-      cancelled: false,
-    });
-    expect(isBulkExportRunning()).toBe(false);
+    expect(state.summary).toEqual(
+      summaryWith({ saved: 3, destinations: ['photos'] }),
+    );
+    expect(bulkExportStore.getState().phase).toBe('done');
   });
 
   it('runs at most TWO items concurrently', async () => {
@@ -602,6 +689,28 @@ describe('startBulkExport', () => {
     expect(appStateRemove).not.toHaveBeenCalled();
     await drain();
     expect(appStateRemove).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens a per-run Sentry capture budget and closes it at the end', async () => {
+    // The beforeEach reset closes a budget too, so count from here.
+    const closedBefore = mockEndBudget.mock.calls.length;
+
+    startBulkExport(planFor(['a']), GRANTED);
+    expect(mockBeginBudget).toHaveBeenCalledTimes(1);
+    expect(mockEndBudget.mock.calls.length).toBe(closedBefore);
+
+    await drain();
+    // One event per failure CODE for the whole run, not one per item: a
+    // systemic writer failure was 500 identical Sentry events from one tap.
+    expect(mockEndBudget.mock.calls.length).toBe(closedBefore + 1);
+  });
+
+  it('discards any stale staging on entry', async () => {
+    startBulkExport(planFor(['a']), GRANTED);
+    // A previous run cancelled mid-picker can leave entries staged; they point
+    // at files chosen under a different snapshot.
+    expect(mockDiscardDocuments).toHaveBeenCalled();
+    await drain();
   });
 
   it('passes the photosToFiles reroute through to every item', async () => {
@@ -864,14 +973,9 @@ describe('iOS document batching', () => {
     await drain();
 
     expect(mockFlushDocuments).toHaveBeenCalledTimes(1);
-    expect(bulkExportStore.getState().summary).toEqual({
-      saved: 3,
-      skipped: 0,
-      failed: 0,
-      destinations: ['files'],
-      stoppedForSpace: false,
-      cancelled: false,
-    });
+    expect(bulkExportStore.getState().summary).toEqual(
+      summaryWith({ saved: 3, destinations: ['files'] }),
+    );
   });
 
   it('counts a cancelled picker as skipped, not failed', async () => {
@@ -916,6 +1020,44 @@ describe('iOS document batching', () => {
 
     dismissBulkExportSummary();
     expect(bulkExportStore.getState().phase).toBe('idle');
+  });
+
+  it('says copies may already have landed when cancel hit the open picker', async () => {
+    mockExportItem.mockResolvedValue({ outcome: 'deferred' });
+    mockFlushDocuments.mockImplementation(() => new Promise(() => {}));
+
+    startBulkExport(planFor(['a', 'b']), GRANTED);
+    await drain();
+    expect(bulkExportStore.getState().phase).toBe('running');
+
+    cancelBulkExport();
+    await drain();
+
+    const summary = bulkExportStore.getState().summary;
+    expect(summary?.cancelledMidFlush).toBe(true);
+    expect(summary?.skipped).toBe(2);
+    expect(describeBulkSummary(summary as BulkExportSummary)).toContain(
+      'some copies may already have been saved',
+    );
+  });
+
+  it('does NOT claim copies landed when cancel came before the picker', async () => {
+    const releases: Array<() => void> = [];
+    mockExportItem.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releases.push(() => resolve({ outcome: 'deferred' }));
+        }),
+    );
+
+    startBulkExport(planFor(['a', 'b']), GRANTED);
+    await drain();
+    cancelBulkExport();
+    releases.forEach((r) => r());
+    await drain();
+
+    expect(bulkExportStore.getState().summary?.cancelledMidFlush).toBe(false);
+    expect(mockFlushDocuments).not.toHaveBeenCalled();
   });
 
   it('sweeps leftover staging even when the run deferred nothing', async () => {
@@ -989,7 +1131,7 @@ describe('resetBulkExportForTesting', () => {
 
     resetBulkExportForTesting();
 
-    expect(isBulkExportRunning()).toBe(false);
+    expect(bulkExportStore.getState().phase).toBe('idle');
     expect(mockRegistered[0].signal.aborted).toBe(true);
     expect(appStateRemove).toHaveBeenCalled();
     expect(bulkExportStore.getState()).toEqual({

@@ -23,7 +23,6 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AccessibilityInfo,
   ActivityIndicator,
   Alert,
   FlatList,
@@ -46,7 +45,7 @@ import { useConversations } from '../stores';
 import { useAppStore } from '../stores/useAppStore';
 import { Header } from '../components/Header';
 import { QuotaBar } from './settings/QuotaBar';
-import { BulkExportPanel, BulkExportSummaryCard } from './settings/BulkExportPanel';
+import { BulkExportStatus } from './settings/BulkExportPanel';
 import { OrbitalSpinner } from '../components/OrbitalSpinner';
 import { MediaLightbox } from '../components/MediaLightbox';
 import { mediaRowToItem } from '../database/repositories/mediaMapper';
@@ -65,15 +64,10 @@ import {
 } from '../services/mediaExportService';
 import {
   bulkExportStore,
-  cancelBulkExport,
   checkBulkExportSpace,
   describeBulkConfirm,
-  describeBulkProgress,
-  describeBulkSummary,
-  dismissBulkExportSummary,
   prepareBulkExport,
   startBulkExport,
-  type BulkExportPhase,
 } from '../services/media/bulkExportRunner';
 import { formatMB } from '../utils/formatBytes';
 import { getGroupQuota } from '../services/api/groups';
@@ -297,12 +291,13 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
   // ---------------------------------------------------------------------------
 
   /**
-   * The whole run state, in one stable snapshot. No selector: every field here
-   * changes together, and the store emits at most every 250 ms, so narrowing
-   * would buy nothing and cost the panel a re-render per field.
+   * PHASE ONLY. The run emits up to four times a second for its whole
+   * duration, and this screen renders a 3-column grid plus an unmemoized
+   * `MediaLightbox`; subscribing to `completed` here re-rendered both on every
+   * tick (#889 review). `BulkExportStatus` holds the full-state subscription.
    */
-  const bulkState = useStore(bulkExportStore);
-  const bulkRunActive = bulkState.phase === 'running' || bulkState.phase === 'paused';
+  const bulkPhase = useStore(bulkExportStore, (s) => s.phase);
+  const bulkRunActive = bulkPhase === 'running' || bulkPhase === 'paused';
 
   /** True between the tap and the run starting (or being refused). */
   const [preparingSaveAll, setPreparingSaveAll] = useState(false);
@@ -367,6 +362,14 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
         if (!mountedRef.current || !permission.granted) return;
 
         startBulkExport(plan, permission);
+      } catch {
+        // Nothing above is expected to throw — the snapshot is the realistic
+        // candidate (SQLite can throw on a closed or corrupt handle). Without
+        // this the tap was an unhandled rejection with no feedback at all.
+        // The copy names nothing: no path, no id, no driver message.
+        if (mountedRef.current) {
+          Alert.alert("Couldn't start saving", 'Something went wrong. Please try again.');
+        }
       } finally {
         preparingRef.current = false;
         if (mountedRef.current) setPreparingSaveAll(false);
@@ -374,27 +377,6 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
     })();
   }, [bulkRunActive, contentFilter, orbitFilter, sortState.sortBy, sortState.sortOrder]);
 
-  /**
-   * Announce START, PAUSE and FINISH — and nothing else.
-   *
-   * The bar carries no progressbar role (`announceProgress={false}`), because a
-   * live value would announce on every item; `accessibilityLiveRegion` is inert
-   * on iOS, so these three transitions are announced explicitly.
-   */
-  const announcedPhaseRef = useRef<BulkExportPhase>('idle');
-  useEffect(() => {
-    const previous = announcedPhaseRef.current;
-    if (previous === bulkState.phase) return;
-    announcedPhaseRef.current = bulkState.phase;
-
-    if (bulkState.phase === 'running' && previous === 'idle') {
-      AccessibilityInfo.announceForAccessibility(`Saving ${bulkState.total} items`);
-    } else if (bulkState.phase === 'paused') {
-      AccessibilityInfo.announceForAccessibility('Saving paused');
-    } else if (bulkState.phase === 'done' && bulkState.summary !== null) {
-      AccessibilityInfo.announceForAccessibility(describeBulkSummary(bulkState.summary));
-    }
-  }, [bulkState.phase, bulkState.total, bulkState.summary]);
 
   // ---------------------------------------------------------------------------
   // Data loading
@@ -766,7 +748,15 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
             accessibilityState={{ disabled: saveAllDisabled, busy: preparingSaveAll }}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           >
-            <Text style={saveAllTextStyle}>{'Save all'}</Text>
+            <Text
+              style={saveAllTextStyle}
+              numberOfLines={1}
+              // Header's right slot is a fixed 88x44 box, so the label cannot
+              // be allowed to grow without bound at large Dynamic Type.
+              maxFontSizeMultiplier={1.4}
+            >
+              {'Save all'}
+            </Text>
           </Pressable>
         }
       />
@@ -780,21 +770,10 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
         />
       )}
 
-      {/* Save-all progress, or the summary of the run that just finished */}
-      {bulkRunActive && (
-        <BulkExportPanel
-          label={describeBulkProgress(bulkState)}
-          progress={bulkState.total > 0 ? bulkState.completed / bulkState.total : 0}
-          paused={bulkState.phase === 'paused'}
-          onCancel={cancelBulkExport}
-        />
-      )}
-      {bulkState.phase === 'done' && bulkState.summary !== null && (
-        <BulkExportSummaryCard
-          message={describeBulkSummary(bulkState.summary)}
-          onDismiss={dismissBulkExportSummary}
-        />
-      )}
+      {/* Save-all progress, or the summary of the run that just finished.
+          Subscribes to the run state itself, so progress ticks re-render this
+          row and not the grid. */}
+      <BulkExportStatus />
 
       {/* Filter by type */}
       <View style={filterSectionStyle}>

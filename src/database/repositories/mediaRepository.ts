@@ -532,8 +532,8 @@ export interface MediaExportSnapshotRow {
  *
  * Returns an empty array — running NO query — when the database is closed or
  * `access` admits no conversation. Synchronous, like every other function in
- * this repository; the caller takes an await tick first so the tap can paint a
- * spinner before the DB work starts (`prepareBulkExport`).
+ * this repository; the caller takes an await tick first so the tap can render
+ * its disabled button state before the DB work starts (`prepareBulkExport`).
  */
 export function getExportSnapshot(
   options: GetAllMediaOptions,

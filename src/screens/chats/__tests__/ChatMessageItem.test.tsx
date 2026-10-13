@@ -46,10 +46,15 @@ jest.mock('../../../hooks/useContactAvatar', () => ({
   }),
 }));
 
+// Hoisted, stable spies returned by every mock call so handle-press assertions
+// are unambiguous regardless of how many renders share a describe block.
+const handleAuthorPress = jest.fn();
+const handleReport = jest.fn();
+
 const mockUseAuthorActions = jest.fn(
   (..._args: unknown[]) => ({
-    handleAuthorPress: jest.fn(),
-    handleReport: jest.fn(),
+    handleAuthorPress,
+    handleReport,
   }),
 );
 jest.mock('../../../hooks/useAuthorActions', () => ({
@@ -59,6 +64,11 @@ jest.mock('../../../hooks/useAuthorActions', () => ({
 jest.mock('../../../stores', () => ({
   useAuth: () => ({ userId: 'user-1', username: 'testuser' }),
 }));
+
+beforeEach(() => {
+  handleAuthorPress.mockClear();
+  handleReport.mockClear();
+});
 
 function renderItem(
   props: Partial<React.ComponentProps<typeof ChatMessageItem>> = {},
@@ -176,5 +186,157 @@ describe('ChatMessageItem — unread indicator', () => {
     expect(
       renderer.root.findAll((n) => n.props.testID === 'chat-unread-dot-t-1'),
     ).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Author handle (#888)
+// ---------------------------------------------------------------------------
+
+describe('ChatMessageItem — author handle (#888)', () => {
+  it('pressing the handle calls handleAuthorPress exactly once', () => {
+    const renderer = renderItem();
+    const handles = renderer.root.findAll(
+      (n) => n.props.testID === 'chat-message-t-1-author-handle',
+    );
+    const pressable = handles.find((n) => typeof n.props.onPress === 'function');
+    expect(pressable).toBeDefined();
+    act(() => {
+      pressable!.props.onPress();
+    });
+    expect(handleAuthorPress).toHaveBeenCalledTimes(1);
+  });
+
+  it('handle frame: minWidth 44, alignSelf stretch, no hitSlop', () => {
+    const renderer = renderItem();
+    const handles = renderer.root.findAll(
+      (n) => n.props.testID === 'chat-message-t-1-author-handle',
+    );
+    const hostNode = handles.find((n) => typeof n.type === 'string');
+    expect(hostNode).toBeDefined();
+    expect(hostNode!.props.style).toEqual(
+      expect.objectContaining({ minWidth: 44, alignSelf: 'stretch' }),
+    );
+    expect(hostNode!.props.hitSlop).toBeUndefined();
+  });
+
+  it('isSelf: handle is disabled, accessibilityRole and accessibilityLabel are absent', () => {
+    // authorId: 'user-1' matches useAuth's userId: 'user-1', so isSelf = true
+    const renderer = renderItem({ authorId: 'user-1' });
+    const handles = renderer.root.findAll(
+      (n) => n.props.testID === 'chat-message-t-1-author-handle',
+    );
+    const pressable = handles.find((n) => typeof n.props.onPress === 'function');
+    expect(pressable).toBeDefined();
+    expect(pressable!.props.disabled).toBe(true);
+    expect(pressable!.props.accessibilityRole).toBeUndefined();
+    expect(pressable!.props.accessibilityLabel).toBeUndefined();
+  });
+
+  it('structural: the avatar, the time and the unread dot are outside every touch surface', () => {
+    const renderer = renderItem({ unread: true });
+
+    // (a) Positive control: the row HAS a touch surface.
+    //
+    // Matched on the responder handler of the host view, NOT on `onPress`:
+    // this component takes an `onPress` PROP (the row's navigation callback,
+    // fired from the GestureDetector), so its own element node carries
+    // `onPress` and contains the entire row. An `onPress` predicate here would
+    // report the whole row as a target and could never go green.
+    const touchSurfaces = renderer.root.findAll(
+      (n) =>
+        typeof n.type === 'string' &&
+        typeof n.props.onStartShouldSetResponder === 'function',
+    );
+    expect(touchSurfaces.length).toBeGreaterThan(0);
+
+    // (b) Positive control: the avatar, the time Text and the unread dot are
+    //     actually rendered — the check cannot pass vacuously.
+    const avatarInitials = renderer.root.findAll(
+      (n) => typeof n.type === 'string' && n.props.allowFontScaling === false,
+    );
+    expect(avatarInitials.length).toBeGreaterThan(0);
+    const timeTexts = renderer.root.findAll(
+      (n) => typeof n.type === 'string' && n.props.children === '11:00 AM',
+    );
+    expect(timeTexts.length).toBeGreaterThan(0);
+    const unreadDots = renderer.root.findAll(
+      (n) => n.props.testID === 'chat-unread-dot-t-1',
+    );
+    expect(unreadDots.length).toBeGreaterThan(0);
+
+    // (c) None of the three is inside a touch surface.
+    for (const surface of touchSurfaces) {
+      expect(
+        surface.findAll(
+          (n) => typeof n.type === 'string' && n.props.allowFontScaling === false,
+        ),
+      ).toHaveLength(0);
+      expect(
+        surface.findAll(
+          (n) => typeof n.type === 'string' && n.props.children === '11:00 AM',
+        ),
+      ).toHaveLength(0);
+      expect(
+        surface.findAll(
+          (n) => n.props.testID === 'chat-unread-dot-t-1',
+        ),
+      ).toHaveLength(0);
+    }
+  });
+
+  it('declares exactly one custom action — authorActions — and never activate', () => {
+    // The container merges its children on iOS, so this action IS the screen
+    // reader's only route to Block/Report in a DM. Declaring `activate` as well
+    // would duplicate the navigation push, so it must stay undeclared (#888).
+    const renderer = renderItem();
+    const withActions = renderer.root.findAll((n) => n.props.accessibilityActions != null);
+    expect(withActions.length).toBeGreaterThan(0);
+    for (const node of withActions) {
+      expect(node.props.accessibilityActions).toEqual([
+        { name: 'authorActions', label: 'Actions for bob' },
+      ]);
+    }
+  });
+
+  it('onAccessibilityAction fires handleAuthorPress for "authorActions"', () => {
+    const renderer = renderItem();
+    const containers = renderer.root.findAll(
+      (n) => typeof n.props.onAccessibilityAction === 'function',
+    );
+    expect(containers.length).toBeGreaterThan(0);
+    act(() => {
+      containers[0].props.onAccessibilityAction({
+        nativeEvent: { actionName: 'authorActions' },
+      });
+    });
+    expect(handleAuthorPress).toHaveBeenCalledTimes(1);
+  });
+
+  it('onAccessibilityAction does NOT fire handleAuthorPress for an unrelated actionName', () => {
+    const renderer = renderItem();
+    const containers = renderer.root.findAll(
+      (n) => typeof n.props.onAccessibilityAction === 'function',
+    );
+    expect(containers.length).toBeGreaterThan(0);
+    act(() => {
+      containers[0].props.onAccessibilityAction({
+        nativeEvent: { actionName: 'activate' },
+      });
+    });
+    expect(handleAuthorPress).not.toHaveBeenCalled();
+  });
+
+  it('own rows expose no accessibilityActions and no onAccessibilityAction', () => {
+    // authorId: 'user-1' matches useAuth's userId: 'user-1', so isSelf = true
+    const renderer = renderItem({ authorId: 'user-1' });
+    const withActions = renderer.root.findAll(
+      (n) => n.props.accessibilityActions != null,
+    );
+    expect(withActions).toHaveLength(0);
+    const withActionHandler = renderer.root.findAll(
+      (n) => typeof n.props.onAccessibilityAction === 'function',
+    );
+    expect(withActionHandler).toHaveLength(0);
   });
 });

@@ -21,10 +21,13 @@
  * a link or an image no longer sets a reply target as a side effect.
  *
  * The row has exactly three touch targets (#821), stacked top to bottom with
- * no overlap: the "↳ Replying to @x" jump control, the author control (block /
+ * no overlap: the "↳ Replying to @x" jump control, the author handle (block /
  * report), and the reply arrow — plus the collapse toggle under the body when
- * the row has descendants. The author control carries NO top slop, so a
- * near-miss below the context line can never open the Block/Report sheet.
+ * the row has descendants. The author handle covers the NAME ONLY and is sized
+ * by its own frame, with no slop at all (#888): it cannot reach above its own
+ * row, so a near-miss below the context line can never open the Block/Report
+ * sheet, and it cannot reach right into the arrow. The avatar and the
+ * timestamp are siblings of the handle, so they are inert.
  */
 
 import React, { useCallback, useMemo, useState } from 'react';
@@ -213,7 +216,7 @@ export const ReplyItem = React.memo(function ReplyItem({
     opacity: syncStatus === 'pending' || syncStatus === 'syncing' ? 0.7 : 1,
   };
 
-  // Outer header row: author control + reply arrow as SIBLINGS.
+  // Outer header row: author block + reply arrow as SIBLINGS.
   const headerRowStyle: ViewStyle = {
     flexDirection: 'row',
     alignItems: 'center',
@@ -229,6 +232,11 @@ export const ReplyItem = React.memo(function ReplyItem({
     // Yield width to the fixed-size arrow instead of pushing it off-screen.
     flexShrink: 1,
     minWidth: 0,
+    // Inline only: take the full 32pt the arrow's frame already gives the
+    // header row, so the handle inside can stretch to it (#888). Stacked, the
+    // handle deliberately does NOT stretch, so stretching this row would only
+    // nudge the two-line block upward for no gain.
+    alignSelf: stackTimestamp ? undefined : 'stretch',
   };
 
   const nameColumnStyle: ViewStyle = {
@@ -236,6 +244,33 @@ export const ReplyItem = React.memo(function ReplyItem({
     flexShrink: 1,
     minWidth: 0,
   };
+
+  // The author handle (#888): the ONLY target that opens Block/Report, and it
+  // covers the name alone. Sized by a real frame, never by slop — the repo rule
+  // (`docs/design/MOBILE-PATTERNS.md`), shared with `replyButtonStyle` below.
+  // With no slop, every no-overlap rule from #821 holds geometrically instead
+  // of by tuning a band per neighbour: the handle cannot reach up into the jump
+  // control's 8pt bottom slop, and it cannot reach right into the arrow.
+  // `minWidth` 44 keeps a 1-character display name tappable.
+  const authorHandleStyle: ViewStyle = stackTimestamp
+    ? {
+        // The column owns the gutter. `flex-start`, not stretch: stretching
+        // would make the empty space beside a short name — out to the width of
+        // the ~92pt timestamp below it — open Block/Report. Height is the name
+        // line (~16pt); a taller frame here would grow the row.
+        alignSelf: 'flex-start',
+        minWidth: 44,
+        marginLeft: 0,
+      }
+    : {
+        // Stretches to the 32pt header row, so the frame is 44 x 32 with no
+        // layout change at all.
+        alignSelf: 'stretch',
+        justifyContent: 'center',
+        minWidth: 44,
+        marginLeft: theme.spacing.xs,
+        flexShrink: 1,
+      };
 
   const replyButtonStyle: ViewStyle = {
     // Sized by its own frame, not by slop: slop does not enlarge the visual
@@ -254,7 +289,8 @@ export const ReplyItem = React.memo(function ReplyItem({
     fontFamily: theme.typography.fontFamily.bodyBold,
     fontSize: theme.typography.fontSize.base,
     color: theme.colors.textPrimary,
-    marginLeft: theme.spacing.xs,
+    // The gutter lives on the handle frame (inline) or on the name column
+    // (stacked), so the text itself carries none in either mode.
     flexShrink: 1,
   };
 
@@ -268,12 +304,6 @@ export const ReplyItem = React.memo(function ReplyItem({
     // clipped name, which at least has an avatar next to it).
     marginLeft: stackTimestamp ? 0 : theme.spacing.sm,
     flexShrink: 0,
-  };
-
-  const stackedAuthorTextStyle: TextStyle = {
-    ...authorTextStyle,
-    // The column owns the gutter now.
-    marginLeft: 0,
   };
 
   const bodyStyle: TextStyle = {
@@ -298,11 +328,13 @@ export const ReplyItem = React.memo(function ReplyItem({
     minHeight: 32,
     justifyContent: 'center',
     // spacing.sm (8), matched to the 8pt bottom hitSlop below. Without it the
-    // slop band would have nothing to land in: the author control starts
-    // immediately underneath, it is the LATER sibling, and the later sibling
-    // wins an overlapping hit — so the bottom slop would be dead, and a tap
-    // 2-6pt under the line would open Block/Report instead of jumping
-    // (PR #843 review).
+    // slop band would have nothing to land in: the header row starts
+    // immediately underneath, and inline the author handle's frame spans that
+    // row's full 32pt height from its very top edge (#888). The header row is
+    // the LATER sibling and the later sibling wins an overlapping hit, so the
+    // bottom slop would be dead and a tap 2-6pt under the line would open
+    // Block/Report instead of jumping (PR #843 review). With the 8pt gap the
+    // slop band ends exactly where the handle's frame begins.
     marginBottom: theme.spacing.sm,
   };
 
@@ -332,6 +364,31 @@ export const ReplyItem = React.memo(function ReplyItem({
     letterSpacing: theme.typography.letterSpacing.tight,
   };
 
+  const authorHandle = (
+    <TouchableOpacity
+      style={authorHandleStyle}
+      onPress={handleAuthorPress}
+      activeOpacity={isSelf ? 1 : 0.7}
+      disabled={isSelf}
+      accessibilityRole={isSelf ? undefined : 'button'}
+      accessibilityLabel={isSelf ? undefined : `Actions for ${displayName}`}
+      testID={`reply-item-${replyId}-author-handle`}
+    >
+      <EmojiText style={authorTextStyle} numberOfLines={1}>
+        {displayName}
+      </EmojiText>
+    </TouchableOpacity>
+  );
+
+  // Outside the handle, so it is its own accessible element (#888). Long form:
+  // "3:04 PM" read out of context is ambiguous, "September 12 at 3:04 PM" is
+  // not (#821).
+  const timestampNode = (
+    <Text style={timestampStyle} accessibilityLabel={timestampA11y}>
+      {timestampText}
+    </Text>
+  );
+
   return (
     // No container tap and no container a11y role (#518): the row is a passive
     // surface so long-press text selection in the body is uncontested, and the
@@ -358,10 +415,10 @@ export const ReplyItem = React.memo(function ReplyItem({
         <TouchableOpacity
           style={replyContextButtonStyle}
           onPress={handleParentPress}
-          // Vertical only. The author control below carries top: 0 slop for
-          // the same reason: these two stack with no gap, and whichever one
-          // reaches into the other would steal its taps — a near-miss here
-          // must never open the Block/Report sheet.
+          // Vertical only. The author handle below carries NO slop at all for
+          // the same reason (#888): these two stack with only the 8pt gap
+          // above, and whichever one reached into the other would steal its
+          // taps — a near-miss here must never open the Block/Report sheet.
           hitSlop={{ top: 8, bottom: 8, left: 0, right: 0 }}
           accessibilityRole="button"
           // No '@' — this string is SPOKEN. The visible text keeps it.
@@ -389,58 +446,48 @@ export const ReplyItem = React.memo(function ReplyItem({
       ) : null}
       <View style={headerRowStyle}>
         {/*
-          Two SIBLING touchables. The arrow must never nest inside the author
-          touchable, which is disabled={isSelf} — nesting would kill reply on
-          your own rows. The arrow also renders last on purpose: if the two
-          hit regions ever overlap, the later sibling wins and the benign
-          control (reply) takes the touch, not the block/report sheet.
+          The author block is a passive View (#888): only the NAME inside it is
+          a touchable. The arrow must never nest inside that handle, which is
+          disabled={isSelf} — nesting would kill reply on your own rows. The
+          arrow also renders last on purpose: if two hit regions ever overlap,
+          the later sibling wins and the benign control (reply) takes the touch,
+          not the block/report sheet.
         */}
-        <TouchableOpacity
-          style={authorRowStyle}
-          onPress={handleAuthorPress}
-          activeOpacity={isSelf ? 1 : 0.7}
-          disabled={isSelf}
-          // right: 0 — any right slop here reaches into the arrow's frame once
-          // the name is long enough to close the gap, so a near-miss left of
-          // the arrow would open the Block/Report sheet instead.
-          // top: 0 ONLY under a jump control — its 8pt bottom slop sits just
-          // above this row (#821), and the destructive control must lose that
-          // argument by construction. With no jump control above (a top-level
-          // reply, or an orphan/hidden line, which are plain text) there is
-          // nothing to contest, so the author block keeps its 4pt.
-          hitSlop={{
-            top: parentState === 'jumpable' && parentId ? 0 : 4,
-            bottom: 4,
-            left: 4,
-            right: 0,
-          }}
-          accessibilityRole={isSelf ? undefined : 'button'}
-          // The timestamp is inside this control, so it is invisible to a
-          // screen reader unless the label carries it. Long form: "3:04 PM"
-          // read out of context is ambiguous, "September 12 at 3:04 PM" is not.
-          accessibilityLabel={
-            isSelf ? undefined : `Actions for ${displayName}, posted ${timestampA11y}`
-          }
-        >
-          <Avatar name={displayName} size={20} {...avatarProps} />
+        <View style={authorRowStyle}>
+          {/*
+            The avatar labels itself ("X avatar") and renders its initials as a
+            host Text, so with the row no longer merged into one accessible
+            element it would become its own screen-reader stop. The wrapper is
+            layout-neutral: no style, so the 20pt avatar still sizes the block.
+          */}
+          <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+            <Avatar name={displayName} size={20} {...avatarProps} />
+          </View>
+          {/*
+            One handle, two placements: stacked it goes inside the name column
+            above the stamp, inline it sits beside it. `authorHandleStyle`
+            already carries the per-mode frame, so the element itself is the
+            same in both — there is only ever one of it rendered.
+          */}
           {stackTimestamp ? (
             <View style={nameColumnStyle}>
-              <EmojiText style={stackedAuthorTextStyle} numberOfLines={1}>{displayName}</EmojiText>
-              <Text style={timestampStyle}>{timestampText}</Text>
+              {authorHandle}
+              {timestampNode}
             </View>
           ) : (
             <>
-              <EmojiText style={authorTextStyle} numberOfLines={1}>{displayName}</EmojiText>
-              <Text style={timestampStyle}>{timestampText}</Text>
+              {authorHandle}
+              {timestampNode}
             </>
           )}
-        </TouchableOpacity>
+        </View>
         <TouchableOpacity
           style={replyButtonStyle}
           onPress={handleReplyPress}
           disabled={!canReply}
-          // No LEFT slop: slop on that edge would sit over the timestamp and
-          // steal taps meant for the author control.
+          // No LEFT slop: slop on that edge would reach back over the inline
+          // timestamp and, once the name is long enough to close the gap, over
+          // the author handle itself — and the arrow wins as the later sibling.
           hitSlop={{ top: 8, bottom: 8, right: 8, left: 0 }}
           accessibilityRole="button"
           accessibilityLabel={`Reply to ${displayName}`}

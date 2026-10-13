@@ -5,12 +5,13 @@
  * (no reply count, badges, or media indicators).
  */
 
-import React, { useMemo } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import {
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
+  type AccessibilityActionEvent,
   type TextStyle,
   type ViewStyle,
 } from 'react-native';
@@ -65,6 +66,18 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
   const { handleAuthorPress } = useAuthorActions(authorId, displayName, userId, authorContext);
   const isSelf = authorId === userId;
 
+  // The container is `accessible` with role button, so iOS merges its children
+  // and a screen reader cannot reach the handle inside it. A custom action is
+  // the only route (#888). Deliberately NO 'activate' action: activation keeps
+  // today's behaviour (open the message), and declaring it would duplicate the
+  // navigation push — matching the in-repo idiom in ThreadItem / ChatItem.
+  const handleAccessibilityAction = useCallback(
+    (event: AccessibilityActionEvent) => {
+      if (event.nativeEvent.actionName === 'authorActions') handleAuthorPress();
+    },
+    [handleAuthorPress],
+  );
+
   const tapGesture = useMemo(
     () =>
       Gesture.Tap()
@@ -102,11 +115,26 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
     marginLeft: theme.spacing.xs,
   };
 
+  // The author handle (#888): the ONLY target that opens Block/Report, and in a
+  // DM it is the only route to it at all — the App Store 1.2 / Play UGC safety
+  // control, so it has to stay reachable. It covers the name alone; the avatar,
+  // the time and the unread dot fall through to the row's navigation tap.
+  // Sized by a real frame, never by slop (`docs/design/MOBILE-PATTERNS.md`):
+  // `stretch` takes the row height the 24pt avatar already sets, so nothing
+  // grows, and `minWidth` 44 keeps a 1-character display name tappable.
+  const authorHandleStyle: ViewStyle = {
+    alignSelf: 'stretch',
+    justifyContent: 'center',
+    minWidth: 44,
+    marginLeft: theme.spacing.xs,
+  };
+
   const authorStyle: TextStyle = {
     fontFamily: theme.typography.fontFamily.bodyBold,
     fontSize: theme.typography.fontSize.sm,
     color: theme.colors.textPrimary,
-    marginLeft: theme.spacing.xs,
+    // The gutter lives on the handle frame around it. No flexShrink: the name
+    // does not shrink today either, so truncation behaviour is unchanged.
   };
 
   const timeStyle: TextStyle = {
@@ -130,25 +158,38 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
         accessible
         accessibilityRole="button"
         accessibilityLabel={unread ? `Unread message from ${displayName}` : `Message from ${displayName}`}
+        accessibilityActions={
+          isSelf ? undefined : [{ name: 'authorActions', label: `Actions for ${displayName}` }]
+        }
+        onAccessibilityAction={isSelf ? undefined : handleAccessibilityAction}
       >
-        <TouchableOpacity
-          style={authorRowStyle}
-          onPress={handleAuthorPress}
-          activeOpacity={isSelf ? 1 : 0.7}
-          disabled={isSelf}
-          hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
-        >
+        {/*
+          Passive row (#888): only the name is a control. A tap on the avatar,
+          the time, the dot or the gaps now falls through to the row's
+          Gesture.Tap and opens the message — the harmless direction.
+        */}
+        <View style={authorRowStyle}>
           <Avatar name={displayName} size={24} {...avatarProps} />
-          <Text style={authorStyle} numberOfLines={1}>
-            {displayName}
-          </Text>
+          <TouchableOpacity
+            style={authorHandleStyle}
+            onPress={handleAuthorPress}
+            activeOpacity={isSelf ? 1 : 0.7}
+            disabled={isSelf}
+            accessibilityRole={isSelf ? undefined : 'button'}
+            accessibilityLabel={isSelf ? undefined : `Actions for ${displayName}`}
+            testID={`chat-message-${threadId}-author-handle`}
+          >
+            <Text style={authorStyle} numberOfLines={1}>
+              {displayName}
+            </Text>
+          </TouchableOpacity>
           <Text style={timeStyle}>{time}</Text>
           {unread && (
             <Text style={unreadDotStyle} testID={`chat-unread-dot-${threadId}`}>
               ●
             </Text>
           )}
-        </TouchableOpacity>
+        </View>
         {body ? (
           // Deliberately NOT selectable (#518): this row's tap is navigation, so
           // a long press here would only contest it — copy the full text in ThreadDetail.

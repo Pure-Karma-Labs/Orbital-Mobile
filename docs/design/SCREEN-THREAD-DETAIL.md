@@ -113,8 +113,8 @@ Both the original post and every reply show an **absolute** date + time. Nothing
 | Source | Shared `src/utils/formatPostTimestamp.ts` — one visible formatter plus its spelled-out screen-reader variant, used by both `ThreadHeader` and `ReplyItem`, so the two can never drift apart |
 | Style | `fontFamily.mono`, `fontSize.xs` (10), `colors.textTertiary`, `letterSpacing.tight` (0.1) |
 | Depth 0–1 (Levels 1–2) | Inline on the header row, right of the author name |
-| Depth ≥ 2 (Level 3 and deeper) | Second line under the author name (still inside the author control) — an indented row keeps the name readable at 375pt instead of truncating it to fit the time |
-| Accessibility | The author control's label carries the long form: "Actions for [Author], posted September 12 at 3:04 PM" |
+| Depth ≥ 2 (Level 3 and deeper) | Second line under the author name, **outside** the author handle — an indented row keeps the name readable at 375pt instead of truncating it to fit the time |
+| Accessibility | The author handle reads "Actions for [Author], button". The timestamp is its own accessible element, read in long form: "September 12 at 3:04 PM" — "3:04 PM" out of context is ambiguous |
 
 `depth` here is the `ReplyItem` prop, not the visual level: depth 0 is a top-level reply (Level 1 in the layout mock), so the second line starts at Level 3. The original post always shows its timestamp inline.
 
@@ -126,11 +126,11 @@ The "↳ Replying to @[Author]" line is the row's first line, above the header r
 |---|---|
 | Text | "↳ Replying to @[Author]" — `fontFamily.mono`, `fontSize.xs` (10), `colors.blue` (the untouchable variants stay `colors.textTertiary`, so colour alone distinguishes a jumpable line) |
 | Position | First line of the reply row, directly above the header row (avatar · author name · timestamp) |
-| Touch target | Full line width × 32pt frame + `hitSlop` `{top: 8, bottom: 8, left: 0, right: 0}` = 48pt effective height. The frame holds an 8pt (`spacing.sm`) margin below it so the bottom band lands in empty space instead of on the author block |
+| Touch target | Full line width × 32pt frame + `hitSlop` `{top: 8, bottom: 8, left: 0, right: 0}` = 48pt effective height. The frame holds an 8pt (`spacing.sm`) margin below it so the bottom band lands in empty space instead of on the author handle's frame, which begins immediately underneath |
 | Action | Scrolls the list to the parent row and briefly highlights it |
 | Accessibility | `accessibilityRole="button"`, label "Go to [Author]'s reply" — no `@`, since the label is spoken; the visible text keeps it. On arrival the screen announces "Showing reply from [Author]" (jump and deep link only — a landing needs no announcement) |
 
-The author control directly below it drops its `hitSlop.top` to 0 for exactly this reason: any top slop there would reach up under the context line, and a near-miss below the line would open the Block/Report sheet instead of jumping. (It keeps its usual 4pt when there is no jump control above — a top-level reply, or the untouchable variants.) A miss on this line must never open an action sheet.
+The author handle directly below it carries no `hitSlop` at all, for exactly this reason: slop there would reach up under the context line, and a near-miss below the line would open the Block/Report sheet instead of jumping. Because the handle is sized by a real frame instead of a slop band, that non-overlap holds geometrically — the jump control's 8pt bottom band ends exactly where the handle's frame begins. A miss on this line must never open an action sheet.
 
 **Parent states** (computed in `replyTree.ts`, from the loaded tree — never from the row alone):
 
@@ -170,7 +170,7 @@ Each reply row (`ReplyItem`) carries one explicit reply control at the **top-rig
 | Unsynced rows | Still rendered, but dimmed (`opacity` 0.5) and inert while the reply is pending / syncing / failed — so the row does not shift when it syncs |
 | Accessibility | Reads "Reply to [Author], button" |
 
-The avatar / author name / timestamp remain a separate tappable control that opens the block/report action sheet — it reads "Actions for [Author], posted September 12 at 3:04 PM, button" (the timestamp lives inside the control, so the label carries it in long form) and is disabled on your own rows. Its `hitSlop` drops its top component to 0 under a jump control, so it cannot steal a tap aimed at that control. The row container itself is not announced as a button.
+Only the author's **name** is tappable, and it opens the block/report action sheet — it reads "Actions for [Author], button" and is disabled on your own rows. The handle is sized by a real frame rather than by `hitSlop`: it stretches to the header row's existing height, which the reply arrow's 32pt frame already sets on a reply row (the 28pt avatar on the original post), so nothing grows, and a `minWidth` of 44 keeps a one-character display name tappable. At depth ≥ 2, where the timestamp moves to a second line, the stacked handle is left-aligned (`flex-start`) and one text line tall, so the empty space beside a short name — out to the width of the timestamp below it — is not a target. The avatar and the timestamp are siblings of the handle, not children, so tapping either does nothing at all. With no slop anywhere on the handle it cannot reach up under the jump control above it or right into the reply arrow. The row container itself is not announced as a button.
 
 ## Reply Composer (Fixed at Bottom)
 
@@ -220,7 +220,7 @@ Native `RefreshControl` with `colors.blue` spinner for new replies.
 - **Tap reply arrow (↩️, top-right of a reply's header row)** → Sets reply context, focuses composer input (keyboard opens). Dimmed and inert until the reply syncs. This is the only way to reply to a specific message — the reply row as a whole is not tappable, and there is no swipe gesture
 - **Tap the "↳ Replying to @name" context line** → Scrolls to the parent reply and briefly highlights it. Only when the parent is loaded and visible (`jumpable`); the "earlier reply" and "hidden reply" variants are plain text
 - **Tap the collapse toggle ([–] / [+], below a reply's body)** → Hides or shows that reply's subtree for this screen session — not persisted, and never offered on the original post
-- **Tap avatar / author name / timestamp** → Block/report action sheet (disabled on your own replies)
+- **Tap the author's name** → Block/report action sheet (disabled on your own replies). The name is the only target for it; tapping the avatar or the timestamp does nothing
 - **Tap media** → Opens media lightbox (full screen)
 - **Long press reply body** → Native text selection; no reply action fires
 - **Pull down** → Refresh for new replies

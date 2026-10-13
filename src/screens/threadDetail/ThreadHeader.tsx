@@ -81,14 +81,27 @@ export const ThreadHeader = React.memo(function ThreadHeader({
     marginBottom: theme.spacing.xs,
   };
 
-  const authorTextStyle: TextStyle = {
-    fontFamily: theme.typography.fontFamily.bodyBold,
-    fontSize: theme.typography.fontSize.base,
-    color: theme.colors.textPrimary,
+  // The author handle (#888): the ONLY target that opens Block/Report, and it
+  // covers the name alone — the avatar, the timestamp and the row's padding are
+  // inert. Sized by a real frame, never by slop (`docs/design/MOBILE-PATTERNS.md`):
+  // `stretch` takes the row height the 28pt avatar already sets, so nothing
+  // grows, and `minWidth` 44 keeps a 1-character display name tappable.
+  const authorHandleStyle: ViewStyle = {
+    alignSelf: 'stretch',
+    justifyContent: 'center',
+    minWidth: 44,
     marginLeft: theme.spacing.sm,
     // The name yields, the date does not: a display-name fallback can be a
     // 64-char user id, and an absolute timestamp is always long enough that
     // an unshrinkable name would push it off screen entirely (#843 review).
+    flexShrink: 1,
+  };
+
+  const authorTextStyle: TextStyle = {
+    fontFamily: theme.typography.fontFamily.bodyBold,
+    fontSize: theme.typography.fontSize.base,
+    color: theme.colors.textPrimary,
+    // The gutter and the shrink budget live on the handle frame around it.
     flexShrink: 1,
   };
 
@@ -119,22 +132,43 @@ export const ThreadHeader = React.memo(function ThreadHeader({
 
   return (
     <View style={containerStyle} testID="thread-header">
-      <TouchableOpacity
-        style={authorRowStyle}
-        onPress={handleAuthorPress}
-        activeOpacity={isSelf ? 1 : 0.7}
-        disabled={isSelf}
-        accessibilityRole={isSelf ? undefined : 'button'}
-        // The timestamp lives inside this control, so a screen reader only
-        // reaches it through the label (#821).
-        accessibilityLabel={
-          isSelf ? undefined : `Actions for ${displayName}, posted ${formatPostTimestampA11y(createdAt)}`
-        }
-      >
-        <Avatar name={displayName} size={28} {...avatarProps} />
-        <EmojiText style={authorTextStyle} numberOfLines={1}>{displayName}</EmojiText>
-        <Text style={timestampStyle}>{formatPostTimestamp(createdAt)}</Text>
-      </TouchableOpacity>
+      {/*
+        Passive row (#888). Only the name is a control; the avatar and the
+        timestamp are siblings of it, not children, so tapping them does
+        nothing at all.
+      */}
+      <View style={authorRowStyle}>
+        {/*
+          The avatar labels itself ("X avatar") and renders its initials as a
+          host Text, so with the row no longer merged into one accessible
+          element it would become its own screen-reader stop. The wrapper is
+          layout-neutral: no style, so the 28pt avatar still sizes the row.
+        */}
+        <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+          <Avatar name={displayName} size={28} {...avatarProps} />
+        </View>
+        <TouchableOpacity
+          style={authorHandleStyle}
+          onPress={handleAuthorPress}
+          activeOpacity={isSelf ? 1 : 0.7}
+          disabled={isSelf}
+          accessibilityRole={isSelf ? undefined : 'button'}
+          accessibilityLabel={isSelf ? undefined : `Actions for ${displayName}`}
+          testID="thread-header-author-handle"
+        >
+          <EmojiText style={authorTextStyle} numberOfLines={1}>
+            {displayName}
+          </EmojiText>
+        </TouchableOpacity>
+        {/*
+          Its own accessible element now that it is outside the control. Long
+          form: "3:04 PM" read out of context is ambiguous, "September 12 at
+          3:04 PM" is not (#821).
+        */}
+        <Text style={timestampStyle} accessibilityLabel={formatPostTimestampA11y(createdAt)}>
+          {formatPostTimestamp(createdAt)}
+        </Text>
+      </View>
       {title != null && title.length > 0 && (
         <EmojiText style={titleStyle} selectable>{title}</EmojiText>
       )}

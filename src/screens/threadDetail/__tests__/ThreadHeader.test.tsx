@@ -55,15 +55,25 @@ jest.mock('../../../components/MediaLightbox', () => ({
   MediaLightbox: () => null,
 }));
 
+// Hoisted, stable spies returned by every mock call so handle-press assertions
+// are unambiguous regardless of how many renders share a describe block.
+const handleAuthorPress = jest.fn();
+const handleReport = jest.fn();
+
 const mockUseAuthorActions = jest.fn(
   (..._args: unknown[]) => ({
-    handleAuthorPress: jest.fn(),
-    handleReport: jest.fn(),
+    handleAuthorPress,
+    handleReport,
   }),
 );
 jest.mock('../../../hooks/useAuthorActions', () => ({
   useAuthorActions: (...args: unknown[]) => mockUseAuthorActions(...args),
 }));
+
+beforeEach(() => {
+  handleAuthorPress.mockClear();
+  handleReport.mockClear();
+});
 
 function renderHeader(
   props: Partial<React.ComponentProps<typeof ThreadHeader>> = {},
@@ -140,16 +150,33 @@ describe('ThreadHeader — timestamp (#821)', () => {
     expect(texts(renderer)).toContain(rendered);
   });
 
-  it('folds the long-form timestamp into the author control label', () => {
-    // The stamp sits inside the author touchable, so a screen reader only
-    // reaches it through the label.
+  it('labels the handle with the name only, and the timestamp separately in long form', () => {
+    // The handle label is now just the name — the timestamp is its own sibling
+    // element with a separate a11y label (#888).
     const renderer = renderHeader({ authorId: 'u-alice', currentUserId: 'u-me' });
     const labelled = renderer.root.findAll(
-      (n) =>
-        n.props.accessibilityLabel ===
-        `Actions for alice, posted ${formatPostTimestampA11y(POSTED_AT)}`,
+      (n) => n.props.accessibilityLabel === 'Actions for alice',
     );
     expect(labelled.length).toBeGreaterThan(0);
+
+    // The timestamp Text sibling carries the long-form label so a screen reader
+    // reaches it as a standalone element: "3:04 PM" out of context is
+    // ambiguous, "January 5 at 3:04 PM" is not (#821).
+    const stampText = renderer.root.findAll(
+      (n) =>
+        typeof n.type === 'string' &&
+        n.props.accessibilityLabel === formatPostTimestampA11y(POSTED_AT),
+    );
+    expect(stampText.length).toBeGreaterThan(0);
+
+    // The avatar wrapper is a11y-hidden so VoiceOver/TalkBack doesn't stop on
+    // the circle between the preceding control and the name handle.
+    const avatarWrapper = renderer.root.findAll(
+      (n) =>
+        n.props.accessibilityElementsHidden === true &&
+        n.props.importantForAccessibility === 'no-hide-descendants',
+    );
+    expect(avatarWrapper.length).toBeGreaterThan(0);
   });
 
   it('drops the label entirely on your own post, where the control is inert', () => {
@@ -161,5 +188,90 @@ describe('ThreadHeader — timestamp (#821)', () => {
           n.props.accessibilityLabel.startsWith('Actions for'),
       ),
     ).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Author handle (#888)
+// ---------------------------------------------------------------------------
+
+describe('ThreadHeader — author handle (#888)', () => {
+  it('pressing the handle calls handleAuthorPress exactly once', () => {
+    const renderer = renderHeader();
+    const handleNodes = renderer.root.findAll(
+      (n) => n.props.testID === 'thread-header-author-handle',
+    );
+    const pressable = handleNodes.find((n) => typeof n.props.onPress === 'function');
+    expect(pressable).toBeDefined();
+    act(() => {
+      pressable!.props.onPress();
+    });
+    expect(handleAuthorPress).toHaveBeenCalledTimes(1);
+  });
+
+  it('handle frame: minWidth 44, alignSelf stretch, no hitSlop', () => {
+    const renderer = renderHeader();
+    const handleNodes = renderer.root.findAll(
+      (n) => n.props.testID === 'thread-header-author-handle',
+    );
+    const hostNode = handleNodes.find((n) => typeof n.type === 'string');
+    expect(hostNode).toBeDefined();
+    expect(hostNode!.props.style).toEqual(
+      expect.objectContaining({ minWidth: 44, alignSelf: 'stretch' }),
+    );
+    expect(hostNode!.props.hitSlop).toBeUndefined();
+  });
+
+  it('isSelf: handle is disabled, accessibilityRole and accessibilityLabel are absent', () => {
+    const renderer = renderHeader({ authorId: 'u-me', currentUserId: 'u-me' });
+    const handleNodes = renderer.root.findAll(
+      (n) => n.props.testID === 'thread-header-author-handle',
+    );
+    const pressable = handleNodes.find((n) => typeof n.props.onPress === 'function');
+    expect(pressable).toBeDefined();
+    expect(pressable!.props.disabled).toBe(true);
+    expect(pressable!.props.accessibilityRole).toBeUndefined();
+    expect(pressable!.props.accessibilityLabel).toBeUndefined();
+  });
+
+  it('structural: the avatar wrapper and timestamp Text are not descendants of any onPress node', () => {
+    const renderer = renderHeader();
+
+    // (a) Positive control: there are onPress nodes in the tree.
+    const pressNodes = renderer.root.findAll((n) => typeof n.props.onPress === 'function');
+    expect(pressNodes.length).toBeGreaterThan(0);
+
+    // (b) Positive control: the avatar wrapper and the timestamp Text are
+    //     actually rendered — the check cannot pass vacuously.
+    const avatarWrappers = renderer.root.findAll(
+      (n) =>
+        n.props.accessibilityElementsHidden === true &&
+        n.props.importantForAccessibility === 'no-hide-descendants',
+    );
+    expect(avatarWrappers.length).toBeGreaterThan(0);
+    const timestampTexts = renderer.root.findAll(
+      (n) =>
+        typeof n.type === 'string' &&
+        n.props.accessibilityLabel === formatPostTimestampA11y(POSTED_AT),
+    );
+    expect(timestampTexts.length).toBeGreaterThan(0);
+
+    // (c) No onPress node contains the avatar wrapper or timestamp as a descendant.
+    for (const pressNode of pressNodes) {
+      expect(
+        pressNode.findAll(
+          (n) =>
+            n.props.accessibilityElementsHidden === true &&
+            n.props.importantForAccessibility === 'no-hide-descendants',
+        ),
+      ).toHaveLength(0);
+      expect(
+        pressNode.findAll(
+          (n) =>
+            typeof n.type === 'string' &&
+            n.props.accessibilityLabel === formatPostTimestampA11y(POSTED_AT),
+        ),
+      ).toHaveLength(0);
+    }
   });
 });

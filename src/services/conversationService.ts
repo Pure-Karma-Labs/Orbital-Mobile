@@ -25,6 +25,7 @@ import { VerifiedStatus } from '../types/database';
 import { arrayBufferToBase64, toArrayBuffer, base64ToArrayBuffer } from './crypto/utils';
 import { ApiError } from './api/errors';
 import { generateUUID } from '../utils/uuid';
+import { maxTimestamp } from '../utils/threadActivity';
 import { useAppStore } from '../stores/useAppStore';
 import { isDatabaseInitialized, getDatabase } from '../database/connection';
 import { getConversationIdsWithThreads, deleteThreadsForConversation } from '../database/repositories/threadRepository';
@@ -349,6 +350,74 @@ function mapDmResponse(response: DmResponse): Conversation {
 }
 
 
+/**
+ * Merge a freshly mapped DM row over whatever is already in the store (#883).
+ *
+ * A DM list response is a SNAPSHOT: by the time it is applied, a WebSocket
+ * message or a local mark-read may already have moved this row forward. Writing
+ * the response wholesale — what `loadDmConversations` used to do — is what made
+ * refreshes move DMs backwards and restored a badge the user had just cleared.
+ *
+ * Recency takes the max of both sides via `maxTimestamp`, so it can only ever
+ * move forward and no NaN can enter a persisted field.
+ *
+ * Unread is server-authoritative EXCEPT when the response is demonstrably
+ * staler than local state, in this precedence:
+ *  1. local `lastMessageAt` is newer than the server's -> keep the LOCAL count.
+ *     The response predates a WS message that already incremented it; applying
+ *     the server's number would silently drop that increment.
+ *  2. a mark-read for this DM is still pending (`readPending`: debounced via
+ *     MARK_READ_DEBOUNCE_MS or in flight) -> force 0. The server hasn't been
+ *     told yet, so its count is about to be wrong. This is deliberately a
+ *     pending-request check, not a `lastReadAt` comparison: the local
+ *     watermark is device-clock and the server's is server-clock, and a
+ *     mark-read that never lands (offline, swallowed error) would otherwise
+ *     leave local > server forever and zero every later badge.
+ *  3. otherwise the server count wins.
+ *
+ * Rule 1 is checked first on purpose: a message that arrives AFTER a local read
+ * must still badge. For the conversation the user is currently viewing both
+ * sides are 0 anyway — `mapDmResponse` zeroes the incoming count, focus runs
+ * `markConversationRead`, and the WS path skips increments for the viewed row.
+ *
+ * Pure: it reads no store state, so the merge rules are testable on their own.
+ */
+export function mergeDmRecency(
+  existing: Conversation | undefined,
+  incoming: Conversation,
+  readPending = false,
+): Conversation {
+  if (!existing) {
+    // First insert: `mapDmResponse` parses server timestamps unguarded, so
+    // sanitize here too — this is the only path that skips the max-merge.
+    return {
+      ...incoming,
+      lastMessageAt: maxTimestamp(incoming.lastMessageAt, null),
+      lastReadAt: maxTimestamp(incoming.lastReadAt, null),
+    };
+  }
+
+  const localMessageAt = maxTimestamp(existing.lastMessageAt, null) ?? 0;
+  const serverMessageAt = maxTimestamp(incoming.lastMessageAt, null) ?? 0;
+
+  let unreadCount: number;
+  if (localMessageAt > serverMessageAt) {
+    unreadCount = existing.unreadCount;
+  } else if (readPending) {
+    unreadCount = 0;
+  } else {
+    unreadCount = incoming.unreadCount;
+  }
+
+  return {
+    ...incoming,
+    lastMessageAt: maxTimestamp(existing.lastMessageAt, incoming.lastMessageAt),
+    lastReadAt: maxTimestamp(existing.lastReadAt, incoming.lastReadAt),
+    updatedAt: maxTimestamp(existing.updatedAt, incoming.updatedAt) ?? incoming.updatedAt,
+    unreadCount,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Ensure a DM conversation exists in the store (on-demand, for WS handlers)
 // ---------------------------------------------------------------------------
@@ -386,7 +455,16 @@ export async function ensureDmConversation(groupId: string): Promise<Conversatio
       const conversation = mapDmResponse(dm);
       if (isSessionStale(session)) return null;
       const storeNow = useAppStore.getState();
-      storeNow.upsertConversation(conversation);
+      // The early return above means this is normally an insert. It is still
+      // merged (#883): `listDms` is awaited, so a WS bump or a mark-read can
+      // have created the row in the meantime, and this snapshot must not undo
+      // it. Merging an absent row returns `conversation` unchanged.
+      const merged = mergeDmRecency(
+        storeNow.conversations[groupId],
+        conversation,
+        isMarkReadPending(groupId),
+      );
+      storeNow.upsertConversation(merged);
 
       storeNow.mergeContacts([{
         id: dm.recipient.id,
@@ -399,7 +477,7 @@ export async function ensureDmConversation(groupId: string): Promise<Conversatio
         avatarDigest: dm.recipient.avatarDigest ?? null,
       }]);
 
-      return conversation;
+      return merged;
     } finally {
       ensureDmInflight.delete(groupId);
     }
@@ -454,7 +532,13 @@ export async function loadDmConversations(): Promise<void> {
   if (isSessionStale(session)) return;
   const store = useAppStore.getState();
   for (const conversation of conversations) {
-    store.upsertConversation(conversation);
+    // Merge, never overwrite (#883). State is re-read per row because each
+    // upsert replaces the map — `store.conversations` is a stale snapshot after
+    // the first iteration.
+    const existing = useAppStore.getState().conversations[conversation.id];
+    store.upsertConversation(
+      mergeDmRecency(existing, conversation, isMarkReadPending(conversation.id)),
+    );
   }
 
   // Merge DM recipients into the contacts store so they're discoverable
@@ -539,18 +623,32 @@ export async function startDm(
 
   const now = Date.now();
   const store = useAppStore.getState();
-  store.upsertConversation({
-    id: response.groupId,
-    type: 'direct',
-    name: response.recipient.username,
-    memberCount: 2,
-    active: true,
-    lastMessageAt: null,
-    unreadCount: 0,
-    lastReadAt: now,
-    createdAt: now,
-    updatedAt: now,
-  });
+  const existing = store.conversations[response.groupId];
+  if (existing) {
+    // Starting a DM that already exists — picking an existing contact in New
+    // Chat — must not reset it (#883). The old unconditional literal below
+    // wrote lastMessageAt: null, lastReadAt/createdAt: now and unreadCount: 0,
+    // which dropped the DM to the bottom of Chats and erased its badge. Only
+    // the display name (it may have changed) and `active` are refreshed.
+    store.upsertConversation({
+      ...existing,
+      name: response.recipient.username,
+      active: true,
+    });
+  } else {
+    store.upsertConversation({
+      id: response.groupId,
+      type: 'direct',
+      name: response.recipient.username,
+      memberCount: 2,
+      active: true,
+      lastMessageAt: null,
+      unreadCount: 0,
+      lastReadAt: now,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
 
   return {
     conversationId: response.groupId,
@@ -977,7 +1075,18 @@ export async function refreshContactAvatar(userId: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 const markReadTimers = new Map<string, ReturnType<typeof setTimeout>>();
+/** In-flight `markGroupRead` calls per conversation (a count: calls can overlap). */
+const markReadInflight = new Map<string, number>();
 const MARK_READ_DEBOUNCE_MS = 3_000;
+
+/**
+ * True while a mark-read for this conversation has not reached the server yet
+ * (debounce timer armed, or request in flight). `mergeDmRecency` uses it to
+ * know the server's unread count is about to be superseded (#883).
+ */
+export function isMarkReadPending(conversationId: string): boolean {
+  return markReadTimers.has(conversationId) || markReadInflight.has(conversationId);
+}
 
 /**
  * Mark a conversation as read locally (immediate) AND on the server (debounced 3s).
@@ -996,9 +1105,16 @@ export function markConversationReadEverywhere(conversationId: string): void {
     conversationId,
     setTimeout(() => {
       markReadTimers.delete(conversationId);
-      markGroupRead(conversationId).catch(() => {
-        // Fire-and-forget — server watermark will catch up on next load
-      });
+      markReadInflight.set(conversationId, (markReadInflight.get(conversationId) ?? 0) + 1);
+      markGroupRead(conversationId)
+        .catch(() => {
+          // Fire-and-forget — server watermark will catch up on next load
+        })
+        .finally(() => {
+          const left = (markReadInflight.get(conversationId) ?? 1) - 1;
+          if (left > 0) markReadInflight.set(conversationId, left);
+          else markReadInflight.delete(conversationId);
+        });
     }, MARK_READ_DEBOUNCE_MS),
   );
 }
@@ -1022,4 +1138,5 @@ export function clearConversationServiceState(): void {
     clearTimeout(timer);
   }
   markReadTimers.clear();
+  markReadInflight.clear();
 }

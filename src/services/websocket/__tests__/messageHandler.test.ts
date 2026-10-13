@@ -83,6 +83,7 @@ jest.mock('../../threadService', () => ({
   decryptThreadFields: jest.fn(),
   decryptReplyBody: jest.fn(),
   processMediaMetadata: jest.fn().mockResolvedValue(undefined),
+  applyReplyToParentThread: jest.fn(),
 }));
 
 const mockMarkConversationReadEverywhere = jest.fn();
@@ -152,7 +153,7 @@ import {
 import { refreshAndCompareIdentityKey, compareAndPersistIdentityKey } from '../../crypto/identityKeyAccess';
 import { base64ToArrayBuffer } from '../../crypto/utils';
 import { submitWrappedKey } from '../../api/groups';
-import { decryptThreadFields, decryptReplyBody } from '../../threadService';
+import { decryptThreadFields, decryptReplyBody, applyReplyToParentThread } from '../../threadService';
 import { useAppStore } from '../../../stores/useAppStore';
 import { saveThread as dbSaveThread } from '../../../database/repositories/threadRepository';
 import { saveReply as dbSaveReply } from '../../../database/repositories/replyRepository';
@@ -163,6 +164,7 @@ const mockGetOrFetchGroupKey = getOrFetchGroupKey as jest.MockedFunction<typeof 
 const mockInvalidateGroupKey = invalidateGroupKey as jest.MockedFunction<typeof invalidateGroupKey>;
 const mockDecryptThreadFields = decryptThreadFields as jest.MockedFunction<typeof decryptThreadFields>;
 const mockDecryptReplyBody = decryptReplyBody as jest.MockedFunction<typeof decryptReplyBody>;
+const mockApplyReplyToParentThread = applyReplyToParentThread as jest.MockedFunction<typeof applyReplyToParentThread>;
 const mockWrapGroupKey = wrapGroupKey as jest.MockedFunction<typeof wrapGroupKey>;
 const mockEvictPendingCache = evictPendingCache as jest.MockedFunction<typeof evictPendingCache>;
 const mockSubmitWrappedKey = submitWrappedKey as jest.MockedFunction<typeof submitWrappedKey>;
@@ -514,7 +516,11 @@ describe('new_reply broadcast', () => {
     expect(ensureDmConversation).toHaveBeenCalledWith(testUUID('group-1'));
   });
 
-  it('bumps lastMessageAt after upserting reply', async () => {
+  // #883: the parent-thread bump and the conversation bump are ONE shared
+  // implementation with postReply (threadService.applyReplyToParentThread).
+  // This handler must not grow its own copy again — the two had drifted, and
+  // this one never persisted the parent thread.
+  it('delegates the parent-thread and conversation bump to applyReplyToParentThread', async () => {
     const msg = JSON.stringify({
       type: 'new_message',
       conversationId: testUUID('group-1'),
@@ -536,10 +542,14 @@ describe('new_reply broadcast', () => {
 
     await handleServerMessage(msg);
 
-    expect(mockBumpLastMessageAt).toHaveBeenCalledWith(
+    expect(mockApplyReplyToParentThread).toHaveBeenCalledWith(
       testUUID('group-1'),
+      testUUID('thread-1'),
       new Date('2026-04-01T11:00:00Z').getTime(),
     );
+    // The handler itself no longer touches either store action for the parent.
+    expect(mockBumpLastMessageAt).not.toHaveBeenCalled();
+    expect(mockUpsertThread).not.toHaveBeenCalled();
   });
 
   it('clears dedup entry on reply failure so message can be retried', async () => {

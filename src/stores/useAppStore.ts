@@ -11,7 +11,8 @@ import { createMediaSlice } from './slices/mediaSlice';
 import { createNotificationSlice, DEFAULT_NOTIFICATION_PREFS } from './slices/notificationSlice';
 import { createBlockedUsersSlice } from './slices/blockedUsersSlice';
 import { createReportSlice } from './slices/reportSlice';
-import type { AppState } from '../types/store';
+import { maxTimestamp } from '../utils/threadActivity';
+import type { AppState, Conversation } from '../types/store';
 import type { NotificationPrefs } from '../types/api';
 
 /**
@@ -75,6 +76,33 @@ export function partializeAppState(state: AppState): PersistedState {
 }
 
 /**
+ * Null out any persisted `lastMessageAt` that is not a finite number > 0 (#883).
+ *
+ * Rows are copied only when the value actually changes, so a healthy blob
+ * hydrates the same object identities it always did.
+ */
+function sanitizePersistedConversations(
+  saved: Record<string, unknown>,
+): AppState['conversations'] {
+  const out: Record<string, Conversation> = {};
+  for (const [id, row] of Object.entries(saved)) {
+    if (row === null || typeof row !== 'object' || Array.isArray(row)) {
+      // Not a row shape at all — pass it through untouched; container-level
+      // corruption is out of scope here (see the merge docstring).
+      out[id] = row as Conversation;
+      continue;
+    }
+    const raw = (row as { lastMessageAt?: unknown }).lastMessageAt;
+    const normalized = typeof raw === 'number' ? maxTimestamp(raw, null) : null;
+    out[id] =
+      normalized === raw
+        ? (row as Conversation)
+        : ({ ...(row as Conversation), lastMessageAt: normalized });
+  }
+  return out;
+}
+
+/**
  * Hydration merge: zustand's default top-level spread, plus a per-key floor on
  * notificationPrefs.
  *
@@ -111,8 +139,15 @@ export function partializeAppState(state: AppState): PersistedState {
  *   It gates push registration at launch, so a corrupt blob must not be able to
  *   hand `registerIfEnabled` a truthy non-boolean (silently killing push) or a
  *   falsy one (silently undoing an opt-out).
+ * - conversations (#883) — ONE field, `lastMessageAt`, is normalized per row: a
+ *   value that is not a finite number greater than 0 hydrates as null. It is
+ *   the Chats sort key AND the floor every later bump compares against, so a
+ *   corrupt or tampered blob holding NaN or Infinity would pin that row to the
+ *   top of Chats for the life of the install — NaN fails every `<=` guard, so
+ *   no later bump could lower it. The rest of the row (and the whole map's
+ *   container shape) is still unvalidated.
  * - everything else — NOT validated. colorScheme/activeTab/soundEnabled,
- *   threadLastViewedAt, conversations/conversationIds, contacts and
+ *   threadLastViewedAt, conversationIds, contacts and
  *   blockedUserIds/blockedUserProfiles ride the raw top-level spread. The
  *   allowlist above governs only WHICH keys are admitted, never their shape.
  *
@@ -174,6 +209,17 @@ export function mergePersistedAppState(persisted: unknown, current: AppState): A
   // Shape only: entry VALUES are not validated (see the docstring).
   const savedMutedTargets = isPlainObject(saved.mutedTargets) ? saved.mutedTargets : current.mutedTargets;
   const savedPendingMuteOps = isPlainObject(saved.pendingMuteOps) ? saved.pendingMuteOps : current.pendingMuteOps;
+  // Per-row `lastMessageAt` normalization (#883). `maxTimestamp` is the only
+  // function allowed to produce a stored recency value, and it never yields
+  // NaN: anything not finite and > 0 — including a non-number a tampered blob
+  // smuggled in — becomes null, which sorts to the bottom and is beatable by
+  // the next real bump. Only this key is touched; every other field rides the
+  // spread exactly as before.
+  // Spread-applied only when the blob actually carried a conversations OBJECT,
+  // so an absent or corrupt (string/array) value keeps its pre-#883 handling.
+  const conversationsOverride = isPlainObject(saved.conversations)
+    ? { conversations: sanitizePersistedConversations(saved.conversations) }
+    : {};
   // The casts only re-narrow: flooredPrefs got every key of the typed constant
   // assigned above, and the two maps are either `current`'s own already-typed
   // value or an object whose shape (not entry types) was just checked.
@@ -184,6 +230,7 @@ export function mergePersistedAppState(persisted: unknown, current: AppState): A
   return {
     ...current,
     ...saved,
+    ...conversationsOverride,
     notificationPrefs: flooredPrefs as NotificationPrefs,
     mutedTargets: savedMutedTargets as AppState['mutedTargets'],
     pendingMuteOps: savedPendingMuteOps as AppState['pendingMuteOps'],

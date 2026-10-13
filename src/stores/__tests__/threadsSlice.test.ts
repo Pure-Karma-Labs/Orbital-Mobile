@@ -581,3 +581,73 @@ describe('markThreadViewed', () => {
     jest.useRealTimers();
   });
 });
+
+// ---------------------------------------------------------------------------
+// #883 — lastReplyAt never goes backwards at the mutation boundary
+// ---------------------------------------------------------------------------
+
+describe('lastReplyAt max-merge (#883)', () => {
+  it('upsertThread keeps the existing lastReplyAt when the incoming row has none', () => {
+    const store = makeStore();
+    store.getState().upsertThread(makeThread({ lastReplyAt: 5000 }));
+
+    store.getState().upsertThread(makeThread({ lastReplyAt: null, replyCount: 3 }));
+
+    const row = store.getState().threads['thread-1'];
+    expect(row.lastReplyAt).toBe(5000);
+    // replyCount is server-authoritative and NOT merged — it must be free to
+    // go down (an admin takedown).
+    expect(row.replyCount).toBe(3);
+  });
+
+  it('upsertThread accepts a newer lastReplyAt', () => {
+    const store = makeStore();
+    store.getState().upsertThread(makeThread({ lastReplyAt: 1000 }));
+
+    store.getState().upsertThread(makeThread({ lastReplyAt: 4000 }));
+
+    expect(store.getState().threads['thread-1'].lastReplyAt).toBe(4000);
+  });
+
+  it('upsertThread heals a NaN already in the store and never stores NaN', () => {
+    const store = makeStore();
+    store.getState().upsertThread(makeThread({ lastReplyAt: NaN }));
+    expect(store.getState().threads['thread-1'].lastReplyAt).toBeNull();
+
+    store.getState().upsertThread(makeThread({ lastReplyAt: 2000 }));
+    expect(store.getState().threads['thread-1'].lastReplyAt).toBe(2000);
+
+    // An incoming NaN cannot erase the healthy value either.
+    store.getState().upsertThread(makeThread({ lastReplyAt: NaN }));
+    expect(store.getState().threads['thread-1'].lastReplyAt).toBe(2000);
+  });
+
+  it('upsertThread drops Infinity', () => {
+    const store = makeStore();
+    store.getState().upsertThread(makeThread({ lastReplyAt: Infinity }));
+
+    expect(store.getState().threads['thread-1'].lastReplyAt).toBeNull();
+  });
+
+  it('setThreads keeps a known lastReplyAt the server list omits', () => {
+    const store = makeStore();
+    store.getState().upsertThread(makeThread({ id: 'thread-1', lastReplyAt: 8000 }));
+
+    store.getState().setThreads('conv-1', [
+      makeThread({ id: 'thread-1', lastReplyAt: null }),
+      makeThread({ id: 'thread-2', lastReplyAt: 3000 }),
+    ]);
+
+    expect(store.getState().threads['thread-1'].lastReplyAt).toBe(8000);
+    expect(store.getState().threads['thread-2'].lastReplyAt).toBe(3000);
+  });
+
+  it('setThreads heals a NaN stored value from the server list', () => {
+    const store = makeStore();
+    store.getState().upsertThread(makeThread({ id: 'thread-1', lastReplyAt: NaN }));
+
+    store.getState().setThreads('conv-1', [makeThread({ id: 'thread-1', lastReplyAt: 6000 })]);
+
+    expect(store.getState().threads['thread-1'].lastReplyAt).toBe(6000);
+  });
+});

@@ -20,9 +20,10 @@ import {
 } from './crypto/contentCrypto';
 import { useAppStore } from '../stores/useAppStore';
 import { generateUUID } from '../utils/uuid';
+import { maxTimestamp } from '../utils/threadActivity';
 import { base64ToArrayBuffer } from './crypto/utils';
 import { getMedia, saveMedia, getThreadLevelMedia, getMediaForReply, getMediaForThreadReplies, updateMediaParent } from '../database/repositories/mediaRepository';
-import { saveThread as dbSaveThread, saveThreadBatch, getThreadsForConversation } from '../database/repositories/threadRepository';
+import { saveThread as dbSaveThread, saveThreadBatch, getThreadsForConversation, getThread as dbGetThread } from '../database/repositories/threadRepository';
 import { saveReply as dbSaveReply, saveReplyBatch, getRepliesForThread, deleteReply as dbDeleteReply } from '../database/repositories/replyRepository';
 import { mediaRowToItem } from '../database/repositories/mediaMapper';
 import { isDatabaseInitialized } from '../database/connection';
@@ -42,6 +43,79 @@ import type { ThreadResponse, ThreadListItem, ReplyResponse, MediaMetadata } fro
  */
 function getStoreActions() {
   return useAppStore.getState();
+}
+
+/**
+ * Read one thread from SQLCipher without ever rejecting or throwing (#883).
+ *
+ * The recency merges need the row that is already on disk when the store is
+ * empty — a cold open from a push notification, or a WS reply that arrives
+ * before any list load. Both callers run inside success paths that must not be
+ * turned into failures by a closed or Fast-Refresh-reset database, so every
+ * outcome collapses to `null`.
+ */
+function safeDbGetThread(threadId: string): Thread | null {
+  if (!isDatabaseInitialized()) return null;
+  try {
+    return dbGetThread(threadId);
+  } catch (e) {
+    if (__DEV__) console.warn('[safeDbGetThread] DB read failed:', e instanceof Error ? e.message : e);
+    return null;
+  }
+}
+
+/**
+ * Apply a new reply to its parent thread and the owning conversation (#883).
+ *
+ * The single implementation behind BOTH reply paths — `postReply`'s own
+ * confirmed send and the WebSocket `new_reply` handler. They used to carry
+ * cloned copies of these steps, which is how `lastReplyAt` ended up maxed at
+ * some call sites and overwritten at others.
+ *
+ * Steps, in order:
+ * 1. resolve the parent from the store, falling back to the guarded DB read;
+ * 2. upsert it with `replyCount + 1` and `lastReplyAt` via `maxTimestamp`;
+ * 3. persist the parent, so the bump survives a cold start;
+ * 4. bump the conversation's `lastMessageAt`, which is what lifts the row to
+ *    the top of Chats / the orbit selector.
+ *
+ * An unparseable `replyCreatedAt` (NaN from a malformed payload) is a complete
+ * no-op: writing it would poison both stored recency fields, and the reply row
+ * itself has already been handled by the caller.
+ *
+ * The conversation bump runs even when the parent thread is nowhere to be
+ * found — the reply is still real activity in that conversation, and this
+ * matches the pre-#883 behaviour of both call sites.
+ */
+export function applyReplyToParentThread(
+  groupId: string,
+  threadId: string,
+  replyCreatedAt: number,
+): void {
+  const replyAt = maxTimestamp(replyCreatedAt, null);
+  if (replyAt === null) {
+    if (__DEV__) console.warn('[applyReplyToParentThread] ignored unparseable reply timestamp');
+    return;
+  }
+
+  const parent = getStoreActions().threads[threadId] ?? safeDbGetThread(threadId);
+  if (parent) {
+    const updated: Thread = {
+      ...parent,
+      replyCount: parent.replyCount + 1,
+      lastReplyAt: maxTimestamp(parent.lastReplyAt, replyAt),
+    };
+    getStoreActions().upsertThread(updated);
+    if (isDatabaseInitialized()) {
+      try {
+        dbSaveThread(updated);
+      } catch (e) {
+        if (__DEV__) console.warn('[applyReplyToParentThread] DB write failed:', e instanceof Error ? e.message : e);
+      }
+    }
+  }
+
+  getStoreActions().bumpLastMessageAt(groupId, replyAt);
 }
 
 /**
@@ -627,6 +701,19 @@ export async function processMediaMetadata(
 }
 
 /**
+ * ISO string -> epoch ms, or null (#883).
+ *
+ * Routed through `maxTimestamp` so an absent, null, empty or unparseable server
+ * value (Date.parse -> NaN) all collapse to the one representation the store
+ * and SQLite accept for "no recency known". NaN must never reach `lastReplyAt`:
+ * it defeats every later comparison and would freeze the row's sort position.
+ */
+function parseServerTimestamp(value: string | null | undefined): number | null {
+  if (!value) return null;
+  return maxTimestamp(Date.parse(value), null);
+}
+
+/**
  * Map a ThreadResponse (API) to a Thread (store), decrypting content fields.
  * groupId on the API maps to conversationId in the store.
  */
@@ -667,7 +754,9 @@ async function mapThreadResponse(
     contentType: response.media && response.media.length > 0 ? 'media' : 'text',
     pinned: false,
     replyCount: response.replyCount,
-    lastReplyAt: null,
+    // #883: the detail response carries last_reply_at. It used to be hardcoded
+    // null here, so opening a post wiped the recency that put it on top.
+    lastReplyAt: parseServerTimestamp(response.lastReplyAt),
     createdAt: new Date(response.createdAt).getTime(),
     updatedAt: new Date(response.createdAt).getTime(),
     syncStatus: 'synced',
@@ -744,7 +833,8 @@ async function mapThreadListItem(
     contentType: item.mediaCount > 0 ? 'media' : 'text',
     pinned: false,
     replyCount: item.replyCount,
-    lastReplyAt: item.lastReplyAt ? Date.parse(item.lastReplyAt) : null,
+    // An unparseable value must land as null, not NaN (#883).
+    lastReplyAt: parseServerTimestamp(item.lastReplyAt),
     createdAt: new Date(item.createdAt).getTime(),
     updatedAt: new Date(item.createdAt).getTime(),
     syncStatus: 'synced',
@@ -757,15 +847,33 @@ async function mapThreadListItem(
 
 /**
  * Fetch all threads for a group from the API, decrypt, and populate the store.
+ *
+ * Requests `activity_desc` (#883): both screens order by latest activity, so
+ * the server's 50-row page has to be the 50 most ACTIVE threads. With the old
+ * `created_desc` default, a reply on message #51 of a DM bumped the Chats row
+ * but the thread itself dropped out of the page on the next load — it showed
+ * at the top from SQLite hydration and then vanished when this list landed.
+ * An older backend ignores the value and returns `created_desc`.
  */
 export async function loadThreadsForGroup(groupId: string): Promise<Thread[]> {
-  const response = await getGroupThreads(groupId);
+  const response = await getGroupThreads(groupId, { sort: 'activity_desc' });
 
   const groupKey = await getOrFetchGroupKey(groupId);
 
-  const threads = await Promise.all(
+  const mapped = await Promise.all(
     response.threads.map((item) => mapThreadListItem(item, groupKey)),
   );
+
+  // Same merge-before-persist rule as `loadThread`: `saveThreadBatch` is
+  // INSERT OR REPLACE, so without this a reply applied while this request was
+  // in flight would reach the store but be overwritten on disk by the
+  // pre-reply value, and the thread would sort low again after a cold start.
+  const storeThreads = getStoreActions().threads;
+  const threads = mapped.map((t) => {
+    const existing = storeThreads[t.id] ?? safeDbGetThread(t.id);
+    const lastReplyAt = maxTimestamp(existing?.lastReplyAt, t.lastReplyAt);
+    return lastReplyAt === t.lastReplyAt ? t : { ...t, lastReplyAt };
+  });
 
   // Write-through: persist decrypted threads to SQLCipher
   if (isDatabaseInitialized()) {
@@ -783,11 +891,23 @@ export async function loadThreadsForGroup(groupId: string): Promise<Thread[]> {
 
 /**
  * Fetch a thread from the API, decrypt its content, and upsert into the store.
+ *
+ * Recency is merged before anything is written (#883). `upsertThread` already
+ * refuses to lower `lastReplyAt` in the store, but SQLite has no such guard and
+ * `dbSaveThread` runs first — so the merge has to happen here, against the
+ * store row OR, when the store is empty (a cold open straight from a push
+ * notification), the row already on disk.
  */
 export async function loadThread(threadId: string): Promise<Thread> {
   const response = await getThread(threadId);
   const groupKey = await getOrFetchGroupKey(response.groupId);
-  const thread = await mapThreadResponse(response, groupKey);
+  const mapped = await mapThreadResponse(response, groupKey);
+
+  const existing = getStoreActions().threads[threadId] ?? safeDbGetThread(threadId);
+  const thread: Thread = {
+    ...mapped,
+    lastReplyAt: maxTimestamp(existing?.lastReplyAt, mapped.lastReplyAt),
+  };
 
   // Write-through: persist decrypted thread to SQLCipher
   if (isDatabaseInitialized()) {
@@ -1078,17 +1198,11 @@ export async function postReply(
     // list, which is exactly how a nested reply jumped to the bottom (#821).
     store.replaceReply(clientId, confirmedReply);
 
-    // Bump the parent thread so list rows stay live without a refetch (#329).
-    // Mirrors the WS new_reply handler; without this the posting device's
-    // thread list shows a stale reply count until the next server load.
-    const parentThread = getStoreActions().threads[threadId];
-    if (parentThread) {
-      getStoreActions().upsertThread({
-        ...parentThread,
-        replyCount: parentThread.replyCount + 1,
-        lastReplyAt: Math.max(parentThread.lastReplyAt ?? 0, confirmedReply.createdAt),
-      });
-    }
+    // Bump the parent thread AND the conversation so list rows stay live
+    // without a refetch (#329, #883). Shared with the WS new_reply handler —
+    // see applyReplyToParentThread. Without it the posting device shows a stale
+    // reply count, and the sender's own post never moved their Chats row.
+    applyReplyToParentThread(groupId, threadId, confirmedReply.createdAt);
     // Own reply must not flag the author's own thread as unread
     getStoreActions().markThreadViewed(threadId);
 
@@ -1208,6 +1322,10 @@ export async function createNewThread(
     store.upsertThread(finalThread);
     // A thread you just created is not unread for you
     store.markThreadViewed(finalThread.id);
+    // Your own post moves the conversation to the top of your own list (#883).
+    // Server createdAt, and only on the success path: an optimistic id is never
+    // bumped, so a failed post leaves the order untouched.
+    getStoreActions().bumpLastMessageAt(groupId, finalThread.createdAt);
 
     // Process server-confirmed media (updates expiresAt, server-set fields)
     // Uses existing-row check to avoid overwriting local attachment_key/localPath

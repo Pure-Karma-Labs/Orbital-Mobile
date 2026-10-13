@@ -166,6 +166,14 @@ export const createConversationsSlice: StateCreator<
     if (!existing) {
       return;
     }
+    // A non-finite bump must never land (#883). `lastMessageAt` is persisted to
+    // MMKV and drives the Chats order, so one `new Date(undefined).getTime()`
+    // (NaN) or Infinity from a malformed payload would latch this row — NaN
+    // fails every later `<=` comparison, so nothing could lower it again, and
+    // Infinity would pin it to the top forever.
+    if (!Number.isFinite(timestamp) || timestamp <= 0) {
+      return;
+    }
     if (timestamp <= (existing.lastMessageAt ?? 0)) {
       return;
     }

@@ -78,6 +78,7 @@ const mockAddOptimisticThread = jest.fn();
 const mockRemoveThread = jest.fn();
 const mockSetThreads = jest.fn();
 const mockUpdateThreadSyncStatus = jest.fn();
+const mockBumpLastMessageAt = jest.fn();
 
 jest.mock('../../stores/useAppStore', () => ({
   useAppStore: {
@@ -99,6 +100,7 @@ jest.mock('../../stores/useAppStore', () => ({
       removeThread: mockRemoveThread,
       setThreads: mockSetThreads,
       updateThreadSyncStatus: mockUpdateThreadSyncStatus,
+      bumpLastMessageAt: mockBumpLastMessageAt,
     })),
   },
 }));
@@ -107,8 +109,8 @@ jest.mock('../../stores/useAppStore', () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
-import { loadThread, loadReplies, postReply, hydrateThreadsFromLocal, hydrateRepliesFromLocal, loadThreadsForGroup, createNewThread, reconcileThreadReplies } from '../threadService';
-import { saveThread as dbSaveThread, saveThreadBatch, getThreadsForConversation } from '../../database/repositories/threadRepository';
+import { loadThread, loadReplies, postReply, hydrateThreadsFromLocal, hydrateRepliesFromLocal, loadThreadsForGroup, createNewThread, reconcileThreadReplies, applyReplyToParentThread } from '../threadService';
+import { saveThread as dbSaveThread, saveThreadBatch, getThreadsForConversation, getThread as dbGetThread } from '../../database/repositories/threadRepository';
 import { saveReply as dbSaveReply, saveReplyBatch, getRepliesForThread, deleteReply as dbDeleteReply } from '../../database/repositories/replyRepository';
 import { isDatabaseInitialized } from '../../database/connection';
 import { getMedia, getMediaForReply } from '../../database/repositories/mediaRepository';
@@ -122,6 +124,7 @@ import {
   getOrFetchGroupKey,
 } from '../crypto/contentCrypto';
 import type { ThreadResponse, ReplyResponse, ListRepliesResponse, CreateReplyResponse, CreateThreadResponse, ListThreadsResponse, ThreadListItem } from '../../types/api';
+import type { Thread } from '../../types/store';
 
 const mockGetThread = getThread as jest.MockedFunction<typeof getThread>;
 const mockGetGroupThreads = getGroupThreads as jest.MockedFunction<typeof getGroupThreads>;
@@ -135,6 +138,7 @@ const mockGetOrFetchGroupKey = getOrFetchGroupKey as jest.MockedFunction<typeof 
 const mockDbSaveThread = dbSaveThread as jest.MockedFunction<typeof dbSaveThread>;
 const mockSaveThreadBatch = saveThreadBatch as jest.MockedFunction<typeof saveThreadBatch>;
 const mockGetThreadsForConversation = getThreadsForConversation as jest.MockedFunction<typeof getThreadsForConversation>;
+const mockDbGetThread = dbGetThread as jest.MockedFunction<typeof dbGetThread>;
 const mockDbSaveReply = dbSaveReply as jest.MockedFunction<typeof dbSaveReply>;
 const mockSaveReplyBatch = saveReplyBatch as jest.MockedFunction<typeof saveReplyBatch>;
 const mockGetRepliesForThread = getRepliesForThread as jest.MockedFunction<typeof getRepliesForThread>;
@@ -234,6 +238,7 @@ beforeEach(() => {
     removeThread: mockRemoveThread,
     setThreads: mockSetThreads,
     updateThreadSyncStatus: mockUpdateThreadSyncStatus,
+    bumpLastMessageAt: mockBumpLastMessageAt,
   });
   mockGetOrFetchGroupKey.mockResolvedValue(fakeGroupKey);
   mockDecryptContent.mockImplementation((ciphertext: string) => {
@@ -412,6 +417,7 @@ describe('loadReplies', () => {
       upsertReply: mockUpsertReply,
       replaceReply: mockReplaceReply,
       reconcileReplies: mockReconcileReplies,
+      bumpLastMessageAt: mockBumpLastMessageAt,
     });
     const response: ListRepliesResponse = {
       replies: [makeReplyResponse({ replyId: 'reply-1' }), makeReplyResponse({ replyId: 'reply-2' })],
@@ -444,6 +450,7 @@ describe('loadReplies', () => {
       upsertReply: mockUpsertReply,
       replaceReply: mockReplaceReply,
       reconcileReplies: mockReconcileReplies,
+      bumpLastMessageAt: mockBumpLastMessageAt,
     });
     const response: ListRepliesResponse = {
       replies: [makeReplyResponse({ replyId: 'reply-1' }), makeReplyResponse({ replyId: 'reply-2' })],
@@ -732,6 +739,7 @@ describe('postReply', () => {
       upsertReply: mockUpsertReply,
       replaceReply: mockReplaceReply,
       reconcileReplies: mockReconcileReplies,
+      bumpLastMessageAt: mockBumpLastMessageAt,
     });
     mockCreateReply.mockResolvedValue({
       replyId: 'server-reply-id',
@@ -835,6 +843,7 @@ describe('postReply', () => {
       upsertReply: mockUpsertReply,
       replaceReply: mockReplaceReply,
       reconcileReplies: mockReconcileReplies,
+      bumpLastMessageAt: mockBumpLastMessageAt,
     });
 
     const dateNowSpy = jest.spyOn(Date, 'now').mockReturnValue(1_000);
@@ -887,6 +896,7 @@ describe('postReply', () => {
       upsertReply: mockUpsertReply,
       replaceReply: mockReplaceReply,
       reconcileReplies: mockReconcileReplies,
+      bumpLastMessageAt: mockBumpLastMessageAt,
     });
 
     const dateNowSpy = jest.spyOn(Date, 'now').mockReturnValue(50_000);
@@ -1091,7 +1101,9 @@ describe('persistence write-through', () => {
   });
 
   it('isDatabaseInitialized false — DB functions not called, store still updated (loadThread)', async () => {
-    mockIsDatabaseInitialized.mockReturnValueOnce(false);
+    // mockReturnValue, not ...Once: loadThread now asks twice — once for the
+    // #883 recency fallback read, once for the write-through.
+    mockIsDatabaseInitialized.mockReturnValue(false);
     const apiResponse = makeThreadResponse();
     mockGetThread.mockResolvedValue(apiResponse);
 
@@ -1131,7 +1143,7 @@ describe('persistence write-through', () => {
 
     await loadThreadsForGroup('group-1');
 
-    expect(mockGetGroupThreads).toHaveBeenCalledWith('group-1');
+    expect(mockGetGroupThreads).toHaveBeenCalledWith('group-1', { sort: 'activity_desc' });
     expect(mockSaveThreadBatch).toHaveBeenCalledTimes(1);
     const [batchGroupId, batchThreads] = mockSaveThreadBatch.mock.calls[0];
     expect(batchGroupId).toBe('group-1');
@@ -1316,5 +1328,260 @@ describe('hydration', () => {
     hydrateRepliesFromLocal('thread-1');
 
     expect(mockGetRepliesForThread).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #883 — activity recency never goes backwards
+// ---------------------------------------------------------------------------
+
+function makeStoredThread(overrides: Partial<Thread> = {}): Thread {
+  return {
+    id: 'thread-1',
+    conversationId: 'group-1',
+    authorId: 'user-1',
+    authorUsername: 'alice',
+    title: 'T',
+    body: null,
+    contentType: 'text',
+    pinned: false,
+    replyCount: 1,
+    lastReplyAt: null,
+    createdAt: 900,
+    updatedAt: 900,
+    syncStatus: 'synced',
+    ...overrides,
+  };
+}
+
+function setStoreThreads(threads: Record<string, Thread>): void {
+  const { useAppStore } = jest.requireMock('../../stores/useAppStore') as {
+    useAppStore: { getState: jest.Mock };
+  };
+  const current = useAppStore.getState();
+  useAppStore.getState.mockReturnValue({ ...current, threads });
+}
+
+describe('#883 loadThread recency merge', () => {
+  it('keeps the store lastReplyAt when the server response has none', async () => {
+    setStoreThreads({ 'thread-1': makeStoredThread({ lastReplyAt: 5000 }) });
+    mockGetThread.mockResolvedValue(makeThreadResponse({ lastReplyAt: null }));
+
+    const result = await loadThread('thread-1');
+
+    expect(result.lastReplyAt).toBe(5000);
+    expect(mockDbSaveThread.mock.calls[0][0].lastReplyAt).toBe(5000);
+    expect(mockUpsertThread.mock.calls[0][0].lastReplyAt).toBe(5000);
+  });
+
+  it('takes the server lastReplyAt when it is newer than the store value', async () => {
+    setStoreThreads({ 'thread-1': makeStoredThread({ lastReplyAt: 1000 }) });
+    mockGetThread.mockResolvedValue(
+      makeThreadResponse({ lastReplyAt: '2026-04-01T12:00:00Z' }),
+    );
+
+    const result = await loadThread('thread-1');
+
+    expect(result.lastReplyAt).toBe(new Date('2026-04-01T12:00:00Z').getTime());
+  });
+
+  it('falls back to the SQLite row when the store is empty (cold push open)', async () => {
+    mockDbGetThread.mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }));
+    mockGetThread.mockResolvedValue(makeThreadResponse({ lastReplyAt: null }));
+
+    const result = await loadThread('thread-1');
+
+    expect(mockDbGetThread).toHaveBeenCalledWith('thread-1');
+    expect(result.lastReplyAt).toBe(7000);
+    // The DB write must carry the merged value — dbSaveThread runs before the
+    // store upsert, so it has no slice-level guard behind it.
+    expect(mockDbSaveThread.mock.calls[0][0].lastReplyAt).toBe(7000);
+  });
+
+  it('does not read SQLite when the database is not initialized', async () => {
+    mockIsDatabaseInitialized.mockReturnValue(false);
+    mockGetThread.mockResolvedValue(makeThreadResponse({ lastReplyAt: null }));
+
+    const result = await loadThread('thread-1');
+
+    expect(mockDbGetThread).not.toHaveBeenCalled();
+    expect(result.lastReplyAt).toBeNull();
+  });
+
+  it('still resolves when the SQLite read throws', async () => {
+    mockDbGetThread.mockImplementationOnce(() => {
+      throw new Error('DB error');
+    });
+    mockGetThread.mockResolvedValue(
+      makeThreadResponse({ lastReplyAt: '2026-04-01T12:00:00Z' }),
+    );
+
+    const result = await loadThread('thread-1');
+
+    expect(result.lastReplyAt).toBe(new Date('2026-04-01T12:00:00Z').getTime());
+    expect(mockUpsertThread).toHaveBeenCalledTimes(1);
+  });
+
+  it('maps an unparseable server lastReplyAt to null, never NaN', async () => {
+    mockGetThread.mockResolvedValue(makeThreadResponse({ lastReplyAt: 'not-a-date' }));
+
+    const result = await loadThread('thread-1');
+
+    expect(result.lastReplyAt).toBeNull();
+  });
+});
+
+describe('#883 loadThreadsForGroup', () => {
+  it('requests the activity_desc sort', async () => {
+    mockGetGroupThreads.mockResolvedValue({
+      threads: [makeThreadListItem()],
+      totalCount: 1,
+      hasMore: false,
+    });
+
+    await loadThreadsForGroup('group-1');
+
+    expect(mockGetGroupThreads).toHaveBeenCalledWith('group-1', {
+      sort: 'activity_desc',
+    });
+  });
+
+  it('maps an unparseable list lastReplyAt to null, never NaN', async () => {
+    mockGetGroupThreads.mockResolvedValue({
+      threads: [makeThreadListItem({ lastReplyAt: 'garbage' })],
+      totalCount: 1,
+      hasMore: false,
+    });
+
+    const threads = await loadThreadsForGroup('group-1');
+
+    expect(threads[0].lastReplyAt).toBeNull();
+  });
+
+  it('merges recency BEFORE saveThreadBatch so a reply applied mid-request is not lowered on disk', async () => {
+    // A WS reply bumped thread-1 to 9000 while the list request was in flight;
+    // the page (computed earlier) has no reply. saveThreadBatch is INSERT OR
+    // REPLACE, so the merged value has to be what reaches SQLite.
+    setStoreThreads({ 'thread-1': makeStoredThread({ lastReplyAt: 9000 }) });
+    mockGetGroupThreads.mockResolvedValue({
+      threads: [makeThreadListItem({ lastReplyAt: null })],
+      totalCount: 1,
+      hasMore: false,
+    });
+
+    const threads = await loadThreadsForGroup('group-1');
+
+    expect(threads[0].lastReplyAt).toBe(9000);
+    const [, batchThreads] = mockSaveThreadBatch.mock.calls[0];
+    expect(batchThreads[0].lastReplyAt).toBe(9000);
+  });
+
+  it('falls back to the SQLite row for the batch merge when the store is empty', async () => {
+    mockDbGetThread.mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }));
+    mockGetGroupThreads.mockResolvedValue({
+      threads: [makeThreadListItem({ lastReplyAt: null })],
+      totalCount: 1,
+      hasMore: false,
+    });
+
+    await loadThreadsForGroup('group-1');
+
+    const [, batchThreads] = mockSaveThreadBatch.mock.calls[0];
+    expect(batchThreads[0].lastReplyAt).toBe(7000);
+  });
+});
+
+describe('#883 applyReplyToParentThread', () => {
+  it('upserts the parent with replyCount+1 and the max lastReplyAt, persists it, and bumps the conversation', () => {
+    setStoreThreads({
+      'thread-1': makeStoredThread({ replyCount: 4, lastReplyAt: 1000 }),
+    });
+
+    applyReplyToParentThread('group-1', 'thread-1', 2000);
+
+    expect(mockUpsertThread).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'thread-1', replyCount: 5, lastReplyAt: 2000 }),
+    );
+    expect(mockDbSaveThread).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'thread-1', lastReplyAt: 2000 }),
+    );
+    expect(mockBumpLastMessageAt).toHaveBeenCalledWith('group-1', 2000);
+  });
+
+  it('never lowers lastReplyAt with an older reply timestamp', () => {
+    setStoreThreads({ 'thread-1': makeStoredThread({ lastReplyAt: 9000 }) });
+
+    applyReplyToParentThread('group-1', 'thread-1', 2000);
+
+    expect(mockUpsertThread).toHaveBeenCalledWith(
+      expect.objectContaining({ lastReplyAt: 9000 }),
+    );
+  });
+
+  it('resolves the parent from SQLite when it is not in the store', () => {
+    mockDbGetThread.mockReturnValueOnce(
+      makeStoredThread({ id: 'thread-2', replyCount: 2, lastReplyAt: 100 }),
+    );
+
+    applyReplyToParentThread('group-1', 'thread-2', 3000);
+
+    expect(mockUpsertThread).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'thread-2', replyCount: 3, lastReplyAt: 3000 }),
+    );
+    expect(mockBumpLastMessageAt).toHaveBeenCalledWith('group-1', 3000);
+  });
+
+  it('still bumps the conversation when the parent is nowhere to be found', () => {
+    applyReplyToParentThread('group-1', 'thread-missing', 3000);
+
+    expect(mockUpsertThread).not.toHaveBeenCalled();
+    expect(mockDbSaveThread).not.toHaveBeenCalled();
+    expect(mockBumpLastMessageAt).toHaveBeenCalledWith('group-1', 3000);
+  });
+
+  it('is a complete no-op for an unparseable reply timestamp', () => {
+    setStoreThreads({ 'thread-1': makeStoredThread({ lastReplyAt: 1000 }) });
+
+    applyReplyToParentThread('group-1', 'thread-1', NaN);
+    applyReplyToParentThread('group-1', 'thread-1', Infinity);
+
+    expect(mockUpsertThread).not.toHaveBeenCalled();
+    expect(mockDbSaveThread).not.toHaveBeenCalled();
+    expect(mockBumpLastMessageAt).not.toHaveBeenCalled();
+  });
+});
+
+describe('#883 createNewThread conversation bump', () => {
+  it('bumps lastMessageAt with the SERVER createdAt on success', async () => {
+    const createdAt = '2026-04-02T09:30:00Z';
+    mockCreateThread.mockResolvedValue({
+      threadId: 'server-thread-id',
+      groupId: 'group-1',
+      createdAt,
+      media: [],
+    } as CreateThreadResponse);
+
+    await createNewThread('group-1', 'Title', 'Body', {
+      authorId: 'user-1',
+      authorUsername: 'alice',
+    });
+
+    expect(mockBumpLastMessageAt).toHaveBeenCalledWith(
+      'group-1',
+      new Date(createdAt).getTime(),
+    );
+  });
+
+  it('does not bump when the post fails', async () => {
+    mockCreateThread.mockRejectedValue(new ServerError(500));
+
+    await expect(
+      createNewThread('group-1', 'Title', 'Body', {
+        authorId: 'user-1',
+        authorUsername: 'alice',
+      }),
+    ).rejects.toBeDefined();
+
+    expect(mockBumpLastMessageAt).not.toHaveBeenCalled();
   });
 });

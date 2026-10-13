@@ -211,9 +211,14 @@ export function formatPostTimestampA11y(timestamp: number, now: number = Date.no
 
 /**
  * Clock time only — "3:04 PM". For the per-row time in a day-grouped list:
- * the clock time of this row's own timestamp. The enclosing day separator may
- * be grouped on a different field (ThreadsScreen groups by last activity
- * while rows show creation time), so this does not promise agreement with it.
+ * the clock time of this row's own timestamp.
+ *
+ * Callers are ThreadsScreen (orbit thread list) and ChatDetailScreen (DM
+ * message list). Both pass the row's `createdAt` while grouping their day
+ * separators on last activity (#883), so a message whose latest reply landed
+ * today sits under "Today" showing the time it was originally posted. This
+ * formatter therefore does NOT promise agreement with the enclosing day
+ * separator — that mismatch is a known product call, not a bug here.
  *
  * @param timestamp Epoch milliseconds.
  *

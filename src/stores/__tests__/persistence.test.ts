@@ -477,6 +477,75 @@ describe('persist merge — hydration guards', () => {
     });
   });
 
+  // -------------------------------------------------------------------------
+  // #883 — a corrupt persisted lastMessageAt cannot latch a DM to the top
+  // -------------------------------------------------------------------------
+
+  it.each([
+    ['NaN', NaN],
+    ['Infinity', Infinity],
+    ['zero', 0],
+    ['a string', '2026-01-01T00:00:00Z'],
+  ])('nulls a hydrated %s lastMessageAt (#883)', (_label, lastMessageAt) => {
+    const current = useAppStore.getState();
+
+    const merged = mergePersistedAppState(
+      {
+        conversations: {
+          'conv-1': {
+            id: 'conv-1',
+            type: 'direct',
+            name: 'bob',
+            memberCount: 2,
+            active: true,
+            lastMessageAt,
+            unreadCount: 0,
+            lastReadAt: null,
+            createdAt: 900,
+            updatedAt: 900,
+          },
+        },
+      },
+      current,
+    );
+
+    expect(merged.conversations['conv-1'].lastMessageAt).toBeNull();
+    // Only that one field is touched — the rest of the row rides through.
+    expect(merged.conversations['conv-1'].name).toBe('bob');
+    expect(merged.conversations['conv-1'].createdAt).toBe(900);
+    // Replace-mode guard: the sanitizer must not cost the actions.
+    expect(typeof merged.upsertConversation).toBe('function');
+  });
+
+  it('hydrates a healthy lastMessageAt untouched (#883)', () => {
+    const current = useAppStore.getState();
+    const row = {
+      id: 'conv-1',
+      type: 'direct' as const,
+      name: 'bob',
+      memberCount: 2,
+      active: true,
+      lastMessageAt: 1700000000000,
+      unreadCount: 2,
+      lastReadAt: 1699000000000,
+      createdAt: 900,
+      updatedAt: 1700000000000,
+    };
+
+    const merged = mergePersistedAppState({ conversations: { 'conv-1': row } }, current);
+
+    expect(merged.conversations['conv-1']).toBe(row);
+  });
+
+  it('leaves a non-object conversations value on its pre-#883 path', () => {
+    const current = useAppStore.getState();
+
+    const merged = mergePersistedAppState({ conversations: 'garbage' }, current);
+
+    // Unchanged behaviour: the container shape is still not validated here.
+    expect(merged.conversations as unknown).toBe('garbage');
+  });
+
   it('never resurrects a key partialize excludes (the allowlist governs reads too)', () => {
     const current = useAppStore.getState();
 

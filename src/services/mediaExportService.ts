@@ -75,7 +75,6 @@ import {
   getMediaExportAccess,
   type MediaRow,
 } from '../database/repositories/mediaRepository';
-import { useAppStore } from '../stores/useAppStore';
 import { captureError } from './telemetry';
 import {
   downloadAndDecryptMedia,
@@ -84,6 +83,7 @@ import {
 } from './mediaDownloadService';
 import { AuthError, NotFoundError } from './api/errors';
 import { abortable, isExportAbortError } from './media/abortable';
+import { isBlockedAuthor, isExportableConversation } from './media/exportAccess';
 import {
   buildExportFileName,
   reconcileExportLabel,
@@ -91,6 +91,7 @@ import {
 } from './media/exportFileName';
 import { SNIFF_HEAD_BYTES, sniffContentType } from './media/contentType';
 import { base64ToUint8Array } from './crypto/utils';
+import { createSemaphore } from '../utils/semaphore';
 
 // ---------------------------------------------------------------------------
 // Public result type
@@ -241,6 +242,11 @@ export function currentExportEpoch(): number {
  */
 export function cancelAllExports(): void {
   exportEpoch += 1;
+  // A staged document entry points at a decrypted file in MEDIA_DIR, which
+  // phase 2 of the wipe is about to delete. Dropping the list here means the
+  // end-of-run picker has nothing to present even if the runner's own unwind
+  // is still a microtask away.
+  discardStagedBulkDocuments();
   for (const controller of Array.from(activeControllers)) {
     try {
       controller.abort();
@@ -479,21 +485,66 @@ async function ensureExportPermission(kind: 'photo' | 'document'): Promise<Permi
 // Native-write choke point
 // ---------------------------------------------------------------------------
 
-interface ExportRequest {
-  /**
-   * WHERE this goes, and the only part of the route the native layer reads:
-   * the extension travels inside `displayName`, which is what both platforms
-   * derive the file's type and name from. Fixed before the download, because
-   * the permission was acquired for it — see `resolveExportLabel`.
-   */
-  kind: 'photo' | 'document';
+/**
+ * One file as the native writers want it. The extension travels inside
+ * `displayName`, which is what both platforms derive the file's type and name
+ * from.
+ */
+interface ExportEntry {
   sourcePath: string;
   mimeType: string;
   displayName: string;
-  createdAtMs: number;
-  /** Epoch captured when this export started — a wipe since then voids it. */
-  epoch: number;
 }
+
+/**
+ * A staged iOS document, plus the id needed to re-check its access at flush
+ * time. The id never leaves this module — the runner is handed counts.
+ */
+interface StagedDocument extends ExportEntry {
+  mediaId: string;
+}
+
+/**
+ * WHERE this goes. Fixed before the download, because the permission was
+ * acquired for it — see `resolveExportLabel`.
+ *
+ * The document arm takes a LIST so a bulk run presents exactly one iOS picker
+ * for the whole batch (plan §5). It is a list here, and not a second native
+ * call site, because `exportFiles(` may appear in precisely one function —
+ * see the `media-export-disclosure-gate` invariant.
+ */
+type ExportRequest =
+  | ({
+      kind: 'photo';
+      /** Post date, honoured by the photo route only. */
+      createdAtMs: number;
+      /** Epoch captured when this export started — a wipe since then voids it. */
+      epoch: number;
+      /**
+       * The CALLER's cancellation, re-checked inside the write lock. The lock
+       * wait is unbounded (a document picker waits for a human), so a lightbox
+       * save queued behind a bulk run could otherwise write minutes after the
+       * user closed the lightbox (#889 review).
+       */
+      signal?: AbortSignal;
+    } & ExportEntry)
+  | {
+      kind: 'document';
+      documents: readonly ExportEntry[];
+      epoch: number;
+      signal?: AbortSignal;
+    };
+
+/**
+ * Native writes are serialized, run-wide.
+ *
+ * Two bulk workers download in parallel, but a PhotoKit `performChanges` block
+ * and a document-picker presentation are both single-resource: two concurrent
+ * presentations would race for `RCTPresentedViewController()`, and parallel
+ * `performChanges` calls serialize inside PhotoKit anyway, just with less
+ * predictable failure attribution.
+ */
+const nativeWriteLock = createSemaphore(1);
 
 /**
  * THE ONLY NATIVE-WRITE CALL SITE IN THE APP.
@@ -503,7 +554,7 @@ interface ExportRequest {
  * `media-export-disclosure-gate` invariant, which also checks that every
  * exported entry point calls `ensureExportDisclosure(` before its first await.
  *
- * (The add-only permission QUERY in `ensurePhotoRouteAccess` also reaches
+ * (The add-only permission QUERY in `ensureExportPermission` also reaches
  * native, deliberately outside this function and outside the invariant's
  * scope: it writes nothing, returns no user data, and must run before the
  * download so the user is never asked for access to fetch a file they then
@@ -515,26 +566,42 @@ async function performExport(request: ExportRequest): Promise<ExportResult> {
     return { outcome: 'cancelled' };
   }
 
-  if (request.kind === 'photo') {
-    await saveToPhotoLibrary({
-      sourcePath: request.sourcePath,
-      mimeType: request.mimeType,
-      displayName: request.displayName,
-      createdAtMs: request.createdAtMs,
-    });
-    return { outcome: 'saved', destination: 'photos' };
-  }
+  await nativeWriteLock.acquire();
+  try {
+    // Re-checked INSIDE the lock: waiting for another item's write is
+    // unbounded (a document picker waits for the user), so BOTH a wipe and the
+    // caller walking away must still stop this write.
+    if (request.epoch !== exportEpoch || request.signal?.aborted === true) {
+      return { outcome: 'cancelled' };
+    }
 
-  const result = await exportFiles([
-    {
-      sourcePath: request.sourcePath,
-      mimeType: request.mimeType,
-      displayName: request.displayName,
-    },
-  ]);
-  return result === 'cancelled'
-    ? { outcome: 'cancelled' }
-    : { outcome: 'saved', destination: 'files' };
+    if (request.kind === 'photo') {
+      await saveToPhotoLibrary({
+        sourcePath: request.sourcePath,
+        mimeType: request.mimeType,
+        displayName: request.displayName,
+        createdAtMs: request.createdAtMs,
+      });
+      return { outcome: 'saved', destination: 'photos' };
+    }
+
+    if (request.documents.length === 0) {
+      return { outcome: 'cancelled' };
+    }
+
+    const result = await exportFiles(
+      request.documents.map((entry) => ({
+        sourcePath: entry.sourcePath,
+        mimeType: entry.mimeType,
+        displayName: entry.displayName,
+      })),
+    );
+    return result === 'cancelled'
+      ? { outcome: 'cancelled' }
+      : { outcome: 'saved', destination: 'files' };
+  } finally {
+    nativeWriteLock.release();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -543,6 +610,40 @@ async function performExport(request: ExportRequest): Promise<ExportResult> {
 
 function warnCode(code: string): void {
   if (__DEV__) console.warn('[mediaExport]', code);
+}
+
+/**
+ * Error codes already reported in the current capture WINDOW, or null when no
+ * window is open.
+ *
+ * A bulk run can touch `BULK_EXPORT_MAX_ITEMS` items, and a systemic writer
+ * failure fails all of them the same way — which was up to 500 identical
+ * Sentry events from one tap (#889 review). Inside a window each code is
+ * reported once; the second and later occurrences still reach `warnCode`, so
+ * nothing is hidden in a dev log.
+ *
+ * Null (the lightbox's single-item path) means no budget at all: one save, one
+ * event, exactly as before.
+ */
+let capturedExportCodes: Set<string> | null = null;
+
+/** Open the per-run capture budget. Called by the bulk runner at run start. */
+export function beginExportCaptureBudget(): void {
+  capturedExportCodes = new Set<string>();
+}
+
+/** Close it. Every later single-item save reports unconditionally again. */
+export function endExportCaptureBudget(): void {
+  capturedExportCodes = null;
+}
+
+/** Report a writer failure, at most once per code while a budget is open. */
+function captureExportFailure(code: string): void {
+  if (capturedExportCodes !== null) {
+    if (capturedExportCodes.has(code)) return;
+    capturedExportCodes.add(code);
+  }
+  captureError(new Error('media export failed'), { tags: { export_code: code } });
 }
 
 /** Map a native error code onto an outcome. */
@@ -611,12 +712,12 @@ function resultForError(e: unknown): ExportResult {
     const code = e.code;
     warnCode(code);
     if (code === 'EEXPORT' || code === 'EINVALIDNAME') {
-      captureError(new Error('media export failed'), { tags: { export_code: code } });
+      captureExportFailure(code);
     }
     return { outcome: outcomeForCode(code) };
   }
   warnCode('EUNKNOWN');
-  captureError(new Error('media export failed'), { tags: { export_code: 'EUNKNOWN' } });
+  captureExportFailure('EUNKNOWN');
   return { outcome: 'failed' };
 }
 
@@ -682,29 +783,112 @@ async function resolveExportLabel(
 // Access
 // ---------------------------------------------------------------------------
 
-/**
- * An item is exportable iff its resolved conversation is a key of the store's
- * `conversations` map.
- *
- * The STORE, not SQL, is the membership authority: DMs are threads, and DM
- * conversations live in the same Zustand map, while the SQLite `conversations`
- * table is a group-key store that keeps rows for orbits you have left. This
- * excludes orphans (left orbits) and the uploader's own not-yet-posted rows,
- * and is re-checked after the download.
- */
-function isExportableConversation(conversationId: string | null): boolean {
-  if (!conversationId) return false;
-  return Object.prototype.hasOwnProperty.call(
-    useAppStore.getState().conversations,
-    conversationId,
-  );
-}
-
 /** True when this id may be saved right now. Synchronous; DB + store only. */
 export function isMediaExportAllowed(mediaId: string): boolean {
   const access = getMediaExportAccess(mediaId);
   if (access === null) return false;
   return isExportableConversation(access.conversation_id);
+}
+
+// ---------------------------------------------------------------------------
+// The shared middle: fetch, re-check, label
+// ---------------------------------------------------------------------------
+
+/**
+ * Either an entry ready for the native write, or the result to report instead.
+ */
+type PreparedWrite =
+  | { ok: true; entry: ExportEntry; createdAtMs: number }
+  | { ok: false; result: ExportResult };
+
+/**
+ * Everything between the gates and the write, shared by the single-item and
+ * bulk paths: download, abort + access re-check, the 0-byte guard, and the
+ * label.
+ *
+ * Shared rather than duplicated on purpose. Each of those steps is a property
+ * the review of PR 1 argued for individually, and a second copy for the bulk
+ * runner is how one of them (realistically the 0-byte guard, which has no
+ * user-visible symptom) would quietly go missing from a batch of 400 items.
+ *
+ * Callers still own the gates BEFORE this — disclosure, permission, the first
+ * access check — because bulk acquires those once for the whole run.
+ *
+ * `rejectBlockedAuthor` is the one behavioural difference between the two
+ * callers: a blocked author's media is refused in a BATCH and allowed one item
+ * at a time, so the single-item path passes false.
+ */
+async function prepareWrite(
+  row: MediaRow,
+  mediaId: string,
+  signal: AbortSignal,
+  epoch: number,
+  options: { rejectBlockedAuthor: boolean },
+): Promise<PreparedWrite> {
+  // --- Download (joined, but abortable independently) ---------------------
+  let sourcePath: string;
+  try {
+    sourcePath = await abortable(downloadAndDecryptMedia(mediaId, signal), signal);
+  } catch (e) {
+    return { ok: false, result: resultForError(e) };
+  }
+
+  if (signal.aborted || epoch !== exportEpoch) {
+    return { ok: false, result: { outcome: 'cancelled' } };
+  }
+
+  // --- Access re-check: a download is long enough to lose membership, and
+  // long enough for the author to be blocked (bulk only) -------------------
+  const after = getMediaExportAccess(mediaId);
+  if (
+    after === null ||
+    !isExportableConversation(after.conversation_id) ||
+    (options.rejectBlockedAuthor && isBlockedAuthor(after.author_id))
+  ) {
+    warnCode('ENOACCESS');
+    return { ok: false, result: { outcome: 'notAllowed' } };
+  }
+
+  // --- 0-byte guard (DEBT-186): never hand an empty file to the OS --------
+  try {
+    const info = await stat(sourcePath);
+    if (!info || info.size <= 0) {
+      warnCode('ECORRUPT');
+      return { ok: false, result: { outcome: 'corrupt' } };
+    }
+  } catch {
+    warnCode('ENOENT');
+    return { ok: false, result: { outcome: 'unavailable' } };
+  }
+
+  // --- Label from the BYTES, not from the peer's content_type (#880) ------
+  // The KIND is NOT revisited: the permission for it was acquired before the
+  // download, so a byte check must never escalate a document save into a
+  // photo-library write.
+  let mimeType: string;
+  let displayName: string;
+  try {
+    ({ mimeType, displayName } = await resolveExportLabel(row, sourcePath));
+  } catch (e) {
+    // `reconcileExportLabel` throws on a REFUSED declared type, which both
+    // callers' routing gate already returned on — so this is a programming
+    // error, not a user state. It is caught anyway because neither entry point
+    // throws: the UI gets a result, not a rejection.
+    return { ok: false, result: resultForError(e) };
+  }
+
+  // The label step awaits (a file read), which is long enough for the lightbox
+  // to close or for a wipe to land. Mirrors the post-download check above: the
+  // native write is the one step that must not happen anyway.
+  if (signal.aborted || epoch !== exportEpoch) {
+    return { ok: false, result: { outcome: 'cancelled' } };
+  }
+
+  return {
+    ok: true,
+    entry: { sourcePath, mimeType, displayName },
+    createdAtMs: exportCreatedAtMs(row),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -785,72 +969,17 @@ export async function saveMediaItem(
   }
 
   try {
-    // --- Download (joined, but abortable independently) -------------------
-    let sourcePath: string;
+    const prepared = await prepareWrite(row, mediaId, controller.signal, epoch, {
+      rejectBlockedAuthor: false,
+    });
+    if (!prepared.ok) return prepared.result;
+    const { entry } = prepared;
     try {
-      sourcePath = await abortable(
-        downloadAndDecryptMedia(mediaId, controller.signal),
-        controller.signal,
+      return await performExport(
+        kind === 'photo'
+          ? { kind: 'photo', ...entry, createdAtMs, epoch, signal: controller.signal }
+          : { kind: 'document', documents: [entry], epoch, signal: controller.signal },
       );
-    } catch (e) {
-      return resultForError(e);
-    }
-
-    if (controller.signal.aborted || epoch !== exportEpoch) {
-      return { outcome: 'cancelled' };
-    }
-
-    // --- Access re-check: a download is long enough to lose membership ----
-    const after = getMediaExportAccess(mediaId);
-    if (after === null || !isExportableConversation(after.conversation_id)) {
-      warnCode('ENOACCESS');
-      return { outcome: 'notAllowed' };
-    }
-
-    // --- 0-byte guard (DEBT-186): never hand an empty file to the OS ------
-    try {
-      const info = await stat(sourcePath);
-      if (!info || info.size <= 0) {
-        warnCode('ECORRUPT');
-        return { outcome: 'corrupt' };
-      }
-    } catch {
-      warnCode('ENOENT');
-      return { outcome: 'unavailable' };
-    }
-
-    // --- Label from the BYTES, not from the peer's content_type (#880) ----
-    // The KIND is NOT revisited: the permission for it was acquired before the
-    // download, so a byte check must never escalate a document save into a
-    // photo-library write.
-    let mimeType: string;
-    let displayName: string;
-    try {
-      ({ mimeType, displayName } = await resolveExportLabel(row, sourcePath));
-    } catch (e) {
-      // `reconcileExportLabel` throws on a REFUSED declared type, which the
-      // gate at the top of this function already returned on — so this is a
-      // programming error, not a user state. It is caught anyway because
-      // saveMediaItem never throws: the UI gets a result, not a rejection.
-      return resultForError(e);
-    }
-
-    // The label step awaits (a file read), which is long enough for the
-    // lightbox to close or for a wipe to land. Mirrors the post-download check
-    // above: the native write is the one step that must not happen anyway.
-    if (controller.signal.aborted || epoch !== exportEpoch) {
-      return { outcome: 'cancelled' };
-    }
-
-    try {
-      return await performExport({
-        kind,
-        sourcePath,
-        mimeType,
-        displayName,
-        createdAtMs,
-        epoch,
-      });
     } catch (e) {
       // EUNSUPPORTED from Photos is recoverable: the same bytes can go to
       // Files. Offered only on a single-item save — a batch cannot stop to ask.
@@ -861,11 +990,9 @@ export async function saveMediaItem(
         try {
           return await performExport({
             kind: 'document',
-            sourcePath,
-            mimeType,
-            displayName,
-            createdAtMs,
+            documents: [entry],
             epoch,
+            signal: controller.signal,
           });
         } catch (retryError) {
           return resultForError(retryError);
@@ -895,6 +1022,258 @@ function offerFilesFallback(): Promise<boolean> {
 }
 
 // ---------------------------------------------------------------------------
+// Bulk save (#878 PR 2) — the service half of `media/bulkExportRunner.ts`
+// ---------------------------------------------------------------------------
+
+/**
+ * What a whole batch needs permission for, decided once from the snapshot's
+ * content types rather than per item.
+ */
+export interface BulkExportNeeds {
+  photo: boolean;
+  document: boolean;
+}
+
+export interface BulkExportPermission {
+  /** False ⇒ do not start the run. The service already explained why. */
+  granted: boolean;
+  /** iOS: photo access was refused and the user chose Files for everything. */
+  photosToFiles: boolean;
+}
+
+/**
+ * Acquire, ONCE, every permission the batch needs.
+ *
+ * A 400-item run must not prompt 400 times, and on Android ≤28 the second
+ * request is a no-op anyway (`PermissionsAndroid.request` resolves `granted`
+ * without a dialog once the permission is held).
+ *
+ * A single refusal stops the whole run rather than silently degrading it to
+ * "the documents only": the user asked to save what they were looking at, and
+ * a partial batch with no explanation is worse than none. The Alert that
+ * explains it — Settings, or Files instead — has already been shown by
+ * `ensureExportPermission`.
+ */
+export async function ensureBulkExportPermission(
+  needs: BulkExportNeeds,
+): Promise<BulkExportPermission> {
+  let photosToFiles = false;
+
+  if (needs.photo) {
+    const decision = await ensureExportPermission('photo');
+    if (decision === 'denied') {
+      warnCode('EPERMISSION');
+      return { granted: false, photosToFiles: false };
+    }
+    photosToFiles = decision === 'useFiles';
+  }
+
+  if (needs.document || photosToFiles) {
+    const decision = await ensureExportPermission('document');
+    if (decision === 'denied') {
+      warnCode('EPERMISSION');
+      return { granted: false, photosToFiles: false };
+    }
+  }
+
+  return { granted: true, photosToFiles };
+}
+
+/**
+ * iOS document entries staged by the running batch, presented through ONE
+ * picker at the end of the run (plan §5).
+ *
+ * The list lives HERE, not in the runner: an entry carries a decrypted path,
+ * a peer-supplied display name and a media id, and this module is the only one
+ * allowed to hold any of them. The runner sees counts.
+ */
+let stagedBulkDocuments: StagedDocument[] = [];
+
+/** How many document writes are waiting for the end-of-run picker. */
+export function stagedBulkDocumentCount(): number {
+  return stagedBulkDocuments.length;
+}
+
+/** Drop the staged batch without presenting anything (cancel, wipe). */
+export function discardStagedBulkDocuments(): void {
+  stagedBulkDocuments = [];
+}
+
+export interface BulkItemOptions {
+  /** Every photo-route item goes to the document route instead. */
+  photosToFiles: boolean;
+  /**
+   * Stage document writes instead of presenting a picker per item. True on
+   * iOS, where each `exportFiles` call is a modal the user must dismiss; false
+   * on Android, where the document route is a silent write to
+   * `Download/Orbital`.
+   */
+  batchDocuments: boolean;
+}
+
+/**
+ * Outcome of one item inside a batch. `deferred` means the item is staged for
+ * the end-of-run picker and is neither saved nor failed yet.
+ */
+export type BulkItemResult = ExportResult | { outcome: 'deferred' };
+
+/**
+ * Save one item as part of a batch.
+ *
+ * Same order as `saveMediaItem` with two differences, both because the run
+ * owns them once: the permission was acquired up front, and a photo the
+ * library refuses is NOT offered to Files (a batch cannot stop to ask — it is
+ * reported `unsupported` and the user can save that one item by hand).
+ *
+ * The disclosure is still re-confirmed per item. It is a cached boolean read
+ * after the first acknowledgement, so it costs nothing and shows no Alert —
+ * and it is the property `media-export-disclosure-gate` checks of EVERY entry
+ * point that can reach a native write, which is exactly what this is.
+ *
+ * Never throws.
+ */
+export async function exportMediaItemInBulk(
+  mediaId: string,
+  signal: AbortSignal,
+  options: BulkItemOptions,
+): Promise<BulkItemResult> {
+  let row: MediaRow | null = null;
+  try {
+    row = getMedia(mediaId);
+  } catch {
+    // DB may not be open (Metro Fast Refresh resets the handle).
+  }
+  if (row === null) {
+    warnCode('ENOROW');
+    return { outcome: 'unavailable' };
+  }
+
+  const routed = resolveExportRoute(row.content_type);
+  if (routed.kind === 'refused') {
+    warnCode('EUNSUPPORTED');
+    return { outcome: 'unsupported' };
+  }
+  const kind: 'photo' | 'document' =
+    routed.kind === 'photo' && options.photosToFiles ? 'document' : routed.kind;
+
+  if (!(await ensureExportDisclosure())) {
+    return { outcome: 'cancelled' };
+  }
+
+  // Access, plus the BULK-ONLY blocked-author rule. The snapshot already
+  // excluded blocked authors, but it was taken once and a run lasts minutes:
+  // blocking someone mid-batch has to stop the items still queued (#889).
+  const access = getMediaExportAccess(mediaId);
+  if (
+    access === null ||
+    !isExportableConversation(access.conversation_id) ||
+    isBlockedAuthor(access.author_id)
+  ) {
+    warnCode('ENOACCESS');
+    return { outcome: 'notAllowed' };
+  }
+
+  const epoch = exportEpoch;
+  if (signal.aborted) return { outcome: 'cancelled' };
+
+  const prepared = await prepareWrite(row, mediaId, signal, epoch, {
+    rejectBlockedAuthor: true,
+  });
+  if (!prepared.ok) return prepared.result;
+  const { entry } = prepared;
+
+  if (kind === 'document' && options.batchDocuments) {
+    stagedBulkDocuments.push({ ...entry, mediaId });
+    return { outcome: 'deferred' };
+  }
+
+  try {
+    return await performExport(
+      kind === 'photo'
+        ? { kind: 'photo', ...entry, createdAtMs: prepared.createdAtMs, epoch, signal }
+        : { kind: 'document', documents: [entry], epoch, signal },
+    );
+  } catch (e) {
+    return resultForError(e);
+  }
+}
+
+/** What the end-of-run picker did, and to how many items. */
+export interface BulkDocumentFlush {
+  outcome: 'saved' | 'cancelled' | 'failed' | 'skipped';
+  count: number;
+}
+
+/**
+ * Present the staged documents in ONE picker and clear the staging list.
+ *
+ * `cancelled` counts the presented items as skipped — the user dismissed the
+ * picker, which is a decision about the whole batch, not a failure of any item.
+ *
+ * `count` is what was actually PRESENTED, which can be fewer than was staged:
+ * every entry is re-checked against the access predicate here, immediately
+ * before the write, because access is otherwise only checked at download time
+ * and a document can sit staged for the length of the whole run (#889 review).
+ * The caller treats the shortfall as skipped.
+ *
+ * The staging list is detached before anything can await, so no path — throw
+ * included — leaves a decrypted path behind for the next run to present. That
+ * covers the LIST; it does not and cannot recall a copy the picker already
+ * wrote.
+ */
+export async function flushStagedBulkDocuments(): Promise<BulkDocumentFlush> {
+  // FIRST statement, before the detach and before any await: a wipe that lands
+  // in the window below must make this comparison fail, not pass. (The window
+  // is a few microtasks in practice — the disclosure read is cached by now —
+  // but the ordering is free and the review asked for it rather than for an
+  // argument about reachability.)
+  const epoch = exportEpoch;
+
+  const staged = stagedBulkDocuments;
+  stagedBulkDocuments = [];
+  if (staged.length === 0) return { outcome: 'skipped', count: 0 };
+
+  if (!(await ensureExportDisclosure())) {
+    return { outcome: 'cancelled', count: staged.length };
+  }
+
+  // Re-check every entry's access at WRITE time, not at download time.
+  const batch = staged.filter((entry) => isBulkExportAllowedAt(entry.mediaId));
+  if (batch.length === 0) return { outcome: 'skipped', count: 0 };
+
+  try {
+    const result = await performExport({ kind: 'document', documents: batch, epoch });
+    // The picker waits for a human, so a wipe is far likelier to land HERE
+    // than in the microtask window above. A copy may already exist on disk —
+    // this cannot undo that — but the outcome must not be reported as saved.
+    if (epoch !== exportEpoch) {
+      return { outcome: 'cancelled', count: batch.length };
+    }
+    return {
+      outcome: result.outcome === 'saved' ? 'saved' : 'cancelled',
+      count: batch.length,
+    };
+  } catch (e) {
+    const result = resultForError(e);
+    return {
+      outcome: result.outcome === 'cancelled' ? 'cancelled' : 'failed',
+      count: batch.length,
+    };
+  }
+}
+
+/**
+ * Both bulk access rules for one id, from ONE query. A deleted row (null)
+ * is refused — there is nothing left to attribute the copy to.
+ */
+function isBulkExportAllowedAt(mediaId: string): boolean {
+  const access = getMediaExportAccess(mediaId);
+  if (access === null) return false;
+  if (!isExportableConversation(access.conversation_id)) return false;
+  return !isBlockedAuthor(access.author_id);
+}
+
+// ---------------------------------------------------------------------------
 // Test seam
 // ---------------------------------------------------------------------------
 
@@ -902,5 +1281,7 @@ function offerFilesFallback(): Promise<boolean> {
 export function resetMediaExportForTesting(): void {
   disclosureAcked = null;
   exportEpoch = 0;
+  stagedBulkDocuments = [];
+  nativeWriteLock.reset();
   activeControllers.clear();
 }

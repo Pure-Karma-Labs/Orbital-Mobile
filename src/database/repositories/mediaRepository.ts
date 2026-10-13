@@ -285,18 +285,74 @@ const SORT_DIRS: Record<string, string> = {
 export type MediaRowWithConversation = MediaRow & { conversation_id: string | null };
 
 /**
- * Build shared WHERE clause fragments and params for getAllMedia/getMediaCount.
+ * The membership facts a BULK export narrows its snapshot by (#878 PR 2).
+ *
+ * `conversationIds` are the keys of the store's `conversations` map — the
+ * store, not SQL, is the membership authority (DMs are threads and live in the
+ * same map; the SQLite `conversations` table is a group-key store that keeps
+ * rows for orbits you have left). Passing it in keeps this repository free of
+ * a store import.
  */
-function buildMediaFilterClause(options: GetAllMediaOptions): {
+export interface MediaExportAccessFilter {
+  /** Conversations the signed-in user is currently in. Empty ⇒ nothing. */
+  conversationIds: readonly string[];
+  /** Authors excluded from a BATCH only (Alex 2026-10-09). May be empty. */
+  blockedAuthorIds: readonly string[];
+}
+
+/** SQL for the row's author, picked by whichever parent it actually hangs off. */
+const AUTHOR_EXPR =
+  'CASE WHEN m.reply_id IS NOT NULL THEN r.author_id ELSE t.author_id END';
+
+/**
+ * Build shared WHERE clause fragments and params for getAllMedia/getMediaCount
+ * and the bulk-export snapshot.
+ *
+ * `access` is OPTIONAL and only the bulk path passes it. The grid deliberately
+ * does NOT apply it: leaving an orbit leaves its `orbital_media` rows behind,
+ * and those orphans keep showing under "All Orbits" (Alex 2026-10-09) — the
+ * alternative hides media from orbits you have left.
+ *
+ * Returns `null` when `access` is present with an EMPTY conversation list. That
+ * is not the same as "no conversation filter": an `IN ()` is a syntax error in
+ * SQLite, and a silently dropped clause would return the whole library to a
+ * caller that asked for nothing. Callers short-circuit on null and run no
+ * query at all.
+ */
+function buildMediaFilterClause(
+  options: GetAllMediaOptions,
+  access?: MediaExportAccessFilter,
+): {
   where: string;
   params: (string | number)[];
-} {
+} | null {
   const conditions: string[] = [
     "m.attachment_key IS NOT NULL",
     "m.upload_state = 'done'",
     "COALESCE(m.is_thumbnail, 0) = 0",
   ];
   const params: (string | number)[] = [];
+
+  if (access) {
+    if (access.conversationIds.length === 0) return null;
+    const convPlaceholders = access.conversationIds.map(() => '?').join(', ');
+    conditions.push(
+      `COALESCE(t.conversation_id, rt.conversation_id) IN (${convPlaceholders})`,
+    );
+    params.push(...access.conversationIds);
+
+    // Only when there IS someone blocked. An always-present `NOT IN ('')` would
+    // read as a pin on a behaviour that is off by default.
+    if (access.blockedAuthorIds.length > 0) {
+      const authorPlaceholders = access.blockedAuthorIds.map(() => '?').join(', ');
+      // COALESCE: `NULL NOT IN (…)` evaluates to NULL, which filters the row
+      // OUT — so an author-less row would silently vanish from a batch.
+      conditions.push(
+        `COALESCE(${AUTHOR_EXPR}, '') NOT IN (${authorPlaceholders})`,
+      );
+      params.push(...access.blockedAuthorIds);
+    }
+  }
 
   // Conversation filter
   if (options.conversationId) {
@@ -333,7 +389,9 @@ export function getAllMedia(options: GetAllMediaOptions): MediaRowWithConversati
   const col = SORT_COLUMNS[options.sortBy] ?? 'm.created_at';
   const dir = SORT_DIRS[options.sortOrder] ?? 'DESC';
 
-  const { where, params } = buildMediaFilterClause(options);
+  const clause = buildMediaFilterClause(options);
+  if (clause === null) return [];
+  const { where, params } = clause;
 
   const sql = `
     SELECT m.*, COALESCE(t.conversation_id, rt.conversation_id) as conversation_id
@@ -353,12 +411,23 @@ export function getAllMedia(options: GetAllMediaOptions): MediaRowWithConversati
  * Count of media matching the given filters (same as getAllMedia but without
  * limit/offset/sort).
  *
- * Returns 0 if database is not initialized.
+ * The optional `access` argument is what lets the bulk-export confirm Alert
+ * say how many items "can't be saved": the difference between the count
+ * WITHOUT it (what the grid shows) and WITH it (what a batch may touch) is
+ * exactly the orphan + blocked-author set.
+ *
+ * Returns 0 if database is not initialized, or if `access` admits no
+ * conversation at all.
  */
-export function getMediaCount(options: GetAllMediaOptions): number {
+export function getMediaCount(
+  options: GetAllMediaOptions,
+  access?: MediaExportAccessFilter,
+): number {
   if (!isDatabaseInitialized()) return 0;
 
-  const { where, params } = buildMediaFilterClause(options);
+  const clause = buildMediaFilterClause(options, access);
+  if (clause === null) return 0;
+  const { where, params } = clause;
 
   const sql = `
     SELECT COUNT(*) as cnt
@@ -423,7 +492,7 @@ export function getMediaExportAccess(id: string): MediaExportAccess | null {
 
   return queryOne<MediaExportAccess>(
     `SELECT COALESCE(t.conversation_id, rt.conversation_id) as conversation_id,
-            CASE WHEN m.reply_id IS NOT NULL THEN r.author_id ELSE t.author_id END as author_id
+            ${AUTHOR_EXPR} as author_id
      FROM orbital_media m
      LEFT JOIN orbital_threads t ON m.thread_id = t.id
      LEFT JOIN orbital_replies r ON m.reply_id = r.id
@@ -431,6 +500,68 @@ export function getMediaExportAccess(id: string): MediaExportAccess | null {
      WHERE m.id = ?`,
     [id],
   );
+}
+
+/**
+ * One row of a bulk-export snapshot — the five facts a batch needs and nothing
+ * else (#878 PR 2).
+ *
+ * Deliberately NOT `MediaRow`: the runner must never hold a `file_name`, an
+ * `attachment_key` or a `local_path`. It passes ids back into
+ * `mediaExportService`, which re-reads the row and is the only module that
+ * handles a peer-supplied name or a decrypted path.
+ *
+ * `has_local` is 1/0 rather than a boolean because it comes straight out of
+ * SQLite, which has no boolean type.
+ */
+export interface MediaExportSnapshotRow {
+  id: string;
+  content_type: string;
+  file_size: number;
+  download_state: string;
+  has_local: number;
+}
+
+/**
+ * Every item a "Save all" run would touch, under the SAME filters and sort the
+ * grid is showing, narrowed to what the user may actually export.
+ *
+ * Bounded by `limit` (the caller passes `BULK_EXPORT_MAX_ITEMS`): the run is
+ * the iterated set, so the bound is also the bound on the single iOS document
+ * picker at the end of a run.
+ *
+ * Returns an empty array — running NO query — when the database is closed or
+ * `access` admits no conversation. Synchronous, like every other function in
+ * this repository; the caller takes an await tick first so the tap can render
+ * its disabled button state before the DB work starts (`prepareBulkExport`).
+ */
+export function getExportSnapshot(
+  options: GetAllMediaOptions,
+  access: MediaExportAccessFilter,
+  limit: number,
+): MediaExportSnapshotRow[] {
+  if (!isDatabaseInitialized()) return [];
+
+  const clause = buildMediaFilterClause(options, access);
+  if (clause === null) return [];
+  const { where, params } = clause;
+
+  const col = SORT_COLUMNS[options.sortBy] ?? 'm.created_at';
+  const dir = SORT_DIRS[options.sortOrder] ?? 'DESC';
+
+  const sql = `
+    SELECT m.id, m.content_type, m.file_size, m.download_state,
+           CASE WHEN m.local_path IS NOT NULL THEN 1 ELSE 0 END as has_local
+    FROM orbital_media m
+    LEFT JOIN orbital_threads t ON m.thread_id = t.id
+    LEFT JOIN orbital_replies r ON m.reply_id = r.id
+    LEFT JOIN orbital_threads rt ON r.thread_id = rt.id
+    WHERE ${where}
+    ORDER BY ${col} ${dir}
+    LIMIT ?
+  `;
+
+  return queryMany<MediaExportSnapshotRow>(sql, [...params, limit]);
 }
 
 /**

@@ -6,8 +6,10 @@
  */
 
 import React from 'react';
-import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'react-test-renderer';
+import { act, create, type ReactTestRenderer } from 'react-test-renderer';
+import { AccessibilityInfo, Alert, type AlertButton } from 'react-native';
 import { ThemeProvider } from '../../theme';
+import { findByTestId, findHostByTestId, hasHostTestId } from '../../testUtils/rtr';
 import { FileLibraryScreen } from '../FileLibraryScreen';
 
 // ---------------------------------------------------------------------------
@@ -53,6 +55,11 @@ jest.mock('../../stores/useAppStore', () => ({
     {
       getState: () => ({
         media: mockMedia,
+        // #878: the canExport projection goes through the SHARED
+        // `isExportableConversation` predicate, which reads membership from the
+        // store rather than from the hook. Without this the predicate sees an
+        // empty map and refuses every row.
+        conversations: mockConversations,
         setMediaBatch: jest.fn(),
       }),
     },
@@ -146,7 +153,57 @@ jest.mock('../../database/connection', () => ({
 jest.mock('../../services/mediaDownloadService', () => ({
   downloadAndDecryptMedia: jest.fn().mockResolvedValue('/path/to/file.jpg'),
   recoverStalePaths: jest.fn().mockResolvedValue([]),
+  // Not used by this screen, but `mediaExportService` imports both from here
+  // and a missing binding would only surface the day that mock is relaxed.
+  DOWNLOAD_ABORTED_MESSAGE: 'Download aborted',
+  InsufficientSpaceError: class InsufficientSpaceError extends Error {},
 }));
+
+/**
+ * The two user-consent gates for "Save all" (#878 PR 2).
+ *
+ * Mocked at the module boundary: the real pair talks to the native photo
+ * permission and persists the disclosure acknowledgement. What this suite
+ * asserts is the ORDER the screen asks in, not what the dialogs look like.
+ */
+jest.mock('../../services/mediaExportService', () => ({
+  ensureExportDisclosure: jest.fn(),
+  ensureBulkExportPermission: jest.fn(),
+}));
+
+/**
+ * The batch runner — mocked EXCEPT for its store.
+ *
+ * The run deliberately outlives the screen, so its state is a vanilla zustand
+ * store read through `useStore`. Replacing that store with a plain object would
+ * break `useSyncExternalStore`, so the factory builds a real one: the tests
+ * drive phases by writing to it, exactly as a live run would.
+ */
+jest.mock('../../services/media/bulkExportRunner', () => {
+  const { createStore } = require('zustand/vanilla');
+  const store = createStore(() => ({
+    phase: 'idle',
+    total: 0,
+    completed: 0,
+    summary: null,
+  }));
+  return {
+    bulkExportStore: store,
+    prepareBulkExport: jest.fn(),
+    checkBulkExportSpace: jest.fn(),
+    startBulkExport: jest.fn(() => true),
+    cancelBulkExport: jest.fn(),
+    dismissBulkExportSummary: jest.fn(),
+    describeBulkConfirm: jest.fn(() => 'CONFIRM_BODY'),
+    describeBulkProgress: jest.fn(
+      (s: { completed: number; total: number }) => `${s.completed} of ${s.total} items`,
+    ),
+    describeBulkSummary: jest.fn(() => 'SUMMARY_LINE'),
+    // Real, not a sentinel: the start announcement's pluralisation is one of
+    // the strings the #889 review asked for ("Saving 1 items").
+    pluralItems: (n: number) => (n === 1 ? '1 item' : `${n} items`),
+  };
+});
 
 /**
  * Mock MediaLightbox to avoid pulling in useMediaDownload — and to capture the
@@ -206,6 +263,16 @@ const mockRoute = {
   params: undefined,
 };
 
+/**
+ * Every screen mounted by a test, so `afterEach` can unmount them.
+ *
+ * #878: the bulk-export store is MODULE state and every mounted screen
+ * subscribes to it, so a renderer left mounted by an earlier test reacts to a
+ * phase change driven by a later one — and announces. Tearing each mount down
+ * is what keeps the announcement counts a property of one screen.
+ */
+const mountedRenderers: ReactTestRenderer[] = [];
+
 function renderScreen(): ReactTestRenderer {
   let renderer!: ReactTestRenderer;
   act(() => {
@@ -220,17 +287,86 @@ function renderScreen(): ReactTestRenderer {
       ),
     );
   });
+  mountedRenderers.push(renderer);
   return renderer;
 }
 
-function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstance {
-  const found = root.findAll((node) => node.props.testID === testID);
-  if (found.length === 0) throw new Error(`No element with testID "${testID}"`);
-  return found[0];
+// ---------------------------------------------------------------------------
+// Save-all fixtures (#878)
+// ---------------------------------------------------------------------------
+
+type BulkPhase = 'idle' | 'running' | 'paused' | 'done';
+
+interface BulkSummaryShape {
+  saved: number;
+  skipped: number;
+  failed: number;
+  destinations: string[];
+  stoppedForSpace: boolean;
+  cancelled: boolean;
 }
 
-function findAllByTestId(root: ReactTestInstance, testID: string): ReactTestInstance[] {
-  return root.findAll((node) => node.props.testID === testID);
+interface BulkStateShape {
+  phase: BulkPhase;
+  total: number;
+  completed: number;
+  summary: BulkSummaryShape | null;
+}
+
+const IDLE_BULK_STATE: BulkStateShape = {
+  phase: 'idle',
+  total: 0,
+  completed: 0,
+  summary: null,
+};
+
+interface BulkRunnerMock {
+  bulkExportStore: {
+    setState: (next: BulkStateShape, replace: true) => void;
+    getState: () => BulkStateShape;
+  };
+  prepareBulkExport: jest.Mock;
+  checkBulkExportSpace: jest.Mock;
+  startBulkExport: jest.Mock;
+  cancelBulkExport: jest.Mock;
+  dismissBulkExportSummary: jest.Mock;
+  describeBulkConfirm: jest.Mock;
+  describeBulkProgress: jest.Mock;
+  describeBulkSummary: jest.Mock;
+  pluralItems: (n: number) => string;
+}
+
+function bulkRunner(): BulkRunnerMock {
+  return jest.requireMock('../../services/media/bulkExportRunner');
+}
+
+function exportService(): {
+  ensureExportDisclosure: jest.Mock;
+  ensureBulkExportPermission: jest.Mock;
+} {
+  return jest.requireMock('../../services/mediaExportService');
+}
+
+/** A plan shaped like `BulkExportPlan`; only `count` matters to the screen. */
+function makePlan(overrides: Partial<{
+  ids: string[];
+  count: number;
+  totalBytes: number;
+  toDownloadBytes: number;
+  unavailableCount: number;
+  excludedCount: number;
+  needs: { photo: boolean; document: boolean };
+}> = {}): Record<string, unknown> {
+  return {
+    ids: ['media-1', 'media-2'],
+    count: 2,
+    totalBytes: 3 * 1024 * 1024,
+    toDownloadBytes: 1024 * 1024,
+    unavailableCount: 0,
+    excludedCount: 0,
+    needs: { photo: true, document: false },
+    ...overrides,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -240,53 +376,65 @@ function findAllByTestId(root: ReactTestInstance, testID: string): ReactTestInst
 beforeEach(() => {
   jest.clearAllMocks();
   mockLightboxProps.length = 0;
+  // The run outlives the screen by design, so the store is module state that
+  // would otherwise leak between tests. Reset before any render.
+  bulkRunner().bulkExportStore.setState(IDLE_BULK_STATE, true);
+  exportService().ensureExportDisclosure.mockResolvedValue(true);
+  exportService().ensureBulkExportPermission.mockResolvedValue({
+    granted: true,
+    photosToFiles: false,
+  });
+});
+
+afterEach(() => {
+  act(() => {
+    for (const renderer of mountedRenderers.splice(0)) renderer.unmount();
+  });
 });
 
 describe('FileLibraryScreen — rendering', () => {
   it('renders with testID "file-library-screen"', () => {
     const renderer = renderScreen();
-    expect(() => findByTestId(renderer.root, 'file-library-screen')).not.toThrow();
+    expect(hasHostTestId(renderer.root, 'file-library-screen')).toBe(true);
   });
 
   it('does not render quota bar when quota is not loaded', () => {
     const renderer = renderScreen();
-    const bars = findAllByTestId(renderer.root, 'quota-bar');
-    expect(bars.length).toBe(0);
+    expect(hasHostTestId(renderer.root, 'quota-bar')).toBe(false);
   });
 
   it('renders the content filter row', () => {
     const renderer = renderScreen();
-    expect(() => findByTestId(renderer.root, 'content-filter-row')).not.toThrow();
+    expect(hasHostTestId(renderer.root, 'content-filter-row')).toBe(true);
   });
 
   it('renders all four content filter chips', () => {
     const renderer = renderScreen();
-    expect(() => findByTestId(renderer.root, 'filter-all')).not.toThrow();
-    expect(() => findByTestId(renderer.root, 'filter-images')).not.toThrow();
-    expect(() => findByTestId(renderer.root, 'filter-videos')).not.toThrow();
-    expect(() => findByTestId(renderer.root, 'filter-documents')).not.toThrow();
+    expect(hasHostTestId(renderer.root, 'filter-all')).toBe(true);
+    expect(hasHostTestId(renderer.root, 'filter-images')).toBe(true);
+    expect(hasHostTestId(renderer.root, 'filter-videos')).toBe(true);
+    expect(hasHostTestId(renderer.root, 'filter-documents')).toBe(true);
   });
 
   it('renders the orbit filter row when conversations have media', () => {
     const renderer = renderScreen();
-    expect(() => findByTestId(renderer.root, 'orbit-filter-row')).not.toThrow();
-    expect(() => findByTestId(renderer.root, 'orbit-all')).not.toThrow();
+    expect(hasHostTestId(renderer.root, 'orbit-filter-row')).toBe(true);
+    expect(hasHostTestId(renderer.root, 'orbit-all')).toBe(true);
   });
 
   it('renders the sort row', () => {
     const renderer = renderScreen();
-    expect(() => findByTestId(renderer.root, 'sort-row')).not.toThrow();
+    expect(hasHostTestId(renderer.root, 'sort-row')).toBe(true);
   });
 
   it('renders the FlatList grid', () => {
     const renderer = renderScreen();
-    expect(() => findByTestId(renderer.root, 'file-library-grid')).not.toThrow();
+    expect(hasHostTestId(renderer.root, 'file-library-grid')).toBe(true);
   });
 
   it('renders media cells', () => {
     const renderer = renderScreen();
-    const cells = findAllByTestId(renderer.root, 'file-cell-media-1');
-    expect(cells.length).toBeGreaterThan(0);
+    expect(hasHostTestId(renderer.root, 'file-cell-media-1')).toBe(true);
   });
 });
 
@@ -375,7 +523,7 @@ describe('FileLibraryScreen — cell press interactions', () => {
     });
 
     // Lightbox should now be visible
-    expect(() => findByTestId(renderer.root, 'media-lightbox')).not.toThrow();
+    expect(hasHostTestId(renderer.root, 'media-lightbox')).toBe(true);
     delete mockMedia['media-2'];
   });
 
@@ -417,8 +565,8 @@ describe('FileLibraryScreen — unavailable tile states', () => {
     const renderer = renderScreen();
 
     // The unavailable tile should be present
-    expect(() => findByTestId(renderer.root, 'file-cell-media-1-unavailable')).not.toThrow();
-    const tile = findByTestId(renderer.root, 'file-cell-media-1-unavailable');
+    expect(hasHostTestId(renderer.root, 'file-cell-media-1-unavailable')).toBe(true);
+    const tile = findHostByTestId(renderer.root, 'file-cell-media-1-unavailable');
 
     // Should contain 'No longer available' text
     const texts = tile.findAllByType('Text' as unknown as React.ComponentType);
@@ -437,13 +585,12 @@ describe('FileLibraryScreen — unavailable tile states', () => {
     const renderer = renderScreen();
 
     // The unavailable tile should NOT be present (localPath exists -> falls through)
-    const unavailableTiles = findAllByTestId(renderer.root, 'file-cell-media-1-unavailable');
-    expect(unavailableTiles.length).toBe(0);
+    expect(hasHostTestId(renderer.root, 'file-cell-media-1-unavailable')).toBe(false);
 
     // The pressable download-prompt tile should be present
     // (isDownloaded requires downloadState === 'downloaded', so this falls through
     //  past the unavailable guard to the download-prompt branch)
-    expect(() => findByTestId(renderer.root, 'file-cell-media-1')).not.toThrow();
+    expect(hasHostTestId(renderer.root, 'file-cell-media-1')).toBe(true);
 
     delete mockMedia['media-1'];
   });
@@ -455,7 +602,7 @@ describe('FileLibraryScreen — empty state', () => {
     getAllMedia.mockReturnValue([]);
 
     const renderer = renderScreen();
-    expect(() => findByTestId(renderer.root, 'empty-state')).not.toThrow();
+    expect(hasHostTestId(renderer.root, 'empty-state')).toBe(true);
   });
 });
 
@@ -530,5 +677,416 @@ describe('FileLibraryScreen — canExport wiring', () => {
   it('refuses an id that is not on the loaded page at all', () => {
     renderScreen();
     expect(canExport()('never-loaded')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Save all (#878 PR 2)
+//
+// The screen owns the whole conversation — disclosure, the zero and
+// low-storage arms, the confirm Alert, the permission — and `bulkExportRunner`
+// owns the run. So what is asserted here is the ORDER of the gates and the
+// fact that each refusal stops short of `startBulkExport`; the copy and the
+// run mechanics are covered in bulkExportRunner's own suite.
+//
+// No fake timers anywhere in this file (#834): a scoped fake-timer test in the
+// Lightbox family failed unrelated suites, so the async flow is driven with
+// `await act(async () => {})` microtask flushes instead.
+// ---------------------------------------------------------------------------
+
+describe('FileLibraryScreen — Save all (#878)', () => {
+  let alertSpy: jest.SpyInstance;
+  let announceSpy: jest.SpyInstance;
+
+  // Same reason as the canExport block: the "empty state" test leaves
+  // getAllMedia pinned to [], so this block states its own page.
+  beforeEach(() => {
+    const repo = jest.requireMock('../../database/repositories/mediaRepository');
+    (repo.getAllMedia as jest.Mock).mockReturnValue(mockMediaRows);
+
+    // jest.setup.ts mocks nothing from react-native, so both of these are ours
+    // to install and to restore.
+    alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+    announceSpy = jest
+      .spyOn(AccessibilityInfo, 'announceForAccessibility')
+      .mockImplementation(() => {});
+
+    bulkRunner().prepareBulkExport.mockResolvedValue(makePlan());
+    bulkRunner().checkBulkExportSpace.mockResolvedValue({
+      ok: true,
+      requiredBytes: 4 * 1024 * 1024,
+      freeBytes: 1024 * 1024 * 1024,
+    });
+  });
+
+  afterEach(() => {
+    alertSpy.mockRestore();
+    announceSpy.mockRestore();
+  });
+
+  /** Tap "Save all" and let the flow run as far as its next await. */
+  async function pressSaveAll(renderer: ReactTestRenderer): Promise<void> {
+    await act(async () => {
+      findByTestId(renderer.root, 'save-all-button').props.onPress();
+    });
+  }
+
+  /** The buttons of the nth Alert — `Alert.alert`'s 3rd argument. */
+  function alertButtons(index: number): AlertButton[] {
+    const buttons = alertSpy.mock.calls[index][2];
+    expect(Array.isArray(buttons)).toBe(true);
+    return buttons as AlertButton[];
+  }
+
+  /** Titles of every Alert raised so far, in order. */
+  function alertTitles(): unknown[] {
+    return alertSpy.mock.calls.map((call) => call[0]);
+  }
+
+  function setBulkState(next: BulkStateShape): void {
+    bulkRunner().bulkExportStore.setState(next, true);
+  }
+
+  it('renders an enabled Save all button while the store is idle', () => {
+    const renderer = renderScreen();
+
+    expect(hasHostTestId(renderer.root, 'save-all-button')).toBe(true);
+    const host = findHostByTestId(renderer.root, 'save-all-button');
+    expect(host.props.accessibilityState.disabled).toBe(false);
+  });
+
+  it('asks for the disclosure, then snapshots, then confirms, then starts', async () => {
+    const runner = bulkRunner();
+    const svc = exportService();
+    const renderer = renderScreen();
+
+    await pressSaveAll(renderer);
+
+    // Gate 1 comes BEFORE any DB work: the disclosure must not be shown
+    // after the app has already gone looking at the user's media.
+    expect(svc.ensureExportDisclosure).toHaveBeenCalledTimes(1);
+    expect(runner.prepareBulkExport).toHaveBeenCalledTimes(1);
+    expect(svc.ensureExportDisclosure.mock.invocationCallOrder[0]).toBeLessThan(
+      runner.prepareBulkExport.mock.invocationCallOrder[0],
+    );
+
+    // The confirm body is the plan rendered by `describeBulkConfirm` — the
+    // screen never builds that string itself.
+    expect(runner.describeBulkConfirm).toHaveBeenCalledTimes(1);
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+    expect(alertSpy.mock.calls[0][0]).toBe('Save all');
+    expect(alertSpy.mock.calls[0][1]).toBe('CONFIRM_BODY');
+
+    // Nothing has been asked of the OS yet.
+    expect(svc.ensureBulkExportPermission).not.toHaveBeenCalled();
+    expect(runner.startBulkExport).not.toHaveBeenCalled();
+
+    await act(async () => {
+      alertButtons(0)[1].onPress?.();
+    });
+
+    expect(svc.ensureBulkExportPermission).toHaveBeenCalledTimes(1);
+    expect(runner.startBulkExport).toHaveBeenCalledTimes(1);
+  });
+
+  it('takes no snapshot when the disclosure is declined', async () => {
+    exportService().ensureExportDisclosure.mockResolvedValue(false);
+    const renderer = renderScreen();
+
+    await pressSaveAll(renderer);
+
+    expect(bulkRunner().prepareBulkExport).not.toHaveBeenCalled();
+    expect(bulkRunner().startBulkExport).not.toHaveBeenCalled();
+    expect(alertSpy).not.toHaveBeenCalled();
+  });
+
+  it('shows "Nothing to save" for an empty plan and starts nothing', async () => {
+    bulkRunner().prepareBulkExport.mockResolvedValue(makePlan({ ids: [], count: 0 }));
+    const renderer = renderScreen();
+
+    await pressSaveAll(renderer);
+
+    expect(alertTitles()).toEqual(['Nothing to save']);
+    expect(bulkRunner().checkBulkExportSpace).not.toHaveBeenCalled();
+    expect(bulkRunner().startBulkExport).not.toHaveBeenCalled();
+  });
+
+  it('blocks on low storage without reaching the confirm', async () => {
+    bulkRunner().checkBulkExportSpace.mockResolvedValue({
+      ok: false,
+      requiredBytes: 900 * 1024 * 1024,
+      freeBytes: 0,
+    });
+    const renderer = renderScreen();
+
+    await pressSaveAll(renderer);
+
+    expect(alertTitles()).toEqual(['Not enough storage']);
+    expect(alertTitles()).not.toContain('Save all');
+    expect(exportService().ensureBulkExportPermission).not.toHaveBeenCalled();
+    expect(bulkRunner().startBulkExport).not.toHaveBeenCalled();
+  });
+
+  it('refuses to start when membership never hydrated (plan is null)', async () => {
+    bulkRunner().prepareBulkExport.mockResolvedValue(null);
+    const renderer = renderScreen();
+
+    await pressSaveAll(renderer);
+
+    expect(alertTitles()).toEqual(["Can't save yet"]);
+    expect(bulkRunner().checkBulkExportSpace).not.toHaveBeenCalled();
+    expect(bulkRunner().startBulkExport).not.toHaveBeenCalled();
+  });
+
+  it('asks for no permission when the confirm is cancelled', async () => {
+    const renderer = renderScreen();
+
+    await pressSaveAll(renderer);
+    expect(alertSpy.mock.calls[0][0]).toBe('Save all');
+
+    await act(async () => {
+      alertButtons(0)[0].onPress?.();
+    });
+
+    expect(exportService().ensureBulkExportPermission).not.toHaveBeenCalled();
+    expect(bulkRunner().startBulkExport).not.toHaveBeenCalled();
+  });
+
+  it('starts nothing when the permission is refused', async () => {
+    exportService().ensureBulkExportPermission.mockResolvedValue({
+      granted: false,
+      photosToFiles: false,
+    });
+    const renderer = renderScreen();
+
+    await pressSaveAll(renderer);
+    await act(async () => {
+      alertButtons(0)[1].onPress?.();
+    });
+
+    expect(exportService().ensureBulkExportPermission).toHaveBeenCalledTimes(1);
+    expect(bulkRunner().startBulkExport).not.toHaveBeenCalled();
+  });
+
+  it('reattaches to a run already in flight on mount', () => {
+    // The reattach case: the run was started on a PREVIOUS mount, so the state
+    // is in the store before this screen renders at all.
+    setBulkState({ phase: 'running', total: 37, completed: 12, summary: null });
+
+    const renderer = renderScreen();
+
+    expect(hasHostTestId(renderer.root, 'bulk-export-panel')).toBe(true);
+    expect(hasHostTestId(renderer.root, 'bulk-export-label')).toBe(true);
+    expect(findHostByTestId(renderer.root, 'bulk-export-label').props.children).toBe(
+      '12 of 37 items',
+    );
+    expect(hasHostTestId(renderer.root, 'bulk-export-bar')).toBe(true);
+    expect(hasHostTestId(renderer.root, 'bulk-export-paused')).toBe(false);
+
+    // The header button is disabled for the duration of the run.
+    expect(
+      findHostByTestId(renderer.root, 'save-all-button').props.accessibilityState.disabled,
+    ).toBe(true);
+
+    // The bar carries NO progressbar role: a live value would announce on
+    // every item, so the screen announces start/pause/finish instead.
+    const bar = findHostByTestId(renderer.root, 'bulk-export-bar');
+    expect(bar.props.accessibilityRole).toBeUndefined();
+    expect(bar.props.accessibilityValue).toBeUndefined();
+  });
+
+  it('renders the paused marker while the run is paused', () => {
+    setBulkState({ phase: 'paused', total: 37, completed: 12, summary: null });
+
+    const renderer = renderScreen();
+
+    expect(hasHostTestId(renderer.root, 'bulk-export-panel')).toBe(true);
+    expect(hasHostTestId(renderer.root, 'bulk-export-paused')).toBe(true);
+  });
+
+  it('cancels the run from the panel', () => {
+    setBulkState({ phase: 'running', total: 37, completed: 12, summary: null });
+
+    const renderer = renderScreen();
+    act(() => {
+      findByTestId(renderer.root, 'bulk-export-cancel').props.onPress();
+    });
+
+    expect(bulkRunner().cancelBulkExport).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a finished run in the summary card, dismissable', () => {
+    setBulkState({
+      phase: 'done',
+      total: 37,
+      completed: 37,
+      summary: {
+        saved: 35,
+        skipped: 1,
+        failed: 1,
+        destinations: ['photos'],
+        stoppedForSpace: false,
+        cancelled: false,
+      },
+    });
+
+    const renderer = renderScreen();
+
+    expect(hasHostTestId(renderer.root, 'bulk-export-summary')).toBe(true);
+    expect(
+      findHostByTestId(renderer.root, 'bulk-export-summary-message').props.children,
+    ).toBe('SUMMARY_LINE');
+    // The progress panel is gone — `done` is not an active run.
+    expect(hasHostTestId(renderer.root, 'bulk-export-panel')).toBe(false);
+
+    act(() => {
+      findByTestId(renderer.root, 'bulk-export-dismiss').props.onPress();
+    });
+
+    expect(bulkRunner().dismissBulkExportSummary).toHaveBeenCalledTimes(1);
+  });
+
+  it('announces start, pause and finish — and nothing per item', () => {
+    renderScreen();
+    expect(announceSpy).not.toHaveBeenCalled();
+
+    act(() => {
+      setBulkState({ phase: 'running', total: 37, completed: 0, summary: null });
+    });
+    expect(announceSpy).toHaveBeenCalledTimes(1);
+    expect(announceSpy).toHaveBeenLastCalledWith('Saving 37 items');
+
+    // A per-item tick must stay silent: 37 items would mean 37 announcements.
+    act(() => {
+      setBulkState({ phase: 'running', total: 37, completed: 1, summary: null });
+    });
+    act(() => {
+      setBulkState({ phase: 'running', total: 37, completed: 2, summary: null });
+    });
+    expect(announceSpy).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      setBulkState({ phase: 'paused', total: 37, completed: 2, summary: null });
+    });
+    expect(announceSpy).toHaveBeenCalledTimes(2);
+    expect(announceSpy).toHaveBeenLastCalledWith('Saving paused');
+
+    act(() => {
+      setBulkState({
+        phase: 'done',
+        total: 37,
+        completed: 37,
+        summary: {
+          saved: 37,
+          skipped: 0,
+          failed: 0,
+          destinations: ['photos'],
+          stoppedForSpace: false,
+          cancelled: false,
+        },
+      });
+    });
+    expect(announceSpy).toHaveBeenCalledTimes(3);
+    expect(announceSpy).toHaveBeenLastCalledWith('SUMMARY_LINE');
+  });
+
+  // -------------------------------------------------------------------------
+  // #889 review items
+  // -------------------------------------------------------------------------
+
+  it('pluralises the start announcement for a single item', () => {
+    renderScreen();
+
+    act(() => {
+      setBulkState({ phase: 'running', total: 1, completed: 0, summary: null });
+    });
+
+    expect(announceSpy).toHaveBeenLastCalledWith('Saving 1 item');
+  });
+
+  it('announces a RESUME, not another start, on paused → running', () => {
+    renderScreen();
+
+    act(() => {
+      setBulkState({ phase: 'running', total: 37, completed: 0, summary: null });
+    });
+    act(() => {
+      setBulkState({ phase: 'paused', total: 37, completed: 5, summary: null });
+    });
+    act(() => {
+      setBulkState({ phase: 'running', total: 37, completed: 5, summary: null });
+    });
+
+    expect(announceSpy).toHaveBeenLastCalledWith('Saving resumed');
+    expect(announceSpy).toHaveBeenCalledTimes(3);
+  });
+
+  it('does NOT re-announce the start when the screen remounts mid-run', () => {
+    // The run was started on a previous mount, so the store is already
+    // 'running' before this screen exists.
+    setBulkState({ phase: 'running', total: 37, completed: 12, summary: null });
+
+    renderScreen();
+
+    // The ref is seeded from the store's CURRENT phase, so coming back to File
+    // Library does not say "Saving 37 items" all over again.
+    expect(announceSpy).not.toHaveBeenCalled();
+  });
+
+  it('alerts instead of rejecting when the snapshot throws', async () => {
+    bulkRunner().prepareBulkExport.mockRejectedValue(new Error('db closed'));
+    const renderer = renderScreen();
+
+    await pressSaveAll(renderer);
+
+    // Nothing above is expected to throw; without a catch this was an
+    // unhandled rejection with no feedback at all.
+    expect(alertTitles()).toEqual(["Couldn't start saving"]);
+    expect(alertSpy.mock.calls[0][1]).toBe('Something went wrong. Please try again.');
+    // The copy names nothing: no path, no id, no driver message.
+    expect(String(alertSpy.mock.calls[0][1])).not.toContain('db closed');
+    expect(bulkRunner().startBulkExport).not.toHaveBeenCalled();
+  });
+
+  it('re-enables Save all after a throw, so the user can retry', async () => {
+    bulkRunner().prepareBulkExport.mockRejectedValue(new Error('db closed'));
+    const renderer = renderScreen();
+
+    await pressSaveAll(renderer);
+
+    expect(
+      findHostByTestId(renderer.root, 'save-all-button').props.accessibilityState.disabled,
+    ).toBe(false);
+  });
+
+  it('bounds the Save all label inside the header slot', () => {
+    const renderer = renderScreen();
+    const label = findHostByTestId(renderer.root, 'save-all-button').findByType(
+      'Text' as unknown as React.ComponentType,
+    );
+
+    // Header's right slot is a fixed 88x44 box.
+    expect(label.props.numberOfLines).toBe(1);
+    expect(label.props.maxFontSizeMultiplier).toBe(1.4);
+  });
+
+  it('keeps the grid out of the progress subscription', () => {
+    // The screen watches `phase`; BulkExportStatus owns the rest. A `completed`
+    // tick must therefore not re-render the screen at all — asserted through
+    // the cheapest observable proxy: the screen's own data read does not run
+    // again, and the panel label still updates.
+    setBulkState({ phase: 'running', total: 37, completed: 1, summary: null });
+    const renderer = renderScreen();
+    const repo = jest.requireMock('../../database/repositories/mediaRepository');
+    (repo.getAllMedia as jest.Mock).mockClear();
+
+    act(() => {
+      setBulkState({ phase: 'running', total: 37, completed: 2, summary: null });
+    });
+
+    expect(repo.getAllMedia).not.toHaveBeenCalled();
+    expect(findHostByTestId(renderer.root, 'bulk-export-label').props.children).toBe(
+      '2 of 37 items',
+    );
   });
 });

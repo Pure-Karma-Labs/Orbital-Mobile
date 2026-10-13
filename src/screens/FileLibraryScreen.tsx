@@ -7,11 +7,24 @@
  * CRITICAL: Does NOT use MediaItemView in the grid — it auto-downloads via
  * useMediaDownload. Instead, FileLibraryCell shows blurHash/placeholder for
  * non-downloaded items and triggers download only on tap.
+ *
+ * ## "Save all" (#878 PR 2)
+ *
+ * The header's right slot starts a BATCH save of everything matching the
+ * active filters — not just the loaded page. This screen owns the whole
+ * conversation with the user (disclosure, the zero and low-storage arms, the
+ * confirm Alert, the permission) and `media/bulkExportRunner` owns the run.
+ *
+ * The run deliberately outlives this screen: its state lives in a vanilla
+ * zustand store read through `useStore`, so navigating away and back
+ * REATTACHES to a batch in flight instead of orphaning it. Nothing about the
+ * run is component state.
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   Image,
   Pressable,
@@ -25,12 +38,14 @@ import {
   type ViewStyle,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useStore } from 'zustand';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useTheme } from '../theme';
 import { useConversations } from '../stores';
 import { useAppStore } from '../stores/useAppStore';
 import { Header } from '../components/Header';
 import { QuotaBar } from './settings/QuotaBar';
+import { BulkExportStatus } from './settings/BulkExportPanel';
 import { OrbitalSpinner } from '../components/OrbitalSpinner';
 import { MediaLightbox } from '../components/MediaLightbox';
 import { mediaRowToItem } from '../database/repositories/mediaMapper';
@@ -42,6 +57,19 @@ import {
 import { isDatabaseInitialized } from '../database/connection';
 import { downloadAndDecryptMedia, recoverStalePaths } from '../services/mediaDownloadService';
 import { MEDIA_DIR, resolveMediaPath } from '../services/media/mediaPaths';
+import { isExportableConversation } from '../services/media/exportAccess';
+import {
+  ensureBulkExportPermission,
+  ensureExportDisclosure,
+} from '../services/mediaExportService';
+import {
+  bulkExportStore,
+  checkBulkExportSpace,
+  describeBulkConfirm,
+  prepareBulkExport,
+  startBulkExport,
+} from '../services/media/bulkExportRunner';
+import { formatMB } from '../utils/formatBytes';
 import { getGroupQuota } from '../services/api/groups';
 import type { GroupQuotaResponse } from '../types/api';
 import type { SettingsStackParamList } from '../navigation/types';
@@ -71,6 +99,27 @@ const SORT_CYCLE: SortState[] = [
   { sortBy: 'size', sortOrder: 'desc', label: 'Largest' },
   { sortBy: 'size', sortOrder: 'asc', label: 'Smallest' },
 ];
+
+/**
+ * The confirm Alert for a batch save.
+ *
+ * Its own dialog, never merged with the disclosure: one button must not
+ * approve two different decisions (see `ensureExportDisclosure`). `onDismiss`
+ * resolves false so an Android back-press is a refusal, not a hang.
+ */
+function confirmSaveAll(body: string): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    Alert.alert(
+      'Save all',
+      body,
+      [
+        { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+        { text: 'Save', onPress: () => resolve(true) },
+      ],
+      { onDismiss: () => resolve(false) },
+    );
+  });
+}
 
 // ---------------------------------------------------------------------------
 // FileLibraryCell — lightweight grid cell (no auto-download)
@@ -223,6 +272,111 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
   const [orbitOptions, setOrbitOptions] = useState<Array<{ id: string; name: string }>>([]);
 
   const sortState = SORT_CYCLE[sortIndex];
+
+  /**
+   * Guards every post-await UI effect on this screen (setState, Alert, nav).
+   * The Save-all flow awaits four times before it starts anything, and each
+   * await is long enough for the user to walk away.
+   */
+  const mountedRef = useRef(true);
+  useEffect(
+    () => () => {
+      mountedRef.current = false;
+    },
+    [],
+  );
+
+  // ---------------------------------------------------------------------------
+  // Save all (#878 PR 2)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * PHASE ONLY. The run emits up to four times a second for its whole
+   * duration, and this screen renders a 3-column grid plus an unmemoized
+   * `MediaLightbox`; subscribing to `completed` here re-rendered both on every
+   * tick (#889 review). `BulkExportStatus` holds the full-state subscription.
+   */
+  const bulkPhase = useStore(bulkExportStore, (s) => s.phase);
+  const bulkRunActive = bulkPhase === 'running' || bulkPhase === 'paused';
+
+  /** True between the tap and the run starting (or being refused). */
+  const [preparingSaveAll, setPreparingSaveAll] = useState(false);
+  const preparingRef = useRef(false);
+
+  const handleSaveAll = useCallback(() => {
+    // Ref, not state: two taps in one React batch would both see `false`.
+    if (preparingRef.current || bulkRunActive) return;
+    preparingRef.current = true;
+    setPreparingSaveAll(true);
+
+    void (async () => {
+      try {
+        // Gate 1: the disclosure, before any DB work and any download.
+        if (!(await ensureExportDisclosure())) return;
+
+        // The snapshot is the whole filtered set, not the loaded page.
+        const plan = await prepareBulkExport({
+          contentTypeFilter: contentFilter === 'all' ? null : contentFilter,
+          conversationId: orbitFilter,
+          sortBy: sortState.sortBy,
+          sortOrder: sortState.sortOrder,
+        });
+        if (!mountedRef.current) return;
+
+        if (plan === null) {
+          // Persisted membership never arrived, so the blocked-author
+          // exclusion cannot be trusted. Refusing is the fail-CLOSED choice.
+          Alert.alert(
+            "Can't save yet",
+            'Orbital is still loading your orbits. Try again in a moment.',
+          );
+          return;
+        }
+
+        if (plan.count === 0) {
+          Alert.alert(
+            'Nothing to save',
+            'None of the files shown here can be saved to this device.',
+          );
+          return;
+        }
+
+        const space = await checkBulkExportSpace(plan);
+        if (!mountedRef.current) return;
+        if (!space.ok) {
+          // Blocking, not a warning: starting a batch that cannot finish would
+          // fill the device and then stop halfway.
+          Alert.alert(
+            'Not enough storage',
+            `Saving these files needs about ${formatMB(space.requiredBytes)} of free space. ` +
+              'Free up some space and try again.',
+          );
+          return;
+        }
+
+        if (!(await confirmSaveAll(describeBulkConfirm(plan)))) return;
+        if (!mountedRef.current) return;
+
+        // Gate 2: the permission, once for the whole batch.
+        const permission = await ensureBulkExportPermission(plan.needs);
+        if (!mountedRef.current || !permission.granted) return;
+
+        startBulkExport(plan, permission);
+      } catch {
+        // Nothing above is expected to throw — the snapshot is the realistic
+        // candidate (SQLite can throw on a closed or corrupt handle). Without
+        // this the tap was an unhandled rejection with no feedback at all.
+        // The copy names nothing: no path, no id, no driver message.
+        if (mountedRef.current) {
+          Alert.alert("Couldn't start saving", 'Something went wrong. Please try again.');
+        }
+      } finally {
+        preparingRef.current = false;
+        if (mountedRef.current) setPreparingSaveAll(false);
+      }
+    })();
+  }, [bulkRunActive, contentFilter, orbitFilter, sortState.sortBy, sortState.sortOrder]);
+
 
   // ---------------------------------------------------------------------------
   // Data loading
@@ -397,20 +551,25 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
    * their resolved `conversation_id` is NULL and the grid still shows them
    * under "All Orbits" (deliberate, Alex 2026-10-09: the grid is unchanged).
    *
-   * Projected from the page rows already in hand plus the store's
-   * `conversations` keys — the store, not SQL, is the membership authority
+   * Projected from the page rows already in hand through the SHARED predicate
+   * in `media/exportAccess` — the store, not SQL, is the membership authority
    * (DMs are threads and live in the same map; the SQLite `conversations`
    * table is a group-key store that keeps rows for orbits you have left). So
    * the lightbox gets a synchronous Set lookup and never queries the DB.
+   *
+   * `conversations` stays in the dependency list even though the predicate
+   * reads the store itself: it is what makes this memo recompute when
+   * membership changes.
    */
   const exportableIds = useMemo(() => {
     const ids = new Set<string>();
     for (const row of mediaRows) {
-      if (row.conversation_id && conversations[row.conversation_id]) {
+      if (isExportableConversation(row.conversation_id)) {
         ids.add(row.id);
       }
     }
     return ids;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- conversations is the deliberate invalidation signal; the predicate reads the store, so the rule sees it as unused
   }, [mediaRows, conversations]);
 
   const canExportMedia = useCallback(
@@ -437,6 +596,9 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
   const handleBack = useCallback(() => {
     navigation.goBack();
   }, [navigation]);
+
+  /** Disabled while a run is in flight, and while one is being set up. */
+  const saveAllDisabled = bulkRunActive || preparingSaveAll;
 
   // ---------------------------------------------------------------------------
   // Styles
@@ -495,6 +657,20 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
     fontFamily: theme.typography.fontFamily.body,
     fontSize: theme.typography.fontSize.base,
     color: theme.colors.textSecondary,
+  };
+
+  // MOBILE-PATTERNS "Right Action Button": the same style as the Back button —
+  // blue text at fontSize.base in the body face, inside a 44pt touch target
+  // (the Header's own back button uses exactly this minHeight).
+  const saveAllTextStyle: TextStyle = {
+    fontFamily: theme.typography.fontFamily.body,
+    fontSize: theme.typography.fontSize.base,
+    color: saveAllDisabled ? theme.colors.textTertiary : theme.colors.blue,
+  };
+
+  const saveAllTouchStyle: ViewStyle = {
+    minHeight: 44,
+    justifyContent: 'center',
   };
 
   const columnWrapperStyle: ViewStyle = {
@@ -558,7 +734,32 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
 
   return (
     <SafeAreaView style={containerStyle} edges={['top']} testID="file-library-screen">
-      <Header title="File Library" onBack={handleBack} />
+      <Header
+        title="File Library"
+        onBack={handleBack}
+        right={
+          <Pressable
+            onPress={handleSaveAll}
+            disabled={saveAllDisabled}
+            style={saveAllTouchStyle}
+            testID="save-all-button"
+            accessibilityRole="button"
+            accessibilityLabel="Save all files to this device"
+            accessibilityState={{ disabled: saveAllDisabled, busy: preparingSaveAll }}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Text
+              style={saveAllTextStyle}
+              numberOfLines={1}
+              // Header's right slot is a fixed 88x44 box, so the label cannot
+              // be allowed to grow without bound at large Dynamic Type.
+              maxFontSizeMultiplier={1.4}
+            >
+              {'Save all'}
+            </Text>
+          </Pressable>
+        }
+      />
 
       {/* Storage quota bar */}
       {quota && (
@@ -568,6 +769,11 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
           percentage={quota.storage.percentage}
         />
       )}
+
+      {/* Save-all progress, or the summary of the run that just finished.
+          Subscribes to the run state itself, so progress ticks re-render this
+          row and not the grid. */}
+      <BulkExportStatus />
 
       {/* Filter by type */}
       <View style={filterSectionStyle}>

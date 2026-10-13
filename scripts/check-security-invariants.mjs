@@ -1907,8 +1907,9 @@ try {
 //   media-export-no-name-logging    — the service, the two pure leaves
 //                                     (media/exportFileName.ts,
 //                                     media/contentType.ts), the abort helper
-//                                     (media/abortable.ts) and the package's
-//                                     src/index.tsx +
+//                                     (media/abortable.ts), the bulk runner
+//                                     (media/bulkExportRunner.ts) and the
+//                                     package's src/index.tsx +
 //                                     src/NativeOrbitalMediaExport.ts carry no
 //                                     file_name|fileName|displayName|localPath|
 //                                     sourcePath|mediaId on a log or Sentry
@@ -1924,12 +1925,15 @@ try {
 //                                     and sniffExportHead( appear EXACTLY once
 //                                     in mediaExportService.ts, all three inside
 //                                     resolveExportLabel(), and none inside
-//                                     performExport().
+//                                     performExport(); plus a TREE-WIDE importer
+//                                     allowlist, so no second module can label
+//                                     for itself (#881 Low).
 
 const ME_SERVICE = join(SRC, 'services', 'mediaExportService.ts');
 const ME_EXPORT_NAMES = join(SRC, 'services', 'media', 'exportFileName.ts');
 const ME_CONTENT_TYPE = join(SRC, 'services', 'media', 'contentType.ts');
 const ME_ABORTABLE = join(SRC, 'services', 'media', 'abortable.ts');
+const ME_BULK_RUNNER = join(SRC, 'services', 'media', 'bulkExportRunner.ts');
 const ME_IMAGE_SANITIZER = join(SRC, 'services', 'media', 'imageSanitizer.ts');
 const ME_PKG_INDEX = join(MEDIA_EXPORT_PKG, 'src', 'index.tsx');
 const ME_PKG_SPEC = join(MEDIA_EXPORT_PKG, 'src', 'NativeOrbitalMediaExport.ts');
@@ -1937,15 +1941,14 @@ const ME_AUTH_SERVICE = join(SRC, 'services', 'authService.ts');
 const ME_UPLOAD_SERVICE = join(SRC, 'services', 'mediaUploadService.ts');
 
 /**
- * PR 2 adds `src/services/media/bulkExportRunner.ts`. It is scanned by
- * `media-export-no-name-logging` the moment it exists (see ME_OPTIONAL_LOG_FILES)
- * and must be MOVED into the required list in that PR — a file that only
- * exists in half the delivery cannot be a required file here without failing
- * PR 1, and a rule that passes because its subject is absent is the vacuity
- * these checks exist to prevent. The required list below is PR 1's complete
- * set, so nothing is currently unguarded.
+ * The bulk runner (PR 2) is a REQUIRED file here, not an optional one.
+ *
+ * It was scanned-if-present through PR 1, because a file that exists in only
+ * half of a two-PR delivery cannot be required without failing the first half.
+ * PR 2 shipped it, so the conditional is gone: a missing file is now a
+ * violation, which is the point — a rule that passes because its subject was
+ * deleted is exactly the vacuity these checks exist to prevent.
  */
-const ME_OPTIONAL_LOG_FILES = [join(SRC, 'services', 'media', 'bulkExportRunner.ts')];
 
 /** Read a file, recording a violation and returning null when it is missing. */
 function meRead(file, rule, why) {
@@ -2243,6 +2246,7 @@ const ME_REQUIRED_LOG_FILES = [
   ME_EXPORT_NAMES,
   ME_CONTENT_TYPE,
   ME_ABORTABLE,
+  ME_BULK_RUNNER,
   ME_PKG_INDEX,
   ME_PKG_SPEC,
 ];
@@ -2284,16 +2288,7 @@ for (const file of ME_SILENT_FILES) {
   }
 }
 
-for (const file of ME_REQUIRED_LOG_FILES.concat(
-  ME_OPTIONAL_LOG_FILES.filter((f) => {
-    try {
-      statSync(f);
-      return true;
-    } catch {
-      return false;
-    }
-  }),
-)) {
+for (const file of ME_REQUIRED_LOG_FILES) {
   const raw = meRead(file, ME_LOG_RULE, 'its log and Sentry lines');
   if (raw === null) continue;
 
@@ -2429,6 +2424,65 @@ const ME_LABEL_CALLS = ['buildExportFileName(', 'reconcileExportLabel(', 'sniffE
         }
       }
     }
+  }
+}
+
+// The clause above is scoped to ONE file, and that was the gap #881 left open
+// (its Low finding): "exactly one call inside resolveExportLabel()" says
+// nothing about a SECOND MODULE importing the builders and labelling for
+// itself. PR 2's bulk runner was the concrete candidate — it has a media id,
+// a destination and every reason to want a file name — so the allowlist is
+// enforced across the whole tree rather than trusted to review.
+//
+// Each name is pinned to the modules that may NAME it at all:
+//  - the two label builders: their own definition file, plus the service,
+//    whose `resolveExportLabel()` is the single site above;
+//  - `sniffContentType`: its definition file, the service (export labelling),
+//    and `imageSanitizer` (the UPLOAD-side relabel that keeps this client's
+//    own rows honest, #880). It reads DECRYPTED bytes, so a fourth caller is
+//    a decision, not a detail.
+//
+// Test paths are exempt, like every other cross-file scan here.
+{
+  const ME_LABEL_IMPORT_ALLOW = new Map([
+    ['buildExportFileName', new Set([ME_EXPORT_NAMES, ME_SERVICE])],
+    ['reconcileExportLabel', new Set([ME_EXPORT_NAMES, ME_SERVICE])],
+    ['sniffContentType', new Set([ME_CONTENT_TYPE, ME_SERVICE, ME_IMAGE_SANITIZER])],
+  ]);
+
+  /** Names seen inside their own allowlist — zero is a vacuous pass. */
+  const meLabelNameSeen = new Map([...ME_LABEL_IMPORT_ALLOW.keys()].map((n) => [n, false]));
+
+  for (const file of allFiles) {
+    const rel = relative('.', file);
+    if (rel.includes('__tests__/') || rel.includes('.test.ts') || rel.includes('.test.tsx')) {
+      continue;
+    }
+
+    const lines = meStripComments(readFileSync(file, 'utf8')).split('\n');
+    for (const [name, allowed] of ME_LABEL_IMPORT_ALLOW) {
+      const nameRe = new RegExp(`\\b${name}\\b`);
+      for (let i = 0; i < lines.length; i++) {
+        if (!nameRe.test(lines[i])) continue;
+        if (allowed.has(file)) {
+          meLabelNameSeen.set(name, true);
+          continue;
+        }
+        report(
+          file,
+          i + 1,
+          ME_LABEL_RULE,
+          `"${name}" is named outside its allowlist — export labels are computed in exactly one place (resolveExportLabel in mediaExportService.ts)`,
+        );
+      }
+    }
+  }
+
+  for (const [name, seen] of meLabelNameSeen) {
+    if (seen) continue;
+    violations.push(
+      `  ${relative('.', ME_SERVICE)}:0  [${ME_LABEL_RULE}]  "${name}" appears in none of its allowlisted files — the import allowlist would pass vacuously (${ME_ISSUE})`,
+    );
   }
 }
 

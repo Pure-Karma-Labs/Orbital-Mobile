@@ -53,6 +53,29 @@ export const STREAM_READ_SIZE_BYTES = 1 * 1024 * 1024;
 export const DISK_HEADROOM_BYTES = 64 * 1024 * 1024;
 
 /**
+ * Download total above which the bulk-save confirm Alert adds a data-usage
+ * warning (#878 PR 2).
+ *
+ * There is no NetInfo in this app and adding a native dependency for one
+ * warning line was rejected, so the copy is conditional on SIZE rather than on
+ * the connection type: it says "on mobile data this can use a lot of your
+ * allowance" instead of claiming to know the user is on mobile data.
+ */
+export const BULK_EXPORT_DOWNLOAD_WARN_BYTES = 100 * 1024 * 1024;
+
+/**
+ * Hard ceiling on the number of items one "Save all" run will iterate (#878).
+ *
+ * The snapshot is taken once and the run is the iterated set, so this is also
+ * the ceiling on the single iOS document picker presentation at the end of a
+ * run. Items past the bound are reported in the confirm Alert's "will be
+ * skipped" line rather than silently dropped — a second run saves the rest
+ * (duplicates cannot be detected under add-only photo access, which is why the
+ * bound is generous rather than small).
+ */
+export const BULK_EXPORT_MAX_ITEMS = 500;
+
+/**
  * Upper bound on bytes we will accept onto disk for one download (#661).
  *
  * `expectedBytes` is server truth (ciphertext length) for received media, but

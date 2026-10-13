@@ -103,6 +103,11 @@ import {
   registerExportAbort,
   resetMediaExportForTesting,
   saveMediaItem,
+  discardStagedBulkDocuments,
+  ensureBulkExportPermission,
+  exportMediaItemInBulk,
+  flushStagedBulkDocuments,
+  stagedBulkDocumentCount,
 } from '../mediaExportService';
 
 const mockDownload = downloadAndDecryptMedia as jest.MockedFunction<
@@ -1459,5 +1464,324 @@ describe('describeExportOutcome', () => {
     expect(describeExportOutcome(result)).toBe(copy);
     // No copy may name a file, a path or an id.
     expect(copy).not.toMatch(/\/|\.jpg|media-/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The bulk half (#878 PR 2)
+//
+// `bulkExportRunner` drives these three. The run acquires the disclosure and
+// the permission ONCE, so the properties worth pinning here are the ones that
+// differ from `saveMediaItem`: no per-item prompt, no "Save to Files instead"
+// offer, and iOS documents staged for a single picker rather than written.
+// ---------------------------------------------------------------------------
+
+const BULK_PHOTO = { photosToFiles: false, batchDocuments: false };
+const BULK_IOS = { photosToFiles: false, batchDocuments: true };
+
+describe('ensureBulkExportPermission', () => {
+  it('asks for photo access once when the batch contains photos (iOS)', async () => {
+    (Platform as { OS: string }).OS = 'ios';
+    mockRequestPhotoPermission.mockResolvedValue('granted');
+
+    const result = await ensureBulkExportPermission({ photo: true, document: false });
+
+    expect(result).toEqual({ granted: true, photosToFiles: false });
+    expect(mockRequestPhotoPermission).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks for nothing when the batch is documents only (iOS)', async () => {
+    (Platform as { OS: string }).OS = 'ios';
+
+    const result = await ensureBulkExportPermission({ photo: false, document: true });
+
+    expect(result).toEqual({ granted: true, photosToFiles: false });
+    expect(mockRequestPhotoPermission).not.toHaveBeenCalled();
+  });
+
+  it('refuses the whole run when photo access is denied and Files declined', async () => {
+    (Platform as { OS: string }).OS = 'ios';
+    mockRequestPhotoPermission.mockResolvedValue('denied');
+    answerAlert('Cancel');
+
+    const result = await ensureBulkExportPermission({ photo: true, document: false });
+
+    expect(result).toEqual({ granted: false, photosToFiles: false });
+  });
+
+  it('reroutes every photo to Files when the user picks that instead', async () => {
+    (Platform as { OS: string }).OS = 'ios';
+    mockRequestPhotoPermission.mockResolvedValue('denied');
+    answerAlert('Save to Files instead');
+
+    const result = await ensureBulkExportPermission({ photo: true, document: false });
+
+    expect(result).toEqual({ granted: true, photosToFiles: true });
+  });
+
+  it('requests shared storage once on Android 28, for either route', async () => {
+    setAndroid(28);
+    const request = jest
+      .spyOn(PermissionsAndroid, 'request')
+      .mockResolvedValue('granted' as never);
+
+    const result = await ensureBulkExportPermission({ photo: true, document: true });
+
+    expect(result).toEqual({ granted: true, photosToFiles: false });
+    // Both routes need WRITE_EXTERNAL_STORAGE there; the second request is a
+    // no-op at the OS level, so asking twice is harmless but must still grant.
+    expect(request).toHaveBeenCalled();
+  });
+
+  it('needs nothing on Android 29+', async () => {
+    setAndroid(33);
+    const request = jest.spyOn(PermissionsAndroid, 'request');
+
+    const result = await ensureBulkExportPermission({ photo: true, document: true });
+
+    expect(result).toEqual({ granted: true, photosToFiles: false });
+    expect(request).not.toHaveBeenCalled();
+  });
+});
+
+describe('exportMediaItemInBulk', () => {
+  it('writes to the photo library without prompting for anything', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath();
+    (Platform as { OS: string }).OS = 'ios';
+
+    const result = await exportMediaItemInBulk(
+      'media-1',
+      new AbortController().signal,
+      BULK_PHOTO,
+    );
+
+    expect(result).toEqual({ outcome: 'saved', destination: 'photos' });
+    expect(alertSpy).not.toHaveBeenCalled();
+    expect(mockRequestPhotoPermission).not.toHaveBeenCalled();
+    expect(mockSaveToPhotoLibrary).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a peer-crafted content type before any download', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath({ content_type: 'text/html' });
+
+    const result = await exportMediaItemInBulk(
+      'media-1',
+      new AbortController().signal,
+      BULK_PHOTO,
+    );
+
+    expect(result).toEqual({ outcome: 'unsupported' });
+    expect(mockDownload).not.toHaveBeenCalled();
+  });
+
+  it('cancels, without downloading, when the disclosure is not acknowledged', async () => {
+    arrangeHappyPath();
+    dismissAlert();
+
+    const result = await exportMediaItemInBulk(
+      'media-1',
+      new AbortController().signal,
+      BULK_PHOTO,
+    );
+
+    expect(result).toEqual({ outcome: 'cancelled' });
+    expect(mockDownload).not.toHaveBeenCalled();
+  });
+
+  it('refuses an orphan before any download', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath();
+    mockGetAccess.mockReturnValue({ conversation_id: null, author_id: 'u-2' });
+
+    const result = await exportMediaItemInBulk(
+      'media-1',
+      new AbortController().signal,
+      BULK_PHOTO,
+    );
+
+    expect(result).toEqual({ outcome: 'notAllowed' });
+    expect(mockDownload).not.toHaveBeenCalled();
+  });
+
+  it('returns cancelled for an already-aborted run without downloading', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath();
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await exportMediaItemInBulk('media-1', controller.signal, BULK_PHOTO);
+
+    expect(result).toEqual({ outcome: 'cancelled' });
+    expect(mockDownload).not.toHaveBeenCalled();
+  });
+
+  it('refuses a 0-byte decrypted file (DEBT-186), like the single-item path', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath();
+    mockStat.mockResolvedValue({ size: 0 } as unknown as Awaited<ReturnType<typeof stat>>);
+
+    const result = await exportMediaItemInBulk(
+      'media-1',
+      new AbortController().signal,
+      BULK_PHOTO,
+    );
+
+    expect(result).toEqual({ outcome: 'corrupt' });
+    expect(mockSaveToPhotoLibrary).not.toHaveBeenCalled();
+  });
+
+  it('does NOT offer "Save to Files instead" when Photos refuses an item', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath();
+    (Platform as { OS: string }).OS = 'ios';
+    mockSaveToPhotoLibrary.mockRejectedValue(new MediaExportError('EUNSUPPORTED'));
+
+    const result = await exportMediaItemInBulk(
+      'media-1',
+      new AbortController().signal,
+      BULK_PHOTO,
+    );
+
+    // A batch cannot stop to ask: the user saves that one item by hand.
+    expect(result).toEqual({ outcome: 'unsupported' });
+    expect(alertSpy).not.toHaveBeenCalled();
+    expect(mockExportFiles).not.toHaveBeenCalled();
+  });
+
+  it('honours the photosToFiles reroute for the whole run', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath();
+    (Platform as { OS: string }).OS = 'ios';
+    mockExportFiles.mockResolvedValue('saved');
+
+    const result = await exportMediaItemInBulk('media-1', new AbortController().signal, {
+      photosToFiles: true,
+      batchDocuments: false,
+    });
+
+    expect(result).toEqual({ outcome: 'saved', destination: 'files' });
+    expect(mockSaveToPhotoLibrary).not.toHaveBeenCalled();
+  });
+
+  it('STAGES an iOS document instead of presenting a picker per item', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath({ content_type: 'application/pdf', file_name: 'Lease.pdf' });
+    (Platform as { OS: string }).OS = 'ios';
+
+    const result = await exportMediaItemInBulk(
+      'media-1',
+      new AbortController().signal,
+      BULK_IOS,
+    );
+
+    expect(result).toEqual({ outcome: 'deferred' });
+    expect(mockExportFiles).not.toHaveBeenCalled();
+    expect(stagedBulkDocumentCount()).toBe(1);
+  });
+
+  it('writes an Android document immediately — there is no picker to batch', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath({ content_type: 'application/pdf' });
+    setAndroid(33);
+    mockExportFiles.mockResolvedValue('saved');
+
+    const result = await exportMediaItemInBulk(
+      'media-1',
+      new AbortController().signal,
+      BULK_PHOTO,
+    );
+
+    expect(result).toEqual({ outcome: 'saved', destination: 'files' });
+    expect(stagedBulkDocumentCount()).toBe(0);
+  });
+
+  it('never throws, even when the native writer rejects with nothing useful', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath();
+    mockSaveToPhotoLibrary.mockRejectedValue('not an error at all');
+
+    await expect(
+      exportMediaItemInBulk('media-1', new AbortController().signal, BULK_PHOTO),
+    ).resolves.toEqual({ outcome: 'failed' });
+  });
+
+  it('is voided by a wipe between the download and the write', async () => {
+    acknowledgeDisclosure();
+    arrangeHappyPath();
+    mockDownload.mockImplementation(() => {
+      cancelAllExports();
+      return Promise.resolve('/media/media-1.jpg');
+    });
+
+    const result = await exportMediaItemInBulk(
+      'media-1',
+      new AbortController().signal,
+      BULK_PHOTO,
+    );
+
+    expect(result).toEqual({ outcome: 'cancelled' });
+    expect(mockSaveToPhotoLibrary).not.toHaveBeenCalled();
+  });
+});
+
+describe('flushStagedBulkDocuments', () => {
+  async function stage(count: number): Promise<void> {
+    acknowledgeDisclosure();
+    (Platform as { OS: string }).OS = 'ios';
+    for (let i = 0; i < count; i++) {
+      arrangeHappyPath({ id: `media-${i}`, content_type: 'application/pdf' });
+      await exportMediaItemInBulk(`media-${i}`, new AbortController().signal, BULK_IOS);
+    }
+  }
+
+  it('presents every staged document in ONE picker call', async () => {
+    await stage(3);
+    mockExportFiles.mockResolvedValue('saved');
+
+    const presented = await flushStagedBulkDocuments();
+
+    expect(presented).toEqual({ outcome: 'saved', count: 3 });
+    expect(mockExportFiles).toHaveBeenCalledTimes(1);
+    expect(mockExportFiles.mock.calls[0][0]).toHaveLength(3);
+    // The list is emptied, so a second run cannot re-present stale paths.
+    expect(stagedBulkDocumentCount()).toBe(0);
+  });
+
+  it('reports a dismissed picker as cancelled, with the staged count', async () => {
+    await stage(2);
+    mockExportFiles.mockResolvedValue('cancelled');
+
+    expect(await flushStagedBulkDocuments()).toEqual({ outcome: 'cancelled', count: 2 });
+  });
+
+  it('reports a rejected picker as failed', async () => {
+    await stage(2);
+    mockExportFiles.mockRejectedValue(new MediaExportError('EEXPORT'));
+
+    expect(await flushStagedBulkDocuments()).toEqual({ outcome: 'failed', count: 2 });
+  });
+
+  it('is a no-op with nothing staged', async () => {
+    acknowledgeDisclosure();
+    expect(await flushStagedBulkDocuments()).toEqual({ outcome: 'skipped', count: 0 });
+    expect(mockExportFiles).not.toHaveBeenCalled();
+  });
+
+  it('presents nothing after a wipe cleared the staging list', async () => {
+    await stage(2);
+    cancelAllExports();
+
+    expect(stagedBulkDocumentCount()).toBe(0);
+    expect(await flushStagedBulkDocuments()).toEqual({ outcome: 'skipped', count: 0 });
+    expect(mockExportFiles).not.toHaveBeenCalled();
+  });
+
+  it('presents nothing after discardStagedBulkDocuments', async () => {
+    await stage(2);
+    discardStagedBulkDocuments();
+
+    expect(await flushStagedBulkDocuments()).toEqual({ outcome: 'skipped', count: 0 });
   });
 });

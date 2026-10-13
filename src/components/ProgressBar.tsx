@@ -11,8 +11,19 @@
  * palette export, and a default parameter would pin light-mode colors into
  * dark mode.
  *
- * Used by UploadProgressBar (composer upload); the download-side progress UI
- * reuses this bar without the cancel/MB row.
+ * ## Consumers
+ *
+ * - `UploadProgressBar` (composer upload) — per-item bytes, with its own
+ *   cancel/MB row.
+ * - `BulkExportPanel` (File Library "Save all", #878 PR 2) — the first
+ *   DOWNLOAD-side consumer, and the first that counts ITEMS rather than bytes:
+ *   `completed / total` over the snapshot, emitted at most every 250 ms by the
+ *   bulk runner. It passes `announceProgress={false}` deliberately — a batch
+ *   of hundreds of items with a live progressbar value would talk over the
+ *   user for minutes, so the screen announces start, pause and finish only.
+ *
+ * The chunky-emission note above therefore holds for every consumer: no
+ * caller feeds this bar a continuous value, so interpolation would be fiction.
  */
 
 import React from 'react';

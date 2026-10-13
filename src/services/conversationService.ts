@@ -366,9 +366,13 @@ function mapDmResponse(response: DmResponse): Conversation {
  *  1. local `lastMessageAt` is newer than the server's -> keep the LOCAL count.
  *     The response predates a WS message that already incremented it; applying
  *     the server's number would silently drop that increment.
- *  2. local `lastReadAt` is newer than the server's -> force 0. The user read
- *     the DM inside the 3 s mark-read debounce, so the server hasn't been told
- *     yet and its count is about to be wrong.
+ *  2. a mark-read for this DM is still pending (`readPending`: debounced via
+ *     MARK_READ_DEBOUNCE_MS or in flight) -> force 0. The server hasn't been
+ *     told yet, so its count is about to be wrong. This is deliberately a
+ *     pending-request check, not a `lastReadAt` comparison: the local
+ *     watermark is device-clock and the server's is server-clock, and a
+ *     mark-read that never lands (offline, swallowed error) would otherwise
+ *     leave local > server forever and zero every later badge.
  *  3. otherwise the server count wins.
  *
  * Rule 1 is checked first on purpose: a message that arrives AFTER a local read
@@ -381,18 +385,25 @@ function mapDmResponse(response: DmResponse): Conversation {
 export function mergeDmRecency(
   existing: Conversation | undefined,
   incoming: Conversation,
+  readPending = false,
 ): Conversation {
-  if (!existing) return incoming;
+  if (!existing) {
+    // First insert: `mapDmResponse` parses server timestamps unguarded, so
+    // sanitize here too — this is the only path that skips the max-merge.
+    return {
+      ...incoming,
+      lastMessageAt: maxTimestamp(incoming.lastMessageAt, null),
+      lastReadAt: maxTimestamp(incoming.lastReadAt, null),
+    };
+  }
 
   const localMessageAt = maxTimestamp(existing.lastMessageAt, null) ?? 0;
   const serverMessageAt = maxTimestamp(incoming.lastMessageAt, null) ?? 0;
-  const localReadAt = maxTimestamp(existing.lastReadAt, null) ?? 0;
-  const serverReadAt = maxTimestamp(incoming.lastReadAt, null) ?? 0;
 
   let unreadCount: number;
   if (localMessageAt > serverMessageAt) {
     unreadCount = existing.unreadCount;
-  } else if (localReadAt > serverReadAt) {
+  } else if (readPending) {
     unreadCount = 0;
   } else {
     unreadCount = incoming.unreadCount;
@@ -448,7 +459,11 @@ export async function ensureDmConversation(groupId: string): Promise<Conversatio
       // merged (#883): `listDms` is awaited, so a WS bump or a mark-read can
       // have created the row in the meantime, and this snapshot must not undo
       // it. Merging an absent row returns `conversation` unchanged.
-      const merged = mergeDmRecency(storeNow.conversations[groupId], conversation);
+      const merged = mergeDmRecency(
+        storeNow.conversations[groupId],
+        conversation,
+        isMarkReadPending(groupId),
+      );
       storeNow.upsertConversation(merged);
 
       storeNow.mergeContacts([{
@@ -521,7 +536,9 @@ export async function loadDmConversations(): Promise<void> {
     // upsert replaces the map — `store.conversations` is a stale snapshot after
     // the first iteration.
     const existing = useAppStore.getState().conversations[conversation.id];
-    store.upsertConversation(mergeDmRecency(existing, conversation));
+    store.upsertConversation(
+      mergeDmRecency(existing, conversation, isMarkReadPending(conversation.id)),
+    );
   }
 
   // Merge DM recipients into the contacts store so they're discoverable
@@ -1058,7 +1075,18 @@ export async function refreshContactAvatar(userId: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 const markReadTimers = new Map<string, ReturnType<typeof setTimeout>>();
+/** In-flight `markGroupRead` calls per conversation (a count: calls can overlap). */
+const markReadInflight = new Map<string, number>();
 const MARK_READ_DEBOUNCE_MS = 3_000;
+
+/**
+ * True while a mark-read for this conversation has not reached the server yet
+ * (debounce timer armed, or request in flight). `mergeDmRecency` uses it to
+ * know the server's unread count is about to be superseded (#883).
+ */
+export function isMarkReadPending(conversationId: string): boolean {
+  return markReadTimers.has(conversationId) || markReadInflight.has(conversationId);
+}
 
 /**
  * Mark a conversation as read locally (immediate) AND on the server (debounced 3s).
@@ -1077,9 +1105,16 @@ export function markConversationReadEverywhere(conversationId: string): void {
     conversationId,
     setTimeout(() => {
       markReadTimers.delete(conversationId);
-      markGroupRead(conversationId).catch(() => {
-        // Fire-and-forget — server watermark will catch up on next load
-      });
+      markReadInflight.set(conversationId, (markReadInflight.get(conversationId) ?? 0) + 1);
+      markGroupRead(conversationId)
+        .catch(() => {
+          // Fire-and-forget — server watermark will catch up on next load
+        })
+        .finally(() => {
+          const left = (markReadInflight.get(conversationId) ?? 1) - 1;
+          if (left > 0) markReadInflight.set(conversationId, left);
+          else markReadInflight.delete(conversationId);
+        });
     }, MARK_READ_DEBOUNCE_MS),
   );
 }
@@ -1103,4 +1138,5 @@ export function clearConversationServiceState(): void {
     clearTimeout(timer);
   }
   markReadTimers.clear();
+  markReadInflight.clear();
 }

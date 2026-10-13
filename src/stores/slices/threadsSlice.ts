@@ -25,6 +25,13 @@ import type {
  *
  * `replyCount` is deliberately NOT merged: it is server-authoritative and must
  * be allowed to go down (an admin takedown).
+ *
+ * Accepted divergence: because `lastReplyAt` only moves up, a takedown of a
+ * thread's NEWEST reply (`scripts/admin-remove-content.js` on the backend — a
+ * manual moderation step, not a user action) leaves the thread at that reply's
+ * activity slot while its count drops. Lowering it needs an authoritative,
+ * merge-bypassing write (e.g. from `reconcileThreadReplies`), tracked as a
+ * #883 follow-up.
  */
 function withMergedRecency(incoming: Thread, existing: Thread | undefined): Thread {
   const merged = maxTimestamp(existing?.lastReplyAt, incoming.lastReplyAt);

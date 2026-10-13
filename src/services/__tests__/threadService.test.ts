@@ -1457,6 +1457,38 @@ describe('#883 loadThreadsForGroup', () => {
 
     expect(threads[0].lastReplyAt).toBeNull();
   });
+
+  it('merges recency BEFORE saveThreadBatch so a reply applied mid-request is not lowered on disk', async () => {
+    // A WS reply bumped thread-1 to 9000 while the list request was in flight;
+    // the page (computed earlier) has no reply. saveThreadBatch is INSERT OR
+    // REPLACE, so the merged value has to be what reaches SQLite.
+    setStoreThreads({ 'thread-1': makeStoredThread({ lastReplyAt: 9000 }) });
+    mockGetGroupThreads.mockResolvedValue({
+      threads: [makeThreadListItem({ lastReplyAt: null })],
+      totalCount: 1,
+      hasMore: false,
+    });
+
+    const threads = await loadThreadsForGroup('group-1');
+
+    expect(threads[0].lastReplyAt).toBe(9000);
+    const [, batchThreads] = mockSaveThreadBatch.mock.calls[0];
+    expect(batchThreads[0].lastReplyAt).toBe(9000);
+  });
+
+  it('falls back to the SQLite row for the batch merge when the store is empty', async () => {
+    mockDbGetThread.mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }));
+    mockGetGroupThreads.mockResolvedValue({
+      threads: [makeThreadListItem({ lastReplyAt: null })],
+      totalCount: 1,
+      hasMore: false,
+    });
+
+    await loadThreadsForGroup('group-1');
+
+    const [, batchThreads] = mockSaveThreadBatch.mock.calls[0];
+    expect(batchThreads[0].lastReplyAt).toBe(7000);
+  });
 });
 
 describe('#883 applyReplyToParentThread', () => {

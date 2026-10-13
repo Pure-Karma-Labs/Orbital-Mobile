@@ -860,9 +860,20 @@ export async function loadThreadsForGroup(groupId: string): Promise<Thread[]> {
 
   const groupKey = await getOrFetchGroupKey(groupId);
 
-  const threads = await Promise.all(
+  const mapped = await Promise.all(
     response.threads.map((item) => mapThreadListItem(item, groupKey)),
   );
+
+  // Same merge-before-persist rule as `loadThread`: `saveThreadBatch` is
+  // INSERT OR REPLACE, so without this a reply applied while this request was
+  // in flight would reach the store but be overwritten on disk by the
+  // pre-reply value, and the thread would sort low again after a cold start.
+  const storeThreads = getStoreActions().threads;
+  const threads = mapped.map((t) => {
+    const existing = storeThreads[t.id] ?? safeDbGetThread(t.id);
+    const lastReplyAt = maxTimestamp(existing?.lastReplyAt, t.lastReplyAt);
+    return lastReplyAt === t.lastReplyAt ? t : { ...t, lastReplyAt };
+  });
 
   // Write-through: persist decrypted threads to SQLCipher
   if (isDatabaseInitialized()) {

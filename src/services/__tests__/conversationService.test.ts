@@ -133,7 +133,7 @@ jest.mock('../../stores/useAppStore', () => ({
   },
 }));
 
-import { loadConversations, loadDmConversations, startDm, joinOrbit, fetchCreatorOrbitsDecrypted, hydrateContactsFromOrbits, ensureDmConversation, fulfillPendingWraps, wrapKeyForMember, getPendingWrapsForGroup, clearConversationServiceState, refreshContactAvatar, markConversationReadEverywhere, createInviteCode, mergeDmRecency } from '../conversationService';
+import { loadConversations, loadDmConversations, startDm, joinOrbit, fetchCreatorOrbitsDecrypted, hydrateContactsFromOrbits, ensureDmConversation, fulfillPendingWraps, wrapKeyForMember, getPendingWrapsForGroup, clearConversationServiceState, refreshContactAvatar, markConversationReadEverywhere, createInviteCode, mergeDmRecency, isMarkReadPending } from '../conversationService';
 import type { Conversation } from '../../types/store';
 import { listGroups, listDms, createDm, joinGroup, getGroupMembers, getPendingWraps, submitWrappedKey, markGroupRead, generateInviteCode as generateInviteCodeApi, selfWrapGroupKey } from '../api/groups';
 import * as inviteCrypto from '../crypto/inviteCrypto';
@@ -1671,6 +1671,34 @@ describe('markConversationReadEverywhere', () => {
     await Promise.resolve();
     expect(mockMarkGroupRead).toHaveBeenCalledTimes(1);
   });
+
+  it('reports a mark-read as pending while debounced and in flight, then clears it (#883)', async () => {
+    let resolveRead: (v: unknown) => void = () => {};
+    mockMarkGroupRead.mockReturnValue(new Promise((r) => { resolveRead = r; }));
+    expect(isMarkReadPending('conv-1')).toBe(false);
+
+    markConversationReadEverywhere('conv-1');
+    expect(isMarkReadPending('conv-1')).toBe(true); // debounced
+
+    jest.advanceTimersByTime(3_000);
+    expect(isMarkReadPending('conv-1')).toBe(true); // in flight
+
+    resolveRead({ lastReadAt: '2026-06-12T00:00:00Z' });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(isMarkReadPending('conv-1')).toBe(false);
+  });
+
+  it('clears the pending flag when the server call fails (#883)', async () => {
+    mockMarkGroupRead.mockRejectedValue(new Error('network down'));
+    markConversationReadEverywhere('conv-1');
+    jest.advanceTimersByTime(3_000);
+
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(isMarkReadPending('conv-1')).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2260,10 +2288,20 @@ function makeDmConversation(overrides: Partial<Conversation> = {}): Conversation
 }
 
 describe('mergeDmRecency (#883)', () => {
-  it('returns the incoming row unchanged when nothing is stored', () => {
+  it('returns the incoming row when nothing is stored', () => {
     const incoming = makeDmConversation();
 
-    expect(mergeDmRecency(undefined, incoming)).toBe(incoming);
+    expect(mergeDmRecency(undefined, incoming)).toEqual(incoming);
+  });
+
+  it('sanitizes non-finite timestamps on the first insert', () => {
+    const merged = mergeDmRecency(
+      undefined,
+      makeDmConversation({ lastMessageAt: NaN, lastReadAt: Infinity }),
+    );
+
+    expect(merged.lastMessageAt).toBeNull();
+    expect(merged.lastReadAt).toBeNull();
   });
 
   it('keeps a newer local lastMessageAt', () => {
@@ -2296,16 +2334,27 @@ describe('mergeDmRecency (#883)', () => {
     expect(merged.unreadCount).toBe(3);
   });
 
-  it('keeps 0 when the local lastReadAt is newer than the server one (inside the 3s debounce)', () => {
+  it('keeps 0 while a mark-read is still pending (inside the debounce)', () => {
+    const merged = mergeDmRecency(
+      makeDmConversation({ lastMessageAt: 4000, unreadCount: 0, lastReadAt: 8000 }),
+      makeDmConversation({ lastMessageAt: 4000, unreadCount: 2, lastReadAt: 1000 }),
+      true,
+    );
+
+    expect(merged.unreadCount).toBe(0);
+    expect(merged.lastReadAt).toBe(8000);
+  });
+
+  it('lets the server count win once no mark-read is pending, even if the local watermark is ahead', () => {
+    // A mark-read that never reached the server (offline, swallowed error) or a
+    // fast device clock leaves local lastReadAt > server's permanently. That
+    // must not zero every later badge: with nothing pending, the server wins.
     const merged = mergeDmRecency(
       makeDmConversation({ lastMessageAt: 4000, unreadCount: 0, lastReadAt: 8000 }),
       makeDmConversation({ lastMessageAt: 4000, unreadCount: 2, lastReadAt: 1000 }),
     );
 
-    expect(merged.unreadCount).toBe(0);
-    // The newer local read watermark survives, so a second refresh inside the
-    // same debounce window stays cleared too.
-    expect(merged.lastReadAt).toBe(8000);
+    expect(merged.unreadCount).toBe(2);
   });
 
   it('badges a message that arrived AFTER a local read', () => {
@@ -2314,6 +2363,7 @@ describe('mergeDmRecency (#883)', () => {
     const merged = mergeDmRecency(
       makeDmConversation({ lastMessageAt: 9000, unreadCount: 1, lastReadAt: 8000 }),
       makeDmConversation({ lastMessageAt: 4000, unreadCount: 0, lastReadAt: 1000 }),
+      true,
     );
 
     expect(merged.unreadCount).toBe(1);
@@ -2369,8 +2419,14 @@ describe('loadDmConversations — merge, not overwrite (#883)', () => {
       mergeContacts: mockMergeContacts,
       removeContact: jest.fn(),
       setContactVerifiedStatus: mockSetContactVerifiedStatus,
+      markConversationRead: jest.fn(),
     });
   }
+
+  afterEach(() => {
+    // Cancels any mark-read debounce timer a test armed.
+    clearConversationServiceState();
+  });
 
   it('keeps a newer local lastMessageAt when the list response is stale', async () => {
     seedStore({
@@ -2398,7 +2454,7 @@ describe('loadDmConversations — merge, not overwrite (#883)', () => {
     expect(mockUpsertConversation.mock.calls[0][0].unreadCount).toBe(2);
   });
 
-  it('keeps the badge cleared when the local read is newer than the server watermark', async () => {
+  function seedReadAheadOfServer(): void {
     seedStore({
       'dm-1': makeDmConversation({
         lastMessageAt: Date.parse('2026-03-15T12:00:00.000Z'),
@@ -2413,10 +2469,24 @@ describe('loadDmConversations — merge, not overwrite (#883)', () => {
         lastReadAt: '2026-03-10T00:00:00.000Z',
       },
     ]);
+  }
+
+  it('keeps the badge cleared while the mark-read is still pending', async () => {
+    seedReadAheadOfServer();
+    markConversationReadEverywhere('dm-1');
 
     await loadDmConversations();
 
     expect(mockUpsertConversation.mock.calls[0][0].unreadCount).toBe(0);
+  });
+
+  it('takes the server count when no mark-read is pending, even with a local watermark ahead', async () => {
+    // A read that never reached the server must not suppress later badges.
+    seedReadAheadOfServer();
+
+    await loadDmConversations();
+
+    expect(mockUpsertConversation.mock.calls[0][0].unreadCount).toBe(3);
   });
 });
 

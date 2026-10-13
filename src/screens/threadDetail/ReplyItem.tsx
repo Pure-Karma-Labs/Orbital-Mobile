@@ -245,26 +245,28 @@ export const ReplyItem = React.memo(function ReplyItem({
     minWidth: 0,
   };
 
-  // The author handle (#888): the ONLY target that opens Block/Report, and it
-  // covers the name alone. Sized by a real frame, never by slop — the repo rule
-  // (`docs/design/MOBILE-PATTERNS.md`), shared with `replyButtonStyle` below.
-  // With no slop, every no-overlap rule from #821 holds geometrically instead
-  // of by tuning a band per neighbour: the handle cannot reach up into the jump
-  // control's 8pt bottom slop, and it cannot reach right into the arrow.
-  // `minWidth` 44 keeps a 1-character display name tappable.
+  // The author handle (#888): the name only, sized by its frame and never by
+  // slop. Why, and the frame per surface: `docs/design/MOBILE-PATTERNS.md`
+  // (touch targets), the same rule as `replyButtonStyle` below. Local: with no
+  // slop, every no-overlap rule from #821 holds geometrically rather than by
+  // tuning a band per neighbour — the handle cannot reach up into the jump
+  // control's 8pt bottom band, nor right into the arrow.
   const authorHandleStyle: ViewStyle = stackTimestamp
     ? {
         // The column owns the gutter. `flex-start`, not stretch: stretching
-        // would make the empty space beside a short name — out to the width of
-        // the ~92pt timestamp below it — open Block/Report. Height is the name
+        // would widen the frame to the whole column — out to the ~92pt stamp
+        // below it — so a tap far right of the name would open Block/Report.
+        // The 44pt floor still extends the frame past a name shorter than
+        // that, and that strip is tappable (#890 review). Height is the name
         // line (~16pt); a taller frame here would grow the row.
         alignSelf: 'flex-start',
         minWidth: 44,
         marginLeft: 0,
       }
     : {
-        // Stretches to the 32pt header row, so the frame is 44 x 32 with no
-        // layout change at all.
+        // Stretches to the 32pt header row, so the frame is 44 x 32 and the
+        // row height is unchanged. The 44pt floor does shift the inline stamp
+        // right for a name narrower than that (#890 review).
         alignSelf: 'stretch',
         justifyContent: 'center',
         minWidth: 44,
@@ -384,7 +386,20 @@ export const ReplyItem = React.memo(function ReplyItem({
   // "3:04 PM" read out of context is ambiguous, "September 12 at 3:04 PM" is
   // not (#821).
   const timestampNode = (
-    <Text style={timestampStyle} accessibilityLabel={timestampA11y}>
+    <Text
+      style={timestampStyle}
+      accessibilityLabel={timestampA11y}
+      // Pressure valve, inline only (#890 review). The stamp never shrinks
+      // (#843: a clipped date is worse than a clipped name) and the handle
+      // beside it cannot shrink below 44, so there is no slack left in the
+      // row: at large text sizes the growing stamp would run into the reply
+      // arrow's frame. Capping its scaling keeps the whole date readable
+      // without letting it push into a control — preferred over
+      // `flexShrink` + truncation, which would clip the date instead.
+      // Stacked it owns its own line with nothing to collide with, so it
+      // keeps full scaling.
+      maxFontSizeMultiplier={stackTimestamp ? undefined : 1.3}
+    >
       {timestampText}
     </Text>
   );
@@ -453,7 +468,13 @@ export const ReplyItem = React.memo(function ReplyItem({
           the later sibling wins and the benign control (reply) takes the touch,
           not the block/report sheet.
         */}
-        <View style={authorRowStyle}>
+        {/*
+          Tagged because the inline handle's 32pt height depends on THIS view
+          stretching: delete `alignSelf` here and the target silently shrinks
+          to the text box (~20pt), with nothing else in the tree changing
+          (#890 review). The testID is what lets a test pin it.
+        */}
+        <View style={authorRowStyle} testID={`reply-item-${replyId}-author-row`}>
           {/*
             The avatar labels itself ("X avatar") and renders its initials as a
             host Text, so with the row no longer merged into one accessible

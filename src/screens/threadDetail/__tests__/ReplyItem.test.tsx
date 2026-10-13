@@ -734,4 +734,29 @@ describe('ReplyItem — author handle (#888)', () => {
       ).toHaveLength(0);
     }
   });
+
+  it('inline (depth 0–1) author row has alignSelf stretch; stacked (depth 2) has alignSelf undefined', () => {
+    // The inline handle's 32pt touch height depends on the author-row View
+    // (reply-item-r-1-author-row) having alignSelf: 'stretch'. If that style is
+    // deleted, the frame silently shrinks to the text box (~20pt) with nothing
+    // else in the tree changing (#890 review). This test pins the style so that
+    // deletion is caught before it ships.
+    function authorRowHostStyle(depth: number) {
+      const renderer = renderReplyItem({ depth });
+      const hosts = nodesWithTestId(renderer, 'reply-item-r-1-author-row')
+        .filter((n) => typeof n.type === 'string');
+      expect(hosts).toHaveLength(1);
+      return hosts[0].props.style as Record<string, unknown>;
+    }
+
+    // depth 0: inline — must stretch to the 32pt header row
+    expect(authorRowHostStyle(0)).toEqual(expect.objectContaining({ alignSelf: 'stretch' }));
+    // depth 1: still inline
+    expect(authorRowHostStyle(1)).toEqual(expect.objectContaining({ alignSelf: 'stretch' }));
+    // depth 2: stacked — `alignSelf` is the CROSS axis here (the header row is
+    // a row, so it governs height). Stretching the stacked block to the full
+    // 32pt would pull its two lines to the top of the row for no benefit: the
+    // stacked handle uses flex-start and does not stretch anyway.
+    expect(authorRowHostStyle(2).alignSelf).toBeUndefined();
+  });
 });

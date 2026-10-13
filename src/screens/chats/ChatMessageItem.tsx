@@ -66,16 +66,42 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
   const { handleAuthorPress } = useAuthorActions(authorId, displayName, userId, authorContext);
   const isSelf = authorId === userId;
 
-  // The container is `accessible` with role button, so iOS merges its children
-  // and a screen reader cannot reach the handle inside it. A custom action is
-  // the only route (#888). Deliberately NO 'activate' action: activation keeps
-  // today's behaviour (open the message), and declaring it would duplicate the
-  // navigation push — matching the in-repo idiom in ThreadItem / ChatItem.
+  /**
+   * Both of this row's actions have to be declared here, because the row is a
+   * bare `View` driven by an RNGH tap rather than a Touchable (#890 review):
+   * TalkBack only dispatches ACTION_CLICK when `activate` is declared, and the
+   * gesture handler never receives it. `ThreadItem` / `ChatItem` omit
+   * `activate` precisely because they ARE Touchables, where the platform
+   * already dispatches activation — that idiom does not transfer to this row.
+   *
+   * - `activate` opens the message, on EVERY row including your own. It is the
+   *   screen-reader equivalent of the row tap, and also the backup route to
+   *   Block/Report: ThreadDetail shows the same author's handle.
+   * - `authorActions` opens Block/Report, and only on other people's rows.
+   *
+   * The container is `accessible` with role button, so iOS merges its children
+   * and a screen reader cannot reach the handle inside it (#888).
+   */
+  const accessibilityActions = useMemo(
+    () =>
+      isSelf
+        ? [{ name: 'activate' }]
+        : [{ name: 'activate' }, { name: 'authorActions', label: `Actions for ${displayName}` }],
+    [isSelf, displayName],
+  );
+
   const handleAccessibilityAction = useCallback(
     (event: AccessibilityActionEvent) => {
-      if (event.nativeEvent.actionName === 'authorActions') handleAuthorPress();
+      switch (event.nativeEvent.actionName) {
+        case 'activate':
+          onPress(threadId);
+          break;
+        case 'authorActions':
+          handleAuthorPress();
+          break;
+      }
     },
-    [handleAuthorPress],
+    [onPress, threadId, handleAuthorPress],
   );
 
   const tapGesture = useMemo(
@@ -115,13 +141,15 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
     marginLeft: theme.spacing.xs,
   };
 
-  // The author handle (#888): the ONLY target that opens Block/Report, and in a
-  // DM it is the only route to it at all — the App Store 1.2 / Play UGC safety
-  // control, so it has to stay reachable. It covers the name alone; the avatar,
-  // the time and the unread dot fall through to the row's navigation tap.
-  // Sized by a real frame, never by slop (`docs/design/MOBILE-PATTERNS.md`):
-  // `stretch` takes the row height the 24pt avatar already sets, so nothing
-  // grows, and `minWidth` 44 keeps a 1-character display name tappable.
+  // The author handle (#888): the name only, sized by its frame and never by
+  // slop. Why, and the frame per surface: `docs/design/MOBILE-PATTERNS.md`
+  // (touch targets). Local reason this one cannot be made smaller: in a DM the
+  // handle is the ONLY route to Block/Report, the App Store 1.2 / Play UGC
+  // safety control. The avatar, the time and the dot fall through to the row's
+  // navigation tap. `stretch` takes the 24pt the avatar already sets, so the
+  // row height is unchanged; the 44pt floor can extend the frame past a short
+  // name, which shifts the time right and leaves that blank strip opening
+  // Block/Report too (#890 review).
   const authorHandleStyle: ViewStyle = {
     alignSelf: 'stretch',
     justifyContent: 'center',
@@ -158,10 +186,8 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
         accessible
         accessibilityRole="button"
         accessibilityLabel={unread ? `Unread message from ${displayName}` : `Message from ${displayName}`}
-        accessibilityActions={
-          isSelf ? undefined : [{ name: 'authorActions', label: `Actions for ${displayName}` }]
-        }
-        onAccessibilityAction={isSelf ? undefined : handleAccessibilityAction}
+        accessibilityActions={accessibilityActions}
+        onAccessibilityAction={handleAccessibilityAction}
       >
         {/*
           Passive row (#888): only the name is a control. A tap on the avatar,
@@ -179,9 +205,9 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
             accessibilityLabel={isSelf ? undefined : `Actions for ${displayName}`}
             testID={`chat-message-${threadId}-author-handle`}
           >
-            <Text style={authorStyle} numberOfLines={1}>
+            <EmojiText style={authorStyle} numberOfLines={1}>
               {displayName}
-            </Text>
+            </EmojiText>
           </TouchableOpacity>
           <Text style={timeStyle}>{time}</Text>
           {unread && (

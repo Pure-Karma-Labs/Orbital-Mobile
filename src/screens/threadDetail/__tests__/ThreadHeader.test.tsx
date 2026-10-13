@@ -11,6 +11,7 @@ import {
   formatPostTimestamp,
   formatPostTimestampA11y,
 } from '../../../utils/formatPostTimestamp';
+import { findAllByTestId, findHostByTestId } from '../../../testUtils/rtr';
 
 /**
  * Fixed instant from LOCAL wall-clock parts, so the rendered string is the
@@ -198,10 +199,8 @@ describe('ThreadHeader — timestamp (#821)', () => {
 describe('ThreadHeader — author handle (#888)', () => {
   it('pressing the handle calls handleAuthorPress exactly once', () => {
     const renderer = renderHeader();
-    const handleNodes = renderer.root.findAll(
-      (n) => n.props.testID === 'thread-header-author-handle',
-    );
-    const pressable = handleNodes.find((n) => typeof n.props.onPress === 'function');
+    const pressable = findAllByTestId(renderer.root, 'thread-header-author-handle')
+      .find((n) => typeof n.props.onPress === 'function');
     expect(pressable).toBeDefined();
     act(() => {
       pressable!.props.onPress();
@@ -211,23 +210,17 @@ describe('ThreadHeader — author handle (#888)', () => {
 
   it('handle frame: minWidth 44, alignSelf stretch, no hitSlop', () => {
     const renderer = renderHeader();
-    const handleNodes = renderer.root.findAll(
-      (n) => n.props.testID === 'thread-header-author-handle',
-    );
-    const hostNode = handleNodes.find((n) => typeof n.type === 'string');
-    expect(hostNode).toBeDefined();
-    expect(hostNode!.props.style).toEqual(
+    const hostNode = findHostByTestId(renderer.root, 'thread-header-author-handle');
+    expect(hostNode.props.style).toEqual(
       expect.objectContaining({ minWidth: 44, alignSelf: 'stretch' }),
     );
-    expect(hostNode!.props.hitSlop).toBeUndefined();
+    expect(hostNode.props.hitSlop).toBeUndefined();
   });
 
   it('isSelf: handle is disabled, accessibilityRole and accessibilityLabel are absent', () => {
     const renderer = renderHeader({ authorId: 'u-me', currentUserId: 'u-me' });
-    const handleNodes = renderer.root.findAll(
-      (n) => n.props.testID === 'thread-header-author-handle',
-    );
-    const pressable = handleNodes.find((n) => typeof n.props.onPress === 'function');
+    const pressable = findAllByTestId(renderer.root, 'thread-header-author-handle')
+      .find((n) => typeof n.props.onPress === 'function');
     expect(pressable).toBeDefined();
     expect(pressable!.props.disabled).toBe(true);
     expect(pressable!.props.accessibilityRole).toBeUndefined();

@@ -81,11 +81,12 @@ export const ThreadHeader = React.memo(function ThreadHeader({
     marginBottom: theme.spacing.xs,
   };
 
-  // The author handle (#888): the ONLY target that opens Block/Report, and it
-  // covers the name alone — the avatar, the timestamp and the row's padding are
-  // inert. Sized by a real frame, never by slop (`docs/design/MOBILE-PATTERNS.md`):
-  // `stretch` takes the row height the 28pt avatar already sets, so nothing
-  // grows, and `minWidth` 44 keeps a 1-character display name tappable.
+  // The author handle (#888): the name only, sized by its frame and never by
+  // slop. Why, and the frame per surface: `docs/design/MOBILE-PATTERNS.md`
+  // (touch targets). Local: `stretch` takes the row height the 28pt avatar
+  // already sets, so nothing grows vertically; horizontally the 44pt floor can
+  // extend the frame past a short name, shifting the date right and leaving
+  // that blank strip opening Block/Report too (#890 review).
   const authorHandleStyle: ViewStyle = {
     alignSelf: 'stretch',
     justifyContent: 'center',

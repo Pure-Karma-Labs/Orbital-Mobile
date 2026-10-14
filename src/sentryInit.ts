@@ -2,21 +2,11 @@ import * as Sentry from '@sentry/react-native';
 import { SENTRY_DSN } from './config/env';
 import { filterBreadcrumb, scrubEvent } from './services/telemetryScrub';
 
-/**
- * `enableNetworkBreadcrumbs` is a sentry-cocoa option (read by
- * `optionsFromDictionary`) with no entry in the React Native typings.
- * `initNativeSdk` (dist/js/wrapper.js) forwards options to native with a
- * DENY-list rest-destructure, so an unknown-to-JS key still reaches cocoa.
- * Android's parser is an allow-list and ignores it, which is fine: Android's
- * OkHttp breadcrumbs are opt-in and we never enable them.
- */
-type CocoaPassthrough = { enableNetworkBreadcrumbs: boolean };
-
 // Must be imported in index.js BEFORE `./src/App` — App.tsx calls Sentry.wrap()
 // at module scope, and the SDK requires init to run before wrap or the
 // app-start span is lost. Init always runs (disabled without a DSN) so dev
 // builds don't warn "`Sentry.wrap` was called before `Sentry.init`".
-const options: Sentry.ReactNativeOptions & CocoaPassthrough = {
+const options: Sentry.ReactNativeOptions = {
   dsn: SENTRY_DSN,
   enabled: Boolean(SENTRY_DSN),
   environment: __DEV__ ? 'development' : 'production',
@@ -36,14 +26,33 @@ const options: Sentry.ReactNativeOptions & CocoaPassthrough = {
   // device check in the PR verifies the trail survives; if it does not, raise
   // this value.
   maxBreadcrumbs: 100,
-  // iOS: sentry-cocoa 9.29 defaults this ON and swizzles NSURLSession, so it
+  // iOS ONLY, and it defaults ON: sentry-cocoa swizzles NSURLSession, so it
   // sees RN fetch and RNFS traffic. Those URLs carry orbit / thread / media
   // UUIDs and `setUser({ id })` makes them attributable. The JS hooks below
-  // cannot cover this: `initNativeSdk` strips `beforeSend`/`beforeBreadcrumb`
-  // from the native options, so a HARD NATIVE CRASH report is assembled by
-  // cocoa with no JS boundary in the path. This flag is the only defence
-  // there, and it is unverifiable from JS — see docs/ios-dependency-delivery.md
-  // for the re-check triggers on an SDK bump.
+  // cannot cover this: `initNativeSdk` (dist/js/wrapper.js) forwards our
+  // options to native through a DENY-list rest-destructure that strips
+  // `beforeSend`/`beforeBreadcrumb`, so a HARD NATIVE CRASH report is
+  // assembled by cocoa with no JS boundary in the path. That same forward is
+  // how this key reaches native at all, and the flag is the only defence
+  // there.
+  //
+  // The RN typing marks it OPTIONAL, so nothing in the type system notices our
+  // DELETING it. Section 15 of scripts/check-security-invariants.mjs pins it as
+  // source text and __tests__/sentryInit.test.ts pins the value passed to
+  // init(); those two are the whole guard that it is present AND `false`.
+  // Neither may be deleted. The reverse direction IS covered since #877: with
+  // the options literal typed as a plain `ReactNativeOptions`, an UPSTREAM
+  // removal of `enableNetworkBreadcrumbs?` fails tsc as an excess property
+  // here, so it breaks the build instead of becoming a silent no-op.
+  //
+  // Android has a SEPARATE option, `enableNetworkEventBreadcrumbs`, which
+  // records network-connectivity-state crumbs (available/lost, WiFi <->
+  // cellular, VPN) and no request URLs — nothing content-bearing, so it is
+  // deliberately left at its default and not pinned.
+  //
+  // Whether cocoa honours this is unverifiable from JS — see
+  // docs/ios-dependency-delivery.md for the re-check triggers on an SDK bump
+  // and for the file/line anchors, which carry the version they were read at.
   enableNetworkBreadcrumbs: false,
   // Replace the default Breadcrumbs integration (name: 'Breadcrumbs') with one
   // that has console and xhr capture off at the SOURCE. Console crumbs would

@@ -4,7 +4,7 @@
 
 import React from 'react';
 import { Alert, Share } from 'react-native';
-import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'react-test-renderer';
+import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../../theme';
 import { ManageOrbitsScreen } from '../ManageOrbitsScreen';
@@ -16,6 +16,7 @@ import {
   findHostByTestId,
   hasHostTestId,
   queryByText,
+  renderedText,
 } from '../../testUtils/rtr';
 import { reasonedValidationError } from '../../testUtils/apiErrorFixtures';
 import * as Sentry from '@sentry/react-native';
@@ -1012,11 +1013,6 @@ const INVITE_NOT_ALLOWED_COPY = "You can't create invites for this orbit";
 const INVITE_ORBIT_GONE_COPY = 'This orbit no longer exists';
 const INVITE_GENERIC_FAILURE_COPY = 'Failed to generate invite code. Please try again.';
 
-/** True when some rendered Text has exactly these children. */
-function hasText(root: ReactTestInstance, children: string): boolean {
-  return queryByText(root, children) !== undefined;
-}
-
 describe('ManageOrbitsScreen — invite email routing', () => {
   /**
    * Helper: render the screen, expand the orbit, and open the email modal.
@@ -1106,8 +1102,9 @@ describe('ManageOrbitsScreen — invite email routing', () => {
     expect(hasHostTestId(renderer.root, 'generate-code-error-banner')).toBe(true);
     // The banner's words, not just its presence: the legacy retry copy, and
     // never the raw server text (which rides only in __DEV__ serverMessage).
-    expect(hasText(renderer.root, INVITE_GENERIC_FAILURE_COPY)).toBe(true);
-    expect(hasText(renderer.root, 'some server text')).toBe(false);
+    expect(queryByText(renderer.root, INVITE_GENERIC_FAILURE_COPY)).toBeDefined();
+    expect(renderedText(renderer.root)).toContain(INVITE_GENERIC_FAILURE_COPY);
+    expect(renderedText(renderer.root)).not.toContain('some server text');
     expect(hasHostTestId(renderer.root, 'email-input-error')).toBe(false);
     // Alert must NOT be called — the old Alert.alert on failure is gone
     expect(alertSpy).not.toHaveBeenCalled();
@@ -1139,10 +1136,10 @@ describe('ManageOrbitsScreen — invite email routing', () => {
     expect(hasHostTestId(renderer.root, 'generate-code-error-banner')).toBe(true);
     // The screen renders its own legacy copy, NOT the GROUP_FULL copy that
     // errors.ts selected for the reason — this screen does not route it.
-    expect(hasText(renderer.root, INVITE_GENERIC_FAILURE_COPY)).toBe(true);
+    expect(queryByText(renderer.root, INVITE_GENERIC_FAILURE_COPY)).toBeDefined();
     expect(
-      hasText(renderer.root, 'This orbit is full — ask the orbit admin to make room'),
-    ).toBe(false);
+      queryByText(renderer.root, 'This orbit is full — ask the orbit admin to make room'),
+    ).toBeUndefined();
     expect(hasHostTestId(renderer.root, 'email-input-error')).toBe(false);
 
     expect(mockCaptureException).toHaveBeenCalledTimes(1);

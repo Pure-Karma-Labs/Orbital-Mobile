@@ -166,7 +166,7 @@ export function ComposeThreadScreen({
               stage: 'local-commit',
               surface: 'compose-thread',
               level: 'warning',
-              dm: !!isDm,
+              dm: isDm,
             });
           }
         }
@@ -198,7 +198,7 @@ export function ComposeThreadScreen({
       // Everything below this line is a real failure the user just watched
       // happen. Before #738 it existed only in a __DEV__ console.warn, which is
       // why the S24 sanitizer bug (#732) was invisible in release builds.
-      captureUploadFailure(e, { stage, surface: 'compose-thread', dm: !!isDm });
+      captureUploadFailure(e, { stage, surface: 'compose-thread', dm: isDm });
       // One classification drives both the cache and the banner, so the two can
       // never disagree about whether the post may exist. Stage-gated: a
       // media-stage failure never reached createNewThread, and the backend maps

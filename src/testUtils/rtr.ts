@@ -32,6 +32,8 @@
  *   the handler prop lives.
  * - Every presence, absence or conditional-render assertion must go through
  *   `hasHostTestId`, `findHostByTestId` or `bannerMessage`.
+ * - An absence assertion about SERVER-SOURCED text goes through
+ *   `renderedText`, never `queryByText` — see that helper's note on vacuity.
  *
  * ## Migrating the remaining local copies
  *
@@ -50,6 +52,16 @@
  *   `findAllByTestId`;
  * - a null-returning copy (e.g. `MediaItemView.unavailable`) → rewrite the
  *   call sites onto `hasHostTestId`.
+ * - a local copy that joins all `Text` children for a substring check →
+ *   **`renderedText`** — but only when it joins from the ROOT and backs an
+ *   ABSENCE check. Two shapes have no shared counterpart yet and stay local:
+ *   a SUBTREE-scoped join (`OrbitAdminActions`'s four error-node walkers,
+ *   `FileLibraryScreen`'s unavailable-tile one) reads text through one node,
+ *   so a matching string elsewhere on the screen cannot satisfy the
+ *   assertion — that scoping is the assertion's whole point and `renderedText`
+ *   would throw it away; and a node-RETURNING copy (`MediaItemView`,
+ *   `MediaThumbnailStrip`'s `findTextWithContent`) hands back an instance to
+ *   assert further props on, which a joined string cannot do.
  *
  * Swapping a host-filtered local copy onto the same-named `findByTestId` would
  * silently widen matching back to component nodes and re-introduce the vacuity
@@ -156,7 +168,52 @@ export function bannerMessage(root: ReactTestInstance, testID: string): unknown 
 /**
  * react-test-renderer equivalent of `queryByText` — the first `Text` whose
  * children are exactly `text`, or `undefined` when there is none.
+ *
+ * WARNING — not for absence assertions about server-sourced text. The match is
+ * EXACT on one `Text`'s children, so `expect(queryByText(root, raw))
+ * .toBeUndefined()` starts passing vacuously the moment the screen interpolates
+ * the raw string into its own copy (`Couldn't save (${raw})`) instead of
+ * rendering it alone — which is exactly the leak the assertion was written to
+ * catch. Use `renderedText` for those. `queryByText` absence is only sound for
+ * CURATED COPY the client owns, where the test asserts that one specific
+ * client-authored string was not selected (the #783 reason-routing checks).
  */
 export function queryByText(root: ReactTestInstance, text: string): ReactTestInstance | undefined {
   return root.findAllByType(TEXT).find((node) => node.props.children === text);
+}
+
+/**
+ * Every `Text` node's children, stringified and joined with NUL — for SUBSTRING
+ * absence assertions about server-sourced text:
+ * `expect(renderedText(renderer.root)).not.toContain(raw)`.
+ *
+ * NUL is the separator because no copy in this app contains it, so a match can
+ * never be manufactured by two adjacent nodes.
+ *
+ * Preconditions, all of which make a `.not.toContain` pass for the WRONG reason
+ * if ignored:
+ * - it sees only the `children` of host `Text` nodes. A `TextInput`'s `value`
+ *   or `placeholder`, an `accessibilityLabel`, and any other prop-borne string
+ *   are INVISIBLE to it; assert on those nodes directly;
+ * - it is sound only when the asserted string would land as a CONTIGUOUS string
+ *   child of a single `Text`. Text rendered through `EmojiText` is split across
+ *   sibling `Text` nodes at every emoji and URL boundary, so a raw string
+ *   carrying either will not be found even when it IS on screen. `rtr.test.tsx`
+ *   pins that blind spot deliberately;
+ * - the stringification is `String(children)`, so an array child renders as
+ *   comma-joined — fine for `toContain` on a substring with no commas of its
+ *   own, but do not use it for exact-equality checks.
+ *
+ * Where the leak-prone string is the `__DEV__`-only raw server text our API
+ * errors retain, this is the assertion to reach for.
+ *
+ * Pair every absence assertion with a positive one on the same root — the
+ * curated copy the test already expects — so the call site proves the helper
+ * actually saw the tree rather than passing on an empty string (#894).
+ */
+export function renderedText(root: ReactTestInstance): string {
+  return root
+    .findAllByType(TEXT)
+    .map((node) => String(node.props.children))
+    .join('\u0000');
 }

@@ -9,7 +9,7 @@ import { ThemeProvider } from '../../theme';
 import { ResetPasswordScreen } from '../ResetPasswordScreen';
 import { ApiError, NetworkError, ValidationError } from '../../services/api/errors';
 import { PASSWORD_RULE_HINT } from '../../utils/validatePassword';
-import { bannerMessage, findByTestId, queryByText } from '../../testUtils/rtr';
+import { bannerMessage, findByTestId, queryByText, renderedText } from '../../testUtils/rtr';
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -340,6 +340,8 @@ describe('ResetPasswordScreen — error handling', () => {
     expect(findByTestId(root, 'reset-code-input-error').props.children).toBe(
       'Invalid or expired code',
     );
+    expect(renderedText(root)).toContain('Invalid or expired code');
+    expect(renderedText(root)).not.toContain('invalid code');
   });
 
   it('routes a coded EMAIL_FORMAT ValidationError to the banner, not the code field', async () => {

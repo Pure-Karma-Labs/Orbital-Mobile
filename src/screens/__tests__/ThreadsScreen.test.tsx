@@ -268,6 +268,28 @@ describe('ThreadsScreen', () => {
     );
     expect(emptyNode).toBeDefined();
   });
+
+  // #826: `isDm` is a REQUIRED ComposeThreadParams field, and this is the only
+  // producer that used to omit it. An omitted `isDm` makes the composer's
+  // upload telemetry drop the `dm` tag entirely rather than report 'false', so
+  // the param must be passed explicitly — asserted with an exact-object match,
+  // not objectContaining, so a dropped field fails here.
+  it('composing navigates to ComposeThread with the active orbit and isDm: false', () => {
+    const renderer = renderThreadsScreen();
+    const composeNodes = renderer.root.findAll(
+      (node) => typeof node.props.onCompose === 'function',
+    );
+    expect(composeNodes.length).toBeGreaterThan(0);
+
+    act(() => {
+      composeNodes[0].props.onCompose();
+    });
+
+    expect(mockNavigation.navigate).toHaveBeenCalledWith('ComposeThread', {
+      groupId: 'group-1',
+      isDm: false,
+    });
+  });
 });
 
 describe('ThreadsScreen — with thread data', () => {

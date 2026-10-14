@@ -14,6 +14,7 @@ import {
   findHostByTestId,
   hasHostTestId,
   queryByText,
+  renderedText,
 } from '../../testUtils/rtr';
 import { reasonedValidationError } from '../../testUtils/apiErrorFixtures';
 
@@ -353,7 +354,10 @@ describe('CreateOrbitScreen — invite generation', () => {
     expect(
       queryByText(renderer.root, 'Failed to generate invite code. Please try again.'),
     ).toBeDefined();
-    expect(queryByText(renderer.root, 'boom')).toBeUndefined();
+    expect(renderedText(renderer.root)).toContain(
+      'Failed to generate invite code. Please try again.',
+    );
+    expect(renderedText(renderer.root)).not.toContain('boom');
   });
 });
 
@@ -373,7 +377,8 @@ describe('CreateOrbitScreen — error handling', () => {
 
     expect(queryByText(renderer.root, 'Could not create orbit — please try again')).toBeDefined();
     expect(() => findByTestId(renderer.root, 'orbit-name-input-error')).toThrow();
-    expect(queryByText(renderer.root, 'Server error')).toBeUndefined();
+    expect(renderedText(renderer.root)).toContain('Could not create orbit — please try again');
+    expect(renderedText(renderer.root)).not.toContain('Server error');
 
     expect(mockCaptureException).toHaveBeenCalledTimes(1);
     const [reportedError, context] = mockCaptureException.mock.calls[0];
@@ -542,8 +547,9 @@ describe('CreateOrbitScreen — invite email routing', () => {
 
     expect(hasHostTestId(renderer.root, 'invite-error-banner')).toBe(true);
     expect(queryByText(renderer.root, GENERIC_INVITE_FAILURE_COPY)).toBeDefined();
+    expect(renderedText(renderer.root)).toContain(GENERIC_INVITE_FAILURE_COPY);
     // Never the raw server text — that rides only in the __DEV__ serverMessage.
-    expect(queryByText(renderer.root, 'some server text')).toBeUndefined();
+    expect(renderedText(renderer.root)).not.toContain('some server text');
     expect(hasHostTestId(renderer.root, 'invite-email-input-error')).toBe(false);
 
     expect(mockCaptureException).toHaveBeenCalledTimes(1);

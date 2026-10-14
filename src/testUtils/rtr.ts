@@ -53,7 +53,15 @@
  * - a null-returning copy (e.g. `MediaItemView.unavailable`) → rewrite the
  *   call sites onto `hasHostTestId`.
  * - a local copy that joins all `Text` children for a substring check →
- *   **`renderedText`**.
+ *   **`renderedText`** — but only when it joins from the ROOT and backs an
+ *   ABSENCE check. Two shapes have no shared counterpart yet and stay local:
+ *   a SUBTREE-scoped join (`OrbitAdminActions`'s four error-node walkers,
+ *   `FileLibraryScreen`'s unavailable-tile one) reads text through one node,
+ *   so a matching string elsewhere on the screen cannot satisfy the
+ *   assertion — that scoping is the assertion's whole point and `renderedText`
+ *   would throw it away; and a node-RETURNING copy (`MediaItemView`,
+ *   `MediaThumbnailStrip`'s `findTextWithContent`) hands back an instance to
+ *   assert further props on, which a joined string cannot do.
  *
  * Swapping a host-filtered local copy onto the same-named `findByTestId` would
  * silently widen matching back to component nodes and re-introduce the vacuity
@@ -196,8 +204,12 @@ export function queryByText(root: ReactTestInstance, text: string): ReactTestIns
  *   comma-joined — fine for `toContain` on a substring with no commas of its
  *   own, but do not use it for exact-equality checks.
  *
- * Where the leak-prone string is the server's own message text (the `__DEV__`-
- * only `serverMessage` on our API errors), this is the assertion to reach for.
+ * Where the leak-prone string is the `__DEV__`-only raw server text our API
+ * errors retain, this is the assertion to reach for.
+ *
+ * Pair every absence assertion with a positive one on the same root — the
+ * curated copy the test already expects — so the call site proves the helper
+ * actually saw the tree rather than passing on an empty string (#894).
  */
 export function renderedText(root: ReactTestInstance): string {
   return root

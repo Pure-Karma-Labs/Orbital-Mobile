@@ -340,6 +340,7 @@ describe('ResetPasswordScreen — error handling', () => {
     expect(findByTestId(root, 'reset-code-input-error').props.children).toBe(
       'Invalid or expired code',
     );
+    expect(renderedText(root)).toContain('Invalid or expired code');
     expect(renderedText(root)).not.toContain('invalid code');
   });
 

@@ -29,26 +29,30 @@ const options: Sentry.ReactNativeOptions = {
   // iOS ONLY, and it defaults ON: sentry-cocoa swizzles NSURLSession, so it
   // sees RN fetch and RNFS traffic. Those URLs carry orbit / thread / media
   // UUIDs and `setUser({ id })` makes them attributable. The JS hooks below
-  // cannot cover this: `initNativeSdk` (dist/js/wrapper.js:162) forwards our
+  // cannot cover this: `initNativeSdk` (dist/js/wrapper.js) forwards our
   // options to native through a DENY-list rest-destructure that strips
   // `beforeSend`/`beforeBreadcrumb`, so a HARD NATIVE CRASH report is
   // assembled by cocoa with no JS boundary in the path. That same forward is
   // how this key reaches native at all, and the flag is the only defence
   // there.
   //
-  // The RN typing marks it OPTIONAL, so nothing in the type system notices its
-  // removal. Section 15 of scripts/check-security-invariants.mjs pins it as
+  // The RN typing marks it OPTIONAL, so nothing in the type system notices our
+  // DELETING it. Section 15 of scripts/check-security-invariants.mjs pins it as
   // source text and __tests__/sentryInit.test.ts pins the value passed to
   // init(); those two are the whole guard that it is present AND `false`.
-  // Neither may be deleted.
+  // Neither may be deleted. The reverse direction IS covered since #877: with
+  // the options literal typed as a plain `ReactNativeOptions`, an UPSTREAM
+  // removal of `enableNetworkBreadcrumbs?` fails tsc as an excess property
+  // here, so it breaks the build instead of becoming a silent no-op.
   //
-  // Android has a SEPARATE option, `enableNetworkEventBreadcrumbs`
-  // (options.d.ts:227), which records network-connectivity-state crumbs
-  // (available/lost, WiFi <-> cellular, VPN) and no request URLs — nothing
-  // content-bearing, so it is deliberately left at its default and not pinned.
+  // Android has a SEPARATE option, `enableNetworkEventBreadcrumbs`, which
+  // records network-connectivity-state crumbs (available/lost, WiFi <->
+  // cellular, VPN) and no request URLs — nothing content-bearing, so it is
+  // deliberately left at its default and not pinned.
   //
   // Whether cocoa honours this is unverifiable from JS — see
-  // docs/ios-dependency-delivery.md for the re-check triggers on an SDK bump.
+  // docs/ios-dependency-delivery.md for the re-check triggers on an SDK bump
+  // and for the file/line anchors, which carry the version they were read at.
   enableNetworkBreadcrumbs: false,
   // Replace the default Breadcrumbs integration (name: 'Breadcrumbs') with one
   // that has console and xhr capture off at the SOURCE. Console crumbs would

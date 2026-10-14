@@ -592,6 +592,7 @@ describe('SignupScreen — error handling', () => {
         node.props.children.toLowerCase().includes('invalid'),
     );
     expect(errorText).toBeDefined();
+    expect(renderedText(root)).toContain('Invalid request');
     expect(renderedText(root)).not.toContain('username taken');
   });
 
@@ -727,6 +728,7 @@ describe('SignupScreen — server validation reasons (#783)', () => {
 
     // Nothing the server wrote reaches the screen, on any node.
     const rendered = renderedText(root);
+    expect(rendered).toContain('Invalid request');
     expect(rendered).not.toContain('SECRET');
     expect(rendered).not.toContain('SOME_FUTURE_CODE');
 

@@ -292,6 +292,7 @@ describe('OrbitAdminActions — transfer', () => {
     );
     const errorText = allTextNodes.map((n) => n.children[0]).join('');
     expect(errorText).toContain("hasn't received the orbit's key yet");
+    expect(renderedText(renderer.root)).toContain("hasn't received the orbit's key yet");
     expect(renderedText(renderer.root)).not.toContain(
       'Target member has not yet received the group key',
     );

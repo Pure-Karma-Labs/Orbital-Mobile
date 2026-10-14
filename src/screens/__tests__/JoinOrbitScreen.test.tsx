@@ -383,6 +383,7 @@ describe('JoinOrbitScreen — error handling', () => {
       queryByText(renderer.root, 'Could not join orbit — please try again'),
     ).toBeDefined();
     expect(() => findByTestId(renderer.root, 'invite-code-input-error')).toThrow();
+    expect(renderedText(renderer.root)).toContain('Could not join orbit — please try again');
     expect(renderedText(renderer.root)).not.toContain('boom');
 
     expect(mockCaptureException).toHaveBeenCalledTimes(1);

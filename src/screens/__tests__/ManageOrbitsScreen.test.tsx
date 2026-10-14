@@ -1103,6 +1103,7 @@ describe('ManageOrbitsScreen — invite email routing', () => {
     // The banner's words, not just its presence: the legacy retry copy, and
     // never the raw server text (which rides only in __DEV__ serverMessage).
     expect(queryByText(renderer.root, INVITE_GENERIC_FAILURE_COPY)).toBeDefined();
+    expect(renderedText(renderer.root)).toContain(INVITE_GENERIC_FAILURE_COPY);
     expect(renderedText(renderer.root)).not.toContain('some server text');
     expect(hasHostTestId(renderer.root, 'email-input-error')).toBe(false);
     // Alert must NOT be called — the old Alert.alert on failure is gone

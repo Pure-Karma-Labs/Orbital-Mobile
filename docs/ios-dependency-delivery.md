@@ -187,7 +187,13 @@ sentry-cocoa 9.30.0.
     string is still in the binary:
     `strings -a Sentry | grep -x enableNetworkBreadcrumbs`. Cocoa's documented
     default is `true`, so a regression here puts request URLs back into native
-    crash reports.
+    crash reports. One direction is now checked for you: since #877 the init
+    literal is typed as a plain `ReactNativeOptions`, so an upstream removal of
+    `enableNetworkBreadcrumbs?` from `options.d.ts:215` fails `tsc --noEmit` as
+    an excess property on `src/sentryInit.ts` -- a build break, not a silent
+    no-op. Android's sibling option `enableNetworkEventBreadcrumbs`
+    (`options.d.ts:228`) records connectivity-state crumbs with no request
+    URLs, so it is deliberately left at its default and not pinned.
 11. **`wrapper.js` still strips `beforeSend` / `beforeBreadcrumb` from the
     native options** (same destructure, `wrapper.js:162`). This is why item 10
     matters: native crash reports are assembled by sentry-cocoa with no JS

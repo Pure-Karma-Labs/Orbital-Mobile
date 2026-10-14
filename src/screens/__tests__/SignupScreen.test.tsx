@@ -11,7 +11,7 @@ import { SignupScreen } from '../SignupScreen';
 import { ApiError, AuthError, NetworkError, ValidationError } from '../../services/api/errors';
 import { PASSWORD_RULE_HINT } from '../../utils/validatePassword';
 import { RATE_LIMIT_MESSAGE } from '../../utils/errorMessages';
-import { findByTestId, hasHostTestId, queryByText } from '../../testUtils/rtr';
+import { findByTestId, hasHostTestId, queryByText, renderedText } from '../../testUtils/rtr';
 import { reasonedValidationError } from '../../testUtils/apiErrorFixtures';
 
 // ---------------------------------------------------------------------------
@@ -592,6 +592,7 @@ describe('SignupScreen — error handling', () => {
         node.props.children.toLowerCase().includes('invalid'),
     );
     expect(errorText).toBeDefined();
+    expect(renderedText(root)).not.toContain('username taken');
   });
 
   it('shows network error message on NetworkError', async () => {
@@ -725,10 +726,7 @@ describe('SignupScreen — server validation reasons (#783)', () => {
     expect(queryByText(root, 'Invalid request')).toBeDefined();
 
     // Nothing the server wrote reaches the screen, on any node.
-    const rendered = root
-      .findAllByType('Text' as unknown as React.ComponentType)
-      .map((node) => String(node.props.children))
-      .join('\u0000');
+    const rendered = renderedText(root);
     expect(rendered).not.toContain('SECRET');
     expect(rendered).not.toContain('SOME_FUTURE_CODE');
 

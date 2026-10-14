@@ -9,6 +9,7 @@ import React from 'react';
 import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'react-test-renderer';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../../theme';
+import { findByTestId } from '../../testUtils/rtr';
 import { ComposeThreadScreen } from '../ComposeThreadScreen';
 
 // ---------------------------------------------------------------------------
@@ -134,7 +135,7 @@ const mockNavigation = {
 const mockRoute = {
   key: 'ComposeThread',
   name: 'ComposeThread' as const,
-  params: { groupId: 'group-1' },
+  params: { groupId: 'group-1', isDm: false },
 };
 
 /**
@@ -143,7 +144,7 @@ const mockRoute = {
  * DM variant (no title input, "Send message" button).
  */
 function renderScreen(
-  params: { groupId: string; isDm?: boolean } = { groupId: 'group-1' },
+  params: { groupId: string; isDm: boolean } = { groupId: 'group-1', isDm: false },
 ): ReactTestRenderer {
   const route = { ...mockRoute, params };
   let renderer!: ReactTestRenderer;
@@ -164,12 +165,6 @@ function renderScreen(
     );
   });
   return renderer;
-}
-
-function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstance {
-  const found = root.findAll((node) => node.props.testID === testID);
-  if (found.length === 0) throw new Error(`No element with testID "${testID}"`);
-  return found[0];
 }
 
 /** Find the Post button by its accessibilityLabel. */

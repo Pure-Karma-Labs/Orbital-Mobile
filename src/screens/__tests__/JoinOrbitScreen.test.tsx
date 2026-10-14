@@ -16,7 +16,7 @@ import {
   ValidationError,
 } from '../../services/api/errors';
 import { RATE_LIMIT_MESSAGE } from '../../utils/errorMessages';
-import { findByTestId, hasHostTestId, queryByText } from '../../testUtils/rtr';
+import { findByTestId, hasHostTestId, queryByText, renderedText } from '../../testUtils/rtr';
 import { reasonedValidationError } from '../../testUtils/apiErrorFixtures';
 
 // ---------------------------------------------------------------------------
@@ -383,7 +383,7 @@ describe('JoinOrbitScreen — error handling', () => {
       queryByText(renderer.root, 'Could not join orbit — please try again'),
     ).toBeDefined();
     expect(() => findByTestId(renderer.root, 'invite-code-input-error')).toThrow();
-    expect(queryByText(renderer.root, 'boom')).toBeUndefined();
+    expect(renderedText(renderer.root)).not.toContain('boom');
 
     expect(mockCaptureException).toHaveBeenCalledTimes(1);
     const [reportedError, context] = mockCaptureException.mock.calls[0];

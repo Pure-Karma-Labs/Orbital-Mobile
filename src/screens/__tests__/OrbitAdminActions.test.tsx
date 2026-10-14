@@ -20,6 +20,7 @@ import { Alert } from 'react-native';
 import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'react-test-renderer';
 import { ThemeProvider } from '../../theme';
 import { OrbitAdminActions } from '../settings/OrbitAdminActions';
+import { renderedText } from '../../testUtils/rtr';
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -291,6 +292,9 @@ describe('OrbitAdminActions — transfer', () => {
     );
     const errorText = allTextNodes.map((n) => n.children[0]).join('');
     expect(errorText).toContain("hasn't received the orbit's key yet");
+    expect(renderedText(renderer.root)).not.toContain(
+      'Target member has not yet received the group key',
+    );
 
     alertSpy.mockRestore();
   });

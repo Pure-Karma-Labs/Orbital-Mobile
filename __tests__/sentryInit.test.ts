@@ -27,7 +27,7 @@ describe('sentryInit', () => {
   });
 
   it('pins the breadcrumb budget and disables native network breadcrumbs', () => {
-    // enableNetworkBreadcrumbs is a sentry-cocoa option with no RN typing; it
+    // enableNetworkBreadcrumbs is an iOS-only sentry-cocoa option; it
     // reaches native through initNativeSdk's deny-list rest-destructure and is
     // the ONLY defence for hard native crash reports, because that same
     // destructure strips beforeSend/beforeBreadcrumb. Only the on-device check

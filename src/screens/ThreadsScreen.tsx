@@ -311,7 +311,7 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
 
   const handleCompose = useCallback(() => {
     if (!activeConversationId) return;
-    navigation.navigate('ComposeThread', { groupId: activeConversationId });
+    navigation.navigate('ComposeThread', { groupId: activeConversationId, isDm: false });
   }, [navigation, activeConversationId]);
 
   const handleOpenOrbits = useCallback(() => {

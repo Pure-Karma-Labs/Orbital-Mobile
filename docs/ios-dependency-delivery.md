@@ -167,9 +167,10 @@ Each rests on undocumented internals of the installed package, so re-verify by
 reading the files named, not the release notes. Line numbers are 8.29.0 /
 sentry-cocoa 9.30.0.
 
-10. **`enableNetworkBreadcrumbs` still reaches native.** The option is a
-    sentry-cocoa one with no entry in the React Native typings; it only works
-    because `initNativeSdk`
+10. **`enableNetworkBreadcrumbs` still reaches native.** The option is an
+    iOS-only sentry-cocoa one. It has had a React Native typing since 8.28
+    (item 9), but that typing is cosmetic -- it is declared optional and
+    nothing in the type system applies it. It works because `initNativeSdk`
     (`node_modules/@sentry/react-native/dist/js/wrapper.js:162`) forwards
     options to native through a DENY-list rest-destructure, currently stripping
     only `beforeSend`, `beforeBreadcrumb`, `beforeSendTransaction`,

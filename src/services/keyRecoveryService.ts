@@ -625,11 +625,13 @@ async function doRecoverIdentityKeys(
     } catch (e) {
       warnAndCapture('[Recovery:EciesLock]')(e);
     }
+    // Blocked-users sync runs ahead of the awaited loads, mirroring
+    // postAuthBootstrap (#896): WS ingest reads blockedUserIds at message time.
+    syncBlockedUsers().catch(warnAndCapture('[Recovery:BlockedUsersSync]'));
     await loadConversations().catch(warnAndCapture('[Recovery:ConversationSync]'));
     await loadDmConversations().catch(warnAndCapture('[Recovery:DmSync]'));
     hydrateContactsFromOrbits().catch(warnAndCapture('[Recovery:ContactHydration]'));
     fulfillPendingWraps().catch(warnAndCapture('[Recovery:PendingWraps]'));
-    syncBlockedUsers().catch(warnAndCapture('[Recovery:BlockedUsersSync]'));
     syncNotificationSettings().catch(warnAndCapture('[Recovery:NotificationSettingsSync]'));
 
     return { status: 'success' };

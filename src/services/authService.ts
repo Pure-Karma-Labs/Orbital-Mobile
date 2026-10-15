@@ -95,7 +95,7 @@ export function checkAccountSwitch(newUserId: string): void {
  * contacts, pending wraps, and crypto state. Each step is catch-guarded so
  * a single failure never prevents the remaining bootstrap tasks.
  *
- * FIRST step: attemptKeychainIdentityRestore() — on iOS reinstall the Keychain
+ * FIRST awaited step: attemptKeychainIdentityRestore() — on iOS reinstall the Keychain
  * survives but the DB is gone. The restore service probes the server, proves
  * key-match via ECIES round-trip, and writes identityKeyPublic to the DB so
  * ensureKeysInitialized can upload the (idempotent) bundle without a 409.
@@ -107,6 +107,15 @@ export function checkAccountSwitch(newUserId: string): void {
  * If you change one, update the other. Grep for this marker to find both.
  */
 async function postAuthBootstrap(): Promise<void> {
+  // Blocked-users sync is kicked off first (#896): WS ingest guards read
+  // blockedUserIds at message time, and on the post-logout/reinstall path the
+  // persisted list is empty until this lands. Running it first NARROWS that
+  // window — it cannot close it: the socket connects on isAuthenticated, before
+  // bootstrap runs, so a message arriving ahead of the GET is still persisted
+  // and counted, then hidden at render. Fire-and-forget — it does not precede
+  // the first AWAITED step (the Keychain identity restore below).
+  syncBlockedUsers().catch(warnCatch('[BlockedUsersSync]'));
+
   // --- Step 0: Keychain identity restore (must run FIRST) ---
   let restoreDeferred = false;
   try {
@@ -164,7 +173,6 @@ async function postAuthBootstrap(): Promise<void> {
     });
   }
 
-  syncBlockedUsers().catch(warnCatch('[BlockedUsersSync]'));
   syncNotificationSettings().catch(warnCatch('[NotificationSettingsSync]'));
 }
 

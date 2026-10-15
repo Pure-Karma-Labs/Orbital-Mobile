@@ -1,6 +1,8 @@
 import type { StateCreator } from 'zustand';
 import type { AppState, BlockedUsersSlice } from '../../types/store';
 import { blockUserApi, unblockUserApi } from '../../services/api/users';
+import { NetworkError } from '../../services/api/errors';
+import { captureError } from '../../services/telemetry';
 
 export const createBlockedUsersSlice: StateCreator<
   AppState,
@@ -30,8 +32,9 @@ export const createBlockedUsersSlice: StateCreator<
   },
 
   unblockUser: (userId) => {
-    const { blockedUserIds, blockedUserProfiles } = get();
+    const { blockedUserIds, blockedUserProfiles, userId: sessionUserId } = get();
     if (!blockedUserIds.includes(userId)) return; // No-op for unknown
+    const savedName = blockedUserProfiles[userId];
     const updated = { ...blockedUserProfiles };
     delete updated[userId];
     set(
@@ -44,6 +47,31 @@ export const createBlockedUsersSlice: StateCreator<
     );
     unblockUserApi(userId).catch((e: unknown) => {
       if (__DEV__) console.warn('[BlockedUsers] unblockUser API failed:', e instanceof Error ? e.message : e);
+      // #896: the sync no longer deletes server rows, so a failed DELETE must
+      // not leave local state ahead of the server (the next cold-start sync
+      // would silently resurrect the block). Roll the optimistic removal back
+      // so the row returns and the user can retry. Same session only — after a
+      // logout/account switch the id belongs to someone else's state.
+      const s = get();
+      if (s.userId !== sessionUserId) return;
+      if (!s.blockedUserIds.includes(userId)) {
+        set(
+          {
+            blockedUserIds: [...s.blockedUserIds, userId],
+            blockedUserProfiles:
+              savedName === undefined
+                ? s.blockedUserProfiles
+                : { ...s.blockedUserProfiles, [userId]: savedName },
+          },
+          false,
+          'blockedUsers/unblockUserRollback',
+        );
+      }
+      // NetworkError is a modelled transient state the rollback already handles,
+      // not a fault worth a Sentry event (inviteCreateErrors.ts precedent).
+      if (!(e instanceof NetworkError)) {
+        captureError(e, { tags: { feature: 'blocking', op: 'unblock' } });
+      }
     });
   },
 
@@ -56,19 +84,16 @@ export const createBlockedUsersSlice: StateCreator<
   },
 
   hydrateBlockedUsers: (serverBlockedIds) => {
-    const { blockedUserIds, blockedUserProfiles } = get();
+    const { blockedUserIds } = get();
     const localSet = new Set(blockedUserIds);
     const newIds = serverBlockedIds.filter((id) => !localSet.has(id));
     if (newIds.length === 0) return;
-    const updatedProfiles = { ...blockedUserProfiles };
-    for (const id of newIds) {
-      updatedProfiles[id] = updatedProfiles[id] ?? 'Unknown';
-    }
+    // #896: ids only — blockedUserProfiles is left untouched. GET /blocked
+    // carries no usernames, and a shared 'Unknown' placeholder would render as
+    // a real handle ("Unblock @Unknown?"). The screen falls back to a
+    // disambiguating user-<id prefix> label when no profile/contact exists.
     set(
-      {
-        blockedUserIds: [...blockedUserIds, ...newIds],
-        blockedUserProfiles: updatedProfiles,
-      },
+      { blockedUserIds: [...blockedUserIds, ...newIds] },
       false,
       'blockedUsers/hydrateBlockedUsers',
     );

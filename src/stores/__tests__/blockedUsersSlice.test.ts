@@ -15,11 +15,22 @@ const mockBlockUserApi = jest.fn().mockResolvedValue(undefined);
 const mockUnblockUserApi = jest.fn().mockResolvedValue(undefined);
 const mockGetBlockedUsers = jest.fn().mockResolvedValue({ blockedUserIds: [] });
 
+const mockCaptureError = jest.fn();
+
 jest.mock('../../services/api/users', () => ({
   blockUserApi: (...args: unknown[]) => mockBlockUserApi(...args),
   unblockUserApi: (...args: unknown[]) => mockUnblockUserApi(...args),
   getBlockedUsers: (...args: unknown[]) => mockGetBlockedUsers(...args),
 }));
+
+jest.mock('../../services/telemetry', () => ({
+  captureError: (...args: unknown[]) => mockCaptureError(...args),
+}));
+
+/** Let the fire-and-forget API promise settle and its catch handler run. */
+function flushMicrotasks(): Promise<void> {
+  return new Promise<void>((resolve) => setImmediate(resolve));
+}
 
 // ---------------------------------------------------------------------------
 // Minimal store factory
@@ -163,8 +174,17 @@ function makeStore() {
 // Tests
 // ---------------------------------------------------------------------------
 
+let warnSpy: jest.SpyInstance;
+
 beforeEach(() => {
   jest.clearAllMocks();
+  mockUnblockUserApi.mockResolvedValue(undefined);
+  // The API-failure paths warn under __DEV__; keep the suite output quiet.
+  warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+});
+
+afterEach(() => {
+  warnSpy.mockRestore();
 });
 
 describe('blockedUsersSlice - initial state', () => {
@@ -288,6 +308,64 @@ describe('blockedUsersSlice - unblockUser API wiring', () => {
   });
 });
 
+describe('blockedUsersSlice - unblockUser rollback (#896)', () => {
+  it('restores the id and username when unblockUserApi rejects', async () => {
+    const store = makeStore();
+    store.setState({ userId: 'self' });
+    store.getState().blockUser('user-1', 'alice');
+    const failure = new Error('offline');
+    mockUnblockUserApi.mockRejectedValueOnce(failure);
+
+    store.getState().unblockUser('user-1');
+    // Optimistic removal is visible immediately.
+    expect(store.getState().blockedUserIds).toEqual([]);
+
+    await flushMicrotasks();
+
+    const state = store.getState();
+    expect(state.blockedUserIds).toEqual(['user-1']);
+    expect(state.blockedUserProfiles['user-1']).toBe('alice');
+    expect(mockCaptureError).toHaveBeenCalledWith(failure, {
+      tags: { feature: 'blocking', op: 'unblock' },
+    });
+  });
+
+  it('does not roll back into another account after a session change', async () => {
+    const store = makeStore();
+    store.setState({ userId: 'self' });
+    store.getState().blockUser('user-1', 'alice');
+    mockUnblockUserApi.mockRejectedValueOnce(new Error('offline'));
+
+    store.getState().unblockUser('user-1');
+    // Logout + login as another account before the rejection lands.
+    store.setState({ userId: 'other', blockedUserIds: [], blockedUserProfiles: {} });
+
+    await flushMicrotasks();
+
+    const state = store.getState();
+    expect(state.blockedUserIds).toEqual([]);
+    expect(state.blockedUserProfiles).toEqual({});
+    expect(mockCaptureError).not.toHaveBeenCalled();
+  });
+
+  it('does not duplicate the id when it was re-blocked before the rejection', async () => {
+    const store = makeStore();
+    store.setState({ userId: 'self' });
+    store.getState().blockUser('user-1', 'alice');
+    mockUnblockUserApi.mockRejectedValueOnce(new Error('offline'));
+
+    store.getState().unblockUser('user-1');
+    store.getState().blockUser('user-1', 'alice');
+
+    await flushMicrotasks();
+
+    const state = store.getState();
+    expect(state.blockedUserIds).toEqual(['user-1']);
+    expect(state.blockedUserProfiles['user-1']).toBe('alice');
+    expect(mockCaptureError).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('blockedUsersSlice - hydrateBlockedUsers', () => {
   it('merges new IDs from server without duplicating existing ones', () => {
     const store = makeStore();
@@ -296,8 +374,9 @@ describe('blockedUsersSlice - hydrateBlockedUsers', () => {
     const state = store.getState();
     expect(state.blockedUserIds).toEqual(['user-1', 'user-2', 'user-3']);
     expect(state.blockedUserProfiles['user-1']).toBe('alice');
-    expect(state.blockedUserProfiles['user-2']).toBe('Unknown');
-    expect(state.blockedUserProfiles['user-3']).toBe('Unknown');
+    // #896: hydrate writes ids only — no placeholder username is invented.
+    expect('user-2' in state.blockedUserProfiles).toBe(false);
+    expect('user-3' in state.blockedUserProfiles).toBe(false);
   });
 
   it('is a no-op when all server IDs are already present locally', () => {
@@ -316,8 +395,8 @@ describe('blockedUsersSlice - hydrateBlockedUsers', () => {
     store.getState().hydrateBlockedUsers(['user-1', 'user-2']);
     const state = store.getState();
     expect(state.blockedUserIds).toEqual(['user-1', 'user-2']);
-    expect(state.blockedUserProfiles['user-1']).toBe('Unknown');
-    expect(state.blockedUserProfiles['user-2']).toBe('Unknown');
+    // #896: ids only — the screen renders a user-<id prefix> fallback label.
+    expect(state.blockedUserProfiles).toEqual({});
   });
 
   it('handles empty server list as no-op', () => {

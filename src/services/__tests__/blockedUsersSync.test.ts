@@ -1,8 +1,24 @@
 /**
- * Tests for blockedUsersSync — reconciles local blocked list with server.
+ * Tests for blockedUsersSync — ADDITIVE reconciliation of the local blocked
+ * list with the server (#896).
+ *
+ * The sync pushes local-only blocks up and hydrates server-only blocks down.
+ * It must never delete a server row: the suite-wide `afterEach` below is the
+ * regression tripwire for that invariant.
+ *
+ * Server-list ids are real UUIDv4 fixtures because the module filters the
+ * response through isValidUUIDv4.
  */
 
 import { syncBlockedUsers } from '../blockedUsersSync';
+
+// Real v4 fixtures (the module filters server ids through isValidUUIDv4).
+const UID_A = '11111111-1111-4111-8111-111111111111';
+const UID_B = '22222222-2222-4222-8222-222222222222';
+const UID_C = '33333333-3333-4333-8333-333333333333';
+const UID_X = '44444444-4444-4444-8444-444444444444';
+const UID_Y = '55555555-5555-4555-9555-555555555555';
+const JUNK_ID = 'not-a-uuid';
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -19,11 +35,17 @@ jest.mock('../../services/api/users', () => ({
 }));
 
 let mockBlockedUserIds: string[] = [];
+let mockUserId: string | null = 'user-self';
+const mockHydrateBlockedUsers = jest.fn();
 
+// NOTE: the mocked getState deliberately does NOT expose `unblockUser` —
+// the sync has no business reaching the delete path through the store either.
 jest.mock('../../stores/useAppStore', () => ({
   useAppStore: {
     getState: jest.fn(() => ({
       blockedUserIds: mockBlockedUserIds,
+      userId: mockUserId,
+      hydrateBlockedUsers: mockHydrateBlockedUsers,
     })),
   },
 }));
@@ -32,9 +54,27 @@ jest.mock('../../stores/useAppStore', () => ({
 // Setup
 // ---------------------------------------------------------------------------
 
+let warnSpy: jest.SpyInstance;
+
 beforeEach(() => {
   jest.clearAllMocks();
   mockBlockedUserIds = [];
+  mockUserId = 'user-self';
+  mockGetBlockedUsers.mockResolvedValue({ blockedUserIds: [] });
+  // The two bail paths warn under __DEV__ (so a mis-wired guard is visible in
+  // a smoke run); keep the suite output quiet but assertable.
+  warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+});
+
+afterEach(() => {
+  warnSpy.mockRestore();
+});
+
+// #896 regression tripwire: the sync is additive, so no code path — in ANY
+// test below — may delete a server row. The removed `unblockUserApi` import is
+// the structural guarantee; this assertion fails loudly if it ever comes back.
+afterEach(() => {
+  expect(mockUnblockUserApi).not.toHaveBeenCalled();
 });
 
 // ---------------------------------------------------------------------------
@@ -42,70 +82,134 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('syncBlockedUsers', () => {
+  it('hydrates server-only blocks instead of deleting them (#896 regression)', async () => {
+    mockBlockedUserIds = [];
+    mockGetBlockedUsers.mockResolvedValue({ blockedUserIds: [UID_A, UID_B] });
+
+    await syncBlockedUsers();
+
+    expect(mockHydrateBlockedUsers).toHaveBeenCalledTimes(1);
+    expect(mockHydrateBlockedUsers).toHaveBeenCalledWith([UID_A, UID_B]);
+    expect(mockBlockUserApi).not.toHaveBeenCalled();
+  });
+
   it('pushes local-only blocks to the server', async () => {
-    mockBlockedUserIds = ['user-1', 'user-2'];
-    mockGetBlockedUsers.mockResolvedValue({ blockedUserIds: ['user-2'] });
+    mockBlockedUserIds = [UID_A, UID_B];
+    mockGetBlockedUsers.mockResolvedValue({ blockedUserIds: [UID_B] });
 
     await syncBlockedUsers();
 
     expect(mockBlockUserApi).toHaveBeenCalledTimes(1);
-    expect(mockBlockUserApi).toHaveBeenCalledWith('user-1');
-    expect(mockUnblockUserApi).not.toHaveBeenCalled();
+    expect(mockBlockUserApi).toHaveBeenCalledWith(UID_A);
+    expect(mockHydrateBlockedUsers).not.toHaveBeenCalled();
   });
 
-  it('removes server-only blocks (local is authoritative)', async () => {
-    mockBlockedUserIds = ['user-1'];
-    mockGetBlockedUsers.mockResolvedValue({ blockedUserIds: ['user-1', 'user-3'] });
+  it('reconciles both directions additively', async () => {
+    mockBlockedUserIds = [UID_A, UID_B];
+    mockGetBlockedUsers.mockResolvedValue({ blockedUserIds: [UID_B, UID_C] });
 
     await syncBlockedUsers();
 
-    expect(mockUnblockUserApi).toHaveBeenCalledTimes(1);
-    expect(mockUnblockUserApi).toHaveBeenCalledWith('user-3');
+    expect(mockBlockUserApi).toHaveBeenCalledTimes(1);
+    expect(mockBlockUserApi).toHaveBeenCalledWith(UID_A);
+    expect(mockHydrateBlockedUsers).toHaveBeenCalledWith([UID_C]);
+  });
+
+  it('does not call hydrateBlockedUsers when there are no server-only ids', async () => {
+    mockBlockedUserIds = [UID_A, UID_B];
+    mockGetBlockedUsers.mockResolvedValue({ blockedUserIds: [UID_A] });
+
+    await syncBlockedUsers();
+
+    expect(mockHydrateBlockedUsers).not.toHaveBeenCalled();
+  });
+
+  it('drops the response when the session changed mid-sync', async () => {
+    mockBlockedUserIds = [];
+    mockGetBlockedUsers.mockImplementation(async () => {
+      // Logout + login for another account landed while the GET was in flight.
+      mockUserId = 'user-other';
+      return { blockedUserIds: [UID_A, UID_B] };
+    });
+
+    await syncBlockedUsers();
+
+    expect(mockHydrateBlockedUsers).not.toHaveBeenCalled();
+    expect(mockBlockUserApi).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith('[BlockedUsersSync] session changed mid-sync — dropped');
+  });
+
+  it('skips the sync entirely when there is no session', async () => {
+    mockUserId = null;
+    mockBlockedUserIds = [UID_A];
+
+    await syncBlockedUsers();
+
+    expect(mockGetBlockedUsers).not.toHaveBeenCalled();
+    expect(mockHydrateBlockedUsers).not.toHaveBeenCalled();
+    expect(mockBlockUserApi).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith('[BlockedUsersSync] no session — skipped');
+  });
+
+  it('does not re-push a block unblocked during the GET (DELETE landed first)', async () => {
+    mockBlockedUserIds = [UID_X, UID_Y];
+    mockGetBlockedUsers.mockImplementation(async () => {
+      // User unblocked X from Settings; the DELETE landed before the GET ran.
+      mockBlockedUserIds = [UID_Y];
+      return { blockedUserIds: [UID_Y] };
+    });
+
+    await syncBlockedUsers();
+
+    expect(mockBlockUserApi).not.toHaveBeenCalled();
+    expect(mockHydrateBlockedUsers).not.toHaveBeenCalled();
+  });
+
+  it('does not hydrate back a block unblocked during the GET (DELETE not landed)', async () => {
+    mockBlockedUserIds = [UID_X, UID_Y];
+    mockGetBlockedUsers.mockImplementation(async () => {
+      // Local removal already applied; the server still has X at GET time.
+      mockBlockedUserIds = [UID_Y];
+      return { blockedUserIds: [UID_X, UID_Y] };
+    });
+
+    await syncBlockedUsers();
+
+    expect(mockHydrateBlockedUsers).not.toHaveBeenCalled();
     expect(mockBlockUserApi).not.toHaveBeenCalled();
   });
 
-  it('pushes and removes delta in both directions', async () => {
-    mockBlockedUserIds = ['user-1', 'user-2'];
-    mockGetBlockedUsers.mockResolvedValue({ blockedUserIds: ['user-2', 'user-3'] });
+  it('ignores a malformed server id (neither hydrated nor pushed)', async () => {
+    mockBlockedUserIds = [];
+    mockGetBlockedUsers.mockResolvedValue({ blockedUserIds: [JUNK_ID, UID_A] });
 
     await syncBlockedUsers();
 
-    expect(mockBlockUserApi).toHaveBeenCalledWith('user-1');
-    expect(mockUnblockUserApi).toHaveBeenCalledWith('user-3');
+    expect(mockHydrateBlockedUsers).toHaveBeenCalledTimes(1);
+    expect(mockHydrateBlockedUsers).toHaveBeenCalledWith([UID_A]);
+    expect(mockBlockUserApi).not.toHaveBeenCalled();
   });
 
   it('does nothing when local and server lists match', async () => {
-    mockBlockedUserIds = ['user-1', 'user-2'];
-    mockGetBlockedUsers.mockResolvedValue({ blockedUserIds: ['user-1', 'user-2'] });
+    mockBlockedUserIds = [UID_A, UID_B];
+    mockGetBlockedUsers.mockResolvedValue({ blockedUserIds: [UID_A, UID_B] });
 
     await syncBlockedUsers();
 
     expect(mockBlockUserApi).not.toHaveBeenCalled();
-    expect(mockUnblockUserApi).not.toHaveBeenCalled();
-  });
-
-  it('handles empty local list with non-empty server list', async () => {
-    mockBlockedUserIds = [];
-    mockGetBlockedUsers.mockResolvedValue({ blockedUserIds: ['user-1', 'user-2'] });
-
-    await syncBlockedUsers();
-
-    expect(mockUnblockUserApi).toHaveBeenCalledTimes(2);
-    expect(mockUnblockUserApi).toHaveBeenCalledWith('user-1');
-    expect(mockUnblockUserApi).toHaveBeenCalledWith('user-2');
-    expect(mockBlockUserApi).not.toHaveBeenCalled();
+    expect(mockHydrateBlockedUsers).not.toHaveBeenCalled();
   });
 
   it('handles non-empty local list with empty server list', async () => {
-    mockBlockedUserIds = ['user-1', 'user-2'];
+    mockBlockedUserIds = [UID_A, UID_B];
     mockGetBlockedUsers.mockResolvedValue({ blockedUserIds: [] });
 
     await syncBlockedUsers();
 
     expect(mockBlockUserApi).toHaveBeenCalledTimes(2);
-    expect(mockBlockUserApi).toHaveBeenCalledWith('user-1');
-    expect(mockBlockUserApi).toHaveBeenCalledWith('user-2');
-    expect(mockUnblockUserApi).not.toHaveBeenCalled();
+    expect(mockBlockUserApi).toHaveBeenCalledWith(UID_A);
+    expect(mockBlockUserApi).toHaveBeenCalledWith(UID_B);
+    expect(mockHydrateBlockedUsers).not.toHaveBeenCalled();
   });
 
   it('handles both lists empty as no-op', async () => {
@@ -115,11 +219,11 @@ describe('syncBlockedUsers', () => {
     await syncBlockedUsers();
 
     expect(mockBlockUserApi).not.toHaveBeenCalled();
-    expect(mockUnblockUserApi).not.toHaveBeenCalled();
+    expect(mockHydrateBlockedUsers).not.toHaveBeenCalled();
   });
 
   it('completes even when individual API calls fail (allSettled)', async () => {
-    mockBlockedUserIds = ['user-1', 'user-2'];
+    mockBlockedUserIds = [UID_A, UID_B];
     mockGetBlockedUsers.mockResolvedValue({ blockedUserIds: [] });
     mockBlockUserApi
       .mockResolvedValueOnce(undefined)
@@ -132,11 +236,11 @@ describe('syncBlockedUsers', () => {
   });
 
   it('propagates getBlockedUsers failure to caller', async () => {
-    mockBlockedUserIds = ['user-1'];
+    mockBlockedUserIds = [UID_A];
     mockGetBlockedUsers.mockRejectedValue(new Error('server down'));
 
     await expect(syncBlockedUsers()).rejects.toThrow('server down');
     expect(mockBlockUserApi).not.toHaveBeenCalled();
-    expect(mockUnblockUserApi).not.toHaveBeenCalled();
+    expect(mockHydrateBlockedUsers).not.toHaveBeenCalled();
   });
 });

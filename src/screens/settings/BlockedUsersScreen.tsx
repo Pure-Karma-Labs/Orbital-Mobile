@@ -3,7 +3,10 @@
  *
  * Lists all blocked users with an unblock button.
  * Uses contact store for display name fallback, blockedUserProfiles
- * for username when the user is not in contacts.
+ * for username when the user is not in contacts. Ids hydrated from the
+ * server (#896) carry no username — neither source resolves them until
+ * contacts hydration lands, so they render as a disambiguating
+ * `user-<first 8 of id>` label rather than a shared placeholder handle.
  */
 
 import React, { useCallback, useMemo } from 'react';
@@ -30,7 +33,7 @@ function useBlockedUserRows(): BlockedUserRow[] {
     () =>
       blockedUserIds.map((id) => ({
         id,
-        displayName: contacts[id]?.username ?? profiles[id] ?? 'Unknown',
+        displayName: contacts[id]?.username ?? profiles[id] ?? `user-${id.slice(0, 8)}`,
       })),
     [blockedUserIds, contacts, profiles],
   );

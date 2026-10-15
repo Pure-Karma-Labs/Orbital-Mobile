@@ -109,9 +109,11 @@ export function checkAccountSwitch(newUserId: string): void {
 async function postAuthBootstrap(): Promise<void> {
   // Blocked-users sync is kicked off first (#896): WS ingest guards read
   // blockedUserIds at message time, and on the post-logout/reinstall path the
-  // persisted list is empty until this lands, so content from blocked authors
-  // arriving in the gap is persisted and counted. Fire-and-forget — it does not
-  // precede the first AWAITED step (the Keychain identity restore below).
+  // persisted list is empty until this lands. Running it first NARROWS that
+  // window — it cannot close it: the socket connects on isAuthenticated, before
+  // bootstrap runs, so a message arriving ahead of the GET is still persisted
+  // and counted, then hidden at render. Fire-and-forget — it does not precede
+  // the first AWAITED step (the Keychain identity restore below).
   syncBlockedUsers().catch(warnCatch('[BlockedUsersSync]'));
 
   // --- Step 0: Keychain identity restore (must run FIRST) ---

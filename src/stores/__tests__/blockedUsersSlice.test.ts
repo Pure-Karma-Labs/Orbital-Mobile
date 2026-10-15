@@ -5,6 +5,7 @@
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import { createBlockedUsersSlice } from '../slices/blockedUsersSlice';
+import { NetworkError } from '../../services/api/errors';
 import type { AppState } from '../../types/store';
 
 // ---------------------------------------------------------------------------
@@ -345,6 +346,22 @@ describe('blockedUsersSlice - unblockUser rollback (#896)', () => {
     const state = store.getState();
     expect(state.blockedUserIds).toEqual([]);
     expect(state.blockedUserProfiles).toEqual({});
+    expect(mockCaptureError).not.toHaveBeenCalled();
+  });
+
+  it('rolls back without a Sentry event when the failure is a NetworkError', async () => {
+    const store = makeStore();
+    store.setState({ userId: 'self' });
+    store.getState().blockUser('user-1', 'alice');
+    mockUnblockUserApi.mockRejectedValueOnce(new NetworkError());
+
+    store.getState().unblockUser('user-1');
+    await flushMicrotasks();
+
+    const state = store.getState();
+    expect(state.blockedUserIds).toEqual(['user-1']);
+    expect(state.blockedUserProfiles['user-1']).toBe('alice');
+    // Offline is a modelled transient state the rollback handles, not a fault.
     expect(mockCaptureError).not.toHaveBeenCalled();
   });
 

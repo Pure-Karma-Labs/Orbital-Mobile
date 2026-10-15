@@ -1,6 +1,7 @@
 import type { StateCreator } from 'zustand';
 import type { AppState, BlockedUsersSlice } from '../../types/store';
 import { blockUserApi, unblockUserApi } from '../../services/api/users';
+import { NetworkError } from '../../services/api/errors';
 import { captureError } from '../../services/telemetry';
 
 export const createBlockedUsersSlice: StateCreator<
@@ -66,7 +67,11 @@ export const createBlockedUsersSlice: StateCreator<
           'blockedUsers/unblockUserRollback',
         );
       }
-      captureError(e, { tags: { feature: 'blocking', op: 'unblock' } });
+      // NetworkError is a modelled transient state the rollback already handles,
+      // not a fault worth a Sentry event (inviteCreateErrors.ts precedent).
+      if (!(e instanceof NetworkError)) {
+        captureError(e, { tags: { feature: 'blocking', op: 'unblock' } });
+      }
     });
   },
 

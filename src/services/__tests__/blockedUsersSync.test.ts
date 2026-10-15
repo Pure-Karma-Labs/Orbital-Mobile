@@ -104,7 +104,7 @@ describe('syncBlockedUsers', () => {
     expect(mockHydrateBlockedUsers).not.toHaveBeenCalled();
   });
 
-  it('reconciles both directions additively', async () => {
+  it('reconciles both directions additively, hydrating before it pushes', async () => {
     mockBlockedUserIds = [UID_A, UID_B];
     mockGetBlockedUsers.mockResolvedValue({ blockedUserIds: [UID_B, UID_C] });
 
@@ -113,6 +113,11 @@ describe('syncBlockedUsers', () => {
     expect(mockBlockUserApi).toHaveBeenCalledTimes(1);
     expect(mockBlockUserApi).toHaveBeenCalledWith(UID_A);
     expect(mockHydrateBlockedUsers).toHaveBeenCalledWith([UID_C]);
+    // Ordering is the WS-ingest contract: the store write must not wait on the
+    // network pushes, because ingest guards read blockedUserIds at message time.
+    expect(mockHydrateBlockedUsers.mock.invocationCallOrder[0]).toBeLessThan(
+      mockBlockUserApi.mock.invocationCallOrder[0],
+    );
   });
 
   it('does not call hydrateBlockedUsers when there are no server-only ids', async () => {
@@ -188,6 +193,19 @@ describe('syncBlockedUsers', () => {
     expect(mockHydrateBlockedUsers).toHaveBeenCalledTimes(1);
     expect(mockHydrateBlockedUsers).toHaveBeenCalledWith([UID_A]);
     expect(mockBlockUserApi).not.toHaveBeenCalled();
+    // Count only — ids are never logged.
+    expect(warnSpy).toHaveBeenCalledWith('[BlockedUsersSync] dropped 1 malformed server id(s)');
+  });
+
+  it('does not push a malformed local id', async () => {
+    mockBlockedUserIds = [JUNK_ID, UID_A];
+    mockGetBlockedUsers.mockResolvedValue({ blockedUserIds: [] });
+
+    await syncBlockedUsers();
+
+    expect(mockBlockUserApi).toHaveBeenCalledTimes(1);
+    expect(mockBlockUserApi).toHaveBeenCalledWith(UID_A);
+    expect(mockHydrateBlockedUsers).not.toHaveBeenCalled();
   });
 
   it('does nothing when local and server lists match', async () => {

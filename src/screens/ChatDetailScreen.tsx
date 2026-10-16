@@ -8,6 +8,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import {
+  AccessibilityInfo,
   Animated,
   FlatList,
   Keyboard,
@@ -43,6 +44,8 @@ import { usePullToRefresh } from '../hooks/usePullToRefresh';
 import { useSQLiteSearch } from '../hooks/useSQLiteSearch';
 import { useWebSocketSubscription } from '../hooks/useWebSocketSubscription';
 import { useBlockedSet } from '../hooks/useBlockedSet';
+import { useBlockedDmPeer } from '../hooks/useBlockedDmPeer';
+import { BlockedPeerNotice } from '../components/BlockedPeerNotice';
 import { useIsMuted } from '../hooks/useIsMuted';
 import { useMuteActions } from '../hooks/useMuteActions';
 import { Emoji } from '../components/Emoji';
@@ -96,7 +99,7 @@ function buildListRows(threads: Thread[]): ListRow[] {
   return rows;
 }
 
-function EmptyState({ onCompose }: { onCompose: () => void }): React.JSX.Element {
+function EmptyState({ onCompose }: { onCompose?: () => void }): React.JSX.Element {
   const theme = useTheme();
 
   const containerStyle: ViewStyle = {
@@ -137,7 +140,9 @@ function EmptyState({ onCompose }: { onCompose: () => void }): React.JSX.Element
         <Text style={borderStyle}>{'┌─────────────────────┐'}</Text>
         <Text style={messageStyle}>{'No messages yet\nStart the conversation!'}</Text>
         <Text style={borderStyle}>{'└─────────────────────┘'}</Text>
-        <Button title="Send a Message" onPress={onCompose} variant="primary" />
+        {onCompose != null && (
+          <Button title="Send a Message" onPress={onCompose} variant="primary" />
+        )}
       </View>
     </View>
   );
@@ -148,7 +153,7 @@ export function ChatDetailScreen({
   navigation,
 }: ChatDetailScreenProps): React.JSX.Element {
   const theme = useTheme();
-  const { conversationId, recipientName } = route.params;
+  const { conversationId, recipientName, recipientId } = route.params;
 
   const { threads, threadIdsByConversation, threadLastViewedAt } = useThreads();
   const { userId } = useAuth();
@@ -187,6 +192,33 @@ export function ChatDetailScreen({
   );
 
   const blockedSet = useBlockedSet();
+
+  // Blocked DM peer (#908). `recipientId` is the route's DM-only hint, used
+  // when the conversation row is missing from the store — a push tap or a
+  // deep link can land here before the DM list has loaded. Nothing redirects:
+  // the screen stays reachable and explains itself.
+  const blockedPeer = useBlockedDmPeer(conversationId, recipientId);
+  const isBlocked = blockedPeer != null;
+
+  // Announce once on the false -> true edge only. `blockedPeer` is a fresh
+  // object on every conversations/contacts upsert, so the latch — not the
+  // object identity — is what makes this fire exactly once (iOS ignores a
+  // live region, so the announcement is explicit).
+  const wasBlockedRef = useRef(false);
+  const blockedLabelRef = useRef<string | null>(null);
+  blockedLabelRef.current = blockedPeer?.label ?? null;
+  useEffect(() => {
+    if (!isBlocked) {
+      wasBlockedRef.current = false;
+      return;
+    }
+    if (wasBlockedRef.current) return;
+    wasBlockedRef.current = true;
+    AccessibilityInfo.announceForAccessibility(
+      `You blocked ${blockedLabelRef.current ?? 'this person'}. Sending is turned off.`,
+    );
+  }, [isBlocked]);
+
   const flatListRef = useRef<FlatList<ListRow>>(null);
 
   const threadList = useMemo((): Thread[] => {
@@ -251,8 +283,12 @@ export function ChatDetailScreen({
   }, [conversationId]);
 
   const handleCompose = useCallback(() => {
+    // UX guard: the compose button is not rendered while blocked, but a stale
+    // empty-state press must not open a composer either (#908). The composer
+    // and threadService both re-check from the store.
+    if (isBlocked) return;
     navigation.navigate('ComposeChatThread', { groupId: conversationId, isDm: true });
-  }, [navigation, conversationId]);
+  }, [navigation, conversationId, isBlocked]);
 
   const handleBannerPress = useCallback(() => {
     if (contact) {
@@ -319,6 +355,17 @@ export function ChatDetailScreen({
     backgroundColor: theme.colors.background,
   };
 
+  const noticeStyle: ViewStyle = {
+    marginHorizontal: theme.spacing.base,
+    marginTop: theme.spacing.xs,
+  };
+
+  const blockedEmptyStyle: ViewStyle = {
+    flex: 1,
+    justifyContent: 'center',
+    padding: theme.spacing.base,
+  };
+
   return (
     <SafeAreaView style={containerStyle} edges={['top']} testID="chat-detail-screen">
       <Header
@@ -337,15 +384,17 @@ export function ChatDetailScreen({
             >
               <Emoji unified={isMuted ? '1F515' : '1F514'} size={20} />
             </TouchableOpacity>
-            <TouchableOpacity
-              onPress={handleCompose}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              accessibilityRole="button"
-              accessibilityLabel="New thread"
-              testID="chat-compose-button"
-            >
-              <Text style={composeBtnStyle}>+</Text>
-            </TouchableOpacity>
+            {!isBlocked && (
+              <TouchableOpacity
+                onPress={handleCompose}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                accessibilityRole="button"
+                accessibilityLabel="New thread"
+                testID="chat-compose-button"
+              >
+                <Text style={composeBtnStyle}>+</Text>
+              </TouchableOpacity>
+            )}
           </View>
         }
       />
@@ -354,6 +403,16 @@ export function ChatDetailScreen({
         <IdentityChangeBanner
           contactName={recipientName ?? contact?.username ?? 'Unknown'}
           onPress={handleBannerPress}
+        />
+      )}
+
+      {blockedPeer != null && listRows.length > 0 && (
+        // Non-empty list: the notice sits above the search bar and the
+        // blocker's own older threads stay readable below it.
+        <BlockedPeerNotice
+          label={blockedPeer.label}
+          peerId={blockedPeer.peerId}
+          style={noticeStyle}
         />
       )}
 
@@ -368,7 +427,15 @@ export function ChatDetailScreen({
       {isSearching && resultThreadIds.length === 0 ? (
         <SearchEmptyState searchText={searchText} />
       ) : listRows.length === 0 ? (
-        <EmptyState onCompose={handleCompose} />
+        blockedPeer != null ? (
+          // The notice REPLACES the empty state: no "No messages yet /
+          // Start the conversation!" box and no "Send a Message" CTA.
+          <View style={blockedEmptyStyle}>
+            <BlockedPeerNotice label={blockedPeer.label} peerId={blockedPeer.peerId} />
+          </View>
+        ) : (
+          <EmptyState onCompose={handleCompose} />
+        )
       ) : (
         <View style={{ flex: 1 }}>
           <PullToRefreshOverlay scrollY={scrollY} refreshing={refreshing} />

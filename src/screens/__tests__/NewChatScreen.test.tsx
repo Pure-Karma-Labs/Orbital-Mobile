@@ -7,6 +7,7 @@ import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'rea
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../../theme';
 import { NewChatScreen } from '../NewChatScreen';
+import type { Contact } from '../../types/store';
 
 jest.mock('../../services/conversationService', () => ({
   startDm: jest.fn(),
@@ -21,6 +22,14 @@ const mockUseContacts = jest.fn();
 
 jest.mock('../../stores', () => ({
   useContacts: (...args: unknown[]) => mockUseContacts(...args),
+}));
+
+// The real hook reaches `useAppStore` → MMKV/nitro, which cannot load under
+// Jest. Mocked at the module boundary (the ThreadsScreen idiom) so the block
+// set stays a plain, test-driven value (#908).
+let mockBlockedSet = new Set<string>();
+jest.mock('../../hooks/useBlockedSet', () => ({
+  useBlockedSet: () => mockBlockedSet,
 }));
 
 import { startDm } from '../../services/conversationService';
@@ -40,6 +49,27 @@ const contactsWithBob = {
   mergeContacts: jest.fn(),
   upsertContact: jest.fn(),
   removeContact: jest.fn(),
+};
+
+/** The one contact these tests ever block (#908). */
+const BLOCKED_CONTACT_ID = 'contact-2';
+
+const blockedContact: Contact = {
+  id: BLOCKED_CONTACT_ID,
+  // Deliberately matches the same 'bob' filter as contact-1, so a test can
+  // prove the block filter runs BEFORE the text filter.
+  displayName: 'Bob Jones',
+  username: 'bobjones',
+  avatarPath: null,
+  conversationIds: [],
+};
+
+const contactsWithBobAndBlocked = {
+  ...contactsWithBob,
+  contacts: {
+    ...contactsWithBob.contacts,
+    [BLOCKED_CONTACT_ID]: blockedContact,
+  },
 };
 
 const emptyContactsState = {
@@ -81,25 +111,38 @@ const mockRoute = {
   params: undefined,
 };
 
+function screenElement(): React.ReactElement {
+  return React.createElement(
+    SafeAreaProvider,
+    { initialMetrics: safeAreaMetrics },
+    React.createElement(
+      ThemeProvider,
+      { colorSchemeOverride: 'light' },
+      React.createElement(NewChatScreen, {
+        navigation: mockNavigation as unknown as React.ComponentProps<typeof NewChatScreen>['navigation'],
+        route: mockRoute as unknown as React.ComponentProps<typeof NewChatScreen>['route'],
+      }),
+    ),
+  );
+}
+
 function renderScreen(): ReactTestRenderer {
   let renderer!: ReactTestRenderer;
   act(() => {
-    renderer = create(
-      React.createElement(
-        SafeAreaProvider,
-        { initialMetrics: safeAreaMetrics },
-        React.createElement(
-          ThemeProvider,
-          { colorSchemeOverride: 'light' },
-          React.createElement(NewChatScreen, {
-            navigation: mockNavigation as unknown as React.ComponentProps<typeof NewChatScreen>['navigation'],
-            route: mockRoute as unknown as React.ComponentProps<typeof NewChatScreen>['route'],
-          }),
-        ),
-      ),
-    );
+    renderer = create(screenElement());
   });
   return renderer;
+}
+
+/**
+ * Re-render in place. `useBlockedSet` is mocked to a plain value with no
+ * subscription, so a change to `mockBlockedSet` reaches the screen on the next
+ * render pass — what a real `blockedUserIds` store write would trigger.
+ */
+function rerenderScreen(renderer: ReactTestRenderer): void {
+  act(() => {
+    renderer.update(screenElement());
+  });
 }
 
 function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstance {
@@ -108,9 +151,21 @@ function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstanc
   return found[0];
 }
 
+/** True when a contact row is actually RENDERED (host nodes only). */
+function hasContactRow(root: ReactTestInstance, contactId: string): boolean {
+  return (
+    root.findAll(
+      (node) =>
+        typeof node.type === 'string' &&
+        node.props.testID === `contact-row-${contactId}`,
+    ).length > 0
+  );
+}
+
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockBlockedSet = new Set<string>();
   mockUseContacts.mockReturnValue(emptyContactsState);
 });
 
@@ -183,6 +238,9 @@ describe('NewChatScreen — selection', () => {
     expect(mockNavigation.replace).toHaveBeenCalledWith('ChatDetail', {
       conversationId: 'dm-1',
       recipientName: 'bob',
+      // The DM-peer hint ChatDetail needs for the frame before the row carries
+      // `peerUserId` (#908).
+      recipientId: 'contact-1',
     });
   });
 
@@ -202,6 +260,96 @@ describe('NewChatScreen — selection', () => {
         node.props.children.toLowerCase().includes('failed'),
     );
     expect(errorText).toBeDefined();
+    expect(mockNavigation.replace).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Blocked contacts (#908)
+// ---------------------------------------------------------------------------
+
+describe('NewChatScreen — blocked contacts (#908)', () => {
+  it('omits a blocked contact even when it matches the typed filter', () => {
+    mockUseContacts.mockReturnValue(contactsWithBobAndBlocked);
+    mockBlockedSet = new Set([BLOCKED_CONTACT_ID]);
+    const renderer = renderScreen();
+
+    expect(hasContactRow(renderer.root, BLOCKED_CONTACT_ID)).toBe(false);
+    expect(hasContactRow(renderer.root, 'contact-1')).toBe(true);
+
+    // 'bob' matches BOTH contacts' username/displayName, so a block filter
+    // applied after the text filter would let this typing surface the row.
+    act(() => {
+      findByTestId(renderer.root, 'new-chat-username-input').props.onChangeText('bob');
+    });
+
+    expect(hasContactRow(renderer.root, BLOCKED_CONTACT_ID)).toBe(false);
+    expect(hasContactRow(renderer.root, 'contact-1')).toBe(true);
+  });
+
+  it('keeps the contact when nobody is blocked', () => {
+    mockUseContacts.mockReturnValue(contactsWithBobAndBlocked);
+    const renderer = renderScreen();
+
+    expect(hasContactRow(renderer.root, BLOCKED_CONTACT_ID)).toBe(true);
+    expect(hasContactRow(renderer.root, 'contact-1')).toBe(true);
+  });
+
+  it('brings the contact back after an unblock', () => {
+    mockUseContacts.mockReturnValue(contactsWithBobAndBlocked);
+    mockBlockedSet = new Set([BLOCKED_CONTACT_ID]);
+    const renderer = renderScreen();
+    expect(hasContactRow(renderer.root, BLOCKED_CONTACT_ID)).toBe(false);
+
+    mockBlockedSet = new Set<string>();
+    rerenderScreen(renderer);
+
+    expect(hasContactRow(renderer.root, BLOCKED_CONTACT_ID)).toBe(true);
+  });
+
+  it('does not call startDm for a blocked contact, even from a stale row', async () => {
+    mockUseContacts.mockReturnValue(contactsWithBobAndBlocked);
+    mockBlockedSet = new Set([BLOCKED_CONTACT_ID]);
+    const renderer = renderScreen();
+
+    // The list no longer renders the row, so the only way to reach
+    // `handleSelect` for a blocked contact is the row a slower re-render would
+    // still have on screen — rendered here straight from the list's
+    // `renderItem`. That path is the guard inside `handleSelect`.
+    const list = renderer.root.findAll(
+      (n) => typeof n.props.renderItem === 'function',
+    )[0];
+    const renderItem = list.props.renderItem as (info: {
+      item: Contact;
+      index: number;
+    }) => { props: { onPress: () => void } };
+    const staleRow = renderItem({ item: blockedContact, index: 0 });
+
+    await act(async () => {
+      staleRow.props.onPress();
+    });
+
+    expect(mockStartDm).not.toHaveBeenCalled();
+    expect(mockNavigation.replace).not.toHaveBeenCalled();
+  });
+
+  it('shows the blocked copy when startDm refuses a blocked recipient', async () => {
+    mockUseContacts.mockReturnValue(contactsWithBob);
+    // Shaped like `BlockedRecipientError`, matched on `name` the way the screen
+    // does — `instanceof` is unavailable with the service module factory-mocked.
+    const refusal = new Error('You blocked this person.');
+    refusal.name = 'BlockedRecipientError';
+    mockStartDm.mockRejectedValue(refusal);
+    const renderer = renderScreen();
+
+    await act(async () => {
+      findByTestId(renderer.root, 'contact-row-contact-1').props.onPress();
+    });
+
+    const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
+    const texts = allText.map((node) => node.props.children);
+    expect(texts).toContain('You blocked this person.');
+    expect(texts).not.toContain('Failed to start chat. Please try again.');
     expect(mockNavigation.replace).not.toHaveBeenCalled();
   });
 });

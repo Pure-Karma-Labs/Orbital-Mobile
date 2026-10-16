@@ -34,6 +34,8 @@ import { PullToRefreshOverlay } from '../components/PullToRefreshOverlay';
 import { usePullToRefresh } from '../hooks/usePullToRefresh';
 import { useFuseSearch } from '../hooks/useFuseSearch';
 import { useMuteActions } from '../hooks/useMuteActions';
+import { useBlockedSet } from '../hooks/useBlockedSet';
+import { resolveDmPeerId } from '../utils/dmPeer';
 
 // ---------------------------------------------------------------------------
 // Fuse search options — module-level constant for stable WeakMap cache key
@@ -128,9 +130,26 @@ export function ChatsListScreen({ navigation }: ChatsListScreenProps): React.JSX
     });
   }, [conversations]);
 
-  // Fuzzy search filtering
+  // A blocked peer's DM disappears from this list until they are unblocked
+  // (#908). Separate from the sort memo so the Fuse index stays stable while
+  // nothing is blocked, and short-circuited on an empty block set like
+  // ThreadsScreen and ChatDetailScreen. Fail-open: a row whose peer cannot be
+  // resolved stays visible. The peer id comes from the single resolver —
+  // `peerUserId` first (O(1)), the contact scan only for rows persisted
+  // before #908.
+  const blockedSet = useBlockedSet();
+  const visibleDms = useMemo((): Conversation[] => {
+    if (blockedSet.size === 0) return dmConversations;
+    return dmConversations.filter((c) => {
+      const peerId = resolveDmPeerId(c.id, c, contacts);
+      return peerId === null || !blockedSet.has(peerId);
+    });
+  }, [dmConversations, blockedSet, contacts]);
+
+  // Fuzzy search filtering — over the FILTERED array, so search can never
+  // surface a hidden DM.
   const { searchText, setSearchText, results: filteredDMs, isSearching, clearSearch } =
-    useFuseSearch(dmConversations, DM_SEARCH_OPTIONS);
+    useFuseSearch(visibleDms, DM_SEARCH_OPTIONS);
 
   // Scroll to top when entering/exiting search mode
   useEffect(() => {
@@ -243,7 +262,9 @@ export function ChatsListScreen({ navigation }: ChatsListScreenProps): React.JSX
 
   // Determine which empty state to show
   const showSearchEmpty = isSearching && filteredDMs.length === 0;
-  const showEmpty = !isSearching && dmConversations.length === 0;
+  // Every DM hidden reads as "No chats yet" — deliberately no hint that
+  // blocked conversations exist (product call, #908).
+  const showEmpty = !isSearching && visibleDms.length === 0;
 
   return (
     <SafeAreaView style={containerStyle} edges={['top']} testID="chats-list-screen">

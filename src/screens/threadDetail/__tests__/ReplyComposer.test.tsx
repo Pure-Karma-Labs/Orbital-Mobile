@@ -18,6 +18,25 @@ jest.mock('../../../components/MediaThumbnailStrip', () => {
   };
 });
 
+/**
+ * #908: the blocked-peer seam replaces the LINK PREVIEW too, so the slot needs
+ * to be observable. The real card renders null for text with no URL, which
+ * would make that assertion vacuous; this stub always renders.
+ */
+jest.mock('../../../components/LinkPreviewCard', () => {
+  const React = require('react');
+  const { View } = require('react-native');
+  return {
+    LinkPreviewCard: () => React.createElement(View, { testID: 'mock-link-preview' }),
+  };
+});
+
+// #908: BlockedPeerNotice -> confirmUnblock -> blockedContentRefresh reaches
+// the store singleton (MMKV), which does not load under jest.
+jest.mock('../../../services/blockedContentRefresh', () => ({
+  unblockUserAndRefresh: jest.fn(),
+}));
+
 jest.mock('../../../components/Emoji', () => {
   const React = require('react');
   const { View } = require('react-native');
@@ -323,5 +342,83 @@ describe('ReplyComposer — upload progress', () => {
 
     const input = findByTestId(renderer, 'reply-input');
     expect(input[0].props.editable).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Blocked DM peer seam (#908)
+// ---------------------------------------------------------------------------
+
+describe('ReplyComposer — blocked peer notice', () => {
+  const blockedProps = { blockedPeerId: 'u-bob', blockedLabel: '@bob' };
+
+  const fakeUploadProgress: UploadProgressState = {
+    fraction: 0.25,
+    phase: 'uploading',
+    bytesSent: 1024,
+    totalBytes: 4096,
+    itemIndex: 0,
+    itemCount: 1,
+    cancelling: false,
+  };
+
+  it('replaces the input row, the reply chip and the link preview', () => {
+    const renderer = renderComposer({
+      ...blockedProps,
+      text: 'a draft',
+      replyTarget: { replyId: 'r-1', authorUsername: 'bob', depth: 0 },
+      onPickMedia: jest.fn(),
+      onToggleEmojiPicker: jest.fn(),
+    });
+
+    expect(findByTestId(renderer, 'blocked-peer-notice').length).toBeGreaterThan(0);
+    expect(findByTestId(renderer, 'reply-input').length).toBe(0);
+    expect(findByTestId(renderer, 'send-button').length).toBe(0);
+    expect(findByTestId(renderer, 'emoji-toggle-button').length).toBe(0);
+    expect(findByTestId(renderer, 'media-picker-button').length).toBe(0);
+    expect(findByTestId(renderer, 'reply-context').length).toBe(0);
+    expect(findByTestId(renderer, 'mock-link-preview').length).toBe(0);
+  });
+
+  it('keeps the upload progress bar and its cancel X mounted mid-upload (#722/#724b)', () => {
+    const onCancelUpload = jest.fn();
+    const renderer = renderComposer({
+      ...blockedProps,
+      sending: true,
+      uploadProgress: fakeUploadProgress,
+      onCancelUpload,
+      media: fakeMedia,
+    });
+
+    expect(findByTestId(renderer, 'upload-progress').length).toBeGreaterThan(0);
+    const cancelBtn = findByTestId(renderer, 'upload-cancel-button');
+    expect(cancelBtn.length).toBeGreaterThan(0);
+    expect(cancelBtn[0].props.disabled).toBeFalsy();
+    act(() => {
+      cancelBtn[0].props.onPress();
+    });
+    expect(onCancelUpload).toHaveBeenCalledTimes(1);
+
+    // The strip stays too, so attachments remain visible.
+    expect(findByTestId(renderer, 'mock-media-strip').length).toBeGreaterThan(0);
+  });
+
+  it('renders the normal composer again when the props clear', () => {
+    const renderer = renderComposer({ ...blockedProps, onPickMedia: jest.fn() });
+    expect(findByTestId(renderer, 'reply-input').length).toBe(0);
+
+    updateComposer(renderer, { onPickMedia: jest.fn() });
+    expect(findByTestId(renderer, 'blocked-peer-notice').length).toBe(0);
+    expect(findByTestId(renderer, 'reply-input').length).toBeGreaterThan(0);
+    expect(findByTestId(renderer, 'mock-link-preview').length).toBeGreaterThan(0);
+  });
+
+  it('ignores a half-set pair (an id with no label, or the reverse)', () => {
+    expect(
+      findByTestId(renderComposer({ blockedPeerId: 'u-bob' }), 'reply-input').length,
+    ).toBeGreaterThan(0);
+    expect(
+      findByTestId(renderComposer({ blockedLabel: '@bob' }), 'reply-input').length,
+    ).toBeGreaterThan(0);
   });
 });

@@ -8,6 +8,7 @@ export { useAppStore } from './useAppStore';
 
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from './useAppStore';
+import { resolveDmPeerId } from '../utils/dmPeer';
 import type { Contact, MediaItem, TypingEntry } from '../types/store';
 
 export const useAuth = () =>
@@ -173,19 +174,23 @@ export const useMediaForReply = (replyId: string | null): MediaItem[] =>
   );
 
 /**
- * Reverse-lookup: find the contact whose conversationIds includes
- * the given conversationId. Used by DM screens to access the
- * recipient's contact record (including verifiedStatus).
+ * The DM peer's contact record (including verifiedStatus), or null.
+ *
+ * Delegates entirely to `resolveDmPeerId` (#908) — the single DM-peer
+ * resolution path — so it gains that function's `type !== 'direct'` guard (an
+ * orbit id can no longer resolve to an arbitrary member) and its
+ * `peerUserId`-first precedence. The latter is why a brand-new DM now resolves
+ * right after `startDm`, before the contact's `conversationIds` has the id.
  */
 export const useContactForConversation = (conversationId: string | null): Contact | null =>
   useAppStore(
     useShallow((s) => {
       if (!conversationId) return null;
-      for (const contact of Object.values(s.contacts)) {
-        if (contact.conversationIds.includes(conversationId)) {
-          return contact;
-        }
-      }
-      return null;
+      const peerId = resolveDmPeerId(
+        conversationId,
+        s.conversations[conversationId],
+        s.contacts,
+      );
+      return (peerId ? s.contacts[peerId] : null) ?? null;
     }),
   );

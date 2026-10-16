@@ -235,6 +235,35 @@ export class AccountSwitchError extends Error {
 }
 
 /**
+ * Client-side blocked-recipient refusal (#908).
+ *
+ * Thrown before any encryption or HTTP call when the user tries to send into a
+ * DM whose peer they have blocked. Like {@link AccountSwitchError} this is NOT
+ * an HTTP error — it is raised ahead of every side effect (no group key is
+ * wrapped, no optimistic row is added, nothing is uploaded), so there is
+ * nothing to roll back.
+ *
+ * The message is a constant, user-safe string: `recipientId` is carried as a
+ * field so screens can key off it without an id ever reaching an error string,
+ * a log line or Sentry (the blocked catch branches deliberately skip capture).
+ *
+ * SCREENS MUST MATCH ON `err.name === 'BlockedRecipientError'`, never on
+ * `instanceof`: about a dozen suites replace service modules with a factory
+ * mock, where this class can be undefined.
+ */
+export class BlockedRecipientError extends Error {
+  /** The blocked peer. Never interpolated into the message or logged. */
+  readonly recipientId: string;
+
+  constructor(recipientId: string) {
+    super('You blocked this person.');
+    this.name = 'BlockedRecipientError';
+    this.recipientId = recipientId;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+/**
  * HTTP 409 — conflict. The request cannot be completed due to a conflict
  * with the current state of the resource.
  *

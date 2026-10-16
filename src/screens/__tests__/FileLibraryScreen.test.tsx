@@ -9,7 +9,12 @@ import React from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { AccessibilityInfo, Alert, type AlertButton } from 'react-native';
 import { ThemeProvider } from '../../theme';
-import { findByTestId, findHostByTestId, hasHostTestId } from '../../testUtils/rtr';
+import {
+  findByTestId,
+  findHostByTestId,
+  hasHostTestId,
+  renderedText,
+} from '../../testUtils/rtr';
 import { FileLibraryScreen } from '../FileLibraryScreen';
 
 // ---------------------------------------------------------------------------
@@ -34,7 +39,12 @@ jest.mock('react-native-safe-area-context', () => {
 });
 
 // Mock the store selectors
-const mockConversations: Record<string, { id: string; name: string; type: string }> = {
+// `peerUserId` is DM-only (#908) — the blocked-chip tests add direct rows that
+// carry it, group rows never do.
+const mockConversations: Record<
+  string,
+  { id: string; name: string; type: string; peerUserId?: string }
+> = {
   'conv-1': { id: 'conv-1', name: 'Family', type: 'group' },
   'conv-2': { id: 'conv-2', name: 'Friends', type: 'group' },
 };
@@ -1176,5 +1186,80 @@ describe('FileLibraryScreen — blocked authors (#897)', () => {
     rerender(renderer);
 
     expect(getAllMedia).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Blocked DM peers — orbit filter chips (#908)
+// ---------------------------------------------------------------------------
+
+describe('FileLibraryScreen — blocked DM chips (#908)', () => {
+  const BLOCKED_PEER_ID = 'bad';
+
+  function mediaRepo(): { getMediaConversationIds: jest.Mock } {
+    return jest.requireMock('../../database/repositories/mediaRepository');
+  }
+
+  beforeEach(() => {
+    // Two DM rows among the group rows. The suite's `getState()` mock has no
+    // `contacts` key — deliberately: `resolveDmPeerId` tolerates `undefined`,
+    // so `peerUserId` on the row is the whole resolution path here.
+    mockConversations['dm-blocked'] = {
+      id: 'dm-blocked',
+      name: 'blockedpeer',
+      type: 'direct',
+      peerUserId: BLOCKED_PEER_ID,
+    };
+    mockConversations['dm-ok'] = {
+      id: 'dm-ok',
+      name: 'goodpeer',
+      type: 'direct',
+      peerUserId: 'good',
+    };
+    mediaRepo().getMediaConversationIds.mockReturnValue([
+      'conv-1',
+      'dm-blocked',
+      'dm-ok',
+    ]);
+  });
+
+  afterEach(() => {
+    delete mockConversations['dm-blocked'];
+    delete mockConversations['dm-ok'];
+    mediaRepo().getMediaConversationIds.mockReturnValue(['conv-1', 'conv-2']);
+  });
+
+  it('drops the chip for a DM whose peer is blocked and keeps the rest', () => {
+    mockBlockedUserIds = [BLOCKED_PEER_ID];
+
+    const renderer = renderScreen();
+
+    expect(hasHostTestId(renderer.root, 'orbit-dm-blocked')).toBe(false);
+    // The blocked peer's handle is the chip label, so its absence is the
+    // point; the unblocked peer's label proves the walker saw the chip row.
+    expect(renderedText(renderer.root)).not.toContain('blockedpeer');
+    expect(renderedText(renderer.root)).toContain('goodpeer');
+    // Positive controls: an unblocked DM and a group row are untouched.
+    expect(hasHostTestId(renderer.root, 'orbit-dm-ok')).toBe(true);
+    expect(hasHostTestId(renderer.root, 'orbit-conv-1')).toBe(true);
+  });
+
+  it('keeps every DM chip when nobody is blocked', () => {
+    const renderer = renderScreen();
+
+    expect(hasHostTestId(renderer.root, 'orbit-dm-blocked')).toBe(true);
+    expect(hasHostTestId(renderer.root, 'orbit-dm-ok')).toBe(true);
+    expect(hasHostTestId(renderer.root, 'orbit-conv-1')).toBe(true);
+  });
+
+  it('restores the chip on an unblock', () => {
+    mockBlockedUserIds = [BLOCKED_PEER_ID];
+    const renderer = renderScreen();
+    expect(hasHostTestId(renderer.root, 'orbit-dm-blocked')).toBe(false);
+
+    mockBlockedUserIds = [];
+    rerender(renderer);
+
+    expect(hasHostTestId(renderer.root, 'orbit-dm-blocked')).toBe(true);
   });
 });

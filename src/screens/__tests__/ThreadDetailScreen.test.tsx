@@ -47,7 +47,22 @@ let mockMutedTargets: Record<string, string> = {};
 // Mutable so a test can make the thread's conversation a DM or an orbit (#745).
 // Left empty by default: handleSend then reads undefined out of the map and the
 // `dm` tag is omitted entirely.
-let mockConversations: Record<string, { type: 'group' | 'direct' }> = {};
+// #908 widened the row shape: the blocked-DM-peer derivation reads
+// `peerUserId` and (for the label) `name` off it.
+let mockConversations: Record<
+  string,
+  { type: 'group' | 'direct'; peerUserId?: string; name?: string | null }
+> = {};
+
+// #908: the blocked set and contacts the real useBlockedDmPeer derives from.
+let mockBlockedUserIds: string[] = [];
+let mockContacts: Record<string, unknown> = {};
+
+// #908: BlockedPeerNotice -> confirmUnblock -> blockedContentRefresh reaches
+// the store singleton (MMKV), which does not load under jest.
+jest.mock('../../services/blockedContentRefresh', () => ({
+  unblockUserAndRefresh: jest.fn(),
+}));
 
 jest.mock('../../services/notificationSettingsSync', () => ({
   toggleMute: jest.fn().mockResolvedValue(true),
@@ -59,8 +74,9 @@ jest.mock('../../stores/useAppStore', () => ({
       selector({
         userId: 'user-1',
         displayName: null,
-        contacts: {},
-        blockedUserIds: [],
+        contacts: mockContacts,
+        blockedUserIds: mockBlockedUserIds,
+        blockedUserProfiles: {},
         blockUser: jest.fn(),
         mutedTargets: mockMutedTargets,
         conversations: mockConversations,
@@ -70,8 +86,9 @@ jest.mock('../../stores/useAppStore', () => ({
       getState: jest.fn(() => ({
         userId: 'user-1',
         displayName: null,
-        contacts: {},
-        blockedUserIds: [],
+        contacts: mockContacts,
+        blockedUserIds: mockBlockedUserIds,
+        blockedUserProfiles: {},
         blockUser: jest.fn(),
         viewingConversationId: null,
         setViewingConversation: jest.fn(),
@@ -405,6 +422,8 @@ function applyDefaultMocks(): void {
   mockStoreReplyIds = {};
   mockMutedTargets = {};
   mockConversations = {};
+  mockBlockedUserIds = [];
+  mockContacts = {};
   // The guard mock has no implementation — clearAllMocks() above already resets
   // its call history. Explicitly clear in case a test overrides its behaviour.
   mockUsePreventRemove.mockReset();
@@ -2709,5 +2728,314 @@ describe('ThreadDetailScreen — thread switch resets focus state (#821)', () =>
     });
 
     expect(flatList(renderer).props.extraData).toBe('|');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Blocked DM peer (#908)
+// ---------------------------------------------------------------------------
+
+describe('ThreadDetailScreen — blocked DM peer', () => {
+  // Installed per test, NOT in the describe body: `jest.spyOn` hands back the
+  // existing mock when the property is already spied, so an earlier describe's
+  // `mockRestore()` in its afterEach would uninstall a body-level spy.
+  let alertSpy: jest.SpyInstance;
+  const mockCaptureException = Sentry.captureException as unknown as jest.Mock;
+
+  const oneImage = [
+    {
+      uri: 'file:///photo1.jpg',
+      type: 'image/jpeg',
+      fileName: 'photo1.jpg',
+      fileSize: 100,
+      width: 50,
+      height: 50,
+    },
+  ];
+
+  const peerReply = {
+    id: 'reply-1',
+    threadId: 'thread-1',
+    authorId: 'u-bob',
+    authorUsername: 'bob',
+    body: 'peer reply',
+    parentReplyId: null,
+    depth: 0,
+    createdAt: now - 1800000,
+    updatedAt: now - 1800000,
+    syncStatus: 'synced' as const,
+  };
+
+  function seedThread(): void {
+    const storesMock = jest.requireMock('../../stores') as { useThreads: jest.Mock };
+    storesMock.useThreads.mockReturnValue({
+      threads: { 'thread-1': fakeThread },
+      threadIdsByConversation: { 'group-1': ['thread-1'] },
+      replies: { 'reply-1': peerReply },
+      replyIdsByThread: { 'thread-1': ['reply-1'] },
+      activeThreadId: 'thread-1',
+      setThreads: jest.fn(),
+      upsertThread: jest.fn(),
+      removeThread: jest.fn(),
+      setActiveThread: mockSetActiveThread,
+      markThreadViewed: jest.fn(),
+      setReplies: jest.fn(),
+      appendReplies: jest.fn(),
+      upsertReply: jest.fn(),
+      addOptimisticThread: jest.fn(),
+      addOptimisticReply: jest.fn(),
+      updateThreadSyncStatus: jest.fn(),
+      updateReplySyncStatus: jest.fn(),
+    });
+  }
+
+  /** Make 'group-1' a DM with `u-bob` as the peer. */
+  function makeDm(): void {
+    mockConversations = { 'group-1': { type: 'direct', peerUserId: 'u-bob', name: 'bob' } };
+  }
+
+  function blockPeer(): void {
+    mockBlockedUserIds = ['u-bob'];
+  }
+
+  function find(renderer: ReactTestRenderer, testID: string): ReactTestInstance[] {
+    return renderer.root.findAll((node) => node.props.testID === testID);
+  }
+
+  /** Re-render in place, which is what a store write does to this screen. */
+  async function rerender(renderer: ReactTestRenderer): Promise<void> {
+    await act(async () => {
+      renderer.update(screenElement());
+    });
+  }
+
+  beforeEach(() => {
+    alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+    seedThread();
+  });
+
+  afterEach(() => {
+    const storesMock = jest.requireMock('../../stores') as { useThreads: jest.Mock };
+    storesMock.useThreads.mockReturnValue({
+      threads: {},
+      threadIdsByConversation: {},
+      replies: {},
+      replyIdsByThread: {},
+      activeThreadId: null,
+      setThreads: jest.fn(),
+      upsertThread: jest.fn(),
+      removeThread: jest.fn(),
+      setActiveThread: mockSetActiveThread,
+      markThreadViewed: jest.fn(),
+      setReplies: jest.fn(),
+      appendReplies: jest.fn(),
+      upsertReply: jest.fn(),
+      addOptimisticThread: jest.fn(),
+      addOptimisticReply: jest.fn(),
+      updateThreadSyncStatus: jest.fn(),
+      updateReplySyncStatus: jest.fn(),
+    });
+    alertSpy.mockRestore();
+    mockSelectedMedia = [];
+  });
+
+  it('renders the notice inside the composer region instead of the input row', async () => {
+    makeDm();
+    blockPeer();
+
+    const renderer = await renderScreen();
+
+    const composer = find(renderer, 'reply-composer');
+    expect(composer.length).toBeGreaterThan(0);
+    expect(
+      composer[0].findAll((node) => node.props.testID === 'blocked-peer-notice').length,
+    ).toBeGreaterThan(0);
+    expect(find(renderer, 'reply-input').length).toBe(0);
+    expect(find(renderer, 'send-button').length).toBe(0);
+  });
+
+  it('keeps the upload bar, its cancel X and the media strip mounted mid-upload', async () => {
+    makeDm();
+    mockSelectedMedia = oneImage;
+    let capturedOnProgress: ((e: BatchUploadProgressEvent) => void) | undefined;
+    mockUploadMediaBatch.mockImplementation(
+      (
+        _items: unknown,
+        _groupId: unknown,
+        opts: { signal: AbortSignal; onProgress: (e: BatchUploadProgressEvent) => void },
+      ) => {
+        capturedOnProgress = opts.onProgress;
+        return new Promise(() => {});
+      },
+    );
+
+    const renderer = await renderScreen();
+    await act(async () => {
+      find(renderer, 'reply-input')[0].props.onChangeText('hello');
+    });
+    await act(async () => {
+      find(renderer, 'send-button')[0].props.onPress();
+    });
+    await act(async () => {
+      capturedOnProgress!({
+        fraction: 0.5,
+        phase: 'uploading',
+        bytesSent: 1024,
+        totalBytes: 2048,
+        itemIndex: 0,
+        itemCount: 1,
+      });
+    });
+
+    blockPeer();
+    await rerender(renderer);
+
+    expect(find(renderer, 'blocked-peer-notice').length).toBeGreaterThan(0);
+    expect(find(renderer, 'upload-progress').length).toBeGreaterThan(0);
+    // The bar and its cancel X survive the swap — that is the #722/#724b
+    // invariant. The X reads `disabled` here only because the transition
+    // effect already auto-cancelled this upload; ReplyComposer.test covers
+    // its tappability for the blocked-with-live-upload case.
+    expect(find(renderer, 'upload-cancel-button').length).toBeGreaterThan(0);
+    expect(find(renderer, 'mock-media-strip').length).toBeGreaterThan(0);
+  });
+
+  it('clears the reply target and cancels the in-flight upload on the block transition', async () => {
+    makeDm();
+    mockSelectedMedia = oneImage;
+    let capturedSignal: AbortSignal | undefined;
+    mockUploadMediaBatch.mockImplementation(
+      (_items: unknown, _groupId: unknown, opts: { signal: AbortSignal }) => {
+        capturedSignal = opts.signal;
+        return new Promise(() => {});
+      },
+    );
+
+    const renderer = await renderScreen();
+
+    // Arm a reply target through the row's own callback.
+    const row = renderer.root.findAll((node) => typeof node.props.onReplyPress === 'function');
+    await act(async () => {
+      row[0].props.onReplyPress('reply-1', 'bob', 0);
+    });
+    expect(find(renderer, 'reply-context').length).toBeGreaterThan(0);
+
+    await act(async () => {
+      find(renderer, 'reply-input')[0].props.onChangeText('hello');
+    });
+    await act(async () => {
+      find(renderer, 'send-button')[0].props.onPress();
+    });
+    expect(capturedSignal!.aborted).toBe(false);
+
+    blockPeer();
+    await rerender(renderer);
+
+    // The chip is gone (it is also not rendered while blocked) and the upload
+    // took the existing silent cancellation path.
+    expect(find(renderer, 'reply-context').length).toBe(0);
+    expect(capturedSignal!.aborted).toBe(true);
+  });
+
+  it('does not re-cancel when an unrelated store write churns the blocked object', async () => {
+    makeDm();
+    mockSelectedMedia = oneImage;
+    let abortCount = 0;
+    mockUploadMediaBatch.mockImplementation(
+      (_items: unknown, _groupId: unknown, opts: { signal: AbortSignal }) => {
+        opts.signal.addEventListener('abort', () => {
+          abortCount++;
+        });
+        return new Promise(() => {});
+      },
+    );
+
+    const renderer = await renderScreen();
+    await act(async () => {
+      find(renderer, 'reply-input')[0].props.onChangeText('hello');
+    });
+    await act(async () => {
+      find(renderer, 'send-button')[0].props.onPress();
+    });
+
+    blockPeer();
+    await rerender(renderer);
+    expect(abortCount).toBe(1);
+
+    // A contacts write: the derived object is rebuilt, the latch swallows it.
+    mockContacts = { 'u-other': { id: 'u-other', username: 'carol', conversationIds: [] } };
+    await rerender(renderer);
+    expect(abortCount).toBe(1);
+  });
+
+  it('makes the reply arrows a no-op while blocked', async () => {
+    makeDm();
+    blockPeer();
+
+    const renderer = await renderScreen();
+    const row = renderer.root.findAll((node) => typeof node.props.onReplyPress === 'function');
+    expect(row.length).toBeGreaterThan(0);
+
+    await act(async () => {
+      row[0].props.onReplyPress('reply-1', 'bob', 0);
+    });
+
+    // No chip, and nothing to unblock-surprise the user with afterwards.
+    expect(find(renderer, 'reply-context').length).toBe(0);
+    mockBlockedUserIds = [];
+    await rerender(renderer);
+    expect(find(renderer, 'reply-context').length).toBe(0);
+  });
+
+  it('shows the blocked Alert and reports nothing when postReply refuses', async () => {
+    makeDm();
+    const err = new Error('You blocked this person.');
+    err.name = 'BlockedRecipientError';
+    mockPostReply.mockRejectedValue(err);
+
+    const renderer = await renderScreen();
+    await act(async () => {
+      find(renderer, 'reply-input')[0].props.onChangeText('hello');
+    });
+    await act(async () => {
+      find(renderer, 'send-button')[0].props.onPress();
+    });
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+    expect(alertSpy.mock.calls[0][0]).toBe('Not Sent');
+    expect(String(alertSpy.mock.calls[0][1])).toContain('Not sent —');
+    // Never the generic retry alert.
+    expect(alertSpy.mock.calls[0][0]).not.toBe('Reply Failed');
+    // R3-3: a deliberate client refusal is not a failure, so nothing is
+    // captured and the peer id never reaches Sentry.
+    expect(mockCaptureException).not.toHaveBeenCalled();
+    // The draft survives.
+    expect(find(renderer, 'reply-input')[0].props.value).toBe('hello');
+  });
+
+  it('leaves an orbit thread untouched even when a member is blocked', async () => {
+    mockConversations = { 'group-1': { type: 'group', name: 'Family' } };
+    mockContacts = { 'u-bob': { id: 'u-bob', username: 'bob', conversationIds: ['group-1'] } };
+    blockPeer();
+
+    const renderer = await renderScreen();
+
+    expect(find(renderer, 'blocked-peer-notice').length).toBe(0);
+    expect(find(renderer, 'reply-input').length).toBeGreaterThan(0);
+    expect(find(renderer, 'send-button').length).toBeGreaterThan(0);
+  });
+
+  it('resolves the peer from contacts when the DM row has no peerUserId', async () => {
+    mockConversations = { 'group-1': { type: 'direct', name: 'bob' } };
+    mockContacts = { 'u-bob': { id: 'u-bob', username: 'bob', conversationIds: ['group-1'] } };
+    blockPeer();
+
+    const renderer = await renderScreen();
+
+    expect(find(renderer, 'blocked-peer-notice').length).toBeGreaterThan(0);
+    expect(find(renderer, 'reply-input').length).toBe(0);
   });
 });

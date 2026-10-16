@@ -59,22 +59,36 @@ jest.mock('../../services/notificationSettingsSync', () => ({
   toggleMute: jest.fn().mockResolvedValue(true),
 }));
 
+// #908: the slices the real useBlockedDmPeer derives from. Mutable and rebuilt
+// per read, so a test can block a peer and re-render.
+let mockStoreConversations: Record<string, unknown> = {};
+let mockStoreContacts: Record<string, unknown> = {};
+let mockBlockedUserIds: string[] = [];
+
 jest.mock('../../stores/useAppStore', () => {
-  const state = {
+  const getState = () => ({
     setViewingConversation: mockSetViewingConversation,
     markConversationRead: mockMarkConversationRead,
-    conversations: {},
+    conversations: mockStoreConversations,
     userId: null,
     displayName: null,
-    contacts: {},
-  };
+    contacts: mockStoreContacts,
+    blockedUserIds: mockBlockedUserIds,
+    blockedUserProfiles: {},
+  });
   return {
     useAppStore: Object.assign(
-      (selector: (s: typeof state) => unknown) => selector(state),
-      { getState: jest.fn(() => state) },
+      (selector: (s: ReturnType<typeof getState>) => unknown) => selector(getState()),
+      { getState: jest.fn(getState) },
     ),
   };
 });
+
+// #908: BlockedPeerNotice -> confirmUnblock -> blockedContentRefresh reaches
+// the store singleton (MMKV), which does not load under jest.
+jest.mock('../../services/blockedContentRefresh', () => ({
+  unblockUserAndRefresh: jest.fn(),
+}));
 
 jest.mock('../../hooks/usePullToRefresh', () => ({
   usePullToRefresh: () => ({
@@ -212,31 +226,33 @@ const mockNavigation = {
   setParams: jest.fn(),
 };
 
-function makeRoute(recipientName?: string) {
+function makeRoute(recipientName?: string, recipientId?: string) {
   return {
     key: 'ChatDetail',
     name: 'ChatDetail' as const,
-    params: { conversationId: 'dm-conv-1', recipientName },
+    params: { conversationId: 'dm-conv-1', recipientName, recipientId },
   };
 }
 
-function renderScreen(recipientName?: string): ReactTestRenderer {
+function screenElement(recipientName?: string, recipientId?: string): React.ReactElement {
+  return React.createElement(
+    SafeAreaProvider,
+    { initialMetrics: safeAreaMetrics },
+    React.createElement(
+      ThemeProvider,
+      { colorSchemeOverride: 'light' },
+      React.createElement(ChatDetailScreen, {
+        navigation: mockNavigation as unknown as React.ComponentProps<typeof ChatDetailScreen>['navigation'],
+        route: makeRoute(recipientName, recipientId) as unknown as React.ComponentProps<typeof ChatDetailScreen>['route'],
+      }),
+    ),
+  );
+}
+
+function renderScreen(recipientName?: string, recipientId?: string): ReactTestRenderer {
   let renderer!: ReactTestRenderer;
   act(() => {
-    renderer = create(
-      React.createElement(
-        SafeAreaProvider,
-        { initialMetrics: safeAreaMetrics },
-        React.createElement(
-          ThemeProvider,
-          { colorSchemeOverride: 'light' },
-          React.createElement(ChatDetailScreen, {
-            navigation: mockNavigation as unknown as React.ComponentProps<typeof ChatDetailScreen>['navigation'],
-            route: makeRoute(recipientName) as unknown as React.ComponentProps<typeof ChatDetailScreen>['route'],
-          }),
-        ),
-      ),
-    );
+    renderer = create(screenElement(recipientName, recipientId));
   });
   return renderer;
 }
@@ -255,6 +271,9 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockUseThreads.mockReturnValue(emptyThreadsState);
   mockBlockedSet = new Set<string>();
+  mockStoreConversations = {};
+  mockStoreContacts = {};
+  mockBlockedUserIds = [];
   mockMutedTargets = {};
   mockSearchState = {
     searchText: '',
@@ -651,5 +670,129 @@ describe('ChatDetailScreen — header mute bell', () => {
     });
 
     expect(mockToggleMute).toHaveBeenCalledWith('dm-conv-1', 'group');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Blocked DM peer (#908)
+// ---------------------------------------------------------------------------
+
+describe('ChatDetailScreen — blocked DM peer', () => {
+  const PEER_ID = 'u-bob';
+
+  /** The DM row as written since #908: the peer id is on the row. */
+  function seedDmRow(): void {
+    mockStoreConversations = {
+      'dm-conv-1': {
+        id: 'dm-conv-1',
+        type: 'direct',
+        name: 'bob',
+        peerUserId: PEER_ID,
+        memberCount: 2,
+        active: true,
+        lastMessageAt: null,
+        unreadCount: 0,
+        lastReadAt: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+    };
+  }
+
+  function texts(renderer: ReactTestRenderer): unknown[] {
+    return renderer.root
+      .findAllByType('Text' as unknown as React.ComponentType)
+      .map((node) => node.props.children);
+  }
+
+  function has(renderer: ReactTestRenderer, testID: string): boolean {
+    return renderer.root.findAll((node) => node.props.testID === testID).length > 0;
+  }
+
+  it('replaces the empty state with the notice and drops the CTA and the "+"', () => {
+    seedDmRow();
+    mockBlockedUserIds = [PEER_ID];
+
+    const renderer = renderScreen('Bob');
+
+    expect(has(renderer, 'blocked-peer-notice')).toBe(true);
+    expect(texts(renderer)).not.toContain('No messages yet\nStart the conversation!');
+    expect(texts(renderer)).not.toContain('Send a Message');
+    expect(has(renderer, 'chat-compose-button')).toBe(false);
+    // The mute bell stays.
+    expect(has(renderer, 'chat-mute-bell')).toBe(true);
+  });
+
+  it('renders the notice above the list when the user has older threads of their own', () => {
+    seedDmRow();
+    mockUseThreads.mockReturnValue(populatedThreadsState);
+    mockBlockedUserIds = [PEER_ID];
+
+    const renderer = renderScreen('Bob');
+
+    expect(has(renderer, 'blocked-peer-notice')).toBe(true);
+    // The existing thread is still readable (it is the viewer's own history).
+    expect(texts(renderer)).toContain('First message in this DM');
+    expect(has(renderer, 'chat-compose-button')).toBe(false);
+  });
+
+  it('keeps the normal empty state and the "+" when the peer is not blocked', () => {
+    seedDmRow();
+
+    const renderer = renderScreen('Bob');
+
+    expect(has(renderer, 'blocked-peer-notice')).toBe(false);
+    expect(texts(renderer)).toContain('No messages yet\nStart the conversation!');
+    expect(has(renderer, 'chat-compose-button')).toBe(true);
+  });
+
+  it('uses the route recipientId hint when the conversation row is missing', () => {
+    // A push tap or deep link can land here before the DM list has loaded.
+    mockBlockedUserIds = [PEER_ID];
+
+    const renderer = renderScreen('Bob', PEER_ID);
+
+    expect(has(renderer, 'blocked-peer-notice')).toBe(true);
+    expect(has(renderer, 'chat-compose-button')).toBe(false);
+  });
+
+  it('restores the composer entry points on an unblock', () => {
+    seedDmRow();
+    mockBlockedUserIds = [PEER_ID];
+    const renderer = renderScreen('Bob');
+    expect(has(renderer, 'chat-compose-button')).toBe(false);
+
+    mockBlockedUserIds = [];
+    act(() => {
+      renderer.update(screenElement('Bob'));
+    });
+
+    expect(has(renderer, 'blocked-peer-notice')).toBe(false);
+    expect(has(renderer, 'chat-compose-button')).toBe(true);
+  });
+
+  it('resolves the peer from contacts when the row predates #908', () => {
+    mockStoreConversations = {
+      'dm-conv-1': {
+        id: 'dm-conv-1',
+        type: 'direct',
+        name: 'bob',
+        memberCount: 2,
+        active: true,
+        lastMessageAt: null,
+        unreadCount: 0,
+        lastReadAt: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+    };
+    mockStoreContacts = {
+      [PEER_ID]: { id: PEER_ID, username: 'bob', conversationIds: ['dm-conv-1'] },
+    };
+    mockBlockedUserIds = [PEER_ID];
+
+    const renderer = renderScreen('Bob');
+
+    expect(has(renderer, 'blocked-peer-notice')).toBe(true);
   });
 });

@@ -24,6 +24,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AccessibilityInfo,
   Alert,
   Animated,
   FlatList,
@@ -73,6 +74,7 @@ import { EmojiPicker } from '../components/EmojiPicker';
 import type { Reply, Thread } from '../types/store';
 import type { ThreadsStackParamList } from '../navigation/types';
 import { useBlockedSet } from '../hooks/useBlockedSet';
+import { useBlockedDmPeer, getBlockedDmPeer } from '../hooks/useBlockedDmPeer';
 import { useIsMuted } from '../hooks/useIsMuted';
 import { useMuteActions } from '../hooks/useMuteActions';
 import { Emoji } from '../components/Emoji';
@@ -322,6 +324,56 @@ export function ThreadDetailScreen({
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   /** Whether we are waiting for keyboard to hide before showing the picker */
   const pendingPickerShow = useRef(false);
+
+  // ---------------------------------------------------------------------------
+  // Blocked DM peer (#908)
+  // ---------------------------------------------------------------------------
+
+  // A DM thread whose peer the viewer blocked: the composer's input row is
+  // replaced by the notice and every send path refuses. Null for orbit threads
+  // and for an unblocked DM. No route hint — ThreadDetail is mounted on BOTH
+  // stacks and its params carry no recipient id.
+  const blockedPeer = useBlockedDmPeer(thread?.conversationId ?? null);
+  const isBlocked = blockedPeer != null;
+
+  // Render-synced mirror, for the [] -deps callbacks (handleReplyPress must
+  // NEVER gain `thread` in its deps — that would change `renderRow`'s identity
+  // and re-render every cell). Mirrors the blockedRef/collapsedRef idiom above.
+  const blockedPeerRef = useRef(false);
+  blockedPeerRef.current = isBlocked;
+  const blockedLabelRef = useRef<string | null>(null);
+  blockedLabelRef.current = blockedPeer?.label ?? null;
+  // Render-synced too: the transition effect runs after a commit, where the
+  // values captured in its closure would be a render behind.
+  const sendingRef = useRef(false);
+  sendingRef.current = sending;
+  const uploadingRef = useRef(false);
+  uploadingRef.current = uploading;
+
+  // The false -> true transition. Latched on a ref, not on `blockedPeer`
+  // identity: that object is rebuilt on every conversations/contacts upsert,
+  // so an identity-keyed effect would re-announce and re-cancel on unrelated
+  // store writes. Resets on true -> false, so a re-block re-fires.
+  const wasBlockedRef = useRef(false);
+  useEffect(() => {
+    if (!isBlocked) {
+      wasBlockedRef.current = false;
+      return;
+    }
+    if (wasBlockedRef.current) return;
+    wasBlockedRef.current = true;
+    // No stale reply chip, no surprise keyboard pop, and no emoji picker
+    // springing open on unblock.
+    setReplyTarget(null);
+    setShowEmojiPicker(false);
+    pendingPickerShow.current = false;
+    // A send already in flight with an upload: cancelling takes the existing
+    // silent `isUploadCancellation` path, and the notice explains the rest.
+    if (sendingRef.current && uploadingRef.current) cancelUpload();
+    AccessibilityInfo.announceForAccessibility(
+      `You blocked ${blockedLabelRef.current ?? 'this person'}. Sending is turned off.`,
+    );
+  }, [isBlocked, cancelUpload]);
 
   // Pagination state (local — not stored in Zustand). Offsets count RAW server
   // rows, never decrypted ones: a row that fails to decrypt still occupies a
@@ -675,6 +727,10 @@ export function ThreadDetailScreen({
 
   const handleReplyPress = useCallback(
     (replyId: string, authorUsername: string, depth: number) => {
+      // Blocked peer: the reply arrows do nothing rather than silently setting
+      // a target for a composer that cannot send (#908). Read from the
+      // render-synced ref so this callback keeps its EMPTY dep array.
+      if (blockedPeerRef.current) return;
       // LOAD-BEARING: a FRESH object every press. ReplyComposer keys its
       // focus effect on replyTarget identity, so memoizing or reusing the
       // object here would silently stop the composer re-focusing when the
@@ -691,6 +747,11 @@ export function ThreadDetailScreen({
   const handleSend = useCallback(
     async (body: string) => {
       if (!thread || !userId || !username) return;
+      // UX guard (#908): the input row is replaced while blocked, so this is
+      // only reachable from a queued press. postReply refuses regardless —
+      // this just avoids a pointless upload. Read imperatively from the store,
+      // through the same derivation the render path uses.
+      if (getBlockedDmPeer(thread.conversationId)) return;
       // #745: DM vs orbit discriminator for post-failure telemetry. Tri-state:
       // undefined (tag omitted) when the conversation is not in the store, so
       // dm:'false' always means "known orbit", never "unknown".
@@ -771,6 +832,19 @@ export function ThreadDetailScreen({
         // runs on the success path only), so the user can just send again.
         if (isUploadCancellation(e)) {
           if (__DEV__) console.warn('[Reply] upload cancelled by user');
+        } else if (e instanceof Error && e.name === 'BlockedRecipientError') {
+          // A refusal the client made on purpose (#908) — a sibling of the
+          // cancellation branch and deliberately ABOVE the capture: nothing
+          // went wrong, so there is no telemetry, no failure classification,
+          // and the blocked peer's id never reaches Sentry. The draft, media
+          // and reply target survive. Matched on `name`, never `instanceof`:
+          // threadService is factory-mocked in several suites.
+          if (mountedRef.current) {
+            Alert.alert(
+              'Not Sent',
+              `Not sent — you blocked ${blockedLabelRef.current ?? 'this person'}.`,
+            );
+          }
         } else {
           captureUploadFailure(e, { stage, surface: 'thread-reply', dm });
           // One classification drives both the cache and the alert, so the two
@@ -1020,6 +1094,8 @@ export function ThreadDetailScreen({
         )}
 
         <ReplyComposer
+          blockedPeerId={blockedPeer?.peerId}
+          blockedLabel={blockedPeer?.label}
           replyTarget={replyTarget}
           onClearReplyTarget={handleClearReplyTarget}
           onSend={handleSend}
@@ -1036,7 +1112,7 @@ export function ThreadDetailScreen({
           onCancelUpload={cancelUpload}
         />
         <EmojiPicker
-          visible={showEmojiPicker}
+          visible={showEmojiPicker && !isBlocked}
           onSelectEmoji={handleEmojiSelect}
           height={keyboardHeight > 0 ? keyboardHeight : 300}
         />

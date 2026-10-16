@@ -89,6 +89,32 @@ jest.mock('../../stores', () => ({
   useContactForConversation: () => null,
 }));
 
+/**
+ * #908: BlockedPeerNotice -> confirmUnblock -> blockedContentRefresh reaches
+ * the store singleton (MMKV), which does not load under jest. Mocked at the
+ * service boundary, the same way this suite mocks threadService.
+ */
+jest.mock('../../services/blockedContentRefresh', () => ({
+  unblockUserAndRefresh: jest.fn(),
+}));
+
+/**
+ * #908: the real hook imports the store singleton (MMKV), which does not load
+ * under jest, so BOTH exports are module-mocked. Mutable and reset in
+ * beforeEach; a test flips it and calls `rerender` to drive the
+ * unblocked -> blocked transition.
+ */
+let mockBlockedPeer: { peerId: string; label: string; labelResolved: boolean } | null = null;
+jest.mock('../../hooks/useBlockedDmPeer', () => ({
+  // Honours the id argument: the screen passes `isDm ? groupId : null`, and
+  // the real hook answers null for null — an argument-blind mock would make
+  // the orbit composer look blocked.
+  useBlockedDmPeer: (conversationId: string | null) =>
+    conversationId == null ? null : mockBlockedPeer,
+  getBlockedDmPeer: (conversationId: string | null) =>
+    conversationId == null ? null : mockBlockedPeer,
+}));
+
 import * as Sentry from '@sentry/react-native';
 import { createNewThread } from '../../services/threadService';
 import { Alert } from 'react-native';
@@ -187,6 +213,7 @@ beforeEach(() => {
   mockCreateNewThread.mockReset();
   mockUsePreventRemove.mockClear();
   mockSelectedMedia = [];
+  mockBlockedPeer = null;
   mockUploadMediaBatch.mockResolvedValue(['media-id-1']);
   mockRollbackUploadedMedia.mockResolvedValue(undefined);
 });
@@ -1135,5 +1162,195 @@ describe('ComposeThreadScreen — upload reuse cache and unmount safety', () => 
     });
 
     expect(mockRollbackUploadedMedia).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Blocked DM peer (#908)
+// ---------------------------------------------------------------------------
+
+describe('ComposeThreadScreen — blocked DM peer', () => {
+  const dmParams = { groupId: 'dm-1', isDm: true };
+  const blocked = { peerId: 'u-bob', label: '@bob', labelResolved: true };
+
+  const oneImage = [
+    {
+      uri: 'file:///photo1.jpg',
+      type: 'image/jpeg',
+      fileName: 'photo1.jpg',
+      fileSize: 100,
+      width: 50,
+      height: 50,
+    },
+  ];
+
+  /** Re-render the same tree so a flipped mockBlockedPeer is picked up. */
+  function rerender(
+    renderer: ReactTestRenderer,
+    params: { groupId: string; isDm: boolean },
+  ): void {
+    act(() => {
+      renderer.update(
+        React.createElement(
+          SafeAreaProvider,
+          { initialMetrics: safeAreaMetrics },
+          React.createElement(
+            ThemeProvider,
+            { colorSchemeOverride: 'light' },
+            React.createElement(ComposeThreadScreen, {
+              navigation: mockNavigation as unknown as React.ComponentProps<typeof ComposeThreadScreen>['navigation'],
+              route: { ...mockRoute, params } as unknown as React.ComponentProps<typeof ComposeThreadScreen>['route'],
+            }),
+          ),
+        ),
+      );
+    });
+  }
+
+  function findSendButton(renderer: ReactTestRenderer): ReactTestInstance {
+    const found = renderer.root.findAll(
+      (node) => node.props.accessibilityLabel === 'Send message',
+    );
+    if (found.length === 0) throw new Error('Send button not found');
+    return found[0];
+  }
+
+  it('replaces the body input with the notice, keeps the media strip, and disables Send', () => {
+    mockBlockedPeer = blocked;
+    mockSelectedMedia = oneImage;
+    const renderer = renderScreen(dmParams);
+
+    expect(() => findByTestId(renderer.root, 'blocked-peer-notice')).not.toThrow();
+    expect(() => findByTestId(renderer.root, 'compose-body-input')).toThrow();
+    expect(() => findByTestId(renderer.root, 'attach-media-button')).toThrow();
+    // The strip stays mounted so attachments remain visible and removable.
+    expect(() => findByTestId(renderer.root, 'media-thumbnail-strip')).not.toThrow();
+    expect(findSendButton(renderer).props.disabled).toBe(true);
+  });
+
+  it('keeps the draft body, so it comes back after an unblock', () => {
+    const renderer = renderScreen(dmParams);
+    act(() => {
+      findByTestId(renderer.root, 'compose-body-input').props.onChangeText('draft text');
+    });
+
+    mockBlockedPeer = blocked;
+    rerender(renderer, dmParams);
+    expect(() => findByTestId(renderer.root, 'compose-body-input')).toThrow();
+
+    mockBlockedPeer = null;
+    rerender(renderer, dmParams);
+    expect(findByTestId(renderer.root, 'compose-body-input').props.value).toBe('draft text');
+  });
+
+  it('keeps the discard guard armed while blocked with media selected', () => {
+    mockBlockedPeer = blocked;
+    mockSelectedMedia = oneImage;
+    const renderer = renderScreen(dmParams);
+    // The guard is mounted (it would strand uploaded ids as FileLibrary
+    // ghosts if it were disarmed, #724b) and the strip gives its prompt
+    // something to refer to.
+    expect(mockUsePreventRemove).toHaveBeenCalled();
+    expect(() => findByTestId(renderer.root, 'media-thumbnail-strip')).not.toThrow();
+  });
+
+  it('cancels an in-flight upload when the block lands mid-send', () => {
+    mockSelectedMedia = oneImage;
+    let capturedSignal: AbortSignal | undefined;
+    mockUploadMediaBatch.mockImplementation(
+      (_items: unknown, _groupId: unknown, opts: { signal: AbortSignal }) => {
+        capturedSignal = opts.signal;
+        return new Promise(() => {});
+      },
+    );
+
+    const renderer = renderScreen(dmParams);
+    act(() => {
+      findByTestId(renderer.root, 'compose-body-input').props.onChangeText('Some body text');
+    });
+    act(() => {
+      findSendButton(renderer).props.onPress();
+    });
+    expect(capturedSignal!.aborted).toBe(false);
+
+    mockBlockedPeer = blocked;
+    rerender(renderer, dmParams);
+
+    expect(capturedSignal!.aborted).toBe(true);
+  });
+
+  it('does not re-cancel when an unrelated store write churns the blocked object', () => {
+    mockSelectedMedia = oneImage;
+    let abortCount = 0;
+    mockUploadMediaBatch.mockImplementation(
+      (_items: unknown, _groupId: unknown, opts: { signal: AbortSignal }) => {
+        opts.signal.addEventListener('abort', () => { abortCount++; });
+        return new Promise(() => {});
+      },
+    );
+
+    const renderer = renderScreen(dmParams);
+    act(() => {
+      findByTestId(renderer.root, 'compose-body-input').props.onChangeText('Some body text');
+    });
+    act(() => {
+      findSendButton(renderer).props.onPress();
+    });
+
+    mockBlockedPeer = blocked;
+    rerender(renderer, dmParams);
+    expect(abortCount).toBe(1);
+
+    // A fresh object with identical content — what a contacts/conversations
+    // upsert produces. The wasBlockedRef latch must swallow it (R3-4).
+    mockBlockedPeer = { ...blocked };
+    rerender(renderer, dmParams);
+    expect(abortCount).toBe(1);
+  });
+
+  it('shows blocked-specific copy and reports nothing when createNewThread refuses', async () => {
+    const mockCaptureException = Sentry.captureException as unknown as jest.Mock;
+    const err = new Error('You blocked this person.');
+    err.name = 'BlockedRecipientError';
+    mockCreateNewThread.mockRejectedValue(err);
+
+    // The realistic shape: the press happened while the composer still
+    // believed it could send, and the block landed before the service ran.
+    // The service is the enforcement point, so the screen only has to explain
+    // the refusal.
+    const renderer = renderScreen(dmParams);
+    act(() => {
+      findByTestId(renderer.root, 'compose-body-input').props.onChangeText('Some body text');
+    });
+    await act(async () => {
+      findSendButton(renderer).props.onPress();
+    });
+
+    const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
+    const errorText = allText.find(
+      (node) =>
+        typeof node.props.children === 'string' &&
+        node.props.children.startsWith('Not sent —'),
+    );
+    expect(errorText).toBeDefined();
+    // Not the generic retry banner.
+    expect(
+      allText.some(
+        (node) =>
+          typeof node.props.children === 'string' &&
+          node.props.children === 'Failed to create thread. Please try again.',
+      ),
+    ).toBe(false);
+    // R3-3: no telemetry on a refusal the client made on purpose, so the
+    // blocked peer's id never reaches Sentry.
+    expect(mockCaptureException).not.toHaveBeenCalled();
+  });
+
+  it('leaves the orbit composer (isDm: false) untouched', () => {
+    mockBlockedPeer = blocked;
+    const renderer = renderScreen({ groupId: 'group-1', isDm: false });
+    expect(() => findByTestId(renderer.root, 'blocked-peer-notice')).toThrow();
+    expect(() => findByTestId(renderer.root, 'compose-body-input')).not.toThrow();
+    expect(() => findByTestId(renderer.root, 'attach-media-button')).not.toThrow();
   });
 });

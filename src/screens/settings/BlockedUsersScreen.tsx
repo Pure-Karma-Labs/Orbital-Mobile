@@ -2,32 +2,30 @@
  * Blocked Users settings screen.
  *
  * Lists all blocked users with an unblock button.
- * Uses contact store for display name fallback, blockedUserProfiles
- * for username when the user is not in contacts. Ids hydrated from the
- * server (#896) carry no username, so they render as a disambiguating
- * `user-<first 8 of id>` label rather than a shared placeholder handle.
- * That fallback is not only a pre-hydration state: a user blocked from an
- * orbit the viewer has since left has no contact row to resolve against and
- * stays id-labelled permanently. Unresolved labels render WITHOUT the `@`
- * prefix so they can never be mistaken for a real handle.
+ *
+ * The label rule (contacts → blockedUserProfiles, and the `@`-prefix
+ * invariant) now lives in `utils/blockedUserLabel`, and the unblock
+ * confirmation in `utils/confirmUnblock`, so this screen and the in-DM
+ * `BlockedPeerNotice` cannot drift apart (#908). This screen passes NO
+ * username fallback, so its behaviour is unchanged.
  */
 
 import React, { useCallback, useMemo } from 'react';
-import { Alert, FlatList, Text, TouchableOpacity, View, type ListRenderItemInfo, type TextStyle, type ViewStyle } from 'react-native';
+import { FlatList, Text, TouchableOpacity, View, type ListRenderItemInfo, type TextStyle, type ViewStyle } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { useTheme } from '../../theme';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../stores/useAppStore';
-import { unblockUserAndRefresh } from '../../services/blockedContentRefresh';
+import { blockedUserLabel } from '../../utils/blockedUserLabel';
+import { confirmUnblock } from '../../utils/confirmUnblock';
 import { Header } from '../../components/Header';
 import { EmojiText } from '../../components/EmojiText';
 
 interface BlockedUserRow {
   id: string;
-  displayName: string;
-  /** False when displayName is id-derived — never prefix it with `@`. */
-  resolved: boolean;
+  /** Display-ready: `@name` only when resolved (see blockedUserLabel). */
+  label: string;
 }
 
 function useBlockedUserRows(): BlockedUserRow[] {
@@ -37,17 +35,10 @@ function useBlockedUserRows(): BlockedUserRow[] {
 
   return useMemo(
     () =>
-      blockedUserIds.map((id) => {
-        // A corrupt persisted entry (non-string) must not throw in .slice —
-        // this screen is the user's only way to undo a block.
-        if (typeof id !== 'string') {
-          return { id: String(id), displayName: 'Unknown user', resolved: false };
-        }
-        const username = contacts[id]?.username ?? profiles[id];
-        return username !== undefined
-          ? { id, displayName: username, resolved: true }
-          : { id, displayName: `user-${id.slice(0, 8)}`, resolved: false };
-      }),
+      blockedUserIds.map((id) => ({
+        id: String(id),
+        label: blockedUserLabel(id, contacts, profiles).label,
+      })),
     [blockedUserIds, contacts, profiles],
   );
 }
@@ -59,29 +50,12 @@ export function BlockedUsersScreen(): React.JSX.Element {
 
   // `label` is already handle-composed by the row (`@name` only when resolved).
   const handleUnblock = useCallback((userId: string, label: string) => {
-    Alert.alert(
-      `Unblock ${label}?`,
-      'You will see their posts and replies again.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Unblock',
-          // #897: unblocking changes the server's per-viewer answer for every
-          // list, so the lists are re-pulled once the DELETE settles.
-          onPress: () => void unblockUserAndRefresh(userId),
-        },
-      ],
-    );
+    confirmUnblock(userId, label);
   }, []);
 
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<BlockedUserRow>) => (
-      <BlockedUserItem
-        userId={item.id}
-        displayName={item.displayName}
-        resolved={item.resolved}
-        onUnblock={handleUnblock}
-      />
+      <BlockedUserItem userId={item.id} label={item.label} onUnblock={handleUnblock} />
     ),
     [handleUnblock],
   );
@@ -126,21 +100,17 @@ export function BlockedUsersScreen(): React.JSX.Element {
 
 interface BlockedUserItemProps {
   userId: string;
-  displayName: string;
-  resolved: boolean;
+  /** Display-ready: `@name` only when resolved (see blockedUserLabel). */
+  label: string;
   onUnblock: (userId: string, label: string) => void;
 }
 
 const BlockedUserItem = React.memo(function BlockedUserItem({
   userId,
-  displayName,
-  resolved,
+  label,
   onUnblock,
 }: BlockedUserItemProps): React.JSX.Element {
   const theme = useTheme();
-
-  // Only a resolved username is a handle; an id-derived label is not.
-  const label = resolved ? `@${displayName}` : displayName;
 
   const handlePress = useCallback(() => {
     onUnblock(userId, label);
@@ -186,7 +156,7 @@ const BlockedUserItem = React.memo(function BlockedUserItem({
         onPress={handlePress}
         activeOpacity={0.7}
         accessibilityRole="button"
-        accessibilityLabel={`Unblock ${displayName}`}
+        accessibilityLabel={`Unblock ${label}`}
       >
         <Text style={buttonTextStyle}>Unblock</Text>
       </TouchableOpacity>

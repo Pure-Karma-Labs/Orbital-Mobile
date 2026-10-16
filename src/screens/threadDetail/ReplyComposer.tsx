@@ -24,6 +24,7 @@ import { Emoji } from '../../components/Emoji';
 import { LinkPreviewCard } from '../../components/LinkPreviewCard';
 import { MediaThumbnailStrip } from '../../components/MediaThumbnailStrip';
 import { UploadProgressBar } from '../../components/UploadProgressBar';
+import { BlockedPeerNotice } from '../../components/BlockedPeerNotice';
 import type { PickedMedia } from '../../hooks/useMediaPicker';
 import type { UploadProgressState } from '../../hooks/useMediaUploadProgress';
 
@@ -62,6 +63,19 @@ export interface ReplyComposerProps {
   uploadProgress?: UploadProgressState | null;
   /** Called when the user taps the cancel X on the upload bar */
   onCancelUpload?: () => void;
+  /**
+   * Set together with {@link blockedLabel} when this DM's peer is blocked
+   * (#908). PRIMITIVES, not a ReactNode: a node prop would change identity on
+   * every parent render and defeat this component's React.memo.
+   *
+   * While set, the notice REPLACES the input row (text input, emoji, attach,
+   * send), the reply-target chip and the link preview. `UploadProgressBar`
+   * with its cancel X and `MediaThumbnailStrip` deliberately stay mounted —
+   * the cancel X is the one control that must remain tappable (#722/#724b).
+   */
+  blockedPeerId?: string;
+  /** Display-ready label for the notice (`@name` only when resolved). */
+  blockedLabel?: string;
 }
 
 export const ReplyComposer = React.memo(function ReplyComposer({
@@ -79,8 +93,16 @@ export const ReplyComposer = React.memo(function ReplyComposer({
   onInputFocus,
   uploadProgress,
   onCancelUpload,
+  blockedPeerId,
+  blockedLabel,
 }: ReplyComposerProps): React.JSX.Element {
   const theme = useTheme();
+  // Both props or neither: a label with no id (or the reverse) is not a
+  // renderable notice, so it degrades to the normal composer.
+  const blocked =
+    blockedPeerId != null && blockedLabel != null
+      ? { peerId: blockedPeerId, label: blockedLabel }
+      : null;
   const inputRef = useRef<RNTextInput>(null);
   const lastFocusedTargetRef = useRef<ReplyTarget | null>(null);
 
@@ -219,7 +241,7 @@ export const ReplyComposer = React.memo(function ReplyComposer({
           onCancel={onCancelUpload ?? (() => {})}
         />
       )}
-      {replyTarget != null && (
+      {blocked == null && replyTarget != null && (
         <View style={replyContextStyle} testID="reply-context">
           <Text style={replyContextTextStyle} numberOfLines={1}>
             Replying to @{replyTarget.authorUsername}
@@ -241,56 +263,62 @@ export const ReplyComposer = React.memo(function ReplyComposer({
           disabled={uploadProgress != null}
         />
       )}
-      <LinkPreviewCard text={text} debounceMs={500} dismissible />
-      <View style={inputRowStyle}>
-        {onToggleEmojiPicker != null && (
-          <TouchableOpacity
-            style={emojiButtonStyle}
-            onPress={onToggleEmojiPicker}
-            disabled={sending}
-            accessibilityRole="button"
-            accessibilityLabel={showEmojiPicker ? 'Hide emoji picker' : 'Show emoji picker'}
-            testID="emoji-toggle-button"
-          >
-            <Emoji unified={showEmojiPicker ? '2328-FE0F' : '1F60A'} size={22} />
-          </TouchableOpacity>
-        )}
-        {onPickMedia != null && (
-          <TouchableOpacity
-            style={mediaButtonStyle}
-            onPress={onPickMedia}
-            disabled={sending}
-            accessibilityRole="button"
-            accessibilityLabel="Attach media"
-            testID="media-picker-button"
-          >
-            <Emoji unified="1F4F7" size={22} />
-          </TouchableOpacity>
-        )}
-        <RNTextInput
-          ref={inputRef}
-          style={inputStyle}
-          value={text}
-          onChangeText={onChangeText}
-          onFocus={handleFocus}
-          placeholder="Type a reply..."
-          placeholderTextColor={theme.colors.textTertiary}
-          multiline
-          maxLength={4000}
-          editable={!sending}
-          testID="reply-input"
-        />
-        <TouchableOpacity
-          style={sendButtonStyle}
-          onPress={handleSend}
-          disabled={!canSend}
-          accessibilityRole="button"
-          accessibilityLabel="Send reply"
-          testID="send-button"
-        >
-          <Text style={sendTextStyle}>Send</Text>
-        </TouchableOpacity>
-      </View>
+      {blocked != null ? (
+        <BlockedPeerNotice label={blocked.label} peerId={blocked.peerId} />
+      ) : (
+        <>
+          <LinkPreviewCard text={text} debounceMs={500} dismissible />
+          <View style={inputRowStyle}>
+            {onToggleEmojiPicker != null && (
+              <TouchableOpacity
+                style={emojiButtonStyle}
+                onPress={onToggleEmojiPicker}
+                disabled={sending}
+                accessibilityRole="button"
+                accessibilityLabel={showEmojiPicker ? 'Hide emoji picker' : 'Show emoji picker'}
+                testID="emoji-toggle-button"
+              >
+                <Emoji unified={showEmojiPicker ? '2328-FE0F' : '1F60A'} size={22} />
+              </TouchableOpacity>
+            )}
+            {onPickMedia != null && (
+              <TouchableOpacity
+                style={mediaButtonStyle}
+                onPress={onPickMedia}
+                disabled={sending}
+                accessibilityRole="button"
+                accessibilityLabel="Attach media"
+                testID="media-picker-button"
+              >
+                <Emoji unified="1F4F7" size={22} />
+              </TouchableOpacity>
+            )}
+            <RNTextInput
+              ref={inputRef}
+              style={inputStyle}
+              value={text}
+              onChangeText={onChangeText}
+              onFocus={handleFocus}
+              placeholder="Type a reply..."
+              placeholderTextColor={theme.colors.textTertiary}
+              multiline
+              maxLength={4000}
+              editable={!sending}
+              testID="reply-input"
+            />
+            <TouchableOpacity
+              style={sendButtonStyle}
+              onPress={handleSend}
+              disabled={!canSend}
+              accessibilityRole="button"
+              accessibilityLabel="Send reply"
+              testID="send-button"
+            >
+              <Text style={sendTextStyle}>Send</Text>
+            </TouchableOpacity>
+          </View>
+        </>
+      )}
     </View>
   );
 });

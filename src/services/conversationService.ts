@@ -23,7 +23,7 @@ import {
 import { getIdentityKeyPair, resolveRemoteIdentityKey, refreshAndCompareIdentityKey, compareAndPersistIdentityKey, normalizeIdentityKey } from './crypto/identityKeyAccess';
 import { VerifiedStatus } from '../types/database';
 import { arrayBufferToBase64, toArrayBuffer, base64ToArrayBuffer } from './crypto/utils';
-import { ApiError } from './api/errors';
+import { ApiError, BlockedRecipientError } from './api/errors';
 import { generateUUID } from '../utils/uuid';
 import { maxTimestamp } from '../utils/threadActivity';
 import { useAppStore } from '../stores/useAppStore';
@@ -345,6 +345,10 @@ function mapDmResponse(response: DmResponse): Conversation {
     id: response.groupId,
     type: 'direct',
     name: response.recipient.username,
+    // The DM-peer resolver's first-choice source (#908). It MUST be written
+    // here and not only in startDm: mergeDmRecency returns {...incoming}, so a
+    // field this mapper omits is dropped on the next list load.
+    peerUserId: response.recipient.id,
     memberCount: 2,
     active: true,
     lastMessageAt: response.lastMessageAt
@@ -663,6 +667,13 @@ export async function loadDmConversations(): Promise<void> {
 export async function startDm(
   recipientId: string,
 ): Promise<{ conversationId: string; recipientName: string }> {
+  // FIRST statement (#908): a group key must never be generated or wrapped to
+  // someone the user has blocked, and no DM row may be created for them. The
+  // screen's own guard is UX only — this is the enforcement point.
+  if (useAppStore.getState().blockedUserIds.includes(recipientId)) {
+    throw new BlockedRecipientError(recipientId);
+  }
+
   const groupId = generateUUID();
   const { key, keyBase64 } = generateGroupKey();
   const { publicKey: ownPubKey } = getIdentityKeyPair();
@@ -719,6 +730,9 @@ export async function startDm(
     store.upsertConversation({
       ...existing,
       name: response.recipient.username,
+      // Backfills a row persisted before #908 (the spread keeps everything
+      // else), so the DM-peer resolver stops needing the contact scan.
+      peerUserId: response.recipient.id,
       active: true,
     });
   } else {
@@ -726,6 +740,7 @@ export async function startDm(
       id: response.groupId,
       type: 'direct',
       name: response.recipient.username,
+      peerUserId: response.recipient.id,
       memberCount: 2,
       active: true,
       lastMessageAt: null,

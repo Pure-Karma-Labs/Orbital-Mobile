@@ -58,6 +58,7 @@ import { isDatabaseInitialized } from '../database/connection';
 import { downloadAndDecryptMedia, recoverStalePaths } from '../services/mediaDownloadService';
 import { MEDIA_DIR, resolveMediaPath } from '../services/media/mediaPaths';
 import { isExportableConversation } from '../services/media/exportAccess';
+import { resolveDmPeerId } from '../utils/dmPeer';
 import {
   ensureBulkExportPermission,
   ensureExportDisclosure,
@@ -474,16 +475,27 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
     }
 
     const convIds = getMediaConversationIds();
+    // These chips are built from conversation NAMES, DMs included, so a
+    // blocked peer's handle would otherwise stay on screen here (#908).
+    // Resolved through the single DM-peer resolver, which returns null for
+    // group rows — so legitimate DM chips and every orbit chip stay. Keyed on
+    // the existing `excludeAuthorIds` identity (#897 idiom), which only
+    // changes on a REAL block or unblock.
+    const blocked = excludeAuthorIds.length > 0 ? new Set(excludeAuthorIds) : null;
+    const contacts = blocked ? useAppStore.getState().contacts : undefined;
     const opts: Array<{ id: string; name: string }> = [];
     for (const cId of convIds) {
       const conv = conversations[cId];
       const name = conv?.name ?? null;
-      if (name) {
-        opts.push({ id: cId, name });
+      if (!name) continue;
+      if (blocked) {
+        const peerId = resolveDmPeerId(cId, conv, contacts);
+        if (peerId !== null && blocked.has(peerId)) continue;
       }
+      opts.push({ id: cId, name });
     }
     setOrbitOptions(opts);
-  }, [activeConversationId, conversations]);
+  }, [activeConversationId, conversations, excludeAuthorIds]);
 
   // ---------------------------------------------------------------------------
   // Pagination

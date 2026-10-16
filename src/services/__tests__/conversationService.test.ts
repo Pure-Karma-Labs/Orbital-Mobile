@@ -2403,15 +2403,133 @@ describe('mergeDmRecency (#883)', () => {
 
     expect(merged.name).toBe('new-name');
   });
+
+  // #897 — the per-viewer mode. `last_message_at` and `unread_count` are
+  // block-filtered server-side (Backend #301/#306), so both may legitimately
+  // go DOWN; `authoritative: true` skips the local-is-newer rule.
+  it('lowers lastMessageAt under authoritative', () => {
+    const merged = mergeDmRecency(
+      makeDmConversation({ lastMessageAt: 9000 }),
+      makeDmConversation({ lastMessageAt: 5000 }),
+      false,
+      { authoritative: true },
+    );
+
+    expect(merged.lastMessageAt).toBe(5000);
+  });
+
+  it('clears lastMessageAt to null under authoritative', () => {
+    const merged = mergeDmRecency(
+      makeDmConversation({ lastMessageAt: 9000 }),
+      makeDmConversation({ lastMessageAt: null }),
+      false,
+      { authoritative: true },
+    );
+
+    expect(merged.lastMessageAt).toBeNull();
+  });
+
+  it('takes the server unreadCount under authoritative even when local recency is newer', () => {
+    // The stale badge the issue is about: blocking the other party drops their
+    // messages from the count, so the server answers 0 with an older
+    // lastMessageAt — exactly the shape the local-is-newer rule re-latched.
+    const merged = mergeDmRecency(
+      makeDmConversation({ lastMessageAt: 9000, unreadCount: 3 }),
+      makeDmConversation({ lastMessageAt: 5000, unreadCount: 0 }),
+      false,
+      { authoritative: true },
+    );
+
+    expect(merged.unreadCount).toBe(0);
+    expect(merged.lastMessageAt).toBe(5000);
+  });
+
+  it('still forces 0 while a mark-read is pending under authoritative', () => {
+    const merged = mergeDmRecency(
+      makeDmConversation({ lastMessageAt: 5000, unreadCount: 0 }),
+      makeDmConversation({ lastMessageAt: 5000, unreadCount: 2 }),
+      true,
+      { authoritative: true },
+    );
+
+    expect(merged.unreadCount).toBe(0);
+  });
+
+  it('still max-merges lastReadAt and updatedAt under authoritative', () => {
+    // Neither is a per-viewer, block-filtered value, so the bypass must not
+    // reach them.
+    const merged = mergeDmRecency(
+      makeDmConversation({ lastMessageAt: 9000, lastReadAt: 8000, updatedAt: 9000 }),
+      makeDmConversation({ lastMessageAt: 5000, lastReadAt: 1000, updatedAt: 5000 }),
+      false,
+      { authoritative: true },
+    );
+
+    expect(merged.lastReadAt).toBe(8000);
+    expect(merged.updatedAt).toBe(9000);
+  });
+
+  it('keeps the local recency and count under keepLocalRecency (#906)', () => {
+    const merged = mergeDmRecency(
+      makeDmConversation({ lastMessageAt: 9000, unreadCount: 3 }),
+      makeDmConversation({ lastMessageAt: 5000, unreadCount: 0 }),
+      false,
+      { authoritative: true, keepLocalRecency: true },
+    );
+
+    // keepLocalRecency wins over authoritative: the response may predate the
+    // block that bumped the generation.
+    expect(merged.lastMessageAt).toBe(9000);
+    expect(merged.unreadCount).toBe(3);
+  });
+
+  it('still forces 0 while a mark-read is pending under keepLocalRecency (#906)', () => {
+    const merged = mergeDmRecency(
+      makeDmConversation({ lastMessageAt: 9000, unreadCount: 3 }),
+      makeDmConversation({ lastMessageAt: 5000, unreadCount: 2 }),
+      true,
+      { keepLocalRecency: true },
+    );
+
+    expect(merged.unreadCount).toBe(0);
+    expect(merged.lastMessageAt).toBe(9000);
+  });
+
+  it('heals a non-finite local recency under keepLocalRecency (#906)', () => {
+    const merged = mergeDmRecency(
+      makeDmConversation({ lastMessageAt: NaN, unreadCount: 2 }),
+      makeDmConversation({ lastMessageAt: 5000, unreadCount: 0 }),
+      false,
+      { keepLocalRecency: true },
+    );
+
+    expect(merged.lastMessageAt).toBeNull();
+    expect(merged.unreadCount).toBe(2);
+  });
+
+  it('is unchanged on a first insert under authoritative', () => {
+    const incoming = makeDmConversation({ lastMessageAt: NaN, lastReadAt: Infinity });
+
+    const merged = mergeDmRecency(undefined, incoming, false, { authoritative: true });
+
+    expect(merged.lastMessageAt).toBeNull();
+    expect(merged.lastReadAt).toBeNull();
+    expect(merged.unreadCount).toBe(incoming.unreadCount);
+  });
 });
 
 describe('loadDmConversations — merge, not overwrite (#883)', () => {
-  function seedStore(conversations: Record<string, Conversation>): void {
+  function seedStore(
+    conversations: Record<string, Conversation>,
+    blockedUsersGeneration = 0,
+  ): void {
     (useAppStore.getState as jest.Mock).mockReturnValue({
       userId: 'test-self-user',
       activeConversationId: null,
       conversations,
       contacts: {},
+      // #906 review: the request-ordering token `loadDmConversations` reads.
+      blockedUsersGeneration,
       setConversations: mockSetConversations,
       setGroupConversations: mockSetConversations,
       setActiveConversation: mockSetActiveConversation,
@@ -2428,11 +2546,20 @@ describe('loadDmConversations — merge, not overwrite (#883)', () => {
     clearConversationServiceState();
   });
 
-  it('keeps a newer local lastMessageAt when the list response is stale', async () => {
-    seedStore({
-      'dm-1': makeDmConversation({ lastMessageAt: Date.parse('2026-03-20T12:00:00.000Z') }),
+  it('keeps a newer local lastMessageAt when a WS message lands mid-request', async () => {
+    // Since #897 "the response is stale" is only knowable from the PRE-request
+    // snapshot: the row has to move forward WHILE listDms is in flight. A row
+    // that was already ahead before the request is a per-viewer lowering (a
+    // block) and the server wins — see the authoritative tests below.
+    seedStore({ 'dm-1': makeDmConversation({ lastMessageAt: 1000 }) });
+    mockListDms.mockImplementationOnce(async () => {
+      seedStore({
+        'dm-1': makeDmConversation({
+          lastMessageAt: Date.parse('2026-03-20T12:00:00.000Z'),
+        }),
+      });
+      return [DM_RESPONSE];
     });
-    mockListDms.mockResolvedValue([DM_RESPONSE]);
 
     await loadDmConversations();
 
@@ -2441,17 +2568,116 @@ describe('loadDmConversations — merge, not overwrite (#883)', () => {
   });
 
   it('keeps a local unread increment the response predates', async () => {
-    seedStore({
-      'dm-1': makeDmConversation({
-        lastMessageAt: Date.parse('2026-03-20T12:00:00.000Z'),
-        unreadCount: 2,
-      }),
+    seedStore({ 'dm-1': makeDmConversation({ lastMessageAt: 1000, unreadCount: 0 }) });
+    mockListDms.mockImplementationOnce(async () => {
+      seedStore({
+        'dm-1': makeDmConversation({
+          lastMessageAt: Date.parse('2026-03-20T12:00:00.000Z'),
+          unreadCount: 2,
+        }),
+      });
+      return [{ ...DM_RESPONSE, unreadCount: 0 }];
     });
-    mockListDms.mockResolvedValue([{ ...DM_RESPONSE, unreadCount: 0 }]);
 
     await loadDmConversations();
 
     expect(mockUpsertConversation.mock.calls[0][0].unreadCount).toBe(2);
+  });
+
+  it('appearing mid-request also counts as a bump, not a lowering', async () => {
+    // The row was absent from the snapshot: ensureDmConversation created it
+    // from a WS message while the request was in flight. The response carries
+    // the LOWER values, so only the bump detection can save them.
+    seedStore({});
+    mockListDms.mockImplementationOnce(async () => {
+      seedStore({
+        'dm-1': makeDmConversation({ lastMessageAt: 9000, unreadCount: 4 }),
+      });
+      return [
+        { ...DM_RESPONSE, lastMessageAt: new Date(5000).toISOString(), unreadCount: 0 },
+      ];
+    });
+
+    await loadDmConversations();
+
+    const upserted = mockUpsertConversation.mock.calls[0][0];
+    expect(upserted.lastMessageAt).toBe(9000);
+    expect(upserted.unreadCount).toBe(4);
+  });
+
+  it('takes the server lastMessageAt and unreadCount when nothing moved mid-request (#897)', async () => {
+    // THE ISSUE: blocking the other party stops their messages counting, so
+    // the server's per-viewer values are BELOW the WS-bumped local ones. The
+    // local-is-newer rule used to re-latch the stale badge on every refresh
+    // (and `conversations` is MMKV-persisted, so it survived a relaunch).
+    seedStore({ 'dm-1': makeDmConversation({ lastMessageAt: 9000, unreadCount: 3 }) });
+    mockListDms.mockResolvedValue([
+      { ...DM_RESPONSE, lastMessageAt: new Date(5000).toISOString(), unreadCount: 0 },
+    ]);
+
+    await loadDmConversations();
+
+    const upserted = mockUpsertConversation.mock.calls[0][0];
+    expect(upserted.lastMessageAt).toBe(5000);
+    expect(upserted.unreadCount).toBe(0);
+  });
+
+  it('keeps the local recency when the payload OMITS lastMessageAt', async () => {
+    // A 1.7.6-era backend sends no field at all: absent is not null (#897), so
+    // the merging path stays in charge and nothing is lowered.
+    seedStore({ 'dm-1': makeDmConversation({ lastMessageAt: 9000, unreadCount: 3 }) });
+    const { lastMessageAt: _omitted, ...withoutLastMessageAt } = DM_RESPONSE;
+    mockListDms.mockResolvedValue([{ ...withoutLastMessageAt, unreadCount: 0 }]);
+
+    await loadDmConversations();
+
+    const upserted = mockUpsertConversation.mock.calls[0][0];
+    expect(upserted.lastMessageAt).toBe(9000);
+    expect(upserted.unreadCount).toBe(3);
+  });
+
+  it('keeps the live row when the blocked set changed mid-request (#906)', async () => {
+    // The response may predate the block, so neither of its per-viewer values
+    // may be written: the live row wins and the refresh that bumped the
+    // generation brings the corrected numbers moments later. Max-merging
+    // instead would re-latch exactly the stale high value.
+    seedStore({ 'dm-1': makeDmConversation({ lastMessageAt: 9000, unreadCount: 3 }) });
+    mockListDms.mockImplementationOnce(async () => {
+      seedStore(
+        { 'dm-1': makeDmConversation({ lastMessageAt: 9000, unreadCount: 3 }) },
+        1,
+      );
+      return [
+        { ...DM_RESPONSE, lastMessageAt: new Date(5000).toISOString(), unreadCount: 0 },
+      ];
+    });
+
+    await loadDmConversations();
+
+    const upserted = mockUpsertConversation.mock.calls[0][0];
+    expect(upserted.lastMessageAt).toBe(9000);
+    expect(upserted.unreadCount).toBe(3);
+  });
+
+  it('counts an unread increment alone as a mid-request bump (#906)', async () => {
+    // `bumpLastMessageAt` no-ops on an out-of-order timestamp while
+    // `incrementUnreadCount` still fires, so the badge can move without the
+    // recency. Taking the server's 0 here would drop that increment.
+    seedStore({ 'dm-1': makeDmConversation({ lastMessageAt: 9000, unreadCount: 1 }) });
+    mockListDms.mockImplementationOnce(async () => {
+      seedStore({
+        'dm-1': makeDmConversation({ lastMessageAt: 9000, unreadCount: 2 }),
+      });
+      return [
+        { ...DM_RESPONSE, lastMessageAt: new Date(5000).toISOString(), unreadCount: 0 },
+      ];
+    });
+
+    await loadDmConversations();
+
+    const upserted = mockUpsertConversation.mock.calls[0][0];
+    expect(upserted.unreadCount).toBe(2);
+    expect(upserted.lastMessageAt).toBe(9000);
   });
 
   function seedReadAheadOfServer(): void {

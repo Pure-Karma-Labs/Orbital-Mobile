@@ -97,6 +97,8 @@ function makeStore() {
     updateMediaDownloadState: jest.fn(),
     updateMediaUploadState: jest.fn(),
     removeMedia: jest.fn(),
+    removeMediaForAuthor: jest.fn(),
+    removeMediaForAuthors: jest.fn(),
 
     pushPermissionGranted: false,
     pushToken: null,
@@ -119,6 +121,7 @@ function makeStore() {
 
     blockedUserIds: [],
     blockedUserProfiles: {},
+    blockedUsersGeneration: 0,
     blockUser: jest.fn(),
     unblockUser: jest.fn(),
     resetBlockedUsers: jest.fn(),
@@ -649,5 +652,93 @@ describe('lastReplyAt max-merge (#883)', () => {
     store.getState().setThreads('conv-1', [makeThread({ id: 'thread-1', lastReplyAt: 6000 })]);
 
     expect(store.getState().threads['thread-1'].lastReplyAt).toBe(6000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #897 — authoritativeRecency lets a per-viewer server value go BACKWARDS
+// ---------------------------------------------------------------------------
+
+describe('lastReplyAt authoritative writes (#897)', () => {
+  it('upsertThread with authoritativeRecency lowers the stored lastReplyAt', () => {
+    const store = makeStore();
+    store.getState().upsertThread(makeThread({ lastReplyAt: 5000 }));
+
+    // A block stopped counting the reply that lifted the thread, so the
+    // server's per-viewer value is genuinely older than what is stored.
+    store.getState().upsertThread(makeThread({ lastReplyAt: 1000 }), {
+      authoritativeRecency: true,
+    });
+
+    expect(store.getState().threads['thread-1'].lastReplyAt).toBe(1000);
+  });
+
+  it('upsertThread with authoritativeRecency clears lastReplyAt to null', () => {
+    const store = makeStore();
+    store.getState().upsertThread(makeThread({ lastReplyAt: 5000 }));
+
+    // Every counted reply is now from a blocked author: no activity slot left.
+    store.getState().upsertThread(makeThread({ lastReplyAt: null }), {
+      authoritativeRecency: true,
+    });
+
+    expect(store.getState().threads['thread-1'].lastReplyAt).toBeNull();
+  });
+
+  it('upsertThread still heals NaN to null under authoritativeRecency', () => {
+    const store = makeStore();
+    store.getState().upsertThread(makeThread({ lastReplyAt: 5000 }));
+
+    store.getState().upsertThread(makeThread({ lastReplyAt: NaN }), {
+      authoritativeRecency: true,
+    });
+
+    // The bypass skips the merge, not the sanitizer — NaN never gets stored.
+    expect(store.getState().threads['thread-1'].lastReplyAt).toBeNull();
+
+    store.getState().upsertThread(makeThread({ lastReplyAt: Infinity }), {
+      authoritativeRecency: true,
+    });
+
+    expect(store.getState().threads['thread-1'].lastReplyAt).toBeNull();
+  });
+
+  it('setThreads with authoritativeRecency lowers the stored lastReplyAt', () => {
+    const store = makeStore();
+    store.getState().upsertThread(makeThread({ id: 'thread-1', lastReplyAt: 5000 }));
+
+    store.getState().setThreads(
+      'conv-1',
+      [makeThread({ id: 'thread-1', lastReplyAt: 1000 })],
+      { authoritativeRecency: true },
+    );
+
+    expect(store.getState().threads['thread-1'].lastReplyAt).toBe(1000);
+  });
+
+  it('setThreads with authoritativeRecency clears lastReplyAt to null', () => {
+    const store = makeStore();
+    store.getState().upsertThread(makeThread({ id: 'thread-1', lastReplyAt: 5000 }));
+
+    store.getState().setThreads(
+      'conv-1',
+      [makeThread({ id: 'thread-1', lastReplyAt: null })],
+      { authoritativeRecency: true },
+    );
+
+    expect(store.getState().threads['thread-1'].lastReplyAt).toBeNull();
+  });
+
+  it('setThreads still heals NaN to null under authoritativeRecency', () => {
+    const store = makeStore();
+    store.getState().upsertThread(makeThread({ id: 'thread-1', lastReplyAt: 5000 }));
+
+    store.getState().setThreads(
+      'conv-1',
+      [makeThread({ id: 'thread-1', lastReplyAt: NaN })],
+      { authoritativeRecency: true },
+    );
+
+    expect(store.getState().threads['thread-1'].lastReplyAt).toBeNull();
   });
 });

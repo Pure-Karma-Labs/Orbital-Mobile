@@ -38,17 +38,42 @@ export function isExportableConversation(conversationId: string | null | undefin
 }
 
 /**
- * True when this author is blocked. BULK ONLY — a blocked author's media stays
- * saveable one item at a time (Alex 2026-10-09), so only the batch path asks.
+ * True when this author is blocked — the one store-backed author check shared
+ * by the export path and the thread-gallery hydrate path.
  *
- * The snapshot SQL already excludes blocked authors, but a snapshot is taken
- * once and a run can last minutes: blocking someone mid-batch has to stop
- * their media from being saved by the items still queued (#889 review). So
- * this is re-asked per item before the download, again after it, and once more
- * for every staged iOS document immediately before the picker.
+ * ## The "bulk only" carve-out is RETIRED
+ *
+ * This docblock used to read "BULK ONLY — a blocked author's media stays
+ * saveable one item at a time (Alex 2026-10-09)". That carve-out is SUPERSEDED
+ * by Alex's 2026-10-16 addendum on #897: author exclusion now travels on ONE
+ * channel, `GetAllMediaOptions.excludeAuthorIds`, and every list surface
+ * applies it — the File Library grid, `threadService.hydrateMediaFromLocal`
+ * and the bulk-export snapshot alike. With the grid and the gallery filtered
+ * there is no LIST surface left to save a blocked author's item FROM, so what
+ * the single-item path keeps (see below) is a deliberate RETAINED exemption,
+ * not a live carve-out that widens exposure.
+ *
+ * ## What the per-item re-asks are still for
+ *
+ * A snapshot — or a hydrated gallery index — is taken once, and a run can last
+ * minutes. Blocking someone part-way through has to stop their media from
+ * being saved by the items still queued (#889 review). Catching a block that
+ * lands MID-RUN is now the sole reason `mediaExportService` re-asks per item,
+ * at three points, all of them on the BULK paths:
+ *
+ *   - `exportMediaItemInBulk` — the per-item gate, before the download.
+ *   - `prepareWrite` — the access re-check after the download, behind its
+ *     `rejectBlockedAuthor` option.
+ *   - `isBulkExportAllowedAt` — called by `flushStagedBulkDocuments` for every
+ *     staged iOS document immediately before the picker.
+ *
+ * The SINGLE-ITEM save path (`saveMediaItem`) deliberately keeps
+ * `rejectBlockedAuthor: false` — kept and documented by Alex on 2026-10-16,
+ * not an oversight — so the per-item re-ask covers the bulk paths only. Those
+ * are the only two `rejectBlockedAuthor` call sites.
  *
  * A NULL author is NOT treated as blocked. That is the same deliberate
- * trade-off as the SQL's `COALESCE(…, '')`: a deleted reply leaves its media
+ * fail-open as the SQL's `COALESCE(…, '')`: a deleted reply leaves its media
  * with no resolvable author, and refusing those would make a blocked-user
  * list silently un-saveable for unrelated rows.
  */

@@ -13,27 +13,33 @@ export const createBlockedUsersSlice: StateCreator<
   // Initial state
   blockedUserIds: [],
   blockedUserProfiles: {},
+  blockedUsersGeneration: 0,
 
   // Actions
+  // The optimistic `set` stays SYNCHRONOUS — the UI must hide the content on
+  // the same tick. The returned promise only reports when the API settled, so
+  // `services/blockedContentRefresh.ts` knows when the server has stopped
+  // answering with pre-block per-viewer values (#897). It never rejects.
   blockUser: (userId, username) => {
     const { blockedUserIds, blockedUserProfiles } = get();
-    if (blockedUserIds.includes(userId)) return; // Idempotent
+    if (blockedUserIds.includes(userId)) return Promise.resolve(); // Idempotent
     set(
       {
         blockedUserIds: [...blockedUserIds, userId],
         blockedUserProfiles: { ...blockedUserProfiles, [userId]: username },
+        blockedUsersGeneration: get().blockedUsersGeneration + 1,
       },
       false,
       'blockedUsers/blockUser',
     );
-    blockUserApi(userId).catch((e: unknown) => {
+    return blockUserApi(userId).catch((e: unknown) => {
       if (__DEV__) console.warn('[BlockedUsers] blockUser API failed:', e instanceof Error ? e.message : e);
     });
   },
 
   unblockUser: (userId) => {
     const { blockedUserIds, blockedUserProfiles, userId: sessionUserId } = get();
-    if (!blockedUserIds.includes(userId)) return; // No-op for unknown
+    if (!blockedUserIds.includes(userId)) return Promise.resolve(); // No-op for unknown
     const savedName = blockedUserProfiles[userId];
     const updated = { ...blockedUserProfiles };
     delete updated[userId];
@@ -41,11 +47,12 @@ export const createBlockedUsersSlice: StateCreator<
       {
         blockedUserIds: blockedUserIds.filter((id) => id !== userId),
         blockedUserProfiles: updated,
+        blockedUsersGeneration: get().blockedUsersGeneration + 1,
       },
       false,
       'blockedUsers/unblockUser',
     );
-    unblockUserApi(userId).catch((e: unknown) => {
+    return unblockUserApi(userId).catch((e: unknown) => {
       if (__DEV__) console.warn('[BlockedUsers] unblockUser API failed:', e instanceof Error ? e.message : e);
       // #896: the sync no longer deletes server rows, so a failed DELETE must
       // not leave local state ahead of the server (the next cold-start sync
@@ -62,6 +69,7 @@ export const createBlockedUsersSlice: StateCreator<
               savedName === undefined
                 ? s.blockedUserProfiles
                 : { ...s.blockedUserProfiles, [userId]: savedName },
+            blockedUsersGeneration: s.blockedUsersGeneration + 1,
           },
           false,
           'blockedUsers/unblockUserRollback',
@@ -93,9 +101,23 @@ export const createBlockedUsersSlice: StateCreator<
     // a real handle ("Unblock @Unknown?"). The screen falls back to a
     // disambiguating user-<id prefix> label when no profile/contact exists.
     set(
-      { blockedUserIds: [...blockedUserIds, ...newIds] },
+      {
+        blockedUserIds: [...blockedUserIds, ...newIds],
+        blockedUsersGeneration: get().blockedUsersGeneration + 1,
+      },
       false,
       'blockedUsers/hydrateBlockedUsers',
     );
+    // Evict cached media for the newly learned ids, AFTER the set so the new
+    // blocked set is already in force for anything the eviction wakes up
+    // (#897, ordering per the #906 review).
+    //
+    // Honest about its reach: at both bootstrap call sites the store holds no
+    // threads or replies yet, so the author lookup resolves nothing and this
+    // evicts nothing. READ-TIME filtering is the real cross-device guard —
+    // `hydrateMediaFromLocal`'s author filter and the grid's
+    // `excludeAuthorIds`. This loop only matters for an in-session re-sync,
+    // where a gallery or grid page is already seeded.
+    get().removeMediaForAuthors(newIds);
   },
 });

@@ -80,6 +80,7 @@ function makeStore() {
         resetNotificationSettings: jest.fn(),
         // BlockedUsers stubs
         blockedUserIds: [], blockedUserProfiles: {},
+    blockedUsersGeneration: 0,
         blockUser: jest.fn(), unblockUser: jest.fn(),
         resetBlockedUsers: jest.fn(), hydrateBlockedUsers: jest.fn(),
         // Report stubs

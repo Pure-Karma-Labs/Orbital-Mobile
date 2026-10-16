@@ -262,9 +262,29 @@ export interface ThreadsState {
   threadLastViewedAt: Record<string, number>;
 }
 
+/**
+ * Opt-in merge bypass for a thread write (#897).
+ *
+ * `authoritativeRecency: true` means "this `lastReplyAt` is the server's own
+ * per-viewer answer and may LOWER the stored value" — the only way a block
+ * that stops counting a reply can take a thread back down the activity order.
+ * Only `threadService.loadThread` / `loadThreadsForGroup` set it, and only
+ * after reconciling against a pre-request snapshot, because they are the only
+ * callers that can tell a server lowering apart from a reply that landed while
+ * the request was in flight. Everything else (WS, own-post, hydration) stays
+ * on the never-lower default.
+ */
+export interface ThreadRecencyWriteOptions {
+  authoritativeRecency?: boolean;
+}
+
 export interface ThreadsActions {
-  setThreads: (conversationId: string, threads: Thread[]) => void;
-  upsertThread: (thread: Thread) => void;
+  setThreads: (
+    conversationId: string,
+    threads: Thread[],
+    options?: ThreadRecencyWriteOptions,
+  ) => void;
+  upsertThread: (thread: Thread, options?: ThreadRecencyWriteOptions) => void;
   removeThread: (id: string) => void;
   setActiveThread: (id: string | null) => void;
   setReplies: (threadId: string, replies: Reply[]) => void;
@@ -421,6 +441,22 @@ export interface MediaActions {
   updateMediaDownloadState: (id: string, state: MediaItem['downloadState'], localPath?: string) => void;
   updateMediaUploadState: (id: string, state: MediaItem['uploadState']) => void;
   removeMedia: (id: string) => void;
+  /**
+   * Evict every in-memory media item whose author is `authorId` (#897).
+   * Convenience wrapper over {@link removeMediaForAuthors}.
+   */
+  removeMediaForAuthor: (authorId: string) => void;
+  /**
+   * Evict every in-memory media item whose author is in `authorIds` — ONE
+   * scan and ONE `set()` however many ids are passed (#897, #906 review).
+   *
+   * In-session only — SQLite is untouched, so an unblock brings the rows back
+   * on the next hydrate / page load. The author is resolved the way
+   * `AUTHOR_EXPR` resolves it in SQL: a reply's author for reply media, the
+   * thread's author otherwise. An unknown parent is fail-open (not evicted),
+   * and a no-match call does not `set()` at all.
+   */
+  removeMediaForAuthors: (authorIds: string[]) => void;
 }
 
 export type MediaSlice = MediaState & MediaActions;
@@ -529,11 +565,37 @@ export interface BlockedUsersState {
   blockedUserIds: string[];
   /** Fallback username for display when the user is not in contacts */
   blockedUserProfiles: Record<string, string>;
+  /**
+   * Bumped on every change to the blocked set — block, unblock, unblock
+   * rollback, and a hydrate that added ids (#906 review of #897).
+   *
+   * It is a REQUEST-ORDERING token, not state the UI reads: a list response
+   * that left the server BEFORE a block landed must not be written as the
+   * authoritative per-viewer answer afterwards. Services capture it next to
+   * their pre-request snapshot and compare on the way out.
+   *
+   * Deliberately NOT persisted (it is absent from `partializeAppState`'s pick
+   * list): it only has meaning within one app session's in-flight requests,
+   * and a restored value would be compared against a counter that restarts
+   * at 0.
+   */
+  blockedUsersGeneration: number;
 }
 
 export interface BlockedUsersActions {
-  blockUser: (userId: string, username: string) => void;
-  unblockUser: (userId: string) => void;
+  /**
+   * Block optimistically, then settle (#897).
+   *
+   * The state change is synchronous; the returned promise resolves when the
+   * API call has SETTLED — success, or a failure that was swallowed (block has
+   * no rollback) / rolled back (unblock). It never rejects. Callers that have
+   * to refetch per-viewer server data wait on it, because until the API has
+   * landed the server still answers with pre-block values
+   * (`services/blockedContentRefresh.ts`).
+   */
+  blockUser: (userId: string, username: string) => Promise<void>;
+  /** Unblock optimistically, then settle. See {@link blockUser}. */
+  unblockUser: (userId: string) => Promise<void>;
   resetBlockedUsers: () => void;
   hydrateBlockedUsers: (blockedUserIds: string[]) => void;
 }

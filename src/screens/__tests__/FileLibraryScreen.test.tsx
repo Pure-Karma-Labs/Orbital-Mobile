@@ -47,10 +47,12 @@ jest.mock('../../stores', () => ({
 
 // Mock useAppStore (Zustand store access)
 const mockMedia: Record<string, { downloadState: string; localPath: string | null }> = {};
+/** #897: the grid's author exclusion comes from this (bare) store field. */
+let mockBlockedUserIds: string[] = [];
 jest.mock('../../stores/useAppStore', () => ({
   useAppStore: Object.assign(
     jest.fn((selector: (s: unknown) => unknown) =>
-      selector({ media: mockMedia }),
+      selector({ media: mockMedia, blockedUserIds: mockBlockedUserIds }),
     ),
     {
       getState: () => ({
@@ -273,22 +275,35 @@ const mockRoute = {
  */
 const mountedRenderers: ReactTestRenderer[] = [];
 
+function screenElement(): React.ReactElement {
+  return React.createElement(
+    ThemeProvider,
+    { colorSchemeOverride: 'light' },
+    React.createElement(FileLibraryScreen, {
+      navigation: mockNavigation as never,
+      route: mockRoute,
+    }),
+  );
+}
+
 function renderScreen(): ReactTestRenderer {
   let renderer!: ReactTestRenderer;
   act(() => {
-    renderer = create(
-      React.createElement(
-        ThemeProvider,
-        { colorSchemeOverride: 'light' },
-        React.createElement(FileLibraryScreen, {
-          navigation: mockNavigation as never,
-          route: mockRoute,
-        }),
-      ),
-    );
+    renderer = create(screenElement());
   });
   mountedRenderers.push(renderer);
   return renderer;
+}
+
+/**
+ * Re-render in place. The store mock has no subscription, so a change to
+ * `mockBlockedUserIds` only reaches the screen on the next render pass — which
+ * is exactly what a real `blockedUserIds` store update would trigger.
+ */
+function rerender(renderer: ReactTestRenderer): void {
+  act(() => {
+    renderer.update(screenElement());
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -376,6 +391,7 @@ function makePlan(overrides: Partial<{
 beforeEach(() => {
   jest.clearAllMocks();
   mockLightboxProps.length = 0;
+  mockBlockedUserIds = [];
   // The run outlives the screen by design, so the store is module state that
   // would otherwise leak between tests. Reset before any render.
   bulkRunner().bulkExportStore.setState(IDLE_BULK_STATE, true);
@@ -1088,5 +1104,77 @@ describe('FileLibraryScreen — Save all (#878)', () => {
     expect(findHostByTestId(renderer.root, 'bulk-export-label').props.children).toBe(
       '2 of 37 items',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Blocked-author exclusion (#897)
+// ---------------------------------------------------------------------------
+
+describe('FileLibraryScreen — blocked authors (#897)', () => {
+  it('passes the blocked ids to getAllMedia as excludeAuthorIds', () => {
+    const { getAllMedia } = require('../../database/repositories/mediaRepository');
+    mockBlockedUserIds = ['bad'];
+
+    renderScreen();
+
+    expect(getAllMedia).toHaveBeenCalledWith(
+      expect.objectContaining({ excludeAuthorIds: ['bad'], offset: 0 }),
+    );
+  });
+
+  it('passes an empty exclusion when nobody is blocked', () => {
+    const { getAllMedia } = require('../../database/repositories/mediaRepository');
+
+    renderScreen();
+
+    expect(getAllMedia).toHaveBeenCalledWith(
+      expect.objectContaining({ excludeAuthorIds: [] }),
+    );
+  });
+
+  it('re-runs page 0 on an unblock so the rows reappear on the next page load', () => {
+    const { getAllMedia } = require('../../database/repositories/mediaRepository');
+    mockBlockedUserIds = ['bad'];
+    const renderer = renderScreen();
+
+    getAllMedia.mockClear();
+    mockBlockedUserIds = [];
+    rerender(renderer);
+
+    expect(getAllMedia).toHaveBeenCalledWith(
+      expect.objectContaining({ offset: 0, excludeAuthorIds: [] }),
+    );
+  });
+
+  it('renders one fewer cell when the query excludes a blocked uploader', () => {
+    const { getAllMedia } = require('../../database/repositories/mediaRepository');
+    mockBlockedUserIds = ['bad'];
+    // The exclusion happens in SQL — the screen sees the already-filtered page.
+    getAllMedia.mockReturnValue([mockMediaRows[1]]);
+
+    const renderer = renderScreen();
+
+    expect(hasHostTestId(renderer.root, 'file-cell-media-1')).toBe(false);
+    expect(hasHostTestId(renderer.root, 'file-cell-media-2')).toBe(true);
+  });
+
+  it('does not re-query page 0 for a new array identity with the same ids', () => {
+    const { getAllMedia } = require('../../database/repositories/mediaRepository');
+    mockBlockedUserIds = ['bad'];
+    const renderer = renderScreen();
+
+    // One query per mount — the derived `excludeAuthorIds` must not change
+    // identity on a re-render, or the reset effect would loop.
+    expect(getAllMedia).toHaveBeenCalledTimes(1);
+
+    getAllMedia.mockClear();
+    // What `hydrateBlockedUsers` with nothing new, or any unrelated store
+    // write, looks like from here: same contents, fresh array.
+    mockBlockedUserIds = ['bad'];
+    rerender(renderer);
+    rerender(renderer);
+
+    expect(getAllMedia).not.toHaveBeenCalled();
   });
 });

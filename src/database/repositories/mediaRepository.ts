@@ -105,21 +105,54 @@ export function getMedia(id: string): MediaRow | null {
   );
 }
 
-export function getMediaForThread(threadId: string): MediaRow[] {
-  return queryMany<MediaRow>(
-    'SELECT * FROM orbital_media WHERE thread_id = ? ORDER BY created_at ASC',
-    [threadId],
-  );
-}
+/**
+ * A media row with its author resolved through the parent it hangs off (#897).
+ *
+ * `author_id` is NULL when the parent row is not on this device (the LEFT JOIN
+ * found nothing) — the fail-open case every author filter shares.
+ */
+export type MediaRowWithAuthor = MediaRow & { author_id: string | null };
 
 /**
  * Fetch OP-attached media only; hydrateMediaFromLocal supplements this
  * with reply media via getMediaForThreadReplies to match the server-path
  * aggregation.
+ *
+ * Carries the THREAD's author (#897) so the hydrate path can drop a blocked
+ * author's cached media. `reply_id IS NULL` is the thread-author fallback the
+ * issue asks for: reply media first seen via thread detail sits with a NULL
+ * `reply_id` until the `updateMediaParent` backfill runs, and those rows are
+ * attributed to the thread author rather than to nobody.
+ *
+ * KNOWN RESIDUE, documented rather than fixed in #897: that fallback leaves a
+ * gap. `/replies` does NOT drop a blocked author's replies — its recursive
+ * reply CTE (`Orbital-Backend/src/routes/threads.js`) carries no `user_blocks`
+ * clause, so the reply ROW still comes back; only the media query beside it is
+ * block-filtered, so the row arrives with `media: []`. Three consequences:
+ *
+ *   1. With no media on the row, `mapReplyResponse` (`threadService.ts`) never
+ *      calls `processMediaMetadata` for that reply, so the `updateMediaParent`
+ *      backfill never runs for it. Its cached media keeps `reply_id NULL` and
+ *      the JOIN below attributes it to the THREAD author, who is not blocked.
+ *   2. `reconcileThreadReplies` never deletes a blocked author's replies
+ *      either — the server still lists their ids, so they land in the keep-set
+ *      and neither the rows nor their media are ever torn down.
+ *   3. It is reachable on ANY thread whose replies span more than one page, not
+ *      only on rows cached BEFORE the block: `loadThread` hands the whole
+ *      thread `media[]` to `processMediaMetadata` with `{ threadId }`, so every
+ *      row is saved with `reply_id NULL`, and only a FETCHED page of `/replies`
+ *      backfills the parent of the rows it covers.
+ *
+ * Closing it needs an author column on `orbital_media`, i.e. a schema
+ * migration, which is out of scope for #897.
  */
-export function getThreadLevelMedia(threadId: string): MediaRow[] {
-  return queryMany<MediaRow>(
-    'SELECT * FROM orbital_media WHERE thread_id = ? AND reply_id IS NULL ORDER BY created_at ASC',
+export function getThreadLevelMedia(threadId: string): MediaRowWithAuthor[] {
+  return queryMany<MediaRowWithAuthor>(
+    `SELECT m.*, t.author_id AS author_id
+     FROM orbital_media m
+     LEFT JOIN orbital_threads t ON m.thread_id = t.id
+     WHERE m.thread_id = ? AND m.reply_id IS NULL
+     ORDER BY m.created_at ASC`,
     [threadId],
   );
 }
@@ -157,15 +190,19 @@ export function updateUploadState(id: string, state: string): void {
 }
 
 /**
- * Fetch all non-thumbnail media rows attached to replies under a given thread.
+ * Fetch all non-thumbnail media rows attached to replies under a given thread,
+ * each with its REPLY's author (#897) so the hydrate path can drop a blocked
+ * author's cached media. The INNER JOIN it already needed carries the column;
+ * `idx_media_thread` / `idx_replies_thread` still serve the query.
+ *
  * Used by hydrateMediaFromLocal to seed per-reply media indexes on cold start.
  *
  * Returns empty array if database is not initialized.
  */
-export function getMediaForThreadReplies(threadId: string): MediaRow[] {
+export function getMediaForThreadReplies(threadId: string): MediaRowWithAuthor[] {
   if (!isDatabaseInitialized()) return [];
-  return queryMany<MediaRow>(
-    `SELECT m.* FROM orbital_media m
+  return queryMany<MediaRowWithAuthor>(
+    `SELECT m.*, r.author_id AS author_id FROM orbital_media m
      JOIN orbital_replies r ON m.reply_id = r.id
      WHERE r.thread_id = ? AND COALESCE(m.is_thumbnail, 0) = 0
      ORDER BY m.created_at ASC`,
@@ -267,6 +304,20 @@ export interface GetAllMediaOptions {
   sortOrder: 'asc' | 'desc';
   contentTypeFilter?: 'image' | 'video' | 'document' | null;
   conversationId?: string | null;
+  /**
+   * The viewer's own per-viewer author exclusion (#897) — normally
+   * `blockedUserIds`. ONE channel, applied by every list surface that uses
+   * this builder: the File Library grid, the gallery hydrate path and the
+   * bulk-export snapshot.
+   *
+   * REQUIRED, and `[]` means "exclude nobody" (#906 review). It is required
+   * precisely because it is a filter whose omission is silent: an optional
+   * field lets a new list surface forget it and ship a grid that shows a
+   * blocked author's media, with nothing failing. An empty array emits no
+   * clause at all, so the SQL is unchanged for callers that have nobody
+   * blocked.
+   */
+  excludeAuthorIds: readonly string[];
 }
 
 /** Allowlisted sort columns — only these values are interpolated into SQL. */
@@ -285,19 +336,23 @@ const SORT_DIRS: Record<string, string> = {
 export type MediaRowWithConversation = MediaRow & { conversation_id: string | null };
 
 /**
- * The membership facts a BULK export narrows its snapshot by (#878 PR 2).
+ * The membership facts — and since #897 ONLY the membership facts — that a
+ * BULK export narrows its snapshot by (#878 PR 2).
  *
  * `conversationIds` are the keys of the store's `conversations` map — the
  * store, not SQL, is the membership authority (DMs are threads and live in the
  * same map; the SQLite `conversations` table is a group-key store that keeps
  * rows for orbits you have left). Passing it in keeps this repository free of
  * a store import.
+ *
+ * The blocked-author exclusion used to ride here too, as `blockedAuthorIds`.
+ * It moved to `GetAllMediaOptions.excludeAuthorIds` in #897 because it is no
+ * longer bulk-only: every list surface applies it, so it belongs on the
+ * options every surface already passes.
  */
 export interface MediaExportAccessFilter {
   /** Conversations the signed-in user is currently in. Empty ⇒ nothing. */
   conversationIds: readonly string[];
-  /** Authors excluded from a BATCH only (Alex 2026-10-09). May be empty. */
-  blockedAuthorIds: readonly string[];
 }
 
 /** SQL for the row's author, picked by whichever parent it actually hangs off. */
@@ -311,7 +366,8 @@ const AUTHOR_EXPR =
  * `access` is OPTIONAL and only the bulk path passes it. The grid deliberately
  * does NOT apply it: leaving an orbit leaves its `orbital_media` rows behind,
  * and those orphans keep showing under "All Orbits" (Alex 2026-10-09) — the
- * alternative hides media from orbits you have left.
+ * alternative hides media from orbits you have left. `excludeAuthorIds`
+ * (#897) is the opposite: it travels on `options`, so EVERY caller applies it.
  *
  * Returns `null` when `access` is present with an EMPTY conversation list. That
  * is not the same as "no conversation filter": an `IN ()` is a syntax error in
@@ -340,18 +396,21 @@ function buildMediaFilterClause(
       `COALESCE(t.conversation_id, rt.conversation_id) IN (${convPlaceholders})`,
     );
     params.push(...access.conversationIds);
+  }
 
-    // Only when there IS someone blocked. An always-present `NOT IN ('')` would
-    // read as a pin on a behaviour that is off by default.
-    if (access.blockedAuthorIds.length > 0) {
-      const authorPlaceholders = access.blockedAuthorIds.map(() => '?').join(', ');
-      // COALESCE: `NULL NOT IN (…)` evaluates to NULL, which filters the row
-      // OUT — so an author-less row would silently vanish from a batch.
-      conditions.push(
-        `COALESCE(${AUTHOR_EXPR}, '') NOT IN (${authorPlaceholders})`,
-      );
-      params.push(...access.blockedAuthorIds);
-    }
+  // Author exclusion — OUTSIDE the access block (#897). It is the viewer's own
+  // per-viewer filter and applies to every list surface, grid included; the
+  // membership `IN` above stays access-only so orphaned rows keep showing
+  // under "All Orbits" (Alex 2026-10-09). Only emitted when there IS someone
+  // excluded: an always-present `NOT IN ('')` would read as a pin on a
+  // behaviour that is off by default.
+  const excludeAuthorIds = options.excludeAuthorIds;
+  if (excludeAuthorIds.length > 0) {
+    const authorPlaceholders = excludeAuthorIds.map(() => '?').join(', ');
+    // COALESCE: `NULL NOT IN (…)` evaluates to NULL, which filters the row
+    // OUT — so an author-less row would silently vanish from the list.
+    conditions.push(`COALESCE(${AUTHOR_EXPR}, '') NOT IN (${authorPlaceholders})`);
+    params.push(...excludeAuthorIds);
   }
 
   // Conversation filter
@@ -413,8 +472,11 @@ export function getAllMedia(options: GetAllMediaOptions): MediaRowWithConversati
  *
  * The optional `access` argument is what lets the bulk-export confirm Alert
  * say how many items "can't be saved": the difference between the count
- * WITHOUT it (what the grid shows) and WITH it (what a batch may touch) is
- * exactly the orphan + blocked-author set.
+ * WITHOUT it (what the grid shows) and WITH it (what a batch may touch).
+ * Since #897 that delta is ORPHANS ONLY — rows whose conversation JOIN
+ * resolves to NULL. Blocked authors no longer contribute to it: their
+ * exclusion rides on `options.excludeAuthorIds`, which both sides of the
+ * subtraction already carry.
  *
  * Returns 0 if database is not initialized, or if `access` admits no
  * conversation at all.
@@ -470,9 +532,12 @@ export function getLocalStorageUsage(): number {
  * post it belongs to exists.
  *
  * `author_id` resolves through whichever parent the row actually hangs off —
- * a reply's author for reply media, the thread's author otherwise. It is only
- * consumed by the bulk path (blocked authors are excluded from a batch but
- * still saveable one at a time, Alex 2026-10-09).
+ * a reply's author for reply media, the thread's author otherwise. It feeds
+ * the per-item `isBlockedAuthor` re-checks in `mediaExportService`, which
+ * since #897 exist only to catch a block landing MID-RUN: the lists themselves
+ * now exclude blocked authors via `GetAllMediaOptions.excludeAuthorIds`, which
+ * retired the "saveable one at a time" carve-out of 2026-10-09. A NULL author
+ * stays fail-open.
  */
 export interface MediaExportAccess {
   conversation_id: string | null;

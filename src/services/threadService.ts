@@ -20,13 +20,14 @@ import {
 } from './crypto/contentCrypto';
 import { useAppStore } from '../stores/useAppStore';
 import { generateUUID } from '../utils/uuid';
-import { maxTimestamp } from '../utils/threadActivity';
+import { isValidTimestamp, maxTimestamp } from '../utils/threadActivity';
 import { base64ToArrayBuffer } from './crypto/utils';
 import { getMedia, saveMedia, getThreadLevelMedia, getMediaForReply, getMediaForThreadReplies, updateMediaParent } from '../database/repositories/mediaRepository';
 import { saveThread as dbSaveThread, saveThreadBatch, getThreadsForConversation, getThread as dbGetThread } from '../database/repositories/threadRepository';
 import { saveReply as dbSaveReply, saveReplyBatch, getRepliesForThread, deleteReply as dbDeleteReply } from '../database/repositories/replyRepository';
 import { mediaRowToItem } from '../database/repositories/mediaMapper';
 import { isDatabaseInitialized } from '../database/connection';
+import { isBlockedAuthor } from './media/exportAccess';
 import { resolveMediaPath } from './media/mediaPaths';
 import { teardownLocalMedia } from './media/mediaTeardown';
 import type { Thread, Reply, MediaItem } from '../types/store';
@@ -62,6 +63,22 @@ function safeDbGetThread(threadId: string): Thread | null {
     if (__DEV__) console.warn('[safeDbGetThread] DB read failed:', e instanceof Error ? e.message : e);
     return null;
   }
+}
+
+/**
+ * The author of a thread as far as THIS DEVICE knows: store first, then the
+ * guarded SQLite read, else `null` (#897).
+ *
+ * Exists for the WebSocket `new_reply` guard, which has to drop a reply posted
+ * on a BLOCKED author's thread — the broadcast carries only the reply's own
+ * author, and the server does not block-filter WS fan-out, so `messageHandler`
+ * is the enforcement point. `null` means "unknown here", and the caller fails
+ * open on it: the alternative would drop legitimate replies on any thread this
+ * device has not loaded yet.
+ */
+export function getKnownThreadAuthorId(threadId: string): string | null {
+  const known = getStoreActions().threads[threadId] ?? safeDbGetThread(threadId);
+  return known?.authorId ?? null;
 }
 
 /**
@@ -714,6 +731,116 @@ function parseServerTimestamp(value: string | null | undefined): number | null {
 }
 
 /**
+ * Decide the `lastReplyAt` (and sometimes the `replyCount`) a list/detail
+ * response may write, given what the store knew before the request (#897).
+ *
+ * Since Backend #306 `last_reply_at` and `reply_count` are PER-VIEWER and
+ * block-filtered, so a server value may legitimately be LOWER than the one on
+ * this device: blocking the member whose reply lifted the thread stops that
+ * reply from counting. The never-lower merge (#883) pinned the thread at that
+ * slot forever while its count dropped. But the merge still has a job — a WS
+ * reply or an own post can land WHILE this request is in flight, and that
+ * value is newer than anything the response can carry.
+ *
+ * This is the only place that can tell those two apart, because it is the only
+ * place holding both a PRE-request snapshot and the live store row:
+ *
+ *  - `serverSent === false` (a 1.7.6-era backend omits the field entirely) ⇒
+ *    legacy never-lower against whatever is known locally;
+ *  - `blockedSetChanged` ⇒ a block/unblock landed while this request was in
+ *    flight, so the response may predate it and must NOT be written as the
+ *    authoritative per-viewer answer (#906 review). The LIVE row wins
+ *    outright, count included. Demoting to the max-merge instead would
+ *    re-latch exactly the stale high value this whole mechanism exists to
+ *    lower. With no live row there is nothing to keep, so the legacy
+ *    never-lower path applies and the following refresh corrects it;
+ *  - the live row's recency moved past the snapshot (or the row appeared
+ *    mid-request) ⇒ a reply landed; keep the LIVE `lastReplyAt` **and** the
+ *    higher of the two `replyCount`s, which `applyReplyToParentThread` bumped
+ *    together — taking one without the other is what made the pair disagree
+ *    in the first place, and the server may already count more replies than
+ *    the single local bump;
+ *  - otherwise the server value is authoritative and may lower, or be `null`.
+ *
+ * `before` is a plain reference to the `threads` map and is a sound snapshot
+ * only because every writer replaces that map immutably (`setThreads`,
+ * `upsertThread`, `removeThread` all build a new object), so an in-flight
+ * mutation can never be observed through it.
+ *
+ * Only a STORE row can carry a mid-request bump — `applyReplyToParentThread`
+ * upserts the store before it persists — so a DB-only `fallback` row is never
+ * treated as bumped. Everything returned still passes through `maxTimestamp`:
+ * it stays the only producer of a stored recency value.
+ */
+function reconcileServerRecency({
+  serverSent,
+  serverValue,
+  serverReplyCount,
+  before,
+  live,
+  fallback,
+  blockedSetChanged,
+}: {
+  serverSent: boolean;
+  serverValue: number | null;
+  serverReplyCount: number;
+  before: Thread | undefined;
+  live: Thread | undefined;
+  fallback: Thread | null;
+  blockedSetChanged: boolean;
+}): { lastReplyAt: number | null; replyCount?: number } {
+  const existing = live ?? fallback ?? undefined;
+
+  if (!serverSent) {
+    return { lastReplyAt: maxTimestamp(existing?.lastReplyAt, serverValue) };
+  }
+
+  const liveAt = live?.lastReplyAt;
+
+  if (blockedSetChanged) {
+    if (live !== undefined) {
+      return { lastReplyAt: maxTimestamp(liveAt, null), replyCount: live.replyCount };
+    }
+    return { lastReplyAt: maxTimestamp(existing?.lastReplyAt, serverValue) };
+  }
+
+  const bumpedMidRequest =
+    live !== undefined &&
+    isValidTimestamp(liveAt) &&
+    (before === undefined ||
+      !isValidTimestamp(before.lastReplyAt) ||
+      liveAt > before.lastReplyAt);
+
+  if (bumpedMidRequest) {
+    return {
+      lastReplyAt: maxTimestamp(liveAt, null),
+      replyCount: Math.max(live.replyCount, serverReplyCount),
+    };
+  }
+
+  return { lastReplyAt: maxTimestamp(serverValue, null) };
+}
+
+/**
+ * Apply a {@link reconcileServerRecency} result to a mapped thread, keeping the
+ * identity of `thread` when nothing changed (so the store's reference-equality
+ * checks still see an unchanged row).
+ */
+function applyReconciledRecency(
+  thread: Thread,
+  resolved: { lastReplyAt: number | null; replyCount?: number },
+): Thread {
+  if (resolved.lastReplyAt === thread.lastReplyAt && resolved.replyCount === undefined) {
+    return thread;
+  }
+  return {
+    ...thread,
+    lastReplyAt: resolved.lastReplyAt,
+    ...(resolved.replyCount !== undefined ? { replyCount: resolved.replyCount } : {}),
+  };
+}
+
+/**
  * Map a ThreadResponse (API) to a Thread (store), decrypting content fields.
  * groupId on the API maps to conversationId in the store.
  */
@@ -856,23 +983,53 @@ async function mapThreadListItem(
  * An older backend ignores the value and returns `created_desc`.
  */
 export async function loadThreadsForGroup(groupId: string): Promise<Thread[]> {
+  // Captured BEFORE the request so `reconcileServerRecency` can tell a
+  // per-viewer server lowering (#897) apart from a reply that landed while the
+  // request was in flight. Sound as a snapshot because every thread writer
+  // replaces the map immutably.
+  const threadsBefore = getStoreActions().threads;
+  // Captured with the snapshot (#906 review): a block that lands while this
+  // request is in flight makes the response's per-viewer values stale.
+  const blockedGenerationBefore = getStoreActions().blockedUsersGeneration;
+
   const response = await getGroupThreads(groupId, { sort: 'activity_desc' });
 
   const groupKey = await getOrFetchGroupKey(groupId);
+
+  // Did the server SEND `last_reply_at` for this row, or omit it (1.7.6-era
+  // backend)? Read off the RAW payload and keyed by id, never positionally: a
+  // mapped row whose id is missing here degrades to the never-lower path.
+  const serverSentById = new Map(
+    response.threads.map((item) => [item.threadId, item.lastReplyAt !== undefined]),
+  );
 
   const mapped = await Promise.all(
     response.threads.map((item) => mapThreadListItem(item, groupKey)),
   );
 
-  // Same merge-before-persist rule as `loadThread`: `saveThreadBatch` is
-  // INSERT OR REPLACE, so without this a reply applied while this request was
-  // in flight would reach the store but be overwritten on disk by the
-  // pre-reply value, and the thread would sort low again after a cold start.
-  const storeThreads = getStoreActions().threads;
+  // Reconcile before persisting: `saveThreadBatch` is INSERT OR REPLACE, so a
+  // reply applied while this request was in flight would otherwise reach the
+  // store but be overwritten on disk by the pre-reply value, and the thread
+  // would sort low again after a cold start. The other direction (#897) is a
+  // block that legitimately LOWERS the server's per-viewer value, which the
+  // old unconditional max-merge could never let through.
+  const storeAfter = getStoreActions();
+  const threadsAfter = storeAfter.threads;
+  const blockedSetChanged = storeAfter.blockedUsersGeneration !== blockedGenerationBefore;
   const threads = mapped.map((t) => {
-    const existing = storeThreads[t.id] ?? safeDbGetThread(t.id);
-    const lastReplyAt = maxTimestamp(existing?.lastReplyAt, t.lastReplyAt);
-    return lastReplyAt === t.lastReplyAt ? t : { ...t, lastReplyAt };
+    const live = threadsAfter[t.id];
+    return applyReconciledRecency(
+      t,
+      reconcileServerRecency({
+        serverSent: serverSentById.get(t.id) === true,
+        serverValue: t.lastReplyAt,
+        serverReplyCount: t.replyCount,
+        before: threadsBefore[t.id],
+        live,
+        fallback: live ? null : safeDbGetThread(t.id),
+        blockedSetChanged,
+      }),
+    );
   });
 
   // Write-through: persist decrypted threads to SQLCipher
@@ -885,29 +1042,46 @@ export async function loadThreadsForGroup(groupId: string): Promise<Thread[]> {
   }
 
   const store = getStoreActions();
-  store.setThreads(groupId, threads);
+  // The recency decision was made above, against the pre-request snapshot, so
+  // the slice must not re-apply its never-lower merge on top of it (#897).
+  store.setThreads(groupId, threads, { authoritativeRecency: true });
   return threads;
 }
 
 /**
  * Fetch a thread from the API, decrypt its content, and upsert into the store.
  *
- * Recency is merged before anything is written (#883). `upsertThread` already
- * refuses to lower `lastReplyAt` in the store, but SQLite has no such guard and
- * `dbSaveThread` runs first — so the merge has to happen here, against the
- * store row OR, when the store is empty (a cold open straight from a push
- * notification), the row already on disk.
+ * Recency is reconciled before anything is written (#883, #897). The slice's
+ * never-lower merge cannot do this job alone: SQLite has no such guard and
+ * `dbSaveThread` runs first, AND the server's `last_reply_at` is per-viewer
+ * since Backend #306, so a block must be allowed to lower it. The decision
+ * runs here, against the store row captured BEFORE the request OR, when the
+ * store is empty (a cold open straight from a push notification), the row
+ * already on disk. See {@link reconcileServerRecency}.
  */
 export async function loadThread(threadId: string): Promise<Thread> {
+  const before = getStoreActions().threads[threadId];
+  const blockedGenerationBefore = getStoreActions().blockedUsersGeneration;
+
   const response = await getThread(threadId);
   const groupKey = await getOrFetchGroupKey(response.groupId);
   const mapped = await mapThreadResponse(response, groupKey);
 
-  const existing = getStoreActions().threads[threadId] ?? safeDbGetThread(threadId);
-  const thread: Thread = {
-    ...mapped,
-    lastReplyAt: maxTimestamp(existing?.lastReplyAt, mapped.lastReplyAt),
-  };
+  const storeAfter = getStoreActions();
+  const live = storeAfter.threads[threadId];
+  const thread: Thread = applyReconciledRecency(
+    mapped,
+    reconcileServerRecency({
+      serverSent: response.lastReplyAt !== undefined,
+      serverValue: mapped.lastReplyAt,
+      serverReplyCount: mapped.replyCount,
+      before,
+      live,
+      fallback: live ? null : safeDbGetThread(threadId),
+      blockedSetChanged:
+        storeAfter.blockedUsersGeneration !== blockedGenerationBefore,
+    }),
+  );
 
   // Write-through: persist decrypted thread to SQLCipher
   if (isDatabaseInitialized()) {
@@ -918,7 +1092,8 @@ export async function loadThread(threadId: string): Promise<Thread> {
     }
   }
 
-  getStoreActions().upsertThread(thread);
+  // Already reconciled above (#897) — the slice must not merge again.
+  getStoreActions().upsertThread(thread, { authoritativeRecency: true });
   return thread;
 }
 
@@ -1406,6 +1581,16 @@ export function hydrateRepliesFromLocal(threadId: string): void {
  *
  * Thumbnails are excluded (useVideoThumbnail does its own cold-start probe).
  * Uses mergeMediaBatch for a single set() call across all per-reply indexes.
+ *
+ * Media whose author the viewer has BLOCKED is dropped (#897). The server
+ * stopped sending it with Backend #310, but this path re-seeds from SQLite, so
+ * without the filter a blocked author's reply photo kept rendering in the
+ * blocker's root-post gallery until the row was evicted. The author arrives on
+ * the row itself, resolved by the repository's JOIN (reply author for reply
+ * media, thread author otherwise — including the `reply_id NULL` rows awaiting
+ * the `updateMediaParent` backfill). A NULL author is fail-open, as everywhere
+ * else. Filtering happens BEFORE mapping, so an excluded id reaches neither
+ * the per-reply index nor the thread aggregate.
  */
 export function hydrateMediaFromLocal(threadId: string): void {
   if (!isDatabaseInitialized()) return;
@@ -1415,7 +1600,7 @@ export function hydrateMediaFromLocal(threadId: string): void {
     // Thread-level media (OP-attached); reply media is folded in below (#601)
     const threadRows = getThreadLevelMedia(threadId);
     const threadItems = threadRows
-      .filter((r) => (r.is_thumbnail ?? 0) === 0)
+      .filter((r) => (r.is_thumbnail ?? 0) === 0 && !isBlockedAuthor(r.author_id))
       .map(mediaRowToItem);
 
     // Per-reply media (batched join)
@@ -1424,6 +1609,7 @@ export function hydrateMediaFromLocal(threadId: string): void {
     const allReplyItems: MediaItem[] = [];
     for (const row of replyRows) {
       if (!row.reply_id) continue;
+      if (isBlockedAuthor(row.author_id)) continue;
       const item = mediaRowToItem(row);
       allReplyItems.push(item);
       let arr = byReply.get(row.reply_id);

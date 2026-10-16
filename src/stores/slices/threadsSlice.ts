@@ -9,7 +9,8 @@ import type {
 } from '../../types/store';
 
 /**
- * Thread recency never goes backwards (#883).
+ * Thread recency never goes backwards BY ACCIDENT (#883), and goes backwards
+ * ON PURPOSE only when a caller says the value is authoritative (#897).
  *
  * `lastReplyAt` is the only field a write may LOWER by accident: `loadThread`,
  * `loadThreadsForGroup`, the WS handlers and own-reply confirmation all build a
@@ -26,16 +27,28 @@ import type {
  * `replyCount` is deliberately NOT merged: it is server-authoritative and must
  * be allowed to go down (an admin takedown).
  *
- * Accepted divergence: because `lastReplyAt` only moves up, a takedown of a
- * thread's NEWEST reply (`scripts/admin-remove-content.js` on the backend — a
- * manual moderation step, not a user action) leaves the thread at that reply's
- * activity slot while its count drops. Lowering it needs an authoritative,
- * merge-bypassing write (e.g. from `reconcileThreadReplies`), tracked as a
- * #883 follow-up.
+ * THE BYPASS (#897). Since Backend #306 `last_reply_at` and `reply_count` are
+ * PER-VIEWER and block-filtered, so a block legitimately LOWERS a thread's
+ * recency: the reply that lifted it is no longer counted for this viewer. A
+ * never-lower merge pinned the thread at that slot forever while its count
+ * dropped, so the two disagreed. `authoritativeRecency: true` takes the
+ * incoming value as-is (still through `maxTimestamp`, so NaN/Infinity are
+ * healed to `null`). Only `threadService` sets it, and only after
+ * `reconcileServerRecency` has checked a pre-request snapshot — this slice
+ * cannot tell a server lowering apart from a WS reply that landed mid-request,
+ * and the service can. The same mechanism retires the #883 accepted-divergence
+ * note about a takedown of a thread's newest reply: the next list load now
+ * lowers the slot to match the count.
  */
-function withMergedRecency(incoming: Thread, existing: Thread | undefined): Thread {
-  const merged = maxTimestamp(existing?.lastReplyAt, incoming.lastReplyAt);
-  return merged === incoming.lastReplyAt ? incoming : { ...incoming, lastReplyAt: merged };
+function resolveRecency(
+  incoming: Thread,
+  existing: Thread | undefined,
+  authoritative: boolean,
+): Thread {
+  const resolved = authoritative
+    ? maxTimestamp(incoming.lastReplyAt, null)
+    : maxTimestamp(existing?.lastReplyAt, incoming.lastReplyAt);
+  return resolved === incoming.lastReplyAt ? incoming : { ...incoming, lastReplyAt: resolved };
 }
 
 export const createThreadsSlice: StateCreator<
@@ -53,11 +66,12 @@ export const createThreadsSlice: StateCreator<
   threadLastViewedAt: {},
 
   // Actions
-  setThreads: (conversationId, threads) => {
+  setThreads: (conversationId, threads, options) => {
+    const authoritative = options?.authoritativeRecency === true;
     const { threads: existingThreads, threadIdsByConversation } = get();
     const updatedThreads = { ...existingThreads };
     for (const t of threads) {
-      updatedThreads[t.id] = withMergedRecency(t, existingThreads[t.id]);
+      updatedThreads[t.id] = resolveRecency(t, existingThreads[t.id], authoritative);
     }
     // Order by createdAt descending (newest threads first)
     const ids = [...threads]
@@ -76,11 +90,15 @@ export const createThreadsSlice: StateCreator<
     );
   },
 
-  upsertThread: (thread) => {
+  upsertThread: (thread, options) => {
     const { threads, threadIdsByConversation } = get();
     const updatedThreads = {
       ...threads,
-      [thread.id]: withMergedRecency(thread, threads[thread.id]),
+      [thread.id]: resolveRecency(
+        thread,
+        threads[thread.id],
+        options?.authoritativeRecency === true,
+      ),
     };
     const existingIds = threadIdsByConversation[thread.conversationId] ?? [];
     const updatedIds = existingIds.includes(thread.id)

@@ -267,7 +267,14 @@ async function waitForPersistedMembership(): Promise<boolean> {
   });
 }
 
-function snapshotOptions(filters: BulkExportFilters): GetAllMediaOptions {
+/**
+ * Pure: the ids are an explicit argument, not a store read, so the snapshot's
+ * options stay a function of what the caller passed (#897).
+ */
+function snapshotOptions(
+  filters: BulkExportFilters,
+  excludeAuthorIds: readonly string[],
+): GetAllMediaOptions {
   return {
     // The snapshot query takes its own LIMIT; these two are unused by it and
     // only present because the filter builder is shared with the grid.
@@ -277,6 +284,7 @@ function snapshotOptions(filters: BulkExportFilters): GetAllMediaOptions {
     sortOrder: filters.sortOrder,
     contentTypeFilter: filters.contentTypeFilter,
     conversationId: filters.conversationId,
+    excludeAuthorIds,
   };
 }
 
@@ -295,10 +303,12 @@ export async function prepareBulkExport(
   const state = useAppStore.getState();
   const access: MediaExportAccessFilter = {
     conversationIds: Object.keys(state.conversations),
-    blockedAuthorIds: state.blockedUserIds,
   };
 
-  const options = snapshotOptions(filters);
+  // Blocked authors now ride on the OPTIONS (#897), the one channel every list
+  // surface shares, so `matching` still means exactly "what the grid shows"
+  // and the "N can't be saved" delta against `accessible` is orphans only.
+  const options = snapshotOptions(filters, state.blockedUserIds);
   const rows = getExportSnapshot(options, access, BULK_EXPORT_MAX_ITEMS);
   const matching = getMediaCount(options);
   const accessible = getMediaCount(options, access);

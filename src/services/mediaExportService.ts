@@ -815,8 +815,16 @@ type PreparedWrite =
  * access check — because bulk acquires those once for the whole run.
  *
  * `rejectBlockedAuthor` is the one behavioural difference between the two
- * callers: a blocked author's media is refused in a BATCH and allowed one item
- * at a time, so the single-item path passes false.
+ * callers: `exportMediaItemInBulk` passes true, `saveMediaItem` passes false.
+ *
+ * That single-item exemption is deliberately RETAINED after #897 (Alex,
+ * 2026-10-16). It is no longer justified as the 2026-10-09 "bulk only"
+ * carve-out — that language is retired. Every LIST surface now filters blocked
+ * authors through `GetAllMediaOptions.excludeAuthorIds`: the File Library grid,
+ * `threadService.hydrateMediaFromLocal` behind the thread gallery, and the
+ * bulk-export snapshot. So a blocked author's row can still reach this path
+ * only when the author does not resolve at all (NULL — the shared fail-open) or
+ * when a caller already holds the id explicitly. No behaviour change.
  */
 async function prepareWrite(
   row: MediaRow,

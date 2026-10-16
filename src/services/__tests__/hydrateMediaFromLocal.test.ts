@@ -39,10 +39,13 @@ jest.mock('../../database/repositories/replyRepository', () => ({
 }));
 
 const mockMergeMediaBatch = jest.fn();
+/** #897: `isBlockedAuthor` reads this straight off the store. */
+let mockBlockedUserIds: string[] = [];
 jest.mock('../../stores/useAppStore', () => ({
   useAppStore: {
     getState: jest.fn(() => ({
       media: {},
+      blockedUserIds: mockBlockedUserIds,
       setThreads: jest.fn(),
       setReplies: jest.fn(),
       mergeMediaBatch: mockMergeMediaBatch,
@@ -76,8 +79,14 @@ jest.mock('../crypto/utils', () => ({
   base64ToArrayBuffer: jest.fn(() => new ArrayBuffer(64)),
 }));
 
+import { create } from 'zustand';
+import { devtools } from 'zustand/middleware';
 import { hydrateMediaFromLocal } from '../threadService';
-import type { MediaRow } from '../../database/repositories/mediaRepository';
+import { createMediaSlice } from '../../stores/slices/mediaSlice';
+import type { AppState, MediaItem } from '../../types/store';
+import type { MediaRow, MediaRowWithAuthor } from '../../database/repositories/mediaRepository';
+
+type MediaBatch = Map<string, { type: 'thread' | 'reply'; items: MediaItem[] }>;
 
 function makeRow(overrides: Partial<MediaRow> = {}): MediaRow {
   return {
@@ -105,8 +114,29 @@ function makeRow(overrides: Partial<MediaRow> = {}): MediaRow {
   };
 }
 
+/** A row with the author the repository's JOIN now resolves (#897). */
+function makeAuthoredRow(
+  overrides: Partial<MediaRowWithAuthor> = {},
+): MediaRowWithAuthor {
+  return { ...makeRow(), author_id: null, ...overrides };
+}
+
+/**
+ * Apply a captured `mergeMediaBatch` argument to a REAL media slice — the
+ * indexes it builds are what `useMediaForThread` (and so the ThreadHeader
+ * gallery) reads.
+ */
+function applyBatchToRealSlice(batch: MediaBatch): AppState {
+  const store = create<AppState>()(
+    devtools((...a) => ({ ...createMediaSlice(...a) }) as unknown as AppState),
+  );
+  store.getState().mergeMediaBatch(batch);
+  return store.getState();
+}
+
 beforeEach(() => {
   jest.clearAllMocks();
+  mockBlockedUserIds = [];
   mockIsDatabaseInitialized.mockReturnValue(true);
   mockGetThreadLevelMedia.mockReturnValue([]);
   mockGetThreadLevelMediaReplies.mockReturnValue([]);
@@ -213,5 +243,73 @@ describe('hydrateMediaFromLocal', () => {
     // Per-reply entries still present
     expect(batchArg.get('reply-1')?.items).toHaveLength(1);
     expect(batchArg.get('reply-2')?.items).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Blocked-author exclusion (#897)
+// ---------------------------------------------------------------------------
+
+describe('hydrateMediaFromLocal — blocked authors (#897)', () => {
+  it("drops a blocked replier's media from the reply entry AND the thread aggregate", () => {
+    mockBlockedUserIds = ['bad'];
+    mockGetThreadLevelMedia.mockReturnValue([
+      makeAuthoredRow({ id: 'op-img', reply_id: null, author_id: 'good' }),
+    ]);
+    mockGetThreadLevelMediaReplies.mockReturnValue([
+      makeAuthoredRow({ id: 'bad-img', reply_id: 'reply-1', author_id: 'bad' }),
+      makeAuthoredRow({ id: 'good-img', reply_id: 'reply-2', author_id: 'good' }),
+    ]);
+
+    hydrateMediaFromLocal('thread-1');
+
+    const batchArg: MediaBatch = mockMergeMediaBatch.mock.calls[0][0];
+    expect(batchArg.has('reply-1')).toBe(false);
+    expect(batchArg.get('reply-2')?.items.map((i) => i.id)).toEqual(['good-img']);
+    expect(batchArg.get('thread-1')?.items.map((i) => i.id)).toEqual([
+      'op-img',
+      'good-img',
+    ]);
+
+    // What the gallery actually renders from.
+    const state = applyBatchToRealSlice(batchArg);
+    expect(state.mediaIdsByThread['thread-1']).toEqual(['op-img', 'good-img']);
+    expect('bad-img' in state.media).toBe(false);
+  });
+
+  it('excludes a reply_id NULL row via the thread-author fallback', () => {
+    mockBlockedUserIds = ['bad'];
+    // The repository attributes a `reply_id NULL` row to the THREAD author —
+    // the pre-backfill state of media first seen through thread detail.
+    mockGetThreadLevelMedia.mockReturnValue([
+      makeAuthoredRow({ id: 'orphan-img', reply_id: null, author_id: 'bad' }),
+    ]);
+
+    hydrateMediaFromLocal('thread-1');
+
+    expect(mockMergeMediaBatch).not.toHaveBeenCalled();
+  });
+
+  it('keeps a row whose author is unknown (fail-open)', () => {
+    mockBlockedUserIds = ['bad'];
+    mockGetThreadLevelMedia.mockReturnValue([
+      makeAuthoredRow({ id: 'unknown-img', reply_id: null, author_id: null }),
+    ]);
+
+    hydrateMediaFromLocal('thread-1');
+
+    const batchArg: MediaBatch = mockMergeMediaBatch.mock.calls[0][0];
+    expect(batchArg.get('thread-1')?.items.map((i) => i.id)).toEqual(['unknown-img']);
+  });
+
+  it('keeps everything when nobody is blocked', () => {
+    mockGetThreadLevelMediaReplies.mockReturnValue([
+      makeAuthoredRow({ id: 'r1-img', reply_id: 'reply-1', author_id: 'bad' }),
+    ]);
+
+    hydrateMediaFromLocal('thread-1');
+
+    const batchArg: MediaBatch = mockMergeMediaBatch.mock.calls[0][0];
+    expect(batchArg.get('reply-1')?.items).toHaveLength(1);
   });
 });

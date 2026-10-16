@@ -145,6 +145,8 @@ function makeStore() {
     updateMediaDownloadState: jest.fn(),
     updateMediaUploadState: jest.fn(),
     removeMedia: jest.fn(),
+    removeMediaForAuthor: jest.fn(),
+    removeMediaForAuthors: jest.fn(),
 
     pushPermissionGranted: false,
     pushToken: null,
@@ -421,5 +423,145 @@ describe('blockedUsersSlice - hydrateBlockedUsers', () => {
     store.getState().blockUser('user-1', 'alice');
     store.getState().hydrateBlockedUsers([]);
     expect(store.getState().blockedUserIds).toEqual(['user-1']);
+  });
+
+  it('evicts cached media for the NEWLY hydrated ids in one call (#897, #906)', () => {
+    const store = makeStore();
+    store.getState().blockUser('user-1', 'alice');
+    const removeMediaForAuthors = store.getState().removeMediaForAuthors as jest.Mock;
+    removeMediaForAuthors.mockClear();
+
+    store.getState().hydrateBlockedUsers(['user-1', 'user-2', 'user-3']);
+
+    // A cross-device block evicts here too — the server stopped sending the
+    // media, but an in-session gallery/grid was seeded from SQLite. One call,
+    // one scan, and already-known ids are not included.
+    expect(removeMediaForAuthors).toHaveBeenCalledTimes(1);
+    expect(removeMediaForAuthors).toHaveBeenCalledWith(['user-2', 'user-3']);
+  });
+
+  it('evicts AFTER the blocked ids are in the store (#906)', () => {
+    const store = makeStore();
+    let idsAtEvictionTime: string[] = [];
+    store.setState({
+      removeMediaForAuthors: () => {
+        idsAtEvictionTime = store.getState().blockedUserIds;
+      },
+    });
+
+    store.getState().hydrateBlockedUsers(['user-2']);
+
+    // The new blocked set must already be in force for anything the eviction
+    // wakes up (a re-render reading `blockedUserIds`, a read-time filter).
+    expect(idsAtEvictionTime).toEqual(['user-2']);
+  });
+
+  it('does not evict when the server list adds nothing new (#897)', () => {
+    const store = makeStore();
+    store.getState().blockUser('user-1', 'alice');
+    const removeMediaForAuthors = store.getState().removeMediaForAuthors as jest.Mock;
+    removeMediaForAuthors.mockClear();
+
+    store.getState().hydrateBlockedUsers(['user-1']);
+
+    expect(removeMediaForAuthors).not.toHaveBeenCalled();
+  });
+
+  it('bumps the blocked-set generation on every change (#906)', () => {
+    const store = makeStore();
+    expect(store.getState().blockedUsersGeneration).toBe(0);
+
+    store.getState().blockUser('user-1', 'alice');
+    expect(store.getState().blockedUsersGeneration).toBe(1);
+
+    // Idempotent re-block changes nothing, so no in-flight request is voided.
+    store.getState().blockUser('user-1', 'alice');
+    expect(store.getState().blockedUsersGeneration).toBe(1);
+
+    store.getState().unblockUser('user-1');
+    expect(store.getState().blockedUsersGeneration).toBe(2);
+
+    store.getState().unblockUser('user-unknown');
+    expect(store.getState().blockedUsersGeneration).toBe(2);
+
+    store.getState().hydrateBlockedUsers(['user-9']);
+    expect(store.getState().blockedUsersGeneration).toBe(3);
+
+    store.getState().hydrateBlockedUsers(['user-9']);
+    expect(store.getState().blockedUsersGeneration).toBe(3);
+  });
+
+  it('bumps the generation again when an unblock rolls back (#906)', async () => {
+    mockUnblockUserApi.mockRejectedValueOnce(new Error('offline'));
+    const store = makeStore();
+    store.getState().blockUser('user-1', 'alice');
+    const afterBlock = store.getState().blockedUsersGeneration;
+
+    await store.getState().unblockUser('user-1');
+
+    // Optimistic removal AND the rollback each void an in-flight request.
+    expect(store.getState().blockedUsersGeneration).toBe(afterBlock + 2);
+    expect(store.getState().blockedUserIds).toEqual(['user-1']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Awaitable settle (#897)
+// ---------------------------------------------------------------------------
+
+describe('blockedUsersSlice - awaitable settle (#897)', () => {
+  it('blockUser resolves after the API rejects, with the block kept', async () => {
+    mockBlockUserApi.mockRejectedValueOnce(new Error('offline'));
+    const store = makeStore();
+
+    // Never rejects: `blockedContentRefresh` awaits this and must not see an
+    // unhandled rejection. `blockUser` has no rollback, so the block stays.
+    await expect(store.getState().blockUser('user-1', 'alice')).resolves.toBeUndefined();
+
+    expect(store.getState().blockedUserIds).toEqual(['user-1']);
+  });
+
+  it('blockUser resolves only after the API settles', async () => {
+    let settle: () => void = () => {};
+    mockBlockUserApi.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        settle = resolve;
+      }),
+    );
+    const store = makeStore();
+
+    let resolved = false;
+    const pending = store.getState().blockUser('user-1', 'alice').then(() => {
+      resolved = true;
+    });
+
+    // The optimistic state change is synchronous; the promise is not.
+    expect(store.getState().blockedUserIds).toEqual(['user-1']);
+    await flushMicrotasks();
+    expect(resolved).toBe(false);
+
+    settle();
+    await pending;
+    expect(resolved).toBe(true);
+  });
+
+  it('unblockUser resolves after the rollback has been applied', async () => {
+    mockUnblockUserApi.mockRejectedValueOnce(new Error('offline'));
+    const store = makeStore();
+    store.getState().blockUser('user-1', 'alice');
+
+    await expect(store.getState().unblockUser('user-1')).resolves.toBeUndefined();
+
+    // By the time the promise resolves, the #896 rollback is visible.
+    expect(store.getState().blockedUserIds).toEqual(['user-1']);
+    expect(store.getState().blockedUserProfiles['user-1']).toBe('alice');
+  });
+
+  it('the idempotent and unknown-id paths resolve too', async () => {
+    const store = makeStore();
+    store.getState().blockUser('user-1', 'alice');
+
+    await expect(store.getState().blockUser('user-1', 'alice')).resolves.toBeUndefined();
+    await expect(store.getState().unblockUser('user-unknown')).resolves.toBeUndefined();
   });
 });

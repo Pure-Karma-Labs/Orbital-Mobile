@@ -5,10 +5,10 @@
  * Covers:
  * - No-op when the author is the current user
  * - Top-level action alert (Block / Report / Cancel)
- * - Block confirm chain -> blockUser -> "Also report?" follow-up
+ * - Block confirm chain -> blockUserAndRefresh (#897) -> "Also report?" follow-up
  * - Follow-up Report -> openReportSheet with content context
  * - handleReport with/without a content context
- * - Cancel path does not call blockUser or openReportSheet
+ * - Cancel path does not call blockUserAndRefresh or openReportSheet
  */
 
 import React from 'react';
@@ -20,16 +20,25 @@ import { useAuthorActions, type AuthorActionContext } from '../useAuthorActions'
 // Module mocks
 // ---------------------------------------------------------------------------
 
-const mockBlockUser = jest.fn();
+const mockBlockUserAndRefresh = jest.fn<Promise<void>, [string, string]>(() =>
+  Promise.resolve(),
+);
 const mockOpenReportSheet = jest.fn();
 
 jest.mock('../../stores/useAppStore', () => ({
   useAppStore: {
     getState: () => ({
-      blockUser: mockBlockUser,
       openReportSheet: mockOpenReportSheet,
     }),
   },
+}));
+
+// #897: the hook no longer calls the slice action directly — it goes through
+// the service that blocks, evicts the cached media and then refetches the
+// per-viewer lists.
+jest.mock('../../services/blockedContentRefresh', () => ({
+  blockUserAndRefresh: (userId: string, username: string) =>
+    mockBlockUserAndRefresh(userId, username),
 }));
 
 // ---------------------------------------------------------------------------
@@ -166,8 +175,8 @@ describe('useAuthorActions — block confirm chain', () => {
       getAlertButton(alertSpy, 1, 'Block').onPress?.();
     });
 
-    expect(mockBlockUser).toHaveBeenCalledTimes(1);
-    expect(mockBlockUser).toHaveBeenCalledWith(authorId, authorUsername);
+    expect(mockBlockUserAndRefresh).toHaveBeenCalledTimes(1);
+    expect(mockBlockUserAndRefresh).toHaveBeenCalledWith(authorId, authorUsername);
 
     expect(alertSpy).toHaveBeenCalledTimes(3);
     const [followUpTitle, followUpMessage, followUpButtons] = alertSpy.mock.calls[2];
@@ -274,7 +283,7 @@ describe('useAuthorActions — cancel path', () => {
     });
 
     expect(alertSpy).toHaveBeenCalledTimes(2);
-    expect(mockBlockUser).not.toHaveBeenCalled();
+    expect(mockBlockUserAndRefresh).not.toHaveBeenCalled();
     expect(mockOpenReportSheet).not.toHaveBeenCalled();
   });
 });

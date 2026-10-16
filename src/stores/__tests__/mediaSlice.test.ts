@@ -8,7 +8,7 @@
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import { createMediaSlice } from '../slices/mediaSlice';
-import type { AppState, MediaItem } from '../../types/store';
+import type { AppState, MediaItem, Reply, Thread } from '../../types/store';
 
 // ---------------------------------------------------------------------------
 // Minimal store factory
@@ -142,6 +142,7 @@ function makeStore() {
         // BlockedUsers slice stubs
         blockedUserIds: [],
         blockedUserProfiles: {},
+    blockedUsersGeneration: 0,
         blockUser: jest.fn(),
         unblockUser: jest.fn(),
         resetBlockedUsers: jest.fn(),
@@ -501,5 +502,163 @@ describe('mediaSlice — removeMedia', () => {
     store.getState().removeMedia('media-1');
 
     expect('media-1' in store.getState().media).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// removeMediaForAuthor (#897)
+// ---------------------------------------------------------------------------
+
+function makeThread(id: string, authorId: string): Thread {
+  return {
+    id,
+    conversationId: 'conv-1',
+    authorId,
+    authorUsername: authorId,
+    title: 'T',
+    body: 'B',
+    contentType: 'media',
+    pinned: false,
+    replyCount: 0,
+    lastReplyAt: null,
+    createdAt: 1000,
+    updatedAt: 1000,
+    syncStatus: 'synced',
+  };
+}
+
+function makeReply(id: string, threadId: string, authorId: string): Reply {
+  return {
+    id,
+    threadId,
+    authorId,
+    authorUsername: authorId,
+    body: 'B',
+    parentReplyId: null,
+    depth: 0,
+    createdAt: 1000,
+    updatedAt: 1000,
+    syncStatus: 'synced',
+  };
+}
+
+describe('mediaSlice — removeMediaForAuthor (#897)', () => {
+  /**
+   * thread-1 belongs to `good`; reply-bad (by `bad`) and reply-good (by
+   * `good`) both hang off it, and each carries one media item. The thread also
+   * has one OP-attached item.
+   */
+  function seed() {
+    const store = makeStore();
+    store.setState({
+      threads: { 'thread-1': makeThread('thread-1', 'good') },
+      replies: {
+        'reply-bad': makeReply('reply-bad', 'thread-1', 'bad'),
+        'reply-good': makeReply('reply-good', 'thread-1', 'good'),
+      },
+    });
+    const opItem = makeMediaItem({ id: 'media-op', threadId: 'thread-1', replyId: null });
+    const badItem = makeMediaItem({
+      id: 'media-bad',
+      threadId: 'thread-1',
+      replyId: 'reply-bad',
+    });
+    const goodItem = makeMediaItem({
+      id: 'media-good',
+      threadId: 'thread-1',
+      replyId: 'reply-good',
+    });
+    store.getState().mergeMediaBatch(
+      new Map([
+        ['thread-1', { type: 'thread' as const, items: [opItem, badItem, goodItem] }],
+        ['reply-bad', { type: 'reply' as const, items: [badItem] }],
+        ['reply-good', { type: 'reply' as const, items: [goodItem] }],
+      ]),
+    );
+    return store;
+  }
+
+  it("drops a blocked replier's media from the map, the reply index and the thread aggregate", () => {
+    const store = seed();
+
+    store.getState().removeMediaForAuthor('bad');
+
+    const state = store.getState();
+    expect('media-bad' in state.media).toBe(false);
+    expect(state.mediaIdsByReply['reply-bad']).toEqual([]);
+    // The ThreadHeader gallery reads the thread aggregate — the whole point.
+    expect(state.mediaIdsByThread['thread-1']).toEqual(['media-op', 'media-good']);
+    expect('media-good' in state.media).toBe(true);
+    expect(state.mediaIdsByReply['reply-good']).toEqual(['media-good']);
+  });
+
+  it('resolves thread-level media through the thread author', () => {
+    const store = seed();
+
+    store.getState().removeMediaForAuthor('good');
+
+    const state = store.getState();
+    // media-op (reply_id NULL, resolved to the thread author) and media-good
+    // both go; the blocked replier's item is untouched by THIS call.
+    expect('media-op' in state.media).toBe(false);
+    expect('media-good' in state.media).toBe(false);
+    expect(state.mediaIdsByThread['thread-1']).toEqual(['media-bad']);
+    expect(state.mediaIdsByReply['reply-good']).toEqual([]);
+  });
+
+  it('is fail-open when the parent reply is not in the store', () => {
+    const store = makeStore();
+    const orphan = makeMediaItem({
+      id: 'media-orphan',
+      threadId: 'thread-1',
+      replyId: 'reply-missing',
+    });
+    store.getState().upsertMedia(orphan);
+
+    store.getState().removeMediaForAuthor('bad');
+
+    // Unknown parent ⇒ unknown author ⇒ kept, same as the SQL COALESCE rule.
+    expect('media-orphan' in store.getState().media).toBe(true);
+  });
+
+  it('evicts SEVERAL authors in one scan and one set() (#906)', () => {
+    const store = seed();
+    let notifications = 0;
+    const unsubscribe = store.subscribe(() => {
+      notifications += 1;
+    });
+
+    store.getState().removeMediaForAuthors(['bad', 'good']);
+    unsubscribe();
+
+    // A cross-device hydrate learns several ids at once; one `set` keeps it to
+    // a single re-render instead of one per id.
+    expect(notifications).toBe(1);
+    const state = store.getState();
+    expect(Object.keys(state.media)).toEqual([]);
+    expect(state.mediaIdsByThread['thread-1']).toEqual([]);
+    expect(state.mediaIdsByReply['reply-bad']).toEqual([]);
+    expect(state.mediaIdsByReply['reply-good']).toEqual([]);
+  });
+
+  it('removeMediaForAuthors with an empty list is a no-op (#906)', () => {
+    const store = seed();
+    const before = store.getState();
+
+    store.getState().removeMediaForAuthors([]);
+
+    expect(store.getState().media).toBe(before.media);
+  });
+
+  it('leaves other authors untouched and keeps state identity on a no-op', () => {
+    const store = seed();
+    const before = store.getState();
+
+    store.getState().removeMediaForAuthor('nobody-here');
+
+    const after = store.getState();
+    expect(after.media).toBe(before.media);
+    expect(after.mediaIdsByThread).toBe(before.mediaIdsByThread);
+    expect(after.mediaIdsByReply).toBe(before.mediaIdsByReply);
   });
 });

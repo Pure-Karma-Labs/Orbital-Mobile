@@ -4,8 +4,9 @@ import { closeDatabase, resetDatabaseForTesting } from '../../connection';
 import {
   saveMedia,
   getMedia,
-  getMediaForThread,
+  getThreadLevelMedia,
   getMediaForReply,
+  getMediaForThreadReplies,
   updateDownloadState,
   updateUploadState,
   getPendingDownloads,
@@ -153,30 +154,45 @@ describe('mediaRepository', () => {
     });
   });
 
-  describe('getMediaForThread', () => {
-    it('queries by thread_id ordered by created_at ASC', () => {
-      const executeSync = jest.fn((_sql: string, _params?: unknown[]) => ({ rows: [], rowsAffected: 0 }));
+  describe('getThreadLevelMedia', () => {
+    it('joins the THREAD to carry its author and keeps the reply_id IS NULL cut', () => {
+      const executeSync = jest.fn((_sql: string, _params?: unknown[]) => ({
+        rows: [],
+        rowsAffected: 0,
+      }));
       makeDb(executeSync);
-      getMediaForThread('thread-1');
+      getThreadLevelMedia('thread-1');
       const selectCall = executeSync.mock.calls.find(
-        (c) => typeof c[0] === 'string' && (c[0] as string).includes('SELECT'),
+        (c) => typeof c[0] === 'string' && (c[0] as string).includes('SELECT m.*'),
       ) as unknown as [string, unknown[]];
       expect(selectCall).toBeDefined();
-      expect(selectCall[0]).toContain('WHERE thread_id = ?');
-      expect(selectCall[0]).toContain('ORDER BY created_at ASC');
+      // The author rides on the projection (#897); without it the hydrate path
+      // has no way to drop a blocked author's cached media.
+      expect(selectCall[0]).toContain('t.author_id AS author_id');
+      // LEFT, not INNER: a thread missing from this device must still yield
+      // its media rows (with a NULL author) rather than dropping them.
+      expect(selectCall[0]).toContain('LEFT JOIN orbital_threads t ON m.thread_id = t.id');
+      expect(selectCall[0]).toContain('m.thread_id = ?');
+      expect(selectCall[0]).toContain('m.reply_id IS NULL');
+      expect(selectCall[0]).toContain('ORDER BY m.created_at ASC');
       expect(selectCall[1]).toEqual(['thread-1']);
     });
 
-    it('returns matching rows', () => {
+    it('returns the joined author_id on each row', () => {
       makeDb(
         jest.fn(() => ({
-          rows: [sampleMedia, { ...sampleMedia, id: 'media-2' }],
+          rows: [
+            { ...sampleMedia, author_id: 'user-1' },
+            { ...sampleMedia, id: 'media-2', author_id: null },
+          ],
           rowsAffected: 0,
         })),
       );
-      const result = getMediaForThread('thread-1');
+      const result = getThreadLevelMedia('thread-1');
       expect(result).toHaveLength(2);
-      expect(result[1].id).toBe('media-2');
+      expect(result[0].author_id).toBe('user-1');
+      // NULL is the fail-open case: the parent thread is not on this device.
+      expect(result[1].author_id).toBeNull();
     });
   });
 
@@ -192,6 +208,47 @@ describe('mediaRepository', () => {
       expect(selectCall[0]).toContain('WHERE reply_id = ?');
       expect(selectCall[0]).toContain('ORDER BY created_at ASC');
       expect(selectCall[1]).toEqual(['reply-1']);
+    });
+  });
+
+  describe('getMediaForThreadReplies', () => {
+    it('projects the REPLY author through the existing join, thumbnails excluded', () => {
+      const executeSync = jest.fn((_sql: string, _params?: unknown[]) => ({
+        rows: [],
+        rowsAffected: 0,
+      }));
+      makeDb(executeSync);
+      getMediaForThreadReplies('thread-1');
+      const selectCall = executeSync.mock.calls.find(
+        (c) => typeof c[0] === 'string' && (c[0] as string).includes('SELECT m.*'),
+      ) as unknown as [string, unknown[]];
+      expect(selectCall).toBeDefined();
+      // r.author_id, NOT t.author_id: attributing reply media to the thread
+      // starter would apply the blocked decision to the wrong person (#897).
+      expect(selectCall[0]).toContain('r.author_id AS author_id');
+      expect(selectCall[0]).not.toContain('t.author_id');
+      expect(selectCall[0]).toContain('JOIN orbital_replies r ON m.reply_id = r.id');
+      expect(selectCall[0]).toContain('WHERE r.thread_id = ?');
+      expect(selectCall[0]).toContain('COALESCE(m.is_thumbnail, 0) = 0');
+      expect(selectCall[0]).toContain('ORDER BY m.created_at ASC');
+      expect(selectCall[1]).toEqual(['thread-1']);
+    });
+
+    it('returns the joined author_id on each row', () => {
+      makeDb(
+        jest.fn(() => ({
+          rows: [{ ...sampleMedia, reply_id: 'reply-1', author_id: 'user-2' }],
+          rowsAffected: 0,
+        })),
+      );
+      const result = getMediaForThreadReplies('thread-1');
+      expect(result).toHaveLength(1);
+      expect(result[0].author_id).toBe('user-2');
+    });
+
+    it('returns empty array when database is not initialized', () => {
+      closeDatabase();
+      expect(getMediaForThreadReplies('thread-1')).toEqual([]);
     });
   });
 

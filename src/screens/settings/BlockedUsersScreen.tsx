@@ -19,6 +19,7 @@ import { useNavigation } from '@react-navigation/native';
 import { useTheme } from '../../theme';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../stores/useAppStore';
+import { unblockUserAndRefresh } from '../../services/blockedContentRefresh';
 import { Header } from '../../components/Header';
 import { EmojiText } from '../../components/EmojiText';
 
@@ -65,7 +66,9 @@ export function BlockedUsersScreen(): React.JSX.Element {
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Unblock',
-          onPress: () => useAppStore.getState().unblockUser(userId),
+          // #897: unblocking changes the server's per-viewer answer for every
+          // list, so the lists are re-pulled once the DELETE settles.
+          onPress: () => void unblockUserAndRefresh(userId),
         },
       ],
     );

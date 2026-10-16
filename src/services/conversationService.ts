@@ -39,13 +39,21 @@ import type { DmResponse, GroupMember, GroupResponse } from '../types/api';
 
 let sessionGeneration = 0;
 
-function captureSession(): { userId: string; generation: number } | null {
+/**
+ * Capture the current session identity. Exported for
+ * `services/blockedContentRefresh.ts` (#897), which runs the same
+ * await-then-write shape and must use this generation-carrying guard rather
+ * than a userId-only comparison (a logout/login into the SAME account bumps
+ * the generation but not the id).
+ */
+export function captureSession(): { userId: string; generation: number } | null {
   const userId = useAppStore.getState().userId;
   if (!userId) return null;
   return { userId, generation: sessionGeneration };
 }
 
-function isSessionStale(captured: { userId: string; generation: number }): boolean {
+/** True when the session captured by {@link captureSession} is no longer current. */
+export function isSessionStale(captured: { userId: string; generation: number }): boolean {
   return useAppStore.getState().userId !== captured.userId
     || sessionGeneration !== captured.generation;
 }
@@ -380,12 +388,33 @@ function mapDmResponse(response: DmResponse): Conversation {
  * sides are 0 anyway — `mapDmResponse` zeroes the incoming count, focus runs
  * `markConversationRead`, and the WS path skips increments for the viewed row.
  *
+ * ## `authoritative` — the per-viewer mode (#897)
+ *
+ * Since Backend #301/#306 a DM's `last_message_at` and `unread_count` are
+ * PER-VIEWER and block-filtered, so both may legitimately go DOWN: blocking
+ * the other party stops their messages from counting. Under the rules above
+ * that is unreachable — a block lowers the server's values below the
+ * WS-bumped local ones for exactly the DMs carrying a pre-block badge, rule 1
+ * fires, and `existing.unreadCount` re-latches the stale badge on every
+ * refresh (and `conversations` is MMKV-persisted, so it survives a relaunch).
+ *
+ * `authoritative: true` therefore SKIPS rule 1 and takes the server's
+ * `lastMessageAt` (healed through `maxTimestamp`, so it may lower or be `null`)
+ * and its `unreadCount`. Rule 2 still wins: a pending mark-read forces 0, so an
+ * authoritative response cannot resurrect a badge the user just cleared.
+ * `lastReadAt` and `updatedAt` stay max-merged — neither is a per-viewer,
+ * block-filtered value. Rule 1 cannot simply be re-applied for the block case
+ * because "local recency is newer" is exactly what a block PRODUCES; only
+ * `loadDmConversations`, holding a pre-request snapshot, can tell that apart
+ * from a WS message that landed mid-request, so it decides and passes the flag.
+ *
  * Pure: it reads no store state, so the merge rules are testable on their own.
  */
 export function mergeDmRecency(
   existing: Conversation | undefined,
   incoming: Conversation,
   readPending = false,
+  options?: { authoritative?: boolean },
 ): Conversation {
   if (!existing) {
     // First insert: `mapDmResponse` parses server timestamps unguarded, so
@@ -397,11 +426,13 @@ export function mergeDmRecency(
     };
   }
 
+  const authoritative = options?.authoritative === true;
+
   const localMessageAt = maxTimestamp(existing.lastMessageAt, null) ?? 0;
   const serverMessageAt = maxTimestamp(incoming.lastMessageAt, null) ?? 0;
 
   let unreadCount: number;
-  if (localMessageAt > serverMessageAt) {
+  if (!authoritative && localMessageAt > serverMessageAt) {
     unreadCount = existing.unreadCount;
   } else if (readPending) {
     unreadCount = 0;
@@ -411,7 +442,9 @@ export function mergeDmRecency(
 
   return {
     ...incoming,
-    lastMessageAt: maxTimestamp(existing.lastMessageAt, incoming.lastMessageAt),
+    lastMessageAt: authoritative
+      ? maxTimestamp(incoming.lastMessageAt, null)
+      : maxTimestamp(existing.lastMessageAt, incoming.lastMessageAt),
     lastReadAt: maxTimestamp(existing.lastReadAt, incoming.lastReadAt),
     updatedAt: maxTimestamp(existing.updatedAt, incoming.updatedAt) ?? incoming.updatedAt,
     unreadCount,
@@ -491,6 +524,12 @@ export async function loadDmConversations(): Promise<void> {
   const session = captureSession();
   if (!session) return;
 
+  // Captured BEFORE the request: it is what lets a per-viewer server lowering
+  // (#897 — a block stops counting the other party's messages) be told apart
+  // from a WS message that landed while the request was in flight. Sound as a
+  // snapshot because `upsertConversation` replaces the map immutably.
+  const conversationsBefore = useAppStore.getState().conversations;
+
   const dms = await listDms();
 
   const uniqueSenders = new Set<string>();
@@ -528,6 +567,11 @@ export async function loadDmConversations(): Promise<void> {
   );
 
   const conversations = dms.map(mapDmResponse);
+  // Did the server SEND `last_message_at` for this DM, or omit it? Keyed by id
+  // off the RAW payload, never positionally.
+  const serverSentById = new Map(
+    dms.map((dm) => [dm.groupId, dm.lastMessageAt !== undefined]),
+  );
 
   if (isSessionStale(session)) return;
   const store = useAppStore.getState();
@@ -536,8 +580,19 @@ export async function loadDmConversations(): Promise<void> {
     // upsert replaces the map — `store.conversations` is a stale snapshot after
     // the first iteration.
     const existing = useAppStore.getState().conversations[conversation.id];
+    // A row that moved forward (or appeared) while the request was in flight
+    // carries a WS bump the response cannot know about; anything else makes
+    // the server's per-viewer values authoritative, so a block can lower them.
+    const snapshot = conversationsBefore[conversation.id];
+    const bumpedMidRequest =
+      existing !== undefined &&
+      (snapshot === undefined ||
+        (maxTimestamp(existing.lastMessageAt, null) ?? 0) >
+          (maxTimestamp(snapshot.lastMessageAt, null) ?? 0));
     store.upsertConversation(
-      mergeDmRecency(existing, conversation, isMarkReadPending(conversation.id)),
+      mergeDmRecency(existing, conversation, isMarkReadPending(conversation.id), {
+        authoritative: serverSentById.get(conversation.id) === true && !bumpedMidRequest,
+      }),
     );
   }
 

@@ -1,5 +1,5 @@
 import type { StateCreator } from 'zustand';
-import type { AppState, MediaSlice } from '../../types/store';
+import type { AppState, MediaItem, MediaSlice } from '../../types/store';
 
 export const createMediaSlice: StateCreator<
   AppState,
@@ -207,6 +207,55 @@ export const createMediaSlice: StateCreator<
       },
       false,
       'media/updateMediaUploadState',
+    );
+  },
+
+  removeMediaForAuthor: (authorId) => {
+    const { media, mediaIdsByThread, mediaIdsByReply, replies, threads } = get();
+
+    // Author resolution mirrors the repository's `AUTHOR_EXPR`: a reply's
+    // author for reply media, the thread's author otherwise. A parent that is
+    // not in the store resolves to null and the item is KEPT — the same
+    // fail-open rule the SQL `COALESCE(…, '')` and `isBlockedAuthor` use.
+    const doomed = new Set<string>();
+    for (const item of Object.values(media)) {
+      const author = item.replyId
+        ? replies[item.replyId]?.authorId ?? null
+        : item.threadId
+          ? threads[item.threadId]?.authorId ?? null
+          : null;
+      if (author === authorId) doomed.add(item.id);
+    }
+    // No `set` at all when nothing matches: this runs on every block and on
+    // every cross-device hydrate, and a new map identity would re-render every
+    // gallery for nothing.
+    if (doomed.size === 0) return;
+
+    const updatedMedia: Record<string, MediaItem> = {};
+    for (const [id, item] of Object.entries(media)) {
+      if (!doomed.has(id)) updatedMedia[id] = item;
+    }
+
+    const pruneIndex = (
+      index: Record<string, string[]>,
+    ): Record<string, string[]> => {
+      const next: Record<string, string[]> = {};
+      for (const [parentId, ids] of Object.entries(index)) {
+        next[parentId] = ids.some((id) => doomed.has(id))
+          ? ids.filter((id) => !doomed.has(id))
+          : ids;
+      }
+      return next;
+    };
+
+    set(
+      {
+        media: updatedMedia,
+        mediaIdsByThread: pruneIndex(mediaIdsByThread),
+        mediaIdsByReply: pruneIndex(mediaIdsByReply),
+      },
+      false,
+      'media/removeMediaForAuthor',
     );
   },
 

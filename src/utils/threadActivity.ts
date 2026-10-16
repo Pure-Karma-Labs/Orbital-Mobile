@@ -43,8 +43,13 @@ export type ThreadActivityInput = Pick<Thread, 'id' | 'createdAt' | 'lastReplyAt
  * A timestamp we are willing to render or order on: finite and strictly
  * positive. `0` is rejected on purpose — it is the "no value" sentinel the
  * SQLite read path produces for a non-finite stored value, not 1970.
+ *
+ * Exported for `threadService.reconcileServerRecency` (#897), which has to ask
+ * "is this store value a real timestamp?" before deciding whether a reply
+ * landed mid-request. It is a pure predicate: it stores nothing and
+ * {@link maxTimestamp} remains the only producer of a stored value.
  */
-function isValidTimestamp(value: unknown): value is number {
+export function isValidTimestamp(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0;
 }
 

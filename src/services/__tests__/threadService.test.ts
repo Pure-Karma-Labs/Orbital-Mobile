@@ -109,7 +109,7 @@ jest.mock('../../stores/useAppStore', () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
-import { loadThread, loadReplies, postReply, hydrateThreadsFromLocal, hydrateRepliesFromLocal, loadThreadsForGroup, createNewThread, reconcileThreadReplies, applyReplyToParentThread } from '../threadService';
+import { loadThread, loadReplies, postReply, hydrateThreadsFromLocal, hydrateRepliesFromLocal, loadThreadsForGroup, createNewThread, reconcileThreadReplies, applyReplyToParentThread, getKnownThreadAuthorId } from '../threadService';
 import { saveThread as dbSaveThread, saveThreadBatch, getThreadsForConversation, getThread as dbGetThread } from '../../database/repositories/threadRepository';
 import { saveReply as dbSaveReply, saveReplyBatch, getRepliesForThread, deleteReply as dbDeleteReply } from '../../database/repositories/replyRepository';
 import { isDatabaseInitialized } from '../../database/connection';
@@ -1149,10 +1149,16 @@ describe('persistence write-through', () => {
     expect(batchGroupId).toBe('group-1');
     expect(batchThreads).toHaveLength(2);
     expect(batchThreads[0].syncStatus).toBe('synced');
-    expect(mockSetThreads).toHaveBeenCalledWith('group-1', expect.arrayContaining([
-      expect.objectContaining({ id: 'thread-1' }),
-      expect.objectContaining({ id: 'thread-2' }),
-    ]));
+    expect(mockSetThreads).toHaveBeenCalledWith(
+      'group-1',
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'thread-1' }),
+        expect.objectContaining({ id: 'thread-2' }),
+      ]),
+      // The service reconciles recency itself (#897), so the slice must not
+      // re-apply its never-lower merge on top of the decision.
+      { authoritativeRecency: true },
+    );
   });
 
   it('createNewThread calls dbSaveThread with the server-confirmed thread', async () => {
@@ -1363,15 +1369,35 @@ function setStoreThreads(threads: Record<string, Thread>): void {
 }
 
 describe('#883 loadThread recency merge', () => {
-  it('keeps the store lastReplyAt when the server response has none', async () => {
+  it('keeps the store lastReplyAt when the server OMITS the field', async () => {
     setStoreThreads({ 'thread-1': makeStoredThread({ lastReplyAt: 5000 }) });
-    mockGetThread.mockResolvedValue(makeThreadResponse({ lastReplyAt: null }));
+    // `makeThreadResponse` omits lastReplyAt entirely — a 1.7.6-era backend.
+    // Absent is NOT the same as null (#897): there is no server answer to be
+    // authoritative about, so the never-lower merge still rules.
+    mockGetThread.mockResolvedValue(makeThreadResponse());
 
     const result = await loadThread('thread-1');
 
     expect(result.lastReplyAt).toBe(5000);
     expect(mockDbSaveThread.mock.calls[0][0].lastReplyAt).toBe(5000);
     expect(mockUpsertThread.mock.calls[0][0].lastReplyAt).toBe(5000);
+    // The decision was made here, so the slice is told not to merge again.
+    expect(mockUpsertThread.mock.calls[0][1]).toEqual({ authoritativeRecency: true });
+  });
+
+  it('takes an explicit null lastReplyAt, lowering the stored value (#897)', async () => {
+    // `last_reply_at: null` means "no reply counts for THIS viewer" since
+    // Backend #306 — blocking the author of the only reply produces exactly
+    // this response, and it has to clear the activity slot everywhere.
+    setStoreThreads({ 'thread-1': makeStoredThread({ lastReplyAt: 5000 }) });
+    mockGetThread.mockResolvedValue(makeThreadResponse({ lastReplyAt: null }));
+
+    const result = await loadThread('thread-1');
+
+    expect(result.lastReplyAt).toBeNull();
+    expect(mockDbSaveThread.mock.calls[0][0].lastReplyAt).toBeNull();
+    expect(mockUpsertThread.mock.calls[0][0].lastReplyAt).toBeNull();
+    expect(mockUpsertThread.mock.calls[0][1]).toEqual({ authoritativeRecency: true });
   });
 
   it('takes the server lastReplyAt when it is newer than the store value', async () => {
@@ -1387,7 +1413,8 @@ describe('#883 loadThread recency merge', () => {
 
   it('falls back to the SQLite row when the store is empty (cold push open)', async () => {
     mockDbGetThread.mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }));
-    mockGetThread.mockResolvedValue(makeThreadResponse({ lastReplyAt: null }));
+    // Field omitted: the legacy never-lower path, now against the disk row.
+    mockGetThread.mockResolvedValue(makeThreadResponse());
 
     const result = await loadThread('thread-1');
 
@@ -1396,6 +1423,19 @@ describe('#883 loadThread recency merge', () => {
     // The DB write must carry the merged value — dbSaveThread runs before the
     // store upsert, so it has no slice-level guard behind it.
     expect(mockDbSaveThread.mock.calls[0][0].lastReplyAt).toBe(7000);
+  });
+
+  it('lets an explicit null lower a value that exists only on disk (#897)', async () => {
+    // A DB-only row can never carry a mid-request bump (the WS path upserts
+    // the store before it persists), so the server value wins outright.
+    mockDbGetThread.mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }));
+    mockGetThread.mockResolvedValue(makeThreadResponse({ lastReplyAt: null }));
+
+    const result = await loadThread('thread-1');
+
+    expect(result.lastReplyAt).toBeNull();
+    expect(mockDbSaveThread.mock.calls[0][0].lastReplyAt).toBeNull();
+    expect(mockUpsertThread.mock.calls[0][0].lastReplyAt).toBeNull();
   });
 
   it('does not read SQLite when the database is not initialized', async () => {
@@ -1458,25 +1498,58 @@ describe('#883 loadThreadsForGroup', () => {
     expect(threads[0].lastReplyAt).toBeNull();
   });
 
-  it('merges recency BEFORE saveThreadBatch so a reply applied mid-request is not lowered on disk', async () => {
-    // A WS reply bumped thread-1 to 9000 while the list request was in flight;
-    // the page (computed earlier) has no reply. saveThreadBatch is INSERT OR
-    // REPLACE, so the merged value has to be what reaches SQLite.
-    setStoreThreads({ 'thread-1': makeStoredThread({ lastReplyAt: 9000 }) });
-    mockGetGroupThreads.mockResolvedValue({
-      threads: [makeThreadListItem({ lastReplyAt: null })],
-      totalCount: 1,
-      hasMore: false,
+  it('keeps a reply applied DURING the request, lastReplyAt and replyCount together', async () => {
+    // thread-1 is at 1000/4 when the request goes out; a WS reply bumps the
+    // store row to 9000/5 while it is in flight, and the response (computed
+    // before that reply) carries null/0. Only the pre-request snapshot can
+    // tell this apart from a per-viewer lowering (#897) — and the pair has to
+    // move together, or the slot and the count disagree. saveThreadBatch is
+    // INSERT OR REPLACE, so the live pair must reach SQLite too.
+    setStoreThreads({
+      'thread-1': makeStoredThread({ lastReplyAt: 1000, replyCount: 4 }),
+    });
+    mockGetGroupThreads.mockImplementationOnce(async () => {
+      setStoreThreads({
+        'thread-1': makeStoredThread({ lastReplyAt: 9000, replyCount: 5 }),
+      });
+      return {
+        threads: [makeThreadListItem({ lastReplyAt: null, replyCount: 0 })],
+        totalCount: 1,
+        hasMore: false,
+      };
     });
 
     const threads = await loadThreadsForGroup('group-1');
 
     expect(threads[0].lastReplyAt).toBe(9000);
+    expect(threads[0].replyCount).toBe(5);
     const [, batchThreads] = mockSaveThreadBatch.mock.calls[0];
     expect(batchThreads[0].lastReplyAt).toBe(9000);
+    expect(batchThreads[0].replyCount).toBe(5);
+    expect(mockSetThreads).toHaveBeenCalledWith(
+      'group-1',
+      [expect.objectContaining({ lastReplyAt: 9000, replyCount: 5 })],
+      { authoritativeRecency: true },
+    );
   });
 
-  it('falls back to the SQLite row for the batch merge when the store is empty', async () => {
+  it('falls back to the SQLite row for the batch merge when the field is omitted', async () => {
+    mockDbGetThread.mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }));
+    mockGetGroupThreads.mockResolvedValue({
+      // Explicitly omitted: the fixture default is `null`, which is now an
+      // authoritative "no counted reply" rather than "not sent" (#897).
+      threads: [makeThreadListItem({ lastReplyAt: undefined })],
+      totalCount: 1,
+      hasMore: false,
+    });
+
+    await loadThreadsForGroup('group-1');
+
+    const [, batchThreads] = mockSaveThreadBatch.mock.calls[0];
+    expect(batchThreads[0].lastReplyAt).toBe(7000);
+  });
+
+  it('lets an explicit null lower a batch value that exists only on disk (#897)', async () => {
     mockDbGetThread.mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }));
     mockGetGroupThreads.mockResolvedValue({
       threads: [makeThreadListItem({ lastReplyAt: null })],
@@ -1487,7 +1560,133 @@ describe('#883 loadThreadsForGroup', () => {
     await loadThreadsForGroup('group-1');
 
     const [, batchThreads] = mockSaveThreadBatch.mock.calls[0];
-    expect(batchThreads[0].lastReplyAt).toBe(7000);
+    expect(batchThreads[0].lastReplyAt).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #897 — a per-viewer server value may LOWER the stored recency
+// ---------------------------------------------------------------------------
+
+describe('#897 loadThreadsForGroup authoritative recency', () => {
+  it('stores the server null over a higher local value when nothing moved mid-request', async () => {
+    // THE ISSUE: blocking the member whose reply lifted thread-1 drops that
+    // reply from this viewer's last_reply_at/reply_count (Backend #306). The
+    // old unconditional max-merge pinned the thread at 9000 forever while the
+    // count fell to 0, so the activity slot and the badge disagreed.
+    setStoreThreads({
+      'thread-1': makeStoredThread({ lastReplyAt: 9000, replyCount: 5 }),
+    });
+    mockGetGroupThreads.mockResolvedValue({
+      threads: [makeThreadListItem({ lastReplyAt: null, replyCount: 0 })],
+      totalCount: 1,
+      hasMore: false,
+    });
+
+    const threads = await loadThreadsForGroup('group-1');
+
+    expect(threads[0].lastReplyAt).toBeNull();
+    expect(threads[0].replyCount).toBe(0);
+    const [, batchThreads] = mockSaveThreadBatch.mock.calls[0];
+    expect(batchThreads[0].lastReplyAt).toBeNull();
+    expect(batchThreads[0].replyCount).toBe(0);
+    expect(mockSetThreads).toHaveBeenCalledWith(
+      'group-1',
+      [expect.objectContaining({ lastReplyAt: null, replyCount: 0 })],
+      { authoritativeRecency: true },
+    );
+  });
+
+  it('stores an OLDER server timestamp over a higher local value', async () => {
+    // Same lowering, one surviving reply: the slot moves back to that reply.
+    const older = Date.parse('2026-04-01T11:00:00Z');
+    setStoreThreads({
+      'thread-1': makeStoredThread({
+        lastReplyAt: Date.parse('2026-04-05T10:00:00Z'),
+        replyCount: 5,
+      }),
+    });
+    mockGetGroupThreads.mockResolvedValue({
+      threads: [
+        makeThreadListItem({ lastReplyAt: '2026-04-01T11:00:00Z', replyCount: 3 }),
+      ],
+      totalCount: 1,
+      hasMore: false,
+    });
+
+    const threads = await loadThreadsForGroup('group-1');
+
+    expect(threads[0].lastReplyAt).toBe(older);
+    expect(threads[0].replyCount).toBe(3);
+    const [, batchThreads] = mockSaveThreadBatch.mock.calls[0];
+    expect(batchThreads[0].lastReplyAt).toBe(older);
+    expect(batchThreads[0].replyCount).toBe(3);
+    expect(mockSetThreads).toHaveBeenCalledWith(
+      'group-1',
+      [expect.objectContaining({ lastReplyAt: older, replyCount: 3 })],
+      { authoritativeRecency: true },
+    );
+  });
+
+  it('degrades to the never-lower merge for a mapped row the raw payload does not key', async () => {
+    // `serverSentById` is keyed off the RAW payload by id, never positionally,
+    // and the lookup is `=== true` — a mapped row with no entry has no server
+    // answer and must take the legacy path. The mapper is identity on the id
+    // today, so the only way to produce such a row is to make the raw item
+    // report a different id for the map build than for the mapping.
+    setStoreThreads({ 'thread-1': makeStoredThread({ lastReplyAt: 9000 }) });
+    const item = makeThreadListItem({ lastReplyAt: null });
+    let idReads = 0;
+    Object.defineProperty(item, 'threadId', {
+      get: () => (idReads++ === 0 ? 'thread-ghost' : 'thread-1'),
+    });
+    mockGetGroupThreads.mockResolvedValue({
+      threads: [item],
+      totalCount: 1,
+      hasMore: false,
+    });
+
+    const threads = await loadThreadsForGroup('group-1');
+
+    expect(threads[0].id).toBe('thread-1');
+    expect(threads[0].lastReplyAt).toBe(9000);
+    const [, batchThreads] = mockSaveThreadBatch.mock.calls[0];
+    expect(batchThreads[0].lastReplyAt).toBe(9000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #897 — getKnownThreadAuthorId (the WS new_reply block guard's lookup)
+// ---------------------------------------------------------------------------
+
+describe('#897 getKnownThreadAuthorId', () => {
+  it('reads the author from the store without touching SQLite', () => {
+    setStoreThreads({ 'thread-1': makeStoredThread({ authorId: 'user-store' }) });
+
+    expect(getKnownThreadAuthorId('thread-1')).toBe('user-store');
+    expect(mockDbGetThread).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the SQLite row when the store has no such thread', () => {
+    mockDbGetThread.mockReturnValueOnce(
+      makeStoredThread({ id: 'thread-2', authorId: 'user-disk' }),
+    );
+
+    expect(getKnownThreadAuthorId('thread-2')).toBe('user-disk');
+    expect(mockDbGetThread).toHaveBeenCalledWith('thread-2');
+  });
+
+  it('returns null when neither the store nor SQLite knows the thread', () => {
+    // `null` is "unknown here", and the WS guard fails OPEN on it.
+    expect(getKnownThreadAuthorId('thread-missing')).toBeNull();
+    expect(mockDbGetThread).toHaveBeenCalledWith('thread-missing');
+  });
+
+  it('returns null without reading SQLite when the database is not initialized', () => {
+    mockIsDatabaseInitialized.mockReturnValue(false);
+
+    expect(getKnownThreadAuthorId('thread-1')).toBeNull();
+    expect(mockDbGetThread).not.toHaveBeenCalled();
   });
 });
 

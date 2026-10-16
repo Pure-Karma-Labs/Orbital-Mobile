@@ -145,6 +145,7 @@ function makeStore() {
     updateMediaDownloadState: jest.fn(),
     updateMediaUploadState: jest.fn(),
     removeMedia: jest.fn(),
+    removeMediaForAuthor: jest.fn(),
 
     pushPermissionGranted: false,
     pushToken: null,
@@ -421,5 +422,94 @@ describe('blockedUsersSlice - hydrateBlockedUsers', () => {
     store.getState().blockUser('user-1', 'alice');
     store.getState().hydrateBlockedUsers([]);
     expect(store.getState().blockedUserIds).toEqual(['user-1']);
+  });
+
+  it('evicts cached media once per NEWLY hydrated id (#897)', () => {
+    const store = makeStore();
+    store.getState().blockUser('user-1', 'alice');
+    const removeMediaForAuthor = store.getState().removeMediaForAuthor as jest.Mock;
+    removeMediaForAuthor.mockClear();
+
+    store.getState().hydrateBlockedUsers(['user-1', 'user-2', 'user-3']);
+
+    // A cross-device block has to evict here too — the server stopped sending
+    // the media, but the in-memory gallery/grid was seeded from SQLite.
+    expect(removeMediaForAuthor).toHaveBeenCalledTimes(2);
+    expect(removeMediaForAuthor).toHaveBeenCalledWith('user-2');
+    expect(removeMediaForAuthor).toHaveBeenCalledWith('user-3');
+    // Already-known ids are not re-evicted.
+    expect(removeMediaForAuthor).not.toHaveBeenCalledWith('user-1');
+  });
+
+  it('does not evict when the server list adds nothing new (#897)', () => {
+    const store = makeStore();
+    store.getState().blockUser('user-1', 'alice');
+    const removeMediaForAuthor = store.getState().removeMediaForAuthor as jest.Mock;
+    removeMediaForAuthor.mockClear();
+
+    store.getState().hydrateBlockedUsers(['user-1']);
+
+    expect(removeMediaForAuthor).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Awaitable settle (#897)
+// ---------------------------------------------------------------------------
+
+describe('blockedUsersSlice - awaitable settle (#897)', () => {
+  it('blockUser resolves after the API rejects, with the block kept', async () => {
+    mockBlockUserApi.mockRejectedValueOnce(new Error('offline'));
+    const store = makeStore();
+
+    // Never rejects: `blockedContentRefresh` awaits this and must not see an
+    // unhandled rejection. `blockUser` has no rollback, so the block stays.
+    await expect(store.getState().blockUser('user-1', 'alice')).resolves.toBeUndefined();
+
+    expect(store.getState().blockedUserIds).toEqual(['user-1']);
+  });
+
+  it('blockUser resolves only after the API settles', async () => {
+    let settle: () => void = () => {};
+    mockBlockUserApi.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        settle = resolve;
+      }),
+    );
+    const store = makeStore();
+
+    let resolved = false;
+    const pending = store.getState().blockUser('user-1', 'alice').then(() => {
+      resolved = true;
+    });
+
+    // The optimistic state change is synchronous; the promise is not.
+    expect(store.getState().blockedUserIds).toEqual(['user-1']);
+    await flushMicrotasks();
+    expect(resolved).toBe(false);
+
+    settle();
+    await pending;
+    expect(resolved).toBe(true);
+  });
+
+  it('unblockUser resolves after the rollback has been applied', async () => {
+    mockUnblockUserApi.mockRejectedValueOnce(new Error('offline'));
+    const store = makeStore();
+    store.getState().blockUser('user-1', 'alice');
+
+    await expect(store.getState().unblockUser('user-1')).resolves.toBeUndefined();
+
+    // By the time the promise resolves, the #896 rollback is visible.
+    expect(store.getState().blockedUserIds).toEqual(['user-1']);
+    expect(store.getState().blockedUserProfiles['user-1']).toBe('alice');
+  });
+
+  it('the idempotent and unknown-id paths resolve too', async () => {
+    const store = makeStore();
+    store.getState().blockUser('user-1', 'alice');
+
+    await expect(store.getState().blockUser('user-1', 'alice')).resolves.toBeUndefined();
+    await expect(store.getState().unblockUser('user-unknown')).resolves.toBeUndefined();
   });
 });

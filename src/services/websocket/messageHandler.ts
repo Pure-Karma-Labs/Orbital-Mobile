@@ -19,7 +19,7 @@ import { refreshAndCompareIdentityKey, compareAndPersistIdentityKey, normalizeId
 import { base64ToArrayBuffer } from '../crypto/utils';
 import { VerifiedStatus } from '../../types/database';
 import { submitWrappedKey } from '../api/groups';
-import { decryptThreadFields, decryptReplyBody, processMediaMetadata, applyReplyToParentThread } from '../threadService';
+import { decryptThreadFields, decryptReplyBody, processMediaMetadata, applyReplyToParentThread, getKnownThreadAuthorId } from '../threadService';
 import { ensureDmConversation, hydrateContactsFromOrbits, refreshContactAvatar, retryPendingNameDecrypt, retryAllPendingNameDecrypts, markConversationReadEverywhere } from '../conversationService';
 import { isDatabaseInitialized } from '../../database/connection';
 import { saveThread as dbSaveThread } from '../../database/repositories/threadRepository';
@@ -48,6 +48,20 @@ import type { Thread, Reply } from '../../types/store';
 
 const dedupSet = new LRUSet(500);
 
+/**
+ * Threads whose `new_thread` was dropped because their author is blocked
+ * (#897).
+ *
+ * A post-block thread by a blocked author is never written to the store or to
+ * SQLite, so `getKnownThreadAuthorId` cannot resolve its author — and without
+ * that, a NON-blocked member's reply on it would still badge the orbit and bump
+ * a thread the app refuses to show. Remembering the dropped ids is the only
+ * local way to recognise those replies. Same bounded LRU shape as `dedupSet`
+ * (an unbounded Set here would grow for the whole session), and cleared by
+ * `clearMessageHandlerState` on logout.
+ */
+const droppedBlockedThreadIds = new LRUSet(500);
+
 const wrapDedup = new Map<string, number>();
 const deliveryDedup = new Map<string, number>();
 const WRAP_DEDUP_TTL_MS = 30_000;
@@ -63,6 +77,7 @@ function sweepExpired(map: Map<string, number>): void {
 
 export function clearMessageHandlerState(): void {
   dedupSet.clear();
+  droppedBlockedThreadIds.clear();
   wrapDedup.clear();
   deliveryDedup.clear();
 }
@@ -247,6 +262,9 @@ async function handleNewThread(data: NewThreadPayload): Promise<void> {
   const blockedSet = new Set(useAppStore.getState().blockedUserIds);
   if (blockedSet.has(data.authorId)) {
     if (__DEV__) console.log('[WS] dropped thread from blocked user', data.authorId);
+    // Remembered so replies on this thread can be dropped too (#897): nothing
+    // about it is persisted, so its author is otherwise unknowable locally.
+    droppedBlockedThreadIds.add(data.threadId);
     return;
   }
 
@@ -347,6 +365,22 @@ async function handleNewReply(data: NewReplyPayload): Promise<void> {
   const blockedSet = new Set(useAppStore.getState().blockedUserIds);
   if (blockedSet.has(data.authorId)) {
     if (__DEV__) console.log('[WS] dropped reply from blocked user', data.authorId);
+    return;
+  }
+
+  // Parent guard (#897): a NOT-blocked member's reply on a BLOCKED author's
+  // thread must not reach `applyReplyToParentThread` (replyCount + 1, recency
+  // bump) or `incrementUnreadCount` — it would badge activity on a thread the
+  // app hides. WS fan-out is not block-filtered server-side, so this is the
+  // enforcement point. Before the dedup add, so a dropped id is not burned.
+  // Fail-open when the parent is unknown locally and was never dropped here.
+  const parentAuthorId = getKnownThreadAuthorId(data.threadId);
+  const parentBlocked =
+    parentAuthorId !== null
+      ? blockedSet.has(parentAuthorId)
+      : droppedBlockedThreadIds.has(data.threadId);
+  if (parentBlocked) {
+    if (__DEV__) console.log("[WS] dropped reply on a blocked author's thread");
     return;
   }
 

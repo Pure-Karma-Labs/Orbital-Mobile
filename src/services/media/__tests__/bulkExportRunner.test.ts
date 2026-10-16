@@ -195,7 +195,7 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('prepareBulkExport', () => {
-  it('passes the grid filters, the store access list and the item bound to SQL', async () => {
+  it('passes the grid filters, the blocked set, the access list and the item bound to SQL', async () => {
     mockStoreState = {
       conversations: { 'conv-1': {}, 'conv-2': {} },
       blockedUserIds: ['user-bad'],
@@ -210,17 +210,24 @@ describe('prepareBulkExport', () => {
     });
 
     const [options, access, limit] = mockGetExportSnapshot.mock.calls[0];
+    // #897: the blocked set rides on the OPTIONS, the one channel the grid
+    // shares, so `matching` below already excludes a blocked author.
     expect(options).toMatchObject({
       contentTypeFilter: 'image',
       conversationId: 'conv-2',
       sortBy: 'size',
       sortOrder: 'asc',
+      excludeAuthorIds: ['user-bad'],
     });
-    expect(access).toEqual({
-      conversationIds: ['conv-1', 'conv-2'],
-      blockedAuthorIds: ['user-bad'],
-    });
+    // Membership only — it is the access filter, not the author filter.
+    expect(access).toEqual({ conversationIds: ['conv-1', 'conv-2'] });
     expect(limit).toBe(500);
+
+    // Both counts take the SAME options, so the matching/accessible delta is
+    // orphans only rather than orphans plus blocked authors.
+    for (const [countOptions] of mockGetMediaCount.mock.calls) {
+      expect(countOptions).toMatchObject({ excludeAuthorIds: ['user-bad'] });
+    }
   });
 
   it('sums the totals and separates what still has to be downloaded', async () => {
@@ -268,9 +275,10 @@ describe('prepareBulkExport', () => {
     expect(plan?.ids).toEqual(['kept']);
   });
 
-  it('reports orphaned and blocked-author rows as excluded via the count delta', async () => {
+  it('reports orphaned rows as excluded via the count delta', async () => {
     mockGetExportSnapshot.mockReturnValue([row({ id: 'ok' })]);
-    // The grid shows 5; only 1 is accessible.
+    // The grid shows 5; only 1 is accessible. Since #897 both counts already
+    // exclude blocked authors, so this delta is the ORPHAN set alone.
     mockGetMediaCount.mockImplementation((_o: unknown, access?: unknown) =>
       access === undefined ? 5 : 1,
     );
@@ -345,9 +353,13 @@ describe('prepareBulkExport', () => {
 
     const plan = await pending;
     expect(plan?.count).toBe(1);
+    // The gate exists so the blocked set is HYDRATED before it is read; it is
+    // read onto the options now (#897), not onto the access filter.
+    expect(mockGetExportSnapshot.mock.calls[0][0]).toMatchObject({
+      excludeAuthorIds: ['user-bad'],
+    });
     expect(mockGetExportSnapshot.mock.calls[0][1]).toEqual({
       conversationIds: ['conv-1'],
-      blockedAuthorIds: ['user-bad'],
     });
   });
 

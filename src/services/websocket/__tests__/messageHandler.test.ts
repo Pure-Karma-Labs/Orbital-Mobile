@@ -84,6 +84,9 @@ jest.mock('../../threadService', () => ({
   decryptReplyBody: jest.fn(),
   processMediaMetadata: jest.fn().mockResolvedValue(undefined),
   applyReplyToParentThread: jest.fn(),
+  // #897: handleNewReply calls this OUTSIDE the try, before dedup — without
+  // the mock every new_reply test throws on an undefined import.
+  getKnownThreadAuthorId: jest.fn(() => null),
 }));
 
 const mockMarkConversationReadEverywhere = jest.fn();
@@ -153,7 +156,7 @@ import {
 import { refreshAndCompareIdentityKey, compareAndPersistIdentityKey } from '../../crypto/identityKeyAccess';
 import { base64ToArrayBuffer } from '../../crypto/utils';
 import { submitWrappedKey } from '../../api/groups';
-import { decryptThreadFields, decryptReplyBody, applyReplyToParentThread } from '../../threadService';
+import { decryptThreadFields, decryptReplyBody, applyReplyToParentThread, getKnownThreadAuthorId } from '../../threadService';
 import { useAppStore } from '../../../stores/useAppStore';
 import { saveThread as dbSaveThread } from '../../../database/repositories/threadRepository';
 import { saveReply as dbSaveReply } from '../../../database/repositories/replyRepository';
@@ -165,6 +168,7 @@ const mockInvalidateGroupKey = invalidateGroupKey as jest.MockedFunction<typeof 
 const mockDecryptThreadFields = decryptThreadFields as jest.MockedFunction<typeof decryptThreadFields>;
 const mockDecryptReplyBody = decryptReplyBody as jest.MockedFunction<typeof decryptReplyBody>;
 const mockApplyReplyToParentThread = applyReplyToParentThread as jest.MockedFunction<typeof applyReplyToParentThread>;
+const mockGetKnownThreadAuthorId = getKnownThreadAuthorId as jest.MockedFunction<typeof getKnownThreadAuthorId>;
 const mockWrapGroupKey = wrapGroupKey as jest.MockedFunction<typeof wrapGroupKey>;
 const mockEvictPendingCache = evictPendingCache as jest.MockedFunction<typeof evictPendingCache>;
 const mockSubmitWrappedKey = submitWrappedKey as jest.MockedFunction<typeof submitWrappedKey>;
@@ -243,6 +247,8 @@ beforeEach(() => {
     identityChanged: false,
   });
   mockNormalizeIdentityKey.mockImplementation((bytes: Uint8Array) => bytes);
+  // #897: fail-open default — the parent thread is unknown on this device.
+  mockGetKnownThreadAuthorId.mockReturnValue(null);
   mockRefreshAndCompareIdentityKey.mockResolvedValue({
     publicKey: new ArrayBuffer(33),
     identityChanged: false,
@@ -1844,6 +1850,129 @@ describe('blocked user guard', () => {
     await handleServerMessage(msg);
     expect(mockUpsertReply).not.toHaveBeenCalled();
     expect(mockIncrementUnreadCount).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // Parent-thread author guard (#897)
+  // -------------------------------------------------------------------------
+
+  const parentGuardState = (blockedUserIds: string[]) => ({
+    userId: testUUID('test-user'),
+    viewingConversationId: null,
+    upsertThread: mockUpsertThread,
+    upsertReply: mockUpsertReply,
+    upsertContact: mockUpsertContact,
+    setConnectionStatus: mockSetConnectionStatus,
+    setLastConnectedAt: mockSetLastConnectedAt,
+    setReconnectAttempt: mockSetReconnectAttempt,
+    blockedUserIds,
+    addTypingUser: mockAddTypingUser,
+    bumpLastMessageAt: mockBumpLastMessageAt,
+    incrementUnreadCount: mockIncrementUnreadCount,
+    contacts: {},
+    threads: {},
+  });
+
+  const newReplyMessage = (threadId: string, authorId: string, replyId: string) =>
+    JSON.stringify({
+      type: 'new_message',
+      conversationId: testUUID('group-1'),
+      timestamp: Date.now(),
+      data: {
+        type: 'new_reply',
+        replyId,
+        threadId,
+        groupId: testUUID('group-1'),
+        authorId,
+        authorName: 'innocent',
+        encryptedBody: 'enc-body',
+        bodyIv: 'iv',
+        parentReplyId: null,
+        createdAt: '2026-06-06T00:00:00Z',
+        media: [],
+      },
+    });
+
+  it("drops new_reply on a blocked author's thread", async () => {
+    const blockedAuthor = testUUID('blocked-parent-author');
+    (useAppStore.getState as jest.Mock).mockReturnValue(
+      parentGuardState([blockedAuthor]),
+    );
+    // The reply's OWN author is not blocked — only the thread's author is.
+    mockGetKnownThreadAuthorId.mockReturnValue(blockedAuthor);
+
+    await handleServerMessage(
+      newReplyMessage(
+        testUUID('thread-by-blocked'),
+        testUUID('innocent-replier'),
+        testUUID('reply-on-blocked-thread'),
+      ),
+    );
+
+    expect(mockUpsertReply).not.toHaveBeenCalled();
+    expect(mockIncrementUnreadCount).not.toHaveBeenCalled();
+    expect(mockApplyReplyToParentThread).not.toHaveBeenCalled();
+    expect(mockDbSaveReply).not.toHaveBeenCalled();
+  });
+
+  it("drops a reply on a thread whose new_thread was dropped for a blocked author", async () => {
+    const blockedAuthor = testUUID('blocked-user-3');
+    const threadId = testUUID('thread-never-stored');
+    (useAppStore.getState as jest.Mock).mockReturnValue(
+      parentGuardState([blockedAuthor]),
+    );
+    // Nothing about this thread is ever written locally, so its author stays
+    // unresolvable — the dropped-id set is the only way to recognise it.
+    mockGetKnownThreadAuthorId.mockReturnValue(null);
+
+    await handleServerMessage(
+      JSON.stringify({
+        type: 'new_message',
+        conversationId: testUUID('group-1'),
+        timestamp: Date.now(),
+        data: {
+          type: 'new_thread',
+          threadId,
+          groupId: testUUID('group-1'),
+          authorId: blockedAuthor,
+          authorName: 'baduser3',
+          encryptedTitle: 'enc-title',
+          encryptedBody: 'enc-body',
+          titleIv: 'iv',
+          bodyIv: 'iv',
+          createdAt: '2026-06-06T00:00:00Z',
+          media: [],
+        },
+      }),
+    );
+    expect(mockUpsertThread).not.toHaveBeenCalled();
+
+    await handleServerMessage(
+      newReplyMessage(threadId, testUUID('innocent-replier-2'), testUUID('reply-2')),
+    );
+
+    expect(mockUpsertReply).not.toHaveBeenCalled();
+    expect(mockIncrementUnreadCount).not.toHaveBeenCalled();
+    expect(mockApplyReplyToParentThread).not.toHaveBeenCalled();
+    expect(mockDbSaveReply).not.toHaveBeenCalled();
+  });
+
+  it('lets a reply through when the parent is unknown and was never dropped', async () => {
+    (useAppStore.getState as jest.Mock).mockReturnValue(
+      parentGuardState([testUUID('someone-else')]),
+    );
+    mockGetKnownThreadAuthorId.mockReturnValue(null);
+
+    await handleServerMessage(
+      newReplyMessage(
+        testUUID('thread-unknown-locally'),
+        testUUID('innocent-replier-3'),
+        testUUID('reply-3'),
+      ),
+    );
+
+    expect(mockUpsertReply).toHaveBeenCalled();
+    expect(mockApplyReplyToParentThread).toHaveBeenCalled();
   });
 });
 

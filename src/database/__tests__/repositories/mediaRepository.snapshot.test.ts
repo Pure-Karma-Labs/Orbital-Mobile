@@ -6,7 +6,8 @@
  * property here is SILENT when wrong:
  *  - a dropped conversation `IN (…)` returns the WHOLE library to a batch,
  *    including media from orbits the user has left;
- *  - a dropped author `NOT IN (…)` saves media from someone they blocked;
+ *  - a dropped author `NOT IN (…)` saves media from someone they blocked
+ *    (that clause now rides on the OPTIONS, not on `access` — #897);
  *  - an `author_id` read off the wrong parent applies the blocked decision to
  *    the wrong person;
  *  - a missing LIMIT unbinds the run (and the one iOS picker at the end of it);
@@ -53,7 +54,6 @@ const OPTIONS: GetAllMediaOptions = {
 
 const ACCESS: MediaExportAccessFilter = {
   conversationIds: ['conv-1', 'conv-2'],
-  blockedAuthorIds: [],
 };
 
 /** The last SQL + params handed to the driver. */
@@ -134,11 +134,13 @@ describe('getExportSnapshot', () => {
     expect(snapshotCall(withoutBlocks)[0]).not.toContain('NOT IN');
     closeDatabase();
 
+    // #897: the blocked set travels on the OPTIONS now, so the snapshot and
+    // the grid cannot disagree about who is excluded.
     const withBlocks = jest.fn(() => ({ rows: [], rowsAffected: 0 }));
     makeDb(withBlocks);
     getExportSnapshot(
-      OPTIONS,
-      { conversationIds: ['conv-1'], blockedAuthorIds: ['user-bad', 'user-worse'] },
+      { ...OPTIONS, excludeAuthorIds: ['user-bad', 'user-worse'] },
+      { conversationIds: ['conv-1'] },
       500,
     );
 
@@ -170,8 +172,8 @@ describe('getExportSnapshot', () => {
     const before = executeSync.mock.calls.length;
 
     const result = getExportSnapshot(
-      OPTIONS,
-      { conversationIds: [], blockedAuthorIds: ['user-bad'] },
+      { ...OPTIONS, excludeAuthorIds: ['user-bad'] },
+      { conversationIds: [] },
       500,
     );
 
@@ -268,7 +270,7 @@ describe('getMediaCount — access argument', () => {
     makeDb(executeSync);
     const before = executeSync.mock.calls.length;
 
-    expect(getMediaCount(OPTIONS, { conversationIds: [], blockedAuthorIds: [] })).toBe(0);
+    expect(getMediaCount(OPTIONS, { conversationIds: [] })).toBe(0);
     expect(executeSync.mock.calls.length).toBe(before);
   });
 });

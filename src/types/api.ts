@@ -9,6 +9,28 @@
  * Property names use camelCase throughout — the API client automatically
  * transforms server snake_case to camelCase on response, and camelCase to
  * snake_case on request bodies.
+ *
+ * PER-VIEWER AGGREGATES (#897). Since Backend #301/#304/#306/#310 the counts,
+ * recency timestamps and media arrays below are computed FOR THE CALLER and
+ * exclude everyone the caller has blocked, matched on the author of the
+ * thread/reply or the uploader of the media. That covers thread `replyCount`
+ * and `lastReplyAt` (and so the `activity_desc` order), orbit and DM
+ * `unreadCount` and `lastMessageAt`, thread-detail `media[]`, list
+ * `mediaCount`, and the `/replies` media arrays; orbit aggregates also drop
+ * replies posted on a blocked author's thread.
+ *
+ * Two surfaces stay UNFILTERED by design. Id-keyed
+ * `GET /api/media/:id/download` and `/info` are not filtered — they serve an
+ * id the client already holds. WebSocket broadcasts are not server-filtered
+ * either: the block guards in `src/services/websocket/messageHandler.ts`,
+ * including the parent-thread-author guard, are the enforcement point for
+ * live events.
+ *
+ * Because these values are per-viewer they can MOVE DOWN when a block lands,
+ * so the recency fields distinguish absent from null. A field ABSENT on the
+ * payload means "keep the value already known locally" (a 1.7.6-era backend
+ * omits it). An explicit `null` is the current backend's authoritative "no
+ * counted reply/message" and MAY LOWER the stored value.
  */
 
 // ============================================================
@@ -162,9 +184,17 @@ export interface GroupResponse {
   isCreator: boolean;
   joinedAt: string;
   groupType?: 'orbit' | 'dm';
-  /** ISO timestamp of the most recent thread/reply in this group (null if no activity) */
+  /**
+   * ISO timestamp of the most recent COUNTED thread/reply in this orbit, null
+   * when there is none. Per-viewer and block-filtered on the author (#301 /
+   * #306) — see the file header, including the absent-vs-null contract.
+   */
   lastMessageAt?: string | null;
-  /** Server-side unread count for the current user */
+  /**
+   * Server-side unread count for the current user. Per-viewer and
+   * block-filtered on the author (file header); orbit aggregates also drop
+   * replies posted on a blocked author's thread, so this can fall.
+   */
   unreadCount?: number;
   /** ISO timestamp of when the current user last read this group */
   lastReadAt?: string | null;
@@ -357,9 +387,22 @@ export interface DmResponse {
   };
   wrappedGroupKey: string | null;
   wrappedBy: string | null;
-  lastMessageAt: string | null;
+  /**
+   * Optional because a 1.7.6-era backend omits the field; absent and `null`
+   * are NOT the same thing to `loadDmConversations` (#897): absent keeps the
+   * locally known recency, `null` is an authoritative "no counted message".
+   *
+   * The explicit `null` has to be allowed to overwrite a higher stored value
+   * precisely because this timestamp is PER-VIEWER and block-filtered on the
+   * sender (#301 / #306, file header): blocking the other party legitimately
+   * lowers it, and a max-merge would pin the old value forever.
+   */
+  lastMessageAt?: string | null;
   createdAt: string;
-  /** Server-side unread count for the current user */
+  /**
+   * Server-side unread count for the current user. Per-viewer and
+   * block-filtered on the sender (file header), so it too can fall.
+   */
   unreadCount?: number;
   /** ISO timestamp of when the current user last read this DM */
   lastReadAt?: string | null;
@@ -415,17 +458,29 @@ export interface ThreadResponse {
   titleIv: string | null;
   encryptedBody: string | null;
   bodyIv: string | null;
+  /**
+   * Per-viewer since Backend #301/#304: replies by an author the caller has
+   * blocked are not counted (file header).
+   */
   replyCount: number;
   /**
-   * ISO timestamp of the most recent reply, null when there are none (#883).
+   * ISO timestamp of the most recent COUNTED reply, null when there are none
+   * (#883). Per-viewer and block-filtered on the reply author (file header).
    *
-   * Optional on the type because a 1.7.6-era backend omits the field; absent
-   * and null are treated identically (no known recency), and the store-side
-   * max-merge keeps a previously known value from being erased either way.
+   * Optional on the type because a 1.7.6-era backend omits the field — and
+   * absent is NOT the same as `null` (#897). Absent means "no opinion": keep
+   * whatever recency is already known locally. An explicit `null` is the
+   * current backend's authoritative "no counted reply" and MAY LOWER the
+   * stored value, since blocking the only replier is exactly how a known
+   * timestamp legitimately goes away. A blanket max-merge would pin it.
    */
   lastReplyAt?: string | null;
   createdAt: string;
-  /** Includes tombstoned (evicted/expired) media; detail views show unavailable tiles. */
+  /**
+   * Includes tombstoned (evicted/expired) media; detail views show unavailable
+   * tiles. Per-viewer since Backend #306/#310: media uploaded by a blocked
+   * author is left out of this array (file header).
+   */
   media: MediaMetadata[];
 }
 
@@ -450,11 +505,21 @@ export interface ThreadListItem {
   encryptedBody: string | null;
   titleIv: string | null;
   bodyIv: string | null;
+  /** Per-viewer, block-filtered on the reply author — see `ThreadResponse`. */
   replyCount: number;
-  /** Includes tombstoned (evicted/expired) media; detail views show unavailable tiles. */
+  /**
+   * Includes tombstoned (evicted/expired) media; detail views show unavailable
+   * tiles. Per-viewer since Backend #310: media uploaded by a blocked author
+   * is not counted (file header).
+   */
   mediaCount: number;
   createdAt: string;
-  /** ISO timestamp of the most recent reply (null if no replies) */
+  /**
+   * ISO timestamp of the most recent counted reply (null if there is none),
+   * and the key the server's `activity_desc` order sorts by. Per-viewer and
+   * block-filtered under the same absent-vs-null contract as
+   * `ThreadResponse.lastReplyAt`.
+   */
   lastReplyAt?: string | null;
 }
 
@@ -537,6 +602,10 @@ export interface ReplyResponse {
   parentReplyId: string | null;
   level: number;
   createdAt: string;
+  /**
+   * Per-viewer since Backend #310: media uploaded by a blocked author is left
+   * out (file header).
+   */
   media: MediaMetadata[];
 }
 
@@ -548,6 +617,10 @@ export interface ReplyResponse {
  */
 export interface ListRepliesResponse {
   replies: ReplyResponse[];
+  /**
+   * Thread-level media. Per-viewer since Backend #310: this pass drops media
+   * uploaded by a blocked author (file header).
+   */
   media: MediaMetadata[];
   totalCount: number;
   hasMore: boolean;

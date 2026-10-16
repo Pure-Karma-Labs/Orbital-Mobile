@@ -1,6 +1,7 @@
 import { useCallback } from 'react';
 import { Alert } from 'react-native';
 import { useAppStore } from '../stores/useAppStore';
+import { blockUserAndRefresh } from '../services/blockedContentRefresh';
 
 export interface AuthorActionContext {
   contentType: 'thread' | 'reply' | 'message';
@@ -41,7 +42,11 @@ export function useAuthorActions(
                 text: 'Block',
                 style: 'destructive',
                 onPress: () => {
-                  useAppStore.getState().blockUser(authorId, authorUsername);
+                  // #897: blocks the content locally on this tick, then
+                  // refetches the per-viewer lists once the API has settled.
+                  // Fire-and-forget: it never rejects and the Alert chain below
+                  // must not wait on a network round-trip.
+                  void blockUserAndRefresh(authorId, authorUsername);
                   // Follow-up: offer to also report
                   Alert.alert(
                     `Blocked @${authorUsername}`,

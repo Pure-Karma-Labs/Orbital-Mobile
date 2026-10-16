@@ -15,9 +15,13 @@ export const createBlockedUsersSlice: StateCreator<
   blockedUserProfiles: {},
 
   // Actions
+  // The optimistic `set` stays SYNCHRONOUS — the UI must hide the content on
+  // the same tick. The returned promise only reports when the API settled, so
+  // `services/blockedContentRefresh.ts` knows when the server has stopped
+  // answering with pre-block per-viewer values (#897). It never rejects.
   blockUser: (userId, username) => {
     const { blockedUserIds, blockedUserProfiles } = get();
-    if (blockedUserIds.includes(userId)) return; // Idempotent
+    if (blockedUserIds.includes(userId)) return Promise.resolve(); // Idempotent
     set(
       {
         blockedUserIds: [...blockedUserIds, userId],
@@ -26,14 +30,14 @@ export const createBlockedUsersSlice: StateCreator<
       false,
       'blockedUsers/blockUser',
     );
-    blockUserApi(userId).catch((e: unknown) => {
+    return blockUserApi(userId).catch((e: unknown) => {
       if (__DEV__) console.warn('[BlockedUsers] blockUser API failed:', e instanceof Error ? e.message : e);
     });
   },
 
   unblockUser: (userId) => {
     const { blockedUserIds, blockedUserProfiles, userId: sessionUserId } = get();
-    if (!blockedUserIds.includes(userId)) return; // No-op for unknown
+    if (!blockedUserIds.includes(userId)) return Promise.resolve(); // No-op for unknown
     const savedName = blockedUserProfiles[userId];
     const updated = { ...blockedUserProfiles };
     delete updated[userId];
@@ -45,7 +49,7 @@ export const createBlockedUsersSlice: StateCreator<
       false,
       'blockedUsers/unblockUser',
     );
-    unblockUserApi(userId).catch((e: unknown) => {
+    return unblockUserApi(userId).catch((e: unknown) => {
       if (__DEV__) console.warn('[BlockedUsers] unblockUser API failed:', e instanceof Error ? e.message : e);
       // #896: the sync no longer deletes server rows, so a failed DELETE must
       // not leave local state ahead of the server (the next cold-start sync
@@ -88,6 +92,13 @@ export const createBlockedUsersSlice: StateCreator<
     const localSet = new Set(blockedUserIds);
     const newIds = serverBlockedIds.filter((id) => !localSet.has(id));
     if (newIds.length === 0) return;
+    // A block made on another device evicts cached media here too (#897): the
+    // server already stopped sending it, but the in-memory gallery/grid was
+    // seeded from SQLite. In-session only — SQLite is untouched, so an unblock
+    // brings the rows back on the next hydrate or page load.
+    for (const id of newIds) {
+      get().removeMediaForAuthor(id);
+    }
     // #896: ids only — blockedUserProfiles is left untouched. GET /blocked
     // carries no usernames, and a shared 'Unknown' placeholder would render as
     // a real handle ("Unblock @Unknown?"). The screen falls back to a

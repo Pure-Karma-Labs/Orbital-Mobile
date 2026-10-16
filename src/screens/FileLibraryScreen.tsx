@@ -254,6 +254,23 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
   const cellSize = Math.floor((screenWidth - GRID_GAP * (NUM_COLUMNS - 1) - GRID_GAP * 2) / NUM_COLUMNS);
   const { activeConversationId, conversations } = useConversations();
 
+  // The BARE field selector (#897). Never `?? []` inside the selector: that
+  // would hand back a fresh array on every store change, change `loadPage`'s
+  // identity on every render and loop the reset effect below. The two derived
+  // memos collapse an identity-only change (e.g. a hydrate that added nothing
+  // new) to the same `excludeAuthorIds` reference, so only a REAL block or
+  // unblock re-runs page 0. `?? []` outside the selector is for the screen
+  // test's store mock, which resolves selectors against a partial state.
+  const blockedUserIds = useAppStore((s) => s.blockedUserIds);
+  const blockedKey = useMemo(
+    () => [...(blockedUserIds ?? [])].sort().join(','),
+    [blockedUserIds],
+  );
+  const excludeAuthorIds = useMemo(
+    () => (blockedKey ? blockedKey.split(',') : []),
+    [blockedKey],
+  );
+
   // ---------------------------------------------------------------------------
   // State
   // ---------------------------------------------------------------------------
@@ -396,6 +413,7 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
         sortOrder: sortState.sortOrder,
         contentTypeFilter: contentFilter === 'all' ? null : contentFilter,
         conversationId: orbitFilter,
+        excludeAuthorIds,
       });
 
       if (rows.length < PAGE_SIZE) {
@@ -429,10 +447,11 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
         );
       });
     },
-    [sortState.sortBy, sortState.sortOrder, contentFilter, orbitFilter],
+    [sortState.sortBy, sortState.sortOrder, contentFilter, orbitFilter, excludeAuthorIds],
   );
 
-  // Reset + reload on filter/sort change
+  // Reset + reload on filter/sort change (and on a real block/unblock, which
+  // changes `excludeAuthorIds` and so `loadPage`'s identity — #897)
   useEffect(() => {
     setMediaRows([]);
     setLoading(true);

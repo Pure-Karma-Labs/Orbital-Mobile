@@ -210,8 +210,16 @@ export const createMediaSlice: StateCreator<
     );
   },
 
+  // One author is the one-element case of many (#906 review): a cross-device
+  // hydrate learns several ids at once and must not pay a full scan per id.
   removeMediaForAuthor: (authorId) => {
+    get().removeMediaForAuthors([authorId]);
+  },
+
+  removeMediaForAuthors: (authorIds) => {
     const { media, mediaIdsByThread, mediaIdsByReply, replies, threads } = get();
+    const doomedAuthors = new Set(authorIds);
+    if (doomedAuthors.size === 0) return;
 
     // Author resolution mirrors the repository's `AUTHOR_EXPR`: a reply's
     // author for reply media, the thread's author otherwise. A parent that is
@@ -224,7 +232,7 @@ export const createMediaSlice: StateCreator<
         : item.threadId
           ? threads[item.threadId]?.authorId ?? null
           : null;
-      if (author === authorId) doomed.add(item.id);
+      if (author !== null && doomedAuthors.has(author)) doomed.add(item.id);
     }
     // No `set` at all when nothing matches: this runs on every block and on
     // every cross-device hydrate, and a new map identity would re-render every
@@ -255,7 +263,7 @@ export const createMediaSlice: StateCreator<
         mediaIdsByReply: pruneIndex(mediaIdsByReply),
       },
       false,
-      'media/removeMediaForAuthor',
+      'media/removeMediaForAuthors',
     );
   },
 

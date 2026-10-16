@@ -443,13 +443,20 @@ export interface MediaActions {
   removeMedia: (id: string) => void;
   /**
    * Evict every in-memory media item whose author is `authorId` (#897).
+   * Convenience wrapper over {@link removeMediaForAuthors}.
+   */
+  removeMediaForAuthor: (authorId: string) => void;
+  /**
+   * Evict every in-memory media item whose author is in `authorIds` — ONE
+   * scan and ONE `set()` however many ids are passed (#897, #906 review).
    *
    * In-session only — SQLite is untouched, so an unblock brings the rows back
    * on the next hydrate / page load. The author is resolved the way
    * `AUTHOR_EXPR` resolves it in SQL: a reply's author for reply media, the
-   * thread's author otherwise. An unknown parent is fail-open (not evicted).
+   * thread's author otherwise. An unknown parent is fail-open (not evicted),
+   * and a no-match call does not `set()` at all.
    */
-  removeMediaForAuthor: (authorId: string) => void;
+  removeMediaForAuthors: (authorIds: string[]) => void;
 }
 
 export type MediaSlice = MediaState & MediaActions;
@@ -558,6 +565,21 @@ export interface BlockedUsersState {
   blockedUserIds: string[];
   /** Fallback username for display when the user is not in contacts */
   blockedUserProfiles: Record<string, string>;
+  /**
+   * Bumped on every change to the blocked set — block, unblock, unblock
+   * rollback, and a hydrate that added ids (#906 review of #897).
+   *
+   * It is a REQUEST-ORDERING token, not state the UI reads: a list response
+   * that left the server BEFORE a block landed must not be written as the
+   * authoritative per-viewer answer afterwards. Services capture it next to
+   * their pre-request snapshot and compare on the way out.
+   *
+   * Deliberately NOT persisted (it is absent from `partializeAppState`'s pick
+   * list): it only has meaning within one app session's in-flight requests,
+   * and a restored value would be compared against a counter that restarts
+   * at 0.
+   */
+  blockedUsersGeneration: number;
 }
 
 export interface BlockedUsersActions {

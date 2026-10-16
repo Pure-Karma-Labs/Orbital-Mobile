@@ -142,6 +142,7 @@ function makeStore() {
         // BlockedUsers slice stubs
         blockedUserIds: [],
         blockedUserProfiles: {},
+    blockedUsersGeneration: 0,
         blockUser: jest.fn(),
         unblockUser: jest.fn(),
         resetBlockedUsers: jest.fn(),
@@ -618,6 +619,35 @@ describe('mediaSlice — removeMediaForAuthor (#897)', () => {
 
     // Unknown parent ⇒ unknown author ⇒ kept, same as the SQL COALESCE rule.
     expect('media-orphan' in store.getState().media).toBe(true);
+  });
+
+  it('evicts SEVERAL authors in one scan and one set() (#906)', () => {
+    const store = seed();
+    let notifications = 0;
+    const unsubscribe = store.subscribe(() => {
+      notifications += 1;
+    });
+
+    store.getState().removeMediaForAuthors(['bad', 'good']);
+    unsubscribe();
+
+    // A cross-device hydrate learns several ids at once; one `set` keeps it to
+    // a single re-render instead of one per id.
+    expect(notifications).toBe(1);
+    const state = store.getState();
+    expect(Object.keys(state.media)).toEqual([]);
+    expect(state.mediaIdsByThread['thread-1']).toEqual([]);
+    expect(state.mediaIdsByReply['reply-bad']).toEqual([]);
+    expect(state.mediaIdsByReply['reply-good']).toEqual([]);
+  });
+
+  it('removeMediaForAuthors with an empty list is a no-op (#906)', () => {
+    const store = seed();
+    const before = store.getState();
+
+    store.getState().removeMediaForAuthors([]);
+
+    expect(store.getState().media).toBe(before.media);
   });
 
   it('leaves other authors untouched and keeps state identity on a no-op', () => {

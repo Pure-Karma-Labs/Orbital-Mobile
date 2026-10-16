@@ -747,10 +747,19 @@ function parseServerTimestamp(value: string | null | undefined): number | null {
  *
  *  - `serverSent === false` (a 1.7.6-era backend omits the field entirely) ⇒
  *    legacy never-lower against whatever is known locally;
+ *  - `blockedSetChanged` ⇒ a block/unblock landed while this request was in
+ *    flight, so the response may predate it and must NOT be written as the
+ *    authoritative per-viewer answer (#906 review). The LIVE row wins
+ *    outright, count included. Demoting to the max-merge instead would
+ *    re-latch exactly the stale high value this whole mechanism exists to
+ *    lower. With no live row there is nothing to keep, so the legacy
+ *    never-lower path applies and the following refresh corrects it;
  *  - the live row's recency moved past the snapshot (or the row appeared
- *    mid-request) ⇒ a reply landed; keep the LIVE `lastReplyAt` **and**
- *    `replyCount`, which `applyReplyToParentThread` bumped together — taking
- *    one without the other is what made the pair disagree in the first place;
+ *    mid-request) ⇒ a reply landed; keep the LIVE `lastReplyAt` **and** the
+ *    higher of the two `replyCount`s, which `applyReplyToParentThread` bumped
+ *    together — taking one without the other is what made the pair disagree
+ *    in the first place, and the server may already count more replies than
+ *    the single local bump;
  *  - otherwise the server value is authoritative and may lower, or be `null`.
  *
  * `before` is a plain reference to the `threads` map and is a sound snapshot
@@ -766,15 +775,19 @@ function parseServerTimestamp(value: string | null | undefined): number | null {
 function reconcileServerRecency({
   serverSent,
   serverValue,
+  serverReplyCount,
   before,
   live,
   fallback,
+  blockedSetChanged,
 }: {
   serverSent: boolean;
   serverValue: number | null;
+  serverReplyCount: number;
   before: Thread | undefined;
   live: Thread | undefined;
   fallback: Thread | null;
+  blockedSetChanged: boolean;
 }): { lastReplyAt: number | null; replyCount?: number } {
   const existing = live ?? fallback ?? undefined;
 
@@ -783,6 +796,14 @@ function reconcileServerRecency({
   }
 
   const liveAt = live?.lastReplyAt;
+
+  if (blockedSetChanged) {
+    if (live !== undefined) {
+      return { lastReplyAt: maxTimestamp(liveAt, null), replyCount: live.replyCount };
+    }
+    return { lastReplyAt: maxTimestamp(existing?.lastReplyAt, serverValue) };
+  }
+
   const bumpedMidRequest =
     live !== undefined &&
     isValidTimestamp(liveAt) &&
@@ -791,7 +812,10 @@ function reconcileServerRecency({
       liveAt > before.lastReplyAt);
 
   if (bumpedMidRequest) {
-    return { lastReplyAt: maxTimestamp(liveAt, null), replyCount: live.replyCount };
+    return {
+      lastReplyAt: maxTimestamp(liveAt, null),
+      replyCount: Math.max(live.replyCount, serverReplyCount),
+    };
   }
 
   return { lastReplyAt: maxTimestamp(serverValue, null) };
@@ -964,6 +988,9 @@ export async function loadThreadsForGroup(groupId: string): Promise<Thread[]> {
   // request was in flight. Sound as a snapshot because every thread writer
   // replaces the map immutably.
   const threadsBefore = getStoreActions().threads;
+  // Captured with the snapshot (#906 review): a block that lands while this
+  // request is in flight makes the response's per-viewer values stale.
+  const blockedGenerationBefore = getStoreActions().blockedUsersGeneration;
 
   const response = await getGroupThreads(groupId, { sort: 'activity_desc' });
 
@@ -986,7 +1013,9 @@ export async function loadThreadsForGroup(groupId: string): Promise<Thread[]> {
   // would sort low again after a cold start. The other direction (#897) is a
   // block that legitimately LOWERS the server's per-viewer value, which the
   // old unconditional max-merge could never let through.
-  const threadsAfter = getStoreActions().threads;
+  const storeAfter = getStoreActions();
+  const threadsAfter = storeAfter.threads;
+  const blockedSetChanged = storeAfter.blockedUsersGeneration !== blockedGenerationBefore;
   const threads = mapped.map((t) => {
     const live = threadsAfter[t.id];
     return applyReconciledRecency(
@@ -994,9 +1023,11 @@ export async function loadThreadsForGroup(groupId: string): Promise<Thread[]> {
       reconcileServerRecency({
         serverSent: serverSentById.get(t.id) === true,
         serverValue: t.lastReplyAt,
+        serverReplyCount: t.replyCount,
         before: threadsBefore[t.id],
         live,
         fallback: live ? null : safeDbGetThread(t.id),
+        blockedSetChanged,
       }),
     );
   });
@@ -1030,20 +1061,25 @@ export async function loadThreadsForGroup(groupId: string): Promise<Thread[]> {
  */
 export async function loadThread(threadId: string): Promise<Thread> {
   const before = getStoreActions().threads[threadId];
+  const blockedGenerationBefore = getStoreActions().blockedUsersGeneration;
 
   const response = await getThread(threadId);
   const groupKey = await getOrFetchGroupKey(response.groupId);
   const mapped = await mapThreadResponse(response, groupKey);
 
-  const live = getStoreActions().threads[threadId];
+  const storeAfter = getStoreActions();
+  const live = storeAfter.threads[threadId];
   const thread: Thread = applyReconciledRecency(
     mapped,
     reconcileServerRecency({
       serverSent: response.lastReplyAt !== undefined,
       serverValue: mapped.lastReplyAt,
+      serverReplyCount: mapped.replyCount,
       before,
       live,
       fallback: live ? null : safeDbGetThread(threadId),
+      blockedSetChanged:
+        storeAfter.blockedUsersGeneration !== blockedGenerationBefore,
     }),
   );
 

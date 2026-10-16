@@ -146,6 +146,7 @@ function makeStore() {
     updateMediaUploadState: jest.fn(),
     removeMedia: jest.fn(),
     removeMediaForAuthor: jest.fn(),
+    removeMediaForAuthors: jest.fn(),
 
     pushPermissionGranted: false,
     pushToken: null,
@@ -424,32 +425,83 @@ describe('blockedUsersSlice - hydrateBlockedUsers', () => {
     expect(store.getState().blockedUserIds).toEqual(['user-1']);
   });
 
-  it('evicts cached media once per NEWLY hydrated id (#897)', () => {
+  it('evicts cached media for the NEWLY hydrated ids in one call (#897, #906)', () => {
     const store = makeStore();
     store.getState().blockUser('user-1', 'alice');
-    const removeMediaForAuthor = store.getState().removeMediaForAuthor as jest.Mock;
-    removeMediaForAuthor.mockClear();
+    const removeMediaForAuthors = store.getState().removeMediaForAuthors as jest.Mock;
+    removeMediaForAuthors.mockClear();
 
     store.getState().hydrateBlockedUsers(['user-1', 'user-2', 'user-3']);
 
-    // A cross-device block has to evict here too — the server stopped sending
-    // the media, but the in-memory gallery/grid was seeded from SQLite.
-    expect(removeMediaForAuthor).toHaveBeenCalledTimes(2);
-    expect(removeMediaForAuthor).toHaveBeenCalledWith('user-2');
-    expect(removeMediaForAuthor).toHaveBeenCalledWith('user-3');
-    // Already-known ids are not re-evicted.
-    expect(removeMediaForAuthor).not.toHaveBeenCalledWith('user-1');
+    // A cross-device block evicts here too — the server stopped sending the
+    // media, but an in-session gallery/grid was seeded from SQLite. One call,
+    // one scan, and already-known ids are not included.
+    expect(removeMediaForAuthors).toHaveBeenCalledTimes(1);
+    expect(removeMediaForAuthors).toHaveBeenCalledWith(['user-2', 'user-3']);
+  });
+
+  it('evicts AFTER the blocked ids are in the store (#906)', () => {
+    const store = makeStore();
+    let idsAtEvictionTime: string[] = [];
+    store.setState({
+      removeMediaForAuthors: () => {
+        idsAtEvictionTime = store.getState().blockedUserIds;
+      },
+    });
+
+    store.getState().hydrateBlockedUsers(['user-2']);
+
+    // The new blocked set must already be in force for anything the eviction
+    // wakes up (a re-render reading `blockedUserIds`, a read-time filter).
+    expect(idsAtEvictionTime).toEqual(['user-2']);
   });
 
   it('does not evict when the server list adds nothing new (#897)', () => {
     const store = makeStore();
     store.getState().blockUser('user-1', 'alice');
-    const removeMediaForAuthor = store.getState().removeMediaForAuthor as jest.Mock;
-    removeMediaForAuthor.mockClear();
+    const removeMediaForAuthors = store.getState().removeMediaForAuthors as jest.Mock;
+    removeMediaForAuthors.mockClear();
 
     store.getState().hydrateBlockedUsers(['user-1']);
 
-    expect(removeMediaForAuthor).not.toHaveBeenCalled();
+    expect(removeMediaForAuthors).not.toHaveBeenCalled();
+  });
+
+  it('bumps the blocked-set generation on every change (#906)', () => {
+    const store = makeStore();
+    expect(store.getState().blockedUsersGeneration).toBe(0);
+
+    store.getState().blockUser('user-1', 'alice');
+    expect(store.getState().blockedUsersGeneration).toBe(1);
+
+    // Idempotent re-block changes nothing, so no in-flight request is voided.
+    store.getState().blockUser('user-1', 'alice');
+    expect(store.getState().blockedUsersGeneration).toBe(1);
+
+    store.getState().unblockUser('user-1');
+    expect(store.getState().blockedUsersGeneration).toBe(2);
+
+    store.getState().unblockUser('user-unknown');
+    expect(store.getState().blockedUsersGeneration).toBe(2);
+
+    store.getState().hydrateBlockedUsers(['user-9']);
+    expect(store.getState().blockedUsersGeneration).toBe(3);
+
+    store.getState().hydrateBlockedUsers(['user-9']);
+    expect(store.getState().blockedUsersGeneration).toBe(3);
+  });
+
+  it('bumps the generation again when an unblock rolls back (#906)', async () => {
+    mockUnblockUserApi.mockRejectedValueOnce(new Error('offline'));
+    const store = makeStore();
+    store.getState().blockUser('user-1', 'alice');
+    const afterBlock = store.getState().blockedUsersGeneration;
+
+    await store.getState().unblockUser('user-1');
+
+    // Optimistic removal AND the rollback each void an in-flight request.
+    expect(store.getState().blockedUsersGeneration).toBe(afterBlock + 2);
+    expect(store.getState().blockedUserIds).toEqual(['user-1']);
   });
 });
 

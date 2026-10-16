@@ -408,13 +408,23 @@ function mapDmResponse(response: DmResponse): Conversation {
  * `loadDmConversations`, holding a pre-request snapshot, can tell that apart
  * from a WS message that landed mid-request, so it decides and passes the flag.
  *
+ * ## `keepLocalRecency` — the request-ordering mode (#906 review)
+ *
+ * When the blocked set changed WHILE the list request was in flight, the
+ * response may predate the block and so cannot be authoritative; but demoting
+ * it to the max-merge would re-latch the very stale high value the
+ * authoritative mode exists to lower. So the LIVE row's `lastMessageAt` and
+ * `unreadCount` win outright (rule 2 still forces 0 for a pending mark-read),
+ * the rest of the incoming row is written, and the post-block refresh that
+ * caused the generation bump supplies the corrected numbers moments later.
+ *
  * Pure: it reads no store state, so the merge rules are testable on their own.
  */
 export function mergeDmRecency(
   existing: Conversation | undefined,
   incoming: Conversation,
   readPending = false,
-  options?: { authoritative?: boolean },
+  options?: { authoritative?: boolean; keepLocalRecency?: boolean },
 ): Conversation {
   if (!existing) {
     // First insert: `mapDmResponse` parses server timestamps unguarded, so
@@ -426,13 +436,19 @@ export function mergeDmRecency(
     };
   }
 
-  const authoritative = options?.authoritative === true;
+  const keepLocalRecency = options?.keepLocalRecency === true;
+  const authoritative = !keepLocalRecency && options?.authoritative === true;
 
   const localMessageAt = maxTimestamp(existing.lastMessageAt, null) ?? 0;
   const serverMessageAt = maxTimestamp(incoming.lastMessageAt, null) ?? 0;
 
   let unreadCount: number;
-  if (!authoritative && localMessageAt > serverMessageAt) {
+  if (keepLocalRecency) {
+    // The live row wins, but a pending mark-read still forces 0 (rule 2).
+    unreadCount = readPending ? 0 : existing.unreadCount;
+  } else if (!authoritative && localMessageAt > serverMessageAt) {
+    // Rule 1 stays ahead of rule 2 in the merging mode (#883): a message that
+    // arrives AFTER a local read must still badge.
     unreadCount = existing.unreadCount;
   } else if (readPending) {
     unreadCount = 0;
@@ -442,9 +458,11 @@ export function mergeDmRecency(
 
   return {
     ...incoming,
-    lastMessageAt: authoritative
-      ? maxTimestamp(incoming.lastMessageAt, null)
-      : maxTimestamp(existing.lastMessageAt, incoming.lastMessageAt),
+    lastMessageAt: keepLocalRecency
+      ? maxTimestamp(existing.lastMessageAt, null)
+      : authoritative
+        ? maxTimestamp(incoming.lastMessageAt, null)
+        : maxTimestamp(existing.lastMessageAt, incoming.lastMessageAt),
     lastReadAt: maxTimestamp(existing.lastReadAt, incoming.lastReadAt),
     updatedAt: maxTimestamp(existing.updatedAt, incoming.updatedAt) ?? incoming.updatedAt,
     unreadCount,
@@ -529,6 +547,9 @@ export async function loadDmConversations(): Promise<void> {
   // from a WS message that landed while the request was in flight. Sound as a
   // snapshot because `upsertConversation` replaces the map immutably.
   const conversationsBefore = useAppStore.getState().conversations;
+  // Captured with the snapshot (#906 review): a block landing while this
+  // request is in flight makes the response's per-viewer values stale.
+  const blockedGenerationBefore = useAppStore.getState().blockedUsersGeneration;
 
   const dms = await listDms();
 
@@ -575,6 +596,7 @@ export async function loadDmConversations(): Promise<void> {
 
   if (isSessionStale(session)) return;
   const store = useAppStore.getState();
+  const blockedSetChanged = store.blockedUsersGeneration !== blockedGenerationBefore;
   for (const conversation of conversations) {
     // Merge, never overwrite (#883). State is re-read per row because each
     // upsert replaces the map — `store.conversations` is a stale snapshot after
@@ -588,10 +610,19 @@ export async function loadDmConversations(): Promise<void> {
       existing !== undefined &&
       (snapshot === undefined ||
         (maxTimestamp(existing.lastMessageAt, null) ?? 0) >
-          (maxTimestamp(snapshot.lastMessageAt, null) ?? 0));
+          (maxTimestamp(snapshot.lastMessageAt, null) ?? 0) ||
+        // The badge can move WITHOUT the recency (#906 review):
+        // `bumpLastMessageAt` no-ops on an out-of-order timestamp while
+        // `incrementUnreadCount` still fires, so an unread increment alone is
+        // also a mid-request bump.
+        existing.unreadCount > snapshot.unreadCount);
     store.upsertConversation(
       mergeDmRecency(existing, conversation, isMarkReadPending(conversation.id), {
         authoritative: serverSentById.get(conversation.id) === true && !bumpedMidRequest,
+        // A response that may predate the block/unblock must not write its
+        // per-viewer values at all — the live row wins and the refresh that
+        // bumped the generation brings the corrected ones.
+        keepLocalRecency: blockedSetChanged && existing !== undefined,
       }),
     );
   }

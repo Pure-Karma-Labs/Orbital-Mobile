@@ -4,7 +4,6 @@ import { closeDatabase, resetDatabaseForTesting } from '../../connection';
 import {
   saveMedia,
   getMedia,
-  getMediaForThread,
   getThreadLevelMedia,
   getMediaForReply,
   getMediaForThreadReplies,
@@ -152,33 +151,6 @@ describe('mediaRepository', () => {
       const result = getMedia('media-1');
       expect(result?.id).toBe('media-1');
       expect(result?.content_type).toBe('image/jpeg');
-    });
-  });
-
-  describe('getMediaForThread', () => {
-    it('queries by thread_id ordered by created_at ASC', () => {
-      const executeSync = jest.fn((_sql: string, _params?: unknown[]) => ({ rows: [], rowsAffected: 0 }));
-      makeDb(executeSync);
-      getMediaForThread('thread-1');
-      const selectCall = executeSync.mock.calls.find(
-        (c) => typeof c[0] === 'string' && (c[0] as string).includes('SELECT'),
-      ) as unknown as [string, unknown[]];
-      expect(selectCall).toBeDefined();
-      expect(selectCall[0]).toContain('WHERE thread_id = ?');
-      expect(selectCall[0]).toContain('ORDER BY created_at ASC');
-      expect(selectCall[1]).toEqual(['thread-1']);
-    });
-
-    it('returns matching rows', () => {
-      makeDb(
-        jest.fn(() => ({
-          rows: [sampleMedia, { ...sampleMedia, id: 'media-2' }],
-          rowsAffected: 0,
-        })),
-      );
-      const result = getMediaForThread('thread-1');
-      expect(result).toHaveLength(2);
-      expect(result[1].id).toBe('media-2');
     });
   });
 

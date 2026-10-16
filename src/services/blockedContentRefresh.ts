@@ -36,6 +36,15 @@
  * pre-block values until the next successful load, and the UI's `blockedSet`
  * filters plus the WebSocket guards still hide the content in the meantime.
  *
+ * ## No logout teardown hook, deliberately
+ *
+ * Unlike `messageHandler` / `conversationService`, this module registers no
+ * `clear*State` function in the logout path and needs none: `inflight` is
+ * nulled in a `finally`, so it cannot survive the run that owns it, and a
+ * coalesced re-run that starts after the wipe finds `captureSession() === null`
+ * and returns without touching anything. The loaders carry their own
+ * session-stale guards on top of that.
+ *
  * NOTE: the `loadConversations()` + `loadDmConversations()` pair also appears
  * in `authService` and `keyRecoveryService`. A shared `reloadConversationLists`
  * was deliberately NOT extracted here: those two are smoke-verified bootstrap
@@ -97,12 +106,10 @@ async function runRefreshOnce(): Promise<void> {
   // reject — its callers are fire-and-forget from an Alert handler.
   const results = await Promise.allSettled(tasks);
 
-  // Session changed while the loaders ran: every loader has its own
-  // session guard and already dropped its writes, so there is nothing to
-  // report and nothing to retry.
-  if (isSessionStale(session)) return;
-
-  if (__DEV__) {
+  // Logging only: a session that changed while the loaders ran is not worth
+  // reporting — every loader has its own session guard and already dropped
+  // its writes. Nothing else hangs off this check.
+  if (__DEV__ && !isSessionStale(session)) {
     for (const result of results) {
       if (result.status === 'rejected') {
         const reason = result.reason;
@@ -133,6 +140,18 @@ export function refreshBlockedContent(): Promise<void> {
         rerunRequested = false;
         await runRefreshOnce();
       }
+    } catch (e) {
+      // Nothing inside is EXPECTED to throw — `Promise.allSettled` absorbs the
+      // loaders — but the two dynamic imports can reject (a module-eval error,
+      // a bundler miss), and every caller is fire-and-forget from an Alert
+      // handler. So the contract "never rejects" is enforced here rather than
+      // assumed (#906 review).
+      if (__DEV__) {
+        console.warn(
+          '[BlockedContentRefresh] refresh failed:',
+          e instanceof Error ? e.message : e,
+        );
+      }
     } finally {
       inflight = null;
       rerunRequested = false;
@@ -140,6 +159,34 @@ export function refreshBlockedContent(): Promise<void> {
   })();
 
   return inflight;
+}
+
+/**
+ * Wait for the optimistic action's API call to settle, then refresh — and
+ * NEVER reject (#906 review).
+ *
+ * The lazy `conversationService` import is itself awaited here, so it can
+ * reject (module-eval error, bundler miss) where no `allSettled` would catch
+ * it; both callers are fire-and-forget from an Alert handler, so the local
+ * half of the operation must stand regardless. The session is captured after
+ * that import — one microtask later than the state change, which is the price
+ * of keeping the store writes synchronous — and only gates the refetch.
+ */
+async function settleThenRefresh(settled: Promise<void>, op: string): Promise<void> {
+  try {
+    const { captureSession, isSessionStale } = await import('./conversationService');
+    const session = captureSession();
+    await settled;
+    if (!session || isSessionStale(session)) return;
+    await refreshBlockedContent();
+  } catch (e) {
+    if (__DEV__) {
+      console.warn(
+        `[BlockedContentRefresh] ${op} refresh failed:`,
+        e instanceof Error ? e.message : e,
+      );
+    }
+  }
 }
 
 /**
@@ -157,13 +204,7 @@ export function blockUserAndRefresh(userId: string, username: string): Promise<v
   const settled = store.blockUser(userId, username);
   store.removeMediaForAuthor(userId);
 
-  return (async () => {
-    const { captureSession, isSessionStale } = await import('./conversationService');
-    const session = captureSession();
-    await settled;
-    if (!session || isSessionStale(session)) return;
-    await refreshBlockedContent();
-  })();
+  return settleThenRefresh(settled, 'block');
 }
 
 /**
@@ -176,11 +217,5 @@ export function blockUserAndRefresh(userId: string, username: string): Promise<v
 export function unblockUserAndRefresh(userId: string): Promise<void> {
   const settled = useAppStore.getState().unblockUser(userId);
 
-  return (async () => {
-    const { captureSession, isSessionStale } = await import('./conversationService');
-    const session = captureSession();
-    await settled;
-    if (!session || isSessionStale(session)) return;
-    await refreshBlockedContent();
-  })();
+  return settleThenRefresh(settled, 'unblock');
 }

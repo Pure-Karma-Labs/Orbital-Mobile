@@ -14,13 +14,21 @@ const mockIsSessionStale = jest.fn<boolean, [{ userId: string; generation: numbe
 const mockLoadThreadsForGroup = jest.fn<Promise<unknown>, [string]>();
 const mockLoadThread = jest.fn<Promise<unknown>, [string]>();
 
-jest.mock('../conversationService', () => ({
+/**
+ * Named so a test that temporarily replaces this module with a THROWING
+ * factory can put the working one back — `jest.dontMock` would hand back the
+ * real `conversationService` instead, whose `captureSession` then reads the
+ * mocked store and silently returns null.
+ */
+const conversationServiceMock = () => ({
   loadConversations: () => mockLoadConversations(),
   loadDmConversations: () => mockLoadDmConversations(),
   captureSession: () => mockCaptureSession(),
   isSessionStale: (captured: { userId: string; generation: number }) =>
     mockIsSessionStale(captured),
-}));
+});
+
+jest.mock('../conversationService', () => conversationServiceMock());
 
 jest.mock('../threadService', () => ({
   loadThreadsForGroup: (groupId: string) => mockLoadThreadsForGroup(groupId),
@@ -224,6 +232,45 @@ describe('refreshBlockedContent single-flight', () => {
     expect(mockLoadConversations).toHaveBeenCalledTimes(2);
     expect(mockLoadDmConversations).toHaveBeenCalledTimes(2);
     expect(mockLoadThreadsForGroup).toHaveBeenCalledTimes(2);
+  });
+
+  it('resolves instead of rejecting when a lazy import fails (#906)', async () => {
+    // The loaders are absorbed by `allSettled`, but the two dynamic imports
+    // can reject on their own (module-eval error, bundler miss) and every
+    // caller is fire-and-forget from an Alert handler.
+    jest.resetModules();
+    jest.doMock('../conversationService', () => {
+      throw new Error('module eval failed');
+    });
+    try {
+      const { refreshBlockedContent } = loadModule();
+
+      await expect(refreshBlockedContent()).resolves.toBeUndefined();
+      expect(mockLoadConversations).not.toHaveBeenCalled();
+    } finally {
+      jest.doMock('../conversationService', () => conversationServiceMock());
+      jest.resetModules();
+    }
+  });
+
+  it('blockUserAndRefresh also resolves when a lazy import fails (#906)', async () => {
+    jest.resetModules();
+    jest.doMock('../conversationService', () => {
+      throw new Error('module eval failed');
+    });
+    try {
+      const { blockUserAndRefresh } = loadModule();
+
+      await expect(
+        blockUserAndRefresh('bad-user', 'baduser'),
+      ).resolves.toBeUndefined();
+      // The local half still happened.
+      expect(mockBlockUser).toHaveBeenCalledWith('bad-user', 'baduser');
+      expect(mockRemoveMediaForAuthor).toHaveBeenCalledWith('bad-user');
+    } finally {
+      jest.doMock('../conversationService', () => conversationServiceMock());
+      jest.resetModules();
+    }
   });
 
   it('runs a full fetch set again on a later, non-overlapping call', async () => {

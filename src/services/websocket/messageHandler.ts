@@ -49,18 +49,37 @@ import type { Thread, Reply } from '../../types/store';
 const dedupSet = new LRUSet(500);
 
 /**
- * Threads whose `new_thread` was dropped because their author is blocked
- * (#897).
+ * Threads whose `new_thread` was dropped because their author is blocked, and
+ * WHICH author that was (#897).
  *
  * A post-block thread by a blocked author is never written to the store or to
  * SQLite, so `getKnownThreadAuthorId` cannot resolve its author — and without
  * that, a NON-blocked member's reply on it would still badge the orbit and bump
- * a thread the app refuses to show. Remembering the dropped ids is the only
- * local way to recognise those replies. Same bounded LRU shape as `dedupSet`
- * (an unbounded Set here would grow for the whole session), and cleared by
- * `clearMessageHandlerState` on logout.
+ * a thread the app refuses to show. Remembering the dropped threads is the only
+ * local way to recognise those replies.
+ *
+ * It maps threadId -> authorId rather than being a bare Set (#906 review) so
+ * the guard re-asks the CURRENT blocked set instead of trusting a past
+ * decision: an unblock — local or hydrated from another device — self-corrects
+ * on the next reply with no teardown hook of its own, because the recorded
+ * author is simply no longer in `blockedSet`. A Set would have gone on dropping
+ * that thread's replies for the rest of the session.
+ *
+ * Bounded like `dedupSet` (an unbounded map would grow for the whole session),
+ * evicting oldest-first, and cleared by `clearMessageHandlerState` on logout.
  */
-const droppedBlockedThreadIds = new LRUSet(500);
+const MAX_DROPPED_BLOCKED_THREADS = 500;
+const droppedBlockedThreadAuthors = new Map<string, string>();
+
+function recordDroppedBlockedThread(threadId: string, authorId: string): void {
+  droppedBlockedThreadAuthors.delete(threadId);
+  droppedBlockedThreadAuthors.set(threadId, authorId);
+  if (droppedBlockedThreadAuthors.size > MAX_DROPPED_BLOCKED_THREADS) {
+    // Map iterates in insertion order, so the first key is the oldest entry.
+    const oldest = droppedBlockedThreadAuthors.keys().next();
+    if (!oldest.done) droppedBlockedThreadAuthors.delete(oldest.value);
+  }
+}
 
 const wrapDedup = new Map<string, number>();
 const deliveryDedup = new Map<string, number>();
@@ -77,7 +96,7 @@ function sweepExpired(map: Map<string, number>): void {
 
 export function clearMessageHandlerState(): void {
   dedupSet.clear();
-  droppedBlockedThreadIds.clear();
+  droppedBlockedThreadAuthors.clear();
   wrapDedup.clear();
   deliveryDedup.clear();
 }
@@ -262,9 +281,11 @@ async function handleNewThread(data: NewThreadPayload): Promise<void> {
   const blockedSet = new Set(useAppStore.getState().blockedUserIds);
   if (blockedSet.has(data.authorId)) {
     if (__DEV__) console.log('[WS] dropped thread from blocked user', data.authorId);
-    // Remembered so replies on this thread can be dropped too (#897): nothing
-    // about it is persisted, so its author is otherwise unknowable locally.
-    droppedBlockedThreadIds.add(data.threadId);
+    // Remembered WITH its author so replies on this thread can be dropped too
+    // (#897): nothing about it is persisted, so its author is otherwise
+    // unknowable locally. Keeping the author is what lets a later unblock
+    // release the thread (#906 review).
+    recordDroppedBlockedThread(data.threadId, data.authorId);
     return;
   }
 
@@ -373,12 +394,16 @@ async function handleNewReply(data: NewReplyPayload): Promise<void> {
   // bump) or `incrementUnreadCount` — it would badge activity on a thread the
   // app hides. WS fan-out is not block-filtered server-side, so this is the
   // enforcement point. Before the dedup add, so a dropped id is not burned.
-  // Fail-open when the parent is unknown locally and was never dropped here.
-  const parentAuthorId = getKnownThreadAuthorId(data.threadId);
-  const parentBlocked =
-    parentAuthorId !== null
-      ? blockedSet.has(parentAuthorId)
-      : droppedBlockedThreadIds.has(data.threadId);
+  //
+  // The parent's author comes from what is known locally, else from the
+  // dropped-thread map, and the decision is ALWAYS re-asked against the
+  // current `blockedSet` (#906 review) — so an unblock releases the thread and
+  // an unknown parent that was never dropped fails OPEN.
+  const parentAuthorId =
+    getKnownThreadAuthorId(data.threadId)
+    ?? droppedBlockedThreadAuthors.get(data.threadId)
+    ?? null;
+  const parentBlocked = parentAuthorId !== null && blockedSet.has(parentAuthorId);
   if (parentBlocked) {
     if (__DEV__) console.log("[WS] dropped reply on a blocked author's thread");
     return;

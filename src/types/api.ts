@@ -27,10 +27,20 @@
  * live events.
  *
  * Because these values are per-viewer they can MOVE DOWN when a block lands,
- * so the recency fields distinguish absent from null. A field ABSENT on the
- * payload means "keep the value already known locally" (a 1.7.6-era backend
- * omits it). An explicit `null` is the current backend's authoritative "no
- * counted reply/message" and MAY LOWER the stored value.
+ * so TWO recency fields distinguish absent from null, and only two: thread
+ * recency (`ThreadResponse.lastReplyAt`, `ThreadListItem.lastReplyAt`) and DM
+ * recency (`DmResponse.lastMessageAt`). On those, a field ABSENT on the payload
+ * means "keep the value already known locally" (a 1.7.6-era backend omits it),
+ * while an explicit `null` is the current backend's authoritative "no counted
+ * reply/message" and MAY LOWER the stored value. `reconcileServerRecency` and
+ * `loadDmConversations` are the two places that act on the difference.
+ *
+ * `GroupResponse.lastMessageAt` is NOT one of them: the ORBIT list write is a
+ * verbatim replace. `conversationService.mapGroupResponse` collapses a missing
+ * field to `null` on the way in, and `setGroupConversations`
+ * (`src/stores/slices/conversationsSlice.ts`) swaps the entire group partition
+ * for the server list. There is no absent-vs-null distinction and no
+ * never-lower merge on that path — the server's value simply wins.
  */
 
 // ============================================================
@@ -187,7 +197,12 @@ export interface GroupResponse {
   /**
    * ISO timestamp of the most recent COUNTED thread/reply in this orbit, null
    * when there is none. Per-viewer and block-filtered on the author (#301 /
-   * #306) — see the file header, including the absent-vs-null contract.
+   * #306) — see the file header.
+   *
+   * Unlike the thread and DM recency fields, this one has NO absent-vs-null
+   * contract: `mapGroupResponse` collapses a missing field to `null` and
+   * `setGroupConversations` replaces the whole group partition verbatim, so the
+   * server's value always wins (file header).
    */
   lastMessageAt?: string | null;
   /**

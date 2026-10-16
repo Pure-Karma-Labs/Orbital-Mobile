@@ -13,6 +13,7 @@ export const createBlockedUsersSlice: StateCreator<
   // Initial state
   blockedUserIds: [],
   blockedUserProfiles: {},
+  blockedUsersGeneration: 0,
 
   // Actions
   // The optimistic `set` stays SYNCHRONOUS — the UI must hide the content on
@@ -26,6 +27,7 @@ export const createBlockedUsersSlice: StateCreator<
       {
         blockedUserIds: [...blockedUserIds, userId],
         blockedUserProfiles: { ...blockedUserProfiles, [userId]: username },
+        blockedUsersGeneration: get().blockedUsersGeneration + 1,
       },
       false,
       'blockedUsers/blockUser',
@@ -45,6 +47,7 @@ export const createBlockedUsersSlice: StateCreator<
       {
         blockedUserIds: blockedUserIds.filter((id) => id !== userId),
         blockedUserProfiles: updated,
+        blockedUsersGeneration: get().blockedUsersGeneration + 1,
       },
       false,
       'blockedUsers/unblockUser',
@@ -66,6 +69,7 @@ export const createBlockedUsersSlice: StateCreator<
               savedName === undefined
                 ? s.blockedUserProfiles
                 : { ...s.blockedUserProfiles, [userId]: savedName },
+            blockedUsersGeneration: s.blockedUsersGeneration + 1,
           },
           false,
           'blockedUsers/unblockUserRollback',
@@ -92,21 +96,28 @@ export const createBlockedUsersSlice: StateCreator<
     const localSet = new Set(blockedUserIds);
     const newIds = serverBlockedIds.filter((id) => !localSet.has(id));
     if (newIds.length === 0) return;
-    // A block made on another device evicts cached media here too (#897): the
-    // server already stopped sending it, but the in-memory gallery/grid was
-    // seeded from SQLite. In-session only — SQLite is untouched, so an unblock
-    // brings the rows back on the next hydrate or page load.
-    for (const id of newIds) {
-      get().removeMediaForAuthor(id);
-    }
     // #896: ids only — blockedUserProfiles is left untouched. GET /blocked
     // carries no usernames, and a shared 'Unknown' placeholder would render as
     // a real handle ("Unblock @Unknown?"). The screen falls back to a
     // disambiguating user-<id prefix> label when no profile/contact exists.
     set(
-      { blockedUserIds: [...blockedUserIds, ...newIds] },
+      {
+        blockedUserIds: [...blockedUserIds, ...newIds],
+        blockedUsersGeneration: get().blockedUsersGeneration + 1,
+      },
       false,
       'blockedUsers/hydrateBlockedUsers',
     );
+    // Evict cached media for the newly learned ids, AFTER the set so the new
+    // blocked set is already in force for anything the eviction wakes up
+    // (#897, ordering per the #906 review).
+    //
+    // Honest about its reach: at both bootstrap call sites the store holds no
+    // threads or replies yet, so the author lookup resolves nothing and this
+    // evicts nothing. READ-TIME filtering is the real cross-device guard —
+    // `hydrateMediaFromLocal`'s author filter and the grid's
+    // `excludeAuthorIds`. This loop only matters for an in-session re-sync,
+    // where a gallery or grid page is already seeded.
+    get().removeMediaForAuthors(newIds);
   },
 });

@@ -50,6 +50,7 @@ const OPTIONS: GetAllMediaOptions = {
   sortOrder: 'desc',
   contentTypeFilter: null,
   conversationId: null,
+  excludeAuthorIds: [],
 };
 
 const ACCESS: MediaExportAccessFilter = {

@@ -49,17 +49,28 @@ export function isExportableConversation(conversationId: string | null | undefin
  * channel, `GetAllMediaOptions.excludeAuthorIds`, and every list surface
  * applies it — the File Library grid, `threadService.hydrateMediaFromLocal`
  * and the bulk-export snapshot alike. With the grid and the gallery filtered
- * there is no surface left to save a blocked author's item FROM, one at a time
- * or otherwise, so the exception has nothing left to except.
+ * there is no LIST surface left to save a blocked author's item FROM, so what
+ * the single-item path keeps (see below) is a deliberate RETAINED exemption,
+ * not a live carve-out that widens exposure.
  *
  * ## What the per-item re-asks are still for
  *
  * A snapshot — or a hydrated gallery index — is taken once, and a run can last
  * minutes. Blocking someone part-way through has to stop their media from
  * being saved by the items still queued (#889 review). Catching a block that
- * lands MID-RUN is now the sole reason `mediaExportService` re-asks per item
- * (~:846 before the download, ~:1170 after it, ~:1273 for every staged iOS
- * document immediately before the picker).
+ * lands MID-RUN is now the sole reason `mediaExportService` re-asks per item,
+ * at three points, all of them on the BULK paths:
+ *
+ *   - `exportMediaItemInBulk` — the per-item gate, before the download.
+ *   - `prepareWrite` — the access re-check after the download, behind its
+ *     `rejectBlockedAuthor` option.
+ *   - `isBulkExportAllowedAt` — called by `flushStagedBulkDocuments` for every
+ *     staged iOS document immediately before the picker.
+ *
+ * The SINGLE-ITEM save path (`saveMediaItem`) deliberately keeps
+ * `rejectBlockedAuthor: false` — kept and documented by Alex on 2026-10-16,
+ * not an oversight — so the per-item re-ask covers the bulk paths only. Those
+ * are the only two `rejectBlockedAuthor` call sites.
  *
  * A NULL author is NOT treated as blocked. That is the same deliberate
  * fail-open as the SQL's `COALESCE(…, '')`: a deleted reply leaves its media

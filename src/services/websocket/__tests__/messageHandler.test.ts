@@ -1761,6 +1761,76 @@ describe('clearMessageHandlerState', () => {
     await handleServerMessage(msg);
     expect(mockUpsertThread).toHaveBeenCalledTimes(2);
   });
+
+  it("clears the dropped blocked-thread map so its replies are no longer dropped", async () => {
+    // #906 review: the map is session state keyed by thread, and after a
+    // logout those ids belong to someone else's account.
+    const blockedAuthor = testUUID('blocked-clear');
+    const threadId = testUUID('thread-clear-dropped');
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: testUUID('test-user'),
+      viewingConversationId: null,
+      upsertThread: mockUpsertThread,
+      upsertReply: mockUpsertReply,
+      upsertContact: mockUpsertContact,
+      setConnectionStatus: mockSetConnectionStatus,
+      setLastConnectedAt: mockSetLastConnectedAt,
+      setReconnectAttempt: mockSetReconnectAttempt,
+      blockedUserIds: [blockedAuthor],
+      addTypingUser: mockAddTypingUser,
+      bumpLastMessageAt: mockBumpLastMessageAt,
+      incrementUnreadCount: mockIncrementUnreadCount,
+      contacts: {},
+      threads: {},
+    });
+
+    await handleServerMessage(
+      JSON.stringify({
+        type: 'new_message',
+        conversationId: testUUID('group-1'),
+        timestamp: Date.now(),
+        data: {
+          type: 'new_thread',
+          threadId,
+          groupId: testUUID('group-1'),
+          authorId: blockedAuthor,
+          authorName: 'baduser',
+          encryptedTitle: 'enc-title',
+          encryptedBody: 'enc-body',
+          titleIv: 'iv',
+          bodyIv: 'iv',
+          createdAt: '2026-06-06T00:00:00Z',
+          media: [],
+        },
+      }),
+    );
+    expect(mockUpsertThread).not.toHaveBeenCalled();
+
+    clearMessageHandlerState();
+
+    await handleServerMessage(
+      JSON.stringify({
+        type: 'new_message',
+        conversationId: testUUID('group-1'),
+        timestamp: Date.now(),
+        data: {
+          type: 'new_reply',
+          replyId: testUUID('reply-after-clear'),
+          threadId,
+          groupId: testUUID('group-1'),
+          authorId: testUUID('innocent-after-clear'),
+          authorName: 'innocent',
+          encryptedBody: 'enc-body',
+          bodyIv: 'iv',
+          parentReplyId: null,
+          createdAt: '2026-06-06T00:00:00Z',
+          media: [],
+        },
+      }),
+    );
+
+    expect(mockUpsertReply).toHaveBeenCalled();
+  });
 });
 
 // ============================================================
@@ -1955,6 +2025,51 @@ describe('blocked user guard', () => {
     expect(mockIncrementUnreadCount).not.toHaveBeenCalled();
     expect(mockApplyReplyToParentThread).not.toHaveBeenCalled();
     expect(mockDbSaveReply).not.toHaveBeenCalled();
+  });
+
+  it('lets replies through again once the dropped thread\'s author is unblocked', async () => {
+    // #906 review: the guard re-asks the CURRENT blocked set, so an unblock —
+    // local or hydrated from another device — self-corrects with no teardown
+    // hook. A bare id Set would have gone on dropping this thread's replies
+    // for the rest of the session.
+    const blockedAuthor = testUUID('blocked-then-unblocked');
+    const threadId = testUUID('thread-released-by-unblock');
+    (useAppStore.getState as jest.Mock).mockReturnValue(
+      parentGuardState([blockedAuthor]),
+    );
+    mockGetKnownThreadAuthorId.mockReturnValue(null);
+
+    await handleServerMessage(
+      JSON.stringify({
+        type: 'new_message',
+        conversationId: testUUID('group-1'),
+        timestamp: Date.now(),
+        data: {
+          type: 'new_thread',
+          threadId,
+          groupId: testUUID('group-1'),
+          authorId: blockedAuthor,
+          authorName: 'baduser',
+          encryptedTitle: 'enc-title',
+          encryptedBody: 'enc-body',
+          titleIv: 'iv',
+          bodyIv: 'iv',
+          createdAt: '2026-06-06T00:00:00Z',
+          media: [],
+        },
+      }),
+    );
+    expect(mockUpsertThread).not.toHaveBeenCalled();
+
+    // The author is unblocked; the thread is still unknown locally.
+    (useAppStore.getState as jest.Mock).mockReturnValue(parentGuardState([]));
+
+    await handleServerMessage(
+      newReplyMessage(threadId, testUUID('innocent-after-unblock'), testUUID('reply-4')),
+    );
+
+    expect(mockUpsertReply).toHaveBeenCalled();
+    expect(mockApplyReplyToParentThread).toHaveBeenCalled();
   });
 
   it('lets a reply through when the parent is unknown and was never dropped', async () => {

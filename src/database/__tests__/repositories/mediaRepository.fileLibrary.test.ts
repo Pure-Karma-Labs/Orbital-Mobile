@@ -50,6 +50,7 @@ describe('mediaRepository — File Library queries', () => {
         offset: 0,
         sortBy: 'date',
         sortOrder: 'desc',
+        excludeAuthorIds: [],
       });
       expect(result).toEqual([]);
     });
@@ -58,7 +59,13 @@ describe('mediaRepository — File Library queries', () => {
       const executeSync = jest.fn((_sql: string, _params?: unknown[]) => ({ rows: [], rowsAffected: 0 }));
       makeDb(executeSync);
 
-      getAllMedia({ limit: 30, offset: 0, sortBy: 'date', sortOrder: 'desc' });
+      getAllMedia({
+        limit: 30,
+        offset: 0,
+        sortBy: 'date',
+        sortOrder: 'desc',
+        excludeAuthorIds: [],
+      });
 
       const selectCall = executeSync.mock.calls.find(
         (c) => typeof c[0] === 'string' && (c[0] as string).includes('SELECT m.*'),
@@ -79,6 +86,7 @@ describe('mediaRepository — File Library queries', () => {
         sortBy: 'date',
         sortOrder: 'desc',
         contentTypeFilter: 'image',
+        excludeAuthorIds: [],
       });
 
       const selectCall = executeSync.mock.calls.find(
@@ -99,6 +107,7 @@ describe('mediaRepository — File Library queries', () => {
         sortBy: 'date',
         sortOrder: 'desc',
         contentTypeFilter: 'video',
+        excludeAuthorIds: [],
       });
 
       const selectCall = executeSync.mock.calls.find(
@@ -118,6 +127,7 @@ describe('mediaRepository — File Library queries', () => {
         sortBy: 'date',
         sortOrder: 'desc',
         contentTypeFilter: 'document',
+        excludeAuthorIds: [],
       });
 
       const selectCall = executeSync.mock.calls.find(
@@ -138,6 +148,7 @@ describe('mediaRepository — File Library queries', () => {
         sortBy: 'date',
         sortOrder: 'desc',
         conversationId: 'conv-1',
+        excludeAuthorIds: [],
       });
 
       const selectCall = executeSync.mock.calls.find(
@@ -152,7 +163,13 @@ describe('mediaRepository — File Library queries', () => {
       const executeSync = jest.fn((_sql: string, _params?: unknown[]) => ({ rows: [], rowsAffected: 0 }));
       makeDb(executeSync);
 
-      getAllMedia({ limit: 30, offset: 0, sortBy: 'size', sortOrder: 'asc' });
+      getAllMedia({
+        limit: 30,
+        offset: 0,
+        sortBy: 'size',
+        sortOrder: 'asc',
+        excludeAuthorIds: [],
+      });
 
       const selectCall = executeSync.mock.calls.find(
         (c) => typeof c[0] === 'string' && (c[0] as string).includes('SELECT m.*'),
@@ -177,7 +194,13 @@ describe('mediaRepository — File Library queries', () => {
       }));
       makeDb(executeSync);
 
-      const result = getAllMedia({ limit: 30, offset: 0, sortBy: 'date', sortOrder: 'desc' });
+      const result = getAllMedia({
+        limit: 30,
+        offset: 0,
+        sortBy: 'date',
+        sortOrder: 'desc',
+        excludeAuthorIds: [],
+      });
       expect(result).toHaveLength(1);
       expect(result[0].id).toBe('media-1');
     });
@@ -215,6 +238,8 @@ describe('mediaRepository — File Library queries', () => {
       expect(selectCall[1]).toEqual(['u1', 'u2', 30, 0]);
     });
 
+    // No "absent field" sibling: `excludeAuthorIds` is REQUIRED since the #906
+    // review, so `[]` is the only way to say "exclude nobody".
     it('emits NO author clause for an empty array', () => {
       const executeSync = jest.fn((_sql: string, _params?: unknown[]) => ({
         rows: [],
@@ -236,22 +261,6 @@ describe('mediaRepository — File Library queries', () => {
       expect(selectCall).toBeDefined();
       expect(selectCall[0]).not.toContain('NOT IN');
       expect(selectCall[1]).toEqual([30, 0]);
-    });
-
-    it('emits NO author clause when the field is absent', () => {
-      const executeSync = jest.fn((_sql: string, _params?: unknown[]) => ({
-        rows: [],
-        rowsAffected: 0,
-      }));
-      makeDb(executeSync);
-
-      getAllMedia({ limit: 30, offset: 0, sortBy: 'date', sortOrder: 'desc' });
-
-      const selectCall = executeSync.mock.calls.find(
-        (c) => typeof c[0] === 'string' && (c[0] as string).includes('SELECT m.*'),
-      ) as unknown as [string, unknown[]];
-      expect(selectCall).toBeDefined();
-      expect(selectCall[0]).not.toContain('NOT IN');
     });
 
     it('never adds the membership IN clause — the grid takes no access filter', () => {
@@ -325,6 +334,7 @@ describe('mediaRepository — File Library queries', () => {
         offset: 0,
         sortBy: 'date',
         sortOrder: 'desc',
+        excludeAuthorIds: [],
       });
       expect(result).toBe(0);
     });
@@ -341,6 +351,7 @@ describe('mediaRepository — File Library queries', () => {
         offset: 0,
         sortBy: 'date',
         sortOrder: 'desc',
+        excludeAuthorIds: [],
       });
       expect(result).toBe(42);
     });
@@ -359,6 +370,7 @@ describe('mediaRepository — File Library queries', () => {
         sortOrder: 'desc',
         contentTypeFilter: 'image',
         conversationId: 'conv-1',
+        excludeAuthorIds: [],
       });
 
       const selectCall = executeSync.mock.calls.find(
@@ -399,7 +411,10 @@ describe('mediaRepository — File Library queries', () => {
       expect(selectCall[0]).not.toContain('COALESCE(t.conversation_id, rt.conversation_id) IN (');
     });
 
-    it('emits NO author clause for an empty array or an absent field', () => {
+    // `excludeAuthorIds` is REQUIRED since the #906 review, so there is no
+    // "absent field" case left to cover: `[]` is the only way to exclude
+    // nobody, and it must still bind no params and emit no clause.
+    it('emits NO author clause for an empty array', () => {
       const withEmpty = jest.fn((_sql: string, _params?: unknown[]) => ({
         rows: [{ cnt: 3 }],
         rowsAffected: 0,
@@ -418,20 +433,6 @@ describe('mediaRepository — File Library queries', () => {
       expect(emptyCall).toBeDefined();
       expect(emptyCall[0]).not.toContain('NOT IN');
       expect(emptyCall[1]).toEqual([]);
-      closeDatabase();
-
-      const withAbsent = jest.fn((_sql: string, _params?: unknown[]) => ({
-        rows: [{ cnt: 3 }],
-        rowsAffected: 0,
-      }));
-      makeDb(withAbsent);
-      getMediaCount({ limit: 30, offset: 0, sortBy: 'date', sortOrder: 'desc' });
-      const absentCall = withAbsent.mock.calls.find(
-        (c) => typeof c[0] === 'string' && (c[0] as string).includes('COUNT(*)'),
-      ) as unknown as [string, unknown[]];
-      expect(absentCall).toBeDefined();
-      expect(absentCall[0]).not.toContain('NOT IN');
-      expect(absentCall[1]).toEqual([]);
     });
 
     it('orders the params access → authors → conversation → content type', () => {

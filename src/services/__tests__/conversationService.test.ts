@@ -2469,6 +2469,44 @@ describe('mergeDmRecency (#883)', () => {
     expect(merged.updatedAt).toBe(9000);
   });
 
+  it('keeps the local recency and count under keepLocalRecency (#906)', () => {
+    const merged = mergeDmRecency(
+      makeDmConversation({ lastMessageAt: 9000, unreadCount: 3 }),
+      makeDmConversation({ lastMessageAt: 5000, unreadCount: 0 }),
+      false,
+      { authoritative: true, keepLocalRecency: true },
+    );
+
+    // keepLocalRecency wins over authoritative: the response may predate the
+    // block that bumped the generation.
+    expect(merged.lastMessageAt).toBe(9000);
+    expect(merged.unreadCount).toBe(3);
+  });
+
+  it('still forces 0 while a mark-read is pending under keepLocalRecency (#906)', () => {
+    const merged = mergeDmRecency(
+      makeDmConversation({ lastMessageAt: 9000, unreadCount: 3 }),
+      makeDmConversation({ lastMessageAt: 5000, unreadCount: 2 }),
+      true,
+      { keepLocalRecency: true },
+    );
+
+    expect(merged.unreadCount).toBe(0);
+    expect(merged.lastMessageAt).toBe(9000);
+  });
+
+  it('heals a non-finite local recency under keepLocalRecency (#906)', () => {
+    const merged = mergeDmRecency(
+      makeDmConversation({ lastMessageAt: NaN, unreadCount: 2 }),
+      makeDmConversation({ lastMessageAt: 5000, unreadCount: 0 }),
+      false,
+      { keepLocalRecency: true },
+    );
+
+    expect(merged.lastMessageAt).toBeNull();
+    expect(merged.unreadCount).toBe(2);
+  });
+
   it('is unchanged on a first insert under authoritative', () => {
     const incoming = makeDmConversation({ lastMessageAt: NaN, lastReadAt: Infinity });
 
@@ -2481,12 +2519,17 @@ describe('mergeDmRecency (#883)', () => {
 });
 
 describe('loadDmConversations — merge, not overwrite (#883)', () => {
-  function seedStore(conversations: Record<string, Conversation>): void {
+  function seedStore(
+    conversations: Record<string, Conversation>,
+    blockedUsersGeneration = 0,
+  ): void {
     (useAppStore.getState as jest.Mock).mockReturnValue({
       userId: 'test-self-user',
       activeConversationId: null,
       conversations,
       contacts: {},
+      // #906 review: the request-ordering token `loadDmConversations` reads.
+      blockedUsersGeneration,
       setConversations: mockSetConversations,
       setGroupConversations: mockSetConversations,
       setActiveConversation: mockSetActiveConversation,
@@ -2591,6 +2634,50 @@ describe('loadDmConversations — merge, not overwrite (#883)', () => {
     const upserted = mockUpsertConversation.mock.calls[0][0];
     expect(upserted.lastMessageAt).toBe(9000);
     expect(upserted.unreadCount).toBe(3);
+  });
+
+  it('keeps the live row when the blocked set changed mid-request (#906)', async () => {
+    // The response may predate the block, so neither of its per-viewer values
+    // may be written: the live row wins and the refresh that bumped the
+    // generation brings the corrected numbers moments later. Max-merging
+    // instead would re-latch exactly the stale high value.
+    seedStore({ 'dm-1': makeDmConversation({ lastMessageAt: 9000, unreadCount: 3 }) });
+    mockListDms.mockImplementationOnce(async () => {
+      seedStore(
+        { 'dm-1': makeDmConversation({ lastMessageAt: 9000, unreadCount: 3 }) },
+        1,
+      );
+      return [
+        { ...DM_RESPONSE, lastMessageAt: new Date(5000).toISOString(), unreadCount: 0 },
+      ];
+    });
+
+    await loadDmConversations();
+
+    const upserted = mockUpsertConversation.mock.calls[0][0];
+    expect(upserted.lastMessageAt).toBe(9000);
+    expect(upserted.unreadCount).toBe(3);
+  });
+
+  it('counts an unread increment alone as a mid-request bump (#906)', async () => {
+    // `bumpLastMessageAt` no-ops on an out-of-order timestamp while
+    // `incrementUnreadCount` still fires, so the badge can move without the
+    // recency. Taking the server's 0 here would drop that increment.
+    seedStore({ 'dm-1': makeDmConversation({ lastMessageAt: 9000, unreadCount: 1 }) });
+    mockListDms.mockImplementationOnce(async () => {
+      seedStore({
+        'dm-1': makeDmConversation({ lastMessageAt: 9000, unreadCount: 2 }),
+      });
+      return [
+        { ...DM_RESPONSE, lastMessageAt: new Date(5000).toISOString(), unreadCount: 0 },
+      ];
+    });
+
+    await loadDmConversations();
+
+    const upserted = mockUpsertConversation.mock.calls[0][0];
+    expect(upserted.unreadCount).toBe(2);
+    expect(upserted.lastMessageAt).toBe(9000);
   });
 
   function seedReadAheadOfServer(): void {

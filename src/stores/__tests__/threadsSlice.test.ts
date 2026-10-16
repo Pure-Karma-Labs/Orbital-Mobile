@@ -98,6 +98,7 @@ function makeStore() {
     updateMediaUploadState: jest.fn(),
     removeMedia: jest.fn(),
     removeMediaForAuthor: jest.fn(),
+    removeMediaForAuthors: jest.fn(),
 
     pushPermissionGranted: false,
     pushToken: null,
@@ -120,6 +121,7 @@ function makeStore() {
 
     blockedUserIds: [],
     blockedUserProfiles: {},
+    blockedUsersGeneration: 0,
     blockUser: jest.fn(),
     unblockUser: jest.fn(),
     resetBlockedUsers: jest.fn(),

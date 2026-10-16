@@ -132,10 +132,12 @@ function makeStore() {
     updateMediaUploadState: jest.fn(),
     removeMedia: jest.fn(),
     removeMediaForAuthor: jest.fn(),
+    removeMediaForAuthors: jest.fn(),
 
     // BlockedUsers stub
     blockedUserIds: [],
     blockedUserProfiles: {},
+    blockedUsersGeneration: 0,
     blockUser: jest.fn(),
     unblockUser: jest.fn(),
     resetBlockedUsers: jest.fn(),

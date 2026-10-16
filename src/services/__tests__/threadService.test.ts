@@ -101,6 +101,8 @@ jest.mock('../../stores/useAppStore', () => ({
       setThreads: mockSetThreads,
       updateThreadSyncStatus: mockUpdateThreadSyncStatus,
       bumpLastMessageAt: mockBumpLastMessageAt,
+      // #906 review: the request-ordering token the recency reconcile reads.
+      blockedUsersGeneration: 0,
     })),
   },
 }));
@@ -1368,6 +1370,15 @@ function setStoreThreads(threads: Record<string, Thread>): void {
   useAppStore.getState.mockReturnValue({ ...current, threads });
 }
 
+/** Simulate a block/unblock landing: the generation token moves (#906 review). */
+function setStoreBlockedGeneration(generation: number): void {
+  const { useAppStore } = jest.requireMock('../../stores/useAppStore') as {
+    useAppStore: { getState: jest.Mock };
+  };
+  const current = useAppStore.getState();
+  useAppStore.getState.mockReturnValue({ ...current, blockedUsersGeneration: generation });
+}
+
 describe('#883 loadThread recency merge', () => {
   it('keeps the store lastReplyAt when the server OMITS the field', async () => {
     setStoreThreads({ 'thread-1': makeStoredThread({ lastReplyAt: 5000 }) });
@@ -1652,6 +1663,136 @@ describe('#897 loadThreadsForGroup authoritative recency', () => {
     expect(threads[0].lastReplyAt).toBe(9000);
     const [, batchThreads] = mockSaveThreadBatch.mock.calls[0];
     expect(batchThreads[0].lastReplyAt).toBe(9000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #906 review — a block landing MID-REQUEST makes the response unusable
+// ---------------------------------------------------------------------------
+
+describe('#906 blocked-set generation guard', () => {
+  it('keeps the live row when the blocked set changed during loadThreadsForGroup', async () => {
+    // The response left the server BEFORE the block, so its per-viewer values
+    // are pre-block and must not be written authoritatively. Nothing moved in
+    // the store, so only the generation token can tell.
+    setStoreThreads({
+      'thread-1': makeStoredThread({ lastReplyAt: 9000, replyCount: 5 }),
+    });
+    mockGetGroupThreads.mockImplementationOnce(async () => {
+      setStoreBlockedGeneration(1);
+      return {
+        threads: [makeThreadListItem({ lastReplyAt: null, replyCount: 0 })],
+        totalCount: 1,
+        hasMore: false,
+      };
+    });
+
+    const threads = await loadThreadsForGroup('group-1');
+
+    expect(threads[0].lastReplyAt).toBe(9000);
+    expect(threads[0].replyCount).toBe(5);
+    const [, batchThreads] = mockSaveThreadBatch.mock.calls[0];
+    expect(batchThreads[0].lastReplyAt).toBe(9000);
+    expect(batchThreads[0].replyCount).toBe(5);
+    expect(mockSetThreads).toHaveBeenCalledWith(
+      'group-1',
+      [expect.objectContaining({ lastReplyAt: 9000, replyCount: 5 })],
+      { authoritativeRecency: true },
+    );
+  });
+
+  it('falls back to the never-lower merge when the generation changed and there is no live row', async () => {
+    // Nothing live to keep, so the disk row is protected by the legacy path
+    // and the refresh that bumped the generation supplies the real values.
+    mockDbGetThread.mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }));
+    mockGetGroupThreads.mockImplementationOnce(async () => {
+      setStoreBlockedGeneration(1);
+      return {
+        threads: [makeThreadListItem({ lastReplyAt: null, replyCount: 0 })],
+        totalCount: 1,
+        hasMore: false,
+      };
+    });
+
+    await loadThreadsForGroup('group-1');
+
+    const [, batchThreads] = mockSaveThreadBatch.mock.calls[0];
+    expect(batchThreads[0].lastReplyAt).toBe(7000);
+  });
+
+  it('keeps the live row when the blocked set changed during loadThread', async () => {
+    setStoreThreads({
+      'thread-1': makeStoredThread({ lastReplyAt: 9000, replyCount: 5 }),
+    });
+    mockGetThread.mockImplementationOnce(async () => {
+      setStoreBlockedGeneration(1);
+      return makeThreadResponse({ lastReplyAt: null, replyCount: 0 });
+    });
+
+    const result = await loadThread('thread-1');
+
+    expect(result.lastReplyAt).toBe(9000);
+    expect(result.replyCount).toBe(5);
+    expect(mockDbSaveThread.mock.calls[0][0].lastReplyAt).toBe(9000);
+    expect(mockDbSaveThread.mock.calls[0][0].replyCount).toBe(5);
+    expect(mockUpsertThread.mock.calls[0][0].lastReplyAt).toBe(9000);
+    expect(mockUpsertThread.mock.calls[0][0].replyCount).toBe(5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #906 review — the mid-request bump keeps the HIGHER replyCount
+// ---------------------------------------------------------------------------
+
+describe('#906 mid-request bump replyCount', () => {
+  it('keeps a bump that starts from a null snapshot recency', async () => {
+    // The QA shape: the thread had no counted reply at all when the request
+    // went out, and the first reply landed while it was in flight. An invalid
+    // (null) snapshot value still reads as "moved forward".
+    setStoreThreads({
+      'thread-1': makeStoredThread({ lastReplyAt: null, replyCount: 0 }),
+    });
+    mockGetGroupThreads.mockImplementationOnce(async () => {
+      setStoreThreads({
+        'thread-1': makeStoredThread({ lastReplyAt: 9000, replyCount: 1 }),
+      });
+      return {
+        threads: [makeThreadListItem({ lastReplyAt: null, replyCount: 0 })],
+        totalCount: 1,
+        hasMore: false,
+      };
+    });
+
+    const threads = await loadThreadsForGroup('group-1');
+
+    expect(threads[0].lastReplyAt).toBe(9000);
+    expect(threads[0].replyCount).toBe(1);
+    const [, batchThreads] = mockSaveThreadBatch.mock.calls[0];
+    expect(batchThreads[0].lastReplyAt).toBe(9000);
+    expect(batchThreads[0].replyCount).toBe(1);
+  });
+
+  it('takes the SERVER count when it is higher than the single local bump', async () => {
+    // The local bump is +1; the server may already count more replies than
+    // this device ever saw, so the pair takes the higher of the two.
+    setStoreThreads({
+      'thread-1': makeStoredThread({ lastReplyAt: 1000, replyCount: 4 }),
+    });
+    mockGetGroupThreads.mockImplementationOnce(async () => {
+      setStoreThreads({
+        'thread-1': makeStoredThread({ lastReplyAt: 9000, replyCount: 5 }),
+      });
+      return {
+        threads: [makeThreadListItem({ lastReplyAt: null, replyCount: 9 })],
+        totalCount: 1,
+        hasMore: false,
+      };
+    });
+
+    const threads = await loadThreadsForGroup('group-1');
+
+    expect(threads[0].lastReplyAt).toBe(9000);
+    expect(threads[0].replyCount).toBe(9);
   });
 });
 

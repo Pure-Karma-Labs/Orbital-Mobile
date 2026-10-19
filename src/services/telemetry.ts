@@ -25,6 +25,7 @@
 import * as Sentry from '@sentry/react-native';
 import type { SeverityLevel } from '@sentry/react-native';
 import { ApiError } from './api/errors';
+import { isGroupKeyUnwrapError } from './crypto/groupKeyErrors';
 import { toReportableError } from './telemetryScrub';
 
 /**
@@ -61,6 +62,16 @@ export function captureError(e: unknown, ctx?: CaptureContext): void {
   if (e instanceof ApiError) {
     tags.status = String(e.statusCode);
     tags.api_code = e.code;
+  }
+  // A dead group-key envelope is indistinguishable in Sentry without these:
+  // every one of them used to arrive as a bare `SignalError.InvalidMessage`
+  // (#912). All three are closed client-defined enums — no groupId, no
+  // envelope, no server text — so they are owned here rather than spread by
+  // each call site.
+  if (isGroupKeyUnwrapError(e)) {
+    tags.group_key_code = e.code;
+    tags.group_key_self_heal = e.selfHeal;
+    if (e.refusalCode !== undefined) tags.group_key_refusal = e.refusalCode;
   }
 
   const scope: CaptureContext = {};

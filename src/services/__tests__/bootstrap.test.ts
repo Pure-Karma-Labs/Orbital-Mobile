@@ -94,6 +94,12 @@ jest.mock('../notificationSettingsSync', () => ({
     mockRegisterForegroundNotificationSettingsSync(...args),
 }));
 
+const mockInstallGroupKeyFailureReporter = jest.fn();
+jest.mock('../groupKeyTelemetry', () => ({
+  installGroupKeyFailureReporter: (...args: unknown[]) =>
+    mockInstallGroupKeyFailureReporter(...args),
+}));
+
 const mockClearAuth = jest.fn();
 jest.mock('../../stores/useAppStore', () => ({
   useAppStore: {
@@ -329,6 +335,27 @@ describe('bootstrap() idempotency (#914)', () => {
     // ...but did not touch the Keychain for the MMKV key, nor re-init MMKV.
     expect(mockGetOrCreateMMKVKey).toHaveBeenCalledTimes(1);
     expect(mockInitMMKV).toHaveBeenCalledTimes(1);
+  });
+
+  // #912: the group-key reporter is installed BEFORE the first await, so a
+  // failure in any awaited step below is still reported. Both assertions
+  // matter: a reporter installed inside runBootstrap would survive the first
+  // test but not the rejection one.
+  it('installs the group-key reporter before the first await', async () => {
+    await bootstrap();
+
+    expect(mockInstallGroupKeyFailureReporter).toHaveBeenCalled();
+    expect(
+      mockInstallGroupKeyFailureReporter.mock.invocationCallOrder[0],
+    ).toBeLessThan(mockClearKeychainIfFreshInstall.mock.invocationCallOrder[0]);
+  });
+
+  it('installs the group-key reporter even when a later step rejects', async () => {
+    mockGetOrCreateMMKVKey.mockRejectedValueOnce(new Error('keychain locked'));
+
+    await expect(bootstrap()).rejects.toThrow('keychain locked');
+
+    expect(mockInstallGroupKeyFailureReporter).toHaveBeenCalledTimes(1);
   });
 
   it('registers each listener exactly once across a rejection and retry', async () => {

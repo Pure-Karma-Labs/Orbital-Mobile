@@ -12,6 +12,7 @@ jest.mock('@sentry/react-native', () => ({
 import * as Sentry from '@sentry/react-native';
 import { captureError } from '../telemetry';
 import { ApiError, AuthError, QuotaExceededError } from '../api/errors';
+import { GroupKeyUnwrapError } from '../crypto/groupKeyErrors';
 
 const mockCapture = Sentry.captureException as unknown as jest.Mock;
 
@@ -103,5 +104,104 @@ describe('captureError', () => {
     const tags = { feature: 'orbit-join' };
     captureError(new ApiError('nope', 404, 'NOT_FOUND', false), { tags });
     expect(tags).toEqual({ feature: 'orbit-join' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group-key unwrap failures (#912)
+// ---------------------------------------------------------------------------
+
+/**
+ * `captureError` owns the three `group_key_*` tags so no call site can forget
+ * them. What is pinned here is that they are a property of the ERROR CLASS:
+ * an ordinary Error and an ApiError must get none of them, or the tags would
+ * be describing the mock rather than the error.
+ */
+describe('captureError — group-key tags', () => {
+  const GROUP_KEY_TAGS = ['group_key_code', 'group_key_self_heal', 'group_key_refusal'];
+
+  /** Tag keys actually attached to the one captured event. */
+  function capturedTagKeys(): string[] {
+    const tags = capturedContext().tags as Record<string, string> | undefined;
+    return tags === undefined ? [] : Object.keys(tags);
+  }
+
+  it('tags the failure code and the self-heal outcome, and omits the refusal tag', () => {
+    captureError(new GroupKeyUnwrapError('recipient_mismatch', 'requested'));
+
+    expect(capturedContext()).toEqual({
+      tags: { group_key_code: 'recipient_mismatch', group_key_self_heal: 'requested' },
+    });
+    expect(capturedTagKeys()).not.toContain('group_key_refusal');
+  });
+
+  it('adds group_key_refusal only when the server refused with a coded 409', () => {
+    captureError(new GroupKeyUnwrapError('recipient_mismatch', 'refused', 'ENVELOPE_CHANGED'));
+
+    expect(capturedContext()).toEqual({
+      tags: {
+        group_key_code: 'recipient_mismatch',
+        group_key_self_heal: 'refused',
+        group_key_refusal: 'ENVELOPE_CHANGED',
+      },
+    });
+  });
+
+  it('keeps the class name and the enum-built message', () => {
+    captureError(new GroupKeyUnwrapError('sender_mismatch', 'failed'));
+
+    expect(capturedError().name).toBe('GroupKeyUnwrapError');
+    expect(capturedError().message).toBe('Group key unwrap failed: sender_mismatch / failed');
+  });
+
+  it('merges the caller\'s own tags without being clobbered by them', () => {
+    captureError(new GroupKeyUnwrapError('corrupt', 'not_eligible'), {
+      level: 'warning',
+      tags: { feature: 'group-key-self-heal' },
+    });
+
+    expect(capturedContext()).toEqual({
+      level: 'warning',
+      tags: {
+        feature: 'group-key-self-heal',
+        group_key_code: 'corrupt',
+        group_key_self_heal: 'not_eligible',
+      },
+    });
+  });
+
+  // Negative control: the tags come from the error class, not from the mock.
+  it('attaches none of the group-key tags to an ordinary Error', () => {
+    captureError(new Error('boom'), { tags: { feature: 'orbit-create' } });
+
+    expect(capturedContext()).toEqual({ tags: { feature: 'orbit-create' } });
+    for (const tag of GROUP_KEY_TAGS) {
+      expect(capturedTagKeys()).not.toContain(tag);
+    }
+  });
+
+  // ...and an ApiError still gets exactly its own two facets, no more.
+  it('leaves the ApiError facets alone and adds no group-key tags to one', () => {
+    captureError(new ApiError('nope', 409, 'REWRAP_REFUSED', false));
+
+    expect(capturedContext()).toEqual({
+      tags: { status: '409', api_code: 'REWRAP_REFUSED' },
+    });
+    for (const tag of GROUP_KEY_TAGS) {
+      expect(capturedTagKeys()).not.toContain(tag);
+    }
+  });
+
+  // This layer never SEES a groupId — `captureError` takes the error alone —
+  // so the assertion is a floor, not the boundary: the load-bearing version,
+  // where a real groupId is passed in and must not escape, is
+  // `groupKeyTelemetry.test.ts`. Kept here because a future tag added to this
+  // block (a conversation id "for context") would trip it.
+  it('sends no uuid-shaped identifier anywhere in the event', () => {
+    captureError(new GroupKeyUnwrapError('recipient_mismatch', 'identity_mismatch'));
+
+    expect(JSON.stringify(mockCapture.mock.calls)).not.toMatch(
+      /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i,
+    );
   });
 });

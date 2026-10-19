@@ -33,6 +33,7 @@ import type {
 } from '../../types/api';
 import { getSecureItem, setSecureItem, removeSecureItem } from '../secure-storage';
 import { clearGroupKeyCache, clearContentCryptoInflight } from './contentCrypto';
+import { resetGroupKeyFailureBudget } from './groupKeyErrors';
 import { clearAllGroupCryptoState } from '../../database/repositories/conversationRepository';
 import { SecureKeys } from '../secure-storage/constants';
 
@@ -625,6 +626,10 @@ export async function fullCryptoWipe(): Promise<void> {
   clearIdentityKeyCache();
   clearGroupKeyCache();
   clearContentCryptoInflight();
+  // The group-key reporter's per-session budget. Reached through the
+  // import-free registry rather than by importing groupKeyTelemetry: this file
+  // is inside the crypto fence, where ESLint bans every telemetry facade.
+  resetGroupKeyFailureBudget();
 
   // Clear group crypto state and all Signal Protocol tables in one transaction
   if (isDatabaseInitialized()) {

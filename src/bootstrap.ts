@@ -11,6 +11,7 @@ import { normalizeLegacyMediaPaths } from './database/migrations/normalizeMediaP
 import { tokenManager } from './services/api/tokenManager';
 import { useAppStore } from './stores/useAppStore';
 import { initIdentityKeyCache } from './services/crypto/keyGenerationService';
+import { installGroupKeyFailureReporter } from './services/groupKeyTelemetry';
 import { isRecoveryInitiator } from './services/recoveryState';
 
 /**
@@ -50,6 +51,14 @@ let sideEffectsInstalled = false;
  * cache is cleared and the error rethrown, so a caller can retry.
  */
 export function bootstrap(): Promise<void> {
+  // BEFORE the first await, and a static import rather than the lazy
+  // `import().then()` convention used for the registration tail: a group-key
+  // failure can surface from any awaited step below (a lazy media drain, a
+  // rehydrated screen), and a reporter installed after an await would miss it.
+  // Safe statically — Sentry is initialized in index.js long before bootstrap,
+  // and the registry this writes to (crypto/groupKeyErrors) has no imports at
+  // all. Idempotent: it only assigns the registry slot.
+  installGroupKeyFailureReporter();
   if (bootstrapPromise === null) {
     bootstrapPromise = runBootstrap().catch((e: unknown) => {
       // A failed bootstrap must be retryable: drop the cache so the next call

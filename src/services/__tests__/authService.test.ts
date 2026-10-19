@@ -202,6 +202,12 @@ jest.mock('../websocket/messageHandler', () => ({
   handleServerMessage: jest.fn(),
 }));
 
+const mockClearGroupKeyTelemetryState = jest.fn();
+jest.mock('../groupKeyTelemetry', () => ({
+  clearGroupKeyTelemetryState: (...args: unknown[]) => mockClearGroupKeyTelemetryState(...args),
+  installGroupKeyFailureReporter: jest.fn(),
+}));
+
 jest.mock('../websocket', () => ({
   websocketManager: {
     connect: jest.fn(),
@@ -951,6 +957,16 @@ describe('logout', () => {
 
     expect(mockClearPrefetchState).toHaveBeenCalledTimes(1);
     expect(mockClearArchiveConfirmState).toHaveBeenCalledTimes(1);
+  });
+
+  // #912: the group-key reporter spends one event per (group, outcome) per
+  // session. Logout does not reload the JS bundle, so without this reset the
+  // next account on the device inherits this one's spent keys and its first
+  // real group-key failure can go unreported.
+  it('clears the group-key telemetry budget on logout (localWipe)', async () => {
+    await logout();
+
+    expect(mockClearGroupKeyTelemetryState).toHaveBeenCalledTimes(1);
   });
 
   // #449: in-memory Zustand state survives MMKV clearAll() and re-persists,

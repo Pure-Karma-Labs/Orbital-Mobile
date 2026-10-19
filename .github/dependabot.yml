@@ -109,6 +109,16 @@ updates:
       # (or ships a modular glog path) and a local iOS Debug build passes.
       - dependency-name: "react-native-nitro-modules"
         versions: ["> 0.36.5"]
+      # react-native-image-picker 8.3.x adds `#import "UniformTypeIdentifiers/..."`
+      # and UTTypeImage to ImagePickerManager.mm, but its podspec s.frameworks
+      # does not link UniformTypeIdentifiers. Under the #769 dynamic-framework
+      # build the quoted import does not auto-link, so the image-picker framework
+      # fails at Ld (iOS Debug Build, build.yml run 39300754861 on PR #916).
+      # 8.3.1's iOS sources are identical. Lift when an upstream release adds
+      # UniformTypeIdentifiers to s.frameworks (or uses @import) and a local
+      # iOS Debug build passes.
+      - dependency-name: "react-native-image-picker"
+        versions: ["> 8.2.1"]
       # Babel 8 and ESLint 10 require RN ecosystem support — tracked in #311
       - dependency-name: "@babel/core"
         update-types: ["version-update:semver-major"]

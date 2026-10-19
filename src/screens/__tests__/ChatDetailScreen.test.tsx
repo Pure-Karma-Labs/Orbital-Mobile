@@ -240,15 +240,27 @@ const mockNavigation = {
   setParams: jest.fn(),
 };
 
-function makeRoute(recipientName?: string, recipientId?: string) {
+/**
+ * `conversationId` is a parameter so a test can re-render this screen pointed
+ * at ANOTHER DM — a params-in-place navigate, which keeps the same mount.
+ */
+function makeRoute(
+  recipientName?: string,
+  recipientId?: string,
+  conversationId = 'dm-conv-1',
+) {
   return {
     key: 'ChatDetail',
     name: 'ChatDetail' as const,
-    params: { conversationId: 'dm-conv-1', recipientName, recipientId },
+    params: { conversationId, recipientName, recipientId },
   };
 }
 
-function screenElement(recipientName?: string, recipientId?: string): React.ReactElement {
+function screenElement(
+  recipientName?: string,
+  recipientId?: string,
+  conversationId?: string,
+): React.ReactElement {
   return React.createElement(
     SafeAreaProvider,
     { initialMetrics: safeAreaMetrics },
@@ -257,16 +269,20 @@ function screenElement(recipientName?: string, recipientId?: string): React.Reac
       { colorSchemeOverride: 'light' },
       React.createElement(ChatDetailScreen, {
         navigation: mockNavigation as unknown as React.ComponentProps<typeof ChatDetailScreen>['navigation'],
-        route: makeRoute(recipientName, recipientId) as unknown as React.ComponentProps<typeof ChatDetailScreen>['route'],
+        route: makeRoute(recipientName, recipientId, conversationId) as unknown as React.ComponentProps<typeof ChatDetailScreen>['route'],
       }),
     ),
   );
 }
 
-function renderScreen(recipientName?: string, recipientId?: string): ReactTestRenderer {
+function renderScreen(
+  recipientName?: string,
+  recipientId?: string,
+  conversationId?: string,
+): ReactTestRenderer {
   let renderer!: ReactTestRenderer;
   act(() => {
-    renderer = create(screenElement(recipientName, recipientId));
+    renderer = create(screenElement(recipientName, recipientId, conversationId));
   });
   return renderer;
 }
@@ -980,5 +996,48 @@ describe('ChatDetailScreen — group key (#912)', () => {
     await rerender(renderer);
 
     expect(mockLoadThreadsForGroup).toHaveBeenCalledTimes(1);
+  });
+
+  // The milder form of the ThreadsScreen leak: a params-in-place navigate to
+  // another DM keeps this mount, so the previous conversation's key state has
+  // to go with it. The second load fails for a NON-key reason, which leaves
+  // the flags alone — so only the conversation change itself can clear them.
+  it('drops the notice when the route points at another conversation', async () => {
+    mockLoadThreadsForGroup.mockRejectedValueOnce(unwrapFailure('refused'));
+
+    const renderer = await render();
+    expect(count(renderer, 'group-key-failure-notice')).toBeGreaterThan(0);
+
+    mockLoadThreadsForGroup.mockRejectedValueOnce(new Error('network down'));
+    await act(async () => {
+      renderer.update(screenElement('Bob', undefined, 'dm-conv-2'));
+    });
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(count(renderer, 'group-key-failure-notice')).toBe(0);
+    expect(texts(renderer).join('\n')).toContain('No messages yet');
+    expect(mockLoadThreadsForGroup).toHaveBeenLastCalledWith('dm-conv-2');
+  });
+
+  // `loadThreadsForGroup` is not cancellable, so the first DM's rejection can
+  // land after the screen has re-pointed. Its verdict must be dropped.
+  it('ignores a rejection that lands after the route re-pointed', async () => {
+    mockLoadThreadsForGroup.mockRejectedValueOnce(pendingWrap());
+    mockLoadThreadsForGroup.mockRejectedValueOnce(new Error('network down'));
+
+    // Rendered but NOT flushed: the first DM's load is still in flight.
+    const renderer = renderScreen('Bob');
+    await act(async () => {
+      renderer.update(screenElement('Bob', undefined, 'dm-conv-2'));
+    });
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(count(renderer, 'group-key-pending-banner')).toBe(0);
+    expect(count(renderer, 'group-key-pending-body')).toBe(0);
+    expect(texts(renderer).join('\n')).toContain('No messages yet');
   });
 });

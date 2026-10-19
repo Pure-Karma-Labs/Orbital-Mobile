@@ -15,8 +15,8 @@ import {
   NotFoundError,
   ValidationError,
 } from '../services/api/errors';
-import { GROUP_KEY_RESENDING_MESSAGE, RATE_LIMIT_MESSAGE } from './errorMessages';
-import { isGroupKeyPending } from './groupKeyErrorCopy';
+import { RATE_LIMIT_MESSAGE } from './errorMessages';
+import { groupKeyFailureCopy } from './groupKeyErrorCopy';
 
 /**
  * Permanent refusals: the orbit, not the email, is the problem, and no retry
@@ -40,22 +40,6 @@ export interface InviteCreateErrorRoute {
   bannerError?: string;
   /** Present only when the outcome should be reported via `captureError`. */
   captureTags?: Record<string, string>;
-}
-
-/**
- * `PendingWrapError` (services/crypto/contentCrypto) is matched by `name`, not
- * `instanceof`: importing the class drags contentCrypto's module graph
- * (orbital-signal, the conversation repository, `useAppStore` → MMKV via
- * nitro) into these screens for one branch whose only effect is to suppress a
- * capture. The name is assigned in the class constructor; the unit test for
- * this module pins the string on the consuming side.
- *
- * Delegates to `groupKeyErrorCopy.isGroupKeyPending` (#912) so the app has ONE
- * definition of that name test. The export stays: it is this module's own
- * contract with its test, and the invite screens read better for it.
- */
-export function isPendingWrapError(err: unknown): boolean {
-  return isGroupKeyPending(err);
 }
 
 /**
@@ -85,15 +69,19 @@ export function routeInviteCreateError(err: unknown): InviteCreateErrorRoute {
   if (err instanceof NotFoundError) {
     return { bannerError: INVITE_ORBIT_GONE_MESSAGE };
   }
-  if (isPendingWrapError(err)) {
-    // A modelled transient state, not a fault: this device's group key wrap
-    // has not been delivered yet. Nothing to report.
-    //
-    // #912 replaced the generic "Failed to generate invite code" with the
-    // shared RESENDING wording: a self-heal demote now ends here too, and the
-    // honest reason ("another member is re-sending the key") is both more
-    // specific and the same sentence the composers show for the same state.
-    return { bannerError: GROUP_KEY_RESENDING_MESSAGE };
+  // Every group-key failure (#912): the transient pending wrap AND each
+  // terminal self-heal outcome, which used to fall through to the generic
+  // banner below WITH a capture. Both halves of that were wrong: the budgeted
+  // reporter in `services/groupKeyTelemetry` already captured the failure once
+  // per (group, outcome) with content-free codes, so this emitted a second
+  // event for the same thing; and "Failed to generate invite code. Please try
+  // again." buried a reason retrying cannot change. So: no captureTags, and
+  // the copy for the actual outcome, from the one selector every other surface
+  // reads — a group-key failure on the invite route is the same failure it is
+  // in a composer, and must not be worded differently here.
+  const keyCopy = groupKeyFailureCopy(err);
+  if (keyCopy) {
+    return { bannerError: keyCopy.message };
   }
 
   // Everything unattributable: 401, 5xx, an uncoded 400 (a client-contract bug

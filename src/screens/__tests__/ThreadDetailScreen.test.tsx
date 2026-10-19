@@ -217,11 +217,15 @@ jest.mock('../../hooks/useWebSocketSubscription', () => ({
 const mockSetActiveThread = jest.fn();
 
 /**
- * #912: the per-group heal counter. The real `useGroupKeyGeneration` reads the
- * store singleton (MMKV), which does not load under jest; a test bumps this and
- * re-renders to stand in for `wrapped_key_delivered` landing.
+ * #912: the per-group heal counters. The real `useGroupKeyGeneration` reads the
+ * store singleton (MMKV), which does not load under jest; a test writes a group
+ * in here and re-renders to stand in for `wrapped_key_delivered` landing.
+ *
+ * KEYED, mirroring the real selector: this screen reads the cross-group TOTAL
+ * until it knows its own conversation and that group's count afterwards, and a
+ * flat value would hide the difference between the two bases.
  */
-let mockKeyGeneration = 0;
+let mockKeyGenerations: Record<string, number> = {};
 
 jest.mock('../../stores', () => {
   const getState = () => ({
@@ -270,7 +274,10 @@ jest.mock('../../stores', () => {
   }),
   useMediaForThread: () => [],
   useMediaForReply: () => [],
-  useGroupKeyGeneration: () => mockKeyGeneration,
+  useGroupKeyGeneration: (groupId: string | null) =>
+    groupId === null
+      ? Object.values(mockKeyGenerations).reduce((sum, n) => sum + n, 0)
+      : mockKeyGenerations[groupId] ?? 0,
 };});
 
 jest.mock('@react-navigation/native-stack', () => ({
@@ -439,7 +446,7 @@ function applyDefaultMocks(): void {
   mockBlockedUserIds = [];
   mockContacts = {};
   mockIsFocused = true;
-  mockKeyGeneration = 0;
+  mockKeyGenerations = {};
   // The guard mock has no implementation — clearAllMocks() above already resets
   // its call history. Explicitly clear in case a test overrides its behaviour.
   mockUsePreventRemove.mockReset();
@@ -3426,7 +3433,7 @@ describe('ThreadDetailScreen — group key (#912)', () => {
     // Deliberately NOT seedThread(): it hands useThreads a fresh
     // `markThreadViewed` identity, which re-runs the mount effect and would
     // make a third fetch look like the heal reload.
-    mockKeyGeneration = 1;
+    mockKeyGenerations = { 'group-1': 1 };
     await rerender(renderer);
 
     expect(mockLoadThread).toHaveBeenCalledTimes(2);
@@ -3443,5 +3450,112 @@ describe('ThreadDetailScreen — group key (#912)', () => {
 
     // A plain re-render (any store write) must not re-run the load.
     expect(mockLoadThread).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * `useThreads` value whose EFFECT-RELEVANT callbacks keep one identity
+   * across calls. The mount effect depends on `markThreadViewed`, so handing
+   * it a fresh `jest.fn()` re-runs that effect and re-fetches — which would
+   * mask the very double fetch the case below exists to catch.
+   */
+  const stableMarkThreadViewed = jest.fn();
+  function setThreadRow(present: boolean): void {
+    const storesMock = jest.requireMock('../../stores') as { useThreads: jest.Mock };
+    storesMock.useThreads.mockReturnValue({
+      threads: present ? { 'thread-1': fakeThread } : {},
+      threadIdsByConversation: present ? { 'group-1': ['thread-1'] } : {},
+      replies: {},
+      replyIdsByThread: {},
+      activeThreadId: present ? 'thread-1' : null,
+      setThreads: jest.fn(),
+      upsertThread: jest.fn(),
+      removeThread: jest.fn(),
+      setActiveThread: mockSetActiveThread,
+      markThreadViewed: stableMarkThreadViewed,
+      setReplies: jest.fn(),
+      appendReplies: jest.fn(),
+      upsertReply: jest.fn(),
+      addOptimisticThread: jest.fn(),
+      addOptimisticReply: jest.fn(),
+      updateThreadSyncStatus: jest.fn(),
+      updateReplySyncStatus: jest.fn(),
+    });
+  }
+
+  // A push deep link mounts with no thread row, so the generation is read as
+  // the cross-group TOTAL; when the load lands and the row appears, the basis
+  // flips to this group's own count. That flip is a change of units, not a
+  // delivery, and taking it for one fetched the thread twice.
+  it('does not re-fetch when the generation basis flips to this group', async () => {
+    // A sibling group healed earlier this session: the total is non-zero.
+    mockKeyGenerations = { 'group-other': 3 };
+    setThreadRow(false);
+
+    const renderer = await renderScreen();
+    expect(mockLoadThread).toHaveBeenCalledTimes(1);
+
+    setThreadRow(true);
+    await rerender(renderer);
+
+    expect(mockLoadThread).toHaveBeenCalledTimes(1);
+
+    // Not by switching the mechanism off: a real delivery for THIS group,
+    // under the same scope, still reloads.
+    mockKeyGenerations = { 'group-other': 3, 'group-1': 1 };
+    await rerender(renderer);
+
+    expect(mockLoadThread).toHaveBeenCalledTimes(2);
+  });
+
+  // With no thread row there is no list, no header and no footer, so the body
+  // was BLANK under the one-line banner — which reads as a load that gave up.
+  it('explains the pending state instead of leaving the body blank', async () => {
+    mockLoadThread.mockRejectedValue(pendingWrap());
+
+    const renderer = await renderScreen();
+
+    expect(find(renderer, 'group-key-pending-notice').length).toBeGreaterThan(0);
+    expect(texts(renderer)).toContain(RESENDING);
+  });
+
+  // `handleSend` returns silently with no thread row, so Send took the press
+  // and did nothing. The text stays in the box: it has to survive the wait.
+  it('holds Send down while there is no thread to reply to', async () => {
+    mockLoadThread.mockRejectedValue(pendingWrap());
+
+    const renderer = await renderScreen();
+    await act(async () => {
+      find(renderer, 'reply-input')[0].props.onChangeText('hello');
+    });
+
+    expect(find(renderer, 'send-button')[0].props.disabled).toBe(true);
+    expect(find(renderer, 'reply-input')[0].props.value).toBe('hello');
+  });
+
+  it('leaves Send live once there is a thread row', async () => {
+    seedThread();
+
+    const renderer = await renderScreen();
+    await act(async () => {
+      find(renderer, 'reply-input')[0].props.onChangeText('hello');
+    });
+
+    expect(find(renderer, 'send-button')[0].props.disabled).toBe(false);
+  });
+
+  // A stale row from a previous session renders the list, so the body notice
+  // above never shows — and the copy was dropped entirely.
+  it('explains a terminal failure under a stale thread row', async () => {
+    seedThread();
+    mockLoadThread.mockRejectedValue(unwrapFailure('refused'));
+
+    const renderer = await renderScreen();
+
+    expect(find(renderer, 'group-key-failure-footer').length).toBeGreaterThan(0);
+    const rendered = texts(renderer);
+    expect(rendered).toContain(UNREADABLE);
+    expect(rendered).not.toContain('Be the first to reply');
+    // The stale content it explains is still on screen.
+    expect(rendered).toContain(fakeThread.title);
   });
 });

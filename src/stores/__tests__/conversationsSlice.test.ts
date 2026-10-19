@@ -469,3 +469,106 @@ describe('setGroupConversations', () => {
     expect(store.getState().conversationIds).toEqual(['g-1', 'dm-1']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Group-key heal generations (#912)
+// ---------------------------------------------------------------------------
+
+describe('conversationsSlice — bumpGroupKeyGeneration', () => {
+  it('starts empty', () => {
+    expect(makeStore().getState().groupKeyGeneration).toEqual({});
+  });
+
+  it('counts deliveries per group, monotonically', () => {
+    const store = makeStore();
+
+    store.getState().bumpGroupKeyGeneration('g-1');
+    expect(store.getState().groupKeyGeneration).toEqual({ 'g-1': 1 });
+
+    store.getState().bumpGroupKeyGeneration('g-1');
+    store.getState().bumpGroupKeyGeneration('g-1');
+    // Monotonic is the whole contract: a screen compares this against the
+    // value it last loaded at, so a reset or a decrement would make it miss a
+    // delivery it was mounted for.
+    expect(store.getState().groupKeyGeneration['g-1']).toBe(3);
+  });
+
+  it('keys by groupId — one group\'s delivery leaves the others alone', () => {
+    const store = makeStore();
+
+    store.getState().bumpGroupKeyGeneration('g-1');
+    store.getState().bumpGroupKeyGeneration('g-2');
+    store.getState().bumpGroupKeyGeneration('g-2');
+
+    expect(store.getState().groupKeyGeneration).toEqual({ 'g-1': 1, 'g-2': 2 });
+  });
+
+  // A demoted member can be sitting on a push deep link whose conversation row
+  // has not loaded, which is exactly the screen that must reload — so the
+  // counter must not require a conversation to exist.
+  it('needs no conversation row for the group', () => {
+    const store = makeStore();
+
+    store.getState().bumpGroupKeyGeneration('never-loaded');
+
+    expect(store.getState().groupKeyGeneration['never-loaded']).toBe(1);
+    expect(store.getState().conversations['never-loaded']).toBeUndefined();
+    expect(store.getState().conversationIds).toEqual([]);
+  });
+
+  it('leaves the conversation map and order untouched', () => {
+    const store = makeStore();
+    const c1 = makeConversation({ id: 'g-1' });
+    store.getState().setConversations([c1]);
+    const before = store.getState().conversations;
+
+    store.getState().bumpGroupKeyGeneration('g-1');
+
+    expect(store.getState().conversations).toBe(before);
+    expect(store.getState().conversationIds).toEqual(['g-1']);
+  });
+});
+
+describe('conversationsSlice — clearGroupKeyGenerations', () => {
+  it('drops every counter', () => {
+    const store = makeStore();
+    store.getState().bumpGroupKeyGeneration('g-1');
+    store.getState().bumpGroupKeyGeneration('g-2');
+
+    store.getState().clearGroupKeyGenerations();
+
+    expect(store.getState().groupKeyGeneration).toEqual({});
+  });
+
+  // localWipe calls this unconditionally, and a fresh {} would re-render every
+  // `useGroupKeyGeneration` subscriber for nothing.
+  it('is identity-stable when already empty', () => {
+    const store = makeStore();
+    const before = store.getState().groupKeyGeneration;
+
+    store.getState().clearGroupKeyGenerations();
+
+    expect(store.getState().groupKeyGeneration).toBe(before);
+  });
+
+  it('is identity-stable when called twice', () => {
+    const store = makeStore();
+    store.getState().bumpGroupKeyGeneration('g-1');
+
+    store.getState().clearGroupKeyGenerations();
+    const cleared = store.getState().groupKeyGeneration;
+    store.getState().clearGroupKeyGenerations();
+
+    expect(store.getState().groupKeyGeneration).toBe(cleared);
+  });
+
+  it('counts from zero again after a clear', () => {
+    const store = makeStore();
+    store.getState().bumpGroupKeyGeneration('g-1');
+    store.getState().clearGroupKeyGenerations();
+
+    store.getState().bumpGroupKeyGeneration('g-1');
+
+    expect(store.getState().groupKeyGeneration['g-1']).toBe(1);
+  });
+});

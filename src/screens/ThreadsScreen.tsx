@@ -289,18 +289,51 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
    */
   const keyGeneration = useGroupKeyGeneration(activeConversationId ?? null);
 
+  /**
+   * One orbit's key state must never be shown over another's. This screen
+   * stays MOUNTED across orbit switches (the selector only writes
+   * activeConversationId), so without this the banner from orbit A sat over
+   * orbit B — indefinitely, if B's own load then failed for a non-key reason,
+   * since the flags clear only on a success.
+   *
+   * Keyed on the id ALONE, deliberately not on `keyGeneration`: a heal bump
+   * re-runs the load below, and clearing the flags there would flash the
+   * create-first empty state on every reload attempt.
+   */
+  useEffect(() => {
+    setKeyPending(false);
+    setKeyFailureMessage(null);
+  }, [activeConversationId]);
+
+  // Instant hydration from the local SQLCipher cache, before the async fetch.
+  // SPLIT from the load effect below: `setThreads` REPLACES this
+  // conversation's id list, so re-running it on a heal bump would roll the
+  // list back to the disk snapshot the heal was supposed to supersede.
   useEffect(() => {
     if (!activeConversationId) return;
-    // Instant hydration from local SQLCipher cache before async API fetch
     hydrateThreadsFromLocal(activeConversationId);
-    loadThreadsForGroup(activeConversationId)
+  }, [activeConversationId]);
+
+  useEffect(() => {
+    if (!activeConversationId) return;
+    // The id this load was issued FOR. Every state write below is gated on it
+    // still being the active orbit: `loadThreadsForGroup` is not cancellable,
+    // and a late settle from the orbit the user just left must not write its
+    // verdict onto the one they are looking at.
+    const target = activeConversationId;
+    const isStale = (): boolean =>
+      useAppStore.getState().activeConversationId !== target;
+    loadThreadsForGroup(target)
       .then(() => {
+        if (isStale()) return;
         // Cleared only on success: clearing at the START of the load would
         // flash the create-first empty state on every reload attempt.
         setKeyPending(false);
         setKeyFailureMessage(null);
       })
       .catch((e) => {
+        if (__DEV__) console.warn('[ThreadsScreen] load failed:', e instanceof Error ? e.message : e);
+        if (isStale()) return;
         if (isGroupKeyPending(e)) {
           setKeyPending(true);
           setKeyFailureMessage(null);
@@ -314,7 +347,6 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
           // visible and the failure is a dev warning. Not every load failure
           // is a key failure, and a network blip must not claim to be one.
         }
-        if (__DEV__) console.warn('[ThreadsScreen] load failed:', e instanceof Error ? e.message : e);
       });
   }, [activeConversationId, keyGeneration]);
 

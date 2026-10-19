@@ -76,6 +76,14 @@ export interface ReplyComposerProps {
   blockedPeerId?: string;
   /** Display-ready label for the notice (`@name` only when resolved). */
   blockedLabel?: string;
+  /**
+   * Hold Send down even with content in the box (#912). Set while there is no
+   * thread to reply TO — a deep link still loading, or a group key this device
+   * cannot open — where `handleSend` returns silently: the button looked live,
+   * took the press and did nothing. The input stays editable on purpose, so a
+   * reply typed during the wait survives into the send that works.
+   */
+  sendDisabled?: boolean;
 }
 
 export const ReplyComposer = React.memo(function ReplyComposer({
@@ -95,6 +103,7 @@ export const ReplyComposer = React.memo(function ReplyComposer({
   onCancelUpload,
   blockedPeerId,
   blockedLabel,
+  sendDisabled = false,
 }: ReplyComposerProps): React.JSX.Element {
   const theme = useTheme();
   // Both props or neither: a label with no id (or the reverse) is not a
@@ -126,7 +135,7 @@ export const ReplyComposer = React.memo(function ReplyComposer({
   }, [replyTarget, sending]);
 
   const hasContent = text.trim().length > 0 || (media?.length ?? 0) > 0;
-  const canSend = hasContent && !sending;
+  const canSend = hasContent && !sending && !sendDisabled;
 
   const handleSend = useCallback(() => {
     if (!canSend) return;

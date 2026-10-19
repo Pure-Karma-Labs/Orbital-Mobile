@@ -17,14 +17,17 @@
  *   `colors.error` banner would overstate a condition that is usually someone
  *   else's device being offline.
  *
- * Neither is dismissible: both describe the state of the content on screen, so
- * dismissing one would leave an empty conversation with no explanation — the
- * #912 bug itself.
+ * {@link GroupKeyPendingNotice} is the failure notice's shape carrying the
+ * pending sentence, for the one surface with nothing else on it (see its own
+ * doc). None of the three is dismissible: each describes the state of the
+ * content on screen, so dismissing one would leave an empty conversation with
+ * no explanation — the #912 bug itself.
  */
 
 import React from 'react';
 import { Text, View, type TextStyle, type ViewStyle } from 'react-native';
 import { useTheme } from '../theme';
+import { GROUP_KEY_RESENDING_MESSAGE } from '../utils/errorMessages';
 
 /**
  * Pinned here rather than in `utils/errorMessages.ts`: this component is the
@@ -74,6 +77,13 @@ export function GroupKeyPendingBanner({
 export interface GroupKeyFailureNoticeProps {
   /** Already selected by `utils/groupKeyErrorCopy.groupKeyFailureCopy`. */
   message: string;
+  /**
+   * Render as a block that takes its own height instead of filling the content
+   * area. For a `ListFooterComponent`: the box sits under a thread whose own
+   * rows are still on screen, and `flex: 1` inside an auto-height list content
+   * container collapses to its flex basis of 0.
+   */
+  inline?: boolean;
   testID?: string;
 }
 
@@ -84,16 +94,23 @@ export interface GroupKeyFailureNoticeProps {
  */
 export function GroupKeyFailureNotice({
   message,
+  inline = false,
   testID = 'group-key-failure-notice',
 }: GroupKeyFailureNoticeProps): React.JSX.Element {
   const theme = useTheme();
 
-  const containerStyle: ViewStyle = {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: theme.spacing.xl,
-  };
+  const containerStyle: ViewStyle = inline
+    ? {
+        alignItems: 'center',
+        paddingHorizontal: theme.spacing.xl,
+        paddingVertical: theme.spacing.lg,
+      }
+    : {
+        flex: 1,
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: theme.spacing.xl,
+      };
 
   const boxStyle: ViewStyle = {
     borderWidth: 1,
@@ -132,4 +149,25 @@ export function GroupKeyFailureNotice({
       </View>
     </View>
   );
+}
+
+export interface GroupKeyPendingNoticeProps {
+  testID?: string;
+}
+
+/**
+ * The pending state as a CENTRED notice rather than a banner, for the one
+ * surface that has nothing else to show: ThreadDetail reached by a deep link
+ * whose thread row never decrypted. The inbox surfaces keep the banner alone —
+ * their orbit bar, search bar and list frame already say where the user is —
+ * but a bare thread screen under a one-line banner reads as a failed load.
+ *
+ * Carries the full RESENDING sentence (the banner's "Re-sending encryption
+ * key…" is a status line, not an explanation), reusing the composers' copy so
+ * the two cannot drift.
+ */
+export function GroupKeyPendingNotice({
+  testID = 'group-key-pending-notice',
+}: GroupKeyPendingNoticeProps): React.JSX.Element {
+  return <GroupKeyFailureNotice message={GROUP_KEY_RESENDING_MESSAGE} testID={testID} />;
 }

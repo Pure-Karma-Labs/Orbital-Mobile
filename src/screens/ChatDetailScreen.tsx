@@ -266,17 +266,47 @@ export function ChatDetailScreen({
    */
   const keyGeneration = useGroupKeyGeneration(conversationId);
 
+  /**
+   * The conversation this render belongs to, read at settle time. A
+   * params-in-place navigate to another DM keeps this screen mounted, and
+   * `loadThreadsForGroup` is not cancellable, so a late settle from the
+   * previous conversation would otherwise write its key verdict onto this one
+   * (the ThreadsScreen leak, in its milder form here).
+   */
+  const conversationIdRef = useRef(conversationId);
+  conversationIdRef.current = conversationId;
+
+  /**
+   * Reset on a conversation change — NOT on a `keyGeneration` bump, which
+   * re-runs the load below and would flash the empty state on every reload.
+   */
   useEffect(() => {
-    // Instant hydration from local SQLCipher cache before async API fetch
+    setKeyPending(false);
+    setKeyFailureMessage(null);
+  }, [conversationId]);
+
+  // Instant hydration from the local SQLCipher cache, before the async fetch.
+  // SPLIT from the load effect: `setThreads` REPLACES this conversation's id
+  // list, so re-running it on a heal bump would roll the list back to the disk
+  // snapshot the heal was supposed to supersede.
+  useEffect(() => {
     hydrateThreadsFromLocal(conversationId);
-    loadThreadsForGroup(conversationId)
+  }, [conversationId]);
+
+  useEffect(() => {
+    const target = conversationId;
+    const isStale = (): boolean => conversationIdRef.current !== target;
+    loadThreadsForGroup(target)
       .then(() => {
+        if (isStale()) return;
         // On success only: clearing before the load would flash the
         // create-first empty state on every reload attempt.
         setKeyPending(false);
         setKeyFailureMessage(null);
       })
       .catch((e) => {
+        if (__DEV__) console.warn('[ChatDetail] load failed:', e instanceof Error ? e.message : e);
+        if (isStale()) return;
         if (isGroupKeyPending(e)) {
           setKeyPending(true);
           setKeyFailureMessage(null);
@@ -290,7 +320,6 @@ export function ChatDetailScreen({
           // visible, the failure is a dev warning. A network blip must not
           // claim to be a key problem.
         }
-        if (__DEV__) console.warn('[ChatDetail] load failed:', e instanceof Error ? e.message : e);
       });
   }, [conversationId, keyGeneration]);
 

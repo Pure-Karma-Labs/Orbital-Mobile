@@ -242,6 +242,7 @@ const mockResetBlockedUsers = jest.fn();
 const mockResetNotificationSettings = jest.fn();
 const mockSetViewingConversation = jest.fn();
 const mockSetIdentityRestoreDeferred = jest.fn();
+const mockClearGroupKeyGenerations = jest.fn();
 
 jest.mock('../../stores/useAppStore', () => ({
   useAppStore: {
@@ -264,6 +265,7 @@ jest.mock('../../stores/useAppStore', () => ({
       resetNotificationSettings: mockResetNotificationSettings,
       setViewingConversation: mockSetViewingConversation,
       setIdentityRestoreDeferred: mockSetIdentityRestoreDeferred,
+      clearGroupKeyGenerations: mockClearGroupKeyGenerations,
     })),
   },
 }));
@@ -967,6 +969,16 @@ describe('logout', () => {
     await logout();
 
     expect(mockClearGroupKeyTelemetryState).toHaveBeenCalledTimes(1);
+  });
+
+  // #912: the heal-reload counters are per session and per account, and
+  // nothing else clears them — `setConversations([])` replaces the rows, not
+  // this map. Without the reset the next account on this device starts with a
+  // screen that thinks a key was just delivered for one of its groups.
+  it('clears the group-key heal generations on logout (localWipe)', async () => {
+    await logout();
+
+    expect(mockClearGroupKeyGenerations).toHaveBeenCalledTimes(1);
   });
 
   // #449: in-memory Zustand state survives MMKV clearAll() and re-persists,

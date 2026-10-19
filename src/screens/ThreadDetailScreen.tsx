@@ -66,6 +66,7 @@ import { Header } from '../components/Header';
 import {
   GroupKeyFailureNotice,
   GroupKeyPendingBanner,
+  GroupKeyPendingNotice,
 } from '../components/GroupKeyNotice';
 import { groupKeyFailureCopy, isGroupKeyPending } from '../utils/groupKeyErrorCopy';
 import { OrbitalKeyboardAvoidingView } from '../components/OrbitalKeyboardAvoidingView';
@@ -699,14 +700,28 @@ export function ThreadDetailScreen({
    * A ref, not a dependency, carries the previous value: `fetchData`'s identity
    * changes with `threadId`, and the mount effect below already fetches, so
    * only a genuine CHANGE of the counter may trigger a second one.
+   *
+   * The ref carries the SCOPE with the value, because the two bases are not
+   * comparable. On a deep link the first load resolves, the thread row lands,
+   * and the basis flips from the cross-group total to this group's own count —
+   * a drop from (say) 3 to 0 that is a change of units, not a delivery. Taken
+   * as a bump it fetched the thread a second time. A scope change therefore
+   * re-seeds the ref and fetches nothing; only a value change under the SAME
+   * scope is a real delivery.
    */
-  const keyGeneration = useGroupKeyGeneration(thread?.conversationId ?? null);
-  const keyGenerationRef = useRef(keyGeneration);
+  const keyGenerationScope = thread?.conversationId ?? null;
+  const keyGeneration = useGroupKeyGeneration(keyGenerationScope);
+  const keyGenerationRef = useRef<{ scope: string | null; value: number }>({
+    scope: keyGenerationScope,
+    value: keyGeneration,
+  });
   useEffect(() => {
-    if (keyGenerationRef.current === keyGeneration) return;
-    keyGenerationRef.current = keyGeneration;
+    const previous = keyGenerationRef.current;
+    keyGenerationRef.current = { scope: keyGenerationScope, value: keyGeneration };
+    if (previous.scope !== keyGenerationScope) return;
+    if (previous.value === keyGeneration) return;
     fetchData();
-  }, [keyGeneration, fetchData]);
+  }, [keyGenerationScope, keyGeneration, fetchData]);
 
   // Track which conversation the user is viewing (for foreground push suppression)
   const conversationId = thread?.conversationId;
@@ -1048,9 +1063,23 @@ export function ThreadDetailScreen({
         </View>
       );
     }
-    // #912: "Be the first to reply" is the same lie as the inbox's empty state
-    // when the replies simply could not be decrypted.
-    if (keyPending || keyFailureMessage !== null) {
+    // #912: a terminal key failure with a STALE thread row still in the store
+    // renders the list, not the body notice below — so the footer is the only
+    // place the explanation can go, and without it the copy was dropped
+    // entirely. In place of "Be the first to reply", which is the same lie as
+    // the inbox's empty state when the replies simply could not be decrypted.
+    if (keyFailureMessage !== null) {
+      return (
+        <GroupKeyFailureNotice
+          message={keyFailureMessage}
+          inline
+          testID="group-key-failure-footer"
+        />
+      );
+    }
+    // Pending needs no footer: the banner above the list is already saying it,
+    // and this state resolves itself.
+    if (keyPending) {
       return null;
     }
     if (replyRows.length === 0 && !loading && !refreshing) {
@@ -1119,6 +1148,11 @@ export function ThreadDetailScreen({
           // Ahead of `error`: a key failure sets this instead of `error`, and
           // the explanation is the only thing on screen that is actionable.
           <GroupKeyFailureNotice message={keyFailureMessage} />
+        ) : keyPending && !thread ? (
+          // With no thread row there is no list, no header and no footer, so
+          // without this the body was BLANK under a one-line banner — which
+          // reads as a load that silently gave up (#912).
+          <GroupKeyPendingNotice />
         ) : error && !thread ? (
           <View style={centerStyle}>
             <Text style={errorTextStyle}>{error}</Text>
@@ -1174,6 +1208,11 @@ export function ThreadDetailScreen({
         <ReplyComposer
           blockedPeerId={blockedPeer?.peerId}
           blockedLabel={blockedPeer?.label}
+          // #912: `handleSend` returns silently with no thread row — a pending
+          // or dead group key is the case that lasts. Disabled rather than
+          // alerting on press: the banner and the body notice above already
+          // say why, and a greyed Send never promises a send it cannot make.
+          sendDisabled={!thread}
           replyTarget={replyTarget}
           onClearReplyTarget={handleClearReplyTarget}
           onSend={handleSend}

@@ -2016,7 +2016,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
-  - react-native-image-picker (8.3.0):
+  - react-native-image-picker (8.2.1):
     - boost
     - DoubleConversion
     - fast_float
@@ -3368,7 +3368,7 @@ SPEC CHECKSUMS:
   React-microtasksnativemodule: a84b9331106616ab1fa36de9ae555718d4bbdcf5
   react-native-config: 713a638bfc2b359f4606a9a161bb16e6a5068568
   react-native-get-random-values: 5c2e7ce0c1eedefde8e97fe60152601887fcfa08
-  react-native-image-picker: 686891e39197364111c4c1cef9c74a8a73d2050d
+  react-native-image-picker: 6051cfd030121b880a58f1cc0e5e33e9887804e4
   react-native-safe-area-context: 2bcd3bece6b4dcb20da32a9ac7a3f20f156a86f6
   react-native-video: 558711646609a96027f16a724c89556d9b149806
   React-NativeModulesApple: efd0906463c79d9b86197dbcf0d58358dff8c5ed

@@ -103,6 +103,13 @@ jest.mock('../../stores/useAppStore', () => ({
       bumpLastMessageAt: mockBumpLastMessageAt,
       // #906 review: the request-ordering token the recency reconcile reads.
       blockedUsersGeneration: 0,
+      // #908: the slices deriveBlockedDmPeer reads on every send. It tolerates
+      // missing ones by returning null, so they are supplied explicitly here
+      // (and per-test below) rather than relied on to be absent.
+      conversations: {},
+      contacts: {},
+      blockedUserIds: [],
+      blockedUserProfiles: {},
     })),
   },
 }));
@@ -126,7 +133,7 @@ import {
   getOrFetchGroupKey,
 } from '../crypto/contentCrypto';
 import type { ThreadResponse, ReplyResponse, ListRepliesResponse, CreateReplyResponse, CreateThreadResponse, ListThreadsResponse, ThreadListItem } from '../../types/api';
-import type { Thread } from '../../types/store';
+import type { Thread, Conversation, Contact } from '../../types/store';
 
 const mockGetThread = getThread as jest.MockedFunction<typeof getThread>;
 const mockGetGroupThreads = getGroupThreads as jest.MockedFunction<typeof getGroupThreads>;
@@ -241,6 +248,11 @@ beforeEach(() => {
     setThreads: mockSetThreads,
     updateThreadSyncStatus: mockUpdateThreadSyncStatus,
     bumpLastMessageAt: mockBumpLastMessageAt,
+    // #908: see the factory mock above — the blocked-DM-peer derivation slices.
+    conversations: {},
+    contacts: {},
+    blockedUserIds: [],
+    blockedUserProfiles: {},
   });
   mockGetOrFetchGroupKey.mockResolvedValue(fakeGroupKey);
   mockDecryptContent.mockImplementation((ciphertext: string) => {
@@ -1923,5 +1935,225 @@ describe('#883 createNewThread conversation bump', () => {
     ).rejects.toBeDefined();
 
     expect(mockBumpLastMessageAt).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #908 blocked-DM-peer send refusal
+// ---------------------------------------------------------------------------
+
+describe('#908 blocked DM peer refuses the send', () => {
+  function baseStoreState() {
+    return {
+      threads: {},
+      replies: {},
+      replyIdsByThread: {},
+      markThreadViewed: mockMarkThreadViewed,
+      upsertThread: mockUpsertThread,
+      setReplies: mockSetReplies,
+      appendReplies: mockAppendReplies,
+      addOptimisticReply: mockAddOptimisticReply,
+      updateReplySyncStatus: mockUpdateReplySyncStatus,
+      removeReply: mockRemoveReply,
+      upsertReply: mockUpsertReply,
+      replaceReply: mockReplaceReply,
+      reconcileReplies: mockReconcileReplies,
+      addOptimisticThread: mockAddOptimisticThread,
+      removeThread: mockRemoveThread,
+      setThreads: mockSetThreads,
+      updateThreadSyncStatus: mockUpdateThreadSyncStatus,
+      bumpLastMessageAt: mockBumpLastMessageAt,
+      blockedUsersGeneration: 0,
+      blockedUserProfiles: {},
+    };
+  }
+
+  function seedStore(state: {
+    conversations?: Record<string, Conversation>;
+    contacts?: Record<string, Contact>;
+    blockedUserIds?: string[];
+  }): void {
+    const { useAppStore } = jest.requireMock('../../stores/useAppStore') as {
+      useAppStore: { getState: jest.Mock };
+    };
+    useAppStore.getState.mockReturnValue({
+      ...baseStoreState(),
+      conversations: state.conversations ?? {},
+      contacts: state.contacts ?? {},
+      blockedUserIds: state.blockedUserIds ?? [],
+    });
+  }
+
+  function makeDmRow(overrides: Partial<Conversation> = {}): Conversation {
+    return {
+      id: 'dm-1',
+      type: 'direct',
+      name: 'bob',
+      memberCount: 2,
+      active: true,
+      lastMessageAt: 1000,
+      unreadCount: 0,
+      lastReadAt: null,
+      createdAt: 900,
+      updatedAt: 1000,
+      peerUserId: 'user-2',
+      ...overrides,
+    };
+  }
+
+  function makeContact(overrides: Partial<Contact> = {}): Contact {
+    return {
+      id: 'user-2',
+      username: 'bob',
+      displayName: null,
+      avatarPath: null,
+      conversationIds: ['dm-1'],
+      ...overrides,
+    };
+  }
+
+  /** Nothing may have been encrypted, enqueued or sent. */
+  function expectNoSendSideEffects(): void {
+    expect(mockGetOrFetchGroupKey).not.toHaveBeenCalled();
+    expect(mockEncryptContent).not.toHaveBeenCalled();
+    expect(mockBumpLastMessageAt).not.toHaveBeenCalled();
+  }
+
+  it('createNewThread rejects with BlockedRecipientError (peer from peerUserId)', async () => {
+    seedStore({ conversations: { 'dm-1': makeDmRow() }, blockedUserIds: ['user-2'] });
+
+    // `name`, not `instanceof`: the suites that factory-mock this service can
+    // leave the error class undefined.
+    await expect(
+      createNewThread('dm-1', 'Title', 'Body', {
+        authorId: 'user-1',
+        authorUsername: 'alice',
+      }),
+    ).rejects.toMatchObject({
+      name: 'BlockedRecipientError',
+      recipientId: 'user-2',
+      message: 'You blocked this person.',
+    });
+
+    // The refusal is the FIRST statement: no network call and — because it is
+    // ahead of addOptimisticThread — no row to roll back either.
+    expect(mockCreateThread).not.toHaveBeenCalled();
+    expect(mockAddOptimisticThread).not.toHaveBeenCalled();
+    expect(mockRemoveThread).not.toHaveBeenCalled();
+    expectNoSendSideEffects();
+  });
+
+  it('postReply rejects with BlockedRecipientError (peer from peerUserId)', async () => {
+    seedStore({ conversations: { 'dm-1': makeDmRow() }, blockedUserIds: ['user-2'] });
+
+    await expect(
+      postReply('thread-1', 'dm-1', 'Hello', null, 0, {
+        authorId: 'user-1',
+        authorUsername: 'alice',
+      }),
+    ).rejects.toMatchObject({
+      name: 'BlockedRecipientError',
+      recipientId: 'user-2',
+    });
+
+    expect(mockCreateReply).not.toHaveBeenCalled();
+    expect(mockAddOptimisticReply).not.toHaveBeenCalled();
+    expect(mockRemoveReply).not.toHaveBeenCalled();
+    expectNoSendSideEffects();
+  });
+
+  it('resolves the peer from the contact fallback when the row predates #908', async () => {
+    // A DM row persisted before peerUserId existed: the contact reverse-scan
+    // is the only way to the peer, and the send must still be refused.
+    const { peerUserId: _legacy, ...legacyRow } = makeDmRow();
+    seedStore({
+      conversations: { 'dm-1': legacyRow },
+      contacts: { 'user-2': makeContact() },
+      blockedUserIds: ['user-2'],
+    });
+
+    await expect(
+      postReply('thread-1', 'dm-1', 'Hello', null, 0, {
+        authorId: 'user-1',
+        authorUsername: 'alice',
+      }),
+    ).rejects.toMatchObject({
+      name: 'BlockedRecipientError',
+      recipientId: 'user-2',
+    });
+
+    expect(mockCreateReply).not.toHaveBeenCalled();
+    expect(mockAddOptimisticReply).not.toHaveBeenCalled();
+  });
+
+  it('createNewThread into an ORBIT proceeds even when a member is blocked', async () => {
+    // An orbit id is never reverse-looked-up to a member: posting to a forum
+    // the blocked person happens to be in is not a send to them.
+    seedStore({
+      conversations: {
+        'group-1': makeDmRow({ id: 'group-1', type: 'group', name: 'Family', peerUserId: undefined }),
+      },
+      contacts: { 'user-2': makeContact({ conversationIds: ['group-1'] }) },
+      blockedUserIds: ['user-2'],
+    });
+    mockCreateThread.mockResolvedValue({
+      threadId: 'server-thread-id',
+      groupId: 'group-1',
+      createdAt: '2026-04-02T09:30:00Z',
+      media: [],
+    } as CreateThreadResponse);
+
+    await expect(
+      createNewThread('group-1', 'Title', 'Body', {
+        authorId: 'user-1',
+        authorUsername: 'alice',
+      }),
+    ).resolves.toMatchObject({ id: 'server-thread-id' });
+
+    expect(mockAddOptimisticThread).toHaveBeenCalledTimes(1);
+    expect(mockCreateThread).toHaveBeenCalledTimes(1);
+  });
+
+  it('postReply into a DM whose peer is NOT blocked proceeds', async () => {
+    seedStore({
+      conversations: { 'dm-1': makeDmRow() },
+      contacts: { 'user-2': makeContact() },
+      blockedUserIds: ['someone-else'],
+    });
+    mockCreateReply.mockResolvedValue({
+      replyId: 'server-reply-id',
+      threadId: 'thread-1',
+      createdAt: '2026-04-01T12:00:00Z',
+      media: [],
+    } as CreateReplyResponse);
+
+    await expect(
+      postReply('thread-1', 'dm-1', 'Hello', null, 0, {
+        authorId: 'user-1',
+        authorUsername: 'alice',
+      }),
+    ).resolves.toMatchObject({ id: 'server-reply-id' });
+
+    expect(mockAddOptimisticReply).toHaveBeenCalledTimes(1);
+    expect(mockCreateReply).toHaveBeenCalledTimes(1);
+  });
+
+  it('createNewThread into a DM whose peer is NOT blocked proceeds', async () => {
+    seedStore({ conversations: { 'dm-1': makeDmRow() }, blockedUserIds: [] });
+    mockCreateThread.mockResolvedValue({
+      threadId: 'server-thread-id',
+      groupId: 'dm-1',
+      createdAt: '2026-04-02T09:30:00Z',
+      media: [],
+    } as CreateThreadResponse);
+
+    await expect(
+      createNewThread('dm-1', 'Title', 'Body', {
+        authorId: 'user-1',
+        authorUsername: 'alice',
+      }),
+    ).resolves.toMatchObject({ id: 'server-thread-id' });
+
+    expect(mockCreateThread).toHaveBeenCalledTimes(1);
   });
 });

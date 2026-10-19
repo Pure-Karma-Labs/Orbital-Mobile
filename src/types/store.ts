@@ -53,6 +53,15 @@ export interface Conversation {
   updatedAt: number;
   /** Whether the current user is the orbit creator/owner. Updated via WS owner_changed. */
   isCreator?: boolean;
+  /**
+   * DM only: the other member's user id (#908). Sourced from
+   * `DmResponse.recipient.id` (list) and `CreateDmResponse.recipient.id`
+   * (startDm). MUST be written by `mapDmResponse`: `mergeDmRecency` returns
+   * `{...incoming}`, so a field written only by `startDm` /
+   * `ensureDmConversation` would be erased on the next `loadDmConversations`.
+   * Absent on rows persisted before #908 until the next DM list load.
+   */
+  peerUserId?: string;
 }
 
 export interface Thread {

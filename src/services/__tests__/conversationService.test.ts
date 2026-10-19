@@ -122,6 +122,8 @@ jest.mock('../../stores/useAppStore', () => ({
       activeConversationId: null,
       conversations: {},
       contacts: {},
+      // #908: startDm reads this unconditionally as its first statement.
+      blockedUserIds: [],
       setConversations: mockSetConversations,
       setGroupConversations: mockSetConversations,
       setActiveConversation: mockSetActiveConversation,
@@ -184,6 +186,8 @@ beforeEach(() => {
     activeConversationId: null,
     conversations: {},
     contacts: {},
+    // #908: startDm reads this unconditionally as its first statement.
+    blockedUserIds: [],
     setConversations: mockSetConversations,
     setGroupConversations: mockSetConversations,
     setActiveConversation: mockSetActiveConversation,
@@ -2732,6 +2736,7 @@ describe('startDm — existing DM is preserved (#883)', () => {
       activeConversationId: null,
       conversations: { 'dm-existing': existing },
       contacts: {},
+      blockedUserIds: [],
       setConversations: mockSetConversations,
       setGroupConversations: mockSetConversations,
       setActiveConversation: mockSetActiveConversation,
@@ -2754,7 +2759,168 @@ describe('startDm — existing DM is preserved (#883)', () => {
       ...existing,
       // The display name is still refreshed from the server.
       name: 'carol',
+      // #908: the existing-row branch also backfills the DM peer id. Asserted
+      // in the exact-equality object so this test keeps proving that NOTHING
+      // ELSE is written.
+      peerUserId: 'user-3',
       active: true,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #908 — blocked-peer send refusal and the DM peer id
+// ---------------------------------------------------------------------------
+
+describe('startDm — blocked recipient refusal (#908)', () => {
+  function seedBlocked(blockedUserIds: string[]): void {
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-self-user',
+      activeConversationId: null,
+      conversations: {},
+      contacts: {},
+      blockedUserIds,
+      setConversations: mockSetConversations,
+      setGroupConversations: mockSetConversations,
+      setActiveConversation: mockSetActiveConversation,
+      upsertConversation: mockUpsertConversation,
+      mergeContacts: mockMergeContacts,
+      removeContact: jest.fn(),
+      setContactVerifiedStatus: mockSetContactVerifiedStatus,
+    });
+  }
+
+  it('rejects with BlockedRecipientError carrying the recipient id', async () => {
+    seedBlocked(['user-3']);
+
+    // Matched on `name`, never `instanceof`: screens key off the name because
+    // factory-mocked service modules can leave the class undefined.
+    await expect(startDm('user-3')).rejects.toMatchObject({
+      name: 'BlockedRecipientError',
+      recipientId: 'user-3',
+      message: 'You blocked this person.',
+    });
+  });
+
+  it('refuses BEFORE any key generation, identity fetch or network call', async () => {
+    seedBlocked(['user-3']);
+    mockCreateDm.mockResolvedValue({
+      groupId: 'dm-new',
+      isNew: true,
+      wrappedGroupKey: 'ecies-wrapped-base64',
+      recipient: { id: 'user-3', username: 'carol' },
+    });
+
+    await expect(startDm('user-3')).rejects.toMatchObject({
+      name: 'BlockedRecipientError',
+    });
+
+    // The refusal is the FIRST statement, so there is nothing to roll back.
+    expect(mockCreateDm).not.toHaveBeenCalled();
+    expect(mockRefreshAndCompareIdentityKey).not.toHaveBeenCalled();
+    expect(mockGenerateGroupKey).not.toHaveBeenCalled();
+    expect(mockWrapGroupKey).not.toHaveBeenCalled();
+    expect(mockPersistGroupKey).not.toHaveBeenCalled();
+    expect(mockUpsertConversation).not.toHaveBeenCalled();
+  });
+
+  it('still starts a DM with a recipient who is not blocked', async () => {
+    seedBlocked(['someone-else']);
+    mockCreateDm.mockResolvedValue({
+      groupId: 'dm-new',
+      isNew: true,
+      wrappedGroupKey: 'ecies-wrapped-base64',
+      recipient: { id: 'user-3', username: 'carol' },
+    });
+
+    await expect(startDm('user-3')).resolves.toEqual({
+      conversationId: 'dm-new',
+      recipientName: 'carol',
+    });
+    expect(mockCreateDm).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('peerUserId is written on every DM row (#908)', () => {
+  function seedConversations(conversations: Record<string, Conversation>): void {
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: 'test-self-user',
+      activeConversationId: null,
+      conversations,
+      contacts: {},
+      blockedUserIds: [],
+      blockedUsersGeneration: 0,
+      setConversations: mockSetConversations,
+      setGroupConversations: mockSetConversations,
+      setActiveConversation: mockSetActiveConversation,
+      upsertConversation: mockUpsertConversation,
+      mergeContacts: mockMergeContacts,
+      removeContact: jest.fn(),
+      setContactVerifiedStatus: mockSetContactVerifiedStatus,
+      markConversationRead: jest.fn(),
+    });
+  }
+
+  it('startDm writes peerUserId on the NEW-row branch', async () => {
+    mockCreateDm.mockResolvedValue({
+      groupId: 'dm-new',
+      isNew: true,
+      wrappedGroupKey: 'ecies-wrapped-base64',
+      recipient: { id: 'user-3', username: 'carol' },
+    });
+
+    await startDm('user-3');
+
+    expect(mockUpsertConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'dm-new', peerUserId: 'user-3' }),
+    );
+  });
+
+  it('startDm writes peerUserId on the EXISTING-row branch', async () => {
+    seedConversations({
+      'dm-existing': makeDmConversation({ id: 'dm-existing', name: 'stale-name' }),
+    });
+    mockCreateDm.mockResolvedValue({
+      groupId: 'dm-existing',
+      isNew: false,
+      wrappedGroupKey: 'server-existing-key',
+      wrappedBy: 'other-user',
+      recipient: { id: 'user-3', username: 'carol' },
+    });
+
+    await startDm('user-3');
+
+    expect(mockUpsertConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'dm-existing', peerUserId: 'user-3' }),
+    );
+  });
+
+  it('loadDmConversations writes peerUserId from recipient.id', async () => {
+    mockListDms.mockResolvedValue([DM_RESPONSE]);
+
+    await loadDmConversations();
+
+    expect(mockUpsertConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'dm-1', peerUserId: 'user-2' }),
+    );
+  });
+
+  it('backfills peerUserId onto a row persisted WITHOUT it (the merge path)', async () => {
+    // mergeDmRecency returns `{...incoming}`, so the field has to come from
+    // mapDmResponse — a row stored before #908 is upgraded by the next list
+    // load rather than keeping the resolver on the contact scan forever.
+    const stored = makeDmConversation({ lastMessageAt: 1000, lastReadAt: 4500 });
+    expect(stored.peerUserId).toBeUndefined();
+    seedConversations({ 'dm-1': stored });
+    mockListDms.mockResolvedValue([DM_RESPONSE]);
+
+    await loadDmConversations();
+
+    const upserted = mockUpsertConversation.mock.calls[0][0];
+    expect(upserted.id).toBe('dm-1');
+    expect(upserted.peerUserId).toBe('user-2');
+    // The local-only lastReadAt proves this went through the merge branch
+    // (`existing` present) and not the first-insert one.
+    expect(upserted.lastReadAt).toBe(4500);
   });
 });

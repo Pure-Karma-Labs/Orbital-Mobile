@@ -5,6 +5,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
+  Keyboard,
   ScrollView,
   Text,
   TextInput,
@@ -30,6 +31,8 @@ import { updateMediaParent } from '../database/repositories/mediaRepository';
 import { useMediaPicker } from '../hooks/useMediaPicker';
 import { useMediaUploadProgress } from '../hooks/useMediaUploadProgress';
 import { useDiscardUploadGuard } from '../hooks/useDiscardUploadGuard';
+import { useBlockedDmPeer, useBlockedPeerTransition } from '../hooks/useBlockedDmPeer';
+import { BlockedPeerNotice } from '../components/BlockedPeerNotice';
 import { Header } from '../components/Header';
 import { OrbitalKeyboardAvoidingView } from '../components/OrbitalKeyboardAvoidingView';
 import { LinkPreviewCard } from '../components/LinkPreviewCard';
@@ -51,6 +54,11 @@ export function ComposeThreadScreen({
   const { userId, username } = useAuth();
   const { groupId, isDm } = route.params;
   const contact = useContactForConversation(isDm ? groupId : null);
+  // Blocked DM peer (#908). No route hint: the compose routes must keep
+  // IDENTICAL params (the ComposeRoutesShareParams tripwire in
+  // navigation/types.ts), so the store is the only source here.
+  const blockedPeer = useBlockedDmPeer(isDm ? groupId : null, { dmIntent: true });
+  const isBlocked = blockedPeer != null;
 
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
@@ -111,11 +119,30 @@ export function ComposeThreadScreen({
   }, [selectedMedia]);
 
   const busy = loading || uploading;
-  const canSubmit = isDm
+  const canSubmit = !isBlocked && (isDm
     ? body.trim().length > 0 && !busy
-    : title.trim().length > 0 && body.trim().length > 0 && !busy;
+    : title.trim().length > 0 && body.trim().length > 0 && !busy);
+
+  // Block landing while this screen is open (#908). The shared latch fires
+  // once on the false -> true edge. An in-flight upload is cancelled, which
+  // routes the send through the existing `isUploadCancellation` path, and the
+  // notice then explains why nothing sent. The keyboard is dismissed because
+  // the body input unmounts under it and Android does not guarantee it drops.
+  const uploadingRef = useRef(uploading);
+  uploadingRef.current = uploading;
+  // Read by the BlockedRecipientError branch in `doPost`'s catch, which can run
+  // after the block has already cleared the notice.
+  const blockedLabelRef = useRef<string | null>(null);
+  blockedLabelRef.current = blockedPeer?.label ?? null;
+  useBlockedPeerTransition(blockedPeer, () => {
+    Keyboard.dismiss();
+    if (uploadingRef.current) cancelUpload();
+  });
 
   const doPost = useCallback(async () => {
+    // UX guard: `canSubmit` already covers it, but a queued press must not
+    // start an upload for a blocked peer (#908). threadService refuses too.
+    if (isBlocked) return;
     if (!canSubmit || !userId || !username) {
       if (__DEV__) {
         console.warn('[Compose] blocked:', { canSubmit, userId, username, groupId });
@@ -195,6 +222,17 @@ export function ComposeThreadScreen({
       // selected media and the thread stay exactly as they were; the finally
       // below still re-arms the composer.
       if (isUploadCancellation(e)) return;
+      // A refusal the client made on purpose (#908) — a sibling of the
+      // cancellation return, deliberately ABOVE the capture: nothing went
+      // wrong, so there is no telemetry, no failure classification, and the
+      // blocked peer's id never reaches Sentry. Matched on `name`, never
+      // `instanceof`: threadService is factory-mocked in several suites.
+      if (e instanceof Error && e.name === 'BlockedRecipientError') {
+        if (mountedRef.current) {
+          setError(`Not sent — you blocked ${blockedLabelRef.current ?? 'this person'}.`);
+        }
+        return;
+      }
       // Everything below this line is a real failure the user just watched
       // happen. Before #738 it existed only in a __DEV__ console.warn, which is
       // why the S24 sanitizer bug (#732) was invisible in release builds.
@@ -233,7 +271,7 @@ export function ComposeThreadScreen({
     } finally {
       if (mountedRef.current) setLoading(false);
     }
-  }, [canSubmit, userId, username, groupId, isDm, title, body, navigation, selectedMedia, uploadBatch, releaseUploadCache]);
+  }, [canSubmit, isBlocked, userId, username, groupId, isDm, title, body, navigation, selectedMedia, uploadBatch, releaseUploadCache]);
 
   const handlePost = useCallback(() => {
     if (isDm && contact?.verifiedStatus === VerifiedStatus.Unverified) {
@@ -357,22 +395,31 @@ export function ComposeThreadScreen({
             </View>
           )}
 
-          <View>
-            <Text style={labelStyle}>Body</Text>
-            <TextInput
-              style={bodyInputStyle}
-              value={body}
-              onChangeText={setBody}
-              placeholder="What's on your mind?"
-              placeholderTextColor={theme.colors.textTertiary}
-              multiline
-              maxLength={10000}
-              editable={!busy}
-              testID="compose-body-input"
-            />
-          </View>
-
-          <LinkPreviewCard text={body} debounceMs={500} dismissible />
+          {blockedPeer != null ? (
+            // The notice REPLACES the body input (and the attach button
+            // below). `body`/`title` state is kept, so the draft comes back
+            // if the user unblocks.
+            <BlockedPeerNotice label={blockedPeer.label} peerId={blockedPeer.peerId} />
+          ) : (
+            <View>
+              <Text style={labelStyle}>Body</Text>
+              <TextInput
+                style={bodyInputStyle}
+                value={body}
+                onChangeText={setBody}
+                placeholder="What's on your mind?"
+                placeholderTextColor={theme.colors.textTertiary}
+                multiline
+                maxLength={10000}
+                editable={!busy}
+                testID="compose-body-input"
+              />
+              {/* Inside the non-blocked branch, matching ReplyComposer: the
+                  card must not preview (or keep fetching metadata for) a draft
+                  the user can no longer see. */}
+              <LinkPreviewCard text={body} debounceMs={500} dismissible />
+            </View>
+          )}
 
           <MediaThumbnailStrip
             media={selectedMedia}
@@ -380,27 +427,29 @@ export function ComposeThreadScreen({
             disabled={uploading}
           />
 
-          <TouchableOpacity
-            onPress={pickMedia}
-            disabled={busy}
-            accessibilityRole="button"
-            accessibilityLabel="Attach media"
-            style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: theme.spacing.xs,
-              paddingVertical: theme.spacing.xs,
-            }}
-            testID="attach-media-button"
-          >
-            <Text style={{
-              fontFamily: theme.typography.fontFamily.body,
-              fontSize: theme.typography.fontSize.sm,
-              color: busy ? theme.colors.textTertiary : theme.colors.blue,
-            }}>
-              + Add Media
-            </Text>
-          </TouchableOpacity>
+          {!isBlocked && (
+            <TouchableOpacity
+              onPress={pickMedia}
+              disabled={busy}
+              accessibilityRole="button"
+              accessibilityLabel="Attach media"
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: theme.spacing.xs,
+                paddingVertical: theme.spacing.xs,
+              }}
+              testID="attach-media-button"
+            >
+              <Text style={{
+                fontFamily: theme.typography.fontFamily.body,
+                fontSize: theme.typography.fontSize.sm,
+                color: busy ? theme.colors.textTertiary : theme.colors.blue,
+              }}>
+                + Add Media
+              </Text>
+            </TouchableOpacity>
+          )}
 
           <ErrorBanner message={error} />
         </ScrollView>

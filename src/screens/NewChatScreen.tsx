@@ -24,6 +24,7 @@ import { Header } from '../components/Header';
 import { OrbitalKeyboardAvoidingView } from '../components/OrbitalKeyboardAvoidingView';
 import { ErrorBanner } from '../components/ErrorBanner';
 import { TextInput } from '../components/TextInput';
+import { useBlockedSet } from '../hooks/useBlockedSet';
 import type { ChatsStackParamList } from '../navigation/types';
 import type { Contact } from '../types/store';
 
@@ -46,8 +47,16 @@ export function NewChatScreen({
     hydrateContactsFromOrbits().catch(() => {});
   }, []);
 
+  const blockedSet = useBlockedSet();
+
   const contactList = useMemo(() => {
-    const all = Object.values(contacts);
+    // Blocked people vanish from the picker until they are unblocked (#908).
+    // Filtered BEFORE the text filter, so typing their handle cannot surface
+    // them; this also removes blocked orbit co-members that
+    // hydrateContactsFromOrbits added.
+    const all = blockedSet.size === 0
+      ? Object.values(contacts)
+      : Object.values(contacts).filter((c) => !blockedSet.has(c.id));
     if (filter.trim().length === 0) return all;
     const lower = filter.trim().toLowerCase();
     return all.filter(
@@ -55,10 +64,14 @@ export function NewChatScreen({
         c.username?.toLowerCase().includes(lower) ||
         c.displayName?.toLowerCase().includes(lower),
     );
-  }, [contacts, filter]);
+  }, [contacts, filter, blockedSet]);
 
   const handleSelect = useCallback(
     async (contact: Contact) => {
+      // UX guard only — startDm itself refuses a blocked recipient before it
+      // generates or wraps any group key (#908). A stale row the filter above
+      // has not dropped yet still cannot start a chat.
+      if (blockedSet.has(contact.id)) return;
       setError(null);
       setLoading(true);
       try {
@@ -66,6 +79,9 @@ export function NewChatScreen({
         navigation.replace('ChatDetail', {
           conversationId: result.conversationId,
           recipientName: result.recipientName,
+          // The DM-peer hint for ChatDetail, for the frame before the row
+          // carries `peerUserId` (#908).
+          recipientId: contact.id,
         });
       } catch (e) {
         if (__DEV__)
@@ -73,12 +89,18 @@ export function NewChatScreen({
             '[NewChat] error:',
             e instanceof Error ? e.message : e,
           );
-        setError('Failed to start chat. Please try again.');
+        // Matched on `name`, never `instanceof`: service modules are factory-
+        // mocked in several suites, where the class can be undefined.
+        setError(
+          e instanceof Error && e.name === 'BlockedRecipientError'
+            ? 'You blocked this person.'
+            : 'Failed to start chat. Please try again.',
+        );
       } finally {
         setLoading(false);
       }
     },
-    [navigation],
+    [navigation, blockedSet],
   );
 
   const renderContact = useCallback(

@@ -28,6 +28,8 @@ import { saveReply as dbSaveReply, saveReplyBatch, getRepliesForThread, deleteRe
 import { mediaRowToItem } from '../database/repositories/mediaMapper';
 import { isDatabaseInitialized } from '../database/connection';
 import { isBlockedAuthor } from './media/exportAccess';
+import { BlockedRecipientError } from './api/errors';
+import { deriveBlockedDmPeer } from '../utils/dmPeer';
 import { resolveMediaPath } from './media/mediaPaths';
 import { teardownLocalMedia } from './media/mediaTeardown';
 import type { Thread, Reply, MediaItem } from '../types/store';
@@ -1316,6 +1318,15 @@ export async function postReply(
   author: { authorId: string; authorUsername: string },
   options?: { mediaIds?: string[] },
 ): Promise<Reply> {
+  // FIRST statement (#908): the enforcement point for "never send into a DM
+  // whose peer you blocked". Ahead of generateUUID and addOptimisticReply, so
+  // a refused send leaves NO optimistic row behind — those calls sit outside
+  // the try whose catch removes it. The screens' own guards are UX only, and
+  // any future DM send surface inherits this one. Resolves through the same
+  // pure derivation the UI renders from, and returns null for orbit rows.
+  const blockedPeer = deriveBlockedDmPeer(useAppStore.getState(), groupId);
+  if (blockedPeer) throw new BlockedRecipientError(blockedPeer.peerId);
+
   const clientId = generateUUID();
   const store = getStoreActions();
 
@@ -1437,6 +1448,12 @@ export async function createNewThread(
   author: { authorId: string; authorUsername: string },
   options?: { mediaIds?: string[] },
 ): Promise<Thread> {
+  // FIRST statement (#908) — see postReply: refuse before generateUUID and
+  // before addOptimisticThread, so nothing is encrypted, uploaded or left in
+  // the store for a DM whose peer the user blocked.
+  const blockedPeer = deriveBlockedDmPeer(useAppStore.getState(), groupId);
+  if (blockedPeer) throw new BlockedRecipientError(blockedPeer.peerId);
+
   const clientId = generateUUID();
   const now = Date.now();
 

@@ -3,7 +3,12 @@
  * path (M3 of #628).
  *
  * Coverage:
- * - Round-trip verifier true/false/other-error taxonomy
+ * - Round-trip verifier taxonomy (#913): a key mismatch is reported by the SEAL
+ *   call as InvalidArgument { inner.reason: "...does not match..." } and is the
+ *   ONLY error that maps to 'cleared'. eciesOpen is never reached on a mismatch.
+ *   Every other error — including an open-side InvalidArgument whose reason is
+ *   not a mismatch — is rethrown by the probe and becomes 'deferred', so a
+ *   surviving Keychain key is never discarded on an ambiguous failure.
  * - Restore writes byte-identical pub hex + fresh registrationId, BUNDLE_UPLOADED unset
  * - Mismatch -> 'cleared' (both keychain + cache)
  * - 404 -> 'cleared'
@@ -161,6 +166,21 @@ function makeArrayBuffer(size: number, fill = 0xab): ArrayBuffer {
   new Uint8Array(buf).fill(fill);
   return buf;
 }
+
+/**
+ * Build an error shaped like a real uniffi-bindgen SignalError: message is the
+ * variant name, `tag` is the discriminant, and the payload fields live on
+ * `inner` (the probe reads `inner.reason`).
+ */
+function makeSignalError(tag: string, reason: string): Error {
+  const err = new Error(`SignalError.${tag}`);
+  Object.assign(err, { tag, inner: { reason } });
+  return err;
+}
+
+/** Verbatim reason string emitted by ecies_seal on a sender key-pair mismatch. */
+const SEAL_MISMATCH_REASON =
+  'ecies_seal: sender_public_key does not match sender_private_key';
 
 const PRIVATE_KEY_HEX = '0202020202020202020202020202020202020202020202020202020202020202';
 
@@ -330,7 +350,9 @@ describe('attemptKeychainIdentityRestore — ECIES proof match -> restored', () 
 });
 
 describe('attemptKeychainIdentityRestore — ECIES proof mismatch -> cleared', () => {
-  it('returns cleared on InvalidArgument (key mismatch) and clears both', async () => {
+  // #913: ecies_seal derives the public key from the private key and refuses up
+  // front, so a genuine mismatch surfaces from SEAL and open is never reached.
+  it('returns cleared when eciesSeal reports the key-pair mismatch and clears both', async () => {
     (getSecureItem as jest.Mock).mockResolvedValue(PRIVATE_KEY_HEX);
     await initIdentityKeyCache();
 
@@ -338,18 +360,20 @@ describe('attemptKeychainIdentityRestore — ECIES proof mismatch -> cleared', (
       identityKey: SERVER_KEY_B64,
     });
 
-    (eciesSeal as jest.Mock).mockReturnValue(makeArrayBuffer(190));
-    (eciesOpen as jest.Mock).mockImplementation(() => {
-      const err = new Error('does not match');
-      (err as unknown as { tag: string }).tag = 'InvalidArgument';
-      throw err;
+    (eciesSeal as jest.Mock).mockImplementation(() => {
+      throw makeSignalError('InvalidArgument', SEAL_MISMATCH_REASON);
     });
+    (eciesOpen as jest.Mock).mockReturnValue(makeArrayBuffer(32));
 
     const result = await attemptKeychainIdentityRestore();
     expect(result).toBe('cleared');
 
     expect(removeSecureItem).toHaveBeenCalledWith('com.orbital.mobile.identity-key-private');
     expect(getCachedIdentityPrivateKeyHex()).toBeNull();
+
+    // The mismatch is decided by seal alone — open must never run.
+    expect(eciesSeal).toHaveBeenCalledTimes(1);
+    expect(eciesOpen).not.toHaveBeenCalled();
   });
 });
 
@@ -364,9 +388,7 @@ describe('attemptKeychainIdentityRestore — ECIES non-mismatch error -> deferre
 
     (eciesSeal as jest.Mock).mockReturnValue(makeArrayBuffer(190));
     (eciesOpen as jest.Mock).mockImplementation(() => {
-      const err = new Error('bad key');
-      (err as unknown as { tag: string }).tag = 'InvalidKey';
-      throw err;
+      throw makeSignalError('InvalidKey', 'ecies_open: bad key');
     });
 
     const result = await attemptKeychainIdentityRestore();
@@ -386,14 +408,35 @@ describe('attemptKeychainIdentityRestore — ECIES non-mismatch error -> deferre
 
     (eciesSeal as jest.Mock).mockReturnValue(makeArrayBuffer(190));
     (eciesOpen as jest.Mock).mockImplementation(() => {
-      const err = new Error('internal');
-      (err as unknown as { tag: string }).tag = 'InternalError';
-      throw err;
+      throw makeSignalError('InternalError', 'ecies_open: internal');
     });
 
     const result = await attemptKeychainIdentityRestore();
     expect(result).toBe('deferred');
     expect(removeSecureItem).not.toHaveBeenCalled();
+  });
+
+  // Security tightening (#913): an InvalidArgument raised by OPEN is not proof
+  // of a key mismatch — seal already accepted the pair — so the surviving key
+  // must survive.
+  it('returns deferred on an open-side InvalidArgument that is not a mismatch', async () => {
+    (getSecureItem as jest.Mock).mockResolvedValue(PRIVATE_KEY_HEX);
+    await initIdentityKeyCache();
+
+    (fetchRemoteIdentityKeyBundle as jest.Mock).mockResolvedValue({
+      identityKey: SERVER_KEY_B64,
+    });
+
+    (eciesSeal as jest.Mock).mockReturnValue(makeArrayBuffer(190));
+    (eciesOpen as jest.Mock).mockImplementation(() => {
+      throw makeSignalError('InvalidArgument', 'ecies_open: context too long');
+    });
+
+    const result = await attemptKeychainIdentityRestore();
+    expect(result).toBe('deferred');
+
+    expect(removeSecureItem).not.toHaveBeenCalled();
+    expect(getCachedIdentityPrivateKeyHex()).toBe(PRIVATE_KEY_HEX);
   });
 });
 

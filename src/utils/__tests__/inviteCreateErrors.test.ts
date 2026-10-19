@@ -15,6 +15,10 @@ const NOT_ALLOWED = "You can't create invites for this orbit";
 const ORBIT_GONE = 'This orbit no longer exists';
 const RATE_LIMITED = 'Too many attempts — please wait a few minutes and try again';
 const BAD_EMAIL = 'Please enter a valid email address';
+// #912: the pending-wrap branch now shares the composers' RESENDING wording
+// (errorMessages.GROUP_KEY_RESENDING_MESSAGE), pinned here as a literal too.
+const RESENDING =
+  "This conversation's encryption key is being re-sent by another member. Please try again in a moment.";
 
 function coded(code: string): ValidationError {
   return new ValidationError(
@@ -37,7 +41,7 @@ describe('routeInviteCreateError', () => {
     ['coded EMAIL_FORMAT → field error', coded('EMAIL_FORMAT'), { fieldError: BAD_EMAIL }],
     ['403 → permanent banner, no capture', new AuthError(403), { bannerError: NOT_ALLOWED }],
     ['404 → permanent banner, no capture', new NotFoundError(), { bannerError: ORBIT_GONE }],
-    ['PendingWrapError → retry banner, no capture', pendingWrap(), { bannerError: GENERIC }],
+    ['PendingWrapError → RESENDING banner, no capture', pendingWrap(), { bannerError: RESENDING }],
   ])('%s', (_label, err, expected) => {
     // toEqual on the whole route: an unexpected captureTags (or a second slot)
     // fails here, which is what proves the "no capture" half of each row.

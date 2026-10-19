@@ -112,6 +112,8 @@ const mockSetLastConnectedAt = jest.fn();
 const mockSetReconnectAttempt = jest.fn();
 const mockAddTypingUser = jest.fn();
 const mockBumpLastMessageAt = jest.fn();
+// #912: the heal-reload counter the open read screen's load effect depends on.
+const mockBumpGroupKeyGeneration = jest.fn();
 const mockIncrementUnreadCount = jest.fn();
 const mockSetContactVerifiedStatus = jest.fn();
 
@@ -132,6 +134,7 @@ jest.mock('../../../stores/useAppStore', () => ({
       blockedUserIds: [],
       addTypingUser: mockAddTypingUser,
       bumpLastMessageAt: mockBumpLastMessageAt,
+      bumpGroupKeyGeneration: mockBumpGroupKeyGeneration,
       incrementUnreadCount: mockIncrementUnreadCount,
       setContactVerifiedStatus: mockSetContactVerifiedStatus,
       contacts: {},
@@ -662,6 +665,7 @@ describe('owner_changed broadcast', () => {
       blockedUserIds: [],
       addTypingUser: mockAddTypingUser,
       bumpLastMessageAt: mockBumpLastMessageAt,
+      bumpGroupKeyGeneration: mockBumpGroupKeyGeneration,
       incrementUnreadCount: mockIncrementUnreadCount,
       contacts: {},
       conversations: { [testUUID('group-owned')]: existingConversation },
@@ -707,6 +711,7 @@ describe('owner_changed broadcast', () => {
       blockedUserIds: [],
       addTypingUser: mockAddTypingUser,
       bumpLastMessageAt: mockBumpLastMessageAt,
+      bumpGroupKeyGeneration: mockBumpGroupKeyGeneration,
       incrementUnreadCount: mockIncrementUnreadCount,
       contacts: {},
       conversations: { [testUUID('group-owned')]: convAsCreator },
@@ -769,6 +774,7 @@ describe('owner_changed broadcast', () => {
       blockedUserIds: [],
       addTypingUser: mockAddTypingUser,
       bumpLastMessageAt: mockBumpLastMessageAt,
+      bumpGroupKeyGeneration: mockBumpGroupKeyGeneration,
       incrementUnreadCount: mockIncrementUnreadCount,
       contacts: {},
       conversations: { [testUUID('group-owned')]: { ...existingConversation, unreadCount: 7 } },
@@ -820,6 +826,7 @@ describe('owner_changed broadcast', () => {
       blockedUserIds: [],
       addTypingUser: mockAddTypingUser,
       bumpLastMessageAt: mockBumpLastMessageAt,
+      bumpGroupKeyGeneration: mockBumpGroupKeyGeneration,
       incrementUnreadCount: mockIncrementUnreadCount,
       contacts: {},
       conversations: { [testUUID('dm-conv')]: dmConversation },
@@ -1051,6 +1058,7 @@ describe('wrap_key_request', () => {
       blockedUserIds: [],
       addTypingUser: mockAddTypingUser,
       bumpLastMessageAt: mockBumpLastMessageAt,
+      bumpGroupKeyGeneration: mockBumpGroupKeyGeneration,
       incrementUnreadCount: mockIncrementUnreadCount,
       setContactVerifiedStatus: mockSetContactVerifiedStatus,
       contacts: {},
@@ -1090,6 +1098,7 @@ describe('wrap_key_request', () => {
       blockedUserIds: [],
       addTypingUser: mockAddTypingUser,
       bumpLastMessageAt: mockBumpLastMessageAt,
+      bumpGroupKeyGeneration: mockBumpGroupKeyGeneration,
       incrementUnreadCount: mockIncrementUnreadCount,
       setContactVerifiedStatus: mockSetContactVerifiedStatus,
       contacts: {},
@@ -1269,6 +1278,34 @@ describe('wrapped_key_delivered', () => {
     await expect(handleServerMessage(makeDeliveredEvent(testUUID('group-err')))).resolves.toBeUndefined();
   });
 
+  // #912 / D11: the open read screen's load effect depends on this counter, so
+  // the bump IS the reload. It must land after the key is actually in hand.
+  it('bumps the group key generation after the key fetch resolves', async () => {
+    await handleServerMessage(makeDeliveredEvent(testUUID('group-gen-bump')));
+
+    expect(mockBumpGroupKeyGeneration).toHaveBeenCalledTimes(1);
+    expect(mockBumpGroupKeyGeneration).toHaveBeenCalledWith(testUUID('group-gen-bump'));
+  });
+
+  it('does not bump the generation when the key fetch fails', async () => {
+    mockGetOrFetchGroupKey.mockRejectedValueOnce(new Error('fetch failed'));
+
+    await handleServerMessage(makeDeliveredEvent(testUUID('group-gen-nobump')));
+
+    // Reloading on the promise of a key would only put the screen back into
+    // the pending state it is already in.
+    expect(mockBumpGroupKeyGeneration).not.toHaveBeenCalled();
+  });
+
+  it('bumps once per delivery, deduped with the fetch', async () => {
+    const groupId = testUUID('group-gen-dedup');
+    await handleServerMessage(makeDeliveredEvent(groupId));
+    await handleServerMessage(makeDeliveredEvent(groupId));
+
+    expect(mockGetOrFetchGroupKey).toHaveBeenCalledTimes(1);
+    expect(mockBumpGroupKeyGeneration).toHaveBeenCalledTimes(1);
+  });
+
   // #912: after a self-heal demote the NEXT wrapped_key_delivered is the heal
   // landing, but the event that exposed the dead envelope has usually already
   // claimed the group's dedup slot. The crypto layer clears it through the
@@ -1410,6 +1447,7 @@ describe('unread count increment', () => {
       blockedUserIds: [],
       addTypingUser: mockAddTypingUser,
       bumpLastMessageAt: mockBumpLastMessageAt,
+      bumpGroupKeyGeneration: mockBumpGroupKeyGeneration,
       incrementUnreadCount: mockIncrementUnreadCount,
       contacts: {},
       threads: {},
@@ -1454,6 +1492,7 @@ describe('unread count increment', () => {
       blockedUserIds: [],
       addTypingUser: mockAddTypingUser,
       bumpLastMessageAt: mockBumpLastMessageAt,
+      bumpGroupKeyGeneration: mockBumpGroupKeyGeneration,
       incrementUnreadCount: mockIncrementUnreadCount,
       contacts: {},
       threads: {},
@@ -1521,6 +1560,7 @@ describe('unread count increment', () => {
       blockedUserIds: [],
       addTypingUser: mockAddTypingUser,
       bumpLastMessageAt: mockBumpLastMessageAt,
+      bumpGroupKeyGeneration: mockBumpGroupKeyGeneration,
       incrementUnreadCount: mockIncrementUnreadCount,
       contacts: {},
       threads: {},
@@ -1569,6 +1609,7 @@ describe('avatar_changed broadcast', () => {
       setReconnectAttempt: mockSetReconnectAttempt,
       addTypingUser: mockAddTypingUser,
       bumpLastMessageAt: mockBumpLastMessageAt,
+      bumpGroupKeyGeneration: mockBumpGroupKeyGeneration,
       incrementUnreadCount: mockIncrementUnreadCount,
       contacts: {
         [testUUID('user-avatar')]: {
@@ -1637,6 +1678,7 @@ describe('avatar_changed broadcast', () => {
       setReconnectAttempt: mockSetReconnectAttempt,
       addTypingUser: mockAddTypingUser,
       bumpLastMessageAt: mockBumpLastMessageAt,
+      bumpGroupKeyGeneration: mockBumpGroupKeyGeneration,
       incrementUnreadCount: mockIncrementUnreadCount,
       contacts: {
         [testUUID('user-refresh')]: {
@@ -1703,6 +1745,7 @@ describe('avatar_changed broadcast', () => {
       setReconnectAttempt: mockSetReconnectAttempt,
       addTypingUser: mockAddTypingUser,
       bumpLastMessageAt: mockBumpLastMessageAt,
+      bumpGroupKeyGeneration: mockBumpGroupKeyGeneration,
       incrementUnreadCount: mockIncrementUnreadCount,
       contacts: {
         [testUUID('user-remove-avatar')]: {
@@ -1812,6 +1855,7 @@ describe('clearMessageHandlerState', () => {
       blockedUserIds: [blockedAuthor],
       addTypingUser: mockAddTypingUser,
       bumpLastMessageAt: mockBumpLastMessageAt,
+      bumpGroupKeyGeneration: mockBumpGroupKeyGeneration,
       incrementUnreadCount: mockIncrementUnreadCount,
       contacts: {},
       threads: {},
@@ -1884,6 +1928,7 @@ describe('blocked user guard', () => {
       blockedUserIds: [testUUID('blocked-user-1')],
       addTypingUser: mockAddTypingUser,
       bumpLastMessageAt: mockBumpLastMessageAt,
+      bumpGroupKeyGeneration: mockBumpGroupKeyGeneration,
       incrementUnreadCount: mockIncrementUnreadCount,
       contacts: {},
       threads: {},
@@ -1926,6 +1971,7 @@ describe('blocked user guard', () => {
       blockedUserIds: [testUUID('blocked-user-2')],
       addTypingUser: mockAddTypingUser,
       bumpLastMessageAt: mockBumpLastMessageAt,
+      bumpGroupKeyGeneration: mockBumpGroupKeyGeneration,
       incrementUnreadCount: mockIncrementUnreadCount,
       contacts: {},
       threads: {},
@@ -1971,6 +2017,7 @@ describe('blocked user guard', () => {
     blockedUserIds,
     addTypingUser: mockAddTypingUser,
     bumpLastMessageAt: mockBumpLastMessageAt,
+    bumpGroupKeyGeneration: mockBumpGroupKeyGeneration,
     incrementUnreadCount: mockIncrementUnreadCount,
     contacts: {},
     threads: {},

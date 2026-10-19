@@ -15,7 +15,8 @@ import {
   NotFoundError,
   ValidationError,
 } from '../services/api/errors';
-import { RATE_LIMIT_MESSAGE } from './errorMessages';
+import { GROUP_KEY_RESENDING_MESSAGE, RATE_LIMIT_MESSAGE } from './errorMessages';
+import { isGroupKeyPending } from './groupKeyErrorCopy';
 
 /**
  * Permanent refusals: the orbit, not the email, is the problem, and no retry
@@ -27,9 +28,7 @@ const INVITE_NOT_ALLOWED_MESSAGE = "You can't create invites for this orbit";
 const INVITE_ORBIT_GONE_MESSAGE = 'This orbit no longer exists';
 
 /**
- * Transient or unattributable: retrying is honest advice. Also the copy for a
- * pending group-key wrap, which resolves on its own once another key holder
- * delivers the wrap.
+ * Transient or unattributable: retrying is honest advice.
  */
 const INVITE_GENERIC_FAILURE_MESSAGE =
   'Failed to generate invite code. Please try again.';
@@ -50,9 +49,13 @@ export interface InviteCreateErrorRoute {
  * nitro) into these screens for one branch whose only effect is to suppress a
  * capture. The name is assigned in the class constructor; the unit test for
  * this module pins the string on the consuming side.
+ *
+ * Delegates to `groupKeyErrorCopy.isGroupKeyPending` (#912) so the app has ONE
+ * definition of that name test. The export stays: it is this module's own
+ * contract with its test, and the invite screens read better for it.
  */
 export function isPendingWrapError(err: unknown): boolean {
-  return err instanceof Error && err.name === 'PendingWrapError';
+  return isGroupKeyPending(err);
 }
 
 /**
@@ -84,9 +87,13 @@ export function routeInviteCreateError(err: unknown): InviteCreateErrorRoute {
   }
   if (isPendingWrapError(err)) {
     // A modelled transient state, not a fault: this device's group key wrap
-    // has not been delivered yet. Retrying is the right advice; nothing to
-    // report.
-    return { bannerError: INVITE_GENERIC_FAILURE_MESSAGE };
+    // has not been delivered yet. Nothing to report.
+    //
+    // #912 replaced the generic "Failed to generate invite code" with the
+    // shared RESENDING wording: a self-heal demote now ends here too, and the
+    // honest reason ("another member is re-sending the key") is both more
+    // specific and the same sentence the composers show for the same state.
+    return { bannerError: GROUP_KEY_RESENDING_MESSAGE };
   }
 
   // Everything unattributable: 401, 5xx, an uncoded 400 (a client-contract bug

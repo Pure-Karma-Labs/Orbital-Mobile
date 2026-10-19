@@ -18,7 +18,13 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useTheme } from '../theme';
-import { useAppStore, useThreads, useConversations, useConnection } from '../stores';
+import {
+  useAppStore,
+  useThreads,
+  useConversations,
+  useConnection,
+  useGroupKeyGeneration,
+} from '../stores';
 import type { Thread } from '../types/store';
 import type { ThreadsStackParamList } from '../navigation/types';
 import { Button } from '../components/Button';
@@ -30,6 +36,11 @@ import { ThreadItem } from './threads/ThreadItem';
 import { OnboardingEmptyState } from './threads/OnboardingEmptyState';
 import { loadThreadsForGroup, hydrateThreadsFromLocal } from '../services/threadService';
 import { markConversationReadEverywhere } from '../services/conversationService';
+import {
+  GroupKeyFailureNotice,
+  GroupKeyPendingBanner,
+} from '../components/GroupKeyNotice';
+import { groupKeyFailureCopy, isGroupKeyPending } from '../utils/groupKeyErrorCopy';
 import { PullToRefreshOverlay } from '../components/PullToRefreshOverlay';
 import { usePullToRefresh } from '../hooks/usePullToRefresh';
 import { useSQLiteSearch } from '../hooks/useSQLiteSearch';
@@ -261,14 +272,51 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
     flatListRef.current?.scrollToOffset({ offset: 0, animated: false });
   }, [isSearching]);
 
+  /**
+   * Group-key state for the active orbit (#912). `pending` is the transient
+   * "a peer is re-wrapping" banner; `failureMessage` is every other outcome,
+   * which replaces the empty state. Only ONE of them is ever set.
+   */
+  const [keyPending, setKeyPending] = useState(false);
+  const [keyFailureMessage, setKeyFailureMessage] = useState<string | null>(null);
+
+  /**
+   * Bumped by `handleWrappedKeyDelivered` once a delivered key has actually
+   * been fetched (#912 / D11). Listed in the load effect's deps so the OPEN
+   * screen reloads itself when the heal lands — the whole point of B2: before
+   * this, the member stared at a false "No threads yet" until they navigated
+   * away and back.
+   */
+  const keyGeneration = useGroupKeyGeneration(activeConversationId ?? null);
+
   useEffect(() => {
     if (!activeConversationId) return;
     // Instant hydration from local SQLCipher cache before async API fetch
     hydrateThreadsFromLocal(activeConversationId);
-    loadThreadsForGroup(activeConversationId).catch((e) => {
-      if (__DEV__) console.warn('[ThreadsScreen] load failed:', e instanceof Error ? e.message : e);
-    });
-  }, [activeConversationId]);
+    loadThreadsForGroup(activeConversationId)
+      .then(() => {
+        // Cleared only on success: clearing at the START of the load would
+        // flash the create-first empty state on every reload attempt.
+        setKeyPending(false);
+        setKeyFailureMessage(null);
+      })
+      .catch((e) => {
+        if (isGroupKeyPending(e)) {
+          setKeyPending(true);
+          setKeyFailureMessage(null);
+        } else {
+          const copy = groupKeyFailureCopy(e);
+          if (copy) {
+            setKeyPending(false);
+            setKeyFailureMessage(copy.message);
+          }
+          // Anything else keeps the pre-#912 behaviour: stale content stays
+          // visible and the failure is a dev warning. Not every load failure
+          // is a key failure, and a network blip must not claim to be one.
+        }
+        if (__DEV__) console.warn('[ThreadsScreen] load failed:', e instanceof Error ? e.message : e);
+      });
+  }, [activeConversationId, keyGeneration]);
 
   const handleThreadPress = useCallback(
     (threadId: string) => {
@@ -408,6 +456,7 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
           {connectionStatus === 'reconnecting' && (
             <ConnectionStatusBanner theme={theme} />
           )}
+          {keyPending && <GroupKeyPendingBanner />}
           <SearchBar
             value={searchText}
             onChangeText={setSearchText}
@@ -419,7 +468,18 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
           {showSearchEmpty ? (
             <SearchEmptyState searchText={searchText} testID="search-empty-state" />
           ) : showEmpty ? (
-            <EmptyState onCompose={handleCompose} />
+            // #912: an undecryptable orbit is NOT a brand-new one. While the
+            // key is pending the banner above is the whole message and the
+            // body stays blank — no "No threads yet" box and no New Thread
+            // CTA, which would only fail. A terminal outcome gets the
+            // explanation in place of that box.
+            keyPending ? (
+              <View style={{ flex: 1 }} testID="group-key-pending-body" />
+            ) : keyFailureMessage !== null ? (
+              <GroupKeyFailureNotice message={keyFailureMessage} />
+            ) : (
+              <EmptyState onCompose={handleCompose} />
+            )
           ) : (
             <View style={{ flex: 1 }}>
               <PullToRefreshOverlay scrollY={scrollY} refreshing={refreshing} />

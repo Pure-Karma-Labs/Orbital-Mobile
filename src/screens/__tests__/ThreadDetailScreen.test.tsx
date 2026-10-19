@@ -216,6 +216,13 @@ jest.mock('../../hooks/useWebSocketSubscription', () => ({
 
 const mockSetActiveThread = jest.fn();
 
+/**
+ * #912: the per-group heal counter. The real `useGroupKeyGeneration` reads the
+ * store singleton (MMKV), which does not load under jest; a test bumps this and
+ * re-renders to stand in for `wrapped_key_delivered` landing.
+ */
+let mockKeyGeneration = 0;
+
 jest.mock('../../stores', () => {
   const getState = () => ({
     userId: 'user-1',
@@ -263,6 +270,7 @@ jest.mock('../../stores', () => {
   }),
   useMediaForThread: () => [],
   useMediaForReply: () => [],
+  useGroupKeyGeneration: () => mockKeyGeneration,
 };});
 
 jest.mock('@react-navigation/native-stack', () => ({
@@ -431,6 +439,7 @@ function applyDefaultMocks(): void {
   mockBlockedUserIds = [];
   mockContacts = {};
   mockIsFocused = true;
+  mockKeyGeneration = 0;
   // The guard mock has no implementation — clearAllMocks() above already resets
   // its call history. Explicitly clear in case a test overrides its behaviour.
   mockUsePreventRemove.mockReset();
@@ -3196,5 +3205,243 @@ describe('ThreadDetailScreen — blocked DM peer', () => {
 
     expect(find(renderer, 'blocked-peer-notice').length).toBeGreaterThan(0);
     expect(find(renderer, 'reply-input').length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group-key failures (#912)
+//
+// In THIS suite, not a new file, so the cases inherit the #731 warm-up above.
+// ---------------------------------------------------------------------------
+
+describe('ThreadDetailScreen — group key (#912)', () => {
+  const mockCaptureException = Sentry.captureException as unknown as jest.Mock;
+
+  // The exact strings the user sees, pinned as literals (not imported from
+  // utils/errorMessages) so a wording change shows up as a diff here.
+  const RESENDING =
+    "This conversation's encryption key is being re-sent by another member. Please try again in a moment.";
+  const UNREADABLE =
+    "This device can't open this conversation's encryption key. Another member needs to open Orbital to re-send it.";
+  const RETRY_LATER =
+    "Couldn't recover this conversation's encryption key right now. Please try again in a few minutes.";
+  const DEVICE_KEY =
+    "This device's encryption keys need to be restored before this conversation can be opened.";
+  const GENERIC_REPLY_FAILURE = 'Failed to send your reply. Please try again.';
+
+  let alertSpy: jest.SpyInstance;
+
+  /** `contentCrypto.PendingWrapError`: only the `name` is load-bearing. */
+  function pendingWrap(): Error {
+    const e = new Error('Group key not yet available (pending wrap)');
+    e.name = 'PendingWrapError';
+    return e;
+  }
+
+  /**
+   * `crypto/groupKeyErrors.GroupKeyUnwrapError` — built by hand rather than
+   * imported, for the same reason the screen matches on `name`: the class is
+   * not reachable from a suite that factory-mocks the service modules.
+   */
+  function unwrapFailure(selfHeal: string): Error {
+    const e = new Error(`Group key unwrap failed: recipient_mismatch / ${selfHeal}`);
+    e.name = 'GroupKeyUnwrapError';
+    (e as unknown as { selfHeal: string }).selfHeal = selfHeal;
+    return e;
+  }
+
+  function find(renderer: ReactTestRenderer, testID: string): ReactTestInstance[] {
+    return renderer.root.findAll((node) => node.props.testID === testID);
+  }
+
+  /** Every rendered string in the tree. */
+  function texts(renderer: ReactTestRenderer): string[] {
+    return renderer.root
+      .findAllByType('Text' as unknown as React.ComponentType)
+      .map((node) => node.props.children)
+      .filter((c): c is string => typeof c === 'string');
+  }
+
+  function seedThread(): void {
+    const storesMock = jest.requireMock('../../stores') as { useThreads: jest.Mock };
+    storesMock.useThreads.mockReturnValue({
+      threads: { 'thread-1': fakeThread },
+      threadIdsByConversation: { 'group-1': ['thread-1'] },
+      replies: {},
+      replyIdsByThread: {},
+      activeThreadId: 'thread-1',
+      setThreads: jest.fn(),
+      upsertThread: jest.fn(),
+      removeThread: jest.fn(),
+      setActiveThread: mockSetActiveThread,
+      markThreadViewed: jest.fn(),
+      setReplies: jest.fn(),
+      appendReplies: jest.fn(),
+      upsertReply: jest.fn(),
+      addOptimisticThread: jest.fn(),
+      addOptimisticReply: jest.fn(),
+      updateThreadSyncStatus: jest.fn(),
+      updateReplySyncStatus: jest.fn(),
+    });
+  }
+
+  /** Re-render in place, which is what a store write does to this screen. */
+  async function rerender(renderer: ReactTestRenderer): Promise<void> {
+    await act(async () => {
+      renderer.update(screenElement());
+    });
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  beforeEach(() => {
+    alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    alertSpy.mockRestore();
+    const storesMock = jest.requireMock('../../stores') as { useThreads: jest.Mock };
+    storesMock.useThreads.mockReturnValue({
+      threads: {},
+      threadIdsByConversation: {},
+      replies: {},
+      replyIdsByThread: {},
+      activeThreadId: null,
+      setThreads: jest.fn(),
+      upsertThread: jest.fn(),
+      removeThread: jest.fn(),
+      setActiveThread: mockSetActiveThread,
+      markThreadViewed: jest.fn(),
+      setReplies: jest.fn(),
+      appendReplies: jest.fn(),
+      upsertReply: jest.fn(),
+      addOptimisticThread: jest.fn(),
+      addOptimisticReply: jest.fn(),
+      updateThreadSyncStatus: jest.fn(),
+      updateReplySyncStatus: jest.fn(),
+    });
+  });
+
+  // --- the reply composer ---
+
+  async function sendReply(renderer: ReactTestRenderer): Promise<void> {
+    await act(async () => {
+      renderer.root
+        .findAll((node) => node.props.testID === 'reply-input')[0]
+        .props.onChangeText('hello');
+    });
+    await act(async () => {
+      renderer.root
+        .findAll((node) => node.props.testID === 'send-button')[0]
+        .props.onPress();
+    });
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  it('shows the RESENDING copy and reports nothing when the reply hits a pending wrap', async () => {
+    seedThread();
+    mockPostReply.mockRejectedValue(pendingWrap());
+
+    const renderer = await renderScreen();
+    await sendReply(renderer);
+
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+    expect(alertSpy).toHaveBeenCalledWith('Not Sent Yet', RESENDING);
+    // Never the generic retry prompt — the D5 regression this test exists for.
+    expect(alertSpy).not.toHaveBeenCalledWith('Reply Failed', GENERIC_REPLY_FAILURE);
+    // The budgeted group-key reporter is the only emitter: captureUploadFailure
+    // (which forwards to Sentry) must not run.
+    expect(mockCaptureException).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['refused', UNREADABLE, 'Not Sent'],
+    ['failed', RETRY_LATER, 'Not Sent'],
+    ['identity_mismatch', DEVICE_KEY, 'Device Key Problem'],
+  ])('routes a %s unwrap failure to its own copy, with no capture', async (outcome, message, title) => {
+    seedThread();
+    mockPostReply.mockRejectedValue(unwrapFailure(outcome));
+
+    const renderer = await renderScreen();
+    await sendReply(renderer);
+
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+    expect(alertSpy).toHaveBeenCalledWith(title, message);
+    expect(alertSpy).not.toHaveBeenCalledWith('Reply Failed', GENERIC_REPLY_FAILURE);
+    expect(mockCaptureException).not.toHaveBeenCalled();
+  });
+
+  // --- the read surface ---
+
+  it('shows the pending banner instead of the empty-replies state', async () => {
+    mockLoadThread.mockRejectedValue(pendingWrap());
+
+    const renderer = await renderScreen();
+
+    // >0, not ===1: findAll matches the composite AND its host View.
+    expect(find(renderer, 'group-key-pending-banner').length).toBeGreaterThan(0);
+    const rendered = texts(renderer);
+    expect(rendered).toContain('Re-sending encryption key…');
+    // Neither lie: not "could not load", not "be the first to reply".
+    expect(rendered).not.toContain('Could not load thread');
+    expect(rendered).not.toContain('Be the first to reply');
+  });
+
+  it('shows the outcome copy instead of the generic load error', async () => {
+    mockLoadThread.mockRejectedValue(unwrapFailure('refused'));
+
+    const renderer = await renderScreen();
+
+    expect(find(renderer, 'group-key-failure-notice').length).toBeGreaterThan(0);
+    const rendered = texts(renderer);
+    expect(rendered).toContain(UNREADABLE);
+    expect(rendered).not.toContain('Could not load thread');
+    expect(find(renderer, 'group-key-pending-banner').length).toBe(0);
+  });
+
+  it('keeps the generic load error for a failure that is not a key failure', async () => {
+    mockLoadThread.mockRejectedValue(new Error('network down'));
+
+    const renderer = await renderScreen();
+
+    expect(texts(renderer)).toContain('Could not load thread');
+    expect(find(renderer, 'group-key-pending-banner').length).toBe(0);
+    expect(find(renderer, 'group-key-failure-notice').length).toBe(0);
+  });
+
+  it('reloads and clears the banner when the generation is bumped (D11)', async () => {
+    mockLoadThread.mockRejectedValue(pendingWrap());
+
+    const renderer = await renderScreen();
+    // >0, not ===1: findAll matches the composite AND its host View.
+    expect(find(renderer, 'group-key-pending-banner').length).toBeGreaterThan(0);
+    expect(mockLoadThread).toHaveBeenCalledTimes(1);
+
+    // The heal lands: handleWrappedKeyDelivered fetched the delivered key and
+    // bumped the counter. The screen must re-fetch with NO re-entry (B2).
+    mockLoadThread.mockResolvedValue(fakeThread);
+    // Deliberately NOT seedThread(): it hands useThreads a fresh
+    // `markThreadViewed` identity, which re-runs the mount effect and would
+    // make a third fetch look like the heal reload.
+    mockKeyGeneration = 1;
+    await rerender(renderer);
+
+    expect(mockLoadThread).toHaveBeenCalledTimes(2);
+    expect(find(renderer, 'group-key-pending-banner').length).toBe(0);
+  });
+
+  it('does not re-fetch while the generation is unchanged', async () => {
+    seedThread();
+
+    const renderer = await renderScreen();
+    expect(mockLoadThread).toHaveBeenCalledTimes(1);
+
+    await rerender(renderer);
+
+    // A plain re-render (any store write) must not re-run the load.
+    expect(mockLoadThread).toHaveBeenCalledTimes(1);
   });
 });

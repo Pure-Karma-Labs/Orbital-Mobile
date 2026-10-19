@@ -40,6 +40,9 @@ export type PersistedState = Pick<
  * - activeConversationId, activeThreadId — transient navigation state
  * - isComposerOpen — transient UI state
  * - syncOverallStatus — re-computed from pending sync queue on startup
+ * - groupKeyGeneration (#912) — a per-session reload trigger. A restored
+ *   counter would read as "a key was just delivered" on the first render after
+ *   every launch, and a cold start reloads the content anyway
  * - pushPermissionGranted, pushToken — device/OS-derived, re-read at launch;
  *   the FCM token must never sit in persisted state. Their opposite is
  *   pushOptOut (#683), which IS persisted: it records user INTENT, not OS

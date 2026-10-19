@@ -73,6 +73,13 @@ jest.mock('../../services/notificationSettingsSync', () => ({
   toggleMute: jest.fn().mockResolvedValue(true),
 }));
 
+/**
+ * #912: the per-group heal counter. The real `useGroupKeyGeneration` reads the
+ * store singleton (MMKV), which does not load under jest; a test bumps this and
+ * re-renders to stand in for `wrapped_key_delivered` landing.
+ */
+let mockKeyGeneration = 0;
+
 jest.mock('../../stores', () => {
   const getState = () => ({
     setViewingConversation: mockSetViewingConversation,
@@ -139,6 +146,7 @@ jest.mock('../../stores', () => {
     updateUnreadCount: jest.fn(),
     markConversationRead: jest.fn(),
   }),
+  useGroupKeyGeneration: () => mockKeyGeneration,
   useConnection: () => ({
     connectionStatus: 'connected',
     lastConnectedAt: null,
@@ -152,6 +160,10 @@ jest.mock('../../stores', () => {
 
 import { toggleMute } from '../../services/notificationSettingsSync';
 const mockToggleMute = toggleMute as jest.Mock;
+
+import { loadThreadsForGroup } from '../../services/threadService';
+// #912: the load seam the group-key read-surface cases drive.
+const mockLoadThreadsForGroup = loadThreadsForGroup as jest.Mock;
 
 // Mock @react-navigation/native-stack for navigation prop
 jest.mock('@react-navigation/native-stack', () => ({
@@ -217,6 +229,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockBlockedSet = new Set<string>();
   mockMutedTargets = {};
+  mockKeyGeneration = 0;
   mockSearchState = {
     searchText: '',
     setSearchText: jest.fn(),
@@ -935,5 +948,133 @@ describe('ThreadsScreen — block filtering', () => {
     );
     expect(blockedTitle).toBeUndefined();
     expect(okTitle).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group-key failures on the read surface (#912)
+// ---------------------------------------------------------------------------
+
+describe('ThreadsScreen — group key (#912)', () => {
+  // Pinned as literals, never imported from utils/errorMessages.
+  const UNREADABLE =
+    "This device can't open this conversation's encryption key. Another member needs to open Orbital to re-send it.";
+  const PENDING_NOTICE = 'Re-sending encryption key…';
+
+  function pendingWrap(): Error {
+    const e = new Error('Group key not yet available (pending wrap)');
+    e.name = 'PendingWrapError';
+    return e;
+  }
+
+  function unwrapFailure(selfHeal: string): Error {
+    const e = new Error(`Group key unwrap failed: recipient_mismatch / ${selfHeal}`);
+    e.name = 'GroupKeyUnwrapError';
+    (e as unknown as { selfHeal: string }).selfHeal = selfHeal;
+    return e;
+  }
+
+  /** Render and flush the load effect's promise. */
+  async function render(): Promise<ReactTestRenderer> {
+    const renderer = renderThreadsScreen();
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+    return renderer;
+  }
+
+  async function rerender(renderer: ReactTestRenderer): Promise<void> {
+    await act(async () => {
+      renderer.update(
+        React.createElement(
+          ThemeProvider,
+          { colorSchemeOverride: 'light' },
+          React.createElement(ThreadsScreen, {
+            navigation: mockNavigation as unknown as React.ComponentProps<typeof ThreadsScreen>['navigation'],
+            route: mockRoute as unknown as React.ComponentProps<typeof ThreadsScreen>['route'],
+          }),
+        ),
+      );
+    });
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  function find(renderer: ReactTestRenderer, testID: string): number {
+    return renderer.root.findAll((node) => node.props.testID === testID).length;
+  }
+
+  function texts(renderer: ReactTestRenderer): string[] {
+    return renderer.root
+      .findAllByType('Text' as unknown as React.ComponentType)
+      .map((node) => node.props.children)
+      .filter((c): c is string => typeof c === 'string');
+  }
+
+  afterEach(() => {
+    mockLoadThreadsForGroup.mockResolvedValue([]);
+  });
+
+  it('replaces the create-first empty state with the pending notice', async () => {
+    mockLoadThreadsForGroup.mockRejectedValueOnce(pendingWrap());
+
+    const renderer = await render();
+
+    expect(find(renderer, 'group-key-pending-banner')).toBeGreaterThan(0);
+    const rendered = texts(renderer);
+    expect(rendered).toContain(PENDING_NOTICE);
+    // An undecryptable orbit is not an empty one: no box, no CTA.
+    expect(rendered.join('\n')).not.toContain('No threads yet');
+    expect(rendered).not.toContain('New Thread');
+    expect(find(renderer, 'group-key-pending-body')).toBeGreaterThan(0);
+  });
+
+  it('shows the outcome copy in place of the empty state', async () => {
+    mockLoadThreadsForGroup.mockRejectedValueOnce(unwrapFailure('refused'));
+
+    const renderer = await render();
+
+    expect(find(renderer, 'group-key-failure-notice')).toBeGreaterThan(0);
+    const rendered = texts(renderer);
+    expect(rendered).toContain(UNREADABLE);
+    expect(rendered.join('\n')).not.toContain('No threads yet');
+    expect(find(renderer, 'group-key-pending-banner')).toBe(0);
+  });
+
+  it('keeps the normal empty state for a failure that is not a key failure', async () => {
+    mockLoadThreadsForGroup.mockRejectedValueOnce(new Error('network down'));
+
+    const renderer = await render();
+
+    expect(texts(renderer).join('\n')).toContain('No threads yet');
+    expect(find(renderer, 'group-key-pending-banner')).toBe(0);
+    expect(find(renderer, 'group-key-failure-notice')).toBe(0);
+  });
+
+  it('reloads and clears the notice when the generation is bumped (D11)', async () => {
+    mockLoadThreadsForGroup.mockRejectedValueOnce(pendingWrap());
+
+    const renderer = await render();
+    expect(find(renderer, 'group-key-pending-banner')).toBeGreaterThan(0);
+    expect(mockLoadThreadsForGroup).toHaveBeenCalledTimes(1);
+
+    // The heal lands: handleWrappedKeyDelivered fetched the delivered key and
+    // bumped the counter. The OPEN screen reloads itself (B2).
+    mockKeyGeneration = 1;
+    await rerender(renderer);
+
+    expect(mockLoadThreadsForGroup).toHaveBeenCalledTimes(2);
+    expect(find(renderer, 'group-key-pending-banner')).toBe(0);
+    expect(texts(renderer).join('\n')).toContain('No threads yet');
+  });
+
+  it('does not reload while the generation is unchanged', async () => {
+    const renderer = await render();
+    expect(mockLoadThreadsForGroup).toHaveBeenCalledTimes(1);
+
+    await rerender(renderer);
+
+    expect(mockLoadThreadsForGroup).toHaveBeenCalledTimes(1);
   });
 });

@@ -34,11 +34,14 @@ function makeStore() {
         // Conversations stubs
         conversations: {}, conversationIds: [], activeConversationId: null,
         viewingConversationId: null,
+        groupKeyGeneration: {},
         setConversations: jest.fn(), setGroupConversations: jest.fn(),
         upsertConversation: jest.fn(), removeConversation: jest.fn(),
         setActiveConversation: jest.fn(), updateUnreadCount: jest.fn(),
         incrementUnreadCount: jest.fn(), markConversationRead: jest.fn(),
         setViewingConversation: jest.fn(), bumpLastMessageAt: jest.fn(),
+ bumpGroupKeyGeneration: jest.fn(),
+ clearGroupKeyGenerations: jest.fn(),
         // Threads stubs
         threads: {}, threadIdsByConversation: {}, replies: {}, replyIdsByThread: {},
         activeThreadId: null, threadLastViewedAt: {},

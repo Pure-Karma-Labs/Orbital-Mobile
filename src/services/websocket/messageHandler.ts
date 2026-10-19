@@ -723,6 +723,14 @@ async function handleWrappedKeyDelivered(data: WrappedKeyDeliveredPayload): Prom
     // to avoid the cache short-circuit.
     await getOrFetchGroupKey(data.groupId);
 
+    // #912 heal reload. AFTER the fetch resolves, deliberately: the counter
+    // means "content for this group can decrypt now", and the open screen's
+    // load effect re-runs on it. Bumping before the await would reload the
+    // screen against the same dead envelope and put it straight back into the
+    // pending state. The 30s pending cache is why the order matters at all —
+    // `evictPendingCache` above is what lets this fetch reach the server.
+    useAppStore.getState().bumpGroupKeyGeneration(data.groupId);
+
     // Key obtained — re-decrypt any orbit name that was pending (#325)
     await retryPendingNameDecrypt(data.groupId);
   } catch (e) {

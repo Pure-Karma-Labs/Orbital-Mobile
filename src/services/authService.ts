@@ -414,6 +414,11 @@ export async function localWipe({ preserveIdentity }: { preserveIdentity: boolea
     state.setConversations([]);
     state.setContacts([]);
     state.setViewingConversation(null);
+    // #912: the heal-reload counters are per session and per account. Nothing
+    // else clears them — `setConversations([])` replaces the rows, not this
+    // map — and the next account on this device must not start with a screen
+    // that thinks a key was just delivered for one of its groups.
+    state.clearGroupKeyGenerations();
   } catch {
     if (__DEV__) console.warn('[LocalWipe] store reset failed');
   }

@@ -234,6 +234,18 @@ export interface ConversationsState {
   activeConversationId: string | null;
   /** The conversation the user is currently viewing (for unread suppression) */
   viewingConversationId: string | null;
+  /**
+   * groupId -> number of group keys this session has seen DELIVERED for it
+   * (#912). A pure reload trigger: the open read screen's load effect depends
+   * on its own group's entry, so a heal that lands while the user is staring at
+   * an undecryptable conversation re-runs the load with no re-entry.
+   *
+   * Deliberately NOT persisted (`partializeAppState` excludes it): the value is
+   * meaningless across launches — a cold start reloads everything anyway — and
+   * a restored counter would make the first render of every screen look like a
+   * heal just landed. Cleared by `clearGroupKeyGenerations` on localWipe.
+   */
+  groupKeyGeneration: Record<string, number>;
 }
 
 export interface ConversationsActions {
@@ -251,6 +263,15 @@ export interface ConversationsActions {
   markConversationRead: (id: string) => void;
   setViewingConversation: (id: string | null) => void;
   bumpLastMessageAt: (id: string, timestamp: number) => void;
+  /**
+   * A group key for `groupId` was just delivered and accepted (#912). Called
+   * from `handleWrappedKeyDelivered` AFTER its `getOrFetchGroupKey` resolves,
+   * never before: the counter means "content for this group can now decrypt",
+   * and a screen that reloads on the promise of a key simply fails again.
+   */
+  bumpGroupKeyGeneration: (groupId: string) => void;
+  /** Drop every generation counter (account switch / local wipe). */
+  clearGroupKeyGenerations: () => void;
 }
 
 export type ConversationsSlice = ConversationsState & ConversationsActions;

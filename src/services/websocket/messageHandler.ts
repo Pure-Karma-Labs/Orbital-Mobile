@@ -115,7 +115,7 @@ export function clearMessageHandlerState(): void {
  * import cycle) and the crypto layer is fenced off from `websocket/`.
  * Module scope, per the #677 rule for subscriptions and registrations.
  */
-setWrapDeliveryDedupClearer(groupId => {
+setWrapDeliveryDedupClearer((groupId) => {
   deliveryDedup.delete(groupId);
 });
 

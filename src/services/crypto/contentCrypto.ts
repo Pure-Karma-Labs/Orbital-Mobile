@@ -295,11 +295,7 @@ export async function getOrFetchGroupKey(groupId: string): Promise<Uint8Array> {
         });
 
         if (result.outcome !== 'healed') {
-          const failure = new GroupKeyUnwrapError(
-            result.code,
-            result.outcome,
-            result.refusalCode,
-          );
+          const failure = new GroupKeyUnwrapError(result.code, result.outcome, result.refusalCode);
           if (result.outcome === 'requested') {
             // A peer is re-wrapping. Short-circuit the next 30s of callers,
             // then let the delivery event through: `wrapped_key_delivered`

@@ -46,17 +46,10 @@
  */
 
 import { requestGroupKeyRewrap } from '../api/groups';
-import {
-  getIdentityKeyPair,
-  refreshAndCompareIdentityKey,
-} from './identityKeyAccess';
+import { getIdentityKeyPair, refreshAndCompareIdentityKey } from './identityKeyAccess';
 import { probeIdentityKeyPair } from './identityKeyProbe';
 import { classifyEciesOpenError } from './groupKeyErrors';
-import type {
-  GroupKeyFailureCode,
-  RewrapRefusalCode,
-  SelfHealOutcome,
-} from './groupKeyErrors';
+import type { GroupKeyFailureCode, RewrapRefusalCode, SelfHealOutcome } from './groupKeyErrors';
 import { arrayBufferToBase64 } from './utils';
 import { useAppStore } from '../../stores/useAppStore';
 import { VerifiedStatus } from '../../types/database';
@@ -179,7 +172,10 @@ const IDENTITY_REFUSALS: ReadonlyArray<RewrapRefusalCode> = [
  * from another module registry fails `instanceof` while still carrying the
  * right fields. The same rule screens follow for `BlockedRecipientError`.
  */
-function routeDemoteError(e: unknown): { outcome: SelfHealOutcome; refusalCode?: RewrapRefusalCode } {
+function routeDemoteError(e: unknown): {
+  outcome: SelfHealOutcome;
+  refusalCode?: RewrapRefusalCode;
+} {
   const err =
     e != null && typeof e === 'object'
       ? (e as {
@@ -194,9 +190,7 @@ function routeDemoteError(e: unknown): { outcome: SelfHealOutcome; refusalCode?:
 
   if (status === 409) {
     const refusalCode =
-      typeof err.refusalCode === 'string'
-        ? (err.refusalCode as RewrapRefusalCode)
-        : undefined;
+      typeof err.refusalCode === 'string' ? (err.refusalCode as RewrapRefusalCode) : undefined;
     if (refusalCode !== undefined && IDENTITY_REFUSALS.includes(refusalCode)) {
       return { outcome: 'identity_mismatch', refusalCode };
     }
@@ -238,9 +232,7 @@ function routeDemoteError(e: unknown): { outcome: SelfHealOutcome; refusalCode?:
  * Never throws: every failure is an outcome. Concurrent calls for one group
  * share a single attempt.
  */
-export function recoverDeadEnvelope(
-  input: RecoverDeadEnvelopeInput,
-): Promise<RecoveryResult> {
+export function recoverDeadEnvelope(input: RecoverDeadEnvelopeInput): Promise<RecoveryResult> {
   const existing = inflight.get(input.groupId);
   if (existing) return existing;
 
@@ -318,9 +310,7 @@ async function runRecovery(input: RecoverDeadEnvelopeInput): Promise<RecoveryRes
       if (identityChanged) {
         // The wrapper reset their identity: surface it the same way the WS
         // wrap path does (#633 convention).
-        useAppStore
-          .getState()
-          .setContactVerifiedStatus(wrappedBy, VerifiedStatus.Unverified);
+        useAppStore.getState().setContactVerifiedStatus(wrappedBy, VerifiedStatus.Unverified);
       }
     } catch {
       return { outcome: 'failed', code };
@@ -345,9 +335,7 @@ async function runRecovery(input: RecoverDeadEnvelopeInput): Promise<RecoveryRes
     await requestGroupKeyRewrap(groupId, envelope, localPublicKey);
   } catch (e) {
     const { outcome, refusalCode } = routeDemoteError(e);
-    return refusalCode === undefined
-      ? { outcome, code }
-      : { outcome, code, refusalCode };
+    return refusalCode === undefined ? { outcome, code } : { outcome, code, refusalCode };
   }
 
   // Committed: either the row was demoted or it was already NULL, and in both

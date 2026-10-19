@@ -16,6 +16,14 @@
 import type { QuotaUsage } from '../../types/api';
 import { formatMB } from '../../utils/formatBytes';
 import { INVALID_EMAIL_MESSAGE } from '../../utils/validateEmail';
+// The refusal vocabulary is defined in crypto/groupKeyErrors.ts — an
+// import-free, side-effect-free module — because the wire parser here and the
+// telemetry tag there must share one list, and that module is the only one
+// both the crypto boundary and this layer may import. See its JSDoc.
+import {
+  REWRAP_REFUSAL_CODES,
+  type RewrapRefusalCode,
+} from '../crypto/groupKeyErrors';
 
 export class ApiError extends Error {
   readonly statusCode: number;
@@ -276,13 +284,69 @@ export interface BlockingOrbit {
   encryptedName: string;
 }
 
+/**
+ * Allowlist membership test for a 409 `details.code`.
+ *
+ * `hasOwnProperty.call` rather than `in` or a truthy lookup, for the same
+ * reason as {@link isValidationReason}: the latter two accept `__proto__`,
+ * `constructor` and `toString`.
+ */
+function isRewrapRefusalCode(c: unknown): c is RewrapRefusalCode {
+  return (
+    typeof c === 'string' &&
+    Object.prototype.hasOwnProperty.call(REWRAP_REFUSAL_CODES, c)
+  );
+}
+
+/**
+ * Extract the refusal code from a 409 body.
+ *
+ * - A known code → that code.
+ * - A present but unknown code → `'unrecognized'`, so a newer backend is
+ *   visible as "refused for a reason this build doesn't know" instead of
+ *   silently looking like a generic conflict. The server's own string never
+ *   escapes this function.
+ * - No code at all (every other 409 route: account deletion, duplicate DM) →
+ *   `undefined`.
+ *
+ * Top-level rather than a method, matching `parseValidationReason`: the parse
+ * stays testable and the class body stays free of routing logic.
+ */
+function parseRefusalCode(rawBody?: string): RewrapRefusalCode | undefined {
+  if (!rawBody) return undefined;
+  try {
+    const parsed = JSON.parse(rawBody);
+    if (parsed?.error !== 'REWRAP_REFUSED') return undefined;
+    const code: unknown = parsed?.details?.code;
+    if (code === undefined || code === null) return undefined;
+    return isRewrapRefusalCode(code) ? code : 'unrecognized';
+  } catch {
+    // Malformed body — indistinguishable from a 409 with no details.
+    return undefined;
+  }
+}
+
 export class ConflictError extends ApiError {
   /** Orbits blocking account deletion — always available (prod-retained). */
   readonly blockingOrbits: BlockingOrbit[];
 
+  /**
+   * The allowlisted `details.code` of a `REWRAP_REFUSED` 409, or undefined on
+   * any other 409 (#912).
+   *
+   * Prod-retained, like `ValidationError.reason` and `blockingOrbits`: it is
+   * one of a fixed set of client-known enum values, not server text. Without
+   * it the refusal vocabulary would be invisible in release builds — the
+   * self-heal state machine routes on it (`IDENTITY_MISMATCH` and friends mean
+   * "this device's key", everything else means "ask a peer") and it is the
+   * `group_key_refusal` Sentry tag.
+   */
+  readonly refusalCode: RewrapRefusalCode | undefined;
+
   constructor(rawBody?: string) {
     super('Conflict — action cannot be completed', 409, 'CONFLICT', false, rawBody);
     this.name = 'ConflictError';
+    this.refusalCode = parseRefusalCode(rawBody);
 
     // Parse blocking_orbits from the raw 409 response body (snake_case from server)
     let orbits: BlockingOrbit[] = [];

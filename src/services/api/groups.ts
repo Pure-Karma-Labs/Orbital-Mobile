@@ -96,6 +96,38 @@ export function submitWrappedKey(
   });
 }
 
+/**
+ * Ask the server to NULL **this user's own** wrapped group key for a group, so
+ * every remaining key holder is asked to re-wrap it (#912).
+ *
+ * Used only by `crypto/groupKeyRecovery.ts` after a dead envelope: the stored
+ * envelope was sealed to an identity key this device no longer holds, so no
+ * amount of refetching can open it. The server compares `wrappedGroupKey`
+ * against the stored row (compare-and-swap) and `identityPublicKey` against
+ * the registered identity key before it demotes anything, and it refuses with
+ * a coded 409 (`ConflictError.refusalCode`) rather than demoting blindly.
+ *
+ * @param wrappedGroupKey   The exact envelope string `getGroupKey` returned,
+ *                          unmodified — it is the compare-and-swap witness.
+ * @param identityPublicKey This device's identity public key, base64.
+ */
+export function requestGroupKeyRewrap(
+  groupId: string,
+  wrappedGroupKey: string,
+  identityPublicKey: string,
+): Promise<{ success: boolean }> {
+  return request<{ success: boolean }>({
+    method: 'POST',
+    path: `/api/groups/${encodeURIComponent(groupId)}/request-rewrap`,
+    body: { wrappedGroupKey, identityPublicKey },
+    // The backend's keyRewrapLimiter allows 5 per 15 minutes per user and the
+    // caller's own per-session cap is 4, so there is no slack for a backoff to
+    // spend: a 429 here means the budget is gone, and the honest "try again
+    // later" copy should appear now rather than up to ~7 seconds later.
+    retryOn429: false,
+  });
+}
+
 export function selfWrapGroupKey(
   groupId: string,
   wrappedGroupKey: string,

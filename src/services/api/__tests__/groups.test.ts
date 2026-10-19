@@ -17,6 +17,7 @@ import {
   listDms,
   submitWrappedKey,
   selfWrapGroupKey,
+  requestGroupKeyRewrap,
   getPendingWraps,
   getGroupMembers,
   generateInviteCode,
@@ -294,6 +295,42 @@ describe('selfWrapGroupKey', () => {
       expect.objectContaining({
         path: '/api/groups/g%2F..%2Fadmin/self-wrap',
       }),
+    );
+  });
+});
+
+describe('requestGroupKeyRewrap', () => {
+  it('calls POST /api/groups/:groupId/request-rewrap with both witnesses', async () => {
+    await requestGroupKeyRewrap('group-1', 'envelope-b64', 'identity-pub-b64');
+    expect(mockRequest).toHaveBeenCalledWith({
+      method: 'POST',
+      path: '/api/groups/group-1/request-rewrap',
+      body: {
+        wrappedGroupKey: 'envelope-b64',
+        identityPublicKey: 'identity-pub-b64',
+      },
+      retryOn429: false,
+    });
+  });
+
+  it('encodes groupId in the URL path', async () => {
+    await requestGroupKeyRewrap('g/../admin', 'envelope-b64', 'identity-pub-b64');
+    expect(mockRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/groups/g%2F..%2Fadmin/request-rewrap',
+      }),
+    );
+  });
+
+  // The backend limiter is 5 per 15 min and the client's own session cap is 4,
+  // so a backoff would spend the budget it is meant to respect. Asserted as
+  // `false`, not just "not true": the default is retry, so an omitted flag
+  // would read as a pass under objectContaining. `generateInviteCode`'s
+  // sibling negative control above covers the mock-wide case.
+  it('opts out of the 429 retry', async () => {
+    await requestGroupKeyRewrap('group-1', 'envelope-b64', 'identity-pub-b64');
+    expect(mockRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ retryOn429: false }),
     );
   });
 });

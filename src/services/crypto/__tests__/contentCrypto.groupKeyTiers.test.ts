@@ -1,0 +1,357 @@
+/**
+ * Tests for getOrFetchGroupKey's tier ladder and its tier-4 self-heal hook.
+ *
+ * These are the first tests of the ladder itself, and the ordering is the
+ * security property: tiers 1-3 must be tried first, so the self-heal can never
+ * demote a server row while this device still holds a usable key. The hook also
+ * has to stay invisible to non-key failures — a database error or a bug must
+ * come out of here unchanged.
+ *
+ * `groupKeyRecovery` is mocked so each outcome can be driven directly; its own
+ * state machine is covered in groupKeyRecovery.test.ts.
+ */
+
+jest.mock('orbital-signal', () => ({
+  aesGcmEncrypt: jest.fn(),
+  aesGcmDecrypt: jest.fn(),
+  eciesSeal: jest.fn(() => new ArrayBuffer(190)),
+  eciesOpen: jest.fn(() => new ArrayBuffer(32)),
+}));
+
+jest.mock('../../../database/repositories/conversationRepository', () => ({
+  getGroupMasterKey: jest.fn(),
+  setGroupMasterKey: jest.fn(),
+  clearGroupMasterKey: jest.fn(),
+}));
+
+jest.mock('../../api/groups', () => ({
+  getGroupKey: jest.fn(),
+}));
+
+jest.mock('../groupKeyRecovery', () => ({
+  recoverDeadEnvelope: jest.fn(),
+  resetGroupKeyRecoveryState: jest.fn(),
+}));
+
+jest.mock('../identityKeyAccess', () => ({
+  getIdentityKeyPair: jest.fn(() => ({
+    privateKey: new ArrayBuffer(32),
+    publicKey: new ArrayBuffer(33),
+  })),
+  resolveRemoteIdentityKey: jest.fn(() => Promise.resolve(new ArrayBuffer(33))),
+}));
+
+jest.mock('../../../stores/useAppStore', () => ({
+  useAppStore: {
+    getState: jest.fn(() => ({ userId: 'me' })),
+  },
+}));
+
+import { eciesOpen } from 'orbital-signal';
+import { getGroupMasterKey } from '../../../database/repositories/conversationRepository';
+import { getGroupKey } from '../../api/groups';
+import { recoverDeadEnvelope, resetGroupKeyRecoveryState } from '../groupKeyRecovery';
+import {
+  getOrFetchGroupKey,
+  clearGroupKeyCache,
+  clearContentCryptoInflight,
+  setCachedGroupKey,
+  PendingWrapError,
+} from '../contentCrypto';
+import {
+  GroupKeyUnwrapError,
+  setGroupKeyFailureReporter,
+  isGroupKeyUnwrapError,
+} from '../groupKeyErrors';
+import { setWrapDeliveryDedupClearer } from '../wrapDeliveryHook';
+import { arrayBufferToBase64 } from '../utils';
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+const GROUP = 'group-1';
+const PEER = 'peer-user';
+
+/** A well-formed ECIES envelope: 190 bytes, version byte 0x02. */
+const ENVELOPE = (() => {
+  const bytes = new Uint8Array(190);
+  bytes[0] = 0x02;
+  bytes.fill(0x33, 1);
+  return arrayBufferToBase64(bytes.buffer);
+})();
+
+const DEAD_ENVELOPE_ERROR = (() => {
+  const err = new Error('SignalError.InvalidMessage');
+  Object.assign(err, {
+    tag: 'InvalidMessage',
+    inner: { reason: 'ecies_open: decryption failed' },
+  });
+  return err;
+})();
+
+const reported: Array<{ groupId: string; error: GroupKeyUnwrapError }> = [];
+const dedupCleared: string[] = [];
+
+beforeEach(() => {
+  clearGroupKeyCache();
+  clearContentCryptoInflight();
+  jest.clearAllMocks();
+  reported.length = 0;
+  dedupCleared.length = 0;
+  setGroupKeyFailureReporter({
+    report: (groupId, error) => {
+      reported.push({ groupId, error });
+    },
+    reset: () => {},
+  });
+  setWrapDeliveryDedupClearer(groupId => {
+    dedupCleared.push(groupId);
+  });
+  (getGroupMasterKey as jest.Mock).mockReturnValue(null);
+  (getGroupKey as jest.Mock).mockResolvedValue({
+    wrappedGroupKey: ENVELOPE,
+    wrappedBy: PEER,
+  });
+  (eciesOpen as jest.Mock).mockImplementation(() => {
+    throw DEAD_ENVELOPE_ERROR;
+  });
+});
+
+afterEach(() => {
+  setGroupKeyFailureReporter(null);
+  setWrapDeliveryDedupClearer(null);
+});
+
+// ---------------------------------------------------------------------------
+// Tiers 1-3 come first
+// ---------------------------------------------------------------------------
+
+describe('tier precedence', () => {
+  it('returns the in-memory key without touching the network', async () => {
+    const cached = new Uint8Array(32).fill(1);
+    setCachedGroupKey(GROUP, cached);
+
+    await expect(getOrFetchGroupKey(GROUP)).resolves.toBe(cached);
+    expect(getGroupKey).not.toHaveBeenCalled();
+    expect(recoverDeadEnvelope).not.toHaveBeenCalled();
+  });
+
+  it('a persisted key wins over the API, and no recovery runs', async () => {
+    const persisted = new Uint8Array(32).fill(2);
+    (getGroupMasterKey as jest.Mock).mockReturnValue(persisted);
+
+    await expect(getOrFetchGroupKey(GROUP)).resolves.toEqual(persisted);
+    expect(getGroupKey).not.toHaveBeenCalled();
+    expect(recoverDeadEnvelope).not.toHaveBeenCalled();
+    expect(reported).toHaveLength(0);
+  });
+
+  it('a null server key is a pending wrap, not a dead envelope', async () => {
+    (getGroupKey as jest.Mock).mockResolvedValue({
+      wrappedGroupKey: null,
+      wrappedBy: null,
+    });
+
+    await expect(getOrFetchGroupKey(GROUP)).rejects.toBeInstanceOf(PendingWrapError);
+    expect(recoverDeadEnvelope).not.toHaveBeenCalled();
+    expect(reported).toHaveLength(0);
+  });
+
+  it('keeps the unattributed-envelope branch out of recovery', async () => {
+    (getGroupKey as jest.Mock).mockResolvedValue({
+      wrappedGroupKey: ENVELOPE,
+      wrappedBy: null,
+    });
+
+    await expect(getOrFetchGroupKey(GROUP)).rejects.toThrow(
+      'ECIES envelope requires sender identity',
+    );
+    expect(recoverDeadEnvelope).not.toHaveBeenCalled();
+
+    // And it still marks the group pending for the TTL.
+    await expect(getOrFetchGroupKey(GROUP)).rejects.toBeInstanceOf(PendingWrapError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tier 4 — the self-heal hook
+// ---------------------------------------------------------------------------
+
+describe('tier 4 — hook inputs', () => {
+  it('passes the classified code and the untouched envelope', async () => {
+    (recoverDeadEnvelope as jest.Mock).mockResolvedValue({
+      outcome: 'failed',
+      code: 'recipient_mismatch',
+    });
+
+    await expect(getOrFetchGroupKey(GROUP)).rejects.toBeTruthy();
+
+    expect(recoverDeadEnvelope).toHaveBeenCalledTimes(1);
+    const arg = (recoverDeadEnvelope as jest.Mock).mock.calls[0][0];
+    expect(arg.groupId).toBe(GROUP);
+    expect(arg.envelope).toBe(ENVELOPE);
+    expect(arg.wrappedBy).toBe(PEER);
+    expect(arg.code).toBe('recipient_mismatch');
+    expect(typeof arg.retryUnwrap).toBe('function');
+  });
+
+  it('rethrows a non-SignalError untouched', async () => {
+    const bug = new Error('database is locked');
+    (eciesOpen as jest.Mock).mockImplementation(() => {
+      throw bug;
+    });
+
+    await expect(getOrFetchGroupKey(GROUP)).rejects.toBe(bug);
+    expect(recoverDeadEnvelope).not.toHaveBeenCalled();
+    expect(reported).toHaveLength(0);
+  });
+});
+
+describe('tier 4 — requested', () => {
+  beforeEach(() => {
+    (recoverDeadEnvelope as jest.Mock).mockResolvedValue({
+      outcome: 'requested',
+      code: 'recipient_mismatch',
+    });
+  });
+
+  it('throws PendingWrapError, not the unwrap error', async () => {
+    await expect(getOrFetchGroupKey(GROUP)).rejects.toBeInstanceOf(PendingWrapError);
+  });
+
+  it('reports the outcome once, with no envelope or id in the error', async () => {
+    await getOrFetchGroupKey(GROUP).catch(() => {});
+
+    expect(reported).toHaveLength(1);
+    expect(reported[0].groupId).toBe(GROUP);
+    expect(reported[0].error.code).toBe('recipient_mismatch');
+    expect(reported[0].error.selfHeal).toBe('requested');
+    expect(reported[0].error.message).toBe(
+      'Group key unwrap failed: recipient_mismatch / requested',
+    );
+  });
+
+  it('clears the WS delivery dedup so the re-wrap event is processed', async () => {
+    await getOrFetchGroupKey(GROUP).catch(() => {});
+
+    expect(dedupCleared).toEqual([GROUP]);
+  });
+
+  it('short-circuits the next call without refetching or re-recovering', async () => {
+    await getOrFetchGroupKey(GROUP).catch(() => {});
+
+    await expect(getOrFetchGroupKey(GROUP)).rejects.toBeInstanceOf(PendingWrapError);
+    expect(getGroupKey).toHaveBeenCalledTimes(1);
+    expect(recoverDeadEnvelope).toHaveBeenCalledTimes(1);
+    expect(reported).toHaveLength(1);
+  });
+});
+
+describe('tier 4 — not healed', () => {
+  it('throws a GroupKeyUnwrapError carrying the outcome and refusal code', async () => {
+    (recoverDeadEnvelope as jest.Mock).mockResolvedValue({
+      outcome: 'refused',
+      code: 'recipient_mismatch',
+      refusalCode: 'NO_KEY_HOLDER',
+    });
+
+    const err = await getOrFetchGroupKey(GROUP).catch((e: unknown) => e);
+
+    expect(isGroupKeyUnwrapError(err)).toBe(true);
+    const failure = err as GroupKeyUnwrapError;
+    expect(failure.selfHeal).toBe('refused');
+    expect(failure.code).toBe('recipient_mismatch');
+    expect(failure.refusalCode).toBe('NO_KEY_HOLDER');
+    expect(reported).toHaveLength(1);
+    expect(reported[0].error).toBe(failure);
+  });
+
+  it('does not clear the delivery dedup when nothing was requested', async () => {
+    (recoverDeadEnvelope as jest.Mock).mockResolvedValue({
+      outcome: 'exhausted',
+      code: 'recipient_mismatch',
+    });
+
+    await getOrFetchGroupKey(GROUP).catch(() => {});
+
+    expect(dedupCleared).toEqual([]);
+  });
+
+  it('reports a reclassified code rather than the original', async () => {
+    (recoverDeadEnvelope as jest.Mock).mockResolvedValue({
+      outcome: 'failed',
+      code: 'sender_mismatch',
+    });
+
+    await getOrFetchGroupKey(GROUP).catch(() => {});
+
+    expect(reported[0].error.code).toBe('sender_mismatch');
+  });
+
+  it('does not mark the group pending, so a later retry is allowed', async () => {
+    (recoverDeadEnvelope as jest.Mock).mockResolvedValue({
+      outcome: 'failed',
+      code: 'recipient_mismatch',
+    });
+
+    await getOrFetchGroupKey(GROUP).catch(() => {});
+    await getOrFetchGroupKey(GROUP).catch(() => {});
+
+    expect(getGroupKey).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('tier 4 — healed', () => {
+  it('resolves the ORIGINAL in-flight promise from the recovered key', async () => {
+    const recovered = new Uint8Array(32).fill(7);
+    (recoverDeadEnvelope as jest.Mock).mockImplementation(async () => {
+      // Stands in for the recovery's own retryUnwrap, which populates the
+      // cache through processReceivedGroupKey.
+      setCachedGroupKey(GROUP, recovered);
+      return { outcome: 'healed', code: 'sender_mismatch' };
+    });
+
+    await expect(getOrFetchGroupKey(GROUP)).resolves.toBe(recovered);
+    expect(getGroupKey).toHaveBeenCalledTimes(1);
+    expect(reported).toHaveLength(0);
+    expect(dedupCleared).toEqual([]);
+  });
+
+  it('still fails loudly if a healed recovery left no key behind', async () => {
+    (recoverDeadEnvelope as jest.Mock).mockResolvedValue({
+      outcome: 'healed',
+      code: 'sender_mismatch',
+    });
+
+    await expect(getOrFetchGroupKey(GROUP)).rejects.toThrow(
+      'Group key not available after processing',
+    );
+  });
+});
+
+describe('tier 4 — concurrency and teardown', () => {
+  it('coalesces concurrent callers onto one fetch and one recovery', async () => {
+    (recoverDeadEnvelope as jest.Mock).mockResolvedValue({
+      outcome: 'requested',
+      code: 'recipient_mismatch',
+    });
+
+    const results = await Promise.allSettled([
+      getOrFetchGroupKey(GROUP),
+      getOrFetchGroupKey(GROUP),
+      getOrFetchGroupKey(GROUP),
+    ]);
+
+    expect(results.every(r => r.status === 'rejected')).toBe(true);
+    expect(getGroupKey).toHaveBeenCalledTimes(1);
+    expect(recoverDeadEnvelope).toHaveBeenCalledTimes(1);
+    expect(reported).toHaveLength(1);
+  });
+
+  it('clearContentCryptoInflight resets the recovery state too', () => {
+    clearContentCryptoInflight();
+
+    expect(resetGroupKeyRecoveryState).toHaveBeenCalledTimes(1);
+  });
+});

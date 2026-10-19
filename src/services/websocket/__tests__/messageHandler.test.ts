@@ -146,6 +146,7 @@ jest.mock('../../../stores/useAppStore', () => ({
 // ---------------------------------------------------------------------------
 
 import { handleServerMessage, clearMessageHandlerState } from '../messageHandler';
+import { clearWrapDeliveryDedup } from '../../crypto/wrapDeliveryHook';
 import { snakeToCamel } from '../../api/client';
 import {
   getOrFetchGroupKey,
@@ -1266,6 +1267,38 @@ describe('wrapped_key_delivered', () => {
     mockGetOrFetchGroupKey.mockRejectedValueOnce(new Error('fetch failed'));
 
     await expect(handleServerMessage(makeDeliveredEvent(testUUID('group-err')))).resolves.toBeUndefined();
+  });
+
+  // #912: after a self-heal demote the NEXT wrapped_key_delivered is the heal
+  // landing, but the event that exposed the dead envelope has usually already
+  // claimed the group's dedup slot. The crypto layer clears it through the
+  // import-free wrapDeliveryHook registry, which messageHandler fills at
+  // module scope.
+  it('processes a re-delivery once the crypto layer clears the dedup', async () => {
+    const groupId = testUUID('group-dedup-cleared');
+
+    await handleServerMessage(makeDeliveredEvent(groupId));
+    await handleServerMessage(makeDeliveredEvent(groupId));
+    expect(mockGetOrFetchGroupKey).toHaveBeenCalledTimes(1);
+
+    clearWrapDeliveryDedup(groupId);
+    await handleServerMessage(makeDeliveredEvent(groupId));
+
+    expect(mockGetOrFetchGroupKey).toHaveBeenCalledTimes(2);
+  });
+
+  it('leaves other groups deduped when one is cleared', async () => {
+    const cleared = testUUID('group-clear-a');
+    const kept = testUUID('group-clear-b');
+
+    await handleServerMessage(makeDeliveredEvent(cleared));
+    await handleServerMessage(makeDeliveredEvent(kept));
+    clearWrapDeliveryDedup(cleared);
+    await handleServerMessage(makeDeliveredEvent(cleared));
+    await handleServerMessage(makeDeliveredEvent(kept));
+
+    // cleared: 2 fetches, kept: 1.
+    expect(mockGetOrFetchGroupKey).toHaveBeenCalledTimes(3);
   });
 });
 

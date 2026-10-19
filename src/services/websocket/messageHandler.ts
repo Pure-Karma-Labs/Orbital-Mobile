@@ -15,6 +15,7 @@ import {
   wrapGroupKey,
   evictPendingCache,
 } from '../crypto/contentCrypto';
+import { setWrapDeliveryDedupClearer } from '../crypto/wrapDeliveryHook';
 import { refreshAndCompareIdentityKey, compareAndPersistIdentityKey, normalizeIdentityKey } from '../crypto/identityKeyAccess';
 import { base64ToArrayBuffer } from '../crypto/utils';
 import { VerifiedStatus } from '../../types/database';
@@ -100,6 +101,23 @@ export function clearMessageHandlerState(): void {
   wrapDedup.clear();
   deliveryDedup.clear();
 }
+
+/**
+ * Let the crypto layer drop this group's delivery-dedup entry (#912).
+ *
+ * After a self-heal demote, the next `wrapped_key_delivered` is the heal
+ * landing — but the event that exposed the dead envelope has usually already
+ * claimed the group's 30-second dedup slot, so without this the re-wrap would
+ * be ignored until the TTL expired.
+ *
+ * Registered through `crypto/wrapDeliveryHook` rather than imported by
+ * `contentCrypto`, because this module already imports `contentCrypto` (an
+ * import cycle) and the crypto layer is fenced off from `websocket/`.
+ * Module scope, per the #677 rule for subscriptions and registrations.
+ */
+setWrapDeliveryDedupClearer(groupId => {
+  deliveryDedup.delete(groupId);
+});
 
 // ============================================================
 // Allowed broadcast data.type values (WS-05)

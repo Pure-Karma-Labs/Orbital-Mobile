@@ -89,9 +89,19 @@ function AppContent(): React.JSX.Element {
   // Cold start: bootstrap storage/db, then attempt session restoration
   useEffect(() => {
     bootstrap()
-      .then(() => restoreSession())
-      .then((restored) => {
-        if (!restored) setRestoreDone(true);
+      .then(() => {
+        // A remount with auth already in the store means this is not a cold
+        // start — on Android an activity re-create runs this effect again
+        // (#914). Auth is never persisted, so `isAuthenticated` can only be
+        // true because an earlier mount already restored or logged in: the
+        // session is live and restoreSession must not run a second time.
+        if (useAppStore.getState().isAuthenticated) {
+          setRestoreDone(true);
+          return undefined;
+        }
+        return restoreSession().then((restored) => {
+          if (!restored) setRestoreDone(true);
+        });
       })
       .catch((e: unknown) => {
         captureError(e);

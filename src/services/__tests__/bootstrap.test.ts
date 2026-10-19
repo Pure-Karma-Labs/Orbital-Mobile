@@ -32,12 +32,25 @@ jest.mock('../secure-storage', () => ({
   })),
 }));
 
+// MMKV / database mocks are STATEFUL: bootstrap's idempotency guards read
+// is*Initialized(), so the mocks have to behave like the real modules
+// (init flips the flag) for the retry-path tests to mean anything.
+const mockStorageState = { mmkv: false, database: false };
+const mockInitMMKV = jest.fn((..._args: unknown[]) => {
+  mockStorageState.mmkv = true;
+});
+const mockInitDatabase = jest.fn((..._args: unknown[]) => {
+  mockStorageState.database = true;
+});
+
 jest.mock('../../stores/middleware/persistence', () => ({
-  initMMKV: jest.fn(),
+  initMMKV: (...args: unknown[]) => mockInitMMKV(...args),
+  isMMKVInitialized: () => mockStorageState.mmkv,
 }));
 
 jest.mock('../../database', () => ({
-  initDatabase: jest.fn(),
+  initDatabase: (...args: unknown[]) => mockInitDatabase(...args),
+  isDatabaseInitialized: () => mockStorageState.database,
 }));
 
 jest.mock('../../database/migrations', () => ({
@@ -75,6 +88,12 @@ jest.mock('../mediaArchiveConfirmService', () => ({
   scheduleArchiveConfirmDrain: (...args: unknown[]) => mockScheduleArchiveConfirmDrain(...args),
 }));
 
+const mockRegisterForegroundNotificationSettingsSync = jest.fn();
+jest.mock('../notificationSettingsSync', () => ({
+  registerForegroundNotificationSettingsSync: (...args: unknown[]) =>
+    mockRegisterForegroundNotificationSettingsSync(...args),
+}));
+
 const mockClearAuth = jest.fn();
 jest.mock('../../stores/useAppStore', () => ({
   useAppStore: {
@@ -91,9 +110,33 @@ jest.mock('../../stores/useAppStore', () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
-import { bootstrap, handleTokensCleared } from '../../bootstrap';
+import { bootstrap, handleTokensCleared, resetBootstrapForTesting } from '../../bootstrap';
 import { isRecoveryInitiator, setRecoveryInitiator } from '../recoveryState';
 import { tokenManager } from '../api/tokenManager';
+import {
+  clearKeychainIfFreshInstall,
+  getOrCreateMMKVKey,
+  getOrCreateDatabaseKey,
+} from '../secure-storage';
+
+// clearKeychainIfFreshInstall is the only unguarded step, so its call count is
+// the direct observable for "the whole sequence ran again".
+const mockClearKeychainIfFreshInstall = jest.mocked(clearKeychainIfFreshInstall);
+const mockGetOrCreateMMKVKey = jest.mocked(getOrCreateMMKVKey);
+const mockGetOrCreateDatabaseKey = jest.mocked(getOrCreateDatabaseKey);
+
+// bootstrap() caches its promise and guards each step against module-level
+// state, so every test starts from a clean process-like slate.
+beforeEach(() => {
+  resetBootstrapForTesting();
+  mockStorageState.mmkv = false;
+  mockStorageState.database = false;
+});
+
+/** Flush the microtasks queued by bootstrap's lazy `import().then()` tail. */
+async function flushLazyImports(): Promise<void> {
+  await new Promise((r) => setImmediate(r));
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -191,8 +234,7 @@ describe('bootstrap() wiring', () => {
   it('bootstrap() registers foreground prefetch drain and schedules initial drain', async () => {
     await bootstrap();
 
-    // Flush lazy import microtasks
-    await new Promise((r) => setImmediate(r));
+    await flushLazyImports();
 
     expect(mockRegisterForegroundDrain).toHaveBeenCalledTimes(1);
     expect(mockSchedulePendingMediaDrain).toHaveBeenCalledTimes(1);
@@ -201,10 +243,110 @@ describe('bootstrap() wiring', () => {
   it('bootstrap() registers foreground archive-confirm drain and schedules initial drain', async () => {
     await bootstrap();
 
-    // Flush lazy import microtasks
-    await new Promise((r) => setImmediate(r));
+    await flushLazyImports();
 
     expect(mockRegisterForegroundConfirmDrain).toHaveBeenCalledTimes(1);
     expect(mockScheduleArchiveConfirmDrain).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #914: an Android activity re-create remounts App, which calls bootstrap()
+// again. A second unguarded run threw `MMKV already initialized`.
+// ---------------------------------------------------------------------------
+
+describe('bootstrap() idempotency (#914)', () => {
+  const unsubscribes: Array<() => void> = [];
+
+  afterEach(() => {
+    setRecoveryInitiator(false);
+    while (unsubscribes.length) {
+      unsubscribes.pop()!();
+    }
+    jest.restoreAllMocks();
+    jest.clearAllMocks();
+  });
+
+  /** Capture every listener bootstrap registered so it can be unhooked. */
+  function trackRegistrations(spy: jest.SpyInstance): void {
+    for (const result of spy.mock.results) {
+      if (typeof result.value === 'function') {
+        unsubscribes.push(result.value as () => void);
+      }
+    }
+  }
+
+  it('runs the sequence once for two concurrent calls', async () => {
+    const spy = jest.spyOn(tokenManager, 'onTokensCleared');
+
+    await Promise.all([bootstrap(), bootstrap()]);
+    trackRegistrations(spy);
+    await flushLazyImports();
+
+    expect(mockClearKeychainIfFreshInstall).toHaveBeenCalledTimes(1);
+    expect(mockGetOrCreateMMKVKey).toHaveBeenCalledTimes(1);
+    expect(mockInitMMKV).toHaveBeenCalledTimes(1);
+    expect(mockGetOrCreateDatabaseKey).toHaveBeenCalledTimes(1);
+    expect(mockInitDatabase).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(mockRegisterForegroundDrain).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not re-run after it has already resolved', async () => {
+    const spy = jest.spyOn(tokenManager, 'onTokensCleared');
+
+    await bootstrap();
+    await bootstrap();
+    trackRegistrations(spy);
+    await flushLazyImports();
+
+    expect(mockClearKeychainIfFreshInstall).toHaveBeenCalledTimes(1);
+    expect(mockGetOrCreateMMKVKey).toHaveBeenCalledTimes(1);
+    expect(mockInitMMKV).toHaveBeenCalledTimes(1);
+    expect(mockInitDatabase).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(mockRegisterForegroundDrain).toHaveBeenCalledTimes(1);
+    expect(mockRegisterForegroundConfirmDrain).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries after a rejection but skips both getOrCreateMMKVKey and initMMKV', async () => {
+    const spy = jest.spyOn(tokenManager, 'onTokensCleared');
+    mockGetOrCreateDatabaseKey.mockRejectedValueOnce(new Error('keychain locked'));
+
+    await expect(bootstrap()).rejects.toThrow('keychain locked');
+
+    // The failed run got as far as initializing MMKV.
+    expect(mockGetOrCreateMMKVKey).toHaveBeenCalledTimes(1);
+    expect(mockInitMMKV).toHaveBeenCalledTimes(1);
+    expect(mockInitDatabase).not.toHaveBeenCalled();
+
+    await expect(bootstrap()).resolves.toBeUndefined();
+    trackRegistrations(spy);
+
+    // The retry re-ran the sequence...
+    expect(mockGetOrCreateDatabaseKey).toHaveBeenCalledTimes(2);
+    expect(mockInitDatabase).toHaveBeenCalledTimes(1);
+    // ...but did not touch the Keychain for the MMKV key, nor re-init MMKV.
+    expect(mockGetOrCreateMMKVKey).toHaveBeenCalledTimes(1);
+    expect(mockInitMMKV).toHaveBeenCalledTimes(1);
+  });
+
+  it('registers each listener exactly once across a rejection and retry', async () => {
+    const spy = jest.spyOn(tokenManager, 'onTokensCleared');
+    mockGetOrCreateDatabaseKey.mockRejectedValueOnce(new Error('keychain locked'));
+
+    await expect(bootstrap()).rejects.toThrow('keychain locked');
+    await bootstrap();
+    await bootstrap();
+    trackRegistrations(spy);
+    await flushLazyImports();
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith(handleTokensCleared);
+    expect(mockRegisterForegroundDrain).toHaveBeenCalledTimes(1);
+    expect(mockSchedulePendingMediaDrain).toHaveBeenCalledTimes(1);
+    expect(mockRegisterForegroundConfirmDrain).toHaveBeenCalledTimes(1);
+    expect(mockScheduleArchiveConfirmDrain).toHaveBeenCalledTimes(1);
+    expect(mockRegisterForegroundNotificationSettingsSync).toHaveBeenCalledTimes(1);
   });
 });

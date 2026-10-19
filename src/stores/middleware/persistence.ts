@@ -19,6 +19,15 @@ export function initMMKV(encryptionKey: string): void {
 }
 
 /**
+ * Returns true once initMMKV() has run. Callers that may run more than once
+ * (bootstrap on an Android activity re-create) guard the key fetch + init with
+ * this instead of catching the throw above.
+ */
+export function isMMKVInitialized(): boolean {
+  return mmkvInstance !== null;
+}
+
+/**
  * Returns the initialized MMKV instance.
  * Throws a descriptive error if initMMKV() has not been called yet.
  */

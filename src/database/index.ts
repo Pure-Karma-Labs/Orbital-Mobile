@@ -1,5 +1,6 @@
 export {
   initDatabase,
+  isDatabaseInitialized,
   getDatabase,
   closeDatabase,
   resetDatabaseForTesting,

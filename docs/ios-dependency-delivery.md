@@ -57,6 +57,7 @@ decision, not a build one.
 | sentry-cocoa | 9.30.2 | **Enforced:** `expected_sentry_cocoa` in the Issue #768 guard in `ios/Podfile` (pod install fails if the staged version differs). Upstream source: `sentry_cocoa_version` in `node_modules/@sentry/react-native/RNSentry.podspec` |
 | `Sentry.xcframework.zip` SHA256 | `593897dbdee24febeef45208b13960a4b389c5dbd25f64b1b3cb94c30291ed55` | `SENTRY_COCOA_XCFRAMEWORK_CHECKSUMS['9.30.2']['Sentry']` in `sentry_utils.rb`; independently matched against sentry-cocoa's `Package.swift` binary-target checksum at tag 9.30.2 |
 | Local cache | `~/Library/Caches/sentry-react-native/xcframeworks/9.30.2/` | Build machine; CI cache key `sentry-xcframework-<os>-<hash of podspec + sentry_utils.rb>` |
+| sentry-android (Android native SDK) | 8.61.0 (sentry-native 0.17.3 underneath) | **Recorded only, not enforced.** Upstream source: `sentryAndroidVersion` in `node_modules/@sentry/react-native/android/build.gradle`. There is no Android equivalent of the #768 guard: the applied groovy `sentry.gradle` carries no version assertion, and Dependabot's gradle ecosystem does not cover `/android`. This row is the only control |
 
 **Note:** nothing verifies the SHA256 row against `node_modules` at install
 time; the Podfile literal enforces the version row. Any bump must update this
@@ -223,6 +224,16 @@ sentry-cocoa 9.30.2.
     `scrubEvent` re-filters breadcrumbs. If this moves out of `processEvent` (or
     starts running after `beforeSend`), the re-filter no longer covers native
     crumbs and `maxBreadcrumbs: 100` no longer bounds them.
+13. **Android native SDK (sentry-java) data-collection changes.** The
+    `@sentry/react-native` bump also moves `sentryAndroidVersion` (record it in
+    the version table). Android hard-crash reports are assembled by
+    sentry-android with no JS boundary in the path, so read the sentry-java
+    changelog between the old and new version for data-collection changes.
+    **Named tripwire:** sentry-java 8.59.0 deprecated `sendDefaultPii` in favour
+    of `dataCollection`, with removal announced for 9.0. When a bump crosses
+    sentry-java 9.0, our `sendDefaultPii: false` pin stops reaching Android with
+    no type error and no guard firing; replace it with the equivalent
+    `dataCollection` setting in the same PR.
 
 ---
 

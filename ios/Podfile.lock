@@ -2016,7 +2016,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
-  - react-native-image-picker (8.2.1):
+  - react-native-image-picker (8.3.0):
     - boost
     - DoubleConversion
     - fast_float
@@ -2990,7 +2990,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
-  - RNSentry (8.29.0):
+  - RNSentry (8.31.0):
     - boost
     - DoubleConversion
     - fast_float
@@ -3368,7 +3368,7 @@ SPEC CHECKSUMS:
   React-microtasksnativemodule: a84b9331106616ab1fa36de9ae555718d4bbdcf5
   react-native-config: 713a638bfc2b359f4606a9a161bb16e6a5068568
   react-native-get-random-values: 5c2e7ce0c1eedefde8e97fe60152601887fcfa08
-  react-native-image-picker: 6051cfd030121b880a58f1cc0e5e33e9887804e4
+  react-native-image-picker: 686891e39197364111c4c1cef9c74a8a73d2050d
   react-native-safe-area-context: 2bcd3bece6b4dcb20da32a9ac7a3f20f156a86f6
   react-native-video: 558711646609a96027f16a724c89556d9b149806
   React-NativeModulesApple: efd0906463c79d9b86197dbcf0d58358dff8c5ed
@@ -3411,11 +3411,11 @@ SPEC CHECKSUMS:
   RNKeychain: 76d042fc1dfba47f3945920bc82e0bce9ad1ff55
   RNNotifee: 5e3b271e8ea7456a36eec994085543c9adca9168
   RNScreens: cfb11dc33b79eac5e09a10b25e1ad0c2499d5b8b
-  RNSentry: 197c157d0880f2dea42538277f29f78e60be2fc9
+  RNSentry: c3838453bd9721dbd35a8121bcec43a51e571a84
   SocketRocket: d4aabe649be1e368d1318fdf28a022d714d65748
   uniffi-bindgen-react-native: 205a15613d97a49fe17d5bda57f7fa46a7bbafd0
   Yoga: 526f25666395d30c297d53154398ffd249eaf9e1
 
-PODFILE CHECKSUM: 29d8432151c45d750adedd9c572fda87e008acbc
+PODFILE CHECKSUM: 15db7679d5b01bc051da93ce4d476f704d73c900
 
 COCOAPODS: 1.17.0

@@ -20,10 +20,7 @@ import { INVALID_EMAIL_MESSAGE } from '../../utils/validateEmail';
 // import-free, side-effect-free module — because the wire parser here and the
 // telemetry tag there must share one list, and that module is the only one
 // both the crypto boundary and this layer may import. See its JSDoc.
-import {
-  REWRAP_REFUSAL_CODES,
-  type RewrapRefusalCode,
-} from '../crypto/groupKeyErrors';
+import { REWRAP_REFUSAL_CODES, type RewrapRefusalCode } from '../crypto/groupKeyErrors';
 
 export class ApiError extends Error {
   readonly statusCode: number;
@@ -292,10 +289,7 @@ export interface BlockingOrbit {
  * `constructor` and `toString`.
  */
 function isRewrapRefusalCode(c: unknown): c is RewrapRefusalCode {
-  return (
-    typeof c === 'string' &&
-    Object.prototype.hasOwnProperty.call(REWRAP_REFUSAL_CODES, c)
-  );
+  return typeof c === 'string' && Object.prototype.hasOwnProperty.call(REWRAP_REFUSAL_CODES, c);
 }
 
 /**

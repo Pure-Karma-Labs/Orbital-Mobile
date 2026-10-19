@@ -43,11 +43,7 @@
  * - `unknown` — a SignalError this classifier does not recognise. Never
  *   self-healed (a demote must be justified by a known cause).
  */
-export type GroupKeyFailureCode =
-  | 'recipient_mismatch'
-  | 'sender_mismatch'
-  | 'corrupt'
-  | 'unknown';
+export type GroupKeyFailureCode = 'recipient_mismatch' | 'sender_mismatch' | 'corrupt' | 'unknown';
 
 /**
  * What the self-heal attempt did about it. These are the only values that ever
@@ -149,9 +145,7 @@ export class GroupKeyUnwrapError extends Error {
 /** Name-based test — survives factory mocks that shadow the class. */
 export function isGroupKeyUnwrapError(e: unknown): e is GroupKeyUnwrapError {
   return (
-    e != null &&
-    typeof e === 'object' &&
-    (e as { name?: unknown }).name === 'GroupKeyUnwrapError'
+    e != null && typeof e === 'object' && (e as { name?: unknown }).name === 'GroupKeyUnwrapError'
   );
 }
 

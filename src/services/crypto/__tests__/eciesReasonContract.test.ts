@@ -71,6 +71,37 @@ describe('ecies.rs reason-string contract', () => {
     },
   );
 
+  /**
+   * The probe matches "does not match" as a SUBSTRING under one tag, so a
+   * SECOND `InvalidArgument` reason containing it would also read as "this
+   * private key does not belong to this public key" — and that answer is what
+   * authorises deleting a surviving Keychain identity key (#913) and latching
+   * the self-heal kill switch. Presence is not enough: uniqueness is the real
+   * criterion, and it is one `format!` away from being lost.
+   *
+   * The InvalidKey "does not match expected sender" reason at the other end of
+   * the file is deliberately not counted — a different tag, a different
+   * decision (`sender_mismatch`, which is healed by a sender-key refresh).
+   */
+  it('carries exactly ONE InvalidArgument "does not match" reason — the deletion-authorising one', () => {
+    const hits = lines
+      .map((line, i) => ({ line, i }))
+      .filter(({ line }) => line.includes('reason') && line.includes('does not match'));
+
+    const underInvalidArgument = hits.filter(({ i }) =>
+      lines
+        .slice(Math.max(0, i - VARIANT_WINDOW), i + 1)
+        .some(l => l.includes('SignalError::InvalidArgument')),
+    );
+
+    expect(underInvalidArgument).toHaveLength(1);
+    expect(underInvalidArgument[0].line).toContain('sender_public_key does not match');
+    // Non-vacuity: the other one still exists and is still the InvalidKey the
+    // classifier reads as `sender_mismatch`, so this is a split of two reasons
+    // and not a scan that found nothing.
+    expect(hits.length).toBeGreaterThan(underInvalidArgument.length);
+  });
+
   it('still returns InvalidSignature with no reason payload', () => {
     // classifyEciesOpenError maps a bare InvalidSignature to `corrupt` and must
     // not depend on an `inner` that does not exist.

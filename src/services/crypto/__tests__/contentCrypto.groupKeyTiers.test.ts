@@ -196,6 +196,45 @@ describe('tier 4 — hook inputs', () => {
     expect(typeof arg.retryUnwrap).toBe('function');
   });
 
+  /**
+   * The rule the module header states twice: `retryUnwrap` MUST close over
+   * `processReceivedGroupKey`, never `getOrFetchGroupKey`. Recovery runs INSIDE
+   * the in-flight promise that `getOrFetchGroupKey` is holding, so re-entering
+   * it self-awaits and hangs forever — the one bug in this path that no outcome
+   * test can see, because it manifests as a promise that never settles.
+   *
+   * So the real captured closure is invoked here rather than asserted about.
+   * `getGroupKey` is the discriminator: a re-entrant implementation falls
+   * through tiers 1-3 (nothing is cached — the unwrap failed) and fetches
+   * again, while the correct one only re-unwraps the envelope it was handed.
+   */
+  it('hands recovery a retryUnwrap that re-unwraps without re-entering getOrFetchGroupKey', async () => {
+    let captured: (() => Promise<Uint8Array | null>) | null = null;
+    (recoverDeadEnvelope as jest.Mock).mockImplementation(
+      async (arg: { retryUnwrap: () => Promise<Uint8Array | null> }) => {
+        captured = arg.retryUnwrap;
+        return { outcome: 'failed', code: 'recipient_mismatch' };
+      },
+    );
+
+    await getOrFetchGroupKey(GROUP).catch(() => {});
+    expect(typeof captured).toBe('function');
+
+    // Now let the unwrap succeed, as it would after a sender-key refresh.
+    const recovered = new Uint8Array(32).fill(4);
+    (getGroupKey as jest.Mock).mockClear();
+    (eciesOpen as jest.Mock).mockClear();
+    (eciesOpen as jest.Mock).mockImplementation(() => recovered.buffer);
+
+    const key = await (captured as unknown as () => Promise<Uint8Array | null>)();
+
+    expect(key).toEqual(recovered);
+    // processReceivedGroupKey ran exactly once (its only ECIES call)…
+    expect(eciesOpen).toHaveBeenCalledTimes(1);
+    // …and getOrFetchGroupKey did not: no second fetch, no re-entry.
+    expect(getGroupKey).not.toHaveBeenCalled();
+  });
+
   it('rethrows a non-SignalError untouched', async () => {
     const bug = new Error('database is locked');
     (eciesOpen as jest.Mock).mockImplementation(() => {

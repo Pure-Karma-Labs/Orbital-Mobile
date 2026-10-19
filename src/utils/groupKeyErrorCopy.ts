@@ -93,6 +93,13 @@ export function groupKeyFailureCopy(e: unknown): GroupKeyFailureCopy | null {
   // from another module's enum, and the switch must not assume exhaustiveness.
   const outcome: SelfHealOutcome | string = e.selfHeal;
   switch (outcome) {
+    // `session_exhausted`: the SESSION demote budget is spent and this group
+    // never had a demote requested, so no peer has been asked about it and the
+    // UNREADABLE copy ("another member needs to open Orbital") would be false.
+    // The budget is per-session state, so "in a few minutes" is literally true
+    // too: a relaunch frees it. Per-group `exhausted` is the opposite case and
+    // keeps UNREADABLE.
+    case 'session_exhausted':
     case 'rate_limited':
     case 'failed':
     case 'cooldown':

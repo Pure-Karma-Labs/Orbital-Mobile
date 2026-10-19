@@ -1557,6 +1557,35 @@ checkWindowedPins(
   VMP_ISSUE,
 );
 
+// Windows B3/B4 — the SAME allowlist discipline for the 409 `REWRAP_REFUSED`
+// refusal code (#912). The shape is identical to Windows B/B2 and so is the
+// leak: the code is reported as the `group_key_refusal` Sentry tag and routes
+// the self-heal state machine, so an unknown value must become the client's own
+// `'unrecognized'` sentinel rather than the server's string, and the membership
+// test must be `hasOwnProperty.call` so `__proto__`/`constructor`/`toString`
+// cannot pass as refusal codes.
+const RRC_ISSUE = '#912';
+
+checkWindowedPins(
+  ERRORS_FILE,
+  VMP_RULE,
+  /^function parseRefusalCode[\s\S]*?\n\}/m,
+  'the parseRefusalCode body',
+  ['isRewrapRefusalCode(', "'unrecognized'"],
+  [],
+  RRC_ISSUE,
+);
+
+checkWindowedPins(
+  ERRORS_FILE,
+  VMP_RULE,
+  /^function isRewrapRefusalCode[\s\S]*?\n\}/m,
+  'the isRewrapRefusalCode body',
+  ['hasOwnProperty.call(REWRAP_REFUSAL_CODES'],
+  [],
+  RRC_ISSUE,
+);
+
 // Window C — the __DEV__ gate on the raw body, for every error class. Curated
 // copy is only safe to show because the server's own text never leaves dev.
 checkWindowedPins(
@@ -2679,6 +2708,84 @@ checkWindowedPins(
   [],
   ME_ISSUE,
 );
+
+// ---------------------------------------------------------------------------
+// 25. The two import-free registries that cross the crypto fence (#912)
+// ---------------------------------------------------------------------------
+
+// `src/services/crypto/**` is a fenced layer: ESLint bans Sentry and every
+// telemetry facade there, because an error report built inside the crypto layer
+// is one interpolation away from carrying key material. Two modules are allowed
+// to be imported from BOTH sides of that fence, and the only thing that makes
+// that safe is that they import NOTHING AT ALL — so they cannot reach Sentry,
+// a store, MMKV or the database, whichever side loads them:
+//
+//   crypto/groupKeyErrors.ts    the closed failure vocabulary, the classifier,
+//                               REWRAP_REFUSAL_CODES and a {report, reset}
+//                               reporter slot. Imported from outside the fence
+//                               by src/services/groupKeyTelemetry.ts (which
+//                               fills the slot) and src/services/api/errors.ts
+//                               (which allowlists details.code against
+//                               REWRAP_REFUSAL_CODES), and from inside it by
+//                               contentCrypto / groupKeyRecovery.
+//   crypto/wrapDeliveryHook.ts  a one-way slot for the WS wrapped_key_delivered
+//                               dedup. Filled from outside the fence by
+//                               src/services/websocket/messageHandler.ts at
+//                               module scope; called from inside it.
+//
+// One import added to either file re-opens the fence for its outside callers
+// (api/errors.ts is reachable from almost everything, and messageHandler pulls
+// stores, repositories and notifications) without tripping any ESLint rule,
+// because the restriction is on where the FILE lives, not on who imports it.
+// Both module headers say "zero imports"; this is what enforces it.
+//
+// Type-only imports are forbidden too, deliberately: they are erased at
+// runtime, so they would be safe — but allowing them means this rule has to
+// distinguish forms, and a one-character edit (`import type` -> `import`) would
+// then be invisible. "No import, require or from statement at all" is the
+// cheapest rule to keep true. Comments are blanked first: both headers discuss
+// imports at length in prose.
+const IFR_RULE = 'import-free-registry';
+const IFR_ISSUE = '#912';
+const IFR_FILES = [
+  [
+    join(SRC, 'services', 'crypto', 'groupKeyErrors.ts'),
+    'src/services/groupKeyTelemetry.ts and src/services/api/errors.ts import it from OUTSIDE the crypto fence',
+  ],
+  [
+    join(SRC, 'services', 'crypto', 'wrapDeliveryHook.ts'),
+    'src/services/websocket/messageHandler.ts fills its slot from OUTSIDE the crypto fence',
+  ],
+];
+// `from` is matched as a statement-position keyword only (`} from '…'`,
+// `* from '…'`), so prose-free code using `from` as an identifier is unaffected.
+const IFR_PATTERNS = [
+  [/^\s*import\b/m, 'an import statement'],
+  [/\brequire\s*\(/, 'a require() call'],
+  [/\bfrom\s*['"\x60]/, "a `from '…'` specifier"],
+];
+
+for (const [file, importers] of IFR_FILES) {
+  let source;
+  try {
+    source = blankComments(readFileSync(file, 'utf8'));
+  } catch {
+    violations.push(
+      `  ${relative('.', file)}:0  [${IFR_RULE}]  import-free registry not found — it is imported from both sides of the crypto fence and the rule cannot be verified (${IFR_ISSUE})`,
+    );
+    continue;
+  }
+  for (const [re, label] of IFR_PATTERNS) {
+    const m = re.exec(source);
+    if (m === null) continue;
+    report(
+      file,
+      source.slice(0, m.index).split('\n').length,
+      IFR_RULE,
+      `must stay import-free but has ${label} — ${importers}, so any dependency here lands on both sides of it. Put the dependency in the module that fills the registry slot instead (${IFR_ISSUE})`,
+    );
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Summary

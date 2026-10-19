@@ -967,6 +967,40 @@ describe('uploadMedia — video branch', () => {
         jest.useRealTimers();
       }
     });
+
+    /**
+     * `groupKeyTelemetry` is the only emitter for a dead group-key envelope
+     * (#912) and has already reported this failure from inside the crypto
+     * layer. A second capture here would double-count it AND misattribute the
+     * cause to the thumbnail stage. Matched by name, not `instanceof`, because
+     * this suite replaces contentCrypto with a factory mock — which is exactly
+     * the condition that makes `instanceof` undefined.
+     */
+    it.each([['GroupKeyUnwrapError'], ['PendingWrapError']])(
+      'degrades silently on a %s instead of capturing it a second time',
+      async (name) => {
+        const groupKeyFailure = Object.assign(new Error('Group key unwrap failed'), { name });
+        // The thumbnail child encrypts its metadata first, so its
+        // getOrFetchGroupKey call is the first of the two.
+        mockGetOrFetchGroupKey
+          .mockRejectedValueOnce(groupKeyFailure)
+          .mockResolvedValue(fakeGroupKey);
+
+        // Still posts: the video goes out duration-only.
+        const result = await uploadMedia(videoOptions);
+        expect(result.mediaId).toBe('parent-media-id');
+
+        const capture = Sentry.captureException as unknown as jest.Mock;
+        const thumbnailCaptures = capture.mock.calls.filter(
+          (c: unknown[]) =>
+            (c[1] as { tags?: Record<string, string> })?.tags?.stage === 'thumbnail',
+        );
+        expect(thumbnailCaptures).toHaveLength(0);
+        // And the envelope really did degrade — no thumbnail fields survive.
+        const completeArgs = mockCompleteUpload.mock.calls[0];
+        expect(JSON.stringify(completeArgs)).not.toContain('thumb-media-id');
+      },
+    );
   });
 
   describe('video branch — progress + cancellation', () => {

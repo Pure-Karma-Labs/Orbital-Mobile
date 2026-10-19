@@ -38,6 +38,7 @@ const ALL_OUTCOMES: SelfHealOutcome[] = [
   'requested',
   'cooldown',
   'exhausted',
+  'session_exhausted',
   'refused',
   'identity_mismatch',
   'unsupported',
@@ -54,10 +55,15 @@ const OUTCOME_TABLE: OutcomeRow[] = [
   ['rate_limited', NOT_SENT_TITLE, RETRY_LATER],
   ['failed', NOT_SENT_TITLE, RETRY_LATER],
   ['cooldown', NOT_SENT_TITLE, RETRY_LATER],
+  // The SESSION budget is spent and this group was never demoted, so no peer
+  // has been asked: UNREADABLE would blame someone who was never told. The caps
+  // are per-session, so "in a few minutes" is true — a relaunch frees them.
+  ['session_exhausted', NOT_SENT_TITLE, RETRY_LATER],
   ['identity_mismatch', DEVICE_KEY_TITLE, DEVICE_KEY],
   ['blocked_local_key', DEVICE_KEY_TITLE, DEVICE_KEY],
   ['refused', NOT_SENT_TITLE, UNREADABLE],
   ['unsupported', NOT_SENT_TITLE, UNREADABLE],
+  // Per-group cap: a peer HAS been asked and has not delivered.
   ['exhausted', NOT_SENT_TITLE, UNREADABLE],
   ['not_eligible', NOT_SENT_TITLE, UNREADABLE],
   // Production never routes `requested` through this branch — contentCrypto
@@ -142,6 +148,6 @@ describe('groupKeyFailureCopy', () => {
     // so a value added to the union and not to this table fails this assertion,
     // and a value removed from the union stops ALL_OUTCOMES compiling.
     expect([...OUTCOME_TABLE.map(([outcome]) => outcome)].sort()).toEqual([...ALL_OUTCOMES].sort());
-    expect(ALL_OUTCOMES).toHaveLength(10);
+    expect(ALL_OUTCOMES).toHaveLength(11);
   });
 });

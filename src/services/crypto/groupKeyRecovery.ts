@@ -28,11 +28,12 @@
  * budget is deliberately small and layered:
  * - single-flight per group, so concurrent callers share one attempt;
  * - a 15-minute per-group cooldown that EVERY attempt stamps, including failed
- *   ones (a delay, not a lockout);
+ *   ones (a delay, not a lockout) — but a terminal verdict reached inside that
+ *   window is repeated rather than downgraded to "try again later";
  * - a per-group cap of {@link PER_GROUP_DEMOTE_CAP} that counts COMMITTED
  *   demotes only — a network failure or a 429 costs nothing;
- * - a per-session cap of {@link SESSION_DEMOTE_CAP}, which stays under the
- *   backend limiter (5 per 15 minutes per user);
+ * - a per-session cap of {@link SESSION_DEMOTE_CAP}, which sits under the
+ *   backend limiter (5 per 15 minutes per user) without replacing it;
  * - two latches: `localKeyInvalid`, set only on a DEFINITE probe mismatch, and
  *   `endpointUnsupported`, set on a 404 (backend not deployed yet).
  *
@@ -50,6 +51,7 @@ import { getIdentityKeyPair, refreshAndCompareIdentityKey } from './identityKeyA
 import { probeIdentityKeyPair } from './identityKeyProbe';
 import { classifyEciesOpenError } from './groupKeyErrors';
 import type { GroupKeyFailureCode, RewrapRefusalCode, SelfHealOutcome } from './groupKeyErrors';
+import { clearWrapDeliveryDedup } from './wrapDeliveryHook';
 import { arrayBufferToBase64 } from './utils';
 import { useAppStore } from '../../stores/useAppStore';
 import { VerifiedStatus } from '../../types/database';
@@ -65,9 +67,22 @@ export const RECOVERY_COOLDOWN_MS = 15 * 60_000;
 export const PER_GROUP_DEMOTE_CAP = 2;
 
 /**
- * Committed demotes allowed per session across all groups. Must stay BELOW the
- * backend's `keyRewrapLimiter` (5 per 15 minutes per user) so a legitimate
- * client never trips a rate limit.
+ * Committed demotes allowed per session across all groups, set below the
+ * backend's `keyRewrapLimiter` (5 per 15 minutes per user) so one session's
+ * COMMITTED demotes alone cannot fill the server's window.
+ *
+ * It is not a guarantee that the limiter is never tripped, and must not be
+ * read as one:
+ * - a refused or rejected request still consumes a limiter slot server-side
+ *   while costing nothing here (only a commit spends these caps), so a run of
+ *   409s can reach the limiter with this cap untouched;
+ * - these caps are per-session module state, so an app relaunch resets them
+ *   while the server's 15-minute window keeps counting.
+ *
+ * The server limiter is the hard gate. This cap is amplification control for
+ * one session — a bound on how much ECIES work and WS fan-out one device can
+ * ask its peers to do — and `rate_limited` is a first-class outcome precisely
+ * because the limiter can still be reached.
  */
 export const SESSION_DEMOTE_CAP = 4;
 
@@ -128,6 +143,54 @@ const inflight = new Map<string, Promise<RecoveryResult>>();
 let sessionDemotes = 0;
 
 /**
+ * The last TERMINAL verdict per group, remembered so the cooldown cannot
+ * downgrade it.
+ *
+ * Every attempt stamps a 15-minute cooldown, and the cooldown short-circuit
+ * used to return `'cooldown'` — which the copy selector maps to "try again in
+ * a few minutes". So a group that had just been told "this device's keys need
+ * restoring" or "another member must open Orbital" asked the user to retry on
+ * every later view, for the one quarter-hour where the verdict was freshest.
+ *
+ * Only outcomes that say WHY nothing will change are recorded: a transient one
+ * (`failed`, `rate_limited`) still falls through to `'cooldown'`, because
+ * retrying later is genuinely the right advice for it. `session_exhausted` is
+ * deliberately NOT recorded either — it already means "try again later", which
+ * is what `'cooldown'` says.
+ */
+const lastTerminal = new Map<
+  string,
+  { outcome: SelfHealOutcome; refusalCode?: RewrapRefusalCode }
+>();
+
+/**
+ * Outcomes that are terminal for the cooldown window: nothing this device does
+ * before it expires can change them.
+ */
+const TERMINAL_OUTCOMES: ReadonlySet<string> = new Set<SelfHealOutcome>([
+  'refused',
+  'identity_mismatch',
+  'exhausted',
+  'not_eligible',
+  'blocked_local_key',
+  'unsupported',
+]);
+
+/** Record a terminal verdict for the cooldown window. Ignores everything else. */
+function rememberTerminalOutcome(groupId: string, result: RecoveryResult): void {
+  const outcome = result.outcome;
+  // `healed` is excluded by the narrowing, not by the set — a healed attempt
+  // is not a verdict to repeat.
+  if (outcome === 'healed' || !TERMINAL_OUTCOMES.has(outcome)) return;
+  lastTerminal.set(
+    groupId,
+    result.refusalCode === undefined
+      ? { outcome }
+      : { outcome, refusalCode: result.refusalCode },
+  );
+}
+
+/**
  * Session kill switch: this device's identity key pair failed its own ECIES
  * probe, so NO envelope can be opened and no demote is justified (the server
  * would compare against a key we cannot prove we hold). Set only on a definite
@@ -144,6 +207,7 @@ export function resetGroupKeyRecoveryState(): void {
   cooldownUntil.clear();
   committedDemotes.clear();
   inflight.clear();
+  lastTerminal.clear();
   sessionDemotes = 0;
   localKeyInvalid = false;
   endpointUnsupported = false;
@@ -171,8 +235,15 @@ const IDENTITY_REFUSALS: ReadonlyArray<RewrapRefusalCode> = [
  * `instanceof`: suites replace `api/errors` with factory mocks, and a class
  * from another module registry fails `instanceof` while still carrying the
  * right fields. The same rule screens follow for `BlockedRecipientError`.
+ *
+ * Takes `groupId` because two branches have session side effects keyed to it
+ * (the `endpointUnsupported` latch is global; the `ENVELOPE_CHANGED` delivery
+ * dedup clear is per group).
  */
-function routeDemoteError(e: unknown): {
+function routeDemoteError(
+  e: unknown,
+  groupId: string,
+): {
   outcome: SelfHealOutcome;
   refusalCode?: RewrapRefusalCode;
 } {
@@ -193,6 +264,22 @@ function routeDemoteError(e: unknown): {
       typeof err.refusalCode === 'string' ? (err.refusalCode as RewrapRefusalCode) : undefined;
     if (refusalCode !== undefined && IDENTITY_REFUSALS.includes(refusalCode)) {
       return { outcome: 'identity_mismatch', refusalCode };
+    }
+    if (refusalCode === 'ENVELOPE_CHANGED') {
+      // NOT a refusal to heal — the opposite. The server's row no longer holds
+      // the envelope we fetched, so a peer has ALREADY re-wrapped and a fresh,
+      // openable envelope exists server-side. "Another member needs to open
+      // Orbital" would be plainly false, so this routes to the transient
+      // `failed` (RETRY_LATER) copy instead.
+      //
+      // Nothing is cached and no pending TTL is stamped for `failed`, so the
+      // next `getOrFetchGroupKey` refetches and picks the new envelope up. The
+      // dedup clear is what lets that happen sooner: the delivery event that
+      // announced the re-wrap was almost certainly the one that triggered this
+      // attempt, and it has already claimed the 30-second dedup slot, so
+      // without this the re-wrap is ignored for up to 30 seconds.
+      clearWrapDeliveryDedup(groupId);
+      return { outcome: 'failed', refusalCode };
     }
     return { outcome: 'refused', refusalCode };
   }
@@ -238,7 +325,9 @@ export function recoverDeadEnvelope(input: RecoverDeadEnvelopeInput): Promise<Re
 
   const promise = (async () => {
     try {
-      return await runRecovery(input);
+      const result = await runRecovery(input);
+      rememberTerminalOutcome(input.groupId, result);
+      return result;
     } finally {
       inflight.delete(input.groupId);
     }
@@ -271,13 +360,30 @@ async function runRecovery(input: RecoverDeadEnvelopeInput): Promise<RecoveryRes
   const now = Date.now();
   const until = cooldownUntil.get(groupId);
   if (until !== undefined && now < until) {
+    // A terminal verdict from earlier in this window survives it: the user is
+    // told the same thing as the first time, not "try again in a few minutes".
+    // `code` stays the CURRENT classification — it describes the envelope this
+    // attempt just failed to open, while the outcome describes what the last
+    // real attempt concluded.
+    const remembered = lastTerminal.get(groupId);
+    if (remembered !== undefined) {
+      return remembered.refusalCode === undefined
+        ? { outcome: remembered.outcome, code }
+        : { outcome: remembered.outcome, code, refusalCode: remembered.refusalCode };
+    }
     return { outcome: 'cooldown', code };
   }
-  if (
-    (committedDemotes.get(groupId) ?? 0) >= PER_GROUP_DEMOTE_CAP ||
-    sessionDemotes >= SESSION_DEMOTE_CAP
-  ) {
+  const perGroupDemotes = committedDemotes.get(groupId) ?? 0;
+  if (perGroupDemotes >= PER_GROUP_DEMOTE_CAP) {
     return { outcome: 'exhausted', code };
+  }
+  if (sessionDemotes >= SESSION_DEMOTE_CAP) {
+    // Two different facts wear the same shape here, and only one of them means
+    // "a peer has been asked". A session-cap block with ZERO demotes committed
+    // for this group means nobody has been asked about it — the budget went to
+    // other groups (login-time name/avatar decryption fans out across every
+    // orbit) — so it must not render as "another member needs to open Orbital".
+    return { outcome: perGroupDemotes === 0 ? 'session_exhausted' : 'exhausted', code };
   }
   // Stamped before any network call or trust write, so a crash, a hang or a
   // transient failure still backs this group off.
@@ -334,7 +440,7 @@ async function runRecovery(input: RecoverDeadEnvelopeInput): Promise<RecoveryRes
   try {
     await requestGroupKeyRewrap(groupId, envelope, localPublicKey);
   } catch (e) {
-    const { outcome, refusalCode } = routeDemoteError(e);
+    const { outcome, refusalCode } = routeDemoteError(e, groupId);
     return refusalCode === undefined ? { outcome, code } : { outcome, code, refusalCode };
   }
 

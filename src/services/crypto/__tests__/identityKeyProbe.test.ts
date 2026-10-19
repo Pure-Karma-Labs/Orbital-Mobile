@@ -164,6 +164,39 @@ describe('probeIdentityKeyPair — everything else is rethrown', () => {
     expect(() => probeIdentityKeyPair(PRIV, PUB)).toThrow(err as Error);
   });
 
+  it('rethrows a duck-typed object carrying only the tag and the reason', () => {
+    // The discriminator is the uniffi message shape, not the properties: an
+    // object shaped like a SignalError is not one, and 'mismatch' is the single
+    // answer that authorises deleting a surviving Keychain identity key.
+    const impostor = {
+      tag: 'InvalidArgument',
+      inner: { reason: 'ecies_seal: sender_public_key does not match sender_private_key' },
+    };
+    (eciesSeal as jest.Mock).mockImplementation(() => {
+      throw impostor;
+    });
+
+    let thrown: unknown;
+    try {
+      probeIdentityKeyPair(PRIV, PUB);
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBe(impostor);
+  });
+
+  it('rethrows a tagged Error whose message is not SignalError.<Variant>', () => {
+    const err = Object.assign(new Error('something failed'), {
+      tag: 'InvalidArgument',
+      inner: { reason: 'ecies_seal: sender_public_key does not match sender_private_key' },
+    });
+    (eciesSeal as jest.Mock).mockImplementation(() => {
+      throw err;
+    });
+
+    expect(() => probeIdentityKeyPair(PRIV, PUB)).toThrow(err);
+  });
+
   it('rethrows a plain Error with no tag', () => {
     const err = new Error('native module unavailable');
     (eciesSeal as jest.Mock).mockImplementation(() => {

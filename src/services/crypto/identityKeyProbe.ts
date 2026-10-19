@@ -32,14 +32,30 @@
  * `groupKeyRecovery` latch its session kill switch. An ambiguous failure must
  * never do either.
  *
- * ## Reason-string contract
+ * ## Reason-string contract, and exactly what is pinned
  *
  * The literal "does not match" is copied from
- * `packages/orbital-signal/rust/orbital_signal/src/ecies.rs` and is pinned by
- * `__tests__/eciesReasonContract.test.ts`. A libsignal/orbital_signal bump must
- * re-verify it (see the bump playbook): if the wording changes, this probe
- * degrades to "always throws", i.e. 'deferred' / 'failed' — safe, not silent
- * key deletion.
+ * `packages/orbital-signal/rust/orbital_signal/src/ecies.rs`.
+ * `__tests__/eciesReasonContract.test.ts` pins three things about it, all by
+ * reading that Rust file:
+ * - a reason containing the literal still exists;
+ * - it is still carried by `SignalError::InvalidArgument` (the tag this probe
+ *   branches on — the other "does not match" reason in the file is an
+ *   `InvalidKey` about the expected SENDER, which must not read as a local key
+ *   mismatch); and
+ * - it is the ONLY `InvalidArgument` reason containing the literal, so a second
+ *   one — which this substring match would also accept as proof — cannot be
+ *   added unnoticed.
+ *
+ * What it does NOT pin: errors raised inside libsignal rather than in
+ * `ecies.rs`. An `InvalidArgument` from there whose reason happened to contain
+ * "does not match" would still be read as a mismatch; the `SignalError.`
+ * message check in {@link isDefiniteMismatch} narrows the shape, not the
+ * origin.
+ *
+ * A libsignal/orbital_signal bump must re-verify all of this (see the bump
+ * playbook): if the wording changes, this probe degrades to "always throws",
+ * i.e. 'deferred' / 'failed' — safe, not silent key deletion.
  *
  * @module identityKeyProbe
  */
@@ -65,7 +81,14 @@ export type IdentityKeyProbeResult = 'match' | 'mismatch';
 
 function isDefiniteMismatch(err: unknown): boolean {
   if (err == null || typeof err !== 'object') return false;
-  const e = err as { tag?: unknown; inner?: { reason?: unknown } };
+  const e = err as { message?: unknown; tag?: unknown; inner?: { reason?: unknown } };
+  // POSITIVE discrimination first, the same rule `classifyEciesOpenError`
+  // follows: a uniffi-lifted SignalError always has
+  // `message === 'SignalError.<Variant>'`. `tag` + `inner.reason` alone is
+  // duck-typing — any object carrying those two properties would authorise
+  // deleting a surviving Keychain identity key, and this is the ONE answer
+  // allowed to do that.
+  if (typeof e.message !== 'string' || !e.message.startsWith('SignalError.')) return false;
   if (e.tag !== SignalError_Tags.InvalidArgument) return false;
   const reason = e.inner?.reason;
   return typeof reason === 'string' && reason.includes(MISMATCH_REASON_FRAGMENT);

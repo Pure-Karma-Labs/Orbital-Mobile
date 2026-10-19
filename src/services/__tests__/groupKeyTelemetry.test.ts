@@ -121,6 +121,7 @@ describe('level mapping', () => {
   const ERROR_OUTCOMES: SelfHealOutcome[] = [
     'cooldown',
     'exhausted',
+    'session_exhausted',
     'refused',
     'identity_mismatch',
     'unsupported',

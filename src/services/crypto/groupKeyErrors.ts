@@ -51,8 +51,15 @@ export type GroupKeyFailureCode = 'recipient_mismatch' | 'sender_mismatch' | 'co
  * selector (`src/utils/groupKeyErrorCopy.ts`) maps every one of them.
  *
  * - `requested` — the server accepted the demote; peers are re-wrapping.
- * - `cooldown` — this group was attempted within the cooldown window.
- * - `exhausted` — the per-group or per-session demote cap is spent.
+ * - `cooldown` — this group was attempted within the cooldown window, and no
+ *   terminal verdict was reached for it earlier in the session.
+ * - `exhausted` — this GROUP's demote cap is spent (or the session cap is spent
+ *   and this group already had a demote committed). A peer has been asked and
+ *   has not delivered, so the copy may point at a peer.
+ * - `session_exhausted` — the SESSION cap is spent and this group never had a
+ *   demote requested at all. Nobody has been asked about this group, so the
+ *   copy must NOT point at a peer: the caps are per-session module state, so a
+ *   relaunch makes this group eligible again.
  * - `refused` — the server declined (see `refusalCode`), or 403.
  * - `identity_mismatch` — server and device disagree about this device's
  *   identity key, or the server has none. Points at identity restore, not at
@@ -69,6 +76,7 @@ export type SelfHealOutcome =
   | 'requested'
   | 'cooldown'
   | 'exhausted'
+  | 'session_exhausted'
   | 'refused'
   | 'identity_mismatch'
   | 'unsupported'

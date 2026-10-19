@@ -433,7 +433,19 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
           }
           // The post still goes out, so the user sees nothing — which is
           // exactly why this needs a release-visible signal (#738).
-          captureUploadFailure(e, { stage: 'thumbnail', level: 'warning' });
+          //
+          // Except for a group-key failure: `groupKeyTelemetry` is the ONLY
+          // emitter for those (#912), and it has already reported this one from
+          // inside the crypto layer. Capturing again would double-count it
+          // under a stage that misattributes the cause to the thumbnail.
+          // Matched by NAME, not `instanceof`: contentCrypto's classes are
+          // undefined wherever a suite replaces that module with a factory
+          // mock, which is the same rule the screens follow.
+          const degradeName =
+            e != null && typeof e === 'object' ? (e as { name?: unknown }).name : undefined;
+          if (degradeName !== 'GroupKeyUnwrapError' && degradeName !== 'PendingWrapError') {
+            captureUploadFailure(e, { stage: 'thumbnail', level: 'warning' });
+          }
           // Drops the envelope data ONLY. `committedThumbnailMediaId` must NOT be
           // cleared here: if the child had already committed locally, the parent
           // still owes it a rollback should the parent later throw (#721).

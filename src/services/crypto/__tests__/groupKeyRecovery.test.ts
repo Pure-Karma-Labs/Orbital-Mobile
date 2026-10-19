@@ -53,6 +53,7 @@ import {
   PER_GROUP_DEMOTE_CAP,
   SESSION_DEMOTE_CAP,
 } from '../groupKeyRecovery';
+import { setWrapDeliveryDedupClearer } from '../wrapDeliveryHook';
 import { VerifiedStatus } from '../../../types/database';
 
 // ---------------------------------------------------------------------------
@@ -106,9 +107,21 @@ function input(overrides: Overrides = {}): Parameters<typeof recoverDeadEnvelope
 
 let now = 1_700_000_000_000;
 
+/**
+ * Groups whose `wrapped_key_delivered` dedup entry was cleared. The real
+ * import-free registry is used rather than a module mock: it is the contract
+ * `messageHandler` fills, and the point of the clear is that recovery reaches
+ * the WS layer without importing it.
+ */
+const dedupCleared: string[] = [];
+
 beforeEach(() => {
   jest.clearAllMocks();
   resetGroupKeyRecoveryState();
+  dedupCleared.length = 0;
+  setWrapDeliveryDedupClearer(groupId => {
+    dedupCleared.push(groupId);
+  });
   mockState.userId = 'me';
   now = 1_700_000_000_000;
   jest.spyOn(Date, 'now').mockImplementation(() => now);
@@ -122,6 +135,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  setWrapDeliveryDedupClearer(null);
   jest.restoreAllMocks();
 });
 
@@ -374,7 +388,6 @@ describe('demote request', () => {
     ['NO_IDENTITY_KEY', 'identity_mismatch'],
     ['SERVER_KEY_UNREADABLE', 'identity_mismatch'],
     ['NO_KEY_HOLDER', 'refused'],
-    ['ENVELOPE_CHANGED', 'refused'],
     ['SELF_WRAPPED', 'refused'],
     ['UNATTRIBUTED', 'refused'],
     ['DEMO_ACCOUNT', 'refused'],
@@ -460,6 +473,71 @@ describe('demote request', () => {
 });
 
 // ---------------------------------------------------------------------------
+// ENVELOPE_CHANGED — the refusal that means "already healed"
+// ---------------------------------------------------------------------------
+
+describe('ENVELOPE_CHANGED', () => {
+  beforeEach(() => {
+    (requestGroupKeyRewrap as jest.Mock).mockRejectedValue(refusal('ENVELOPE_CHANGED'));
+  });
+
+  it('routes to the transient failed outcome, NOT refused', async () => {
+    // A peer has already re-wrapped, so a fresh openable envelope exists: the
+    // UNREADABLE copy ("another member needs to open Orbital") would be false.
+    const r = await recoverDeadEnvelope(input());
+
+    expect(r.outcome).toBe('failed');
+  });
+
+  it('still carries the refusal code, so the Sentry tag keeps the cause', async () => {
+    const r = await recoverDeadEnvelope(input());
+
+    expect(r.refusalCode).toBe('ENVELOPE_CHANGED');
+  });
+
+  it('clears the WS delivery dedup so the next wrapped_key_delivered is processed', async () => {
+    await recoverDeadEnvelope(input());
+
+    expect(dedupCleared).toEqual(['group-1']);
+  });
+
+  it('is not remembered as a terminal verdict — a later view says "try again"', async () => {
+    expect((await recoverDeadEnvelope(input())).outcome).toBe('failed');
+    now += 1_000;
+
+    const second = await recoverDeadEnvelope(input());
+
+    expect(second.outcome).toBe('cooldown');
+    expect(second.refusalCode).toBeUndefined();
+  });
+
+  it('spends no cap, so a real demote is still possible afterwards', async () => {
+    await recoverDeadEnvelope(input());
+    now += RECOVERY_COOLDOWN_MS + 1;
+    (requestGroupKeyRewrap as jest.Mock).mockResolvedValue({ success: true });
+
+    expect((await recoverDeadEnvelope(input())).outcome).toBe('requested');
+  });
+});
+
+describe('delivery dedup', () => {
+  it.each([
+    ['a committed demote', undefined],
+    ['a plain refusal', refusal('NO_KEY_HOLDER')],
+    ['an identity refusal', refusal('IDENTITY_MISMATCH')],
+    ['a transient failure', new Error('socket hang up')],
+  ])('is left alone for %s', async (_label, rejection) => {
+    if (rejection !== undefined) {
+      (requestGroupKeyRewrap as jest.Mock).mockRejectedValue(rejection);
+    }
+
+    await recoverDeadEnvelope(input());
+
+    expect(dedupCleared).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Step 2 — cooldown and caps
 // ---------------------------------------------------------------------------
 
@@ -499,6 +577,88 @@ describe('cooldown', () => {
 
     const second = await recoverDeadEnvelope(input());
     expect(second.outcome).toBe('cooldown');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 2 — a terminal verdict outlives the cooldown that follows it
+// ---------------------------------------------------------------------------
+
+describe('terminal outcomes survive the cooldown window', () => {
+  it('repeats a refusal, with its code, instead of asking the user to retry', async () => {
+    (requestGroupKeyRewrap as jest.Mock).mockRejectedValue(refusal('NO_KEY_HOLDER'));
+
+    const first = await recoverDeadEnvelope(input());
+    expect(first.outcome).toBe('refused');
+    now += 1_000;
+
+    const second = await recoverDeadEnvelope(input());
+
+    // Without the memory this was 'cooldown' → "try again in a few minutes",
+    // which contradicts what the user was told a second earlier.
+    expect(second.outcome).toBe('refused');
+    expect(second.refusalCode).toBe('NO_KEY_HOLDER');
+    // And it is still a short-circuit: no second network call.
+    expect(requestGroupKeyRewrap).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['identity_mismatch', refusal('IDENTITY_MISMATCH')],
+    ['not_eligible', new ValidationError(400)],
+    ['refused', new AuthError(403)],
+  ])('remembers %s', async (expected, rejection) => {
+    (requestGroupKeyRewrap as jest.Mock).mockRejectedValue(rejection);
+
+    expect((await recoverDeadEnvelope(input())).outcome).toBe(expected);
+    now += 1_000;
+
+    expect((await recoverDeadEnvelope(input())).outcome).toBe(expected);
+  });
+
+  it.each([
+    ['a transient failure', new Error('socket hang up')],
+    ['a 429', new ApiError('Rate limited — try again shortly', 429, 'RATE_LIMITED', true)],
+    ['a 401', new AuthError(401)],
+  ])('still reports cooldown after %s — retrying later is the right advice', async (
+    _label,
+    rejection,
+  ) => {
+    (requestGroupKeyRewrap as jest.Mock).mockRejectedValue(rejection);
+
+    await recoverDeadEnvelope(input());
+    now += 1_000;
+
+    expect((await recoverDeadEnvelope(input())).outcome).toBe('cooldown');
+  });
+
+  it('carries the CURRENT failure code alongside the remembered outcome', async () => {
+    (requestGroupKeyRewrap as jest.Mock).mockRejectedValue(refusal('NO_KEY_HOLDER'));
+
+    await recoverDeadEnvelope(input({ code: 'recipient_mismatch' }));
+    now += 1_000;
+
+    const second = await recoverDeadEnvelope(input({ code: 'corrupt' }));
+
+    expect(second.outcome).toBe('refused');
+    expect(second.code).toBe('corrupt');
+  });
+
+  it('is per group', async () => {
+    (requestGroupKeyRewrap as jest.Mock).mockRejectedValueOnce(refusal('NO_KEY_HOLDER'));
+
+    await recoverDeadEnvelope(input());
+
+    expect((await recoverDeadEnvelope(input({ groupId: 'group-2' }))).outcome).toBe('requested');
+  });
+
+  it('is dropped by resetGroupKeyRecoveryState', async () => {
+    (requestGroupKeyRewrap as jest.Mock).mockRejectedValueOnce(refusal('NO_KEY_HOLDER'));
+    await recoverDeadEnvelope(input());
+
+    resetGroupKeyRecoveryState();
+    now += 1_000;
+
+    expect((await recoverDeadEnvelope(input())).outcome).toBe('requested');
   });
 });
 
@@ -553,8 +713,34 @@ describe('caps', () => {
     }
 
     const r = await recoverDeadEnvelope(input({ groupId: 'g5' }));
-    expect(r.outcome).toBe('exhausted');
+    // A group nobody has been asked about: distinct from 'exhausted', because
+    // the UNREADABLE copy would blame a peer who was never asked.
+    expect(r.outcome).toBe('session_exhausted');
     expect(requestGroupKeyRewrap).toHaveBeenCalledTimes(SESSION_DEMOTE_CAP);
+  });
+
+  it('reports exhausted, not session_exhausted, once THIS group has had a demote', async () => {
+    // group-1 gets one committed demote, then the rest of the session budget
+    // goes to other groups.
+    expect((await recoverDeadEnvelope(input())).outcome).toBe('requested');
+    for (const groupId of ['g2', 'g3', 'g4']) {
+      expect((await recoverDeadEnvelope(input({ groupId }))).outcome).toBe('requested');
+    }
+
+    now += RECOVERY_COOLDOWN_MS + 1;
+    const r = await recoverDeadEnvelope(input());
+
+    // A peer HAS been asked about this group and has not delivered, so
+    // "another member needs to open Orbital" is honest here.
+    expect(r.outcome).toBe('exhausted');
+  });
+
+  it('reports exhausted for a per-group cap even with session budget left', async () => {
+    expect((await recoverDeadEnvelope(input())).outcome).toBe('requested');
+    expect(await attemptAfterCooldown()).toBe('requested');
+
+    expect(await attemptAfterCooldown()).toBe('exhausted');
+    expect(SESSION_DEMOTE_CAP).toBeGreaterThan(PER_GROUP_DEMOTE_CAP);
   });
 });
 

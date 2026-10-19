@@ -30,11 +30,12 @@ const options: Sentry.ReactNativeOptions = {
   // sees RN fetch and RNFS traffic. Those URLs carry orbit / thread / media
   // UUIDs and `setUser({ id })` makes them attributable. The JS hooks below
   // cannot cover this: `initNativeSdk` (dist/js/wrapper.js) forwards our
-  // options to native through a DENY-list rest-destructure that strips
-  // `beforeSend`/`beforeBreadcrumb`, so a HARD NATIVE CRASH report is
-  // assembled by cocoa with no JS boundary in the path. That same forward is
-  // how this key reaches native at all, and the flag is the only defence
-  // there.
+  // options to native after stripping every function-valued option
+  // (`withoutFunctionValues`, which drops `beforeSend`/`beforeBreadcrumb`) and
+  // a short explicit deny-list, so a HARD NATIVE CRASH report is assembled by
+  // cocoa with no JS boundary in the path. That same forward is how this
+  // boolean reaches native at all, and the flag is the only defence there.
+  // Anchors: docs/ios-dependency-delivery.md items 10-11.
   //
   // The RN typing marks it OPTIONAL, so nothing in the type system notices our
   // DELETING it. Section 15 of scripts/check-security-invariants.mjs pins it as

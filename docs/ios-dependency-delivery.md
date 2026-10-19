@@ -53,10 +53,11 @@ decision, not a build one.
 
 | What | Value | Where it lives |
 |---|---|---|
-| `@sentry/react-native` | 8.29.0 | `package.json` / `package-lock.json`; `RNSentry (8.29.0)` in `ios/Podfile.lock` |
-| sentry-cocoa | 9.30.0 | **Enforced:** `expected_sentry_cocoa` in the Issue #768 guard in `ios/Podfile` (pod install fails if the staged version differs). Upstream source: `sentry_cocoa_version` in `node_modules/@sentry/react-native/RNSentry.podspec` |
-| `Sentry.xcframework.zip` SHA256 | `46f659ad81a4a53db82f263d5ce5a3d704e6b7f6625518b175a4d1b630cd90a9` | `SENTRY_COCOA_XCFRAMEWORK_CHECKSUMS['9.30.0']['Sentry']` in `sentry_utils.rb`; independently matched against sentry-cocoa's `Package.swift` binary-target checksum at tag 9.30.0 |
-| Local cache | `~/Library/Caches/sentry-react-native/xcframeworks/9.30.0/` | Build machine; CI cache key `sentry-xcframework-<os>-<hash of podspec + sentry_utils.rb>` |
+| `@sentry/react-native` | 8.31.0 | `package.json` / `package-lock.json`; `RNSentry (8.31.0)` in `ios/Podfile.lock` |
+| sentry-cocoa | 9.30.2 | **Enforced:** `expected_sentry_cocoa` in the Issue #768 guard in `ios/Podfile` (pod install fails if the staged version differs). Upstream source: `sentry_cocoa_version` in `node_modules/@sentry/react-native/RNSentry.podspec` |
+| `Sentry.xcframework.zip` SHA256 | `593897dbdee24febeef45208b13960a4b389c5dbd25f64b1b3cb94c30291ed55` | `SENTRY_COCOA_XCFRAMEWORK_CHECKSUMS['9.30.2']['Sentry']` in `sentry_utils.rb`; independently matched against sentry-cocoa's `Package.swift` binary-target checksum at tag 9.30.2 |
+| Local cache | `~/Library/Caches/sentry-react-native/xcframeworks/9.30.2/` | Build machine; CI cache key `sentry-xcframework-<os>-<hash of podspec + sentry_utils.rb>` |
+| sentry-android (Android native SDK) | 8.61.0 (sentry-native 0.17.3 underneath) | **Recorded only, not enforced.** Upstream source: `sentryAndroidVersion` in `node_modules/@sentry/react-native/android/build.gradle`. There is no Android equivalent of the #768 guard: the applied groovy `sentry.gradle` carries no version assertion, and Dependabot's gradle ecosystem does not cover `/android`. This row is the only control |
 
 **Note:** nothing verifies the SHA256 row against `node_modules` at install
 time; the Podfile literal enforces the version row. Any bump must update this
@@ -108,7 +109,7 @@ Any `@sentry/react-native` bump:
 7. Stale staged versions under `ios/Pods/sentry-xcframeworks` are pruned
    upstream, **conditionally**. Since `@sentry/react-native` **8.22.0**
    (getsentry/sentry-react-native PR **6534**, undocumented in Sentry's
-   changelog; we are on 8.29.0), `stage_sentry_xcframework_in_pods` deletes
+   changelog; we are on 8.31.0), `stage_sentry_xcframework_in_pods` deletes
    every directory under the staging root whose basename is not the current
    sentry-cocoa version — `node_modules/@sentry/react-native/scripts/sentry_utils.rb:227-231`.
    It runs during **podspec evaluation**, i.e. before the Issue #768
@@ -159,28 +160,41 @@ Any `@sentry/react-native` bump:
    8.29 changed `-force_load` emission to a private `SENTRY_FORCE_LOAD_LDFLAGS[sdk=…]`
    var plus a plain `OTHER_LDFLAGS`; item 8's greps still hold (the var's value
    carries the `-force_load` literal).
+   8.30 added cellular network generation (`4g`/`5g`) to `device.connection_effective_type`
+   on Android and iOS — a system string, not PII; no pin needed. Also changed how
+   JS callback options (`beforeSend`, `beforeBreadcrumb`, etc.) are stripped before
+   native SDK init: the explicit deny-list destructure was replaced by
+   `withoutFunctionValues` (strips any function-valued key) at `wrapper.js:46-54`;
+   the effective behaviour is unchanged but items 10–11 below update their line refs.
+   No new default-on native options.
+   8.31 added `applicationKey` / `moduleMetadata` for Expo third-party error
+   filtering — no-op without the Expo plugin; no pin needed. `sendDefaultPii` was
+   un-deprecated (our explicit `false` pin in `src/sentryInit.ts` stays valid and
+   required). No new default-on native options.
 
 The next three items are the payload-boundary triggers from #746. They apply to
 any `@sentry/react-native` bump and to any sentry-cocoa bump underneath it
 (sentry-cocoa moves when `sentry_cocoa_version` in `RNSentry.podspec` moves).
 Each rests on undocumented internals of the installed package, so re-verify by
-reading the files named, not the release notes. Line numbers are 8.29.0 /
-sentry-cocoa 9.30.0.
+reading the files named, not the release notes. Line numbers are 8.31.0 /
+sentry-cocoa 9.30.2.
 
 10. **`enableNetworkBreadcrumbs` still reaches native.** The option is an
     iOS-only sentry-cocoa one. It has had a React Native typing since 8.28
     (item 9), but that typing is cosmetic -- it is declared optional and
     nothing in the type system applies it. It works because `initNativeSdk`
-    (`node_modules/@sentry/react-native/dist/js/wrapper.js:162`) forwards
-    options to native through a DENY-list rest-destructure, currently stripping
-    only `beforeSend`, `beforeBreadcrumb`, `beforeSendTransaction`,
-    `beforeSendMetric`, `integrations`, `ignoreErrors`, `logsOrigin`,
-    `profilingOptions`, `androidProfilingOptions` and `onNativeLog`. If that
-    list gains the key, or the destructure becomes an allow-list, the flag
-    stops applying silently. On the cocoa side the dictionary is parsed by
-    `RNSentryInternal.options(fromDictionary:)`
+    (`node_modules/@sentry/react-native/dist/js/wrapper.js`) forwards options
+    to native through two filters (since 8.30): `withoutFunctionValues`
+    (`wrapper.js:46-54`) strips every function-typed key (`beforeSend`,
+    `beforeBreadcrumb`, etc.), and an explicit destructure at `wrapper.js:177`
+    strips `integrations`, `ignoreErrors`, `logsOrigin`, `profilingOptions`,
+    `androidProfilingOptions`. `enableNetworkBreadcrumbs: false` is a boolean
+    and passes through both filters. If it is added to the destructure at
+    line 177, or if `withoutFunctionValues` is changed to strip non-function
+    values, the flag stops applying silently. On the cocoa side the dictionary
+    is parsed by `RNSentryInternal.options(fromDictionary:)`
     (`node_modules/@sentry/react-native/ios/Swift/RNSentryInternal.swift:52`, called
-    from `ios/RNSentryStart.m:75`), so confirm the key still exists as an
+    from `ios/RNSentryStart.m:80`), so confirm the key still exists as an
     `Options` property -- `@property (nonatomic) BOOL enableNetworkBreadcrumbs;`
     in `Headers/Sentry-Swift.h:560` of the staged
     `Sentry.xcframework/<slice>/Sentry.framework` -- and that the bare key
@@ -195,12 +209,12 @@ sentry-cocoa 9.30.0.
     (`options.d.ts:228`) records connectivity-state crumbs with no request
     URLs, so it is deliberately left at its default and not pinned.
 11. **`wrapper.js` still strips `beforeSend` / `beforeBreadcrumb` from the
-    native options** (same destructure, `wrapper.js:162`). This is why item 10
-    matters: native crash reports are assembled by sentry-cocoa with no JS
-    boundary in the path, so `scrubEvent` / `filterBreadcrumb`
-    (`src/services/telemetryScrub.ts`) never run on them. If a future version
-    forwards the hooks to native, re-read what the native side does with them
-    before relaxing anything.
+    native options** (via `withoutFunctionValues` at `wrapper.js:46-54`,
+    applied at `wrapper.js:179`). This is why item 10 matters: native crash
+    reports are assembled by sentry-cocoa with no JS boundary in the path, so
+    `scrubEvent` / `filterBreadcrumb` (`src/services/telemetryScrub.ts`) never
+    run on them. If a future version forwards the hooks to native, re-read what
+    the native side does with them before relaxing anything.
 12. **Native breadcrumbs are still merged before `beforeSend`.**
     `node_modules/@sentry/react-native/dist/js/integrations/devicecontext.js`
     merges the native breadcrumb buffer inside a `processEvent` event processor
@@ -210,6 +224,16 @@ sentry-cocoa 9.30.0.
     `scrubEvent` re-filters breadcrumbs. If this moves out of `processEvent` (or
     starts running after `beforeSend`), the re-filter no longer covers native
     crumbs and `maxBreadcrumbs: 100` no longer bounds them.
+13. **Android native SDK (sentry-java) data-collection changes.** The
+    `@sentry/react-native` bump also moves `sentryAndroidVersion` (record it in
+    the version table). Android hard-crash reports are assembled by
+    sentry-android with no JS boundary in the path, so read the sentry-java
+    changelog between the old and new version for data-collection changes.
+    **Named tripwire:** sentry-java 8.59.0 deprecated `sendDefaultPii` in favour
+    of `dataCollection`, with removal announced for 9.0. When a bump crosses
+    sentry-java 9.0, our `sendDefaultPii: false` pin stops reaching Android with
+    no type error and no guard firing; replace it with the equivalent
+    `dataCollection` setting in the same PR.
 
 ---
 

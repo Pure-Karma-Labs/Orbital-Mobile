@@ -41,7 +41,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useTheme } from '../theme';
-import { useAuth, useThreads } from '../stores';
+import { useAuth, useThreads, useGroupKeyGeneration } from '../stores';
 import { useAppStore } from '../stores/useAppStore';
 import {
   loadThread,
@@ -63,6 +63,12 @@ import { useMediaPicker } from '../hooks/useMediaPicker';
 import { useMediaUploadProgress } from '../hooks/useMediaUploadProgress';
 import { useDiscardUploadGuard } from '../hooks/useDiscardUploadGuard';
 import { Header } from '../components/Header';
+import {
+  GroupKeyFailureNotice,
+  GroupKeyPendingBanner,
+  GroupKeyPendingNotice,
+} from '../components/GroupKeyNotice';
+import { groupKeyFailureCopy, isGroupKeyPending } from '../utils/groupKeyErrorCopy';
 import { OrbitalKeyboardAvoidingView } from '../components/OrbitalKeyboardAvoidingView';
 import { AsciiSection } from '../components/AsciiSeparator';
 import { ThreadHeader } from './threadDetail/ThreadHeader';
@@ -270,6 +276,14 @@ export function ThreadDetailScreen({
 
   // Local state
   const [loading, setLoading] = useState(true);
+  /**
+   * Group-key state for this thread's conversation (#912). `keyPending` is the
+   * transient "a peer is re-wrapping" banner; `keyFailureMessage` is every
+   * other outcome. Both replace `error`: "Could not load thread" is true but
+   * useless when the real answer is "this device cannot open the key yet".
+   */
+  const [keyPending, setKeyPending] = useState(false);
+  const [keyFailureMessage, setKeyFailureMessage] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const { scrollY, scrollProps } = usePullToRefresh();
   const [loadingMore, setLoadingMore] = useState(false);
@@ -616,6 +630,13 @@ export function ThreadDetailScreen({
     try {
       setError(null);
       const loadedThread = await loadThread(threadId);
+      // Reached only once the group key opened, so whatever key state this
+      // screen was in is over. Cleared HERE and not at the top of the load, so
+      // a reload attempt does not flash the empty state (#912).
+      if (mountedRef.current) {
+        setKeyPending(false);
+        setKeyFailureMessage(null);
+      }
       try {
         beginPaginationPass();
         const result = await loadReplies(
@@ -629,7 +650,22 @@ export function ThreadDetailScreen({
       }
     } catch (e) {
       if (__DEV__) console.warn('[ThreadDetail]', e instanceof Error ? e.message : e);
-      setError('Could not load thread');
+      // #912: a group-key failure is not "could not load thread". Pending gets
+      // the transient banner and suppresses both the error text and the
+      // "Be the first to reply" footer; every other outcome gets the copy for
+      // its outcome in place of that text.
+      if (isGroupKeyPending(e)) {
+        setKeyPending(true);
+        setKeyFailureMessage(null);
+      } else {
+        const copy = groupKeyFailureCopy(e);
+        if (copy) {
+          setKeyPending(false);
+          setKeyFailureMessage(copy.message);
+        } else {
+          setError('Could not load thread');
+        }
+      }
     } finally {
       if (mountedRef.current) setLoading(false);
     }
@@ -650,6 +686,42 @@ export function ThreadDetailScreen({
       setActiveThread(null);
     };
   }, [threadId, setActiveThread, markThreadViewed, fetchData]);
+
+  /**
+   * Heal reload (#912 / D11). `handleWrappedKeyDelivered` bumps this group's
+   * generation once a delivered key has actually been fetched, and the open
+   * screen re-fetches itself — no re-entry, which is what B2 asked for.
+   *
+   * Keyed on this thread's conversation when it is known. Before that it reads
+   * the TOTAL across groups (see `useGroupKeyGeneration`): a push deep link
+   * into a thread whose key was dead never got a thread row, so there is no
+   * conversationId to key on, and that is exactly the screen that must reload.
+   *
+   * A ref, not a dependency, carries the previous value: `fetchData`'s identity
+   * changes with `threadId`, and the mount effect below already fetches, so
+   * only a genuine CHANGE of the counter may trigger a second one.
+   *
+   * The ref carries the SCOPE with the value, because the two bases are not
+   * comparable. On a deep link the first load resolves, the thread row lands,
+   * and the basis flips from the cross-group total to this group's own count —
+   * a drop from (say) 3 to 0 that is a change of units, not a delivery. Taken
+   * as a bump it fetched the thread a second time. A scope change therefore
+   * re-seeds the ref and fetches nothing; only a value change under the SAME
+   * scope is a real delivery.
+   */
+  const keyGenerationScope = thread?.conversationId ?? null;
+  const keyGeneration = useGroupKeyGeneration(keyGenerationScope);
+  const keyGenerationRef = useRef<{ scope: string | null; value: number }>({
+    scope: keyGenerationScope,
+    value: keyGeneration,
+  });
+  useEffect(() => {
+    const previous = keyGenerationRef.current;
+    keyGenerationRef.current = { scope: keyGenerationScope, value: keyGeneration };
+    if (previous.scope !== keyGenerationScope) return;
+    if (previous.value === keyGeneration) return;
+    fetchData();
+  }, [keyGenerationScope, keyGeneration, fetchData]);
 
   // Track which conversation the user is viewing (for foreground push suppression)
   const conversationId = thread?.conversationId;
@@ -821,6 +893,10 @@ export function ThreadDetailScreen({
           requestFocus(reply.id, { source: 'landing' });
         }
       } catch (e) {
+        // #912: resolved BEFORE the chain so the group-key branch below can sit
+        // above `captureUploadFailure` with no duplicated condition. Pure and
+        // cheap; non-null only for a group-key failure.
+        const keyCopy = groupKeyFailureCopy(e);
         // A self-cancel raises no Alert. The composer text, the selected media
         // and the reply target are all left untouched (the reset block above
         // runs on the success path only), so the user can just send again.
@@ -838,6 +914,17 @@ export function ThreadDetailScreen({
               'Not Sent',
               `Not sent — you blocked ${blockedLabelRef.current ?? 'this person'}.`,
             );
+          }
+        } else if (keyCopy) {
+          // A group-key failure (#912), deliberately ABOVE the capture and a
+          // sibling of the blocked-recipient branch: the budgeted reporter in
+          // `services/groupKeyTelemetry` already captured it once per (group,
+          // outcome) with content-free codes, so capturing again here would
+          // double-report it AND attach this screen's upload tags to a failure
+          // that has nothing to do with the upload. No cache classification
+          // either: the reply never reached the server.
+          if (mountedRef.current) {
+            Alert.alert(keyCopy.title, keyCopy.message);
           }
         } else {
           captureUploadFailure(e, { stage, surface: 'thread-reply', dm });
@@ -976,11 +1063,30 @@ export function ThreadDetailScreen({
         </View>
       );
     }
+    // #912: a terminal key failure with a STALE thread row still in the store
+    // renders the list, not the body notice below — so the footer is the only
+    // place the explanation can go, and without it the copy was dropped
+    // entirely. In place of "Be the first to reply", which is the same lie as
+    // the inbox's empty state when the replies simply could not be decrypted.
+    if (keyFailureMessage !== null) {
+      return (
+        <GroupKeyFailureNotice
+          message={keyFailureMessage}
+          inline
+          testID="group-key-failure-footer"
+        />
+      );
+    }
+    // Pending needs no footer: the banner above the list is already saying it,
+    // and this state resolves itself.
+    if (keyPending) {
+      return null;
+    }
     if (replyRows.length === 0 && !loading && !refreshing) {
       return <EmptyReplies />;
     }
     return null;
-  }, [loadingMore, replyRows.length, loading, refreshing, theme]);
+  }, [loadingMore, replyRows.length, loading, refreshing, keyPending, keyFailureMessage, theme]);
 
   // ---------------------------------------------------------------------------
   // Styles
@@ -1030,11 +1136,23 @@ export function ThreadDetailScreen({
         />
       </SafeAreaView>
 
+      {/* Below the header, matching the inbox surfaces (#912). */}
+      {keyPending && <GroupKeyPendingBanner />}
+
       <OrbitalKeyboardAvoidingView keyboardVerticalOffset={0}>
         {loading && !thread ? (
           <View style={centerStyle}>
             <OrbitalSpinner size={32} />
           </View>
+        ) : keyFailureMessage !== null && !thread ? (
+          // Ahead of `error`: a key failure sets this instead of `error`, and
+          // the explanation is the only thing on screen that is actionable.
+          <GroupKeyFailureNotice message={keyFailureMessage} />
+        ) : keyPending && !thread ? (
+          // With no thread row there is no list, no header and no footer, so
+          // without this the body was BLANK under a one-line banner — which
+          // reads as a load that silently gave up (#912).
+          <GroupKeyPendingNotice />
         ) : error && !thread ? (
           <View style={centerStyle}>
             <Text style={errorTextStyle}>{error}</Text>
@@ -1090,6 +1208,11 @@ export function ThreadDetailScreen({
         <ReplyComposer
           blockedPeerId={blockedPeer?.peerId}
           blockedLabel={blockedPeer?.label}
+          // #912: `handleSend` returns silently with no thread row — a pending
+          // or dead group key is the case that lasts. Disabled rather than
+          // alerting on press: the banner and the body notice above already
+          // say why, and a greyed Send never promises a send it cannot make.
+          sendDisabled={!thread}
           replyTarget={replyTarget}
           onClearReplyTarget={handleClearReplyTarget}
           onSend={handleSend}

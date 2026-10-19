@@ -39,6 +39,7 @@ import {
   clearMediaExportStaging,
 } from './mediaExportService';
 import { clearMessageHandlerState } from './websocket/messageHandler';
+import { clearGroupKeyTelemetryState } from './groupKeyTelemetry';
 import { execute } from '../database/queryHelpers';
 import { isDatabaseInitialized, closeDatabase } from '../database/connection';
 import { getItem, setItem } from '../database/repositories/itemRepository';
@@ -413,6 +414,11 @@ export async function localWipe({ preserveIdentity }: { preserveIdentity: boolea
     state.setConversations([]);
     state.setContacts([]);
     state.setViewingConversation(null);
+    // #912: the heal-reload counters are per session and per account. Nothing
+    // else clears them — `setConversations([])` replaces the rows, not this
+    // map — and the next account on this device must not start with a screen
+    // that thinks a key was just delivered for one of its groups.
+    state.clearGroupKeyGenerations();
   } catch {
     if (__DEV__) console.warn('[LocalWipe] store reset failed');
   }
@@ -439,6 +445,12 @@ export async function localWipe({ preserveIdentity }: { preserveIdentity: boolea
   }
   try { clearMessageHandlerState(); } catch {
     if (__DEV__) console.warn('[LocalWipe] clearMessageHandlerState failed');
+  }
+  // Own line, next to the other per-session budgets: the group-key reporter
+  // spends one event per (group, outcome) per session, and the next account on
+  // this device must not inherit this one's spent keys (#912).
+  try { clearGroupKeyTelemetryState(); } catch {
+    if (__DEV__) console.warn('[LocalWipe] clearGroupKeyTelemetryState failed');
   }
   try { clearLinkPreviewCache(); } catch {
     if (__DEV__) console.warn('[LocalWipe] clearLinkPreviewCache failed');

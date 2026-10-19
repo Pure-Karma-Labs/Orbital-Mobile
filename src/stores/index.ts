@@ -148,6 +148,30 @@ export const useTypingUsers = (conversationId: string | null): TypingEntry[] =>
   );
 
 /**
+ * Scoped selector for one group's heal generation (#912) — the number of group
+ * keys delivered for it this session.
+ *
+ * Scoped so a heal in one orbit does not re-run every open screen's load
+ * effect, and returning a NUMBER (not the map) keeps zustand's default
+ * `Object.is` comparison correct — a `useShallow` over the whole record would
+ * re-render every subscriber on any group's bump.
+ *
+ * `null` means "this screen does not know its group yet": a ThreadDetail opened
+ * from a push notification whose thread has never decrypted has no
+ * conversationId to key on, yet it is exactly the screen that must reload when
+ * the heal lands. It therefore reads the TOTAL across groups, which changes on
+ * any delivery. The cost of that coarseness is at most one extra reload of a
+ * screen that was already failing.
+ */
+export const useGroupKeyGeneration = (groupId: string | null): number =>
+  useAppStore((s) => {
+    if (groupId !== null) return s.groupKeyGeneration[groupId] ?? 0;
+    let total = 0;
+    for (const n of Object.values(s.groupKeyGeneration)) total += n;
+    return total;
+  });
+
+/**
  * Scoped selector for media items attached to a specific thread.
  * Only re-renders when the media IDs for *this* thread change.
  */

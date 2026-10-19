@@ -23,6 +23,7 @@ export const createConversationsSlice: StateCreator<
   conversationIds: [],
   activeConversationId: null,
   viewingConversationId: null,
+  groupKeyGeneration: {},
 
   // Actions
   setConversations: (conversations) => {
@@ -187,5 +188,35 @@ export const createConversationsSlice: StateCreator<
       false,
       'conversations/bumpLastMessageAt',
     );
+  },
+
+  /**
+   * #912 heal reload. Monotonic per group and never reset while the user is
+   * logged in, so a screen comparing it against the value it last loaded at
+   * cannot miss a delivery it was mounted for.
+   *
+   * No conversation row is required: a demoted member can be sitting on a DM
+   * whose row has not loaded yet (a push deep link), and the counter is keyed
+   * by groupId alone precisely so that case still reloads.
+   */
+  bumpGroupKeyGeneration: (groupId) => {
+    const { groupKeyGeneration } = get();
+    set(
+      {
+        groupKeyGeneration: {
+          ...groupKeyGeneration,
+          [groupId]: (groupKeyGeneration[groupId] ?? 0) + 1,
+        },
+      },
+      false,
+      'conversations/bumpGroupKeyGeneration',
+    );
+  },
+
+  clearGroupKeyGenerations: () => {
+    // Identity-stable when already empty: localWipe calls this unconditionally,
+    // and a fresh object would re-render every subscriber for nothing.
+    if (Object.keys(get().groupKeyGeneration).length === 0) return;
+    set({ groupKeyGeneration: {} }, false, 'conversations/clearGroupKeyGenerations');
   },
 });

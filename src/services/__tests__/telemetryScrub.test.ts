@@ -343,6 +343,27 @@ describe('scrubEvent', () => {
     expect(out?.extra).toEqual({ step: 'local-wipe <path>', attempt: 3, fatal: true });
   });
 
+  // The group-key tags are closed client enums, and the scrub is the only
+  // thing between them and the event. A value that the id/path patterns
+  // mangled would be a silently useless facet (#912).
+  it('passes the closed group-key enum tags through verbatim', () => {
+    const out = scrubEvent(
+      makeEvent({
+        tags: {
+          group_key_code: 'recipient_mismatch',
+          group_key_self_heal: 'session_exhausted',
+          group_key_refusal: 'ENVELOPE_CHANGED',
+        },
+      }),
+    );
+
+    expect(out?.tags).toEqual({
+      group_key_code: 'recipient_mismatch',
+      group_key_self_heal: 'session_exhausted',
+      group_key_refusal: 'ENVELOPE_CHANGED',
+    });
+  });
+
   it('deletes extra.__serialized__', () => {
     const out = scrubEvent(
       makeEvent({ extra: { __serialized__: { body: 'Secret title' }, attempt: 1 } }),

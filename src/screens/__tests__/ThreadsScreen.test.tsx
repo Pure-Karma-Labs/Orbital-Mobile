@@ -73,11 +73,27 @@ jest.mock('../../services/notificationSettingsSync', () => ({
   toggleMute: jest.fn().mockResolvedValue(true),
 }));
 
+/**
+ * #912: the per-group heal counter. The real `useGroupKeyGeneration` reads the
+ * store singleton (MMKV), which does not load under jest; a test bumps this and
+ * re-renders to stand in for `wrapped_key_delivered` landing.
+ */
+let mockKeyGeneration = 0;
+
+/**
+ * The active orbit, mutable so a test can SWITCH orbits: the screen stays
+ * mounted across a switch, and both the selector and `getState()` have to agree
+ * on which orbit is active — the load's `.then`/`.catch` read the imperative
+ * one to decide whether their verdict is still current.
+ */
+let mockActiveConversationId: string | null = 'group-1';
+
 jest.mock('../../stores', () => {
   const getState = () => ({
     setViewingConversation: mockSetViewingConversation,
     markConversationRead: mockMarkConversationRead,
     conversations: {},
+    activeConversationId: mockActiveConversationId,
     userId: null,
     displayName: null,
     contacts: {},
@@ -128,9 +144,20 @@ jest.mock('../../stores', () => {
         createdAt: 1700000000000,
         updatedAt: 1700000000000,
       },
+      'group-2': {
+        id: 'group-2',
+        type: 'group',
+        name: 'Second Orbit',
+        memberCount: 2,
+        active: true,
+        lastMessageAt: null,
+        unreadCount: 0,
+        createdAt: 1700000000000,
+        updatedAt: 1700000000000,
+      },
     },
-    conversationIds: ['group-1'],
-    activeConversationId: 'group-1',
+    conversationIds: ['group-1', 'group-2'],
+    activeConversationId: mockActiveConversationId,
     setConversations: jest.fn(),
     setGroupConversations: jest.fn(),
     upsertConversation: jest.fn(),
@@ -139,6 +166,7 @@ jest.mock('../../stores', () => {
     updateUnreadCount: jest.fn(),
     markConversationRead: jest.fn(),
   }),
+  useGroupKeyGeneration: () => mockKeyGeneration,
   useConnection: () => ({
     connectionStatus: 'connected',
     lastConnectedAt: null,
@@ -152,6 +180,10 @@ jest.mock('../../stores', () => {
 
 import { toggleMute } from '../../services/notificationSettingsSync';
 const mockToggleMute = toggleMute as jest.Mock;
+
+import { loadThreadsForGroup } from '../../services/threadService';
+// #912: the load seam the group-key read-surface cases drive.
+const mockLoadThreadsForGroup = loadThreadsForGroup as jest.Mock;
 
 // Mock @react-navigation/native-stack for navigation prop
 jest.mock('@react-navigation/native-stack', () => ({
@@ -217,6 +249,8 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockBlockedSet = new Set<string>();
   mockMutedTargets = {};
+  mockKeyGeneration = 0;
+  mockActiveConversationId = 'group-1';
   mockSearchState = {
     searchText: '',
     setSearchText: jest.fn(),
@@ -935,5 +969,179 @@ describe('ThreadsScreen — block filtering', () => {
     );
     expect(blockedTitle).toBeUndefined();
     expect(okTitle).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group-key failures on the read surface (#912)
+// ---------------------------------------------------------------------------
+
+describe('ThreadsScreen — group key (#912)', () => {
+  // Pinned as literals, never imported from utils/errorMessages.
+  const UNREADABLE =
+    "This device can't open this conversation's encryption key. Another member needs to open Orbital to re-send it.";
+  const PENDING_NOTICE = 'Re-sending encryption key…';
+
+  function pendingWrap(): Error {
+    const e = new Error('Group key not yet available (pending wrap)');
+    e.name = 'PendingWrapError';
+    return e;
+  }
+
+  function unwrapFailure(selfHeal: string): Error {
+    const e = new Error(`Group key unwrap failed: recipient_mismatch / ${selfHeal}`);
+    e.name = 'GroupKeyUnwrapError';
+    (e as unknown as { selfHeal: string }).selfHeal = selfHeal;
+    return e;
+  }
+
+  /** Render and flush the load effect's promise. */
+  async function render(): Promise<ReactTestRenderer> {
+    const renderer = renderThreadsScreen();
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+    return renderer;
+  }
+
+  async function rerender(renderer: ReactTestRenderer): Promise<void> {
+    await act(async () => {
+      renderer.update(
+        React.createElement(
+          ThemeProvider,
+          { colorSchemeOverride: 'light' },
+          React.createElement(ThreadsScreen, {
+            navigation: mockNavigation as unknown as React.ComponentProps<typeof ThreadsScreen>['navigation'],
+            route: mockRoute as unknown as React.ComponentProps<typeof ThreadsScreen>['route'],
+          }),
+        ),
+      );
+    });
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  function find(renderer: ReactTestRenderer, testID: string): number {
+    return renderer.root.findAll((node) => node.props.testID === testID).length;
+  }
+
+  function texts(renderer: ReactTestRenderer): string[] {
+    return renderer.root
+      .findAllByType('Text' as unknown as React.ComponentType)
+      .map((node) => node.props.children)
+      .filter((c): c is string => typeof c === 'string');
+  }
+
+  afterEach(() => {
+    mockLoadThreadsForGroup.mockResolvedValue([]);
+  });
+
+  it('replaces the create-first empty state with the pending notice', async () => {
+    mockLoadThreadsForGroup.mockRejectedValueOnce(pendingWrap());
+
+    const renderer = await render();
+
+    expect(find(renderer, 'group-key-pending-banner')).toBeGreaterThan(0);
+    const rendered = texts(renderer);
+    expect(rendered).toContain(PENDING_NOTICE);
+    // An undecryptable orbit is not an empty one: no box, no CTA.
+    expect(rendered.join('\n')).not.toContain('No threads yet');
+    expect(rendered).not.toContain('New Thread');
+    expect(find(renderer, 'group-key-pending-body')).toBeGreaterThan(0);
+  });
+
+  it('shows the outcome copy in place of the empty state', async () => {
+    mockLoadThreadsForGroup.mockRejectedValueOnce(unwrapFailure('refused'));
+
+    const renderer = await render();
+
+    expect(find(renderer, 'group-key-failure-notice')).toBeGreaterThan(0);
+    const rendered = texts(renderer);
+    expect(rendered).toContain(UNREADABLE);
+    expect(rendered.join('\n')).not.toContain('No threads yet');
+    expect(find(renderer, 'group-key-pending-banner')).toBe(0);
+  });
+
+  it('keeps the normal empty state for a failure that is not a key failure', async () => {
+    mockLoadThreadsForGroup.mockRejectedValueOnce(new Error('network down'));
+
+    const renderer = await render();
+
+    expect(texts(renderer).join('\n')).toContain('No threads yet');
+    expect(find(renderer, 'group-key-pending-banner')).toBe(0);
+    expect(find(renderer, 'group-key-failure-notice')).toBe(0);
+  });
+
+  it('reloads and clears the notice when the generation is bumped (D11)', async () => {
+    mockLoadThreadsForGroup.mockRejectedValueOnce(pendingWrap());
+
+    const renderer = await render();
+    expect(find(renderer, 'group-key-pending-banner')).toBeGreaterThan(0);
+    expect(mockLoadThreadsForGroup).toHaveBeenCalledTimes(1);
+
+    // The heal lands: handleWrappedKeyDelivered fetched the delivered key and
+    // bumped the counter. The OPEN screen reloads itself (B2).
+    mockKeyGeneration = 1;
+    await rerender(renderer);
+
+    expect(mockLoadThreadsForGroup).toHaveBeenCalledTimes(2);
+    expect(find(renderer, 'group-key-pending-banner')).toBe(0);
+    expect(texts(renderer).join('\n')).toContain('No threads yet');
+  });
+
+  it('does not reload while the generation is unchanged', async () => {
+    const renderer = await render();
+    expect(mockLoadThreadsForGroup).toHaveBeenCalledTimes(1);
+
+    await rerender(renderer);
+
+    expect(mockLoadThreadsForGroup).toHaveBeenCalledTimes(1);
+  });
+
+  // The screen stays MOUNTED across an orbit switch, so before the reset the
+  // undecryptable orbit's state sat over the next one: its New Thread CTA was
+  // gone, and if that orbit's own load then failed for a non-key reason the
+  // flags never cleared, because they clear only on a success.
+  it('drops the notice and restores the New Thread CTA when the orbit changes', async () => {
+    mockLoadThreadsForGroup.mockRejectedValueOnce(unwrapFailure('refused'));
+
+    const renderer = await render();
+    expect(find(renderer, 'group-key-failure-notice')).toBeGreaterThan(0);
+
+    // Switch orbits. group-2's own load then fails for a NON-key reason,
+    // which is the case that made this permanent: that path leaves the flags
+    // alone, so only the switch itself can clear them.
+    mockLoadThreadsForGroup.mockRejectedValueOnce(new Error('network down'));
+    mockActiveConversationId = 'group-2';
+    await rerender(renderer);
+
+    expect(find(renderer, 'group-key-failure-notice')).toBe(0);
+    expect(find(renderer, 'group-key-pending-banner')).toBe(0);
+    const rendered = texts(renderer);
+    expect(rendered.join('\n')).toContain('No threads yet');
+    expect(rendered).toContain('New Thread');
+    expect(mockLoadThreadsForGroup).toHaveBeenLastCalledWith('group-2');
+  });
+
+  // The ugly half of the same bug: `loadThreadsForGroup` is not cancellable,
+  // so orbit A's rejection can land AFTER the user has moved to orbit B. Its
+  // verdict must be dropped, not written onto B.
+  it('ignores a rejection that lands after the user switched orbits', async () => {
+    mockLoadThreadsForGroup.mockRejectedValueOnce(pendingWrap());
+
+    // B's load fails for a non-key reason, so it neither sets nor clears the
+    // key flags: whatever A's late rejection writes is what stays on screen.
+    mockLoadThreadsForGroup.mockRejectedValueOnce(new Error('network down'));
+
+    // Rendered but NOT flushed: A's load is still in flight.
+    const renderer = renderThreadsScreen();
+    mockActiveConversationId = 'group-2';
+    await rerender(renderer);
+
+    // A's pending rejection has now settled, against the wrong orbit.
+    expect(find(renderer, 'group-key-pending-banner')).toBe(0);
+    expect(find(renderer, 'group-key-pending-body')).toBe(0);
+    expect(texts(renderer).join('\n')).toContain('No threads yet');
   });
 });

@@ -20,7 +20,8 @@
  *
  * ## Round-trip proof contract
  *
- * Uses eciesSeal/eciesOpen DIRECTLY from orbital-signal (NOT the contentCrypto
+ * Delegated to {@link probeIdentityKeyPair} (identityKeyProbe.ts), which calls
+ * eciesSeal/eciesOpen DIRECTLY from orbital-signal (NOT the contentCrypto
  * wrappers which call getIdentityKeyPair() — that throws when identityKeyPublic
  * is absent from the wiped DB).
  *
@@ -30,10 +31,12 @@
  *
  * ## Error taxonomy
  *
- * Only the ECIES InvalidArgument "does not match" case maps to mismatch -> 'cleared'.
- * Every other error (InvalidKey, InternalError, anything unexpected) throws to
- * the outer catch -> 'deferred'. A transient/malformed-state failure must never
- * discard the surviving key.
+ * Only InvalidArgument whose reason contains "does not match" maps to
+ * mismatch -> 'cleared', and that error comes from the SEAL call (#913: the
+ * previous open-only try made this branch unreachable). Every other error
+ * (InvalidKey, InvalidMessage, InternalError, anything unexpected) is rethrown
+ * by the probe and caught here -> 'deferred'. A transient/malformed-state
+ * failure must never discard the surviving key.
  *
  * ## Sentry telemetry
  *
@@ -45,7 +48,6 @@
  * @module identityRestoreService
  */
 
-import { eciesSeal, eciesOpen, SignalError_Tags } from 'orbital-signal';
 import { fetchRemoteIdentityKeyBundle } from '../api/keys';
 import { NotFoundError } from '../api/errors';
 import { getItem } from '../../database/repositories/itemRepository';
@@ -60,18 +62,10 @@ import {
   hexToUint8Array,
   toArrayBuffer,
   base64ToArrayBuffer,
-  encodeUTF8,
-  getSecureRandom,
 } from './utils';
 import { normalizeIdentityKey } from './identityKeyAccess';
+import { probeIdentityKeyPair } from './identityKeyProbe';
 import { useAppStore } from '../../stores/useAppStore';
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/** Fixed domain-separation context for the ECIES round-trip proof. */
-const VERIFY_PROBE_CONTEXT = 'identity-verify-probe';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -87,57 +81,24 @@ export type IdentityRestoreResult = 'restored' | 'cleared' | 'none' | 'deferred'
  * Verify that a cached private key matches a server-held public key via
  * an ECIES seal+open round-trip.
  *
- * Returns true on match, false on ECIES InvalidArgument (key mismatch).
+ * Thin decode-and-normalize wrapper over {@link probeIdentityKeyPair}, which
+ * owns the round trip and the error taxonomy: the mismatch answer comes from
+ * the SEAL call, not the open call (#913 — see identityKeyProbe.ts).
+ *
+ * Returns true on match, false on a definite key mismatch.
  * Throws on any other error (caller treats as 'deferred').
  */
 function verifyPrivateKeyMatchesPublic(
   privHex: string,
   serverKeyB64: string,
 ): boolean {
-  const privateKeyBytes = hexToUint8Array(privHex);
-  const privateKey = toArrayBuffer(privateKeyBytes);
+  const privateKey = toArrayBuffer(hexToUint8Array(privHex));
 
   // Decode server public key and normalize to 33-byte Signal format
   const serverKeyDecoded = new Uint8Array(base64ToArrayBuffer(serverKeyB64));
   const publicKey = toArrayBuffer(normalizeIdentityKey(serverKeyDecoded));
 
-  // Domain-separation context (UTF-8 encoded)
-  const contextBytes = toArrayBuffer(encodeUTF8(VERIFY_PROBE_CONTEXT));
-
-  // Generate 32-byte random plaintext for the proof
-  const plaintextBuf = toArrayBuffer(getSecureRandom(32));
-
-  // Seal: encrypt to self (recipient = own public key)
-  const sealed = eciesSeal(
-    plaintextBuf,
-    contextBytes,
-    publicKey,     // recipient = our own public key
-    privateKey,    // sender private = our private key
-    publicKey,     // sender public = our own public key
-  );
-
-  // Open: decrypt with our private key, verifying sender = our public key
-  try {
-    eciesOpen(
-      sealed,
-      contextBytes,
-      privateKey,    // recipient secret key
-      publicKey,     // expected sender public key
-    );
-    return true;
-  } catch (err: unknown) {
-    // ONLY InvalidArgument maps to mismatch
-    if (
-      err != null &&
-      typeof err === 'object' &&
-      'tag' in err &&
-      (err as { tag: string }).tag === SignalError_Tags.InvalidArgument
-    ) {
-      return false;
-    }
-    // Everything else (InvalidKey, InternalError, etc.) -> rethrow
-    throw err;
-  }
+  return probeIdentityKeyPair(privateKey, publicKey) === 'match';
 }
 
 // ---------------------------------------------------------------------------

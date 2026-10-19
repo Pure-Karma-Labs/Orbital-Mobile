@@ -33,6 +33,9 @@ import {
   ValidationError,
 } from '../errors';
 import { tokenManager } from '../tokenManager';
+// Imported for the wire-body assertion below — groups.ts calls the real
+// `request`, so the serialized body goes through camelToSnake for real.
+import { requestGroupKeyRewrap } from '../groups';
 import { codedValidationBody } from '../../../testUtils/apiErrorFixtures';
 
 // ---------------------------------------------------------------------------
@@ -302,6 +305,25 @@ describe('request body case transform', () => {
     expect(sent).toEqual({ encrypted_body: 'abc', parent_reply_id: null });
   });
 
+  // Asserted here, not in groups.test.ts: that suite mocks `request`, so it can
+  // only prove the camelCase field names handed IN. The wire contract is what
+  // camelToSnake emits, and the backend reads `wrapped_group_key` /
+  // `identity_public_key` (#912).
+  it('serializes the request-rewrap body as wrapped_group_key / identity_public_key', async () => {
+    mockFetchOk({ success: true });
+
+    await requestGroupKeyRewrap('g-1', 'envelope-b64', 'identity-pub-b64');
+
+    const [url, init] = ((globalThis as Record<string, unknown>).fetch as jest.Mock).mock
+      .calls[0] as [string, RequestInit];
+    expect(url).toContain('/api/groups/g-1/request-rewrap');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({
+      wrapped_group_key: 'envelope-b64',
+      identity_public_key: 'identity-pub-b64',
+    });
+  });
+
   it('handles nested objects in body', async () => {
     mockFetchOk({ ok: true });
 
@@ -498,6 +520,111 @@ describe('ConflictError', () => {
 
     expect(err).toBeInstanceOf(ConflictError);
     expect(err.blockingOrbits).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ConflictError.refusalCode — REWRAP_REFUSED (409) vocabulary (#912)
+// ---------------------------------------------------------------------------
+
+describe('ConflictError — refusalCode parsing', () => {
+  function refusedBody(code: unknown, message = 'SECRET-server-text'): string {
+    return JSON.stringify({ error: 'REWRAP_REFUSED', message, details: { code } });
+  }
+
+  async function conflictFor(bodyText: string): Promise<ConflictError> {
+    mockFetchError(409, bodyText);
+    return (await request({ method: 'POST', path: '/api/test' }).catch(
+      (e: unknown) => e,
+    )) as ConflictError;
+  }
+
+  // Written out literally on both sides — deriving these from the allowlist
+  // under test would assert nothing.
+  it.each([
+    'ENVELOPE_CHANGED',
+    'UNATTRIBUTED',
+    'SELF_WRAPPED',
+    'NO_IDENTITY_KEY',
+    'IDENTITY_MISMATCH',
+    'SERVER_KEY_UNREADABLE',
+    'NO_KEY_HOLDER',
+    'DEMO_ACCOUNT',
+  ])('keeps the allowlisted refusal code %s', async code => {
+    const err = await conflictFor(refusedBody(code));
+
+    expect(err).toBeInstanceOf(ConflictError);
+    expect(err.refusalCode).toBe(code);
+    expect(err.message).toBe('Conflict — action cannot be completed');
+    expect(err.message).not.toContain('SECRET');
+  });
+
+  it("maps a code this build does not know to 'unrecognized'", async () => {
+    const err = await conflictFor(refusedBody('SOME_FUTURE_REFUSAL'));
+
+    expect(err.refusalCode).toBe('unrecognized');
+  });
+
+  it.each([
+    ['a prototype key', '__proto__'],
+    ['a function-valued prototype key', 'constructor'],
+    ['toString', 'toString'],
+  ])("maps %s to 'unrecognized', never to a lookup", async (_label, code) => {
+    const err = await conflictFor(refusedBody(code));
+
+    expect(err.refusalCode).toBe('unrecognized');
+  });
+
+  it.each([
+    ['a number code', refusedBody(123)],
+    ['an object code', refusedBody({})],
+    ['an array code', refusedBody(['NO_KEY_HOLDER'])],
+    ['a lowercased code', refusedBody('no_key_holder')],
+  ])("maps %s to 'unrecognized'", async (_label, bodyText) => {
+    const err = await conflictFor(bodyText);
+
+    expect(err.refusalCode).toBe('unrecognized');
+  });
+
+  it.each([
+    ['a null code', refusedBody(null)],
+    ['REWRAP_REFUSED with no details', JSON.stringify({ error: 'REWRAP_REFUSED' })],
+    ['REWRAP_REFUSED with empty details', JSON.stringify({ error: 'REWRAP_REFUSED', details: {} })],
+    ['a body that is not JSON', 'not json at all'],
+    ['a truncated JSON body', '{"details":'],
+    ['an empty body', ''],
+  ])('leaves refusalCode undefined for %s', async (_label, bodyText) => {
+    const err = await conflictFor(bodyText);
+
+    expect(err.refusalCode).toBeUndefined();
+  });
+
+  it('leaves refusalCode undefined on every other coded 409', async () => {
+    // Account deletion: a 409 that carries its own details shape.
+    const err = await conflictFor(
+      JSON.stringify({
+        error: 'Cannot delete',
+        details: { code: 'NO_KEY_HOLDER', blocking_orbits: [] },
+      }),
+    );
+
+    expect(err.refusalCode).toBeUndefined();
+    expect(err.blockingOrbits).toEqual([]);
+  });
+
+  it('retains refusalCode in release builds while serverMessage is dropped', async () => {
+    const g = globalThis as Record<string, unknown>;
+    const prev = g.__DEV__;
+    try {
+      g.__DEV__ = false;
+
+      const err = await conflictFor(refusedBody('NO_KEY_HOLDER'));
+
+      expect(err.refusalCode).toBe('NO_KEY_HOLDER');
+      expect(err.serverMessage).toBeUndefined();
+    } finally {
+      g.__DEV__ = prev;
+    }
   });
 });
 

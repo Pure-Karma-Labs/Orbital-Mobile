@@ -1556,3 +1556,109 @@ describe('ComposeThreadScreen — blocked DM peer', () => {
     expect(() => findByTestId(renderer.root, 'attach-media-button')).not.toThrow();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Group-key failures (#912)
+//
+// In THIS suite, not a new file, so the cases inherit the suite's warm module
+// registry and mock plumbing (#731).
+// ---------------------------------------------------------------------------
+
+describe('ComposeThreadScreen — group key (#912)', () => {
+  const mockCaptureException = Sentry.captureException as unknown as jest.Mock;
+
+  // The exact strings the user sees, pinned as literals (not imported from
+  // utils/errorMessages) so a wording change shows up as a diff here.
+  const RESENDING =
+    "This conversation's encryption key is being re-sent by another member. Please try again in a moment.";
+  const UNREADABLE =
+    "This device can't open this conversation's encryption key. Another member needs to open Orbital to re-send it.";
+  const RETRY_LATER =
+    "Couldn't recover this conversation's encryption key right now. Please try again in a few minutes.";
+  const DEVICE_KEY =
+    "This device's encryption keys need to be restored before this conversation can be opened.";
+  const GENERIC = 'Failed to create thread. Please try again.';
+
+  /** `contentCrypto.PendingWrapError`: only the `name` is load-bearing. */
+  function pendingWrap(): Error {
+    const e = new Error('Group key not yet available (pending wrap)');
+    e.name = 'PendingWrapError';
+    return e;
+  }
+
+  /**
+   * `crypto/groupKeyErrors.GroupKeyUnwrapError` — built by hand rather than
+   * imported, for the same reason the screen matches on `name`: the class is
+   * not reachable from a suite that factory-mocks the service modules.
+   */
+  function unwrapFailure(selfHeal: string): Error {
+    const e = new Error(`Group key unwrap failed: recipient_mismatch / ${selfHeal}`);
+    e.name = 'GroupKeyUnwrapError';
+    (e as unknown as { selfHeal: string }).selfHeal = selfHeal;
+    return e;
+  }
+
+  /** Every rendered string in the tree. */
+  function texts(renderer: ReactTestRenderer): string[] {
+    return renderer.root
+      .findAllByType('Text' as unknown as React.ComponentType)
+      .map((node) => node.props.children)
+      .filter((c): c is string => typeof c === 'string');
+  }
+
+  async function post(): Promise<ReactTestRenderer> {
+    const renderer = renderScreen();
+    act(() => {
+      findByTestId(renderer.root, 'compose-title-input').props.onChangeText('My Title');
+      findByTestId(renderer.root, 'compose-body-input').props.onChangeText('Some body text');
+    });
+    await act(async () => {
+      findPostButton(renderer.root).props.onPress();
+    });
+    return renderer;
+  }
+
+  it('shows the RESENDING copy, not the generic one, on a pending wrap', async () => {
+    mockCreateNewThread.mockRejectedValue(pendingWrap());
+
+    const renderer = await post();
+
+    const rendered = texts(renderer);
+    expect(rendered).toContain(RESENDING);
+    // The D5 regression this test exists for: the most common #912 outcome
+    // used to render as a generic "try again".
+    expect(rendered).not.toContain(GENERIC);
+    // The budgeted group-key reporter is the only emitter, so
+    // captureUploadFailure (which forwards to Sentry) must not run.
+    expect(mockCaptureException).not.toHaveBeenCalled();
+    expect(mockNavigation.replace).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['refused', UNREADABLE],
+    ['unsupported', UNREADABLE],
+    ['cooldown', RETRY_LATER],
+    ['rate_limited', RETRY_LATER],
+    ['blocked_local_key', DEVICE_KEY],
+  ])('routes a %s unwrap failure to its own copy, with no capture', async (outcome, message) => {
+    mockCreateNewThread.mockRejectedValue(unwrapFailure(outcome));
+
+    const renderer = await post();
+
+    const rendered = texts(renderer);
+    expect(rendered).toContain(message);
+    expect(rendered).not.toContain(GENERIC);
+    expect(mockCaptureException).not.toHaveBeenCalled();
+  });
+
+  it('still reports and shows the generic copy for a failure that is not a key failure', async () => {
+    mockCreateNewThread.mockRejectedValue(new Error('network down'));
+
+    const renderer = await post();
+
+    const rendered = texts(renderer);
+    expect(rendered).toContain(GENERIC);
+    expect(rendered).not.toContain(RESENDING);
+    expect(mockCaptureException).toHaveBeenCalledTimes(1);
+  });
+});

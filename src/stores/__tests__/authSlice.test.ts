@@ -22,6 +22,7 @@ function makeStore() {
     conversationIds: [],
     activeConversationId: null,
     viewingConversationId: null,
+    groupKeyGeneration: {},
     setConversations: jest.fn(),
     setGroupConversations: jest.fn(),
     upsertConversation: jest.fn(),
@@ -32,6 +33,8 @@ function makeStore() {
     markConversationRead: jest.fn(),
     setViewingConversation: jest.fn(),
     bumpLastMessageAt: jest.fn(),
+    bumpGroupKeyGeneration: jest.fn(),
+    clearGroupKeyGenerations: jest.fn(),
 
     threads: {},
     threadIdsByConversation: {},

@@ -35,6 +35,7 @@ jest.mock('../../../database/connection', () => ({
 
 jest.mock('../../../database/queryHelpers', () => ({
   queryOne: jest.fn(),
+  execute: jest.fn(),
 }));
 
 jest.mock('../../api/keys', () => ({
@@ -45,11 +46,19 @@ jest.mock('../../api/keys', () => ({
 jest.mock('../../secure-storage', () => ({
   getSecureItem: jest.fn(),
   setSecureItem: jest.fn().mockResolvedValue(undefined),
+  removeSecureItem: jest.fn().mockResolvedValue(undefined),
 }));
 
 jest.mock('../contentCrypto', () => ({
   clearGroupKeyCache: jest.fn(),
   clearContentCryptoInflight: jest.fn(),
+}));
+
+// Partial mock: only the reporter registry is stubbed, so fullCryptoWipe's call
+// into it is observable while the error vocabulary stays real.
+jest.mock('../groupKeyErrors', () => ({
+  ...jest.requireActual('../groupKeyErrors'),
+  resetGroupKeyFailureBudget: jest.fn(),
 }));
 
 jest.mock('../../../database/repositories/conversationRepository', () => ({
@@ -70,9 +79,12 @@ import { savePreKey } from '../../../database/repositories/signalPreKeyRepositor
 import { saveSignedPreKey } from '../../../database/repositories/signalSignedPreKeyRepository';
 import { saveKyberPreKey } from '../../../database/repositories/signalKyberPreKeyRepository';
 import { getDatabase, isDatabaseInitialized } from '../../../database/connection';
-import { queryOne } from '../../../database/queryHelpers';
+import { queryOne, execute } from '../../../database/queryHelpers';
 import { uploadPreKeyBundle, getPreKeyCount } from '../../api/keys';
-import { getSecureItem, setSecureItem } from '../../secure-storage';
+import { getSecureItem, setSecureItem, removeSecureItem } from '../../secure-storage';
+import { resetGroupKeyFailureBudget } from '../groupKeyErrors';
+import { clearGroupKeyCache, clearContentCryptoInflight } from '../contentCrypto';
+import { clearAllGroupCryptoState } from '../../../database/repositories/conversationRepository';
 
 import {
   generateInitialKeys,
@@ -83,6 +95,7 @@ import {
   initIdentityKeyCache,
   cancelKeyInitialization,
   clearIdentityKeyCache,
+  fullCryptoWipe,
 } from '../keyGenerationService';
 
 // ---------------------------------------------------------------------------
@@ -738,5 +751,40 @@ describe('cancelKeyInitialization', () => {
     await expect(cancelPromise).resolves.toBeUndefined();
     // The orphan itself rejects but we don't re-throw
     await expect(orphanPromise).rejects.toThrow('Simulated failure');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fullCryptoWipe — the per-session budgets go with the keys (#912)
+// ---------------------------------------------------------------------------
+
+describe('fullCryptoWipe', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    // clearAllMocks drops the factory's mockResolvedValue.
+    (removeSecureItem as jest.Mock).mockResolvedValue(undefined);
+    (isDatabaseInitialized as jest.Mock).mockReturnValue(true);
+    (getDatabase as jest.Mock).mockReturnValue({ executeSync: jest.fn() });
+  });
+
+  it('clears the group-key telemetry budget along with the key caches', async () => {
+    await fullCryptoWipe();
+
+    expect(removeSecureItem).toHaveBeenCalledTimes(1);
+    expect(clearGroupKeyCache).toHaveBeenCalledTimes(1);
+    expect(clearContentCryptoInflight).toHaveBeenCalledTimes(1);
+    // Reached through the import-free registry: this module is inside the
+    // crypto fence and cannot import groupKeyTelemetry.
+    expect(resetGroupKeyFailureBudget).toHaveBeenCalledTimes(1);
+  });
+
+  it('still clears the budget when there is no database to wipe', async () => {
+    (isDatabaseInitialized as jest.Mock).mockReturnValue(false);
+
+    await fullCryptoWipe();
+
+    expect(resetGroupKeyFailureBudget).toHaveBeenCalledTimes(1);
+    expect(clearAllGroupCryptoState).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
   });
 });

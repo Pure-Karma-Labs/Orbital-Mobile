@@ -25,6 +25,13 @@ import {
 import { arrayBufferToBase64, base64ToArrayBuffer, toArrayBuffer } from './utils';
 import { getIdentityKeyPair, resolveRemoteIdentityKey } from './identityKeyAccess';
 import { markEciesLocked, isEciesLocked } from './downgradeProtection';
+import {
+  classifyEciesOpenError,
+  GroupKeyUnwrapError,
+  reportGroupKeyFailure,
+} from './groupKeyErrors';
+import { recoverDeadEnvelope, resetGroupKeyRecoveryState } from './groupKeyRecovery';
+import { clearWrapDeliveryDedup } from './wrapDeliveryHook';
 import { useAppStore } from '../../stores/useAppStore';
 
 // ---------------------------------------------------------------------------
@@ -251,20 +258,60 @@ export async function getOrFetchGroupKey(groupId: string): Promise<Uint8Array> {
         pendingGroups.set(groupId, Date.now() + PENDING_CACHE_TTL_MS);
         throw new PendingWrapError();
       }
+      // Captured once: the envelope string is the server's compare-and-swap
+      // witness for a rewrap request and must be passed on unmodified.
+      const envelope = response.wrappedGroupKey;
+      const wrappedBy = response.wrappedBy ?? null;
       try {
-        await processReceivedGroupKey(
-          groupId,
-          response.wrappedGroupKey,
-          response.wrappedBy ?? null,
-        );
+        await processReceivedGroupKey(groupId, envelope, wrappedBy);
       } catch (e) {
         if (
           e instanceof Error &&
           e.message === 'ECIES envelope requires sender identity'
         ) {
           pendingGroups.set(groupId, Date.now() + PENDING_CACHE_TTL_MS);
+          throw e;
         }
-        throw e;
+
+        // Tier 4: the server handed us an envelope this device cannot open
+        // (#912). Reached only after tiers 1-3 missed, so a persisted key can
+        // never be discarded by this path.
+        const code = classifyEciesOpenError(e);
+        // Not a SignalError at all — a database failure, 'No authenticated
+        // user', a bug. Not a key problem; rethrow untouched.
+        if (code === null) throw e;
+
+        const result = await recoverDeadEnvelope({
+          groupId,
+          envelope,
+          wrappedBy,
+          code,
+          // Deliberately NOT getOrFetchGroupKey: we are inside its in-flight
+          // promise, and re-entering would self-await and hang forever.
+          retryUnwrap: async () => {
+            await processReceivedGroupKey(groupId, envelope, wrappedBy);
+            return groupKeyCache.get(groupId) ?? null;
+          },
+        });
+
+        if (result.outcome !== 'healed') {
+          const failure = new GroupKeyUnwrapError(result.code, result.outcome, result.refusalCode);
+          if (result.outcome === 'requested') {
+            // A peer is re-wrapping. Short-circuit the next 30s of callers,
+            // then let the delivery event through: `wrapped_key_delivered`
+            // dedups per group, and the event that triggered this failure has
+            // usually already claimed that slot.
+            pendingGroups.set(groupId, Date.now() + PENDING_CACHE_TTL_MS);
+            reportGroupKeyFailure(groupId, failure);
+            clearWrapDeliveryDedup(groupId);
+            throw new PendingWrapError();
+          }
+          reportGroupKeyFailure(groupId, failure);
+          throw failure;
+        }
+        // 'healed': a stale sender key was refreshed and the retry inside the
+        // recovery populated the cache. Fall through to the read below, so the
+        // original caller resolves from THIS in-flight promise.
       }
       const resolved = groupKeyCache.get(groupId);
       if (!resolved) {
@@ -311,6 +358,12 @@ export function clearGroupKeyCache(): void {
 export function clearContentCryptoInflight(): void {
   inflight.clear();
   pendingGroups.clear();
+  // Cooldowns, demote caps and both session latches belong to the signed-in
+  // account, not to the device: an account switch or a key wipe must not
+  // inherit the previous session's "already asked twice" or "local key is
+  // broken". Deliberately NOT in clearGroupKeyCache, which also runs on
+  // ordinary cache invalidation.
+  resetGroupKeyRecoveryState();
 }
 
 /**

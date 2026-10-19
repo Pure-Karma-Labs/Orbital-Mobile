@@ -201,6 +201,23 @@ describe('ReplyComposer — send behavior', () => {
     const sendBtn = findByTestId(renderer, 'send-button');
     expect(sendBtn[0].props.disabled).toBe(false);
   });
+
+  // #912: set while there is no thread to reply TO, where the screen's
+  // handleSend returns silently. The input stays editable on purpose, so a
+  // reply typed during the wait survives into the send that works.
+  it('send button is disabled when sendDisabled={true}, and the input stays editable', () => {
+    const onSend = jest.fn();
+    const renderer = renderComposer({ text: 'hello', sendDisabled: true, onSend });
+    const sendBtn = findByTestId(renderer, 'send-button');
+
+    expect(sendBtn[0].props.disabled).toBe(true);
+    expect(findByTestId(renderer, 'reply-input')[0].props.editable).toBe(true);
+
+    act(() => {
+      sendBtn[0].props.onPress();
+    });
+    expect(onSend).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------

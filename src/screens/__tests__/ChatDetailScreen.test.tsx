@@ -128,6 +128,13 @@ jest.mock('../../components/Emoji', () => ({
 
 const mockUseThreads = jest.fn();
 
+/**
+ * #912: the per-group heal counter. The real `useGroupKeyGeneration` reads the
+ * store singleton (MMKV), which does not load under jest; a test bumps this and
+ * re-renders to stand in for `wrapped_key_delivered` landing.
+ */
+let mockKeyGeneration = 0;
+
 jest.mock('../../stores', () => {
   const getState = () => ({
     setViewingConversation: mockSetViewingConversation,
@@ -142,6 +149,7 @@ jest.mock('../../stores', () => {
     useThreads: (...args: unknown[]) => mockUseThreads(...args),
     useAuth: () => ({ userId: 'test-user-id', username: 'testuser' }),
     useContactForConversation: () => null,
+    useGroupKeyGeneration: () => mockKeyGeneration,
     useAppStore: Object.assign(
       (selector: (s: ReturnType<typeof getState>) => unknown) => selector(getState()),
       { getState: jest.fn(getState) },
@@ -232,15 +240,27 @@ const mockNavigation = {
   setParams: jest.fn(),
 };
 
-function makeRoute(recipientName?: string, recipientId?: string) {
+/**
+ * `conversationId` is a parameter so a test can re-render this screen pointed
+ * at ANOTHER DM — a params-in-place navigate, which keeps the same mount.
+ */
+function makeRoute(
+  recipientName?: string,
+  recipientId?: string,
+  conversationId = 'dm-conv-1',
+) {
   return {
     key: 'ChatDetail',
     name: 'ChatDetail' as const,
-    params: { conversationId: 'dm-conv-1', recipientName, recipientId },
+    params: { conversationId, recipientName, recipientId },
   };
 }
 
-function screenElement(recipientName?: string, recipientId?: string): React.ReactElement {
+function screenElement(
+  recipientName?: string,
+  recipientId?: string,
+  conversationId?: string,
+): React.ReactElement {
   return React.createElement(
     SafeAreaProvider,
     { initialMetrics: safeAreaMetrics },
@@ -249,16 +269,20 @@ function screenElement(recipientName?: string, recipientId?: string): React.Reac
       { colorSchemeOverride: 'light' },
       React.createElement(ChatDetailScreen, {
         navigation: mockNavigation as unknown as React.ComponentProps<typeof ChatDetailScreen>['navigation'],
-        route: makeRoute(recipientName, recipientId) as unknown as React.ComponentProps<typeof ChatDetailScreen>['route'],
+        route: makeRoute(recipientName, recipientId, conversationId) as unknown as React.ComponentProps<typeof ChatDetailScreen>['route'],
       }),
     ),
   );
 }
 
-function renderScreen(recipientName?: string, recipientId?: string): ReactTestRenderer {
+function renderScreen(
+  recipientName?: string,
+  recipientId?: string,
+  conversationId?: string,
+): ReactTestRenderer {
   let renderer!: ReactTestRenderer;
   act(() => {
-    renderer = create(screenElement(recipientName, recipientId));
+    renderer = create(screenElement(recipientName, recipientId, conversationId));
   });
   return renderer;
 }
@@ -276,6 +300,7 @@ function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstanc
 beforeEach(() => {
   jest.clearAllMocks();
   mockIsFocused = true;
+  mockKeyGeneration = 0;
   mockUseThreads.mockReturnValue(emptyThreadsState);
   mockBlockedSet = new Set<string>();
   mockStoreConversations = {};
@@ -835,5 +860,184 @@ describe('ChatDetailScreen — blocked DM peer', () => {
     const renderer = renderScreen('Bob');
 
     expect(has(renderer, 'blocked-peer-notice')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group-key failures on the read surface (#912)
+//
+// This is the reported #912 screen: a DM whose key had been wrapped to the
+// member's pre-reset identity key rendered "No messages yet / Start the
+// conversation!" over a conversation full of history.
+// ---------------------------------------------------------------------------
+
+describe('ChatDetailScreen — group key (#912)', () => {
+  // Pinned as literals, never imported from utils/errorMessages.
+  const UNREADABLE =
+    "This device can't open this conversation's encryption key. Another member needs to open Orbital to re-send it.";
+  const PENDING_NOTICE = 'Re-sending encryption key…';
+
+  function pendingWrap(): Error {
+    const e = new Error('Group key not yet available (pending wrap)');
+    e.name = 'PendingWrapError';
+    return e;
+  }
+
+  function unwrapFailure(selfHeal: string): Error {
+    const e = new Error(`Group key unwrap failed: recipient_mismatch / ${selfHeal}`);
+    e.name = 'GroupKeyUnwrapError';
+    (e as unknown as { selfHeal: string }).selfHeal = selfHeal;
+    return e;
+  }
+
+  /** Render and flush the load effect's promise. */
+  async function render(): Promise<ReactTestRenderer> {
+    const renderer = renderScreen('Bob');
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+    return renderer;
+  }
+
+  async function rerender(renderer: ReactTestRenderer): Promise<void> {
+    await act(async () => {
+      renderer.update(screenElement('Bob'));
+    });
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  function count(renderer: ReactTestRenderer, testID: string): number {
+    return renderer.root.findAll((node) => node.props.testID === testID).length;
+  }
+
+  function texts(renderer: ReactTestRenderer): string[] {
+    return renderer.root
+      .findAllByType('Text' as unknown as React.ComponentType)
+      .map((node) => node.props.children)
+      .filter((c): c is string => typeof c === 'string');
+  }
+
+  afterEach(() => {
+    mockLoadThreadsForGroup.mockResolvedValue([]);
+  });
+
+  it('replaces the create-first empty state with the pending notice', async () => {
+    mockLoadThreadsForGroup.mockRejectedValueOnce(pendingWrap());
+
+    const renderer = await render();
+
+    expect(count(renderer, 'group-key-pending-banner')).toBeGreaterThan(0);
+    const rendered = texts(renderer);
+    expect(rendered).toContain(PENDING_NOTICE);
+    expect(rendered.join('\n')).not.toContain('No messages yet');
+    expect(rendered).not.toContain('Send a Message');
+    expect(count(renderer, 'group-key-pending-body')).toBeGreaterThan(0);
+  });
+
+  it('shows the outcome copy in place of the empty state', async () => {
+    mockLoadThreadsForGroup.mockRejectedValueOnce(unwrapFailure('exhausted'));
+
+    const renderer = await render();
+
+    expect(count(renderer, 'group-key-failure-notice')).toBeGreaterThan(0);
+    const rendered = texts(renderer);
+    expect(rendered).toContain(UNREADABLE);
+    expect(rendered.join('\n')).not.toContain('No messages yet');
+    expect(count(renderer, 'group-key-pending-banner')).toBe(0);
+  });
+
+  it('keeps the normal empty state for a failure that is not a key failure', async () => {
+    mockLoadThreadsForGroup.mockRejectedValueOnce(new Error('network down'));
+
+    const renderer = await render();
+
+    expect(texts(renderer).join('\n')).toContain('No messages yet');
+    expect(count(renderer, 'group-key-pending-banner')).toBe(0);
+    expect(count(renderer, 'group-key-failure-notice')).toBe(0);
+  });
+
+  it('lets the blocked-peer notice win over a key notice', async () => {
+    // A block is the user's own decision; a key problem is not actionable.
+    mockStoreConversations = {
+      'dm-conv-1': { id: 'dm-conv-1', type: 'direct', peerUserId: 'u-bob', name: 'bob' },
+    };
+    mockBlockedUserIds = ['u-bob'];
+    mockLoadThreadsForGroup.mockRejectedValueOnce(pendingWrap());
+
+    const renderer = await render();
+
+    expect(count(renderer, 'blocked-peer-notice')).toBeGreaterThan(0);
+    expect(count(renderer, 'group-key-pending-body')).toBe(0);
+  });
+
+  it('reloads and clears the notice when the generation is bumped (D11)', async () => {
+    mockLoadThreadsForGroup.mockRejectedValueOnce(pendingWrap());
+
+    const renderer = await render();
+    expect(count(renderer, 'group-key-pending-banner')).toBeGreaterThan(0);
+    expect(mockLoadThreadsForGroup).toHaveBeenCalledTimes(1);
+
+    // The heal lands: handleWrappedKeyDelivered fetched the delivered key and
+    // bumped the counter. The OPEN screen reloads itself (B2).
+    mockKeyGeneration = 1;
+    await rerender(renderer);
+
+    expect(mockLoadThreadsForGroup).toHaveBeenCalledTimes(2);
+    expect(count(renderer, 'group-key-pending-banner')).toBe(0);
+    expect(texts(renderer).join('\n')).toContain('No messages yet');
+  });
+
+  it('does not reload while the generation is unchanged', async () => {
+    const renderer = await render();
+    expect(mockLoadThreadsForGroup).toHaveBeenCalledTimes(1);
+
+    await rerender(renderer);
+
+    expect(mockLoadThreadsForGroup).toHaveBeenCalledTimes(1);
+  });
+
+  // The milder form of the ThreadsScreen leak: a params-in-place navigate to
+  // another DM keeps this mount, so the previous conversation's key state has
+  // to go with it. The second load fails for a NON-key reason, which leaves
+  // the flags alone — so only the conversation change itself can clear them.
+  it('drops the notice when the route points at another conversation', async () => {
+    mockLoadThreadsForGroup.mockRejectedValueOnce(unwrapFailure('refused'));
+
+    const renderer = await render();
+    expect(count(renderer, 'group-key-failure-notice')).toBeGreaterThan(0);
+
+    mockLoadThreadsForGroup.mockRejectedValueOnce(new Error('network down'));
+    await act(async () => {
+      renderer.update(screenElement('Bob', undefined, 'dm-conv-2'));
+    });
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(count(renderer, 'group-key-failure-notice')).toBe(0);
+    expect(texts(renderer).join('\n')).toContain('No messages yet');
+    expect(mockLoadThreadsForGroup).toHaveBeenLastCalledWith('dm-conv-2');
+  });
+
+  // `loadThreadsForGroup` is not cancellable, so the first DM's rejection can
+  // land after the screen has re-pointed. Its verdict must be dropped.
+  it('ignores a rejection that lands after the route re-pointed', async () => {
+    mockLoadThreadsForGroup.mockRejectedValueOnce(pendingWrap());
+    mockLoadThreadsForGroup.mockRejectedValueOnce(new Error('network down'));
+
+    // Rendered but NOT flushed: the first DM's load is still in flight.
+    const renderer = renderScreen('Bob');
+    await act(async () => {
+      renderer.update(screenElement('Bob', undefined, 'dm-conv-2'));
+    });
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(count(renderer, 'group-key-pending-banner')).toBe(0);
+    expect(count(renderer, 'group-key-pending-body')).toBe(0);
+    expect(texts(renderer).join('\n')).toContain('No messages yet');
   });
 });

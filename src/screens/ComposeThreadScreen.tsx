@@ -32,6 +32,7 @@ import { useMediaPicker } from '../hooks/useMediaPicker';
 import { useMediaUploadProgress } from '../hooks/useMediaUploadProgress';
 import { useDiscardUploadGuard } from '../hooks/useDiscardUploadGuard';
 import { useBlockedDmPeer, useBlockedPeerTransition } from '../hooks/useBlockedDmPeer';
+import { groupKeyFailureCopy } from '../utils/groupKeyErrorCopy';
 import { BlockedPeerNotice } from '../components/BlockedPeerNotice';
 import { Header } from '../components/Header';
 import { OrbitalKeyboardAvoidingView } from '../components/OrbitalKeyboardAvoidingView';
@@ -230,6 +231,25 @@ export function ComposeThreadScreen({
       if (e instanceof Error && e.name === 'BlockedRecipientError') {
         if (mountedRef.current) {
           setError(`Not sent — you blocked ${blockedLabelRef.current ?? 'this person'}.`);
+        }
+        return;
+      }
+      // A group key this device cannot open (#912) — another sibling of the
+      // returns above, and deliberately ABOVE the capture: the budgeted
+      // reporter in `services/groupKeyTelemetry` has already sent exactly one
+      // content-free event for this (group, outcome), so capturing here would
+      // double-report it and attach upload tags to a failure that has nothing
+      // to do with the upload. It also replaces the old "Failed to create
+      // thread. Please try again." for EVERY pending wrap, which is D5: the
+      // most common #912 outcome used to read as a generic retry prompt.
+      //
+      // Only `copy.message` is used: `ErrorBanner` has no title slot, and the
+      // copy's title ("Not Sent Yet") would read as a heading glued to the
+      // front of the sentence. ThreadDetail's Alert does use both.
+      const keyCopy = groupKeyFailureCopy(e);
+      if (keyCopy) {
+        if (mountedRef.current) {
+          setError(keyCopy.message);
         }
         return;
       }

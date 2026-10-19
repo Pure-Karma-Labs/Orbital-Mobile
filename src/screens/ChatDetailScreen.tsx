@@ -23,7 +23,12 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useTheme } from '../theme';
 import { useAppStore } from '../stores';
-import { useAuth, useThreads, useContactForConversation } from '../stores';
+import {
+  useAuth,
+  useThreads,
+  useContactForConversation,
+  useGroupKeyGeneration,
+} from '../stores';
 import type { Thread } from '../types/store';
 import { getThreadState } from '../utils/threadState';
 import { compareThreadsByActivityDesc, threadActivityAt } from '../utils/threadActivity';
@@ -38,6 +43,11 @@ import { SearchBar } from './threads/SearchBar';
 import { ChatMessageItem } from './chats/ChatMessageItem';
 import { loadThreadsForGroup, hydrateThreadsFromLocal } from '../services/threadService';
 import { markConversationReadEverywhere } from '../services/conversationService';
+import {
+  GroupKeyFailureNotice,
+  GroupKeyPendingBanner,
+} from '../components/GroupKeyNotice';
+import { groupKeyFailureCopy, isGroupKeyPending } from '../utils/groupKeyErrorCopy';
 import { PullToRefreshOverlay } from '../components/PullToRefreshOverlay';
 import { usePullToRefresh } from '../hooks/usePullToRefresh';
 import { useSQLiteSearch } from '../hooks/useSQLiteSearch';
@@ -237,13 +247,81 @@ export function ChatDetailScreen({
     flatListRef.current?.scrollToOffset({ offset: 0, animated: false });
   }, [isSearching]);
 
+  /**
+   * Group-key state for this DM (#912). `keyPending` is the transient "a peer
+   * is re-wrapping" banner; `keyFailureMessage` is every other outcome, which
+   * replaces the empty state. Only one of them is ever set.
+   *
+   * This is the #912 screen: the reported case was a DM whose key had been
+   * wrapped to the member's pre-reset identity key, and the member saw "No
+   * messages yet / Start the conversation!" on a conversation full of history.
+   */
+  const [keyPending, setKeyPending] = useState(false);
+  const [keyFailureMessage, setKeyFailureMessage] = useState<string | null>(null);
+
+  /**
+   * Bumped by `handleWrappedKeyDelivered` once a delivered key has actually
+   * been fetched (#912 / D11). In the load effect's deps so this screen
+   * reloads itself when the heal lands, with no re-entry.
+   */
+  const keyGeneration = useGroupKeyGeneration(conversationId);
+
+  /**
+   * The conversation this render belongs to, read at settle time. A
+   * params-in-place navigate to another DM keeps this screen mounted, and
+   * `loadThreadsForGroup` is not cancellable, so a late settle from the
+   * previous conversation would otherwise write its key verdict onto this one
+   * (the ThreadsScreen leak, in its milder form here).
+   */
+  const conversationIdRef = useRef(conversationId);
+  conversationIdRef.current = conversationId;
+
+  /**
+   * Reset on a conversation change — NOT on a `keyGeneration` bump, which
+   * re-runs the load below and would flash the empty state on every reload.
+   */
   useEffect(() => {
-    // Instant hydration from local SQLCipher cache before async API fetch
-    hydrateThreadsFromLocal(conversationId);
-    loadThreadsForGroup(conversationId).catch((e) => {
-      if (__DEV__) console.warn('[ChatDetail] load failed:', e instanceof Error ? e.message : e);
-    });
+    setKeyPending(false);
+    setKeyFailureMessage(null);
   }, [conversationId]);
+
+  // Instant hydration from the local SQLCipher cache, before the async fetch.
+  // SPLIT from the load effect: `setThreads` REPLACES this conversation's id
+  // list, so re-running it on a heal bump would roll the list back to the disk
+  // snapshot the heal was supposed to supersede.
+  useEffect(() => {
+    hydrateThreadsFromLocal(conversationId);
+  }, [conversationId]);
+
+  useEffect(() => {
+    const target = conversationId;
+    const isStale = (): boolean => conversationIdRef.current !== target;
+    loadThreadsForGroup(target)
+      .then(() => {
+        if (isStale()) return;
+        // On success only: clearing before the load would flash the
+        // create-first empty state on every reload attempt.
+        setKeyPending(false);
+        setKeyFailureMessage(null);
+      })
+      .catch((e) => {
+        if (__DEV__) console.warn('[ChatDetail] load failed:', e instanceof Error ? e.message : e);
+        if (isStale()) return;
+        if (isGroupKeyPending(e)) {
+          setKeyPending(true);
+          setKeyFailureMessage(null);
+        } else {
+          const copy = groupKeyFailureCopy(e);
+          if (copy) {
+            setKeyPending(false);
+            setKeyFailureMessage(copy.message);
+          }
+          // Everything else keeps the pre-#912 behaviour: stale content stays
+          // visible, the failure is a dev warning. A network blip must not
+          // claim to be a key problem.
+        }
+      });
+  }, [conversationId, keyGeneration]);
 
   const handleThreadPress = useCallback(
     (threadId: string) => {
@@ -392,6 +470,8 @@ export function ChatDetailScreen({
         />
       )}
 
+      {keyPending && <GroupKeyPendingBanner />}
+
       {blockedPeer != null && listRows.length > 0 && (
         // Non-empty list: the notice sits above the search bar and the
         // blocker's own older threads stay readable below it.
@@ -416,9 +496,18 @@ export function ChatDetailScreen({
         blockedPeer != null ? (
           // The notice REPLACES the empty state: no "No messages yet /
           // Start the conversation!" box and no "Send a Message" CTA.
+          // Checked FIRST: a block is the user's own decision and outranks a
+          // key problem they cannot act on.
           <View style={blockedEmptyStyle}>
             <BlockedPeerNotice label={blockedPeer.label} peerId={blockedPeer.peerId} />
           </View>
+        ) : keyPending ? (
+          // #912: same discipline as the blocked notice — the banner above is
+          // the whole message, and the false "Start the conversation!" box and
+          // its CTA are both gone while the key is being re-sent.
+          <View style={{ flex: 1 }} testID="group-key-pending-body" />
+        ) : keyFailureMessage !== null ? (
+          <GroupKeyFailureNotice message={keyFailureMessage} />
         ) : (
           <EmptyState onCompose={handleCompose} />
         )

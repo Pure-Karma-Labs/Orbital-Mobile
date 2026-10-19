@@ -6,7 +6,7 @@ import {
   ServerError,
   ValidationError,
 } from '../../services/api/errors';
-import { routeInviteCreateError, isPendingWrapError } from '../inviteCreateErrors';
+import { routeInviteCreateError } from '../inviteCreateErrors';
 
 // Copy is pinned as literals, never imported from the module under test, so a
 // wording change shows up here as a diff.
@@ -15,6 +15,17 @@ const NOT_ALLOWED = "You can't create invites for this orbit";
 const ORBIT_GONE = 'This orbit no longer exists';
 const RATE_LIMITED = 'Too many attempts — please wait a few minutes and try again';
 const BAD_EMAIL = 'Please enter a valid email address';
+// #912: every group-key failure is routed through `groupKeyFailureCopy`, so
+// this route shows the composers' wording for the actual outcome. Pinned here
+// as literals too, never imported from errorMessages.
+const RESENDING =
+  "This conversation's encryption key is being re-sent by another member. Please try again in a moment.";
+const UNREADABLE =
+  "This device can't open this conversation's encryption key. Another member needs to open Orbital to re-send it.";
+const RETRY_LATER =
+  "Couldn't recover this conversation's encryption key right now. Please try again in a few minutes.";
+const DEVICE_KEY =
+  "This device's encryption keys need to be restored before this conversation can be opened.";
 
 function coded(code: string): ValidationError {
   return new ValidationError(
@@ -30,6 +41,18 @@ function pendingWrap(): Error {
   return e;
 }
 
+/**
+ * Mirrors `crypto/groupKeyErrors.GroupKeyUnwrapError` — built by hand for the
+ * same reason the routing matches by name: importing the class would drag the
+ * crypto module graph into this suite.
+ */
+function unwrapFailure(selfHeal: string): Error {
+  const e = new Error(`Group key unwrap failed: recipient_mismatch / ${selfHeal}`);
+  e.name = 'GroupKeyUnwrapError';
+  (e as unknown as { selfHeal: string }).selfHeal = selfHeal;
+  return e;
+}
+
 describe('routeInviteCreateError', () => {
   it.each([
     ['NetworkError → banner with its own message', new NetworkError(), { bannerError: 'Network error — please check your connection' }],
@@ -37,7 +60,13 @@ describe('routeInviteCreateError', () => {
     ['coded EMAIL_FORMAT → field error', coded('EMAIL_FORMAT'), { fieldError: BAD_EMAIL }],
     ['403 → permanent banner, no capture', new AuthError(403), { bannerError: NOT_ALLOWED }],
     ['404 → permanent banner, no capture', new NotFoundError(), { bannerError: ORBIT_GONE }],
-    ['PendingWrapError → retry banner, no capture', pendingWrap(), { bannerError: GENERIC }],
+    ['PendingWrapError → RESENDING banner, no capture', pendingWrap(), { bannerError: RESENDING }],
+    // Each used to fall through to the generic banner WITH a capture: a second
+    // Sentry event for a failure `groupKeyTelemetry` already reported, under
+    // copy that invited a retry nothing would change (#912 PR review).
+    ['a refused unwrap → UNREADABLE banner, no capture', unwrapFailure('refused'), { bannerError: UNREADABLE }],
+    ['a failed unwrap → RETRY_LATER banner, no capture', unwrapFailure('failed'), { bannerError: RETRY_LATER }],
+    ['an identity_mismatch unwrap → DEVICE_KEY banner, no capture', unwrapFailure('identity_mismatch'), { bannerError: DEVICE_KEY }],
   ])('%s', (_label, err, expected) => {
     // toEqual on the whole route: an unexpected captureTags (or a second slot)
     // fails here, which is what proves the "no capture" half of each row.
@@ -83,9 +112,9 @@ describe('routeInviteCreateError', () => {
   });
 });
 
-describe('isPendingWrapError', () => {
-  it('matches by name, the string contentCrypto assigns in its constructor', () => {
-    expect(isPendingWrapError(pendingWrap())).toBe(true);
+describe('the PendingWrapError contract', () => {
+  it('routes by NAME, so a factory-mocked contentCrypto still gets the copy', () => {
+    expect(routeInviteCreateError(pendingWrap())).toEqual({ bannerError: RESENDING });
   });
 
   it('stays in step with the producer: contentCrypto still assigns that exact name', () => {
@@ -101,12 +130,17 @@ describe('isPendingWrapError', () => {
     expect(src).toMatch(/class PendingWrapError[\s\S]*?this\.name = 'PendingWrapError';/);
   });
 
+  // A near miss must NOT reach the group-key copy: it falls through to the
+  // generic banner, with the capture that goes with an unattributable failure.
   it.each([
     ['a plain Error', new Error('x')],
     ['a near-miss name', Object.assign(new Error('x'), { name: 'PendingWrap' })],
     ['a non-Error with the name', { name: 'PendingWrapError' }],
     ['undefined', undefined],
   ])('rejects %s', (_label, value) => {
-    expect(isPendingWrapError(value)).toBe(false);
+    expect(routeInviteCreateError(value)).toEqual({
+      bannerError: GENERIC,
+      captureTags: { feature: 'orbit-invite-create' },
+    });
   });
 });

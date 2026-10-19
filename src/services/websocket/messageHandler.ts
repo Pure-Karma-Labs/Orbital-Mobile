@@ -15,6 +15,7 @@ import {
   wrapGroupKey,
   evictPendingCache,
 } from '../crypto/contentCrypto';
+import { setWrapDeliveryDedupClearer } from '../crypto/wrapDeliveryHook';
 import { refreshAndCompareIdentityKey, compareAndPersistIdentityKey, normalizeIdentityKey } from '../crypto/identityKeyAccess';
 import { base64ToArrayBuffer } from '../crypto/utils';
 import { VerifiedStatus } from '../../types/database';
@@ -100,6 +101,23 @@ export function clearMessageHandlerState(): void {
   wrapDedup.clear();
   deliveryDedup.clear();
 }
+
+/**
+ * Let the crypto layer drop this group's delivery-dedup entry (#912).
+ *
+ * After a self-heal demote, the next `wrapped_key_delivered` is the heal
+ * landing — but the event that exposed the dead envelope has usually already
+ * claimed the group's 30-second dedup slot, so without this the re-wrap would
+ * be ignored until the TTL expired.
+ *
+ * Registered through `crypto/wrapDeliveryHook` rather than imported by
+ * `contentCrypto`, because this module already imports `contentCrypto` (an
+ * import cycle) and the crypto layer is fenced off from `websocket/`.
+ * Module scope, per the #677 rule for subscriptions and registrations.
+ */
+setWrapDeliveryDedupClearer((groupId) => {
+  deliveryDedup.delete(groupId);
+});
 
 // ============================================================
 // Allowed broadcast data.type values (WS-05)
@@ -704,6 +722,14 @@ async function handleWrappedKeyDelivered(data: WrappedKeyDeliveredPayload): Prom
     // When group key rotation lands, must invalidateGroupKey before getOrFetchGroupKey
     // to avoid the cache short-circuit.
     await getOrFetchGroupKey(data.groupId);
+
+    // #912 heal reload. AFTER the fetch resolves, deliberately: the counter
+    // means "content for this group can decrypt now", and the open screen's
+    // load effect re-runs on it. Bumping before the await would reload the
+    // screen against the same dead envelope and put it straight back into the
+    // pending state. The 30s pending cache is why the order matters at all —
+    // `evictPendingCache` above is what lets this fetch reach the server.
+    useAppStore.getState().bumpGroupKeyGeneration(data.groupId);
 
     // Key obtained — re-decrypt any orbit name that was pending (#325)
     await retryPendingNameDecrypt(data.groupId);

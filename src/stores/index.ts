@@ -186,11 +186,13 @@ export const useContactForConversation = (conversationId: string | null): Contac
   useAppStore(
     useShallow((s) => {
       if (!conversationId) return null;
-      const peerId = resolveDmPeerId(
-        conversationId,
-        s.conversations[conversationId],
-        s.contacts,
-      );
+      // `dmIntent`: both call sites are DM-only (ChatDetailScreen, and
+      // ComposeThreadScreen which passes `isDm ? groupId : null`), so the
+      // missing-row contact scan is safe here — a two-member orbit id can
+      // never reach it (#908).
+      const peerId = resolveDmPeerId(conversationId, s.conversations[conversationId], s.contacts, {
+        dmIntent: true,
+      });
       return (peerId ? s.contacts[peerId] : null) ?? null;
     }),
   );

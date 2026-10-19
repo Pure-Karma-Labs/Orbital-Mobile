@@ -81,7 +81,6 @@ describe('BlockedPeerNotice — rendering', () => {
     const tree = render({ label: 'user-abcdef01', peerId: 'abcdef0123456789' });
     const json = JSON.stringify(tree.toJSON());
     expect(json).toContain('user-abcdef01');
-    expect(json).not.toContain('@user-abcdef01');
   });
 });
 

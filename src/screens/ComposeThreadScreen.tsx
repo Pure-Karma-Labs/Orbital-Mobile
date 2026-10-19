@@ -4,8 +4,8 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  AccessibilityInfo,
   Alert,
+  Keyboard,
   ScrollView,
   Text,
   TextInput,
@@ -31,7 +31,7 @@ import { updateMediaParent } from '../database/repositories/mediaRepository';
 import { useMediaPicker } from '../hooks/useMediaPicker';
 import { useMediaUploadProgress } from '../hooks/useMediaUploadProgress';
 import { useDiscardUploadGuard } from '../hooks/useDiscardUploadGuard';
-import { useBlockedDmPeer } from '../hooks/useBlockedDmPeer';
+import { useBlockedDmPeer, useBlockedPeerTransition } from '../hooks/useBlockedDmPeer';
 import { BlockedPeerNotice } from '../components/BlockedPeerNotice';
 import { Header } from '../components/Header';
 import { OrbitalKeyboardAvoidingView } from '../components/OrbitalKeyboardAvoidingView';
@@ -57,7 +57,7 @@ export function ComposeThreadScreen({
   // Blocked DM peer (#908). No route hint: the compose routes must keep
   // IDENTICAL params (the ComposeRoutesShareParams tripwire in
   // navigation/types.ts), so the store is the only source here.
-  const blockedPeer = useBlockedDmPeer(isDm ? groupId : null);
+  const blockedPeer = useBlockedDmPeer(isDm ? groupId : null, { dmIntent: true });
   const isBlocked = blockedPeer != null;
 
   const [title, setTitle] = useState('');
@@ -123,29 +123,21 @@ export function ComposeThreadScreen({
     ? body.trim().length > 0 && !busy
     : title.trim().length > 0 && body.trim().length > 0 && !busy);
 
-  // Block landing while this screen is open (#908). Latched on the
-  // false -> true edge: `blockedPeer` is a fresh object on every
-  // conversations/contacts upsert, so the ref — not the object — is what makes
-  // this fire exactly once. An in-flight upload is cancelled, which routes the
-  // send through the existing `isUploadCancellation` path, and the notice then
-  // explains why nothing sent.
-  const wasBlockedRef = useRef(false);
-  const blockedLabelRef = useRef<string | null>(null);
-  blockedLabelRef.current = blockedPeer?.label ?? null;
+  // Block landing while this screen is open (#908). The shared latch fires
+  // once on the false -> true edge. An in-flight upload is cancelled, which
+  // routes the send through the existing `isUploadCancellation` path, and the
+  // notice then explains why nothing sent. The keyboard is dismissed because
+  // the body input unmounts under it and Android does not guarantee it drops.
   const uploadingRef = useRef(uploading);
   uploadingRef.current = uploading;
-  useEffect(() => {
-    if (!isBlocked) {
-      wasBlockedRef.current = false;
-      return;
-    }
-    if (wasBlockedRef.current) return;
-    wasBlockedRef.current = true;
+  // Read by the BlockedRecipientError branch in `doPost`'s catch, which can run
+  // after the block has already cleared the notice.
+  const blockedLabelRef = useRef<string | null>(null);
+  blockedLabelRef.current = blockedPeer?.label ?? null;
+  useBlockedPeerTransition(blockedPeer, () => {
+    Keyboard.dismiss();
     if (uploadingRef.current) cancelUpload();
-    AccessibilityInfo.announceForAccessibility(
-      `You blocked ${blockedLabelRef.current ?? 'this person'}. Sending is turned off.`,
-    );
-  }, [isBlocked, cancelUpload]);
+  });
 
   const doPost = useCallback(async () => {
     // UX guard: `canSubmit` already covers it, but a queued press must not
@@ -422,10 +414,12 @@ export function ComposeThreadScreen({
                 editable={!busy}
                 testID="compose-body-input"
               />
+              {/* Inside the non-blocked branch, matching ReplyComposer: the
+                  card must not preview (or keep fetching metadata for) a draft
+                  the user can no longer see. */}
+              <LinkPreviewCard text={body} debounceMs={500} dismissible />
             </View>
           )}
-
-          <LinkPreviewCard text={body} debounceMs={500} dismissible />
 
           <MediaThumbnailStrip
             media={selectedMedia}

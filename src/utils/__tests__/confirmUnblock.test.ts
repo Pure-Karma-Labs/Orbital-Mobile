@@ -99,7 +99,7 @@ describe('confirmUnblock — confirming', () => {
     const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
     mockUnblockUserAndRefresh.mockReturnValueOnce(new Promise<void>(() => {}));
 
-    expect(confirmUnblock('u-1', '@alice')).toBeUndefined();
+    confirmUnblock('u-1', '@alice');
     expect(() => getButtons(alertSpy)[1].onPress?.()).not.toThrow();
     expect(mockUnblockUserAndRefresh).toHaveBeenCalledWith('u-1');
   });

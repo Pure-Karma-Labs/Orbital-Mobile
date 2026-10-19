@@ -3,6 +3,7 @@
  */
 
 import React from 'react';
+import { Alert } from 'react-native';
 import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'react-test-renderer';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../../theme';
@@ -41,12 +42,17 @@ jest.mock('../../hooks/useWebSocketSubscription', () => ({
   useWebSocketSubscription: jest.fn(),
 }));
 
+// #908: `useBlockedPeerTransition` calls `useIsFocused()`. The real one needs a
+// navigation container, so it is driven from this flag — the announcement half
+// of the latch is gated on it.
+let mockIsFocused = true;
 jest.mock('@react-navigation/native', () => ({
   useFocusEffect: (cb: () => (() => void) | void) => {
     const React = require('react');
     // eslint-disable-next-line react-hooks/exhaustive-deps
     React.useEffect(() => cb(), []);
   },
+  useIsFocused: () => mockIsFocused,
 }));
 
 const mockSetViewingConversation = jest.fn();
@@ -269,6 +275,7 @@ function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstanc
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockIsFocused = true;
   mockUseThreads.mockReturnValue(emptyThreadsState);
   mockBlockedSet = new Set<string>();
   mockStoreConversations = {};
@@ -769,6 +776,40 @@ describe('ChatDetailScreen — blocked DM peer', () => {
 
     expect(has(renderer, 'blocked-peer-notice')).toBe(false);
     expect(has(renderer, 'chat-compose-button')).toBe(true);
+  });
+
+  // `handleCompose`'s own `if (isBlocked) return` cannot be reached from the
+  // committed tree: `isBlocked` gates BOTH the render of every control that
+  // carries the callback AND the callback body, so any render that hands out
+  // `handleCompose` has `isBlocked === false` in its closure. What IS testable
+  // — and what the guard exists to protect — is the observable contract: while
+  // blocked, pressing EVERYTHING the screen still renders opens no composer.
+  it('opens no composer from any control still on screen while blocked', () => {
+    const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+    seedDmRow();
+    mockUseThreads.mockReturnValue(populatedThreadsState);
+    mockBlockedUserIds = [PEER_ID];
+
+    const renderer = renderScreen('Bob');
+
+    // Composite nodes: `onPress` never reaches a host element (Touchable
+    // translates it into responder props), so the host filter used elsewhere
+    // in this suite would match nothing here.
+    const pressables = renderer.root.findAll((node) => typeof node.props.onPress === 'function');
+    // Positive control: the sweep has to actually find the controls that are
+    // still rendered (the mute bell, the notice's Unblock, the rows).
+    expect(pressables.length).toBeGreaterThan(0);
+
+    act(() => {
+      for (const node of pressables) node.props.onPress();
+    });
+
+    const composerCalls = [
+      ...mockNavigation.navigate.mock.calls,
+      ...mockNavigation.push.mock.calls,
+    ].filter(([routeName]) => routeName === 'ComposeChatThread');
+    expect(composerCalls).toEqual([]);
+    alertSpy.mockRestore();
   });
 
   it('resolves the peer from contacts when the row predates #908', () => {

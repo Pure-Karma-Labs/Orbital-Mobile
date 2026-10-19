@@ -567,6 +567,85 @@ describe('ChatsListScreen — blocked DM peers (#908)', () => {
     expect(mockLoadDmConversations).toHaveBeenCalledTimes(1);
   });
 
+  it('shows the plain "No chats yet" empty state when every DM is hidden', () => {
+    // Product call (#908): an all-hidden list reads exactly like a brand new
+    // account. No count, no "some conversations are hidden" hint — nothing
+    // that would tell the user (or anyone looking over their shoulder) that a
+    // blocked conversation exists.
+    const allBlockedState = {
+      ...emptyConversationsState,
+      conversations: {
+        'dm-1': { ...dmConversationsState.conversations['dm-1'], peerUserId: 'user-bob' },
+        'dm-2': { ...dmConversationsState.conversations['dm-2'], peerUserId: 'user-charlie' },
+      },
+      conversationIds: ['dm-1', 'dm-2'],
+    };
+    mockUseConversations.mockReturnValue(allBlockedState);
+
+    // Positive control: unblocked, the same fixture renders both rows and no
+    // empty state at all.
+    const before = renderScreen();
+    expect(hasRowNamed(before, 'Bob')).toBe(true);
+    expect(hasRowNamed(before, 'Charlie')).toBe(true);
+
+    mockBlockedSet = new Set(['user-bob', 'user-charlie']);
+    const renderer = renderScreen();
+
+    const texts = renderer.root
+      .findAllByType('Text' as unknown as React.ComponentType)
+      .map((node) => node.props.children)
+      .filter((c): c is string => typeof c === 'string');
+
+    expect(texts).toContain('No chats yet\nStart a conversation!');
+    expect(texts).toContain('New Chat');
+    expect(hasRowNamed(renderer, 'Bob')).toBe(false);
+    expect(hasRowNamed(renderer, 'Charlie')).toBe(false);
+    // Nothing anywhere on screen alludes to the hidden rows.
+    expect(texts.some((t) => /block|hidden/i.test(t))).toBe(false);
+  });
+
+  it('passes the peerUserId-derived recipientId to ChatDetail', () => {
+    // The hint ChatDetail feeds back into `resolveDmPeerId` has to come from
+    // the SAME resolver the hide filter uses. The pressed row carries
+    // `peerUserId` and the contacts map is empty, so the old local
+    // `Object.values(contacts).find(...)` scan this replaced would have found
+    // nothing and sent `recipientId: undefined`.
+    mockUseConversations.mockReturnValue(dmsWithPeerIdState);
+    mockUseContacts.mockReturnValue({ contacts: {} });
+    const renderer = renderScreen();
+
+    const row = renderer.root.findAll((node) => node.props.accessibilityLabel === 'Chat with Dave');
+    expect(row.length).toBeGreaterThan(0);
+
+    act(() => {
+      row[0].props.onPress();
+    });
+
+    expect(mockNavigation.push).toHaveBeenCalledWith('ChatDetail', {
+      conversationId: 'dm-3',
+      recipientName: 'Dave',
+      recipientId: BLOCKED_PEER_ID,
+    });
+  });
+
+  it('falls back to the contact scan for a recipientId on a pre-#908 row', () => {
+    mockUseConversations.mockReturnValue(dmsWithLegacyRowState);
+    mockUseContacts.mockReturnValue(contactsWithDave);
+    const renderer = renderScreen();
+
+    act(() => {
+      renderer.root
+        .findAll((node) => node.props.accessibilityLabel === 'Chat with Dave')[0]
+        .props.onPress();
+    });
+
+    expect(mockNavigation.push).toHaveBeenCalledWith('ChatDetail', {
+      conversationId: 'dm-3',
+      recipientName: 'Dave',
+      recipientId: BLOCKED_PEER_ID,
+    });
+  });
+
   it('shows the search-empty state when the query matches only a hidden DM', async () => {
     mockUseConversations.mockReturnValue(dmsWithPeerIdState);
     mockBlockedSet = new Set([BLOCKED_PEER_ID]);

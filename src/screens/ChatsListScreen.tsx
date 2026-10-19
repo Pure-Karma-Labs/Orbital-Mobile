@@ -35,7 +35,14 @@ import { usePullToRefresh } from '../hooks/usePullToRefresh';
 import { useFuseSearch } from '../hooks/useFuseSearch';
 import { useMuteActions } from '../hooks/useMuteActions';
 import { useBlockedSet } from '../hooks/useBlockedSet';
-import { resolveDmPeerId } from '../utils/dmPeer';
+import { resolveDmPeerId, type DmPeerOptions } from '../utils/dmPeer';
+
+/**
+ * Every id on this screen comes from the DM list, so the missing-row contact
+ * scan in `resolveDmPeerId` is safe here (a two-member orbit can never reach
+ * it). Hoisted so the resolver's options object is a stable reference.
+ */
+const DM_INTENT: DmPeerOptions = { dmIntent: true };
 
 // ---------------------------------------------------------------------------
 // Fuse search options — module-level constant for stable WeakMap cache key
@@ -138,13 +145,27 @@ export function ChatsListScreen({ navigation }: ChatsListScreenProps): React.JSX
   // `peerUserId` first (O(1)), the contact scan only for rows persisted
   // before #908.
   const blockedSet = useBlockedSet();
-  const visibleDms = useMemo((): Conversation[] => {
-    if (blockedSet.size === 0) return dmConversations;
-    return dmConversations.filter((c) => {
-      const peerId = resolveDmPeerId(c.id, c, contacts);
-      return peerId === null || !blockedSet.has(peerId);
-    });
+  // Two stages on purpose. The first produces a stable STRING key for "which
+  // DM rows are hidden"; the second rebuilds the array only when that key
+  // actually changes. A contacts upsert that changes an avatar — or any of the
+  // one-row-at-a-time writes `loadDmConversations` makes — therefore leaves
+  // `visibleDms` referentially identical, so Fuse keeps its index (it caches on
+  // the array identity) instead of rebuilding it per upsert.
+  const hiddenDmKey = useMemo((): string => {
+    if (blockedSet.size === 0) return '';
+    const hidden: string[] = [];
+    for (const c of dmConversations) {
+      const peerId = resolveDmPeerId(c.id, c, contacts, DM_INTENT);
+      if (peerId !== null && blockedSet.has(peerId)) hidden.push(c.id);
+    }
+    return hidden.join(',');
   }, [dmConversations, blockedSet, contacts]);
+
+  const visibleDms = useMemo((): Conversation[] => {
+    if (hiddenDmKey === '') return dmConversations;
+    const hidden = new Set(hiddenDmKey.split(','));
+    return dmConversations.filter((c) => !hidden.has(c.id));
+  }, [dmConversations, hiddenDmKey]);
 
   // Fuzzy search filtering — over the FILTERED array, so search can never
   // surface a hidden DM.
@@ -156,15 +177,18 @@ export function ChatsListScreen({ navigation }: ChatsListScreenProps): React.JSX
     flatListRef.current?.scrollToOffset({ offset: 0, animated: false });
   }, [isSearching]);
 
+  // Through the single resolver, so the avatar/handle shown on a row comes from
+  // the same peer id the hide filter and ChatDetail use: `peerUserId` first,
+  // the contact reverse-scan only as a fallback, and never a member of a
+  // non-direct row (#908).
   const contactByConversation = useMemo(() => {
-    const map: Record<string, typeof contacts[string]> = {};
-    for (const contact of Object.values(contacts)) {
-      for (const convId of contact.conversationIds) {
-        map[convId] = contact;
-      }
+    const map: Record<string, (typeof contacts)[string] | undefined> = {};
+    for (const c of dmConversations) {
+      const peerId = resolveDmPeerId(c.id, c, contacts, DM_INTENT);
+      if (peerId !== null) map[c.id] = contacts[peerId];
     }
     return map;
-  }, [contacts]);
+  }, [dmConversations, contacts]);
 
   useEffect(() => {
     loadDmConversations().catch((e) => {
@@ -190,14 +214,14 @@ export function ChatsListScreen({ navigation }: ChatsListScreenProps): React.JSX
     (conversationId: string) => {
       Keyboard.dismiss();
       const conversation = conversations[conversationId];
-      // Find the contact associated with this DM conversation
-      const contact = Object.values(contacts).find((c) =>
-        c.conversationIds.includes(conversationId),
-      );
+      // The `recipientId` hint ChatDetail feeds back into `resolveDmPeerId`
+      // must come from that same resolver, or the two can disagree: the old
+      // local reverse-scan ignored `peerUserId` and the non-direct guard (#908).
+      const recipientId = resolveDmPeerId(conversationId, conversation, contacts, DM_INTENT);
       navigation.push('ChatDetail', {
         conversationId,
         recipientName: conversation?.name ?? undefined,
-        recipientId: contact?.id,
+        recipientId: recipientId ?? undefined,
       });
     },
     [navigation, conversations, contacts],

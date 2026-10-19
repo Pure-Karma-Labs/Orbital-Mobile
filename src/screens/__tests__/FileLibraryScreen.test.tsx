@@ -1252,6 +1252,75 @@ describe('FileLibraryScreen — blocked DM chips (#908)', () => {
     expect(hasHostTestId(renderer.root, 'orbit-conv-1')).toBe(true);
   });
 
+  /**
+   * The chip row has no selected-state prop — `renderChip` encodes it purely
+   * as a background colour — so "which chip is active" is read off the host
+   * node's style, and compared against a chip KNOWN to be active rather than
+   * against a hard-coded token.
+   */
+  function chipBackground(renderer: ReactTestRenderer, testID: string): unknown {
+    return (
+      findHostByTestId(renderer.root, testID).props.style as {
+        backgroundColor?: unknown;
+      }
+    ).backgroundColor;
+  }
+
+  it('resets the orbit filter when the selected chip disappears', () => {
+    const { getAllMedia } = require('../../database/repositories/mediaRepository');
+    const renderer = renderScreen();
+
+    act(() => {
+      findByTestId(renderer.root, 'orbit-dm-blocked').props.onPress();
+    });
+
+    // Positive controls: the DM chip is selected, "All Orbits" is not, and the
+    // grid query is scoped to that conversation.
+    const activeBackground = chipBackground(renderer, 'orbit-dm-blocked');
+    expect(chipBackground(renderer, 'orbit-all')).not.toEqual(activeBackground);
+    expect(getAllMedia).toHaveBeenLastCalledWith(
+      expect.objectContaining({ conversationId: 'dm-blocked' }),
+    );
+
+    getAllMedia.mockClear();
+    mockBlockedUserIds = [BLOCKED_PEER_ID];
+    rerender(renderer);
+
+    expect(hasHostTestId(renderer.root, 'orbit-dm-blocked')).toBe(false);
+    // Without the `setOrbitFilter` reset the grid stays scoped to the chip
+    // that just vanished, while "All Orbits" reads as inactive and nothing on
+    // screen explains why the grid (and "Save all") is empty.
+    expect(chipBackground(renderer, 'orbit-all')).toEqual(activeBackground);
+    // The LAST query is the one the grid is showing. An earlier one in the
+    // same pass still carries the old `conversationId` — the block changes
+    // `excludeAuthorIds` (and so `loadPage`'s identity) on the render before
+    // the functional `setOrbitFilter` commits — but it already excludes the
+    // blocked uploader, so it leaks nothing.
+    expect(getAllMedia).toHaveBeenLastCalledWith(expect.objectContaining({ conversationId: null }));
+  });
+
+  it('leaves a still-present selection alone when an unrelated peer is blocked', () => {
+    // The reset is scoped to a chip that actually disappeared — blocking
+    // someone else must not drop the user's filter.
+    const { getAllMedia } = require('../../database/repositories/mediaRepository');
+    const renderer = renderScreen();
+
+    act(() => {
+      findByTestId(renderer.root, 'orbit-dm-ok').props.onPress();
+    });
+    const activeBackground = chipBackground(renderer, 'orbit-dm-ok');
+
+    getAllMedia.mockClear();
+    mockBlockedUserIds = [BLOCKED_PEER_ID];
+    rerender(renderer);
+
+    expect(hasHostTestId(renderer.root, 'orbit-dm-ok')).toBe(true);
+    expect(chipBackground(renderer, 'orbit-dm-ok')).toEqual(activeBackground);
+    expect(getAllMedia).toHaveBeenLastCalledWith(
+      expect.objectContaining({ conversationId: 'dm-ok' }),
+    );
+  });
+
   it('restores the chip on an unblock', () => {
     mockBlockedUserIds = [BLOCKED_PEER_ID];
     const renderer = renderScreen();

@@ -21,11 +21,17 @@ import { ComposeThreadScreen } from '../ComposeThreadScreen';
 // dispatch() from Discard is observable on it.
 // ---------------------------------------------------------------------------
 const mockUsePreventRemove = jest.fn();
+// #908: `useBlockedPeerTransition` calls `useIsFocused()`, which the real
+// module can only answer from inside a navigation container. Driven from this
+// flag so a test can prove the announcement — and ONLY the announcement — is
+// gated on focus.
+let mockIsFocused = true;
 jest.mock('@react-navigation/native', () => ({
   ...jest.requireActual('@react-navigation/native'),
   usePreventRemove: (preventRemove: boolean, cb: unknown) =>
     mockUsePreventRemove(preventRemove, cb),
   useNavigation: () => mockNavigation,
+  useIsFocused: () => mockIsFocused,
 }));
 
 jest.mock('@sentry/react-native', () => ({
@@ -99,13 +105,27 @@ jest.mock('../../services/blockedContentRefresh', () => ({
 }));
 
 /**
- * #908: the real hook imports the store singleton (MMKV), which does not load
- * under jest, so BOTH exports are module-mocked. Mutable and reset in
- * beforeEach; a test flips it and calls `rerender` to drive the
- * unblocked -> blocked transition.
+ * #908: the real `useBlockedDmPeer` reaches the store singleton (MMKV), which
+ * does not load under jest — hence the mock below. The store module is mocked
+ * separately so `jest.requireActual` on the hooks module is safe: that spread
+ * is what keeps the REAL `useBlockedPeerTransition` (the false -> true latch
+ * and its focus gate) running, which the latch tests at the bottom of this file
+ * depend on. Only the two store-reading exports are overridden.
  */
-let mockBlockedPeer: { peerId: string; label: string; labelResolved: boolean } | null = null;
+jest.mock('../../stores/useAppStore', () => ({
+  useAppStore: Object.assign(
+    jest.fn(() => null),
+    { getState: jest.fn(() => ({})) },
+  ),
+}));
+
+/**
+ * Mutable and reset in beforeEach; a test flips it and calls `rerender` to
+ * drive the unblocked -> blocked transition.
+ */
+let mockBlockedPeer: { peerId: string; label: string } | null = null;
 jest.mock('../../hooks/useBlockedDmPeer', () => ({
+  ...jest.requireActual('../../hooks/useBlockedDmPeer'),
   // Honours the id argument: the screen passes `isDm ? groupId : null`, and
   // the real hook answers null for null — an argument-blind mock would make
   // the orbit composer look blocked.
@@ -117,7 +137,8 @@ jest.mock('../../hooks/useBlockedDmPeer', () => ({
 
 import * as Sentry from '@sentry/react-native';
 import { createNewThread } from '../../services/threadService';
-import { Alert } from 'react-native';
+import { AccessibilityInfo, Alert, Keyboard } from 'react-native';
+import { LinkPreviewCard } from '../../components/LinkPreviewCard';
 import {
   ConflictError,
   NetworkError,
@@ -214,6 +235,7 @@ beforeEach(() => {
   mockUsePreventRemove.mockClear();
   mockSelectedMedia = [];
   mockBlockedPeer = null;
+  mockIsFocused = true;
   mockUploadMediaBatch.mockResolvedValue(['media-id-1']);
   mockRollbackUploadedMedia.mockResolvedValue(undefined);
 });
@@ -1171,7 +1193,7 @@ describe('ComposeThreadScreen — upload reuse cache and unmount safety', () => 
 
 describe('ComposeThreadScreen — blocked DM peer', () => {
   const dmParams = { groupId: 'dm-1', isDm: true };
-  const blocked = { peerId: 'u-bob', label: '@bob', labelResolved: true };
+  const blocked = { peerId: 'u-bob', label: '@bob' };
 
   const oneImage = [
     {
@@ -1243,15 +1265,195 @@ describe('ComposeThreadScreen — blocked DM peer', () => {
     expect(findByTestId(renderer.root, 'compose-body-input').props.value).toBe('draft text');
   });
 
-  it('keeps the discard guard armed while blocked with media selected', () => {
-    mockBlockedPeer = blocked;
+  it('keeps the discard guard armed when the block lands on held media', async () => {
+    // The armed state is the post-failure one: the batch landed, the create
+    // failed, and the screen is holding ids only this session can attach
+    // (#724b). Selecting media is NOT enough on its own — `usePreventRemove`
+    // is called on every render, so the old `toHaveBeenCalled()` here could
+    // never fail; the last call's arm flag is the only thing that says
+    // anything.
     mockSelectedMedia = oneImage;
+    mockUploadMediaBatch.mockResolvedValue(['media-id-1']);
+    mockCreateNewThread.mockRejectedValue(new Error('boom'));
+
     const renderer = renderScreen(dmParams);
-    // The guard is mounted (it would strand uploaded ids as FileLibrary
-    // ghosts if it were disarmed, #724b) and the strip gives its prompt
-    // something to refer to.
-    expect(mockUsePreventRemove).toHaveBeenCalled();
+    act(() => {
+      findByTestId(renderer.root, 'compose-body-input').props.onChangeText('Some body text');
+    });
+    await act(async () => {
+      findSendButton(renderer).props.onPress();
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+    // Positive control: armed BEFORE the block, so a `false` below is the
+    // block's doing and not the fixture's.
+    expect(mockUsePreventRemove.mock.calls.at(-1)?.[0]).toBe(true);
+
+    mockBlockedPeer = blocked;
+    rerender(renderer, dmParams);
+
+    // Still armed — blocking must not strand the uploaded ids as FileLibrary
+    // ghosts — and the strip gives the prompt something to refer to.
+    expect(mockUsePreventRemove.mock.calls.at(-1)?.[0]).toBe(true);
     expect(() => findByTestId(renderer.root, 'media-thumbnail-strip')).not.toThrow();
+  });
+
+  it('hides the link preview card while blocked', () => {
+    const renderer = renderScreen(dmParams);
+    act(() => {
+      findByTestId(renderer.root, 'compose-body-input').props.onChangeText('see https://x.test');
+    });
+    // Positive control: the card IS mounted for the same draft when the peer
+    // is not blocked. (It renders null until a preview resolves, so only the
+    // component's presence in the tree is observable.)
+    expect(renderer.root.findAllByType(LinkPreviewCard).length).toBeGreaterThan(0);
+
+    mockBlockedPeer = blocked;
+    rerender(renderer, dmParams);
+
+    // Moved inside the non-blocked branch: the card must not preview — or keep
+    // fetching metadata for — a draft the user can no longer see.
+    expect(renderer.root.findAllByType(LinkPreviewCard).length).toBe(0);
+  });
+
+  it('dismisses the keyboard on the false -> true block transition', () => {
+    const dismissSpy = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => {});
+    try {
+      const renderer = renderScreen(dmParams);
+      act(() => {
+        findByTestId(renderer.root, 'compose-body-input').props.onChangeText('Some body text');
+      });
+      expect(dismissSpy).not.toHaveBeenCalled();
+
+      mockBlockedPeer = blocked;
+      rerender(renderer, dmParams);
+
+      // The body input unmounts under the keyboard and Android does not
+      // guarantee it drops on its own.
+      expect(dismissSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      dismissSpy.mockRestore();
+    }
+  });
+
+  it('announces the block exactly once, however many renders follow', () => {
+    const announceSpy = jest
+      .spyOn(AccessibilityInfo, 'announceForAccessibility')
+      .mockImplementation(() => {});
+    try {
+      const renderer = renderScreen(dmParams);
+      expect(announceSpy).not.toHaveBeenCalled();
+
+      mockBlockedPeer = blocked;
+      rerender(renderer, dmParams);
+      expect(announceSpy).toHaveBeenCalledTimes(1);
+      expect(announceSpy).toHaveBeenCalledWith('You blocked @bob. Sending is turned off.');
+
+      // Three more committed renders while still blocked, including the
+      // identity churn a contacts/conversations upsert produces and a label
+      // change. The `wasBlockedRef` latch has to swallow all of them — without
+      // it VoiceOver repeats the sentence on every store write.
+      rerender(renderer, dmParams);
+      mockBlockedPeer = { ...blocked };
+      rerender(renderer, dmParams);
+      mockBlockedPeer = { peerId: 'u-bob', label: 'user-u-bob' };
+      rerender(renderer, dmParams);
+
+      expect(announceSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      announceSpy.mockRestore();
+    }
+  });
+
+  it('re-announces after an unblock and a re-block', () => {
+    const announceSpy = jest
+      .spyOn(AccessibilityInfo, 'announceForAccessibility')
+      .mockImplementation(() => {});
+    try {
+      const renderer = renderScreen(dmParams);
+      mockBlockedPeer = blocked;
+      rerender(renderer, dmParams);
+      mockBlockedPeer = null;
+      rerender(renderer, dmParams);
+      mockBlockedPeer = blocked;
+      rerender(renderer, dmParams);
+
+      // The latch resets on true -> false, so the second block is a real edge.
+      expect(announceSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      announceSpy.mockRestore();
+    }
+  });
+
+  it('skips the announcement while unfocused but still runs the screen resets', () => {
+    // ThreadDetail, ChatDetail and this composer can all be mounted on the
+    // same stack: only the focused one speaks, but every one of them still has
+    // to cancel its upload and drop its keyboard.
+    mockIsFocused = false;
+    const announceSpy = jest
+      .spyOn(AccessibilityInfo, 'announceForAccessibility')
+      .mockImplementation(() => {});
+    const dismissSpy = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => {});
+    try {
+      mockSelectedMedia = oneImage;
+      let capturedSignal: AbortSignal | undefined;
+      mockUploadMediaBatch.mockImplementation(
+        (_items: unknown, _groupId: unknown, opts: { signal: AbortSignal }) => {
+          capturedSignal = opts.signal;
+          return new Promise(() => {});
+        },
+      );
+
+      const renderer = renderScreen(dmParams);
+      act(() => {
+        findByTestId(renderer.root, 'compose-body-input').props.onChangeText('Some body text');
+      });
+      act(() => {
+        findSendButton(renderer).props.onPress();
+      });
+      expect(capturedSignal!.aborted).toBe(false);
+
+      mockBlockedPeer = blocked;
+      rerender(renderer, dmParams);
+
+      expect(announceSpy).not.toHaveBeenCalled();
+      // The resets are NOT focus-gated.
+      expect(capturedSignal!.aborted).toBe(true);
+      expect(dismissSpy).toHaveBeenCalled();
+    } finally {
+      announceSpy.mockRestore();
+      dismissSpy.mockRestore();
+    }
+  });
+
+  it('starts no upload and no create from a press queued before the block', async () => {
+    // The composer's Send is `disabled` while blocked, but a test press (and a
+    // real press already in the event queue) bypasses that — so the refusal
+    // has to live inside `doPost`.
+    mockSelectedMedia = oneImage;
+    mockCreateNewThread.mockResolvedValue({ id: 'thread-1', title: null });
+
+    const renderer = renderScreen(dmParams);
+    act(() => {
+      findByTestId(renderer.root, 'compose-body-input').props.onChangeText('Some body text');
+    });
+    // Positive control: with the same draft and media, an unblocked press DOES
+    // start the upload — so the zero counts below are the guard's doing.
+    expect(findSendButton(renderer).props.disabled).toBe(false);
+
+    mockBlockedPeer = blocked;
+    rerender(renderer, dmParams);
+    mockUploadMediaBatch.mockClear();
+    mockCreateNewThread.mockClear();
+
+    await act(async () => {
+      findSendButton(renderer).props.onPress();
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(mockUploadMediaBatch).not.toHaveBeenCalled();
+    expect(mockCreateNewThread).not.toHaveBeenCalled();
+    expect(mockNavigation.goBack).not.toHaveBeenCalled();
+    expect(mockNavigation.replace).not.toHaveBeenCalled();
   });
 
   it('cancels an in-flight upload when the block lands mid-send', () => {

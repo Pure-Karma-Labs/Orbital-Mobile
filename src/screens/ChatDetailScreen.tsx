@@ -8,7 +8,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import {
-  AccessibilityInfo,
   Animated,
   FlatList,
   Keyboard,
@@ -44,7 +43,7 @@ import { usePullToRefresh } from '../hooks/usePullToRefresh';
 import { useSQLiteSearch } from '../hooks/useSQLiteSearch';
 import { useWebSocketSubscription } from '../hooks/useWebSocketSubscription';
 import { useBlockedSet } from '../hooks/useBlockedSet';
-import { useBlockedDmPeer } from '../hooks/useBlockedDmPeer';
+import { useBlockedDmPeer, useBlockedPeerTransition } from '../hooks/useBlockedDmPeer';
 import { BlockedPeerNotice } from '../components/BlockedPeerNotice';
 import { useIsMuted } from '../hooks/useIsMuted';
 import { useMuteActions } from '../hooks/useMuteActions';
@@ -99,7 +98,7 @@ function buildListRows(threads: Thread[]): ListRow[] {
   return rows;
 }
 
-function EmptyState({ onCompose }: { onCompose?: () => void }): React.JSX.Element {
+function EmptyState({ onCompose }: { onCompose: () => void }): React.JSX.Element {
   const theme = useTheme();
 
   const containerStyle: ViewStyle = {
@@ -140,9 +139,7 @@ function EmptyState({ onCompose }: { onCompose?: () => void }): React.JSX.Elemen
         <Text style={borderStyle}>{'┌─────────────────────┐'}</Text>
         <Text style={messageStyle}>{'No messages yet\nStart the conversation!'}</Text>
         <Text style={borderStyle}>{'└─────────────────────┘'}</Text>
-        {onCompose != null && (
-          <Button title="Send a Message" onPress={onCompose} variant="primary" />
-        )}
+        <Button title="Send a Message" onPress={onCompose} variant="primary" />
       </View>
     </View>
   );
@@ -197,27 +194,16 @@ export function ChatDetailScreen({
   // when the conversation row is missing from the store — a push tap or a
   // deep link can land here before the DM list has loaded. Nothing redirects:
   // the screen stays reachable and explains itself.
-  const blockedPeer = useBlockedDmPeer(conversationId, recipientId);
+  const blockedPeer = useBlockedDmPeer(conversationId, {
+    hint: recipientId,
+    dmIntent: true,
+  });
   const isBlocked = blockedPeer != null;
 
-  // Announce once on the false -> true edge only. `blockedPeer` is a fresh
-  // object on every conversations/contacts upsert, so the latch — not the
-  // object identity — is what makes this fire exactly once (iOS ignores a
-  // live region, so the announcement is explicit).
-  const wasBlockedRef = useRef(false);
-  const blockedLabelRef = useRef<string | null>(null);
-  blockedLabelRef.current = blockedPeer?.label ?? null;
-  useEffect(() => {
-    if (!isBlocked) {
-      wasBlockedRef.current = false;
-      return;
-    }
-    if (wasBlockedRef.current) return;
-    wasBlockedRef.current = true;
-    AccessibilityInfo.announceForAccessibility(
-      `You blocked ${blockedLabelRef.current ?? 'this person'}. Sending is turned off.`,
-    );
-  }, [isBlocked]);
+  // Announce once on the false -> true edge only (iOS ignores a live region,
+  // so the announcement is explicit). This screen has nothing to reset: no
+  // composer input and no upload of its own.
+  useBlockedPeerTransition(blockedPeer);
 
   const flatListRef = useRef<FlatList<ListRow>>(null);
 

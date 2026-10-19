@@ -4,15 +4,22 @@
  * (#908).
  *
  * TOKENS. Deliberately NEUTRAL, not `yellowTint`/`warning`: a block is a state
- * the user chose, not a warning about something that went wrong. Surface
- * `colors.surface` on a `colors.borderSubtle` hairline at
- * `borderRadius.base` (3px), label text at `fontSize.sm` in
- * `colors.textSecondary`; the Unblock control reuses the secondary-chip idiom
- * from `settings/BlockedUsersScreen` (`surfaceElevated` on `borderStrong`).
+ * the user chose, not a warning about something that went wrong. The notice
+ * takes the place of a composer input row, so it takes the INPUT surface —
+ * `colors.surfaceElevated` ("input fields, top-level posts" in
+ * MOBILE-DESIGN-FOUNDATION) on a `colors.borderSubtle` hairline at
+ * `borderRadius.base` (3px). Label text is `fontSize.base` in
+ * `colors.textPrimary`, and the Unblock control reuses the secondary-chip
+ * tokens from `settings/BlockedUsersScreen` verbatim (`surface` on
+ * `borderSubtle`), which is what keeps the chip legible against the elevated
+ * notice instead of disappearing into it.
  *
- * The label is rendered with plain `Text`, matching BlockedUsersScreen: it is a
- * username, not user-authored content, and `EmojiText` is reserved for the
- * latter.
+ * The label is rendered with plain `Text` where BlockedUsersScreen uses
+ * `EmojiText` — a DELIBERATE divergence. A handle is `[A-Za-z0-9_]` only
+ * (`utils/validateUsername`, mirroring the backend rule) and the unresolved
+ * fallback is `user-<prefix>`, so no emoji can occur; plain `Text` also lets
+ * the whole sentence carry one `accessibilityLabel`, which `EmojiText` has no
+ * prop for.
  */
 
 import React, { useCallback } from 'react';
@@ -55,7 +62,7 @@ export function BlockedPeerNotice({
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: theme.spacing.sm,
-    backgroundColor: theme.colors.surface,
+    backgroundColor: theme.colors.surfaceElevated,
     borderWidth: 1,
     borderColor: theme.colors.borderSubtle,
     borderRadius: theme.borderRadius.base,
@@ -66,14 +73,14 @@ export function BlockedPeerNotice({
   const textStyle: TextStyle = {
     flex: 1,
     fontFamily: theme.typography.fontFamily.body,
-    fontSize: theme.typography.fontSize.sm,
-    color: theme.colors.textSecondary,
+    fontSize: theme.typography.fontSize.base,
+    color: theme.colors.textPrimary,
   };
 
   const buttonStyle: ViewStyle = {
-    backgroundColor: theme.colors.surfaceElevated,
+    backgroundColor: theme.colors.surface,
     borderWidth: 1,
-    borderColor: theme.colors.borderStrong,
+    borderColor: theme.colors.borderSubtle,
     borderRadius: theme.borderRadius.base,
     paddingHorizontal: theme.spacing.md,
     minHeight: 44,
@@ -105,5 +112,3 @@ export function BlockedPeerNotice({
     </View>
   );
 }
-
-export default BlockedPeerNotice;

@@ -272,6 +272,21 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
     [blockedKey],
   );
 
+  // Same idiom for `contacts`: the chip effect below resolves DM peers through
+  // the contact reverse-scan, so it must re-run when a LATE contacts hydration
+  // first maps a pre-#908 DM row to its peer. Collapsed to a string key over
+  // the only thing that effect reads — which contact owns which conversation
+  // id — so an avatar or display-name write does not re-run it. Empty (and so
+  // free) while nothing is blocked, which is nearly every session.
+  const contacts = useAppStore((s) => s.contacts);
+  const contactConvKey = useMemo(() => {
+    if (excludeAuthorIds.length === 0) return '';
+    return Object.values(contacts ?? {})
+      .map((c) => `${c.id}:${(c.conversationIds ?? []).join('|')}`)
+      .sort()
+      .join(',');
+  }, [contacts, excludeAuthorIds]);
+
   // ---------------------------------------------------------------------------
   // State
   // ---------------------------------------------------------------------------
@@ -480,22 +495,30 @@ export function FileLibraryScreen({ navigation }: Props): React.JSX.Element {
     // Resolved through the single DM-peer resolver, which returns null for
     // group rows — so legitimate DM chips and every orbit chip stay. Keyed on
     // the existing `excludeAuthorIds` identity (#897 idiom), which only
-    // changes on a REAL block or unblock.
+    // changes on a REAL block or unblock, plus `contactConvKey` so a late
+    // contacts hydration cannot leave a blocked peer's handle on a chip.
     const blocked = excludeAuthorIds.length > 0 ? new Set(excludeAuthorIds) : null;
-    const contacts = blocked ? useAppStore.getState().contacts : undefined;
+    // Read imperatively: `contactConvKey` is what makes this effect REACT to
+    // contacts, and getState() is the freshest value at effect time.
+    const contactsNow = blocked ? useAppStore.getState().contacts : undefined;
     const opts: Array<{ id: string; name: string }> = [];
     for (const cId of convIds) {
       const conv = conversations[cId];
       const name = conv?.name ?? null;
       if (!name) continue;
       if (blocked) {
-        const peerId = resolveDmPeerId(cId, conv, contacts);
+        const peerId = resolveDmPeerId(cId, conv, contactsNow);
         if (peerId !== null && blocked.has(peerId)) continue;
       }
       opts.push({ id: cId, name });
     }
     setOrbitOptions(opts);
-  }, [activeConversationId, conversations, excludeAuthorIds]);
+    // A chip that just disappeared must not leave the grid scoped to it: with
+    // no chip selected, "All" would read as active while the query — and "Save
+    // all" — still ran over the hidden conversation. Functional update so this
+    // effect does not have to depend on `orbitFilter`.
+    setOrbitFilter((prev) => (prev != null && !opts.some((o) => o.id === prev) ? null : prev));
+  }, [activeConversationId, conversations, excludeAuthorIds, contactConvKey]);
 
   // ---------------------------------------------------------------------------
   // Pagination

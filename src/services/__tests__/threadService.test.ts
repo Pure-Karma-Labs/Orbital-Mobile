@@ -1943,15 +1943,8 @@ describe('#883 createNewThread conversation bump', () => {
 // ---------------------------------------------------------------------------
 
 describe('#908 blocked DM peer refuses the send', () => {
-  function seedStore(state: {
-    conversations?: Record<string, Conversation>;
-    contacts?: Record<string, Contact>;
-    blockedUserIds?: string[];
-  }): void {
-    const { useAppStore } = jest.requireMock('../../stores/useAppStore') as {
-      useAppStore: { getState: jest.Mock };
-    };
-    useAppStore.getState.mockReturnValue({
+  function baseStoreState() {
+    return {
       threads: {},
       replies: {},
       replyIdsByThread: {},
@@ -1971,10 +1964,23 @@ describe('#908 blocked DM peer refuses the send', () => {
       updateThreadSyncStatus: mockUpdateThreadSyncStatus,
       bumpLastMessageAt: mockBumpLastMessageAt,
       blockedUsersGeneration: 0,
+      blockedUserProfiles: {},
+    };
+  }
+
+  function seedStore(state: {
+    conversations?: Record<string, Conversation>;
+    contacts?: Record<string, Contact>;
+    blockedUserIds?: string[];
+  }): void {
+    const { useAppStore } = jest.requireMock('../../stores/useAppStore') as {
+      useAppStore: { getState: jest.Mock };
+    };
+    useAppStore.getState.mockReturnValue({
+      ...baseStoreState(),
       conversations: state.conversations ?? {},
       contacts: state.contacts ?? {},
       blockedUserIds: state.blockedUserIds ?? [],
-      blockedUserProfiles: {},
     });
   }
 

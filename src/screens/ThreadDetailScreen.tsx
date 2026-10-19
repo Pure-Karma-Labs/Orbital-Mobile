@@ -24,7 +24,6 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AccessibilityInfo,
   Alert,
   Animated,
   FlatList,
@@ -74,7 +73,11 @@ import { EmojiPicker } from '../components/EmojiPicker';
 import type { Reply, Thread } from '../types/store';
 import type { ThreadsStackParamList } from '../navigation/types';
 import { useBlockedSet } from '../hooks/useBlockedSet';
-import { useBlockedDmPeer, getBlockedDmPeer } from '../hooks/useBlockedDmPeer';
+import {
+  useBlockedDmPeer,
+  useBlockedPeerTransition,
+  getBlockedDmPeer,
+} from '../hooks/useBlockedDmPeer';
 import { useIsMuted } from '../hooks/useIsMuted';
 import { useMuteActions } from '../hooks/useMuteActions';
 import { Emoji } from '../components/Emoji';
@@ -341,6 +344,7 @@ export function ThreadDetailScreen({
   // and re-render every cell). Mirrors the blockedRef/collapsedRef idiom above.
   const blockedPeerRef = useRef(false);
   blockedPeerRef.current = isBlocked;
+  // Read by the BlockedRecipientError alert, which runs in a [] -deps callback.
   const blockedLabelRef = useRef<string | null>(null);
   blockedLabelRef.current = blockedPeer?.label ?? null;
   // Render-synced too: the transition effect runs after a commit, where the
@@ -350,30 +354,20 @@ export function ThreadDetailScreen({
   const uploadingRef = useRef(false);
   uploadingRef.current = uploading;
 
-  // The false -> true transition. Latched on a ref, not on `blockedPeer`
-  // identity: that object is rebuilt on every conversations/contacts upsert,
-  // so an identity-keyed effect would re-announce and re-cancel on unrelated
-  // store writes. Resets on true -> false, so a re-block re-fires.
-  const wasBlockedRef = useRef(false);
-  useEffect(() => {
-    if (!isBlocked) {
-      wasBlockedRef.current = false;
-      return;
-    }
-    if (wasBlockedRef.current) return;
-    wasBlockedRef.current = true;
+  // The false -> true transition, via the shared latch.
+  useBlockedPeerTransition(blockedPeer, () => {
     // No stale reply chip, no surprise keyboard pop, and no emoji picker
-    // springing open on unblock.
+    // springing open on unblock. `keyboardShouldPersistTaps="handled"` means
+    // the input can still be focused when the block lands, and the input row
+    // unmounts under the keyboard — Android does not guarantee it drops.
+    Keyboard.dismiss();
     setReplyTarget(null);
     setShowEmojiPicker(false);
     pendingPickerShow.current = false;
     // A send already in flight with an upload: cancelling takes the existing
     // silent `isUploadCancellation` path, and the notice explains the rest.
     if (sendingRef.current && uploadingRef.current) cancelUpload();
-    AccessibilityInfo.announceForAccessibility(
-      `You blocked ${blockedLabelRef.current ?? 'this person'}. Sending is turned off.`,
-    );
-  }, [isBlocked, cancelUpload]);
+  });
 
   // Pagination state (local — not stored in Zustand). Offsets count RAW server
   // rows, never decrypted ones: a row that fails to decrypt still occupies a

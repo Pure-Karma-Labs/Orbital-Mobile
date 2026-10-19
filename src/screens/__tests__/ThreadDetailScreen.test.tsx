@@ -9,11 +9,17 @@
 // dispatch() calls from the guard are observable on the same mock.
 // ---------------------------------------------------------------------------
 const mockUsePreventRemove = jest.fn();
+// #908: `useBlockedPeerTransition` calls `useIsFocused()`, which the real
+// module can only answer from inside a navigation container. Driven from this
+// flag so a test can prove the announcement — and ONLY the announcement — is
+// gated on focus.
+let mockIsFocused = true;
 jest.mock('@react-navigation/native', () => ({
   ...jest.requireActual('@react-navigation/native'),
   usePreventRemove: (preventRemove: boolean, cb: unknown) =>
     mockUsePreventRemove(preventRemove, cb),
   useNavigation: () => mockNavigation,
+  useIsFocused: () => mockIsFocused,
 }));
 
 jest.mock('@sentry/react-native', () => ({
@@ -136,7 +142,7 @@ jest.mock('../../components/Emoji', () => {
 });
 
 import React from 'react';
-import { Alert } from 'react-native';
+import { AccessibilityInfo, Alert, Keyboard } from 'react-native';
 import * as Sentry from '@sentry/react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import { ThemeProvider } from '../../theme';
@@ -424,6 +430,7 @@ function applyDefaultMocks(): void {
   mockConversations = {};
   mockBlockedUserIds = [];
   mockContacts = {};
+  mockIsFocused = true;
   // The guard mock has no implementation — clearAllMocks() above already resets
   // its call history. Explicitly clear in case a test overrides its behaviour.
   mockUsePreventRemove.mockReset();
@@ -2968,6 +2975,157 @@ describe('ThreadDetailScreen — blocked DM peer', () => {
     expect(abortCount).toBe(1);
   });
 
+  it('dismisses the keyboard on the false -> true block transition', async () => {
+    const dismissSpy = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => {});
+    try {
+      makeDm();
+      const renderer = await renderScreen();
+      expect(dismissSpy).not.toHaveBeenCalled();
+
+      blockPeer();
+      await rerender(renderer);
+
+      // `keyboardShouldPersistTaps="handled"` means the input can still hold
+      // focus when the block lands, and the input row unmounts under the
+      // keyboard — Android does not guarantee it drops on its own.
+      expect(dismissSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      dismissSpy.mockRestore();
+    }
+  });
+
+  it('announces the block exactly once, however many renders follow', async () => {
+    const announceSpy = jest
+      .spyOn(AccessibilityInfo, 'announceForAccessibility')
+      .mockImplementation(() => {});
+    try {
+      makeDm();
+      const renderer = await renderScreen();
+      expect(announceSpy).not.toHaveBeenCalled();
+
+      blockPeer();
+      await rerender(renderer);
+      expect(announceSpy).toHaveBeenCalledTimes(1);
+      expect(announceSpy).toHaveBeenCalledWith('You blocked @bob. Sending is turned off.');
+
+      // Three more committed renders while still blocked, including the
+      // contacts write that rebuilds the derived object and a label change.
+      // The `wasBlockedRef` latch has to swallow all of them — without it
+      // VoiceOver repeats the sentence on every unrelated store write.
+      await rerender(renderer);
+      mockContacts = { 'u-other': { id: 'u-other', username: 'carol', conversationIds: [] } };
+      await rerender(renderer);
+      mockContacts = { 'u-bob': { id: 'u-bob', username: 'robert', conversationIds: ['group-1'] } };
+      await rerender(renderer);
+
+      expect(announceSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      announceSpy.mockRestore();
+    }
+  });
+
+  it('re-announces after an unblock and a re-block', async () => {
+    const announceSpy = jest
+      .spyOn(AccessibilityInfo, 'announceForAccessibility')
+      .mockImplementation(() => {});
+    try {
+      makeDm();
+      const renderer = await renderScreen();
+      blockPeer();
+      await rerender(renderer);
+      mockBlockedUserIds = [];
+      await rerender(renderer);
+      blockPeer();
+      await rerender(renderer);
+
+      // The latch resets on true -> false, so the second block is a real edge.
+      expect(announceSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      announceSpy.mockRestore();
+    }
+  });
+
+  it('skips the announcement while unfocused but still runs the screen resets', async () => {
+    // ThreadDetail, ChatDetail and the composer can all be mounted on the same
+    // stack. Only the focused one speaks — but every one of them still has to
+    // drop its reply chip, its keyboard and its in-flight upload.
+    mockIsFocused = false;
+    const announceSpy = jest
+      .spyOn(AccessibilityInfo, 'announceForAccessibility')
+      .mockImplementation(() => {});
+    const dismissSpy = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => {});
+    try {
+      makeDm();
+      mockSelectedMedia = oneImage;
+      let capturedSignal: AbortSignal | undefined;
+      mockUploadMediaBatch.mockImplementation(
+        (_items: unknown, _groupId: unknown, opts: { signal: AbortSignal }) => {
+          capturedSignal = opts.signal;
+          return new Promise(() => {});
+        },
+      );
+
+      const renderer = await renderScreen();
+      const row = renderer.root.findAll((node) => typeof node.props.onReplyPress === 'function');
+      await act(async () => {
+        row[0].props.onReplyPress('reply-1', 'bob', 0);
+      });
+      expect(find(renderer, 'reply-context').length).toBeGreaterThan(0);
+      await act(async () => {
+        find(renderer, 'reply-input')[0].props.onChangeText('hello');
+      });
+      await act(async () => {
+        find(renderer, 'send-button')[0].props.onPress();
+      });
+      expect(capturedSignal!.aborted).toBe(false);
+
+      blockPeer();
+      await rerender(renderer);
+
+      expect(announceSpy).not.toHaveBeenCalled();
+      // The resets are NOT focus-gated.
+      expect(find(renderer, 'reply-context').length).toBe(0);
+      expect(capturedSignal!.aborted).toBe(true);
+      expect(dismissSpy).toHaveBeenCalled();
+    } finally {
+      announceSpy.mockRestore();
+      dismissSpy.mockRestore();
+    }
+  });
+
+  it('starts no upload and posts no reply from a press queued before the block', async () => {
+    // The block lands between the press and the handler running, so the
+    // composer still holds the pre-block render: the input row and the Send
+    // button are both on screen and the closure believes it may send. Only
+    // `handleSend`'s imperative `getBlockedDmPeer` read can refuse here.
+    makeDm();
+    mockSelectedMedia = oneImage;
+    const renderer = await renderScreen();
+    await act(async () => {
+      find(renderer, 'reply-input')[0].props.onChangeText('hello');
+    });
+
+    blockPeer();
+    await act(async () => {
+      find(renderer, 'send-button')[0].props.onPress();
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(mockUploadMediaBatch).not.toHaveBeenCalled();
+    expect(mockPostReply).not.toHaveBeenCalled();
+
+    // Positive control on the SAME renderer and the SAME button: with the
+    // block lifted, that press does go through — so the zero counts above are
+    // the guard's doing and not a broken press.
+    mockBlockedUserIds = [];
+    await act(async () => {
+      find(renderer, 'send-button')[0].props.onPress();
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+    expect(mockUploadMediaBatch).toHaveBeenCalledTimes(1);
+    expect(mockPostReply).toHaveBeenCalledTimes(1);
+  });
+
   it('makes the reply arrows a no-op while blocked', async () => {
     makeDm();
     blockPeer();
@@ -3007,8 +3165,9 @@ describe('ThreadDetailScreen — blocked DM peer', () => {
     expect(alertSpy).toHaveBeenCalledTimes(1);
     expect(alertSpy.mock.calls[0][0]).toBe('Not Sent');
     expect(String(alertSpy.mock.calls[0][1])).toContain('Not sent —');
-    // Never the generic retry alert.
-    expect(alertSpy.mock.calls[0][0]).not.toBe('Reply Failed');
+    // (The old `not.toBe('Reply Failed')` line lived here. It could never
+    // fail: the two assertions above already pin the title to 'Not Sent' and
+    // the call count to one.)
     // R3-3: a deliberate client refusal is not a failure, so nothing is
     // captured and the peer id never reaches Sentry.
     expect(mockCaptureException).not.toHaveBeenCalled();

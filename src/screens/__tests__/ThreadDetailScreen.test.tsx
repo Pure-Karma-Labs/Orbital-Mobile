@@ -3558,4 +3558,220 @@ describe('ThreadDetailScreen — group key (#912)', () => {
     // The stale content it explains is still on screen.
     expect(rendered).toContain(fakeThread.title);
   });
+
+  // -------------------------------------------------------------------------
+  // Pull-to-refresh (#940)
+  //
+  // The refresh used to swallow EVERY error, so a key verdict survived the
+  // pull that was meant to re-classify it — most visibly after #938's 24h
+  // bound turned a pending wrap into `stale_pending`, where the screen kept
+  // promising a re-send that was never coming.
+  //
+  // The RefreshControl only exists on the LIST branch, so every case here
+  // needs a thread row in the store; reply rows come with it, so a footer
+  // assertion is about the key copy and never about "Be the first to reply".
+  //
+  // Rejections are queued with `*Once` only, and both service mocks are reset
+  // to their resolved defaults afterwards: `jest.clearAllMocks()` in the global
+  // beforeEach clears call history but NOT a leftover once-queue, so an
+  // unconsumed rejection would surface inside the next test's load.
+  //
+  // REAL TIMERS, like the rest of this file (#731).
+  // -------------------------------------------------------------------------
+
+  describe('pull-to-refresh (#940)', () => {
+    /** Thread + reply rows — the refresh control lives on the list branch. */
+    function seedThreadWithReplies(): void {
+      mockThreadsStore(
+        {
+          A: makeReply('A', null, now - 3000),
+          A1: makeReply('A1', 'A', now - 2000),
+        },
+        ['A', 'A1'],
+      );
+    }
+
+    /**
+     * Fire the pull-to-refresh. The list node comes from this file's existing
+     * `flatList()` helper, which is built on `root.find` — that THROWS on a
+     * second match, so the single Animated.FlatList it returns is unambiguous.
+     */
+    async function refresh(renderer: ReactTestRenderer): Promise<void> {
+      await flatList(renderer).props.refreshControl.props.onRefresh();
+    }
+
+    /** Flush the microtasks a settle queued, the way renderScreen does. */
+    async function flush(): Promise<void> {
+      await act(async () => {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      });
+    }
+
+    beforeEach(() => {
+      seedThreadWithReplies();
+    });
+
+    afterEach(() => {
+      mockLoadThread.mockReset();
+      mockLoadReplies.mockReset();
+      mockLoadThread.mockResolvedValue(fakeThread);
+      mockLoadReplies.mockResolvedValue(page({}));
+      resetThreadsStore();
+    });
+
+    // The #938 case itself: the wrap the banner was promising went past its
+    // 24h bound, so the SAME dead key now raises `stale_pending`. The pull is
+    // the only thing that can re-ask, so it has to be allowed to answer.
+    it('replaces the pending banner with the failure footer when the refresh re-classifies the key', async () => {
+      mockLoadThread.mockRejectedValueOnce(pendingWrap());
+
+      const renderer = await renderScreen();
+      expect(find(renderer, 'group-key-pending-banner').length).toBeGreaterThan(0);
+
+      mockLoadThread.mockRejectedValueOnce(unwrapFailure('stale_pending'));
+      await act(async () => {
+        await refresh(renderer);
+      });
+      await flush();
+
+      expect(find(renderer, 'group-key-pending-banner').length).toBe(0);
+      expect(find(renderer, 'group-key-failure-footer').length).toBeGreaterThan(0);
+      expect(texts(renderer)).toContain(UNREADABLE);
+    });
+
+    it('clears the pending banner on a refresh that succeeds', async () => {
+      mockLoadThread.mockRejectedValueOnce(pendingWrap());
+
+      const renderer = await renderScreen();
+      expect(find(renderer, 'group-key-pending-banner').length).toBeGreaterThan(0);
+
+      // Both service mocks keep their resolved defaults: the key opened.
+      await act(async () => {
+        await refresh(renderer);
+      });
+      await flush();
+
+      expect(find(renderer, 'group-key-pending-banner').length).toBe(0);
+      expect(find(renderer, 'group-key-failure-footer').length).toBe(0);
+    });
+
+    // A network blip must neither clear a key verdict nor claim to be one.
+    // `applyKeyLoadError` returns false here and writes nothing, and the
+    // refresh has no `error` text of its own — the stale rows stay.
+    it('keeps the pending banner when the refresh fails for a non-key reason', async () => {
+      mockLoadThread.mockRejectedValueOnce(pendingWrap());
+
+      const renderer = await renderScreen();
+      expect(find(renderer, 'group-key-pending-banner').length).toBeGreaterThan(0);
+
+      mockLoadThread.mockRejectedValueOnce(new Error('network down'));
+      await act(async () => {
+        await refresh(renderer);
+      });
+      await flush();
+
+      expect(find(renderer, 'group-key-pending-banner').length).toBeGreaterThan(0);
+      expect(find(renderer, 'group-key-failure-footer').length).toBe(0);
+      expect(texts(renderer)).not.toContain('Could not load thread');
+    });
+
+    // Only a `loadThread` rejection is a verdict about the key. `loadThread`
+    // RESOLVING is proof the key opened, so the banner goes down — and the
+    // replies error that follows is routed nowhere, even though it is an error
+    // `applyKeyLoadError` would happily have turned into failure copy.
+    it('clears the banner and renders no verdict when only the replies page fails', async () => {
+      mockLoadThread.mockRejectedValueOnce(pendingWrap());
+
+      const renderer = await renderScreen();
+      expect(find(renderer, 'group-key-pending-banner').length).toBeGreaterThan(0);
+
+      mockLoadReplies.mockRejectedValueOnce(unwrapFailure('stale_pending'));
+      await act(async () => {
+        await refresh(renderer);
+      });
+      await flush();
+
+      expect(find(renderer, 'group-key-pending-banner').length).toBe(0);
+      expect(find(renderer, 'group-key-failure-footer').length).toBe(0);
+      expect(texts(renderer)).not.toContain(UNREADABLE);
+    });
+
+    // A refresh that loses its replies page must not cost the pass its
+    // contiguity: `beginPaginationPass()` now runs AFTER the awaited
+    // `loadReplies`, so a rejection leaves no empty pass behind and the next
+    // `onEndReached` page can still reconcile. Opening the pass first set
+    // `covered` back to 0, and the offset-2 page below then looked exactly
+    // like the refresh high-water JUMP that is forbidden to delete rows.
+    it('leaves the pagination pass able to reconcile after a refresh loses its replies page', async () => {
+      mockLoadReplies.mockResolvedValueOnce(
+        page({ rawCount: 2, serverIds: ['s1', 's2'], newIdCount: 2, hasMore: true }),
+      );
+
+      const renderer = await renderScreen();
+      expect(mockReconcileThreadReplies).not.toHaveBeenCalled();
+
+      mockLoadReplies.mockRejectedValueOnce(new Error('replies offline'));
+      await act(async () => {
+        await refresh(renderer);
+      });
+      await flush();
+
+      mockLoadReplies.mockResolvedValueOnce(
+        page({ rawCount: 1, serverIds: ['s3'], newIdCount: 1, hasMore: false }),
+      );
+      await act(async () => {
+        await flatList(renderer).props.onEndReached();
+      });
+
+      expect(mockReconcileThreadReplies).toHaveBeenCalledTimes(1);
+      const [threadIdArg, keepIds] = mockReconcileThreadReplies.mock.calls[0];
+      expect(threadIdArg).toBe('thread-1');
+      // Every raw id of the one pass that was never interrupted.
+      expect([...(keepIds as Set<string>)]).toEqual(['s1', 's2', 's3']);
+    });
+
+    // A params-in-place navigate keeps this screen MOUNTED, so a refresh that
+    // settles after the switch belongs to a thread that is no longer on
+    // screen. Nothing it learned may be written, and thread A's own banner
+    // goes with it (the resetKey this screen lacked before #940).
+    it('writes nothing when a thread switch beats the refresh home', async () => {
+      mockLoadThread.mockRejectedValueOnce(pendingWrap());
+
+      const renderer = await renderScreen();
+      expect(find(renderer, 'group-key-pending-banner').length).toBeGreaterThan(0);
+
+      // Deferred so the switch lands while the refresh is still in flight.
+      // `mockImplementationOnce` for the same reason every rejection here is
+      // `*Once`: nothing can leak past this case.
+      let rejectLoad!: (e: unknown) => void;
+      mockLoadThread.mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectLoad = reject;
+          }),
+      );
+      let refreshDone!: Promise<void>;
+      await act(async () => {
+        refreshDone = refresh(renderer);
+      });
+
+      // Thread B's own load fails for a NON-key reason, which is the case that
+      // used to last forever: the values clear only on a success, so without
+      // the resetKey thread A's banner sat over thread B indefinitely.
+      mockLoadThread.mockRejectedValueOnce(new Error('network down'));
+      await updateScreen(renderer, { threadId: 'thread-2' });
+
+      await act(async () => {
+        rejectLoad(unwrapFailure('refused'));
+        await refreshDone;
+      });
+      await flush();
+
+      expect(find(renderer, 'group-key-pending-banner').length).toBe(0);
+      expect(find(renderer, 'group-key-failure-footer').length).toBe(0);
+      expect(find(renderer, 'group-key-failure-notice').length).toBe(0);
+      // Thread B wears its own honest, non-key failure instead.
+      expect(texts(renderer)).toContain('Could not load thread');
+    });
+  });
 });

@@ -1040,4 +1040,175 @@ describe('ChatDetailScreen — group key (#912)', () => {
     expect(count(renderer, 'group-key-pending-body')).toBe(0);
     expect(texts(renderer).join('\n')).toContain('No messages yet');
   });
+
+  // -------------------------------------------------------------------------
+  // Pull-to-refresh re-classification (#940)
+  //
+  // The pull used to swallow every rejection, so a key verdict could only ever
+  // be revised by a remount or a heal bump: the "key is being re-sent" banner
+  // sat through the very refresh meant to re-classify it. Most visible after
+  // #938's 24h bound, which turns a long-pending wrap into `stale_pending` —
+  // the screen kept promising a re-send that was never coming.
+  //
+  // Every case here needs ROWS. The RefreshControl hangs off the FlatList, and
+  // with no rows this screen renders the empty state instead, so there is
+  // nothing to pull.
+  // -------------------------------------------------------------------------
+
+  describe('pull-to-refresh', () => {
+    const MESSAGE_BODY = 'First message in this DM';
+
+    beforeEach(() => {
+      mockUseThreads.mockReturnValue(populatedThreadsState);
+    });
+
+    afterEach(() => {
+      // Hand the surrounding empty-state cases their world back.
+      mockUseThreads.mockReturnValue(emptyThreadsState);
+    });
+
+    /**
+     * The one list that owns the RefreshControl. HOST nodes only: `data` and
+     * `refreshControl` are both spread all the way down from Animated.FlatList
+     * through VirtualizedList to the ScrollView, so six instances carry them
+     * and exactly one of them is the host. Asserted UNIQUE either way — a
+     * second match would mean this finder had quietly started driving a
+     * different list than the one under test.
+     */
+    function refreshList(renderer: ReactTestRenderer): ReactTestInstance {
+      const nodes = renderer.root.findAll(
+        (n) =>
+          typeof n.type === 'string' &&
+          Array.isArray(n.props.data) &&
+          n.props.refreshControl != null,
+      );
+      expect(nodes).toHaveLength(1);
+      return nodes[0];
+    }
+
+    function hasRows(renderer: ReactTestRenderer): boolean {
+      return texts(renderer).includes(MESSAGE_BODY);
+    }
+
+    /** Pull, and let the refresh settle. `handleRefresh` never rejects. */
+    async function pull(renderer: ReactTestRenderer): Promise<void> {
+      const { onRefresh } = refreshList(renderer).props.refreshControl.props;
+      await act(async () => {
+        await onRefresh();
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      });
+    }
+
+    /**
+     * Pull, run `during` while the refresh is STILL in flight, then let it
+     * settle. The pull is only STARTED here: `during` runs with no await in
+     * between, so no microtask — and therefore no `.catch` continuation — can
+     * run before it.
+     */
+    async function pullThen(renderer: ReactTestRenderer, during: () => void): Promise<void> {
+      const { onRefresh } = refreshList(renderer).props.refreshControl.props;
+      await act(async () => {
+        const pending = onRefresh();
+        during();
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        await pending;
+      });
+    }
+
+    // #937/#938: past the 24h bound the crypto layer stops raising
+    // PendingWrapError and raises `stale_pending` instead. The pull is the only
+    // thing that re-asks, so it is the only thing that can take the banner
+    // down — which is exactly what it used to refuse to do.
+    it('replaces the pending banner with the failure verdict on a refresh', async () => {
+      mockLoadThreadsForGroup.mockRejectedValueOnce(pendingWrap());
+
+      const renderer = await render();
+      expect(count(renderer, 'group-key-pending-banner')).toBeGreaterThan(0);
+
+      mockLoadThreadsForGroup.mockRejectedValueOnce(unwrapFailure('stale_pending'));
+      await pull(renderer);
+
+      // THE #940 assertion: the old handleRefresh swallowed the rejection, so
+      // this banner survived the pull.
+      expect(count(renderer, 'group-key-pending-banner')).toBe(0);
+      expect(hasRows(renderer)).toBe(true);
+
+      // This screen has no rows-present surface for a terminal verdict — the
+      // notice replaces the EMPTY state — so the verdict the refresh recorded
+      // is read where it renders: the same mount with the rows gone. Had the
+      // refresh written nothing, this would be the create-first empty state.
+      mockUseThreads.mockReturnValue(emptyThreadsState);
+      await rerender(renderer);
+
+      expect(count(renderer, 'group-key-failure-notice')).toBeGreaterThan(0);
+      expect(texts(renderer)).toContain(UNREADABLE);
+    });
+
+    it('clears the pending banner when the refresh succeeds', async () => {
+      mockLoadThreadsForGroup.mockRejectedValueOnce(pendingWrap());
+
+      const renderer = await render();
+      expect(count(renderer, 'group-key-pending-banner')).toBeGreaterThan(0);
+
+      mockLoadThreadsForGroup.mockResolvedValueOnce([]);
+      await pull(renderer);
+
+      expect(count(renderer, 'group-key-pending-banner')).toBe(0);
+      expect(count(renderer, 'group-key-failure-notice')).toBe(0);
+      expect(hasRows(renderer)).toBe(true);
+    });
+
+    // The other half of the contract: the pull may re-classify a key verdict,
+    // but a network blip is not a re-classification. Clearing here would drop
+    // a real verdict on every failed pull.
+    it('keeps the pending banner when the refresh fails for a non-key reason', async () => {
+      mockLoadThreadsForGroup.mockRejectedValueOnce(pendingWrap());
+
+      const renderer = await render();
+      expect(count(renderer, 'group-key-pending-banner')).toBeGreaterThan(0);
+
+      mockLoadThreadsForGroup.mockRejectedValueOnce(new Error('network down'));
+      await pull(renderer);
+
+      expect(count(renderer, 'group-key-pending-banner')).toBeGreaterThan(0);
+      expect(count(renderer, 'group-key-failure-notice')).toBe(0);
+      expect(hasRows(renderer)).toBe(true);
+    });
+
+    // `loadThreadsForGroup` is not cancellable and a params-in-place navigate
+    // keeps this mount, so a pull on one DM can settle while another DM is on
+    // screen. The second load fails for a NON-key reason, which writes nothing
+    // — so anything on screen at the end came from the stale refresh.
+    it('drops a refresh verdict that settles after a conversation switch', async () => {
+      const renderer = await render();
+      expect(count(renderer, 'group-key-pending-banner')).toBe(0);
+
+      mockLoadThreadsForGroup.mockRejectedValueOnce(unwrapFailure('stale_pending'));
+      mockLoadThreadsForGroup.mockRejectedValueOnce(new Error('network down'));
+      await pullThen(renderer, () => {
+        renderer.update(screenElement('Bob', undefined, 'dm-conv-2'));
+      });
+
+      expect(mockLoadThreadsForGroup).toHaveBeenLastCalledWith('dm-conv-2');
+      expect(count(renderer, 'group-key-failure-notice')).toBe(0);
+      expect(count(renderer, 'group-key-pending-banner')).toBe(0);
+      expect(texts(renderer).join('\n')).toContain('No messages yet');
+    });
+
+    // The user can pop this screen mid-pull, which `conversationIdRef` cannot
+    // see: it is a render-synced mirror, and an unmount is not a render.
+    it('writes nothing and does not throw when the refresh settles after unmount', async () => {
+      const renderer = await render();
+
+      mockLoadThreadsForGroup.mockRejectedValueOnce(unwrapFailure('stale_pending'));
+
+      await expect(
+        pullThen(renderer, () => {
+          renderer.unmount();
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(mockLoadThreadsForGroup).toHaveBeenLastCalledWith('dm-conv-1');
+    });
+  });
 });

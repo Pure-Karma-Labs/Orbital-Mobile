@@ -1165,4 +1165,248 @@ describe('ThreadsScreen — group key (#912)', () => {
     expect(find(renderer, 'group-key-pending-body')).toBe(0);
     expect(texts(renderer).join('\n')).toContain('No threads yet');
   });
+
+  // -------------------------------------------------------------------------
+  // Pull-to-refresh re-classification (#940)
+  // -------------------------------------------------------------------------
+
+  /**
+   * #940: `handleRefresh` used to swallow EVERY error and never clear on
+   * success, so the pull that was meant to re-classify a key verdict left the
+   * old one on screen — most visibly after #938's 24h bound, where the
+   * "being re-sent" banner outlived the re-send it kept promising.
+   *
+   * These cases need ROWS. The RefreshControl only exists on the FlatList
+   * branch (`listRows` non-empty); an orbit with nothing in it renders an
+   * empty state with nothing to pull. That also means the failure NOTICE has
+   * nowhere to render while rows are up — it replaces the empty state, by
+   * design, because visible stale content is the better answer than an
+   * explanation nobody asked for. So with rows the observable effect of a
+   * re-classification is the BANNER coming down; the first case checks the
+   * recorded verdict itself by emptying the orbit once the pull has settled.
+   */
+  describe('pull-to-refresh (#940)', () => {
+    const now = Date.now();
+    const SEEDED_TITLE = 'Seeded thread';
+
+    /** The threads slice, with or without this orbit's one row. */
+    function threadsSlice(withRows: boolean) {
+      const thread: Thread = {
+        id: 'thread-1',
+        conversationId: 'group-1',
+        authorId: 'user-1',
+        authorUsername: 'alice',
+        title: SEEDED_TITLE,
+        body: null,
+        contentType: 'text',
+        pinned: false,
+        replyCount: 0,
+        lastReplyAt: now,
+        createdAt: now,
+        updatedAt: now,
+        syncStatus: 'synced',
+      };
+      return {
+        threads: withRows ? ({ 'thread-1': thread } as Record<string, Thread>) : {},
+        threadIdsByConversation: withRows ? { 'group-1': ['thread-1'] } : {},
+        threadLastViewedAt: {},
+        replies: {},
+        replyIdsByThread: {},
+        activeThreadId: null,
+        setThreads: jest.fn(),
+        upsertThread: jest.fn(),
+        removeThread: jest.fn(),
+        setActiveThread: jest.fn(),
+        markThreadViewed: jest.fn(),
+        setReplies: jest.fn(),
+        upsertReply: jest.fn(),
+        addOptimisticThread: jest.fn(),
+        addOptimisticReply: jest.fn(),
+        updateThreadSyncStatus: jest.fn(),
+        updateReplySyncStatus: jest.fn(),
+      };
+    }
+
+    function setRows(withRows: boolean): void {
+      const storesMock = jest.requireMock('../../stores') as { useThreads: jest.Mock };
+      storesMock.useThreads.mockReturnValue(threadsSlice(withRows));
+    }
+
+    beforeEach(() => {
+      setRows(true);
+    });
+
+    // Put the surrounding empty-orbit state back, so the cases above (which
+    // all assert on the empty state) are unaffected by the seeding here.
+    afterEach(() => {
+      setRows(false);
+    });
+
+    function flush(): Promise<void> {
+      return new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+
+    /**
+     * The list's `onRefresh`, via the ONE host node that carries both `data`
+     * and a `refreshControl`. The exactly-one assertion is the point: if a
+     * second list ever renders here (a search list, a nested FlatList), the
+     * helper must fail rather than silently pull on whichever came first.
+     */
+    function refreshHandler(renderer: ReactTestRenderer): () => Promise<void> {
+      const nodes = renderer.root.findAll(
+        (n) =>
+          typeof n.type === 'string' &&
+          Array.isArray(n.props.data) &&
+          n.props.refreshControl != null,
+      );
+      expect(nodes).toHaveLength(1);
+      return nodes[0].props.refreshControl.props.onRefresh as () => Promise<void>;
+    }
+
+    /** Pull, and let the handler and its state writes settle. */
+    async function pullToRefresh(renderer: ReactTestRenderer): Promise<void> {
+      const onRefresh = refreshHandler(renderer);
+      await act(async () => {
+        await onRefresh();
+        await flush();
+      });
+    }
+
+    /**
+     * A refresh whose rejection is settled BY HAND. `mockRejectedValueOnce`
+     * settles on the first microtask, which is too early for the two
+     * late-settle cases: those need the orbit switch / the unmount to happen
+     * while the pull is still in flight. Still one-shot — the next call after
+     * it falls back to the suite's `mockResolvedValue([])`.
+     */
+    function deferNextLoad(): { reject: (e: unknown) => void } {
+      const box = { reject: (_e: unknown): void => {} };
+      mockLoadThreadsForGroup.mockImplementationOnce(
+        () =>
+          new Promise<never>((_resolve, rej) => {
+            box.reject = rej;
+          }),
+      );
+      return box;
+    }
+
+    // THE #940 case. The pending banner is up, the pull comes back
+    // `stale_pending` (#938: the wait is over, the key is not coming), and the
+    // banner must come DOWN. Against the old swallow-everything handler the
+    // first expectation below fails: the banner survived the pull.
+    it('takes the pending banner down when the refresh comes back stale_pending', async () => {
+      mockLoadThreadsForGroup.mockRejectedValueOnce(pendingWrap());
+      const renderer = await render();
+      expect(find(renderer, 'group-key-pending-banner')).toBeGreaterThan(0);
+
+      mockLoadThreadsForGroup.mockRejectedValueOnce(unwrapFailure('stale_pending'));
+      await pullToRefresh(renderer);
+
+      expect(find(renderer, 'group-key-pending-banner')).toBe(0);
+      // The rows the pull was issued over are untouched: a key verdict never
+      // costs the user content that is already decrypted and on screen.
+      expect(texts(renderer)).toContain(SEEDED_TITLE);
+
+      // And the verdict the pull recorded is the failure copy, not a cleared
+      // state. That notice replaces the EMPTY state, so it has somewhere to
+      // render only once this orbit has no rows left — which is also what the
+      // user sees on the next cold open of an orbit they cannot decrypt.
+      setRows(false);
+      await rerender(renderer);
+      expect(find(renderer, 'group-key-failure-notice')).toBeGreaterThan(0);
+      expect(texts(renderer)).toContain(UNREADABLE);
+    });
+
+    // The happy half: the peer's re-send landed, the pull succeeds, and the
+    // banner must go. The old handler cleared nothing on success either, so
+    // the banner sat there until the screen was navigated away from.
+    it('clears the pending banner when the refresh succeeds', async () => {
+      mockLoadThreadsForGroup.mockRejectedValueOnce(pendingWrap());
+      const renderer = await render();
+      expect(find(renderer, 'group-key-pending-banner')).toBeGreaterThan(0);
+
+      // Falls through to the suite default: resolves with no threads.
+      await pullToRefresh(renderer);
+
+      expect(find(renderer, 'group-key-pending-banner')).toBe(0);
+      expect(find(renderer, 'group-key-failure-notice')).toBe(0);
+      expect(texts(renderer)).toContain(SEEDED_TITLE);
+    });
+
+    // The guard on the other side: a dropped connection is not a verdict. A
+    // refresh that fails for a non-key reason must leave the real one alone —
+    // this is what fails if #940 is ever "fixed" by clearing unconditionally.
+    it('keeps the pending banner when the refresh fails for a non-key reason', async () => {
+      mockLoadThreadsForGroup.mockRejectedValueOnce(pendingWrap());
+      const renderer = await render();
+      expect(find(renderer, 'group-key-pending-banner')).toBeGreaterThan(0);
+
+      mockLoadThreadsForGroup.mockRejectedValueOnce(new Error('network down'));
+      await pullToRefresh(renderer);
+
+      expect(find(renderer, 'group-key-pending-banner')).toBeGreaterThan(0);
+      expect(find(renderer, 'group-key-failure-notice')).toBe(0);
+      expect(texts(renderer)).toContain(SEEDED_TITLE);
+    });
+
+    // `loadThreadsForGroup` is not cancellable, so a pull on orbit A can
+    // settle after the user has moved to orbit B. The refresh reads the store
+    // LIVE at settle time for exactly this: A's verdict is dropped, never
+    // written onto B.
+    it('writes nothing when a refresh rejection lands after an orbit switch', async () => {
+      const renderer = await render();
+
+      const deferred = deferNextLoad();
+      let settled!: Promise<void>;
+      await act(async () => {
+        settled = refreshHandler(renderer)();
+        await flush();
+      });
+
+      // Switch mid-pull. group-2 has no rows here, and its own load resolves,
+      // so nothing but A's late rejection could put a notice on screen.
+      mockActiveConversationId = 'group-2';
+      await rerender(renderer);
+
+      await act(async () => {
+        deferred.reject(unwrapFailure('refused'));
+        await settled;
+        await flush();
+      });
+
+      expect(find(renderer, 'group-key-failure-notice')).toBe(0);
+      expect(find(renderer, 'group-key-pending-banner')).toBe(0);
+      expect(texts(renderer).join('\n')).toContain('No threads yet');
+    });
+
+    // The other thing a pull can outlive: the screen itself. The orbit check
+    // is a render-synced mirror of the store and cannot see an unmount, hence
+    // the separate mounted ref. Nothing is written and nothing throws.
+    it('writes nothing and does not throw when a refresh rejection lands after unmount', async () => {
+      mockLoadThreadsForGroup.mockRejectedValueOnce(pendingWrap());
+      const renderer = await render();
+      expect(find(renderer, 'group-key-pending-banner')).toBeGreaterThan(0);
+
+      const deferred = deferNextLoad();
+      let settled!: Promise<void>;
+      await act(async () => {
+        settled = refreshHandler(renderer)();
+        await flush();
+      });
+
+      act(() => {
+        renderer.unmount();
+      });
+
+      await act(async () => {
+        deferred.reject(unwrapFailure('stale_pending'));
+        await flush();
+      });
+
+      // The handler swallows the rejection it decided not to act on: no
+      // unhandled rejection escapes the pull, and the tree stays torn down.
+      await expect(settled).resolves.toBeUndefined();
+      expect(renderer.toJSON()).toBeNull();
+    });
+  });
 });

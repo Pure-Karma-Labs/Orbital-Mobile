@@ -40,7 +40,7 @@ import {
   GroupKeyFailureNotice,
   GroupKeyPendingBanner,
 } from '../components/GroupKeyNotice';
-import { groupKeyFailureCopy, isGroupKeyPending } from '../utils/groupKeyErrorCopy';
+import { useGroupKeyLoadState } from '../hooks/useGroupKeyLoadState';
 import { PullToRefreshOverlay } from '../components/PullToRefreshOverlay';
 import { usePullToRefresh } from '../hooks/usePullToRefresh';
 import { useSQLiteSearch } from '../hooks/useSQLiteSearch';
@@ -208,6 +208,20 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
   const { scrollY, scrollProps } = usePullToRefresh();
   const flatListRef = useRef<FlatList<ListRow>>(null);
 
+  /**
+   * #940: the orbit check below is a render-synced mirror of the store, so it
+   * cannot see an unmount — the user can pop this screen (or the tab can be
+   * torn down) while a pull-to-refresh is still in flight, and
+   * `loadThreadsForGroup` is not cancellable.
+   */
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   // Snapshot lastReadAt on focus — held for the entire focus session.
   // CRITICAL: Do NOT read conversation.lastReadAt live in render —
   // the debounced mark-read would flip all threads to 'read' seconds after focusing.
@@ -273,12 +287,17 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
   }, [isSearching]);
 
   /**
-   * Group-key state for the active orbit (#912). `pending` is the transient
-   * "a peer is re-wrapping" banner; `failureMessage` is every other outcome,
+   * Group-key state for the active orbit (#912). `keyPending` is the transient
+   * "a peer is re-wrapping" banner; `keyFailureMessage` is every other outcome,
    * which replaces the empty state. Only ONE of them is ever set.
+   *
+   * Keyed on the orbit id: one orbit's key state must never be shown over
+   * another's, and this screen stays MOUNTED across an orbit switch (the
+   * selector only writes `activeConversationId`). The hook owns that reset —
+   * see `useGroupKeyLoadState` for why it is not keyed on `keyGeneration`.
    */
-  const [keyPending, setKeyPending] = useState(false);
-  const [keyFailureMessage, setKeyFailureMessage] = useState<string | null>(null);
+  const { keyPending, keyFailureMessage, clearKeyState, applyKeyLoadError } =
+    useGroupKeyLoadState(activeConversationId);
 
   /**
    * Bumped by `handleWrappedKeyDelivered` once a delivered key has actually
@@ -288,22 +307,6 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
    * away and back.
    */
   const keyGeneration = useGroupKeyGeneration(activeConversationId ?? null);
-
-  /**
-   * One orbit's key state must never be shown over another's. This screen
-   * stays MOUNTED across orbit switches (the selector only writes
-   * activeConversationId), so without this the banner from orbit A sat over
-   * orbit B — indefinitely, if B's own load then failed for a non-key reason,
-   * since the flags clear only on a success.
-   *
-   * Keyed on the id ALONE, deliberately not on `keyGeneration`: a heal bump
-   * re-runs the load below, and clearing the flags there would flash the
-   * create-first empty state on every reload attempt.
-   */
-  useEffect(() => {
-    setKeyPending(false);
-    setKeyFailureMessage(null);
-  }, [activeConversationId]);
 
   // Instant hydration from the local SQLCipher cache, before the async fetch.
   // SPLIT from the load effect below: `setThreads` REPLACES this
@@ -328,27 +331,17 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
         if (isStale()) return;
         // Cleared only on success: clearing at the START of the load would
         // flash the create-first empty state on every reload attempt.
-        setKeyPending(false);
-        setKeyFailureMessage(null);
+        clearKeyState();
       })
       .catch((e) => {
         if (__DEV__) console.warn('[ThreadsScreen] load failed:', e instanceof Error ? e.message : e);
         if (isStale()) return;
-        if (isGroupKeyPending(e)) {
-          setKeyPending(true);
-          setKeyFailureMessage(null);
-        } else {
-          const copy = groupKeyFailureCopy(e);
-          if (copy) {
-            setKeyPending(false);
-            setKeyFailureMessage(copy.message);
-          }
-          // Anything else keeps the pre-#912 behaviour: stale content stays
-          // visible and the failure is a dev warning. Not every load failure
-          // is a key failure, and a network blip must not claim to be one.
-        }
+        // A non-key failure keeps the pre-#912 behaviour: stale content stays
+        // visible and the failure is a dev warning. Not every load failure is a
+        // key failure, and a network blip must not claim to be one.
+        applyKeyLoadError(e);
       });
-  }, [activeConversationId, keyGeneration]);
+  }, [activeConversationId, keyGeneration, clearKeyState, applyKeyLoadError]);
 
   const handleThreadPress = useCallback(
     (threadId: string) => {
@@ -377,17 +370,33 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
     [showMuteMenu],
   );
 
+  /**
+   * Pull-to-refresh. #940: this used to swallow EVERY error, so the group-key
+   * banner survived the pull that was meant to re-classify it — most visibly
+   * after #938's 24h bound turned a pending wrap into `stale_pending`, where
+   * the screen kept promising a re-send that was never coming.
+   */
   const handleRefresh = useCallback(async () => {
     if (!activeConversationId) return;
+    const target = activeConversationId;
+    // Mounted AND still this orbit: the refresh outlives both a pop and an
+    // orbit switch, and a verdict from the orbit the user just left must not
+    // be written onto the one they are looking at.
+    const isStale = (): boolean =>
+      !mountedRef.current || useAppStore.getState().activeConversationId !== target;
     setRefreshing(true);
     try {
-      await loadThreadsForGroup(activeConversationId);
-    } catch {
-      // Silently fail — stale data is still visible
+      await loadThreadsForGroup(target);
+      if (!isStale()) clearKeyState();
+    } catch (e) {
+      if (__DEV__)
+        console.warn('[ThreadsScreen] refresh failed:', e instanceof Error ? e.message : e);
+      // Non-key errors stay silent, as before: stale data is still visible.
+      if (!isStale()) applyKeyLoadError(e);
     } finally {
-      setRefreshing(false);
+      if (mountedRef.current) setRefreshing(false);
     }
-  }, [activeConversationId]);
+  }, [activeConversationId, clearKeyState, applyKeyLoadError]);
 
   const handleCompose = useCallback(() => {
     if (!activeConversationId) return;

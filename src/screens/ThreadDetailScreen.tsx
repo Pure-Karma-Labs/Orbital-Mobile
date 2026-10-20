@@ -68,7 +68,8 @@ import {
   GroupKeyPendingBanner,
   GroupKeyPendingNotice,
 } from '../components/GroupKeyNotice';
-import { groupKeyFailureCopy, isGroupKeyPending } from '../utils/groupKeyErrorCopy';
+import { groupKeyFailureCopy } from '../utils/groupKeyErrorCopy';
+import { useGroupKeyLoadState } from '../hooks/useGroupKeyLoadState';
 import { OrbitalKeyboardAvoidingView } from '../components/OrbitalKeyboardAvoidingView';
 import { AsciiSection } from '../components/AsciiSeparator';
 import { ThreadHeader } from './threadDetail/ThreadHeader';
@@ -281,9 +282,13 @@ export function ThreadDetailScreen({
    * transient "a peer is re-wrapping" banner; `keyFailureMessage` is every
    * other outcome. Both replace `error`: "Could not load thread" is true but
    * useless when the real answer is "this device cannot open the key yet".
+   *
+   * Keyed on the thread id, which is the reset this screen lacked: a
+   * params-in-place navigate to another thread keeps it mounted, so thread A's
+   * verdict used to sit over thread B.
    */
-  const [keyPending, setKeyPending] = useState(false);
-  const [keyFailureMessage, setKeyFailureMessage] = useState<string | null>(null);
+  const { keyPending, keyFailureMessage, clearKeyState, applyKeyLoadError } =
+    useGroupKeyLoadState(threadId);
   const [refreshing, setRefreshing] = useState(false);
   const { scrollY, scrollProps } = usePullToRefresh();
   const [loadingMore, setLoadingMore] = useState(false);
@@ -626,17 +631,25 @@ export function ThreadDetailScreen({
     [threadId],
   );
 
+  /**
+   * The thread this render belongs to, read at SETTLE time. A params-in-place
+   * navigate to another thread keeps this screen (and all of its state)
+   * mounted — the same hazard `focusThreadRef` and `paginationThreadRef` guard
+   * — so a load or refresh that rejects for thread A must not write its key
+   * verdict onto thread B, where it would stick (#940).
+   */
+  const currentThreadRef = useRef(threadId);
+  currentThreadRef.current = threadId;
+
   const fetchData = useCallback(async () => {
+    const target = threadId;
     try {
       setError(null);
       const loadedThread = await loadThread(threadId);
       // Reached only once the group key opened, so whatever key state this
       // screen was in is over. Cleared HERE and not at the top of the load, so
       // a reload attempt does not flash the empty state (#912).
-      if (mountedRef.current) {
-        setKeyPending(false);
-        setKeyFailureMessage(null);
-      }
+      if (mountedRef.current) clearKeyState();
       try {
         beginPaginationPass();
         const result = await loadReplies(
@@ -650,26 +663,19 @@ export function ThreadDetailScreen({
       }
     } catch (e) {
       if (__DEV__) console.warn('[ThreadDetail]', e instanceof Error ? e.message : e);
+      // Deliberately AFTER the warn: diagnostics stay unguarded, state writes
+      // do not. An unmounted screen and a re-pointed one (params-in-place
+      // thread switch) both drop the verdict (#940).
+      if (!mountedRef.current || currentThreadRef.current !== target) return;
       // #912: a group-key failure is not "could not load thread". Pending gets
       // the transient banner and suppresses both the error text and the
       // "Be the first to reply" footer; every other outcome gets the copy for
       // its outcome in place of that text.
-      if (isGroupKeyPending(e)) {
-        setKeyPending(true);
-        setKeyFailureMessage(null);
-      } else {
-        const copy = groupKeyFailureCopy(e);
-        if (copy) {
-          setKeyPending(false);
-          setKeyFailureMessage(copy.message);
-        } else {
-          setError('Could not load thread');
-        }
-      }
+      if (!applyKeyLoadError(e)) setError('Could not load thread');
     } finally {
       if (mountedRef.current) setLoading(false);
     }
-  }, [threadId, beginPaginationPass, applyRepliesPage]);
+  }, [threadId, beginPaginationPass, applyRepliesPage, clearKeyState, applyKeyLoadError]);
 
   // Mount/unmount lifecycle
   useEffect(() => {
@@ -734,20 +740,50 @@ export function ThreadDetailScreen({
     };
   }, [conversationId]);
 
-  // Pull-to-refresh
+  /**
+   * Pull-to-refresh. #940: this used to swallow EVERY error, so a group-key
+   * banner survived the pull meant to re-classify it — most visibly after
+   * #938's 24h bound turned a pending wrap into `stale_pending`, where the
+   * screen kept promising a re-send that was never coming.
+   */
   const handleRefresh = useCallback(async () => {
+    const target = threadId;
+    const isStale = (): boolean => !mountedRef.current || currentThreadRef.current !== target;
     setRefreshing(true);
     try {
       const loadedThread = await loadThread(threadId);
-      beginPaginationPass();
-      const result = await loadReplies(threadId, loadedThread.conversationId);
-      applyRepliesPage(0, result);
-    } catch {
-      // Silently fail on refresh — stale data is still visible
+      // The thread opened, so the key did: clear as soon as that is known,
+      // independently of how the replies page goes.
+      if (!isStale()) clearKeyState();
+      try {
+        // `loadReplies` is awaited BEFORE the pass is opened. Opening first
+        // and then rejecting left an empty, non-contiguous pass behind, and a
+        // later `onEndReached` pass could no longer reconcile.
+        const result = await loadReplies(threadId, loadedThread.conversationId);
+        beginPaginationPass();
+        applyRepliesPage(0, result);
+      } catch (e) {
+        // Silent, exactly as `fetchData`'s inner catch: a replies failure is
+        // not a "this thread cannot be opened" verdict, so it must not reach
+        // the key banner. `hasMoreRef` is left alone — unlike the first load,
+        // a refresh has rows on screen and pagination still has somewhere to
+        // go.
+        if (__DEV__)
+          console.warn(
+            '[ThreadDetail] refresh replies failed:',
+            e instanceof Error ? e.message : e,
+          );
+      }
+    } catch (e) {
+      if (__DEV__)
+        console.warn('[ThreadDetail] refresh failed:', e instanceof Error ? e.message : e);
+      // Only a `loadThread` rejection is a verdict about the key, and only
+      // while this screen is still mounted and still on this thread.
+      if (!isStale()) applyKeyLoadError(e);
     } finally {
       if (mountedRef.current) setRefreshing(false);
     }
-  }, [threadId, beginPaginationPass, applyRepliesPage]);
+  }, [threadId, beginPaginationPass, applyRepliesPage, clearKeyState, applyKeyLoadError]);
 
   // Pagination — load more replies
   const handleEndReached = useCallback(async () => {

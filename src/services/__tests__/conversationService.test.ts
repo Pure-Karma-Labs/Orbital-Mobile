@@ -444,6 +444,30 @@ describe('loadConversations — pending group names', () => {
 // ---------------------------------------------------------------------------
 
 describe('loadConversations — dissolution cleanup', () => {
+  /**
+   * Built by hand for the same reason as the pending-names describe above:
+   * `crypto/contentCrypto` is a factory mock here, so the real class is
+   * undefined and the service matches on `name` (pattern at :403).
+   */
+  function pendingWrapError(): Error {
+    const e = new Error('Group key not yet available (pending wrap)');
+    e.name = 'PendingWrapError';
+    return e;
+  }
+
+  const STORE_WITH_DM = {
+    g1: { id: 'g1', type: 'group' },
+    'dm-1': { id: 'dm-1', type: 'direct' },
+  };
+
+  afterEach(() => {
+    // The tests below strand a pending-name entry (module state), and the
+    // Once-rejections outlive clearAllMocks — restore the suite-wide default.
+    clearConversationServiceState();
+    mockGetOrFetchGroupKey.mockReset();
+    mockGetOrFetchGroupKey.mockResolvedValue(new Uint8Array(32));
+  });
+
   it('dissolved group triggers transactional delete of replies and threads', async () => {
     mockIsDatabaseInitialized.mockReturnValue(true);
     mockGetLocalConvIds.mockReturnValue(['g1', 'dissolved-group']);
@@ -483,6 +507,132 @@ describe('loadConversations — dissolution cleanup', () => {
     expect(mockGetLocalConvIds).not.toHaveBeenCalled();
     expect(mockDeleteReplies).not.toHaveBeenCalled();
     expect(mockDeleteThreads).not.toHaveBeenCalled();
+  });
+
+  /**
+   * #939: `getConversationIdsWithThreads` returns DM ids too, while
+   * `listGroups` excludes `group_type='dm'` — so comparing local ids against
+   * the server group list alone purged every DM's cache on every call.
+   */
+  it('keeps DM threads while purging a dissolved group', async () => {
+    const base = (useAppStore.getState as jest.Mock)();
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      ...base,
+      conversations: STORE_WITH_DM,
+    });
+    mockIsDatabaseInitialized.mockReturnValue(true);
+    mockGetLocalConvIds.mockReturnValue(['g1', 'dm-1', 'dissolved-group']);
+    mockListGroups.mockResolvedValue([GROUP_RESPONSE]); // server only returns g1
+
+    const mockExecuteSync = jest.fn();
+    mockGetDatabase.mockReturnValue({ executeSync: mockExecuteSync });
+
+    await loadConversations();
+
+    expect(mockDeleteReplies).not.toHaveBeenCalledWith('dm-1');
+    expect(mockDeleteThreads).not.toHaveBeenCalledWith('dm-1');
+    expect(mockDeleteReplies).toHaveBeenCalledWith('dissolved-group');
+    expect(mockDeleteThreads).toHaveBeenCalledWith('dissolved-group');
+    expect(mockExecuteSync).toHaveBeenCalledWith('BEGIN IMMEDIATE');
+    expect(mockExecuteSync).toHaveBeenCalledWith('COMMIT');
+  });
+
+  /**
+   * Exact keep-set, not a containment check: a helper that unioned ALL store
+   * ids instead of the server's would also keep 'dissolved-group' and pass a
+   * toContain assertion.
+   */
+  it('keeps exactly the server groups plus live DMs, and purges replies before threads', async () => {
+    const base = (useAppStore.getState as jest.Mock)();
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      ...base,
+      conversations: {
+        ...STORE_WITH_DM,
+        'dissolved-group': { id: 'dissolved-group', type: 'group' },
+      },
+    });
+    mockIsDatabaseInitialized.mockReturnValue(true);
+    mockGetLocalConvIds.mockReturnValue(['g1', 'dm-1', 'dissolved-group', 'orphan']);
+    mockListGroups.mockResolvedValue([GROUP_RESPONSE]);
+    mockGetDatabase.mockReturnValue({ executeSync: jest.fn() });
+
+    await loadConversations();
+
+    const keep = mockPrunePendingWraps.mock.calls[0][0] as string[];
+    expect(new Set(keep)).toEqual(new Set(['g1', 'dm-1']));
+    expect(keep).toHaveLength(2);
+
+    expect(mockDeleteReplies.mock.calls.map(c => c[0])).toEqual(['dissolved-group', 'orphan']);
+    expect(mockDeleteThreads.mock.calls.map(c => c[0])).toEqual(['dissolved-group', 'orphan']);
+
+    // Replies must be deleted BEFORE threads for each id: migration 004
+    // dropped the cascade and deleteRepliesForConversation selects its rows
+    // through `orbital_threads`, so the reverse order leaks every reply.
+    for (let i = 0; i < 2; i++) {
+      expect(mockDeleteReplies.mock.invocationCallOrder[i]).toBeLessThan(
+        mockDeleteThreads.mock.invocationCallOrder[i],
+      );
+    }
+  });
+
+  /**
+   * The session guard after `retryAllPendingNameDecrypts`: that await fetches a
+   * key per stranded name, so it can outlive the session. Forcing a pending
+   * name is what makes the retry — and therefore the window — exist at all.
+   */
+  it('bails before the purge when the session changes during the name retry', async () => {
+    const base = (useAppStore.getState as jest.Mock)();
+    mockIsDatabaseInitialized.mockReturnValue(true);
+    mockGetLocalConvIds.mockReturnValue(['g1', 'dissolved-group']);
+    mockListGroups.mockResolvedValue([GROUP_RESPONSE]);
+    mockGetDatabase.mockReturnValue({ executeSync: jest.fn() });
+
+    // 1st call: mapGroupResponse's name decrypt — rejecting registers g1 as a
+    // pending name. 2nd call: the retry, which is where the user changes.
+    mockGetOrFetchGroupKey
+      .mockRejectedValueOnce(pendingWrapError())
+      .mockImplementationOnce(async () => {
+        (useAppStore.getState as jest.Mock).mockReturnValue({ ...base, userId: 'other-user' });
+        return new Uint8Array(32);
+      });
+
+    await loadConversations();
+
+    expect(mockGetOrFetchGroupKey).toHaveBeenCalledTimes(2);
+    expect(mockGetLocalConvIds).not.toHaveBeenCalled();
+    expect(mockSetActiveConversation).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A DM that lands mid-flight (WS `new_message` → `ensureDmConversation`, or
+   * a concurrent `startDm`) must survive too. This is what a pre-await
+   * snapshot of the store would get wrong.
+   */
+  it('keeps a DM that the store gains during the await', async () => {
+    const base = (useAppStore.getState as jest.Mock)();
+    const withDm1 = { ...base, conversations: STORE_WITH_DM };
+    (useAppStore.getState as jest.Mock).mockReturnValue(withDm1);
+    mockIsDatabaseInitialized.mockReturnValue(true);
+    mockGetLocalConvIds.mockReturnValue(['g1', 'dm-1', 'dm-2', 'dissolved-group']);
+    mockListGroups.mockResolvedValue([GROUP_RESPONSE]);
+    mockGetDatabase.mockReturnValue({ executeSync: jest.fn() });
+
+    mockGetOrFetchGroupKey
+      .mockRejectedValueOnce(pendingWrapError())
+      .mockImplementationOnce(async () => {
+        (useAppStore.getState as jest.Mock).mockReturnValue({
+          ...withDm1,
+          conversations: { ...STORE_WITH_DM, 'dm-2': { id: 'dm-2', type: 'direct' } },
+        });
+        return new Uint8Array(32);
+      });
+
+    await loadConversations();
+
+    expect(mockDeleteThreads.mock.calls.map(c => c[0])).toEqual(['dissolved-group']);
+    // The prune runs before the retry, so dm-2 is not in ITS keep-set — only
+    // the purge below the await sees the new row.
+    expect(mockPrunePendingWraps.mock.calls[0][0]).not.toContain('dm-2');
   });
 });
 

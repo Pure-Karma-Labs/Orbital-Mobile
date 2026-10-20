@@ -46,6 +46,53 @@
 export type GroupKeyFailureCode = 'recipient_mismatch' | 'sender_mismatch' | 'corrupt' | 'unknown';
 
 /**
+ * Every cause a {@link GroupKeyUnwrapError} can carry — the classifier's codes
+ * plus the one cause that has no envelope to classify.
+ *
+ * - `no_envelope` — the server has no wrapped key for this device at all (a
+ *   NULL row), so there is nothing to open. CLIENT-ORIGINATED: it is produced
+ *   only by `contentCrypto`'s pending paths and is NEVER returned by
+ *   {@link classifyEciesOpenError}.
+ *
+ * Deliberately a SEPARATE type from {@link GroupKeyFailureCode}, which stays
+ * the narrow classifier vocabulary: `groupKeyRecovery` takes a
+ * `GroupKeyFailureCode` in and out, so `no_envelope` cannot reach its demote
+ * gate even as a widened value. A NULL row is already "demoted" — asking the
+ * server to demote it again would be a fan-out for nothing.
+ */
+export type GroupKeyErrorCode = GroupKeyFailureCode | 'no_envelope';
+
+/**
+ * Compile-time proof of the sentence above: `no_envelope` is not in
+ * {@link classifyEciesOpenError}'s range. Adding it to
+ * {@link GroupKeyFailureCode} makes `Extract` non-empty, the conditional
+ * resolve to `never`, and this declaration stop compiling — which is the
+ * point, because the demote gate would then be able to see a code that means
+ * "there is nothing to demote".
+ *
+ * The ANNOTATION is the assertion; the value exists because `noUnusedLocals`
+ * deletes a proof nobody reads, and it is exported so this module's test can
+ * read it.
+ */
+export const NO_ENVELOPE_IS_CLIENT_ONLY: Extract<
+  ReturnType<typeof classifyEciesOpenError>,
+  'no_envelope'
+> extends never
+  ? true
+  : never = true;
+
+/**
+ * How long a group may stay in "a peer is re-wrapping your key" before the
+ * client stops promising it (#937).
+ *
+ * The promise is only true while some member can actually re-wrap. Nothing
+ * server-side can prove that — a holder row may itself be dead — so the bound
+ * is the client's own honesty check: past it, the pending copy is replaced by
+ * UNREADABLE. A delivery still heals the group at any point, before or after.
+ */
+export const PENDING_WRAP_BOUND_MS = 24 * 60 * 60 * 1000;
+
+/**
  * What the self-heal attempt did about it. These are the only values that ever
  * become a Sentry tag or select user copy, so the list is closed and the copy
  * selector (`src/utils/groupKeyErrorCopy.ts`) maps every one of them.
@@ -71,6 +118,10 @@ export type GroupKeyFailureCode = 'recipient_mismatch' | 'sender_mismatch' | 'co
  * - `not_eligible` — self-heal does not apply (no sender, self-wrapped,
  *   unknown cause, or a terminal 400).
  * - `failed` — a transient failure of the attempt itself. Retryable later.
+ * - `stale_pending` — this group has been waiting for a wrap for longer than
+ *   {@link PENDING_WRAP_BOUND_MS} (#937). Produced ONLY by `contentCrypto`,
+ *   never by `groupKeyRecovery`: it is a verdict about elapsed time, not about
+ *   an attempt, so it is not a terminal recovery outcome either.
  */
 export type SelfHealOutcome =
   | 'requested'
@@ -83,7 +134,8 @@ export type SelfHealOutcome =
   | 'rate_limited'
   | 'blocked_local_key'
   | 'not_eligible'
-  | 'failed';
+  | 'failed'
+  | 'stale_pending';
 
 /**
  * Client copy of the backend's `REWRAP_REFUSAL_CODES`
@@ -126,16 +178,12 @@ export type RewrapRefusalCode = keyof typeof REWRAP_REFUSAL_CODES;
  * service modules with factory mocks leave this class undefined.
  */
 export class GroupKeyUnwrapError extends Error {
-  readonly code: GroupKeyFailureCode;
+  readonly code: GroupKeyErrorCode;
   readonly selfHeal: SelfHealOutcome;
   /** Present only when the server refused a demote with a coded 409. */
   readonly refusalCode: RewrapRefusalCode | undefined;
 
-  constructor(
-    code: GroupKeyFailureCode,
-    selfHeal: SelfHealOutcome,
-    refusalCode?: RewrapRefusalCode,
-  ) {
+  constructor(code: GroupKeyErrorCode, selfHeal: SelfHealOutcome, refusalCode?: RewrapRefusalCode) {
     // Enum values only — this message is reportable verbatim.
     super(
       refusalCode === undefined
@@ -155,6 +203,39 @@ export function isGroupKeyUnwrapError(e: unknown): e is GroupKeyUnwrapError {
   return (
     e != null && typeof e === 'object' && (e as { name?: unknown }).name === 'GroupKeyUnwrapError'
   );
+}
+
+/**
+ * Is this the hopeful "a peer is re-wrapping, wait" state?
+ *
+ * `PendingWrapError` is defined in `contentCrypto`, whose module graph no
+ * screen may import for one `instanceof`, and factory-mocked suites leave the
+ * class undefined — so the check is on the NAME. It lives here, next to
+ * {@link isStalePendingError}, because the two are read together everywhere and
+ * this is the one module both sides of the crypto fence may import;
+ * `utils/groupKeyErrorCopy.isGroupKeyPending` delegates to it.
+ *
+ * The `instanceof Error` half is deliberate and pinned by the copy selector's
+ * test: a bare `{ name: 'PendingWrapError' }` object is not something a screen
+ * should render a transient banner for.
+ */
+export function isPendingWrapLike(e: unknown): boolean {
+  return e instanceof Error && e.name === 'PendingWrapError';
+}
+
+/**
+ * Is this the "waiting for a wrap for longer than the bound" end state (#937)?
+ *
+ * Name-based for the same reason as {@link isGroupKeyUnwrapError}: suites
+ * replace the crypto modules with factory mocks, which leaves the class
+ * undefined and `instanceof` false for an error that is otherwise identical.
+ *
+ * Callers that treat the pending state as recoverable (the pending-name
+ * registry) must accept this alongside `PendingWrapError`: the key can still
+ * arrive, the client has only stopped promising that it will.
+ */
+export function isStalePendingError(e: unknown): boolean {
+  return isGroupKeyUnwrapError(e) && e.selfHeal === 'stale_pending';
 }
 
 // ---------------------------------------------------------------------------

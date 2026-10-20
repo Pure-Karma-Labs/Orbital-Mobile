@@ -26,7 +26,13 @@
 
 import { captureError } from './telemetry';
 import { setGroupKeyFailureReporter } from './crypto/groupKeyErrors';
-import type { GroupKeyUnwrapError } from './crypto/groupKeyErrors';
+import type { GroupKeyUnwrapError, SelfHealOutcome } from './crypto/groupKeyErrors';
+
+/** Outcomes reported at `warning` rather than `error` — see the level below. */
+const WARNING_OUTCOMES: ReadonlySet<string> = new Set<SelfHealOutcome>([
+  'requested',
+  'stale_pending',
+]);
 
 /**
  * Keys already spent, as `groupId:selfHeal`.
@@ -56,7 +62,11 @@ function reportGroupKeyUnwrapFailure(groupId: string, error: GroupKeyUnwrapError
   captureError(error, {
     // `requested` is the SUCCESS path of the self-heal — the key is on its way,
     // and the user sees a transient notice. Worth counting, not worth paging.
-    level: error.selfHeal === 'requested' ? 'warning' : 'error',
+    //
+    // `stale_pending` (#937) is the expected END of that path when no member
+    // ever re-wraps: an elapsed 24h, not a failure anyone on call can act on.
+    // Same level for the same reason.
+    level: WARNING_OUTCOMES.has(error.selfHeal) ? 'warning' : 'error',
     tags: { feature: 'group-key-self-heal' },
   });
 }

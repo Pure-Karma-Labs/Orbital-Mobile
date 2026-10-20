@@ -46,6 +46,7 @@ const ALL_OUTCOMES: SelfHealOutcome[] = [
   'blocked_local_key',
   'not_eligible',
   'failed',
+  'stale_pending',
 ];
 
 /** [outcome, expected title, expected message] */
@@ -69,6 +70,10 @@ const OUTCOME_TABLE: OutcomeRow[] = [
   // Production never routes `requested` through this branch — contentCrypto
   // throws PendingWrapError for it — so the default UNREADABLE copy is correct.
   ['requested', NOT_SENT_TITLE, UNREADABLE],
+  // `stale_pending` (#937): the 24h deadline passed without a wrap delivery.
+  // The pending banner is gone (isGroupKeyPending returns false), and the copy
+  // falls to UNREADABLE — blame goes to a peer who was asked but did not deliver.
+  ['stale_pending', NOT_SENT_TITLE, UNREADABLE],
 ];
 
 describe('isGroupKeyPending', () => {
@@ -82,6 +87,11 @@ describe('isGroupKeyPending', () => {
     ['null', null],
     ['undefined', undefined],
     ['a GroupKeyUnwrapError', new GroupKeyUnwrapError('recipient_mismatch', 'refused')],
+    // `stale_pending` demotes the banner — the UI must NOT show "pending" for it.
+    [
+      'a stale_pending GroupKeyUnwrapError',
+      new GroupKeyUnwrapError('recipient_mismatch', 'stale_pending'),
+    ],
   ])('rejects %s', (_label, value) => {
     expect(isGroupKeyPending(value)).toBe(false);
   });
@@ -148,6 +158,6 @@ describe('groupKeyFailureCopy', () => {
     // so a value added to the union and not to this table fails this assertion,
     // and a value removed from the union stops ALL_OUTCOMES compiling.
     expect([...OUTCOME_TABLE.map(([outcome]) => outcome)].sort()).toEqual([...ALL_OUTCOMES].sort());
-    expect(ALL_OUTCOMES).toHaveLength(11);
+    expect(ALL_OUTCOMES).toHaveLength(12);
   });
 });

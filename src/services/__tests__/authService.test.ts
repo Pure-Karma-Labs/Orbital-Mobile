@@ -168,6 +168,11 @@ jest.mock('../../stores/middleware/persistence', () => ({
   getMMKVInstance: jest.fn(() => ({ clearAll: jest.fn() })),
 }));
 
+const mockClearAllPendingWraps = jest.fn();
+jest.mock('../crypto/pendingWrapClock', () => ({
+  clearAllPendingWraps: (...args: unknown[]) => mockClearAllPendingWraps(...args),
+}));
+
 jest.mock('../avatarService');
 const mockClearAvatarCache = jest.mocked(clearAvatarCache);
 
@@ -1026,6 +1031,29 @@ describe('logout', () => {
       alertSpy.mockRestore();
       (getMMKVInstance as jest.Mock).mockImplementation(() => ({ clearAll: jest.fn() }));
       resetMediaExportForTesting();
+    }
+  });
+
+  // #937: same hazard as the export disclosure above, same remedy. The
+  // pending-wrap clock is MMKV plus an in-memory mirror, and a group key
+  // touched DURING the wipe can re-persist the previous account's group ids —
+  // so the clear has to run AFTER clearAll(), not only in phase 1.
+  it('clears the pending-wrap clock AFTER MMKV clearAll (localWipe)', async () => {
+    const { getMMKVInstance } = require('../../stores/middleware/persistence');
+    const clearAll = jest.fn();
+    (getMMKVInstance as jest.Mock).mockImplementation(() => ({ clearAll }));
+
+    try {
+      await logout();
+
+      expect(clearAll).toHaveBeenCalledTimes(1);
+      const clearOrders = mockClearAllPendingWraps.mock.invocationCallOrder;
+      expect(clearOrders.length).toBeGreaterThan(0);
+      expect(clearAll.mock.invocationCallOrder[0]).toBeLessThan(
+        clearOrders[clearOrders.length - 1],
+      );
+    } finally {
+      (getMMKVInstance as jest.Mock).mockImplementation(() => ({ clearAll: jest.fn() }));
     }
   });
 

@@ -60,6 +60,13 @@ jest.mock('../crypto/contentCrypto', () => ({
   evictPendingCache: (...args: unknown[]) => mockEvictPendingCache(...args),
 }));
 
+// #937: the pending-wrap clock is module state behind MMKV, and the only thing
+// this suite asserts about it is WHICH group ids the prune is handed.
+const mockPrunePendingWraps = jest.fn();
+jest.mock('../crypto/pendingWrapClock', () => ({
+  prunePendingWraps: (...args: unknown[]) => mockPrunePendingWraps(...args),
+}));
+
 jest.mock('../../utils/uuid', () => ({
   generateUUID: jest.fn(() => 'mock-uuid-1234'),
 }));
@@ -135,7 +142,7 @@ jest.mock('../../stores/useAppStore', () => ({
   },
 }));
 
-import { loadConversations, loadDmConversations, startDm, joinOrbit, fetchCreatorOrbitsDecrypted, hydrateContactsFromOrbits, ensureDmConversation, fulfillPendingWraps, wrapKeyForMember, getPendingWrapsForGroup, clearConversationServiceState, refreshContactAvatar, markConversationReadEverywhere, createInviteCode, mergeDmRecency, isMarkReadPending } from '../conversationService';
+import { loadConversations, loadDmConversations, startDm, joinOrbit, fetchCreatorOrbitsDecrypted, hydrateContactsFromOrbits, ensureDmConversation, fulfillPendingWraps, wrapKeyForMember, getPendingWrapsForGroup, clearConversationServiceState, refreshContactAvatar, markConversationReadEverywhere, createInviteCode, mergeDmRecency, isMarkReadPending, _getPendingNameRegistry } from '../conversationService';
 import type { Conversation } from '../../types/store';
 import { listGroups, listDms, createDm, joinGroup, getGroupMembers, getPendingWraps, submitWrappedKey, markGroupRead, generateInviteCode as generateInviteCodeApi, selfWrapGroupKey } from '../api/groups';
 import * as inviteCrypto from '../crypto/inviteCrypto';
@@ -316,6 +323,119 @@ describe('loadConversations', () => {
     mockListGroups.mockRejectedValue(new Error('network'));
 
     await expect(loadConversations()).rejects.toThrow('network');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loadConversations — pending-wrap clock (#937)
+// ---------------------------------------------------------------------------
+
+describe('loadConversations — pending-wrap prune', () => {
+  /**
+   * The prune is handed SERVER truth, not the locally-known conversation ids:
+   * a pending group has no local threads (its key never arrived), so the
+   * thread-based dissolution sweep below structurally cannot see it.
+   */
+  it('prunes with the server group ids', async () => {
+    mockIsDatabaseInitialized.mockReturnValue(false);
+    mockGetLocalConvIds.mockReturnValue(['g1', 'dissolved-group']);
+    mockListGroups.mockResolvedValue([GROUP_RESPONSE]);
+
+    await loadConversations();
+
+    expect(mockPrunePendingWraps).toHaveBeenCalledWith(['g1']);
+  });
+
+  it('prunes to nothing when the server returns no groups and no DMs are known', async () => {
+    mockListGroups.mockResolvedValue([]);
+
+    await loadConversations();
+
+    expect(mockPrunePendingWraps).toHaveBeenCalledWith([]);
+  });
+
+  /**
+   * DM ids share the clock's keyspace but `listGroups` excludes
+   * `group_type='dm'`, and `postAuthBootstrap` runs this before
+   * `loadDmConversations` on every launch — so pruning to the group list alone
+   * would erase a DM's mark before it could ever age past the bound.
+   */
+  it('keeps local DM ids while still pruning a dissolved group', async () => {
+    const base = (useAppStore.getState as jest.Mock)();
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      ...base,
+      conversations: {
+        g1: { id: 'g1', type: 'group' },
+        'dissolved-group': { id: 'dissolved-group', type: 'group' },
+        'dm-1': { id: 'dm-1', type: 'direct' },
+      },
+    });
+    mockListGroups.mockResolvedValue([GROUP_RESPONSE]);
+
+    await loadConversations();
+
+    const keep = mockPrunePendingWraps.mock.calls[0][0] as string[];
+    expect(keep).toContain('g1');
+    expect(keep).toContain('dm-1');
+    expect(keep).not.toContain('dissolved-group');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// decryptGroupNameSafe — pending vs undecryptable (#937)
+// ---------------------------------------------------------------------------
+
+describe('loadConversations — pending group names', () => {
+  /**
+   * Built by hand rather than imported: `crypto/contentCrypto` is a factory
+   * mock in this suite, so the real classes are undefined and the service has
+   * to match on `name`.
+   */
+  function unwrapFailure(selfHeal: string): Error {
+    const e = new Error(`Group key unwrap failed: no_envelope / ${selfHeal}`);
+    e.name = 'GroupKeyUnwrapError';
+    Object.assign(e, { code: 'no_envelope', selfHeal });
+    return e;
+  }
+
+  function pendingWrapError(): Error {
+    const e = new Error('Group key not yet available (pending wrap)');
+    e.name = 'PendingWrapError';
+    return e;
+  }
+
+  beforeEach(() => {
+    mockListGroups.mockResolvedValue([GROUP_RESPONSE]);
+  });
+
+  afterEach(() => {
+    clearConversationServiceState();
+    // The rejections below are set with mockRejectedValue, which outlives
+    // clearAllMocks — restore the suite-wide default.
+    mockGetOrFetchGroupKey.mockResolvedValue(new Uint8Array(32));
+  });
+
+  it.each([
+    ['a pending wrap', pendingWrapError()],
+    // Past the 24h bound the key can still arrive, so the name stays
+    // RECOVERABLE — '(unable to decrypt)' would be frozen into the list.
+    ['a stale pending wrap', unwrapFailure('stale_pending')],
+  ])('leaves the name null and registers it as pending for %s', async (_label, error) => {
+    mockGetOrFetchGroupKey.mockRejectedValue(error);
+
+    await loadConversations();
+
+    expect(mockSetConversations.mock.calls[0][0][0].name).toBeNull();
+    expect(_getPendingNameRegistry().get('g1')).toBe('Family Orbit');
+  });
+
+  it('falls back to (unable to decrypt) for a verdict that is not pending', async () => {
+    mockGetOrFetchGroupKey.mockRejectedValue(unwrapFailure('refused'));
+
+    await loadConversations();
+
+    expect(mockSetConversations.mock.calls[0][0][0].name).toBe('(unable to decrypt)');
+    expect(_getPendingNameRegistry().has('g1')).toBe(false);
   });
 });
 

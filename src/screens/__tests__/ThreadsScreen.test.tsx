@@ -1063,6 +1063,27 @@ describe('ThreadsScreen — group key (#912)', () => {
     expect(find(renderer, 'group-key-pending-banner')).toBe(0);
   });
 
+  // #937: past the 24h bound the crypto layer stops raising PendingWrapError
+  // and raises the unwrap error with `stale_pending` instead. "Another member
+  // is re-sending it" has stopped being a promise anyone can keep, so the
+  // transient banner must come DOWN and the terminal copy take the body.
+  it('shows the unreadable copy, not the pending banner, once the wrap is stale', async () => {
+    mockLoadThreadsForGroup.mockRejectedValueOnce(unwrapFailure('stale_pending'));
+
+    const renderer = await render();
+
+    expect(find(renderer, 'group-key-failure-notice')).toBeGreaterThan(0);
+    const rendered = texts(renderer);
+    expect(rendered).toContain(UNREADABLE);
+    expect(rendered.join('\n')).not.toContain('No threads yet');
+    // Not the transient state: no banner, no blank "key is on its way" body,
+    // and none of the re-sending wording anywhere on screen.
+    expect(find(renderer, 'group-key-pending-banner')).toBe(0);
+    expect(find(renderer, 'group-key-pending-body')).toBe(0);
+    expect(rendered).not.toContain(PENDING_NOTICE);
+    expect(rendered.join('\n')).not.toContain('being re-sent');
+  });
+
   it('keeps the normal empty state for a failure that is not a key failure', async () => {
     mockLoadThreadsForGroup.mockRejectedValueOnce(new Error('network down'));
 

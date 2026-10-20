@@ -745,6 +745,105 @@ describe('caps', () => {
 });
 
 // ---------------------------------------------------------------------------
+// already_pending (#937)
+// ---------------------------------------------------------------------------
+
+/**
+ * The server now distinguishes "I demoted your row" from "your row was already
+ * NULL, and another member holds a key". Both are a 200 and both mean peers
+ * have been asked, so both are `requested` — but only the first caused any
+ * fan-out, and the two caps brake different things.
+ */
+describe('already_pending', () => {
+  /** Walk past the cooldown so only a cap can stop the next attempt. */
+  async function attemptAfterCooldown(groupId = 'group-1'): Promise<string> {
+    now += RECOVERY_COOLDOWN_MS + 1;
+    return (await recoverDeadEnvelope(input({ groupId }))).outcome;
+  }
+
+  it('returns requested and does not spend the PER-GROUP cap', async () => {
+    (requestGroupKeyRewrap as jest.Mock).mockResolvedValue({
+      success: true,
+      alreadyPending: true,
+    });
+
+    expect((await recoverDeadEnvelope(input())).outcome).toBe('requested');
+    expect(await attemptAfterCooldown()).toBe('requested');
+    // A committed demote would have exhausted the per-group cap by now.
+    expect(PER_GROUP_DEMOTE_CAP).toBe(2);
+    expect(await attemptAfterCooldown()).toBe('requested');
+  });
+
+  it('does spend the SESSION cap, which keeps the client under the limiter', async () => {
+    (requestGroupKeyRewrap as jest.Mock).mockResolvedValue({
+      success: true,
+      alreadyPending: true,
+    });
+
+    for (let i = 0; i < SESSION_DEMOTE_CAP; i++) {
+      expect(await attemptAfterCooldown()).toBe('requested');
+    }
+
+    // Nothing was ever demoted FOR this group, so the copy must not blame a
+    // peer — the session-cap outcome, not `exhausted`.
+    expect(await attemptAfterCooldown()).toBe('session_exhausted');
+    expect(requestGroupKeyRewrap).toHaveBeenCalledTimes(SESSION_DEMOTE_CAP);
+  });
+
+  it('charges both caps when the server omits the field (an older backend)', async () => {
+    (requestGroupKeyRewrap as jest.Mock).mockResolvedValue({ success: true });
+
+    expect((await recoverDeadEnvelope(input())).outcome).toBe('requested');
+    expect(await attemptAfterCooldown()).toBe('requested');
+
+    expect(await attemptAfterCooldown()).toBe('exhausted');
+  });
+
+  it('does not reach the network again inside the cooldown', async () => {
+    (requestGroupKeyRewrap as jest.Mock).mockResolvedValue({
+      success: true,
+      alreadyPending: true,
+    });
+
+    expect((await recoverDeadEnvelope(input())).outcome).toBe('requested');
+    // `requested` is not a terminal verdict, so the window answers 'cooldown'…
+    expect((await recoverDeadEnvelope(input())).outcome).toBe('cooldown');
+    // …and spends nothing, server-side included.
+    expect(requestGroupKeyRewrap).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes the zero-holder refusal to refused, spending no cap', async () => {
+    // The other half of the backend change: already-NULL with NO other holder
+    // is a 409 rather than a 200, because nobody can answer the wrap request.
+    (requestGroupKeyRewrap as jest.Mock)
+      .mockRejectedValueOnce(refusal('NO_KEY_HOLDER'))
+      .mockResolvedValue({ success: true });
+
+    const r = await recoverDeadEnvelope(input());
+
+    expect(r.outcome).toBe('refused');
+    expect(r.refusalCode).toBe('NO_KEY_HOLDER');
+    expect(await attemptAfterCooldown()).toBe('requested');
+  });
+
+  it('refuses a no_envelope cause without asking the server', async () => {
+    const r = await recoverDeadEnvelope(
+      input({
+        // @ts-expect-error — `no_envelope` is not a GroupKeyFailureCode: the
+        // type keeps it out of recovery, and the runtime guard is the backstop.
+        // A NULL row is already demoted; demoting it again is a fan-out for
+        // nothing.
+        code: 'no_envelope',
+      }),
+    );
+
+    expect(r.outcome).toBe('not_eligible');
+    expect(probeIdentityKeyPair).not.toHaveBeenCalled();
+    expect(requestGroupKeyRewrap).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Single-flight and reset
 // ---------------------------------------------------------------------------
 

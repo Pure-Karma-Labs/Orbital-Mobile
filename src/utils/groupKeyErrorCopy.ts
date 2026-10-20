@@ -26,7 +26,11 @@
  * @module groupKeyErrorCopy
  */
 
-import { isGroupKeyUnwrapError, type SelfHealOutcome } from '../services/crypto/groupKeyErrors';
+import {
+  isGroupKeyUnwrapError,
+  isPendingWrapLike,
+  type SelfHealOutcome,
+} from '../services/crypto/groupKeyErrors';
 import {
   GROUP_KEY_DEVICE_KEY_MESSAGE,
   GROUP_KEY_RESENDING_MESSAGE,
@@ -69,7 +73,7 @@ const DEVICE_KEY_TITLE = 'Device Key Problem';
  * explanation.
  */
 export function isGroupKeyPending(e: unknown): boolean {
-  return e instanceof Error && e.name === 'PendingWrapError';
+  return isPendingWrapLike(e);
 }
 
 /**
@@ -107,6 +111,12 @@ export function groupKeyFailureCopy(e: unknown): GroupKeyFailureCopy | null {
     case 'identity_mismatch':
     case 'blocked_local_key':
       return { title: DEVICE_KEY_TITLE, message: GROUP_KEY_DEVICE_KEY_MESSAGE };
+    // `stale_pending` (#937): the key has been pending for longer than the
+    // 24h bound, so "another member is re-sending it" has stopped being a
+    // promise anyone can keep. It is still not a retry the user can win, so it
+    // reads as UNREADABLE — and `isGroupKeyPending` is false for it, which is
+    // what takes the transient banner down.
+    case 'stale_pending':
     case 'refused':
     case 'unsupported':
     case 'exhausted':

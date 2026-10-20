@@ -31,7 +31,8 @@
  *   ones (a delay, not a lockout) — but a terminal verdict reached inside that
  *   window is repeated rather than downgraded to "try again later";
  * - a per-group cap of {@link PER_GROUP_DEMOTE_CAP} that counts COMMITTED
- *   demotes only — a network failure or a 429 costs nothing;
+ *   demotes only — a network failure, a 429 or an `already_pending` 200 (which
+ *   demotes nothing) costs nothing;
  * - a per-session cap of {@link SESSION_DEMOTE_CAP}, which sits under the
  *   backend limiter (5 per 15 minutes per user) without replacing it;
  * - two latches: `localKeyInvalid`, set only on a DEFINITE probe mismatch, and
@@ -63,7 +64,11 @@ import { VerifiedStatus } from '../../types/database';
 /** Every attempt stamps this, so a hot loop backs off even when it fails. */
 export const RECOVERY_COOLDOWN_MS = 15 * 60_000;
 
-/** Committed demotes allowed per group per session. */
+/**
+ * Committed demotes allowed per group per session. Only a request that
+ * actually NULLed the row counts: an `already_pending` 200 found it NULL
+ * already and caused no fan-out to bound (#937).
+ */
 export const PER_GROUP_DEMOTE_CAP = 2;
 
 /**
@@ -74,10 +79,14 @@ export const PER_GROUP_DEMOTE_CAP = 2;
  * It is not a guarantee that the limiter is never tripped, and must not be
  * read as one:
  * - a refused or rejected request still consumes a limiter slot server-side
- *   while costing nothing here (only a commit spends these caps), so a run of
- *   409s can reach the limiter with this cap untouched;
+ *   while costing nothing here (only an accepted request spends this cap), so
+ *   a run of 409s can reach the limiter with this cap untouched;
  * - these caps are per-session module state, so an app relaunch resets them
  *   while the server's 15-minute window keeps counting.
+ *
+ * Unlike {@link PER_GROUP_DEMOTE_CAP} this one is charged for an
+ * `already_pending` 200 too (#937): nothing was demoted, so there is no
+ * fan-out to bound, but the request did spend a limiter slot.
  *
  * The server limiter is the hard gate. This cap is amplification control for
  * one session — a bound on how much ECIES work and WS fan-out one device can
@@ -349,7 +358,13 @@ async function runRecovery(input: RecoverDeadEnvelopeInput): Promise<RecoveryRes
     wrappedBy === userId ||
     // An unrecognised SignalError is not evidence of a dead envelope, and a
     // demote must be justified by a known cause.
-    code === 'unknown'
+    code === 'unknown' ||
+    // `no_envelope` is client-originated and NOT a `GroupKeyFailureCode`, so
+    // the type already keeps it out of this function. Checked at runtime too
+    // because the consequence of being wrong is a demote of a row that is
+    // already NULL: a WS fan-out asking peers to re-wrap what they were
+    // already asked to re-wrap (#937).
+    (code as string) === 'no_envelope'
   ) {
     return { outcome: 'not_eligible', code };
   }
@@ -437,17 +452,33 @@ async function runRecovery(input: RecoverDeadEnvelopeInput): Promise<RecoveryRes
   }
 
   // --- Step 5: demote ----------------------------------------------------
+  let alreadyPending = false;
   try {
-    await requestGroupKeyRewrap(groupId, envelope, localPublicKey);
+    const response = await requestGroupKeyRewrap(groupId, envelope, localPublicKey);
+    alreadyPending = response.alreadyPending === true;
   } catch (e) {
     const { outcome, refusalCode } = routeDemoteError(e, groupId);
     return refusalCode === undefined ? { outcome, code } : { outcome, code, refusalCode };
   }
 
-  // Committed: either the row was demoted or it was already NULL, and in both
-  // cases the server has sent wrap requests to every key holder. Only this
-  // branch spends the caps.
-  committedDemotes.set(groupId, (committedDemotes.get(groupId) ?? 0) + 1);
+  // Accepted: the server has sent wrap requests to every key holder. Which
+  // caps that spends depends on whether anything was actually demoted — the
+  // two are different brakes on different things (#937):
+  //
+  // - the PER-GROUP cap bounds the ECIES work and WS fan-out this device asks
+  //   its peers to do, which only a real demote causes. An `already_pending`
+  //   200 means the row was NULL before we asked, so it buys nothing;
+  // - the SESSION cap sits under the backend's `keyRewrapLimiter`, and the
+  //   request consumed a limiter slot either way. It is charged always, or a
+  //   run of races could walk the client straight into a 429.
+  //
+  // `already_pending` only ever arrives on a GET/POST race: a NULL row is a
+  // pending wrap, which `contentCrypto` turns into a `PendingWrapError`
+  // without ever reaching recovery. An older server omits the field, and the
+  // pre-#937 behaviour (charge both) is what the `false` default gives.
+  if (!alreadyPending) {
+    committedDemotes.set(groupId, (committedDemotes.get(groupId) ?? 0) + 1);
+  }
   sessionDemotes += 1;
   return { outcome: 'requested', code };
 }

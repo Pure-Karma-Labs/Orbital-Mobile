@@ -10,11 +10,14 @@
 import {
   GroupKeyUnwrapError,
   isGroupKeyUnwrapError,
+  isStalePendingError,
   classifyEciesOpenError,
   setGroupKeyFailureReporter,
   reportGroupKeyFailure,
   resetGroupKeyFailureBudget,
   REWRAP_REFUSAL_CODES,
+  PENDING_WRAP_BOUND_MS,
+  NO_ENVELOPE_IS_CLIENT_ONLY,
 } from '../groupKeyErrors';
 
 /** Build an error shaped exactly like a uniffi-lifted SignalError. */
@@ -156,6 +159,70 @@ describe('classifyEciesOpenError — not a SignalError', () => {
     const e2 = new Error('SignalError.InvalidMessage');
     Object.assign(e2, { tag: 'InvalidMessage', inner: 'decryption failed' });
     expect(classifyEciesOpenError(e2)).toBe('unknown');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The pending-wrap bound (#937)
+// ---------------------------------------------------------------------------
+
+describe('stale_pending', () => {
+  it('bounds the promise at 24 hours', () => {
+    expect(PENDING_WRAP_BOUND_MS).toBe(24 * 60 * 60 * 1000);
+  });
+
+  it('isStalePendingError matches by name and outcome, not by instanceof', () => {
+    expect(isStalePendingError(new GroupKeyUnwrapError('no_envelope', 'stale_pending'))).toBe(true);
+    // The shape a factory-mocked suite produces.
+    expect(isStalePendingError({ name: 'GroupKeyUnwrapError', selfHeal: 'stale_pending' })).toBe(
+      true,
+    );
+  });
+
+  it('is false for every other group-key error', () => {
+    expect(isStalePendingError(new GroupKeyUnwrapError('no_envelope', 'requested'))).toBe(false);
+    expect(isStalePendingError(new GroupKeyUnwrapError('recipient_mismatch', 'refused'))).toBe(
+      false,
+    );
+    expect(isStalePendingError({ name: 'PendingWrapError' })).toBe(false);
+    expect(isStalePendingError(new Error('nope'))).toBe(false);
+    expect(isStalePendingError(null)).toBe(false);
+  });
+
+  it('carries no_envelope in a reportable message', () => {
+    expect(new GroupKeyUnwrapError('no_envelope', 'stale_pending').message).toBe(
+      'Group key unwrap failed: no_envelope / stale_pending',
+    );
+  });
+});
+
+describe('no_envelope is client-originated', () => {
+  /**
+   * The annotation on this constant is the compile-time half of the claim; the
+   * loop below is the runtime half. If the classifier ever learned to return
+   * `no_envelope`, a NULL server row would reach the demote gate and ask peers
+   * to re-wrap a row that is already NULL.
+   */
+  it('is pinned at the type level', () => {
+    expect(NO_ENVELOPE_IS_CLIENT_ONLY).toBe(true);
+  });
+
+  it('is never produced by the classifier', () => {
+    const inputs: unknown[] = [
+      signalError('InvalidMessage', 'ecies_open: decryption failed'),
+      signalError('InvalidMessage', 'DH produced identity point'),
+      signalError('InvalidMessage', 'something new'),
+      signalError('InvalidKey', 'does not match expected sender'),
+      signalError('InvalidKey', 'something new'),
+      signalError('InvalidSignature'),
+      signalError('Unrecognised', 'whatever'),
+      new Error('No authenticated user'),
+      null,
+    ];
+
+    for (const input of inputs) {
+      expect(classifyEciesOpenError(input)).not.toBe('no_envelope');
+    }
   });
 });
 

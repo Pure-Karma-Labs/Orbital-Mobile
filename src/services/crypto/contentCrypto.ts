@@ -28,8 +28,16 @@ import { markEciesLocked, isEciesLocked } from './downgradeProtection';
 import {
   classifyEciesOpenError,
   GroupKeyUnwrapError,
+  isStalePendingError,
   reportGroupKeyFailure,
 } from './groupKeyErrors';
+import type { GroupKeyErrorCode } from './groupKeyErrors';
+import {
+  clearAllPendingWraps,
+  clearPendingWrap,
+  isPendingWrapPastBound,
+  notePendingWrap,
+} from './pendingWrapClock';
 import { recoverDeadEnvelope, resetGroupKeyRecoveryState } from './groupKeyRecovery';
 import { clearWrapDeliveryDedup } from './wrapDeliveryHook';
 import { useAppStore } from '../../stores/useAppStore';
@@ -95,6 +103,9 @@ function validateAndDecode(keyBase64: string): Uint8Array {
 export function persistGroupKey(groupId: string, keyBase64: string): void {
   const keyBytes = validateAndDecode(keyBase64);
   groupKeyCache.set(groupId, keyBytes);
+  // The wait is over: a group with a usable key has no pending-wrap entry
+  // (#937). One of the three sites where that invariant is restored.
+  clearPendingWrap(groupId);
   try {
     setGroupMasterKey(groupId, keyBytes);
   } catch {
@@ -193,6 +204,7 @@ export function setCachedGroupKey(groupId: string, key: Uint8Array): void {
     throw new Error(`Invalid group key length: expected 32, got ${key.length}`);
   }
   groupKeyCache.set(groupId, key);
+  clearPendingWrap(groupId);
 }
 
 /**
@@ -227,13 +239,39 @@ export function evictPendingCache(groupId: string): void {
   pendingGroups.delete(groupId);
 }
 
+/**
+ * The error for "there is no usable key for this group yet": the hopeful
+ * {@link PendingWrapError} while the wait is within the bound, and a
+ * `stale_pending` {@link GroupKeyUnwrapError} past it (#937).
+ *
+ * Every pending path goes through here, so starting the clock and reading it
+ * cannot drift apart. The bound changes only WHICH error is thrown — the server
+ * is still fetched on the next call, and a delivery still heals the group, so a
+ * key that does eventually arrive is picked up either way.
+ *
+ * Reports the stale verdict itself (one event per group and outcome, budgeted
+ * by the reporter); the caller must not report again.
+ */
+function pendingOrStale(groupId: string, code: GroupKeyErrorCode): Error {
+  const now = Date.now();
+  notePendingWrap(groupId, now);
+  if (!isPendingWrapPastBound(groupId, now)) {
+    return new PendingWrapError();
+  }
+  const stale = new GroupKeyUnwrapError(code, 'stale_pending');
+  reportGroupKeyFailure(groupId, stale);
+  return stale;
+}
+
 export async function getOrFetchGroupKey(groupId: string): Promise<Uint8Array> {
   const cached = groupKeyCache.get(groupId);
   if (cached) return cached;
 
   const pendingUntil = pendingGroups.get(groupId);
   if (pendingUntil && Date.now() < pendingUntil) {
-    throw new PendingWrapError();
+    // `no_envelope`: whatever stamped this TTL did so because there was no key
+    // to open, not because one failed to open.
+    throw pendingOrStale(groupId, 'no_envelope');
   }
 
   // Tier 2: persisted key. Grandfathered raw keys stored before ECIES existed
@@ -242,6 +280,7 @@ export async function getOrFetchGroupKey(groupId: string): Promise<Uint8Array> {
     const persisted = loadPersistedGroupKey(groupId);
     if (persisted) {
       groupKeyCache.set(groupId, persisted);
+      clearPendingWrap(groupId);
       return persisted;
     }
   } catch {
@@ -256,7 +295,7 @@ export async function getOrFetchGroupKey(groupId: string): Promise<Uint8Array> {
       const response = await getGroupKey(groupId);
       if (!response.wrappedGroupKey) {
         pendingGroups.set(groupId, Date.now() + PENDING_CACHE_TTL_MS);
-        throw new PendingWrapError();
+        throw pendingOrStale(groupId, 'no_envelope');
       }
       // Captured once: the envelope string is the server's compare-and-swap
       // witness for a rewrap request and must be passed on unmodified.
@@ -302,9 +341,15 @@ export async function getOrFetchGroupKey(groupId: string): Promise<Uint8Array> {
             // dedups per group, and the event that triggered this failure has
             // usually already claimed that slot.
             pendingGroups.set(groupId, Date.now() + PENDING_CACHE_TTL_MS);
-            reportGroupKeyFailure(groupId, failure);
             clearWrapDeliveryDedup(groupId);
-            throw new PendingWrapError();
+            // Both stamps above happen either way: a stale verdict is about
+            // how long the wait has lasted, not about this attempt, which did
+            // succeed in asking the peers.
+            const pending = pendingOrStale(groupId, result.code);
+            // One read, one event: `pendingOrStale` has already reported the
+            // stale verdict, which is the more informative of the two.
+            if (!isStalePendingError(pending)) reportGroupKeyFailure(groupId, failure);
+            throw pending;
           }
           reportGroupKeyFailure(groupId, failure);
           throw failure;
@@ -358,6 +403,10 @@ export function clearGroupKeyCache(): void {
 export function clearContentCryptoInflight(): void {
   inflight.clear();
   pendingGroups.clear();
+  // The pending-wrap clock is per account too: a new account on this device
+  // must not inherit "this group has been waiting 23 hours" (#937). This is
+  // the crypto-side clear; `localWipe` repeats it after MMKV's own `clearAll`.
+  clearAllPendingWraps();
   // Cooldowns, demote caps and both session latches belong to the signed-in
   // account, not to the device: an account switch or a key wipe must not
   // inherit the previous session's "already asked twice" or "local key is

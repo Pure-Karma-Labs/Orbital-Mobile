@@ -112,8 +112,12 @@ describe('the per-session budget', () => {
 describe('level mapping', () => {
   // `requested` is the SUCCESS path of the self-heal — the key is on its way
   // and the user sees a transient notice. Worth counting, not worth paging.
-  it('reports `requested` at warning', () => {
-    reportGroupKeyFailure(GROUP_ID, new GroupKeyUnwrapError('recipient_mismatch', 'requested'));
+  // `stale_pending` (#937) is the expected END of that path when the 24h
+  // deadline passes: it demotes back to UNREADABLE, so still not page-worthy.
+  const WARNING_OUTCOMES: SelfHealOutcome[] = ['requested', 'stale_pending'];
+
+  it.each(WARNING_OUTCOMES)('reports `%s` at warning', (outcome) => {
+    reportGroupKeyFailure(GROUP_ID, new GroupKeyUnwrapError('recipient_mismatch', outcome));
 
     expect(context()).toMatchObject({ level: 'warning' });
   });
@@ -135,6 +139,13 @@ describe('level mapping', () => {
     reportGroupKeyFailure(GROUP_ID, new GroupKeyUnwrapError('recipient_mismatch', outcome));
 
     expect(context()).toMatchObject({ level: 'error' });
+  });
+
+  // TRIPWIRE: every SelfHealOutcome value must appear in exactly one list.
+  // Adding a new outcome without updating WARNING_OUTCOMES or ERROR_OUTCOMES
+  // will break this assertion.
+  it('covers every SelfHealOutcome value exactly once across warning and error', () => {
+    expect(WARNING_OUTCOMES.length + ERROR_OUTCOMES.length).toBe(12);
   });
 
   it('tags the feature so the events can be found as a group', () => {

@@ -281,6 +281,26 @@ describe('response case transform', () => {
 
     expect(result).toEqual([{ userId: '1' }, { userId: '2' }]);
   });
+
+  // Asserted through the real endpoint function, not a bare `request`:
+  // `requestGroupKeyRewrap` declares `alreadyPending` but never converts it, so
+  // the only thing standing between the backend's `already_pending` (#937) and
+  // the caller is this transform. groups.test.ts mocks `request` and therefore
+  // cannot see it. Both values matter — `false` must survive as `false`, not
+  // collapse into the "server predates the field" undefined case.
+  it.each([
+    ['true', true],
+    ['false', false],
+  ])(
+    'surfaces request-rewrap already_pending=%s as alreadyPending',
+    async (_label, alreadyPending) => {
+      mockFetchOk({ success: true, already_pending: alreadyPending });
+
+      const result = await requestGroupKeyRewrap('g-1', 'envelope-b64', 'identity-pub-b64');
+
+      expect(result).toEqual({ success: true, alreadyPending });
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------

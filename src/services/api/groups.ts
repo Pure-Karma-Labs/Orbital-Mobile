@@ -110,13 +110,21 @@ export function submitWrappedKey(
  * @param wrappedGroupKey   The exact envelope string `getGroupKey` returned,
  *                          unmodified — it is the compare-and-swap witness.
  * @param identityPublicKey This device's identity public key, base64.
+ * @returns `alreadyPending` is true when the row was ALREADY NULL, so nothing
+ *          was demoted and the wrap requests had been sent before (#937).
+ *          `snakeToCamel` supplies it from `already_pending`; a server that
+ *          predates the field simply omits it, and the caller then charges its
+ *          caps exactly as it did before. The caller spends its SESSION cap
+ *          either way, so the client stays under the server limiter (5 per 15
+ *          minutes) whose slot this request consumed regardless; only the
+ *          per-group cap, which counts committed demotes, is left untouched.
  */
 export function requestGroupKeyRewrap(
   groupId: string,
   wrappedGroupKey: string,
   identityPublicKey: string,
-): Promise<{ success: boolean }> {
-  return request<{ success: boolean }>({
+): Promise<{ success: boolean; alreadyPending?: boolean }> {
+  return request<{ success: boolean; alreadyPending?: boolean }>({
     method: 'POST',
     path: `/api/groups/${encodeURIComponent(groupId)}/request-rewrap`,
     body: { wrappedGroupKey, identityPublicKey },

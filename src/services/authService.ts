@@ -22,6 +22,7 @@ import {
   fullCryptoWipe,
 } from './crypto/keyGenerationService';
 import { clearGroupKeyCache, clearContentCryptoInflight, persistGroupKey } from './crypto/contentCrypto';
+import { clearAllPendingWraps } from './crypto/pendingWrapClock';
 import * as inviteCrypto from './crypto/inviteCrypto';
 import { arrayBufferToBase64, toArrayBuffer } from './crypto/utils';
 import { clearEciesLockState, loadEciesLockState } from './crypto/downgradeProtection';
@@ -576,6 +577,14 @@ export async function localWipe({ preserveIdentity }: { preserveIdentity: boolea
   // acknowledgement — the next account must be asked again.
   try { clearExportDisclosureCache(); } catch {
     if (__DEV__) console.warn('[LocalWipe] clearExportDisclosureCache failed');
+  }
+  // #937: same shape for the pending-wrap clock. It was already cleared with
+  // the rest of the crypto state in phase 1, but a group key touched DURING
+  // the wipe (a drain, an in-flight fetch) can re-mark it and re-persist the
+  // previous account's group ids. Repeating the clear after clearAll() closes
+  // that window; it is unconditional and cheap.
+  try { clearAllPendingWraps(); } catch {
+    if (__DEV__) console.warn('[LocalWipe] clearAllPendingWraps failed');
   }
 
   // --- Plaintext-adjacent media staging residue in Caches (both paths) ---

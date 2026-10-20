@@ -18,14 +18,16 @@ import {
   loadPersistedGroupKey,
   setCachedGroupKey,
   evictPendingCache,
-  PendingWrapError,
 } from './crypto/contentCrypto';
+import { isStalePendingError } from './crypto/groupKeyErrors';
+import { prunePendingWraps } from './crypto/pendingWrapClock';
 import { getIdentityKeyPair, resolveRemoteIdentityKey, refreshAndCompareIdentityKey, compareAndPersistIdentityKey, normalizeIdentityKey } from './crypto/identityKeyAccess';
 import { VerifiedStatus } from '../types/database';
 import { arrayBufferToBase64, toArrayBuffer, base64ToArrayBuffer } from './crypto/utils';
 import { ApiError, BlockedRecipientError } from './api/errors';
 import { generateUUID } from '../utils/uuid';
 import { maxTimestamp } from '../utils/threadActivity';
+import { isGroupKeyPending } from '../utils/groupKeyErrorCopy';
 import { useAppStore } from '../stores/useAppStore';
 import { isDatabaseInitialized, getDatabase } from '../database/connection';
 import { getConversationIdsWithThreads, deleteThreadsForConversation } from '../database/repositories/threadRepository';
@@ -167,8 +169,15 @@ async function decryptGroupNameSafe(
     const groupKey = await getOrFetchGroupKey(groupId);
     return decryptGroupName(encryptedName, groupKey);
   } catch (e) {
-    // Distinguish pending-key (transient) from genuine decrypt failure (permanent)
-    if (e instanceof PendingWrapError) {
+    // Distinguish pending-key (transient) from genuine decrypt failure
+    // (permanent). Matched by NAME, not `instanceof`: suites replace the crypto
+    // modules with factory mocks, which leaves the class undefined.
+    //
+    // `stale_pending` (#937) counts as pending here on purpose. The 24h bound
+    // only stops the client PROMISING a re-wrap — the key can still arrive, and
+    // a name left in the registry recovers on delivery, while
+    // '(unable to decrypt)' would be frozen into the conversation list.
+    if (isGroupKeyPending(e) || isStalePendingError(e)) {
       registerPendingName(groupId, encryptedName);
       return null;
     }
@@ -248,6 +257,13 @@ export async function loadConversations(): Promise<void> {
   // Type-partitioned replace: only replace group-type conversations,
   // preserving all existing DM conversations and their unread counts.
   store.setGroupConversations(conversations);
+
+  // #937: drop pending-wrap clocks for groups the server no longer returns —
+  // dissolved, or the user was removed. This list is SERVER truth, which the
+  // local thread-based reconciliation below is not: a group with no local
+  // threads has no local row to detect a removal from, and a pending group has
+  // no threads precisely because its key never arrived.
+  prunePendingWraps(conversations.map(c => c.id));
 
   // #327: Retry any stranded pending-name entries now that keys have been
   // processed and conversations are in the store.

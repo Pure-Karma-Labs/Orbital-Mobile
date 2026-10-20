@@ -206,6 +206,24 @@ export function isGroupKeyUnwrapError(e: unknown): e is GroupKeyUnwrapError {
 }
 
 /**
+ * Is this the hopeful "a peer is re-wrapping, wait" state?
+ *
+ * `PendingWrapError` is defined in `contentCrypto`, whose module graph no
+ * screen may import for one `instanceof`, and factory-mocked suites leave the
+ * class undefined — so the check is on the NAME. It lives here, next to
+ * {@link isStalePendingError}, because the two are read together everywhere and
+ * this is the one module both sides of the crypto fence may import;
+ * `utils/groupKeyErrorCopy.isGroupKeyPending` delegates to it.
+ *
+ * The `instanceof Error` half is deliberate and pinned by the copy selector's
+ * test: a bare `{ name: 'PendingWrapError' }` object is not something a screen
+ * should render a transient banner for.
+ */
+export function isPendingWrapLike(e: unknown): boolean {
+  return e instanceof Error && e.name === 'PendingWrapError';
+}
+
+/**
  * Is this the "waiting for a wrap for longer than the bound" end state (#937)?
  *
  * Name-based for the same reason as {@link isGroupKeyUnwrapError}: suites

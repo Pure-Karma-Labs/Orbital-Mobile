@@ -452,6 +452,27 @@ describe('pending-wrap bound', () => {
       expect(getGroupKey).toHaveBeenCalledTimes(2);
     });
 
+    it('re-raises the stamping cause, not a hard-coded one', async () => {
+      // The TTL stamped by the self-heal's `requested` carries the CLASSIFIED
+      // code, so the short-circuit must not report `no_envelope` for it.
+      (recoverDeadEnvelope as jest.Mock).mockResolvedValue({
+        outcome: 'requested',
+        code: 'sender_mismatch',
+      });
+
+      await getOrFetchGroupKey(GROUP).catch(() => {});
+      now = T0 + PENDING_WRAP_BOUND_MS - 10_000;
+      await getOrFetchGroupKey(GROUP).catch(() => {});
+
+      // Inside the re-stamped TTL and past the bound: the short-circuit answers.
+      now = T0 + PENDING_WRAP_BOUND_MS;
+      const err = await getOrFetchGroupKey(GROUP).catch((e: unknown) => e);
+
+      expect(isStalePendingError(err)).toBe(true);
+      expect((err as GroupKeyUnwrapError).code).toBe('sender_mismatch');
+      expect(getGroupKey).toHaveBeenCalledTimes(2);
+    });
+
     it('bounds a null server envelope', async () => {
       (getGroupKey as jest.Mock).mockResolvedValue({
         wrappedGroupKey: null,

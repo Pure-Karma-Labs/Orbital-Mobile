@@ -34,10 +34,18 @@
  *
  * ## Failure direction
  *
- * Every degraded path fails toward PENDING — "not past the bound". A device
- * that cannot read its clock, has no signed-in user, or holds an implausible
- * mark keeps the hopeful copy rather than declaring a key unrecoverable on the
- * strength of a broken clock.
+ * Every degraded path here fails toward PENDING — "not past the bound". A
+ * device that cannot read its clock, has no signed-in user, or holds an
+ * implausible mark keeps the hopeful copy rather than declaring a key
+ * unrecoverable on the strength of a broken clock.
+ *
+ * The one case that can fire the bound EARLY is outside this module's reach: a
+ * forward jump of the device clock makes an existing mark look older than it
+ * is, up to 24h older than it is at the extreme, so a recently-marked group
+ * can read as stale. Nothing here can tell that apart from a real wait. The
+ * consequence is bounded and self-correcting: the copy is the honest
+ * "unreadable" rather than a false promise, the server is still fetched on
+ * every read, and a delivery heals the group whenever it arrives.
  *
  * @module pendingWrapClock
  */
@@ -111,6 +119,18 @@ function currentUserId(): string | null {
 /** groupId → epoch ms of the FIRST mark. Mirrors the persisted blob. */
 const since = new Map<string, number>();
 
+/**
+ * Marks taken while there was NO signed-in user, so they belong to nobody.
+ *
+ * They stay memory-only and are dropped the moment an owner is established.
+ * A crypto touch during account teardown (`localWipe` clears this clock in
+ * phase 1 and again after MMKV's `clearAll`, and a drain can land between) or
+ * before `setUser` on a cold launch would otherwise be written through under
+ * the NEXT account's name: its group ids, and a clock it never started. The
+ * group simply gets re-marked on the next read, which costs one bound window.
+ */
+const ownerlessMarks = new Set<string>();
+
 /** The user the mirror belongs to, set when (and only when) the blob loads. */
 let owner: string | null = null;
 
@@ -136,6 +156,7 @@ function ensureLoaded(): string | null {
   // which happens on every pre-`setUser` touch and must not discard anything.
   if (userId !== null && owner !== null && userId !== owner) {
     since.clear();
+    ownerlessMarks.clear();
     owner = null;
     loaded = false;
   }
@@ -146,10 +167,23 @@ function ensureLoaded(): string | null {
   const mmkv = storage();
   if (mmkv === null) return userId;
 
+  // An owner is being established, so anything marked without one is dropped
+  // rather than inherited.
+  for (const groupId of ownerlessMarks) {
+    since.delete(groupId);
+  }
+  ownerlessMarks.clear();
+
+  const preloadMarks = since.size > 0;
+  if (!mergeStoredBlob(mmkv, userId)) {
+    // The read itself failed. Stay UNLOADED, which keeps `persist()` quiet:
+    // writing the mirror now would clobber a blob we never managed to read.
+    // The next access retries.
+    return userId;
+  }
+
   owner = userId;
   loaded = true;
-  const preloadMarks = since.size > 0;
-  mergeStoredBlob(mmkv, userId);
   // Marks taken while the clock was memory-only are now attributable and
   // storable, so write them through rather than losing them at the next launch.
   if (preloadMarks) persist();
@@ -161,16 +195,19 @@ function ensureLoaded(): string | null {
  * which is the same "first mark wins" rule {@link notePendingWrap} applies and
  * is order-independent: the stored mark usually predates this session, but a
  * memory-only mark taken before the load may predate a stale stored one.
+ *
+ * @returns false ONLY when the read failed, meaning the caller must not treat
+ *          the clock as loaded. A missing or rejected blob is a successful
+ *          read: we know what is there.
  */
-function mergeStoredBlob(mmkv: RawStorage, userId: string): void {
+function mergeStoredBlob(mmkv: RawStorage, userId: string): boolean {
   let raw: string | undefined;
   try {
     raw = mmkv.getString(STORAGE_KEY);
   } catch {
-    // Unreadable storage: keep the mirror, stay loaded, write through later.
-    return;
+    return false;
   }
-  if (raw === undefined) return;
+  if (raw === undefined) return true;
 
   let parsed: unknown;
   try {
@@ -178,27 +215,27 @@ function mergeStoredBlob(mmkv: RawStorage, userId: string): void {
   } catch {
     // Corrupt blob — drop it rather than guessing what it meant.
     discard(mmkv);
-    return;
+    return true;
   }
   if (parsed == null || typeof parsed !== 'object') {
     discard(mmkv);
-    return;
+    return true;
   }
   const blob = parsed as { v?: unknown; owner?: unknown; since?: unknown };
   if (blob.v !== BLOB_VERSION) {
     discard(mmkv);
-    return;
+    return true;
   }
   // A definite owner mismatch: the blob belongs to another account on this
   // device. Nothing in it is meaningful here, and keeping it would leak one
   // account's group ids into another's clock.
   if (typeof blob.owner !== 'string' || blob.owner !== userId) {
     discard(mmkv);
-    return;
+    return true;
   }
   if (blob.since == null || typeof blob.since !== 'object') {
     discard(mmkv);
-    return;
+    return true;
   }
 
   const stored = blob.since as Record<string, unknown>;
@@ -215,6 +252,7 @@ function mergeStoredBlob(mmkv: RawStorage, userId: string): void {
       since.set(groupId, value);
     }
   }
+  return true;
 }
 
 /** Drop the stored blob and the mirror together. */
@@ -261,11 +299,18 @@ function isPlausible(at: number, now: number): boolean {
  * replaced with `now`, because it describes a clock, not a wait.
  */
 export function notePendingWrap(groupId: string, now: number): void {
-  ensureLoaded();
+  const userId = ensureLoaded();
   const existing = since.get(groupId);
   if (existing !== undefined && isPlausible(existing, now)) return;
   if (existing === undefined && since.size >= MAX_ENTRIES) return;
   since.set(groupId, now);
+  if (userId === null) {
+    // Nobody to attribute it to: memory-only, and dropped once an owner is
+    // known. See {@link ownerlessMarks}.
+    ownerlessMarks.add(groupId);
+    return;
+  }
+  ownerlessMarks.delete(groupId);
   persist();
 }
 
@@ -334,6 +379,7 @@ export function prunePendingWraps(keepGroupIds: Iterable<string>): void {
  */
 export function clearAllPendingWraps(): void {
   since.clear();
+  ownerlessMarks.clear();
   owner = null;
   loaded = false;
   const mmkv = storage();
@@ -349,6 +395,7 @@ export function clearAllPendingWraps(): void {
 /** @internal Test-only: drop the in-memory mirror without touching storage. */
 export function _resetPendingWrapClockForTesting(): void {
   since.clear();
+  ownerlessMarks.clear();
   owner = null;
   loaded = false;
 }

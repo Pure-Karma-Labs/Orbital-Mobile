@@ -19,7 +19,7 @@ import {
   setCachedGroupKey,
   evictPendingCache,
 } from './crypto/contentCrypto';
-import { isStalePendingError } from './crypto/groupKeyErrors';
+import { isPendingWrapLike, isStalePendingError } from './crypto/groupKeyErrors';
 import { prunePendingWraps } from './crypto/pendingWrapClock';
 import { getIdentityKeyPair, resolveRemoteIdentityKey, refreshAndCompareIdentityKey, compareAndPersistIdentityKey, normalizeIdentityKey } from './crypto/identityKeyAccess';
 import { VerifiedStatus } from '../types/database';
@@ -27,7 +27,6 @@ import { arrayBufferToBase64, toArrayBuffer, base64ToArrayBuffer } from './crypt
 import { ApiError, BlockedRecipientError } from './api/errors';
 import { generateUUID } from '../utils/uuid';
 import { maxTimestamp } from '../utils/threadActivity';
-import { isGroupKeyPending } from '../utils/groupKeyErrorCopy';
 import { useAppStore } from '../stores/useAppStore';
 import { isDatabaseInitialized, getDatabase } from '../database/connection';
 import { getConversationIdsWithThreads, deleteThreadsForConversation } from '../database/repositories/threadRepository';
@@ -177,7 +176,7 @@ async function decryptGroupNameSafe(
     // only stops the client PROMISING a re-wrap — the key can still arrive, and
     // a name left in the registry recovers on delivery, while
     // '(unable to decrypt)' would be frozen into the conversation list.
-    if (isGroupKeyPending(e) || isStalePendingError(e)) {
+    if (isPendingWrapLike(e) || isStalePendingError(e)) {
       registerPendingName(groupId, encryptedName);
       return null;
     }
@@ -259,11 +258,22 @@ export async function loadConversations(): Promise<void> {
   store.setGroupConversations(conversations);
 
   // #937: drop pending-wrap clocks for groups the server no longer returns —
-  // dissolved, or the user was removed. This list is SERVER truth, which the
+  // dissolved, or the user was removed. These ids are SERVER truth, which the
   // local thread-based reconciliation below is not: a group with no local
   // threads has no local row to detect a removal from, and a pending group has
   // no threads precisely because its key never arrived.
-  prunePendingWraps(conversations.map(c => c.id));
+  //
+  // DM ids share the clock's keyspace (ChatDetailScreen reads a DM key through
+  // the same `getOrFetchGroupKey`) but `listGroups` excludes group_type='dm',
+  // so every local DM id is kept: pruning them here would erase a DM's mark on
+  // every launch — `postAuthBootstrap` runs this before `loadDmConversations` —
+  // and the 24h bound would never fire for a DM. Nothing is lost by keeping
+  // them: a DM is never dissolved through `listGroups`, and an account switch
+  // or wipe drops the whole clock.
+  const liveDmIds = Object.values(useAppStore.getState().conversations)
+    .filter(c => c.type === 'direct')
+    .map(c => c.id);
+  prunePendingWraps([...conversations.map(c => c.id), ...liveDmIds]);
 
   // #327: Retry any stranded pending-name entries now that keys have been
   // processed and conversations are in the store.

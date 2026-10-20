@@ -207,19 +207,16 @@ describe('ownership', () => {
 // ---------------------------------------------------------------------------
 
 describe('lazy load', () => {
-  it('persists a mark taken before MMKV and the userId were available', () => {
-    // The pre-bootstrap touch: no MMKV, no signed-in user.
+  it('writes through a mark taken while MMKV was down but the user was known', () => {
     mockMMKV.ready = false;
-    mockState.userId = null;
 
     notePendingWrap(GROUP, NOW);
     expect(mirror()).toEqual({ [GROUP]: NOW });
     expect(mockMMKV.store.size).toBe(0);
 
-    // Bootstrap finishes and the session is restored: the next access loads,
-    // writes the memory-only mark through, and honours it.
+    // Bootstrap finishes: the next access loads, writes the memory-only mark
+    // through, and honours it.
     mockMMKV.ready = true;
-    mockState.userId = 'user-1';
 
     expect(isPendingWrapPastBound(GROUP, NOW + PENDING_WRAP_BOUND_MS)).toBe(true);
     expect(storedBlob()).toEqual({ v: 1, owner: 'user-1', since: { [GROUP]: NOW } });
@@ -227,6 +224,34 @@ describe('lazy load', () => {
     // And it survives the relaunch the bound exists for.
     const reloaded = reloadClock();
     expect(reloaded.isPendingWrapPastBound(GROUP, NOW + PENDING_WRAP_BOUND_MS)).toBe(true);
+  });
+
+  /**
+   * A crypto touch with no signed-in user — during account teardown, or before
+   * `setUser` on a cold launch — must not hand its mark to whoever logs in
+   * next: that would be the previous account's group id, and a clock the new
+   * account never started.
+   */
+  it('drops a mark taken with no signed-in user when an owner is established', () => {
+    mockState.userId = null;
+
+    notePendingWrap(GROUP, NOW);
+    expect(mirror()).toEqual({ [GROUP]: NOW });
+    expect(storedBlob()).toBeNull();
+
+    mockState.userId = 'user-2';
+
+    expect(isPendingWrapPastBound(GROUP, NOW + PENDING_WRAP_BOUND_MS)).toBe(false);
+    expect(mirror()).toEqual({});
+    expect(storedBlob()).toBeNull();
+
+    // The group is still pending, so the next read restarts the clock honestly.
+    notePendingWrap(GROUP, NOW + PENDING_WRAP_BOUND_MS);
+    expect(storedBlob()).toEqual({
+      v: 1,
+      owner: 'user-2',
+      since: { [GROUP]: NOW + PENDING_WRAP_BOUND_MS },
+    });
   });
 
   it('keeps the EARLIER of a stored and a memory-only mark', () => {
@@ -267,15 +292,20 @@ describe('lazy load', () => {
     expect(mirror()).toEqual({ other: NOW });
   });
 
-  it('falls back to memory when the read itself throws, and retries later', () => {
+  it('retries IN SESSION when the read itself throws, without clobbering the blob', () => {
     seedBlob('user-1', { [GROUP]: NOW });
+    const untouched = mockMMKV.store.get(STORAGE_KEY);
     mockMMKV.throwOnGet = true;
 
     expect(isPendingWrapPastBound(GROUP, NOW + PENDING_WRAP_BOUND_MS)).toBe(false);
+    // A write while the blob is unread would overwrite marks we never saw.
+    notePendingWrap('other', NOW);
+    expect(mockMMKV.store.get(STORAGE_KEY)).toBe(untouched);
 
+    // No reload: the same module instance retries and honours the stored mark.
     mockMMKV.throwOnGet = false;
-    const reloaded = reloadClock();
-    expect(reloaded.isPendingWrapPastBound(GROUP, NOW + PENDING_WRAP_BOUND_MS)).toBe(true);
+    expect(isPendingWrapPastBound(GROUP, NOW + PENDING_WRAP_BOUND_MS)).toBe(true);
+    expect(storedBlob()?.since).toEqual({ [GROUP]: NOW, other: NOW });
   });
 });
 

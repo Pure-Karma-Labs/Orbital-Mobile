@@ -141,11 +141,33 @@ describe('level mapping', () => {
     expect(context()).toMatchObject({ level: 'error' });
   });
 
-  // TRIPWIRE: every SelfHealOutcome value must appear in exactly one list.
-  // Adding a new outcome without updating WARNING_OUTCOMES or ERROR_OUTCOMES
-  // will break this assertion.
+  /**
+   * Every SelfHealOutcome value appears in exactly one of the two lists.
+   *
+   * Set equality, not a length sum: a sum is satisfied by a duplicate paired
+   * with an omission, which is exactly the mistake worth catching — the typed
+   * array stops a value being INVENTED here, but nothing else stops a new
+   * outcome from being added to the union and silently inheriting `error`.
+   */
   it('covers every SelfHealOutcome value exactly once across warning and error', () => {
-    expect(WARNING_OUTCOMES.length + ERROR_OUTCOMES.length).toBe(12);
+    const ALL_OUTCOMES: SelfHealOutcome[] = [
+      'requested',
+      'cooldown',
+      'exhausted',
+      'session_exhausted',
+      'refused',
+      'identity_mismatch',
+      'unsupported',
+      'rate_limited',
+      'blocked_local_key',
+      'not_eligible',
+      'failed',
+      'stale_pending',
+    ];
+    const covered = [...WARNING_OUTCOMES, ...ERROR_OUTCOMES];
+
+    expect(covered).toHaveLength(new Set(covered).size);
+    expect([...covered].sort()).toEqual([...ALL_OUTCOMES].sort());
   });
 
   it('tags the feature so the events can be found as a group', () => {

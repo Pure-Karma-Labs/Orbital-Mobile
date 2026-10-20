@@ -32,7 +32,7 @@
  *   window is repeated rather than downgraded to "try again later";
  * - a per-group cap of {@link PER_GROUP_DEMOTE_CAP} that counts COMMITTED
  *   demotes only — a network failure, a 429 or an `already_pending` 200 (which
- *   demotes nothing) costs nothing;
+ *   demotes nothing, though peers are still asked) costs nothing;
  * - a per-session cap of {@link SESSION_DEMOTE_CAP}, which sits under the
  *   backend limiter (5 per 15 minutes per user) without replacing it;
  * - two latches: `localKeyInvalid`, set only on a DEFINITE probe mismatch, and
@@ -65,9 +65,16 @@ import { VerifiedStatus } from '../../types/database';
 export const RECOVERY_COOLDOWN_MS = 15 * 60_000;
 
 /**
- * Committed demotes allowed per group per session. Only a request that
- * actually NULLed the row counts: an `already_pending` 200 found it NULL
- * already and caused no fan-out to bound (#937).
+ * Demotes allowed per group per session. Only a request that actually NULLed
+ * the row counts: an `already_pending` 200 found it NULL already, so this
+ * device changed nothing (#937).
+ *
+ * Note that the server fans out `sendWrapKeyRequests` post-commit on BOTH
+ * branches, so an `already_pending` 200 DOES ask the peers again. Not spending
+ * this cap for it is a deliberate choice, not a claim that nothing happened:
+ * the row was already NULL, which recovery can only reach through a GET/POST
+ * race, and that repeat fan-out stays bounded by the 15-minute per-group
+ * cooldown, {@link SESSION_DEMOTE_CAP} and the server's own limiter.
  */
 export const PER_GROUP_DEMOTE_CAP = 2;
 
@@ -85,8 +92,9 @@ export const PER_GROUP_DEMOTE_CAP = 2;
  *   while the server's 15-minute window keeps counting.
  *
  * Unlike {@link PER_GROUP_DEMOTE_CAP} this one is charged for an
- * `already_pending` 200 too (#937): nothing was demoted, so there is no
- * fan-out to bound, but the request did spend a limiter slot.
+ * `already_pending` 200 too (#937): nothing was demoted, but the request spent
+ * a limiter slot AND the server still fanned out to the key holders, so this
+ * cap and the cooldown are what bound the repeat.
  *
  * The server limiter is the hard gate. This cap is amplification control for
  * one session — a bound on how much ECIES work and WS fan-out one device can
@@ -461,21 +469,24 @@ async function runRecovery(input: RecoverDeadEnvelopeInput): Promise<RecoveryRes
     return refusalCode === undefined ? { outcome, code } : { outcome, code, refusalCode };
   }
 
-  // Accepted: the server has sent wrap requests to every key holder. Which
-  // caps that spends depends on whether anything was actually demoted — the
-  // two are different brakes on different things (#937):
+  // Accepted: the server has sent wrap requests to every key holder — on BOTH
+  // branches, `already_pending` included (`sendWrapKeyRequests` runs
+  // post-commit either way). What differs is whether THIS device changed the
+  // row, and the two caps brake different things (#937):
   //
-  // - the PER-GROUP cap bounds the ECIES work and WS fan-out this device asks
-  //   its peers to do, which only a real demote causes. An `already_pending`
-  //   200 means the row was NULL before we asked, so it buys nothing;
+  // - the PER-GROUP cap counts demotes this device caused. An
+  //   `already_pending` 200 found the row NULL before we asked, so it is not
+  //   charged — deliberately, since recovery can only reach a NULL row through
+  //   a GET/POST race, and the repeat fan-out it triggers is still bounded by
+  //   the 15-minute cooldown, the session cap and the server limiter. If the
+  //   server ever stopped fanning out unconditionally, or the race stopped
+  //   being rare, this is the choice to revisit;
   // - the SESSION cap sits under the backend's `keyRewrapLimiter`, and the
   //   request consumed a limiter slot either way. It is charged always, or a
   //   run of races could walk the client straight into a 429.
   //
-  // `already_pending` only ever arrives on a GET/POST race: a NULL row is a
-  // pending wrap, which `contentCrypto` turns into a `PendingWrapError`
-  // without ever reaching recovery. An older server omits the field, and the
-  // pre-#937 behaviour (charge both) is what the `false` default gives.
+  // An older server omits the field, and the pre-#937 behaviour (charge both)
+  // is what the `false` default gives.
   if (!alreadyPending) {
     committedDemotes.set(groupId, (committedDemotes.get(groupId) ?? 0) + 1);
   }

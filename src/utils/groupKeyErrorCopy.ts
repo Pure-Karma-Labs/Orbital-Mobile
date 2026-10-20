@@ -26,7 +26,11 @@
  * @module groupKeyErrorCopy
  */
 
-import { isGroupKeyUnwrapError, type SelfHealOutcome } from '../services/crypto/groupKeyErrors';
+import {
+  isGroupKeyUnwrapError,
+  isPendingWrapLike,
+  type SelfHealOutcome,
+} from '../services/crypto/groupKeyErrors';
 import {
   GROUP_KEY_DEVICE_KEY_MESSAGE,
   GROUP_KEY_RESENDING_MESSAGE,
@@ -69,7 +73,7 @@ const DEVICE_KEY_TITLE = 'Device Key Problem';
  * explanation.
  */
 export function isGroupKeyPending(e: unknown): boolean {
-  return e instanceof Error && e.name === 'PendingWrapError';
+  return isPendingWrapLike(e);
 }
 
 /**

@@ -346,12 +346,38 @@ describe('loadConversations — pending-wrap prune', () => {
     expect(mockPrunePendingWraps).toHaveBeenCalledWith(['g1']);
   });
 
-  it('prunes to nothing when the server returns no groups', async () => {
+  it('prunes to nothing when the server returns no groups and no DMs are known', async () => {
     mockListGroups.mockResolvedValue([]);
 
     await loadConversations();
 
     expect(mockPrunePendingWraps).toHaveBeenCalledWith([]);
+  });
+
+  /**
+   * DM ids share the clock's keyspace but `listGroups` excludes
+   * `group_type='dm'`, and `postAuthBootstrap` runs this before
+   * `loadDmConversations` on every launch — so pruning to the group list alone
+   * would erase a DM's mark before it could ever age past the bound.
+   */
+  it('keeps local DM ids while still pruning a dissolved group', async () => {
+    const base = (useAppStore.getState as jest.Mock)();
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      ...base,
+      conversations: {
+        g1: { id: 'g1', type: 'group' },
+        'dissolved-group': { id: 'dissolved-group', type: 'group' },
+        'dm-1': { id: 'dm-1', type: 'direct' },
+      },
+    });
+    mockListGroups.mockResolvedValue([GROUP_RESPONSE]);
+
+    await loadConversations();
+
+    const keep = mockPrunePendingWraps.mock.calls[0][0] as string[];
+    expect(keep).toContain('g1');
+    expect(keep).toContain('dm-1');
+    expect(keep).not.toContain('dissolved-group');
   });
 });
 

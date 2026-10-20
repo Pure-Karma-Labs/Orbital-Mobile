@@ -28,7 +28,6 @@ import { markEciesLocked, isEciesLocked } from './downgradeProtection';
 import {
   classifyEciesOpenError,
   GroupKeyUnwrapError,
-  isStalePendingError,
   reportGroupKeyFailure,
 } from './groupKeyErrors';
 import type { GroupKeyErrorCode } from './groupKeyErrors';
@@ -219,7 +218,13 @@ export function setCachedGroupKey(groupId: string, key: Uint8Array): void {
  * Concurrent calls for the same groupId coalesce onto a single request.
  *
  */
-const pendingGroups = new Map<string, number>();
+/**
+ * Groups short-circuited for the TTL below, with the CAUSE that stamped them:
+ * the 30-second gate re-raises the error, so it has to re-raise the right one
+ * (#937). `no_envelope` for the two "there was no key" stamps, the classified
+ * code for the self-heal's `requested`.
+ */
+const pendingGroups = new Map<string, { until: number; code: GroupKeyErrorCode }>();
 const PENDING_CACHE_TTL_MS = 30_000;
 
 /**
@@ -239,6 +244,11 @@ export function evictPendingCache(groupId: string): void {
   pendingGroups.delete(groupId);
 }
 
+/** Short-circuit this group for the TTL, remembering why. */
+function stampPending(groupId: string, code: GroupKeyErrorCode): void {
+  pendingGroups.set(groupId, { until: Date.now() + PENDING_CACHE_TTL_MS, code });
+}
+
 /**
  * The error for "there is no usable key for this group yet": the hopeful
  * {@link PendingWrapError} while the wait is within the bound, and a
@@ -252,10 +262,15 @@ export function evictPendingCache(groupId: string): void {
  * Reports the stale verdict itself (one event per group and outcome, budgeted
  * by the reporter); the caller must not report again.
  */
-function pendingOrStale(groupId: string, code: GroupKeyErrorCode): Error {
+function pendingOrStale(
+  groupId: string,
+  code: GroupKeyErrorCode,
+  reportWhenPending?: GroupKeyUnwrapError,
+): Error {
   const now = Date.now();
   notePendingWrap(groupId, now);
   if (!isPendingWrapPastBound(groupId, now)) {
+    if (reportWhenPending !== undefined) reportGroupKeyFailure(groupId, reportWhenPending);
     return new PendingWrapError();
   }
   const stale = new GroupKeyUnwrapError(code, 'stale_pending');
@@ -267,11 +282,11 @@ export async function getOrFetchGroupKey(groupId: string): Promise<Uint8Array> {
   const cached = groupKeyCache.get(groupId);
   if (cached) return cached;
 
-  const pendingUntil = pendingGroups.get(groupId);
-  if (pendingUntil && Date.now() < pendingUntil) {
-    // `no_envelope`: whatever stamped this TTL did so because there was no key
-    // to open, not because one failed to open.
-    throw pendingOrStale(groupId, 'no_envelope');
+  const pending = pendingGroups.get(groupId);
+  if (pending && Date.now() < pending.until) {
+    // Re-raise with the cause that stamped the TTL, so a stale verdict reported
+    // from here carries the same code the stamping read reported.
+    throw pendingOrStale(groupId, pending.code);
   }
 
   // Tier 2: persisted key. Grandfathered raw keys stored before ECIES existed
@@ -294,7 +309,7 @@ export async function getOrFetchGroupKey(groupId: string): Promise<Uint8Array> {
     try {
       const response = await getGroupKey(groupId);
       if (!response.wrappedGroupKey) {
-        pendingGroups.set(groupId, Date.now() + PENDING_CACHE_TTL_MS);
+        stampPending(groupId, 'no_envelope');
         throw pendingOrStale(groupId, 'no_envelope');
       }
       // Captured once: the envelope string is the server's compare-and-swap
@@ -308,7 +323,7 @@ export async function getOrFetchGroupKey(groupId: string): Promise<Uint8Array> {
           e instanceof Error &&
           e.message === 'ECIES envelope requires sender identity'
         ) {
-          pendingGroups.set(groupId, Date.now() + PENDING_CACHE_TTL_MS);
+          stampPending(groupId, 'no_envelope');
           throw e;
         }
 
@@ -340,16 +355,16 @@ export async function getOrFetchGroupKey(groupId: string): Promise<Uint8Array> {
             // then let the delivery event through: `wrapped_key_delivered`
             // dedups per group, and the event that triggered this failure has
             // usually already claimed that slot.
-            pendingGroups.set(groupId, Date.now() + PENDING_CACHE_TTL_MS);
+            stampPending(groupId, result.code);
             clearWrapDeliveryDedup(groupId);
             // Both stamps above happen either way: a stale verdict is about
             // how long the wait has lasted, not about this attempt, which did
             // succeed in asking the peers.
-            const pending = pendingOrStale(groupId, result.code);
-            // One read, one event: `pendingOrStale` has already reported the
-            // stale verdict, which is the more informative of the two.
-            if (!isStalePendingError(pending)) reportGroupKeyFailure(groupId, failure);
-            throw pending;
+            //
+            // One read, one event: `pendingOrStale` owns the whole reporting
+            // decision — `failure` when the wait is still within the bound,
+            // the stale verdict (the more informative of the two) past it.
+            throw pendingOrStale(groupId, result.code, failure);
           }
           reportGroupKeyFailure(groupId, failure);
           throw failure;

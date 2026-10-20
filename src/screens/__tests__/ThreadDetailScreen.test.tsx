@@ -3773,5 +3773,130 @@ describe('ThreadDetailScreen — group key (#912)', () => {
       // Thread B wears its own honest, non-key failure instead.
       expect(texts(renderer)).toContain('Could not load thread');
     });
+
+    // Thread A's load resolving late must not clear the verdict thread B has
+    // already recorded: the success path carries the same thread-identity
+    // guard as the catch path.
+    it('does not clear thread B’s verdict when thread A’s load resolves late', async () => {
+      // A's load is held open past the switch.
+      let resolveA!: (t: unknown) => void;
+      mockLoadThread.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveA = resolve;
+          }),
+      );
+      const renderer = await renderScreen();
+
+      // B's own load records a terminal verdict for B.
+      mockLoadThread.mockRejectedValueOnce(unwrapFailure('refused'));
+      await updateScreen(renderer, { threadId: 'thread-2' });
+      expect(find(renderer, 'group-key-failure-notice').length).toBeGreaterThan(0);
+
+      await act(async () => {
+        resolveA(fakeThread);
+      });
+      await flush();
+
+      // B's verdict survives A's late success.
+      expect(find(renderer, 'group-key-failure-notice').length).toBeGreaterThan(0);
+      expect(texts(renderer)).toContain(UNREADABLE);
+    });
+
+    // #842, the invariant the contiguity fix must not cost: guard 3 of
+    // `reconcileReplies` is "only ids present at pass START are candidates".
+    // A WebSocket reply or a send ack that lands inside the fetch+decrypt
+    // window postdates the server snapshot, so a candidate snapshot taken
+    // AFTER the page resolved would offer it up for deletion from the store,
+    // SQLite and FTS (with media teardown) on any single-page refresh.
+    it('never offers a reply that landed mid-refresh as a deletion candidate', async () => {
+      mockStoreReplyIds = { 'thread-1': ['old-1'] };
+
+      const renderer = await renderScreen();
+      // The mount's own pass has reconciled already; this case is the pull.
+      mockReconcileThreadReplies.mockClear();
+
+      mockLoadReplies.mockImplementationOnce(async () => {
+        // The arrival, mid-flight: messageHandler's upsertReply, or a send
+        // ack's replaceReply. Either way `syncStatus` is 'synced', so the
+        // pending-row guard would not save it.
+        mockStoreReplyIds = { 'thread-1': ['old-1', 'ws-1'] };
+        return page({ rawCount: 1, serverIds: ['s1'], newIdCount: 1, hasMore: false });
+      });
+      await act(async () => {
+        await refresh(renderer);
+      });
+      await flush();
+
+      expect(mockReconcileThreadReplies).toHaveBeenCalledTimes(1);
+      const [threadIdArg, keepIds, candidateIds] = mockReconcileThreadReplies.mock.calls[0];
+      expect(threadIdArg).toBe('thread-1');
+      expect([...(keepIds as Set<string>)]).toEqual(['s1']);
+      // 'ws-1' is absent from BOTH sets, which is the whole point: it is not a
+      // candidate, so no keep-set membership is needed to save it.
+      expect([...(candidateIds as Set<string>)]).toEqual(['old-1']);
+      expect((candidateIds as Set<string>).has('ws-1')).toBe(false);
+    });
+
+    // The other half of "open the pass only when it is still ours": a refresh
+    // that settles after a params-in-place switch must not re-point
+    // `paginationThreadRef` at the old thread, which would reset the new
+    // thread's high-water offset and reconcile the OLD thread's ids.
+    it('leaves the new thread’s pagination untouched when a stale refresh settles', async () => {
+      // Both threads in the store, so the switch has a thread row to render.
+      const storesMock = jest.requireMock('../../stores') as { useThreads: jest.Mock };
+      const seeded = storesMock.useThreads();
+      storesMock.useThreads.mockReturnValue({
+        ...seeded,
+        threads: { 'thread-1': fakeThread, 'thread-2': { ...fakeThread, id: 'thread-2' } },
+        threadIdsByConversation: { 'group-1': ['thread-1', 'thread-2'] },
+        replyIdsByThread: { 'thread-1': ['A', 'A1'], 'thread-2': [] },
+      });
+
+      // Thread A's own pass: offset 2, more to come.
+      mockLoadReplies.mockResolvedValueOnce(
+        page({ rawCount: 2, serverIds: ['a1', 'a2'], newIdCount: 2, hasMore: true }),
+      );
+      const renderer = await renderScreen();
+
+      // A's refresh page is held open across the switch.
+      let resolveStale!: (p: unknown) => void;
+      mockLoadReplies.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveStale = resolve;
+          }),
+      );
+      let refreshDone!: Promise<void>;
+      await act(async () => {
+        refreshDone = flatList(renderer).props.refreshControl.props.onRefresh();
+      });
+
+      // Thread B's own pass takes the offset to 3.
+      mockLoadReplies.mockResolvedValueOnce(
+        page({ rawCount: 3, serverIds: ['b1', 'b2', 'b3'], newIdCount: 3, hasMore: true }),
+      );
+      await updateScreen(renderer, { threadId: 'thread-2' });
+      mockReconcileThreadReplies.mockClear();
+
+      await act(async () => {
+        resolveStale(page({ rawCount: 1, serverIds: ['a1'], newIdCount: 0, hasMore: false }));
+        await refreshDone;
+      });
+      await flush();
+
+      // No pass was opened for A, so nothing reconciled against A's ids...
+      expect(mockReconcileThreadReplies).not.toHaveBeenCalled();
+      // ...and B's high-water offset is intact: an unguarded
+      // `beginPaginationPass()` on A's closure would have reset it to 0.
+      mockLoadReplies.mockResolvedValueOnce(
+        page({ rawCount: 1, serverIds: ['b4'], newIdCount: 1, hasMore: false }),
+      );
+      await act(async () => {
+        await flatList(renderer).props.onEndReached();
+      });
+
+      expect(mockLoadReplies).toHaveBeenLastCalledWith('thread-2', 'group-1', 3);
+    });
   });
 });

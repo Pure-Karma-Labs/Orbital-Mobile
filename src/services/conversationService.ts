@@ -66,6 +66,54 @@ export interface DecryptedGroup {
   isCreator: boolean;
 }
 
+/**
+ * The ids of every DM the store currently knows about.
+ *
+ * The store is the ONLY DM marker on this device. The single writer of the
+ * SQLCipher `conversations` table is
+ * `conversationRepository.setGroupMasterKey`, whose INSERT hardcodes
+ * `type = 'group'` for every row, DMs included (nothing else inserts there —
+ * `threadRepository` never touches that table). Only the MMKV-persisted store
+ * carries `type: 'direct'`.
+ *
+ * Read LIVE rather than from a caller's snapshot. The store rehydrates before
+ * `postAuthBootstrap` runs, so a snapshot taken at the top of
+ * `loadConversations` already holds every DM from the previous session — the
+ * live read only matters for DMs that arrive DURING the awaits (a WS
+ * `new_message` calling `ensureDmConversation`, or a concurrent `startDm`).
+ */
+function liveDmIds(): string[] {
+  return Object.values(useAppStore.getState().conversations)
+    .filter(c => c.type === 'direct')
+    .map(c => c.id);
+}
+
+/**
+ * The conversation ids `loadConversations` must KEEP when it reconciles local
+ * state against the server: the server's group ids plus every live DM id.
+ *
+ * `getUserGroups` filters `group_type != 'dm'`, so `listGroups` never returns a
+ * DM. Without the DM union every reconcile pass treats every DM as dissolved
+ * (#939).
+ *
+ * Unioning the SERVER group ids is belt-and-braces: `setGroupConversations`
+ * has already dropped the dissolved groups from the store above, so the
+ * store's own group ids would give the same answer. Taking them from the
+ * response keeps the keep-set server-truthed and covers a group that has no
+ * store row yet.
+ *
+ * SEAM: reconcile correctness now depends on the MMKV store. A DM whose store
+ * row was lost (for example a persist reset) is still treated as dissolved —
+ * only a cache, so the cost is a re-fetch. The purge below fail-safes the
+ * TOTAL-loss case (no DM rows at all), not the single-row one. The structural
+ * fix is to reconcile
+ * ONCE against both server lists after `loadConversations` and
+ * `loadDmConversations` have run; that is not done here.
+ */
+function keepIdsForReconcile(serverGroups: Conversation[]): string[] {
+  return [...serverGroups.map(c => c.id), ...liveDmIds()];
+}
+
 // ---------------------------------------------------------------------------
 // Pending name registry — tracks encrypted orbit names whose group key hasn't
 // arrived yet. When handleWrappedKeyDelivered obtains the key it calls
@@ -265,33 +313,72 @@ export async function loadConversations(): Promise<void> {
   //
   // DM ids share the clock's keyspace (ChatDetailScreen reads a DM key through
   // the same `getOrFetchGroupKey`) but `listGroups` excludes group_type='dm',
-  // so every local DM id is kept: pruning them here would erase a DM's mark on
-  // every launch — `postAuthBootstrap` runs this before `loadDmConversations` —
-  // and the 24h bound would never fire for a DM. Nothing is lost by keeping
-  // them: a DM is never dissolved through `listGroups`, and an account switch
-  // or wipe drops the whole clock.
-  const liveDmIds = Object.values(useAppStore.getState().conversations)
-    .filter(c => c.type === 'direct')
-    .map(c => c.id);
-  prunePendingWraps([...conversations.map(c => c.id), ...liveDmIds]);
+  // so `keepIdsForReconcile` unions every live DM id back in: pruning them here
+  // would erase a DM's mark on every launch — `postAuthBootstrap` runs this
+  // before `loadDmConversations` — and the 24h bound would never fire for a DM.
+  // Nothing is lost by keeping them: a DM is never dissolved through
+  // `listGroups`, and an account switch or wipe drops the whole clock.
+  prunePendingWraps(keepIdsForReconcile(conversations));
 
   // #327: Retry any stranded pending-name entries now that keys have been
   // processed and conversations are in the store.
   await retryAllPendingNameDecrypts();
 
+  // That await hits the network once per stranded name, so it can outlive the
+  // session. Re-check before the destructive reconcile below: a stale session
+  // would purge the NEW user's local threads against the old user's group
+  // list, and would hand the old user's group to `setActiveConversation`.
+  if (isSessionStale(session)) return;
+
   // Reconciliation: purge local threads/replies for dissolved groups.
   // If the server no longer returns a group, it was dissolved or the user
   // was removed — local cache must be cleaned to avoid stale data.
+  //
+  // #939: the keep-set has to include live DM ids.
+  // `getConversationIdsWithThreads` returns EVERY conversation that has local
+  // threads, DMs included, so comparing it against the server group list alone
+  // deleted every DM's cached threads and replies on every call — bootstrap,
+  // `blockedContentRefresh`, ManageOrbits, key recovery. That also orphaned the
+  // DM's `orbital_media` rows (which makes save-to-device refuse DM media) and
+  // dropped its FTS rows (local DM search came back empty).
+  //
+  // RESIDUE: nothing else deletes DM thread rows. There is no thread-level
+  // delete-stale reconcile, and `loadDmConversations` only upserts — so after
+  // this fix a DM's cached threads and replies persist until `localWipe`. That
+  // covers a peer-deleted DM, a blocked peer's DM (hidden at read time, and
+  // therefore not search-reachable either) and server-side thread takedowns.
+  // Accepted trade: the behaviour being replaced destroys every DM cache on
+  // every launch. A thread-level reconcile is the follow-up.
   if (isDatabaseInitialized()) {
     try {
-      const serverGroupIds = new Set(conversations.map(c => c.id));
+      // Both reads are live and there is no await between them, so the two
+      // views of the store agree.
+      const dmIds = liveDmIds();
+      const keep = new Set(keepIdsForReconcile(conversations));
       const localConversationIds = getConversationIdsWithThreads();
-      const dissolved = localConversationIds.filter(id => !serverGroupIds.has(id));
-      if (dissolved.length > 0) {
+      const dissolved = localConversationIds.filter(id => !keep.has(id));
+
+      // FAIL-SAFE: an empty DM set is indistinguishable from a lost or corrupt
+      // MMKV blob, and in that state the keep-set silently collapses back to
+      // the server group list — which is exactly the #939 behaviour that
+      // deleted every DM. A stale cache is recoverable, a deleted one is not,
+      // so when the store knows of no DM at all we skip the whole pass rather
+      // than guess which unrecognised local id is safe to delete.
+      //
+      // Trade: an account that genuinely has no DMs never purges a dissolved
+      // orbit's threads until it has one. That is cache-only — the rows are
+      // already unreachable (the conversation is gone from every list), and
+      // `localWipe` still clears them.
+      const purgeIsSafe = dmIds.length > 0;
+
+      if (dissolved.length > 0 && purgeIsSafe) {
         const db = getDatabase();
         db.executeSync('BEGIN IMMEDIATE');
         try {
           for (const localId of dissolved) {
+            // Replies BEFORE threads: deleteRepliesForConversation selects its
+            // rows through `orbital_threads` (migration 004 dropped the
+            // cascade), so deleting the thread rows first leaks every reply.
             deleteRepliesForConversation(localId);
             deleteThreadsForConversation(localId);
           }
@@ -300,14 +387,24 @@ export async function loadConversations(): Promise<void> {
           db.executeSync('ROLLBACK');
           throw txError;
         }
+      } else if (dissolved.length > 0 && __DEV__) {
+        console.warn(
+          '[loadConversations] purge skipped:',
+          dissolved.length,
+          'unrecognised local conversation(s) and no DM row in the store',
+        );
       }
     } catch (e) {
       if (__DEV__) console.warn('[loadConversations] cleanup failed:', e instanceof Error ? e.message : e);
     }
   }
 
-  if (store.activeConversationId === null && conversations.length > 0) {
-    store.setActiveConversation(conversations[0].id);
+  // Live read, not the pre-await `store` snapshot: a WS delivery or a screen
+  // can have selected a conversation while the awaits above were in flight,
+  // and overwriting that selection would yank the user off their screen.
+  const liveStore = useAppStore.getState();
+  if (liveStore.activeConversationId === null && conversations.length > 0) {
+    liveStore.setActiveConversation(conversations[0].id);
   }
 }
 
@@ -1014,7 +1111,9 @@ export async function fulfillPendingWraps(): Promise<void> {
   // FORBIDDEN_PENDING_MEMBER for them, which the existing catch below
   // swallows by design.
   const allConversations = Object.values(conversations);
-  const dmIds = allConversations.filter(c => c.type === 'direct').map(c => c.id);
+  // `liveDmIds` re-reads the store, but there is no await between it and the
+  // `conversations` read above, so the two lists stay consistent.
+  const dmIds = liveDmIds();
   const groupIds = allConversations.filter(c => c.type !== 'direct').map(c => c.id);
 
   // Round-robin interleave: alternate DM/group; when one list runs out, fill

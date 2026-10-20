@@ -69,10 +69,12 @@ export interface DecryptedGroup {
 /**
  * The ids of every DM the store currently knows about.
  *
- * The store is the ONLY DM marker on this device: `threadRepository` and
- * `conversationRepository` write `conversations.type = 'group'` for every row,
- * DMs included, so nothing in SQLCipher distinguishes them. Only the
- * MMKV-persisted store carries `type: 'direct'`.
+ * The store is the ONLY DM marker on this device. The single writer of the
+ * SQLCipher `conversations` table is
+ * `conversationRepository.setGroupMasterKey`, whose INSERT hardcodes
+ * `type = 'group'` for every row, DMs included (nothing else inserts there —
+ * `threadRepository` never touches that table). Only the MMKV-persisted store
+ * carries `type: 'direct'`.
  *
  * Read LIVE rather than from a caller's snapshot. The store rehydrates before
  * `postAuthBootstrap` runs, so a snapshot taken at the top of
@@ -102,7 +104,9 @@ function liveDmIds(): string[] {
  *
  * SEAM: reconcile correctness now depends on the MMKV store. A DM whose store
  * row was lost (for example a persist reset) is still treated as dissolved —
- * only a cache, so the cost is a re-fetch. The structural fix is to reconcile
+ * only a cache, so the cost is a re-fetch. The purge below fail-safes the
+ * TOTAL-loss case (no DM rows at all), not the single-row one. The structural
+ * fix is to reconcile
  * ONCE against both server lists after `loadConversations` and
  * `loadDmConversations` have run; that is not done here.
  */
@@ -347,10 +351,27 @@ export async function loadConversations(): Promise<void> {
   // every launch. A thread-level reconcile is the follow-up.
   if (isDatabaseInitialized()) {
     try {
+      // Both reads are live and there is no await between them, so the two
+      // views of the store agree.
+      const dmIds = liveDmIds();
       const keep = new Set(keepIdsForReconcile(conversations));
       const localConversationIds = getConversationIdsWithThreads();
       const dissolved = localConversationIds.filter(id => !keep.has(id));
-      if (dissolved.length > 0) {
+
+      // FAIL-SAFE: an empty DM set is indistinguishable from a lost or corrupt
+      // MMKV blob, and in that state the keep-set silently collapses back to
+      // the server group list — which is exactly the #939 behaviour that
+      // deleted every DM. A stale cache is recoverable, a deleted one is not,
+      // so when the store knows of no DM at all we skip the whole pass rather
+      // than guess which unrecognised local id is safe to delete.
+      //
+      // Trade: an account that genuinely has no DMs never purges a dissolved
+      // orbit's threads until it has one. That is cache-only — the rows are
+      // already unreachable (the conversation is gone from every list), and
+      // `localWipe` still clears them.
+      const purgeIsSafe = dmIds.length > 0;
+
+      if (dissolved.length > 0 && purgeIsSafe) {
         const db = getDatabase();
         db.executeSync('BEGIN IMMEDIATE');
         try {
@@ -366,6 +387,12 @@ export async function loadConversations(): Promise<void> {
           db.executeSync('ROLLBACK');
           throw txError;
         }
+      } else if (dissolved.length > 0 && __DEV__) {
+        console.warn(
+          '[loadConversations] purge skipped:',
+          dissolved.length,
+          'unrecognised local conversation(s) and no DM row in the store',
+        );
       }
     } catch (e) {
       if (__DEV__) console.warn('[loadConversations] cleanup failed:', e instanceof Error ? e.message : e);

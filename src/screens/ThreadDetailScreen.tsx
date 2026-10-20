@@ -68,7 +68,8 @@ import {
   GroupKeyPendingBanner,
   GroupKeyPendingNotice,
 } from '../components/GroupKeyNotice';
-import { groupKeyFailureCopy, isGroupKeyPending } from '../utils/groupKeyErrorCopy';
+import { groupKeyFailureCopy } from '../utils/groupKeyErrorCopy';
+import { useGroupKeyLoadState } from '../hooks/useGroupKeyLoadState';
 import { OrbitalKeyboardAvoidingView } from '../components/OrbitalKeyboardAvoidingView';
 import { AsciiSection } from '../components/AsciiSeparator';
 import { ThreadHeader } from './threadDetail/ThreadHeader';
@@ -281,9 +282,13 @@ export function ThreadDetailScreen({
    * transient "a peer is re-wrapping" banner; `keyFailureMessage` is every
    * other outcome. Both replace `error`: "Could not load thread" is true but
    * useless when the real answer is "this device cannot open the key yet".
+   *
+   * Keyed on the thread id, which is the reset this screen lacked: a
+   * params-in-place navigate to another thread keeps it mounted, so thread A's
+   * verdict used to sit over thread B.
    */
-  const [keyPending, setKeyPending] = useState(false);
-  const [keyFailureMessage, setKeyFailureMessage] = useState<string | null>(null);
+  const { keyPending, keyFailureMessage, clearKeyState, applyKeyLoadError } =
+    useGroupKeyLoadState(threadId);
   const [refreshing, setRefreshing] = useState(false);
   const { scrollY, scrollProps } = usePullToRefresh();
   const [loadingMore, setLoadingMore] = useState(false);
@@ -559,24 +564,50 @@ export function ThreadDetailScreen({
    *  another thread keeps this screen (and its refs) mounted. */
   const paginationThreadRef = useRef(threadId);
 
-  /** Start a fresh pagination pass: the keep-set only spans one pass. */
-  const beginPaginationPass = useCallback(() => {
-    if (paginationThreadRef.current !== threadId) {
-      // Different thread: the high-water offset would otherwise skip straight
-      // past the new thread's first pages.
-      paginationThreadRef.current = threadId;
-      offsetRef.current = 0;
-      hasMoreRef.current = true;
-    }
-    serverIdsSeenRef.current = new Set();
-    // Read from the store, not from the render-time selector value: this runs
-    // inside an async load, where the captured value may already be a frame old.
-    candidatesRef.current = new Set(
-      useAppStore.getState().replyIdsByThread?.[threadId] ?? [],
-    );
-    coveredRef.current = 0;
-    passContiguousRef.current = true;
-  }, [threadId]);
+  /**
+   * The ids this pass may reconcile away, read from the store at the moment of
+   * the call.
+   *
+   * LOAD-BEARING that callers take this BEFORE awaiting the page they are about
+   * to fold in. Guard 3 of `reconcileReplies` is "only ids present at pass
+   * START are candidates": a WebSocket reply or a confirmed send that lands
+   * during the fetch+decrypt window postdates the server's snapshot, so a
+   * snapshot taken AFTER the fetch would offer it up for deletion from the
+   * store, SQLite and FTS (the #842 blocker).
+   *
+   * Read from the store rather than from the render-time selector value: this
+   * runs inside an async load, where the captured value may already be a frame
+   * old.
+   */
+  const snapshotPassCandidates = useCallback(
+    (): Set<string> => new Set(useAppStore.getState().replyIdsByThread?.[threadId] ?? []),
+    [threadId],
+  );
+
+  /**
+   * Start a fresh pagination pass: the keep-set only spans one pass.
+   *
+   * @param candidates - A candidate set captured earlier, for callers that must
+   *   open the pass only once their page has resolved (the refresh). Omitted,
+   *   the snapshot is taken here, which is correct only when nothing has been
+   *   awaited since.
+   */
+  const beginPaginationPass = useCallback(
+    (candidates?: ReadonlySet<string>) => {
+      if (paginationThreadRef.current !== threadId) {
+        // Different thread: the high-water offset would otherwise skip straight
+        // past the new thread's first pages.
+        paginationThreadRef.current = threadId;
+        offsetRef.current = 0;
+        hasMoreRef.current = true;
+      }
+      serverIdsSeenRef.current = new Set();
+      candidatesRef.current = candidates ? new Set(candidates) : snapshotPassCandidates();
+      coveredRef.current = 0;
+      passContiguousRef.current = true;
+    },
+    [threadId, snapshotPassCandidates],
+  );
 
   /**
    * Fold one page into the pagination state.
@@ -626,17 +657,29 @@ export function ThreadDetailScreen({
     [threadId],
   );
 
+  /**
+   * The thread this render belongs to, read at SETTLE time. A params-in-place
+   * navigate to another thread keeps this screen (and all of its state)
+   * mounted — the same hazard `focusThreadRef` and `paginationThreadRef` guard
+   * — so a load or refresh that rejects for thread A must not write its key
+   * verdict onto thread B, where it would stick (#940).
+   */
+  const currentThreadRef = useRef(threadId);
+  currentThreadRef.current = threadId;
+
   const fetchData = useCallback(async () => {
+    const target = threadId;
     try {
       setError(null);
       const loadedThread = await loadThread(threadId);
       // Reached only once the group key opened, so whatever key state this
       // screen was in is over. Cleared HERE and not at the top of the load, so
       // a reload attempt does not flash the empty state (#912).
-      if (mountedRef.current) {
-        setKeyPending(false);
-        setKeyFailureMessage(null);
-      }
+      //
+      // Gated on the thread as well as the mount, exactly like the catch below:
+      // thread A's load resolving late must not clear the verdict thread B has
+      // already recorded for itself.
+      if (mountedRef.current && currentThreadRef.current === target) clearKeyState();
       try {
         beginPaginationPass();
         const result = await loadReplies(
@@ -650,26 +693,19 @@ export function ThreadDetailScreen({
       }
     } catch (e) {
       if (__DEV__) console.warn('[ThreadDetail]', e instanceof Error ? e.message : e);
+      // Deliberately AFTER the warn: diagnostics stay unguarded, state writes
+      // do not. An unmounted screen and a re-pointed one (params-in-place
+      // thread switch) both drop the verdict (#940).
+      if (!mountedRef.current || currentThreadRef.current !== target) return;
       // #912: a group-key failure is not "could not load thread". Pending gets
       // the transient banner and suppresses both the error text and the
       // "Be the first to reply" footer; every other outcome gets the copy for
       // its outcome in place of that text.
-      if (isGroupKeyPending(e)) {
-        setKeyPending(true);
-        setKeyFailureMessage(null);
-      } else {
-        const copy = groupKeyFailureCopy(e);
-        if (copy) {
-          setKeyPending(false);
-          setKeyFailureMessage(copy.message);
-        } else {
-          setError('Could not load thread');
-        }
-      }
+      if (!applyKeyLoadError(e)) setError('Could not load thread');
     } finally {
       if (mountedRef.current) setLoading(false);
     }
-  }, [threadId, beginPaginationPass, applyRepliesPage]);
+  }, [threadId, beginPaginationPass, applyRepliesPage, clearKeyState, applyKeyLoadError]);
 
   // Mount/unmount lifecycle
   useEffect(() => {
@@ -734,20 +770,65 @@ export function ThreadDetailScreen({
     };
   }, [conversationId]);
 
-  // Pull-to-refresh
+  /**
+   * Pull-to-refresh. #940: this used to swallow EVERY error, so a group-key
+   * banner survived the pull meant to re-classify it — most visibly after
+   * #938's 24h bound turned a pending wrap into `stale_pending`, where the
+   * screen kept promising a re-send that was never coming.
+   */
   const handleRefresh = useCallback(async () => {
+    const target = threadId;
+    const isStale = (): boolean => !mountedRef.current || currentThreadRef.current !== target;
     setRefreshing(true);
     try {
       const loadedThread = await loadThread(threadId);
-      beginPaginationPass();
-      const result = await loadReplies(threadId, loadedThread.conversationId);
-      applyRepliesPage(0, result);
-    } catch {
-      // Silently fail on refresh — stale data is still visible
+      // The thread opened, so the key did: clear as soon as that is known,
+      // independently of how the replies page goes.
+      if (!isStale()) clearKeyState();
+      try {
+        // The candidate snapshot is taken BEFORE the fetch (a mid-flight
+        // WebSocket reply must never become a deletion candidate), but the
+        // pass is only OPENED once the page has resolved: opening first and
+        // then rejecting left an empty, non-contiguous pass behind, and a
+        // later `onEndReached` pass could no longer reconcile.
+        const candidates = snapshotPassCandidates();
+        const result = await loadReplies(threadId, loadedThread.conversationId);
+        // A pass belongs to the thread on screen. After a params-in-place
+        // switch this closure's `threadId` is the OLD one, and opening a pass
+        // with it would re-point `paginationThreadRef` and reset the new
+        // thread's offset mid-flight.
+        if (isStale()) return;
+        beginPaginationPass(candidates);
+        applyRepliesPage(0, result);
+      } catch (e) {
+        // Silent, exactly as `fetchData`'s inner catch: a replies failure is
+        // not a "this thread cannot be opened" verdict, so it must not reach
+        // the key banner. `hasMoreRef` is left alone — unlike the first load,
+        // a refresh has rows on screen and pagination still has somewhere to
+        // go.
+        if (__DEV__)
+          console.warn(
+            '[ThreadDetail] refresh replies failed:',
+            e instanceof Error ? e.message : e,
+          );
+      }
+    } catch (e) {
+      if (__DEV__)
+        console.warn('[ThreadDetail] refresh failed:', e instanceof Error ? e.message : e);
+      // Only a `loadThread` rejection is a verdict about the key, and only
+      // while this screen is still mounted and still on this thread.
+      if (!isStale()) applyKeyLoadError(e);
     } finally {
       if (mountedRef.current) setRefreshing(false);
     }
-  }, [threadId, beginPaginationPass, applyRepliesPage]);
+  }, [
+    threadId,
+    beginPaginationPass,
+    snapshotPassCandidates,
+    applyRepliesPage,
+    clearKeyState,
+    applyKeyLoadError,
+  ]);
 
   // Pagination — load more replies
   const handleEndReached = useCallback(async () => {

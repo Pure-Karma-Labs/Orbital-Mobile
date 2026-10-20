@@ -47,7 +47,7 @@ import {
   GroupKeyFailureNotice,
   GroupKeyPendingBanner,
 } from '../components/GroupKeyNotice';
-import { groupKeyFailureCopy, isGroupKeyPending } from '../utils/groupKeyErrorCopy';
+import { useGroupKeyLoadState } from '../hooks/useGroupKeyLoadState';
 import { PullToRefreshOverlay } from '../components/PullToRefreshOverlay';
 import { usePullToRefresh } from '../hooks/usePullToRefresh';
 import { useSQLiteSearch } from '../hooks/useSQLiteSearch';
@@ -255,9 +255,14 @@ export function ChatDetailScreen({
    * This is the #912 screen: the reported case was a DM whose key had been
    * wrapped to the member's pre-reset identity key, and the member saw "No
    * messages yet / Start the conversation!" on a conversation full of history.
+   *
+   * Keyed on the conversation, so a params-in-place navigate to another DM
+   * (which keeps this screen mounted) resets it — and NOT on a `keyGeneration`
+   * bump, which re-runs the load below and would flash the empty state on
+   * every reload attempt.
    */
-  const [keyPending, setKeyPending] = useState(false);
-  const [keyFailureMessage, setKeyFailureMessage] = useState<string | null>(null);
+  const { keyPending, keyFailureMessage, clearKeyState, applyKeyLoadError } =
+    useGroupKeyLoadState(conversationId);
 
   /**
    * Bumped by `handleWrappedKeyDelivered` once a delivered key has actually
@@ -277,13 +282,17 @@ export function ChatDetailScreen({
   conversationIdRef.current = conversationId;
 
   /**
-   * Reset on a conversation change — NOT on a `keyGeneration` bump, which
-   * re-runs the load below and would flash the empty state on every reload.
+   * #940: `conversationIdRef` is a render-synced mirror, so it cannot see an
+   * unmount — the user can pop this screen while a pull-to-refresh is still in
+   * flight, and `loadThreadsForGroup` is not cancellable.
    */
+  const mountedRef = useRef(true);
   useEffect(() => {
-    setKeyPending(false);
-    setKeyFailureMessage(null);
-  }, [conversationId]);
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   // Instant hydration from the local SQLCipher cache, before the async fetch.
   // SPLIT from the load effect: `setThreads` REPLACES this conversation's id
@@ -301,27 +310,17 @@ export function ChatDetailScreen({
         if (isStale()) return;
         // On success only: clearing before the load would flash the
         // create-first empty state on every reload attempt.
-        setKeyPending(false);
-        setKeyFailureMessage(null);
+        clearKeyState();
       })
       .catch((e) => {
         if (__DEV__) console.warn('[ChatDetail] load failed:', e instanceof Error ? e.message : e);
         if (isStale()) return;
-        if (isGroupKeyPending(e)) {
-          setKeyPending(true);
-          setKeyFailureMessage(null);
-        } else {
-          const copy = groupKeyFailureCopy(e);
-          if (copy) {
-            setKeyPending(false);
-            setKeyFailureMessage(copy.message);
-          }
-          // Everything else keeps the pre-#912 behaviour: stale content stays
-          // visible, the failure is a dev warning. A network blip must not
-          // claim to be a key problem.
-        }
+        // A non-key failure keeps the pre-#912 behaviour: stale content stays
+        // visible, the failure is a dev warning. A network blip must not claim
+        // to be a key problem.
+        applyKeyLoadError(e);
       });
-  }, [conversationId, keyGeneration]);
+  }, [conversationId, keyGeneration, clearKeyState, applyKeyLoadError]);
 
   const handleThreadPress = useCallback(
     (threadId: string) => {
@@ -335,16 +334,29 @@ export function ChatDetailScreen({
     [navigation, threads],
   );
 
+  /**
+   * Pull-to-refresh. #940: this used to swallow EVERY error, so the group-key
+   * banner survived the pull meant to re-classify it — most visibly after
+   * #938's 24h bound turned a pending wrap into `stale_pending`, where the
+   * screen kept promising a re-send that was never coming.
+   */
   const handleRefresh = useCallback(async () => {
+    const target = conversationId;
+    // Mounted AND still this DM: the refresh outlives both a pop and a
+    // params-in-place switch to another DM.
+    const isStale = (): boolean => !mountedRef.current || conversationIdRef.current !== target;
     setRefreshing(true);
     try {
-      await loadThreadsForGroup(conversationId);
-    } catch {
-      // Silently fail -- stale data is still visible
+      await loadThreadsForGroup(target);
+      if (!isStale()) clearKeyState();
+    } catch (e) {
+      if (__DEV__) console.warn('[ChatDetail] refresh failed:', e instanceof Error ? e.message : e);
+      // Non-key errors stay silent, as before: stale data is still visible.
+      if (!isStale()) applyKeyLoadError(e);
     } finally {
-      setRefreshing(false);
+      if (mountedRef.current) setRefreshing(false);
     }
-  }, [conversationId]);
+  }, [conversationId, clearKeyState, applyKeyLoadError]);
 
   const handleCompose = useCallback(() => {
     // UX guard: the compose button is not rendered while blocked, but a stale

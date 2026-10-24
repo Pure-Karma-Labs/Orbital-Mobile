@@ -68,7 +68,7 @@ jobs:
         # node_modules is never installed in this job.
         uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Blocking audit (PR / push -- critical only)
         # Threshold: critical only.

@@ -63,6 +63,39 @@
 //! libsignal v0.104.0 (#858): nothing owed — spqr unchanged at v1.6.0 and all
 //! `rust/protocol/src/proto/*.proto` files are blob-identical to v0.103.0.
 //!
+//! libsignal v0.106.0 (#946, Tahini session management): `storage.proto` DID
+//! change this time, so the "nothing owed" reasoning above does not carry and
+//! the replay was **run**, not exempted. Result: all three tests pass
+//! (3 passed / 1 ignored) with the fixtures below unmodified — the v0.97.4 /
+//! spqr 1.5.1 records still deserialize, still ratchet, and the truncation
+//! negative still has teeth. Why that holds: both new fields are additive —
+//! `SessionStructure.origin = 16` (enum, so an absent field decodes as the
+//! zero variant `LEGACY`) and a new `RecordStructure` oneof
+//! `session_management_state { tahini = 3 }` (absent oneof decodes as `None`) —
+//! and prost ignores fields a serialized record does not carry. spqr stays at
+//! v1.6.0 with `PqRatchetState` unchanged, so the SPQR restore path these
+//! fixtures exist for is untouched.
+//!
+//! Direction run, and the direction NOT run: what the tests above execute is
+//! *old record read by the new build* (pre-bump fixtures restored under
+//! v0.106.0). The reverse — a v0.106.0 record read by an older shipped build —
+//! is not constructible in one repo state and rests on two things instead:
+//! proto additivity (an older build ignores `origin` and the `tahini` oneof as
+//! unknown fields) and upstream's own RELEASE_NOTES statement that session
+//! records gain new fields but stay readable by earlier libsignal versions.
+//! That is an argument, not a test; it is also unexercised in practice, because
+//! no device persists a `SessionRecord` at all (see the #200 note above).
+//!
+//! Also recorded here so a future bump does not read an absent test as an
+//! absent risk: v0.106.0 drops `consts::MAX_ARCHIVED_SESSIONS` (the rename of
+//! `ARCHIVED_STATES_MAX_LENGTH`) from 40 to 3, and Tahini may now re-point which
+//! session is current. Neither gets a test, for the same reason the device-level
+//! test is unperformable: there are zero production callers of the 1:1 session
+//! API and zero persisted session rows, and there is no public API through which
+//! to accumulate four archived sessions without first reviving that pipeline.
+//! Reviving it owes a test at that point — archived-session eviction at 3, and
+//! that an archived session cannot roll back a learned identity.
+//!
 //! ## How to regenerate
 //!
 //! ```sh

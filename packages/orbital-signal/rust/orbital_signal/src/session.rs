@@ -497,7 +497,7 @@ pub fn signal_decrypt_pre_key(
         let consumed_kyber_pre_key_id = prekey_signal_message.kyber_pre_key_id().map(u32::from);
 
         // Decrypt using message_decrypt_prekey
-        let plaintext = libsignal_protocol::message_decrypt_prekey(
+        let decrypted = libsignal_protocol::message_decrypt_prekey(
             &prekey_signal_message,
             &protocol_address,
             &local_address,
@@ -510,6 +510,39 @@ pub fn signal_decrypt_pre_key(
         )
         .await
         .map_err(SignalError::from)?;
+
+        // Cross-check upstream's identity key against our own envelope read, and
+        // fail closed on disagreement (libsignal v0.106.0, #946).
+        //
+        // `message_decrypt_prekey` now also returns the identity key it decided
+        // the sender has. The two values are equal on every success path upstream
+        // offers: on the existing-session path it refuses to decrypt unless the
+        // envelope key equals the session's stored key
+        // (`session_management.rs:303-315` @ v0.106.0) and then hands back the
+        // stored key; on the fresh-session path it hands back the candidate
+        // session's key, which was built from this very envelope and is
+        // AEAD-verified before the session is committed.
+        //
+        // We keep OUR read (`*prekey_signal_message.identity_key()`, taken above,
+        // before decryption) as the value we return, because `sender_identity_key`
+        // and `identity_changed` are an attacker-supplied-claim-vs-known-identity
+        // comparison for the TypeScript layer — anchoring them to upstream's
+        // *stored* key would make `identity_changed` compare the stored identity
+        // with itself if upstream ever relaxed that guard. This check is what
+        // turns "the two are equal" from an assumption into an enforced one: if a
+        // future upstream ever returns a key we did not read off the wire, the
+        // call fails instead of silently re-pointing the field's meaning.
+        //
+        // Deliberately an error, never `assert!`/`debug_assert!`: a panic across
+        // the uniffi boundary aborts the host process rather than surfacing as a
+        // catchable `SignalError`.
+        if decrypted.sender_identity_key != sender_identity_key {
+            return Err(SignalError::InvalidMessage {
+                reason: "sender identity key does not match the message envelope".to_string(),
+            });
+        }
+
+        let plaintext = decrypted.plaintext;
 
         // Extract updated session record
         let updated_session = store

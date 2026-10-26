@@ -155,6 +155,13 @@ async fn roundtrip_inner(plaintext: &[u8]) -> Result<RoundtripResult, SignalErro
     .await
     .map_err(SignalError::from)?;
 
+    // libsignal v0.106.0 returns `PreKeyDecryptResult { plaintext, sender,
+    // sender_identity_key }` here instead of a bare `Vec<u8>`. This dev-only
+    // round-trip asserts nothing about the sender, so take the plaintext.
+    // (The shipped path, `signal_decrypt_pre_key`, DOES check the identity key
+    // against its own envelope read — see src/session.rs.)
+    let decrypted = decrypted.plaintext;
+
     // --- 7. Build result ---
     let elapsed_ms = start.elapsed().as_millis() as u64;
     let success = plaintext == decrypted.as_slice();

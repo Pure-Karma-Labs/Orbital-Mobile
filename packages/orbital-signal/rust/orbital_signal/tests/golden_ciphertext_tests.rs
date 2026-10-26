@@ -328,8 +328,13 @@ fn golden_ecies_open() {
 /// is provably untouched. v0.102.3 (#811): replay skipped — `rust/core/src/curve.rs`
 /// and `curve/curve25519.rs` are byte-identical v0.99.1..v0.102.3 and
 /// `curve25519-dalek` stays at stock 5.0.0, so the sealed bytes cannot have
-/// moved. The replay is mandatory again on any bump that touches `rust/core`
-/// or moves the dalek crate.
+/// moved. The replay is mandatory again on **any change under `rust/core/src`
+/// other than `version.rs`, or any `curve25519-dalek` / `x25519-dalek`
+/// movement** (version, source, or resolved feature set). That wording is
+/// deliberately narrower than the original "touches `rust/core`": the broad form
+/// has fired on every bump since and been argued away every time on the same
+/// `version.rs`-only grounds, which trains the reader to dismiss it. A trigger
+/// that always fires carries no information.
 ///
 /// v0.103.0 (#822): replay skipped — the `rust/core` trigger fired only on
 /// `rust/core/src/version.rs` (the `VERSION` string const); `curve.rs`,
@@ -349,6 +354,53 @@ fn golden_ecies_open() {
 /// `rustls-platform-verifier` (absent from our lock); spqr stays at v1.6.0, `curve25519-dalek` stays at stock 5.0.0 from
 /// crates.io, and the resolved `cargo tree -f '{p} {f}'` feature set is
 /// identical before and after. The sealing path is provably untouched.
+///
+/// v0.106.0 (#946, Tahini session management): replay skipped — the narrowed
+/// trigger does not fire. Across the four dirs our lock compiles from the
+/// libsignal git repo, `rust/core` changed only `src/version.rs` (the `VERSION`
+/// string const) and `rust/crypto` + `rust/debug` are absent from the
+/// v0.104.0..v0.106.0 diffstat altogether, i.e. byte-identical; `curve.rs` and
+/// `curve/curve25519.rs` are untouched. `curve25519-dalek` stays at stock 5.0.0
+/// from crates.io and `x25519-dalek` at stock 3.0.0 — neither moved in
+/// `Cargo.lock`, whose entire diff is 5 lines (4 git `source` strings plus
+/// libsignal-debug's version), and the resolved
+/// `cargo tree -e normal -f '{p} {f}'` feature set is identical before and
+/// after.
+///
+/// All of v0.106.0's change lands in `rust/protocol/src`: **13 files changed**,
+/// 1562 insertions / 3764 deletions — 10 modified (`consts.rs`, `lib.rs`,
+/// `proto/storage.proto`, `sealed_sender.rs`, `session.rs`,
+/// `session_management.rs`, `state.rs`, `state/session.rs`, `timestamp.rs`,
+/// `triple_ratchet.rs`), 1 **deleted** (`session_cipher_legacy.rs`, already
+/// `#[cfg(test)] mod` at v0.104.0 and so never in our binary) and 2 added
+/// (`tahini.rs`, `session_management/tests.rs`). The substantive subset is the
+/// session-management rewrite: `session_management.rs`, `session.rs`,
+/// `state/session.rs`, `proto/storage.proto`, `consts.rs`
+/// (`MAX_ARCHIVED_SESSIONS` 40 -> 3) and the new `tahini.rs`. Not one of the 13
+/// is reachable from the sealing path, which enters libsignal only through
+/// `libsignal_core::curve` sign/verify — `src/ecies.rs` depends on libsignal
+/// solely for
+/// `libsignal_core::curve::{PrivateKey::calculate_signature,
+/// PublicKey::verify_signature}` — two production call sites, `:189` (sign) and
+/// `:289` (verify), plus one in-file test at `:765`. The sealed bytes provably
+/// cannot move.
+///
+/// How to re-derive that file list on the next bump — the method matters,
+/// because a wrong file list silently invalidates this whole exemption. Use the
+/// local cargo git database, which holds both tags:
+///
+/// ```sh
+/// G=~/.cargo/git/db/libsignal-*        # one bare clone, both tags present
+/// git -C $G diff --stat <old-sha> <new-sha> -- rust/protocol/src
+/// ```
+///
+/// (The commit SHAs are the `#…` fragments on the `source = "git+…libsignal"`
+/// lines in `Cargo.lock`, before and after the bump.) Equivalently, compare
+/// recursive git-tree blob SHAs at both tags — identical blob SHA means
+/// byte-identical, which is how `rust/crypto` and `rust/debug` are cleared
+/// without reading them. Do NOT rely on `gh api repos/signalapp/libsignal/
+/// compare/<old>...<new>`: that endpoint caps its `files` array at 300 entries
+/// and silently truncates, and a cross-tag libsignal diff exceeds that.
 #[test]
 fn golden_ecies_open_sealed_under_stock_dalek() {
     // TEST VECTOR — synthetic sender public key, never used outside this test

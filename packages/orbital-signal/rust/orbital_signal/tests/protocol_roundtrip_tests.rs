@@ -669,16 +669,31 @@ fn test_session_roundtrip_with_uuid_addresses_mac_binding() {
 //          envelope identity key does not match the established session
 // ---------------------------------------------------------------------------
 //
-// Upstream anchor: libsignal `rust/protocol/src/session.rs:116` @ v0.102.3
-// (`process_prekey_impl`). On the `promote_matching_session` early-exit branch
+// Upstream anchor: libsignal `rust/protocol/src/session_management.rs:313`
+// @ v0.106.0 (`message_decrypt_prekey`, Case 1). On the existing-session branch
 // — i.e. a PreKey message whose base key we already have a session for —
-// upstream now compares the *envelope* identity key against the session's
+// upstream compares the *envelope* identity key against the session's
 // stored remote identity key and returns
 // `SignalProtocolError::InvalidMessage(PreKey, "remote identity key not
 // consistent with previously-established session")` on mismatch. Before
 // v0.102.3 that branch returned `Ok(None)` unconditionally and went straight on
 // to decrypt with the stored session, so the substituted envelope key was never
 // examined at all.
+//
+// The check was introduced at v0.102.3 in `process_prekey_impl`
+// (`rust/protocol/src/session.rs:116`); v0.106.0's Tahini rewrite moved it, and
+// the branch it guards, without weakening it. Two things moved:
+//
+//   * the match is now `SessionRecord::find_session_by_id(&base_key)` (a lookup
+//     over the current session AND the archived ones) rather than
+//     `promote_matching_session`, which used to promote an archived match to
+//     current as a side effect of matching;
+//   * the ordering flipped. At v0.102.3 `process_prekey` trust-checked the
+//     envelope identity (`is_trusted_identity`) BEFORE reaching the consistency
+//     check; at v0.106.0 the consistency check runs first and the trust check
+//     only after a successful decrypt, with the identity saved only when the
+//     matched session is `SessionLocation::Current` — an archived session can no
+//     longer roll back a later-learned identity.
 //
 // Why that matters on OUR side of the FFI: `signal_decrypt_pre_key` reads
 // `sender_identity_key` from the envelope *before* decryption (src/session.rs,
@@ -698,18 +713,25 @@ fn test_session_roundtrip_with_uuid_addresses_mac_binding() {
 // genuine identity rotation, where the peer sends its own, correctly
 // self-consistent envelope. 8e covers a *forged* envelope key on a
 // re-delivered message — a check that lives one layer deeper, inside
-// `process_prekey_impl`, and did not exist before v0.102.3.
+// `message_decrypt_prekey` itself, and did not exist before v0.102.3.
 //
-// `remote_identity: None` is load-bearing: `process_prekey` runs
-// `is_trusted_identity` (upstream session.rs:59) *before* `process_prekey_impl`
-// (:87), so pre-loading Alice #1's identity short-circuits to
-// `UntrustedIdentity` — that is Test 8c sub-case (a) — and never reaches the
-// new check.
+// `remote_identity: None` is still the right input, but as of v0.106.0 it is no
+// longer *load-bearing* for reaching the check. At v0.102.3 it was: the trust
+// check ran first (upstream `session.rs:59` before `process_prekey_impl` at
+// `:87`), so pre-loading Alice #1's identity short-circuited to
+// `UntrustedIdentity` — Test 8c sub-case (a) — and never reached the new check.
+// At v0.106.0 the consistency check runs before any trust check, so the forged
+// message would be rejected with `InvalidMessage` either way; `None` is kept
+// because it holds this test to ONE moving part (the envelope key) and keeps it
+// independent of the trust-check ordering, which has now moved twice. Do not
+// "simplify" it by preloading an identity: that would make the test pass for
+// two different reasons at two different upstream versions.
 //
 // The 1:1 Signal session surface has no production TypeScript callers today
-// (#200 deferral / DEBT-159; DMs use ECIES + AES-GCM), which lowers the urgency
-// of this check but not its value: it is the only assertion in this crate that
-// tells v0.102.3 apart from v0.99.1.
+// (#200 deferral / DEBT-159; DMs use ECIES + AES-GCM — enforced by the
+// `signal-session-dormant` clause in scripts/check-security-invariants.mjs),
+// which lowers the urgency of this check but not its value: it is the only
+// assertion in this crate that tells v0.102.3 apart from v0.99.1.
 
 #[test]
 fn test_prekey_redelivery_with_substituted_identity_key_is_rejected() {
@@ -805,7 +827,7 @@ fn test_prekey_redelivery_with_substituted_identity_key_is_rejected() {
     //     `PreKeySignalMessage::new` takes everything owned; the accessors hand
     //     back references (SignalMessage / KyberPayload derive Clone, PublicKey
     //     and IdentityKey are Copy). Base key, pre-key ids and the inner
-    //     SignalMessage are carried over verbatim, so `promote_matching_session`
+    //     SignalMessage are carried over verbatim, so `find_session_by_id`
     //     still matches session S and the *only* difference is the envelope
     //     identity key. ---
     let m = PreKeySignalMessage::try_from(m1.as_slice()).expect("parse M1");
@@ -836,13 +858,13 @@ fn test_prekey_redelivery_with_substituted_identity_key_is_rejected() {
     .expect("rebuild PreKeySignalMessage with substituted identity key");
 
     // Precondition for reaching the new check: same base key (so
-    // promote_matching_session matches), different envelope identity key.
+    // find_session_by_id matches), different envelope identity key.
     let forged_parsed =
         PreKeySignalMessage::try_from(forged.serialized()).expect("parse forged message");
     assert_eq!(
         forged_parsed.base_key().serialize(),
         m.base_key().serialize(),
-        "base key must be carried over verbatim or promote_matching_session will not match"
+        "base key must be carried over verbatim or find_session_by_id will not match"
     );
     assert_eq!(
         *forged_parsed.identity_key(),
@@ -883,26 +905,43 @@ fn test_prekey_redelivery_with_substituted_identity_key_is_rejected() {
     };
     assert!(
         reason.contains("not consistent with previously-established session"),
-        "expected upstream's identity-mismatch reason (libsignal session.rs:116 @ v0.102.3), \
-         got: {reason}"
+        "expected upstream's identity-mismatch reason \
+         (libsignal session_management.rs:313 @ v0.106.0), got: {reason}"
     );
 }
 
 // ---------------------------------------------------------------------------
-// Test 8f: positive control for the promote_matching_session branch — a
+// Test 8f: positive control for the existing-session branch — a
 //          legitimate second PreKey message from the SAME session still decrypts
 // ---------------------------------------------------------------------------
 //
 // Test 8e asserts the v0.102.3 identity-key check only in its failure mode.
 // This is the other half: until Bob replies, every message Alice sends is still
 // a PreKeySignalMessage carrying the same base key, so Bob's second decrypt hits
-// exactly the `promote_matching_session` early-exit branch that 8e forges — with
-// a self-consistent envelope. Upstream's guard is
+// exactly the existing-session branch that 8e forges (`find_session_by_id` at
+// v0.106.0; `promote_matching_session` up to v0.104.0) — with a self-consistent
+// envelope. Upstream's guard is
 // `!remote_identity_key()?.is_some_and(|stored| envelope == stored)`, which also
 // rejects when the stored state has NO remote identity key; this test would
 // catch a future upstream tightening that broke legitimate re-delivery, which
 // 8e alone would let land green. Same fixtures and preconditions as 8e
 // (same key records on the second call; `remote_identity: None`).
+//
+// v0.106.0 (Tahini): the second PreKey message now also drives
+// `tahini::on_receive_active`, and the peer's identity is saved only when the
+// matched session is `SessionLocation::Current` — so this test is additionally
+// the positive control for "a legitimate re-delivery still lands on the current
+// session", not an archived one.
+//
+// The `first.sender_identity_key == alice_identity.public_key` assertion below
+// is the *absolute* anchor for the FFI contract, added with the v0.106.0 bump
+// (#946). The `second == first` assertion alone is relative: it would stay green
+// if `sender_identity_key` silently came to mean something else (e.g. upstream's
+// stored key rather than our envelope read) as long as it meant the same wrong
+// thing twice. Pinning it to the key Alice actually generated is what makes the
+// shipped fail-closed cross-check in `src/session.rs` observable from a test:
+// our envelope read, upstream's returned key and Alice's real identity key are
+// all required to be the same bytes.
 
 #[test]
 fn test_prekey_redelivery_with_consistent_identity_key_still_decrypts() {
@@ -979,10 +1018,10 @@ fn test_prekey_redelivery_with_consistent_identity_key_still_decrypts() {
     .expect("Alice signal_encrypt M2");
 
     // Precondition: Bob has not replied, so M2 is still a PreKey message and
-    // therefore takes the promote_matching_session path on Bob's side.
+    // therefore takes the existing-session (find_session_by_id) path on Bob's side.
     assert!(
         matches!(m2.ciphertext.message_type, CiphertextMessageType::PreKey),
-        "M2 must still be a PreKeySignalMessage for this test to exercise the promote branch"
+        "M2 must still be a PreKeySignalMessage for this test to exercise the existing-session branch"
     );
 
     // Bob: M1 establishes session S.
@@ -1000,6 +1039,12 @@ fn test_prekey_redelivery_with_consistent_identity_key_still_decrypts() {
     })
     .expect("Bob decrypt M1");
     assert_eq!(first.plaintext, b"first message (8f)");
+    assert_eq!(
+        first.sender_identity_key, alice_identity.public_key,
+        "sender_identity_key must be the identity key Alice actually generated — \
+         the envelope read, upstream's PreKeyDecryptResult.sender_identity_key \
+         (cross-checked in src/session.rs) and Alice's real key are one value"
+    );
 
     // Bob: M2 against the existing session S — same base key, same (honest)
     // envelope identity key. Must decrypt, and must not report an identity change.
@@ -1015,7 +1060,7 @@ fn test_prekey_redelivery_with_consistent_identity_key_still_decrypts() {
         kyber_pre_key_record: Some(bob_kyber_result.record),
         ciphertext: m2.ciphertext.serialized,
     })
-    .expect("a legitimate same-session PreKey re-delivery must still decrypt at v0.102.3");
+    .expect("a legitimate same-session PreKey re-delivery must still decrypt at v0.106.0");
     assert_eq!(second.plaintext, b"second message (8f)");
     assert_eq!(
         second.sender_identity_key, first.sender_identity_key,

@@ -2788,6 +2788,308 @@ for (const [file, importers] of IFR_FILES) {
 }
 
 // ---------------------------------------------------------------------------
+// 26. The 1:1 Signal session path stays dormant (#200 / #946)
+// ---------------------------------------------------------------------------
+
+// Every libsignal bump since v0.95 has been reviewed as a ROUTINE bump on the
+// strength of one premise: the Signal 1:1 session pipeline has no production
+// callers. That premise is what licenses skipping a device smoke, skipping a
+// SessionRecord migration, and (at v0.106.0 / #946) accepting Tahini session
+// management — `SessionStructure.origin`, the `RecordStructure.tahini` oneof,
+// `MAX_ARCHIVED_SESSIONS` 40 -> 3 and "an archived session is never made active
+// again" — with no test of any of it. Until this clause existed the premise was
+// recorded only in prose (src/services/crypto/index.ts's header, Test 8e's
+// docblock, the golden-fixture ledgers), so a single `import { signalEncrypt }`
+// could falsify every one of those reviews without tripping anything.
+//
+// The FFI surface is exported and callable today: `processPreKeyBundle`,
+// `signalEncrypt`, `signalDecrypt`, `signalDecryptPreKey` and
+// `parsePrekeyMessageIds` are generated into
+// packages/orbital-signal/src/generated/orbital_signal.ts and re-exported by the
+// blanket `export *` in its index.tsx, so a caller needs no new plumbing.
+//
+// Reviving the path is allowed — it is a deferral (#200), not a ban — but it is
+// not a one-line change, and this clause is where the bill is written down:
+//
+//   1. Tahini policy. Sessions now carry an origin and a direction-change
+//      counter; archived sessions are never reactivated and a tiebreaker picks
+//      the active session in a race. Read upstream `rust/protocol/src/tahini.rs`
+//      before writing a session service.
+//   2. `MAX_ARCHIVED_SESSIONS` is 3 (was 40). Records holding more are trimmed
+//      on the next archive. Test eviction at 3.
+//   3. Golden fixtures. tests/golden_session_record_tests.rs holds v0.97.4-era
+//      records with no on-device counterpart; the moment real records are
+//      persisted, migration and restore need coverage in both directions.
+//   4. A device smoke. The whole 1:1 path has never run on a device in this
+//      app, and every bump review has deferred that smoke on these grounds.
+//
+// Matching is a plain identifier scan over non-comment code, deliberately: it
+// catches a direct import from the package, an import through the barrel, a
+// namespaced `OrbitalSignal.signalEncrypt(…)` member call, and a bare
+// re-export, without this rule having to model import forms. Comments are
+// blanked first because the prose that records the deferral names all four
+// functions. `__tests__/` and `*.test.*` are exempt: the export-surface smoke
+// test (__tests__/OrbitalSignal.test.ts) and the mock (__mocks__/) live outside
+// `src/` anyway, and a future in-crate test of a revived path should not be
+// blocked by the clause that merely says "not in production yet".
+//
+// The store half is the same premise from the other end: no production code may
+// READ or WRITE a session row. `signalSessionRepository`'s save/load exports
+// have no caller outside their own test file, and production SQL against
+// `signal_sessions` is DELETE-only (the logout wipe in authService and the
+// Signal-table wipe in keyGenerationService). `removeSession` /
+// `removeAllSessionsForService` are therefore NOT on this list — wiping a table
+// that is never written is harmless. `getSession` is a generic enough name that
+// an unrelated module could want it one day; if that happens, rename the
+// unrelated one or scope this clause to the import specifier — do not delete it.
+//
+// The third arm is the TABLE NAME, which catches what the two name lists cannot:
+// raw SQL. Any mention of `signal_sessions` in a non-test `src/` file must be a
+// DELETE. The two production wipes (`execute('DELETE FROM signal_sessions')` in
+// authService's logout and keyGenerationService's full Signal-table wipe) are
+// exactly that and keep passing; an `INSERT`, `SELECT`, `UPDATE` or an unverbed
+// mention fails. Exempt: the repository itself (it defines the save/load SQL),
+// `src/database/migrations/` (DDL — the table must be creatable) and
+// `src/types/database.ts` (the row type's doc comment names the table).
+//
+// SCAN ROOT: `src/` only, `.ts`/`.tsx` only (the shared `allFiles` walk).
+// `packages/orbital-signal/src` is NOT scanned and must not be — it holds
+// generated bindings, which necessarily name all four functions; it is read
+// instead as the non-vacuity floor below.
+//
+// Non-vacuity floor: assert every name in SSD_FFI is still generated. If a
+// future ubrn/libsignal change stops exporting one, this clause would pass by
+// having nothing to find, while the real question ("is the 1:1 path still
+// dormant?") had quietly become "does the 1:1 path still exist?".
+const SSD_RULE = 'signal-session-dormant';
+const SSD_ISSUE = '#200 / #946';
+const SSD_FFI = [
+  'processPreKeyBundle',
+  'signalEncrypt',
+  'signalDecryptPreKey',
+  'signalDecrypt',
+  // The preloaded-store pattern's first step: a caller must parse the message's
+  // key ids before it can load the pre-keys to decrypt with. It is pure parsing
+  // with no crypto, which makes it the quietest possible first production
+  // reference to the 1:1 path — and the most likely one to be added first.
+  'parsePrekeyMessageIds',
+];
+const SSD_STORE = ['saveSession', 'getSessionsForService', 'getSession'];
+const SSD_TABLE = 'signal_sessions';
+const SSD_TABLE_OK = /DELETE\s+FROM\s+signal_sessions/i;
+const SSD_REPO = join(SRC, 'database', 'repositories', 'signalSessionRepository.ts');
+const SSD_TABLE_EXEMPT = [join(SRC, 'database', 'migrations'), join(SRC, 'types', 'database.ts')];
+const SSD_GENERATED = join('packages', 'orbital-signal', 'src', 'generated', 'orbital_signal.ts');
+// THE canonical list of what reviving the 1:1 path owes. Deliberately stated
+// once, here: it used to be restated in the golden-fixture headers and Test 8e's
+// docblock, where the copies drifted. Those now point at this rule by name.
+const SSD_OWED =
+  'reviving it owes: (1) Tahini policy — read upstream tahini.rs, sessions carry an origin and a direction-change counter and archived sessions are never reactivated; (2) MAX_ARCHIVED_SESSIONS=3 eviction coverage (was 40); (3) a test that an archived session cannot roll back a later-learned identity (upstream saves the identity only for SessionLocation::Current); (4) golden SessionRecord fixtures for real on-device records, in both directions; (5) correct pre-key consumption — DecryptPreKeyResult.consumedPreKeyId / consumedKyberPreKeyId are ENVELOPE READS, not upstream consumption facts: on the existing-session branch upstream consumes no pre-key at all, so a session service must not delete the keys they name unconditionally; and a device smoke (the whole path has never run on a device)';
+
+{
+  let generated = '';
+  try {
+    generated = readFileSync(SSD_GENERATED, 'utf8');
+  } catch {
+    violations.push(
+      `  ${SSD_GENERATED}:0  [${SSD_RULE}]  generated bindings not found — the dormancy rule would pass vacuously (${SSD_ISSUE})`,
+    );
+  }
+  for (const fn of SSD_FFI) {
+    if (generated && !new RegExp(`export function ${fn}\\b`).test(generated)) {
+      violations.push(
+        `  ${SSD_GENERATED}:0  [${SSD_RULE}]  \`${fn}\` is no longer generated — the 1:1 session surface moved, so re-derive this clause's name list from the current bindings instead of letting it match nothing (${SSD_ISSUE})`,
+      );
+    }
+  }
+
+  const ssdNames = [
+    ...SSD_FFI.map((n) => [n, 'the 1:1 session FFI surface has no production caller']),
+    ...SSD_STORE.map((n) => [n, 'no production code reads or writes a signal_sessions row']),
+  ];
+  for (const file of allFiles) {
+    const rel = relative('.', file);
+    if (rel.includes('__tests__/') || rel.includes('.test.ts') || rel.includes('.test.tsx')) {
+      continue;
+    }
+    // The repository defines the store half; the barrel's `export *` names nothing.
+    if (file === SSD_REPO) continue;
+
+    const tableExempt = SSD_TABLE_EXEMPT.some((p) => rel.startsWith(p));
+    const lines = blankComments(readFileSync(file, 'utf8')).split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      for (const [name, why] of ssdNames) {
+        if (!new RegExp(`\\b${name}\\b`).test(lines[i])) continue;
+        report(
+          file,
+          i + 1,
+          SSD_RULE,
+          `references \`${name}\` — ${why} (${SSD_ISSUE}), and every libsignal bump review has relied on that. If the path is being revived deliberately, ${SSD_OWED}; then update this clause.`,
+        );
+      }
+      if (!tableExempt && lines[i].includes(SSD_TABLE) && !SSD_TABLE_OK.test(lines[i])) {
+        report(
+          file,
+          i + 1,
+          SSD_RULE,
+          `raw SQL touching \`${SSD_TABLE}\` that is not a DELETE — production access to that table is wipe-only, because no production code ever writes a session row (${SSD_ISSUE}). If the path is being revived deliberately, ${SSD_OWED}; then update this clause.`,
+        );
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 27. libsignal version literals in the docs track the pinned tag (#573)
+// ---------------------------------------------------------------------------
+
+// The libsignal pin appears in eleven prose literals across five docs, and
+// every bump has hand-swept them: v0.102.3, v0.103.0, v0.104.0 and v0.106.0 all
+// shipped the same manual edit list with no detector behind it. A missed literal
+// is not cosmetic — docs/encryption-export-compliance.md and
+// docs/compliance/bis-filing-2026.md are the derivation source for the BIS
+// filing and the export-compliance answer, so a stale version there is a stale
+// regulatory claim.
+//
+// The pin is read from the crate's Cargo.toml (`tag = "…"`), which also makes
+// this the lockstep check for the two libsignal crates: libsignal-protocol and
+// libsignal-core are published from one repo at one tag and have never been
+// pinned apart.
+//
+// Rule: on any line of the doc set that mentions libsignal, every version token
+// must equal the pin. That shape — rather than a list of blessed phrasings —
+// means a NEW stale literal added later is caught too. Two escapes, both narrow:
+//
+//   * FROZEN tokens, allowlisted by exact substring. `v0.83.0 at time of
+//     writing` is a historical statement about what was current when those
+//     feasibility docs were written; `since libsignal v0.99.1` dates when
+//     curve25519-dalek became stock. Neither tracks the pin.
+//   * HISTORY lines, allowlisted per file by line pattern: the BIS derivation
+//     log is an append-only ledger of every version it was re-derived at. It
+//     gets the opposite check instead — it MUST contain the current pin, which
+//     is what makes the append non-optional.
+//
+// Per-version ledgers inside the crate (the golden-fixture test headers, the
+// Cargo.toml history comments, .cargo/audit.toml's re-verification log) are
+// deliberately OUT of scope: they are append-only records of what was true at
+// each tag, and rewriting them to the current pin would destroy the evidence.
+//
+// Non-vacuity floor: each file must carry at least as many pin-matching tokens
+// as it does today, so deleting a literal (or renaming the file) fails instead
+// of silently shrinking the swept surface.
+const LVL_RULE = 'libsignal-doc-version';
+const LVL_ISSUE = '#573';
+const LVL_CARGO = join(CRATE_REL, 'Cargo.toml');
+const LVL_FROZEN = ['v0.83.0 at time of writing', 'since libsignal v0.99.1'];
+const LVL_HISTORY = /^-\s+\*\*Derived:\*\*/;
+// file -> minimum number of tokens that must equal the pin
+const LVL_DOCS = [
+  ['docs/MOBILE-APP-SPEC.md', 3],
+  // Floor 0: this file's only version-bearing line is the append-only `- **Derived:**`
+  // log, which LVL_HISTORY skips and the inverse check below owns. It is still in the
+  // scan set so that a NEW stale literal added anywhere else in it is caught.
+  ['docs/compliance/bis-filing-2026.md', 0],
+  ['docs/libsignal-api-surface.md', 2],
+  ['docs/uniffi-toolchain.md', 1],
+  ['docs/uniffi-udl-feasibility.md', 3],
+  ['docs/encryption-export-compliance.md', 2],
+];
+const LVL_BIS = 'docs/compliance/bis-filing-2026.md';
+const LVL_VER_RE = /\bv\d+\.\d+\.\d+\b/g;
+const LVL_BARE_RE = /\blibsignal(?:-protocol|-core)?\s+(\d+\.\d+\.\d+)\b/g;
+
+{
+  let pin = null;
+  try {
+    const cargo = readFileSync(LVL_CARGO, 'utf8');
+    const tags = [...cargo.matchAll(/^libsignal-(protocol|core)\s*=.*tag\s*=\s*"([^"]+)"/gm)];
+    const found = new Map(tags.map(([, crate, tag]) => [crate, tag]));
+    if (found.size !== 2) {
+      violations.push(
+        `  ${LVL_CARGO}:0  [${LVL_RULE}]  could not read a \`tag = "…"\` pin for both libsignal-protocol and libsignal-core (found ${[...found.keys()].join(', ') || 'neither'}) — the doc-literal rule has no reference to compare against (${LVL_ISSUE})`,
+      );
+    } else if (found.get('protocol') !== found.get('core')) {
+      violations.push(
+        `  ${LVL_CARGO}:0  [${LVL_RULE}]  libsignal-protocol (${found.get('protocol')}) and libsignal-core (${found.get('core')}) are pinned to different tags — they are published from one repo at one tag and must move in lockstep (${LVL_ISSUE})`,
+      );
+    } else {
+      pin = found.get('protocol');
+    }
+  } catch {
+    violations.push(
+      `  ${LVL_CARGO}:0  [${LVL_RULE}]  crate Cargo.toml not found — the doc-literal rule would pass vacuously (${LVL_ISSUE})`,
+    );
+  }
+
+  if (pin !== null) {
+    const bare = pin.replace(/^v/, '');
+    for (const [docFile, floor] of LVL_DOCS) {
+      let lines;
+      try {
+        lines = readFileSync(docFile, 'utf8').split('\n');
+      } catch {
+        violations.push(
+          `  ${docFile}:0  [${LVL_RULE}]  doc not found — it carries ${floor} libsignal version literal(s) that this rule sweeps; if it moved, update LVL_DOCS (${LVL_ISSUE})`,
+        );
+        continue;
+      }
+      let matched = 0;
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (!/libsignal/i.test(line)) continue;
+        if (LVL_HISTORY.test(line)) continue;
+        const tokens = new Set([
+          ...[...line.matchAll(LVL_VER_RE)].map((m) => m[0].slice(1)),
+          ...[...line.matchAll(LVL_BARE_RE)].map((m) => m[1]),
+        ]);
+        for (const token of tokens) {
+          if (token === bare) {
+            matched += 1;
+            continue;
+          }
+          if (LVL_FROZEN.some((f) => line.includes(f) && f.includes(token))) continue;
+          report(
+            docFile,
+            i + 1,
+            LVL_RULE,
+            `libsignal version literal \`v${token}\` does not match the pinned tag \`${pin}\` from ${CRATE_REL}/Cargo.toml (${LVL_ISSUE}). If it is a frozen historical statement, add its exact phrase to LVL_FROZEN; otherwise sweep it with the bump.`,
+          );
+        }
+      }
+      if (matched < floor) {
+        violations.push(
+          `  ${docFile}:0  [${LVL_RULE}]  found ${matched} literal(s) matching the pin \`${pin}\`, expected at least ${floor} — a swept literal was deleted or reworded, so the doc no longer states the pin it used to (${LVL_ISSUE})`,
+        );
+      }
+    }
+
+    let bisLine = null;
+    let bisLineNo = 0;
+    try {
+      const lines = readFileSync(LVL_BIS, 'utf8').split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        if (LVL_HISTORY.test(lines[i])) {
+          bisLine = lines[i];
+          bisLineNo = i + 1;
+          break;
+        }
+      }
+    } catch {
+      /* reported below */
+    }
+    if (bisLine === null) {
+      violations.push(
+        `  ${LVL_BIS}:0  [${LVL_RULE}]  the \`- **Derived:**\` log line is missing — it is the append-only record of every libsignal version the BIS filing was re-derived at (${LVL_ISSUE})`,
+      );
+    } else if (!bisLine.includes(pin)) {
+      violations.push(
+        `  ${LVL_BIS}:${bisLineNo}  [${LVL_RULE}]  the derivation log does not mention the current pin \`${pin}\` — append \`; updated <date>, ${pin}, Cargo.lock\` rather than editing an earlier entry (${LVL_ISSUE})`,
+      );
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------
 

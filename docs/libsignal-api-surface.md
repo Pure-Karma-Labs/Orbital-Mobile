@@ -1,9 +1,10 @@
 # libsignal API Surface Specification
 
 **Version:** 1.0
-**libsignal version:** v0.104.0 (pinned)
+**libsignal version:** v0.106.0 (pinned)
 **Author:** Signal Crypto Specialist
 **Status:** Draft
+**Authority:** `packages/orbital-signal/rust/orbital_signal/src/session.rs` (and its siblings) is authoritative for the shipped FFI. The reproduced Rust signature blocks below (~:560/:574/:630/:646) are the ORIGINAL DESIGN: they predate the input-struct / preloaded-store pattern every session function now takes, and v0.106.0's `PreKeyDecryptResult` return for `message_decrypt_prekey`. Read them as intent, not as the current signatures.
 **Blocks:** Issues #5 (Rust crate), #6 (uniffi-bindgen toolchain), #7-#11 (crypto pipeline)
 
 ---
@@ -53,7 +54,7 @@ orbital_signal (thin Rust crate)
     |
     | re-exports with UniFFI proc macros
     v
-libsignal-protocol v0.104.0 (Rust)
+libsignal-protocol v0.106.0 (Rust)
 ```
 
 ---

@@ -146,5 +146,8 @@ fn test_encrypt_decrypt_roundtrip_repeated() {
         .expect("batch roundtrip should succeed");
     assert_eq!(result.success_count, 5);
     assert!(result.total_elapsed_ms > 0);
-    assert!(result.avg_elapsed_ms > 0);
+    // avg_elapsed_ms is whole milliseconds (total / iterations), so in a release
+    // build sub-millisecond round trips legitimately average to 0. Asserting > 0
+    // failed 9/10 release runs on main (#948); assert the relation instead.
+    assert!(result.avg_elapsed_ms <= result.total_elapsed_ms);
 }

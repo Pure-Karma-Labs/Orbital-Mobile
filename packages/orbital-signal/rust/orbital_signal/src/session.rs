@@ -511,12 +511,25 @@ pub fn signal_decrypt_pre_key(
         .await
         .map_err(SignalError::from)?;
 
-        // Cross-check upstream's identity key against our own envelope read, and
-        // fail closed on disagreement (libsignal v0.106.0, #946).
+        // Cross-check BOTH of upstream's recovered-sender fields against what we
+        // read ourselves, and fail closed on disagreement (libsignal v0.106.0,
+        // #946).
         //
-        // `message_decrypt_prekey` now also returns the identity key it decided
-        // the sender has. The two values are equal on every success path upstream
-        // offers: on the existing-session path it refuses to decrypt unless the
+        // `message_decrypt_prekey` returns `PreKeyDecryptResult { plaintext,
+        // sender, sender_identity_key }`. The two non-plaintext fields are
+        // upstream's answer to "who sent this", and upstream's own docstring says
+        // what they are for: "With plain PQXDH the caller supplies the address, so
+        // `sender` echoes the input. Under a future sender-anonymity layer these
+        // fields will identify the sender recovered during session initiation."
+        // That is precisely the change we must not absorb silently — today both
+        // fields are provably redundant with our inputs, and the day they stop
+        // being redundant is the day this function's contract with TypeScript
+        // changes meaning. Both guards below turn "redundant" into an enforced
+        // invariant rather than an assumption, so that day is a loud failure.
+        //
+        // `sender_identity_key`: the identity key upstream decided the sender has.
+        // It equals our envelope read on every success path upstream offers: on
+        // the existing-session path it refuses to decrypt unless the
         // envelope key equals the session's stored key
         // (`session_management.rs:303-315` @ v0.106.0) and then hands back the
         // stored key; on the fresh-session path it hands back the candidate
@@ -533,12 +546,25 @@ pub fn signal_decrypt_pre_key(
         // future upstream ever returns a key we did not read off the wire, the
         // call fails instead of silently re-pointing the field's meaning.
         //
-        // Deliberately an error, never `assert!`/`debug_assert!`: a panic across
-        // the uniffi boundary aborts the host process rather than surfacing as a
-        // catchable `SignalError`.
+        // `sender`: the address upstream attributes the message to. Today it is a
+        // pure echo of the `remote_address` we passed in, which is
+        // `input.sender_address` — the address the TypeScript caller chose, and the
+        // one every downstream effect is keyed by (the session record we return,
+        // the identity the caller trusts, the conversation the plaintext lands in).
+        // If upstream ever recovers a *different* sender, continuing would attribute
+        // one peer's plaintext to another.
+        //
+        // Both guards are deliberately errors, never `assert!`/`debug_assert!`: a
+        // panic across the uniffi boundary aborts the host process rather than
+        // surfacing as a catchable `SignalError`.
         if decrypted.sender_identity_key != sender_identity_key {
             return Err(SignalError::InvalidMessage {
                 reason: "sender identity key does not match the message envelope".to_string(),
+            });
+        }
+        if decrypted.sender != protocol_address {
+            return Err(SignalError::InvalidMessage {
+                reason: "sender address does not match the requested remote address".to_string(),
             });
         }
 

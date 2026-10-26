@@ -2803,7 +2803,8 @@ for (const [file, importers] of IFR_FILES) {
 // could falsify every one of those reviews without tripping anything.
 //
 // The FFI surface is exported and callable today: `processPreKeyBundle`,
-// `signalEncrypt`, `signalDecrypt` and `signalDecryptPreKey` are generated into
+// `signalEncrypt`, `signalDecrypt`, `signalDecryptPreKey` and
+// `parsePrekeyMessageIds` are generated into
 // packages/orbital-signal/src/generated/orbital_signal.ts and re-exported by the
 // blanket `export *` in its index.tsx, so a caller needs no new plumbing.
 //
@@ -2842,18 +2843,48 @@ for (const [file, importers] of IFR_FILES) {
 // an unrelated module could want it one day; if that happens, rename the
 // unrelated one or scope this clause to the import specifier — do not delete it.
 //
-// Non-vacuity floor: assert the four functions are still generated. If a future
-// ubrn/libsignal change stops exporting them, this clause would pass by having
-// nothing to find, while the real question ("is the 1:1 path still dormant?")
-// had quietly become "does the 1:1 path still exist?".
+// The third arm is the TABLE NAME, which catches what the two name lists cannot:
+// raw SQL. Any mention of `signal_sessions` in a non-test `src/` file must be a
+// DELETE. The two production wipes (`execute('DELETE FROM signal_sessions')` in
+// authService's logout and keyGenerationService's full Signal-table wipe) are
+// exactly that and keep passing; an `INSERT`, `SELECT`, `UPDATE` or an unverbed
+// mention fails. Exempt: the repository itself (it defines the save/load SQL),
+// `src/database/migrations/` (DDL — the table must be creatable) and
+// `src/types/database.ts` (the row type's doc comment names the table).
+//
+// SCAN ROOT: `src/` only, `.ts`/`.tsx` only (the shared `allFiles` walk).
+// `packages/orbital-signal/src` is NOT scanned and must not be — it holds
+// generated bindings, which necessarily name all four functions; it is read
+// instead as the non-vacuity floor below.
+//
+// Non-vacuity floor: assert every name in SSD_FFI is still generated. If a
+// future ubrn/libsignal change stops exporting one, this clause would pass by
+// having nothing to find, while the real question ("is the 1:1 path still
+// dormant?") had quietly become "does the 1:1 path still exist?".
 const SSD_RULE = 'signal-session-dormant';
 const SSD_ISSUE = '#200 / #946';
-const SSD_FFI = ['processPreKeyBundle', 'signalEncrypt', 'signalDecryptPreKey', 'signalDecrypt'];
+const SSD_FFI = [
+  'processPreKeyBundle',
+  'signalEncrypt',
+  'signalDecryptPreKey',
+  'signalDecrypt',
+  // The preloaded-store pattern's first step: a caller must parse the message's
+  // key ids before it can load the pre-keys to decrypt with. It is pure parsing
+  // with no crypto, which makes it the quietest possible first production
+  // reference to the 1:1 path — and the most likely one to be added first.
+  'parsePrekeyMessageIds',
+];
 const SSD_STORE = ['saveSession', 'getSessionsForService', 'getSession'];
+const SSD_TABLE = 'signal_sessions';
+const SSD_TABLE_OK = /DELETE\s+FROM\s+signal_sessions/i;
 const SSD_REPO = join(SRC, 'database', 'repositories', 'signalSessionRepository.ts');
+const SSD_TABLE_EXEMPT = [join(SRC, 'database', 'migrations'), join(SRC, 'types', 'database.ts')];
 const SSD_GENERATED = join('packages', 'orbital-signal', 'src', 'generated', 'orbital_signal.ts');
+// THE canonical list of what reviving the 1:1 path owes. Deliberately stated
+// once, here: it used to be restated in the golden-fixture headers and Test 8e's
+// docblock, where the copies drifted. Those now point at this rule by name.
 const SSD_OWED =
-  'reviving it owes: Tahini policy (upstream tahini.rs), MAX_ARCHIVED_SESSIONS=3 eviction coverage, golden SessionRecord fixtures for real on-device records, and a device smoke';
+  'reviving it owes: (1) Tahini policy — read upstream tahini.rs, sessions carry an origin and a direction-change counter and archived sessions are never reactivated; (2) MAX_ARCHIVED_SESSIONS=3 eviction coverage (was 40); (3) a test that an archived session cannot roll back a later-learned identity (upstream saves the identity only for SessionLocation::Current); (4) golden SessionRecord fixtures for real on-device records, in both directions; (5) correct pre-key consumption — DecryptPreKeyResult.consumedPreKeyId / consumedKyberPreKeyId are ENVELOPE READS, not upstream consumption facts: on the existing-session branch upstream consumes no pre-key at all, so a session service must not delete the keys they name unconditionally; and a device smoke (the whole path has never run on a device)';
 
 {
   let generated = '';
@@ -2884,6 +2915,7 @@ const SSD_OWED =
     // The repository defines the store half; the barrel's `export *` names nothing.
     if (file === SSD_REPO) continue;
 
+    const tableExempt = SSD_TABLE_EXEMPT.some((p) => rel.startsWith(p));
     const lines = blankComments(readFileSync(file, 'utf8')).split('\n');
     for (let i = 0; i < lines.length; i++) {
       for (const [name, why] of ssdNames) {
@@ -2893,6 +2925,14 @@ const SSD_OWED =
           i + 1,
           SSD_RULE,
           `references \`${name}\` — ${why} (${SSD_ISSUE}), and every libsignal bump review has relied on that. If the path is being revived deliberately, ${SSD_OWED}; then update this clause.`,
+        );
+      }
+      if (!tableExempt && lines[i].includes(SSD_TABLE) && !SSD_TABLE_OK.test(lines[i])) {
+        report(
+          file,
+          i + 1,
+          SSD_RULE,
+          `raw SQL touching \`${SSD_TABLE}\` that is not a DELETE — production access to that table is wipe-only, because no production code ever writes a session row (${SSD_ISSUE}). If the path is being revived deliberately, ${SSD_OWED}; then update this clause.`,
         );
       }
     }
@@ -2945,6 +2985,10 @@ const LVL_HISTORY = /^-\s+\*\*Derived:\*\*/;
 // file -> minimum number of tokens that must equal the pin
 const LVL_DOCS = [
   ['docs/MOBILE-APP-SPEC.md', 3],
+  // Floor 0: this file's only version-bearing line is the append-only `- **Derived:**`
+  // log, which LVL_HISTORY skips and the inverse check below owns. It is still in the
+  // scan set so that a NEW stale literal added anywhere else in it is caught.
+  ['docs/compliance/bis-filing-2026.md', 0],
   ['docs/libsignal-api-surface.md', 2],
   ['docs/uniffi-toolchain.md', 1],
   ['docs/uniffi-udl-feasibility.md', 3],

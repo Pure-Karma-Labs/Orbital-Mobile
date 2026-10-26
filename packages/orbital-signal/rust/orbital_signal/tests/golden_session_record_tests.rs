@@ -93,8 +93,9 @@
 //! test is unperformable: there are zero production callers of the 1:1 session
 //! API and zero persisted session rows, and there is no public API through which
 //! to accumulate four archived sessions without first reviving that pipeline.
-//! Reviving it owes a test at that point — archived-session eviction at 3, and
-//! that an archived session cannot roll back a learned identity.
+//! What reviving it owes is enumerated in ONE place — the
+//! `signal-session-dormant` invariant in `scripts/check-security-invariants.mjs`
+//! — not restated here, so the list cannot drift between copies.
 //!
 //! ## How to regenerate
 //!

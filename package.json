@@ -35,7 +35,7 @@
     "@dr.pogodin/react-native-fs": "^2.40.3",
     "@notifee/react-native": "^9.1.8",
     "@op-engineering/op-sqlite": "^18.2.5",
-    "@react-native-firebase/app": "^26.3.3",
+    "@react-native-firebase/app": "^27.1.0",
     "@react-native-firebase/messaging": "^26.3.3",
     "@react-navigation/bottom-tabs": "^7.21.0",
     "@react-navigation/native": "^7.2.2",

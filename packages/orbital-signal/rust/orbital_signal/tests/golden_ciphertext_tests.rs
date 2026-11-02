@@ -385,6 +385,66 @@ fn golden_ecies_open() {
 /// `:289` (verify), plus one in-file test at `:765`. The sealed bytes provably
 /// cannot move.
 ///
+/// v0.106.1 (#956): replay skipped — the narrowed trigger does not fire.
+/// Across the four dirs our lock compiles from the libsignal git repo,
+/// `rust/core` changed two files, `src/version.rs` (the `VERSION` string const)
+/// and `Cargo.toml`. The manifest change is *not* a dependency change: upstream
+/// moved `edition` and `rust-version` to `[workspace.package]` inheritance, and
+/// the root's values are the same **edition 2024** and **rust-version 1.93.1**
+/// we compiled against at v0.106.0 (so future per-bump MSRV checks must read
+/// the upstream *root* manifest, not the per-crate ones). `curve.rs` and
+/// `curve/curve25519.rs` are untouched.
+///
+/// Reach, stated in full: `src/ecies.rs` depends on libsignal solely for
+/// `libsignal_core::curve`, and it reaches it from **five production sites** —
+/// `PrivateKey::deserialize` at `:104` and `:182` (both inside `ecies_seal`),
+/// `PublicKey::deserialize` at `:282` (inside `ecies_open`),
+/// `PrivateKey::calculate_signature` at `:189` (sign) and
+/// `PublicKey::verify_signature` at `:289` (verify), plus in-file tests at
+/// `:763`/`:765`. (Earlier entries in this ledger said "two call sites",
+/// counting only sign/verify; the deserialize sites belong in the trigger
+/// surface too, which is why `rust/core/src/curve.rs` is checked as a whole.)
+///
+/// `curve25519-dalek` stays at stock 5.0.0 from crates.io and `x25519-dalek` at
+/// stock 3.0.0 — neither moved in `Cargo.lock`, whose entire diff is **5 lines**
+/// (4 git `source` strings plus `libsignal-debug`'s `version`, which upstream
+/// changed from `version.workspace = true` to a literal `0.1.0`; that is a
+/// manifest literal, not a downgrade) with **230 packages before and after**,
+/// zero added or removed. The resolved
+/// `cargo tree -e normal -f '{p} {f}'` feature set is identical before and
+/// after on every checked target (`aarch64-apple-ios`,
+/// `aarch64-linux-android`, `x86_64-linux-android`), modulo the git rev string.
+///
+/// `rust/crypto` is **not** byte-identical this time, unlike at v0.106.0. Its
+/// only change is `src/aes_cbc.rs`: the block-length check becomes
+/// `!len.is_multiple_of(16)` where it was `len % 16 != 0`. For `usize` those are
+/// arithmetically identical predicates (`is_multiple_of` is defined as
+/// `self % rhs == 0` for a non-zero divisor), and the preceding `is_empty()`
+/// guard is unchanged, so the accepted/rejected ciphertext-length sets are the
+/// same. The sealing path does not use AES-CBC at all (ECIES is AES-256-GCM).
+/// The function *is* in our compiled graph, via libsignal's
+/// `group_cipher.rs:44/:168` (Sender Key) and `triple_ratchet.rs:105/:270`, and
+/// `tests/protocol_roundtrip_tests.rs:162` `test_group_messaging_roundtrip`
+/// executes it as part of the 149/0/5 baseline — so the equivalence is tested,
+/// not merely argued.
+///
+/// The rest of the v0.106.0..v0.106.1 range, all 11 files, +33/−32: the two
+/// `rust/core` files above; `rust/crypto/src/aes_cbc.rs` above;
+/// `rust/protocol/src/incremental_mac.rs` (`0 == N % D` →
+/// `N.is_multiple_of(D)`, inside an `assert!`);
+/// `rust/protocol/src/fingerprint.rs` (`chunks_exact(5)` →
+/// `as_chunks::<5>()`, with the length assert absorbed into the `&[u8; 5]`
+/// type — identical iteration);
+/// `rust/protocol/src/state/session.rs` (2 nested `if let` → let-chains, same
+/// control flow); five `Cargo.toml` files taking the edition/rust-version
+/// inheritance described above; and the upstream test file
+/// `rust/protocol/tests/session.rs` (one nested `if let` → let-chain in
+/// `proptest_session_resets`), which we never compile. There are **no `.proto`
+/// changes** and spqr stays at v1.6.0. Upstream's only release note is "Swift:
+/// SPM instead of CocoaPods", which does not reach us — we consume the Rust
+/// crates through uniffi, not the podspec. The sealed bytes provably cannot
+/// move.
+///
 /// How to re-derive that file list on the next bump — the method matters,
 /// because a wrong file list silently invalidates this whole exemption. Use the
 /// local cargo git database, which holds both tags:

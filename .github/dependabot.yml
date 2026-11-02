@@ -119,6 +119,19 @@ updates:
       # iOS Debug build passes.
       - dependency-name: "react-native-image-picker"
         versions: ["> 8.2.1"]
+      # @dr.pogodin/react-native-fs 2.41.0 moves appendFile/read/readFile/write/
+      # writeFile onto ArrayBuffer transport. Upstream says it was tested only on
+      # RN@0.88 and is "most likely not backward compatible" below it:
+      # ArrayBufferTypeAnnotation first appears in @react-native/codegen 0.87.0 and
+      # Java TurboModule ArrayBuffer support in RN 0.88. On our codegen the spec is
+      # rejected ("Unrecognized generic type 'ArrayBuffer' in NativeModule spec"),
+      # failing pod install and Android codegen (closed PR #955). Its peer range is
+      # "*", so only this rule stops it. Lift only on RN >= 0.88 (NOT the 0.86
+      # target in #311), and re-verify read()/readFile() byte semantics on the
+      # media chunk path then: the data path changes from base64 strings to
+      # ArrayBuffers.
+      - dependency-name: "@dr.pogodin/react-native-fs"
+        versions: [">= 2.41.0"]
       # Babel 8 and ESLint 10 require RN ecosystem support — tracked in #311
       - dependency-name: "@babel/core"
         update-types: ["version-update:semver-major"]

@@ -11,9 +11,12 @@
 # RUSTSEC-2026-0212, -0207 and -0208. Re-verified by reading this crate's
 # Cargo.lock at v0.102.3 (#811), at v0.103.0 (#822, only the five git crates
 # moved), at v0.104.0 (#858, only the four libsignal git crates moved; spqr
-# unchanged) and at v0.106.0 (#946, only the four libsignal git crates moved —
-# the whole lock diff is 5 lines; spqr unchanged at v1.6.0): all three are
-# registry-sourced and unchanged.
+# unchanged), at v0.106.0 (#946, only the four libsignal git crates moved —
+# the whole lock diff is 5 lines; spqr unchanged at v1.6.0) and at v0.106.1
+# (#956, the same 5-line shape: 4 git source strings plus libsignal-debug's
+# version, which upstream changed from version.workspace = true to a literal
+# 0.1.0; zero packages added or removed, 230 before and after; spqr unchanged
+# at v1.6.0): all three are registry-sourced and unchanged.
 # Two different controls apply here. The libcrux crates come from crates.io, so
 # `cargo audit` DOES evaluate them and the blocking rust-audit job is the
 # standing gate for those advisories. `cargo audit` is blind only to the

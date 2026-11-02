@@ -382,8 +382,107 @@ fn golden_ecies_open() {
 /// solely for
 /// `libsignal_core::curve::{PrivateKey::calculate_signature,
 /// PublicKey::verify_signature}` — two production call sites, `:189` (sign) and
-/// `:289` (verify), plus one in-file test at `:765`. The sealed bytes provably
+/// `:289` (verify), plus one in-file test at `:765` (superseded at v0.106.1:
+/// seven production sites; see that entry). The sealed bytes provably
 /// cannot move.
+///
+/// v0.106.1 (#956): replay skipped — the narrowed trigger does not fire.
+/// Across the four dirs our lock compiles from the libsignal git repo,
+/// `rust/core` changed two files, `src/version.rs` (the `VERSION` string const)
+/// and `Cargo.toml`. The manifest change is *not* a dependency change: upstream
+/// moved `edition` and `rust-version` to `[workspace.package]` inheritance.
+/// Precisely what the root `[workspace.package]` did: it **gained**
+/// `edition = "2024"` (at v0.106.0 each of the four consumed crates declared
+/// `edition = "2024"` itself, so the value is unchanged) and it **kept**
+/// `rust-version = "1.93.1"`. Per crate, that means `signal-crypto` and
+/// `libsignal-protocol` moved from a declared `rust-version = "1.85"` to the
+/// inherited 1.93.1 and `libsignal-core` gained a `rust-version` where it had
+/// none — but 1.93.1 was already the effective floor for the whole graph,
+/// because `libsignal-debug` already inherited it at v0.106.0. Our
+/// `rust-toolchain.toml` pins 1.94.1, one minor above that floor, and a breach
+/// would fail the build loudly rather than silently. Two further root moves were
+/// checked and do not reach us: `resolver` `"2"` -> `"3"` (irrelevant — this
+/// crate is its own workspace root, so upstream's resolver and
+/// `[patch.crates-io]` never apply to our resolution), and `boring-signal` /
+/// `tokio-boring-signal` / the patched `boring` + `boring-sys`
+/// `signal-v5.2.0` -> `signal-v5.3.0` (boring has **0 entries** in our
+/// `Cargo.lock`; inside libsignal it is reached by `rust/net`, `rust/attest` and
+/// `rust/device-transfer`, none of which we compile, and by `rust/core` only as
+/// a `[dev-dependencies]` entry). `curve.rs` and `curve/curve25519.rs` are
+/// untouched.
+///
+/// Reach, stated in full: `src/ecies.rs` depends on libsignal solely for
+/// `libsignal_core::curve`, and it reaches it from **seven production sites** —
+/// inside `ecies_seal`, `PrivateKey::deserialize` at `:104`,
+/// `PrivateKey::public_key` at `:109`, `PublicKey::serialize` at `:112`,
+/// `PrivateKey::deserialize` again at `:182` and
+/// `PrivateKey::calculate_signature` at `:189` (sign); inside `ecies_open`,
+/// `PublicKey::deserialize` at `:282` and `PublicKey::verify_signature` at
+/// `:289` (verify). The in-file tests add `use libsignal_core::curve::KeyPair`
+/// at `:427`, `KeyPair::generate` + two `serialize()` calls at `:439`-`:441`,
+/// and `:763`/`:765`. (Earlier entries in this ledger said "two call sites",
+/// counting only sign/verify; every one of the seven belongs in the trigger
+/// surface, which is why `rust/core/src/curve.rs` is checked as a whole.)
+///
+/// `curve25519-dalek` stays at stock 5.0.0 from crates.io and `x25519-dalek` at
+/// stock 3.0.0 — neither moved in `Cargo.lock`, whose entire diff is **5 lines**
+/// (4 git `source` strings plus `libsignal-debug`'s `version`, which upstream
+/// changed from `version.workspace = true` to a literal `0.1.0`; that is a
+/// manifest literal, not a downgrade) with **230 packages before and after**,
+/// zero added or removed. The resolved
+/// `cargo tree -e normal -f '{p} {f}'` feature set is identical before and
+/// after on every checked target (`aarch64-apple-ios`,
+/// `aarch64-linux-android`, `x86_64-linux-android`), modulo the git rev string.
+///
+/// `rust/crypto` is **not** byte-identical this time, unlike at v0.106.0. Its
+/// only change is `src/aes_cbc.rs`: the block-length check becomes
+/// `!len.is_multiple_of(16)` where it was `len % 16 != 0`. For `usize` those are
+/// arithmetically identical predicates (`is_multiple_of` is defined as
+/// `self % rhs == 0` for a non-zero divisor), and the preceding `is_empty()`
+/// guard is unchanged, so the accepted/rejected ciphertext-length sets are the
+/// same. The sealing path does not use AES-CBC at all (ECIES is AES-256-GCM).
+/// The function *is* in our compiled graph: libsignal calls
+/// `signal_crypto::aes_256_cbc_encrypt` at `group_cipher.rs:44` (Sender Key)
+/// and `triple_ratchet.rs:105`, and `signal_crypto::aes_256_cbc_decrypt` at
+/// `group_cipher.rs:168` and `triple_ratchet.rs:270` — **only the two decrypt
+/// sites reach the changed predicate**, which lives in `aes_256_cbc_decrypt`
+/// alone. `tests/protocol_roundtrip_tests.rs:162`
+/// `test_group_messaging_roundtrip` drives both directions and so executes it,
+/// as part of the 149/0/5 baseline — the equivalence is tested, not merely
+/// argued.
+///
+/// The change set, **within the four consumed directories**: 11 files, +33/−32.
+/// The full v0.106.0..v0.106.1 range is **83 files, +503/−486**. None of the
+/// other 72 belongs to a crate our `Cargo.lock` compiles: 14 under
+/// `rust/bridge`, 10 under `swift/`, 4 each in `rust/net` and
+/// `rust/message-backup`, 4 in `.github`, 3 in `node/`, 2 in `java/`, one each
+/// in nine further unconsumed `rust/*` crates, and the rest `bin/`,
+/// `acknowledgments/`, `justfile`, `Package.swift`, `LibSignalClient.podspec`,
+/// `README`/`RELEASE_NOTES`, `.nvmrc` and upstream's own `Cargo.lock`. The one
+/// that *does* matter indirectly is upstream's **root `Cargo.toml`**, also in
+/// that 72 — which is why the re-derivation pathspec below includes it. The 11,
+/// named in full so the count can be audited:
+/// `rust/core/Cargo.toml`, `rust/core/src/version.rs`,
+/// `rust/crypto/Cargo.toml`, `rust/crypto/src/aes_cbc.rs`,
+/// `rust/debug/Cargo.toml` (the source of the lock's `0.1.0`),
+/// `rust/protocol/Cargo.toml`, `rust/protocol/src/fingerprint.rs`,
+/// `rust/protocol/src/incremental_mac.rs`,
+/// `rust/protocol/src/state/session.rs`,
+/// `rust/protocol/test-support/Cargo.toml` and
+/// `rust/protocol/tests/session.rs`. Semantics of the five source files: the
+/// `VERSION` string const; `aes_cbc.rs` as above;
+/// `incremental_mac.rs` (`0 == N % D` → `N.is_multiple_of(D)`, inside an
+/// `assert!`); `fingerprint.rs` (`chunks_exact(5)` → `as_chunks::<5>()`, with
+/// the length assert absorbed into the `&[u8; 5]` type — identical iteration);
+/// `state/session.rs` (2 nested `if let` → let-chains, same control flow). The
+/// five `Cargo.toml` files carry only the edition/rust-version inheritance
+/// described above, and `rust/protocol/tests/session.rs` (one nested `if let` →
+/// let-chain in `proptest_session_resets`) is an upstream test we never compile.
+/// There are **no `.proto` changes** (`rust/protocol/src/proto` and `build.rs`
+/// are blob-identical) and spqr stays at v1.6.0. Upstream's only release note is
+/// "Swift: SPM instead of CocoaPods", which does not reach us — we consume the
+/// Rust crates through uniffi, not the podspec. The sealed bytes provably cannot
+/// move.
 ///
 /// How to re-derive that file list on the next bump — the method matters,
 /// because a wrong file list silently invalidates this whole exemption. Use the
@@ -391,16 +490,44 @@ fn golden_ecies_open() {
 ///
 /// ```sh
 /// G=~/.cargo/git/db/libsignal-*        # one bare clone, both tags present
-/// git -C $G diff --stat <old-sha> <new-sha> -- rust/protocol/src
+/// git -C $G diff --stat <old-sha> <new-sha> \
+///     -- rust/core rust/crypto rust/debug rust/protocol Cargo.toml
 /// ```
+///
+/// The pathspec must cover **whole directories, not `src/` subtrees**, and must
+/// include upstream's **root `Cargo.toml`**. A `rust/protocol/src`-only diff was
+/// used through v0.106.0 and this bump proves it unsafe: it hides
+/// `rust/crypto/src/aes_cbc.rs`, and it hides every manifest.
+///
+/// Two standing steps that only the widened pathspec can feed:
+///
+/// 1. **Read the root `[workspace.dependencies]`.** All four consumed crates
+///    take essentially every dependency as `{ workspace = true }` (`aes`,
+///    `hkdf`, `hmac`, `sha2`, `subtle`, `zeroize`, `libcrux-ml-kem`, `spqr`,
+///    `curve25519-dalek`, `x25519-dalek`, …), so the *versions* exist only in
+///    the root manifest. A per-crate diff shows a dependency bump as no change
+///    at all. (v0.106.0..v0.106.1 moved exactly one such entry — `boring-signal`
+///    / `tokio-boring-signal` to `signal-v5.3.0` — which is inert for us.)
+/// 2. **Read the root `[workspace.package]` `rust-version` and compare it with
+///    our `rust-toolchain.toml` channel.** Since v0.106.1 the consumed crates
+///    inherit both `edition` and `rust-version` from the root, so this is the
+///    only place the MSRV is stated; per-crate manifests no longer carry it.
+///    The toolchain pin must be >= that value, or `cargo` refuses the build.
+///
+/// Upstream's `resolver` and `[patch.crates-io]` are *not* in scope: this crate
+/// is its own workspace root, so neither affects our resolution. Read them only
+/// to confirm a move is inert, never to predict our lock.
 ///
 /// (The commit SHAs are the `#…` fragments on the `source = "git+…libsignal"`
 /// lines in `Cargo.lock`, before and after the bump.) Equivalently, compare
 /// recursive git-tree blob SHAs at both tags — identical blob SHA means
-/// byte-identical, which is how `rust/crypto` and `rust/debug` are cleared
-/// without reading them. Do NOT rely on `gh api repos/signalapp/libsignal/
-/// compare/<old>...<new>`: that endpoint caps its `files` array at 300 entries
-/// and silently truncates, and a cross-tag libsignal diff exceeds that.
+/// byte-identical, which is how a directory absent from the diffstat is cleared,
+/// and how `rust/protocol/src/proto` and `build.rs` are cleared of `.proto`
+/// changes. A directory that *does* appear in the diffstat has to be read:
+/// `rust/crypto` was byte-identical at v0.106.0 and was not at v0.106.1. Do NOT
+/// rely on `gh api repos/signalapp/libsignal/compare/<old>...<new>`: that
+/// endpoint caps its `files` array at 300 entries and silently truncates, and a
+/// cross-tag libsignal diff exceeds that.
 #[test]
 fn golden_ecies_open_sealed_under_stock_dalek() {
     // TEST VECTOR — synthetic sender public key, never used outside this test

@@ -97,6 +97,19 @@
 //! `signal-session-dormant` invariant in `scripts/check-security-invariants.mjs`
 //! — not restated here, so the list cannot drift between copies.
 //!
+//! libsignal v0.106.1 (#956): nothing owed — spqr is unchanged at v1.6.0 and
+//! every `rust/protocol/src/proto/*.proto` file is blob-identical to v0.106.0
+//! (the v0.106.0..v0.106.1 range touches zero `.proto` files, and `build.rs` is
+//! blob-identical too). The range's only `rust/protocol/src` change relevant to
+//! these fixtures is `state/session.rs`: 2 hunks, both nested `if let` →
+//! let-chain rewrites — the `NotStale` pending-pre-key staleness check and the
+//! `session_id.ct_eq(current.session_id())` current-session lookup. A
+//! let-chain's `&&` short-circuits identically to the nesting it replaces, and
+//! the `ct_eq` call and its operands are unchanged, so neither restore
+//! semantics nor the constant-time property can move. (The range's other
+//! `rust/protocol/src` edits — `incremental_mac.rs` and `fingerprint.rs` — do
+//! not touch session state at all.)
+//!
 //! ## How to regenerate
 //!
 //! ```sh

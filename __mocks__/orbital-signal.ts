@@ -22,6 +22,34 @@
 const noopBuffer = () => new ArrayBuffer(0);
 
 /**
+ * Distinctness stub for hkdfSha256 / hmacSha256 (#917) — not a crypto oracle.
+ *
+ * Output depends on every input byte, with a part boundary mixed in, so dedup
+ * tests (#924) can tell items apart. Real expected values come from the Rust
+ * `orbital_import_kat` fixture, not from here; a test that needs them should
+ * install a per-file jest.mock.
+ *
+ * The sizes and the input dependence are both deliberate. `noopBuffer` is
+ * zero-length, which would make #924's 16-byte slice silently empty; an
+ * all-zero buffer of the right size is no better, because every item would
+ * derive the same import_key, so "distinct items get distinct keys" could not
+ * pass and "re-import reports duplicate" would pass for the wrong reason.
+ */
+const mixStub = (outputLen: number, ...parts: ArrayBuffer[]): ArrayBuffer => {
+  let h = 0x811c9dc5;
+  const out = new Uint8Array(outputLen);
+  for (const part of parts) {
+    for (const byte of new Uint8Array(part)) h = Math.imul(h ^ byte, 0x01000193) >>> 0;
+    h = Math.imul(h ^ 0xff, 0x01000193) >>> 0; // part boundary
+  }
+  for (let i = 0; i < outputLen; i++) {
+    h = Math.imul(h ^ i, 0x01000193) >>> 0;
+    out[i] = h & 0xff;
+  }
+  return out.buffer;
+};
+
+/**
  * Stub AttachmentEncryptor class for Jest.
  *
  * push() returns an empty ArrayBuffer (no whole blocks); finalize() returns
@@ -174,5 +202,8 @@ module.exports = {
   messageDecrypt: noopBuffer,
   inviteEncryptGroupKey: noopBuffer,
   inviteDecryptGroupKey: noopBuffer,
+  hkdfSha256: (ikm: ArrayBuffer, salt: ArrayBuffer, info: ArrayBuffer, outputLen: number) =>
+    mixStub(outputLen, ikm, salt, info),
+  hmacSha256: (key: ArrayBuffer, input: ArrayBuffer) => mixStub(32, key, input),
   createProtocolAddress: () => ({ name: '', deviceId: 0 }),
 };

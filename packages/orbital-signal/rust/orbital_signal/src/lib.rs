@@ -4,6 +4,7 @@ mod ecies;
 mod error;
 mod group;
 mod invite_crypto;
+mod kdf;
 mod keys;
 #[cfg(feature = "dev-roundtrip")]
 mod roundtrip;
@@ -28,6 +29,7 @@ pub use ecies::*;
 pub use error::*;
 pub use group::*;
 pub use invite_crypto::*;
+pub use kdf::*;
 pub use keys::*;
 #[cfg(feature = "dev-roundtrip")]
 pub use roundtrip::*;

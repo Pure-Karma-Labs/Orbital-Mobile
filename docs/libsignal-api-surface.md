@@ -30,7 +30,9 @@
 
 ### Design Principles
 
-Orbital-Mobile wraps exactly **18 libsignal functions** organized into 4 domains. The Rust wrapper crate (`orbital_signal`) is a thin bridge -- it re-exports libsignal types with UniFFI proc macros, performs no custom cryptography, and exposes the minimum surface area needed.
+Orbital-Mobile wraps exactly **18 libsignal functions** organized into 5 domains. The Rust wrapper crate (`orbital_signal`) is a thin bridge -- it re-exports libsignal types with UniFFI proc macros and exposes the minimum surface area needed.
+
+**Carve-out: the crate also composes RustCrypto primitives for five Orbital-specific concerns** that libsignal does not cover -- `content_crypto.rs` (AES-256-GCM field encryption), `attachment_crypto.rs` (AES-256-CBC + HMAC-SHA256 attachment format), `ecies.rs` (X25519 ECDH + HKDF group-key wrapping), `invite_crypto.rs` (HKDF-derived invite-link encryption) and `kdf.rs` (HKDF-SHA256 / HMAC-SHA256 primitives for the Meta import dedup key, #917). None of those is a libsignal function, so the count of 18 and the domain table below are unaffected.
 
 ### Domains
 
@@ -1549,7 +1551,7 @@ const plaintext = await OrbitalSignal.signalDecrypt(
 
 ### Mandatory
 
-1. **No custom cryptography.** Every encryption/decryption operation uses libsignal's audited implementations. The wrapper crate performs zero cryptographic computations of its own.
+1. **No unaudited protocol implementations.** Every primitive comes from libsignal or RustCrypto, and the wrapper crate composes them rather than reimplementing them. It does perform cryptographic computation of its own -- see the carve-out in section 1 for the five modules and what each composes -- but no primitive is hand-rolled.
 
 2. **Key material as BLOB.** All key material stored in SQLCipher uses BLOB columns (`Uint8Array`). Never convert to hex or base64 TEXT for storage. Conversion to base64 happens only at the API boundary for server upload.
 
@@ -1569,7 +1571,7 @@ const plaintext = await OrbitalSignal.signalDecrypt(
 - Storing private keys in SharedPreferences/UserDefaults/AsyncStorage -- only SQLCipher
 - Transmitting plaintext to the server under any circumstance
 - Using `Math.random()` or any non-CSPRNG for nonce/IV generation
-- Implementing key derivation, signature verification, or MAC computation outside of libsignal
+- Implementing key derivation, signature verification, or MAC computation in TypeScript. Key derivation and MAC computation live in the Rust crate (`kdf.rs`), built on RustCrypto's `hkdf`/`hmac`.
 
 ---
 
@@ -1637,6 +1639,19 @@ dictionary KyberPreKeyPublicData {
 ```
 
 **Purpose:** The public components are what gets uploaded to the server as part of the pre-key bundle. The full serialized records (containing private keys) stay in SQLCipher.
+
+### Non-libsignal primitives (not counted above)
+
+These are exported by the wrapper crate but are **not** libsignal functions, so they are outside the 18 and outside the matrix:
+
+| Rust signature | Generated TypeScript | Notes |
+|---|---|---|
+| `hkdf_sha256(ikm: Vec<u8>, salt: Vec<u8>, info: Vec<u8>, output_len: u32) -> Result<Vec<u8>, SignalError>` | `hkdfSha256(ikm: ArrayBuffer, salt: ArrayBuffer, info: ArrayBuffer, outputLen: number): ArrayBuffer` | `output_len` must be `1..=8160` (RFC 5869's 255 * HashLen ceiling for SHA-256); `ikm`, `salt` and `info` must all be non-empty. RustCrypto `hkdf` 0.12. |
+| `hmac_sha256(key: Vec<u8>, input: Vec<u8>) -> Result<Vec<u8>, SignalError>` | `hmacSha256(key: ArrayBuffer, input: ArrayBuffer): ArrayBuffer` | Always returns the full 32-byte tag; truncation is the caller's. `key` and `input` must be non-empty. RustCrypto `hmac` 0.12. |
+
+**Sole intended caller:** the Meta import dedup-key derivation (#924). They are generic primitives on purpose (#917 records why a purpose-built export was rejected), but they are not a general-purpose crypto API -- any new caller needs its own domain-separating `salt`. `src/kdf.rs`'s module header carries the zeroization coverage, the group-key-rotation coupling and the removal trigger.
+
+**This document is not a full FFI inventory.** It specifies the libsignal surface. The generated module exports 27 functions today: the 18 above less the 3 that have no generated export (`generate_kyber_pre_key`, `sealed_sender_encrypt`, `sealed_sender_decrypt`), plus the 2 in the table above, plus 10 further non-libsignal exports this doc does not cover (AES-GCM, attachment, ECIES, invite and hashing helpers). Rewriting the inventory is out of scope for #917.
 
 ---
 

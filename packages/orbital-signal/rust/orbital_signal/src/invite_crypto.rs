@@ -20,6 +20,9 @@ const INVITE_KEY_LEN: usize = 32;
 const INVITE_TAG_LEN: usize = 16;
 const INVITE_BLOB_LEN: usize = INVITE_NONCE_LEN + INVITE_KEY_LEN + INVITE_TAG_LEN;
 
+/// Deliberately separate from `kdf.rs`'s private `hkdf_sha256_raw`: this one is
+/// fixed at a 32-byte `[u8; 32]` output with no heap allocation for the derived
+/// key, and bakes in `INVITE_HKDF_INFO`. The two are not merged on purpose.
 fn invite_derive_key(
     invite_code: &[u8],
     group_id: &[u8],

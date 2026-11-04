@@ -442,6 +442,43 @@ export function inviteEncryptGroupKey(
     ),
   );
 }
+export function hkdfSha256(
+  ikm: ArrayBuffer,
+  salt: ArrayBuffer,
+  info: ArrayBuffer,
+  outputLen: /*u32*/ number,
+): ArrayBuffer /*throws*/ {
+  return FfiConverterArrayBuffer.lift(
+    uniffiCaller.rustCallWithError(
+      /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_hkdf_sha256(
+          FfiConverterArrayBuffer.lower(ikm),
+          FfiConverterArrayBuffer.lower(salt),
+          FfiConverterArrayBuffer.lower(info),
+          FfiConverterUInt32.lower(outputLen),
+          callStatus,
+        );
+      },
+      /*liftString:*/ FfiConverterString.lift,
+    ),
+  );
+}
+export function hmacSha256(key: ArrayBuffer, input: ArrayBuffer): ArrayBuffer /*throws*/ {
+  return FfiConverterArrayBuffer.lift(
+    uniffiCaller.rustCallWithError(
+      /*liftError:*/ FfiConverterTypeSignalError.lift.bind(FfiConverterTypeSignalError),
+      /*caller:*/ (callStatus) => {
+        return nativeModule().ubrn_uniffi_orbital_signal_fn_func_hmac_sha256(
+          FfiConverterArrayBuffer.lower(key),
+          FfiConverterArrayBuffer.lower(input),
+          callStatus,
+        );
+      },
+      /*liftString:*/ FfiConverterString.lift,
+    ),
+  );
+}
 /**
  * Generate a new identity key pair (Curve25519).
  */
@@ -4260,6 +4297,16 @@ function uniffiEnsureInitialized() {
   if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_invite_encrypt_group_key() !== 7535) {
     throw new UniffiInternalError.ApiChecksumMismatch(
       'uniffi_orbital_signal_checksum_func_invite_encrypt_group_key',
+    );
+  }
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_hkdf_sha256() !== 45217) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_func_hkdf_sha256',
+    );
+  }
+  if (nativeModule().ubrn_uniffi_orbital_signal_checksum_func_hmac_sha256() !== 9405) {
+    throw new UniffiInternalError.ApiChecksumMismatch(
+      'uniffi_orbital_signal_checksum_func_hmac_sha256',
     );
   }
   if (

@@ -1651,7 +1651,7 @@ These are exported by the wrapper crate but are **not** libsignal functions, so 
 
 **Sole intended caller:** the Meta import dedup-key derivation (#924). They are generic primitives on purpose (#917 records why a purpose-built export was rejected), but they are not a general-purpose crypto API -- any new caller needs its own domain-separating `salt`. `src/kdf.rs`'s module header carries the zeroization coverage, the group-key-rotation coupling and the removal trigger.
 
-**This document is not a full FFI inventory.** It specifies the libsignal surface. The generated module exports 27 functions today: the 18 above less the 3 that have no generated export (`generate_kyber_pre_key`, `sealed_sender_encrypt`, `sealed_sender_decrypt`), plus the 2 in the table above, plus 10 further non-libsignal exports this doc does not cover (AES-GCM, attachment, ECIES, invite and hashing helpers). Rewriting the inventory is out of scope for #917.
+**This document is not a full FFI inventory.** It specifies the libsignal surface. The generated module exports 30 functions today, 27 synchronous and 3 async (`generateKyberPreKey`, `sealedSenderEncrypt`, `sealedSenderDecrypt`): the 18 above, plus the 2 in the table above, plus 10 further non-libsignal exports this doc does not cover (AES-GCM, attachment, ECIES, invite and hashing helpers). Rewriting the inventory is out of scope for #917.
 
 ---
 

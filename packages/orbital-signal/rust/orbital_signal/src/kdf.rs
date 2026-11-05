@@ -56,9 +56,12 @@
 //! # Removal trigger
 //!
 //! These exports have no caller until #924. If #924 closes without merging,
-//! delete `src/kdf.rs` and its `lib.rs` lines, regenerate the bindings and
-//! rebuild both platforms. Checkable condition: no `src/**/*.{ts,tsx}` match
-//! for `hkdfSha256|hmacSha256`.
+//! delete `src/kdf.rs` and its `lib.rs` lines, `tests/kdf_kat_tests.rs`,
+//! `tools/generate_kdf_kat_vectors.py`, the `mixStub` entries in
+//! `__mocks__/orbital-signal.ts`, and the rows in
+//! `docs/libsignal-api-surface.md` and `docs/encryption-export-compliance.md`,
+//! then regenerate the bindings and rebuild both platforms. Checkable
+//! condition: no `src/**/*.{ts,tsx}` match for `hkdfSha256|hmacSha256`.
 
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};

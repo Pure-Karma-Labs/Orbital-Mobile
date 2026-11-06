@@ -305,9 +305,9 @@ one legal home, the `missing_links` block in `ios/Podfile` — never the podspec
 
 | What | Value | Where it lives |
 |---|---|---|
-| `@react-native-firebase/app`, `/messaging` | 26.3.3 | `package.json` / `package-lock.json`; `RNFBApp (26.3.3)` in `ios/Podfile.lock` |
-| Firebase iOS SDK | 12.18.0 | **Enforced:** `exactVersion` on the firebase-ios-sdk `XCRemoteSwiftPackageReference` in `ios/OrbitalMobile.xcodeproj/project.pbxproj`, checked by `scripts/verify-firebase-spm.rb` against `sdkVersions.ios.firebase` in the installed RNFB package on every `pod install`; resolved into `Package.resolved` (same script + ci.yml gate) |
-| firebase-ios-sdk revision | `346daa9f4631…` (tag 12.18.0) | `Package.resolved` `state.revision`; recorded here so a same-version revision swap is a visible two-file diff. Re-record at every bump. |
+| `@react-native-firebase/app`, `/messaging` | 26.4.1 | `package.json` / `package-lock.json`; `RNFBApp (26.4.1)` in `ios/Podfile.lock` |
+| Firebase iOS SDK | 12.19.3 | **Enforced:** `exactVersion` on the firebase-ios-sdk `XCRemoteSwiftPackageReference` in `ios/OrbitalMobile.xcodeproj/project.pbxproj`, checked by `scripts/verify-firebase-spm.rb` against `sdkVersions.ios.firebase` in the installed RNFB package on every `pod install`; resolved into `Package.resolved` (same script + ci.yml gate) |
+| firebase-ios-sdk revision | `42cf1417c51c…` (tag 12.19.3) | `Package.resolved` `state.revision`; recorded here so a same-version revision swap is a visible two-file diff. Re-record at every bump. |
 | Package URL (supply-chain anchor) | `https://github.com/firebase/firebase-ios-sdk.git` | **Literal** `ORBITAL_FIREBASE_SPM_URL` in `ios/Podfile` (mirrored by the `rnfb-spm-dynamic` invariant); guard 1 requires the installed RNFB's `firebaseSpmUrl` to equal it, the verifier requires the pbxproj reference and the pin `location` to equal it |
 | Transitive packages (12) | see `Package.resolved` | each pinned by version **and** commit revision; the verifier requires every `location` to be a `github.com` repo under the firebase / google / googleads orgs (the only orgs the graph uses; grpc-binary and abseil live under google/) |
 | Local clone cache | `~/Library/Caches/orbital-spm` (CI + build machine via `-clonedSourcePackagesDirPath`); Xcode GUI uses DerivedData/SourcePackages | CI cache key `spm-<os>-<hash of Package.resolved>` |

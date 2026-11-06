@@ -8,7 +8,7 @@
 #   F2   Zero XCRemoteSwiftPackageReference entries                             → exit 1
 #   F3   Two XCRemoteSwiftPackageReference entries                              → exit 1
 #   F4   upToNextMajorVersion requirement (not exactVersion)                    → exit 1
-#   F5   pbxproj version 12.19.2 (not 12.18.0)                                 → exit 1
+#   F5   pbxproj version 12.19.2 (not 12.19.3)                                 → exit 1
 #   F6   Wrong URL in pbxproj                                                   → exit 1
 #   F7   FirebaseCore XCSwiftPackageProductDependency absent                    → exit 1
 #   F8   Package.resolved absent                                                → exit 1
@@ -38,7 +38,7 @@ GOOD_RESOLVED="${FIXTURE_DIR}/good.Package.resolved"
 RUBY_BIN="${RUBY:-ruby}"
 
 EXPECTED_URL="https://github.com/firebase/firebase-ios-sdk.git"
-EXPECTED_VER="12.18.0"
+EXPECTED_VER="12.19.3"
 APP_TARGET="OrbitalMobile"
 
 PASS=0
@@ -130,10 +130,10 @@ run_test F4 1 \
   --resolved "$GOOD_RESOLVED"
 
 # ---------------------------------------------------------------------------
-# F5: version 12.19.2 in pbxproj → exit 1
+# F5: version 12.19.2 in pbxproj (not 12.19.3) → exit 1
 # ---------------------------------------------------------------------------
 T="${TMPDIR_BASE}/f5"; mkdir -p "$T"
-sed 's/version = 12.18.0;/version = 12.19.2;/' "$GOOD_PBXPROJ" > "$T/f5.pbxproj"
+sed 's/version = 12.19.3;/version = 12.19.2;/' "$GOOD_PBXPROJ" > "$T/f5.pbxproj"
 run_test F5 1 \
   "${base_args[@]}" \
   --pbxproj "$T/f5.pbxproj" \
@@ -181,6 +181,8 @@ run_test F8 1 \
 
 # ---------------------------------------------------------------------------
 # F9: Package.resolved firebase version != expected → exit 1
+# Note: 12.19.2 here is a deliberate wrong value used as a mutation target;
+# it is unrelated to GoogleAppMeasurement's real pin, which is also 12.19.2.
 # ---------------------------------------------------------------------------
 T="${TMPDIR_BASE}/f9"; mkdir -p "$T"
 python3 -c "

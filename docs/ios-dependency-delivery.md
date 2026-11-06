@@ -53,11 +53,11 @@ decision, not a build one.
 
 | What | Value | Where it lives |
 |---|---|---|
-| `@sentry/react-native` | 8.31.0 | `package.json` / `package-lock.json`; `RNSentry (8.31.0)` in `ios/Podfile.lock` |
-| sentry-cocoa | 9.30.2 | **Enforced:** `expected_sentry_cocoa` in the Issue #768 guard in `ios/Podfile` (pod install fails if the staged version differs). Upstream source: `sentry_cocoa_version` in `node_modules/@sentry/react-native/RNSentry.podspec` |
-| `Sentry.xcframework.zip` SHA256 | `593897dbdee24febeef45208b13960a4b389c5dbd25f64b1b3cb94c30291ed55` | `SENTRY_COCOA_XCFRAMEWORK_CHECKSUMS['9.30.2']['Sentry']` in `sentry_utils.rb`; independently matched against sentry-cocoa's `Package.swift` binary-target checksum at tag 9.30.2 |
-| Local cache | `~/Library/Caches/sentry-react-native/xcframeworks/9.30.2/` | Build machine; CI cache key `sentry-xcframework-<os>-<hash of podspec + sentry_utils.rb>` |
-| sentry-android (Android native SDK) | 8.61.0 (sentry-native 0.17.3 underneath) | **Recorded only, not enforced.** Upstream source: `sentryAndroidVersion` in `node_modules/@sentry/react-native/android/build.gradle`. There is no Android equivalent of the #768 guard: the applied groovy `sentry.gradle` carries no version assertion, and Dependabot's gradle ecosystem does not cover `/android`. This row is the only control |
+| `@sentry/react-native` | 8.34.0 | `package.json` / `package-lock.json`; `RNSentry (8.34.0)` in `ios/Podfile.lock` |
+| sentry-cocoa | 9.33.0 | **Enforced:** `expected_sentry_cocoa` in the Issue #768 guard in `ios/Podfile` (pod install fails if the staged version differs). Upstream source: `sentry_cocoa_version` in `node_modules/@sentry/react-native/RNSentry.podspec` |
+| `Sentry.xcframework.zip` SHA256 | `ede8d9a33a43f70d33e2f24752a681dc9dcb4a7b6245bd6bca2fa7b30e2c63f5` | `SENTRY_COCOA_XCFRAMEWORK_CHECKSUMS['9.33.0']['Sentry']` in `sentry_utils.rb`; independently matched against sentry-cocoa's `Package.swift` binary-target checksum at tag 9.33.0 |
+| Local cache | `~/Library/Caches/sentry-react-native/xcframeworks/9.33.0/` | Build machine; CI cache key `sentry-xcframework-<os>-<hash of podspec + sentry_utils.rb>` |
+| sentry-android (Android native SDK) | 8.62.0 (sentry-native 0.17.3 underneath) | **Recorded only, not enforced.** Upstream source: `sentryAndroidVersion` in `node_modules/@sentry/react-native/android/build.gradle`. There is no Android equivalent of the #768 guard: the applied groovy `sentry.gradle` carries no version assertion, and Dependabot's gradle ecosystem does not cover `/android`. This row is the only control |
 
 **Note:** nothing verifies the SHA256 row against `node_modules` at install
 time; the Podfile literal enforces the version row. Any bump must update this
@@ -109,7 +109,7 @@ Any `@sentry/react-native` bump:
 7. Stale staged versions under `ios/Pods/sentry-xcframeworks` are pruned
    upstream, **conditionally**. Since `@sentry/react-native` **8.22.0**
    (getsentry/sentry-react-native PR **6534**, undocumented in Sentry's
-   changelog; we are on 8.31.0), `stage_sentry_xcframework_in_pods` deletes
+   changelog; we are on 8.34.0), `stage_sentry_xcframework_in_pods` deletes
    every directory under the staging root whose basename is not the current
    sentry-cocoa version — `node_modules/@sentry/react-native/scripts/sentry_utils.rb:227-231`.
    It runs during **podspec evaluation**, i.e. before the Issue #768
@@ -171,13 +171,21 @@ Any `@sentry/react-native` bump:
    filtering — no-op without the Expo plugin; no pin needed. `sendDefaultPii` was
    un-deprecated (our explicit `false` pin in `src/sentryInit.ts` stays valid and
    required). No new default-on native options.
+   8.32 added `enableJsHangTracking` (experimental, iOS only, default `false`);
+   the JS SDK reads it in `integrations/default.js` to decide whether to push
+   `jsHangTrackingIntegration` — the native hang event assembles on the sentry-cocoa
+   side and skips `beforeSend`. Pinned to `false` in `src/sentryInit.ts` (see step 6
+   note). `wrapper.js` line 158 also strips it and `jsHangTimeoutInterval` from the
+   options forwarded to the native init call. No other default-on native options.
+   8.33 no new default-on native options; no data-collection changes observed.
+   8.34 no new default-on native options; no data-collection changes observed.
 
 The next three items are the payload-boundary triggers from #746. They apply to
 any `@sentry/react-native` bump and to any sentry-cocoa bump underneath it
 (sentry-cocoa moves when `sentry_cocoa_version` in `RNSentry.podspec` moves).
 Each rests on undocumented internals of the installed package, so re-verify by
-reading the files named, not the release notes. Line numbers are 8.31.0 /
-sentry-cocoa 9.30.2.
+reading the files named, not the release notes. Line numbers are 8.34.0 /
+sentry-cocoa 9.33.0.
 
 10. **`enableNetworkBreadcrumbs` still reaches native.** The option is an
     iOS-only sentry-cocoa one. It has had a React Native typing since 8.28
@@ -185,12 +193,13 @@ sentry-cocoa 9.30.2.
     nothing in the type system applies it. It works because `initNativeSdk`
     (`node_modules/@sentry/react-native/dist/js/wrapper.js`) forwards options
     to native through two filters (since 8.30): `withoutFunctionValues`
-    (`wrapper.js:46-54`) strips every function-typed key (`beforeSend`,
-    `beforeBreadcrumb`, etc.), and an explicit destructure at `wrapper.js:177`
+    (`wrapper.js:26`) strips every function-typed key (`beforeSend`,
+    `beforeBreadcrumb`, etc.), and an explicit destructure at `wrapper.js:158`
     strips `integrations`, `ignoreErrors`, `logsOrigin`, `profilingOptions`,
-    `androidProfilingOptions`. `enableNetworkBreadcrumbs: false` is a boolean
-    and passes through both filters. If it is added to the destructure at
-    line 177, or if `withoutFunctionValues` is changed to strip non-function
+    `androidProfilingOptions`, `enableJsHangTracking`, `jsHangTimeoutInterval`.
+    `enableNetworkBreadcrumbs: false` is a boolean and passes through both
+    filters. If it is added to the destructure at line 158, or if
+    `withoutFunctionValues` is changed to strip non-function
     values, the flag stops applying silently. On the cocoa side the dictionary
     is parsed by `RNSentryInternal.options(fromDictionary:)`
     (`node_modules/@sentry/react-native/ios/Swift/RNSentryInternal.swift:52`, called
@@ -203,14 +212,14 @@ sentry-cocoa 9.30.2.
     default is `true`, so a regression here puts request URLs back into native
     crash reports. One direction is now checked for you: since #877 the init
     literal is typed as a plain `ReactNativeOptions`, so an upstream removal of
-    `enableNetworkBreadcrumbs?` from `options.d.ts:215` fails `tsc --noEmit` as
+    `enableNetworkBreadcrumbs?` from `options.d.ts:245` fails `tsc --noEmit` as
     an excess property on `src/sentryInit.ts` -- a build break, not a silent
     no-op. Android's sibling option `enableNetworkEventBreadcrumbs`
-    (`options.d.ts:228`) records connectivity-state crumbs with no request
+    (`options.d.ts:258`) records connectivity-state crumbs with no request
     URLs, so it is deliberately left at its default and not pinned.
 11. **`wrapper.js` still strips `beforeSend` / `beforeBreadcrumb` from the
-    native options** (via `withoutFunctionValues` at `wrapper.js:46-54`,
-    applied at `wrapper.js:179`). This is why item 10 matters: native crash
+    native options** (via `withoutFunctionValues` at `wrapper.js:26`,
+    applied at `wrapper.js:160`). This is why item 10 matters: native crash
     reports are assembled by sentry-cocoa with no JS boundary in the path, so
     `scrubEvent` / `filterBreadcrumb` (`src/services/telemetryScrub.ts`) never
     run on them. If a future version forwards the hooks to native, re-read what
@@ -218,8 +227,8 @@ sentry-cocoa 9.30.2.
 12. **Native breadcrumbs are still merged before `beforeSend`.**
     `node_modules/@sentry/react-native/dist/js/integrations/devicecontext.js`
     merges the native breadcrumb buffer inside a `processEvent` event processor
-    (declared at line 22, defined at line 25): deduplicate, `concat`, sort by
-    timestamp, `slice(-maxBreadcrumbs)` (lines 73-82). Event processors run
+    (declared at line 13, defined at line 16): deduplicate, `concat`, sort by
+    timestamp, `slice(-maxBreadcrumbs)` (lines 70-75). Event processors run
     before `beforeSend` and after `beforeBreadcrumb`, which is the entire reason
     `scrubEvent` re-filters breadcrumbs. If this moves out of `processEvent` (or
     starts running after `beforeSend`), the re-filter no longer covers native

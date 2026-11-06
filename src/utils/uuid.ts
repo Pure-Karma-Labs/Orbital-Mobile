@@ -1,8 +1,10 @@
 /**
  * UUID v4 generation using crypto.getRandomValues.
  *
- * Hermes (React Native 0.82+) provides crypto.getRandomValues on globalThis
- * but does NOT expose crypto.randomUUID(). This utility generates RFC 4122
+ * crypto.getRandomValues is polyfilled by react-native-get-random-values
+ * (imported in index.js), which uses SecRandomCopyBytes on iOS and
+ * SecureRandom on Android. Hermes does NOT provide getRandomValues natively
+ * (0 hits across hermesvm source slices). This utility generates RFC 4122
  * compliant v4 UUIDs using the same CSPRNG the codebase already relies on.
  *
  * Matches the pattern used in keyGenerationService.ts and encryptionKeys.ts.

@@ -53,11 +53,11 @@ decision, not a build one.
 
 | What | Value | Where it lives |
 |---|---|---|
-| `@sentry/react-native` | 8.31.0 | `package.json` / `package-lock.json`; `RNSentry (8.31.0)` in `ios/Podfile.lock` |
-| sentry-cocoa | 9.30.2 | **Enforced:** `expected_sentry_cocoa` in the Issue #768 guard in `ios/Podfile` (pod install fails if the staged version differs). Upstream source: `sentry_cocoa_version` in `node_modules/@sentry/react-native/RNSentry.podspec` |
-| `Sentry.xcframework.zip` SHA256 | `593897dbdee24febeef45208b13960a4b389c5dbd25f64b1b3cb94c30291ed55` | `SENTRY_COCOA_XCFRAMEWORK_CHECKSUMS['9.30.2']['Sentry']` in `sentry_utils.rb`; independently matched against sentry-cocoa's `Package.swift` binary-target checksum at tag 9.30.2 |
-| Local cache | `~/Library/Caches/sentry-react-native/xcframeworks/9.30.2/` | Build machine; CI cache key `sentry-xcframework-<os>-<hash of podspec + sentry_utils.rb>` |
-| sentry-android (Android native SDK) | 8.61.0 (sentry-native 0.17.3 underneath) | **Recorded only, not enforced.** Upstream source: `sentryAndroidVersion` in `node_modules/@sentry/react-native/android/build.gradle`. There is no Android equivalent of the #768 guard: the applied groovy `sentry.gradle` carries no version assertion, and Dependabot's gradle ecosystem does not cover `/android`. This row is the only control |
+| `@sentry/react-native` | 8.34.0 | `package.json` / `package-lock.json`; `RNSentry (8.34.0)` in `ios/Podfile.lock` |
+| sentry-cocoa | 9.33.0 | **Enforced:** `expected_sentry_cocoa` in the Issue #768 guard in `ios/Podfile` (pod install fails if the staged version differs). Upstream source: `sentry_cocoa_version` in `node_modules/@sentry/react-native/RNSentry.podspec` |
+| `Sentry.xcframework.zip` SHA256 | `ede8d9a33a43f70d33e2f24752a681dc9dcb4a7b6245bd6bca2fa7b30e2c63f5` | `SENTRY_COCOA_XCFRAMEWORK_CHECKSUMS['9.33.0']['Sentry']` in `sentry_utils.rb`; independently matched against sentry-cocoa's `Package.swift` binary-target checksum at tag 9.33.0 |
+| Local cache | `~/Library/Caches/sentry-react-native/xcframeworks/9.33.0/` | Build machine; CI cache key `sentry-xcframework-<os>-<hash of podspec + sentry_utils.rb>` |
+| sentry-android (Android native SDK) | 8.62.0 (sentry-native 0.17.3 underneath) | **Recorded only, not enforced.** Upstream source: `sentryAndroidVersion` in `node_modules/@sentry/react-native/android/build.gradle`. There is no Android equivalent of the #768 guard: the applied groovy `sentry.gradle` carries no version assertion, and Dependabot's gradle ecosystem does not cover `/android`. This row is the only control |
 
 **Note:** nothing verifies the SHA256 row against `node_modules` at install
 time; the Podfile literal enforces the version row. Any bump must update this
@@ -109,7 +109,7 @@ Any `@sentry/react-native` bump:
 7. Stale staged versions under `ios/Pods/sentry-xcframeworks` are pruned
    upstream, **conditionally**. Since `@sentry/react-native` **8.22.0**
    (getsentry/sentry-react-native PR **6534**, undocumented in Sentry's
-   changelog; we are on 8.31.0), `stage_sentry_xcframework_in_pods` deletes
+   changelog; we are on 8.34.0), `stage_sentry_xcframework_in_pods` deletes
    every directory under the staging root whose basename is not the current
    sentry-cocoa version — `node_modules/@sentry/react-native/scripts/sentry_utils.rb:227-231`.
    It runs during **podspec evaluation**, i.e. before the Issue #768
@@ -171,13 +171,22 @@ Any `@sentry/react-native` bump:
    filtering — no-op without the Expo plugin; no pin needed. `sendDefaultPii` was
    un-deprecated (our explicit `false` pin in `src/sentryInit.ts` stays valid and
    required). No new default-on native options.
+   8.32 added `enableJsHangTracking` (experimental, iOS only, default `false`);
+   the JS SDK reads it in `integrations/default.js` to decide whether to push
+   `jsHangTrackingIntegration` — the native hang event assembles on the sentry-cocoa
+   side and skips `beforeSend`. Pinned to `false` in `src/sentryInit.ts` (see step 6
+   note). `wrapper.js` line 158 also strips it and `jsHangTimeoutInterval` from the
+   options forwarded to the native init call. No other default-on native options.
+   Reviewed with no new default-on native options or data-collection changes:
+   8.33, 8.34. Edit this line for clean versions; add an entry only when a
+   version changes a pin, an anchor, or a behaviour.
 
 The next three items are the payload-boundary triggers from #746. They apply to
 any `@sentry/react-native` bump and to any sentry-cocoa bump underneath it
 (sentry-cocoa moves when `sentry_cocoa_version` in `RNSentry.podspec` moves).
 Each rests on undocumented internals of the installed package, so re-verify by
-reading the files named, not the release notes. Line numbers are 8.31.0 /
-sentry-cocoa 9.30.2.
+reading the files named, not the release notes. Line numbers are 8.34.0 /
+sentry-cocoa 9.33.0.
 
 10. **`enableNetworkBreadcrumbs` still reaches native.** The option is an
     iOS-only sentry-cocoa one. It has had a React Native typing since 8.28
@@ -185,12 +194,13 @@ sentry-cocoa 9.30.2.
     nothing in the type system applies it. It works because `initNativeSdk`
     (`node_modules/@sentry/react-native/dist/js/wrapper.js`) forwards options
     to native through two filters (since 8.30): `withoutFunctionValues`
-    (`wrapper.js:46-54`) strips every function-typed key (`beforeSend`,
-    `beforeBreadcrumb`, etc.), and an explicit destructure at `wrapper.js:177`
+    (`wrapper.js:26`) strips every function-typed key (`beforeSend`,
+    `beforeBreadcrumb`, etc.), and an explicit destructure at `wrapper.js:158`
     strips `integrations`, `ignoreErrors`, `logsOrigin`, `profilingOptions`,
-    `androidProfilingOptions`. `enableNetworkBreadcrumbs: false` is a boolean
-    and passes through both filters. If it is added to the destructure at
-    line 177, or if `withoutFunctionValues` is changed to strip non-function
+    `androidProfilingOptions`, `enableJsHangTracking`, `jsHangTimeoutInterval`.
+    `enableNetworkBreadcrumbs: false` is a boolean and passes through both
+    filters. If it is added to the destructure at line 158, or if
+    `withoutFunctionValues` is changed to strip non-function
     values, the flag stops applying silently. On the cocoa side the dictionary
     is parsed by `RNSentryInternal.options(fromDictionary:)`
     (`node_modules/@sentry/react-native/ios/Swift/RNSentryInternal.swift:52`, called
@@ -203,23 +213,29 @@ sentry-cocoa 9.30.2.
     default is `true`, so a regression here puts request URLs back into native
     crash reports. One direction is now checked for you: since #877 the init
     literal is typed as a plain `ReactNativeOptions`, so an upstream removal of
-    `enableNetworkBreadcrumbs?` from `options.d.ts:215` fails `tsc --noEmit` as
+    `enableNetworkBreadcrumbs?` from `options.d.ts:245` fails `tsc --noEmit` as
     an excess property on `src/sentryInit.ts` -- a build break, not a silent
     no-op. Android's sibling option `enableNetworkEventBreadcrumbs`
-    (`options.d.ts:228`) records connectivity-state crumbs with no request
+    (`options.d.ts:258`) records connectivity-state crumbs with no request
     URLs, so it is deliberately left at its default and not pinned.
 11. **`wrapper.js` still strips `beforeSend` / `beforeBreadcrumb` from the
-    native options** (via `withoutFunctionValues` at `wrapper.js:46-54`,
-    applied at `wrapper.js:179`). This is why item 10 matters: native crash
+    native options** (via `withoutFunctionValues` at `wrapper.js:26`,
+    applied at `wrapper.js:160`). This is why item 10 matters: native crash
     reports are assembled by sentry-cocoa with no JS boundary in the path, so
     `scrubEvent` / `filterBreadcrumb` (`src/services/telemetryScrub.ts`) never
     run on them. If a future version forwards the hooks to native, re-read what
     the native side does with them before relaxing anything.
+    Native app-hang events (`enableAppHangTracking`, iOS, `@default true` in
+    `options.d.ts`) take the same path and are **accepted on the same grounds
+    as native crash reports**: hang reports stay on, the option is deliberately
+    not pinned, and item 10's `enableNetworkBreadcrumbs: false` is the control.
+    Re-confirm the default on each bump, and revisit if it starts carrying
+    new payload.
 12. **Native breadcrumbs are still merged before `beforeSend`.**
     `node_modules/@sentry/react-native/dist/js/integrations/devicecontext.js`
     merges the native breadcrumb buffer inside a `processEvent` event processor
-    (declared at line 22, defined at line 25): deduplicate, `concat`, sort by
-    timestamp, `slice(-maxBreadcrumbs)` (lines 73-82). Event processors run
+    (declared at line 13, defined at line 16): deduplicate, `concat`, sort by
+    timestamp, `slice(-maxBreadcrumbs)` (lines 70-75). Event processors run
     before `beforeSend` and after `beforeBreadcrumb`, which is the entire reason
     `scrubEvent` re-filters breadcrumbs. If this moves out of `processEvent` (or
     starts running after `beforeSend`), the re-filter no longer covers native
@@ -296,9 +312,9 @@ one legal home, the `missing_links` block in `ios/Podfile` — never the podspec
 
 | What | Value | Where it lives |
 |---|---|---|
-| `@react-native-firebase/app`, `/messaging` | 26.3.3 | `package.json` / `package-lock.json`; `RNFBApp (26.3.3)` in `ios/Podfile.lock` |
-| Firebase iOS SDK | 12.18.0 | **Enforced:** `exactVersion` on the firebase-ios-sdk `XCRemoteSwiftPackageReference` in `ios/OrbitalMobile.xcodeproj/project.pbxproj`, checked by `scripts/verify-firebase-spm.rb` against `sdkVersions.ios.firebase` in the installed RNFB package on every `pod install`; resolved into `Package.resolved` (same script + ci.yml gate) |
-| firebase-ios-sdk revision | `346daa9f4631…` (tag 12.18.0) | `Package.resolved` `state.revision`; recorded here so a same-version revision swap is a visible two-file diff. Re-record at every bump. |
+| `@react-native-firebase/app`, `/messaging` | 26.4.1 | `package.json` / `package-lock.json`; `RNFBApp (26.4.1)` in `ios/Podfile.lock` |
+| Firebase iOS SDK | 12.19.3 | **Enforced:** `exactVersion` on the firebase-ios-sdk `XCRemoteSwiftPackageReference` in `ios/OrbitalMobile.xcodeproj/project.pbxproj`, checked by `scripts/verify-firebase-spm.rb` against `sdkVersions.ios.firebase` in the installed RNFB package on every `pod install`; resolved into `Package.resolved` (same script + ci.yml gate) |
+| firebase-ios-sdk revision | `42cf1417c51c…` (tag 12.19.3) | `Package.resolved` `state.revision`; recorded here so a same-version revision swap is a visible two-file diff. Re-record at every bump. |
 | Package URL (supply-chain anchor) | `https://github.com/firebase/firebase-ios-sdk.git` | **Literal** `ORBITAL_FIREBASE_SPM_URL` in `ios/Podfile` (mirrored by the `rnfb-spm-dynamic` invariant); guard 1 requires the installed RNFB's `firebaseSpmUrl` to equal it, the verifier requires the pbxproj reference and the pin `location` to equal it |
 | Transitive packages (12) | see `Package.resolved` | each pinned by version **and** commit revision; the verifier requires every `location` to be a `github.com` repo under the firebase / google / googleads orgs (the only orgs the graph uses; grpc-binary and abseil live under google/) |
 | Local clone cache | `~/Library/Caches/orbital-spm` (CI + build machine via `-clonedSourcePackagesDirPath`); Xcode GUI uses DerivedData/SourcePackages | CI cache key `spm-<os>-<hash of Package.resolved>` |
@@ -353,7 +369,7 @@ exactly two checks (reference missing, `Package.resolved` missing) to warnings; 
 1. `npm install` the new versions; read `sdkVersions.ios.firebase` in the new package.
 2. Edit the `exactVersion` in `ios/OrbitalMobile.xcodeproj/project.pbxproj` to that value.
 3. From the **main checkout**: `cd ios && pod install` (verifier fails on the stale `Package.resolved` — expected), then the resolve command from Bootstrap (without the disable flag), then `pod install` again (now clean).
-4. Confirm `firebase_spm.rb` still defines `RNFirebaseSPM` (`.active?`, `.version`, `.url`) and still prints `Using SPM for Firebase dependency resolution`; confirm the `[RNFB]` phase names are unchanged (`git diff` on the pbxproj shows any rename); confirm `RNFIREBASE_SPM_SIGNATURE_FIX_ARTIFACT_NAMES` did not grow (see Accepted risks).
+4. Confirm `firebase_spm.rb` still defines `RNFirebaseSPM` (`.active?`, `.version`, `.url`) and still prints `Using SPM for Firebase dependency resolution`; confirm the `[RNFB]` phase names are unchanged (`git diff` on the pbxproj shows any rename); confirm `RNFIREBASE_SPM_SIGNATURE_FIX_ARTIFACT_NAMES` did not grow (see Accepted risks). Since RNFB 26.4.1, `rnfirebase_cocoapods_requirement` makes the CocoaPods fallback request `~> <major>.<minor>.0` for the shipped default version rather than an exact pin. That branch is reachable only through `$RNFirebaseDisableSPM`, and the `Using SPM` count in `ci.yml` is the control.
 5. Commit `package.json`, `package-lock.json`, `Podfile.lock`, `project.pbxproj`, `Package.resolved`, the harness fixtures, and this table (version + revision rows) together.
 6. Watch the first `build.yml` run on main; re-run the #637 push cases on TestFlight for a major bump; re-check the privacy-manifest and `.signature` items below at the next Archive.
 

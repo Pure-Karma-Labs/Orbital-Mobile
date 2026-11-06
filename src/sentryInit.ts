@@ -55,6 +55,14 @@ const options: Sentry.ReactNativeOptions = {
   // docs/ios-dependency-delivery.md for the re-check triggers on an SDK bump
   // and for the file/line anchors, which carry the version they were read at.
   enableNetworkBreadcrumbs: false,
+  // JS hang tracking: fires a native event when the JS thread is blocked beyond
+  // jsHangTimeoutInterval. The native event is assembled by sentry-cocoa and
+  // skips `beforeSend`, so `scrubEvent` does not run on it. Default is `false`
+  // (confirmed via options.d.ts); pinned explicitly so a future upstream default
+  // change cannot silently enable it. wrapper.js:158 also strips it from the
+  // native-init forward (along with jsHangTimeoutInterval), so the JS-side pin
+  // is the only control over whether jsHangTrackingIntegration is added.
+  enableJsHangTracking: false,
   // Replace the default Breadcrumbs integration (name: 'Breadcrumbs') with one
   // that has console and xhr capture off at the SOURCE. Console crumbs would
   // otherwise record the raw arguments of every console.warn/error (our

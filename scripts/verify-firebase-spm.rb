@@ -10,7 +10,7 @@
 #     --pbxproj ios/OrbitalMobile.xcodeproj/project.pbxproj \
 #     --resolved ios/OrbitalMobile.xcworkspace/xcshareddata/swiftpm/Package.resolved \
 #     --expected-url https://github.com/firebase/firebase-ios-sdk.git \
-#     --expected-version 12.18.0 \
+#     --expected-version <firebase-ios-sdk version> \
 #     --app-target OrbitalMobile \
 #     [--bootstrap]
 #

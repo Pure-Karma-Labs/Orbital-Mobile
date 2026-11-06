@@ -36,7 +36,8 @@ export async function getOrCreateDatabaseKey(): Promise<string> {
 
 function generateRandomHexKey(bytes: number): string {
   const array = new Uint8Array(bytes);
-  // crypto.getRandomValues is available on Hermes (RN 0.82+) via globalThis.
+  // crypto.getRandomValues comes from the react-native-get-random-values polyfill
+  // (imported in index.js), which uses SecRandomCopyBytes / SecureRandom. Hermes does not provide it.
   // The TypeScript lib config omits 'dom', so we access it through globalThis cast to unknown.
   const cryptoGlobal = (globalThis as unknown as { crypto: { getRandomValues: (a: Uint8Array) => void } }).crypto;
   cryptoGlobal.getRandomValues(array);

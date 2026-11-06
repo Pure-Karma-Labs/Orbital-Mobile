@@ -3,11 +3,11 @@
  *
  * crypto.getRandomValues is polyfilled by react-native-get-random-values
  * (imported in index.js), which uses SecRandomCopyBytes on iOS and
- * SecureRandom on Android. Hermes does NOT provide getRandomValues natively
- * (0 hits across hermesvm source slices). This utility generates RFC 4122
- * compliant v4 UUIDs using the same CSPRNG the codebase already relies on.
+ * SecureRandom on Android. Hermes does not provide it; the polyfill installs
+ * only when the global is absent. This utility generates RFC 4122 compliant
+ * v4 UUIDs using the same CSPRNG the codebase already relies on.
  *
- * Matches the pattern used in keyGenerationService.ts and encryptionKeys.ts.
+ * Matches the pattern used in encryptionKeys.ts.
  */
 
 /**

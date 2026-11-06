@@ -119,7 +119,8 @@ export function base64DecodedLength(base64: string): number {
 
 /**
  * Fill a fresh Uint8Array of `size` bytes with cryptographically secure
- * randomness from the Hermes-polyfilled global crypto object.
+ * randomness from the global crypto object, which is polyfilled by
+ * react-native-get-random-values (imported in index.js).
  */
 export function getSecureRandom(size: number): Uint8Array {
   const buf = new Uint8Array(size);

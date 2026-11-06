@@ -177,8 +177,9 @@ Any `@sentry/react-native` bump:
    side and skips `beforeSend`. Pinned to `false` in `src/sentryInit.ts` (see step 6
    note). `wrapper.js` line 158 also strips it and `jsHangTimeoutInterval` from the
    options forwarded to the native init call. No other default-on native options.
-   8.33 no new default-on native options; no data-collection changes observed.
-   8.34 no new default-on native options; no data-collection changes observed.
+   Reviewed with no new default-on native options or data-collection changes:
+   8.33, 8.34. Edit this line for clean versions; add an entry only when a
+   version changes a pin, an anchor, or a behaviour.
 
 The next three items are the payload-boundary triggers from #746. They apply to
 any `@sentry/react-native` bump and to any sentry-cocoa bump underneath it
@@ -224,6 +225,12 @@ sentry-cocoa 9.33.0.
     `scrubEvent` / `filterBreadcrumb` (`src/services/telemetryScrub.ts`) never
     run on them. If a future version forwards the hooks to native, re-read what
     the native side does with them before relaxing anything.
+    Native app-hang events (`enableAppHangTracking`, iOS, `@default true` in
+    `options.d.ts`) take the same path and are **accepted on the same grounds
+    as native crash reports**: hang reports stay on, the option is deliberately
+    not pinned, and item 10's `enableNetworkBreadcrumbs: false` is the control.
+    Re-confirm the default on each bump, and revisit if it starts carrying
+    new payload.
 12. **Native breadcrumbs are still merged before `beforeSend`.**
     `node_modules/@sentry/react-native/dist/js/integrations/devicecontext.js`
     merges the native breadcrumb buffer inside a `processEvent` event processor
@@ -362,7 +369,7 @@ exactly two checks (reference missing, `Package.resolved` missing) to warnings; 
 1. `npm install` the new versions; read `sdkVersions.ios.firebase` in the new package.
 2. Edit the `exactVersion` in `ios/OrbitalMobile.xcodeproj/project.pbxproj` to that value.
 3. From the **main checkout**: `cd ios && pod install` (verifier fails on the stale `Package.resolved` — expected), then the resolve command from Bootstrap (without the disable flag), then `pod install` again (now clean).
-4. Confirm `firebase_spm.rb` still defines `RNFirebaseSPM` (`.active?`, `.version`, `.url`) and still prints `Using SPM for Firebase dependency resolution`; confirm the `[RNFB]` phase names are unchanged (`git diff` on the pbxproj shows any rename); confirm `RNFIREBASE_SPM_SIGNATURE_FIX_ARTIFACT_NAMES` did not grow (see Accepted risks).
+4. Confirm `firebase_spm.rb` still defines `RNFirebaseSPM` (`.active?`, `.version`, `.url`) and still prints `Using SPM for Firebase dependency resolution`; confirm the `[RNFB]` phase names are unchanged (`git diff` on the pbxproj shows any rename); confirm `RNFIREBASE_SPM_SIGNATURE_FIX_ARTIFACT_NAMES` did not grow (see Accepted risks). Since RNFB 26.4.1, `rnfirebase_cocoapods_requirement` makes the CocoaPods fallback request `~> <major>.<minor>.0` for the shipped default version rather than an exact pin. That branch is reachable only through `$RNFirebaseDisableSPM`, and the `Using SPM` count in `ci.yml` is the control.
 5. Commit `package.json`, `package-lock.json`, `Podfile.lock`, `project.pbxproj`, `Package.resolved`, the harness fixtures, and this table (version + revision rows) together.
 6. Watch the first `build.yml` run on main; re-run the #637 push cases on TestFlight for a major bump; re-check the privacy-manifest and `.signature` items below at the next Archive.
 

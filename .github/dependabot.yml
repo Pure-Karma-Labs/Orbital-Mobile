@@ -129,7 +129,8 @@ updates:
       # "*", so only this rule stops it. Lift only on RN >= 0.88 (NOT the 0.86
       # target in #311), and re-verify read()/readFile() byte semantics on the
       # media chunk path then: the data path changes from base64 strings to
-      # ArrayBuffers.
+      # ArrayBuffers. package.json uses ~2.40.4 (tilde pin) until the hold lifts;
+      # restore ^ at the same time this ignore rule is removed.
       - dependency-name: "@dr.pogodin/react-native-fs"
         versions: [">= 2.41.0"]
       # Babel 8 and ESLint 10 require RN ecosystem support — tracked in #311

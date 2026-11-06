@@ -839,6 +839,7 @@ checkWindowedPins(
     'beforeBreadcrumb: filterBreadcrumb',
     'beforeSend: scrubEvent',
     'enableNetworkBreadcrumbs: false',
+    'enableJsHangTracking: false',
     'console: false',
     'xhr: false',
     'sendDefaultPii: false',

@@ -40,6 +40,17 @@ describe('sentryInit', () => {
     );
   });
 
+  it('pins enableJsHangTracking to false', () => {
+    // JS hang events are assembled natively and skip beforeSend, so scrubEvent
+    // does not run on them. Default is already false but pinned explicitly to
+    // prevent a silent upstream default change from enabling it.
+    expect(Sentry.init).toHaveBeenCalledWith(
+      expect.objectContaining({
+        enableJsHangTracking: false,
+      }),
+    );
+  });
+
   it('wires the scrub hooks to the exported functions, not to copies', () => {
     expect(initOptions().beforeBreadcrumb).toBe(filterBreadcrumb);
     expect(initOptions().beforeSend).toBe(scrubEvent);

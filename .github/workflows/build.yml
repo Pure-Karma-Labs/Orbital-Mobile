@@ -33,6 +33,12 @@ on:
       - 'scripts/test-assert-no-absolute-pod-paths.sh'
       - 'scripts/verify-firebase-spm.rb'
       - 'scripts/fixtures/firebase-spm/**'
+      # #971: patch-package rewrites native pod sources in node_modules at
+      # install time, so a patch-only change alters what iOS compiles. The
+      # verify script is the Xcode-phase gate over the same files, and editing
+      # a gate must exercise it (#767 precedent).
+      - 'patches/**'
+      - 'scripts/verify-native-patches-ios.sh'
   pull_request:
     paths:
       - 'packages/orbital-signal/**'
@@ -64,6 +70,12 @@ on:
       - 'scripts/test-assert-no-absolute-pod-paths.sh'
       - 'scripts/verify-firebase-spm.rb'
       - 'scripts/fixtures/firebase-spm/**'
+      # #971: patch-package rewrites native pod sources in node_modules at
+      # install time, so a patch-only change alters what iOS compiles. The
+      # verify script is the Xcode-phase gate over the same files, and editing
+      # a gate must exercise it (#767 precedent).
+      - 'patches/**'
+      - 'scripts/verify-native-patches-ios.sh'
   # workflow_dispatch lets us manually trigger build jobs on this branch to
   # verify the hosted-runner migration before it merges to main.
   workflow_dispatch:
@@ -519,6 +531,18 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      # Issue #971: prove patch-package actually applied the
+      # react-native-image-picker patch before anything compiles the pod. This
+      # is deliberately redundant -- the root `postinstall` runs
+      # `patch-package --error-on-fail --error-on-warn`, so the `npm ci` above
+      # already fails on a bad or stale patch. It costs milliseconds and it is
+      # the one place CI states the invariant in its own log, so a future
+      # --ignore-scripts or a cached node_modules cannot make the iOS build
+      # pass with the double-callback abort (#971) still in the sources.
+      # Same two checks as the Xcode build phase, same script.
+      - name: Verify native patches applied
+        run: bash scripts/verify-native-patches-ios.sh
 
       - name: Create .env from secrets
         run: |

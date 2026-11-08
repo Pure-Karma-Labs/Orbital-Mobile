@@ -42,6 +42,18 @@ target 'OrbitalMobile' do
     :execution_position => :before_compile,
     :always_out_of_date => '1'
 
+  # Fail any build whose node_modules holds an unpatched react-native-image-picker.
+  # The pod sources come straight out of node_modules, so a missing patch means
+  # shipping the 8.2.1 double-callback abort (#971). This phase is the only
+  # detector that covers a build driven from Xcode.app, Product > Archive
+  # included, where neither `npm ci` nor npm run security:invariants runs.
+  # Logic in scripts/verify-native-patches-ios.sh; always_out_of_date because
+  # its input (node_modules) is outside Xcode's dependency graph.
+  script_phase :name => '[Orbital] Verify native patches',
+    :script => 'exec bash "${SRCROOT}/../scripts/verify-native-patches-ios.sh"',
+    :execution_position => :before_compile,
+    :always_out_of_date => '1'
+
   # Native crash symbolication: upload the app dSYM to Sentry after linking.
   # sentry-xcode-debug-files.sh sources with-environment.sh itself (node on
   # PATH via ios/.xcode.env), reads ios/sentry.properties (gitignored; org,

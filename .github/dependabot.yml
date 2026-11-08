@@ -117,6 +117,24 @@ updates:
       # 8.3.1's iOS sources are identical. Lift when an upstream release adds
       # UniformTypeIdentifiers to s.frameworks (or uses @import) and a local
       # iOS Debug build passes.
+      #
+      # SECOND reason, since #971: this package is also PATCHED locally.
+      # patches/react-native-image-picker+8.2.1.patch rewrites
+      # ios/ImagePickerManager.mm to stop the double JS callback that aborts the
+      # process (upstream react-native-image-picker#2415, unfixed in 8.3.1), and
+      # patch-package applies it from the root `postinstall`. Two consequences:
+      #   * The patch filename carries the version, so ANY bump fails `npm ci`
+      #     (--error-on-warn turns the version-mismatch warning into exit 1).
+      #     package.json therefore pins 8.2.1 EXACTLY, not ^8.2.1; restore the
+      #     caret at the same time this ignore rule is removed.
+      #   * patches/ is now part of the review surface. A diff there changes
+      #     native code that ships, so it gets native-code review, not
+      #     dependency-bump review.
+      # To lift: delete or regenerate the patch against the new version, restore
+      # the caret pin, update rule 28 in scripts/check-security-invariants.mjs
+      # (it reads the version out of the patch filename), run build.yml for iOS,
+      # and repeat the #971 device smoke (multi-pick plus the double-tap and
+      # swipe-dismiss cases).
       - dependency-name: "react-native-image-picker"
         versions: ["> 8.2.1"]
       # @dr.pogodin/react-native-fs 2.41.0 moves appendFile/read/readFile/write/

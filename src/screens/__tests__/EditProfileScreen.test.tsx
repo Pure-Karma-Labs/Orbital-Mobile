@@ -3,6 +3,7 @@
  */
 
 import React from 'react';
+import { ActionSheetIOS } from 'react-native';
 import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'react-test-renderer';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../../theme';
@@ -12,8 +13,15 @@ import { EditProfileScreen } from '../EditProfileScreen';
 // Module mocks
 // ---------------------------------------------------------------------------
 
+// NOT mocked: src/hooks/useMediaPicker. The avatar flow goes through its real
+// `launchLibraryOnce` / `usePickerInFlight`, so the lock under test (#971) is
+// the real module-scope one, shared with the composer surfaces.
 jest.mock('react-native-image-picker', () => ({
   launchImageLibrary: jest.fn(),
+}));
+
+jest.mock('../../services/telemetry', () => ({
+  captureError: jest.fn(),
 }));
 
 jest.mock('../../services/profileService', () => ({
@@ -32,11 +40,16 @@ jest.mock('../../components/OrbitalSpinner', () => ({
 
 import { useAuth } from '../../stores';
 import { updateUserDisplayName, updateUserAvatar } from '../../services/profileService';
+import { launchImageLibrary } from 'react-native-image-picker';
+import { launchLibraryOnce } from '../../hooks/useMediaPicker';
+import { captureError } from '../../services/telemetry';
 
 const mockUseAuth = useAuth as jest.Mock;
 const mockUpdateDisplayName = updateUserDisplayName as jest.Mock;
 // @ts-expect-error — kept for future avatar upload tests
 const _mockUpdateAvatar = updateUserAvatar as jest.Mock;
+const mockLaunchImageLibrary = launchImageLibrary as jest.Mock;
+const mockCaptureError = captureError as jest.Mock;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -98,6 +111,34 @@ function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstanc
   const found = root.findAll((node) => node.props.testID === testID);
   if (found.length === 0) throw new Error(`No element with testID "${testID}"`);
   return found[0];
+}
+
+/** A launch whose resolution the test controls -- the real multi-second load. */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+/**
+ * Press the avatar. Re-finds the node first: `handleAvatarPress` closes over
+ * `pickerInFlight`, so a stale instance would carry the pre-lock closure and
+ * the second press in these tests would prove nothing.
+ */
+function pressAvatar(renderer: ReactTestRenderer): void {
+  act(() => {
+    findByTestId(renderer.root, 'avatar-button').props.onPress();
+  });
+}
+
+function findTextNode(renderer: ReactTestRenderer, text: string) {
+  return renderer.root
+    .findAllByType('Text' as unknown as React.ComponentType)
+    .find((node) => node.props.children === text);
 }
 
 // ---------------------------------------------------------------------------
@@ -232,5 +273,118 @@ describe('EditProfileScreen — avatar', () => {
   it('renders the avatar button', () => {
     const renderer = renderScreen();
     expect(() => findByTestId(renderer.root, 'avatar-button')).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Avatar picker and the app-wide pick lock (#971)
+//
+// The avatar is the one surface that reaches the picker through an ActionSheet,
+// so it has two things to prove: the lock holds across the sheet hop, and the
+// sheet is not opened when its primary action would be swallowed.
+// ---------------------------------------------------------------------------
+
+describe('EditProfileScreen — avatar picker lock (#971)', () => {
+  /** Auto-selects "Choose Photo" (index 0) so a press reaches the picker. */
+  function spyChoosePhotoSheet(): jest.SpyInstance {
+    return jest
+      .spyOn(ActionSheetIOS, 'showActionSheetWithOptions')
+      .mockImplementation((_options, callback) => {
+        callback(0);
+      });
+  }
+
+  it('a double press launches the picker once and does not reopen the sheet', async () => {
+    const sheet = spyChoosePhotoSheet();
+    const d = deferred<Record<string, unknown>>();
+    mockLaunchImageLibrary.mockReturnValue(d.promise);
+
+    const renderer = renderScreen();
+    pressAvatar(renderer);
+    // Second tap while the first pick's assets are still loading -- the exact
+    // user behaviour that overwrote the native callback and aborted.
+    pressAvatar(renderer);
+
+    expect(mockLaunchImageLibrary).toHaveBeenCalledTimes(1);
+    expect(sheet).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      d.resolve({ didCancel: true });
+      await d.promise;
+    });
+
+    // Lock released: the sheet opens again for the next press.
+    pressAvatar(renderer);
+    expect(sheet).toHaveBeenCalledTimes(2);
+    expect(mockLaunchImageLibrary).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not open the ActionSheet while another surface holds the lock', async () => {
+    const sheet = spyChoosePhotoSheet();
+    const d = deferred<Record<string, unknown>>();
+    mockLaunchImageLibrary.mockReturnValue(d.promise);
+
+    // A composer screen's pick, in flight before this screen renders.
+    const fromComposer = launchLibraryOnce({ mediaType: 'mixed' });
+
+    const renderer = renderScreen();
+    pressAvatar(renderer);
+
+    expect(sheet).not.toHaveBeenCalled();
+    expect(mockLaunchImageLibrary).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      d.resolve({ didCancel: true });
+      await fromComposer;
+    });
+
+    pressAvatar(renderer);
+    expect(sheet).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows an error after a rejection and the next press launches again', async () => {
+    const sheet = spyChoosePhotoSheet();
+    mockLaunchImageLibrary.mockRejectedValueOnce(new Error('picker exploded'));
+
+    const renderer = renderScreen();
+    await act(async () => {
+      findByTestId(renderer.root, 'avatar-button').props.onPress();
+    });
+
+    expect(findTextNode(renderer, 'Failed to open photo library')).toBeDefined();
+
+    // The `finally` released the lock even though the promise rejected.
+    mockLaunchImageLibrary.mockResolvedValueOnce({ didCancel: true });
+    await act(async () => {
+      findByTestId(renderer.root, 'avatar-button').props.onPress();
+    });
+
+    expect(sheet).toHaveBeenCalledTimes(2);
+    expect(mockLaunchImageLibrary).toHaveBeenCalledTimes(2);
+  });
+
+  it('surfaces an errorCode as an error banner and one scrubbed report', async () => {
+    spyChoosePhotoSheet();
+    mockLaunchImageLibrary.mockResolvedValueOnce({
+      errorCode: 'permission',
+      errorMessage: 'denied for file:///private/var/avatar.jpg',
+    });
+
+    const renderer = renderScreen();
+    await act(async () => {
+      findByTestId(renderer.root, 'avatar-button').props.onPress();
+    });
+
+    expect(findTextNode(renderer, 'The photo library could not be opened')).toBeDefined();
+    expect(mockCaptureError).toHaveBeenCalledTimes(1);
+    const [reported, ctx] = mockCaptureError.mock.calls[0];
+    expect((reported as Error).message).toBe('Image picker error: permission');
+    expect(ctx).toEqual({
+      level: 'warning',
+      tags: { feature: 'media-picker', picker_error_code: 'permission' },
+    });
+    const serialized = JSON.stringify([(reported as Error).message, ctx]);
+    expect(serialized).not.toContain('avatar.jpg');
+    expect(serialized).not.toContain('file://');
   });
 });

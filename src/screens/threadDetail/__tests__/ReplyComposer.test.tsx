@@ -156,6 +156,52 @@ describe('ReplyComposer — media picker button', () => {
     });
     expect(onPickMedia).toHaveBeenCalledTimes(1);
   });
+
+  // #971: the app-wide pick lock. Dimmed as well as disabled -- a live-looking
+  // button that swallows presses is what made the user tap again, which
+  // overwrote the native picker's callback and aborted the process.
+  it('media button is disabled AND dimmed when pickMediaDisabled={true}', () => {
+    const renderer = renderComposer({
+      onPickMedia: jest.fn(),
+      pickMediaDisabled: true,
+    });
+    const btn = findByTestId(renderer, 'media-picker-button');
+    expect(btn.length).toBeGreaterThan(0);
+    expect(btn[0].props.disabled).toBe(true);
+    expect(btn[0].props.style).toEqual(expect.objectContaining({ opacity: 0.5 }));
+  });
+
+  it('media button is enabled and full opacity when pickMediaDisabled={false}', () => {
+    const renderer = renderComposer({
+      onPickMedia: jest.fn(),
+      pickMediaDisabled: false,
+    });
+    const btn = findByTestId(renderer, 'media-picker-button');
+    expect(btn.length).toBeGreaterThan(0);
+    expect(btn[0].props.disabled).toBe(false);
+    expect(btn[0].props.style).toEqual(expect.objectContaining({ opacity: 1 }));
+  });
+
+  it('media button is enabled and full opacity when pickMediaDisabled is omitted', () => {
+    const renderer = renderComposer({ onPickMedia: jest.fn() });
+    const btn = findByTestId(renderer, 'media-picker-button');
+    expect(btn[0].props.disabled).toBe(false);
+    expect(btn[0].props.style).toEqual(expect.objectContaining({ opacity: 1 }));
+  });
+
+  // The emoji toggle shares the input row and the `sending` gate, so a prop
+  // wired to the wrong style object would be invisible above.
+  it('pickMediaDisabled does not dim the emoji toggle', () => {
+    const renderer = renderComposer({
+      onPickMedia: jest.fn(),
+      onToggleEmojiPicker: jest.fn(),
+      pickMediaDisabled: true,
+    });
+    const emoji = findByTestId(renderer, 'emoji-toggle-button');
+    expect(emoji.length).toBeGreaterThan(0);
+    expect(emoji[0].props.disabled).toBe(false);
+    expect(emoji[0].props.style).toEqual(expect.objectContaining({ opacity: 1 }));
+  });
 });
 
 describe('ReplyComposer — MediaThumbnailStrip', () => {

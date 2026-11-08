@@ -19,7 +19,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { launchImageLibrary } from 'react-native-image-picker';
+import { launchLibraryOnce, reportPickerError, usePickerInFlight } from '../hooks/useMediaPicker';
 import { useTheme } from '../theme';
 import { useAuth } from '../stores';
 import { Header } from '../components/Header';
@@ -52,6 +52,8 @@ export function EditProfileScreen({ navigation }: Props): React.JSX.Element {
   const [avatarRemoved, setAvatarRemoved] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // #971: the app-wide pick lock, shared with the composer surfaces.
+  const pickerInFlight = usePickerInFlight();
 
   // Validation
   const nameValid = DISPLAY_NAME_REGEX.test(editedName) && editedName.trim().length > 0;
@@ -79,13 +81,28 @@ export function EditProfileScreen({ navigation }: Props): React.JSX.Element {
       // NOTE: maxWidth/maxHeight/quality do NOT reliably strip EXIF/GPS metadata --
       // Android's react-native-image-picker skips the re-encode for images <= 2048px.
       // The authoritative EXIF/GPS strip is in avatarService via sanitizeStillImage.
-      const result = await launchImageLibrary({
+      const result = await launchLibraryOnce({
         mediaType: 'photo',
         maxWidth: 800,
         maxHeight: 800,
         quality: 0.8,
         assetRepresentationMode: 'compatible',
       });
+
+      // Another surface already has a pick in flight (#971). Avatar options are
+      // 800px/q0.8 against the composer's 2048px/q0.9, so sharing a launch is
+      // not an option: we wait our turn rather than take theirs.
+      if (result === null) return;
+
+      if (result.errorCode !== undefined) {
+        reportPickerError(result.errorCode);
+        setError(
+          result.errorCode === 'permission'
+            ? 'The photo library could not be opened'
+            : 'The selected photo could not be loaded',
+        );
+        return;
+      }
 
       if (result.didCancel || !result.assets || result.assets.length === 0) return;
 
@@ -109,6 +126,13 @@ export function EditProfileScreen({ navigation }: Props): React.JSX.Element {
   }, []);
 
   const handleAvatarPress = useCallback(() => {
+    // #971: a pick is already loading somewhere, so "Choose Photo" would be
+    // swallowed by the lock. Don't open a sheet whose primary action does
+    // nothing -- the avatar is a single tap target with no room for a dimmed
+    // state, so refusing the press IS the feedback. "Remove Photo" waits with
+    // it; a pick resolves in seconds and the lock is released in `finally`.
+    if (pickerInFlight) return;
+
     const hasAvatar = !!previewAvatarUrl;
 
     if (Platform.OS === 'ios') {
@@ -133,7 +157,7 @@ export function EditProfileScreen({ navigation }: Props): React.JSX.Element {
       ];
       Alert.alert('Profile Photo', undefined, buttons);
     }
-  }, [previewAvatarUrl, handleChoosePhoto, handleRemovePhoto]);
+  }, [pickerInFlight, previewAvatarUrl, handleChoosePhoto, handleRemovePhoto]);
 
   const handleSave = useCallback(async () => {
     if (!canSave) return;

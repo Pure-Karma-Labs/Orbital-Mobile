@@ -14,7 +14,7 @@
  * section below for why a per-component guard is not enough.
  */
 
-import { useCallback, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Alert } from 'react-native';
 import { launchImageLibrary } from 'react-native-image-picker';
 import type {
@@ -200,6 +200,21 @@ export function useMediaPicker() {
   const isPicking = usePickerInFlight();
 
   /**
+   * A pick is not abortable, and its asset load takes seconds, so it routinely
+   * outlives the screen that started it. Same guard as ThreadDetailScreen's
+   * post-send alerts (#744): an unguarded `Alert` pops over whatever screen the
+   * user navigated to, and the state append would be a no-op warning. The
+   * Sentry report is deliberately NOT gated -- the failure happened either way.
+   */
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  /**
    * Open the media library picker. Allows multi-select up to MAX_SELECTION.
    * Picker options include photos and videos (mediaType: 'mixed').
    *
@@ -230,8 +245,10 @@ export function useMediaPicker() {
       // Silence here is what made the native abort look like a dead button.
       if (result.errorCode !== undefined) {
         reportPickerError(result.errorCode);
-        const copy = pickerErrorCopy(result.errorCode);
-        Alert.alert(copy.title, copy.body);
+        if (mountedRef.current) {
+          const copy = pickerErrorCopy(result.errorCode);
+          Alert.alert(copy.title, copy.body);
+        }
         return;
       }
 
@@ -266,6 +283,10 @@ export function useMediaPicker() {
         });
       }
 
+      // Nothing below this line may touch the screen that is gone: the pick
+      // outlived it, and its selection belongs to a composer that unmounted.
+      if (!mountedRef.current) return;
+
       if (filtered && picked.length === 0) {
         Alert.alert(
           'Unsupported Media',
@@ -280,9 +301,15 @@ export function useMediaPicker() {
 
       setSelectedMedia((prev) => [...prev, ...picked].slice(0, MAX_SELECTION));
     } catch {
-      // Silently fail -- picker cancelled or permission denied
       if (__DEV__) {
         console.warn('[useMediaPicker] pickMedia failed');
+      }
+      // A rejected launch used to be indistinguishable from a dead button: the
+      // lock released and nothing else happened. `others` copy, not
+      // `permission` -- a throw here is a native/bridge failure, not a denial.
+      if (mountedRef.current) {
+        const copy = pickerErrorCopy('others');
+        Alert.alert(copy.title, copy.body);
       }
     }
   }, []);

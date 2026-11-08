@@ -54,15 +54,27 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-/** Reads the module-scope lock through a throwaway subscriber. */
+/**
+ * Reads the module-scope lock through a throwaway subscriber.
+ *
+ * Unmounts before returning so the probe's `useSyncExternalStore` subscription
+ * is removed from the module-scope Set -- a probe per assertion would otherwise
+ * accumulate listeners for the whole file. The unmount needs its OWN `act`:
+ * mounting and unmounting in one block lets the flush see both, and the probe
+ * never renders (`value` would stay at its initial sentinel).
+ */
 function readInFlight(): boolean {
   let value = true;
   function Probe() {
     value = usePickerInFlight();
     return null;
   }
+  let probe!: ReturnType<typeof create>;
   act(() => {
-    create(React.createElement(Probe));
+    probe = create(React.createElement(Probe));
+  });
+  act(() => {
+    probe.unmount();
   });
   return value;
 }
@@ -474,7 +486,83 @@ describe('useMediaPicker -- in-flight lock (#971)', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Outliving the screen (#744 pattern, applied to the picker)
+// ---------------------------------------------------------------------------
+
+describe('useMediaPicker -- unmount during a pick', () => {
+  it('does not alert or append once the screen that started the pick is gone', async () => {
+    const d = deferred<Record<string, unknown>>();
+    mockLaunchImageLibrary.mockReturnValue(d.promise);
+    const root = renderHook();
+
+    let pick!: Promise<void>;
+    act(() => {
+      pick = hookResult.pickMedia();
+    });
+
+    // The user navigated away while the assets loaded. A pick is not abortable,
+    // so the promise still resolves -- into a screen that no longer exists.
+    act(() => {
+      root.unmount();
+    });
+
+    await act(async () => {
+      // One good asset and one unsupported one: unguarded, this path would
+      // raise the "Some Files Skipped" Alert over whatever screen is up now.
+      d.resolve({
+        assets: [makeAsset(), makeAsset({ type: 'video/webm', uri: 'file://bad.webm' })],
+      });
+      await pick;
+    });
+
+    expect(Alert.alert).not.toHaveBeenCalled();
+  });
+
+  it('shows no errorCode Alert once the screen is gone', async () => {
+    const d = deferred<Record<string, unknown>>();
+    mockLaunchImageLibrary.mockReturnValue(d.promise);
+    const root = renderHook();
+
+    let pick!: Promise<void>;
+    act(() => {
+      pick = hookResult.pickMedia();
+    });
+    act(() => {
+      root.unmount();
+    });
+
+    await act(async () => {
+      // `others` -- its Sentry budget key is already spent by the lock suite
+      // above, which is why this asserts the Alert gate only. That the REPORT
+      // is ungated (the failure happened whether or not anyone is watching) is
+      // a code invariant: `reportPickerError` sits above the mounted check.
+      d.resolve({ errorCode: 'others' });
+      await pick;
+    });
+
+    expect(Alert.alert).not.toHaveBeenCalled();
+  });
+});
+
 describe('useMediaPicker -- errorCode reporting (#971)', () => {
+  it('alerts with the load-failure copy when the launch itself rejects', async () => {
+    mockLaunchImageLibrary.mockRejectedValueOnce(new Error('bridge died'));
+    renderHook();
+
+    await act(async () => {
+      await hookResult.pickMedia();
+    });
+
+    // `others` copy, not `permission`: a throw is a native failure, not a
+    // denial. Before this, a rejected launch was a silently dead button.
+    expect(Alert.alert).toHaveBeenCalledWith(
+      'Could Not Add Media',
+      expect.stringContaining('could not be loaded'),
+    );
+    expect(readInFlight()).toBe(false);
+  });
+
   // Pure-function checks: reportPickerError's per-session budget is module
   // state, so these deliberately do not go through pickMedia.
   it('does not blame permissions for a load failure (errorCode others)', () => {

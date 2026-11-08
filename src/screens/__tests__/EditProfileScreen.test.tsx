@@ -6,7 +6,7 @@ import React from 'react';
 import { ActionSheetIOS } from 'react-native';
 import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'react-test-renderer';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { ThemeProvider } from '../../theme';
+import { ThemeProvider, lightColors } from '../../theme';
 import { EditProfileScreen } from '../EditProfileScreen';
 
 // ---------------------------------------------------------------------------
@@ -41,7 +41,7 @@ jest.mock('../../components/OrbitalSpinner', () => ({
 import { useAuth } from '../../stores';
 import { updateUserDisplayName, updateUserAvatar } from '../../services/profileService';
 import { launchImageLibrary } from 'react-native-image-picker';
-import { launchLibraryOnce } from '../../hooks/useMediaPicker';
+import { launchLibraryOnce, pickerErrorCopy, usePickerInFlight } from '../../hooks/useMediaPicker';
 import { captureError } from '../../services/telemetry';
 
 const mockUseAuth = useAuth as jest.Mock;
@@ -135,6 +135,27 @@ function pressAvatar(renderer: ReactTestRenderer): void {
   });
 }
 
+/**
+ * Reads the hook's module-scope pick lock through a throwaway subscriber.
+ * Mirrors the hook suite's probe, including the separate unmount `act` (one
+ * combined block flushes both and the probe never renders).
+ */
+function readInFlight(): boolean {
+  let value = true;
+  function Probe() {
+    value = usePickerInFlight();
+    return null;
+  }
+  let probe!: ReactTestRenderer;
+  act(() => {
+    probe = create(React.createElement(Probe));
+  });
+  act(() => {
+    probe.unmount();
+  });
+  return value;
+}
+
 function findTextNode(renderer: ReactTestRenderer, text: string) {
   return renderer.root
     .findAllByType('Text' as unknown as React.ComponentType)
@@ -156,6 +177,13 @@ beforeEach(() => {
     updateProfile: jest.fn(),
   });
   mockUpdateDisplayName.mockResolvedValue(undefined);
+});
+
+// The pick lock is MODULE scope and outlives a test. A leak here would make the
+// next test fail for an unrelated-looking reason (launchLibraryOnce -> null, so
+// no sheet, no launch), so it is asserted at the test that leaked it.
+afterEach(() => {
+  expect(readInFlight()).toBe(false);
 });
 
 // ---------------------------------------------------------------------------
@@ -375,7 +403,7 @@ describe('EditProfileScreen — avatar picker lock (#971)', () => {
       findByTestId(renderer.root, 'avatar-button').props.onPress();
     });
 
-    expect(findTextNode(renderer, 'The photo library could not be opened')).toBeDefined();
+    expect(findTextNode(renderer, pickerErrorCopy('permission').body)).toBeDefined();
     expect(mockCaptureError).toHaveBeenCalledTimes(1);
     const [reported, ctx] = mockCaptureError.mock.calls[0];
     expect((reported as Error).message).toBe('Image picker error: permission');
@@ -386,5 +414,44 @@ describe('EditProfileScreen — avatar picker lock (#971)', () => {
     const serialized = JSON.stringify([(reported as Error).message, ctx]);
     expect(serialized).not.toContain('avatar.jpg');
     expect(serialized).not.toContain('file://');
+  });
+
+  it('disables and dims both avatar touchables while a pick is in flight', async () => {
+    const d = deferred<Record<string, unknown>>();
+    mockLaunchImageLibrary.mockReturnValue(d.promise);
+
+    // A composer screen's pick, in flight before this screen renders.
+    const fromComposer = launchLibraryOnce({ mediaType: 'mixed' });
+    const renderer = renderScreen();
+
+    const avatar = findByTestId(renderer.root, 'avatar-button');
+    const label = findByTestId(renderer.root, 'change-photo-button');
+    expect(avatar.props.disabled).toBe(true);
+    expect(avatar.props.style).toEqual(expect.objectContaining({ opacity: 0.5 }));
+    expect(label.props.disabled).toBe(true);
+    // The label itself is what dims -- textTertiary, the composer's idiom.
+    const labelText = label.findByType('Text' as unknown as React.ComponentType);
+    expect(labelText.props.style.color).toBe(lightColors.textTertiary);
+
+    await act(async () => {
+      d.resolve({ didCancel: true });
+      await fromComposer;
+    });
+
+    const avatarAfter = findByTestId(renderer.root, 'avatar-button');
+    expect(avatarAfter.props.disabled).toBe(false);
+    expect(avatarAfter.props.style).toEqual(expect.objectContaining({ opacity: 1 }));
+  });
+
+  it('leaves both avatar touchables live when no pick is in flight', () => {
+    const renderer = renderScreen();
+
+    const avatar = findByTestId(renderer.root, 'avatar-button');
+    const label = findByTestId(renderer.root, 'change-photo-button');
+    expect(avatar.props.disabled).toBe(false);
+    expect(avatar.props.style).toEqual(expect.objectContaining({ opacity: 1 }));
+    expect(label.props.disabled).toBe(false);
+    const labelText = label.findByType('Text' as unknown as React.ComponentType);
+    expect(labelText.props.style.color).toBe(lightColors.blue);
   });
 });

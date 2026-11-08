@@ -197,11 +197,13 @@ try {
   violations.push(`  ${relative('.', AVATAR_SERVICE)}:0  [file-missing]  avatarService.ts not found`);
 }
 
-// react-native-image-picker imports restricted to useMediaPicker.ts + EditProfileScreen.tsx
-const ALLOWED_PICKER_FILES = new Set([
-  join(SRC, 'hooks', 'useMediaPicker.ts'),
-  join(SRC, 'screens', 'EditProfileScreen.tsx'),
-]);
+// react-native-image-picker imports restricted to useMediaPicker.ts, which since
+// #971 is the SOLE launch path: it owns the app-wide in-flight lock, and
+// launchLibraryOnce is the only wrapper allowed to call launchImageLibrary.
+// EditProfileScreen.tsx was exempt until #971 moved it onto the hook; leaving
+// that exemption in place would let a direct import reopen the re-entrant
+// launch this issue fixed, which is exactly the double-callback abort's trigger.
+const ALLOWED_PICKER_FILES = new Set([join(SRC, 'hooks', 'useMediaPicker.ts')]);
 
 const PICKER_IMPORT_RE = /from\s+['"]react-native-image-picker['"]/;
 
@@ -3147,10 +3149,19 @@ const NP_MARKER_FLOOR = 39;
 // still match after the step itself was deleted (caught while mutation-testing
 // this clause).
 const NP_GATE_SCRIPT = 'scripts/verify-native-patches-ios.sh';
-const NP_PODFILE_GATE = 'the Xcode build phase that covers Product > Archive';
+const NP_PODFILE_GATE = 'the Podfile declaration of the Xcode build phase that covers Product > Archive';
+// The Podfile is only the SOURCE of that phase: Xcode runs what pod install
+// generated into the pbxproj. A Podfile edit committed without a `pod install`
+// leaves the two out of step and the archive ungated, so the generated phase is
+// checked too (both the name CocoaPods writes, prefixed `[CP-User] `, and the
+// shell script, where the quotes are backslash-escaped).
+const NP_PBXPROJ = 'ios/OrbitalMobile.xcodeproj/project.pbxproj';
+const NP_PBXPROJ_GATE = 'the GENERATED Xcode build phase, which is the one Xcode.app and Product > Archive actually run';
 const NP_GATES = [
   ['ios/Podfile', '[Orbital] Verify native patches', NP_PODFILE_GATE],
   ['ios/Podfile', `exec bash "\${SRCROOT}/../${NP_GATE_SCRIPT}"`, NP_PODFILE_GATE],
+  [NP_PBXPROJ, '[Orbital] Verify native patches', NP_PBXPROJ_GATE],
+  [NP_PBXPROJ, `exec bash \\"\${SRCROOT}/../${NP_GATE_SCRIPT}\\"`, NP_PBXPROJ_GATE],
   ['.github/workflows/build.yml', `bash ${NP_GATE_SCRIPT}`, "the iOS job's post-`npm ci` check"],
 ];
 

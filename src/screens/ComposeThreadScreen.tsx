@@ -65,7 +65,7 @@ export function ComposeThreadScreen({
   const [body, setBody] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { selectedMedia, pickMedia, removeMedia } = useMediaPicker();
+  const { selectedMedia, pickMedia, removeMedia, isPicking } = useMediaPicker();
   const {
     progress: uploadProgress,
     cancel: cancelUpload,
@@ -450,7 +450,11 @@ export function ComposeThreadScreen({
           {!isBlocked && (
             <TouchableOpacity
               onPress={pickMedia}
-              disabled={busy}
+              // #971: `isPicking` is the app-wide pick lock, not a local flag.
+              // A multi-second HEVC load shows nothing on screen, and tapping
+              // again is what overwrote the native callback and aborted the
+              // process. Same gate as `busy` so the label dims with it.
+              disabled={busy || isPicking}
               accessibilityRole="button"
               accessibilityLabel="Attach media"
               style={{
@@ -464,7 +468,7 @@ export function ComposeThreadScreen({
               <Text style={{
                 fontFamily: theme.typography.fontFamily.body,
                 fontSize: theme.typography.fontSize.sm,
-                color: busy ? theme.colors.textTertiary : theme.colors.blue,
+                color: busy || isPicking ? theme.colors.textTertiary : theme.colors.blue,
               }}>
                 + Add Media
               </Text>

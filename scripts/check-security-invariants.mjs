@@ -197,11 +197,13 @@ try {
   violations.push(`  ${relative('.', AVATAR_SERVICE)}:0  [file-missing]  avatarService.ts not found`);
 }
 
-// react-native-image-picker imports restricted to useMediaPicker.ts + EditProfileScreen.tsx
-const ALLOWED_PICKER_FILES = new Set([
-  join(SRC, 'hooks', 'useMediaPicker.ts'),
-  join(SRC, 'screens', 'EditProfileScreen.tsx'),
-]);
+// react-native-image-picker imports restricted to useMediaPicker.ts, which since
+// #971 is the SOLE launch path: it owns the app-wide in-flight lock, and
+// launchLibraryOnce is the only wrapper allowed to call launchImageLibrary.
+// EditProfileScreen.tsx was exempt until #971 moved it onto the hook; leaving
+// that exemption in place would let a direct import reopen the re-entrant
+// launch this issue fixed, which is exactly the double-callback abort's trigger.
+const ALLOWED_PICKER_FILES = new Set([join(SRC, 'hooks', 'useMediaPicker.ts')]);
 
 const PICKER_IMPORT_RE = /from\s+['"]react-native-image-picker['"]/;
 
@@ -3086,6 +3088,305 @@ const LVL_BARE_RE = /\blibsignal(?:-protocol|-core)?\s+(\d+\.\d+\.\d+)\b/g;
       violations.push(
         `  ${LVL_BIS}:${bisLineNo}  [${LVL_RULE}]  the derivation log does not mention the current pin \`${pin}\` — append \`; updated <date>, ${pin}, Cargo.lock\` rather than editing an earlier entry (${LVL_ISSUE})`,
       );
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 28. The react-native-image-picker native patch stays intact (#971)
+// ---------------------------------------------------------------------------
+
+// react-native-image-picker 8.2.1 can call one JS callback twice, which trips
+// RCTTurboModule's LOG(FATAL) and aborts the process (Sentry ORBITAL-MOBILE-R).
+// Upstream issue #2415 is unfixed and 8.3.1 ships the same code, so the fix is
+// a local patch: patches/react-native-image-picker+8.2.1.patch, applied by
+// patch-package from the root `postinstall`.
+//
+// That mechanism has three ways to rot silently, and this rule covers the parts
+// of them that live in TRACKED content:
+//   * the patch is deleted, emptied or regenerated without the fix;
+//   * the postinstall loses a flag, so a patch that no longer applies (or
+//     applies to the wrong version) degrades to a warning instead of exit 1;
+//   * the pins drift, so the installed version stops matching the version the
+//     patch was made for.
+//
+// HERMETIC on purpose: it never reads node_modules. Every other rule here runs
+// on a bare checkout, and a rule that needed an install would pass vacuously
+// wherever node_modules was absent or stale. The INSTALLED tree is gated
+// separately, by scripts/verify-native-patches-ios.sh (an Xcode build phase, so
+// it covers Product > Archive) and by the build.yml step after `npm ci`.
+//
+// Marker accounting has three clauses, because each catches a different edit:
+//   * total markers >= NP_MARKER_FLOOR  — the current count. Deleting ONE
+//     marker from a hunk that carries several would clear the per-hunk and
+//     per-count floors below, so only a snapshot floor catches it. Regenerating
+//     the patch legitimately means updating this number, deliberately, the way
+//     rule 27's per-doc floors work.
+//   * total markers >= hunk count       — self-calibrating: a new hunk cannot
+//     ride along unmarked even if the floor above is stale.
+//   * every hunk carries >= 1 marker    — the markers cannot bunch up in one
+//     hunk and leave another unannotated.
+const NP_RULE = 'native-patch-integrity';
+const NP_ISSUE = '#971';
+const NP_DIR = 'patches';
+const NP_PKG = 'react-native-image-picker';
+const NP_MARKER = 'ORBITAL-PATCH(#971)';
+// The call upstream makes through its single shared `callback` property. Every
+// double-call site read it, and the patch removes all ten, so a surviving
+// occurrence on an added or context line means an incomplete patch.
+const NP_BANNED_CALL = 'self.callback(';
+// The patch's only legitimate target. A patch that reached further (the
+// podspec, the JS, the Android sources) would change a different review
+// surface than the one #971 signed off on.
+const NP_PATCHED_FILE = `node_modules/${NP_PKG}/ios/ImagePickerManager.mm`;
+const NP_MARKER_FLOOR = 39;
+// Non-vacuity, in the shape rule 18 uses: this rule DELEGATES the installed-tree
+// half to two detectors that it cannot run itself, so it asserts they are still
+// wired up. Deleting either one is otherwise invisible — an Xcode build with a
+// silently dropped script phase looks exactly like a passing one.
+// Each needle is the INVOCATION, never the bare script path: build.yml also
+// lists that path in its `paths:` trigger filter, so a path-only needle would
+// still match after the step itself was deleted (caught while mutation-testing
+// this clause).
+const NP_GATE_SCRIPT = 'scripts/verify-native-patches-ios.sh';
+const NP_PODFILE_GATE = 'the Podfile declaration of the Xcode build phase that covers Product > Archive';
+// The Podfile is only the SOURCE of that phase: Xcode runs what pod install
+// generated into the pbxproj. A Podfile edit committed without a `pod install`
+// leaves the two out of step and the archive ungated, so the generated phase is
+// checked too (both the name CocoaPods writes, prefixed `[CP-User] `, and the
+// shell script, where the quotes are backslash-escaped).
+const NP_PBXPROJ = 'ios/OrbitalMobile.xcodeproj/project.pbxproj';
+const NP_PBXPROJ_GATE = 'the GENERATED Xcode build phase, which is the one Xcode.app and Product > Archive actually run';
+const NP_GATES = [
+  ['ios/Podfile', '[Orbital] Verify native patches', NP_PODFILE_GATE],
+  ['ios/Podfile', `exec bash "\${SRCROOT}/../${NP_GATE_SCRIPT}"`, NP_PODFILE_GATE],
+  [NP_PBXPROJ, '[Orbital] Verify native patches', NP_PBXPROJ_GATE],
+  [NP_PBXPROJ, `exec bash \\"\${SRCROOT}/../${NP_GATE_SCRIPT}\\"`, NP_PBXPROJ_GATE],
+  ['.github/workflows/build.yml', `bash ${NP_GATE_SCRIPT}`, "the iOS job's post-`npm ci` check"],
+];
+
+{
+  let patchName = null;
+  try {
+    const entries = readdirSync(NP_DIR);
+    const matches = entries.filter((e) => e.startsWith(`${NP_PKG}+`) && e.endsWith('.patch'));
+    if (matches.length === 0) {
+      violations.push(
+        `  ${NP_DIR}/:0  [${NP_RULE}]  no ${NP_PKG}+<version>.patch found — the picker double-callback fix is gone, and patch-package exits 0 with an empty patches/ dir, so nothing else would notice (${NP_ISSUE})`,
+      );
+    } else if (matches.length > 1) {
+      violations.push(
+        `  ${NP_DIR}/:0  [${NP_RULE}]  ${matches.length} patches for ${NP_PKG} (${matches.join(', ')}) — patch-package would apply all of them and only one version can be installed; keep exactly one (${NP_ISSUE})`,
+      );
+    } else {
+      patchName = matches[0];
+    }
+  } catch {
+    violations.push(
+      `  ${NP_DIR}/:0  [${NP_RULE}]  patches/ directory not found — the ${NP_PKG} double-callback fix (${NP_ISSUE}) lives there and patch-package silently succeeds without it`,
+    );
+  }
+
+  let patchVersion = null;
+  if (patchName !== null) {
+    const m = /^react-native-image-picker\+(\d+\.\d+\.\d+)\.patch$/.exec(patchName);
+    if (m === null) {
+      violations.push(
+        `  ${NP_DIR}/${patchName}:0  [${NP_RULE}]  filename does not carry a plain x.y.z version — patch-package keys the patch to the installed version by this name, and the pins below are checked against it (${NP_ISSUE})`,
+      );
+    } else {
+      patchVersion = m[1];
+    }
+  }
+
+  const patchFile = patchName === null ? null : join(NP_DIR, patchName);
+  if (patchFile !== null) {
+    let patchLines = null;
+    try {
+      patchLines = readFileSync(patchFile, 'utf8').split('\n');
+    } catch {
+      violations.push(
+        `  ${patchFile}:0  [${NP_RULE}]  [file-missing] could not read the patch file (${NP_ISSUE})`,
+      );
+    }
+
+    if (patchLines !== null) {
+      let hunks = 0;
+      let markers = 0;
+      let markerlessHunks = 0;
+      let currentHunkMarkers = 0;
+      let sawHunk = false;
+      const touched = new Set();
+
+      for (let i = 0; i < patchLines.length; i++) {
+        const line = patchLines[i];
+
+        if (line.startsWith('@@')) {
+          if (sawHunk && currentHunkMarkers === 0) markerlessHunks += 1;
+          sawHunk = true;
+          currentHunkMarkers = 0;
+          hunks += 1;
+          continue;
+        }
+        if (line.startsWith('+++ ') || line.startsWith('--- ')) {
+          const path = line.slice(4).trim().replace(/^[ab]\//, '');
+          if (path !== '/dev/null') touched.add(path);
+          continue;
+        }
+        if (line.startsWith('diff --git') || line.startsWith('index ')) continue;
+
+        const isAdded = line.startsWith('+');
+        if (isAdded && line.includes(NP_MARKER)) {
+          markers += 1;
+          currentHunkMarkers += 1;
+        }
+
+        // Removed lines are the point of the patch; only what SURVIVES
+        // (added + context) is checked for the banned call.
+        if (!line.startsWith('-') && line.includes(NP_BANNED_CALL)) {
+          report(
+            patchFile,
+            i + 1,
+            NP_RULE,
+            `patch keeps a raw \`${NP_BANNED_CALL}\` call — every launch must call back through its own taken context, or the double-callback abort is still reachable (${NP_ISSUE})`,
+          );
+        }
+      }
+      if (sawHunk && currentHunkMarkers === 0) markerlessHunks += 1;
+
+      if (markers < NP_MARKER_FLOOR) {
+        violations.push(
+          `  ${patchFile}:0  [${NP_RULE}]  ${markers} \`${NP_MARKER}\` marker(s) on added lines, expected at least ${NP_MARKER_FLOOR} — a marked hunk shrank or lost its annotation. If the patch was deliberately regenerated, update NP_MARKER_FLOOR in this file to the new count (${NP_ISSUE})`,
+        );
+      }
+      if (markers < hunks) {
+        violations.push(
+          `  ${patchFile}:0  [${NP_RULE}]  ${hunks} hunk(s) but only ${markers} \`${NP_MARKER}\` marker(s) on added lines — every hunk must say why it diverges from upstream (${NP_ISSUE})`,
+        );
+      }
+      if (markerlessHunks > 0) {
+        violations.push(
+          `  ${patchFile}:0  [${NP_RULE}]  ${markerlessHunks} hunk(s) carry no \`${NP_MARKER}\` marker — annotate each one; the markers are also what the installed-tree gates grep for (${NP_ISSUE})`,
+        );
+      }
+      if (hunks === 0) {
+        violations.push(
+          `  ${patchFile}:0  [${NP_RULE}]  the patch has no hunks — it would apply as a no-op and ship the unpatched picker (${NP_ISSUE})`,
+        );
+      }
+      for (const path of touched) {
+        if (path !== NP_PATCHED_FILE) {
+          violations.push(
+            `  ${patchFile}:0  [${NP_RULE}]  patch touches ${path}; ${NP_ISSUE} scopes it to ${NP_PATCHED_FILE} only. Widening it changes what ships natively — review it as native code, not as a dependency bump`,
+          );
+        }
+      }
+      if (!touched.has(NP_PATCHED_FILE)) {
+        violations.push(
+          `  ${patchFile}:0  [${NP_RULE}]  patch does not touch ${NP_PATCHED_FILE}, which is the file that carries the double-callback fix (${NP_ISSUE})`,
+        );
+      }
+    }
+  }
+
+  for (const [gateFile, needle, what] of NP_GATES) {
+    let content = null;
+    try {
+      content = readFileSync(gateFile, 'utf8');
+    } catch {
+      violations.push(
+        `  ${gateFile}:0  [${NP_RULE}]  [file-missing] not found — it should carry ${what}, which is how the INSTALLED react-native-image-picker gets checked (this rule only sees tracked content) (${NP_ISSUE})`,
+      );
+      continue;
+    }
+    if (!content.includes(needle)) {
+      violations.push(
+        `  ${gateFile}:0  [${NP_RULE}]  no reference to \`${needle}\` — ${what} is gone, so an unpatched node_modules would compile and ship the double-callback abort with nothing to stop it (${NP_ISSUE})`,
+      );
+    }
+  }
+
+  let gateScriptExists = true;
+  try {
+    readFileSync(NP_GATE_SCRIPT, 'utf8');
+  } catch {
+    gateScriptExists = false;
+  }
+  if (!gateScriptExists) {
+    violations.push(
+      `  ${NP_GATE_SCRIPT}:0  [${NP_RULE}]  [file-missing] the installed-tree gate script is missing, but the Podfile build phase and build.yml both invoke it — the iOS build would fail noisily, or silently stop checking (${NP_ISSUE})`,
+    );
+  }
+
+  let pkg = null;
+  try {
+    pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+  } catch {
+    violations.push(
+      `  package.json:0  [${NP_RULE}]  [file-missing] could not read or parse package.json — the patch-package postinstall and the picker pin could not be checked (${NP_ISSUE})`,
+    );
+  }
+
+  if (pkg !== null) {
+    const postinstall = pkg.scripts?.postinstall ?? '';
+    if (!postinstall.includes('patch-package')) {
+      violations.push(
+        `  package.json:0  [${NP_RULE}]  the \`postinstall\` script does not run patch-package — without it npm installs leave node_modules unpatched and the picker aborts the app at runtime (${NP_ISSUE})`,
+      );
+    } else {
+      for (const flag of ['--error-on-fail', '--error-on-warn']) {
+        if (!postinstall.includes(flag)) {
+          violations.push(
+            `  package.json:0  [${NP_RULE}]  \`postinstall\` is missing ${flag} — patch-package would only WARN (exit 0) when the patch fails to apply or was made for another version, so a silent downgrade to the unpatched picker would install cleanly (${NP_ISSUE})`,
+          );
+        }
+      }
+    }
+
+    const ppVersion = pkg.devDependencies?.['patch-package'];
+    if (ppVersion === undefined) {
+      violations.push(
+        `  package.json:0  [${NP_RULE}]  patch-package is not a devDependency, but the \`postinstall\` depends on it (${NP_ISSUE})`,
+      );
+    } else if (!/^\d+\.\d+\.\d+$/.test(ppVersion)) {
+      violations.push(
+        `  package.json:0  [${NP_RULE}]  patch-package is "${ppVersion}", not an exact x.y.z pin — it is this repo's only install-time code execution, so it moves on a reviewed bump, never on a range (${NP_ISSUE})`,
+      );
+    }
+
+    if (patchVersion !== null) {
+      const declared = pkg.dependencies?.[NP_PKG];
+      if (declared !== patchVersion) {
+        violations.push(
+          `  package.json:0  [${NP_RULE}]  ${NP_PKG} is "${declared ?? 'absent'}" but the patch is keyed to ${patchVersion} — pin it EXACTLY (no caret), because any other resolved version makes patch-package fail the install (${NP_ISSUE})`,
+        );
+      }
+    }
+  }
+
+  if (patchVersion !== null) {
+    let lock = null;
+    try {
+      lock = JSON.parse(readFileSync('package-lock.json', 'utf8'));
+    } catch {
+      violations.push(
+        `  package-lock.json:0  [${NP_RULE}]  [file-missing] could not read or parse package-lock.json — the resolved ${NP_PKG} version could not be checked against the patch (${NP_ISSUE})`,
+      );
+    }
+
+    if (lock !== null) {
+      const rootSpec = lock.packages?.['']?.dependencies?.[NP_PKG];
+      if (rootSpec !== patchVersion) {
+        violations.push(
+          `  package-lock.json:0  [${NP_RULE}]  root dependency spec for ${NP_PKG} is "${rootSpec ?? 'absent'}", not the patched ${patchVersion} — regenerate the lock (${NP_ISSUE})`,
+        );
+      }
+      const resolved = lock.packages?.[`node_modules/${NP_PKG}`]?.version;
+      if (resolved !== patchVersion) {
+        violations.push(
+          `  package-lock.json:0  [${NP_RULE}]  the lock resolves ${NP_PKG} to "${resolved ?? 'absent'}" but the patch is for ${patchVersion} — \`npm ci\` would install a version the patch cannot apply to (${NP_ISSUE})`,
+        );
+      }
     }
   }
 }

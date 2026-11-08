@@ -1,0 +1,597 @@
+diff --git a/node_modules/react-native-image-picker/ios/ImagePickerManager.mm b/node_modules/react-native-image-picker/ios/ImagePickerManager.mm
+index 93e99be..90ed405 100644
+--- a/node_modules/react-native-image-picker/ios/ImagePickerManager.mm
++++ b/node_modules/react-native-image-picker/ios/ImagePickerManager.mm
+@@ -1,3 +1,44 @@
++// ORBITAL-PATCH(#971) — applied by patch-package from
++// patches/react-native-image-picker+8.2.1.patch. Do not edit node_modules
++// directly: edit it here and re-run `npx patch-package react-native-image-picker`.
++//
++// WHY. react-native-image-picker 8.2.1 can call one JS callback twice, which
++// trips RCTTurboModule's LOG(FATAL) "Callback arg cannot be called more than
++// once" and aborts the process (Sentry ORBITAL-MOBILE-R, build 1.7.7+21).
++// Upstream issue react-native-image-picker#2415; the proposed fixes (#2406 and
++// #2413) are unmerged and 8.3.1 ships the same code. Four upstream properties
++// combine: a single `self.callback` property read at fire time and never
++// nil'd; a file-global `photoSelected` flag that every launch resets; cancel
++// paths that never consult that flag; and a PHPicker success path that only
++// calls back after a multi-second asynchronous asset load, during which a
++// second launch can overwrite the callback.
++//
++// WHAT THIS PATCH DOES. Every launch gets its own OrbitalPickerContext holding
++// the callback, a SNAPSHOT of the options and the target. The context is owned
++// by the view controller that launch created, and it is TAKEN (read and
++// cleared in one step, on the main queue) exactly once, by that picker. A take
++// keyed to any other picker returns nil, so a stale picker can neither deliver
++// into nor share options with a newer launch, and no path can call a callback
++// twice however the events interleave. `photoSelected` and the file-global
++// `target` are gone. mapImageToAsset: and mapVideoToAsset: take `options:` and
++// `target:` parameters, so no background load handler reads mutable instance
++// state.
++//
++// ACCEPTED RESIDUE. A launch that never reached a terminal event is resolved
++// with {didCancel: YES} by the next launch, but its in-flight
++// loadFileRepresentation handlers are NOT cancelled, so they may still write
++// the picked originals into NSTemporaryDirectory(). Those copies are
++// unsanitized — metadata stripping happens later, on the upload path. This is
++// accepted on the #700 reasoning: NSTemporaryDirectory() is inside the app
++// sandbox, is excluded from backups and is reclaimed by the system, so the
++// residue never leaves the device. Cancelling the NSProgress of every orphaned
++// load is out of scope.
++//
++// Every hunk below is marked ORBITAL-PATCH(#971); scripts/check-security-invariants.mjs
++// rule 28 and scripts/verify-native-patches-ios.sh assert the markers and the
++// absence of any raw call through a shared `self.callback` property — which is
++// also why no comment here may spell that call out. Delete this patch when upstream
++// ships a fix — .github/dependabot.yml carries the lift procedure.
+ #import "ImagePickerManager.h"
+ #import "ImagePickerUtils.h"
+ #import <React/RCTConvert.h>
+@@ -6,10 +47,38 @@
+ #import <PhotosUI/PhotosUI.h>
+ #import <MobileCoreServices/MobileCoreServices.h>
+ 
++// ORBITAL-PATCH(#971): one launch's state, taken as a unit so a partial clear
++// is impossible.
++@interface OrbitalPickerContext : NSObject
++// `copy`, not `strong`: the ObjC convention for block properties. The callback
++// arrives already heap-allocated from the bridge, so -copy is a retain here,
++// but the attribute is what keeps a future stack block from being stored by
++// reference and read after its frame is gone.
++@property (nonatomic, copy) RCTResponseSenderBlock callback;
++@property (nonatomic, copy) NSDictionary *options;
++@property (nonatomic, assign) RNImagePickerTarget target;
++// The view controller this launch created; it keys every take. Strong on
++// purpose: a weak reference would nil out if UIKit released the picker first,
++// and a nil key must never match a pending launch.
++@property (nonatomic, strong) UIViewController *picker;
++@end
++
++@implementation OrbitalPickerContext
++@end
++
+ @interface ImagePickerManager ()
+ 
+-@property (nonatomic, strong) RCTResponseSenderBlock callback;
+-@property (nonatomic, copy) NSDictionary *options;
++// ORBITAL-PATCH(#971): the upstream `callback` and `options` properties are
++// GONE — they were shared across launches. Both now live in the per-launch
++// context, which is why no `self.callback` call site can exist anywhere in
++// this file.
++@property (nonatomic, strong) OrbitalPickerContext *pendingContext;
++
++// Declared here rather than only in the implementation because the
++// presentationControllerDidDismiss category calls them.
++- (OrbitalPickerContext *)takePendingContext;
++- (OrbitalPickerContext *)takeContextForPicker:(UIViewController *)picker;
++- (void)invokeCallbackForPicker:(UIViewController *)picker response:(NSDictionary *)response;
+ 
+ @end
+ 
+@@ -29,27 +98,29 @@ @implementation ImagePickerManager
+ NSString *errCameraUnavailable = @"camera_unavailable";
+ NSString *errPermission = @"permission";
+ NSString *errOthers = @"others";
+-RNImagePickerTarget target;
+-
+-BOOL photoSelected = NO;
++// ORBITAL-PATCH(#971): the file-global `RNImagePickerTarget target` and
++// `BOOL photoSelected` are both removed. `target` was written off the main
++// queue by the launch methods below and read from background load handlers; it
++// is a parameter now, snapshotted into the per-launch context. `photoSelected`
++// was one flag for the whole module that every launch reset to NO, which is
++// precisely what let a stale picker's terminal event pass the guard and fire a
++// newer launch's callback.
+ 
+ RCT_EXPORT_MODULE(ImagePicker)
+ 
+ RCT_EXPORT_METHOD(launchCamera:(NSDictionary *)options callback:(RCTResponseSenderBlock)callback)
+ {
+-    target = camera;
+-    photoSelected = NO;
++    // ORBITAL-PATCH(#971): target passed explicitly instead of through a global.
+     dispatch_async(dispatch_get_main_queue(), ^{
+-        [self launchImagePicker:options callback:callback];
++        [self launchImagePicker:options callback:callback target:camera];
+     });
+ }
+ 
+ RCT_EXPORT_METHOD(launchImageLibrary:(NSDictionary *)options callback:(RCTResponseSenderBlock)callback)
+ {
+-    target = library;
+-    photoSelected = NO;
++    // ORBITAL-PATCH(#971): target passed explicitly instead of through a global.
+     dispatch_async(dispatch_get_main_queue(), ^{
+-        [self launchImagePicker:options callback:callback];
++        [self launchImagePicker:options callback:callback target:library];
+     });
+ }
+ 
+@@ -63,31 +134,63 @@ @implementation ImagePickerManager
+ }
+ #endif
+ 
+-- (void)launchImagePicker:(NSDictionary *)options callback:(RCTResponseSenderBlock)callback
++// ORBITAL-PATCH(#971): takes `target:` as a parameter, and stores the whole
++// launch in one per-picker context. Runs on the main queue (both exported
++// methods dispatch there), so every context mutation below is main-queue-only.
++- (void)launchImagePicker:(NSDictionary *)options callback:(RCTResponseSenderBlock)callback target:(RNImagePickerTarget)pickerTarget
+ {
+-    self.callback = callback;
++    // ORBITAL-PATCH(#971): self-heal before anything else. A launch that never
++    // reached a terminal event (a picker UIKit never presented, say) still owns
++    // a JS callback; resolve it as a cancel so the JS side is never left
++    // waiting forever. This cannot discard a COMPLETED pick: the PHPicker path
++    // takes its context the moment didFinishPicking: fires, long before its
++    // asset loads finish.
++    OrbitalPickerContext *staleContext = [self takePendingContext];
++    if (staleContext.callback != nil) {
++        staleContext.callback(@[@{@"didCancel": @YES}]);
++    }
+ 
+-    if (target == camera && [ImagePickerUtils isSimulator]) {
+-        self.callback(@[@{@"errorCode": errCameraUnavailable}]);
++    // ORBITAL-PATCH(#971): snapshot everything this launch needs. `options` is
++    // copied in here (the property is `copy`) and never read off shared state
++    // again, so a later launch cannot change this launch's resize options.
++    OrbitalPickerContext *context = [[OrbitalPickerContext alloc] init];
++    context.callback = callback;
++    context.options = options;
++    context.target = pickerTarget;
++    self.pendingContext = context;
++
++    if (pickerTarget == camera && [ImagePickerUtils isSimulator]) {
++        // ORBITAL-PATCH(#971): no picker exists yet, so this unconditional take
++        // can only return the context stored immediately above — there is no
++        // suspension point in between, and takeContextForPicker: refuses a nil
++        // key, so no unrelated event can take a context that has no picker.
++        OrbitalPickerContext *unavailableContext = [self takePendingContext];
++        if (unavailableContext.callback != nil) {
++            unavailableContext.callback(@[@{@"errorCode": errCameraUnavailable}]);
++        }
+         return;
+     }
+ 
+-    self.options = options;
+-
+ #if __has_include(<PhotosUI/PHPicker.h>)
+     if (@available(iOS 14, *)) {
+-        if (target == library) {
+-            PHPickerConfiguration *configuration = [ImagePickerUtils makeConfigurationFromOptions:options target:target];
++        if (pickerTarget == library) {
++            PHPickerConfiguration *configuration = [ImagePickerUtils makeConfigurationFromOptions:options target:pickerTarget];
+             PHPickerViewController *picker = [[PHPickerViewController alloc] initWithConfiguration:configuration];
+             picker.delegate = self;
+             picker.modalPresentationStyle = [RCTConvert UIModalPresentationStyle:options[@"presentationStyle"]];
+             picker.presentationController.delegate = self;
++            // ORBITAL-PATCH(#971): bind the context to its picker the moment the
++            // picker exists — before the permission check and before presenting
++            // — so every later event is keyed to this launch.
++            context.picker = picker;
+ 
+-            if([self.options[@"includeExtra"] boolValue]) {
++            if([options[@"includeExtra"] boolValue]) {
+ 
+                 [self checkPhotosPermissions:^(BOOL granted) {
+                     if (!granted) {
+-                        self.callback(@[@{@"errorCode": errPermission}]);
++                        // ORBITAL-PATCH(#971): keyed to this picker, and hops to
++                        // main (PHPhotoLibrary's handler is not main-queue).
++                        [self invokeCallbackForPicker:picker response:@{@"errorCode": errPermission}];
+                         return;
+                     }
+                     [self showPickerViewController:picker];
+@@ -101,14 +204,17 @@ - (void)launchImagePicker:(NSDictionary *)options callback:(RCTResponseSenderBlo
+     }
+ #endif
+     UIImagePickerController *picker = [[UIImagePickerController alloc] init];
+-    [ImagePickerUtils setupPickerFromOptions:picker options:self.options target:target];
++    [ImagePickerUtils setupPickerFromOptions:picker options:options target:pickerTarget];
+     picker.delegate = self;
+     picker.presentationController.delegate = self;
++    // ORBITAL-PATCH(#971): bind the context to its picker, as above.
++    context.picker = picker;
+     
+-    if([self.options[@"includeExtra"] boolValue]) {
++    if([options[@"includeExtra"] boolValue]) {
+         [self checkPhotosPermissions:^(BOOL granted) {
+             if (!granted) {
+-                self.callback(@[@{@"errorCode": errPermission}]);
++                // ORBITAL-PATCH(#971): keyed to this picker, and hops to main.
++                [self invokeCallbackForPicker:picker response:@{@"errorCode": errPermission}];
+                 return;
+             }
+             [self showPickerViewController:picker];
+@@ -122,12 +228,73 @@ - (void) showPickerViewController:(UIViewController *)picker
+ {
+     dispatch_async(dispatch_get_main_queue(), ^{
+         UIViewController *root = RCTPresentedViewController();
++        // ORBITAL-PATCH(#971): with no root view controller there is nothing to
++        // present from, so no delegate would ever fire. Resolve this launch now
++        // instead of leaving the JS callback pending forever.
++        if (root == nil) {
++            [self invokeCallbackForPicker:picker response:@{@"errorCode": errOthers, @"errorMessage": @"No view controller available to present the picker"}];
++            return;
++        }
+         [root presentViewController:picker animated:YES completion:nil];
+     });
+ }
+ 
+ #pragma mark - Helpers
+ 
++// ORBITAL-PATCH(#971): the whole callback discipline lives in these three
++// methods.
++//
++//   * takePendingContext        — unconditional read-and-clear. Only two
++//                                 callers, both in launchImagePicker: on main,
++//                                 where the context either predates any picker
++//                                 or is being retired by a new launch.
++//   * takeContextForPicker:     — read-and-clear ONLY if `picker` is the view
++//                                 controller that owns the pending context. A
++//                                 nil key never matches. This is what makes a
++//                                 stale picker's event a no-op instead of a
++//                                 double call.
++//   * invokeCallbackForPicker:response:
++//                               — hop to main if needed, take, and call the
++//                                 callback if a context was taken.
++//
++// Callback state is touched on the main queue only. Because a take clears the
++// context, a callback can be invoked at most once per launch, whatever order
++// the picker's events arrive in.
++
++- (OrbitalPickerContext *)takePendingContext
++{
++    NSAssert([NSThread isMainThread], @"ORBITAL-PATCH(#971): picker callback state is main-queue-only");
++    OrbitalPickerContext *context = self.pendingContext;
++    self.pendingContext = nil;
++    return context;
++}
++
++- (OrbitalPickerContext *)takeContextForPicker:(UIViewController *)picker
++{
++    NSAssert([NSThread isMainThread], @"ORBITAL-PATCH(#971): picker callback state is main-queue-only");
++    if (picker == nil) {
++        return nil;
++    }
++    if (self.pendingContext == nil || self.pendingContext.picker != picker) {
++        return nil;
++    }
++    return [self takePendingContext];
++}
++
++- (void)invokeCallbackForPicker:(UIViewController *)picker response:(NSDictionary *)response
++{
++    if (![NSThread isMainThread]) {
++        dispatch_async(dispatch_get_main_queue(), ^{
++            [self invokeCallbackForPicker:picker response:response];
++        });
++        return;
++    }
++    OrbitalPickerContext *context = [self takeContextForPicker:picker];
++    if (context.callback != nil) {
++        context.callback(@[response]);
++    }
++}
++
+ NSData* extractImageData(UIImage* image){
+     CFMutableDataRef imageData = CFDataCreateMutable(NULL, 0);
+     CGImageDestinationRef destination = CGImageDestinationCreateWithData(imageData, kUTTypeJPEG, 1, NULL);
+@@ -154,10 +321,15 @@ - (void) showPickerViewController:(UIViewController *)picker
+ 
+ 
+ 
+--(NSMutableDictionary *)mapImageToAsset:(UIImage *)image data:(NSData *)data phAsset:(PHAsset * _Nullable)phAsset {
++// ORBITAL-PATCH(#971): `options:` and `target:` are parameters now. This method
++// runs inside PHPicker's loadFileRepresentation handlers, off the main queue,
++// where reading the old shared `self.options` could see a NEWER launch's resize
++// options (2048px vs 800px across our two call sites) or, since that property
++// was nonatomic, hand back an over-released dictionary.
++-(NSMutableDictionary *)mapImageToAsset:(UIImage *)image data:(NSData *)data phAsset:(PHAsset * _Nullable)phAsset options:(NSDictionary *)options target:(RNImagePickerTarget)pickerTarget {
+     NSString *fileType = [ImagePickerUtils getFileType:data];
+-    if (target == camera) {
+-        if ([self.options[@"saveToPhotos"] boolValue]) {
++    if (pickerTarget == camera) {
++        if ([options[@"saveToPhotos"] boolValue]) {
+             UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil);
+         }
+         data = extractImageData(image);
+@@ -165,12 +337,13 @@ -(NSMutableDictionary *)mapImageToAsset:(UIImage *)image data:(NSData *)data phA
+ 
+     UIImage* newImage = image;
+     if (![fileType isEqualToString:@"gif"]) {
++        // ORBITAL-PATCH(#971): per-launch options, not shared state.
+         newImage = [ImagePickerUtils resizeImage:image
+-                                     maxWidth:[self.options[@"maxWidth"] floatValue]
+-                                    maxHeight:[self.options[@"maxHeight"] floatValue]];
++                                     maxWidth:[options[@"maxWidth"] floatValue]
++                                    maxHeight:[options[@"maxHeight"] floatValue]];
+     }
+ 
+-    float quality = [self.options[@"quality"] floatValue];
++    float quality = [options[@"quality"] floatValue];
+     if (![image isEqual:newImage] || (quality >= 0 && quality < 1)) {
+         if ([fileType isEqualToString:@"jpg"]) {
+             data = UIImageJPEGRepresentation(newImage, quality);
+@@ -186,7 +359,8 @@ -(NSMutableDictionary *)mapImageToAsset:(UIImage *)image data:(NSData *)data phA
+     NSString *path = [[NSTemporaryDirectory() stringByStandardizingPath] stringByAppendingPathComponent:fileName];
+     [data writeToFile:path atomically:YES];
+ 
+-    if ([self.options[@"includeBase64"] boolValue]) {
++    // ORBITAL-PATCH(#971): per-launch options, not shared state.
++    if ([options[@"includeBase64"] boolValue]) {
+         asset[@"base64"] = [data base64EncodedStringWithOptions:0];
+     }
+ 
+@@ -227,13 +401,16 @@ CGImagePropertyOrientation CGImagePropertyOrientationForUIImageOrientation(UIIma
+     }
+ }
+ 
+--(NSMutableDictionary *)mapVideoToAsset:(NSURL *)url phAsset:(PHAsset * _Nullable)phAsset error:(NSError **)error {
++// ORBITAL-PATCH(#971): `options:` and `target:` are parameters now, for the same
++// reason as mapImageToAsset: above — this also runs on a background load queue.
++-(NSMutableDictionary *)mapVideoToAsset:(NSURL *)url phAsset:(PHAsset * _Nullable)phAsset error:(NSError **)error options:(NSDictionary *)options target:(RNImagePickerTarget)pickerTarget {
+     NSString *fileName = [url lastPathComponent];
+     NSString *path = [[NSTemporaryDirectory() stringByStandardizingPath] stringByAppendingPathComponent:fileName];
+     NSURL *videoDestinationURL = [NSURL fileURLWithPath:path];
+     NSString *fileExtension = [fileName pathExtension];
+ 
+-    if ((target == camera) && [self.options[@"saveToPhotos"] boolValue]) {
++    // ORBITAL-PATCH(#971): per-launch target/options, not shared state.
++    if ((pickerTarget == camera) && [options[@"saveToPhotos"] boolValue]) {
+         UISaveVideoAtPathToSavedPhotosAlbum(url.path, nil, nil, nil);
+     }
+ 
+@@ -262,7 +439,8 @@ -(NSMutableDictionary *)mapVideoToAsset:(NSURL *)url phAsset:(PHAsset * _Nullabl
+ 
+     NSMutableDictionary *response = [[NSMutableDictionary alloc] init];
+ 
+-    if([self.options[@"formatAsMp4"] boolValue] && ![fileExtension isEqualToString:@"mp4"]) {
++    // ORBITAL-PATCH(#971): per-launch options, not shared state.
++    if([options[@"formatAsMp4"] boolValue] && ![fileExtension isEqualToString:@"mp4"]) {
+         NSURL *parentURL = [videoDestinationURL URLByDeletingLastPathComponent];
+         NSString *path = [[parentURL.path stringByAppendingString:@"/"] stringByAppendingString:[[NSUUID UUID] UUIDString]];
+         path = [path stringByAppendingString:@".mp4"];
+@@ -383,31 +561,13 @@ - (void)checkCameraAndPhotoPermission:(void(^)(BOOL granted))callback
+     }];
+ }
+ 
+-- (void)checkPermission:(void(^)(BOOL granted)) callback
+-{
+-    void (^permissionBlock)(BOOL) = ^(BOOL permissionGranted) {
+-        if (!permissionGranted) {
+-            callback(NO);
+-            return;
+-        }
+-        callback(YES);
+-    };
+-
+-    if (target == camera && [self.options[@"saveToPhotos"] boolValue]) {
+-        [self checkCameraAndPhotoPermission:permissionBlock];
+-    }
+-    else if (target == camera) {
+-        [self checkCameraPermissions:permissionBlock];
+-    }
+-    else {
+-        if (@available(iOS 11.0, *)) {
+-            callback(YES);
+-        }
+-        else {
+-            [self checkPhotosPermissions:permissionBlock];
+-        }
+-    }
+-}
++// ORBITAL-PATCH(#971): upstream's `-checkPermission:` was deleted here. It had
++// no callers anywhere in the package (the live paths call
++// checkPhotosPermissions: directly), and it was the last reader of the two
++// pieces of shared state this patch removes — the file-global `target` and the
++// `self.options` property. Keeping a dead method that reads state nothing
++// maintains any more would be a landmine; restore it from upstream if a camera
++// path ever comes back (it is banned today by security invariant rule 5).
+ 
+ - (NSString *)getImageFileName:(NSString *)fileType
+ {
+@@ -444,28 +604,38 @@ - (void)imagePickerController:(UIImagePickerController *)picker didFinishPicking
+         NSMutableArray<NSDictionary *> *assets = [[NSMutableArray alloc] initWithCapacity:1];
+         PHAsset *asset = nil;
+ 
+-        if (photoSelected == YES) {
+-           return;
++        // ORBITAL-PATCH(#971): take this picker's context (the dismiss
++        // completion runs on the main queue). Replaces the `photoSelected`
++        // file-global: a context can be taken once, and only by the picker that
++        // owns it, so a stale picker returns here and does nothing.
++        OrbitalPickerContext *context = [self takeContextForPicker:picker];
++        if (context == nil) {
++            return;
+         }
+-        photoSelected = YES;
++        RCTResponseSenderBlock callback = context.callback;
++        NSDictionary *options = context.options;
++        RNImagePickerTarget pickerTarget = context.target;
+ 
+         // If include extra, we fetch the PHAsset, this required library permissions
+-        if([self.options[@"includeExtra"] boolValue]) {
++        if([options[@"includeExtra"] boolValue]) {
+           asset = [ImagePickerUtils fetchPHAssetOnIOS13:info];
+         }
+ 
+         if ([info[UIImagePickerControllerMediaType] isEqualToString:(NSString *) kUTTypeImage]) {
+             UIImage *image = [ImagePickerManager getUIImageFromInfo:info];
+ 
+-            [assets addObject:[self mapImageToAsset:image data:[NSData dataWithContentsOfURL:[ImagePickerManager getNSURLFromInfo:info]] phAsset:asset]];
++            // ORBITAL-PATCH(#971): pass the snapshot through explicitly.
++            [assets addObject:[self mapImageToAsset:image data:[NSData dataWithContentsOfURL:[ImagePickerManager getNSURLFromInfo:info]] phAsset:asset options:options target:pickerTarget]];
+         } else {
+             NSError *error;
+-            NSDictionary *videoAsset = [self mapVideoToAsset:info[UIImagePickerControllerMediaURL] phAsset:asset error:&error];
++            // ORBITAL-PATCH(#971): pass the snapshot through explicitly.
++            NSDictionary *videoAsset = [self mapVideoToAsset:info[UIImagePickerControllerMediaURL] phAsset:asset error:&error options:options target:pickerTarget];
+ 
+             if (videoAsset == nil) {
+                 NSString *errorMessage = error.localizedFailureReason;
+                 if (errorMessage == nil) errorMessage = @"Video asset not found";
+-                self.callback(@[@{@"errorCode": errOthers, @"errorMessage": errorMessage}]);
++                // ORBITAL-PATCH(#971): the taken callback, not shared state.
++                callback(@[@{@"errorCode": errOthers, @"errorMessage": errorMessage}]);
+                 return;
+             }
+             [assets addObject:videoAsset];
+@@ -473,7 +643,8 @@ - (void)imagePickerController:(UIImagePickerController *)picker didFinishPicking
+ 
+         NSMutableDictionary *response = [[NSMutableDictionary alloc] init];
+         response[@"assets"] = assets;
+-        self.callback(@[response]);
++        // ORBITAL-PATCH(#971): the taken callback, not shared state.
++        callback(@[response]);
+     };
+ 
+     dispatch_async(dispatch_get_main_queue(), ^{
+@@ -485,7 +656,10 @@ - (void)imagePickerControllerDidCancel:(UIImagePickerController *)picker
+ {
+     dispatch_async(dispatch_get_main_queue(), ^{
+         [picker dismissViewControllerAnimated:YES completion:^{
+-            self.callback(@[@{@"didCancel": @YES}]);
++            // ORBITAL-PATCH(#971): keyed to this picker, taken inside the
++            // dismiss completion. A no-op if this picker's context was already
++            // taken (for example by presentationControllerDidDismiss:).
++            [self invokeCallbackForPicker:picker response:@{@"didCancel": @YES}];
+         }];
+     });
+ }
+@@ -496,7 +670,13 @@ @implementation ImagePickerManager (presentationControllerDidDismiss)
+ 
+ - (void)presentationControllerDidDismiss:(UIPresentationController *)presentationController
+ {
+-    self.callback(@[@{@"didCancel": @YES}]);
++    // ORBITAL-PATCH(#971): a swipe-dismiss resolves ONLY the launch that owns
++    // the dismissed view controller. Upstream fired the module's single
++    // callback unconditionally, so a swipe on a stale picker (or a swipe after
++    // a pick had already called back) was a double call. `presentedViewController`
++    // on the presentation controller is the picker itself, which is the key the
++    // take needs; it is nil-safe, and a nil key never matches a launch.
++    [self invokeCallbackForPicker:presentationController.presentedViewController response:@{@"didCancel": @YES}];
+ }
+ 
+ @end
+@@ -508,15 +688,23 @@ - (void)picker:(PHPickerViewController *)picker didFinishPicking:(NSArray<PHPick
+ {
+     [picker dismissViewControllerAnimated:YES completion:nil];
+ 
+-    if (photoSelected == YES) {
++    // ORBITAL-PATCH(#971): take this picker's context immediately, before any
++    // asset load starts. This is the heart of the fix for the reported abort:
++    // the callback that the notify block below will call is captured HERE, once,
++    // and cleared from the module, so a second launch cannot overwrite it and a
++    // stale picker (context == nil) skips the loads entirely. UIKit delivers
++    // this delegate callback on the main queue, which is where the take belongs.
++    OrbitalPickerContext *context = [self takeContextForPicker:picker];
++    if (context == nil) {
+         return;
+     }
+-    photoSelected = YES;
++    RCTResponseSenderBlock callback = context.callback;
++    NSDictionary *options = context.options;
++    RNImagePickerTarget pickerTarget = context.target;
+ 
+     if (results.count == 0) {
+-        dispatch_async(dispatch_get_main_queue(), ^{
+-            self.callback(@[@{@"didCancel": @YES}]);
+-        });
++        // ORBITAL-PATCH(#971): already on main, and the callback is ours.
++        callback(@[@{@"didCancel": @YES}]);
+         return;
+     }
+ 
+@@ -531,7 +719,8 @@ - (void)picker:(PHPickerViewController *)picker didFinishPicking:(NSArray<PHPick
+         NSItemProvider *provider = result.itemProvider;
+ 
+         // If include extra, we fetch the PHAsset, this required library permissions
+-        if([self.options[@"includeExtra"] boolValue] && result.assetIdentifier != nil) {
++        // ORBITAL-PATCH(#971): per-launch options, not shared state.
++        if([options[@"includeExtra"] boolValue] && result.assetIdentifier != nil) {
+             PHFetchResult* fetchResult = [PHAsset fetchAssetsWithLocalIdentifiers:@[result.assetIdentifier] options:nil];
+             asset = fetchResult.firstObject;
+         }
+@@ -550,14 +739,28 @@ - (void)picker:(PHPickerViewController *)picker didFinishPicking:(NSArray<PHPick
+                 NSData *data = [[NSData alloc] initWithContentsOfURL:url];
+                 UIImage *image = [[UIImage alloc] initWithData:data];
+ 
+-                assets[index] = [self mapImageToAsset:image data:data phAsset:asset];
++                // ORBITAL-PATCH(#971): map with this launch's snapshot, OUTSIDE
++                // the lock (mapping is the slow part — a resize plus a write to
++                // NSTemporaryDirectory()), then publish under it. These handlers
++                // run concurrently on PHPicker's queues, and NSMutableArray is
++                // not thread-safe, so the unsynchronized upstream write was a
++                // data race.
++                NSDictionary *mappedAsset = [self mapImageToAsset:image data:data phAsset:asset options:options target:pickerTarget];
++                @synchronized (assets) {
++                    assets[index] = mappedAsset ?: (NSDictionary *)[NSNull null];
++                }
+                 dispatch_group_leave(completionGroup);
+             }];
+         } else if ([provider hasItemConformingToTypeIdentifier:(NSString *)kUTTypeMovie]) {
+             [provider loadFileRepresentationForTypeIdentifier:(NSString *)kUTTypeMovie completionHandler:^(NSURL * _Nullable url, NSError * _Nullable error) {
+-                NSDictionary *mappedAsset = [self mapVideoToAsset:url phAsset:asset error:nil];
++                // ORBITAL-PATCH(#971): as above — per-launch snapshot, mapping
++                // outside the lock, publish under it. A nil mapping leaves the
++                // NSNull placeholder, which the notify block turns into errOthers.
++                NSDictionary *mappedAsset = [self mapVideoToAsset:url phAsset:asset error:nil options:options target:pickerTarget];
+                 if (nil != mappedAsset) {
+-                    assets[index] = mappedAsset;
++                    @synchronized (assets) {
++                        assets[index] = mappedAsset;
++                    }
+                 }
+                 dispatch_group_leave(completionGroup);
+             }];
+@@ -568,18 +771,26 @@ - (void)picker:(PHPickerViewController *)picker didFinishPicking:(NSArray<PHPick
+     }];
+ 
+     dispatch_group_notify(completionGroup, dispatch_get_main_queue(), ^{
++        // ORBITAL-PATCH(#971): this is the block that aborted the app
++        // (RCTTurboModule.mm LOG(FATAL), Sentry ORBITAL-MOBILE-R). It now calls
++        // the callback TAKEN by its own didFinishPicking:, which no later launch
++        // can reach, and it still calls it exactly once on either branch.
++        NSArray<NSDictionary *> *mappedAssets;
++        @synchronized (assets) {
++            mappedAssets = [assets copy];
++        }
+         //  mapVideoToAsset can fail and return nil, leaving asset NSNull.
+-        for (NSDictionary *asset in assets) {
++        for (NSDictionary *asset in mappedAssets) {
+             if ([asset isEqual:[NSNull null]]) {
+-                self.callback(@[@{@"errorCode": errOthers}]);
++                callback(@[@{@"errorCode": errOthers}]);
+                 return;
+             }
+         }
+ 
+         NSMutableDictionary *response = [[NSMutableDictionary alloc] init];
+-        [response setObject:assets forKey:@"assets"];
++        [response setObject:mappedAssets forKey:@"assets"];
+ 
+-        self.callback(@[response]);
++        callback(@[response]);
+     });
+ }
+ 

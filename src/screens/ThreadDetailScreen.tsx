@@ -295,7 +295,7 @@ export function ThreadDetailScreen({
   const [error, setError] = useState<string | null>(null);
   const [replyTarget, setReplyTarget] = useState<ReplyTarget | null>(null);
   const [sending, setSending] = useState(false);
-  const { selectedMedia, pickMedia, removeMedia, clearMedia } = useMediaPicker();
+  const { selectedMedia, pickMedia, removeMedia, clearMedia, isPicking } = useMediaPicker();
   const {
     progress: uploadProgress,
     cancel: cancelUpload,
@@ -1302,6 +1302,10 @@ export function ThreadDetailScreen({
           onChangeText={setComposerText}
           media={selectedMedia}
           onPickMedia={pickMedia}
+          // #971: the app-wide pick lock. A second launch while the first is
+          // still loading assets is what overwrote the native callback, so the
+          // attach button dims rather than taking a press the lock will drop.
+          pickMediaDisabled={isPicking}
           onRemoveMedia={removeMedia}
           showEmojiPicker={showEmojiPicker}
           onToggleEmojiPicker={handleToggleEmojiPicker}

@@ -29,7 +29,8 @@
     "test:pod-paths": "bash scripts/test-assert-no-absolute-pod-paths.sh",
     "test:firebase-spm": "bash scripts/test-verify-firebase-spm.sh",
     "test:rust-gate:android": "bash scripts/test-rust-profile-gate-android.sh",
-    "test:rust-gate:ios": "bash scripts/test-rust-profile-gate-ios.sh"
+    "test:rust-gate:ios": "bash scripts/test-rust-profile-gate-ios.sh",
+    "postinstall": "patch-package --error-on-fail --error-on-warn"
   },
   "dependencies": {
     "@dr.pogodin/react-native-fs": "~2.40.4",
@@ -52,7 +53,7 @@
     "react-native-config": "^1.7.2",
     "react-native-gesture-handler": "^3.4.0",
     "react-native-get-random-values": "^2.1.0",
-    "react-native-image-picker": "^8.2.1",
+    "react-native-image-picker": "8.2.1",
     "react-native-keychain": "^10.0.0",
     "react-native-mmkv": "^4.3.2",
     "react-native-nitro-modules": "^0.36.5",
@@ -80,6 +81,7 @@
     "eslint": "^8.19.0",
     "jest": "^29.6.3",
     "openmoji": "^17.0.0",
+    "patch-package": "8.0.1",
     "prettier": "3.9.10",
     "react-test-renderer": "19.1.1",
     "sharp": "^0.35.5",

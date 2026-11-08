@@ -84,6 +84,18 @@ export interface ReplyComposerProps {
    * reply typed during the wait survives into the send that works.
    */
   sendDisabled?: boolean;
+  /**
+   * Hold the attach button down while a media pick is already in flight
+   * anywhere in the app (#971). ThreadDetailScreen passes `isPicking` from
+   * `useMediaPicker`, which reads the module-scope lock -- the native picker is
+   * a singleton, so a second launch during the first one's asset load is what
+   * overwrote its callback and aborted the process.
+   *
+   * Dims the button as well as disabling it, like `sending` does: a multi-second
+   * HEVC load has no other on-screen sign, and a live-looking button that
+   * swallows presses is what made the user tap again.
+   */
+  pickMediaDisabled?: boolean;
 }
 
 export const ReplyComposer = React.memo(function ReplyComposer({
@@ -104,6 +116,7 @@ export const ReplyComposer = React.memo(function ReplyComposer({
   blockedPeerId,
   blockedLabel,
   sendDisabled = false,
+  pickMediaDisabled = false,
 }: ReplyComposerProps): React.JSX.Element {
   const theme = useTheme();
   // Both props or neither: a label with no id (or the reverse) is not a
@@ -222,7 +235,7 @@ export const ReplyComposer = React.memo(function ReplyComposer({
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: theme.spacing.xs,
-    opacity: sending ? 0.5 : 1,
+    opacity: sending || pickMediaDisabled ? 0.5 : 1,
   };
 
   const sendTextStyle: TextStyle = {
@@ -294,7 +307,7 @@ export const ReplyComposer = React.memo(function ReplyComposer({
               <TouchableOpacity
                 style={mediaButtonStyle}
                 onPress={onPickMedia}
-                disabled={sending}
+                disabled={sending || pickMediaDisabled}
                 accessibilityRole="button"
                 accessibilityLabel="Attach media"
                 testID="media-picker-button"

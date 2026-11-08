@@ -19,7 +19,12 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { launchImageLibrary } from 'react-native-image-picker';
+import {
+  launchLibraryOnce,
+  pickerErrorCopy,
+  reportPickerError,
+  usePickerInFlight,
+} from '../hooks/useMediaPicker';
 import { useTheme } from '../theme';
 import { useAuth } from '../stores';
 import { Header } from '../components/Header';
@@ -52,6 +57,8 @@ export function EditProfileScreen({ navigation }: Props): React.JSX.Element {
   const [avatarRemoved, setAvatarRemoved] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // #971: the app-wide pick lock, shared with the composer surfaces.
+  const pickerInFlight = usePickerInFlight();
 
   // Validation
   const nameValid = DISPLAY_NAME_REGEX.test(editedName) && editedName.trim().length > 0;
@@ -79,13 +86,26 @@ export function EditProfileScreen({ navigation }: Props): React.JSX.Element {
       // NOTE: maxWidth/maxHeight/quality do NOT reliably strip EXIF/GPS metadata --
       // Android's react-native-image-picker skips the re-encode for images <= 2048px.
       // The authoritative EXIF/GPS strip is in avatarService via sanitizeStillImage.
-      const result = await launchImageLibrary({
+      const result = await launchLibraryOnce({
         mediaType: 'photo',
         maxWidth: 800,
         maxHeight: 800,
         quality: 0.8,
         assetRepresentationMode: 'compatible',
       });
+
+      // Another surface already has a pick in flight (#971). Avatar options are
+      // 800px/q0.8 against the composer's 2048px/q0.9, so sharing a launch is
+      // not an option: we wait our turn rather than take theirs.
+      if (result === null) return;
+
+      if (result.errorCode !== undefined) {
+        reportPickerError(result.errorCode);
+        // One home for picker copy (useMediaPicker.pickerErrorCopy); the banner
+        // carries the body only, since the ErrorBanner has no title slot.
+        setError(pickerErrorCopy(result.errorCode).body);
+        return;
+      }
 
       if (result.didCancel || !result.assets || result.assets.length === 0) return;
 
@@ -109,6 +129,13 @@ export function EditProfileScreen({ navigation }: Props): React.JSX.Element {
   }, []);
 
   const handleAvatarPress = useCallback(() => {
+    // #971: a pick is already loading somewhere, so "Choose Photo" would be
+    // swallowed by the lock. Both touchables are disabled and dimmed while that
+    // is true, so this is the belt to that suspenders -- it also covers the
+    // press that races the re-render. "Remove Photo" waits with it; a pick
+    // resolves in seconds and the lock is released in `finally`.
+    if (pickerInFlight) return;
+
     const hasAvatar = !!previewAvatarUrl;
 
     if (Platform.OS === 'ios') {
@@ -133,7 +160,7 @@ export function EditProfileScreen({ navigation }: Props): React.JSX.Element {
       ];
       Alert.alert('Profile Photo', undefined, buttons);
     }
-  }, [previewAvatarUrl, handleChoosePhoto, handleRemovePhoto]);
+  }, [pickerInFlight, previewAvatarUrl, handleChoosePhoto, handleRemovePhoto]);
 
   const handleSave = useCallback(async () => {
     if (!canSave) return;
@@ -190,12 +217,16 @@ export function EditProfileScreen({ navigation }: Props): React.JSX.Element {
 
   const avatarTouchStyle: ViewStyle = {
     marginBottom: theme.spacing.sm,
+    // #971: dimmed while a pick is in flight, the same signal the composer
+    // surfaces give. Both avatar touchables are also `disabled`.
+    opacity: pickerInFlight ? 0.5 : 1,
   };
 
   const changePhotoStyle: TextStyle = {
     fontFamily: theme.typography.fontFamily.body,
     fontSize: theme.typography.fontSize.sm,
-    color: theme.colors.blue,
+    // ComposeThreadScreen's idiom for a gated label.
+    color: pickerInFlight ? theme.colors.textTertiary : theme.colors.blue,
   };
 
   const counterStyle: TextStyle = {
@@ -236,6 +267,7 @@ export function EditProfileScreen({ navigation }: Props): React.JSX.Element {
             <TouchableOpacity
               style={avatarTouchStyle}
               onPress={handleAvatarPress}
+              disabled={pickerInFlight}
               activeOpacity={0.7}
               accessibilityRole="button"
               accessibilityLabel="Change profile photo"
@@ -250,7 +282,12 @@ export function EditProfileScreen({ navigation }: Props): React.JSX.Element {
                 avatarDigest={editedAvatarUri || avatarRemoved ? null : avatarDigest}
               />
             </TouchableOpacity>
-            <TouchableOpacity onPress={handleAvatarPress} activeOpacity={0.7}>
+            <TouchableOpacity
+              onPress={handleAvatarPress}
+              disabled={pickerInFlight}
+              activeOpacity={0.7}
+              testID="change-photo-button"
+            >
               <Text style={changePhotoStyle}>Change Photo</Text>
             </TouchableOpacity>
           </View>

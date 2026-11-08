@@ -72,13 +72,22 @@ jest.mock('../../services/mediaUploadService', () => ({
 }));
 
 let mockSelectedMedia: unknown[] = [];
+/**
+ * #971: the app-wide pick lock the real hook exposes. Mutable and read at call
+ * time (same shape as `mockSelectedMedia` above) so a test can flip it before
+ * rendering and prove the attach button dims with it.
+ */
+let mockIsPicking = false;
 
+// Keys here mirror `useMediaPicker`'s real return shape exactly. Two keys this
+// factory used to carry were never part of it; a mock key the hook does not
+// have lands on the screen as `undefined` and silently kills the branch that
+// reads it, so do not add one back.
 jest.mock('../../hooks/useMediaPicker', () => ({
   useMediaPicker: () => ({
     selectedMedia: mockSelectedMedia,
     pickMedia: jest.fn(),
-    pickPhotos: jest.fn(),
-    takePhoto: jest.fn(),
+    isPicking: mockIsPicking,
     removeMedia: jest.fn(),
     clearMedia: jest.fn(),
   }),
@@ -234,6 +243,7 @@ beforeEach(() => {
   mockCreateNewThread.mockReset();
   mockUsePreventRemove.mockClear();
   mockSelectedMedia = [];
+  mockIsPicking = false;
   mockBlockedPeer = null;
   mockIsFocused = true;
   mockUploadMediaBatch.mockResolvedValue(['media-id-1']);
@@ -254,6 +264,22 @@ describe('ComposeThreadScreen — rendering', () => {
   it('renders the Post button', () => {
     const renderer = renderScreen();
     expect(() => findPostButton(renderer.root)).not.toThrow();
+  });
+});
+
+describe('ComposeThreadScreen — pick lock (#971)', () => {
+  // The screen ORs the hook's app-wide `isPicking` into the attach button's
+  // `disabled`, so a second tap cannot overwrite the native picker callback.
+  it('disables the attach button while a pick is in flight', () => {
+    mockIsPicking = true;
+    const renderer = renderScreen();
+    expect(findByTestId(renderer.root, 'attach-media-button').props.disabled).toBe(true);
+  });
+
+  it('leaves the attach button enabled when no pick is in flight', () => {
+    mockIsPicking = false;
+    const renderer = renderScreen();
+    expect(findByTestId(renderer.root, 'attach-media-button').props.disabled).toBe(false);
   });
 });
 

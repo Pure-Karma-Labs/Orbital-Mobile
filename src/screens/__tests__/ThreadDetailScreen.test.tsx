@@ -196,15 +196,27 @@ jest.mock('../../services/mediaUploadService', () => ({
     (e instanceof Error && e.message === require('../../services/media/uploadCancellation').UPLOAD_CANCELLED_MESSAGE),
 }));
 
-const mockPickPhotos = jest.fn();
+const mockPickMedia = jest.fn();
 const mockRemoveMedia = jest.fn();
 const mockClearMedia = jest.fn();
 let mockSelectedMedia: unknown[] = [];
+/**
+ * #971: the app-wide pick lock the real hook exposes. Mutable and read at call
+ * time (same shape as `mockSelectedMedia` above) so a test can flip it before
+ * rendering and prove the composer's attach button dims with it.
+ *
+ * The factory keys here MUST match `useMediaPicker`'s real return shape —
+ * before #971 this mock named the pick function something the hook never
+ * exported, so `onPickMedia` arrived at ReplyComposer as `undefined` and the
+ * attach button was never rendered in this suite at all.
+ */
+let mockIsPicking = false;
 
 jest.mock('../../hooks/useMediaPicker', () => ({
   useMediaPicker: () => ({
     selectedMedia: mockSelectedMedia,
-    pickPhotos: mockPickPhotos,
+    pickMedia: mockPickMedia,
+    isPicking: mockIsPicking,
     removeMedia: mockRemoveMedia,
     clearMedia: mockClearMedia,
   }),
@@ -439,6 +451,7 @@ async function renderScreen(
 function applyDefaultMocks(): void {
   jest.clearAllMocks();
   mockSelectedMedia = [];
+  mockIsPicking = false;
   mockBlockedSet = new Set<string>();
   mockStoreReplyIds = {};
   mockMutedTargets = {};
@@ -989,6 +1002,41 @@ describe('ThreadDetailScreen — media send', () => {
     });
     // Failed with media still selected: the unsent arm is live.
     expect(mockUsePreventRemove.mock.calls.at(-1)?.[0]).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pick lock (#971)
+// ---------------------------------------------------------------------------
+
+describe('ThreadDetailScreen — pick lock (#971)', () => {
+  /**
+   * The screen reads `isPicking` off `useMediaPicker` and hands it down as
+   * ReplyComposer's `pickMediaDisabled`, which the attach button ORs with
+   * `sending`. ReplyComposer is NOT mocked in this suite, so these assertions
+   * read the real button's own `disabled` prop.
+   */
+  it('disables the composer attach button while a pick is in flight', async () => {
+    mockIsPicking = true;
+    const renderer = await renderScreen();
+    const btn = renderer.root.findAll(
+      (node) => node.props.testID === 'media-picker-button',
+    );
+    expect(btn.length).toBeGreaterThan(0);
+    expect(btn[0].props.disabled).toBe(true);
+  });
+
+  it('leaves the composer attach button enabled when no pick is in flight', async () => {
+    // Negative control for the case above — before #971 the stale mock key
+    // left `onPickMedia` undefined and this button was never rendered at all,
+    // which made the positive assertion unreachable.
+    mockIsPicking = false;
+    const renderer = await renderScreen();
+    const btn = renderer.root.findAll(
+      (node) => node.props.testID === 'media-picker-button',
+    );
+    expect(btn.length).toBeGreaterThan(0);
+    expect(btn[0].props.disabled).toBe(false);
   });
 });
 

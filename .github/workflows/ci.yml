@@ -159,6 +159,10 @@ jobs:
               - 'packages/orbital-media-export/ios/**'
               - 'packages/orbital-media-export/src/Native*.ts'
               - '.github/workflows/ci.yml'                        # edits to this gate must exercise the gate (#767)
+              # #971. patch-package rewrites native pod sources in node_modules at
+              # install time, so a patch-only PR changes what pod install resolves
+              # and what iOS compiles.
+              - 'patches/**'
               - 'scripts/assert-no-absolute-pod-paths.sh'         # #767
               - 'scripts/test-assert-no-absolute-pod-paths.sh'    # #767
               - 'scripts/verify-firebase-spm.rb'                  # #769
@@ -422,6 +426,9 @@ jobs:
               - 'packages/orbital-media-export/ios/**'
               - 'packages/orbital-media-export/src/Native*.ts'
               - '.github/workflows/ci.yml'
+              # #971. patch-package rewrites native pod sources in node_modules
+              # at install time, so a patch-only PR changes what iOS compiles.
+              - 'patches/**'
 
       - name: Setup Node.js
         if: github.event_name != 'pull_request' || steps.pod-filter.outputs.ios-native == 'true'

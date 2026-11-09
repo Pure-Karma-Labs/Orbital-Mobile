@@ -1,0 +1,13 @@
+# Provenance marker written by the iOS build scripts (local only): the profile
+# line plus the rust-input-digest output. The glob also covers the .tmp staging
+# file those scripts write to before the atomic mv (#813).
+rust-profile-ios.txt*
+
+# No lockfile here on purpose (same rule as orbital-signal, #798). This package
+# is a `file:` dependency of the app root, so its one dependency
+# (uniffi-bindgen-react-native) resolves into the ROOT package-lock.json and
+# `ubrn` runs from the root node_modules/.bin. A sub-lock would be an orphan
+# peer closure pinned at a different react-native than the app, installed by
+# nothing and audited by nothing. Never run `npm install` in this directory.
+package-lock.json
+node_modules/

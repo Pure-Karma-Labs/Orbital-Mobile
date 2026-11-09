@@ -209,26 +209,38 @@ jobs:
         run: npm run security:invariants
 
   # ---------------------------------------------------------------------------
-  # 5. Gate job: detect Rust source changes (used by rust-test + rust-audit)
+  # 5. Gate job: detect Rust source changes
+  #    (used by rust-test, rust-test-archive and rust-audit)
   # ---------------------------------------------------------------------------
   changes:
     name: Detect Changes
     runs-on: ubuntu-latest
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
+      rust_archive: ${{ steps.filter.outputs.rust_archive }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
       - name: Paths filter
         id: filter
-        # SHA-pinned: fbd0ab8f3e69293af611ebaee6363fc25e6d187d = v4.0.1
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
+          # Two independent crates, two filters. rust-toolchain.toml is a repo
+          # ROOT pin shared by both (invariant 18 forbids a second one under
+          # packages/), so it belongs to both filters. This workflow file is in
+          # both lists too (build.yml:120 precedent): a PR that edits only the
+          # Rust jobs -- a cache key, a clippy flag, the audit step -- would
+          # otherwise skip the very jobs it changes.
           filters: |
             rust:
               - 'packages/orbital-signal/**'
               - 'rust-toolchain.toml'
+              - '.github/workflows/security.yml'
+            rust_archive:
+              - 'packages/orbital-archive-reader/**'
+              - 'rust-toolchain.toml'
+              - '.github/workflows/security.yml'
 
   # ---------------------------------------------------------------------------
   # 6. Rust tests + Clippy -- runs on Rust changes OR scheduled/manual
@@ -340,18 +352,86 @@ jobs:
         run: cargo clippy --locked --all-targets --features dev-roundtrip -- -D warnings
 
   # ---------------------------------------------------------------------------
-  # 7. cargo audit -- Rust dependency vulnerability check (RustSec advisory DB)
+  # 7. Rust tests + Clippy (orbital_archive_reader) -- runs on archive changes
+  #    OR scheduled/manual
+  # ---------------------------------------------------------------------------
+  rust-test-archive:
+    name: Rust Test & Clippy (archive reader)
+    runs-on: ubuntu-latest
+    needs: changes
+    # Same two guards as rust-test above, for the same two reasons:
+    # paths-filter outputs are empty strings on schedule events (no diff
+    # context), so the schedule/dispatch arms are explicit; and always() is
+    # required because without it a FAILED changes job makes GitHub skip this
+    # job without evaluating the if-expression at all -- the scheduled check
+    # would silently disappear while the workflow stays green.
+    if: >
+      always() &&
+      (github.event_name == 'schedule' ||
+       github.event_name == 'workflow_dispatch' ||
+       needs.changes.outputs.rust_archive == 'true')
+    # No BoringSSL, no protobuf, no git dependency: a cold build is ~2 min.
+    timeout-minutes: 20
+    env:
+      # Same reason as rust-test: rust-toolchain.toml lists 5 Apple/Android
+      # targets that would fail to install on a Linux runner.
+      RUSTUP_TOOLCHAIN: "1.94.1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Deliberately NOT here, unlike the orbital_signal job above:
+      #   - protoc. This crate has no build script and no protobuf; its entire
+      #     dependency set is uniffi, thiserror, flate2 (rust_backend) and
+      #     crc32fast, pinned by invariant 29.
+      #   - the curve25519-dalek fork guard. No crypto, no dalek, and invariant
+      #     29 forbids a [patch] section and any git/path dependency outright,
+      #     which is a stronger guarantee than the per-package grep.
+      - name: Install Rust 1.94.1 (minimal profile)
+        run: |
+          rustup toolchain install 1.94.1 --profile minimal
+          rustup component add clippy --toolchain 1.94.1
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: packages/orbital-archive-reader/rust/orbital_archive_reader
+          # Own key: this crate is its own workspace root with a disjoint
+          # dependency graph, so sharing `rust-security` would thrash both.
+          shared-key: rust-security-archive
+          # Only save the cache from main to avoid cache thrash across PR branches
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Cargo test
+        working-directory: packages/orbital-archive-reader/rust/orbital_archive_reader
+        # ~30 s in debug. Almost all of it is the deterministic ~5,000-mutant
+        # archive sweep in tests/stability_and_mutation.rs, which is the whole
+        # point of the job: no mutated archive may panic.
+        run: cargo test --locked
+
+      - name: Cargo clippy (deny warnings)
+        working-directory: packages/orbital-archive-reader/rust/orbital_archive_reader
+        # --all-targets lints tests/ too: the hostile matrix and its ZIP
+        # generator are ~75 KB of support code that would otherwise go unlinted.
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+  # ---------------------------------------------------------------------------
+  # 8. cargo audit -- Rust dependency vulnerability check (RustSec advisory DB)
   # ---------------------------------------------------------------------------
   rust-audit:
     name: Rust Audit (cargo-audit)
     runs-on: ubuntu-latest
     needs: changes
-    # Same schedule-guard and always() rationale as rust-test above
+    # Same schedule-guard and always() rationale as rust-test above. Either
+    # crate's lock changing must run BOTH audits: one cargo-audit install
+    # serves two cheap audits, and a shared advisory DB fetch is the expensive
+    # part.
     if: >
       always() &&
       (github.event_name == 'schedule' ||
        github.event_name == 'workflow_dispatch' ||
-       needs.changes.outputs.rust == 'true')
+       needs.changes.outputs.rust == 'true' ||
+       needs.changes.outputs.rust_archive == 'true')
     env:
       RUSTUP_TOOLCHAIN: "1.94.1"
     steps:
@@ -376,8 +456,16 @@ jobs:
         # the sibling rust-test job's `cargo test --locked`.
         run: cargo audit --file Cargo.lock
 
+      - name: cargo audit -- archive reader (blocking)
+        working-directory: packages/orbital-archive-reader/rust/orbital_archive_reader
+        # Separate step, not a loop: invariant 18 matches each `cargo audit`
+        # against its step's own working-directory, so a crate silently
+        # dropping out of the audit set is a violation rather than a diff
+        # nobody reads. Same --file rationale as the step above.
+        run: cargo audit --file Cargo.lock
+
   # ---------------------------------------------------------------------------
-  # 8. libsignal upstream version check -- create GH issue when behind
+  # 9. libsignal upstream version check -- create GH issue when behind
   # ---------------------------------------------------------------------------
   libsignal-check:
     name: libsignal Version Check

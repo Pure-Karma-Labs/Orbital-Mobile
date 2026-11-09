@@ -191,8 +191,37 @@ updates:
       # fail with "invalid utf-8 sequence" extracting UNIFFI_META symbols
       # (see closed PR #466). No ubrn release supporting 0.32 exists yet;
       # re-evaluate when jhugman/uniffi-bindgen-react-native ships one.
+      #
+      # The floor is 0.31.1, not 0.32.0, since #920 added a SECOND cargo
+      # directory (orbital-archive-reader). Both crates' Cargo.lock files must
+      # resolve the same uniffi — invariant 18 asserts it, because one pinned
+      # ubrn generates the bindings for both. Dependabot bumps one directory at
+      # a time, so a 0.31.x release landing here alone would split the locks
+      # and turn CI red. Every uniffi move is a deliberate two-crate lockstep
+      # edit; the archive entry below carries the same floor.
       - dependency-name: "uniffi"
-        versions: [">= 0.32.0"]
+        versions: [">= 0.31.1"]
+
+  # Rust/Cargo dependencies (orbital_archive_reader crate, #920)
+  # Its own cargo workspace root, so its own Dependabot entry. The whole
+  # dependency set is uniffi, thiserror, flate2 (rust_backend) and crc32fast,
+  # pinned by invariant 29 -- a PR adding a dependency here fails that rule.
+  - package-ecosystem: cargo
+    directory: /packages/orbital-archive-reader/rust/orbital_archive_reader
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    ignore:
+      # uniffi is pinned caret-identical in BOTH crates so the two Cargo.lock
+      # files resolve the same version (invariant 18 asserts exactly that).
+      # Dependabot bumps one directory at a time, so any uniffi bump landing
+      # here alone would split the two locks and green CI would ship bindings
+      # generated against one version and a static library built against the
+      # other. Ignoring >= 0.31.1 makes every uniffi move a deliberate
+      # two-crate lockstep edit, paired with the ubrn pin (see the orbital-
+      # signal entry above for why 0.32 is additionally blocked).
+      - dependency-name: "uniffi"
+        versions: [">= 0.31.1"]
 
   # Gradle dependencies (orbital-media-transcoder Android module)
   # media3 is a media-parsing stack with a real CVE history and is pinned

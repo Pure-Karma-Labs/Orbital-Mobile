@@ -778,6 +778,13 @@ const APP_FILE = join(SRC, 'App.tsx');
  * @param issue - Issue suffix on the violation line. Defaults to the Sentry
  *   privacy-hook issue the helper was written for, so existing callers are
  *   unchanged.
+ * @param strip - Optional comment stripper for languages this helper does not
+ *   know. Without it the window is located in the RAW text and only C-style
+ *   comments are removed from the window, which is what every caller before
+ *   #920 relies on. WITH it the whole file is stripped BEFORE the window is
+ *   located, so a `#`-commented pin cannot satisfy the rule and a `#`-commented
+ *   section header cannot open a window — pass `stripShellComments` for TOML or
+ *   YAML. Mutation 29-18 is why this parameter exists.
  */
 function checkWindowedPins(
   file,
@@ -787,6 +794,7 @@ function checkWindowedPins(
   pins,
   forbidden = [],
   issue = '#746',
+  strip = null,
 ) {
   let text;
   try {
@@ -797,6 +805,7 @@ function checkWindowedPins(
     );
     return;
   }
+  if (strip) text = strip(text);
   const match = text.match(windowRe);
   if (match === null) {
     violations.push(
@@ -804,14 +813,16 @@ function checkWindowedPins(
     );
     return;
   }
-  const body = match[0]
-    .split('\n')
-    .filter((line) => !/^\s*(\/\/|\/\*|\*)/.test(line))
-    // Trailing comments too: `enableNetworkBreadcrumbs: true, // was: false`
-    // must not satisfy the pin (PR #837 review). None of these windows holds
-    // a `//` inside a string literal, so a plain strip is safe.
-    .map((line) => line.replace(/\s\/\/.*$/, ''))
-    .join('\n');
+  const body = strip
+    ? match[0]
+    : match[0]
+        .split('\n')
+        .filter((line) => !/^\s*(\/\/|\/\*|\*)/.test(line))
+        // Trailing comments too: `enableNetworkBreadcrumbs: true, // was: false`
+        // must not satisfy the pin (PR #837 review). None of these windows holds
+        // a `//` inside a string literal, so a plain strip is safe.
+        .map((line) => line.replace(/\s\/\/.*$/, ''))
+        .join('\n');
   for (const pin of pins) {
     if (!body.includes(pin)) {
       violations.push(
@@ -973,8 +984,9 @@ for (const allowedFile of TSU_ALLOWED_FILES) {
 
 // ---------------------------------------------------------------------------
 // 18. Rust provenance: every cargo invocation is --locked, every cargo install
-//     is version-pinned, cargo audit reads the committed lock, and the two
-//     freshness gates share one input list (#812/#813)
+//     is version-pinned, cargo audit reads the committed lock, both crates are
+//     actually tested, neither reaches outside its own digested input set, and
+//     the two freshness gates share one input list (#812/#813/#920)
 // ---------------------------------------------------------------------------
 
 // Cargo re-resolves a drifted Cargo.lock SILENTLY unless --locked is passed.
@@ -991,17 +1003,25 @@ for (const allowedFile of TSU_ALLOWED_FILES) {
 //   including prose such as the libsignal-bump issue body, because a runbook
 //   that tells a developer to run an unlocked cargo command is itself the bug.
 //
-//   EXECUTABLE (EXEC_CARGO_RE) decides the non-vacuity FLOORS and the
+//   EXECUTABLE (EXEC_CARGO_RE) decides the non-vacuity assertions and the
 //   `cargo audit --file` rule. It requires the segment to START with the cargo
 //   invocation (optionally behind a YAML `run:`), which is what a real command
 //   looks like after splitting on `&&`/`||`/`;`/`|`.
 //
-// The split is the PR #859 blocking fix. When the floors counted permissive
+// The split is the PR #859 blocking fix. When the assertions counted permissive
 // matches, the libsignal-bump issue body's "- Run cargo test --locked … and
 // cargo clippy --locked …" line supplied test +1 and clippy +1 all by itself,
 // so the entire rust-test job could be deleted and this invariant stayed
-// green. Mutation-proven: replacing the real :334/:341 `run:` steps with
-// `run: true` now fires two "found 0" violations.
+// green. Mutation-proven: replacing the real rust-test `run:` steps with
+// `run: true` fires "found none" violations.
+//
+// Since #920 the non-vacuity assertions are PER CRATE, not per file: each
+// expected invocation is matched together with the `working-directory:` of the
+// YAML step that carries it. Two crates in one workflow made file-wide count
+// floors unsound in both directions — raising security.yml's `test` floor to 2
+// would have been satisfied by two `cargo test`s in the SAME crate (so the
+// archive job could be deleted whole), and the archive job alone satisfies a
+// floor of 1 after the orbital_signal job is deleted.
 //
 // `cargo audit` is excluded from CARGO_RE on purpose — cargo-audit has no
 // --locked flag — and gets its own `--file Cargo.lock` clause instead. That
@@ -1024,6 +1044,46 @@ const EXEC_CARGO_RE = /^\s*(?:run:\s*)?cargo(?:\s+\+[\w.-]+)?\s+(build|test|clip
 const CARGO_INSTALL_PIN_RE = /\bcargo\s+install\s+([\w.-]+)@([\w.+-]+)/g;
 const PKG_REL = 'packages/orbital-signal';
 const CRATE_REL = 'packages/orbital-signal/rust/orbital_signal';
+const ARCHIVE_PKG_REL = 'packages/orbital-archive-reader';
+const ARCHIVE_CRATE_REL = 'packages/orbital-archive-reader/rust/orbital_archive_reader';
+
+// A GitHub Actions step starts with `- <one of these keys>:`. Prose bullets
+// inside a `run: |` block (the libsignal-bump issue body is full of them) do
+// not match, which is what keeps them out of the working-directory lookup.
+const STEP_KEY_RE =
+  /^(\s*)-\s+(name|uses|run|id|if|with|env|shell|working-directory|timeout-minutes|continue-on-error):/;
+
+/**
+ * The `working-directory:` of the YAML step containing line `idx`, or null.
+ * The step block runs from its first key to the next key at the same-or-lower
+ * indentation, so the lookup cannot leak into a NEIGHBOURING step's
+ * working-directory regardless of key order within the step.
+ */
+function stepWorkingDirectory(lines, idx) {
+  let start = -1;
+  for (let i = idx; i >= 0; i--) {
+    if (STEP_KEY_RE.test(lines[i])) {
+      start = i;
+      break;
+    }
+  }
+  if (start < 0) return null;
+  const indent = lines[start].search(/\S/);
+  let end = lines.length;
+  for (let j = start + 1; j < lines.length; j++) {
+    if (!lines[j].trim()) continue;
+    const col = lines[j].search(/\S/);
+    if (col < indent || (col === indent && STEP_KEY_RE.test(lines[j]))) {
+      end = j;
+      break;
+    }
+  }
+  for (let j = start; j < end; j++) {
+    const wd = /^\s*working-directory:\s*(.+?)\s*$/.exec(lines[j]);
+    if (wd) return wd[1].replace(/^['"]|['"]$/g, '');
+  }
+  return null;
+}
 
 function cargoSegments(rawLine) {
   if (/^\s*#/.test(rawLine)) return [];
@@ -1036,6 +1096,10 @@ function cargoSegments(rawLine) {
 // Collected across every scanned file so a crate pinned in two places can be
 // checked for version parity.
 const cargoInstallPins = new Map(); // crate -> Map<version, string[] sites>
+
+// Every executable cargo invocation, with the crate directory its step runs
+// in. Feeds the per-crate non-vacuity assertions below.
+const cargoInvocations = []; // { file, line, sub, dir }
 
 function checkCargoFile(file, label) {
   const empty = { build: 0, test: 0, clippy: 0, install: 0, audit: 0 };
@@ -1052,8 +1116,16 @@ function checkCargoFile(file, label) {
     for (const segment of cargoSegments(lines[i])) {
       const exec = EXEC_CARGO_RE.exec(segment);
 
-      // --- Non-vacuity floors: executable invocations only.
-      if (exec) counts[exec[1]] += 1;
+      // --- Non-vacuity: executable invocations only.
+      if (exec) {
+        counts[exec[1]] += 1;
+        cargoInvocations.push({
+          file,
+          line: i + 1,
+          sub: exec[1],
+          dir: stepWorkingDirectory(lines, i),
+        });
+      }
 
       // --- cargo audit must read the COMMITTED lock. cargo-audit has no
       // --locked flag; without --file it generates a lock from Cargo.toml and
@@ -1114,10 +1186,12 @@ for (const file of CARGO_SCAN_FILES) {
 // --- Per-file non-vacuity: the gating invocations must still EXIST as
 // commands. A coarse repo-wide "at least one cargo line" check would survive
 // deleting the whole rust-test job, which is the regression this guards.
+//
+// build.yml stays a FILE-WIDE floor: `rust-apple-targets` cross-compiles two
+// Apple slices from the same step and directory, so the two invocations are
+// not distinguishable by working-directory. Its per-crate split lands in PR2
+// with the archive build steps.
 const CARGO_EXPECTED = [
-  ['.github/workflows/security.yml', 'test', 1, 'the rust-test job no longer runs cargo test'],
-  ['.github/workflows/security.yml', 'clippy', 1, 'the rust-test job no longer runs cargo clippy'],
-  ['.github/workflows/security.yml', 'audit', 1, 'the rust-audit job no longer runs cargo audit — the standing RUSTSEC gate'],
   ['.github/workflows/build.yml', 'build', 2, 'rust-apple-targets no longer cross-compiles both Apple slices'],
 ];
 for (const [file, sub, min, why] of CARGO_EXPECTED) {
@@ -1127,6 +1201,153 @@ for (const [file, sub, min, why] of CARGO_EXPECTED) {
   } else if (counts[sub] < min) {
     violations.push(`  ${file}:0  [${RUST_PROV}]  expected >=${min} executable \`cargo ${sub}\` invocation(s), found ${counts[sub]} — ${why}`);
   }
+}
+
+// --- Per-crate non-vacuity. Each row says "this subcommand runs, in THIS
+// crate directory". With two crates in one workflow a count floor proves
+// nothing about coverage: the pair (subcommand, working-directory) does.
+const CARGO_CRATE_EXPECTED = [
+  ['.github/workflows/security.yml', 'test', CRATE_REL, 'the rust-test job no longer runs cargo test in orbital_signal'],
+  ['.github/workflows/security.yml', 'clippy', CRATE_REL, 'the rust-test job no longer runs cargo clippy in orbital_signal'],
+  ['.github/workflows/security.yml', 'audit', CRATE_REL, 'the rust-audit job no longer audits orbital_signal — the standing RUSTSEC gate'],
+  ['.github/workflows/security.yml', 'test', ARCHIVE_CRATE_REL, 'the rust-test-archive job no longer runs cargo test — the ~5,000-mutant hostile-archive sweep would stop running (#920)'],
+  ['.github/workflows/security.yml', 'clippy', ARCHIVE_CRATE_REL, 'the rust-test-archive job no longer runs cargo clippy in orbital_archive_reader (#920)'],
+  ['.github/workflows/security.yml', 'audit', ARCHIVE_CRATE_REL, 'the rust-audit job no longer audits orbital_archive_reader — its flate2/miniz_oxide decompressor would be outside RUSTSEC coverage (#920)'],
+];
+for (const [file, sub, dir, why] of CARGO_CRATE_EXPECTED) {
+  if (!cargoCounts.has(file)) {
+    violations.push(`  ${file}:0  [${RUST_PROV}]  expected cargo-bearing file was not scanned — ${why}`);
+    continue;
+  }
+  const hit = cargoInvocations.some(
+    (inv) => inv.file === file && inv.sub === sub && inv.dir === dir,
+  );
+  if (!hit) {
+    violations.push(`  ${file}:0  [${RUST_PROV}]  no executable \`cargo ${sub}\` step with \`working-directory: ${dir}\` — ${why}`);
+  }
+}
+
+// --- Neither crate may reach outside its own digested input set.
+//
+// Both freshness gates (Android mtime, iOS sha256 digest) hash a LITERAL,
+// fixed per-crate input list: that crate's Cargo.toml, Cargo.lock,
+// rust-toolchain.toml and src/. A `path = "…"` dependency makes source OUTSIDE
+// that list part of the binary, so editing it leaves a stale .a/.xcframework
+// looking fresh to both gates and to `cargo --locked` (a path dep's content is
+// not recorded in the lock). `[patch]` is the same trap by another spelling,
+// and it is also how the curve25519-dalek fork came back in #634.
+//
+// `git =` is forbidden in the ARCHIVE crate only. orbital_signal's libsignal
+// dependency is a git dep and always will be (Signal publishes no crates), and
+// it is sound there because the lock records the resolved rev — content-
+// addressed, so the digest covers it. The archive crate has no such need: it
+// is four crates.io dependencies, and a git dep appearing there would mean
+// something unreviewed is being pulled into a hostile-input parser.
+//
+// The key bans are ANCHORED REGEXES, not substrings: `path = "…"` is equally
+// a dependency at the start of a line, after `{ `, or after `,` with no space
+// at all (`{path="../x"}`), and a `path =` substring check misses two of those
+// three. `[patch` stays a literal — it is a section header, and `[patch]`,
+// `[patch.crates-io]` and `[patch."https://…"]` all start with it.
+//
+// Three spellings beyond the bare key, all probe-proven evasions (PR #977
+// re-review): the DOTTED key `libc.path = "../x"` (legal TOML, equivalent to a
+// `[dependencies.libc]` table), the QUOTED key `"path" = …` / `'git' = …`, and
+// a plain `path = …` inside a `[dependencies.<crate>]` long-form table body —
+// the last of which the line-anchored `^` already covers. Hence `.` in the
+// leading class and an optional quote on each side. A key merely ENDING in the
+// word (`exclude_path = "x"`) is still a non-match: `_` is not in the class.
+const TOML_PATH_KEY_RE = /(^|[\s{,.])["']?path["']?\s*=/m;
+const TOML_GIT_KEY_RE = /(^|[\s{,.])["']?git["']?\s*=/m;
+const CARGO_TOML_BANS = [
+  [`${CRATE_REL}/Cargo.toml`, 'orbital_signal', [['path =', TOML_PATH_KEY_RE], ['[patch', '[patch']]],
+  [
+    `${ARCHIVE_CRATE_REL}/Cargo.toml`,
+    'orbital_archive_reader',
+    [['path =', TOML_PATH_KEY_RE], ['git =', TOML_GIT_KEY_RE], ['[patch', '[patch']],
+  ],
+];
+for (const [file, label, banned] of CARGO_TOML_BANS) {
+  let text;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch {
+    violations.push(`  ${file}:0  [${RUST_PROV}]  ${label}'s Cargo.toml not found — the path/patch dependency rule would pass vacuously`);
+    continue;
+  }
+  // Comments are prose: every one of these Cargo.toml files DOCUMENTS the ban
+  // in a `#` comment, and that must not be mistaken for a violation. TOML uses
+  // shell comment syntax, so the shell stripper is the right one.
+  const code = stripShellComments(text);
+  for (const [name, matcher] of banned) {
+    const hit = typeof matcher === 'string' ? code.includes(matcher) : matcher.test(code);
+    if (hit) {
+      violations.push(`  ${file}:0  [${RUST_PROV}]  \`${name}\` appears in ${label}'s Cargo.toml — source outside the crate's literal freshness-input set would be linked into the binary while both staleness gates still read "fresh"`);
+    }
+  }
+}
+
+// --- One toolchain pin, at the repo root, for both crates.
+// A `rust-toolchain.toml` under packages/ would silently build one crate with
+// a different compiler. The two static libraries are linked into ONE app
+// process and export ~1,805 shared uniffi/JNI symbols between them; a
+// toolchain split there is an ODR-style mismatch nobody would see until a
+// device crash. The root pin is also an input to both freshness gates, so a
+// per-crate override would additionally be undigested.
+const ROOT_TOOLCHAIN = 'rust-toolchain.toml';
+try {
+  statSync(ROOT_TOOLCHAIN);
+} catch {
+  violations.push(`  ${ROOT_TOOLCHAIN}:0  [${RUST_PROV}]  the repo-root Rust toolchain pin is missing — every cargo invocation would use whatever toolchain the host defaults to`);
+}
+// `target/` and `node_modules/` are build output, not sources, and walking
+// them is both slow and meaningless here.
+function findStrayToolchainPins(dir, found = []) {
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return found;
+  }
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      if (entry.name === 'target' || entry.name === 'node_modules') continue;
+      findStrayToolchainPins(join(dir, entry.name), found);
+    } else if (entry.name.startsWith('rust-toolchain')) {
+      found.push(join(dir, entry.name));
+    }
+  }
+  return found;
+}
+for (const stray of findStrayToolchainPins('packages')) {
+  violations.push(`  ${stray}:0  [${RUST_PROV}]  per-package Rust toolchain pin — one repo-root rust-toolchain.toml must cover both crates (the two static libraries share ~1,805 exported symbols in one process)`);
+}
+
+// --- Both crates' locks must resolve the SAME uniffi.
+// uniffi's generated scaffolding and the bindings produced by
+// uniffi-bindgen-react-native must come from one version: the metadata format
+// and the UNIFFI_META symbol layout are version-coupled, and both crates'
+// bindings are generated by ONE pinned ubrn. A split resolves green on CI and
+// fails at runtime (or, on Android, during symbol extraction).
+function lockedUniffiVersion(lockPath) {
+  let text;
+  try {
+    text = readFileSync(lockPath, 'utf8');
+  } catch {
+    violations.push(`  ${lockPath}:0  [${RUST_PROV}]  Cargo.lock not found — the cross-crate uniffi parity check would pass vacuously`);
+    return null;
+  }
+  const m = /^name = "uniffi"\nversion = "([^"]+)"/m.exec(text);
+  if (!m) {
+    violations.push(`  ${lockPath}:0  [${RUST_PROV}]  no resolved \`uniffi\` package — the cross-crate uniffi parity check would pass vacuously`);
+    return null;
+  }
+  return m[1];
+}
+const SIGNAL_UNIFFI = lockedUniffiVersion(`${CRATE_REL}/Cargo.lock`);
+const ARCHIVE_UNIFFI = lockedUniffiVersion(`${ARCHIVE_CRATE_REL}/Cargo.lock`);
+if (SIGNAL_UNIFFI !== null && ARCHIVE_UNIFFI !== null && SIGNAL_UNIFFI !== ARCHIVE_UNIFFI) {
+  violations.push(`  ${ARCHIVE_CRATE_REL}/Cargo.lock:0  [${RUST_PROV}]  uniffi resolves to ${ARCHIVE_UNIFFI} here but ${SIGNAL_UNIFFI} in ${CRATE_REL}/Cargo.lock — one pinned uniffi-bindgen-react-native generates bindings for both crates, so the versions must be identical (#920)`);
 }
 
 // --- A crate installed in more than one place must be pinned to ONE version.
@@ -1987,12 +2208,14 @@ const ME_UPLOAD_SERVICE = join(SRC, 'services', 'mediaUploadService.ts');
  */
 
 /** Read a file, recording a violation and returning null when it is missing. */
-function meRead(file, rule, why) {
+// `issue` defaults to the media-export issue this helper was written for, so
+// its original callers are unchanged; rule 29 (#920) passes its own.
+function meRead(file, rule, why, issue = ME_ISSUE) {
   try {
     return readFileSync(file, 'utf8');
   } catch {
     violations.push(
-      `  ${relative('.', file)}:0  [${rule}]  file not found — ${why} cannot be verified and the rule would pass vacuously (${ME_ISSUE})`,
+      `  ${relative('.', file)}:0  [${rule}]  file not found — ${why} cannot be verified and the rule would pass vacuously (${issue})`,
     );
     return null;
   }
@@ -3390,6 +3613,442 @@ const NP_GATES = [
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// 29. archive-reader-native-pins: the Rust half (#920)
+// ---------------------------------------------------------------------------
+
+// orbital_archive_reader is the ONLY place in Orbital where hostile,
+// attacker-chosen bytes are parsed by hand. It exists as a second crate (and a
+// second binary) precisely so that parsing lives outside the key-holding
+// orbital_signal library. Six properties make that separation real, none of
+// them observable from JS, each of them a one-line edit away from being gone:
+//
+//   1. Memory safety. `#![deny(unsafe_code)]` crate-wide, with exactly ONE
+//      exemption (`fd.rs`, adopting an FFI descriptor). An `unsafe {}` block
+//      added to the ZIP parser would be unreviewed raw-pointer arithmetic over
+//      attacker-controlled lengths.
+//   2. A pure-Rust decompressor. flate2 with `default-features = false` +
+//      `rust_backend` resolves to miniz_oxide. Any default-featured flate2, or
+//      any libz/zlib-ng/zlib-rs backend, hands the inflate loop to C — the
+//      exact code path with the CVE history this crate was built to avoid.
+//   3. A closed dependency set. Four crates.io dependencies, no more: every
+//      addition widens the trusted computing base of the parser.
+//   4. The limits table. The caps are the bomb defence; `KIND_CAPS` having no
+//      `Video` row is what keeps video entries listed-but-never-opened.
+//   5. The allowlist. A denied root appearing as an allowlist row would make
+//      `messages/` (private DMs, photos and all) readable by the importer.
+//      F17's known-root-key set is the other half: it is what stops a wrapper
+//      strip from rewriting a real export's paths, and it must name every root
+//      on BOTH sides.
+//   6. Silence. No logging macro anywhere: an archive path or URI reaching a
+//      log is a privacy leak (and `log::` would also add a dependency).
+//
+// Matching runs on COMMENT-STRIPPED source, because this crate documents each
+// of these bans in its own prose — `fd.rs`'s header names `unsafe`, lib.rs's
+// header quotes `#![deny(unsafe_code)]`, Cargo.toml explains why there is no
+// `panic =` key, and allowlist.rs lists every denied root in a doc comment.
+// Raw-text matching would be satisfied by all of it. The ONE deliberate
+// exception is the no-key-material header phrase, which is prose by nature and
+// is checked on raw text; it is flagged as such below.
+//
+// Every file is read as a NAMED file: a missing one is a violation, never a
+// pass. The glue clauses (.mm / .kt / manifests / ubrn.config.yaml) and rule
+// 29a (import restriction) land with the native layer in PR2.
+
+const AR_RULE = 'archive-reader-native-pins';
+const AR_ISSUE = '#920';
+// One spelling of the crate path in this file: rule 18 already needs it.
+const AR_CRATE = ARCHIVE_CRATE_REL;
+const AR_SRC = join(AR_CRATE, 'src');
+const AR_LIB = join(AR_SRC, 'lib.rs');
+const AR_FD = join(AR_SRC, 'fd.rs');
+const AR_LIMITS = join(AR_SRC, 'limits.rs');
+const AR_ALLOWLIST = join(AR_SRC, 'allowlist.rs');
+const AR_TOML = join(AR_CRATE, 'Cargo.toml');
+const AR_LOCK = join(AR_CRATE, 'Cargo.lock');
+
+function arViolation(file, detail) {
+  violations.push(`  ${relative('.', file)}:0  [${AR_RULE}]  ${detail} (${AR_ISSUE})`);
+}
+
+// --- 29.1 Safety posture across every module.
+//
+// The `unsafe` matcher is the F9 form: the keyword followed by a block, fn,
+// impl, extern or trait. It is deliberately NOT case-insensitive — Rust
+// keywords are case-sensitive, so `UNSAFE {` is not unsafe code, it is a
+// syntax error. `\s*` (not `\s+`) before the brace is what catches the
+// `unsafe\n{` line-break variant, which rustfmt will not produce but a hand
+// edit can.
+// Matched over the WHOLE comment-stripped file, not line by line: `\s*` has
+// to be able to cross the newline for the `unsafe\n{` variant to be caught.
+const AR_UNSAFE_RE = /\bunsafe\s*(\{|fn\b|impl\b|extern\b|trait\b)/g;
+// `log::` covers the log facade; bare `tracing` covers tracing and
+// tracing::debug! alike. On comment-stripped source these can only be code.
+const AR_LOG_TOKENS = ['println!', 'eprintln!', 'print!', 'eprint!', 'dbg!', 'log::', 'tracing'];
+// fd.rs is NOT exempt, it is BOUNDED. A wholesale exemption makes the one file
+// that is allowed to contain `unsafe` the one file where any amount of it is
+// invisible — and it is also the file an attacker-facing descriptor arrives
+// through. So: exactly one unsafe construct, it must be an `unsafe {`
+// expression (not an `unsafe fn`, which would push the obligation onto every
+// caller), exactly one `allow(unsafe_code)`, and the two APIs that make the
+// containment argument work must both still be there. `borrow_raw` is the
+// unsafe step; `try_clone_to_owned` is what makes it a dup this crate owns, so
+// losing it would mean the crate closes the glue's descriptor (F2).
+const AR_FD_REQUIRED = ['BorrowedFd::borrow_raw', 'try_clone_to_owned'];
+
+let arSrcFiles = [];
+try {
+  arSrcFiles = walkSync(AR_SRC, ['.rs']);
+} catch {
+  arViolation(AR_SRC, 'crate src/ directory not found — every clause below would pass vacuously');
+}
+if (arSrcFiles.length === 0) {
+  arViolation(AR_SRC, 'no .rs files under the crate src/ — every clause below would pass vacuously');
+}
+for (const file of arSrcFiles) {
+  const text = readFileSync(file, 'utf8');
+  const code = stripCStyleComments(text);
+  const lines = code.split('\n');
+  const isFd = relative('.', file) === relative('.', AR_FD);
+  const unsafeHits = [...code.matchAll(AR_UNSAFE_RE)];
+  const allowHits = code.match(/allow\(unsafe_code\)/g) ?? [];
+  if (isFd) {
+    if (unsafeHits.length !== 1) {
+      arViolation(file, `fd.rs contains ${unsafeHits.length} \`unsafe\` construct(s) — exactly one is allowed, the \`BorrowedFd::borrow_raw\` dup. Found: ${unsafeHits.map((h) => h[0].replace(/\s+/g, ' ')).join(', ') || 'none'}`);
+    } else if (unsafeHits[0][1] !== '{') {
+      arViolation(file, `fd.rs's single \`unsafe\` construct is \`${unsafeHits[0][0].replace(/\s+/g, ' ')}\` — it must be an \`unsafe {\` expression, so the obligation stays inside this file instead of moving to every caller`);
+    }
+    if (allowHits.length !== 1) {
+      arViolation(file, `fd.rs carries ${allowHits.length} \`allow(unsafe_code)\` attribute(s) — exactly one, on the dup function, is allowed`);
+    }
+    for (const pin of AR_FD_REQUIRED) {
+      if (!code.includes(pin)) {
+        arViolation(file, `fd.rs no longer calls \`${pin}\` — the one permitted \`unsafe\` block is only defensible as borrow_raw immediately followed by a dup this crate owns`);
+      }
+    }
+  } else {
+    for (const m of unsafeHits) {
+      const lineNum = code.slice(0, m.index).split('\n').length;
+      report(file, lineNum, AR_RULE, `\`unsafe\` outside fd.rs: ${m[0].replace(/\s+/g, ' ')} (${AR_ISSUE})`);
+    }
+  }
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!isFd && line.includes('allow(unsafe_code)')) {
+      report(file, i + 1, AR_RULE, `\`allow(unsafe_code)\` outside fd.rs: ${line.trim()} (${AR_ISSUE})`);
+    }
+    if (line.includes('global_allocator')) {
+      report(file, i + 1, AR_RULE, `custom global allocator in a hostile-input parser: ${line.trim()} (${AR_ISSUE})`);
+    }
+    for (const token of AR_LOG_TOKENS) {
+      if (line.includes(token)) {
+        report(file, i + 1, AR_RULE, `logging in the archive reader (\`${token}\`) — paths and URIs must never reach a log: ${line.trim()} (${AR_ISSUE})`);
+      }
+    }
+  }
+}
+
+// The crate-wide deny, matched from the first inner attribute so that deleting
+// the attribute block loses the window and fails rather than passing.
+checkWindowedPins(
+  AR_LIB,
+  AR_RULE,
+  /^#!\[[\s\S]*/m,
+  "lib.rs's crate attribute block",
+  ['#![deny(unsafe_code)]'],
+  [],
+  AR_ISSUE,
+);
+
+// RAW TEXT, deliberately: this is a documentation pin, not a code pin. The
+// crate header is the contract the security audit and the FFI review read —
+// "no key material crosses this boundary" is why the parser was split out of
+// orbital_signal at all, and a silent deletion would erase the rationale that
+// keeps crypto out of this crate.
+const AR_HEADER_PHRASE = 'No key material, no ciphertext and no credential';
+const arLibRaw = meRead(AR_LIB, AR_RULE, 'the no-key-material header contract', AR_ISSUE);
+if (arLibRaw !== null && !arLibRaw.includes(AR_HEADER_PHRASE)) {
+  arViolation(AR_LIB, `the crate header no longer states "${AR_HEADER_PHRASE} …" — that contract is why hostile-input parsing lives outside the key-holding crate`);
+}
+
+// --- 29.2 The closed dependency set and the release profile.
+const AR_ALLOWED_DEPS = new Set(['uniffi', 'thiserror', 'flate2', 'crc32fast']);
+// Non-vacuity anchors: a `[dependencies]` table emptied of these would satisfy
+// the subset check trivially.
+const AR_REQUIRED_DEPS = ['uniffi', 'flate2'];
+// EVERY dependency table, in BOTH TOML spellings:
+//
+//   short form  [dependencies] / [build-dependencies] /
+//               [target.'cfg(unix)'.dependencies]      -> crates are body keys
+//   long form   [dependencies.libc] /
+//               [target.'cfg(unix)'.dependencies.nix]  -> the crate is the
+//                                                         HEADER's last segment
+//
+// The long form has no `libc = …` line anywhere, so a body-only scan saw an
+// empty table and passed (PR #977 re-review, probe-proven by two reviewers).
+// `[dev-dependencies]` and `[dev-dependencies.tempfile]` are the documented
+// carve-out — they repeat flate2 and crc32fast for the ZIP generator in
+// tests/support, are never part of the cdylib/staticlib, and adding a test
+// helper must not need an invariant edit. Note that `dev-dependencies` cannot
+// match AR_DEP_HEADER_RE anyway (the character before `dependencies` is `-`,
+// not `.` or start); the explicit skip is there to say so out loud.
+const AR_DEP_TABLE_RE = /^\[([^\]]+)\]\n?([\s\S]*?)(?=^\[|(?![\s\S]))/gm;
+const AR_DEP_HEADER_RE = /(^|\.)(?:build-)?dependencies(?:\.([^.\]]+))?$/;
+const AR_DEV_DEP_HEADER_RE = /(^|\.)dev-dependencies(?:\.([^.\]]+))?$/;
+const arToml = meRead(AR_TOML, AR_RULE, 'the dependency-set and release-profile clauses', AR_ISSUE);
+if (arToml !== null) {
+  // TOML uses shell comment syntax; this file's comments explain the bans.
+  const tomlCode = stripShellComments(arToml);
+  const depTables = [];
+  AR_DEP_TABLE_RE.lastIndex = 0;
+  let table;
+  while ((table = AR_DEP_TABLE_RE.exec(tomlCode)) !== null) {
+    const name = table[1].trim();
+    if (AR_DEV_DEP_HEADER_RE.test(name)) continue;
+    const header = AR_DEP_HEADER_RE.exec(name);
+    if (header === null) continue;
+    depTables.push({
+      name,
+      // Long form: the crate is named in the header, not in the body.
+      crate: header[2] ? header[2].replace(/^['"]|['"]$/g, '') : null,
+      body: table[2],
+    });
+  }
+  if (depTables.length === 0) {
+    arViolation(AR_TOML, 'no dependency table (`[dependencies]`, `[build-dependencies]`, `[target.*.dependencies]`, or any `.<crate>` long form) — the closed-dependency-set clause would pass vacuously');
+  } else {
+    const keys = new Map(); // crate -> the table it was declared in
+    for (const { name, crate, body } of depTables) {
+      if (crate !== null) {
+        keys.set(crate, name);
+        continue;
+      }
+      for (const line of body.split('\n')) {
+        // `["']?` for the quoted spelling; the optional `\.<field>` tail takes
+        // the CRATE from the dotted spelling (`libc.version = "0.2"`), which a
+        // bare-key match would have skipped entirely.
+        const key = /^\s*["']?([A-Za-z0-9_-]+)(?:\.[A-Za-z0-9_-]+)?["']?\s*=/.exec(line);
+        if (key) keys.set(key[1], name);
+      }
+    }
+    for (const [key, name] of keys) {
+      if (!AR_ALLOWED_DEPS.has(key)) {
+        arViolation(AR_TOML, `\`${key}\` is a new [${name}] entry — the archive reader's dependency set is closed at {${[...AR_ALLOWED_DEPS].join(', ')}}; widening the trusted computing base of a hostile-input parser is a deliberate edit of this rule`);
+      }
+    }
+    for (const key of AR_REQUIRED_DEPS) {
+      if (!keys.has(key)) {
+        arViolation(AR_TOML, `\`${key}\` is missing from every dependency table — the closed-set check above would pass vacuously`);
+      }
+    }
+    // The flate2 declaration, in whichever spelling: a `flate2 = { … }` line
+    // in a short-form table, or the whole body of a `[dependencies.flate2]`
+    // long-form table.
+    const flate2Long = depTables.find((t) => t.crate === 'flate2');
+    const flate2Short = /^\s*flate2\s*=.*$/m.exec(
+      depTables.filter((t) => t.crate === null).map((t) => t.body).join('\n'),
+    );
+    const flate2Decl = flate2Long ? flate2Long.body : flate2Short?.[0];
+    if (flate2Decl === undefined) {
+      arViolation(AR_TOML, 'no flate2 declaration to check the backend on');
+    } else {
+      for (const need of ['default-features = false', '"rust_backend"']) {
+        if (!flate2Decl.includes(need)) {
+          arViolation(AR_TOML, `flate2 is declared without \`${need}\` — inflate would run in C (libz/zlib-ng), not miniz_oxide, in the one crate that parses hostile bytes: ${flate2Decl.trim().replace(/\s+/g, ' ').slice(0, 120)}`);
+        }
+      }
+    }
+  }
+}
+
+// `overflow-checks = true` keeps attacker-driven arithmetic from wrapping
+// silently in release. `panic =` is forbidden: `panic = "abort"` would turn
+// every defensive panic in the parser into a kill of the whole host app.
+// stripShellComments is passed because this table's own comment explains both,
+// and `# overflow-checks = true` must not satisfy the pin (mutation 29-18).
+checkWindowedPins(
+  AR_TOML,
+  AR_RULE,
+  /^\[profile\.release\][\s\S]*?(?=^\[|(?![\s\S]))/m,
+  "the archive crate's [profile.release] table",
+  ['overflow-checks = true'],
+  ['panic ='],
+  AR_ISSUE,
+  stripShellComments,
+);
+
+// --- 29.3 The lock proves the pure-Rust backend actually resolved.
+// miniz_oxide is the non-vacuity anchor: without it the absence of every C
+// backend below would also be satisfied by a lock with no decompressor at all.
+const AR_LOCK_REQUIRED = ['miniz_oxide'];
+const AR_LOCK_FORBIDDEN = ['libz-sys', 'libz-ng-sys', 'zlib-rs', 'cloudflare-zlib-sys', 'miniz-sys', 'zip'];
+const arLock = meRead(AR_LOCK, AR_RULE, 'the resolved decompressor backend', AR_ISSUE);
+if (arLock !== null) {
+  for (const pkg of AR_LOCK_REQUIRED) {
+    if (!arLock.includes(`name = "${pkg}"`)) {
+      arViolation(AR_LOCK, `\`${pkg}\` is not in the resolved graph — the pure-Rust inflate backend is gone, so the "no C zlib" clause below would pass vacuously`);
+    }
+  }
+  for (const pkg of AR_LOCK_FORBIDDEN) {
+    if (arLock.includes(`name = "${pkg}"`)) {
+      arViolation(AR_LOCK, `\`${pkg}\` resolved into the archive reader's graph — hostile archive bytes must be inflated by memory-safe Rust (miniz_oxide) and never by a C zlib or a third-party ZIP crate`);
+    }
+  }
+}
+
+// --- 29.4 The limits table.
+checkWindowedPins(
+  AR_LIMITS,
+  AR_RULE,
+  /^pub const KIND_CAPS[\s\S]*?\];/m,
+  'the KIND_CAPS table',
+  ['(EntryKind::Json, 32 * MIB)', '(EntryKind::Image, 50 * MIB)'],
+  // A `Video` row would make video entries extractable. They are listed so a
+  // post can be shown whole, and never opened: kind_cap returns None, which
+  // becomes EntryKindNotEnabled.
+  ['Video'],
+  AR_ISSUE,
+);
+
+checkWindowedPins(
+  AR_LIMITS,
+  AR_RULE,
+  /^pub const KIB[\s\S]*/m,
+  "limits.rs's constant block",
+  // Full declarations, not bare numbers: the file's own #[cfg(test)] module
+  // asserts `MAX_RATIO, 100` and `HEAD_PEEK_BYTES, 128`, and a bare-literal
+  // pin would be satisfied by those asserts after the consts had changed.
+  [
+    'pub const MAX_RATIO: u64 = 100;',
+    'pub const HEAD_PEEK_BYTES: usize = 128;',
+    // The session-wide central-directory record bound (PR #977 review).
+    // Without it, 64 parts x 1M records keeps ~512 MB of lh_offsets alive and
+    // the OS jetsams the app — a limit whose absence is invisible in every
+    // single-part test.
+    'pub const MAX_CD_RECORDS_PER_SESSION: u64 = 2_000_000;',
+    // The retained-path byte budget (PR #977 re-review). 100k listed entries x
+    // 1 KiB paths x three retained copies is ~320 MB — again a jetsam kill
+    // rather than a typed error, and again invisible in small-archive tests.
+    'pub const MAX_RETAINED_PATH_BYTES: u64 = 64 * MIB;',
+  ],
+  [],
+  AR_ISSUE,
+);
+
+// --- 29.5 The allowlist tables.
+//
+// The forbidden list is DERIVED from DENIED_ROOTS rather than restated. A
+// hand-written list drifted immediately: the first version forbade 7 of the 10
+// roots, leaving `inbox`, `profile` and `other_content` admissible as allowlist
+// rows (PR #977 review). Deriving it means adding a denied root automatically
+// forbids it as a row. The floor of 10 is what stops the derivation from being
+// weakened the easy way — shortening DENIED_ROOTS would otherwise shrink the
+// forbidden list silently, and it is also the F17 known-root set, so a short
+// table makes a denied root strippable too.
+const AR_DENIED_ROOTS_FLOOR = 10;
+const arAllowlistRaw = meRead(AR_ALLOWLIST, AR_RULE, 'the denied-root tables', AR_ISSUE);
+let arDeniedRoots = [];
+if (arAllowlistRaw !== null) {
+  const table = /^pub const DENIED_ROOTS[^=]*=\s*\[([\s\S]*?)\];/m.exec(
+    stripCStyleComments(arAllowlistRaw),
+  );
+  if (table === null) {
+    arViolation(AR_ALLOWLIST, 'no DENIED_ROOTS table — the forbidden-allowlist-row list is derived from it and would be empty');
+  } else {
+    arDeniedRoots = [...table[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    if (arDeniedRoots.length < AR_DENIED_ROOTS_FLOOR) {
+      arViolation(AR_ALLOWLIST, `DENIED_ROOTS lists ${arDeniedRoots.length} roots, below the floor of ${AR_DENIED_ROOTS_FLOOR} — a shortened table both narrows the forbidden-row list below and makes the dropped root strippable by the F17 wrapper strip`);
+    }
+  }
+}
+
+// Required rows are the ones CONFIRMED by name against the local FB and IG
+// samples; they are also the non-vacuity anchors for the forbidden list.
+checkWindowedPins(
+  AR_ALLOWLIST,
+  AR_RULE,
+  /^const JSON_EXACT[\s\S]*?^const MEDIA_PREFIXES[\s\S]*?\n\];/m,
+  'the allowlist tables (JSON_EXACT through MEDIA_PREFIXES)',
+  [
+    '"your_facebook_activity/posts/your_posts__check_ins__photos_and_videos_"',
+    '"your_instagram_activity/media/posts_"',
+    '"your_instagram_activity/media/posts.json"',
+    '"your_facebook_activity/posts/media/"',
+    '"media/posts/"',
+  ],
+  // A denied root appearing as an allowlist ROW is the one way this crate
+  // could ever open private data. These are substrings, so `messages` also
+  // catches `messages/inbox/…`, and the check runs on the comment-stripped
+  // window, so allowlist.rs's own header listing all of them does not count.
+  arDeniedRoots,
+  AR_ISSUE,
+);
+
+// Defence in depth inside classify() itself, since the tables are edited far
+// more often than the function: a denied first segment is refused BEFORE any
+// row is consulted, so a future row that happens to overlap a denied root is
+// inert instead of silently opening private data. The ordering is asserted,
+// not just the presence — a guard after the JSON_EXACT lookup would be a guard
+// that the first matching row has already bypassed.
+const AR_CLASSIFY_GUARD = 'if starts_with_denied_root(path) {';
+if (arAllowlistRaw !== null) {
+  const body = /^pub fn classify\(path: &str\) -> Verdict \{[\s\S]*?\n\}/m.exec(
+    stripCStyleComments(arAllowlistRaw),
+  );
+  if (body === null) {
+    arViolation(AR_ALLOWLIST, 'classify() not found — the denied-root refusal cannot be verified and the rule would pass vacuously');
+  } else {
+    const guardAt = body[0].indexOf(AR_CLASSIFY_GUARD);
+    const firstTableAt = body[0].indexOf('JSON_EXACT');
+    if (guardAt < 0) {
+      arViolation(AR_ALLOWLIST, `classify() no longer refuses denied roots — \`${AR_CLASSIFY_GUARD}\` is missing, so the allowlist tables are the only thing standing between the importer and messages/`);
+    } else if (firstTableAt >= 0 && guardAt > firstTableAt) {
+      arViolation(AR_ALLOWLIST, 'the denied-root refusal in classify() runs AFTER the first allowlist table is consulted — a row matching a denied path would already have returned Listed');
+    }
+  }
+}
+
+// F17: the known-root-key set must name every root on BOTH sides, and
+// is_known_root_key must consult both tables. A denied root dropped from
+// DENIED_ROOTS would become strippable: on the real FB sample every entry
+// shares the single root `your_facebook_activity`, so the unanimous-wrapper
+// strip fires and only this exemption keeps the paths intact — strip it and
+// the only posts JSON in the export stops matching the allowlist and the
+// import silently loses every post.
+checkWindowedPins(
+  AR_ALLOWLIST,
+  AR_RULE,
+  /^pub const ALLOWED_ROOTS[\s\S]*?^pub fn is_known_root_key[\s\S]*?\n\}/m,
+  'the ALLOWED_ROOTS / DENIED_ROOTS tables and is_known_root_key',
+  [
+    // Allowed roots (F17).
+    '"your_facebook_activity"',
+    '"your_activity_across_facebook"',
+    '"your_instagram_activity"',
+    '"posts"',
+    '"media"',
+    '"content"',
+    '"photos_and_videos"',
+    // Denied roots (F17). Named, not merely absent, so a wrapper directory
+    // called after one of them can never be stripped away.
+    '"messages"',
+    '"inbox"',
+    '"friends_and_followers"',
+    '"ads_information"',
+    '"security_and_login_information"',
+    '"personal_information"',
+    '"stories"',
+    '"reels"',
+    '"profile"',
+    '"other_content"',
+    // Both tables are actually consulted.
+    'ALLOWED_ROOTS.contains(&segment)',
+    'DENIED_ROOTS.contains(&segment)',
+  ],
+  [],
+  AR_ISSUE,
+);
 
 // ---------------------------------------------------------------------------
 // Summary

@@ -1,0 +1,50 @@
+[package]
+name = "orbital_archive_reader"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93.1"
+license = "AGPL-3.0-or-later"
+
+# This crate is its own cargo workspace root. It deliberately has NO path
+# dependency, NO git dependency and NO [patch] section: the freshness gates
+# digest a literal, fixed input set per crate, and a path/git dep would let a
+# source change outside that set produce a stale-but-"fresh" binary.
+[workspace]
+
+[lib]
+name = "orbital_archive_reader"
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[dependencies]
+# Pinned caret-identical to orbital_signal so both Cargo.lock files resolve the
+# SAME uniffi (0.31.2, the proven combination). A uniffi bump is a deliberate
+# two-crate lockstep edit; Dependabot is configured to ignore >= 0.31.1 here.
+uniffi = "0.31.0"
+thiserror = "2.0"
+# Pure-Rust inflate (miniz_oxide). `default-features = false` +
+# `rust_backend` keeps every C zlib backend (libz-sys, libz-ng-sys,
+# cloudflare-zlib-sys, zlib-rs) out of the dependency graph: this crate parses
+# hostile input, so the decompressor must be memory-safe Rust.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# ZIP's CRC-32 (entry integrity + the part change-detector fingerprint).
+crc32fast = "1"
+
+# The hostile matrix generates its archives in code, so the test support needs
+# the same deflate encoder and CRC-32 the reader uses. These are the SAME two
+# crates (and the same versions) as above: no package is added to Cargo.lock by
+# this section, and no third-party test framework is pulled in — temp dirs,
+# the async executor and the ZIP writer are all hand-rolled in tests/support.
+[dev-dependencies]
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+crc32fast = "1"
+
+# DELIBERATE: overflow checks stay ON in release. This crate parses untrusted
+# archives; an arithmetic overflow must abort rather than wrap silently. There
+# is intentionally no panic-strategy key: aborting would turn a defensive panic
+# into a process kill in the host app, and the invariant checker forbids it.
+# This crate also installs no custom global allocator.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+overflow-checks = true

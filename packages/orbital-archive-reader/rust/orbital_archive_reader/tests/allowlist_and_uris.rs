@@ -32,9 +32,7 @@ fn skip_of(r: &UriResolution) -> Option<UriSkipCode> {
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|w| w == needle)
+    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 // ---------------------------------------------------------------- group 8
@@ -246,7 +244,10 @@ fn uri_resolution_covers_every_outcome() {
         "../a.jpg".to_owned(),
     ]);
 
-    assert_eq!(resolved_id(&out[0]), Some(h.id_of("media/posts/a.jpg")).as_deref());
+    assert_eq!(
+        resolved_id(&out[0]),
+        Some(h.id_of("media/posts/a.jpg")).as_deref()
+    );
     assert_eq!(
         resolved_id(&out[1]),
         Some(h.id_of("your_facebook_activity/posts/media/Album/a.jpg")).as_deref()
@@ -270,7 +271,11 @@ fn resolution_reads_nothing() {
         "media/posts/nope.jpg".to_owned(),
     ]);
     assert!(resolved_id(&out[0]).is_some());
-    assert_eq!(h.sources[0].read_count(), before, "resolution must not read");
+    assert_eq!(
+        h.sources[0].read_count(),
+        before,
+        "resolution must not read"
+    );
 }
 
 /// A skipped entry is never resolvable: a duplicate or corrupt entry must not
@@ -378,7 +383,10 @@ fn extract_returns_the_same_head_prefix() {
         PeekOutcome::Head { head } => head,
         other => panic!("{other:?}"),
     };
-    match h.extract("media/posts/fake.jpg", EntryKind::Image).expect("x") {
+    match h
+        .extract("media/posts/fake.jpg", EntryKind::Image)
+        .expect("x")
+    {
         orbital_archive_reader::ExtractOutcome::Extracted { head, path, .. } => {
             assert_eq!(head, peeked);
             assert_eq!(support::read_file(&path).len(), body.len());

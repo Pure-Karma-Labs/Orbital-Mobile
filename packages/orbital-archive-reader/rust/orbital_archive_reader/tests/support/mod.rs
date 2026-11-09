@@ -203,10 +203,7 @@ impl Source for MemSource {
         let end = start
             .checked_add(buf.len())
             .ok_or(ArchiveError::ReadFailed)?;
-        let src = self
-            .bytes
-            .get(start..end)
-            .ok_or(ArchiveError::ReadFailed)?;
+        let src = self.bytes.get(start..end).ok_or(ArchiveError::ReadFailed)?;
         buf.copy_from_slice(src);
         Ok(())
     }
@@ -286,14 +283,10 @@ pub fn open(tag: &str, parts: Vec<Vec<u8>>) -> Harness {
 }
 
 /// Opens a session over sources the caller built (failing, recording, ...).
-pub fn try_open_sources(
-    tag: &str,
-    sources: Vec<Arc<MemSource>>,
-) -> Result<Harness, ArchiveError> {
+pub fn try_open_sources(tag: &str, sources: Vec<Arc<MemSource>>) -> Result<Harness, ArchiveError> {
     let dir = TempDir::new(tag);
     let cancel = CancelFlag::new();
-    let session =
-        ArchiveSession::open_with_sources(part_inputs(&sources), dir.as_str(), &cancel)?;
+    let session = ArchiveSession::open_with_sources(part_inputs(&sources), dir.as_str(), &cancel)?;
     Ok(Harness {
         session,
         dir,

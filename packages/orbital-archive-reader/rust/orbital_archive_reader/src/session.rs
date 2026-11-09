@@ -495,12 +495,20 @@ impl ArchiveSession {
     }
 
     #[doc(hidden)]
-    pub fn peek_head_blocking(&self, entry_id: &str, cancel: &CancelFlag) -> ArchiveResult<PeekOutcome> {
+    pub fn peek_head_blocking(
+        &self,
+        entry_id: &str,
+        cancel: &CancelFlag,
+    ) -> ArchiveResult<PeekOutcome> {
         self.core.do_peek_head(entry_id, cancel)
     }
 
     #[doc(hidden)]
-    pub fn read_json_blocking(&self, entry_id: &str, cancel: &CancelFlag) -> ArchiveResult<JsonOutcome> {
+    pub fn read_json_blocking(
+        &self,
+        entry_id: &str,
+        cancel: &CancelFlag,
+    ) -> ArchiveResult<JsonOutcome> {
         self.core.do_read_json(entry_id, cancel)
     }
 
@@ -548,9 +556,7 @@ impl SessionCore {
         // a structural guarantee, not a string check.
         let fully_allowlisted = matches!(allowlist::classify(&norm), Verdict::Listed(_));
 
-        if fully_allowlisted
-            && let Some(hits) = self.exact_index.get(&norm)
-        {
+        if fully_allowlisted && let Some(hits) = self.exact_index.get(&norm) {
             return match hits.len() {
                 1 => self.resolved(hits.first().copied()),
                 _ => UriResolution::Skipped {
@@ -776,7 +782,9 @@ fn list_part(part: PartSourceInput, index: u32, cancel: &CancelFlag) -> ArchiveR
         return Err(ArchiveError::Changed { part_index: index });
     }
 
-    let strip = tracker.strip_segment(allowlist::is_known_root_key).map(str::to_owned);
+    let strip = tracker
+        .strip_segment(allowlist::is_known_root_key)
+        .map(str::to_owned);
 
     // ---- pass 2 ----
     let mut reader = CdReader::new(src.as_ref(), info.cd_offset, info.cd_size, cancel.clone())?;

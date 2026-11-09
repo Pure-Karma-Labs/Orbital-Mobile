@@ -40,9 +40,9 @@ crc32fast = "1"
 
 # DELIBERATE: overflow checks stay ON in release. This crate parses untrusted
 # archives; an arithmetic overflow must abort rather than wrap silently. There
-# is intentionally no `panic =` key — `panic = "abort"` would turn a defensive
-# panic into a process kill in the host app, and the invariant checker forbids
-# it. There is intentionally no #[global_allocator].
+# is intentionally no panic-strategy key: aborting would turn a defensive panic
+# into a process kill in the host app, and the invariant checker forbids it.
+# This crate also installs no custom global allocator.
 [profile.release]
 lto = "thin"
 codegen-units = 1

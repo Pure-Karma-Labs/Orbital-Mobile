@@ -70,9 +70,14 @@ pub fn locate(src: &dyn Source, cancel: &CancelFlag) -> ArchiveResult<EocdInfo> 
     let cd_size_32 = u64::from(le_u32(&tail, base.saturating_add(12))?);
     let cd_offset_32 = u64::from(le_u32(&tail, base.saturating_add(16))?);
 
-    let needs_zip64 = cd_size_32 == u64::from(u32::MAX)
-        || cd_offset_32 == u64::from(u32::MAX)
-        || entries_32 == u64::from(u16::MAX);
+    // A saturated size or offset REQUIRES a ZIP64 record: without one there is
+    // no way to learn the real geometry. A saturated entry count does not --
+    // 0xFFFF only means "more than 65535 records", and both Info-ZIP and
+    // CPython write that value in the 32-bit EOCD while the records themselves
+    // remain countable. Treating the count as fatal would reject real
+    // multi-part exports; the counted value is checked against the per-part
+    // bound regardless, so nothing can hide behind the saturation.
+    let needs_zip64 = cd_size_32 == u64::from(u32::MAX) || cd_offset_32 == u64::from(u32::MAX);
 
     let info = match read_zip64(src, eocd_abs, &tail, window_start, eocd_rel)? {
         Some(z) => z,

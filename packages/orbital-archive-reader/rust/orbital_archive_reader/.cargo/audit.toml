@@ -1,0 +1,20 @@
+# cargo-audit configuration for orbital_archive_reader
+#
+# Standing policy: do NOT add ignore entries without a tracking GitHub issue
+# and an inline comment naming the affected crate, severity, and why the
+# advisory cannot be fixed directly. Remove entries as soon as the blocking
+# upgrade lands.
+#
+# Unlike orbital_signal, this crate has NO git-sourced dependency: every one of
+# the 80 packages in Cargo.lock comes from crates.io, so `cargo audit
+# --file Cargo.lock` sees the whole graph and the blocking rust-audit job is a
+# complete gate. There is no manual-changelog-review carve-out here.
+#
+# The reachable runtime surface is four crates deep: uniffi (FFI scaffolding),
+# thiserror, flate2 with the rust_backend feature only (miniz_oxide, adler2,
+# simd-adler32 -- no C zlib), and crc32fast. Everything else in the lock is
+# build-time: proc macros, serde and cargo_metadata, pulled in by uniffi's
+# macro crate.
+
+[advisories]
+ignore = []

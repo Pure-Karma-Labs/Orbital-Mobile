@@ -250,7 +250,10 @@ impl ZipBuilder {
                 if e.append_data_descriptor {
                     w32(&mut body, DD_SIG);
                     w32(&mut body, crc);
-                    w32(&mut body, clamp32(u64::try_from(payload.len()).unwrap_or(0)));
+                    w32(
+                        &mut body,
+                        clamp32(u64::try_from(payload.len()).unwrap_or(0)),
+                    );
                     w32(&mut body, clamp32(u64::try_from(e.data.len()).unwrap_or(0)));
                 }
             }
@@ -286,7 +289,14 @@ impl ZipBuilder {
 
             w32(&mut cd, CD_SIG);
             // version made by: host 3 (Unix) when a mode is set, else 0 (FAT).
-            w16(&mut cd, if e.unix_mode.is_some() { 0x031E } else { 0x001E });
+            w16(
+                &mut cd,
+                if e.unix_mode.is_some() {
+                    0x031E
+                } else {
+                    0x001E
+                },
+            );
             w16(&mut cd, if e.zip64_record { 45 } else { 20 });
             w16(&mut cd, e.cd_flags.unwrap_or(e.flags));
             w16(&mut cd, e.cd_method.unwrap_or(e.method));

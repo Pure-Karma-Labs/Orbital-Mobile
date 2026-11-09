@@ -195,10 +195,7 @@ impl<'a> CdReader<'a> {
         let external_attrs = le_u32(fixed, 38)?;
         let lh_32 = u64::from(le_u32(fixed, 42)?);
 
-        let total = addus(
-            CD_FIXED,
-            addus(name_len, addus(extra_len, comment_len)?)?,
-        )?;
+        let total = addus(CD_FIXED, addus(name_len, addus(extra_len, comment_len)?)?)?;
         self.ensure(total)?;
         let record = self.head(total)?;
         let name = slice_at(record, CD_FIXED, name_len)?.to_vec();
@@ -312,10 +309,7 @@ mod tests {
     fn saturation_is_per_value() {
         assert_eq!(saturate(5), (5, false));
         assert_eq!(saturate(MAX_SAFE_INTEGER), (MAX_SAFE_INTEGER, false));
-        assert_eq!(
-            saturate(MAX_SAFE_INTEGER + 1),
-            (MAX_SAFE_INTEGER, true)
-        );
+        assert_eq!(saturate(MAX_SAFE_INTEGER + 1), (MAX_SAFE_INTEGER, true));
     }
 
     #[test]

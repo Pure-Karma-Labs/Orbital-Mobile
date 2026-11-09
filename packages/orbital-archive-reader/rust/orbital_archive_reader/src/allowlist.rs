@@ -196,10 +196,7 @@ pub fn normalise_uri(uri: &str) -> Option<String> {
     if trimmed.is_empty() || trimmed.len() > crate::limits::MAX_PATH_BYTES {
         return None;
     }
-    if trimmed.contains('\\')
-        || trimmed.chars().any(char::is_control)
-        || trimmed.contains("://")
-    {
+    if trimmed.contains('\\') || trimmed.chars().any(char::is_control) || trimmed.contains("://") {
         return None;
     }
     let body = trimmed.strip_prefix("./").unwrap_or(trimmed);
@@ -230,7 +227,9 @@ mod tests {
     fn confirmed_sample_rows_are_listed() {
         // Confirmed by name against the local FB sample.
         assert_eq!(
-            classify("your_facebook_activity/posts/your_posts__check_ins__photos_and_videos_1.json"),
+            classify(
+                "your_facebook_activity/posts/your_posts__check_ins__photos_and_videos_1.json"
+            ),
             Verdict::Listed(EntryKind::Json)
         );
         assert_eq!(

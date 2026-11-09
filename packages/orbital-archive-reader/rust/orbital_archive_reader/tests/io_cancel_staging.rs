@@ -70,13 +70,9 @@ fn a_real_descriptor_opens_through_the_ffi_entry_point() {
         .expect("image")
         .entry_id;
     let staging = dir.staging(UUID_A);
-    let out = block_on(session.extract_entry(
-        id,
-        EntryKind::Image,
-        staging.clone(),
-        "job-1".to_owned(),
-    ))
-    .expect("extract");
+    let out =
+        block_on(session.extract_entry(id, EntryKind::Image, staging.clone(), "job-1".to_owned()))
+            .expect("extract");
     match out {
         ExtractOutcome::Extracted { byte_length, .. } => assert!(byte_length > 0),
         other => panic!("expected extraction, got {other:?}"),
@@ -370,12 +366,7 @@ fn a_fifth_concurrent_job_is_busy() {
             _ => "ffffffff-ffff-ffff-ffff-ffffffffffff",
         });
         handles.push(std::thread::spawn(move || {
-            block_on(s.extract_entry(
-                id,
-                EntryKind::Image,
-                staging,
-                format!("job-{i}"),
-            ))
+            block_on(s.extract_entry(id, EntryKind::Image, staging, format!("job-{i}")))
         }));
     }
 
@@ -390,21 +381,27 @@ fn a_fifth_concurrent_job_is_busy() {
         h.sources[0].read_count()
     );
 
-    let fifth = block_on(h.session.peek_head(
-        h.id_of("media/posts/4.jpg"),
-        "job-5".to_owned(),
-    ));
+    let fifth = block_on(
+        h.session
+            .peek_head(h.id_of("media/posts/4.jpg"), "job-5".to_owned()),
+    );
     assert_eq!(fifth.err(), Some(ArchiveError::Busy));
 
     gate.open();
     for handle in handles {
         let out = handle.join().expect("join");
-        assert!(matches!(out, Ok(ExtractOutcome::Extracted { .. })), "{out:?}");
+        assert!(
+            matches!(out, Ok(ExtractOutcome::Extracted { .. })),
+            "{out:?}"
+        );
     }
 
     // With the jobs finished, the registry is empty again.
     assert!(matches!(
-        block_on(h.session.peek_head(h.id_of("media/posts/4.jpg"), "job-6".to_owned())),
+        block_on(
+            h.session
+                .peek_head(h.id_of("media/posts/4.jpg"), "job-6".to_owned())
+        ),
         Ok(PeekOutcome::Head { .. })
     ));
 }
@@ -433,7 +430,11 @@ fn a_duplicate_job_id_is_busy() {
         std::thread::sleep(Duration::from_millis(5));
     }
     assert_eq!(
-        block_on(h.session.peek_head(h.id_of("media/posts/b.jpg"), "same".to_owned())).err(),
+        block_on(
+            h.session
+                .peek_head(h.id_of("media/posts/b.jpg"), "same".to_owned())
+        )
+        .err(),
         Some(ArchiveError::Busy)
     );
     gate.open();

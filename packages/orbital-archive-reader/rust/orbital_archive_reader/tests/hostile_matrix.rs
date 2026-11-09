@@ -8,12 +8,10 @@
 mod support;
 
 use orbital_archive_reader::testing::MIB;
-use orbital_archive_reader::{
-    ArchiveError, EntryKind, EntrySkipCode, ExtractOutcome, JsonOutcome,
-};
+use orbital_archive_reader::{ArchiveError, EntryKind, EntrySkipCode, ExtractOutcome, JsonOutcome};
 use support::zipgen::{
-    EntrySpec, FLAG_DATA_DESCRIPTOR, FLAG_ENCRYPTED, FLAG_STRONG_ENCRYPTION, FLAG_UTF8,
-    MODE_DIR, MODE_FIFO, MODE_SYMLINK, ZipBuilder, crc32, deflate, instagram_like,
+    EntrySpec, FLAG_DATA_DESCRIPTOR, FLAG_ENCRYPTED, FLAG_STRONG_ENCRYPTION, FLAG_UTF8, MODE_DIR,
+    MODE_FIFO, MODE_SYMLINK, ZipBuilder, crc32, deflate, instagram_like,
 };
 use support::{UUID_A, open, try_open};
 
@@ -50,7 +48,10 @@ fn deflate_bomb_declared_ratio_is_refused_up_front() {
     );
     let out = h.extract(IMG_PATH, EntryKind::Image).expect("no throw");
     assert_eq!(skipped(&out), Some(EntrySkipCode::EntryRatioExceeded));
-    assert_eq!(h.staging_residue(), vec![format!("{UUID_A}-archive-staging.bin")]);
+    assert_eq!(
+        h.staging_residue(),
+        vec![format!("{UUID_A}-archive-staging.bin")]
+    );
     assert!(
         support::read_file(&h.dir.staging(UUID_A)).is_empty(),
         "nothing may be written for a refused entry"
@@ -179,7 +180,9 @@ fn non_utf8_names_are_invalid() {
 #[test]
 fn forbidden_entry_types_are_skipped() {
     let zip = ZipBuilder::new()
-        .with(EntrySpec::stored("media/posts/link.jpg", b"../../etc/passwd").with_mode(MODE_SYMLINK))
+        .with(
+            EntrySpec::stored("media/posts/link.jpg", b"../../etc/passwd").with_mode(MODE_SYMLINK),
+        )
         .with(EntrySpec::stored("media/posts/fifo.jpg", b"").with_mode(MODE_FIFO))
         .with(EntrySpec::stored("media/posts/dirish.jpg", b"").with_mode(MODE_DIR))
         .build();
@@ -208,8 +211,7 @@ fn encrypted_entries_are_skipped() {
     let cases = [
         (
             "media/posts/e1.jpg",
-            EntrySpec::stored("media/posts/e1.jpg", JPG)
-                .with_flags(FLAG_UTF8 | FLAG_ENCRYPTED),
+            EntrySpec::stored("media/posts/e1.jpg", JPG).with_flags(FLAG_UTF8 | FLAG_ENCRYPTED),
         ),
         (
             "media/posts/e2.jpg",
@@ -324,15 +326,11 @@ fn video_is_listed_and_never_opened() {
 
     let before = h.sources[0].bytes_read();
     for kind in [EntryKind::Image, EntryKind::Video, EntryKind::Json] {
-        let out = h
-            .extract("media/posts/clip.mp4", kind)
-            .expect("no throw");
+        let out = h.extract("media/posts/clip.mp4", kind).expect("no throw");
         assert!(
             matches!(
                 skipped(&out),
-                Some(
-                    EntrySkipCode::EntryKindNotEnabled | EntrySkipCode::EntryKindMismatch
-                )
+                Some(EntrySkipCode::EntryKindNotEnabled | EntrySkipCode::EntryKindMismatch)
             ),
             "video must never extract, got {out:?}"
         );
@@ -471,7 +469,10 @@ fn local_header_mismatches_are_corrupt() {
 
     let mut bad_method = EntrySpec::stored(IMG_PATH, JPG);
     bad_method.lh_method = Some(8);
-    let h2 = open("lh-method", vec![ZipBuilder::new().with(bad_method).build()]);
+    let h2 = open(
+        "lh-method",
+        vec![ZipBuilder::new().with(bad_method).build()],
+    );
     assert_eq!(
         skipped(&h2.extract(IMG_PATH, EntryKind::Image).expect("no throw")),
         Some(EntrySkipCode::EntryCorrupt)
@@ -605,12 +606,8 @@ fn duplicate_parts_are_refused() {
     ];
     let flag = CancelFlag::new();
     assert_eq!(
-        orbital_archive_reader::ArchiveSession::open_with_sources(
-            same_id,
-            dir.as_str(),
-            &flag
-        )
-        .err(),
+        orbital_archive_reader::ArchiveSession::open_with_sources(same_id, dir.as_str(), &flag)
+            .err(),
         Some(ArchiveError::DuplicatePart)
     );
 
@@ -630,12 +627,8 @@ fn duplicate_parts_are_refused() {
         },
     ];
     assert_eq!(
-        orbital_archive_reader::ArchiveSession::open_with_sources(
-            same_fp,
-            dir.as_str(),
-            &flag
-        )
-        .err(),
+        orbital_archive_reader::ArchiveSession::open_with_sources(same_fp, dir.as_str(), &flag)
+            .err(),
         Some(ArchiveError::DuplicatePart)
     );
 }
@@ -649,8 +642,7 @@ fn session_byte_budget_throws() {
         .stored("media/posts/a.jpg", &body)
         .stored("media/posts/b.jpg", &body)
         .build();
-    let h = support::try_open_with_budgets("budget", vec![zip], 5000, u64::MAX)
-        .expect("opens");
+    let h = support::try_open_with_budgets("budget", vec![zip], 5000, u64::MAX).expect("opens");
     assert!(matches!(
         h.extract("media/posts/a.jpg", EntryKind::Image),
         Ok(ExtractOutcome::Extracted { .. })
@@ -669,8 +661,7 @@ fn live_staging_ceiling_is_enforced_and_releasable() {
         .stored("media/posts/a.jpg", &body)
         .stored("media/posts/b.jpg", &body)
         .build();
-    let h = support::try_open_with_budgets("live", vec![zip], u64::MAX, 5000)
-        .expect("opens");
+    let h = support::try_open_with_budgets("live", vec![zip], u64::MAX, 5000).expect("opens");
     assert!(matches!(
         h.extract("media/posts/a.jpg", EntryKind::Image),
         Ok(ExtractOutcome::Extracted { .. })

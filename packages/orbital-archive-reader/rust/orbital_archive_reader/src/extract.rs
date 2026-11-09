@@ -121,9 +121,7 @@ pub fn precheck(rec: &CdRecord, cap: u64) -> Result<(), EntrySkipCode> {
             return Err(EntrySkipCode::EntrySpecialFile);
         }
     }
-    if (rec.flags & (FLAG_ENCRYPTED | FLAG_STRONG_ENCRYPTION)) != 0
-        || rec.method == METHOD_AE_X
-    {
+    if (rec.flags & (FLAG_ENCRYPTED | FLAG_STRONG_ENCRYPTION)) != 0 || rec.method == METHOD_AE_X {
         return Err(EntrySkipCode::EntryEncrypted);
     }
     if rec.method != METHOD_STORED && rec.method != METHOD_DEFLATE {
@@ -156,12 +154,7 @@ struct Emitter<'s, S: ByteSink> {
 }
 
 impl<S: ByteSink> Emitter<'_, S> {
-    fn emit(
-        &mut self,
-        chunk: &[u8],
-        limits: &StreamLimits,
-        consumed_comp: u64,
-    ) -> EntryResult<()> {
+    fn emit(&mut self, chunk: &[u8], limits: &StreamLimits, consumed_comp: u64) -> EntryResult<()> {
         let mut chunk = chunk;
         if let Some(max) = limits.max_output {
             let room = sub64(max, self.written.min(max)).map_err(EntryFault::Fatal)?;
@@ -254,7 +247,8 @@ pub fn stream_entry<S: ByteSink>(
             return Err(EntryFault::Skip(EntrySkipCode::EntryCorrupt));
         }
         let chunk = inbuf.get_mut(..want).ok_or(ArchiveError::Internal)?;
-        src.read_exact_at(chunk, offset).map_err(EntryFault::Fatal)?;
+        src.read_exact_at(chunk, offset)
+            .map_err(EntryFault::Fatal)?;
         offset = add64(offset, to_u64(want)).map_err(EntryFault::Fatal)?;
         comp_left = sub64(comp_left, to_u64(want)).map_err(EntryFault::Fatal)?;
         consumed_comp = add64(consumed_comp, to_u64(want)).map_err(EntryFault::Fatal)?;
@@ -277,12 +271,12 @@ pub fn stream_entry<S: ByteSink>(
                     let status = dec
                         .decompress(input, &mut outbuf, FlushDecompress::None)
                         .map_err(|_| EntryFault::Skip(EntrySkipCode::EntryCorrupt))?;
-                    let used = to_usize(sub64(dec.total_in(), before_in).map_err(EntryFault::Fatal)?)
-                        .map_err(EntryFault::Fatal)?;
-                    let made = to_usize(
-                        sub64(dec.total_out(), before_out).map_err(EntryFault::Fatal)?,
-                    )
-                    .map_err(EntryFault::Fatal)?;
+                    let used =
+                        to_usize(sub64(dec.total_in(), before_in).map_err(EntryFault::Fatal)?)
+                            .map_err(EntryFault::Fatal)?;
+                    let made =
+                        to_usize(sub64(dec.total_out(), before_out).map_err(EntryFault::Fatal)?)
+                            .map_err(EntryFault::Fatal)?;
                     in_pos = in_pos.saturating_add(used);
                     if made > 0 {
                         let out = slice_at(&outbuf, 0, made).map_err(EntryFault::Fatal)?;

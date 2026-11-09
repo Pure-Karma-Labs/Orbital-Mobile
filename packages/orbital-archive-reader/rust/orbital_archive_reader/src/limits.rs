@@ -13,10 +13,8 @@ pub const GIB: u64 = 1024 * MIB;
 /// Per-kind output ceiling. There is deliberately **no `Video` row**: video
 /// entries are listed (so #925 can hold the whole post) but never opened, and
 /// `kind_cap` returns `None` for them, which becomes `EntryKindNotEnabled`.
-pub const KIND_CAPS: [(EntryKind, u64); 2] = [
-    (EntryKind::Json, 32 * MIB),
-    (EntryKind::Image, 50 * MIB),
-];
+pub const KIND_CAPS: [(EntryKind, u64); 2] =
+    [(EntryKind::Json, 32 * MIB), (EntryKind::Image, 50 * MIB)];
 
 /// `None` means "this kind is not enabled for extraction".
 #[must_use]

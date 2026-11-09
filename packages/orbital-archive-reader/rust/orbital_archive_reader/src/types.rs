@@ -80,9 +80,24 @@ pub struct ArchivePartInfo {
 /// when it was rejected (F6).
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct ArchiveEntry {
-    /// `"{partFp8}:{cdOrdinal}"`. `cdOrdinal` is the RAW central-directory
-    /// record ordinal, independent of the allowlist and of skip filtering, so
-    /// it is stable across re-open, part reordering and allowlist widening.
+    /// An **opaque token**. Callers must never parse, split, shorten or
+    /// truncate it, and must never derive anything from it.
+    ///
+    /// Its current shape is `"<part fingerprint>:<cdOrdinal>"`, but the
+    /// fingerprint is variable-length and both halves may change: treat the
+    /// whole string as the only unit of meaning. Reading it as a fixed-width
+    /// prefix is exactly the bug that made two near-duplicate parts mint the
+    /// same id, so a stored id resolved to whichever twin deduplication had
+    /// marked skipped.
+    ///
+    /// Two properties are guaranteed and are what `#926` relies on for resume:
+    /// it derives only from part CONTENT, never from pick order, and the
+    /// ordinal is the RAW central-directory record ordinal, independent of the
+    /// allowlist and of skip filtering. So it is stable across re-open, part
+    /// reordering and a later widening of the allowlist.
+    ///
+    /// It must never feed `source_item_id`, `import_key` or
+    /// `encrypted_import_meta` (F6).
     pub entry_id: String,
     /// Archive-relative path after the wrapper strip.
     pub path: String,

@@ -6,7 +6,7 @@ mod support;
 use std::time::Instant;
 
 use orbital_archive_reader::testing::{
-    Budgets, CancelFlag, MAX_LISTED_ENTRIES_PER_SESSION, Source,
+    Budgets, CancelFlag, MAX_LISTED_ENTRIES_PER_SESSION, MIB, Source,
 };
 use orbital_archive_reader::{
     ArchiveError, EntryKind, ExtractOutcome, JsonOutcome, PeekOutcome, UriResolution,
@@ -683,28 +683,78 @@ fn the_session_cd_record_budget_is_enforced() {
     assert_eq!(h.session.entries().len(), 10);
 }
 
-/// A malformed central extra field costs one entry, not the archive.
+/// A malformed central extra field costs one entry, not the archive — and that
+/// holds for a capless kind too. A video is never opened, so there is no cap to
+/// precheck against, but listing a held video with geometry we could not parse
+/// would hand #925 a bogus declared size and no skip code.
 #[test]
 fn a_malformed_central_extra_field_is_a_per_entry_skip() {
-    let mut bad = EntrySpec::stored("media/posts/bad.jpg", JPG);
     // A ZIP64 extra header claiming 0xFFFF bytes of payload, with none.
-    bad.cd_extra = Some(vec![0x01, 0x00, 0xFF, 0xFF]);
+    let bogus = vec![0x01, 0x00, 0xFF, 0xFF];
+    let mut bad = EntrySpec::stored("media/posts/bad.jpg", JPG);
+    bad.cd_extra = Some(bogus.clone());
+    let mut bad_video = EntrySpec::stored("media/posts/bad.mp4", b"\x00\x00\x00\x18ftypmp42");
+    bad_video.cd_extra = Some(bogus);
     let zip = ZipBuilder::new()
         .with(bad)
+        .with(bad_video)
         .stored("media/posts/good.jpg", JPG)
+        .stored("media/posts/good.mp4", b"\x00\x00\x00\x18ftypmp42")
         .build();
 
     let h = open("bad-extra", vec![zip]);
-    assert_eq!(h.session.entries().len(), 2);
-    assert_eq!(
-        h.skip_of("media/posts/bad.jpg"),
-        Some(orbital_archive_reader::EntrySkipCode::EntryCorrupt)
-    );
+    assert_eq!(h.session.entries().len(), 4);
+    for p in ["media/posts/bad.jpg", "media/posts/bad.mp4"] {
+        assert_eq!(
+            h.skip_of(p),
+            Some(orbital_archive_reader::EntrySkipCode::EntryCorrupt),
+            "{p}"
+        );
+    }
     assert_eq!(h.skip_of("media/posts/good.jpg"), None);
+    assert_eq!(h.skip_of("media/posts/good.mp4"), None);
     assert!(matches!(
         h.extract("media/posts/good.jpg", EntryKind::Image),
         Ok(ExtractOutcome::Extracted { .. })
     ));
+}
+
+/// Retained path strings are bounded. A hostile export inflates the name and
+/// post-strip path kept per listed entry, not the entry count: 100,000 entries
+/// of 1 KiB paths would retain ~200 MB for the life of the session.
+#[test]
+fn the_retained_path_byte_budget_is_enforced() {
+    let long = "d".repeat(850);
+    let mut b = ZipBuilder::new();
+    for i in 0..200u32 {
+        b = b.stored(&format!("media/posts/{long}{i:04}.jpg"), JPG);
+    }
+    let zip = b.build();
+
+    assert_eq!(
+        support::try_open_with_budgets(
+            "retained",
+            vec![zip.clone()],
+            Budgets {
+                retained_path_bytes: 100_000,
+                ..support::unbounded()
+            },
+        )
+        .err(),
+        Some(orbital_archive_reader::ArchiveError::TooManyEntries)
+    );
+
+    // Non-vacuity: the same archive opens when the budget allows it.
+    let h = support::try_open_with_budgets(
+        "retained-ok",
+        vec![zip],
+        Budgets {
+            retained_path_bytes: 10 * MIB,
+            ..support::unbounded()
+        },
+    )
+    .expect("opens");
+    assert_eq!(h.session.entries().len(), 200);
 }
 
 /// `close()` releases this crate's descriptor dups, so a session the app has

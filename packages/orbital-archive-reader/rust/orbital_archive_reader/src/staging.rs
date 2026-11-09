@@ -70,6 +70,27 @@ pub fn is_valid_staging_name(name: &str) -> bool {
     groups == UUID_GROUPS.len()
 }
 
+/// The staging ledger's key for `path`: the validated leaf name, ASCII
+/// lowercased.
+///
+/// The ledger must not be keyed on the caller's raw string. `<dir>/<uuid>…`,
+/// `<dir>/./<uuid>…` and a case-flipped UUID all name the SAME file — the
+/// parent is forced to equal the session staging directory and the leaf is a
+/// UUID — but as raw strings they are three different keys. Keyed that way, a
+/// `release_staging` that spells the path differently is a silent no-op that
+/// leaks a kind cap of headroom per call, and on case-insensitive APFS two case
+/// variants slip past the in-use check and truncate each other's output.
+pub fn ledger_key(path: &str) -> ArchiveResult<String> {
+    let leaf = Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or(ArchiveError::StagingUnavailable)?;
+    if !is_valid_staging_name(leaf) {
+        return Err(ArchiveError::StagingUnavailable);
+    }
+    Ok(leaf.to_ascii_lowercase())
+}
+
 fn map_io(err: &std::io::Error) -> ArchiveError {
     match err.raw_os_error() {
         Some(code) if code == ENOSPC || code == EDQUOT_MACOS || code == EDQUOT_LINUX => {
@@ -166,6 +187,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_ledger_key_collapses_aliases_of_one_file() {
+        let a = ledger_key("/tmp/x/0b5f1f3c-6a4e-4d2b-9f1a-123456789abc-archive-staging.bin");
+        let dot = ledger_key("/tmp/x/./0b5f1f3c-6a4e-4d2b-9f1a-123456789abc-archive-staging.bin");
+        let upper = ledger_key("/tmp/x/0B5F1F3C-6A4E-4D2B-9F1A-123456789ABC-archive-staging.bin");
+        assert!(a.is_ok());
+        assert_eq!(a, dot);
+        assert_eq!(a, upper);
+        // A path that could never be opened has no key either.
+        assert_eq!(
+            ledger_key("/tmp/x/payload.bin").err(),
+            Some(ArchiveError::StagingUnavailable)
+        );
+    }
+
+    #[test]
     fn staging_names_are_strict() {
         // Lowercase (Android) and uppercase (iOS NSUUID.UUIDString) both pass.
         assert!(is_valid_staging_name(
@@ -176,6 +212,7 @@ mod tests {
         ));
         for bad in [
             "archive-staging.bin",
+            "",
             "0b5f1f3c-archive-staging.bin",
             // Right length and alphabet, wrong shape.
             "------------------------------------archive-staging.bin",

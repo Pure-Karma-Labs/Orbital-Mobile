@@ -51,6 +51,17 @@ pub const MAX_LISTED_ENTRIES_PER_SESSION: usize = 100_000;
 /// than a typed error.
 pub const MAX_CD_RECORDS_PER_SESSION: u64 = 2_000_000;
 
+/// Bytes of entry path retained for the whole session, summed over every
+/// listed entry's central-directory name plus its post-strip path.
+///
+/// Paths may be up to `MAX_PATH_BYTES` each and up to
+/// `MAX_LISTED_ENTRIES_PER_SESSION` entries are listed, so without this bound a
+/// hostile export of long-named files retains ~200 MB of strings for the life of
+/// the session, which is a jetsam kill rather than a typed error. A real Meta
+/// export runs ~60-90 bytes per path, so 100,000 entries cost ~18 MB: this
+/// leaves roughly 3.5x headroom.
+pub const MAX_RETAINED_PATH_BYTES: u64 = 64 * MIB;
+
 /// Bomb bound on total extracted bytes for one session (not a quota).
 pub const MAX_SESSION_BYTES_WRITTEN: u64 = 8 * GIB;
 

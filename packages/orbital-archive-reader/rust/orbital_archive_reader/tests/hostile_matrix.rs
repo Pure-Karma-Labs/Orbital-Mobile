@@ -750,6 +750,57 @@ fn live_staging_ceiling_is_enforced_and_releasable() {
     assert_eq!(h.session.live_staging_bytes(), 0);
 }
 
+/// The ledger is keyed on the FILE, not on the caller's string. Three spellings
+/// of one path — plain, with a `.` component, and with the UUID case-flipped
+/// (iOS `NSUUID.UUIDString` is uppercase) — all name the same file, so they must
+/// all be the same ledger entry. Keyed on the raw string, a mismatched release
+/// would be a silent no-op leaking a kind cap of headroom per call.
+#[test]
+fn the_staging_ledger_is_keyed_on_the_file_not_the_string() {
+    let body = vec![2u8; 1024];
+    let zip = ZipBuilder::new()
+        .stored("media/posts/a.jpg", &body)
+        .stored("media/posts/b.jpg", &body)
+        .build();
+    let h = open("ledger-alias", vec![zip]);
+    let lower = "0b5f1f3c-6a4e-4d2b-9f1a-123456789abc";
+
+    assert!(matches!(
+        h.extract_into("media/posts/a.jpg", EntryKind::Image, lower),
+        Ok(ExtractOutcome::Extracted { .. })
+    ));
+    assert_eq!(h.session.live_staging_bytes(), 1024);
+
+    // A `.`-component alias of the outstanding file is refused, not reserved a
+    // second time.
+    let dotted = format!("{}/./{lower}-archive-staging.bin", h.dir.as_str());
+    assert_eq!(
+        h.session
+            .extract_blocking(
+                &h.id_of("media/posts/b.jpg"),
+                EntryKind::Image,
+                &dotted,
+                &h.cancel
+            )
+            .err(),
+        Some(ArchiveError::StagingInUse)
+    );
+
+    // Releasing with the UUID upper-cased still returns exactly those bytes.
+    let upper = format!(
+        "{}/{}-archive-staging.bin",
+        h.dir.as_str(),
+        lower.to_uppercase()
+    );
+    h.session.release_staging(upper);
+    assert_eq!(h.session.live_staging_bytes(), 0);
+
+    // And a path that could never have been a staging file is a no-op, not a
+    // panic and not a credit.
+    h.session.release_staging("/tmp/payload.bin".to_owned());
+    assert_eq!(h.session.live_staging_bytes(), 0);
+}
+
 /// Re-using a staging path that is still outstanding is refused: two jobs
 /// writing one file would race on both the file and the ledger.
 #[test]
@@ -767,7 +818,8 @@ fn an_outstanding_staging_path_cannot_be_reused() {
     assert_eq!(
         h.extract_into("media/posts/b.jpg", EntryKind::Image, UUID_A)
             .err(),
-        Some(ArchiveError::Busy)
+        Some(ArchiveError::StagingInUse),
+        "a reused staging path is a caller bug, not the transient job-slot Busy"
     );
     h.session.release_staging(h.dir.staging_path(UUID_A));
     assert!(matches!(

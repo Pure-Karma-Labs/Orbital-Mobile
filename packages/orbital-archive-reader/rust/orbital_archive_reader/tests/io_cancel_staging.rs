@@ -636,6 +636,61 @@ fn a_concurrent_reservation_cannot_overshoot_the_ceiling() {
     ));
 }
 
+/// `close()` must not wait for an in-flight `pread`. On iOS the descriptor can
+/// be File-Provider-backed, so one read can stall for seconds, and `close()`
+/// runs in `localWipe` phase 1.
+#[test]
+fn close_does_not_wait_for_a_parked_read() {
+    let body = vec![7u8; 300 * 1024];
+    let zip = ZipBuilder::new().stored(IMG, &body).build();
+    let h = open("close-parked", vec![zip]);
+
+    // Let the two local-header reads through and park the first DATA read, by
+    // which point the staging file is open and the reservation is held.
+    let gate = h.sources[0].install_gate_after(2);
+    h.sources[0].reset_reads();
+
+    let session = Arc::clone(&h.session);
+    let id = h.id_of(IMG);
+    let staging = h.dir.staging(UUID_A);
+    let staging_path = staging.clone();
+    let worker = std::thread::spawn(move || {
+        block_on(session.extract_entry(id, EntryKind::Image, staging, "job-park".to_owned()))
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while h.sources[0].read_count() < 3 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        h.sources[0].read_count() >= 3,
+        "the job never reached its data read"
+    );
+    assert_eq!(h.session.live_staging_bytes(), 300 * 1024);
+
+    let started = Instant::now();
+    h.session.close();
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_millis(250),
+        "close() blocked for {elapsed:?} behind a parked read"
+    );
+
+    gate.open();
+    let out = worker.join().expect("join");
+    assert_eq!(
+        out.err(),
+        Some(ArchiveError::SessionClosed),
+        "the parked job must unwind, not finish"
+    );
+    assert!(
+        !std::path::Path::new(&staging_path).exists(),
+        "the partial staging file must be unlinked"
+    );
+    assert!(h.staging_residue().is_empty());
+    assert_eq!(h.session.live_staging_bytes(), 0);
+}
+
 /// A changed part is detected by its fingerprint on resume, and names the part
 /// index (a count, not a name).
 #[test]

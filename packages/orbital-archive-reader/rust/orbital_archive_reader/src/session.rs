@@ -17,14 +17,14 @@ use crate::extract::{self, NullSink, StreamLimits};
 use crate::fd;
 use crate::limits::{
     HEAD_PEEK_BYTES, MAX_CD_RECORDS_PER_SESSION, MAX_JOBS, MAX_JSON_BYTES,
-    MAX_LISTED_ENTRIES_PER_SESSION, MAX_LIVE_STAGING_BYTES, MAX_PARTS, MAX_SESSION_BYTES_WRITTEN,
-    MIB, kind_cap,
+    MAX_LISTED_ENTRIES_PER_SESSION, MAX_LIVE_STAGING_BYTES, MAX_PARTS, MAX_RETAINED_PATH_BYTES,
+    MAX_SESSION_BYTES_WRITTEN, MIB, kind_cap,
 };
 use crate::local::{self, DataSpan};
 use crate::num::{to_u64, to_usize};
 use crate::path as epath;
 use crate::source::{ClosableSource, FileSource, Source};
-use crate::staging::StagingFile;
+use crate::staging::{self, StagingFile};
 use crate::types::{
     ArchiveEntry, ArchivePartInfo, ArchivePartInput, EntryKind, EntrySkipCode, ExtractOutcome,
     JsonOutcome, PeekOutcome, RejectedCount, UriResolution, UriSkipCode,
@@ -50,6 +50,7 @@ pub struct Budgets {
     pub session_bytes: u64,
     pub live_staging: u64,
     pub cd_records: u64,
+    pub retained_path_bytes: u64,
 }
 
 impl Default for Budgets {
@@ -58,6 +59,7 @@ impl Default for Budgets {
             session_bytes: MAX_SESSION_BYTES_WRITTEN,
             live_staging: MAX_LIVE_STAGING_BYTES,
             cd_records: MAX_CD_RECORDS_PER_SESSION,
+            retained_path_bytes: MAX_RETAINED_PATH_BYTES,
         }
     }
 }
@@ -84,13 +86,20 @@ struct EntryState {
 #[derive(Default)]
 struct Mutables {
     closed: bool,
+    /// Bytes actually written to staging files so far.
     bytes_written: u64,
+    /// Bytes promised to in-flight extracts but not yet written. Together with
+    /// `bytes_written` this makes the session byte budget a true reservation
+    /// rather than a snapshot: four concurrent jobs cannot each read the same
+    /// headroom and collectively overshoot it.
+    session_reserved: u64,
     /// Sum of `staging`'s values, kept in step with it under the same lock.
     live_staging: u64,
-    /// Bytes outstanding per staging path: reserved before the extract starts,
-    /// corrected to the real size on success, dropped on skip, error or
-    /// `release_staging`. Rust owns this number so a caller cannot widen the
-    /// ceiling by releasing a byte count it made up.
+    /// Bytes outstanding per staging LEDGER KEY (the validated, lowercased leaf
+    /// name — see `staging::ledger_key`, never the caller's raw path): reserved
+    /// before the extract starts, corrected to the real size on success,
+    /// dropped on skip, error or `release_staging`. Rust owns this number so a
+    /// caller cannot widen the ceiling by releasing a count it made up.
     staging: HashMap<String, u64>,
     jobs: HashMap<String, CancelFlag>,
 }
@@ -101,7 +110,11 @@ pub struct SessionCore {
     parts: Vec<PartState>,
     entries: Vec<EntryState>,
     by_id: HashMap<String, usize>,
-    exact_index: HashMap<String, Vec<usize>>,
+    /// Basename -> entry indices. There is deliberately no second index keyed
+    /// on the full path: an exact match is found by filtering this bucket, and
+    /// a full-path index would retain one more copy of every path (up to
+    /// ~100 MB for a hostile export of long-named entries) to answer a question
+    /// the basename bucket already answers.
     basename_index: HashMap<String, Vec<usize>>,
     rejected: Vec<RejectedCount>,
     staging_dir: PathBuf,
@@ -125,21 +138,28 @@ impl Drop for JobGuard {
     }
 }
 
-/// Holds a live-staging reservation for one path.
+/// Holds one extract's live-staging and session-byte reservations.
 ///
-/// Dropping without `commit` releases it, so every skip, error, cancel and
-/// panic path reconciles the ceiling without a bespoke branch.
+/// Dropping without `commit` releases both, so every skip, error, cancel and
+/// panic path reconciles the ledgers without a bespoke branch.
 struct StagingReservation<'a> {
     core: &'a SessionCore,
-    path: String,
+    key: String,
+    /// Bytes promised to the session budget by this reservation.
+    promised: u64,
+    /// Session headroom left for this job once every other reservation is
+    /// accounted for. Used as the in-loop backstop.
+    remaining: u64,
     active: bool,
 }
 
 impl StagingReservation<'_> {
-    /// Keeps the reservation, corrected to the bytes actually written. From
-    /// here the caller owns it until `release_staging(path)`.
+    /// Keeps the staging reservation, corrected to the bytes actually written,
+    /// and releases the session promise. From here the caller owns the staging
+    /// entry until `release_staging(path)`.
     fn commit(mut self, actual: u64) {
-        self.core.correct_staging(&self.path, actual);
+        self.core
+            .finish_reservation(&self.key, self.promised, actual);
         self.active = false;
     }
 }
@@ -147,7 +167,7 @@ impl StagingReservation<'_> {
 impl Drop for StagingReservation<'_> {
     fn drop(&mut self) {
         if self.active {
-            self.core.release_path(&self.path);
+            self.core.cancel_reservation(&self.key, self.promised);
         }
     }
 }
@@ -208,11 +228,6 @@ impl SessionCore {
         self.parts.get(index).ok_or(ArchiveError::Internal)
     }
 
-    fn remaining_session_bytes(&self) -> u64 {
-        let st = guard(&self.state);
-        self.budgets.session_bytes.saturating_sub(st.bytes_written)
-    }
-
     fn charge_bytes(&self, n: u64) {
         if n == 0 {
             return;
@@ -223,48 +238,76 @@ impl SessionCore {
 
     // ---- staging ledger (F8) --------------------------------------------
 
-    /// Reserves `bytes` against the live-staging ceiling, atomically with the
-    /// ceiling check. Four concurrent jobs each checking and then adding would
-    /// let the ceiling overshoot by up to three kind caps.
+    /// Reserves `bytes` against BOTH the live-staging ceiling and the session
+    /// byte budget, atomically with their checks. Four concurrent jobs each
+    /// checking and then adding would let either bound overshoot by up to one
+    /// kind cap per job.
     fn reserve_staging(&self, path: &str, bytes: u64) -> ArchiveResult<StagingReservation<'_>> {
+        let key = staging::ledger_key(path)?;
         let mut st = guard(&self.state);
         if st.closed {
             return Err(ArchiveError::SessionClosed);
         }
-        if st.staging.contains_key(path) {
-            // Two jobs extracting into one staging path would race on the file
-            // and on the ledger. That is a caller bug, not hostile input.
-            return Err(ArchiveError::Busy);
+        if st.staging.contains_key(&key) {
+            // Two jobs extracting into one staging file would race on the file
+            // and on the ledger. That is a caller bug, not a transient
+            // condition, so it is not `Busy`: retrying cannot help.
+            return Err(ArchiveError::StagingInUse);
         }
-        let total = st.live_staging.saturating_add(bytes);
-        if total > self.budgets.live_staging {
+        let live = st.live_staging.saturating_add(bytes);
+        if live > self.budgets.live_staging {
             return Err(ArchiveError::NoSpace);
         }
-        st.live_staging = total;
-        st.staging.insert(path.to_owned(), bytes);
+        let committed = st.bytes_written.saturating_add(st.session_reserved);
+        if committed.saturating_add(bytes) > self.budgets.session_bytes {
+            return Err(ArchiveError::SessionBytesExceeded);
+        }
+        st.live_staging = live;
+        st.session_reserved = st.session_reserved.saturating_add(bytes);
+        st.staging.insert(key.clone(), bytes);
+        let remaining = self.budgets.session_bytes.saturating_sub(committed);
         drop(st);
         Ok(StagingReservation {
             core: self,
-            path: path.to_owned(),
+            key,
+            promised: bytes,
+            remaining,
             active: true,
         })
     }
 
-    fn correct_staging(&self, path: &str, actual: u64) {
+    /// Success: the staging entry stays, corrected to the real size, and the
+    /// session promise is released (the bytes are already charged).
+    fn finish_reservation(&self, key: &str, promised: u64, actual: u64) {
         let mut st = guard(&self.state);
-        let Some(&reserved) = st.staging.get(path) else {
+        st.session_reserved = st.session_reserved.saturating_sub(promised);
+        let Some(&reserved) = st.staging.get(key) else {
             return;
         };
-        st.staging.insert(path.to_owned(), actual);
+        st.staging.insert(key.to_owned(), actual);
         st.live_staging = st
             .live_staging
             .saturating_sub(reserved)
             .saturating_add(actual);
     }
 
-    fn release_path(&self, path: &str) {
+    /// Skip, error, cancel or panic: both reservations go back.
+    fn cancel_reservation(&self, key: &str, promised: u64) {
         let mut st = guard(&self.state);
-        if let Some(bytes) = st.staging.remove(path) {
+        st.session_reserved = st.session_reserved.saturating_sub(promised);
+        if let Some(bytes) = st.staging.remove(key) {
+            st.live_staging = st.live_staging.saturating_sub(bytes);
+        }
+    }
+
+    fn release_path(&self, path: &str) {
+        // A path with no valid ledger key was never reserved, so there is
+        // nothing to release and nothing to report.
+        let Ok(key) = staging::ledger_key(path) else {
+            return;
+        };
+        let mut st = guard(&self.state);
+        if let Some(bytes) = st.staging.remove(&key) {
             st.live_staging = st.live_staging.saturating_sub(bytes);
         }
     }
@@ -429,7 +472,9 @@ impl SessionCore {
         let limits = StreamLimits {
             declared: entry.rec.uncomp_size,
             cap,
-            session_remaining: self.remaining_session_bytes(),
+            // Exact: the budget minus what is written and what every other
+            // in-flight job has promised.
+            session_remaining: reservation.remaining,
             max_output: None,
         };
         let mut written = 0u64;
@@ -706,29 +751,49 @@ impl SessionCore {
         // a structural guarantee, not a string check.
         let fully_allowlisted = matches!(allowlist::classify(&norm), Verdict::Listed(_));
 
-        if fully_allowlisted && let Some(hits) = self.exact_index.get(&norm) {
-            return match hits.len() {
-                1 => self.resolved(hits.first().copied()),
-                _ => UriResolution::Skipped {
-                    skip: UriSkipCode::UriAmbiguous,
-                },
-            };
-        }
-
         let basename = norm.rsplit('/').next().unwrap_or(&norm).to_owned();
-        let suffix = format!("/{norm}");
-        let mut found: Option<usize> = None;
-        let mut count = 0usize;
-        if let Some(candidates) = self.basename_index.get(&basename) {
+        let candidates: &[usize] = self
+            .basename_index
+            .get(&basename)
+            .map_or(&[], Vec::as_slice);
+
+        // Exact match first, found by filtering the basename bucket: any entry
+        // whose full path equals the URI necessarily shares its basename.
+        if fully_allowlisted {
+            let mut found: Option<usize> = None;
+            let mut count = 0usize;
             for &idx in candidates {
                 let Some(entry) = self.entries.get(idx) else {
                     continue;
                 };
-                if entry.path.ends_with(&suffix) {
+                if entry.path == norm {
                     count = count.saturating_add(1);
                     if found.is_none() {
                         found = Some(idx);
                     }
+                }
+            }
+            if count > 0 {
+                return match count {
+                    1 => self.resolved(found),
+                    _ => UriResolution::Skipped {
+                        skip: UriSkipCode::UriAmbiguous,
+                    },
+                };
+            }
+        }
+
+        let suffix = format!("/{norm}");
+        let mut found: Option<usize> = None;
+        let mut count = 0usize;
+        for &idx in candidates {
+            let Some(entry) = self.entries.get(idx) else {
+                continue;
+            };
+            if entry.path.ends_with(&suffix) {
+                count = count.saturating_add(1);
+                if found.is_none() {
+                    found = Some(idx);
                 }
             }
         }
@@ -826,6 +891,7 @@ fn build_core(
     let mut seen_file_ids: HashMap<String, ()> = HashMap::new();
     let mut seen_fps: HashMap<String, ()> = HashMap::new();
     let mut cd_records_total = 0u64;
+    let mut retained_path_bytes = 0u64;
 
     for (i, part) in parts.into_iter().enumerate() {
         cancel.check()?;
@@ -843,6 +909,18 @@ fn build_core(
             // The retained local-header offset vectors are what this bounds:
             // 64 parts x 1M records would be ~512 MB held for the life of the
             // session, which is a jetsam kill rather than an error.
+            return Err(ArchiveError::TooManyEntries);
+        }
+        retained_path_bytes = retained_path_bytes.saturating_add(
+            listing
+                .entries
+                .iter()
+                .map(|e| to_u64(e.rec.name.len()).saturating_add(to_u64(e.path.len())))
+                .sum(),
+        );
+        if retained_path_bytes > budgets.retained_path_bytes {
+            // Long-named entries: the retained name + path strings are what a
+            // hostile export inflates, not the entry count.
             return Err(ArchiveError::TooManyEntries);
         }
         for (code, n) in listing.rejected {
@@ -864,7 +942,6 @@ fn build_core(
     }
 
     let mut by_id = HashMap::with_capacity(entries.len());
-    let mut exact_index: HashMap<String, Vec<usize>> = HashMap::new();
     let mut basename_index: HashMap<String, Vec<usize>> = HashMap::new();
     for (idx, e) in entries.iter().enumerate() {
         // Fail closed on a colliding id. `entry_id` is the resume key #926
@@ -880,7 +957,6 @@ fn build_core(
         if e.skip.is_some() || e.kind == EntryKind::Json {
             continue;
         }
-        exact_index.entry(e.path.clone()).or_default().push(idx);
         let base = e.path.rsplit('/').next().unwrap_or(&e.path).to_owned();
         basename_index.entry(base).or_default().push(idx);
     }
@@ -895,7 +971,6 @@ fn build_core(
         parts: part_states,
         entries,
         by_id,
-        exact_index,
         basename_index,
         rejected: rejected_counts,
         staging_dir,
@@ -997,8 +1072,17 @@ fn list_part(part: PartSourceInput, index: u32, cancel: &CancelFlag) -> ArchiveR
         // what will happen; `extract` re-checks them anyway.
         let skip = match kind_cap(kind) {
             Some(cap) => extract::precheck(&rec, cap).err(),
-            // Video: listed with its declared size, never opened.
-            None => None,
+            // A capless kind (video) is listed with its declared size and never
+            // opened, so there is no cap to precheck against — but a record
+            // whose geometry we could not parse is still corrupt, and listing a
+            // held video with a bogus declared size would mislead #925.
+            None => {
+                if rec.saturated || rec.malformed_extra {
+                    Some(EntrySkipCode::EntryCorrupt)
+                } else {
+                    None
+                }
+            }
         };
         entries.push(EntryState {
             entry_id: format!("{fp}:{}", rec.ordinal),

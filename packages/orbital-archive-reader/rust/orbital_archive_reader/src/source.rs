@@ -52,17 +52,25 @@ impl Source for FileSource {
     }
 }
 
-/// A `Source` the session can release early.
+/// A `Source` the session can release early, without ever blocking the closer.
 ///
 /// `close()` has to drop this crate's descriptor dups without waiting for the
-/// uniffi destroy, and it is called from `localWipe` phase 1, which must not
-/// block. So the lock lives INSIDE the read path, one `RwLock` read per
-/// positioned read (an uncontended atomic, negligible beside the syscall),
-/// rather than being held for the length of a job. A job that is mid-read when
-/// the session closes gets `SessionClosed` on its next read and unwinds through
-/// the normal error path, unlinking its staging file.
+/// uniffi destroy, and it runs in `localWipe` phase 1, which must not block. On
+/// iOS the fd can be File-Provider-backed, so one in-flight `pread` can stall
+/// for seconds. Hence two mechanisms rather than one lock:
+///
+/// * a `closed` flag checked BEFORE the read lock, so `release` takes effect
+///   for every new read immediately and `localWipe` never waits;
+/// * `try_write` to drop the source. If a reader is parked in `pread` the write
+///   lock is contended, so the closer leaves it — and the parked reader drops it
+///   on its way out, once it sees the flag. Either way the descriptor is gone
+///   before any further read can use it.
+///
+/// A job mid-read when the session closes gets `SessionClosed` and unwinds
+/// through the normal error path, unlinking its staging file.
 pub struct ClosableSource {
     inner: std::sync::RwLock<Option<Box<dyn Source>>>,
+    closed: std::sync::atomic::AtomicBool,
     len: u64,
 }
 
@@ -72,30 +80,53 @@ impl ClosableSource {
         let len = src.len();
         Self {
             inner: std::sync::RwLock::new(Some(src)),
+            closed: std::sync::atomic::AtomicBool::new(false),
             len,
         }
     }
 
-    /// Drops the underlying source. Idempotent.
+    /// Marks the source closed and drops it if no reader is parked. Never
+    /// blocks. Idempotent.
     pub fn release(&self) {
-        let mut g = self
-            .inner
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *g = None;
+        self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.try_drop_inner();
+    }
+
+    fn try_drop_inner(&self) {
+        if let Ok(mut g) = self.inner.try_write() {
+            *g = None;
+        }
+    }
+
+    fn is_closed(&self) -> bool {
+        self.closed.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
 impl Source for ClosableSource {
     fn read_exact_at(&self, buf: &mut [u8], offset: u64) -> ArchiveResult<()> {
-        let g = self
-            .inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match g.as_deref() {
-            Some(src) => src.read_exact_at(buf, offset),
-            None => Err(ArchiveError::SessionClosed),
+        if self.is_closed() {
+            return Err(ArchiveError::SessionClosed);
         }
+        let result = {
+            let g = self
+                .inner
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match g.as_deref() {
+                Some(src) => src.read_exact_at(buf, offset),
+                None => Err(ArchiveError::SessionClosed),
+            }
+        };
+        if self.is_closed() {
+            // The session closed while this read was in flight. The closer
+            // could not take the write lock because of us, so release it here
+            // and fail the job: whatever we just read belongs to a session the
+            // app has already finished with.
+            self.try_drop_inner();
+            return Err(ArchiveError::SessionClosed);
+        }
+        result
     }
 
     fn len(&self) -> u64 {

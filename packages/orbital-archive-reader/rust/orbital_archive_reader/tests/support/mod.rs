@@ -90,9 +90,9 @@ pub struct MemSource {
     /// Trips a cancel flag once this many reads have been served. Makes
     /// cancellation deterministic instead of time-dependent.
     cancel_after: Mutex<Option<(usize, CancelFlag)>>,
-    /// When present, every read blocks until the gate is opened, so a job can
-    /// be held mid-read while another call is made.
-    gate: Mutex<Option<Arc<Gate>>>,
+    /// When present, reads AFTER the given count block until the gate is
+    /// opened, so a job can be parked at a chosen point in its read sequence.
+    gate: Mutex<Option<(Arc<Gate>, usize)>>,
 }
 
 /// A one-shot open/closed gate.
@@ -152,8 +152,17 @@ impl MemSource {
     /// Blocks every subsequent read until the returned gate is opened.
     #[must_use]
     pub fn install_gate(&self) -> Arc<Gate> {
+        self.install_gate_after(0)
+    }
+
+    /// Lets the next `after` reads through, then parks every read until the
+    /// returned gate is opened. `after = 2` parks a job on its first DATA read,
+    /// by which point the local header has been verified and the staging file
+    /// is open.
+    #[must_use]
+    pub fn install_gate_after(&self, after: usize) -> Arc<Gate> {
         let gate = Gate::closed();
-        *self.gate.lock().expect("lock") = Some(Arc::clone(&gate));
+        *self.gate.lock().expect("lock") = Some((Arc::clone(&gate), after));
         gate
     }
 
@@ -196,7 +205,9 @@ impl Source for MemSource {
             r.len()
         };
         let gate = self.gate.lock().expect("lock").clone();
-        if let Some(g) = gate {
+        if let Some((g, after)) = gate
+            && served > after
+        {
             g.wait();
         }
         if let Some((n, flag)) = self.cancel_after.lock().expect("lock").as_ref()

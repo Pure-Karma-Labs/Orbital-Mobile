@@ -39,8 +39,15 @@ pub enum ArchiveError {
     Cancelled,
     #[error("ARCHIVE_SESSION_CLOSED")]
     SessionClosed,
+    /// Transient: every job slot is taken. A caller may retry.
     #[error("ARCHIVE_BUSY")]
     Busy,
+    /// Not transient: the caller handed over a staging path this session is
+    /// still holding bytes for. Retrying with the same path will never succeed
+    /// — the caller must release it or use a fresh one. Kept distinct from
+    /// `Busy` so a backoff loop cannot spin on it forever.
+    #[error("ARCHIVE_STAGING_IN_USE")]
+    StagingInUse,
     #[error("ARCHIVE_INTERNAL")]
     Internal,
 }

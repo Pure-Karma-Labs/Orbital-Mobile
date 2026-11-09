@@ -191,8 +191,16 @@ updates:
       # fail with "invalid utf-8 sequence" extracting UNIFFI_META symbols
       # (see closed PR #466). No ubrn release supporting 0.32 exists yet;
       # re-evaluate when jhugman/uniffi-bindgen-react-native ships one.
+      #
+      # The floor is 0.31.1, not 0.32.0, since #920 added a SECOND cargo
+      # directory (orbital-archive-reader). Both crates' Cargo.lock files must
+      # resolve the same uniffi — invariant 18 asserts it, because one pinned
+      # ubrn generates the bindings for both. Dependabot bumps one directory at
+      # a time, so a 0.31.x release landing here alone would split the locks
+      # and turn CI red. Every uniffi move is a deliberate two-crate lockstep
+      # edit; the archive entry below carries the same floor.
       - dependency-name: "uniffi"
-        versions: [">= 0.32.0"]
+        versions: [">= 0.31.1"]
 
   # Rust/Cargo dependencies (orbital_archive_reader crate, #920)
   # Its own cargo workspace root, so its own Dependabot entry. The whole

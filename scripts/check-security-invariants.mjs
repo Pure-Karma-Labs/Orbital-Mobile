@@ -778,6 +778,13 @@ const APP_FILE = join(SRC, 'App.tsx');
  * @param issue - Issue suffix on the violation line. Defaults to the Sentry
  *   privacy-hook issue the helper was written for, so existing callers are
  *   unchanged.
+ * @param strip - Optional comment stripper for languages this helper does not
+ *   know. Without it the window is located in the RAW text and only C-style
+ *   comments are removed from the window, which is what every caller before
+ *   #920 relies on. WITH it the whole file is stripped BEFORE the window is
+ *   located, so a `#`-commented pin cannot satisfy the rule and a `#`-commented
+ *   section header cannot open a window — pass `stripShellComments` for TOML or
+ *   YAML. Mutation 29-18 is why this parameter exists.
  */
 function checkWindowedPins(
   file,
@@ -787,6 +794,7 @@ function checkWindowedPins(
   pins,
   forbidden = [],
   issue = '#746',
+  strip = null,
 ) {
   let text;
   try {
@@ -797,6 +805,7 @@ function checkWindowedPins(
     );
     return;
   }
+  if (strip) text = strip(text);
   const match = text.match(windowRe);
   if (match === null) {
     violations.push(
@@ -804,14 +813,16 @@ function checkWindowedPins(
     );
     return;
   }
-  const body = match[0]
-    .split('\n')
-    .filter((line) => !/^\s*(\/\/|\/\*|\*)/.test(line))
-    // Trailing comments too: `enableNetworkBreadcrumbs: true, // was: false`
-    // must not satisfy the pin (PR #837 review). None of these windows holds
-    // a `//` inside a string literal, so a plain strip is safe.
-    .map((line) => line.replace(/\s\/\/.*$/, ''))
-    .join('\n');
+  const body = strip
+    ? match[0]
+    : match[0]
+        .split('\n')
+        .filter((line) => !/^\s*(\/\/|\/\*|\*)/.test(line))
+        // Trailing comments too: `enableNetworkBreadcrumbs: true, // was: false`
+        // must not satisfy the pin (PR #837 review). None of these windows holds
+        // a `//` inside a string literal, so a plain strip is safe.
+        .map((line) => line.replace(/\s\/\/.*$/, ''))
+        .join('\n');
   for (const pin of pins) {
     if (!body.includes(pin)) {
       violations.push(
@@ -1232,9 +1243,21 @@ for (const [file, sub, dir, why] of CARGO_CRATE_EXPECTED) {
 // addressed, so the digest covers it. The archive crate has no such need: it
 // is four crates.io dependencies, and a git dep appearing there would mean
 // something unreviewed is being pulled into a hostile-input parser.
+//
+// The key bans are ANCHORED REGEXES, not substrings: `path = "…"` is equally
+// a dependency at the start of a line, after `{ `, or after `,` with no space
+// at all (`{path="../x"}`), and a `path =` substring check misses two of those
+// three. `[patch` stays a literal — it is a section header, and `[patch]`,
+// `[patch.crates-io]` and `[patch."https://…"]` all start with it.
+const TOML_PATH_KEY_RE = /(^|[\s{,])path\s*=/m;
+const TOML_GIT_KEY_RE = /(^|[\s{,])git\s*=/m;
 const CARGO_TOML_BANS = [
-  [`${CRATE_REL}/Cargo.toml`, 'orbital_signal', ['path =', '[patch']],
-  [`${ARCHIVE_CRATE_REL}/Cargo.toml`, 'orbital_archive_reader', ['path =', 'git =', '[patch']],
+  [`${CRATE_REL}/Cargo.toml`, 'orbital_signal', [['path =', TOML_PATH_KEY_RE], ['[patch', '[patch']]],
+  [
+    `${ARCHIVE_CRATE_REL}/Cargo.toml`,
+    'orbital_archive_reader',
+    [['path =', TOML_PATH_KEY_RE], ['git =', TOML_GIT_KEY_RE], ['[patch', '[patch']],
+  ],
 ];
 for (const [file, label, banned] of CARGO_TOML_BANS) {
   let text;
@@ -1248,9 +1271,10 @@ for (const [file, label, banned] of CARGO_TOML_BANS) {
   // in a `#` comment, and that must not be mistaken for a violation. TOML uses
   // shell comment syntax, so the shell stripper is the right one.
   const code = stripShellComments(text);
-  for (const ban of banned) {
-    if (code.includes(ban)) {
-      violations.push(`  ${file}:0  [${RUST_PROV}]  \`${ban}\` appears in ${label}'s Cargo.toml — source outside the crate's literal freshness-input set would be linked into the binary while both staleness gates still read "fresh"`);
+  for (const [name, matcher] of banned) {
+    const hit = typeof matcher === 'string' ? code.includes(matcher) : matcher.test(code);
+    if (hit) {
+      violations.push(`  ${file}:0  [${RUST_PROV}]  \`${name}\` appears in ${label}'s Cargo.toml — source outside the crate's literal freshness-input set would be linked into the binary while both staleness gates still read "fresh"`);
     }
   }
 }
@@ -2176,12 +2200,14 @@ const ME_UPLOAD_SERVICE = join(SRC, 'services', 'mediaUploadService.ts');
  */
 
 /** Read a file, recording a violation and returning null when it is missing. */
-function meRead(file, rule, why) {
+// `issue` defaults to the media-export issue this helper was written for, so
+// its original callers are unchanged; rule 29 (#920) passes its own.
+function meRead(file, rule, why, issue = ME_ISSUE) {
   try {
     return readFileSync(file, 'utf8');
   } catch {
     violations.push(
-      `  ${relative('.', file)}:0  [${rule}]  file not found — ${why} cannot be verified and the rule would pass vacuously (${ME_ISSUE})`,
+      `  ${relative('.', file)}:0  [${rule}]  file not found — ${why} cannot be verified and the rule would pass vacuously (${issue})`,
     );
     return null;
   }
@@ -3624,7 +3650,8 @@ const NP_GATES = [
 
 const AR_RULE = 'archive-reader-native-pins';
 const AR_ISSUE = '#920';
-const AR_CRATE = join('packages', 'orbital-archive-reader', 'rust', 'orbital_archive_reader');
+// One spelling of the crate path in this file: rule 18 already needs it.
+const AR_CRATE = ARCHIVE_CRATE_REL;
 const AR_SRC = join(AR_CRATE, 'src');
 const AR_LIB = join(AR_SRC, 'lib.rs');
 const AR_FD = join(AR_SRC, 'fd.rs');
@@ -3635,39 +3662,6 @@ const AR_LOCK = join(AR_CRATE, 'Cargo.lock');
 
 function arViolation(file, detail) {
   violations.push(`  ${relative('.', file)}:0  [${AR_RULE}]  ${detail} (${AR_ISSUE})`);
-}
-
-function arRead(file, why) {
-  try {
-    return readFileSync(file, 'utf8');
-  } catch {
-    arViolation(file, `file not found — ${why}`);
-    return null;
-  }
-}
-
-/**
- * checkWindowedPins for text whose comments have ALREADY been stripped by the
- * caller. checkWindowedPins itself only knows C-style comments, so it cannot
- * police a TOML window: mutation case 29-18 proved that `# overflow-checks =
- * true` in a Cargo.toml comment satisfied the pin.
- */
-function arWindowPins(file, code, windowRe, windowLabel, pins, forbidden = []) {
-  const match = code.match(windowRe);
-  if (match === null) {
-    arViolation(file, `${windowLabel} not found — the rule would pass vacuously`);
-    return;
-  }
-  for (const pin of pins) {
-    if (!match[0].includes(pin)) {
-      arViolation(file, `"${pin}" missing from ${windowLabel}`);
-    }
-  }
-  for (const banned of forbidden) {
-    if (match[0].includes(banned)) {
-      arViolation(file, `"${banned}" must not appear in ${windowLabel}`);
-    }
-  }
 }
 
 // --- 29.1 Safety posture across every module.
@@ -3684,6 +3678,16 @@ const AR_UNSAFE_RE = /\bunsafe\s*(\{|fn\b|impl\b|extern\b|trait\b)/g;
 // `log::` covers the log facade; bare `tracing` covers tracing and
 // tracing::debug! alike. On comment-stripped source these can only be code.
 const AR_LOG_TOKENS = ['println!', 'eprintln!', 'print!', 'eprint!', 'dbg!', 'log::', 'tracing'];
+// fd.rs is NOT exempt, it is BOUNDED. A wholesale exemption makes the one file
+// that is allowed to contain `unsafe` the one file where any amount of it is
+// invisible — and it is also the file an attacker-facing descriptor arrives
+// through. So: exactly one unsafe construct, it must be an `unsafe {`
+// expression (not an `unsafe fn`, which would push the obligation onto every
+// caller), exactly one `allow(unsafe_code)`, and the two APIs that make the
+// containment argument work must both still be there. `borrow_raw` is the
+// unsafe step; `try_clone_to_owned` is what makes it a dup this crate owns, so
+// losing it would mean the crate closes the glue's descriptor (F2).
+const AR_FD_REQUIRED = ['BorrowedFd::borrow_raw', 'try_clone_to_owned'];
 
 let arSrcFiles = [];
 try {
@@ -3699,10 +3703,24 @@ for (const file of arSrcFiles) {
   const code = stripCStyleComments(text);
   const lines = code.split('\n');
   const isFd = relative('.', file) === relative('.', AR_FD);
-  if (!isFd) {
-    AR_UNSAFE_RE.lastIndex = 0;
-    let m;
-    while ((m = AR_UNSAFE_RE.exec(code)) !== null) {
+  const unsafeHits = [...code.matchAll(AR_UNSAFE_RE)];
+  const allowHits = code.match(/allow\(unsafe_code\)/g) ?? [];
+  if (isFd) {
+    if (unsafeHits.length !== 1) {
+      arViolation(file, `fd.rs contains ${unsafeHits.length} \`unsafe\` construct(s) — exactly one is allowed, the \`BorrowedFd::borrow_raw\` dup. Found: ${unsafeHits.map((h) => h[0].replace(/\s+/g, ' ')).join(', ') || 'none'}`);
+    } else if (unsafeHits[0][1] !== '{') {
+      arViolation(file, `fd.rs's single \`unsafe\` construct is \`${unsafeHits[0][0].replace(/\s+/g, ' ')}\` — it must be an \`unsafe {\` expression, so the obligation stays inside this file instead of moving to every caller`);
+    }
+    if (allowHits.length !== 1) {
+      arViolation(file, `fd.rs carries ${allowHits.length} \`allow(unsafe_code)\` attribute(s) — exactly one, on the dup function, is allowed`);
+    }
+    for (const pin of AR_FD_REQUIRED) {
+      if (!code.includes(pin)) {
+        arViolation(file, `fd.rs no longer calls \`${pin}\` — the one permitted \`unsafe\` block is only defensible as borrow_raw immediately followed by a dup this crate owns`);
+      }
+    }
+  } else {
+    for (const m of unsafeHits) {
       const lineNum = code.slice(0, m.index).split('\n').length;
       report(file, lineNum, AR_RULE, `\`unsafe\` outside fd.rs: ${m[0].replace(/\s+/g, ' ')} (${AR_ISSUE})`);
     }
@@ -3741,7 +3759,7 @@ checkWindowedPins(
 // orbital_signal at all, and a silent deletion would erase the rationale that
 // keeps crypto out of this crate.
 const AR_HEADER_PHRASE = 'No key material, no ciphertext and no credential';
-const arLibRaw = arRead(AR_LIB, 'the no-key-material header contract cannot be verified');
+const arLibRaw = meRead(AR_LIB, AR_RULE, 'the no-key-material header contract', AR_ISSUE);
 if (arLibRaw !== null && !arLibRaw.includes(AR_HEADER_PHRASE)) {
   arViolation(AR_LIB, `the crate header no longer states "${AR_HEADER_PHRASE} …" — that contract is why hostile-input parsing lives outside the key-holding crate`);
 }
@@ -3751,32 +3769,47 @@ const AR_ALLOWED_DEPS = new Set(['uniffi', 'thiserror', 'flate2', 'crc32fast']);
 // Non-vacuity anchors: a `[dependencies]` table emptied of these would satisfy
 // the subset check trivially.
 const AR_REQUIRED_DEPS = ['uniffi', 'flate2'];
-const arToml = arRead(AR_TOML, 'the dependency-set and release-profile clauses cannot be verified');
+// EVERY table whose name ends in `dependencies`, not just `[dependencies]`:
+// `[build-dependencies]` and `[target.'cfg(unix)'.dependencies]` are linked
+// into the same binary (or run on the build host) and a `[dependencies]`-only
+// scope let both in, mutation-proven. `[dev-dependencies]` is the one
+// documented carve-out — it repeats flate2 and crc32fast for the ZIP generator
+// in tests/support, is never part of the cdylib/staticlib, and adding a test
+// helper there must not need an invariant edit.
+const AR_DEP_TABLE_RE = /^\[([^\]]+)\]\n?([\s\S]*?)(?=^\[|(?![\s\S]))/gm;
+const arToml = meRead(AR_TOML, AR_RULE, 'the dependency-set and release-profile clauses', AR_ISSUE);
 if (arToml !== null) {
   // TOML uses shell comment syntax; this file's comments explain the bans.
   const tomlCode = stripShellComments(arToml);
-  // `[dependencies]` only. `[dev-dependencies]` repeats flate2 and crc32fast
-  // for the ZIP generator in tests/support and is out of scope here.
-  const deps = /^\[dependencies\]\n([\s\S]*?)(?=^\[|(?![\s\S]))/m.exec(tomlCode);
-  if (deps === null) {
-    arViolation(AR_TOML, 'no `[dependencies]` table — the closed-dependency-set clause would pass vacuously');
+  const depTables = [];
+  AR_DEP_TABLE_RE.lastIndex = 0;
+  let table;
+  while ((table = AR_DEP_TABLE_RE.exec(tomlCode)) !== null) {
+    const name = table[1].trim();
+    if (!name.endsWith('dependencies') || name.endsWith('dev-dependencies')) continue;
+    depTables.push([name, table[2]]);
+  }
+  if (depTables.length === 0) {
+    arViolation(AR_TOML, 'no dependency table (`[dependencies]`, `[build-dependencies]`, `[target.*.dependencies]`) — the closed-dependency-set clause would pass vacuously');
   } else {
-    const keys = [];
-    for (const line of deps[1].split('\n')) {
-      const key = /^([A-Za-z0-9_-]+)\s*=/.exec(line);
-      if (key) keys.push(key[1]);
+    const keys = new Map(); // crate -> the table it was declared in
+    for (const [name, body] of depTables) {
+      for (const line of body.split('\n')) {
+        const key = /^([A-Za-z0-9_-]+)\s*=/.exec(line);
+        if (key) keys.set(key[1], name);
+      }
     }
-    for (const key of keys) {
+    for (const [key, name] of keys) {
       if (!AR_ALLOWED_DEPS.has(key)) {
-        arViolation(AR_TOML, `\`${key}\` is a new [dependencies] entry — the archive reader's dependency set is closed at {${[...AR_ALLOWED_DEPS].join(', ')}}; widening the trusted computing base of a hostile-input parser is a deliberate edit of this rule`);
+        arViolation(AR_TOML, `\`${key}\` is a new [${name}] entry — the archive reader's dependency set is closed at {${[...AR_ALLOWED_DEPS].join(', ')}}; widening the trusted computing base of a hostile-input parser is a deliberate edit of this rule`);
       }
     }
     for (const key of AR_REQUIRED_DEPS) {
-      if (!keys.includes(key)) {
-        arViolation(AR_TOML, `\`${key}\` is missing from [dependencies] — the closed-set check above would pass vacuously`);
+      if (!keys.has(key)) {
+        arViolation(AR_TOML, `\`${key}\` is missing from every dependency table — the closed-set check above would pass vacuously`);
       }
     }
-    const flate2 = /^flate2\s*=.*$/m.exec(deps[1]);
+    const flate2 = /^flate2\s*=.*$/m.exec(depTables.map(([, body]) => body).join('\n'));
     if (flate2 === null) {
       arViolation(AR_TOML, 'no flate2 dependency line to check the backend on');
     } else {
@@ -3787,27 +3820,30 @@ if (arToml !== null) {
       }
     }
   }
-
-  // `overflow-checks = true` keeps attacker-driven arithmetic from wrapping
-  // silently in release. `panic =` is forbidden: `panic = "abort"` would turn
-  // every defensive panic in the parser into a kill of the whole host app.
-  // Runs on the `#`-stripped text: this table's own comment explains both.
-  arWindowPins(
-    AR_TOML,
-    tomlCode,
-    /^\[profile\.release\][\s\S]*?(?=^\[|(?![\s\S]))/m,
-    "the archive crate's [profile.release] table",
-    ['overflow-checks = true'],
-    ['panic ='],
-  );
 }
+
+// `overflow-checks = true` keeps attacker-driven arithmetic from wrapping
+// silently in release. `panic =` is forbidden: `panic = "abort"` would turn
+// every defensive panic in the parser into a kill of the whole host app.
+// stripShellComments is passed because this table's own comment explains both,
+// and `# overflow-checks = true` must not satisfy the pin (mutation 29-18).
+checkWindowedPins(
+  AR_TOML,
+  AR_RULE,
+  /^\[profile\.release\][\s\S]*?(?=^\[|(?![\s\S]))/m,
+  "the archive crate's [profile.release] table",
+  ['overflow-checks = true'],
+  ['panic ='],
+  AR_ISSUE,
+  stripShellComments,
+);
 
 // --- 29.3 The lock proves the pure-Rust backend actually resolved.
 // miniz_oxide is the non-vacuity anchor: without it the absence of every C
 // backend below would also be satisfied by a lock with no decompressor at all.
 const AR_LOCK_REQUIRED = ['miniz_oxide'];
 const AR_LOCK_FORBIDDEN = ['libz-sys', 'libz-ng-sys', 'zlib-rs', 'cloudflare-zlib-sys', 'miniz-sys', 'zip'];
-const arLock = arRead(AR_LOCK, 'the resolved decompressor backend cannot be verified');
+const arLock = meRead(AR_LOCK, AR_RULE, 'the resolved decompressor backend', AR_ISSUE);
 if (arLock !== null) {
   for (const pkg of AR_LOCK_REQUIRED) {
     if (!arLock.includes(`name = "${pkg}"`)) {
@@ -3843,12 +3879,46 @@ checkWindowedPins(
   // Full declarations, not bare numbers: the file's own #[cfg(test)] module
   // asserts `MAX_RATIO, 100` and `HEAD_PEEK_BYTES, 128`, and a bare-literal
   // pin would be satisfied by those asserts after the consts had changed.
-  ['pub const MAX_RATIO: u64 = 100;', 'pub const HEAD_PEEK_BYTES: usize = 128;'],
+  [
+    'pub const MAX_RATIO: u64 = 100;',
+    'pub const HEAD_PEEK_BYTES: usize = 128;',
+    // The session-wide central-directory record bound (PR #977 review).
+    // Without it, 64 parts x 1M records keeps ~512 MB of lh_offsets alive and
+    // the OS jetsams the app — a limit whose absence is invisible in every
+    // single-part test.
+    'pub const MAX_CD_RECORDS_PER_SESSION: u64 = 2_000_000;',
+  ],
   [],
   AR_ISSUE,
 );
 
 // --- 29.5 The allowlist tables.
+//
+// The forbidden list is DERIVED from DENIED_ROOTS rather than restated. A
+// hand-written list drifted immediately: the first version forbade 7 of the 10
+// roots, leaving `inbox`, `profile` and `other_content` admissible as allowlist
+// rows (PR #977 review). Deriving it means adding a denied root automatically
+// forbids it as a row. The floor of 10 is what stops the derivation from being
+// weakened the easy way — shortening DENIED_ROOTS would otherwise shrink the
+// forbidden list silently, and it is also the F17 known-root set, so a short
+// table makes a denied root strippable too.
+const AR_DENIED_ROOTS_FLOOR = 10;
+const arAllowlistRaw = meRead(AR_ALLOWLIST, AR_RULE, 'the denied-root tables', AR_ISSUE);
+let arDeniedRoots = [];
+if (arAllowlistRaw !== null) {
+  const table = /^pub const DENIED_ROOTS[^=]*=\s*\[([\s\S]*?)\];/m.exec(
+    stripCStyleComments(arAllowlistRaw),
+  );
+  if (table === null) {
+    arViolation(AR_ALLOWLIST, 'no DENIED_ROOTS table — the forbidden-allowlist-row list is derived from it and would be empty');
+  } else {
+    arDeniedRoots = [...table[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    if (arDeniedRoots.length < AR_DENIED_ROOTS_FLOOR) {
+      arViolation(AR_ALLOWLIST, `DENIED_ROOTS lists ${arDeniedRoots.length} roots, below the floor of ${AR_DENIED_ROOTS_FLOOR} — a shortened table both narrows the forbidden-row list below and makes the dropped root strippable by the F17 wrapper strip`);
+    }
+  }
+}
+
 // Required rows are the ones CONFIRMED by name against the local FB and IG
 // samples; they are also the non-vacuity anchors for the forbidden list.
 checkWindowedPins(
@@ -3867,17 +3937,33 @@ checkWindowedPins(
   // could ever open private data. These are substrings, so `messages` also
   // catches `messages/inbox/…`, and the check runs on the comment-stripped
   // window, so allowlist.rs's own header listing all of them does not count.
-  [
-    'messages',
-    'friends_and_followers',
-    'ads_information',
-    'security_and_login_information',
-    'personal_information',
-    'stories',
-    'reels',
-  ],
+  arDeniedRoots,
   AR_ISSUE,
 );
+
+// Defence in depth inside classify() itself, since the tables are edited far
+// more often than the function: a denied first segment is refused BEFORE any
+// row is consulted, so a future row that happens to overlap a denied root is
+// inert instead of silently opening private data. The ordering is asserted,
+// not just the presence — a guard after the JSON_EXACT lookup would be a guard
+// that the first matching row has already bypassed.
+const AR_CLASSIFY_GUARD = 'if starts_with_denied_root(path) {';
+if (arAllowlistRaw !== null) {
+  const body = /^pub fn classify\(path: &str\) -> Verdict \{[\s\S]*?\n\}/m.exec(
+    stripCStyleComments(arAllowlistRaw),
+  );
+  if (body === null) {
+    arViolation(AR_ALLOWLIST, 'classify() not found — the denied-root refusal cannot be verified and the rule would pass vacuously');
+  } else {
+    const guardAt = body[0].indexOf(AR_CLASSIFY_GUARD);
+    const firstTableAt = body[0].indexOf('JSON_EXACT');
+    if (guardAt < 0) {
+      arViolation(AR_ALLOWLIST, `classify() no longer refuses denied roots — \`${AR_CLASSIFY_GUARD}\` is missing, so the allowlist tables are the only thing standing between the importer and messages/`);
+    } else if (firstTableAt >= 0 && guardAt > firstTableAt) {
+      arViolation(AR_ALLOWLIST, 'the denied-root refusal in classify() runs AFTER the first allowlist table is consulted — a row matching a denied path would already have returned Listed');
+    }
+  }
+}
 
 // F17: the known-root-key set must name every root on BOTH sides, and
 // is_known_root_key must consult both tables. A denied root dropped from

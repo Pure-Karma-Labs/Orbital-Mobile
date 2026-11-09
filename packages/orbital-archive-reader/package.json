@@ -15,11 +15,11 @@
   "main": "./src/index.tsx",
   "scripts": {
     "comment:entrypoint": "ubrn's own loader is src/bindings.tsx (turboModule.entrypoint), NOT src/index.tsx. src/index.tsx is the hand-written wrapper and the package main; ubrn must never write it. See ubrn.config.yaml.",
-    "comment:marker": "The iOS release-profile marker and the per-crate freshness gates are added in B6, together with the scripts/write-rust-marker-ios.sh + verify-rust-profile-ios.sh crate selector. Until then these scripts run ubrn only.",
-    "build:ios": "ubrn build ios --config ubrn.config.yaml --and-generate",
-    "build:ios:release": "ubrn build ios --config ubrn.config.yaml --release --and-generate",
-    "build:android": "ubrn build android --config ubrn.config.yaml --and-generate",
-    "build:android:release": "ubrn build android --config ubrn.config.yaml --release --and-generate"
+    "comment:marker": "build:ios[:release] write rust-profile-ios.txt via the SHARED writer scripts/write-rust-marker-ios.sh with the `archive` selector (rationale, incl. the deliberate pre-build rm -f, lives in its header). build:android[:release] write the jniLibs/rust-profile.txt marker the checkArchiveRustBinaries gradle task reads.",
+    "build:ios": "rm -f rust-profile-ios.txt rust-profile-ios.txt.tmp && ubrn build ios --config ubrn.config.yaml --and-generate && bash ../../scripts/write-rust-marker-ios.sh debug archive",
+    "build:ios:release": "rm -f rust-profile-ios.txt rust-profile-ios.txt.tmp && ubrn build ios --config ubrn.config.yaml --release --and-generate && bash ../../scripts/write-rust-marker-ios.sh release archive",
+    "build:android": "rm -f android/src/main/jniLibs/rust-profile.txt && ubrn build android --config ubrn.config.yaml --and-generate && echo debug > android/src/main/jniLibs/rust-profile.txt",
+    "build:android:release": "rm -f android/src/main/jniLibs/rust-profile.txt && ubrn build android --config ubrn.config.yaml --release --and-generate && echo release > android/src/main/jniLibs/rust-profile.txt"
   },
   "dependencies": {
     "uniffi-bindgen-react-native": "0.31.0-2"

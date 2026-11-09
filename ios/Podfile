@@ -42,6 +42,22 @@ target 'OrbitalMobile' do
     :execution_position => :before_compile,
     :always_out_of_date => '1'
 
+  # Issue #920: the same gate for the SECOND Rust crate
+  # (packages/orbital-archive-reader). One phase per crate rather than one
+  # phase with two invocations, so Xcode attributes the failure to the crate
+  # that is stale. The verifier's crate argument is optional and defaults to
+  # `signal`, which is why the phase above needs no edit.
+  #
+  # A crate-specific check cannot live in OrbitalArchiveReader.podspec: ubrn
+  # regenerates that file (see the package's ubrn.config.yaml noOverwrite
+  # note), so the Podfile is the only durable home. Logic in
+  # scripts/verify-rust-profile-ios.sh; unit-tested for BOTH selectors by
+  # scripts/test-rust-profile-gate-ios.sh.
+  script_phase :name => '[Orbital] Verify Rust release profile (archive)',
+    :script => 'exec bash "${SRCROOT}/../scripts/verify-rust-profile-ios.sh" archive',
+    :execution_position => :before_compile,
+    :always_out_of_date => '1'
+
   # Fail any build whose node_modules holds an unpatched react-native-image-picker.
   # The pod sources come straight out of node_modules, so a missing patch means
   # shipping the 8.2.1 double-callback abort (#971). This phase is the only

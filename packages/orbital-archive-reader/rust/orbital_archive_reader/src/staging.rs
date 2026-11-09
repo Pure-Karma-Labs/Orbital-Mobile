@@ -1,0 +1,168 @@
+//! Staging-file hygiene.
+//!
+//! Rust never *creates* a staging file: the native glue does, because only the
+//! glue can set `NSFileProtectionCompleteUnlessOpen` and the
+//! excluded-from-backup flag. Rust opens the glue-created path with
+//! `create(false)`, so a mid-job `localWipe` sweep is never undone by
+//! recreating the file as residue.
+//!
+//! F8 hardening, in order:
+//! 1. The parent directory must equal the session's canonicalised staging dir.
+//! 2. The file name must match `<uuid>-archive-staging.bin`.
+//! 3. The open carries `O_NOFOLLOW`, so a symlink planted at the path fails.
+//! 4. After the open, `fstat` must report a regular file with `nlink == 1`
+//!    (no hard link aliasing the bytes we are about to write).
+
+use std::fs::{File, OpenOptions};
+use std::io::Write;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::path::{Path, PathBuf};
+
+use crate::error::{ArchiveError, ArchiveResult};
+
+/// `O_NOFOLLOW` is not exposed by `std`, and this crate deliberately has no
+/// `libc` dependency (the dependency set is invariant-pinned). The constants
+/// are the ABI values for the two platform families we ship, and the hostile
+/// matrix proves the flag is effective by planting a symlink.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+const O_NOFOLLOW: i32 = 0x0000_0100;
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const O_NOFOLLOW: i32 = 0o0_400_000;
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "linux",
+    target_os = "android"
+)))]
+compile_error!("O_NOFOLLOW value is unknown for this target; add it before building here");
+
+const ENOSPC: i32 = 28;
+const EDQUOT_MACOS: i32 = 69;
+const EDQUOT_LINUX: i32 = 122;
+
+const STAGING_SUFFIX: &str = "-archive-staging.bin";
+const UUID_LEN: usize = 36;
+
+/// `true` for exactly `<36 chars of [0-9a-f-]>-archive-staging.bin`.
+#[must_use]
+pub fn is_valid_staging_name(name: &str) -> bool {
+    let Some(uuid) = name.strip_suffix(STAGING_SUFFIX) else {
+        return false;
+    };
+    uuid.len() == UUID_LEN
+        && uuid
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b) || b == b'-')
+}
+
+fn map_io(err: &std::io::Error) -> ArchiveError {
+    match err.raw_os_error() {
+        Some(code) if code == ENOSPC || code == EDQUOT_MACOS || code == EDQUOT_LINUX => {
+            ArchiveError::NoSpace
+        }
+        _ => ArchiveError::StagingUnavailable,
+    }
+}
+
+/// An opened staging file, truncated and ready to receive one entry.
+pub struct StagingFile {
+    file: File,
+    path: PathBuf,
+    written: u64,
+    finished: bool,
+}
+
+impl StagingFile {
+    /// Opens `path` after the four F8 checks. `staging_dir` must already be
+    /// canonicalised by the session (once, at open time).
+    pub fn open(path: &str, staging_dir: &Path) -> ArchiveResult<Self> {
+        let candidate = Path::new(path);
+        let name = candidate
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or(ArchiveError::StagingUnavailable)?;
+        if !is_valid_staging_name(name) {
+            return Err(ArchiveError::StagingUnavailable);
+        }
+        let parent = candidate
+            .parent()
+            .ok_or(ArchiveError::StagingUnavailable)?
+            .canonicalize()
+            .map_err(|e| map_io(&e))?;
+        if parent != staging_dir {
+            return Err(ArchiveError::StagingUnavailable);
+        }
+
+        let file = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .create(false)
+            .custom_flags(O_NOFOLLOW)
+            .open(candidate)
+            .map_err(|e| map_io(&e))?;
+
+        let meta = file.metadata().map_err(|e| map_io(&e))?;
+        if !meta.is_file() || meta.nlink() != 1 {
+            // A FIFO, a device node, or a hard link to a file someone else can
+            // read. Unlink nothing: we did not create it.
+            return Err(ArchiveError::StagingUnavailable);
+        }
+
+        Ok(Self {
+            file,
+            path: candidate.to_path_buf(),
+            written: 0,
+            finished: false,
+        })
+    }
+
+    pub fn write_all(&mut self, buf: &[u8]) -> ArchiveResult<()> {
+        self.file.write_all(buf).map_err(|e| map_io(&e))?;
+        self.written = self
+            .written
+            .checked_add(crate::num::to_u64(buf.len()))
+            .ok_or(ArchiveError::Internal)?;
+        Ok(())
+    }
+
+    /// Flushes and hands the path to the caller, which owns the unlink.
+    pub fn finish(mut self) -> ArchiveResult<u64> {
+        self.file.flush().map_err(|e| map_io(&e))?;
+        self.file.sync_data().map_err(|e| map_io(&e))?;
+        self.finished = true;
+        Ok(self.written)
+    }
+}
+
+impl Drop for StagingFile {
+    /// On failure or cancel the partial file is truncated and unlinked, so a
+    /// half-written image can never be mistaken for a complete extract.
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        let _ = self.file.set_len(0);
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn staging_names_are_strict() {
+        assert!(is_valid_staging_name(
+            "0b5f1f3c-6a4e-4d2b-9f1a-123456789abc-archive-staging.bin"
+        ));
+        for bad in [
+            "archive-staging.bin",
+            "0b5f1f3c-archive-staging.bin",
+            "0b5f1f3c-6a4e-4d2b-9f1a-123456789abZ-archive-staging.bin",
+            "0b5f1f3c-6a4e-4d2b-9f1a-123456789abc-archive-staging.bin.tmp",
+            "../0b5f1f3c-6a4e-4d2b-9f1a-123456789abc-archive-staging.bin",
+        ] {
+            assert!(!is_valid_staging_name(bad), "{bad}");
+        }
+    }
+}

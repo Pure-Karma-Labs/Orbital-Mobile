@@ -48,6 +48,10 @@ turboModule:
 #   AndroidManifestNew.xml - ubrn does not generate this file at all (only
 #     AndroidManifest.xml), but the gradle it generates expects it. Listed so a
 #     future ubrn that starts generating it cannot overwrite the committed one.
+#   OrbitalArchiveReader.podspec - hand-edited to declare `s.frameworks`
+#     (UIKit, UniformTypeIdentifiers) for the hand-written glue module. ubrn's
+#     template has no frameworks line, so a regeneration would drop the link
+#     flags and the pod would fail to link UTTypeZIP.
 #
 # src/index.tsx and src/NativeOrbitalArchiveAccess.ts need NO entry: the
 # entrypoint move above takes index.tsx out of the generated set, and the
@@ -57,3 +61,4 @@ turboModule:
 noOverwrite:
   - android/src/main/java/com/orbital/archivereader/OrbitalArchiveReaderPackage.kt
   - android/src/main/AndroidManifestNew.xml
+  - OrbitalArchiveReader.podspec

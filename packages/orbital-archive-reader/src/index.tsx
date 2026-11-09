@@ -125,7 +125,13 @@ export type EntryKind = 'json' | MediaKind | 'video';
  * `"oar1:" + base64url(JSON { v, p, ref, persist, fp? })`. Never parse it;
  * `#921` stores `JSON.stringify(ArchivePartToken[])` in `archive_bookmark`.
  */
-export type ArchivePartToken = string & { readonly __archivePartToken: unique symbol };
+export type ArchivePartToken = string & {
+  // A string-literal brand, NOT `unique symbol`: a unique symbol is nominal
+  // per declaration, so the copy in `__mocks__/orbital-archive-reader.ts`
+  // would be an unrelated type and every token a test hands to app code
+  // would need a cast. This brand is structural, so the two agree.
+  readonly __archivePartToken: 'ArchivePartToken';
+};
 
 export interface ArchiveEntry {
   /** OPAQUE. Never parse, split, shorten or derive from this. */
@@ -304,7 +310,6 @@ function getNative(): Bindings {
   if (bindings !== null) return bindings;
   let loaded: Bindings;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy JSI install (F11)
     loaded = require('./bindings') as Bindings;
   } catch {
     throw new ArchiveReaderError('ARCHIVE_INTERNAL');
@@ -318,7 +323,6 @@ function getNative(): Bindings {
 function getGlue(): GlueSpec {
   if (glue !== null) return glue;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy TurboModule lookup (F11)
     glue = (require('./NativeOrbitalArchiveAccess') as { default: GlueSpec }).default;
   } catch {
     throw new ArchiveReaderError('ARCHIVE_INTERNAL');
@@ -1210,7 +1214,6 @@ function closePartsQuietly(glueModule: GlueSpec, handles: ArchivePartHandle[]): 
  * file rather than of react-native's current internals.
  */
 function platform(): 'ios' | 'android' {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports -- see above
   const { Platform } = require('react-native') as { Platform: { OS: string } };
   return Platform.OS === 'ios' ? 'ios' : 'android';
 }

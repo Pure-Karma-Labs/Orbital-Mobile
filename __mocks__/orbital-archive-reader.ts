@@ -97,7 +97,13 @@ export type EntryKind = 'json' | MediaKind | 'video';
  *
  * `"oar1:" + base64url(JSON { v, p, ref, persist, fp? })`. Never parse it.
  */
-export type ArchivePartToken = string & { readonly __archivePartToken: unique symbol };
+export type ArchivePartToken = string & {
+  // A string-literal brand, NOT `unique symbol`: a unique symbol is nominal
+  // per declaration, so the copy in `__mocks__/orbital-archive-reader.ts`
+  // would be an unrelated type and every token a test hands to app code
+  // would need a cast. This brand is structural, so the two agree.
+  readonly __archivePartToken: 'ArchivePartToken';
+};
 
 export interface ArchiveEntry {
   /** OPAQUE. Never parse, split, shorten or derive from this. */

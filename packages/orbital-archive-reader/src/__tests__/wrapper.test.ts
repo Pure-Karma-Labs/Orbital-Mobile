@@ -11,7 +11,7 @@
    in for a generated module whose types are only meaningful at the real FFI. */
 
 /** Build a uniffi-shaped numeric enum: forward members plus reverse mapping. */
-function numericEnum<T extends string>(...names: T[]): Record<string, unknown> {
+function mockNumericEnum<T extends string>(...names: T[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   names.forEach((name, i) => {
     out[name] = i;
@@ -20,7 +20,7 @@ function numericEnum<T extends string>(...names: T[]): Record<string, unknown> {
   return out;
 }
 
-const SKIP_NAMES = [
+const mockSkipNames = [
   'EntryPathInvalid',
   'EntryPathTraversal',
   'EntrySymlink',
@@ -38,7 +38,7 @@ const SKIP_NAMES = [
   'EntryNotAllowlisted',
 ] as const;
 
-const ERROR_TAGS = [
+const mockErrorTags = [
   'NotZip',
   'Corrupt',
   'Unsupported',
@@ -59,41 +59,41 @@ const ERROR_TAGS = [
   'Internal',
 ] as const;
 
-const EntrySkipCode = numericEnum(...SKIP_NAMES);
-const UriSkipCode = numericEnum(
+const mockEntrySkipCode = mockNumericEnum(...mockSkipNames);
+const mockUriSkipCode = mockNumericEnum(
   'UriInvalid',
   'UriOutsideAllowlist',
   'UriUnresolved',
   'UriAmbiguous',
   'UriUnsupportedKind',
 );
-const EntryKind = numericEnum('Json', 'Image', 'Video');
-const ArchiveError_Tags = Object.fromEntries(ERROR_TAGS.map((t) => [t, t]));
+const mockEntryKindEnum = mockNumericEnum('Json', 'Image', 'Video');
+const mockArchiveErrorTags = Object.fromEntries(mockErrorTags.map((t) => [t, t]));
 
-const cancelTokenCancel = jest.fn();
-class FakeCancelToken {
-  cancel = cancelTokenCancel;
+const mockCancelTokenCancel = jest.fn();
+class MockCancelToken {
+  cancel = mockCancelTokenCancel;
   isCancelled = (): boolean => false;
 }
 
 /** The fake native session every test drives. Reset in `beforeEach`. */
-let nativeSession: any;
-const nativeOpenArchive = jest.fn();
+let mockNativeSession: any;
+const mockNativeOpenArchive = jest.fn();
 
 jest.mock('../bindings', () => ({
-  EntrySkipCode,
-  UriSkipCode,
-  EntryKind,
-  ArchiveError_Tags,
+  EntrySkipCode: mockEntrySkipCode,
+  UriSkipCode: mockUriSkipCode,
+  EntryKind: mockEntryKindEnum,
+  ArchiveError_Tags: mockArchiveErrorTags,
   UriResolution_Tags: { Resolved: 'Resolved', Skipped: 'Skipped' },
   PeekOutcome_Tags: { Head: 'Head', Skipped: 'Skipped' },
   JsonOutcome_Tags: { Text: 'Text', Skipped: 'Skipped' },
   ExtractOutcome_Tags: { Extracted: 'Extracted', Skipped: 'Skipped' },
-  CancelToken: FakeCancelToken,
-  openArchive: (...args: unknown[]) => nativeOpenArchive(...args),
+  CancelToken: MockCancelToken,
+  openArchive: (...args: unknown[]) => mockNativeOpenArchive(...args),
 }));
 
-const glue = {
+const mockGlue = {
   pickArchiveParts: jest.fn(),
   openParts: jest.fn(),
   closeParts: jest.fn(),
@@ -104,7 +104,7 @@ const glue = {
   releaseParts: jest.fn(),
   releaseAllPersistedParts: jest.fn(),
 };
-jest.mock('../NativeOrbitalArchiveAccess', () => ({ default: glue }));
+jest.mock('../NativeOrbitalArchiveAccess', () => ({ default: mockGlue }));
 
 import * as wrapper from '../index';
 
@@ -117,7 +117,7 @@ const HANDLE = {
   persist: true,
 };
 
-function makeNativeSession(overrides: Partial<Record<string, unknown>> = {}): any {
+function makeMockNativeSession(overrides: Partial<Record<string, unknown>> = {}): any {
   return {
     entries: jest.fn(() => []),
     parts: jest.fn(() => [{ index: 0, fp: 'fp0', byteLength: 1024n, fileId: '1:2' }]),
@@ -136,24 +136,29 @@ function makeNativeSession(overrides: Partial<Record<string, unknown>> = {}): an
 async function openOneSession(
   options?: { signal?: AbortSignal },
 ): Promise<wrapper.ArchiveSession> {
-  glue.openParts.mockResolvedValue([HANDLE]);
-  nativeOpenArchive.mockResolvedValue(nativeSession);
+  mockGlue.openParts.mockResolvedValue([HANDLE]);
+  mockNativeOpenArchive.mockResolvedValue(mockNativeSession);
   const [token] = await pickOne();
   return wrapper.openArchive([token], options);
 }
 
 async function pickOne(): Promise<wrapper.ArchivePartToken[]> {
-  glue.pickArchiveParts.mockResolvedValue(['raw-ref']);
+  mockGlue.pickArchiveParts.mockResolvedValue(['raw-ref']);
   const tokens = await wrapper.pickArchiveParts();
   if (tokens === null) throw new Error('expected tokens');
   return tokens;
 }
 
+/** Drain the microtask queue. Fake timers do not fake microtasks. */
+async function flushMicrotasks(): Promise<void> {
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+}
+
 beforeEach(() => {
   jest.clearAllMocks();
   wrapper.__resetArchiveReaderForTests();
-  nativeSession = makeNativeSession();
-  glue.getStagingDirectory.mockReturnValue('/Caches');
+  mockNativeSession = makeMockNativeSession();
+  mockGlue.getStagingDirectory.mockReturnValue('/Caches');
 });
 
 // ---------------------------------------------------------------------------
@@ -162,9 +167,9 @@ describe('lazy loading (F11)', () => {
   it('performs zero native calls when the module is merely imported', () => {
     // The import at the top of this file has already run. If `index.tsx`
     // reached either native module eagerly, one of these would be non-zero.
-    expect(glue.getStagingDirectory).not.toHaveBeenCalled();
-    expect(nativeOpenArchive).not.toHaveBeenCalled();
-    expect(cancelTokenCancel).not.toHaveBeenCalled();
+    expect(mockGlue.getStagingDirectory).not.toHaveBeenCalled();
+    expect(mockNativeOpenArchive).not.toHaveBeenCalled();
+    expect(mockCancelTokenCancel).not.toHaveBeenCalled();
   });
 
   it('exposes the disposition table without loading anything native', () => {
@@ -172,7 +177,7 @@ describe('lazy loading (F11)', () => {
     expect(wrapper.ARCHIVE_ERROR_DISPOSITIONS.ARCHIVE_BUSY).toBe('retryable-pause');
     expect(wrapper.ARCHIVE_ERROR_DISPOSITIONS.ARCHIVE_STAGING_IN_USE).toBe('terminal-for-run');
     expect(wrapper.ARCHIVE_ERROR_DISPOSITIONS.ECANCELLED).toBe('user-action');
-    expect(glue.getStagingDirectory).not.toHaveBeenCalled();
+    expect(mockGlue.getStagingDirectory).not.toHaveBeenCalled();
   });
 });
 
@@ -198,16 +203,16 @@ describe('error normalisation', () => {
       StagingInUse: 'ARCHIVE_STAGING_IN_USE',
       Internal: 'ARCHIVE_INTERNAL',
     };
-    for (const tag of ERROR_TAGS) {
+    for (const tag of mockErrorTags) {
       const session = await openOneSession();
-      nativeSession.readJson.mockRejectedValue({ tag });
+      mockNativeSession.readJson.mockRejectedValue({ tag });
       await expect(session.readJson('e1')).rejects.toMatchObject({ code: expected[tag] });
     }
   });
 
   it('carries partIndex as a count for AccessLost', async () => {
     const session = await openOneSession();
-    nativeSession.readJson.mockRejectedValue({ tag: 'AccessLost', inner: { partIndex: 3 } });
+    mockNativeSession.readJson.mockRejectedValue({ tag: 'AccessLost', inner: { partIndex: 3 } });
     await expect(session.readJson('e1')).rejects.toMatchObject({
       code: 'ARCHIVE_ACCESS_LOST',
       partIndex: 3,
@@ -223,21 +228,21 @@ describe('error normalisation', () => {
       'a string',
       null,
     ]) {
-      nativeSession.readJson.mockRejectedValue(thrown);
+      mockNativeSession.readJson.mockRejectedValue(thrown);
       await expect(session.readJson('e1')).rejects.toMatchObject({ code: 'ARCHIVE_INTERNAL' });
     }
   });
 
   it('accepts only the glue codes on the glue allowlist', async () => {
-    glue.pickArchiveParts.mockRejectedValue({ code: 'PICKER_BUSY' });
+    mockGlue.pickArchiveParts.mockRejectedValue({ code: 'PICKER_BUSY' });
     await expect(wrapper.pickArchiveParts()).rejects.toMatchObject({ code: 'PICKER_BUSY' });
-    glue.pickArchiveParts.mockRejectedValue({ code: 'ARCHIVE_CORRUPT' });
+    mockGlue.pickArchiveParts.mockRejectedValue({ code: 'ARCHIVE_CORRUPT' });
     await expect(wrapper.pickArchiveParts()).rejects.toMatchObject({ code: 'ARCHIVE_INTERNAL' });
   });
 
   it('uses one fixed message per code and never interpolates', async () => {
     const session = await openOneSession();
-    nativeSession.readJson.mockRejectedValue({ tag: 'NotSeekable' });
+    mockNativeSession.readJson.mockRejectedValue({ tag: 'NotSeekable' });
     const e = await session.readJson('e1').catch((err: unknown) => err);
     expect(e).toBeInstanceOf(wrapper.ArchiveReaderError);
     expect((e as Error).message).toBe(
@@ -263,35 +268,35 @@ describe('token codec', () => {
     expect(picked.startsWith('oar1:')).toBe(true);
     expect(wrapper.isArchivePartToken(picked)).toBe(true);
 
-    glue.openParts.mockResolvedValue([HANDLE]);
-    nativeOpenArchive.mockResolvedValue(nativeSession);
+    mockGlue.openParts.mockResolvedValue([HANDLE]);
+    mockNativeOpenArchive.mockResolvedValue(mockNativeSession);
     const session = await wrapper.openArchive([picked]);
 
-    // The persisted token carries the REFRESHED ref, the glue's persist flag
+    // The persisted token carries the REFRESHED ref, the mockGlue's persist flag
     // and the fingerprint, none of which the picked token had.
     expect(session.parts).toHaveLength(1);
     const reopened = session.parts[0];
     expect(reopened).not.toBe(picked);
     await wrapper.releaseArchiveParts([reopened]);
-    expect(glue.releaseParts).toHaveBeenCalledWith(['ref-refreshed']);
+    expect(mockGlue.releaseParts).toHaveBeenCalledWith(['ref-refreshed']);
 
     // And it is handed back to Rust as expectedFp on the next open.
-    nativeOpenArchive.mockClear();
-    glue.openParts.mockResolvedValue([HANDLE]);
+    mockNativeOpenArchive.mockClear();
+    mockGlue.openParts.mockResolvedValue([HANDLE]);
     await wrapper.openArchive([reopened]);
-    expect(nativeOpenArchive.mock.calls[0][0]).toEqual([
+    expect(mockNativeOpenArchive.mock.calls[0][0]).toEqual([
       { fd: 7, byteLength: 1024n, fileId: '1:2', expectedFp: 'fp0' },
     ]);
   });
 
   it('survives non-ASCII in a ref', async () => {
-    glue.pickArchiveParts.mockResolvedValue(['réf-\u{1F600}-ok']);
+    mockGlue.pickArchiveParts.mockResolvedValue(['réf-\u{1F600}-ok']);
     const tokens = await wrapper.pickArchiveParts();
-    glue.openParts.mockResolvedValue([{ ...HANDLE, ref: 'réf-\u{1F600}-ok' }]);
-    nativeOpenArchive.mockResolvedValue(nativeSession);
+    mockGlue.openParts.mockResolvedValue([{ ...HANDLE, ref: 'réf-\u{1F600}-ok' }]);
+    mockNativeOpenArchive.mockResolvedValue(mockNativeSession);
     const session = await wrapper.openArchive(tokens!);
     await wrapper.releaseArchiveParts(session.parts);
-    expect(glue.releaseParts).toHaveBeenCalledWith(['réf-\u{1F600}-ok']);
+    expect(mockGlue.releaseParts).toHaveBeenCalledWith(['réf-\u{1F600}-ok']);
   });
 
   it('rejects a malformed token as ARCHIVE_INTERNAL, not as a corrupt archive', async () => {
@@ -301,11 +306,11 @@ describe('token codec', () => {
         wrapper.openArchive([bad as wrapper.ArchivePartToken]),
       ).rejects.toMatchObject({ code: 'ARCHIVE_INTERNAL' });
     }
-    expect(glue.openParts).not.toHaveBeenCalled();
+    expect(mockGlue.openParts).not.toHaveBeenCalled();
   });
 
   it('returns null, not an empty list, when the picker was cancelled', async () => {
-    glue.pickArchiveParts.mockResolvedValue(null);
+    mockGlue.pickArchiveParts.mockResolvedValue(null);
     await expect(wrapper.pickArchiveParts()).resolves.toBeNull();
   });
 });
@@ -329,7 +334,7 @@ function btoaUrl(text: string): string {
 
 describe('listing and bigint narrowing', () => {
   it('narrows u64 sizes and clamps a saturated one instead of throwing', async () => {
-    nativeSession = makeNativeSession({
+    mockNativeSession = makeMockNativeSession({
       entries: jest.fn(() => [
         {
           entryId: 'fp0:1',
@@ -362,32 +367,28 @@ describe('listing and bigint narrowing', () => {
   });
 
   it('fails closed when Rust grows an enum member the wrapper does not map', async () => {
-    jest.resetModules();
-    jest.doMock('../bindings', () => ({
-      EntrySkipCode: numericEnum(...SKIP_NAMES, 'EntrySomethingNew' as never),
-      UriSkipCode,
-      EntryKind,
-      ArchiveError_Tags,
-      UriResolution_Tags: { Resolved: 'Resolved', Skipped: 'Skipped' },
-      PeekOutcome_Tags: { Head: 'Head', Skipped: 'Skipped' },
-      JsonOutcome_Tags: { Text: 'Text', Skipped: 'Skipped' },
-      ExtractOutcome_Tags: { Extracted: 'Extracted', Skipped: 'Skipped' },
-      CancelToken: FakeCancelToken,
-      openArchive: nativeOpenArchive,
-    }));
-    jest.doMock('../NativeOrbitalArchiveAccess', () => ({ default: glue }));
-    // eslint-disable-next-line @typescript-eslint/no-require-imports -- isolated re-require
-    const fresh = require('../index') as typeof wrapper;
-    glue.pickArchiveParts.mockResolvedValue(['r']);
-    const tokens = await fresh.pickArchiveParts();
-    await expect(fresh.openArchive(tokens!)).rejects.toMatchObject({
-      code: 'ARCHIVE_INTERNAL',
-    });
-    jest.resetModules();
+    // Mutate the fake enum in place rather than re-mocking the module: a
+    // `jest.doMock('../bindings')` here leaks into every later test, because
+    // `__resetArchiveReaderForTests()` drops the wrapper's cached bindings and
+    // the next `getNative()` would pick the doMock up.
+    const added = mockSkipNames.length;
+    (mockEntrySkipCode as Record<string, unknown>).EntrySomethingNew = added;
+    (mockEntrySkipCode as Record<string, unknown>)[String(added)] = 'EntrySomethingNew';
+    try {
+      mockGlue.openParts.mockResolvedValue([HANDLE]);
+      mockNativeOpenArchive.mockResolvedValue(mockNativeSession);
+      const [token] = await pickOne();
+      await expect(wrapper.openArchive([token])).rejects.toMatchObject({
+        code: 'ARCHIVE_INTERNAL',
+      });
+    } finally {
+      delete (mockEntrySkipCode as Record<string, unknown>).EntrySomethingNew;
+      delete (mockEntrySkipCode as Record<string, unknown>)[String(added)];
+    }
   });
 
   it('maps resolveMediaUris outcomes both ways', async () => {
-    nativeSession = makeNativeSession({
+    mockNativeSession = makeMockNativeSession({
       resolveMediaUris: jest.fn(() => [
         { tag: 'Resolved', inner: { entryId: 'fp0:5' } },
         { tag: 'Skipped', inner: { skip: 1 } },
@@ -404,27 +405,27 @@ describe('listing and bigint narrowing', () => {
 describe('fd contract (F2)', () => {
   it('closes every handle after a successful open', async () => {
     await openOneSession();
-    expect(glue.closeParts).toHaveBeenCalledTimes(1);
-    expect(glue.closeParts).toHaveBeenCalledWith(['h0']);
+    expect(mockGlue.closeParts).toHaveBeenCalledTimes(1);
+    expect(mockGlue.closeParts).toHaveBeenCalledWith(['h0']);
   });
 
   it('closes every handle when the Rust open throws', async () => {
-    glue.openParts.mockResolvedValue([HANDLE]);
-    nativeOpenArchive.mockRejectedValue({ tag: 'NotZip' });
+    mockGlue.openParts.mockResolvedValue([HANDLE]);
+    mockNativeOpenArchive.mockRejectedValue({ tag: 'NotZip' });
     const [token] = await pickOne();
     await expect(wrapper.openArchive([token])).rejects.toMatchObject({
       code: 'ARCHIVE_NOT_ZIP',
     });
-    expect(glue.closeParts).toHaveBeenCalledWith(['h0']);
+    expect(mockGlue.closeParts).toHaveBeenCalledWith(['h0']);
   });
 
   it('closes nothing when openParts itself throws', async () => {
-    glue.openParts.mockRejectedValue({ code: 'ARCHIVE_ACCESS_LOST' });
+    mockGlue.openParts.mockRejectedValue({ code: 'ARCHIVE_ACCESS_LOST' });
     const [token] = await pickOne();
     await expect(wrapper.openArchive([token])).rejects.toMatchObject({
       code: 'ARCHIVE_ACCESS_LOST',
     });
-    expect(glue.closeParts).not.toHaveBeenCalled();
+    expect(mockGlue.closeParts).not.toHaveBeenCalled();
   });
 });
 
@@ -433,15 +434,18 @@ describe('cancellation (F4)', () => {
     jest.useFakeTimers();
     try {
       const session = await openOneSession();
-      nativeSession.readJson.mockReturnValue(new Promise(() => {}));
+      mockNativeSession.readJson.mockReturnValue(new Promise(() => {}));
       const controller = new AbortController();
       const pending = session.readJson('e1', { signal: controller.signal });
+      // Awaited below, after the abort and the timer advance this test exists
+      // to interleave; the rule cannot see a stored assertion.
+      // eslint-disable-next-line jest/valid-expect
       const assertion = expect(pending).rejects.toMatchObject({ code: 'ECANCELLED' });
       controller.abort();
       // The REAL native cancel happens the moment abort fires, not when the
       // backstop timer expires: Rust polls the flag inside its loops.
-      expect(nativeSession.cancel).toHaveBeenCalledTimes(1);
-      expect(typeof nativeSession.cancel.mock.calls[0][0]).toBe('string');
+      expect(mockNativeSession.cancel).toHaveBeenCalledTimes(1);
+      expect(typeof mockNativeSession.cancel.mock.calls[0][0]).toBe('string');
       jest.advanceTimersByTime(1500);
       await assertion;
     } finally {
@@ -452,24 +456,27 @@ describe('cancellation (F4)', () => {
   it('cancels the open token and closes a session that arrives late', async () => {
     jest.useFakeTimers();
     try {
-      glue.openParts.mockResolvedValue([HANDLE]);
+      mockGlue.openParts.mockResolvedValue([HANDLE]);
       let settle: (v: unknown) => void = () => {};
-      nativeOpenArchive.mockReturnValue(new Promise((r) => (settle = r)));
+      mockNativeOpenArchive.mockReturnValue(new Promise((r) => (settle = r)));
       const [token] = await pickOne();
       const controller = new AbortController();
       const pending = wrapper.openArchive([token], { signal: controller.signal });
+      // Awaited below, after the abort and the timer advance this test exists
+      // to interleave; the rule cannot see a stored assertion.
+      // eslint-disable-next-line jest/valid-expect
       const assertion = expect(pending).rejects.toMatchObject({ code: 'ECANCELLED' });
-      await Promise.resolve();
+      // Drain enough microtasks that openParts has resolved and the SECOND
+      // backstop (the one holding the CancelToken) is the armed one.
+      await flushMicrotasks();
       controller.abort();
-      expect(cancelTokenCancel).toHaveBeenCalledTimes(1);
+      expect(mockCancelTokenCancel).toHaveBeenCalledTimes(1);
       jest.advanceTimersByTime(1500);
       await assertion;
       // The late settle must be swallowed AND its fd dups dropped.
-      settle(nativeSession);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(nativeSession.close).toHaveBeenCalled();
+      settle(mockNativeSession);
+      await flushMicrotasks();
+      expect(mockNativeSession.close).toHaveBeenCalled();
     } finally {
       jest.useRealTimers();
     }
@@ -479,14 +486,16 @@ describe('cancellation (F4)', () => {
     jest.useFakeTimers();
     try {
       const session = await openOneSession();
-      glue.createStagingFile.mockResolvedValue('/Caches/u-archive-staging.bin');
+      mockGlue.createStagingFile.mockResolvedValue('/Caches/u-archive-staging.bin');
       let settle: (v: unknown) => void = () => {};
-      nativeSession.extractEntry.mockReturnValue(new Promise((r) => (settle = r)));
+      mockNativeSession.extractEntry.mockReturnValue(new Promise((r) => (settle = r)));
       const controller = new AbortController();
       const pending = session.extractEntry('fp0:1', 'image', { signal: controller.signal });
+      // Awaited below, after the abort and the timer advance this test exists
+      // to interleave; the rule cannot see a stored assertion.
+      // eslint-disable-next-line jest/valid-expect
       const assertion = expect(pending).rejects.toMatchObject({ code: 'ECANCELLED' });
-      await Promise.resolve();
-      await Promise.resolve();
+      await flushMicrotasks();
       controller.abort();
       jest.advanceTimersByTime(1500);
       await assertion;
@@ -494,9 +503,9 @@ describe('cancellation (F4)', () => {
         tag: 'Extracted',
         inner: { path: '/Caches/u-archive-staging.bin', byteLength: 10n, head: new ArrayBuffer(0) },
       });
-      for (let i = 0; i < 5; i++) await Promise.resolve();
-      expect(glue.unlinkStagingFile).toHaveBeenCalledWith('/Caches/u-archive-staging.bin');
-      expect(nativeSession.releaseStaging).toHaveBeenCalledWith('/Caches/u-archive-staging.bin');
+      await flushMicrotasks();
+      expect(mockGlue.unlinkStagingFile).toHaveBeenCalledWith('/Caches/u-archive-staging.bin');
+      expect(mockNativeSession.releaseStaging).toHaveBeenCalledWith('/Caches/u-archive-staging.bin');
     } finally {
       jest.useRealTimers();
     }
@@ -504,17 +513,17 @@ describe('cancellation (F4)', () => {
 
   it('does not arm a backstop when no signal was given', async () => {
     const session = await openOneSession();
-    nativeSession.readJson.mockResolvedValue({ tag: 'Text', inner: { text: '{}' } });
+    mockNativeSession.readJson.mockResolvedValue({ tag: 'Text', inner: { text: '{}' } });
     await expect(session.readJson('e1')).resolves.toEqual({ ok: true, text: '{}' });
-    expect(nativeSession.cancel).not.toHaveBeenCalled();
+    expect(mockNativeSession.cancel).not.toHaveBeenCalled();
   });
 });
 
 describe('extract outcomes', () => {
   it('maps a successful extract, narrowing byteLength and copying the head', async () => {
     const session = await openOneSession();
-    glue.createStagingFile.mockResolvedValue('/Caches/u-archive-staging.bin');
-    nativeSession.extractEntry.mockResolvedValue({
+    mockGlue.createStagingFile.mockResolvedValue('/Caches/u-archive-staging.bin');
+    mockNativeSession.extractEntry.mockResolvedValue({
       tag: 'Extracted',
       inner: {
         path: '/Caches/u-archive-staging.bin',
@@ -526,30 +535,30 @@ describe('extract outcomes', () => {
     expect(result).toMatchObject({ ok: true, path: '/Caches/u-archive-staging.bin', byteLength: 42 });
     expect(Array.from((result as { head: Uint8Array }).head)).toEqual([0xff, 0xd8, 0xff]);
     // A successful extract is the caller's to unlink.
-    expect(glue.unlinkStagingFile).not.toHaveBeenCalled();
+    expect(mockGlue.unlinkStagingFile).not.toHaveBeenCalled();
   });
 
   it('releases and unlinks the staging file when Rust skips the entry', async () => {
     const session = await openOneSession();
-    glue.createStagingFile.mockResolvedValue('/Caches/u-archive-staging.bin');
-    nativeSession.extractEntry.mockResolvedValue({ tag: 'Skipped', inner: { skip: 8 } });
+    mockGlue.createStagingFile.mockResolvedValue('/Caches/u-archive-staging.bin');
+    mockNativeSession.extractEntry.mockResolvedValue({ tag: 'Skipped', inner: { skip: 8 } });
     await expect(session.extractEntry('fp0:1', 'image')).resolves.toEqual({
       ok: false,
       skip: 'ENTRY_OVER_CAP',
     });
-    expect(glue.unlinkStagingFile).toHaveBeenCalledWith('/Caches/u-archive-staging.bin');
-    expect(nativeSession.releaseStaging).toHaveBeenCalledWith('/Caches/u-archive-staging.bin');
+    expect(mockGlue.unlinkStagingFile).toHaveBeenCalledWith('/Caches/u-archive-staging.bin');
+    expect(mockNativeSession.releaseStaging).toHaveBeenCalledWith('/Caches/u-archive-staging.bin');
   });
 
   it('maps a peekHead skip and a head', async () => {
     const session = await openOneSession();
-    nativeSession.peekHead.mockResolvedValue({
+    mockNativeSession.peekHead.mockResolvedValue({
       tag: 'Head',
       inner: { head: new Uint8Array([1, 2]).buffer },
     });
     const head = await session.peekHead('fp0:1');
     expect(head).toEqual({ ok: true, head: new Uint8Array([1, 2]) });
-    nativeSession.peekHead.mockResolvedValue({ tag: 'Skipped', inner: { skip: 11 } });
+    mockNativeSession.peekHead.mockResolvedValue({ tag: 'Skipped', inner: { skip: 11 } });
     await expect(session.peekHead('fp0:1')).resolves.toEqual({
       ok: false,
       skip: 'ENTRY_KIND_NOT_ENABLED',
@@ -565,11 +574,11 @@ describe('wipe epoch (F3)', () => {
   it('a session that was live when the wipe ran cannot create a staging file', async () => {
     const session = await openOneSession();
     wrapper.abortAllArchiveSessions();
-    expect(nativeSession.close).toHaveBeenCalledTimes(1);
+    expect(mockNativeSession.close).toHaveBeenCalledTimes(1);
     await expect(session.extractEntry('fp0:1', 'image')).rejects.toMatchObject({
       code: 'ARCHIVE_SESSION_CLOSED',
     });
-    expect(glue.createStagingFile).not.toHaveBeenCalled();
+    expect(mockGlue.createStagingFile).not.toHaveBeenCalled();
     await expect(session.readJson('fp0:1')).rejects.toMatchObject({
       code: 'ARCHIVE_SESSION_CLOSED',
     });
@@ -579,22 +588,22 @@ describe('wipe epoch (F3)', () => {
     // The dangerous race: openArchive is in flight when localWipe lands, so
     // the session is minted AFTER the epoch bump. It must be closed and
     // refused, never handed out.
-    glue.openParts.mockResolvedValue([HANDLE]);
+    mockGlue.openParts.mockResolvedValue([HANDLE]);
     let settle: (v: unknown) => void = () => {};
-    nativeOpenArchive.mockReturnValue(new Promise((r) => (settle = r)));
+    mockNativeOpenArchive.mockReturnValue(new Promise((r) => (settle = r)));
     const [token] = await pickOne();
     const pending = wrapper.openArchive([token]);
     wrapper.abortAllArchiveSessions();
-    settle(nativeSession);
+    settle(mockNativeSession);
     await expect(pending).rejects.toMatchObject({ code: 'ARCHIVE_SESSION_CLOSED' });
-    expect(nativeSession.close).toHaveBeenCalled();
-    expect(glue.createStagingFile).not.toHaveBeenCalled();
-    expect(glue.closeParts).toHaveBeenCalledWith(['h0']);
+    expect(mockNativeSession.close).toHaveBeenCalled();
+    expect(mockGlue.createStagingFile).not.toHaveBeenCalled();
+    expect(mockGlue.closeParts).toHaveBeenCalledWith(['h0']);
   });
 
   it('releaseAllPersistedParts goes straight to the glue', async () => {
-    glue.releaseAllPersistedParts.mockResolvedValue(undefined);
+    mockGlue.releaseAllPersistedParts.mockResolvedValue(undefined);
     await wrapper.releaseAllPersistedParts();
-    expect(glue.releaseAllPersistedParts).toHaveBeenCalledTimes(1);
+    expect(mockGlue.releaseAllPersistedParts).toHaveBeenCalledTimes(1);
   });
 });

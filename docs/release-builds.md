@@ -15,15 +15,19 @@ Before archiving, confirm `.env` contains a valid `SENTRY_DSN` entry. The build 
 `.env.local` is not a build input. If `SENTRY_DSN` is absent, `src/sentryInit.ts` disables
 the Sentry SDK silently — the archive succeeds but crash reporting is off.
 
-1. Build the Rust crate with the release cargo profile (also runs `pod install`):
+1. Build BOTH Rust crates with the release cargo profile (also runs `pod install`):
    ```bash
    npm run build:rust:ios:release
    ```
-   This writes `packages/orbital-signal/rust-profile-ios.txt`: `release` on line 1, then a
-   sha256 digest of the Rust inputs. The Xcode build includes an **[Orbital] Verify Rust
-   release profile** script phase that checks this marker. Skipping this step will cause
-   Archive (and any Release configuration build) to fail with:
+   This writes one marker per crate — `packages/orbital-signal/rust-profile-ios.txt` and
+   `packages/orbital-archive-reader/rust-profile-ios.txt` — each holding `release` on line 1,
+   then a sha256 digest of that crate's Rust inputs. The Xcode build includes one script
+   phase per crate (**[Orbital] Verify Rust release profile** and **… (archive)**), each
+   checking its own marker. Skipping this step will cause Archive (and any Release
+   configuration build) to fail with:
    `error: OrbitalSignal xcframework was built with Rust profile '<profile>', not 'release'.`
+   or the same sentence for `OrbitalArchiveReader`. To rebuild just the archive crate, use
+   `npm run build:rust:archive:ios:release`.
 
    The same phase runs on **every** configuration and also fails when the Rust inputs changed
    after the xcframework was built:
@@ -93,16 +97,20 @@ keyPassword=<YOUR_PASSWORD>
 
 ### Build release-profile Rust binaries
 
-Before building a signed APK or AAB, compile the Rust crate with the release cargo profile:
+Before building a signed APK or AAB, compile BOTH Rust crates with the release cargo
+profile:
 
 ```bash
 npm run build:rust:android:release
 ```
 
-This writes `release` to `packages/orbital-signal/android/src/main/jniLibs/rust-profile.txt`.
-The Gradle `checkRustBinaries` task verifies this marker on every Release variant build.
-If the marker is missing or reads `debug`, the build will fail with:
+This writes `release` to each package's `android/src/main/jniLibs/rust-profile.txt`
+(`packages/orbital-signal` and `packages/orbital-archive-reader`). The Gradle
+`checkRustBinaries` and `checkArchiveRustBinaries` tasks verify their own marker on every
+Release variant build. If a marker is missing or reads `debug`, the build will fail with:
 `Release build requires release-profile Rust binaries, but found profile '<profile>'.`
+(or `… release-profile orbital_archive_reader binaries, …` for the archive crate). To
+rebuild just the archive crate, use `npm run build:rust:archive:android:release`.
 
 ### Build signed AAB (for Play Store)
 

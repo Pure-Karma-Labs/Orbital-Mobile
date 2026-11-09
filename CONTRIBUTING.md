@@ -19,15 +19,30 @@ Please make sure tests, typecheck, and lint pass before opening a PR.
 
 ## The Rust Native Module
 
-The crypto layer lives in `packages/orbital-signal` — a Rust crate wrapping [libsignal](https://github.com/signalapp/libsignal), bridged to React Native via uniffi-bindgen-react-native. If you change Rust code, you must rebuild the native binaries:
+There are two Rust crates, both bridged to React Native via
+uniffi-bindgen-react-native:
+
+- `packages/orbital-signal` — the crypto layer, wrapping [libsignal](https://github.com/signalapp/libsignal).
+- `packages/orbital-archive-reader` — the hostile-input ZIP reader for Meta data exports (#920).
+
+If you change Rust code, you must rebuild the native binaries:
 
 ```bash
-npm run build:rust:ios       # rebuild iOS (also runs pod install)
-npm run build:rust:android   # rebuild Android
-npm run build:rust           # both
+npm run build:rust:ios       # BOTH crates, then one pod install
+npm run build:rust:android   # BOTH crates
+npm run build:rust           # both crates, both platforms
+
+npm run build:rust:archive:ios      # archive crate only
+npm run build:rust:archive:android
 ```
 
 Release builds use the `:release` variants (e.g. `npm run build:rust:release`).
+
+Each crate has its own freshness gate on each platform, and they fail closed:
+Xcode runs one `[Orbital] Verify Rust release profile` phase per crate, and
+Gradle runs `checkRustBinaries` (signal) and `checkArchiveRustBinaries`
+(archive). See [docs/uniffi-toolchain.md](docs/uniffi-toolchain.md) ("Build
+Guards").
 
 ## Pull Requests
 

@@ -512,13 +512,15 @@ jobs:
       # Must stay after assembleDebug: needs the debug-profile Rust binaries +
       # marker it produces. The harness starts its own Gradle daemon (scoped to
       # this step) and stops it via the trap in the script.
-      - name: Test Rust release-profile gate (issue #550)
+      - name: Test Rust release-profile gate (issues #550, #920)
         run: bash scripts/test-rust-profile-gate-android.sh
         env:
           SENTRY_DISABLE_AUTO_UPLOAD: 'true'
 
   # Validates the gate's bash logic (scripts/verify-rust-profile-ios.sh +
-  # scripts/rust-input-digest.sh) and the Podfile wiring on every PR. The
+  # scripts/rust-input-digest.sh + scripts/rust-input-digest-archive.sh, every
+  # case run for BOTH crate selectors since #920) and the Podfile wiring (both
+  # script phases) on every PR. The
   # Xcode -> /bin/sh -> exec bash delegation in project.pbxproj is deliberately
   # NOT exercised here — that path runs in the build-ios job on main pushes
   # (PR #556 review: accepted tradeoff).

@@ -14,9 +14,12 @@
 //! tokio with the `rt` feature; do not switch silently.
 
 use std::future::Future;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
+
+use crate::error::{ArchiveError, ArchiveResult};
 
 struct Inner<T> {
     result: Option<T>,
@@ -35,27 +38,49 @@ fn lock<T>(m: &Mutex<Inner<T>>) -> std::sync::MutexGuard<'_, Inner<T>> {
 }
 
 /// Runs `f` on a worker thread and returns a future for its result.
-pub fn spawn_blocking<T, F>(f: F) -> BlockingJob<T>
+///
+/// The return type is deliberately fixed to `ArchiveResult<T>` rather than a
+/// free `T`: the two failure modes below have to produce a value, and there is
+/// no way to conjure one for an arbitrary `T`.
+///
+/// * **The job panics.** `catch_unwind` turns it into `Internal`. Without this
+///   the result is never stored, no waker is ever called, and the uniffi future
+///   stays pending forever — a hung promise in the app with no error to show.
+/// * **The OS refuses a thread.** `Builder::spawn` reports that as an `Err`
+///   instead of panicking inside the caller, and it also becomes `Internal`.
+pub fn spawn_blocking<T, F>(f: F) -> BlockingJob<ArchiveResult<T>>
 where
     T: Send + 'static,
-    F: FnOnce() -> T + Send + 'static,
+    F: FnOnce() -> ArchiveResult<T> + Send + 'static,
 {
     let inner = Arc::new(Mutex::new(Inner {
         result: None,
         waker: None,
     }));
     let worker = Arc::clone(&inner);
-    std::thread::spawn(move || {
-        let value = f();
-        let waker = {
-            let mut guard = lock(&worker);
-            guard.result = Some(value);
-            guard.waker.take()
-        };
-        if let Some(w) = waker {
-            w.wake();
-        }
-    });
+    let spawned = std::thread::Builder::new()
+        .name("orbital-archive-job".to_owned())
+        .spawn(move || {
+            // AssertUnwindSafe: on a panic the job's partial state is thrown
+            // away wholesale. The session's own invariants are restored by the
+            // Drop impls that run during the unwind (StagingFile unlinks its
+            // partial output, JobGuard deregisters the job, the staging
+            // reservation is released), so nothing observable is left
+            // half-updated.
+            let value = catch_unwind(AssertUnwindSafe(f)).unwrap_or(Err(ArchiveError::Internal));
+            let waker = {
+                let mut guard = lock(&worker);
+                guard.result = Some(value);
+                guard.waker.take()
+            };
+            if let Some(w) = waker {
+                w.wake();
+            }
+        });
+    if spawned.is_err() {
+        let mut guard = lock(&inner);
+        guard.result = Some(Err(ArchiveError::Internal));
+    }
     BlockingJob { inner }
 }
 
@@ -78,7 +103,6 @@ impl<T> Future for BlockingJob<T> {
 mod tests {
     use super::*;
     use crate::cancel::CancelFlag;
-    use crate::error::ArchiveError;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::task::Wake;
     use std::time::{Duration, Instant};
@@ -108,9 +132,23 @@ mod tests {
     fn completion_wakes_the_poller_and_returns_the_value() {
         let job = spawn_blocking(|| {
             std::thread::sleep(Duration::from_millis(20));
-            41u32 + 1
+            Ok(41u32 + 1)
         });
-        assert_eq!(block_on(job), 42);
+        assert_eq!(block_on(job), Ok(42));
+    }
+
+    #[test]
+    fn a_panicking_job_resolves_as_internal_instead_of_hanging() {
+        // The default hook would print a backtrace for a panic the test
+        // expects; silence it for the duration and restore it afterwards.
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let job = spawn_blocking(|| -> ArchiveResult<u32> {
+            panic!("a hostile archive found an arithmetic edge");
+        });
+        let out = block_on(job);
+        std::panic::set_hook(previous);
+        assert_eq!(out, Err(ArchiveError::Internal));
     }
 
     #[test]
@@ -151,8 +189,10 @@ mod tests {
 
     #[test]
     fn many_jobs_complete_independently() {
-        let jobs: Vec<_> = (0..4u32).map(|i| spawn_blocking(move || i * 2)).collect();
-        let results: Vec<u32> = jobs.into_iter().map(block_on).collect();
-        assert_eq!(results, vec![0, 2, 4, 6]);
+        let jobs: Vec<_> = (0..4u32)
+            .map(|i| spawn_blocking(move || Ok(i * 2)))
+            .collect();
+        let results: Vec<ArchiveResult<u32>> = jobs.into_iter().map(block_on).collect();
+        assert_eq!(results, vec![Ok(0), Ok(2), Ok(4), Ok(6)]);
     }
 }

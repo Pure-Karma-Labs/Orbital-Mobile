@@ -13,8 +13,8 @@ use crate::error::{ArchiveError, ArchiveResult};
 /// A positioned reader over one archive part.
 ///
 /// Public so the host-side hostile matrix can inject recording and failing
-/// sources (see `open_archive_with_sources`). Implementors must be `Send +
-/// Sync`: a session is shared across jobs.
+/// sources (see `ArchiveSession::open_with_sources`). Implementors must be
+/// `Send + Sync`: a session is shared across jobs.
 pub trait Source: Send + Sync {
     /// Fill `buf` entirely from `offset`, or fail. A short read is a failure.
     fn read_exact_at(&self, buf: &mut [u8], offset: u64) -> ArchiveResult<()>;
@@ -45,6 +45,57 @@ impl Source for FileSource {
         self.file
             .read_exact_at(buf, offset)
             .map_err(|_| ArchiveError::ReadFailed)
+    }
+
+    fn len(&self) -> u64 {
+        self.len
+    }
+}
+
+/// A `Source` the session can release early.
+///
+/// `close()` has to drop this crate's descriptor dups without waiting for the
+/// uniffi destroy, and it is called from `localWipe` phase 1, which must not
+/// block. So the lock lives INSIDE the read path, one `RwLock` read per
+/// positioned read (an uncontended atomic, negligible beside the syscall),
+/// rather than being held for the length of a job. A job that is mid-read when
+/// the session closes gets `SessionClosed` on its next read and unwinds through
+/// the normal error path, unlinking its staging file.
+pub struct ClosableSource {
+    inner: std::sync::RwLock<Option<Box<dyn Source>>>,
+    len: u64,
+}
+
+impl ClosableSource {
+    #[must_use]
+    pub fn new(src: Box<dyn Source>) -> Self {
+        let len = src.len();
+        Self {
+            inner: std::sync::RwLock::new(Some(src)),
+            len,
+        }
+    }
+
+    /// Drops the underlying source. Idempotent.
+    pub fn release(&self) {
+        let mut g = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *g = None;
+    }
+}
+
+impl Source for ClosableSource {
+    fn read_exact_at(&self, buf: &mut [u8], offset: u64) -> ArchiveResult<()> {
+        let g = self
+            .inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match g.as_deref() {
+            Some(src) => src.read_exact_at(buf, offset),
+            None => Err(ArchiveError::SessionClosed),
+        }
     }
 
     fn len(&self) -> u64 {

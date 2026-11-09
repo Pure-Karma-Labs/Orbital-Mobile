@@ -100,9 +100,9 @@ pub struct StreamOutcome {
 
 /// Checks everything that can be decided without reading entry data.
 pub fn precheck(rec: &CdRecord, cap: u64) -> Result<(), EntrySkipCode> {
-    if rec.saturated {
-        // A size beyond MAX_SAFE_INTEGER: this one entry is unusable, the
-        // archive is not (F6).
+    if rec.saturated || rec.malformed_extra {
+        // A size beyond MAX_SAFE_INTEGER, or a central extra field we could not
+        // parse: this one entry is unusable, the archive is not (F6).
         return Err(EntrySkipCode::EntryCorrupt);
     }
     if rec.disk_start != 0 {
@@ -148,7 +148,11 @@ enum Decoder {
 struct Emitter<'s, S: ByteSink> {
     sink: &'s mut S,
     hasher: crc32fast::Hasher,
-    written: u64,
+    /// Borrowed from the caller so the byte count survives an early return.
+    /// Bytes that were written and then thrown away still cost the device a
+    /// write, so the session budget has to see them even when the entry ends in
+    /// a skip or a hard error.
+    written: &'s mut u64,
     head: Vec<u8>,
     stop: bool,
 }
@@ -157,7 +161,7 @@ impl<S: ByteSink> Emitter<'_, S> {
     fn emit(&mut self, chunk: &[u8], limits: &StreamLimits, consumed_comp: u64) -> EntryResult<()> {
         let mut chunk = chunk;
         if let Some(max) = limits.max_output {
-            let room = sub64(max, self.written.min(max)).map_err(EntryFault::Fatal)?;
+            let room = sub64(max, (*self.written).min(max)).map_err(EntryFault::Fatal)?;
             let room = to_usize(room).map_err(EntryFault::Fatal)?;
             if chunk.len() >= room {
                 chunk = slice_at(chunk, 0, room).map_err(EntryFault::Fatal)?;
@@ -168,21 +172,21 @@ impl<S: ByteSink> Emitter<'_, S> {
             return Ok(());
         }
 
-        self.written = add64(self.written, to_u64(chunk.len())).map_err(EntryFault::Fatal)?;
+        *self.written = add64(*self.written, to_u64(chunk.len())).map_err(EntryFault::Fatal)?;
 
-        if self.written > limits.session_remaining {
+        if *self.written > limits.session_remaining {
             return Err(EntryFault::Fatal(ArchiveError::SessionBytesExceeded));
         }
-        if self.written > limits.cap {
+        if *self.written > limits.cap {
             return Err(EntryFault::Skip(EntrySkipCode::EntryOverCap));
         }
-        if limits.max_output.is_none() && self.written > limits.declared {
+        if limits.max_output.is_none() && *self.written > limits.declared {
             // The central directory lied about the uncompressed size.
             return Err(EntryFault::Skip(EntrySkipCode::EntryCorrupt));
         }
-        if self.written > RATIO_GRACE_BYTES {
+        if *self.written > RATIO_GRACE_BYTES {
             let allowed = mul64(consumed_comp, MAX_RATIO).map_err(EntryFault::Fatal)?;
-            if self.written > allowed {
+            if *self.written > allowed {
                 return Err(EntryFault::Skip(EntrySkipCode::EntryRatioExceeded));
             }
         }
@@ -204,6 +208,11 @@ impl<S: ByteSink> Emitter<'_, S> {
 }
 
 /// Streams one entry's data through `sink`, enforcing `limits` as it goes.
+///
+/// `written` is an out-parameter, not a return value, because the caller needs
+/// it on the error paths too: a CRC skip or a ratio skip still consumed device
+/// writes, and the session byte budget must be charged for them or a small
+/// archive can drive unbounded write-then-unlink churn.
 pub fn stream_entry<S: ByteSink>(
     src: &dyn Source,
     span: DataSpan,
@@ -211,6 +220,7 @@ pub fn stream_entry<S: ByteSink>(
     limits: &StreamLimits,
     cancel: &CancelFlag,
     sink: &mut S,
+    written: &mut u64,
 ) -> EntryResult<StreamOutcome> {
     let mut decoder = if rec.method == METHOD_STORED {
         Decoder::Stored
@@ -221,7 +231,7 @@ pub fn stream_entry<S: ByteSink>(
     let mut emitter = Emitter {
         sink,
         hasher: crc32fast::Hasher::new(),
-        written: 0,
+        written,
         head: Vec::with_capacity(HEAD_BYTES),
         stop: false,
     };
@@ -306,13 +316,13 @@ pub fn stream_entry<S: ByteSink>(
         if emitter.hasher.clone().finalize() != rec.crc32 {
             return Err(EntryFault::Skip(EntrySkipCode::EntryCorrupt));
         }
-        if emitter.written != rec.uncomp_size {
+        if *emitter.written != rec.uncomp_size {
             return Err(EntryFault::Skip(EntrySkipCode::EntryCorrupt));
         }
     }
 
     Ok(StreamOutcome {
-        byte_length: emitter.written,
+        byte_length: *emitter.written,
         head: emitter.head.clone(),
     })
 }

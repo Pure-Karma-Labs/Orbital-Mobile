@@ -1,8 +1,8 @@
 //! The session object: listing, indexes, job registry and byte budgets.
 //!
 //! Everything derived from archive content is computed once at open and then
-//! immutable, so concurrent jobs share it without a lock. Only the budgets and
-//! the job registry are mutable, behind one `Mutex`.
+//! immutable, so concurrent jobs share it without a lock. Only the budgets, the
+//! staging ledger and the job registry are mutable, behind one `Mutex`.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -16,13 +16,14 @@ use crate::error::{ArchiveError, ArchiveResult, EntryFault};
 use crate::extract::{self, NullSink, StreamLimits};
 use crate::fd;
 use crate::limits::{
-    HEAD_PEEK_BYTES, MAX_JOBS, MAX_JSON_BYTES, MAX_LISTED_ENTRIES_PER_SESSION,
-    MAX_LIVE_STAGING_BYTES, MAX_PARTS, MAX_SESSION_BYTES_WRITTEN, kind_cap,
+    HEAD_PEEK_BYTES, MAX_CD_RECORDS_PER_SESSION, MAX_JOBS, MAX_JSON_BYTES,
+    MAX_LISTED_ENTRIES_PER_SESSION, MAX_LIVE_STAGING_BYTES, MAX_PARTS, MAX_SESSION_BYTES_WRITTEN,
+    MIB, kind_cap,
 };
-use crate::local;
-use crate::num::to_u64;
+use crate::local::{self, DataSpan};
+use crate::num::{to_u64, to_usize};
 use crate::path as epath;
-use crate::source::{FileSource, Source};
+use crate::source::{ClosableSource, FileSource, Source};
 use crate::staging::StagingFile;
 use crate::types::{
     ArchiveEntry, ArchivePartInfo, ArchivePartInput, EntryKind, EntrySkipCode, ExtractOutcome,
@@ -38,9 +39,32 @@ pub struct PartSourceInput {
     pub expected_fp: Option<String>,
 }
 
+/// Session-wide ceilings.
+///
+/// Production always uses `Budgets::default()`, which is the `limits.rs` table.
+/// The host matrix overrides them so a 8 GiB budget, a 512 MiB ceiling and a
+/// 2-million-record bound can be exercised in milliseconds instead of being
+/// asserted only by reading the code.
+#[derive(Debug, Clone, Copy)]
+pub struct Budgets {
+    pub session_bytes: u64,
+    pub live_staging: u64,
+    pub cd_records: u64,
+}
+
+impl Default for Budgets {
+    fn default() -> Self {
+        Self {
+            session_bytes: MAX_SESSION_BYTES_WRITTEN,
+            live_staging: MAX_LIVE_STAGING_BYTES,
+            cd_records: MAX_CD_RECORDS_PER_SESSION,
+        }
+    }
+}
+
 struct PartState {
     index: u32,
-    src: Box<dyn Source>,
+    src: ClosableSource,
     fp: String,
     file_id: String,
     byte_length: u64,
@@ -61,7 +85,13 @@ struct EntryState {
 struct Mutables {
     closed: bool,
     bytes_written: u64,
+    /// Sum of `staging`'s values, kept in step with it under the same lock.
     live_staging: u64,
+    /// Bytes outstanding per staging path: reserved before the extract starts,
+    /// corrected to the real size on success, dropped on skip, error or
+    /// `release_staging`. Rust owns this number so a caller cannot widen the
+    /// ceiling by releasing a byte count it made up.
+    staging: HashMap<String, u64>,
     jobs: HashMap<String, CancelFlag>,
 }
 
@@ -75,11 +105,7 @@ pub struct SessionCore {
     basename_index: HashMap<String, Vec<usize>>,
     rejected: Vec<RejectedCount>,
     staging_dir: PathBuf,
-    /// Normally `MAX_SESSION_BYTES_WRITTEN`; overridable by the host matrix so
-    /// the budget can be exercised without extracting gigabytes.
-    max_session_bytes: u64,
-    /// Normally `MAX_LIVE_STAGING_BYTES` (F8).
-    max_live_staging: u64,
+    budgets: Budgets,
     state: Mutex<Mutables>,
 }
 
@@ -97,6 +123,54 @@ impl Drop for JobGuard {
     fn drop(&mut self) {
         guard(&self.core.state).jobs.remove(&self.job_id);
     }
+}
+
+/// Holds a live-staging reservation for one path.
+///
+/// Dropping without `commit` releases it, so every skip, error, cancel and
+/// panic path reconciles the ceiling without a bespoke branch.
+struct StagingReservation<'a> {
+    core: &'a SessionCore,
+    path: String,
+    active: bool,
+}
+
+impl StagingReservation<'_> {
+    /// Keeps the reservation, corrected to the bytes actually written. From
+    /// here the caller owns it until `release_staging(path)`.
+    fn commit(mut self, actual: u64) {
+        self.core.correct_staging(&self.path, actual);
+        self.active = false;
+    }
+}
+
+impl Drop for StagingReservation<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            self.core.release_path(&self.path);
+        }
+    }
+}
+
+/// What kind an entry must be for the operation being attempted.
+#[derive(Debug, Clone, Copy)]
+enum KindRequest {
+    /// F1: a peek is allowed for json and image kinds only.
+    PeekJsonOrImage,
+    Json,
+    Exact(EntryKind),
+}
+
+/// Outcome of the shared pre-read checks.
+enum Checked<'a> {
+    Ready { entry: &'a EntryState, cap: u64 },
+    Skipped(EntrySkipCode),
+}
+
+/// Outcome of local-header verification.
+enum Located<'a> {
+    Ready { part: &'a PartState, span: DataSpan },
+    Skipped(EntrySkipCode),
 }
 
 impl SessionCore {
@@ -136,37 +210,129 @@ impl SessionCore {
 
     fn remaining_session_bytes(&self) -> u64 {
         let st = guard(&self.state);
-        self.max_session_bytes.saturating_sub(st.bytes_written)
+        self.budgets.session_bytes.saturating_sub(st.bytes_written)
+    }
+
+    fn charge_bytes(&self, n: u64) {
+        if n == 0 {
+            return;
+        }
+        let mut st = guard(&self.state);
+        st.bytes_written = st.bytes_written.saturating_add(n);
+    }
+
+    // ---- staging ledger (F8) --------------------------------------------
+
+    /// Reserves `bytes` against the live-staging ceiling, atomically with the
+    /// ceiling check. Four concurrent jobs each checking and then adding would
+    /// let the ceiling overshoot by up to three kind caps.
+    fn reserve_staging(&self, path: &str, bytes: u64) -> ArchiveResult<StagingReservation<'_>> {
+        let mut st = guard(&self.state);
+        if st.closed {
+            return Err(ArchiveError::SessionClosed);
+        }
+        if st.staging.contains_key(path) {
+            // Two jobs extracting into one staging path would race on the file
+            // and on the ledger. That is a caller bug, not hostile input.
+            return Err(ArchiveError::Busy);
+        }
+        let total = st.live_staging.saturating_add(bytes);
+        if total > self.budgets.live_staging {
+            return Err(ArchiveError::NoSpace);
+        }
+        st.live_staging = total;
+        st.staging.insert(path.to_owned(), bytes);
+        drop(st);
+        Ok(StagingReservation {
+            core: self,
+            path: path.to_owned(),
+            active: true,
+        })
+    }
+
+    fn correct_staging(&self, path: &str, actual: u64) {
+        let mut st = guard(&self.state);
+        let Some(&reserved) = st.staging.get(path) else {
+            return;
+        };
+        st.staging.insert(path.to_owned(), actual);
+        st.live_staging = st
+            .live_staging
+            .saturating_sub(reserved)
+            .saturating_add(actual);
+    }
+
+    fn release_path(&self, path: &str) {
+        let mut st = guard(&self.state);
+        if let Some(bytes) = st.staging.remove(path) {
+            st.live_staging = st.live_staging.saturating_sub(bytes);
+        }
+    }
+
+    // ---- shared prologue -------------------------------------------------
+
+    /// Every check that can be made without reading entry data, in one place.
+    ///
+    /// All three job bodies run this, so the order — listing skip, then kind,
+    /// then cap, then the central-directory precheck — cannot drift between
+    /// them. A new operation gets the same gauntlet by construction.
+    fn check_entry(&self, entry_id: &str, want: KindRequest) -> ArchiveResult<Checked<'_>> {
+        let entry = self.entry(entry_id)?;
+        if let Some(skip) = entry.skip {
+            return Ok(Checked::Skipped(skip));
+        }
+        let cap = match want {
+            KindRequest::PeekJsonOrImage => {
+                // Video entries, identified by extension, are never opened.
+                match kind_cap(entry.kind) {
+                    Some(cap) => cap,
+                    None => return Ok(Checked::Skipped(EntrySkipCode::EntryKindNotEnabled)),
+                }
+            }
+            KindRequest::Json => {
+                if entry.kind != EntryKind::Json {
+                    return Ok(Checked::Skipped(EntrySkipCode::EntryKindMismatch));
+                }
+                kind_cap(EntryKind::Json)
+                    .ok_or(ArchiveError::Internal)?
+                    .min(MAX_JSON_BYTES)
+            }
+            KindRequest::Exact(kind) => {
+                if entry.kind != kind {
+                    return Ok(Checked::Skipped(EntrySkipCode::EntryKindMismatch));
+                }
+                match kind_cap(kind) {
+                    Some(cap) => cap,
+                    None => return Ok(Checked::Skipped(EntrySkipCode::EntryKindNotEnabled)),
+                }
+            }
+        };
+        if let Err(skip) = extract::precheck(&entry.rec, cap) {
+            return Ok(Checked::Skipped(skip));
+        }
+        Ok(Checked::Ready { entry, cap })
+    }
+
+    /// Verifies the local header and returns where the data is.
+    fn locate(&self, entry: &EntryState) -> ArchiveResult<Located<'_>> {
+        let part = self.part(entry.part)?;
+        match local::verify(&part.src, &entry.rec, &part.lh_offsets, part.cd_offset) {
+            Ok(span) => Ok(Located::Ready { part, span }),
+            Err(EntryFault::Skip(skip)) => Ok(Located::Skipped(skip)),
+            Err(EntryFault::Fatal(e)) => Err(e),
+        }
     }
 
     // ---- job bodies (run on a blocking worker thread) -------------------
 
     fn do_peek_head(&self, entry_id: &str, cancel: &CancelFlag) -> ArchiveResult<PeekOutcome> {
-        let entry = self.entry(entry_id)?;
-        if let Some(skip) = entry.skip {
-            return Ok(PeekOutcome::Skipped { skip });
-        }
-        // F1: a peek is allowed for json and image kinds only. Video entries,
-        // identified by extension, are never opened.
-        if entry.kind == EntryKind::Video {
-            return Ok(PeekOutcome::Skipped {
-                skip: EntrySkipCode::EntryKindNotEnabled,
-            });
-        }
-        let cap = kind_cap(entry.kind).ok_or(ArchiveError::Internal)?;
-        if let Err(skip) = extract::precheck(&entry.rec, cap) {
-            return Ok(PeekOutcome::Skipped { skip });
-        }
-        let part = self.part(entry.part)?;
-        let span = match local::verify(
-            part.src.as_ref(),
-            &entry.rec,
-            &part.lh_offsets,
-            part.cd_offset,
-        ) {
-            Ok(s) => s,
-            Err(EntryFault::Skip(skip)) => return Ok(PeekOutcome::Skipped { skip }),
-            Err(EntryFault::Fatal(e)) => return Err(e),
+        let (entry, cap) = match self.check_entry(entry_id, KindRequest::PeekJsonOrImage)? {
+            Checked::Ready { entry, cap } => (entry, cap),
+            Checked::Skipped(skip) => return Ok(PeekOutcome::Skipped { skip }),
+        };
+        let (part, span) = match self.locate(entry)? {
+            Located::Ready { part, span } => (part, span),
+            Located::Skipped(skip) => return Ok(PeekOutcome::Skipped { skip }),
         };
         let limits = StreamLimits {
             declared: entry.rec.uncomp_size,
@@ -176,13 +342,15 @@ impl SessionCore {
             max_output: Some(to_u64(HEAD_PEEK_BYTES)),
         };
         let mut sink = NullSink;
+        let mut written = 0u64;
         match extract::stream_entry(
-            part.src.as_ref(),
+            &part.src,
             span,
             &entry.rec,
             &limits,
             cancel,
             &mut sink,
+            &mut written,
         ) {
             Ok(out) => Ok(PeekOutcome::Head { head: out.head }),
             Err(EntryFault::Skip(skip)) => Ok(PeekOutcome::Skipped { skip }),
@@ -191,31 +359,13 @@ impl SessionCore {
     }
 
     fn do_read_json(&self, entry_id: &str, cancel: &CancelFlag) -> ArchiveResult<JsonOutcome> {
-        let entry = self.entry(entry_id)?;
-        if let Some(skip) = entry.skip {
-            return Ok(JsonOutcome::Skipped { skip });
-        }
-        if entry.kind != EntryKind::Json {
-            return Ok(JsonOutcome::Skipped {
-                skip: EntrySkipCode::EntryKindMismatch,
-            });
-        }
-        let cap = kind_cap(EntryKind::Json)
-            .ok_or(ArchiveError::Internal)?
-            .min(MAX_JSON_BYTES);
-        if let Err(skip) = extract::precheck(&entry.rec, cap) {
-            return Ok(JsonOutcome::Skipped { skip });
-        }
-        let part = self.part(entry.part)?;
-        let span = match local::verify(
-            part.src.as_ref(),
-            &entry.rec,
-            &part.lh_offsets,
-            part.cd_offset,
-        ) {
-            Ok(s) => s,
-            Err(EntryFault::Skip(skip)) => return Ok(JsonOutcome::Skipped { skip }),
-            Err(EntryFault::Fatal(e)) => return Err(e),
+        let (entry, cap) = match self.check_entry(entry_id, KindRequest::Json)? {
+            Checked::Ready { entry, cap } => (entry, cap),
+            Checked::Skipped(skip) => return Ok(JsonOutcome::Skipped { skip }),
+        };
+        let (part, span) = match self.locate(entry)? {
+            Located::Ready { part, span } => (part, span),
+            Located::Skipped(skip) => return Ok(JsonOutcome::Skipped { skip }),
         };
         let limits = StreamLimits {
             declared: entry.rec.uncomp_size,
@@ -223,14 +373,21 @@ impl SessionCore {
             session_remaining: u64::MAX,
             max_output: None,
         };
-        let mut buf: Vec<u8> = Vec::new();
+        // Pre-sized to the declared length, but never beyond 1 MiB: a honest
+        // 32 MiB JSON reaches that size by doubling a handful of times, while
+        // an archive that merely CLAIMS 32 MiB and carries ten bytes cannot
+        // make us allocate 32 MiB per attempt.
+        let presize = entry.rec.uncomp_size.min(cap).min(MIB);
+        let mut buf: Vec<u8> = Vec::with_capacity(to_usize(presize)?);
+        let mut written = 0u64;
         match extract::stream_entry(
-            part.src.as_ref(),
+            &part.src,
             span,
             &entry.rec,
             &limits,
             cancel,
             &mut buf,
+            &mut written,
         ) {
             Ok(_) => {}
             Err(EntryFault::Skip(skip)) => return Ok(JsonOutcome::Skipped { skip }),
@@ -254,47 +411,18 @@ impl SessionCore {
         staging_path: &str,
         cancel: &CancelFlag,
     ) -> ArchiveResult<ExtractOutcome> {
-        let entry = self.entry(entry_id)?;
-        if let Some(skip) = entry.skip {
-            return Ok(ExtractOutcome::Skipped { skip });
-        }
-        if entry.kind != kind {
-            return Ok(ExtractOutcome::Skipped {
-                skip: EntrySkipCode::EntryKindMismatch,
-            });
-        }
-        let Some(cap) = kind_cap(kind) else {
-            // Video: no KIND_CAPS row, so it is never opened.
-            return Ok(ExtractOutcome::Skipped {
-                skip: EntrySkipCode::EntryKindNotEnabled,
-            });
+        let (entry, cap) = match self.check_entry(entry_id, KindRequest::Exact(kind))? {
+            Checked::Ready { entry, cap } => (entry, cap),
+            Checked::Skipped(skip) => return Ok(ExtractOutcome::Skipped { skip }),
         };
-        if let Err(skip) = extract::precheck(&entry.rec, cap) {
-            return Ok(ExtractOutcome::Skipped { skip });
-        }
 
-        let projected = entry.rec.uncomp_size.min(cap);
-        {
-            let st = guard(&self.state);
-            if st.closed {
-                return Err(ArchiveError::SessionClosed);
-            }
-            if st.live_staging.saturating_add(projected) > self.max_live_staging {
-                // F8: too many extracted-but-unreleased files alive at once.
-                return Err(ArchiveError::NoSpace);
-            }
-        }
+        // Reserve before any I/O, so four concurrent jobs cannot each pass the
+        // ceiling check on the same headroom.
+        let reservation = self.reserve_staging(staging_path, entry.rec.uncomp_size.min(cap))?;
 
-        let part = self.part(entry.part)?;
-        let span = match local::verify(
-            part.src.as_ref(),
-            &entry.rec,
-            &part.lh_offsets,
-            part.cd_offset,
-        ) {
-            Ok(s) => s,
-            Err(EntryFault::Skip(skip)) => return Ok(ExtractOutcome::Skipped { skip }),
-            Err(EntryFault::Fatal(e)) => return Err(e),
+        let (part, span) = match self.locate(entry)? {
+            Located::Ready { part, span } => (part, span),
+            Located::Skipped(skip) => return Ok(ExtractOutcome::Skipped { skip }),
         };
 
         let mut file = StagingFile::open(staging_path, &self.staging_dir)?;
@@ -304,27 +432,31 @@ impl SessionCore {
             session_remaining: self.remaining_session_bytes(),
             max_output: None,
         };
-        let outcome = match extract::stream_entry(
-            part.src.as_ref(),
+        let mut written = 0u64;
+        let streamed = extract::stream_entry(
+            &part.src,
             span,
             &entry.rec,
             &limits,
             cancel,
             &mut file,
-        ) {
+            &mut written,
+        );
+        // Charged on EVERY path. Bytes written and then thrown away still cost
+        // the device a write, so a CRC skip, a magic skip or a ratio skip has
+        // to count against the session budget or a small archive can drive
+        // unbounded write-then-unlink churn.
+        self.charge_bytes(written);
+
+        let outcome = match streamed {
             Ok(o) => o,
             // `file` is dropped here, which truncates and unlinks the partial
-            // output, so a skipped or cancelled extract leaves no residue.
+            // output, and `reservation` is dropped, which frees the ceiling.
             Err(EntryFault::Skip(skip)) => return Ok(ExtractOutcome::Skipped { skip }),
             Err(EntryFault::Fatal(e)) => return Err(e),
         };
-        let written = file.finish()?;
-
-        {
-            let mut st = guard(&self.state);
-            st.bytes_written = st.bytes_written.saturating_add(written);
-            st.live_staging = st.live_staging.saturating_add(written);
-        }
+        let finished = file.finish()?;
+        reservation.commit(finished);
 
         Ok(ExtractOutcome::Extracted {
             path: staging_path.to_owned(),
@@ -383,11 +515,15 @@ impl ArchiveSession {
         uris.iter().map(|u| self.core.resolve_one(u)).collect()
     }
 
-    /// Releases `byte_length` from the live-staging ceiling. The TS service
-    /// calls this in the same `finally` that unlinks the staging file (F8).
-    pub fn release_staging(&self, byte_length: u64) {
-        let mut st = guard(&self.core.state);
-        st.live_staging = st.live_staging.saturating_sub(byte_length);
+    /// Releases one extracted staging path from the live-staging ceiling (F8).
+    ///
+    /// Takes the path, not a byte count: Rust knows how many bytes it wrote, and
+    /// a caller-supplied number would let a double release (or a padded one)
+    /// silently disable the ceiling. Idempotent, and a path this session never
+    /// extracted is a no-op. The TS service calls it in the same `finally` that
+    /// unlinks the file.
+    pub fn release_staging(&self, staging_path: String) {
+        self.core.release_path(&staging_path);
     }
 
     /// Cancels one in-flight job. Synchronous and lock-free enough for
@@ -398,13 +534,24 @@ impl ArchiveSession {
         }
     }
 
-    /// Cancels every job and refuses further work. Idempotent. Only this
-    /// crate's dups are dropped; the glue still owns the original fds (F2).
+    /// Cancels every job, releases this crate's descriptor dups, and refuses
+    /// further work. Idempotent.
+    ///
+    /// The dups are dropped here rather than at uniffi destroy time: a session
+    /// the app has finished with must not keep a file open across a `localWipe`
+    /// just because the JS object has not been collected yet. The glue still
+    /// owns the original fds and closes them at `closeParts` (F2). A job that is
+    /// mid-read gets `SessionClosed` on its next read and unwinds normally.
     pub fn close(&self) {
-        let mut st = guard(&self.core.state);
-        st.closed = true;
-        for flag in st.jobs.values() {
-            flag.cancel();
+        {
+            let mut st = guard(&self.core.state);
+            st.closed = true;
+            for flag in st.jobs.values() {
+                flag.cancel();
+            }
+        }
+        for part in &self.core.parts {
+            part.src.release();
         }
     }
 
@@ -434,7 +581,7 @@ impl ArchiveSession {
     }
 
     /// Extracts one entry into a glue-created staging file. The caller unlinks
-    /// `path` after consuming it, and calls `release_staging`.
+    /// `path` after consuming it, and calls `release_staging(path)`.
     pub async fn extract_entry(
         &self,
         entry_id: String,
@@ -466,29 +613,18 @@ impl ArchiveSession {
         staging_dir: &str,
         cancel: &CancelFlag,
     ) -> ArchiveResult<Arc<Self>> {
-        Self::open_with_sources_and_budgets(
-            parts,
-            staging_dir,
-            cancel,
-            MAX_SESSION_BYTES_WRITTEN,
-            MAX_LIVE_STAGING_BYTES,
-        )
+        Self::open_with_sources_and_budgets(parts, staging_dir, cancel, Budgets::default())
     }
 
-    /// Host-test entry point with overridable budgets, so the session byte
-    /// budget and the live-staging ceiling can be exercised in milliseconds
-    /// instead of gigabytes.
+    /// Host-test entry point with overridable budgets.
     #[doc(hidden)]
     pub fn open_with_sources_and_budgets(
         parts: Vec<PartSourceInput>,
         staging_dir: &str,
         cancel: &CancelFlag,
-        max_session_bytes: u64,
-        max_live_staging: u64,
+        budgets: Budgets,
     ) -> ArchiveResult<Arc<Self>> {
-        let mut core = build_core(parts, staging_dir, cancel)?;
-        core.max_session_bytes = max_session_bytes;
-        core.max_live_staging = max_live_staging;
+        let core = build_core(parts, staging_dir, cancel, budgets)?;
         Ok(Arc::new(Self {
             core: Arc::new(core),
         }))
@@ -521,6 +657,20 @@ impl ArchiveSession {
         cancel: &CancelFlag,
     ) -> ArchiveResult<ExtractOutcome> {
         self.core.do_extract(entry_id, kind, staging_path, cancel)
+    }
+
+    /// Bytes currently counted against the live-staging ceiling.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn live_staging_bytes(&self) -> u64 {
+        guard(&self.core.state).live_staging
+    }
+
+    /// Bytes charged to the session budget so far.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn session_bytes_written(&self) -> u64 {
+        guard(&self.core.state).bytes_written
     }
 }
 
@@ -638,7 +788,7 @@ pub async fn open_archive(
     }
     let flag = cancel.flag();
     crate::blocking::spawn_blocking(move || {
-        let core = build_core(sources, &staging_dir, &flag)?;
+        let core = build_core(sources, &staging_dir, &flag, Budgets::default())?;
         Ok(Arc::new(ArchiveSession {
             core: Arc::new(core),
         }))
@@ -650,12 +800,15 @@ struct PartListing {
     state: PartState,
     entries: Vec<EntryState>,
     rejected: HashMap<EntrySkipCode, u64>,
+    /// Central-directory records parsed, allowlisted or not.
+    cd_records: u64,
 }
 
 fn build_core(
     parts: Vec<PartSourceInput>,
     staging_dir: &str,
     cancel: &CancelFlag,
+    budgets: Budgets,
 ) -> ArchiveResult<SessionCore> {
     if parts.is_empty() {
         return Err(ArchiveError::NotZip);
@@ -672,6 +825,7 @@ fn build_core(
     let mut rejected: HashMap<EntrySkipCode, u64> = HashMap::new();
     let mut seen_file_ids: HashMap<String, ()> = HashMap::new();
     let mut seen_fps: HashMap<String, ()> = HashMap::new();
+    let mut cd_records_total = 0u64;
 
     for (i, part) in parts.into_iter().enumerate() {
         cancel.check()?;
@@ -683,6 +837,13 @@ fn build_core(
         let listing = list_part(part, index, cancel)?;
         if seen_fps.insert(listing.state.fp.clone(), ()).is_some() {
             return Err(ArchiveError::DuplicatePart);
+        }
+        cd_records_total = cd_records_total.saturating_add(listing.cd_records);
+        if cd_records_total > budgets.cd_records {
+            // The retained local-header offset vectors are what this bounds:
+            // 64 parts x 1M records would be ~512 MB held for the life of the
+            // session, which is a jetsam kill rather than an error.
+            return Err(ArchiveError::TooManyEntries);
         }
         for (code, n) in listing.rejected {
             *rejected.entry(code).or_insert(0) += n;
@@ -706,7 +867,16 @@ fn build_core(
     let mut exact_index: HashMap<String, Vec<usize>> = HashMap::new();
     let mut basename_index: HashMap<String, Vec<usize>> = HashMap::new();
     for (idx, e) in entries.iter().enumerate() {
-        by_id.insert(e.entry_id.clone(), idx);
+        // Fail closed on a colliding id. `entry_id` is the resume key #926
+        // persists, and a last-wins insert would silently point a stored id at
+        // a different entry — in the near-duplicate-part case, at the twin that
+        // dedup marked skipped, making media the member really has unreachable.
+        // The id carries the full part fingerprint, so a collision means two
+        // parts resolved to the same content identity and the session is not
+        // trustworthy.
+        if by_id.insert(e.entry_id.clone(), idx).is_some() {
+            return Err(ArchiveError::DuplicatePart);
+        }
         if e.skip.is_some() || e.kind == EntryKind::Json {
             continue;
         }
@@ -729,8 +899,7 @@ fn build_core(
         basename_index,
         rejected: rejected_counts,
         staging_dir,
-        max_session_bytes: MAX_SESSION_BYTES_WRITTEN,
-        max_live_staging: MAX_LIVE_STAGING_BYTES,
+        budgets,
         state: Mutex::new(Mutables::default()),
     })
 }
@@ -754,16 +923,21 @@ fn list_part(part: PartSourceInput, index: u32, cancel: &CancelFlag) -> ArchiveR
     let mut lh_offsets: Vec<u64> = Vec::new();
     while let Some(rec) = reader.next_record()? {
         lh_offsets.push(rec.lh_offset);
-        let utf8 = (rec.flags & (1 << 11)) != 0;
-        if let Ok(valid) = epath::validate(&rec.name, utf8)
+        if let Ok(valid) = epath::validate(&rec.name)
             && !valid.is_dir
         {
             tracker.observe(&valid.path);
         }
     }
     let counted = reader.count();
+    // A 32-bit EOCD count saturated at 0xFFFF means "more than 65535 records",
+    // and both Info-ZIP and CPython write it for large archives. The exemption
+    // is gated on the absence of a ZIP64 record: when one IS present it carries
+    // a real 64-bit count, so a mismatch there is corruption, not saturation.
     let declared_ok = counted == info.declared_entries
-        || (info.declared_entries == u64::from(u16::MAX) && counted >= info.declared_entries);
+        || (!info.zip64
+            && info.declared_entries == u64::from(u16::MAX)
+            && counted >= info.declared_entries);
     if !declared_ok {
         return Err(ArchiveError::Corrupt);
     }
@@ -771,11 +945,12 @@ fn list_part(part: PartSourceInput, index: u32, cancel: &CancelFlag) -> ArchiveR
     lh_offsets.sort_unstable();
 
     let byte_length = src.len();
+    // Content only, never pick order (F6). A change detector, not an
+    // authenticator: see the plan's Q5.
     let fp = format!(
         "{crc:08x}-{:x}-{:x}-{:x}",
         info.cd_offset, info.cd_size, byte_length
     );
-    let fp8 = format!("{crc:08x}");
     if let Some(expected) = &part.expected_fp
         && expected != &fp
     {
@@ -795,8 +970,7 @@ fn list_part(part: PartSourceInput, index: u32, cancel: &CancelFlag) -> ArchiveR
     };
 
     while let Some(rec) = reader.next_record()? {
-        let utf8 = (rec.flags & (1 << 11)) != 0;
-        let valid = match epath::validate(&rec.name, utf8) {
+        let valid = match epath::validate(&rec.name) {
             Ok(v) => v,
             Err(code) => {
                 bump(&mut rejected, code);
@@ -827,7 +1001,7 @@ fn list_part(part: PartSourceInput, index: u32, cancel: &CancelFlag) -> ArchiveR
             None => None,
         };
         entries.push(EntryState {
-            entry_id: format!("{fp8}:{}", rec.ordinal),
+            entry_id: format!("{fp}:{}", rec.ordinal),
             part: usize::try_from(index).unwrap_or(usize::MAX),
             path: stripped,
             kind,
@@ -839,10 +1013,18 @@ fn list_part(part: PartSourceInput, index: u32, cancel: &CancelFlag) -> ArchiveR
         }
     }
 
+    // The two passes must have seen the same bytes. If the file changed
+    // underneath us between them, `lh_offsets` (from pass 1) no longer
+    // describes the records we just listed, and every data-span bound derived
+    // from it would be checking the wrong geometry.
+    if reader.cd_crc32() != crc || reader.count() != counted {
+        return Err(ArchiveError::Changed { part_index: index });
+    }
+
     Ok(PartListing {
         state: PartState {
             index,
-            src,
+            src: ClosableSource::new(src),
             fp,
             file_id: part.file_id,
             byte_length,
@@ -851,6 +1033,7 @@ fn list_part(part: PartSourceInput, index: u32, cancel: &CancelFlag) -> ArchiveR
         },
         entries,
         rejected,
+        cd_records: counted,
     })
 }
 

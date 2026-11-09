@@ -7,13 +7,13 @@
 
 mod support;
 
-use orbital_archive_reader::testing::MIB;
+use orbital_archive_reader::testing::{Budgets, MIB};
 use orbital_archive_reader::{ArchiveError, EntryKind, EntrySkipCode, ExtractOutcome, JsonOutcome};
 use support::zipgen::{
     EntrySpec, FLAG_DATA_DESCRIPTOR, FLAG_ENCRYPTED, FLAG_STRONG_ENCRYPTION, FLAG_UTF8, MODE_DIR,
     MODE_FIFO, MODE_SYMLINK, ZipBuilder, crc32, deflate, instagram_like,
 };
-use support::{UUID_A, open, try_open};
+use support::{UUID_A, UUID_B, UUID_C, open, try_open};
 
 const JPG: &[u8] = b"\xFF\xD8\xFF\xE0jpeg";
 const JSON_PATH: &str = "your_instagram_activity/media/posts_1.json";
@@ -642,13 +642,63 @@ fn session_byte_budget_throws() {
         .stored("media/posts/a.jpg", &body)
         .stored("media/posts/b.jpg", &body)
         .build();
-    let h = support::try_open_with_budgets("budget", vec![zip], 5000, u64::MAX).expect("opens");
+    let h = support::try_open_with_budgets(
+        "budget",
+        vec![zip],
+        Budgets {
+            session_bytes: 5000,
+            ..support::unbounded()
+        },
+    )
+    .expect("opens");
     assert!(matches!(
-        h.extract("media/posts/a.jpg", EntryKind::Image),
+        h.extract_into("media/posts/a.jpg", EntryKind::Image, UUID_A),
         Ok(ExtractOutcome::Extracted { .. })
     ));
     assert_eq!(
-        h.extract("media/posts/b.jpg", EntryKind::Image).err(),
+        h.extract_into("media/posts/b.jpg", EntryKind::Image, UUID_B)
+            .err(),
+        Some(ArchiveError::SessionBytesExceeded)
+    );
+}
+
+/// Bytes written before a CRC skip are charged too. Otherwise a handful of
+/// deliberately-corrupt entries can drive unbounded write-then-unlink churn
+/// while the session budget never moves.
+#[test]
+fn bytes_written_before_a_skip_are_charged_to_the_session_budget() {
+    let body = vec![9u8; 4096];
+    let mut a = EntrySpec::stored("media/posts/a.jpg", &body);
+    a.cd_crc = Some(crc32(&body) ^ 0xDEAD);
+    let mut b = EntrySpec::stored("media/posts/b.jpg", &body);
+    b.cd_crc = Some(crc32(&body) ^ 0xBEEF);
+    let zip = ZipBuilder::new().with(a).with(b).build();
+
+    let h = support::try_open_with_budgets(
+        "charge-skips",
+        vec![zip],
+        Budgets {
+            session_bytes: 5000,
+            ..support::unbounded()
+        },
+    )
+    .expect("opens");
+
+    // The first corrupt entry writes 4096 bytes, then fails its CRC.
+    assert_eq!(
+        skipped(
+            &h.extract_into("media/posts/a.jpg", EntryKind::Image, UUID_A)
+                .expect("no throw")
+        ),
+        Some(EntrySkipCode::EntryCorrupt)
+    );
+    assert_eq!(h.session.session_bytes_written(), 4096);
+    // Its reservation was released, so the ceiling is clear...
+    assert_eq!(h.session.live_staging_bytes(), 0);
+    // ...but the budget is not, and the second attempt runs out of it.
+    assert_eq!(
+        h.extract_into("media/posts/b.jpg", EntryKind::Image, UUID_B)
+            .err(),
         Some(ArchiveError::SessionBytesExceeded)
     );
 }
@@ -661,18 +711,67 @@ fn live_staging_ceiling_is_enforced_and_releasable() {
         .stored("media/posts/a.jpg", &body)
         .stored("media/posts/b.jpg", &body)
         .build();
-    let h = support::try_open_with_budgets("live", vec![zip], u64::MAX, 5000).expect("opens");
+    let h = support::try_open_with_budgets(
+        "live",
+        vec![zip],
+        Budgets {
+            live_staging: 5000,
+            ..support::unbounded()
+        },
+    )
+    .expect("opens");
     assert!(matches!(
-        h.extract("media/posts/a.jpg", EntryKind::Image),
+        h.extract_into("media/posts/a.jpg", EntryKind::Image, UUID_A),
+        Ok(ExtractOutcome::Extracted { .. })
+    ));
+    assert_eq!(h.session.live_staging_bytes(), 4096);
+    assert_eq!(
+        h.extract_into("media/posts/b.jpg", EntryKind::Image, UUID_B)
+            .err(),
+        Some(ArchiveError::NoSpace)
+    );
+
+    // Releasing is by path and is exact: the ledger, not the caller, says how
+    // many bytes come back.
+    h.session.release_staging(h.dir.staging_path(UUID_A));
+    assert_eq!(h.session.live_staging_bytes(), 0);
+    assert!(matches!(
+        h.extract_into("media/posts/b.jpg", EntryKind::Image, UUID_B),
+        Ok(ExtractOutcome::Extracted { .. })
+    ));
+
+    // Idempotent, and a path this session never extracted is a no-op. A
+    // doubled or bogus release must not create headroom.
+    h.session.release_staging(h.dir.staging_path(UUID_B));
+    h.session.release_staging(h.dir.staging_path(UUID_B));
+    h.session.release_staging(h.dir.staging_path(UUID_C));
+    h.session
+        .release_staging("/not/even/in/this/session.bin".to_owned());
+    assert_eq!(h.session.live_staging_bytes(), 0);
+}
+
+/// Re-using a staging path that is still outstanding is refused: two jobs
+/// writing one file would race on both the file and the ledger.
+#[test]
+fn an_outstanding_staging_path_cannot_be_reused() {
+    let body = vec![1u8; 512];
+    let zip = ZipBuilder::new()
+        .stored("media/posts/a.jpg", &body)
+        .stored("media/posts/b.jpg", &body)
+        .build();
+    let h = open("staging-reuse", vec![zip]);
+    assert!(matches!(
+        h.extract_into("media/posts/a.jpg", EntryKind::Image, UUID_A),
         Ok(ExtractOutcome::Extracted { .. })
     ));
     assert_eq!(
-        h.extract("media/posts/b.jpg", EntryKind::Image).err(),
-        Some(ArchiveError::NoSpace)
+        h.extract_into("media/posts/b.jpg", EntryKind::Image, UUID_A)
+            .err(),
+        Some(ArchiveError::Busy)
     );
-    h.session.release_staging(4096);
+    h.session.release_staging(h.dir.staging_path(UUID_A));
     assert!(matches!(
-        h.extract("media/posts/b.jpg", EntryKind::Image),
+        h.extract_into("media/posts/b.jpg", EntryKind::Image, UUID_A),
         Ok(ExtractOutcome::Extracted { .. })
     ));
 }

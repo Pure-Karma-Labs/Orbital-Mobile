@@ -27,12 +27,11 @@ pub struct ValidPath {
 
 /// Validates one central-directory name.
 ///
-/// `utf8_flag` is general-purpose bit 11. We require valid UTF-8 either way —
-/// Meta exports are always UTF-8, and a name we cannot decode is a name we
-/// cannot match against the allowlist, so listing it would be unsafe.
-pub fn validate(name: &[u8], utf8_flag: bool) -> Result<ValidPath, EntrySkipCode> {
-    let _ = utf8_flag;
-
+/// General-purpose bit 11 is deliberately NOT consulted: valid UTF-8 is
+/// required either way. Meta exports are always UTF-8, and a name we cannot
+/// decode is a name we cannot match against the allowlist, so listing it on the
+/// strength of a flag the archive sets about itself would be backwards.
+pub fn validate(name: &[u8]) -> Result<ValidPath, EntrySkipCode> {
     if name.is_empty() || name.len() > MAX_PATH_BYTES {
         return Err(EntrySkipCode::EntryPathInvalid);
     }
@@ -164,7 +163,7 @@ mod tests {
     use super::*;
 
     fn err(name: &str) -> EntrySkipCode {
-        match validate(name.as_bytes(), true) {
+        match validate(name.as_bytes()) {
             Ok(v) => panic!("expected rejection, got {v:?}"),
             Err(e) => e,
         }
@@ -185,16 +184,10 @@ mod tests {
         assert_eq!(err("C:/x.jpg"), EntrySkipCode::EntryPathInvalid);
         assert_eq!(err("a//b.jpg"), EntrySkipCode::EntryPathInvalid);
         assert_eq!(err(""), EntrySkipCode::EntryPathInvalid);
+        assert_eq!(validate(b"a\x00b"), Err(EntrySkipCode::EntryPathInvalid));
+        assert_eq!(validate(b"a\nb"), Err(EntrySkipCode::EntryPathInvalid));
         assert_eq!(
-            validate(b"a\x00b", true),
-            Err(EntrySkipCode::EntryPathInvalid)
-        );
-        assert_eq!(
-            validate(b"a\nb", true),
-            Err(EntrySkipCode::EntryPathInvalid)
-        );
-        assert_eq!(
-            validate(&[0x80, 0x81], true),
+            validate(&[0x80, 0x81]),
             Err(EntrySkipCode::EntryPathInvalid)
         );
         let deep = "a/".repeat(17);
@@ -208,7 +201,7 @@ mod tests {
 
     #[test]
     fn directory_entries_are_flagged() {
-        let v = validate(b"media/posts/", true).expect("dir");
+        let v = validate(b"media/posts/").expect("dir");
         assert!(v.is_dir);
         assert_eq!(v.path, "media/posts");
     }

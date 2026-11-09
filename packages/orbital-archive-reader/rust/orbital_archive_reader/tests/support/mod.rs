@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
 
-use orbital_archive_reader::testing::{CancelFlag, PartSourceInput, Source};
+use orbital_archive_reader::testing::{Budgets, CancelFlag, PartSourceInput, Source};
 use orbital_archive_reader::{ArchiveError, ArchiveSession, EntryKind, EntrySkipCode};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -48,6 +48,16 @@ impl TempDir {
         let p = self.path.join(format!("{uuid}-archive-staging.bin"));
         std::fs::write(&p, b"").expect("create staging file");
         p.to_str().expect("utf8 staging path").to_owned()
+    }
+
+    /// The staging path for `uuid`, without creating the file.
+    #[must_use]
+    pub fn staging_path(&self, uuid: &str) -> String {
+        self.path
+            .join(format!("{uuid}-archive-staging.bin"))
+            .to_str()
+            .expect("utf8 staging path")
+            .to_owned()
     }
 
     /// A staging path that was never created (exercises `create(false)`).
@@ -247,16 +257,27 @@ fn part_inputs(sources: &[Arc<MemSource>]) -> Vec<PartSourceInput> {
         .collect()
 }
 
+/// Budgets with the byte ceilings lifted, so a test that is not about them
+/// cannot trip them. The central-directory record bound stays at its real
+/// value: nothing in the matrix comes near it by accident.
+#[must_use]
+pub fn unbounded() -> Budgets {
+    Budgets {
+        session_bytes: u64::MAX,
+        live_staging: u64::MAX,
+        ..Budgets::default()
+    }
+}
+
 /// Opens a session over in-memory parts.
 pub fn try_open(tag: &str, parts: Vec<Vec<u8>>) -> Result<Harness, ArchiveError> {
-    try_open_with_budgets(tag, parts, u64::MAX, u64::MAX)
+    try_open_with_budgets(tag, parts, unbounded())
 }
 
 pub fn try_open_with_budgets(
     tag: &str,
     parts: Vec<Vec<u8>>,
-    max_session_bytes: u64,
-    max_live_staging: u64,
+    budgets: Budgets,
 ) -> Result<Harness, ArchiveError> {
     let dir = TempDir::new(tag);
     let sources: Vec<Arc<MemSource>> = parts.into_iter().map(MemSource::new).collect();
@@ -265,8 +286,7 @@ pub fn try_open_with_budgets(
         part_inputs(&sources),
         dir.as_str(),
         &cancel,
-        max_session_bytes,
-        max_live_staging,
+        budgets,
     )?;
     Ok(Harness {
         session,
@@ -337,10 +357,30 @@ impl Harness {
         path: &str,
         kind: EntryKind,
     ) -> Result<orbital_archive_reader::ExtractOutcome, ArchiveError> {
+        self.extract_into(path, kind, UUID_A)
+    }
+
+    /// Extracts `path` into the staging file named by `uuid`.
+    pub fn extract_into(
+        &self,
+        path: &str,
+        kind: EntryKind,
+        uuid: &str,
+    ) -> Result<orbital_archive_reader::ExtractOutcome, ArchiveError> {
         let id = self.id_of(path);
-        let staging = self.dir.staging(UUID_A);
+        let staging = self.dir.staging(uuid);
         self.session
             .extract_blocking(&id, kind, &staging, &self.cancel)
+    }
+
+    /// Entry ids of every listed entry.
+    #[must_use]
+    pub fn ids(&self) -> Vec<String> {
+        self.session
+            .entries()
+            .into_iter()
+            .map(|e| e.entry_id)
+            .collect()
     }
 
     pub fn read_json(

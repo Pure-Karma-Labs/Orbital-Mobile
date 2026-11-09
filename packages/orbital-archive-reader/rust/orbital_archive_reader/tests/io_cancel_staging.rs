@@ -566,6 +566,76 @@ fn a_hard_linked_staging_path_is_refused() {
     );
 }
 
+/// F8: the live-staging reservation is taken under the same lock as the ceiling
+/// check. A check-then-add would let both jobs below pass on the same headroom
+/// and overshoot the ceiling by a whole kind cap per concurrent job.
+#[test]
+fn a_concurrent_reservation_cannot_overshoot_the_ceiling() {
+    let body = vec![5u8; 4096];
+    let zip = ZipBuilder::new()
+        .stored("media/posts/a.jpg", &body)
+        .stored("media/posts/b.jpg", &body)
+        .build();
+    // Room for one 4,096-byte extract, not two.
+    let h = support::try_open_with_budgets(
+        "reserve-race",
+        vec![zip],
+        orbital_archive_reader::testing::Budgets {
+            live_staging: 6000,
+            ..support::unbounded()
+        },
+    )
+    .expect("opens");
+
+    let gate = h.sources[0].install_gate();
+    h.sources[0].reset_reads();
+
+    let session = Arc::clone(&h.session);
+    let first_id = h.id_of("media/posts/a.jpg");
+    let first_path = h.dir.staging(UUID_A);
+    let worker = std::thread::spawn(move || {
+        block_on(session.extract_entry(first_id, EntryKind::Image, first_path, "job-a".to_owned()))
+    });
+
+    // Wait until the first job is inside a read, holding its reservation.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while h.sources[0].read_count() < 1 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        h.sources[0].read_count() >= 1,
+        "the first job never started"
+    );
+    assert_eq!(h.session.live_staging_bytes(), 4096);
+
+    let second = h.session.extract_blocking(
+        &h.id_of("media/posts/b.jpg"),
+        EntryKind::Image,
+        &h.dir.staging(UUID_B),
+        &h.cancel,
+    );
+    assert_eq!(second.err(), Some(ArchiveError::NoSpace));
+
+    gate.open();
+    assert!(matches!(
+        worker.join().expect("join"),
+        Ok(ExtractOutcome::Extracted { .. })
+    ));
+
+    // Releasing the first path makes exactly its bytes available again.
+    h.session.release_staging(h.dir.staging_path(UUID_A));
+    assert_eq!(h.session.live_staging_bytes(), 0);
+    assert!(matches!(
+        h.session.extract_blocking(
+            &h.id_of("media/posts/b.jpg"),
+            EntryKind::Image,
+            &h.dir.staging(UUID_B),
+            &h.cancel,
+        ),
+        Ok(ExtractOutcome::Extracted { .. })
+    ));
+}
+
 /// A changed part is detected by its fingerprint on resume, and names the part
 /// index (a count, not a name).
 #[test]

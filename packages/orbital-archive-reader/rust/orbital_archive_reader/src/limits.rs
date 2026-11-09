@@ -44,6 +44,13 @@ pub const MAX_CD_BYTES_PER_PART: u64 = 256 * MIB;
 /// Allowlisted entries surfaced across the whole session.
 pub const MAX_LISTED_ENTRIES_PER_SESSION: usize = 100_000;
 
+/// Central-directory records parsed across the whole session, allowlisted or
+/// not. This is what bounds the retained `lh_offsets` vectors: without it,
+/// `MAX_PARTS` x `MAX_CD_ENTRIES_PER_PART` would be 64 million u64s (~512 MB)
+/// held for the life of the session, which is a jetsam kill on a phone rather
+/// than a typed error.
+pub const MAX_CD_RECORDS_PER_SESSION: u64 = 2_000_000;
+
 /// Bomb bound on total extracted bytes for one session (not a quota).
 pub const MAX_SESSION_BYTES_WRITTEN: u64 = 8 * GIB;
 

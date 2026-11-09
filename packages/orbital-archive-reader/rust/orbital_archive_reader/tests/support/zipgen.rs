@@ -70,6 +70,8 @@ pub struct EntrySpec {
     pub lh_method: Option<u16>,
     pub lh_name: Option<Vec<u8>>,
     pub lh_sig: Option<u32>,
+    /// Replaces the central-directory extra field with these exact bytes.
+    pub cd_extra: Option<Vec<u8>>,
     pub omit_local_header: bool,
     pub append_data_descriptor: bool,
     /// Force the ZIP64 extra field for this record.
@@ -101,6 +103,7 @@ impl EntrySpec {
             lh_method: None,
             lh_name: None,
             lh_sig: None,
+            cd_extra: None,
             omit_local_header: false,
             append_data_descriptor: false,
             zip64_record: false,
@@ -158,6 +161,12 @@ pub struct ZipBuilder {
     pub comment: Vec<u8>,
     pub prepend: Vec<u8>,
     pub append: Vec<u8>,
+    /// Bytes inserted between the last entry and the central directory. The
+    /// central-directory offset is computed after them, so the archive stays
+    /// strictly well formed — only `cd_offset` and the file length move. That
+    /// is the near-duplicate-part shape: the central directory bytes, and hence
+    /// their CRC-32, are identical to the unpadded copy's.
+    pub pad_before_cd: Vec<u8>,
     pub zip64: bool,
     pub disk_number: u16,
     pub cd_disk: u16,
@@ -264,6 +273,8 @@ impl ZipBuilder {
             ));
         }
 
+        body.extend_from_slice(&self.pad_before_cd);
+
         let cd_offset = u64::try_from(body.len()).expect("cd offset");
         let mut cd: Vec<u8> = Vec::new();
         for (e, &(lh_offset, payload_len, crc)) in self.entries.iter().zip(placed.iter()) {
@@ -286,6 +297,10 @@ impl ZipBuilder {
             } else {
                 (clamp32(uncomp), clamp32(comp), clamp32(lh_offset))
             };
+
+            if let Some(custom) = &e.cd_extra {
+                extra = custom.clone();
+            }
 
             w32(&mut cd, CD_SIG);
             // version made by: host 3 (Unix) when a mode is set, else 0 (FAT).

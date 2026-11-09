@@ -41,18 +41,33 @@ const EDQUOT_MACOS: i32 = 69;
 const EDQUOT_LINUX: i32 = 122;
 
 const STAGING_SUFFIX: &str = "-archive-staging.bin";
-const UUID_LEN: usize = 36;
+/// Canonical UUID group lengths: 8-4-4-4-12.
+const UUID_GROUPS: [usize; 5] = [8, 4, 4, 4, 12];
 
-/// `true` for exactly `<36 chars of [0-9a-f-]>-archive-staging.bin`.
+/// `true` for exactly `<canonical UUID>-archive-staging.bin`.
+///
+/// The group shape is checked, not merely the length and the alphabet: 36
+/// characters of `[0-9a-f-]` would also accept a run of 36 dashes, which is not
+/// a name any glue can produce and not a name we want to open. Hex is accepted
+/// in either case because iOS `NSUUID.UUIDString` is UPPERCASE while
+/// `java.util.UUID.toString()` is lowercase, and neither glue should have to
+/// remember to transform it.
 #[must_use]
 pub fn is_valid_staging_name(name: &str) -> bool {
     let Some(uuid) = name.strip_suffix(STAGING_SUFFIX) else {
         return false;
     };
-    uuid.len() == UUID_LEN
-        && uuid
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b) || b == b'-')
+    let mut groups = 0usize;
+    for (i, group) in uuid.split('-').enumerate() {
+        if UUID_GROUPS.get(i) != Some(&group.len()) {
+            return false;
+        }
+        if !group.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return false;
+        }
+        groups = groups.saturating_add(1);
+    }
+    groups == UUID_GROUPS.len()
 }
 
 fn map_io(err: &std::io::Error) -> ArchiveError {
@@ -152,13 +167,23 @@ mod tests {
 
     #[test]
     fn staging_names_are_strict() {
+        // Lowercase (Android) and uppercase (iOS NSUUID.UUIDString) both pass.
         assert!(is_valid_staging_name(
             "0b5f1f3c-6a4e-4d2b-9f1a-123456789abc-archive-staging.bin"
+        ));
+        assert!(is_valid_staging_name(
+            "0B5F1F3C-6A4E-4D2B-9F1A-123456789ABC-archive-staging.bin"
         ));
         for bad in [
             "archive-staging.bin",
             "0b5f1f3c-archive-staging.bin",
+            // Right length and alphabet, wrong shape.
+            "------------------------------------archive-staging.bin",
+            "0b5f1f3c6a4e-4d2b-9f1a-1234-56789abc-archive-staging.bin",
+            // Non-hex.
             "0b5f1f3c-6a4e-4d2b-9f1a-123456789abZ-archive-staging.bin",
+            // Extra group.
+            "0b5f1f3c-6a4e-4d2b-9f1a-123456789abc-0000-archive-staging.bin",
             "0b5f1f3c-6a4e-4d2b-9f1a-123456789abc-archive-staging.bin.tmp",
             "../0b5f1f3c-6a4e-4d2b-9f1a-123456789abc-archive-staging.bin",
         ] {

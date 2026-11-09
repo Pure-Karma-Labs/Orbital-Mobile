@@ -5,8 +5,12 @@ mod support;
 
 use std::time::Instant;
 
-use orbital_archive_reader::testing::MAX_LISTED_ENTRIES_PER_SESSION;
-use orbital_archive_reader::{EntryKind, ExtractOutcome, JsonOutcome, PeekOutcome, UriResolution};
+use orbital_archive_reader::testing::{
+    Budgets, CancelFlag, MAX_LISTED_ENTRIES_PER_SESSION, Source,
+};
+use orbital_archive_reader::{
+    ArchiveError, EntryKind, ExtractOutcome, JsonOutcome, PeekOutcome, UriResolution,
+};
 use support::zipgen::{EntrySpec, ZipBuilder, instagram_like};
 use support::{UUID_A, open, try_open};
 
@@ -46,12 +50,75 @@ fn entry_ids_use_the_raw_central_directory_ordinal() {
         vec!["1", "3", "5"],
         "ids must be raw CD ordinals, not listing positions"
     );
-    // The fingerprint prefix is 8 lowercase hex digits of the CD CRC-32.
+    // The prefix is the part's FULL fingerprint — CD CRC-32, central-directory
+    // offset, central-directory size and file length — not just the CRC-32. An
+    // 8-hex-digit prefix let two near-duplicate parts (one extra comment byte,
+    // or padding before the central directory) mint identical ids while passing
+    // both duplicate-part guards, and the colliding id then resolved to
+    // whichever twin dedup had marked skipped.
+    let fps: Vec<String> = h.session.parts().into_iter().map(|p| p.fp).collect();
     for id in &ids {
-        let fp8 = id.split(':').next().expect("fp8");
-        assert_eq!(fp8.len(), 8, "{id}");
-        assert!(fp8.bytes().all(|b| b.is_ascii_hexdigit()), "{id}");
+        let prefix = id.split(':').next().expect("fp prefix");
+        assert_eq!(prefix, fps[0], "{id}");
+        assert_eq!(prefix.split('-').count(), 4, "{id}");
     }
+    // No colon can appear inside a fingerprint, so (fp, ordinal) maps to the id
+    // string injectively.
+    assert!(!fps[0].contains(':'));
+}
+
+/// Two parts that differ only in geometry the old 8-hex-digit prefix ignored.
+/// Both shapes passed the `file_id` and full-fingerprint duplicate-part guards,
+/// so they used to land in the session with identical entry ids.
+#[test]
+fn near_duplicate_parts_get_distinct_entry_ids() {
+    let base = ZipBuilder::new().stored("media/posts/a.jpg", JPG);
+
+    // (a) one extra EOCD comment byte: same central directory, file one byte
+    //     longer.
+    let mut commented = base.clone();
+    commented.comment = vec![0x20];
+    // (b) 16 bytes of padding before the central directory: same central
+    //     directory bytes, different cd_offset and file length.
+    let mut padded = base.clone();
+    padded.pad_before_cd = vec![0u8; 16];
+
+    for (label, twin) in [("comment", commented), ("padding", padded)] {
+        let h = open(
+            &format!("near-dup-{label}"),
+            vec![base.build(), twin.build()],
+        );
+        let ids = h.ids();
+        assert_eq!(ids.len(), 2, "{label}");
+        assert_ne!(ids[0], ids[1], "{label}: ids collided");
+
+        // The surviving entry is reachable through its own id, and the
+        // duplicate is the one marked skipped — not the other way round.
+        let entries = h.session.entries();
+        assert_eq!(entries[0].skip, None, "{label}");
+        assert_eq!(
+            entries[1].skip,
+            Some(orbital_archive_reader::EntrySkipCode::EntryDuplicate),
+            "{label}"
+        );
+        match h.extract("media/posts/a.jpg", EntryKind::Image) {
+            Ok(ExtractOutcome::Extracted { byte_length, .. }) => {
+                assert_eq!(byte_length, JPG.len() as u64, "{label}");
+            }
+            other => panic!("{label}: expected the original to extract, got {other:?}"),
+        }
+    }
+}
+
+/// Byte-identical parts are still refused outright: the fingerprints match, so
+/// the duplicate-part guard fires before ids are ever minted.
+#[test]
+fn byte_identical_parts_are_refused() {
+    let zip = ZipBuilder::new().stored("media/posts/a.jpg", JPG).build();
+    assert_eq!(
+        try_open("ident-parts", vec![zip.clone(), zip]).err(),
+        Some(orbital_archive_reader::ArchiveError::DuplicatePart)
+    );
 }
 
 /// Re-opening the same bytes yields identical ids. This is what makes resume
@@ -219,6 +286,108 @@ fn synthetic_interop_fixtures_open_and_extract() {
     }
 }
 
+/// Overwrites every occurrence of `from` with `to`, which must be the same
+/// length, and returns the number of replacements.
+fn replace_in_place(data: &mut [u8], from: &[u8], to: &[u8]) -> usize {
+    assert_eq!(from.len(), to.len());
+    let mut hits = 0usize;
+    let mut i = 0usize;
+    while i + from.len() <= data.len() {
+        if &data[i..i + from.len()] == from {
+            data[i..i + from.len()].copy_from_slice(to);
+            hits += 1;
+            i += from.len();
+        } else {
+            i += 1;
+        }
+    }
+    hits
+}
+
+/// A `Source` that serves one buffer for its first `flip_after` reads and a
+/// different buffer afterwards: a file edited underneath an open descriptor.
+/// The two buffers must be the same length, so `len()` stays honest and only
+/// the content moves.
+struct FlipAfter {
+    first: Vec<u8>,
+    second: Vec<u8>,
+    flip_after: usize,
+    reads: std::sync::atomic::AtomicUsize,
+}
+
+impl Source for FlipAfter {
+    fn read_exact_at(&self, buf: &mut [u8], offset: u64) -> Result<(), ArchiveError> {
+        let n = self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let bytes = if n < self.flip_after {
+            &self.first
+        } else {
+            &self.second
+        };
+        let start = usize::try_from(offset).map_err(|_| ArchiveError::ReadFailed)?;
+        let end = start
+            .checked_add(buf.len())
+            .ok_or(ArchiveError::ReadFailed)?;
+        let src = bytes.get(start..end).ok_or(ArchiveError::ReadFailed)?;
+        buf.copy_from_slice(src);
+        Ok(())
+    }
+
+    fn len(&self) -> u64 {
+        u64::try_from(self.first.len()).unwrap_or(u64::MAX)
+    }
+}
+
+/// The two central-directory passes are cross-checked. A file edited between
+/// them would leave the pass-1 local-header offsets describing records that are
+/// no longer there, and every data-span bound derived from them would be
+/// checking the wrong geometry.
+#[test]
+fn a_file_edited_between_the_two_passes_is_detected() {
+    let first = ZipBuilder::new()
+        .stored("media/posts/a.jpg", JPG)
+        .stored("media/posts/b.jpg", JPG)
+        .build();
+    // Same length, different central-directory bytes: rename one entry in
+    // place, at the byte level (a lossy UTF-8 round trip would resize the
+    // archive). The name appears in both the local header and the central
+    // directory; overwriting both keeps every offset identical.
+    let mut second = first.clone();
+    let hits = replace_in_place(&mut second, b"media/posts/b.jpg", b"media/posts/c.jpg");
+    assert_eq!(hits, 2, "expected the name in the local header and the CD");
+    assert_eq!(
+        first.len(),
+        second.len(),
+        "the edit must not resize the file"
+    );
+    assert_ne!(first, second);
+
+    let dir = support::TempDir::new("pass-flip");
+    let flag = CancelFlag::new();
+    // Pass 1 is one EOCD read plus one central-directory fill; flip right
+    // after it so pass 2 reads the edited bytes.
+    let src = FlipAfter {
+        first,
+        second,
+        flip_after: 2,
+        reads: std::sync::atomic::AtomicUsize::new(0),
+    };
+    let err = orbital_archive_reader::ArchiveSession::open_with_sources(
+        vec![orbital_archive_reader::testing::PartSourceInput {
+            src: Box::new(src),
+            file_id: "1:0".to_owned(),
+            expected_fp: None,
+        }],
+        dir.as_str(),
+        &flag,
+    )
+    .err();
+    assert_eq!(
+        err,
+        Some(orbital_archive_reader::ArchiveError::Changed { part_index: 0 }),
+        "a mid-listing edit must be reported as a changed part"
+    );
+}
+
 // --------------------------------------------------------------- group 11
 
 /// Deterministic xorshift64*. A fixed seed means a CI failure is reproducible
@@ -306,6 +475,13 @@ fn mutation_sweep_produces_only_typed_outcomes() {
             entries.len() <= MAX_LISTED_ENTRIES_PER_SESSION,
             "iteration {i}"
         );
+        // Entry ids are the persisted resume key, so a mutation must never be
+        // able to mint two entries with the same one. `build_core` also fails
+        // closed on a collision, which means a session that opened at all
+        // already has a bijection between ids and entries.
+        let unique: std::collections::HashSet<&String> =
+            entries.iter().map(|e| &e.entry_id).collect();
+        assert_eq!(unique.len(), entries.len(), "iteration {i}: id collision");
         for e in &entries {
             assert!(!e.entry_id.is_empty(), "iteration {i}");
             assert!(!e.path.contains(".."), "iteration {i}: {}", e.path);
@@ -343,7 +519,7 @@ fn mutation_sweep_produces_only_typed_outcomes() {
                         byte_length,
                         "iteration {i}: reported length must match the file"
                     );
-                    h.session.release_staging(byte_length);
+                    h.session.release_staging(staging.clone());
                 }
             }
         }
@@ -434,25 +610,131 @@ fn a_saturated_32_bit_entry_count_is_not_corruption() {
     assert!(last.ends_with(&format!(":{}", N - 1)), "{last}");
 }
 
-/// The listed-entry ceiling is enforced across the session.
+/// The listed-entry ceiling is really reached: 64 DISTINCT parts of 1,600
+/// allowlisted entries each is 102,400, just over the 100,000 bound.
 #[test]
 fn the_listed_entry_ceiling_is_enforced() {
-    let mut b = ZipBuilder::new();
-    for i in 0..1200 {
-        b = b.stored(&format!("media/posts/{i:06}.jpg"), JPG);
-    }
-    let part = b.build();
-    // 100 parts would exceed MAX_PARTS, so prove the per-session ceiling with a
-    // budgeted run instead: 64 parts x 1200 entries = 76,800 < 100,000, and the
-    // listing succeeds; the ceiling itself is unit-tested in limits.rs and
-    // enforced in build_core.
-    let parts: Vec<Vec<u8>> = (0..64).map(|_| part.clone()).collect();
-    // Identical parts are refused as duplicates before the ceiling matters,
-    // which is itself the correct precedence: a duplicate part is a caller bug.
+    let parts: Vec<Vec<u8>> = (0..64u32)
+        .map(|p| {
+            let mut b = ZipBuilder::new();
+            for i in 0..1600u32 {
+                // Part-unique names, so the parts are not duplicates of each
+                // other and nothing is deduplicated away before the count.
+                b = b.stored(&format!("media/posts/{p:02}_{i:05}.jpg"), JPG);
+            }
+            b.build()
+        })
+        .collect();
     assert_eq!(
-        try_open("ceiling", parts).err(),
-        Some(orbital_archive_reader::ArchiveError::DuplicatePart)
+        try_open("listed-ceiling", parts).err(),
+        Some(orbital_archive_reader::ArchiveError::TooManyEntries)
     );
+}
+
+/// Just under the ceiling still opens, so the bound above is a bound and not a
+/// blanket refusal.
+#[test]
+fn just_under_the_listed_entry_ceiling_opens() {
+    let parts: Vec<Vec<u8>> = (0..4u32)
+        .map(|p| {
+            let mut b = ZipBuilder::new();
+            for i in 0..2000u32 {
+                b = b.stored(&format!("media/posts/{p:02}_{i:05}.jpg"), JPG);
+            }
+            b.build()
+        })
+        .collect();
+    let h = open("listed-under", parts);
+    assert_eq!(h.session.entries().len(), 8_000);
+}
+
+/// The session-wide central-directory record budget bounds the retained
+/// local-header offset vectors, which are what 64 x 1M records would blow up.
+#[test]
+fn the_session_cd_record_budget_is_enforced() {
+    let mut b = ZipBuilder::new();
+    for i in 0..10u32 {
+        b = b.stored(&format!("media/posts/{i}.jpg"), JPG);
+    }
+    let zip = b.build();
+    assert_eq!(
+        support::try_open_with_budgets(
+            "cd-records",
+            vec![zip.clone()],
+            Budgets {
+                cd_records: 5,
+                ..support::unbounded()
+            },
+        )
+        .err(),
+        Some(orbital_archive_reader::ArchiveError::TooManyEntries)
+    );
+    // Non-vacuity: the same archive opens when the budget allows it, and it
+    // counts EVERY central-directory record, not just the allowlisted ones.
+    let h = support::try_open_with_budgets(
+        "cd-records-ok",
+        vec![zip],
+        Budgets {
+            cd_records: 10,
+            ..support::unbounded()
+        },
+    )
+    .expect("opens at exactly the budget");
+    assert_eq!(h.session.entries().len(), 10);
+}
+
+/// A malformed central extra field costs one entry, not the archive.
+#[test]
+fn a_malformed_central_extra_field_is_a_per_entry_skip() {
+    let mut bad = EntrySpec::stored("media/posts/bad.jpg", JPG);
+    // A ZIP64 extra header claiming 0xFFFF bytes of payload, with none.
+    bad.cd_extra = Some(vec![0x01, 0x00, 0xFF, 0xFF]);
+    let zip = ZipBuilder::new()
+        .with(bad)
+        .stored("media/posts/good.jpg", JPG)
+        .build();
+
+    let h = open("bad-extra", vec![zip]);
+    assert_eq!(h.session.entries().len(), 2);
+    assert_eq!(
+        h.skip_of("media/posts/bad.jpg"),
+        Some(orbital_archive_reader::EntrySkipCode::EntryCorrupt)
+    );
+    assert_eq!(h.skip_of("media/posts/good.jpg"), None);
+    assert!(matches!(
+        h.extract("media/posts/good.jpg", EntryKind::Image),
+        Ok(ExtractOutcome::Extracted { .. })
+    ));
+}
+
+/// `close()` releases this crate's descriptor dups, so a session the app has
+/// finished with stops reading before uniffi gets round to destroying it.
+#[test]
+fn close_releases_the_sources() {
+    let h = open("close-src", vec![instagram_like().build()]);
+    let json = h.id_of("media/posts/a.jpg");
+    let _ = json;
+    let json_id = h.id_of("your_instagram_activity/media/posts_1.json");
+
+    // Baseline: the source answers reads while the session is open.
+    assert!(h.session.read_json_blocking(&json_id, &h.cancel).is_ok());
+    let reads_before = h.sources[0].read_count();
+
+    h.session.close();
+
+    // read_json takes no staging reservation, so this reaches the source layer
+    // rather than stopping at the `closed` flag.
+    assert_eq!(
+        h.session.read_json_blocking(&json_id, &h.cancel).err(),
+        Some(orbital_archive_reader::ArchiveError::SessionClosed)
+    );
+    assert_eq!(
+        h.sources[0].read_count(),
+        reads_before,
+        "a released source must not forward the read at all"
+    );
+    // Idempotent.
+    h.session.close();
 }
 
 /// A peek on a skipped entry reports the skip rather than reading anything.

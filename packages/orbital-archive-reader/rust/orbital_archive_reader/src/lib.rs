@@ -76,10 +76,10 @@ pub mod testing {
     pub use crate::cancel::CancelFlag;
     pub use crate::extract::looks_like_archive;
     pub use crate::limits::{
-        HEAD_PEEK_BYTES, MAX_LISTED_ENTRIES_PER_SESSION, MAX_LIVE_STAGING_BYTES, MAX_PARTS,
-        MAX_RATIO, MIB, kind_cap,
+        HEAD_PEEK_BYTES, MAX_CD_RECORDS_PER_SESSION, MAX_LISTED_ENTRIES_PER_SESSION,
+        MAX_LIVE_STAGING_BYTES, MAX_PARTS, MAX_RATIO, MIB, kind_cap,
     };
-    pub use crate::session::PartSourceInput;
+    pub use crate::session::{Budgets, PartSourceInput};
     pub use crate::source::{FileSource, Source};
     pub use crate::staging::is_valid_staging_name;
 }

@@ -332,11 +332,9 @@ fn peek_head_exposes_a_video_header_without_extracting() {
 
     // And the budget was untouched: a 1-byte session budget still permits an
     // extraction afterwards, which it would not if the peek had been charged.
-    let h2 = support::try_open_with_budgets(
+    let h2 = support::try_open(
         "f1-budget",
         vec![ZipBuilder::new().stored("media/posts/s.jpg", JPG).build()],
-        u64::MAX,
-        u64::MAX,
     )
     .expect("opens");
     let _ = h2.peek("media/posts/s.jpg").expect("peek");

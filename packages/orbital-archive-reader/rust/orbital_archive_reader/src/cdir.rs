@@ -47,6 +47,13 @@ pub struct CdRecord {
     pub disk_start: u32,
     /// A size or offset exceeded `MAX_SAFE_INTEGER` and was clamped.
     pub saturated: bool,
+    /// The central extra field could not be parsed, so the 64-bit sizes and
+    /// offset for this record are unknown. The record is still yielded (the
+    /// iterator has already stepped past it using the u16 lengths from the
+    /// fixed header, which are independent of the extra's contents), and
+    /// `precheck` turns the flag into `EntryCorrupt` for that one entry. One
+    /// bad extra field must not cost the whole archive.
+    pub malformed_extra: bool,
 }
 
 impl CdRecord {
@@ -197,13 +204,31 @@ impl<'a> CdReader<'a> {
 
         let total = addus(CD_FIXED, addus(name_len, addus(extra_len, comment_len)?)?)?;
         self.ensure(total)?;
-        let record = self.head(total)?;
-        let name = slice_at(record, CD_FIXED, name_len)?.to_vec();
-        let extra = slice_at(record, addus(CD_FIXED, name_len)?, extra_len)?;
-
-        let z = parse_zip64_extra(extra, uncomp_32, comp_32, lh_32, disk_32)?;
-
+        let (name, extra) = {
+            let record = self.head(total)?;
+            (
+                slice_at(record, CD_FIXED, name_len)?.to_vec(),
+                slice_at(record, addus(CD_FIXED, name_len)?, extra_len)?.to_vec(),
+            )
+        };
+        // Step past the record BEFORE parsing the extra field, so a malformed
+        // extra cannot desynchronise the iterator.
         self.cursor = addus(self.cursor, total)?;
+
+        let (z, malformed_extra) =
+            match parse_zip64_extra(&extra, uncomp_32, comp_32, lh_32, disk_32) {
+                Ok(z) => (z, false),
+                Err(_) => (
+                    Zip64Fields {
+                        uncomp: uncomp_32,
+                        comp: comp_32,
+                        lh_offset: lh_32,
+                        disk: disk_32,
+                    },
+                    true,
+                ),
+            };
+
         let ordinal = self.ordinal;
         self.ordinal = add64(self.ordinal, 1)?;
         if self.ordinal > MAX_CD_ENTRIES_PER_PART {
@@ -226,6 +251,7 @@ impl<'a> CdReader<'a> {
             external_attrs,
             disk_start: z.disk,
             saturated: sat_a || sat_b,
+            malformed_extra,
         }))
     }
 }

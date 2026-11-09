@@ -155,6 +155,15 @@ pub enum Verdict {
 /// stripped, and must not be a directory entry.
 #[must_use]
 pub fn classify(path: &str) -> Verdict {
+    // Defence in depth, ahead of every table below: a path whose first segment
+    // is a denied root is never listed, whatever the rows say. Today no row can
+    // match such a path, so this guard is inert — which is the point. It makes a
+    // future row that happens to overlap a denied root (a new `media/` prefix, a
+    // new root key) inert too, instead of silently opening private data. The
+    // tables are edited far more often than this function.
+    if starts_with_denied_root(path) {
+        return Verdict::NotAllowlisted;
+    }
     if JSON_EXACT.contains(&path) {
         return Verdict::Listed(EntryKind::Json);
     }
@@ -293,6 +302,23 @@ mod tests {
     fn nested_archive_by_extension_under_a_media_prefix() {
         assert_eq!(classify("media/posts/payload.zip"), Verdict::NestedArchive);
         assert_eq!(classify("media/posts/payload.TGZ"), Verdict::NestedArchive);
+    }
+
+    #[test]
+    fn classify_refuses_denied_roots_ahead_of_every_table() {
+        for root in DENIED_ROOTS {
+            for p in [
+                format!("{root}/a.jpg"),
+                format!("{root}/posts/a.jpg"),
+                format!("{root}/media/posts/a.jpg"),
+                format!("{root}/your_instagram_activity/media/posts_1.json"),
+            ] {
+                assert_eq!(classify(&p), Verdict::NotAllowlisted, "{p}");
+            }
+        }
+        // The guard is first: a path that is BOTH under a denied root and under
+        // an allowlisted media prefix is still refused.
+        assert_eq!(classify("inbox/media/posts/a.jpg"), Verdict::NotAllowlisted);
     }
 
     #[test]

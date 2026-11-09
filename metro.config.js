@@ -11,6 +11,7 @@ const config = {
   watchFolders: [
     path.resolve(__dirname, 'packages/orbital-signal'),
     path.resolve(__dirname, 'packages/orbital-media-transcoder'),
+    path.resolve(__dirname, 'packages/orbital-archive-reader'),
   ],
   resolver: {
     // Prefer CJS — fuse.js v7 ships .mjs referencing @babel/runtime helpers

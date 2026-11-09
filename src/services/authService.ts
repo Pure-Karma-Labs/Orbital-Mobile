@@ -39,6 +39,7 @@ import {
   clearExportDisclosureCache,
   clearMediaExportStaging,
 } from './mediaExportService';
+import { abortAllArchiveSessions, releaseAllPersistedParts } from './metaImport/archiveAccess';
 import { clearMessageHandlerState } from './websocket/messageHandler';
 import { clearGroupKeyTelemetryState } from './groupKeyTelemetry';
 import { execute } from '../database/queryHelpers';
@@ -397,6 +398,18 @@ export async function localWipe({ preserveIdentity }: { preserveIdentity: boolea
   try { cancelAllExports(); } catch {
     if (__DEV__) console.warn('[LocalWipe] cancelAllExports failed');
   }
+  // #920: the OTHER thing in the app that writes decrypted bytes into Caches
+  // on a path this wipe is about to sweep. An in-flight archive extract is
+  // inflating a plaintext photo into `<uuid>-archive-staging.bin`, so it has
+  // to stop before the suffix sweep below, for exactly the reason
+  // cancelAllExports() does: synchronous, and NOT awaited, because an await
+  // here hands control straight back to the extract we are stopping. It bumps
+  // an epoch that makes any staging creation one microtask from starting
+  // refuse, and closes every live session (which sets each job's cancel flag
+  // and drops Rust's descriptor dups).
+  try { abortAllArchiveSessions(); } catch {
+    if (__DEV__) console.warn('[LocalWipe] abortAllArchiveSessions failed');
+  }
   // The bulk runner's published state is module state and nothing reloads the
   // JS bundle on logout, so without this the next account on this device is
   // shown the previous account's summary card ("Saved 35 items to Photos" for
@@ -530,6 +543,19 @@ export async function localWipe({ preserveIdentity }: { preserveIdentity: boolea
       await clearAvatarCache();
     } catch {
       if (__DEV__) console.warn('[LocalWipe] clearAvatarCache failed');
+    }
+
+    // 3b. #920: release every persistable SAF grant this app holds on a
+    //     picked archive part. DELETION ONLY — on LOGOUT the grants are
+    //     deliberately kept, because the same user on the same device must
+    //     still be able to resume a paused import after re-authenticating. On
+    //     deletion, a retained read grant on a file in the user's Downloads
+    //     folder is a permission the departed account would leave behind.
+    //     iOS is a no-op: a security-scoped bookmark holds no system grant.
+    try {
+      await releaseAllPersistedParts();
+    } catch {
+      if (__DEV__) console.warn('[LocalWipe] releaseAllPersistedParts failed');
     }
 
     // 4. Close DB connection then unlink the file

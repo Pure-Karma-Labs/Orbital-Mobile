@@ -18,6 +18,7 @@ module.exports = {
     '^orbital-signal$': '<rootDir>/__mocks__/orbital-signal.ts',
     '^orbital-media-transcoder$': '<rootDir>/__mocks__/orbital-media-transcoder.ts',
     '^orbital-media-export$': '<rootDir>/__mocks__/orbital-media-export.ts',
+    '^orbital-archive-reader$': '<rootDir>/__mocks__/orbital-archive-reader.ts',
   },
   setupFilesAfterEnv: ['./jest.setup.ts'],
   collectCoverageFrom: [

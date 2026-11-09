@@ -1092,6 +1092,29 @@ describe('logout', () => {
     }
   });
 
+  // #920 F3: an in-flight archive extract is the other thing writing decrypted
+  // bytes into Caches on a path this wipe sweeps, so it must be stopped in
+  // phase 1 and NOT awaited. Logout keeps the SAF grants.
+  it('aborts every archive session in phase 1 and keeps SAF grants on logout (localWipe)', async () => {
+    const {
+      abortAllArchiveSessions,
+      releaseAllPersistedParts,
+    } = require('orbital-archive-reader');
+    abortAllArchiveSessions.mockClear();
+    releaseAllPersistedParts.mockClear();
+
+    await logout();
+
+    expect(abortAllArchiveSessions).toHaveBeenCalledTimes(1);
+    // Phase 1 means BEFORE the first await-bearing teardown step.
+    expect(abortAllArchiveSessions.mock.invocationCallOrder[0]).toBeLessThan(
+      mockClearTokens.mock.invocationCallOrder[0],
+    );
+    // Logout deliberately keeps persistable grants: the same user on the same
+    // device must still be able to resume a paused import after re-login.
+    expect(releaseAllPersistedParts).not.toHaveBeenCalled();
+  });
+
   // #678: the epoch must bump BEFORE the store reset, or an in-flight mute
   // runner's rollback writes this account's target ids into the cleared store.
   it('bumps the notification sync epoch before resetting the store (localWipe)', async () => {
@@ -1122,6 +1145,23 @@ describe('deleteAccount', () => {
     expect(mockFullCryptoWipe).toHaveBeenCalled();
     expect(mockCloseDatabase).toHaveBeenCalled();
     expect(mockClearSecureStorage).toHaveBeenCalled();
+  });
+
+  // #920 F3: deletion releases every persistable SAF grant. A grant on a file
+  // in the user's Downloads folder is a permission a departed account must not
+  // leave behind.
+  it('releases every persisted archive grant on the deletion path (localWipe)', async () => {
+    const {
+      abortAllArchiveSessions,
+      releaseAllPersistedParts,
+    } = require('orbital-archive-reader');
+    abortAllArchiveSessions.mockClear();
+    releaseAllPersistedParts.mockClear();
+
+    await deleteAccount('Password123!');
+
+    expect(abortAllArchiveSessions).toHaveBeenCalledTimes(1);
+    expect(releaseAllPersistedParts).toHaveBeenCalledTimes(1);
   });
 
   it('on success: DB unlink happens BEFORE clearSecureStorage (critical ordering)', async () => {

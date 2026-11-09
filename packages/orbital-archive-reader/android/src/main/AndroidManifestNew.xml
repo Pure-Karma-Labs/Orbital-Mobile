@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  HAND-COMMITTED. ubrn won't regenerate this.
+
+  `android/build.gradle` (which ubrn DOES generate) points
+  `manifest.srcFile` at this file for AGP 8+, where the `package` attribute in
+  a library manifest is an error rather than a deprecation. ubrn only renders
+  `AndroidManifest.xml`, so without this file committed the Gradle project
+  fails to configure on a fresh checkout. It is also listed in
+  `ubrn.config.yaml`'s `noOverwrite` so a future ubrn that starts rendering it
+  cannot replace this one.
+
+  ZERO PERMISSIONS, deliberately, and asserted by security invariant 29.
+  Everything this package touches is reached through the Storage Access
+  Framework with a user-granted document URI: `ACTION_OPEN_DOCUMENT` needs no
+  permission, and asking for one would both widen the app's declared surface
+  and change the Play Data Safety answers.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+</manifest>

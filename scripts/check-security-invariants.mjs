@@ -3646,6 +3646,30 @@ function arRead(file, why) {
   }
 }
 
+/**
+ * checkWindowedPins for text whose comments have ALREADY been stripped by the
+ * caller. checkWindowedPins itself only knows C-style comments, so it cannot
+ * police a TOML window: mutation case 29-18 proved that `# overflow-checks =
+ * true` in a Cargo.toml comment satisfied the pin.
+ */
+function arWindowPins(file, code, windowRe, windowLabel, pins, forbidden = []) {
+  const match = code.match(windowRe);
+  if (match === null) {
+    arViolation(file, `${windowLabel} not found — the rule would pass vacuously`);
+    return;
+  }
+  for (const pin of pins) {
+    if (!match[0].includes(pin)) {
+      arViolation(file, `"${pin}" missing from ${windowLabel}`);
+    }
+  }
+  for (const banned of forbidden) {
+    if (match[0].includes(banned)) {
+      arViolation(file, `"${banned}" must not appear in ${windowLabel}`);
+    }
+  }
+}
+
 // --- 29.1 Safety posture across every module.
 //
 // The `unsafe` matcher is the F9 form: the keyword followed by a block, fn,
@@ -3654,7 +3678,9 @@ function arRead(file, why) {
 // syntax error. `\s*` (not `\s+`) before the brace is what catches the
 // `unsafe\n{` line-break variant, which rustfmt will not produce but a hand
 // edit can.
-const AR_UNSAFE_RE = /\bunsafe\s*(\{|fn\b|impl\b|extern\b|trait\b)/;
+// Matched over the WHOLE comment-stripped file, not line by line: `\s*` has
+// to be able to cross the newline for the `unsafe\n{` variant to be caught.
+const AR_UNSAFE_RE = /\bunsafe\s*(\{|fn\b|impl\b|extern\b|trait\b)/g;
 // `log::` covers the log facade; bare `tracing` covers tracing and
 // tracing::debug! alike. On comment-stripped source these can only be code.
 const AR_LOG_TOKENS = ['println!', 'eprintln!', 'print!', 'eprint!', 'dbg!', 'log::', 'tracing'];
@@ -3670,13 +3696,19 @@ if (arSrcFiles.length === 0) {
 }
 for (const file of arSrcFiles) {
   const text = readFileSync(file, 'utf8');
-  const lines = stripCStyleComments(text).split('\n');
+  const code = stripCStyleComments(text);
+  const lines = code.split('\n');
   const isFd = relative('.', file) === relative('.', AR_FD);
+  if (!isFd) {
+    AR_UNSAFE_RE.lastIndex = 0;
+    let m;
+    while ((m = AR_UNSAFE_RE.exec(code)) !== null) {
+      const lineNum = code.slice(0, m.index).split('\n').length;
+      report(file, lineNum, AR_RULE, `\`unsafe\` outside fd.rs: ${m[0].replace(/\s+/g, ' ')} (${AR_ISSUE})`);
+    }
+  }
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    if (!isFd && AR_UNSAFE_RE.test(line)) {
-      report(file, i + 1, AR_RULE, `\`unsafe\` outside fd.rs: ${line.trim()} (${AR_ISSUE})`);
-    }
     if (!isFd && line.includes('allow(unsafe_code)')) {
       report(file, i + 1, AR_RULE, `\`allow(unsafe_code)\` outside fd.rs: ${line.trim()} (${AR_ISSUE})`);
     }
@@ -3755,20 +3787,20 @@ if (arToml !== null) {
       }
     }
   }
-}
 
-// `overflow-checks = true` keeps attacker-driven arithmetic from wrapping
-// silently in release. `panic =` is forbidden: `panic = "abort"` would turn
-// every defensive panic in the parser into a kill of the whole host app.
-checkWindowedPins(
-  AR_TOML,
-  AR_RULE,
-  /^\[profile\.release\][\s\S]*?(?=^\[|(?![\s\S]))/m,
-  "the archive crate's [profile.release] table",
-  ['overflow-checks = true'],
-  ['panic ='],
-  AR_ISSUE,
-);
+  // `overflow-checks = true` keeps attacker-driven arithmetic from wrapping
+  // silently in release. `panic =` is forbidden: `panic = "abort"` would turn
+  // every defensive panic in the parser into a kill of the whole host app.
+  // Runs on the `#`-stripped text: this table's own comment explains both.
+  arWindowPins(
+    AR_TOML,
+    tomlCode,
+    /^\[profile\.release\][\s\S]*?(?=^\[|(?![\s\S]))/m,
+    "the archive crate's [profile.release] table",
+    ['overflow-checks = true'],
+    ['panic ='],
+  );
+}
 
 // --- 29.3 The lock proves the pure-Rust backend actually resolved.
 // miniz_oxide is the non-vacuity anchor: without it the absence of every C

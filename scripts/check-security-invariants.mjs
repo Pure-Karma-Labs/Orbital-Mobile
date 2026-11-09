@@ -1249,8 +1249,16 @@ for (const [file, sub, dir, why] of CARGO_CRATE_EXPECTED) {
 // at all (`{path="../x"}`), and a `path =` substring check misses two of those
 // three. `[patch` stays a literal — it is a section header, and `[patch]`,
 // `[patch.crates-io]` and `[patch."https://…"]` all start with it.
-const TOML_PATH_KEY_RE = /(^|[\s{,])path\s*=/m;
-const TOML_GIT_KEY_RE = /(^|[\s{,])git\s*=/m;
+//
+// Three spellings beyond the bare key, all probe-proven evasions (PR #977
+// re-review): the DOTTED key `libc.path = "../x"` (legal TOML, equivalent to a
+// `[dependencies.libc]` table), the QUOTED key `"path" = …` / `'git' = …`, and
+// a plain `path = …` inside a `[dependencies.<crate>]` long-form table body —
+// the last of which the line-anchored `^` already covers. Hence `.` in the
+// leading class and an optional quote on each side. A key merely ENDING in the
+// word (`exclude_path = "x"`) is still a non-match: `_` is not in the class.
+const TOML_PATH_KEY_RE = /(^|[\s{,.])["']?path["']?\s*=/m;
+const TOML_GIT_KEY_RE = /(^|[\s{,.])["']?git["']?\s*=/m;
 const CARGO_TOML_BANS = [
   [`${CRATE_REL}/Cargo.toml`, 'orbital_signal', [['path =', TOML_PATH_KEY_RE], ['[patch', '[patch']]],
   [
@@ -3769,14 +3777,25 @@ const AR_ALLOWED_DEPS = new Set(['uniffi', 'thiserror', 'flate2', 'crc32fast']);
 // Non-vacuity anchors: a `[dependencies]` table emptied of these would satisfy
 // the subset check trivially.
 const AR_REQUIRED_DEPS = ['uniffi', 'flate2'];
-// EVERY table whose name ends in `dependencies`, not just `[dependencies]`:
-// `[build-dependencies]` and `[target.'cfg(unix)'.dependencies]` are linked
-// into the same binary (or run on the build host) and a `[dependencies]`-only
-// scope let both in, mutation-proven. `[dev-dependencies]` is the one
-// documented carve-out — it repeats flate2 and crc32fast for the ZIP generator
-// in tests/support, is never part of the cdylib/staticlib, and adding a test
-// helper there must not need an invariant edit.
+// EVERY dependency table, in BOTH TOML spellings:
+//
+//   short form  [dependencies] / [build-dependencies] /
+//               [target.'cfg(unix)'.dependencies]      -> crates are body keys
+//   long form   [dependencies.libc] /
+//               [target.'cfg(unix)'.dependencies.nix]  -> the crate is the
+//                                                         HEADER's last segment
+//
+// The long form has no `libc = …` line anywhere, so a body-only scan saw an
+// empty table and passed (PR #977 re-review, probe-proven by two reviewers).
+// `[dev-dependencies]` and `[dev-dependencies.tempfile]` are the documented
+// carve-out — they repeat flate2 and crc32fast for the ZIP generator in
+// tests/support, are never part of the cdylib/staticlib, and adding a test
+// helper must not need an invariant edit. Note that `dev-dependencies` cannot
+// match AR_DEP_HEADER_RE anyway (the character before `dependencies` is `-`,
+// not `.` or start); the explicit skip is there to say so out loud.
 const AR_DEP_TABLE_RE = /^\[([^\]]+)\]\n?([\s\S]*?)(?=^\[|(?![\s\S]))/gm;
+const AR_DEP_HEADER_RE = /(^|\.)(?:build-)?dependencies(?:\.([^.\]]+))?$/;
+const AR_DEV_DEP_HEADER_RE = /(^|\.)dev-dependencies(?:\.([^.\]]+))?$/;
 const arToml = meRead(AR_TOML, AR_RULE, 'the dependency-set and release-profile clauses', AR_ISSUE);
 if (arToml !== null) {
   // TOML uses shell comment syntax; this file's comments explain the bans.
@@ -3786,16 +3805,30 @@ if (arToml !== null) {
   let table;
   while ((table = AR_DEP_TABLE_RE.exec(tomlCode)) !== null) {
     const name = table[1].trim();
-    if (!name.endsWith('dependencies') || name.endsWith('dev-dependencies')) continue;
-    depTables.push([name, table[2]]);
+    if (AR_DEV_DEP_HEADER_RE.test(name)) continue;
+    const header = AR_DEP_HEADER_RE.exec(name);
+    if (header === null) continue;
+    depTables.push({
+      name,
+      // Long form: the crate is named in the header, not in the body.
+      crate: header[2] ? header[2].replace(/^['"]|['"]$/g, '') : null,
+      body: table[2],
+    });
   }
   if (depTables.length === 0) {
-    arViolation(AR_TOML, 'no dependency table (`[dependencies]`, `[build-dependencies]`, `[target.*.dependencies]`) — the closed-dependency-set clause would pass vacuously');
+    arViolation(AR_TOML, 'no dependency table (`[dependencies]`, `[build-dependencies]`, `[target.*.dependencies]`, or any `.<crate>` long form) — the closed-dependency-set clause would pass vacuously');
   } else {
     const keys = new Map(); // crate -> the table it was declared in
-    for (const [name, body] of depTables) {
+    for (const { name, crate, body } of depTables) {
+      if (crate !== null) {
+        keys.set(crate, name);
+        continue;
+      }
       for (const line of body.split('\n')) {
-        const key = /^([A-Za-z0-9_-]+)\s*=/.exec(line);
+        // `["']?` for the quoted spelling; the optional `\.<field>` tail takes
+        // the CRATE from the dotted spelling (`libc.version = "0.2"`), which a
+        // bare-key match would have skipped entirely.
+        const key = /^\s*["']?([A-Za-z0-9_-]+)(?:\.[A-Za-z0-9_-]+)?["']?\s*=/.exec(line);
         if (key) keys.set(key[1], name);
       }
     }
@@ -3809,13 +3842,20 @@ if (arToml !== null) {
         arViolation(AR_TOML, `\`${key}\` is missing from every dependency table — the closed-set check above would pass vacuously`);
       }
     }
-    const flate2 = /^flate2\s*=.*$/m.exec(depTables.map(([, body]) => body).join('\n'));
-    if (flate2 === null) {
-      arViolation(AR_TOML, 'no flate2 dependency line to check the backend on');
+    // The flate2 declaration, in whichever spelling: a `flate2 = { … }` line
+    // in a short-form table, or the whole body of a `[dependencies.flate2]`
+    // long-form table.
+    const flate2Long = depTables.find((t) => t.crate === 'flate2');
+    const flate2Short = /^\s*flate2\s*=.*$/m.exec(
+      depTables.filter((t) => t.crate === null).map((t) => t.body).join('\n'),
+    );
+    const flate2Decl = flate2Long ? flate2Long.body : flate2Short?.[0];
+    if (flate2Decl === undefined) {
+      arViolation(AR_TOML, 'no flate2 declaration to check the backend on');
     } else {
       for (const need of ['default-features = false', '"rust_backend"']) {
-        if (!flate2[0].includes(need)) {
-          arViolation(AR_TOML, `flate2 is declared without \`${need}\` — inflate would run in C (libz/zlib-ng), not miniz_oxide, in the one crate that parses hostile bytes: ${flate2[0].trim()}`);
+        if (!flate2Decl.includes(need)) {
+          arViolation(AR_TOML, `flate2 is declared without \`${need}\` — inflate would run in C (libz/zlib-ng), not miniz_oxide, in the one crate that parses hostile bytes: ${flate2Decl.trim().replace(/\s+/g, ' ').slice(0, 120)}`);
         }
       }
     }
@@ -3887,6 +3927,10 @@ checkWindowedPins(
     // the OS jetsams the app — a limit whose absence is invisible in every
     // single-part test.
     'pub const MAX_CD_RECORDS_PER_SESSION: u64 = 2_000_000;',
+    // The retained-path byte budget (PR #977 re-review). 100k listed entries x
+    // 1 KiB paths x three retained copies is ~320 MB — again a jetsam kill
+    // rather than a typed error, and again invisible in small-archive tests.
+    'pub const MAX_RETAINED_PATH_BYTES: u64 = 64 * MIB;',
   ],
   [],
   AR_ISSUE,

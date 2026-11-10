@@ -4265,7 +4265,14 @@ const AR_DENIED_ROOTS_FLOOR = 10;
 const arAllowlistRaw = meRead(AR_ALLOWLIST, AR_RULE, 'the denied-root tables', AR_ISSUE);
 let arDeniedRoots = [];
 if (arAllowlistRaw !== null) {
-  const table = /^pub const DENIED_ROOTS[^=]*=\s*\[([\s\S]*?)\];/m.exec(
+  // `\s*:` after the NAME, not `[^=]*`: the loose form also matched a RENAMED
+  // const (`pub const DENIED_ROOTS_X: [&str; 10] = [` — `_X: [&str; 10] ` holds
+  // no `=`, so it slipped through `[^=]*`), which made this clause and 29.7's
+  // parity check read a table whose name nothing in the crate refers to any
+  // more. Mutation P7 (#982) found it. A rename is also a Rust compile error,
+  // so this was never a silent security hole — but a vacuity guard that cannot
+  // see a rename is not a vacuity guard.
+  const table = /^pub const DENIED_ROOTS\s*:[^=]*=\s*\[([\s\S]*?)\];/m.exec(
     stripCStyleComments(arAllowlistRaw),
   );
   if (table === null) {

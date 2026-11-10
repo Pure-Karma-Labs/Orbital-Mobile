@@ -80,18 +80,29 @@ class MockCancelToken {
 let mockNativeSession: any;
 const mockNativeOpenArchive = jest.fn();
 
-jest.mock('../bindings', () => ({
-  EntrySkipCode: mockEntrySkipCode,
-  UriSkipCode: mockUriSkipCode,
-  EntryKind: mockEntryKindEnum,
-  ArchiveError_Tags: mockArchiveErrorTags,
-  UriResolution_Tags: { Resolved: 'Resolved', Skipped: 'Skipped' },
-  PeekOutcome_Tags: { Head: 'Head', Skipped: 'Skipped' },
-  JsonOutcome_Tags: { Text: 'Text', Skipped: 'Skipped' },
-  ExtractOutcome_Tags: { Extracted: 'Extracted', Skipped: 'Skipped' },
-  CancelToken: MockCancelToken,
-  openArchive: (...args: unknown[]) => mockNativeOpenArchive(...args),
-}));
+// Counters for the F11 lazy-loading test: each increments exactly once
+// per module registry — when the factory is first evaluated in that registry.
+// Names start with `mock` so babel-jest hoisting can reference them inside the
+// factory closures even though the declaration sits below the jest.mock call in
+// source order.
+let mockBindingsEvalCount = 0;
+let mockNativeAccessEvalCount = 0;
+
+jest.mock('../bindings', () => {
+  mockBindingsEvalCount++;
+  return {
+    EntrySkipCode: mockEntrySkipCode,
+    UriSkipCode: mockUriSkipCode,
+    EntryKind: mockEntryKindEnum,
+    ArchiveError_Tags: mockArchiveErrorTags,
+    UriResolution_Tags: { Resolved: 'Resolved', Skipped: 'Skipped' },
+    PeekOutcome_Tags: { Head: 'Head', Skipped: 'Skipped' },
+    JsonOutcome_Tags: { Text: 'Text', Skipped: 'Skipped' },
+    ExtractOutcome_Tags: { Extracted: 'Extracted', Skipped: 'Skipped' },
+    CancelToken: MockCancelToken,
+    openArchive: (...args: unknown[]) => mockNativeOpenArchive(...args),
+  };
+});
 
 const mockGlue = {
   pickArchiveParts: jest.fn(),
@@ -104,9 +115,14 @@ const mockGlue = {
   releaseParts: jest.fn(),
   releaseAllPersistedParts: jest.fn(),
 };
-jest.mock('../NativeOrbitalArchiveAccess', () => ({ default: mockGlue }));
+jest.mock('../NativeOrbitalArchiveAccess', () => {
+  mockNativeAccessEvalCount++;
+  return { default: mockGlue };
+});
 
 import * as wrapper from '../index';
+// Token fixture from the app-level mock: the real decoder must accept it.
+import { MOCK_TOKEN } from '../../../../__mocks__/orbital-archive-reader';
 
 const HANDLE = {
   handleId: 'h0',
@@ -159,6 +175,8 @@ beforeEach(() => {
   wrapper.__resetArchiveReaderForTests();
   mockNativeSession = makeMockNativeSession();
   mockGlue.getStagingDirectory.mockReturnValue('/Caches');
+  mockBindingsEvalCount = 0;
+  mockNativeAccessEvalCount = 0;
 });
 
 // ---------------------------------------------------------------------------
@@ -178,6 +196,39 @@ describe('lazy loading (F11)', () => {
     expect(wrapper.ARCHIVE_ERROR_DISPOSITIONS.ARCHIVE_STAGING_IN_USE).toBe('terminal-for-run');
     expect(wrapper.ARCHIVE_ERROR_DISPOSITIONS.ECANCELLED).toBe('user-action');
     expect(mockGlue.getStagingDirectory).not.toHaveBeenCalled();
+  });
+
+  it('requires the module without evaluating either native factory (isolated module registry)', async () => {
+    // A fresh module registry: neither factory should run when the module is
+    // merely imported — that is the core F11 promise. The positive controls
+    // below verify that calling an entry point DOES evaluate each factory
+    // exactly once per registry.
+    await jest.isolateModulesAsync(async () => {
+      const w = require('../index') as typeof wrapper; // require() is intentional: isolateModulesAsync needs a fresh CJS require
+
+      // Touching module-level exports must NOT fire either lazy require.
+      expect(w.ARCHIVE_ERROR_DISPOSITIONS.ARCHIVE_ACCESS_LOST).toBe('requires-repick');
+      expect(w.ArchiveReaderError).toBeDefined();
+      expect(w.isArchiveCancellation).toBeDefined();
+      expect(mockBindingsEvalCount).toBe(0);
+      expect(mockNativeAccessEvalCount).toBe(0);
+
+      // Positive control 1: pickArchiveParts calls getGlue() synchronously,
+      // triggering the NativeOrbitalArchiveAccess factory for the first time
+      // in this registry. Suppress the rejection so it stays in test scope.
+      w.pickArchiveParts().catch(() => {});
+      expect(mockNativeAccessEvalCount).toBe(1);
+      expect(mockBindingsEvalCount).toBe(0); // bindings not yet needed
+
+      // Positive control 2: openArchive calls both getGlue() (now cached, no
+      // second factory call) and getNative() (bindings factory fires once).
+      // MOCK_TOKEN is a real, decodable token of the branded type, so no cast
+      // is needed here — the cast this line used to carry was a tsc error
+      // (TS2352: neither type sufficiently overlaps).
+      w.openArchive([MOCK_TOKEN]).catch(() => {});
+      expect(mockBindingsEvalCount).toBe(1);
+      expect(mockNativeAccessEvalCount).toBe(1); // already cached, no second call
+    });
   });
 });
 
@@ -262,6 +313,62 @@ function isArchiveCancellationOf(code: wrapper.ArchiveErrorCode): boolean {
   return wrapper.isArchiveCancellation(new wrapper.ArchiveReaderError(code));
 }
 
+describe('glue partIndex transport', () => {
+  // Helper: reject openParts with a glue-shaped error and return the
+  // normalised ArchiveReaderError that propagates out of openArchive.
+  async function glueReject(glueError: Record<string, unknown>): Promise<unknown> {
+    const [token] = await pickOne();
+    mockGlue.openParts.mockRejectedValue(glueError);
+    return wrapper.openArchive([token]).catch((e: unknown) => e);
+  }
+
+  it('carries partIndex:1 from a glue ACCESS_LOST rejection (must be red on 4f6d66f)', async () => {
+    // On pre-fix code the glue branch did not read userInfo.partIndex, so
+    // partIndex would be undefined and this assertion would fail.
+    const e = await glueReject({ code: 'ARCHIVE_ACCESS_LOST', userInfo: { partIndex: 1 } });
+    expect(e).toBeInstanceOf(wrapper.ArchiveReaderError);
+    expect((e as wrapper.ArchiveReaderError).partIndex).toBe(1);
+  });
+
+  it.each([
+    ['null userInfo', { code: 'ARCHIVE_ACCESS_LOST', userInfo: null }],
+    ['missing userInfo', { code: 'ARCHIVE_ACCESS_LOST' }],
+    ["string partIndex '1'", { code: 'ARCHIVE_ACCESS_LOST', userInfo: { partIndex: '1' } }],
+    ['negative partIndex -1', { code: 'ARCHIVE_ACCESS_LOST', userInfo: { partIndex: -1 } }],
+    ['fractional partIndex 1.5', { code: 'ARCHIVE_ACCESS_LOST', userInfo: { partIndex: 1.5 } }],
+    ['NaN partIndex', { code: 'ARCHIVE_ACCESS_LOST', userInfo: { partIndex: NaN } }],
+    ['NOT_SEEKABLE with userInfo partIndex:1', { code: 'ARCHIVE_NOT_SEEKABLE', userInfo: { partIndex: 1 } }],
+  ] as Array<[string, Record<string, unknown>]>)(
+    '%s -> no partIndex property on the ArchiveReaderError',
+    async (_label, glueError) => {
+      const e = await glueReject(glueError);
+      expect(e).toBeInstanceOf(wrapper.ArchiveReaderError);
+      // The property must not exist on the instance at all, not merely be undefined.
+      expect('partIndex' in (e as wrapper.ArchiveReaderError)).toBe(false);
+    },
+  );
+
+  it.each([
+    ['negative -1', -1],
+    ['fractional 1.5', 1.5],
+    ['NaN', NaN],
+  ] as Array<[string, number]>)(
+    'uniffi AccessLost inner.partIndex %s -> no property (asPartIndex tightening)',
+    async (_label, badIndex) => {
+      // The deliberate tightening: previously any typeof==='number' was
+      // accepted. Now asPartIndex() rejects negatives, fractions and NaN.
+      const session = await openOneSession();
+      mockNativeSession.readJson.mockRejectedValue({
+        tag: 'AccessLost',
+        inner: { partIndex: badIndex },
+      });
+      const e = await session.readJson('e1').catch((err: unknown) => err);
+      expect(e).toBeInstanceOf(wrapper.ArchiveReaderError);
+      expect('partIndex' in (e as wrapper.ArchiveReaderError)).toBe(false);
+    },
+  );
+});
+
 describe('token codec', () => {
   it('round-trips a token through pick -> open -> refreshed parts', async () => {
     const [picked] = await pickOne();
@@ -312,6 +419,13 @@ describe('token codec', () => {
   it('returns null, not an empty list, when the picker was cancelled', async () => {
     mockGlue.pickArchiveParts.mockResolvedValue(null);
     await expect(wrapper.pickArchiveParts()).resolves.toBeNull();
+  });
+
+  it('the real decoder accepts the MOCK_TOKEN fixture from __mocks__', () => {
+    // Verifies that the token fixture in `__mocks__/orbital-archive-reader.ts`
+    // is accepted by the real `decodeToken` path, so the mock never hides a
+    // token-encoding regression in app tests.
+    expect(wrapper.isArchivePartToken(MOCK_TOKEN)).toBe(true);
   });
 });
 
@@ -519,6 +633,69 @@ describe('cancellation (F4)', () => {
   });
 });
 
+describe('abort during openParts', () => {
+  it('(a) deferred openParts then abort: cancelOpenParts once; CancelToken and closeParts not called; Rust open never called; late settle triggers closeParts', async () => {
+    jest.useFakeTimers();
+    try {
+      let settleOpenParts: (v: unknown) => void = () => {};
+      mockGlue.openParts.mockReturnValue(new Promise((r) => { settleOpenParts = r; }));
+      const [token] = await pickOne();
+      mockNativeOpenArchive.mockClear();
+
+      const controller = new AbortController();
+      const pending = wrapper.openArchive([token], { signal: controller.signal });
+      // Awaited below after the timer advance; stored separately so the rule
+      // cannot see this as a chained assertion.
+      // eslint-disable-next-line jest/valid-expect
+      const assertion = expect(pending).rejects.toMatchObject({ code: 'ECANCELLED' });
+      await flushMicrotasks();
+
+      controller.abort();
+      // The FIRST backstop (openParts) uses cancelOpenParts. The CancelToken
+      // and closeParts belong to the SECOND backstop (Rust open), which hasn't
+      // started because openParts never resolved.
+      expect(mockGlue.cancelOpenParts).toHaveBeenCalledTimes(1);
+      expect(mockCancelTokenCancel).not.toHaveBeenCalled();
+      expect(mockGlue.closeParts).not.toHaveBeenCalled();
+
+      jest.advanceTimersByTime(1500);
+      await assertion;
+      expect(mockNativeOpenArchive).not.toHaveBeenCalled();
+
+      // A late settle of openParts: the abandoned callback must call closeParts
+      // with whatever handles arrived, to honour the fd contract.
+      settleOpenParts([HANDLE]);
+      await flushMicrotasks();
+      expect(mockGlue.closeParts).toHaveBeenCalledWith(['h0']);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('(b) already-aborted signal before the call: cancelOpenParts called, rejects ECANCELLED', async () => {
+    jest.useFakeTimers();
+    try {
+      const [token] = await pickOne();
+      mockGlue.openParts.mockReturnValue(new Promise(() => {})); // never resolves
+
+      const controller = new AbortController();
+      controller.abort(); // already aborted before the call
+
+      const pending = wrapper.openArchive([token], { signal: controller.signal });
+      // eslint-disable-next-line jest/valid-expect
+      const assertion = expect(pending).rejects.toMatchObject({ code: 'ECANCELLED' });
+      // cancelOpenParts is called synchronously when the already-aborted signal
+      // is detected during backstop setup (arm() runs immediately).
+      expect(mockGlue.cancelOpenParts).toHaveBeenCalledTimes(1);
+
+      jest.advanceTimersByTime(1500);
+      await assertion;
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});
+
 describe('extract outcomes', () => {
   it('maps a successful extract, narrowing byteLength and copying the head', async () => {
     const session = await openOneSession();
@@ -599,6 +776,38 @@ describe('wipe epoch (F3)', () => {
     expect(mockNativeSession.close).toHaveBeenCalled();
     expect(mockGlue.createStagingFile).not.toHaveBeenCalled();
     expect(mockGlue.closeParts).toHaveBeenCalledWith(['h0']);
+  });
+
+  it('rejects ARCHIVE_SESSION_CLOSED and cleans up staging when the epoch advances during an in-flight extract', async () => {
+    // This test MUST fail on the pre-fix index.tsx (commit 4f6d66f), which
+    // lacked the `this.assertUsable()` call placed right after the native
+    // extract await. Without it, a wipe that lands while Rust is writing hands
+    // out a live staging path after the sweep — this test verifies that case
+    // is refused and that cleanup runs.
+    const session = await openOneSession();
+    mockGlue.createStagingFile.mockResolvedValue('/Caches/u-archive-staging.bin');
+    let settle: (v: unknown) => void = () => {};
+    mockNativeSession.extractEntry.mockReturnValue(new Promise((r) => { settle = r; }));
+
+    const pending = session.extractEntry('fp0:1', 'image');
+    // Drain microtasks past the staging-file creation and the pre-extract
+    // assertUsable(); now we are suspended inside the native extract await.
+    await flushMicrotasks();
+
+    // Advance the epoch: session is closed from the wipe's perspective.
+    wrapper.abortAllArchiveSessions();
+
+    // The native extract finishes (successfully from Rust's side).
+    settle({
+      tag: 'Extracted',
+      inner: { path: '/Caches/u-archive-staging.bin', byteLength: 10n, head: new ArrayBuffer(0) },
+    });
+
+    // The post-await assertUsable() must reject because closed is now true.
+    await expect(pending).rejects.toMatchObject({ code: 'ARCHIVE_SESSION_CLOSED' });
+    // The catch block must have cleaned up the staging path.
+    expect(mockGlue.unlinkStagingFile).toHaveBeenCalledWith('/Caches/u-archive-staging.bin');
+    expect(mockNativeSession.releaseStaging).toHaveBeenCalledWith('/Caches/u-archive-staging.bin');
   });
 
   it('releaseAllPersistedParts goes straight to the glue', async () => {

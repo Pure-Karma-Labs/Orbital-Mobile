@@ -4,7 +4,9 @@
  * THIS FILE IS NOT GENERATED. ubrn's own loader lives in `bindings.tsx`
  * (`turboModule.entrypoint` in ubrn.config.yaml); `--and-generate` must never
  * write this file. If a regeneration ever rewrites it, the entrypoint override
- * was lost — see the day-1 check in the package README.
+ * was lost: check `turboModule.entrypoint` and the `noOverwrite` list in
+ * `packages/orbital-archive-reader/ubrn.config.yaml`, which the generated-files
+ * table in `docs/uniffi-toolchain.md` enumerates per package.
  *
  * ## What the wrapper is for
  *
@@ -24,6 +26,26 @@
  *    `ENTRY_CORRUPT` (F6), so narrowing clamps rather than throws.
  * 4. **Part tokens are opaque.** A caller persists `session.parts` and hands
  *    them back on resume; it never sees a bookmark blob or a `content://` URI.
+ *
+ *    **Token revocation.** This is the ONE statement of that invariant; the
+ *    `ArchivePartToken` and `openArchive` docs, `releaseArchiveParts`, the
+ *    TurboModule spec and both glue files only point here.
+ *
+ *    Releasing is NOT revoking on either platform:
+ *      - **Android:** `releaseArchiveParts` drops only the PERSISTED SAF grant.
+ *        The transient grant the picker handed this process lives until the
+ *        process dies, so a resume in the same process still opens the parts
+ *        after a release.
+ *      - **iOS:** `releaseArchiveParts` and `releaseAllPersistedParts` are
+ *        no-ops, because the bookmark IS the capability. It follows a move, and
+ *        survives a Files "Delete" into Recently Deleted for up to 30 days;
+ *        `ARCHIVE_ACCESS_LOST` appears only once the file is purged or its
+ *        provider is gone.
+ *      - **Consequence for `#921`/`#926`:** deleting the persisted token is
+ *        iOS's only revocation, so a token must not be retained past a
+ *        completed or cancelled import — delete the stored row. If a cancelled
+ *        import must be unreachable IMMEDIATELY, `#926`'s session layer has to
+ *        enforce that; neither platform will.
  * 5. **Cancellation is a real native cancel (F4)**, plus a grace-timer
  *    backstop that swallows the late settle and cleans up after it.
  * 6. **The fd contract is enforced here (F2).** `openArchive` runs
@@ -124,6 +146,9 @@ export type EntryKind = 'json' | MediaKind | 'video';
  *
  * `"oar1:" + base64url(JSON { v, p, ref, persist, fp? })`. Never parse it;
  * `#921` stores `JSON.stringify(ArchivePartToken[])` in `archive_bookmark`.
+ *
+ * Deleting a stored token is the only immediate revocation of the access it
+ * carries — see the token-revocation invariant in this file's header (§4).
  */
 export type ArchivePartToken = string & {
   // A string-literal brand, NOT `unique symbol`: a unique symbol is nominal
@@ -268,7 +293,25 @@ const ARCHIVE_ERROR_MESSAGES: Readonly<Record<ArchiveErrorCode, string>> = Objec
 /** The only error type this module throws or rejects with. */
 export class ArchiveReaderError extends Error {
   readonly code: ArchiveErrorCode;
-  /** A COUNT, not a name: which part failed, when the code carries one. */
+  /**
+   * Which part failed: a zero-based COUNT, never a name.
+   *
+   * THE authoritative statement of this field. The glue files, the TurboModule
+   * spec and the per-method docs below all point here rather than restate it.
+   *
+   *  - It indexes the `tokens` array handed to `openArchive`, in that order —
+   *    which is also the order of `ArchiveSession.parts` and of `#926`'s
+   *    persisted token array, so `tokens[partIndex]` is the part to re-pick.
+   *  - ONE index space for all three producers: the Android glue, the iOS glue
+   *    and Rust all count the same array, so a consumer never has to ask which
+   *    layer rejected.
+   *  - It is set on every `ARCHIVE_ACCESS_LOST` and every `ARCHIVE_CHANGED`,
+   *    and on nothing else.
+   *  - It is nevertheless typed OPTIONAL, so a consumer MUST tolerate
+   *    `undefined`: anything that is not a safe non-negative integer is
+   *    dropped rather than guessed at (`asPartIndex`), and an older native
+   *    binary paired with this JS would send nothing at all.
+   */
   readonly partIndex?: number;
 
   constructor(code: ArchiveErrorCode, partIndex?: number) {
@@ -493,23 +536,54 @@ function normalizeError(e: unknown): ArchiveReaderError {
   if (e instanceof ArchiveReaderError) return e;
 
   const candidate = e as
-    | { tag?: unknown; inner?: { partIndex?: unknown }; code?: unknown; name?: unknown }
+    | {
+        tag?: unknown;
+        inner?: { partIndex?: unknown };
+        code?: unknown;
+        userInfo?: { partIndex?: unknown } | null;
+        name?: unknown;
+      }
     | null
     | undefined;
   if (candidate !== null && candidate !== undefined && typeof candidate === 'object') {
     if (typeof candidate.tag === 'string') {
       const code = ERROR_CODE_BY_TAG[candidate.tag];
       if (code !== undefined) {
-        const partIndex = candidate.inner?.partIndex;
-        return new ArchiveReaderError(code, typeof partIndex === 'number' ? partIndex : undefined);
+        return new ArchiveReaderError(code, asPartIndex(candidate.inner?.partIndex));
       }
     }
     if (typeof candidate.code === 'string' && GLUE_ERROR_CODES.has(candidate.code)) {
-      return new ArchiveReaderError(candidate.code as ArchiveErrorCode);
+      // The glue sends `userInfo.partIndex` for ACCESS_LOST and for nothing
+      // else (Android: `promise.reject(code, msg, WritableMap)`; iOS: an
+      // NSError in `kOAAErrorDomain`). Reading it only for that code is what
+      // keeps a stray userInfo from widening the contract.
+      return new ArchiveReaderError(
+        candidate.code as ArchiveErrorCode,
+        asPartIndex(
+          candidate.code === 'ARCHIVE_ACCESS_LOST' ? candidate.userInfo?.partIndex : undefined,
+        ),
+      );
     }
     if (candidate.name === 'AbortError') return new ArchiveReaderError('ECANCELLED');
   }
   return new ArchiveReaderError('ARCHIVE_INTERNAL');
+}
+
+/**
+ * A bridge value is a usable `partIndex` only if it is a safe non-negative
+ * integer. Anything else becomes `undefined`.
+ *
+ * Shared by the uniffi branch and the glue branch, which is a DELIBERATE
+ * TIGHTENING of the uniffi branch: it previously accepted any `typeof ===
+ * 'number'`, so a negative, a fraction, `NaN` or `Infinity` would have been
+ * handed to `#926` as an index into `tokens` — and `tokens[-1]`,
+ * `tokens[1.5]` and `tokens[NaN]` are all silently `undefined`, i.e. a
+ * "re-pick that part" prompt about no part at all. Rust cannot produce such a
+ * value today (the index is a `u32`), so dropping it loses nothing real and
+ * the field's optionality already obliges consumers to cope.
+ */
+function asPartIndex(value: unknown): number | undefined {
+  return Number.isSafeInteger(value) && (value as number) >= 0 ? (value as number) : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -965,6 +1039,12 @@ class SessionImpl implements ArchiveSession {
           unlinkStagingQuietly(stagingPath);
         },
       );
+      // Re-checked AFTER the extract settles, the same way peekHead and
+      // readJson do: a wipe that landed while Rust was writing must not have
+      // its staging path handed out. The catch below is what releases and
+      // unlinks it, and `ArchiveReaderError` passes through normalizeError
+      // unchanged, so the caller still sees ARCHIVE_SESSION_CLOSED.
+      this.assertUsable();
       const extract = outcome as NativeExtractOutcome;
       if (extract.tag !== this.native.ExtractOutcome_Tags.Extracted) {
         // A skip wrote nothing, but releasing is cheap and idempotent and
@@ -1093,7 +1173,12 @@ export async function pickArchiveParts(): Promise<ArchivePartToken[] | null> {
   return refs.map((ref) => encodeToken({ v: TOKEN_VERSION, p: platform(), ref, persist: false }));
 }
 
-/** Release the persistable grants behind these tokens. Android only. */
+/**
+ * Release the persistable grants behind these tokens. Android only.
+ *
+ * NOT a revocation: see the token-revocation invariant in this file's header
+ * (§4). Deleting the stored token is what revokes access.
+ */
 export async function releaseArchiveParts(
   tokens: readonly ArchivePartToken[],
 ): Promise<void> {
@@ -1112,6 +1197,14 @@ export async function releaseArchiveParts(
  * Rust keeps only a dup. `closeParts` therefore runs in a `finally` on EVERY
  * path — success, throw and abort — and is the last thing to touch the
  * handles.
+ *
+ * `tokens` defines the part index space: an `ARCHIVE_ACCESS_LOST` or
+ * `ARCHIVE_CHANGED` thrown from here carries `partIndex` into THIS array — see
+ * `ArchiveReaderError.partIndex`.
+ *
+ * This is also the resume entry point `#926` calls with persisted tokens, so
+ * the token-revocation invariant in this file's header (§4) is the rule about
+ * how long those tokens may be kept.
  */
 export async function openArchive(
   tokens: readonly ArchivePartToken[],

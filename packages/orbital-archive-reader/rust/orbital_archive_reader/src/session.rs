@@ -417,9 +417,9 @@ impl SessionCore {
             max_output: None,
         };
         // Pre-sized to the declared length, but never beyond 1 MiB: a honest
-        // 32 MiB JSON reaches that size by doubling a handful of times, while
-        // an archive that merely CLAIMS 32 MiB and carries ten bytes cannot
-        // make us allocate 32 MiB per attempt.
+        // 12 MiB JSON reaches that size by doubling a handful of times, while
+        // an archive that merely CLAIMS 12 MiB and carries ten bytes cannot
+        // make us allocate 12 MiB per attempt.
         let presize = entry.rec.uncomp_size.min(cap).min(MIB);
         let mut buf: Vec<u8> = Vec::with_capacity(to_usize(presize)?);
         let mut written = 0u64;
@@ -437,7 +437,7 @@ impl SessionCore {
             Err(EntryFault::Fatal(e)) => return Err(e),
         }
         // F4: cancellation is checked between the read and the decode, so an
-        // aborted 32 MiB JSON does not pay for a UTF-8 validation pass.
+        // aborted 12 MiB JSON does not pay for a UTF-8 validation pass.
         cancel.check()?;
         match String::from_utf8(buf) {
             Ok(text) => Ok(JsonOutcome::Text { text }),

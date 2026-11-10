@@ -295,7 +295,7 @@ fn cancel_mid_extract_unlinks_the_partial_file() {
 }
 
 /// F4: `read_json` checks the cancel flag between the read and the decode, so
-/// an aborted 32 MiB JSON never pays for a UTF-8 validation pass.
+/// an aborted 12 MiB JSON never pays for a UTF-8 validation pass.
 #[test]
 fn cancel_between_read_and_decode_of_read_json() {
     let zip = ZipBuilder::new()

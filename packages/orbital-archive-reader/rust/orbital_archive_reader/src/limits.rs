@@ -13,8 +13,19 @@ pub const GIB: u64 = 1024 * MIB;
 /// Per-kind output ceiling. There is deliberately **no `Video` row**: video
 /// entries are listed (so #925 can hold the whole post) but never opened, and
 /// `kind_cap` returns `None` for them, which becomes `EntryKindNotEnabled`.
+///
+/// The `Json` row is **12 MiB, not 32**. It is a JS-heap budget, not a disk
+/// budget: `read_json` hands the whole text across the FFI as a `String`, and
+/// the B3 Hermes measurement put the peak resident cost at roughly **ten times
+/// the input bytes** (the UTF-16 copy, the parsed object graph and the
+/// intermediate strings all coexist). At 32 MiB that is an allocation failure
+/// Hermes aborts the process on — uncatchable from JS, so no typed error and no
+/// retry. 12 MiB keeps the worst case inside the measured headroom. Raising it
+/// needs a fresh measurement on device, not an argument: #925 preflights
+/// `declaredSize` and falls back to the per-part `posts_<N>.json` files above
+/// the ceiling.
 pub const KIND_CAPS: [(EntryKind, u64); 2] =
-    [(EntryKind::Json, 32 * MIB), (EntryKind::Image, 50 * MIB)];
+    [(EntryKind::Json, 12 * MIB), (EntryKind::Image, 50 * MIB)];
 
 /// `None` means "this kind is not enabled for extraction".
 #[must_use]
@@ -103,7 +114,9 @@ pub const MAX_PATH_SEGMENTS: usize = 16;
 
 /// In-memory JSON ceiling, equal to the Json kind cap. This is a JS-heap
 /// budget, not a disk budget: `read_json` returns the text across the FFI.
-pub const MAX_JSON_BYTES: u64 = 32 * MIB;
+/// See `KIND_CAPS` for why the number is 12 MiB and what it would take to
+/// raise it.
+pub const MAX_JSON_BYTES: u64 = 12 * MIB;
 
 #[cfg(test)]
 mod tests {
@@ -111,7 +124,7 @@ mod tests {
 
     #[test]
     fn caps_are_pinned() {
-        assert_eq!(kind_cap(EntryKind::Json), Some(32 * MIB));
+        assert_eq!(kind_cap(EntryKind::Json), Some(12 * MIB));
         assert_eq!(kind_cap(EntryKind::Image), Some(50 * MIB));
         assert_eq!(kind_cap(EntryKind::Video), None);
         assert_eq!(MAX_RATIO, 100);

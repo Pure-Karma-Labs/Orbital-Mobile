@@ -380,11 +380,12 @@ jobs:
 
       # --- Second crate: orbital_archive_reader (#920) -----------------------
       # Its own cache workspace + shared-key (a different Cargo.lock under one
-      # key thrashes the cache), and the RELEASE profile: the crate is ~25 s to
-      # build, and the release profile is the only one that link-tests the
-      # parser under thin LTO + overflow-checks. checkArchiveRustBinaries only
-      # demands a release-profile marker for Release variants, so a release
-      # marker is always acceptable for this job's assembleDebug.
+      # key thrashes the cache). DEBUG profile, exactly like orbital-signal
+      # above: scripts/test-rust-profile-gate-android.sh (later in this job)
+      # requires debug-profile markers for BOTH crates as its A0 precondition,
+      # and its release-marker cases (A5-A7) write their own fixtures. Release
+      # coverage for this crate comes from rust-test-archive (security.yml) and
+      # the release cross-compile slices in rust-apple-targets.
       - name: Rust cache lookup (android, archive crate)
         id: rust-cache-lookup-android-archive
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -400,10 +401,10 @@ jobs:
           shared-key: rust-build-android-archive
           save-if: ${{ github.ref == 'refs/heads/main' && steps.rust-cache-lookup-android-archive.outputs.cache-hit != 'true' }}
 
-      - name: Build Rust for Android (archive crate, release profile)
+      - name: Build Rust for Android (archive crate)
         run: |
           cd packages/orbital-archive-reader
-          npm run build:android:release
+          npm run build:android
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
 

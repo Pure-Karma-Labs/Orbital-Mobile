@@ -158,6 +158,15 @@ jobs:
               - 'packages/orbital-media-export/*.podspec'
               - 'packages/orbital-media-export/ios/**'
               - 'packages/orbital-media-export/src/Native*.ts'
+              # #982. pod install / codegen inputs for the archive reader's glue
+              # TurboModule, so a change to them must re-check Podfile.lock.
+              # NOTE what this does NOT do: the Kotlin glue compiles on PRs in
+              # build.yml's build-android (that job has no filter gate), but the
+              # iOS glue compiles only on main or a build.yml workflow_dispatch
+              # -- which is why a native archive PR has to dispatch build.yml.
+              - 'packages/orbital-archive-reader/*.podspec'
+              - 'packages/orbital-archive-reader/ios/**'
+              - 'packages/orbital-archive-reader/src/Native*.ts'
               - '.github/workflows/ci.yml'                        # edits to this gate must exercise the gate (#767)
               # #971. patch-package rewrites native pod sources in node_modules at
               # install time, so a patch-only PR changes what pod install resolves
@@ -403,10 +412,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      # Own filter: paths-filter outputs do not cross job boundaries. Same
-      # filter set as lint-typecheck-test's pod-filter, for the same reason —
-      # pod resolution and this pod's sources are the only inputs that can
-      # change the result. Push builds on main always compile (event gate
+      # Own filter: paths-filter outputs do not cross job boundaries. The same
+      # POD-RESOLUTION INPUTS as lint-typecheck-test's pod-filter, for the same
+      # reason — pod resolution and this pod's sources are the only inputs that
+      # can change the result. That job's filter is a superset: it additionally
+      # gates its own verification scripts (the absolute-pod-path and
+      # Firebase-SPM checks and their fixtures), none of which can change what
+      # this pod compiles. Push builds on main always compile (event gate
       # below), so a filter miss can never let a broken pod reach main.
       - name: iOS pod filter
         id: pod-filter
@@ -425,6 +437,11 @@ jobs:
               - 'packages/orbital-media-export/*.podspec'
               - 'packages/orbital-media-export/ios/**'
               - 'packages/orbital-media-export/src/Native*.ts'
+              # #982. Same three archive-reader entries as filter A; see the
+              # note there about which job actually compiles this glue.
+              - 'packages/orbital-archive-reader/*.podspec'
+              - 'packages/orbital-archive-reader/ios/**'
+              - 'packages/orbital-archive-reader/src/Native*.ts'
               - '.github/workflows/ci.yml'
               # #971. patch-package rewrites native pod sources in node_modules
               # at install time, so a patch-only PR changes what iOS compiles.

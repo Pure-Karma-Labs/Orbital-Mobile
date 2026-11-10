@@ -276,17 +276,17 @@ fn unsupported_methods_are_skipped() {
 
 // ---------------------------------------------------------------- group 4
 
-/// The JSON cap is 32 MiB, declared and actual.
+/// The JSON cap is 12 MiB, declared and actual.
 #[test]
 fn json_over_the_cap_is_skipped() {
     let mut declared = EntrySpec::stored(JSON_PATH, b"{}");
-    declared.cd_uncomp = Some(33 * MIB);
-    declared.cd_comp = Some(33 * MIB);
+    declared.cd_uncomp = Some(13 * MIB);
+    declared.cd_comp = Some(13 * MIB);
     let h = open("json-cap", vec![ZipBuilder::new().with(declared).build()]);
     assert_eq!(h.skip_of(JSON_PATH), Some(EntrySkipCode::EntryOverCap));
 
     // Actual over the cap with an honest declaration is also refused.
-    let body = vec![b' '; (32 * MIB + 1) as usize];
+    let body = vec![b' '; (12 * MIB + 1) as usize];
     let h2 = open(
         "json-cap2",
         vec![ZipBuilder::new().stored(JSON_PATH, &body).build()],

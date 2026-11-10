@@ -154,6 +154,7 @@
 				C38B50BA6285516D6DCD4F65 /* [CP] Check Pods Manifest.lock */,
 				E73D15A5E8854559F55B0B51 /* [CP-User] [Orbital] Verify Rust release profile */,
 				40DCC37392F6C503288A1972 /* [CP-User] [Orbital] Verify native patches */,
+				529F0B99E72CBCDC21B971DE /* [CP-User] [Orbital] Verify Rust release profile (archive) */,
 				13B07F871A680F5B00A75B9A /* Sources */,
 				13B07F8C1A680F5B00A75B9A /* Frameworks */,
 				13B07F8E1A680F5B00A75B9A /* Resources */,
@@ -301,6 +302,17 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "exec bash \"${SRCROOT}/../scripts/verify-native-patches-ios.sh\"";
+		};
+		529F0B99E72CBCDC21B971DE /* [CP-User] [Orbital] Verify Rust release profile (archive) */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			name = "[CP-User] [Orbital] Verify Rust release profile (archive)";
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "exec bash \"${SRCROOT}/../scripts/verify-rust-profile-ios.sh\" archive";
 		};
 		A8C8F2BD0D6F2AB30F03F05D /* [CP-User] Upload Debug Symbols to Sentry */ = {
 			isa = PBXShellScriptBuildPhase;

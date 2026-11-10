@@ -1,4 +1,6 @@
 packages/orbital-signal/cpp/generated/** linguist-generated=true
 packages/orbital-signal/src/generated/** linguist-generated=true
+packages/orbital-archive-reader/cpp/generated/** linguist-generated=true
+packages/orbital-archive-reader/src/generated/** linguist-generated=true
 assets/emoji/** binary linguist-generated=true
 src/emoji/assetMap.ts linguist-generated=true

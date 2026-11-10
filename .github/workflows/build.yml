@@ -5,6 +5,11 @@ on:
     branches: [main]
     paths:
       - 'packages/orbital-signal/**'
+      # Issue #920: orbital-archive-reader, the second ubrn crate + its glue
+      # TurboModule. Whole-package glob like orbital-signal's: its Rust, its
+      # ubrn config, its generated C++/TS and its hand-written glue all change
+      # what the two app targets compile and link.
+      - 'packages/orbital-archive-reader/**'
       - 'packages/orbital-media-transcoder/*.podspec'
       - 'packages/orbital-media-transcoder/android/**'
       - 'packages/orbital-media-transcoder/ios/**'
@@ -25,6 +30,7 @@ on:
       - '.github/workflows/build.yml'
       - 'scripts/verify-rust-profile-ios.sh'
       - 'scripts/rust-input-digest.sh'
+      - 'scripts/rust-input-digest-archive.sh'
       - 'scripts/write-rust-marker-ios.sh'
       - 'scripts/test-rust-profile-gate-ios.sh'
       - 'scripts/test-rust-profile-gate-android.sh'
@@ -42,6 +48,11 @@ on:
   pull_request:
     paths:
       - 'packages/orbital-signal/**'
+      # Issue #920: orbital-archive-reader, the second ubrn crate + its glue
+      # TurboModule. Whole-package glob like orbital-signal's: its Rust, its
+      # ubrn config, its generated C++/TS and its hand-written glue all change
+      # what the two app targets compile and link.
+      - 'packages/orbital-archive-reader/**'
       - 'packages/orbital-media-transcoder/*.podspec'
       - 'packages/orbital-media-transcoder/android/**'
       - 'packages/orbital-media-transcoder/ios/**'
@@ -62,6 +73,7 @@ on:
       - '.github/workflows/build.yml'
       - 'scripts/verify-rust-profile-ios.sh'
       - 'scripts/rust-input-digest.sh'
+      - 'scripts/rust-input-digest-archive.sh'
       - 'scripts/write-rust-marker-ios.sh'
       - 'scripts/test-rust-profile-gate-ios.sh'
       - 'scripts/test-rust-profile-gate-android.sh'
@@ -104,6 +116,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
+      rust_archive: ${{ steps.filter.outputs.rust_archive }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -116,6 +129,16 @@ jobs:
             rust:
               - 'packages/orbital-signal/rust/**'
               - 'packages/orbital-signal/ubrn.config.yaml'
+              - 'rust-toolchain.toml'
+              - '.github/workflows/build.yml'
+            # Issue #920. Deliberately the WHOLE package, not just rust/**:
+            # the package's package.json and ubrn.config.yaml are freshness
+            # inputs of scripts/rust-input-digest-archive.sh, so a change to
+            # either must re-run the Apple cross-compile too. This workflow
+            # file is listed for the same reason the `rust` filter lists it —
+            # editing the gate must exercise it (#767 precedent).
+            rust_archive:
+              - 'packages/orbital-archive-reader/**'
               - 'rust-toolchain.toml'
               - '.github/workflows/build.yml'
 
@@ -147,7 +170,8 @@ jobs:
     if: >
       always() &&
       (github.event_name == 'workflow_dispatch' ||
-       needs.changes.outputs.rust == 'true')
+       needs.changes.outputs.rust == 'true' ||
+       needs.changes.outputs.rust_archive == 'true')
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -210,6 +234,28 @@ jobs:
 
       - name: Cross-compile aarch64-apple-ios-sim (Apple Silicon simulator)
         working-directory: packages/orbital-signal/rust/orbital_signal
+        run: cargo build --locked --target aarch64-apple-ios-sim
+
+      # --- Second crate: orbital_archive_reader (#920) -----------------------
+      # Its own cache workspace and shared-key: a different Cargo.lock under one
+      # shared-key would thrash the cache on every run. Same two targets and the
+      # same release/dev split as the signal crate above — the release leg is
+      # the one that compiles the hostile-input parser under thin LTO,
+      # codegen-units = 1 and overflow-checks.
+      - name: Rust cache (archive crate)
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: packages/orbital-archive-reader/rust/orbital_archive_reader
+          shared-key: rust-pr-apple-archive
+          # Only save from main to avoid cache thrash across PR branches.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Cross-compile archive aarch64-apple-ios (device, release profile)
+        working-directory: packages/orbital-archive-reader/rust/orbital_archive_reader
+        run: cargo build --locked --release --target aarch64-apple-ios
+
+      - name: Cross-compile archive aarch64-apple-ios-sim (Apple Silicon simulator)
+        working-directory: packages/orbital-archive-reader/rust/orbital_archive_reader
         run: cargo build --locked --target aarch64-apple-ios-sim
 
   build-android:
@@ -332,6 +378,36 @@ jobs:
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
 
+      # --- Second crate: orbital_archive_reader (#920) -----------------------
+      # Its own cache workspace + shared-key (a different Cargo.lock under one
+      # key thrashes the cache). DEBUG profile, exactly like orbital-signal
+      # above: scripts/test-rust-profile-gate-android.sh (later in this job)
+      # requires debug-profile markers for BOTH crates as its A0 precondition,
+      # and its release-marker cases (A5-A7) write their own fixtures. Release
+      # coverage for this crate comes from rust-test-archive (security.yml) and
+      # the release cross-compile slices in rust-apple-targets.
+      - name: Rust cache lookup (android, archive crate)
+        id: rust-cache-lookup-android-archive
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: packages/orbital-archive-reader/rust/orbital_archive_reader
+          shared-key: rust-build-android-archive
+          lookup-only: true
+
+      - name: Rust cache (archive crate)
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: packages/orbital-archive-reader/rust/orbital_archive_reader
+          shared-key: rust-build-android-archive
+          save-if: ${{ github.ref == 'refs/heads/main' && steps.rust-cache-lookup-android-archive.outputs.cache-hit != 'true' }}
+
+      - name: Build Rust for Android (archive crate)
+        run: |
+          cd packages/orbital-archive-reader
+          npm run build:android
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
+
       - name: Setup Java
         uses: actions/setup-java@v6
         with:
@@ -349,7 +425,7 @@ jobs:
           path: |
             ~/.gradle/caches/modules-2
             ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('android/gradle/wrapper/gradle-wrapper.properties', 'android/build.gradle', 'android/app/build.gradle', 'packages/orbital-media-transcoder/android/build.gradle', 'packages/orbital-media-export/android/build.gradle') }}
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/gradle/wrapper/gradle-wrapper.properties', 'android/build.gradle', 'android/app/build.gradle', 'packages/orbital-media-transcoder/android/build.gradle', 'packages/orbital-media-export/android/build.gradle', 'packages/orbital-archive-reader/android/build.gradle') }}
           restore-keys: |
             gradle-${{ runner.os }}-
 
@@ -437,13 +513,15 @@ jobs:
       # Must stay after assembleDebug: needs the debug-profile Rust binaries +
       # marker it produces. The harness starts its own Gradle daemon (scoped to
       # this step) and stops it via the trap in the script.
-      - name: Test Rust release-profile gate (issue #550)
+      - name: Test Rust release-profile gate (issues #550, #920)
         run: bash scripts/test-rust-profile-gate-android.sh
         env:
           SENTRY_DISABLE_AUTO_UPLOAD: 'true'
 
   # Validates the gate's bash logic (scripts/verify-rust-profile-ios.sh +
-  # scripts/rust-input-digest.sh) and the Podfile wiring on every PR. The
+  # scripts/rust-input-digest.sh + scripts/rust-input-digest-archive.sh, every
+  # case run for BOTH crate selectors since #920) and the Podfile wiring (both
+  # script phases) on every PR. The
   # Xcode -> /bin/sh -> exec bash delegation in project.pbxproj is deliberately
   # NOT exercised here — that path runs in the build-ios job on main pushes
   # (PR #556 review: accepted tradeoff).
@@ -459,7 +537,7 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-      - name: Test iOS Rust provenance gate (issues #550, #813)
+      - name: Test iOS Rust provenance gate (issues #550, #813, #920)
         run: bash scripts/test-rust-profile-gate-ios.sh
 
   build-ios:
@@ -577,6 +655,32 @@ jobs:
         run: |
           cd packages/orbital-signal
           npm run build:ios
+
+      # --- Second crate: orbital_archive_reader (#920) -----------------------
+      # Own cache workspace + shared-key, and the release profile for the same
+      # reasons as build-android above. build:ios:release also writes
+      # packages/orbital-archive-reader/rust-profile-ios.txt through the shared
+      # marker writer, which the Podfile's '[Orbital] Verify Rust release
+      # profile (archive)' phase then checks on every configuration.
+      - name: Rust cache lookup (ios, archive crate)
+        id: rust-cache-lookup-ios-archive
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: packages/orbital-archive-reader/rust/orbital_archive_reader
+          shared-key: rust-build-ios-archive
+          lookup-only: true
+
+      - name: Rust cache (archive crate)
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: packages/orbital-archive-reader/rust/orbital_archive_reader
+          shared-key: rust-build-ios-archive
+          save-if: ${{ github.ref == 'refs/heads/main' && steps.rust-cache-lookup-ios-archive.outputs.cache-hit != 'true' }}
+
+      - name: Build Rust for iOS (archive crate, release profile)
+        run: |
+          cd packages/orbital-archive-reader
+          npm run build:ios:release
 
       - name: Cache CocoaPods
         uses: actions/cache@v6

@@ -14,6 +14,32 @@
  * the task verifies that the Rust binaries were compiled with the release
  * cargo profile by checking the rust-profile.txt marker file. This prevents
  * shipping unoptimized debug-profile crypto code in store builds.
+ *
+ * TWO TASKS, ONE PER CRATE (#920)
+ * -------------------------------
+ * checkRustBinaries        -> packages/orbital-signal (orbital_signal)
+ * checkArchiveRustBinaries -> packages/orbital-archive-reader
+ *                             (orbital_archive_reader)
+ *
+ * DELIBERATE ASYMMETRY — the archive task is STRONGER than the signal one.
+ * It additionally watches the package's ubrn.config.yaml and package.json,
+ * i.e. the full input set of scripts/rust-input-digest-archive.sh, so the
+ * Android gate and the iOS digest gate agree on inputs for that crate. The
+ * signal task deliberately keeps its narrower, historical set (src, Cargo.toml,
+ * Cargo.lock, rust-toolchain.toml): widening it is the DEBT-408 follow-up, and
+ * doing it here would change signal's local-rebuild behaviour inside a PR
+ * whose subject is the second crate. Security invariant 18 requires each
+ * crate's gradle task and digest script to name the same input set as EACH
+ * OTHER — not as the other crate's.
+ *
+ * Both gates keep their mechanisms: Android compares mtimes and honours the
+ * `orbital.autoRebuildRust` escape hatch; iOS hashes content and fails closed.
+ *
+ * THIRD CRATE: do not paste a third copy. At three crates, parameterise the
+ * whole chain from one table — this file's tasks, the two
+ * scripts/rust-input-digest*.sh, scripts/write-rust-marker-ios.sh,
+ * scripts/verify-rust-profile-ios.sh, both gate harnesses and invariant 18's
+ * FRESHNESS_GATES rows.
  */
 
 def projectRoot = rootProject.projectDir.parentFile
@@ -102,6 +128,110 @@ tasks.register('checkRustBinaries') {
                 }
                 throw new GradleException(
                     "Rust sources are newer than Android binaries.\n" +
+                    "Changed files: ${staleFiles.join(', ')}\n" +
+                    "Run:  npm run ${buildScript}"
+                )
+            }
+        }
+    }
+}
+
+tasks.register('checkArchiveRustBinaries') {
+    description = 'Verify Android orbital_archive_reader binaries are up-to-date with source files'
+    group = 'verification'
+
+    def rustSrcDir = file("${projectRoot}/packages/orbital-archive-reader/rust/orbital_archive_reader/src")
+    def cargoToml = file("${projectRoot}/packages/orbital-archive-reader/rust/orbital_archive_reader/Cargo.toml")
+    def cargoLock = file("${projectRoot}/packages/orbital-archive-reader/rust/orbital_archive_reader/Cargo.lock")
+    def rustToolchain = file("${projectRoot}/rust-toolchain.toml")
+    // The two extra inputs vs checkRustBinaries (see the header's asymmetry
+    // note): ubrn.config.yaml selects the targets and carries cargoExtras, and
+    // package.json pins the ubrn version and holds the build command lines —
+    // either can change the compiled .a without touching a .rs file.
+    def ubrnConfig = file("${projectRoot}/packages/orbital-archive-reader/ubrn.config.yaml")
+    def pkgJson = file("${projectRoot}/packages/orbital-archive-reader/package.json")
+
+    def arm64Lib = file("${projectRoot}/packages/orbital-archive-reader/android/src/main/jniLibs/arm64-v8a/liborbital_archive_reader.a")
+    def x86_64Lib = file("${projectRoot}/packages/orbital-archive-reader/android/src/main/jniLibs/x86_64/liborbital_archive_reader.a")
+    def profileMarker = file("${projectRoot}/packages/orbital-archive-reader/android/src/main/jniLibs/rust-profile.txt")
+
+    inputs.dir(rustSrcDir)
+    inputs.file(cargoToml)
+    inputs.file(cargoLock)
+    inputs.file(ubrnConfig)
+    inputs.file(pkgJson)
+    if (rustToolchain.exists()) inputs.file(rustToolchain)
+    if (profileMarker.exists()) inputs.file(profileMarker)
+    outputs.files(arm64Lib, x86_64Lib)
+
+    // Same reason as checkRustBinaries: the profile gate depends on the
+    // requested build variant, which is not a declared input.
+    outputs.upToDateWhen { false }
+
+    doLast {
+        def releaseRequested = gradle.taskGraph.allTasks.any {
+            it.name ==~ /(assemble|bundle|package|install)\w*Release\w*/
+        }
+        def buildScript = releaseRequested ? 'build:rust:archive:android:release' : 'build:rust:archive:android'
+
+        // 1. Check if binaries exist at all
+        if (!arm64Lib.exists() || !x86_64Lib.exists()) {
+            throw new GradleException(
+                "Android orbital_archive_reader binaries not found. Run:  npm run ${buildScript}"
+            )
+        }
+
+        // 2. Profile gate: Release builds require release-profile Rust binaries
+        def profile = profileMarker.exists() ? profileMarker.text.trim() : 'missing'
+        def profileMismatch = releaseRequested && profile != 'release'
+
+        // 3. Find the oldest binary timestamp
+        def oldestBinaryTime = Math.min(arm64Lib.lastModified(), x86_64Lib.lastModified())
+
+        // 4. Collect all input files that are newer than the oldest binary
+        def staleFiles = []
+
+        fileTree(rustSrcDir).matching { include '**/*.rs' }.each { f ->
+            if (f.lastModified() > oldestBinaryTime) {
+                staleFiles.add(f.name)
+            }
+        }
+        if (cargoToml.lastModified() > oldestBinaryTime) {
+            staleFiles.add('Cargo.toml')
+        }
+        if (cargoLock.lastModified() > oldestBinaryTime) {
+            staleFiles.add('Cargo.lock')
+        }
+        if (rustToolchain.exists() && rustToolchain.lastModified() > oldestBinaryTime) {
+            staleFiles.add('rust-toolchain.toml')
+        }
+        if (ubrnConfig.lastModified() > oldestBinaryTime) {
+            staleFiles.add('ubrn.config.yaml')
+        }
+        if (pkgJson.lastModified() > oldestBinaryTime) {
+            staleFiles.add('package.json')
+        }
+
+        // 5. If stale or profile mismatch, either auto-rebuild or fail with guidance
+        if (!staleFiles.isEmpty() || profileMismatch) {
+            if (project.findProperty('orbital.autoRebuildRust') == 'true') {
+                def reason = profileMismatch
+                    ? "Release build requires release-profile Rust binaries (found '${profile}')"
+                    : "orbital_archive_reader sources changed (${staleFiles.join(', ')})"
+                logger.warn("${reason} — auto-rebuilding Android binaries with: npm run ${buildScript}")
+                exec {
+                    workingDir projectRoot
+                    commandLine 'npm', 'run', buildScript
+                }
+            } else {
+                if (profileMismatch) {
+                    throw new GradleException(
+                        "Release build requires release-profile orbital_archive_reader binaries, but found profile '${profile}'.\n" +
+                        "Run:  npm run build:rust:archive:android:release"
+                    )
+                }
+                throw new GradleException(
+                    "orbital_archive_reader sources are newer than Android binaries.\n" +
                     "Changed files: ${staleFiles.join(', ')}\n" +
                     "Run:  npm run ${buildScript}"
                 )

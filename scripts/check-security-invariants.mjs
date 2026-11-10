@@ -1047,6 +1047,14 @@ const CRATE_REL = 'packages/orbital-signal/rust/orbital_signal';
 const ARCHIVE_PKG_REL = 'packages/orbital-archive-reader';
 const ARCHIVE_CRATE_REL = 'packages/orbital-archive-reader/rust/orbital_archive_reader';
 
+// The ONE app-side module permitted to reach the archive reader (#920).
+// Spelled once here, before its first use: rule 24d's label allowlist, rule
+// 24e's localWipe wiring and rule 29a's import restriction all name it, and a
+// second spelling is how the three would drift apart after the file moves.
+const ARCHIVE_ACCESS = join(SRC, 'services', 'metaImport', 'archiveAccess.ts');
+// The archive-reader issue number, cited by rules 18, 24d, 24e, 29 and 29a.
+const AR_ISSUE = '#920';
+
 // A GitHub Actions step starts with `- <one of these keys>:`. Prose bullets
 // inside a `run: |` block (the libsignal-bump issue body is full of them) do
 // not match, which is what keeps them out of the working-directory lookup.
@@ -1187,25 +1195,19 @@ for (const file of CARGO_SCAN_FILES) {
 // commands. A coarse repo-wide "at least one cargo line" check would survive
 // deleting the whole rust-test job, which is the regression this guards.
 //
-// build.yml stays a FILE-WIDE floor: `rust-apple-targets` cross-compiles two
-// Apple slices from the same step and directory, so the two invocations are
-// not distinguishable by working-directory. Its per-crate split lands in PR2
-// with the archive build steps.
-const CARGO_EXPECTED = [
-  ['.github/workflows/build.yml', 'build', 2, 'rust-apple-targets no longer cross-compiles both Apple slices'],
-];
-for (const [file, sub, min, why] of CARGO_EXPECTED) {
-  const counts = cargoCounts.get(file);
-  if (!counts) {
-    violations.push(`  ${file}:0  [${RUST_PROV}]  expected cargo-bearing file was not scanned — ${why}`);
-  } else if (counts[sub] < min) {
-    violations.push(`  ${file}:0  [${RUST_PROV}]  expected >=${min} executable \`cargo ${sub}\` invocation(s), found ${counts[sub]} — ${why}`);
-  }
-}
-
-// --- Per-crate non-vacuity. Each row says "this subcommand runs, in THIS
-// crate directory". With two crates in one workflow a count floor proves
-// nothing about coverage: the pair (subcommand, working-directory) does.
+// Every row is PER-CRATE as of #920 (F12): the pair (subcommand,
+// working-directory) with a minimum count. A file-wide count floor is what
+// build.yml used to carry, and with two crates in one workflow it proves
+// nothing about coverage — four `cargo build` lines all pointing at
+// orbital_signal satisfy a floor of 4 while the archive crate is never
+// cross-compiled at all. The per-crate count is what preserves the property
+// the old floor was really about: `rust-apple-targets` cross-compiles TWO
+// Apple slices per crate (device release + simulator debug) from one step and
+// one directory, so they are indistinguishable by working-directory alone and
+// only the count separates "both slices" from "one".
+//
+// `min` defaults to 1, which is what every security.yml row wants: one
+// invocation per crate per subcommand, full stop.
 const CARGO_CRATE_EXPECTED = [
   ['.github/workflows/security.yml', 'test', CRATE_REL, 'the rust-test job no longer runs cargo test in orbital_signal'],
   ['.github/workflows/security.yml', 'clippy', CRATE_REL, 'the rust-test job no longer runs cargo clippy in orbital_signal'],
@@ -1213,17 +1215,19 @@ const CARGO_CRATE_EXPECTED = [
   ['.github/workflows/security.yml', 'test', ARCHIVE_CRATE_REL, 'the rust-test-archive job no longer runs cargo test — the ~5,000-mutant hostile-archive sweep would stop running (#920)'],
   ['.github/workflows/security.yml', 'clippy', ARCHIVE_CRATE_REL, 'the rust-test-archive job no longer runs cargo clippy in orbital_archive_reader (#920)'],
   ['.github/workflows/security.yml', 'audit', ARCHIVE_CRATE_REL, 'the rust-audit job no longer audits orbital_archive_reader — its flate2/miniz_oxide decompressor would be outside RUSTSEC coverage (#920)'],
+  ['.github/workflows/build.yml', 'build', CRATE_REL, 'rust-apple-targets no longer cross-compiles both Apple slices of orbital_signal', 2],
+  ['.github/workflows/build.yml', 'build', ARCHIVE_CRATE_REL, 'rust-apple-targets no longer cross-compiles both Apple slices of orbital_archive_reader, so an Apple-only compile break in the hostile-input parser would reach main unseen (#920)', 2],
 ];
-for (const [file, sub, dir, why] of CARGO_CRATE_EXPECTED) {
+for (const [file, sub, dir, why, min = 1] of CARGO_CRATE_EXPECTED) {
   if (!cargoCounts.has(file)) {
     violations.push(`  ${file}:0  [${RUST_PROV}]  expected cargo-bearing file was not scanned — ${why}`);
     continue;
   }
-  const hit = cargoInvocations.some(
+  const hits = cargoInvocations.filter(
     (inv) => inv.file === file && inv.sub === sub && inv.dir === dir,
-  );
-  if (!hit) {
-    violations.push(`  ${file}:0  [${RUST_PROV}]  no executable \`cargo ${sub}\` step with \`working-directory: ${dir}\` — ${why}`);
+  ).length;
+  if (hits < min) {
+    violations.push(`  ${file}:0  [${RUST_PROV}]  found ${hits} executable \`cargo ${sub}\` step(s) with \`working-directory: ${dir}\`, expected >=${min} — ${why}`);
   }
 }
 
@@ -1363,30 +1367,81 @@ for (const [crate, byVersion] of cargoInstallPins) {
   }
 }
 
-// --- ubrn's own cargo passthrough must carry --locked on BOTH platforms.
-// Defence in depth: ubrn 0.31.0-2 runs an unlocked `cargo metadata` first, so
-// the raw workflow lines above remain the real gate.
-const UBRN_CONFIG = 'packages/orbital-signal/ubrn.config.yaml';
-try {
-  const ubrnText = readFileSync(UBRN_CONFIG, 'utf8');
+// --- ubrn's own cargo passthrough must carry --locked on BOTH platforms, in
+// EVERY ubrn config. Defence in depth: ubrn 0.31.0-2 runs an unlocked
+// `cargo metadata` first, so the raw workflow lines above remain the real gate.
+//
+// A LIST since #920, not one path: with two packages a single-file check says
+// nothing about the second, and the second is the one whose binary parses
+// hostile bytes. Each row also carries the files `--and-generate` must not
+// overwrite — `noOverwrite` is the only thing standing between a routine
+// regeneration and the silent deletion of hand-written code:
+//
+//   OrbitalArchiveReaderPackage.kt   registers BOTH TurboModules; ubrn's
+//     template registers only its own, so a regeneration without this entry
+//     makes the hand-written glue module "not found" at runtime, with nothing
+//     in the build log.
+//   AndroidManifestNew.xml           the AGP 8+ manifest the GENERATED gradle
+//     points `manifest.srcFile` at, and the one asserted permission-free by
+//     rule 29. ubrn does not render it today; listed so a future ubrn that
+//     starts cannot replace it with a `package=`-bearing default.
+//   OrbitalArchiveReader.podspec     hand-edited `s.frameworks` (UIKit,
+//     UniformTypeIdentifiers) for the glue module. ubrn's template has no
+//     frameworks line, so a regeneration drops the link flags and the pod
+//     fails to link UTTypeZIP.
+//
+// COMMENTS ARE STRIPPED FIRST, and that is load-bearing twice over: this very
+// config documents all three noOverwrite entries in a `#` comment block
+// immediately above the list, and a `# cargoExtras: ["--locked"]` line would
+// otherwise satisfy the --locked pin while the real key was gone (the same trap
+// as rule 29's mutation 29-18). YAML uses shell comment syntax.
+const UBRN_CONFIGS = [
+  [`${PKG_REL}/ubrn.config.yaml`, 'orbital_signal', []],
+  [
+    `${ARCHIVE_PKG_REL}/ubrn.config.yaml`,
+    'orbital_archive_reader',
+    [
+      'OrbitalArchiveReaderPackage.kt',
+      'AndroidManifestNew.xml',
+      'OrbitalArchiveReader.podspec',
+    ],
+  ],
+];
+for (const [config, crate, noOverwrite] of UBRN_CONFIGS) {
+  let ubrnText;
+  try {
+    ubrnText = stripShellComments(readFileSync(config, 'utf8'));
+  } catch {
+    violations.push(`  ${config}:0  [${RUST_PROV}]  ${crate}'s ubrn config not found — cannot verify cargoExtras`);
+    continue;
+  }
   for (const platform of ['ios', 'android']) {
     // Platform block = from `^<platform>:` to the next top-level key, or to
     // the absolute end of file — `(?![\s\S])`, since JS has no \Z and `$`
     // under /m would stop at the first newline.
     const block = new RegExp(`^${platform}:\\n([\\s\\S]*?)(?=^\\S|(?![\\s\\S]))`, 'm').exec(ubrnText);
     if (!block) {
-      violations.push(`  ${UBRN_CONFIG}:0  [${RUST_PROV}]  no \`${platform}:\` block — cannot verify its cargoExtras`);
+      violations.push(`  ${config}:0  [${RUST_PROV}]  no \`${platform}:\` block — cannot verify its cargoExtras`);
       continue;
     }
     const extras = /^\s+cargoExtras:\s*(.+)$/m.exec(block[1]);
     if (!extras) {
-      violations.push(`  ${UBRN_CONFIG}:0  [${RUST_PROV}]  \`${platform}:\` block has no cargoExtras — ubrn would cargo build unlocked`);
+      violations.push(`  ${config}:0  [${RUST_PROV}]  \`${platform}:\` block has no cargoExtras — ubrn would cargo build unlocked`);
     } else if (!extras[1].includes('--locked')) {
-      violations.push(`  ${UBRN_CONFIG}:0  [${RUST_PROV}]  \`${platform}: cargoExtras\` does not contain --locked: ${extras[1].trim()}`);
+      violations.push(`  ${config}:0  [${RUST_PROV}]  \`${platform}: cargoExtras\` does not contain --locked: ${extras[1].trim()}`);
     }
   }
-} catch {
-  violations.push(`  ${UBRN_CONFIG}:0  [${RUST_PROV}]  ubrn config not found — cannot verify cargoExtras`);
+  if (noOverwrite.length === 0) continue;
+  const list = /^noOverwrite:\n([\s\S]*?)(?=^\S|(?![\s\S]))/m.exec(ubrnText);
+  if (!list) {
+    violations.push(`  ${config}:0  [${RUST_PROV}]  no \`noOverwrite:\` list — \`ubrn build --and-generate\` would rewrite ${crate}'s hand-written package files (${AR_ISSUE})`);
+    continue;
+  }
+  for (const name of noOverwrite) {
+    if (!list[1].includes(name)) {
+      violations.push(`  ${config}:0  [${RUST_PROV}]  \`noOverwrite\` no longer lists \`${name}\` — the next \`ubrn build --and-generate\` overwrites it with the template version (${AR_ISSUE})`);
+    }
+  }
 }
 
 // --- Freshness-input parity between the two staleness gates. They are
@@ -1427,15 +1482,53 @@ function stripCStyleComments(text) {
     .join('\n');
 }
 
+// Comment stripper for GROOVY (.gradle), where stripCStyleComments is actively
+// unsafe and was silently eating most of this repo's Android freshness gate.
+//
+// Groovy has two constructs C does not: the slashy regex literal
+// (it.name ==~ /(assemble|bundle)\w*Release\w*/) and Ant-style glob strings
+// (include '**' + '/*.rs'). The glob contains a slash-star, and the slashy
+// literal ENDS in a star-slash, so the non-greedy block-comment regex opened at
+// the first glob (line 96) and closed at the next regex literal (line 173) —
+// blanking 77 lines of EXECUTABLE code in between, which included the whole
+// second task's input list. The #920 archive rows failed on a file that plainly
+// named every input; that is how this was found. Nothing in the file is written
+// as a JSDoc block here for the same reason: a star-slash inside the prose
+// closes the comment early.
+//
+// So: block comments are recognised only in the shape every gradle file in this
+// repo actually writes them — a line whose first non-space characters open the
+// comment, closed by a line containing the terminator — and `//` starts a
+// comment only at the beginning of a line or after whitespace, never mid-token.
+function stripGroovyComments(text) {
+  const out = [];
+  let inBlock = false;
+  for (const line of text.split('\n')) {
+    if (inBlock) {
+      if (line.includes('*/')) inBlock = false;
+      out.push('');
+      continue;
+    }
+    if (/^\s*\/\*/.test(line)) {
+      if (!line.includes('*/')) inBlock = true;
+      out.push('');
+      continue;
+    }
+    out.push(line.replace(/(^|\s)\/\/.*$/, '$1'));
+  }
+  return out.join('\n');
+}
+
 const FRESHNESS_GATES = [
   {
     file: 'android/check-rust-freshness.gradle',
     label: 'Android mtime gate',
-    strip: stripCStyleComments,
+    strip: stripGroovyComments,
     // The gradle gate composes its src path from a projectRoot variable, so
     // match the tail rather than the full relpath.
     names: ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'orbital_signal/src'],
     execAnchors: [
+      ["tasks.register('checkRustBinaries')", 'the signal crate has no gradle staleness task at all'],
       ['staleFiles.add', 'it no longer records any stale input'],
       ['lastModified', 'it no longer compares timestamps'],
     ],
@@ -1445,6 +1538,53 @@ const FRESHNESS_GATES = [
     label: 'iOS digest gate',
     strip: stripShellComments,
     names: ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', `${CRATE_REL}/src`, 'ubrn.config.yaml', `${PKG_REL}/package.json`],
+    execAnchors: [['shasum -a 256', 'it no longer hashes anything']],
+  },
+  // --- The second crate, #920. Its two gates are a MATCHED PAIR and the rows
+  // below name the SAME SIX inputs on both sides, which is the whole point:
+  // the iOS digest and the Android mtime task must agree on what makes
+  // orbital_archive_reader's binaries stale, or one platform ships a .a built
+  // from source nobody is looking at any more.
+  //
+  // Full relpaths here, not tails: unlike the signal rows (whose `Cargo.toml`
+  // tail would be satisfied by EITHER crate's path) these have to pin the
+  // archive crate specifically, now that two crates' paths are in play.
+  //
+  // The archive pair is deliberately STRONGER than signal's: it also watches
+  // the package's ubrn.config.yaml (target list + cargoExtras) and package.json
+  // (the exact ubrn pin and the build command lines), either of which changes
+  // the compiled .a with no .rs edit at all. Widening signal's narrower
+  // historical set to match is DEBT-408, not this PR.
+  {
+    file: 'android/check-rust-freshness.gradle',
+    label: 'Android mtime gate (archive crate)',
+    strip: stripGroovyComments,
+    names: [
+      `${ARCHIVE_CRATE_REL}/src`,
+      `${ARCHIVE_CRATE_REL}/Cargo.toml`,
+      `${ARCHIVE_CRATE_REL}/Cargo.lock`,
+      'rust-toolchain.toml',
+      `${ARCHIVE_PKG_REL}/ubrn.config.yaml`,
+      `${ARCHIVE_PKG_REL}/package.json`,
+    ],
+    execAnchors: [
+      ["tasks.register('checkArchiveRustBinaries')", 'the second crate has no gradle staleness task at all'],
+      ['staleFiles.add', 'it no longer records any stale input'],
+      ['lastModified', 'it no longer compares timestamps'],
+    ],
+  },
+  {
+    file: 'scripts/rust-input-digest-archive.sh',
+    label: 'iOS digest gate (archive crate)',
+    strip: stripShellComments,
+    names: [
+      `${ARCHIVE_CRATE_REL}/src`,
+      `${ARCHIVE_CRATE_REL}/Cargo.toml`,
+      `${ARCHIVE_CRATE_REL}/Cargo.lock`,
+      'rust-toolchain.toml',
+      `${ARCHIVE_PKG_REL}/ubrn.config.yaml`,
+      `${ARCHIVE_PKG_REL}/package.json`,
+    ],
     execAnchors: [['shasum -a 256', 'it no longer hashes anything']],
   },
 ];
@@ -1474,19 +1614,76 @@ for (const gate of FRESHNESS_GATES) {
 // three copies (both npm scripts + the harness fake tree) and build-ios is
 // main-only, so drift between them was invisible until after merge.
 const MARKER_WRITER = 'scripts/write-rust-marker-ios.sh';
+// Each row is [file, scriptKeyFilter, needles[], why].
+//
+// `scriptKeyFilter` is non-null for package.json callers and it is load-bearing:
+// a whole-file `includes('write-rust-marker-ios.sh')` was satisfied by BOTH
+// packages' own `comment:marker` script, which is prose describing the writer.
+// Replacing the real `build:ios` command with a hand-rolled `echo release > …`
+// left this check green (found by the #920 mutation sweep, row M1). So only the
+// values of the scripts whose KEY matches are searched, and a filter matching
+// no key at all is itself a violation.
+//
+// The needles carry the CRATE SELECTOR, not just the writer name, and they are
+// END-ANCHORED (next token is end-of-command or a shell operator) in BOTH
+// directions. The archive package must call `… <profile> archive`: without the
+// selector the writer defaults to signal (F13 keeps the argument optional so
+// every pre-#920 call site still works), so an archive build would overwrite
+// the SIGNAL marker with the archive digest. The anchor is what catches the
+// MIRROR mistake: a bare `… debug` substring is a prefix of `… debug archive`,
+// so without it, adding `archive` to the SIGNAL package's build:ios read as
+// green while signal builds wrote the archive crate's marker (#920 sweep, M5).
 const MARKER_WRITER_CALLERS = [
-  ['packages/orbital-signal/package.json', 'the build:ios[:release] scripts no longer call the shared marker writer'],
-  ['scripts/test-rust-profile-gate-ios.sh', 'the harness no longer exercises the real marker writer, so writer drift would not surface on a PR'],
+  [
+    `${PKG_REL}/package.json`,
+    /^build:ios/,
+    [
+      ['write-rust-marker-ios.sh debug', /write-rust-marker-ios\.sh debug(?=\s*($|&&|\|\||;))/m],
+      ['write-rust-marker-ios.sh release', /write-rust-marker-ios\.sh release(?=\s*($|&&|\|\||;))/m],
+    ],
+    'the build:ios[:release] scripts no longer call the shared marker writer for the SIGNAL crate (no selector, or the archive one)',
+  ],
+  [
+    `${ARCHIVE_PKG_REL}/package.json`,
+    /^build:ios/,
+    [
+      ['write-rust-marker-ios.sh debug archive', /write-rust-marker-ios\.sh debug archive(?=\s*($|&&|\|\||;))/m],
+      ['write-rust-marker-ios.sh release archive', /write-rust-marker-ios\.sh release archive(?=\s*($|&&|\|\||;))/m],
+    ],
+    "the archive package's build:ios[:release] scripts no longer call the shared marker writer with its `archive` selector, so its marker would describe the wrong crate (or carry no digest at all, which verify-rust-profile-ios.sh archive reads as stale)",
+  ],
+  [
+    'scripts/test-rust-profile-gate-ios.sh',
+    null,
+    [['write-rust-marker-ios.sh', /write-rust-marker-ios\.sh/]],
+    'the harness no longer exercises the real marker writer, so writer drift would not surface on a PR',
+  ],
 ];
 try {
   statSync(MARKER_WRITER);
-  for (const [caller, why] of MARKER_WRITER_CALLERS) {
+  for (const [caller, keyFilter, needles, why] of MARKER_WRITER_CALLERS) {
+    let haystack;
     try {
-      if (!readFileSync(caller, 'utf8').includes('write-rust-marker-ios.sh')) {
-        violations.push(`  ${caller}:0  [${RUST_PROV}]  does not reference ${MARKER_WRITER} — ${why}`);
+      const text = readFileSync(caller, 'utf8');
+      if (keyFilter === null) {
+        haystack = text;
+      } else {
+        const scripts = JSON.parse(text).scripts ?? {};
+        const matched = Object.keys(scripts).filter((k) => keyFilter.test(k));
+        if (matched.length === 0) {
+          violations.push(`  ${caller}:0  [${RUST_PROV}]  no script key matching ${keyFilter} — ${why}`);
+          continue;
+        }
+        haystack = matched.map((k) => scripts[k]).join('\n');
       }
     } catch {
-      violations.push(`  ${caller}:0  [${RUST_PROV}]  expected marker-writer caller not found — ${why}`);
+      violations.push(`  ${caller}:0  [${RUST_PROV}]  expected marker-writer caller not found or unreadable — ${why}`);
+      continue;
+    }
+    for (const [label, needle] of needles) {
+      if (!needle.test(haystack)) {
+        violations.push(`  ${caller}:0  [${RUST_PROV}]  no executable \`${label}\` call — ${why}`);
+      }
     }
   }
 } catch {
@@ -2714,16 +2911,29 @@ const ME_LABEL_CALLS = ['buildExportFileName(', 'reconcileExportLabel(', 'sniffE
 //  - the two label builders: their own definition file, plus the service,
 //    whose `resolveExportLabel()` is the single site above;
 //  - `sniffContentType`: its definition file, the service (export labelling),
-//    and `imageSanitizer` (the UPLOAD-side relabel that keeps this client's
-//    own rows honest, #880). It reads DECRYPTED bytes, so a fourth caller is
-//    a decision, not a detail.
+//    `imageSanitizer` (the UPLOAD-side relabel that keeps this client's own
+//    rows honest, #880), and — the FOURTH caller, which this comment said
+//    would be a decision rather than a detail — `metaImport/archiveAccess.ts`.
+//
+//    THAT DECISION, recorded (#920, PR2): the archive reader's use is an
+//    IMPORT-side magic-byte gate, not an export label. F1 settles "video bytes
+//    under an image name" by sniffing the first 128 bytes BEFORE extraction and
+//    again after, so a renamed .mp4 inside a Meta export is refused instead of
+//    being imported as a photo; nothing it returns ever names a file or reaches
+//    a destination outside the sandbox. It is allowlisted for the sniffer ONLY
+//    — `buildExportFileName` and `reconcileExportLabel` stay at two files each,
+//    so the "labels are computed in exactly one place" property is untouched.
+//    A FIFTH caller of the sniffer is again a decision, not a detail.
 //
 // Test paths are exempt, like every other cross-file scan here.
 {
   const ME_LABEL_IMPORT_ALLOW = new Map([
     ['buildExportFileName', new Set([ME_EXPORT_NAMES, ME_SERVICE])],
     ['reconcileExportLabel', new Set([ME_EXPORT_NAMES, ME_SERVICE])],
-    ['sniffContentType', new Set([ME_CONTENT_TYPE, ME_SERVICE, ME_IMAGE_SANITIZER])],
+    [
+      'sniffContentType',
+      new Set([ME_CONTENT_TYPE, ME_SERVICE, ME_IMAGE_SANITIZER, ARCHIVE_ACCESS]),
+    ],
   ]);
 
   /** Names seen inside their own allowlist — zero is a vacuous pass. */
@@ -2786,6 +2996,27 @@ const ME_LABEL_CALLS = ['buildExportFileName(', 'reconcileExportLabel(', 'sniffE
 //
 // `cleanupOrphanedChunks` carries the same sweep, which is how BOOTSTRAP is
 // covered after a crash or jetsam mid-picker.
+//
+// #920 (F3) adds the ARCHIVE READER's teardown to the same rule rather than a
+// new 29b, because the property is identical — a native job that keeps running
+// through a wipe writes plaintext a wipe cannot reach — and because the two
+// teardowns have to stay next to each other in phase 1 to be reviewable:
+//
+//  - `abortAllArchiveSessions()` runs BEFORE the MEDIA_DIR deletion, for the
+//    same reason `cancelAllExports()` does: it bumps `archiveEpoch` so later
+//    `createStagingFile`/`openArchive` calls refuse, and synchronously sets
+//    every in-flight job's cancel flag. An extraction that is mid-`stream_entry`
+//    when an account is deleted would otherwise finish and leave a decrypted
+//    staging file behind phase 2's sweep. Synchronous and NOT awaited, again
+//    for cancelAllExports' reason: an await hands control straight back to the
+//    job being torn down, which then gets to write one more chunk.
+//  - `releaseAllPersistedParts()` drops the Android SAF persistable grants.
+//    This one IS awaited and belongs on the DELETION path: it is a
+//    ContentResolver round-trip, it must not race the epoch bump, and logout
+//    deliberately KEEPS the grants so a cold-start resume still works. Without
+//    it, a deleted account leaves this app holding long-lived read grants on
+//    the user's Downloads ZIPs — grants that survive the wipe and that nothing
+//    in the UI would ever mention again.
 
 const ME_WIPE_RULE = 'media-export-wipe-wired';
 
@@ -2854,6 +3085,32 @@ if (meAuthRaw !== null) {
     if (/\bawait\s+cancelAllExports\s*\(/.test(wipe[0])) {
       violations.push(
         `  ${relative('.', ME_AUTH_SERVICE)}:${at}  [${ME_WIPE_RULE}]  cancelAllExports( must not be awaited — the abort has to be synchronous (${ME_ISSUE})`,
+      );
+    }
+
+    // --- #920 F3: the archive reader's teardown, pinned the same three ways
+    // as the export teardown above (present, phase 1, not awaited) plus the
+    // deletion-path grant release. `mediaDirPath` is the SAME ordering anchor
+    // the cancelAllExports clause uses, and its non-vacuity is already
+    // asserted above, so this clause cannot pass by the anchor disappearing.
+    const archiveAbortIdx = wipe[0].indexOf('abortAllArchiveSessions(');
+    if (archiveAbortIdx === -1) {
+      violations.push(
+        `  ${relative('.', ME_AUTH_SERVICE)}:${at}  [${ME_WIPE_RULE}]  localWipe() does not call abortAllArchiveSessions( — a native archive job mid-extraction would keep writing a decrypted staging file through the wipe (${AR_ISSUE})`,
+      );
+    } else if (mediaDirIdx !== -1 && archiveAbortIdx > mediaDirIdx) {
+      violations.push(
+        `  ${relative('.', ME_AUTH_SERVICE)}:${at}  [${ME_WIPE_RULE}]  abortAllArchiveSessions( must run in phase 1, BEFORE the MEDIA_DIR deletion in localWipe() — after it, the epoch bump lands too late to stop a job that is already extracting (${AR_ISSUE})`,
+      );
+    }
+    if (/\bawait\s+abortAllArchiveSessions\s*\(/.test(wipe[0])) {
+      violations.push(
+        `  ${relative('.', ME_AUTH_SERVICE)}:${at}  [${ME_WIPE_RULE}]  abortAllArchiveSessions( must not be awaited — the epoch bump and the cancel-flag set are synchronous, and an await hands control back to the job being torn down (${AR_ISSUE})`,
+      );
+    }
+    if (wipe[0].indexOf('releaseAllPersistedParts(') === -1) {
+      violations.push(
+        `  ${relative('.', ME_AUTH_SERVICE)}:${at}  [${ME_WIPE_RULE}]  localWipe() does not call releaseAllPersistedParts( — a deleted account would leave this app holding persistable SAF read grants on the user's archive ZIPs (${AR_ISSUE})`,
       );
     }
   }
@@ -2933,6 +3190,24 @@ checkWindowedPins(
   ['orbital-export', 'CachesDirectoryPath'],
   [],
   ME_ISSUE,
+);
+
+// #920 F3, same reasoning as the cancelAllExports body pin above: the call
+// site in localWipe is satisfied by an emptied function. All three halves of
+// the archive teardown are load-bearing and each alone is insufficient —
+// bumping the epoch refuses the call that is one microtask from creating a
+// staging file; closeForWipe() sets the cancel flag of a job already inside
+// stream_entry and drops Rust's descriptor dups; clearing the live set stops
+// a second wipe from closing sessions twice. A version doing two of the three
+// would pass every call-site check in this file.
+checkWindowedPins(
+  join(ARCHIVE_PKG_REL, 'src', 'index.tsx'),
+  ME_WIPE_RULE,
+  /^export function abortAllArchiveSessions\(\): void \{[\s\S]*?\n\}/m,
+  'the abortAllArchiveSessions teardown body',
+  ['archiveEpoch++', 'closeForWipe(', 'liveSessions.clear('],
+  [],
+  AR_ISSUE,
 );
 
 // ---------------------------------------------------------------------------
@@ -3657,7 +3932,8 @@ const NP_GATES = [
 // 29a (import restriction) land with the native layer in PR2.
 
 const AR_RULE = 'archive-reader-native-pins';
-const AR_ISSUE = '#920';
+// AR_ISSUE is declared with ARCHIVE_ACCESS above — rules 18, 24d and 24e cite
+// it before this block runs.
 // One spelling of the crate path in this file: rule 18 already needs it.
 const AR_CRATE = ARCHIVE_CRATE_REL;
 const AR_SRC = join(AR_CRATE, 'src');
@@ -3898,12 +4174,22 @@ if (arLock !== null) {
 }
 
 // --- 29.4 The limits table.
+//
+// The Json row is 12 MiB and the pin says so. It is a JS-HEAP budget: read_json
+// hands the whole text across the FFI as a String, and the B3 Hermes
+// measurement put peak RSS at ~10x the input bytes (UTF-16 copy + parsed graph
+// + intermediates coexisting). At 32 MiB — the value this row carried until
+// Alex's 2026-11-09 decision — that is an allocation failure Hermes aborts the
+// process on: uncatchable from JS, so no typed error, no retry, no crash
+// breadcrumb beyond a jetsam-style kill. Raising it again requires a fresh
+// on-device measurement, which is why the literal is pinned here and not left
+// to review.
 checkWindowedPins(
   AR_LIMITS,
   AR_RULE,
   /^pub const KIND_CAPS[\s\S]*?\];/m,
   'the KIND_CAPS table',
-  ['(EntryKind::Json, 32 * MIB)', '(EntryKind::Image, 50 * MIB)'],
+  ['(EntryKind::Json, 12 * MIB)', '(EntryKind::Image, 50 * MIB)'],
   // A `Video` row would make video entries extractable. They are listed so a
   // post can be shown whole, and never opened: kind_cap returns None, which
   // becomes EntryKindNotEnabled.
@@ -3931,6 +4217,12 @@ checkWindowedPins(
     // 1 KiB paths x three retained copies is ~320 MB — again a jetsam kill
     // rather than a typed error, and again invisible in small-archive tests.
     'pub const MAX_RETAINED_PATH_BYTES: u64 = 64 * MIB;',
+    // The JS-heap ceiling, pinned separately from the KIND_CAPS Json row
+    // above. read_json takes the MINIMUM of the two, so lowering the kind cap
+    // while leaving this at 32 MiB would look consistent and lowering THIS
+    // while leaving the row high would too — only pinning both says which
+    // number the Hermes measurement licensed (12 MiB, Alex 2026-11-09).
+    'pub const MAX_JSON_BYTES: u64 = 12 * MIB;',
   ],
   [],
   AR_ISSUE,
@@ -4049,6 +4341,311 @@ checkWindowedPins(
   [],
   AR_ISSUE,
 );
+
+// --- 29.6 The native glue (#920 PR2).
+//
+// Rust owns the parsing; these two files own everything Rust cannot see — which
+// document the user picked, which descriptor it arrives on, where the extracted
+// bytes land, and for how long the app keeps the right to re-read the archive.
+// None of it is observable from a unit test on either platform, and all of it
+// is one keyword away from a different security posture:
+//
+//   COPY vs REFERENCE. `asCopy:NO` / `ACTION_OPEN_DOCUMENT` give a reference to
+//   the user's file. The one-character alternatives (`asCopy:YES`,
+//   `ACTION_GET_CONTENT`, `copyItemAtURL`) make the OS duplicate a multi-GB ZIP
+//   into this app's container first: it fails on a full device, it doubles the
+//   user's disk, and the copy is then OURS to wipe — a plaintext archive of the
+//   user's whole social history sitting in a sandbox a localWipe has to find.
+//
+//   DESCRIPTOR vs STREAM. The Rust reader seeks; `openInputStream` and the
+//   asset-fd variants do not give a seekable fd, so reaching for one is how a
+//   future edit would silently fall back to buffering the archive in memory.
+//   `Os.fstat` + `S_ISREG` is the check that refuses a pipe or a directory
+//   before the reader ever trusts an offset.
+//
+//   READ-ONLY. Every descriptor is opened `"r"` / without `O_RDWR`/`O_WRONLY`,
+//   and the SAF grant taken is read-only. A write handle on a document the user
+//   picked means a parser bug can CORRUPT the user's only copy of their export.
+//
+//   CONFINEMENT. Staging goes to the internal `cacheDir` (never
+//   `externalCacheDir`, which is world-readable on older API levels), under the
+//   `-archive-staging.bin` suffix the wipe sweep and the bootstrap reaper
+//   recognise, and `canonicalPath` / `realpath(` are what stop a traversal in a
+//   caller-supplied path from unlinking something else.
+//
+//   SILENCE. `NSLog`, `os_log` and `android.util.Log` all write archive paths
+//   and media URIs — the names of a user's photos — to the device log, where
+//   every other app's crash reporter can read them.
+//
+// Matching is on COMMENT-STRIPPED source for the usual reason: both files
+// document every one of these bans in prose, naming the forbidden API, and raw
+// text would be satisfied by the documentation. Both windows are anchored on a
+// structural declaration, so deleting the class loses the window and FAILS
+// rather than passing vacuously.
+
+const AR_MM = join(ARCHIVE_PKG_REL, 'ios', 'OrbitalArchiveAccess.mm');
+const AR_ANDROID_JAVA = join(
+  ARCHIVE_PKG_REL, 'android', 'src', 'main', 'java', 'com', 'orbital', 'archivereader',
+);
+const AR_KT = join(AR_ANDROID_JAVA, 'OrbitalArchiveAccessModule.kt');
+const AR_PACKAGE_KT = join(AR_ANDROID_JAVA, 'OrbitalArchiveReaderPackage.kt');
+const AR_MANIFEST_DIR = join(ARCHIVE_PKG_REL, 'android', 'src', 'main');
+
+// TODO(#920 F15): pin the data-protection class here once smoke step 4 reports.
+// That leg extracts an entry, locks the device for two minutes and then runs
+// the upload read loop (RNFS reopens per MiB). If it passes, pin
+// `NSFileProtectionCompleteUnlessOpen`; if the locked-device reopen fails, the
+// glue switches to `…CompleteUntilFirstUserAuthentication` and THAT gets
+// pinned. Pinning either string before the measurement would freeze a guess —
+// and the .mm's own closing note says so. `NSFileProtectionNone` is forbidden
+// below either way: that is the one answer no measurement can license.
+checkWindowedPins(
+  AR_MM,
+  AR_RULE,
+  // Whole file from its first #import: the staging-leaf constant and the
+  // realpath(3) helper are file-level statics ABOVE both classes, so a
+  // class-anchored window would miss them. Both class declarations are pinned
+  // as tokens instead, so deleting either still fires, and an emptied file has
+  // no #import and so no window at all.
+  /^#import[\s\S]*/m,
+  'the OrbitalArchiveAccess glue',
+  [
+    '@interface OAAPickSession',
+    '@implementation OrbitalArchiveAccess',
+    'asCopy:NO',
+    'allowsMultipleSelection = YES',
+    'startAccessingSecurityScopedResource',
+    'stopAccessingSecurityScopedResource',
+    'NSFileCoordinator',
+    'NSURLIsExcludedFromBackupKey',
+    'O_CLOEXEC',
+    '-archive-staging.bin',
+    'RCTPresentedViewController',
+    'realpath(',
+  ],
+  [
+    'asCopy:YES',
+    'UIDocumentPickerModeImport',
+    'initWithDocumentTypes',
+    'copyItemAtURL',
+    'copyItemAtPath',
+    'NSFileProtectionNone',
+    'NSLog',
+    'os_log',
+    'O_RDWR',
+    'O_WRONLY',
+  ],
+  AR_ISSUE,
+  stripCStyleComments,
+);
+
+checkWindowedPins(
+  AR_KT,
+  AR_RULE,
+  /^class OrbitalArchiveAccessModule[\s\S]*/m,
+  'the OrbitalArchiveAccessModule glue',
+  [
+    'ACTION_OPEN_DOCUMENT',
+    'EXTRA_ALLOW_MULTIPLE',
+    'openFileDescriptor(',
+    'Os.fstat',
+    'S_ISREG',
+    'cacheDir',
+    'canonicalPath',
+    '-archive-staging.bin',
+    'takePersistableUriPermission',
+    'releasePersistableUriPermission',
+    'persistedUriPermissions',
+    // RN calls invalidate() on a catalyst teardown (reload, Fast Refresh, host
+    // destroy). Without an override, every open descriptor and every staging
+    // file leaks across a reload, and the pending-pick promise never settles.
+    'override fun invalidate',
+  ],
+  [
+    'openInputStream',
+    'openAssetFileDescriptor',
+    'openTypedAssetFileDescriptor',
+    // Substring, so it also catches getExternalCacheDirs() and friends. Note
+    // `cacheDir` above is a substring of `externalCacheDir`, i.e. swapping the
+    // internal dir for the external one would still satisfy the pin — this ban
+    // is what makes that swap fire.
+    'externalCacheDir',
+    'getExternalStorage',
+    'android.util.Log',
+    'ACTION_GET_CONTENT',
+    'MODE_WORLD',
+  ],
+  AR_ISSUE,
+  stripCStyleComments,
+);
+
+// Two Kotlin clauses that a token list cannot express, both about WRITE access.
+const arKtRaw = meRead(AR_KT, AR_RULE, 'the read-only descriptor and grant clauses', AR_ISSUE);
+if (arKtRaw !== null) {
+  const arKtCode = stripCStyleComments(arKtRaw);
+
+  // 1. Every openFileDescriptor() call opens READ-ONLY. A file-wide ban on the
+  //    `"rw"` / `"w"` literals is too blunt (they are ordinary strings
+  //    elsewhere) and too weak (`"rwt"`, `"wa"`, a mode held in a val). So the
+  //    MODE ARGUMENT of each call is read instead: it must be the literal "r".
+  const AR_OFD_RE = /openFileDescriptor\s*\(([^)]*)\)/g;
+  AR_OFD_RE.lastIndex = 0;
+  let ofd;
+  let ofdSeen = 0;
+  while ((ofd = AR_OFD_RE.exec(arKtCode)) !== null) {
+    ofdSeen += 1;
+    if (!/,\s*"r"\s*$/.test(ofd[1].trim())) {
+      report(
+        AR_KT,
+        arKtCode.slice(0, ofd.index).split('\n').length,
+        AR_RULE,
+        `openFileDescriptor() must take the literal mode "r" — a write handle on a document the user picked lets a parser bug corrupt the only copy of their export: ${ofd[0].replace(/\s+/g, ' ')} (${AR_ISSUE})`,
+      );
+    }
+  }
+  if (ofdSeen === 0) {
+    arViolation(AR_KT, 'no openFileDescriptor() call — the read-only-mode clause would pass vacuously, and the reader needs a SEEKABLE descriptor (openInputStream is banned above)');
+  }
+
+  // 2. The WRITE grant flag may appear ONLY inside releaseAllPersistedParts,
+  //    where releasing a grant the user somehow holds is the whole point. Taken
+  //    anywhere else — the picker Intent, takePersistableUriPermission — it
+  //    would hand this app durable write access to the user's archive files.
+  const arRelease = /^ {2}override fun releaseAllPersistedParts\([\s\S]*?\n {2}\}/m.exec(arKtCode);
+  if (arRelease === null) {
+    arViolation(AR_KT, 'releaseAllPersistedParts() not found — localWipe\'s deletion path (rule 24e) calls it, and the write-flag containment clause below would pass vacuously');
+  } else {
+    const releaseStart = arRelease.index;
+    const releaseEnd = releaseStart + arRelease[0].length;
+    for (let at = arKtCode.indexOf('FLAG_GRANT_WRITE_URI_PERMISSION'); at !== -1; at = arKtCode.indexOf('FLAG_GRANT_WRITE_URI_PERMISSION', at + 1)) {
+      if (at >= releaseStart && at < releaseEnd) continue;
+      report(
+        AR_KT,
+        arKtCode.slice(0, at).split('\n').length,
+        AR_RULE,
+        `FLAG_GRANT_WRITE_URI_PERMISSION outside releaseAllPersistedParts() — the SAF grant this app takes and persists must be READ-ONLY; releasing a write grant is the only legitimate mention (${AR_ISSUE})`,
+      );
+    }
+  }
+}
+
+// Both package manifests, ZERO permissions. Everything this package touches is
+// reached through a user-granted SAF document URI, which needs no permission at
+// all; a `<uses-permission>` here would widen the APP's declared surface
+// (library manifests are merged into it) and change the Play Data Safety
+// answers, with nothing in the app's own manifest to show for it. XML comments
+// are stripped because AndroidManifestNew.xml explains this ban in a comment
+// that names the tag.
+for (const manifest of ['AndroidManifest.xml', 'AndroidManifestNew.xml']) {
+  checkWindowedPins(
+    join(AR_MANIFEST_DIR, manifest),
+    AR_RULE,
+    /<manifest[\s\S]*<\/manifest>/m,
+    `the ${manifest} <manifest> element`,
+    [],
+    ['<uses-permission'],
+    AR_ISSUE,
+    meStripXmlComments,
+  );
+}
+
+// The hand-written package registration. ubrn's template registers only its own
+// module; this file is in `noOverwrite` (rule 18) precisely so it can register
+// BOTH. A module missing here fails at runtime as "module not found" with
+// nothing in the build log — and the glue module is the half that owns the
+// picker, the descriptors and the staging files.
+checkWindowedPins(
+  AR_PACKAGE_KT,
+  AR_RULE,
+  /^class OrbitalArchiveReaderPackage[\s\S]*/m,
+  'the OrbitalArchiveReaderPackage module registry',
+  ['OrbitalArchiveReaderModule.NAME', 'OrbitalArchiveAccessModule.NAME'],
+  [],
+  AR_ISSUE,
+  stripCStyleComments,
+);
+
+// ---------------------------------------------------------------------------
+// 29a. archive-reader-import-restricted (#920 F10)
+// ---------------------------------------------------------------------------
+
+// Same shape and the same argument as rule 24a: the archive reader is the only
+// code in the app that parses bytes a stranger produced, and
+// `src/services/metaImport/archiveAccess.ts` is the policy layer wrapped around
+// it — the denied-root tripwire on every listing, the magic-byte gate before
+// and after extraction, the disk-headroom preflight, the one-UUID-per-extract
+// staging discipline and the `release_staging` call in the unlink `finally`
+// that keeps the 512 MiB live-staging ceiling from becoming a hard stop.
+//
+// NONE of that is in the package. A second importer anywhere in src/ would get
+// the raw session API with every one of those policies silently absent, and
+// would also route around rule 24e's wipe wiring, which reasons about ONE
+// module's teardown exports.
+//
+// TWO specifier shapes, because the bare one is trivially avoidable. The
+// precedent is `safetyNumber.ts`: a deep relative path
+// (`../../../packages/orbital-archive-reader/src/index`) or an absolute one
+// resolves to exactly the same module and matches no bare-specifier pattern at
+// all. `\bfrom\s*` also covers `export … from`, i.e. a barrel re-export, which
+// is how a "single importer" rule is usually defeated.
+//
+// Test and mock paths are exempt, like every other cross-file scan here: the
+// wrapper's own tests and the jest manual mock both name the package.
+
+const AR_IMPORT_RULE = 'archive-reader-import-restricted';
+const AR_SPEC_HEAD = String.raw`(?:\bfrom\s*|\brequire\s*\(\s*|\bimport\s*\(\s*)`;
+// The bare package specifier, with or without a subpath.
+const AR_BARE_SPEC_RE = new RegExp(`${AR_SPEC_HEAD}['"]orbital-archive-reader(?:/[^'"]*)?['"]`);
+// Any specifier — relative, absolute or alias — that reaches into the package
+// directory by path. ARCHIVE_PKG_REL holds no regex metacharacters.
+const AR_PATH_SPEC_RE = new RegExp(`${AR_SPEC_HEAD}['"][^'"]*${ARCHIVE_PKG_REL}[^'"]*['"]`);
+
+let arImporterSeen = false;
+for (const file of allFiles) {
+  const rel = relative('.', file);
+  if (
+    rel.includes('__tests__/') ||
+    rel.includes('__mocks__/') ||
+    rel.includes('.test.ts') ||
+    rel.includes('.test.tsx')
+  ) {
+    continue;
+  }
+
+  const lines = meStripComments(readFileSync(file, 'utf8')).split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const bare = AR_BARE_SPEC_RE.test(lines[i]);
+    const byPath = AR_PATH_SPEC_RE.test(lines[i]);
+    if (!bare && !byPath) continue;
+    if (file === ARCHIVE_ACCESS) {
+      // Only the BARE form anchors non-vacuity: the permitted importer is
+      // supposed to use the package specifier, so a deep path there is itself
+      // a drift worth seeing.
+      if (bare) arImporterSeen = true;
+      else {
+        report(
+          file,
+          i + 1,
+          AR_IMPORT_RULE,
+          `the permitted importer reaches into ${ARCHIVE_PKG_REL} by path — use the \`orbital-archive-reader\` package specifier so the single-importer pattern stays greppable (${AR_ISSUE})`,
+        );
+      }
+      continue;
+    }
+    report(
+      file,
+      i + 1,
+      AR_IMPORT_RULE,
+      `imports the archive reader outside ${relative('.', ARCHIVE_ACCESS)} — every hostile-input policy (denied-root tripwire, magic-byte gate, disk preflight, staging release) lives in that module and nothing enforces it here: ${lines[i].trim()} (${AR_ISSUE})`,
+    );
+  }
+}
+
+if (!arImporterSeen) {
+  violations.push(
+    `  ${relative('.', ARCHIVE_ACCESS)}:0  [${AR_IMPORT_RULE}]  the one permitted importer no longer imports 'orbital-archive-reader' — the rule would pass vacuously (${AR_ISSUE})`,
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Summary

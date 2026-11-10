@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
 # Sole writer of the iOS Rust provenance marker (#813, PR #859 review).
 #
-#   bash scripts/write-rust-marker-ios.sh <debug|release>
+#   bash scripts/write-rust-marker-ios.sh <debug|release> [signal|archive]
 #
-# Writes packages/orbital-signal/rust-profile-ios.txt as:
+# Writes <crate package>/rust-profile-ios.txt as:
 #   line 1   the cargo profile the xcframework was compiled with
-#   line 2+  the scripts/rust-input-digest.sh output
+#   line 2+  the matching rust-input-digest script's output
+#
+# The crate selector is OPTIONAL and defaults to `signal`, so every pre-#920
+# call site (packages/orbital-signal/package.json, the iOS gate harness) keeps
+# working unchanged. `archive` selects the orbital_archive_reader package and
+# scripts/rust-input-digest-archive.sh. Both crates' literal paths live in the
+# `case` below rather than in an interpolation, matching the digest scripts'
+# own rationale: a third crate is the point at which the whole chain
+# (digest, this writer, verify-rust-profile-ios.sh, the gradle tasks and both
+# harnesses) should be parameterised from one table instead.
 #
 # Call this ONLY after a successful `ubrn build ios`: ubrn runs an unlocked
 # `cargo metadata` first, which can rewrite Cargo.lock, so the digest has to be
@@ -37,15 +46,31 @@ PROFILE="${1:-}"
 case "${PROFILE}" in
   debug | release) ;;
   *)
-    echo "usage: write-rust-marker-ios.sh <debug|release>" >&2
+    echo "usage: write-rust-marker-ios.sh <debug|release> [signal|archive]" >&2
     exit 2
     ;;
 esac
 
+CRATE="${2:-signal}"
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-MARKER="${REPO_ROOT}/packages/orbital-signal/rust-profile-ios.txt"
+
+case "${CRATE}" in
+  signal)
+    MARKER="${REPO_ROOT}/packages/orbital-signal/rust-profile-ios.txt"
+    DIGEST_SCRIPT="${REPO_ROOT}/scripts/rust-input-digest.sh"
+    ;;
+  archive)
+    MARKER="${REPO_ROOT}/packages/orbital-archive-reader/rust-profile-ios.txt"
+    DIGEST_SCRIPT="${REPO_ROOT}/scripts/rust-input-digest-archive.sh"
+    ;;
+  *)
+    echo "usage: write-rust-marker-ios.sh <debug|release> [signal|archive]" >&2
+    exit 2
+    ;;
+esac
+
 TMP="${MARKER}.tmp"
-DIGEST_SCRIPT="${REPO_ROOT}/scripts/rust-input-digest.sh"
 
 cleanup() { rm -f "${TMP}"; }
 trap cleanup EXIT

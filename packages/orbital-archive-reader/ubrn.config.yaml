@@ -1,0 +1,64 @@
+---
+rust:
+  directory: ./rust/orbital_archive_reader
+  manifestPath: Cargo.toml
+
+# cargoExtras is appended to every `cargo build` ubrn runs per target
+# (ubrn_cli/src/jsi/{ios,android}/commands.rs). --locked makes a drifted
+# Cargo.lock a hard build failure instead of a silent re-resolve (#812).
+#
+# DEFENCE IN DEPTH ONLY: ubrn 0.31.0-2 runs an UNLOCKED `cargo metadata`
+# before this, which can itself rewrite Cargo.lock. The raw `cargo build/test/
+# clippy --locked` lines in .github/workflows/{build,security}.yml are the
+# actual gate; security invariant 18 polices both.
+ios:
+  directory: ios
+  cargoExtras: ["--locked"]
+  targets:
+    - aarch64-apple-ios
+    - aarch64-apple-ios-sim
+    - x86_64-apple-ios
+
+android:
+  directory: android
+  cargoExtras: ["--locked"]
+  targets:
+    - arm64-v8a
+    - x86_64
+
+# ubrn's own loader moves OFF src/index.tsx.
+#
+# `--and-generate` writes the loader at turboModule.entrypoint, which defaults
+# to the package `main`. This package's `main` is the HAND-WRITTEN wrapper
+# (src/index.tsx: the lazy getNative() loader, token codec, error
+# normalisation, AbortSignal plumbing), so leaving the default would make every
+# regeneration silently delete the wrapper. Moving the entrypoint to
+# src/bindings.tsx keeps ubrn's generated loader a private implementation
+# detail that src/index.tsx imports lazily.
+turboModule:
+  entrypoint: src/bindings.tsx
+
+# Files `--and-generate` must not write. Globs are matched against the path
+# relative to this package directory (ubrn_cli/src/codegen/mod.rs: render_files
+# diffs each rendered path against project_root before testing the glob set).
+#
+#   OrbitalArchiveReaderPackage.kt - hand-edited to register BOTH the ubrn
+#     module and the hand-written OrbitalArchiveAccessModule. ubrn's template
+#     registers only its own.
+#   AndroidManifestNew.xml - ubrn does not generate this file at all (only
+#     AndroidManifest.xml), but the gradle it generates expects it. Listed so a
+#     future ubrn that starts generating it cannot overwrite the committed one.
+#   OrbitalArchiveReader.podspec - hand-edited to declare `s.frameworks`
+#     (UIKit, UniformTypeIdentifiers) for the hand-written glue module. ubrn's
+#     template has no frameworks line, so a regeneration would drop the link
+#     flags and the pod would fail to link UTTypeZIP.
+#
+# src/index.tsx and src/NativeOrbitalArchiveAccess.ts need NO entry: the
+# entrypoint move above takes index.tsx out of the generated set, and the
+# generated codegen spec is NativeOrbitalArchiveReader.ts (derived from the
+# package name), a different file from the hand-written glue spec. Both are
+# nonetheless asserted untouched by the day-1 regeneration check.
+noOverwrite:
+  - android/src/main/java/com/orbital/archivereader/OrbitalArchiveReaderPackage.kt
+  - android/src/main/AndroidManifestNew.xml
+  - OrbitalArchiveReader.podspec

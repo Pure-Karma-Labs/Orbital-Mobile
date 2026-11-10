@@ -132,8 +132,13 @@ dependencies {
     }
 }
 
+// One dependency per Rust crate (#920). Both tasks come from
+// check-rust-freshness.gradle and both declare outputs.upToDateWhen { false },
+// so neither can be skipped; listing them separately keeps a failure attributed
+// to the crate that is actually stale.
 tasks.matching { it.name == 'preBuild' }.configureEach {
     dependsOn tasks.named('checkRustBinaries')
+    dependsOn tasks.named('checkArchiveRustBinaries')
 }
 
 apply plugin: 'com.google.gms.google-services'

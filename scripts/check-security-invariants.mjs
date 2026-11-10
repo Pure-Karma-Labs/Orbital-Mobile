@@ -1614,25 +1614,76 @@ for (const gate of FRESHNESS_GATES) {
 // three copies (both npm scripts + the harness fake tree) and build-ios is
 // main-only, so drift between them was invisible until after merge.
 const MARKER_WRITER = 'scripts/write-rust-marker-ios.sh';
+// Each row is [file, scriptKeyFilter, needles[], why].
+//
+// `scriptKeyFilter` is non-null for package.json callers and it is load-bearing:
+// a whole-file `includes('write-rust-marker-ios.sh')` was satisfied by BOTH
+// packages' own `comment:marker` script, which is prose describing the writer.
+// Replacing the real `build:ios` command with a hand-rolled `echo release > …`
+// left this check green (found by the #920 mutation sweep, row M1). So only the
+// values of the scripts whose KEY matches are searched, and a filter matching
+// no key at all is itself a violation.
+//
+// The needles carry the CRATE SELECTOR, not just the writer name, and they are
+// END-ANCHORED (next token is end-of-command or a shell operator) in BOTH
+// directions. The archive package must call `… <profile> archive`: without the
+// selector the writer defaults to signal (F13 keeps the argument optional so
+// every pre-#920 call site still works), so an archive build would overwrite
+// the SIGNAL marker with the archive digest. The anchor is what catches the
+// MIRROR mistake: a bare `… debug` substring is a prefix of `… debug archive`,
+// so without it, adding `archive` to the SIGNAL package's build:ios read as
+// green while signal builds wrote the archive crate's marker (#920 sweep, M5).
 const MARKER_WRITER_CALLERS = [
-  [`${PKG_REL}/package.json`, 'the build:ios[:release] scripts no longer call the shared marker writer'],
-  // #920: the second package's build:ios[:release] must call the SAME writer
-  // with its `archive` selector. A hand-rolled `echo release > …` there would
-  // write a marker with no digest line, and verify-rust-profile-ios.sh archive
-  // treats a digest-less marker as stale — so the archive pod would fail every
-  // Xcode configuration until someone re-copied the writer's logic.
-  [`${ARCHIVE_PKG_REL}/package.json`, "the archive package's build:ios[:release] scripts no longer call the shared marker writer, so its marker format would drift from what verify-rust-profile-ios.sh archive reads"],
-  ['scripts/test-rust-profile-gate-ios.sh', 'the harness no longer exercises the real marker writer, so writer drift would not surface on a PR'],
+  [
+    `${PKG_REL}/package.json`,
+    /^build:ios/,
+    [
+      ['write-rust-marker-ios.sh debug', /write-rust-marker-ios\.sh debug(?=\s*($|&&|\|\||;))/m],
+      ['write-rust-marker-ios.sh release', /write-rust-marker-ios\.sh release(?=\s*($|&&|\|\||;))/m],
+    ],
+    'the build:ios[:release] scripts no longer call the shared marker writer for the SIGNAL crate (no selector, or the archive one)',
+  ],
+  [
+    `${ARCHIVE_PKG_REL}/package.json`,
+    /^build:ios/,
+    [
+      ['write-rust-marker-ios.sh debug archive', /write-rust-marker-ios\.sh debug archive(?=\s*($|&&|\|\||;))/m],
+      ['write-rust-marker-ios.sh release archive', /write-rust-marker-ios\.sh release archive(?=\s*($|&&|\|\||;))/m],
+    ],
+    "the archive package's build:ios[:release] scripts no longer call the shared marker writer with its `archive` selector, so its marker would describe the wrong crate (or carry no digest at all, which verify-rust-profile-ios.sh archive reads as stale)",
+  ],
+  [
+    'scripts/test-rust-profile-gate-ios.sh',
+    null,
+    [['write-rust-marker-ios.sh', /write-rust-marker-ios\.sh/]],
+    'the harness no longer exercises the real marker writer, so writer drift would not surface on a PR',
+  ],
 ];
 try {
   statSync(MARKER_WRITER);
-  for (const [caller, why] of MARKER_WRITER_CALLERS) {
+  for (const [caller, keyFilter, needles, why] of MARKER_WRITER_CALLERS) {
+    let haystack;
     try {
-      if (!readFileSync(caller, 'utf8').includes('write-rust-marker-ios.sh')) {
-        violations.push(`  ${caller}:0  [${RUST_PROV}]  does not reference ${MARKER_WRITER} — ${why}`);
+      const text = readFileSync(caller, 'utf8');
+      if (keyFilter === null) {
+        haystack = text;
+      } else {
+        const scripts = JSON.parse(text).scripts ?? {};
+        const matched = Object.keys(scripts).filter((k) => keyFilter.test(k));
+        if (matched.length === 0) {
+          violations.push(`  ${caller}:0  [${RUST_PROV}]  no script key matching ${keyFilter} — ${why}`);
+          continue;
+        }
+        haystack = matched.map((k) => scripts[k]).join('\n');
       }
     } catch {
-      violations.push(`  ${caller}:0  [${RUST_PROV}]  expected marker-writer caller not found — ${why}`);
+      violations.push(`  ${caller}:0  [${RUST_PROV}]  expected marker-writer caller not found or unreadable — ${why}`);
+      continue;
+    }
+    for (const [label, needle] of needles) {
+      if (!needle.test(haystack)) {
+        violations.push(`  ${caller}:0  [${RUST_PROV}]  no executable \`${label}\` call — ${why}`);
+      }
     }
   }
 } catch {

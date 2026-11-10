@@ -99,6 +99,35 @@ PODS:
     - SocketRocket
     - Yoga
   - OpenSSL-Universal (3.6.2000)
+  - OrbitalArchiveReader (0.0.1):
+    - boost
+    - DoubleConversion
+    - fast_float
+    - fmt
+    - glog
+    - hermes-engine
+    - RCT-Folly
+    - RCT-Folly/Fabric
+    - RCTRequired
+    - RCTTypeSafety
+    - React-Core
+    - React-debug
+    - React-Fabric
+    - React-featureflags
+    - React-graphics
+    - React-ImageManager
+    - React-jsi
+    - React-NativeModulesApple
+    - React-RCTFabric
+    - React-renderercss
+    - React-rendererdebug
+    - React-utils
+    - ReactCodegen
+    - ReactCommon/turbomodule/bridging
+    - ReactCommon/turbomodule/core
+    - SocketRocket
+    - uniffi-bindgen-react-native (= 0.31.0-2)
+    - Yoga
   - OrbitalMediaExport (0.0.1):
     - boost
     - DoubleConversion
@@ -3035,6 +3064,7 @@ DEPENDENCIES:
   - NitroMmkv (from `../node_modules/react-native-mmkv`)
   - NitroModules (from `../node_modules/react-native-nitro-modules`)
   - "op-sqlite (from `../node_modules/@op-engineering/op-sqlite`)"
+  - OrbitalArchiveReader (from `../node_modules/orbital-archive-reader`)
   - OrbitalMediaExport (from `../node_modules/orbital-media-export`)
   - OrbitalMediaTranscoder (from `../node_modules/orbital-media-transcoder`)
   - OrbitalSignal (from `../node_modules/orbital-signal`)
@@ -3150,6 +3180,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native-nitro-modules"
   op-sqlite:
     :path: "../node_modules/@op-engineering/op-sqlite"
+  OrbitalArchiveReader:
+    :path: "../node_modules/orbital-archive-reader"
   OrbitalMediaExport:
     :path: "../node_modules/orbital-media-export"
   OrbitalMediaTranscoder:
@@ -3330,6 +3362,7 @@ SPEC CHECKSUMS:
   NitroModules: d52aaa5db99af2be4c2b171460e3a7541d78fe4d
   op-sqlite: 302a5d22006bf71e51c3eb07a5758ec70c916910
   OpenSSL-Universal: ecee7b138fa75a74ecf00d7ffd248fb584739b9e
+  OrbitalArchiveReader: 73d11c0c5a2dc993704ab833095e4216bb54789b
   OrbitalMediaExport: 4eab66c8b96b4066745711c2212d4ca8b848c854
   OrbitalMediaTranscoder: 378293685f3cba3c504555724a88d928aa69baef
   OrbitalSignal: 9dc838a7d25d35b6f64d12d64435a19eb9e237e0
@@ -3416,6 +3449,6 @@ SPEC CHECKSUMS:
   uniffi-bindgen-react-native: 205a15613d97a49fe17d5bda57f7fa46a7bbafd0
   Yoga: 526f25666395d30c297d53154398ffd249eaf9e1
 
-PODFILE CHECKSUM: 7d1d5aa1cfbef91242c4786a6f13db0a575796b1
+PODFILE CHECKSUM: b893ce4b02a014bf94919d9f02f48e6e9f62da9e
 
 COCOAPODS: 1.17.0

@@ -1,6 +1,7 @@
 package com.orbital.archivereader
 
 import android.app.Activity
+import android.content.ContentResolver
 import android.content.Intent
 import android.net.Uri
 import android.os.ParcelFileDescriptor
@@ -67,6 +68,12 @@ import java.util.concurrent.atomic.AtomicLong
  * ECANCELLED or ARCHIVE_INTERNAL as the code, with a fixed message that names
  * no file, path, URI or byte. A part is identified by index, never by name.
  *
+ * An ARCHIVE_ACCESS_LOST from `openParts` is the ONE rejection that carries a
+ * detail: a userInfo map holding the single numeric key `partIndex`, the
+ * zero-based index of the failing ref in the array JS passed. Nothing else is
+ * ever put in a userInfo map, and the index space is documented once, on
+ * `ArchiveReaderError.partIndex` in src/index.tsx.
+ *
  * Silence is part of that contract: there is no logging call anywhere in this
  * file, because an archive path or document URI must never reach logcat. The
  * forbidden tokens are deliberately not spelled out here so a grep-based pin
@@ -82,6 +89,18 @@ class OrbitalArchiveAccessModule(reactContext: ReactApplicationContext) :
   /** Open descriptors by handle id. `remove` is the atomic close-once gate. */
   private val descriptors = ConcurrentHashMap<String, ParcelFileDescriptor>()
   private val handleSeq = AtomicLong(0)
+
+  /**
+   * Serialises the [invalidated] flag against the [descriptors] publish.
+   *
+   * Dedicated rather than reusing `this`: the executor accessors and the
+   * shutdown block in [invalidate] already synchronize on the instance, and
+   * coupling a descriptor publish to those would make a publish wait behind an
+   * executor creation for no reason. The .mm does the same work in the single
+   * `@synchronized(self)` block that ends `-openParts:resolve:reject:` in
+   * OrbitalArchiveAccess.mm, mirrored by its `-invalidate`.
+   */
+  private val descriptorLock = Any()
 
   private val pickLock = Any()
   private var pendingPick: Promise? = null
@@ -143,6 +162,14 @@ class OrbitalArchiveAccessModule(reactContext: ReactApplicationContext) :
    * Settles EXACTLY once, on every path: result, cancel (including a back or
    * swipe dismiss, which arrives as RESULT_CANCELED), no activity, a launch
    * that throws, and `invalidate`. A second concurrent call is PICKER_BUSY.
+   *
+   * "Nothing to present on" — no current activity here, or none left by the
+   * time the UI thread runs — is ECANCELLED, not ARCHIVE_INTERNAL: it is the
+   * same transient condition as the un-presentable-presenter check in
+   * OrbitalArchiveAccess.mm's `-presentPickerForSession:`, which already
+   * settles ECANCELLED, and the user can simply tap again.
+   * The one site that stays internal is the launch that throws; the comment
+   * there says why.
    */
   override fun pickArchiveParts(promise: Promise) {
     if (invalidated.get()) {
@@ -150,7 +177,7 @@ class OrbitalArchiveAccessModule(reactContext: ReactApplicationContext) :
       return
     }
     if (reactApplicationContext.currentActivity == null) {
-      promise.reject(E_INTERNAL, MSG_INTERNAL)
+      promise.reject(E_CANCELLED, MSG_CANCELLED)
       return
     }
     synchronized(pickLock) {
@@ -184,14 +211,22 @@ class OrbitalArchiveAccessModule(reactContext: ReactApplicationContext) :
     UiThreadUtil.runOnUiThread {
       val host = reactApplicationContext.currentActivity
       if (host == null) {
-        takePendingPick()?.reject(E_INTERNAL, MSG_INTERNAL)
+        // The activity went away between the check above and this runnable: a
+        // backgrounded app, not a broken one. Same disposition as the .mm's
+        // no-presenter path.
+        takePendingPick()?.reject(E_CANCELLED, MSG_CANCELLED)
         return@runOnUiThread
       }
       try {
         host.startActivityForResult(intent, PICK_REQUEST_CODE)
       } catch (e: Throwable) {
-        // ActivityNotFoundException (no documents UI), SecurityException, or an
-        // activity torn down between the check and the call.
+        // DELIBERATELY ARCHIVE_INTERNAL, unlike the two transient sites above.
+        // This throw is dominated by ActivityNotFoundException (the device has
+        // no documents UI at all) and SecurityException, which are persistent
+        // device conditions: reported as a cancel they would give a silently
+        // dead button the user could tap forever. terminal-for-run surfaces it
+        // once and stops. iOS has no analogous site — -presentViewController:
+        // does not throw — so this is a deliberate partial alignment.
         takePendingPick()?.reject(E_INTERNAL, MSG_INTERNAL)
       }
     }
@@ -290,6 +325,11 @@ class OrbitalArchiveAccessModule(reactContext: ReactApplicationContext) :
    * A descriptor that is not a regular file (an MTP/USB provider streaming
    * through a pipe) is ARCHIVE_NOT_SEEKABLE: the user is told to copy the file
    * to the device, which is the only thing that fixes it.
+   *
+   * Every ref must parse as a URI whose scheme is
+   * [ContentResolver.SCHEME_CONTENT] — see [parseUriQuietly]. One that does not
+   * is ARCHIVE_ACCESS_LOST with its index: a re-pick is the only fix, and a
+   * non-content ref cannot have come from this module's picker.
    */
   override fun openParts(refs: ReadableArray?, promise: Promise) {
     if (invalidated.get()) {
@@ -307,8 +347,9 @@ class OrbitalArchiveAccessModule(reactContext: ReactApplicationContext) :
       val ref = refs.getString(i)
       val uri = if (ref == null || ref.isEmpty()) null else parseUriQuietly(ref)
       if (uri == null) {
-        // A token whose ref no longer parses can only be fixed by re-picking.
-        promise.reject(E_ACCESS_LOST, MSG_ACCESS_LOST)
+        // A token whose ref no longer parses, or is not a content URI, can only
+        // be fixed by re-picking.
+        rejectAccessLost(promise, i)
         return
       }
       parsed.add(uri)
@@ -323,7 +364,7 @@ class OrbitalArchiveAccessModule(reactContext: ReactApplicationContext) :
     val handles: WritableArray = Arguments.createArray()
     val ids = ArrayList<String>(uris.size)
 
-    for (uri in uris) {
+    for ((index, uri) in uris.withIndex()) {
       if (invalidated.get()) {
         closeAll(opened)
         promise.reject(E_CANCELLED, MSG_CANCELLED)
@@ -335,14 +376,17 @@ class OrbitalArchiveAccessModule(reactContext: ReactApplicationContext) :
         } catch (e: Throwable) {
           closeAll(opened)
           val code = openFailureCode(e)
-          promise.reject(code, messageFor(code))
+          // Only ACCESS_LOST carries an index, mirroring Rust: ARCHIVE_INTERNAL
+          // is not a statement about a particular part.
+          if (code == E_ACCESS_LOST) rejectAccessLost(promise, index)
+          else promise.reject(code, messageFor(code))
           return
         }
       if (pfd == null) {
         // A provider is allowed to return null for a document it can no longer
         // produce; it means the same thing as FileNotFoundException.
         closeAll(opened)
-        promise.reject(E_ACCESS_LOST, MSG_ACCESS_LOST)
+        rejectAccessLost(promise, index)
         return
       }
       opened.add(pfd)
@@ -352,10 +396,13 @@ class OrbitalArchiveAccessModule(reactContext: ReactApplicationContext) :
           Os.fstat(pfd.fileDescriptor)
         } catch (e: ErrnoException) {
           closeAll(opened)
-          promise.reject(E_ACCESS_LOST, MSG_ACCESS_LOST)
+          rejectAccessLost(promise, index)
           return
         }
       if (!OsConstants.S_ISREG(stat.st_mode)) {
+        // NOT_SEEKABLE carries no index: Rust raises the same code from `adopt`
+        // without one, and the fix (copy the file to the device) does not
+        // depend on which part it was.
         closeAll(opened)
         promise.reject(E_NOT_SEEKABLE, MSG_NOT_SEEKABLE)
         return
@@ -374,20 +421,57 @@ class OrbitalArchiveAccessModule(reactContext: ReactApplicationContext) :
       handles.pushMap(map)
     }
 
-    // A wipe or a teardown that landed while we were opening: the caller will
-    // never see these handles, so this call still owns them.
-    if (invalidated.get()) {
+    // The final invalidation check and the publish are ONE critical section,
+    // taken against the same [descriptorLock] that `invalidate()` sets the flag
+    // under. Checking and publishing separately left a window where a wipe
+    // landed between them: the sweep in `closeAllDescriptors()` had already run
+    // when the publish inserted, so those descriptors leaked for the life of
+    // the process. Now a publish either completes before the flag is set — and
+    // the sweep that follows it closes what we published — or observes the flag
+    // and closes its own. The .mm has the same shape: the one
+    // `@synchronized(self)` block closing `-openParts:resolve:reject:` checks
+    // `_invalidated` and fills `_fds` together, and `-invalidate` clears both
+    // under the same lock.
+    //
+    // The AtomicBoolean stays: every other reader of the flag (the early exits,
+    // the per-part loop, `executor()`) wants a cheap unlocked read, and only
+    // this one pairing needs atomicity with the publish.
+    val published =
+      synchronized(descriptorLock) {
+        if (invalidated.get()) {
+          false
+        } else {
+          // Published only now: until the promise resolves, failure cleanup is
+          // the local list's job, and `closeParts` can never double-close.
+          for (i in ids.indices) {
+            descriptors[ids[i]] = opened[i]
+          }
+          true
+        }
+      }
+    if (!published) {
+      // A wipe or a teardown that landed while we were opening: the caller will
+      // never see these handles, so this call still owns them. Both the close
+      // and the rejection happen OUTSIDE the lock.
       closeAll(opened)
       promise.reject(E_CANCELLED, MSG_CANCELLED)
       return
     }
-
-    // Published only now: until the promise resolves, failure cleanup is the
-    // local list's job, and `closeParts` can never double-close.
-    for (i in ids.indices) {
-      descriptors[ids[i]] = opened[i]
-    }
     promise.resolve(handles)
+  }
+
+  /**
+   * ARCHIVE_ACCESS_LOST plus the zero-based index of the part that failed.
+   *
+   * The index is the only detail any rejection from this module carries, and it
+   * rides in a userInfo map rather than the message because the message is a
+   * fixed phrase (RN prefers `message` over anything else when it builds the JS
+   * Error). `ArchiveReaderError.partIndex` in src/index.tsx documents the index
+   * space for both platforms and for Rust; JS reads this key for no other code.
+   */
+  private fun rejectAccessLost(promise: Promise, index: Int) {
+    val info: WritableMap = Arguments.createMap().apply { putInt("partIndex", index) }
+    promise.reject(E_ACCESS_LOST, MSG_ACCESS_LOST, info)
   }
 
   private fun openFailureCode(e: Throwable): String =
@@ -413,9 +497,26 @@ class OrbitalArchiveAccessModule(reactContext: ReactApplicationContext) :
       else -> MSG_INTERNAL
     }
 
+  /**
+   * Parse a ref, and accept it ONLY if its scheme is
+   * [ContentResolver.SCHEME_CONTENT].
+   *
+   * `Uri.parse` is lenient and `openFileDescriptor` resolves a file-scheme URI
+   * through the system provider, so without this fence a ref that reached the
+   * token store from anywhere else — an older build's format, a tampered
+   * database row — could name a path of the caller's choosing and this module
+   * would open it. A SAF grant only ever exists for the content scheme, so
+   * nothing the picker produced is refused.
+   *
+   * The scheme is compared against the platform constant rather than a string
+   * literal on purpose: the invariant pin (29.6) reads this file with a
+   * comment stripper that is not string-aware, so a literal here would be a
+   * fragile thing to pin and a mangled thing to strip.
+   */
   private fun parseUriQuietly(ref: String): Uri? =
     try {
-      Uri.parse(ref)
+      val uri = Uri.parse(ref)
+      if (uri.scheme == ContentResolver.SCHEME_CONTENT) uri else null
     } catch (e: Throwable) {
       null
     }
@@ -564,6 +665,15 @@ class OrbitalArchiveAccessModule(reactContext: ReactApplicationContext) :
    * Never throws for a ref that holds no grant: releasing is idempotent from
    * the caller's point of view, and a token may have been minted before the
    * provider declined to persist it.
+   *
+   * NOT a revocation. This drops only the PERSISTED grant; the transient grant
+   * the picker handed this process lives until the process dies, so a resume in
+   * the same process still opens these parts afterwards. Deleting the token is
+   * what revokes access — see the token-revocation invariant in the
+   * src/index.tsx header (section 4).
+   *
+   * A ref that is not a content URI is skipped here rather than reported: SAF
+   * grants exist only for the content scheme, so there is nothing to release.
    */
   override fun releaseParts(refs: ReadableArray?, promise: Promise) {
     if (refs == null || refs.size() == 0) {
@@ -649,7 +759,10 @@ class OrbitalArchiveAccessModule(reactContext: ReactApplicationContext) :
    * the executor is stopped so nothing is queued into a dead runtime.
    */
   override fun invalidate() {
-    invalidated.set(true)
+    // Under [descriptorLock], and FIRST: `openAll`'s publish takes the same
+    // lock, so the sweep below cannot miss a batch that was mid-publish. See
+    // the long comment at the publish site.
+    synchronized(descriptorLock) { invalidated.set(true) }
     takePendingPick()?.reject(E_CANCELLED, MSG_CANCELLED)
     synchronized(pickLock) {
       if (listenerRegistered) {

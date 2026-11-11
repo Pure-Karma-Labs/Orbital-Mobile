@@ -27,6 +27,15 @@
  * and it emits NO diagnostics of any kind — no logging call, no print, no
  * exception. The archive is user data from another service and every byte of
  * it, including its names, stays out of crash reports and breadcrumbs.
+ *
+ * ONE rejection carries a detail, and it is a single NUMBER: an
+ * `ARCHIVE_ACCESS_LOST` from `openParts` rejects with an NSError in
+ * `kOAAErrorDomain` whose userInfo holds exactly the key `partIndex`, the
+ * zero-based index of the failing part. No other code passes an NSError at
+ * all, and no other key is ever put in one — `index.tsx` reads `partIndex`
+ * only for that code, so a stray key could not widen the contract, but the
+ * discipline is the point. `ArchiveReaderError.partIndex` in src/index.tsx
+ * documents the index space for both platforms and for Rust.
  */
 static NSString *const kOAAErrPickerBusy = @"PICKER_BUSY";
 static NSString *const kOAAErrAccessLost = @"ARCHIVE_ACCESS_LOST";
@@ -34,6 +43,20 @@ static NSString *const kOAAErrStagingUnavailable = @"ARCHIVE_STAGING_UNAVAILABLE
 static NSString *const kOAAErrNoSpace = @"ARCHIVE_NO_SPACE";
 static NSString *const kOAAErrCancelled = @"ECANCELLED";
 static NSString *const kOAAErrInternal = @"ARCHIVE_INTERNAL";
+
+/**
+ * The NSError domain for the one rejection that carries a detail.
+ *
+ * Its own domain, not NSCocoaErrorDomain or RN's: the only NSError this file
+ * ever builds exists to transport `partIndex`, and a domain of our own means
+ * nothing downstream can mistake it for a system error whose userInfo might
+ * hold a path. The error's own `code` is 0 and unused — the STRING code is the
+ * contract.
+ */
+static NSString *const kOAAErrorDomain = @"OrbitalArchiveAccess";
+
+/** The ONLY userInfo key this module produces. A count, never a name. */
+static NSString *const kOAAPartIndexKey = @"partIndex";
 
 /**
  * Staging leaf suffix. Rust validates `<uuid>-archive-staging.bin` and keys its
@@ -626,7 +649,24 @@ RCT_EXPORT_MODULE()
         close(fd.intValue);
       }
       NSString *code = failure ?: kOAAErrCancelled;
-      reject(code, OAAMessageForCode(code), nil);
+      // ACCESS_LOST is the one code that says WHICH part failed. Only a part
+      // that opened is appended to `handles`, and the loop breaks on the first
+      // failure, so handles.count IS the zero-based index of the failing ref in
+      // the array JS passed. Every other code — including the invalidated
+      // cancel, which is not a statement about a particular part — rejects with
+      // nil, so no userInfo reaches JS that the contract does not name.
+      //
+      // The fixed phrase is still passed as `message`:
+      // RCTJSErrorFromCodeMessageAndNSError prefers an explicit message over
+      // the NSError's -localizedDescription, so the NSError is purely the
+      // transport for the index and contributes no text.
+      NSError *detail = nil;
+      if ([code isEqualToString:kOAAErrAccessLost]) {
+        detail = [NSError errorWithDomain:kOAAErrorDomain
+                                     code:0
+                                 userInfo:@{kOAAPartIndexKey : @(handles.count)}];
+      }
+      reject(code, OAAMessageForCode(code), detail);
       return;
     }
     resolve(handles);
@@ -658,8 +698,20 @@ RCT_EXPORT_MODULE()
                              bookmarkDataIsStale:&stale
                                            error:NULL];
   if (url == nil) {
-    // The file was moved, deleted, or its provider is gone. "Select the file
-    // again" is the only answer, which is what requires-repick means.
+    // NOT "the file was moved or deleted" — a security-scoped bookmark FOLLOWS
+    // a move or a rename (that is what `stale` and the re-bookmark below are
+    // for), and a Files "Delete" moves the file into Recently Deleted, where
+    // the bookmark keeps resolving for up to 30 days. What actually lands here
+    // is: the file was purged from Recently Deleted, its File Provider or
+    // volume is gone (an unlinked iCloud account, an ejected external drive),
+    // or the system refuses the resolution outright. A CONTENT change is not
+    // this case at all — the bookmark still resolves and Rust's `fp`
+    // fingerprint catches it as ARCHIVE_CHANGED.
+    //
+    // "Select the file again" is still the only answer, which is what
+    // requires-repick means. The 30-day window is also why deleting the
+    // PERSISTED TOKEN is iOS's only real revocation — see the token-revocation
+    // invariant in the src/index.tsx header (section 4).
     return kOAAErrAccessLost;
   }
 
@@ -885,6 +937,10 @@ RCT_EXPORT_MODULE()
  * system table, it is a blob the app stores, so there is nothing to release.
  * Dropping the token drops the access. Android's SAF grants are the reason
  * these methods exist at all (plan §10 F3).
+ *
+ * That makes deleting the persisted token the ONLY revocation on this platform,
+ * with the consequences for a cancelled or completed import stated once in the
+ * token-revocation invariant in the src/index.tsx header (section 4).
  */
 - (void)releaseParts:(NSArray *)refs
              resolve:(RCTPromiseResolveBlock)resolve

@@ -478,17 +478,42 @@ relax the ban without teaching both digest scripts to walk `cargo metadata`.
 #### What invariant 18 actually proves
 
 Security invariant 18 `[rust-provenance-locked]` asserts that a freshness gate
-still **names** its inputs in executable code (it strips comments first, so a
-gate's own header cannot satisfy it) and that it still contains its comparison
-machinery (`staleFiles.add` / `lastModified` for Gradle, `shasum -a 256` for the
-digest scripts). Its `FRESHNESS_GATES` rows today cover
-`android/check-rust-freshness.gradle` and `scripts/rust-input-digest.sh`; adding
-a row for `scripts/rust-input-digest-archive.sh` (and archive-specific name
-assertions for the Gradle file) is the natural next step and is part of the
-third-crate parameterisation listed above. The same invariant also asserts the
-single toolchain pin, the cross-crate uniffi parity, the archive crate's
-dependency bans, and that the shared marker writer is still called by
-`packages/orbital-signal/package.json` and by the harness.
+still **names** its inputs in executable code (it strips comments first — Groovy
+and shell strippers respectively — so a gate's own header cannot satisfy it) and
+that it still contains its comparison machinery. Its tables today:
+
+- **`FRESHNESS_GATES` — one row per (gate, crate) pair.**
+  `android/check-rust-freshness.gradle` twice (the signal task
+  `checkRustBinaries`, and the archive task `checkArchiveRustBinaries`), plus
+  `scripts/rust-input-digest.sh` and `scripts/rust-input-digest-archive.sh`.
+  Each row names the gate's inputs and its exec anchors — `staleFiles.add` and
+  `lastModified` for Gradle, `shasum -a 256` for the digest scripts. The two
+  ARCHIVE rows name the SAME six inputs on both platforms (the crate's `src`,
+  `Cargo.toml` and `Cargo.lock`, the root `rust-toolchain.toml`, and the
+  package's `ubrn.config.yaml` and `package.json`), by full relpath rather than
+  by tail, so they pin that crate specifically now that two crates' paths are in
+  play. That pair is deliberately stronger than signal's narrower historical
+  set; widening signal's to match is DEBT-408.
+- **`UBRN_CONFIGS` — one entry per crate**, each checked for its
+  `crateName`. The archive entry additionally pins a `noOverwrite` list
+  (`OrbitalArchiveReaderPackage.kt`, `AndroidManifestNew.xml`,
+  `OrbitalArchiveReader.podspec`): those three are hand-written, and a
+  regeneration that overwrote them would silently drop the glue module's
+  registration, the zero-permission manifest, or the podspec's script phases.
+- **`CARGO_CRATE_EXPECTED` — per crate, per job.** `security.yml` must still run
+  `cargo test`, `cargo clippy` and `cargo audit` in BOTH crate directories, and
+  `build.yml` must still run at least two `cargo build` invocations per crate
+  (the device and simulator Apple slices in rust-apple-targets).
+- **`MARKER_WRITER_CALLERS` — one row per package, plus one for the
+  harness.** Each package's own `build:ios*`
+  scripts must call the shared marker writer — the archive package with its
+  `archive` selector, so its marker cannot describe the wrong crate — and
+  `scripts/test-rust-profile-gate-ios.sh` must still exercise the real writer,
+  so writer drift surfaces on a PR rather than at an Xcode build.
+
+The same invariant also asserts the SINGLE root toolchain pin (no second
+`rust-toolchain.toml` under `packages/`), cross-crate uniffi parity, and the
+archive crate's `path =` / `git =` / `[patch` dependency bans described above.
 
 That a gate actually **uses** those inputs is proven behaviourally only on iOS,
 by the harness cases below; the Android harness is profile-only, so Android's use

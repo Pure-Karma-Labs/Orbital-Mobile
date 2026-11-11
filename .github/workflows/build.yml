@@ -131,14 +131,26 @@ jobs:
               - 'packages/orbital-signal/ubrn.config.yaml'
               - 'rust-toolchain.toml'
               - '.github/workflows/build.yml'
-            # Issue #920. Deliberately the WHOLE package, not just rust/**:
-            # the package's package.json and ubrn.config.yaml are freshness
-            # inputs of scripts/rust-input-digest-archive.sh, so a change to
-            # either must re-run the Apple cross-compile too. This workflow
-            # file is listed for the same reason the `rust` filter lists it —
-            # editing the gate must exercise it (#767 precedent).
+            # Issue #920, narrowed in #982 to the same shape as `rust` above.
+            # Three facts, in order:
+            #  (a) this filter's ONLY consumer is rust-apple-targets, which
+            #      runs `cargo build --locked` in the crate directory. Digest
+            #      inputs (the package's package.json, its generated C++/TS)
+            #      cannot change what that compiles, so the previous
+            #      whole-package glob only cost cache-cold cross-compiles on
+            #      JS- and doc-only archive PRs;
+            #  (b) coverage for the jobs that DO consume the digest inputs is
+            #      unaffected: build-ios and build-android are gated by this
+            #      workflow's whole-package `on.paths` entry, not by this
+            #      filter;
+            #  (c) ubrn.config.yaml stays (target list + cargoExtras change the
+            #      compiled .a), rust-toolchain.toml is the shared root pin, and
+            #      this workflow file is listed for the reason `rust` lists it
+            #      — editing the gate must exercise it (#767 precedent). The
+            #      crate's `.cargo/` config sits under rust/**.
             rust_archive:
-              - 'packages/orbital-archive-reader/**'
+              - 'packages/orbital-archive-reader/rust/**'
+              - 'packages/orbital-archive-reader/ubrn.config.yaml'
               - 'rust-toolchain.toml'
               - '.github/workflows/build.yml'
 
@@ -383,9 +395,12 @@ jobs:
       # key thrashes the cache). DEBUG profile, exactly like orbital-signal
       # above: scripts/test-rust-profile-gate-android.sh (later in this job)
       # requires debug-profile markers for BOTH crates as its A0 precondition,
-      # and its release-marker cases (A5-A7) write their own fixtures. Release
-      # coverage for this crate comes from rust-test-archive (security.yml) and
-      # the release cross-compile slices in rust-apple-targets.
+      # and its release-marker cases (A5-A7) write their own fixtures.
+      #
+      # Release coverage for this crate is the `--release` device slice in
+      # rust-apple-targets plus build-ios's `build:ios:release` below — NOT
+      # rust-test-archive (security.yml), which runs `cargo test --locked` and
+      # is dev-profile only (corrected in #982).
       - name: Rust cache lookup (android, archive crate)
         id: rust-cache-lookup-android-archive
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -657,8 +672,10 @@ jobs:
           npm run build:ios
 
       # --- Second crate: orbital_archive_reader (#920) -----------------------
-      # Own cache workspace + shared-key, and the release profile for the same
-      # reasons as build-android above. build:ios:release also writes
+      # Own cache workspace + shared-key. RELEASE profile here, deliberately
+      # unlike build-android above: this job produces the xcframework slices an
+      # Xcode build consumes, and no debug-marker gate runs in this job to be
+      # satisfied. build:ios:release also writes
       # packages/orbital-archive-reader/rust-profile-ios.txt through the shared
       # marker writer, which the Podfile's '[Orbital] Verify Rust release
       # profile (archive)' phase then checks on every configuration.

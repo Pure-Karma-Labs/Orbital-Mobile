@@ -33,9 +33,12 @@ import { TurboModuleRegistry } from 'react-native';
  * ## Error contract
  *
  * Every rejection carries one of the `ArchiveErrorCode` strings as its `code`
- * and NOTHING else: no file name, no path, no URI, no byte content. A part is
- * identified by index, never by name. `index.tsx` normalises anything it does
- * not recognise to `ARCHIVE_INTERNAL`.
+ * and NOTHING else — no file name, no path, no URI, no byte content — except
+ * `userInfo.partIndex`, a single number, on an `openParts`
+ * `ARCHIVE_ACCESS_LOST`. A part is identified by index, never by name; the
+ * index space is documented once, on `ArchiveReaderError.partIndex` in
+ * `index.tsx`, which also normalises anything it does not recognise to
+ * `ARCHIVE_INTERNAL`.
  */
 
 /**
@@ -73,10 +76,17 @@ export interface Spec extends TurboModule {
   /**
    * Open every ref and return a borrowed descriptor per part.
    *
-   * Rejects `ARCHIVE_ACCESS_LOST` (with the part index) when a bookmark no
-   * longer resolves or the read is refused. On ANY rejection the glue must have
-   * closed every descriptor it had already opened for this call, so the caller
-   * never has to close handles it was not given.
+   * Rejects `ARCHIVE_ACCESS_LOST` when a ref no longer resolves (Android also
+   * refuses any ref that is not a content URI) or the read is refused. That
+   * rejection, and only that one, carries `userInfo.partIndex` — the zero-based
+   * index into `refs`; see `ArchiveReaderError.partIndex` in `index.tsx`.
+   *
+   * On ANY rejection the glue must have closed every descriptor it had already
+   * opened for this call, so the caller never has to close handles it was not
+   * given.
+   *
+   * A ref stays usable longer than a release suggests: see the
+   * token-revocation invariant in the `index.tsx` header (§4).
    */
   openParts(refs: Array<string>): Promise<Array<ArchivePartHandle>>;
 
@@ -133,6 +143,9 @@ export interface Spec extends TurboModule {
    * Release the persistable grant for these refs. Android calls
    * `releasePersistableUriPermission`; iOS is a no-op. Never throws for a ref
    * that holds no grant.
+   *
+   * This does NOT revoke access on either platform — see the token-revocation
+   * invariant in the `index.tsx` header (§4).
    */
   releaseParts(refs: Array<string>): Promise<void>;
 

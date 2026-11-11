@@ -229,7 +229,8 @@ jobs:
           # Two independent crates, two filters. rust-toolchain.toml is a repo
           # ROOT pin shared by both (invariant 18 forbids a second one under
           # packages/), so it belongs to both filters. This workflow file is in
-          # both lists too (build.yml:120 precedent): a PR that edits only the
+          # both lists too (the same reasoning as build.yml's "Detect Rust
+          # Changes" job filter): a PR that edits only the
           # Rust jobs -- a cache key, a clippy flag, the audit step -- would
           # otherwise skip the very jobs it changes.
           filters: |

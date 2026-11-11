@@ -2816,13 +2816,22 @@ checkWindowedPins(
 // The native halves are equally silent. os_log/NSLog write to the device
 // console (readable by anyone with the device plugged in), and android.util.Log
 // to logcat — both would carry the display name and the source path.
+//
+// The token lists are kept IDENTICAL to the archive glue's (29.6): same threat
+// (user file names on their way to a log), same two languages, and a sibling
+// with a shorter ban list is the one a temporary print survives in. The extra
+// tokens were verified to have zero existing hits in either file when they
+// were added (#982).
 checkWindowedPins(
   MEDIA_EXPORT_MM,
   ME_LOG_RULE,
   /^#import "OrbitalMediaExport\.h"[\s\S]*/m,
   'OrbitalMediaExport.mm (logging ban)',
   [],
-  ['NSLog', 'os_log'],
+  // `printf` is a substring and so also covers snprintf/asprintf: same
+  // reasoning as 29.6 — a formatted string in this file would be built out of
+  // a file name. `RCTLog` as a prefix covers the macros and the import.
+  ['NSLog', 'os_log', 'printf', 'fprintf', 'RCTLog'],
   ME_ISSUE,
 );
 
@@ -2832,7 +2841,21 @@ checkWindowedPins(
   /^package com\.orbital\.mediaexport[\s\S]*/m,
   'OrbitalMediaExportModule.kt (logging ban)',
   [],
-  ['android.util.Log', 'Log.d(', 'Log.e(', 'Log.i(', 'Log.w(', 'Log.v('],
+  [
+    // `android.util.Log` is the clause that catches an aliased import; the
+    // call bans do not. See the same note in 29.6.
+    'android.util.Log',
+    'Log.d(',
+    'Log.e(',
+    'Log.i(',
+    'Log.w(',
+    'Log.v(',
+    'Log.wtf(',
+    'println(',
+    'System.out',
+    'System.err',
+    'printStackTrace',
+  ],
   ME_ISSUE,
 );
 
@@ -4242,7 +4265,14 @@ const AR_DENIED_ROOTS_FLOOR = 10;
 const arAllowlistRaw = meRead(AR_ALLOWLIST, AR_RULE, 'the denied-root tables', AR_ISSUE);
 let arDeniedRoots = [];
 if (arAllowlistRaw !== null) {
-  const table = /^pub const DENIED_ROOTS[^=]*=\s*\[([\s\S]*?)\];/m.exec(
+  // `\s*:` after the NAME, not `[^=]*`: the loose form also matched a RENAMED
+  // const (`pub const DENIED_ROOTS_X: [&str; 10] = [` — `_X: [&str; 10] ` holds
+  // no `=`, so it slipped through `[^=]*`), which made this clause and 29.7's
+  // parity check read a table whose name nothing in the crate refers to any
+  // more. Mutation P7 (#982) found it. A rename is also a Rust compile error,
+  // so this was never a silent security hole — but a vacuity guard that cannot
+  // see a rename is not a vacuity guard.
+  const table = /^pub const DENIED_ROOTS\s*:[^=]*=\s*\[([\s\S]*?)\];/m.exec(
     stripCStyleComments(arAllowlistRaw),
   );
   if (table === null) {
@@ -4373,9 +4403,19 @@ checkWindowedPins(
 //   recognise, and `canonicalPath` / `realpath(` are what stop a traversal in a
 //   caller-supplied path from unlinking something else.
 //
-//   SILENCE. `NSLog`, `os_log` and `android.util.Log` all write archive paths
-//   and media URIs — the names of a user's photos — to the device log, where
-//   every other app's crash reporter can read them.
+//   SILENCE. Every diagnostic sink is banned, not just the obvious two. A
+//   logging call in either file writes archive paths and media URIs — the
+//   names of a user's photos, and on Android the document URI that is itself a
+//   capability — to a device log any other app's crash reporter can read.
+//   `NSLog`, `os_log`, `android.util.Log` and the per-level `Log.x(` calls are
+//   the idiomatic sinks; `printf`/`fprintf` and `RCTLog` on the .mm side and
+//   `println(`, `System.out`, `System.err` and `printStackTrace` on the Kotlin
+//   side are the ones a debugging session actually reaches for, which is
+//   exactly when a temporary print gets committed. The `.mm` bans are
+//   SUBSTRINGS: `printf` also covers `snprintf`/`asprintf`, which is
+//   deliberate — this file formats nothing — and a future legitimate need
+//   would have to carve itself an explicit exemption here rather than slip in
+//   under an existing token.
 //
 // Matching is on COMMENT-STRIPPED source for the usual reason: both files
 // document every one of these bans in prose, naming the forbidden API, and raw
@@ -4432,6 +4472,19 @@ checkWindowedPins(
     'NSFileProtectionNone',
     'NSLog',
     'os_log',
+    // Substring bans, and the `printf` one is doing more work than it looks:
+    // it also catches `snprintf`, `asprintf` and `vsnprintf`. That is the
+    // intent — this file builds no formatted strings at all, so any of them
+    // appearing means something is being composed out of a path or an OS error
+    // string. A future legitimate `snprintf` needs an explicit carve-out
+    // added here, not a silent pass under the existing token.
+    'printf',
+    'fprintf',
+    // React's own logger, which routes to NSLog in debug and to the JS console
+    // in dev — both of which carry whatever was interpolated into a log
+    // aggregator. Banning the PREFIX covers RCTLogInfo/Warn/Error/Trace and
+    // the `#import <React/RCTLog.h>` that enables them.
+    'RCTLog',
     'O_RDWR',
     'O_WRONLY',
   ],
@@ -4442,9 +4495,26 @@ checkWindowedPins(
 checkWindowedPins(
   AR_KT,
   AR_RULE,
-  /^class OrbitalArchiveAccessModule[\s\S]*/m,
+  // From the PACKAGE declaration, not the class: the import block has to be
+  // inside the window or `import android.util.Log` sits above it, where the
+  // logging ban cannot see it (#982). Re-anchoring this way loses "deleting
+  // the class loses the window", so the class declaration is pinned as a token
+  // below instead — the same shape the .mm already uses. An emptied file has
+  // no package line and so no window at all.
+  /^package com\.orbital\.archivereader[\s\S]*/m,
   'the OrbitalArchiveAccessModule glue',
   [
+    // WITH the opening paren of the primary constructor: a bare
+    // `class OrbitalArchiveAccessModule` is a substring of
+    // `class OrbitalArchiveAccessModuleSomethingElse`, so a rename would still
+    // satisfy it (proven by mutation K10).
+    'class OrbitalArchiveAccessModule(',
+    // The content-scheme fence on every ref before it reaches
+    // openFileDescriptor. Pinned as the CONSTANT: a string literal would be
+    // mangled by stripCStyleComments (which is not string-aware) and would be
+    // satisfiable from a comment, and the fence is what stops a tampered token
+    // naming a local file from being opened as an archive part.
+    'ContentResolver.SCHEME_CONTENT',
     'ACTION_OPEN_DOCUMENT',
     'EXTRA_ALLOW_MULTIPLE',
     'openFileDescriptor(',
@@ -4471,7 +4541,24 @@ checkWindowedPins(
     // is what makes that swap fire.
     'externalCacheDir',
     'getExternalStorage',
+    // LOAD-BEARING, and not redundant with the call bans below: this is the
+    // only clause that catches an ALIASED import (`import android.util.Log as
+    // L`, then `L.d(...)`, which matches none of the `Log.x(` tokens). It only
+    // works because the window now starts at the package line. Do not prune it
+    // as duplicative.
     'android.util.Log',
+    'Log.d(',
+    'Log.e(',
+    'Log.i(',
+    'Log.w(',
+    'Log.v(',
+    'Log.wtf(',
+    // The sinks a debugging session reaches for. All four write to logcat on
+    // Android, where a document URI is readable by anything with log access.
+    'println(',
+    'System.out',
+    'System.err',
+    'printStackTrace',
     'ACTION_GET_CONTENT',
     'MODE_WORLD',
   ],
@@ -4564,6 +4651,109 @@ checkWindowedPins(
   AR_ISSUE,
   stripCStyleComments,
 );
+
+// --- 29.7 The TS tripwire: parity with the Rust table, and the call itself.
+//
+// 29.5 pins the Rust DENIED_ROOTS table and a floor of 10 on it. This pins the
+// OTHER side of the FFI — `archiveAccess.ts`'s own DENIED_ROOTS set, the second
+// lock on every listing — and everything that makes it run: the set is unique
+// and top-level, `openArchiveSession` still calls the predicate and closes on a
+// hit, and the predicate itself still consults the set.
+//
+// Set EQUALITY, not a floor, with missing and extra reported SEPARATELY,
+// because they mean opposite things:
+//   - MISSING here (denied by Rust, absent in TS): the app-side tripwire lets a
+//     listing under that root through. This is not hypothetical — the TS set
+//     shipped with 6 of the 10 roots (#981), so `stories`, `reels`, `profile`
+//     and `other_content` were admissible to the second lock for a release.
+//   - EXTRA here (absent from the Rust table): a root the app refuses but the
+//     crate does not hold as a known root key, so a wrapper segment named
+//     after it IS strippable, and 29.5's floor-of-10 reasoning no longer
+//     describes a single set.
+//
+// Parity is load-bearing, not tidiness: the F17 argument for why checking the
+// POST-strip path is sound (see `startsWithDeniedRoot`'s comment) depends on
+// Rust's `is_known_root_key` covering every root the TS side denies. Let the
+// two drift and that argument quietly stops holding.
+//
+// A parity check alone would pass on a file that never consults the set, so the
+// ENFORCEMENT is pinned too: `openArchiveSession` must still test
+// `startsWithDeniedRoot(entry.path)` and `session.close()` on a hit. Matching is
+// on `meStripComments` output — string-aware, unlike stripCStyleComments —
+// so neither a set entry nor the call can be satisfied from prose.
+const arAccessRaw = meRead(
+  ARCHIVE_ACCESS,
+  AR_RULE,
+  "the app-side denied-root set and the listing tripwire",
+  AR_ISSUE,
+);
+if (arAccessRaw !== null) {
+  const arAccessCode = meStripComments(arAccessRaw);
+
+  // ANCHORED at column 0 (`^` under `m`) and requiring `\s*:` after the name,
+  // for the reason 29.5 was tightened in this PR plus one more: the first-match
+  // unanchored form was defeated by a DECOY — a block-scoped
+  // `const DENIED_ROOTS = new Set([…all 10…])` inside any helper above the real
+  // declaration was matched FIRST, so the real module-level set could be
+  // shrunk to two roots and the parity check still saw ten (PR #983 review,
+  // mutation D1). Only a top-level declaration can be the one the tripwire
+  // reads, so only a top-level declaration is accepted.
+  const arTsTable = /^const DENIED_ROOTS\s*:[^=]*=\s*new Set\(\[([\s\S]*?)\]\)/m.exec(arAccessCode);
+  const arTsRoots =
+    arTsTable === null ? [] : [...arTsTable[1].matchAll(/['"]([^'"]+)['"]/g)].map((m) => m[1]);
+
+  // ...and exactly ONE declaration of the name in the whole stripped file, so a
+  // decoy is itself a violation rather than merely ignored. Anchoring alone
+  // would leave a second top-level declaration (the later one wins at runtime,
+  // the earlier one here) invisible — mutation D2.
+  const arTsDecls = (arAccessCode.match(/\bconst DENIED_ROOTS\b/g) ?? []).length;
+  if (arTsDecls > 1) {
+    arViolation(ARCHIVE_ACCESS, `${arTsDecls} declarations of \`const DENIED_ROOTS\` — exactly one is allowed, because this clause and the tripwire must be reading the same Set; a second one (block-scoped or shadowing) lets the parity check pass against a table nothing enforces`);
+  }
+
+  if (arTsTable === null) {
+    arViolation(ARCHIVE_ACCESS, 'no `const DENIED_ROOTS = new Set([…])` — the app-side denied-root tripwire has no table, and this parity clause would pass vacuously');
+  } else if (arTsRoots.length === 0) {
+    arViolation(ARCHIVE_ACCESS, 'DENIED_ROOTS is EMPTY — every listing passes the app-side tripwire, including one under messages/');
+  } else if (arDeniedRoots.length > 0) {
+    // Silent when the Rust list could not be read or is short: 29.5 already
+    // reports that, and comparing against an empty set would bury it under a
+    // cascade of "extra" roots.
+    const arRustSet = new Set(arDeniedRoots);
+    const arTsSet = new Set(arTsRoots);
+    const arMissing = arDeniedRoots.filter((root) => !arTsSet.has(root));
+    const arExtra = arTsRoots.filter((root) => !arRustSet.has(root));
+    if (arMissing.length > 0) {
+      arViolation(ARCHIVE_ACCESS, `DENIED_ROOTS is missing ${arMissing.length} root(s) the Rust table denies (${arMissing.join(', ')}) — a listing under those roots passes the only check on this side of the FFI`);
+    }
+    if (arExtra.length > 0) {
+      arViolation(ARCHIVE_ACCESS, `DENIED_ROOTS names ${arExtra.length} root(s) the Rust table does not deny (${arExtra.join(', ')}) — is_known_root_key does not protect them from the F17 wrapper strip, so the two sides no longer describe one set`);
+    }
+  }
+
+  const arTripwire = /export async function openArchiveSession\([\s\S]*?\n\}/m.exec(arAccessCode);
+  if (arTripwire === null) {
+    arViolation(ARCHIVE_ACCESS, 'openArchiveSession() not found — it is the one place the denied-root tripwire runs, and without the window this clause would pass vacuously');
+  } else {
+    for (const pin of ['startsWithDeniedRoot(entry.path)', 'session.close()']) {
+      if (!arTripwire[0].includes(pin)) {
+        arViolation(ARCHIVE_ACCESS, `openArchiveSession() no longer contains \`${pin}\` — the denied-root set is then dead code and a listing under a denied root is returned to the caller`);
+      }
+    }
+  }
+
+  // The PREDICATE's body, not just its call site. `startsWithDeniedRoot` could
+  // be `return false` and everything above would still pass: the Set would be
+  // the right size, the tripwire would still call the function, and every
+  // listing would sail through (PR #983 review, mutation D3). So the body has
+  // to consult the Set.
+  const arPredicate = /^export function startsWithDeniedRoot\([\s\S]*?\n\}/m.exec(arAccessCode);
+  if (arPredicate === null) {
+    arViolation(ARCHIVE_ACCESS, 'startsWithDeniedRoot() not found — it is the predicate the tripwire calls, and without the window this clause would pass vacuously');
+  } else if (!arPredicate[0].includes('DENIED_ROOTS.has(')) {
+    arViolation(ARCHIVE_ACCESS, 'startsWithDeniedRoot() no longer consults DENIED_ROOTS (`DENIED_ROOTS.has(` is missing from its body) — the set and the tripwire call would both still be present while every listing passes');
+  }
+}
 
 // ---------------------------------------------------------------------------
 // 29a. archive-reader-import-restricted (#920 F10)

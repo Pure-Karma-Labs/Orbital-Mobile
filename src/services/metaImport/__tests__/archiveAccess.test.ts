@@ -16,6 +16,7 @@ import { getFSInfo, stat } from '@dr.pogodin/react-native-fs';
 // apply the mapper, so importing the mock-only helpers (`makeMockArchiveSession`,
 // `MockArchiveSession`) through the bare specifier would be a type error.
 import {
+  MOCK_TOKEN,
   makeMockArchiveSession,
   openArchive,
   unlinkStagingFile,
@@ -23,7 +24,9 @@ import {
 } from '../../../../__mocks__/orbital-archive-reader';
 import { isStagingResidueName } from '../../media/stagingResidue';
 import {
+  ArchiveReaderError,
   bucketCount,
+  isArchiveCancellation,
   openArchiveSession,
   startsWithDeniedRoot,
   summarizeSession,
@@ -31,7 +34,7 @@ import {
 
 import type { ArchiveEntry, ArchivePartToken } from 'orbital-archive-reader';
 
-const TOKEN = 'oar1:fake' as ArchivePartToken;
+const TOKEN: ArchivePartToken = MOCK_TOKEN;
 
 function entry(over: Partial<ArchiveEntry> = {}): ArchiveEntry {
   return {
@@ -97,6 +100,10 @@ describe('denied-root tripwire (F17)', () => {
     'ads_information/a.json',
     'security_and_login_information/a.json',
     'personal_information/a.json',
+    'stories/highlights/x.jpg',
+    'reels/videos/r.mp4',
+    'profile/avatar.jpg',
+    'other_content/a.json',
   ])('refuses a listing containing %s', async (path) => {
     const s = session([entry(), entry({ entryId: 'fp0:9', path })]);
     await expect(openArchiveSession([TOKEN])).rejects.toMatchObject({
@@ -120,6 +127,19 @@ describe('denied-root tripwire (F17)', () => {
     expect(startsWithDeniedRoot('media/posts/messages.jpg')).toBe(false);
     expect(startsWithDeniedRoot('your_messages/x.jpg')).toBe(false);
     expect(startsWithDeniedRoot('media/posts/inbox/x.jpg')).toBe(false);
+  });
+
+  // The four roots #981 shipped without. One positive each, plus the adjacent
+  // name that must NOT match — the check is on the whole first SEGMENT, so a
+  // longer segment that merely starts with a denied root is allowed through.
+  it.each([
+    ['stories', 'stories/highlights/x.jpg', 'storiesX/a.jpg'],
+    ['reels', 'reels/videos/r.mp4', 'reels_archive/a.jpg'],
+    ['profile', 'profile/avatar.jpg', 'profile_photos/a.jpg'],
+    ['other_content', 'other_content/a.json', 'other_contents/a.json'],
+  ])('matches the %s root as a whole segment only', (_root, denied, allowed) => {
+    expect(startsWithDeniedRoot(denied)).toBe(true);
+    expect(startsWithDeniedRoot(allowed)).toBe(false);
   });
 });
 
@@ -322,6 +342,114 @@ describe('entry-id guard', () => {
     s.readJson.mockResolvedValue({ ok: true, text: '[]' });
     const handle = await openArchiveSession([TOKEN]);
     await expect(handle.readEntryJson('fp0:2')).resolves.toEqual({ ok: true, text: '[]' });
+  });
+});
+
+describe('peekEntryKind', () => {
+  it('JPEG head -> image + image/jpeg, no extractEntry and no getFSInfo called', async () => {
+    const s = session([entry()]);
+    s.peekHead.mockResolvedValue({ ok: true, head: JPEG_HEAD });
+    const handle = await openArchiveSession([TOKEN]);
+    const result = await handle.peekEntryKind('fp0:1');
+    expect(result).toEqual({ ok: true, kind: 'image', contentType: 'image/jpeg' });
+    expect(s.extractEntry).not.toHaveBeenCalled();
+    expect(getFSInfo).not.toHaveBeenCalled();
+  });
+
+  it('MP4/ISO-BMFF bytes on an image-listed entry -> video', async () => {
+    // The entry is listed as 'image' but the head bytes are video.
+    const s = session([entry({ path: 'media/posts/surprise.jpg' })]);
+    s.peekHead.mockResolvedValue({ ok: true, head: mp4Head() });
+    const handle = await openArchiveSession([TOKEN]);
+    const result = await handle.peekEntryKind('fp0:1');
+    expect(result).toEqual({ ok: true, kind: 'video' });
+  });
+
+  it('listed video kind -> video without calling peekHead', async () => {
+    const s = session([entry({ kind: 'video', path: 'media/posts/clip.mp4' })]);
+    const handle = await openArchiveSession([TOKEN]);
+    const result = await handle.peekEntryKind('fp0:1');
+    expect(result).toEqual({ ok: true, kind: 'video' });
+    expect(s.peekHead).not.toHaveBeenCalled();
+  });
+
+  it('listed video kind with a listing skip -> video (video wins before skip)', async () => {
+    // Contract (e): a listed video is evidence even when the entry is also
+    // skipped. Holding reads no bytes; the skip is irrelevant to the decision.
+    const s = session([
+      entry({ kind: 'video', path: 'media/posts/clip.mp4', skip: 'ENTRY_OVER_CAP' }),
+    ]);
+    const handle = await openArchiveSession([TOKEN]);
+    const result = await handle.peekEntryKind('fp0:1');
+    expect(result).toEqual({ ok: true, kind: 'video' });
+    expect(s.peekHead).not.toHaveBeenCalled();
+  });
+
+  it('json entry id -> throws ARCHIVE_INTERNAL (caller bug)', async () => {
+    session([entry({ entryId: 'fp0:2', kind: 'json', path: 'media/posts_1.json' })]);
+    const handle = await openArchiveSession([TOKEN]);
+    await expect(handle.peekEntryKind('fp0:2')).rejects.toMatchObject({
+      code: 'ARCHIVE_INTERNAL',
+    });
+  });
+
+  it('image entry with a listing skip -> that skip returned, no peek', async () => {
+    const s = session([entry({ skip: 'ENTRY_OVER_CAP' })]);
+    const handle = await openArchiveSession([TOKEN]);
+    const result = await handle.peekEntryKind('fp0:1');
+    expect(result).toEqual({ ok: false, skip: 'ENTRY_OVER_CAP' });
+    expect(s.peekHead).not.toHaveBeenCalled();
+  });
+
+  it('a peekHead skip is passed through', async () => {
+    const s = session([entry()]);
+    s.peekHead.mockResolvedValue({ ok: false, skip: 'ENTRY_KIND_NOT_ENABLED' });
+    const handle = await openArchiveSession([TOKEN]);
+    const result = await handle.peekEntryKind('fp0:1');
+    expect(result).toEqual({ ok: false, skip: 'ENTRY_KIND_NOT_ENABLED' });
+  });
+
+  it('head that sniffs to null -> ENTRY_SNIFF_INDETERMINATE', async () => {
+    // An empty head produces a null from sniffContentType, which classifySniff
+    // maps to ENTRY_SNIFF_INDETERMINATE (not an extension fallback).
+    const s = session([entry()]);
+    s.peekHead.mockResolvedValue({ ok: true, head: new Uint8Array(0) });
+    const handle = await openArchiveSession([TOKEN]);
+    const result = await handle.peekEntryKind('fp0:1');
+    expect(result).toEqual({ ok: false, skip: 'ENTRY_SNIFF_INDETERMINATE' });
+  });
+
+  it('unknown entry id -> throws ARCHIVE_INTERNAL', async () => {
+    session([entry()]);
+    const handle = await openArchiveSession([TOKEN]);
+    await expect(handle.peekEntryKind('fp9:99')).rejects.toMatchObject({
+      code: 'ARCHIVE_INTERNAL',
+    });
+  });
+
+  it('passes the AbortSignal to peekHead and propagates the cancellation', async () => {
+    // The real cancel machinery (native cancel + grace-timer backstop) lives in
+    // the wrapper and is covered there; what matters HERE is that the options
+    // object reaches `peekHead` and that an ECANCELLED rejection travels out of
+    // `peekEntryKind` as a cancellation rather than being swallowed into a skip.
+    const s = session([entry()]);
+    s.peekHead.mockImplementation(
+      (_entryId: string, options?: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          options?.signal?.addEventListener('abort', () => {
+            reject(new ArchiveReaderError('ECANCELLED'));
+          });
+        }),
+    );
+    const handle = await openArchiveSession([TOKEN]);
+    const controller = new AbortController();
+    const pending = handle.peekEntryKind('fp0:1', { signal: controller.signal });
+    expect(s.peekHead).toHaveBeenCalledWith('fp0:1', { signal: controller.signal });
+
+    controller.abort();
+    const thrown = await pending.catch((e: unknown) => e);
+    expect(isArchiveCancellation(thrown)).toBe(true);
+    expect(thrown).toMatchObject({ code: 'ECANCELLED' });
   });
 });
 

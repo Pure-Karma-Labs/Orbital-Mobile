@@ -12,13 +12,18 @@
  *     defence in depth on the OTHER side of the FFI: if a listing ever
  *     contains an entry under a denied root, the session is closed and the run
  *     fails. The real guarantee is the Rust hostile matrix's recording-source
- *     assertion; this is the cheap second lock.
+ *     assertion; this is the cheap second lock. `DENIED_ROOTS` below must name
+ *     the same 10 roots as the Rust table, and security invariant 29.7 pins
+ *     that parity plus the tripwire call itself — a drift on either side is a
+ *     build failure, not a silent half-check.
  *  2. **A content sniff before every extract** (F1). Extension is not
  *     evidence. `peekHead` inflates at most 128 bytes, and
  *     `sniffContentType` decides: video bytes under an image name are held
  *     (`ENTRY_IS_VIDEO`), a non-image is refused
  *     (`ENTRY_UNSUPPORTED_IMAGE_FORMAT`), and an unrecognised head is refused
  *     distinctly (`ENTRY_SNIFF_INDETERMINATE`) — never an extension fallback.
+ *     `peekEntryKind` exposes that same classification WITHOUT extracting, so
+ *     `#925` can decide whether to hold a whole post before any job runs.
  *  3. **Staging-file lifecycle.** Every extract is consumed inside a
  *     `try/finally` that unlinks the file and calls `releaseStaging(path)`, so
  *     the live-staging ceiling cannot leak and no plaintext media outlives the
@@ -28,7 +33,14 @@
  *     are handed on.
  *  5. **Codes-only errors and bucketed telemetry** (F18). Nothing leaving this
  *     module carries a path, an entry name, a URI or a count derived from
- *     path-level rejections.
+ *     path-level rejections. Every skip code except `ENTRY_IS_VIDEO`,
+ *     `ENTRY_UNSUPPORTED_IMAGE_FORMAT` and `ENTRY_SNIFF_INDETERMINATE` comes
+ *     from Rust; those three are this module's own sniff verdicts, and
+ *     `ENTRY_KIND_NOT_ENABLED` is the one RUST code this module also emits
+ *     itself (for a non-image handed to `extractImageEntry`). Per-call skips —
+ *     from `extractImageEntry` or `peekEntryKind` — are NOT folded into
+ *     `telemetry.rejected`, which is listing-time only and comes straight from
+ *     `session.rejectedCounts`.
  *
  * ## What this module does NOT do
  *
@@ -77,10 +89,17 @@ export { ARCHIVE_ERROR_DISPOSITIONS, ArchiveReaderError, isArchiveCancellation }
  *
  * `messages` and `inbox` are the reason this feature was allowed to exist at
  * all: a Meta export contains the user's entire private message history, and
- * Orbital imports POSTS. The other four are personal data an import has no
- * use for. Checked on the PRE-STRIP path, because the wrapper strip removes a
- * leading wrapper segment and a hostile export can name that segment after a
- * denied root to push the real root one level down.
+ * Orbital imports POSTS. The other eight are personal data an import has no
+ * use for.
+ *
+ * All 10 of them, and EXACTLY the 10 in the Rust `DENIED_ROOTS` table: the two
+ * sides are the same F17 known-root set, so a root present on one side only is
+ * either a strippable wrapper segment or an admissible allowlist row. Security
+ * invariant 29.7 compares the two sets and reports missing and extra entries
+ * separately, so they cannot drift.
+ *
+ * Checked against the LISTED path — see `startsWithDeniedRoot`, which explains
+ * why that is sound.
  */
 const DENIED_ROOTS: ReadonlySet<string> = new Set([
   'messages',
@@ -89,6 +108,10 @@ const DENIED_ROOTS: ReadonlySet<string> = new Set([
   'ads_information',
   'security_and_login_information',
   'personal_information',
+  'stories',
+  'reels',
+  'profile',
+  'other_content',
 ]);
 
 /**
@@ -204,12 +227,72 @@ export type ArchiveExtractOutcome =
     }
   | { readonly ok: false; readonly skip: EntrySkipCode };
 
+/**
+ * What `peekEntryKind` returns: a classification, not a file.
+ *
+ * `contentType` rides along on the `image` arm only, because it is the sniffed
+ * type of the 128-byte head and there is nothing to label on the other arms.
+ */
+export type ArchiveEntryKindOutcome =
+  | { readonly ok: true; readonly kind: 'image'; readonly contentType: string }
+  | { readonly ok: true; readonly kind: 'video' }
+  | { readonly ok: false; readonly skip: EntrySkipCode };
+
 export interface ArchiveImportSession {
   readonly parts: readonly ArchivePartToken[];
   readonly entries: readonly ArchiveEntry[];
   readonly telemetry: ArchiveSessionTelemetry;
+  /**
+   * Resolve `uri`-style references from a parsed Meta JSON to entry ids.
+   *
+   * A reference whose target the LISTING skipped is unresolvable, and
+   * indistinguishable from one that was never in the archive — a caller learns
+   * nothing about it beyond "not available". WHICH code it gets depends on the
+   * reference, not on the skip: a fully allowlisted path comes back
+   * `URI_UNRESOLVED`, anything outside the allowlist `URI_OUTSIDE_ALLOWLIST`.
+   * `#925` treats the two identically (no entryId, so hold the post).
+   */
   resolveMediaUris(uris: readonly string[]): UriResolution[];
   readEntryJson(entryId: string, options?: ArchiveCallOptions): Promise<ArchiveJsonOutcome>;
+  /**
+   * Classify ONE media entry without extracting it (`#925`'s pre-pass).
+   *
+   * Reads at most the 128-byte head through `peekHead`, which writes no file
+   * and is not charged to the extract budget. Nothing lands on disk.
+   *
+   * (a) **A skip is NEVER proof of "not a video".** Neither is a
+   *     `URI_UNRESOLVED` from `resolveMediaUris`, nor
+   *     `ENTRY_SNIFF_INDETERMINATE`. A skipped entry is unresolvable and
+   *     indistinguishable from an absent one, and the sniff recognises
+   *     ISO-BMFF video only — there is no WebM or MKV detection. So `#925`
+   *     must HOLD the whole post for any media item it cannot positively
+   *     classify as `image`; only an `{ok: true, kind: 'image'}` licenses
+   *     importing a post's media.
+   * (b) `contentType` is **advisory**, for the hold/skip decision only. The
+   *     only label that may be persisted or uploaded is the post-extract
+   *     `contentType` from `extractImageEntry`, which describes the bytes that
+   *     are actually on disk.
+   * (c) Skips come back as VALUES; archive-wide failures are THROWN
+   *     (`ARCHIVE_BUSY`, `ARCHIVE_READ_FAILED`, `ARCHIVE_SESSION_CLOSED`,
+   *     `ARCHIVE_INTERNAL`). A `json` entry id — or an id not in this
+   *     session's listing — is a caller bug and throws `ARCHIVE_INTERNAL`,
+   *     the same convention `require(id, kind)` already uses. That is also
+   *     what keeps the skip-code provenance in this file's header true: this
+   *     method never invents a Rust code for a caller's mistake.
+   * (d) **Call it sequentially, once per media entry**, and keep the result.
+   *     Rust has 4 concurrent job slots and the import run shares them; this
+   *     is a per-entry inflation of up to 128 bytes, and `extractImageEntry`
+   *     peeks AGAIN by design (F1), so this is not a cache and not a prefetch.
+   *     If a future PR wants to collapse the two peeks, the `contentType`
+   *     returned here is the lever.
+   * (e) Its ORDER differs from `extractImageEntry` and from Rust
+   *     `check_entry`: the listed kind `video` wins BEFORE a listing skip is
+   *     consulted, because a listed video is evidence about the post even when
+   *     the entry itself cannot be read, and holding reads no bytes. The
+   *     extract path cannot do that — it must refuse a skipped entry before it
+   *     touches it.
+   */
+  peekEntryKind(entryId: string, options?: ArchiveCallOptions): Promise<ArchiveEntryKindOutcome>;
   extractImageEntry(
     entryId: string,
     options?: ArchiveCallOptions,
@@ -267,6 +350,48 @@ class ImportSession implements ArchiveImportSession {
     return result.ok ? { ok: true, text: result.text } : { ok: false, skip: result.skip };
   }
 
+  /** See `ArchiveImportSession.peekEntryKind` for the contract. */
+  async peekEntryKind(
+    entryId: string,
+    options?: ArchiveCallOptions,
+  ): Promise<ArchiveEntryKindOutcome> {
+    const entry = this.require(entryId);
+    // A json id here is a caller bug, exactly like a kind mismatch in
+    // `require(id, kind)`: this method answers "is this media a video?", and
+    // asking it about a metadata file means #925 lost track of which id it
+    // held.
+    if (entry.kind === 'json') throw new ArchiveReaderError('ARCHIVE_INTERNAL');
+    // Listed as a video: evidence enough, and no byte is read. BEFORE the skip
+    // check (see contract (e)) — a video that Rust also skipped is still a
+    // video, and the post must still be held.
+    if (entry.kind === 'video') return { ok: true, kind: 'video' };
+    if (entry.skip !== null) return { ok: false, skip: entry.skip };
+
+    const peek = await this.session.peekHead(entryId, options);
+    if (!peek.ok) return { ok: false, skip: peek.skip };
+    const sniffed = sniffContentType(peek.head);
+    const verdict = classifySniff(sniffed);
+    if (verdict !== null) {
+      // Video bytes under an image name: the same hold, reached by content
+      // rather than by extension.
+      if (verdict === 'ENTRY_IS_VIDEO') return { ok: true, kind: 'video' };
+      return { ok: false, skip: verdict };
+    }
+    // classifySniff returns null only for an `image/...` type, so `sniffed` is
+    // a string here; the fallback is for the type checker, not a label we
+    // expect to produce.
+    return { ok: true, kind: 'image', contentType: sniffed ?? 'application/octet-stream' };
+  }
+
+  /**
+   * Extract one image entry, sniffing before and after (F1).
+   *
+   * Its gate ORDER is deliberately not `peekEntryKind`'s: a listing skip is
+   * refused here BEFORE the kind is considered, because this method is about
+   * to read the entry's bytes and a skipped entry must never be opened.
+   * `peekEntryKind` reads nothing on its video path and so can answer from the
+   * listing alone — see contract (e) there.
+   */
   async extractImageEntry(
     entryId: string,
     options?: ArchiveCallOptions,

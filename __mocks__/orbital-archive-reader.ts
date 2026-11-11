@@ -26,8 +26,11 @@
  * `pickArchiveParts` defaults to `Promise.resolve(null)` (user-cancelled) so
  * tests that do not set up the mock do not accidentally receive an empty list.
  *
- * Token fixtures (`MOCK_TOKEN`, `makeOarToken`) produce tokens that pass the
- * real decoder; `wrapper.test.ts` asserts validity once to lock the encoding.
+ * Token fixtures (`MOCK_TOKEN`, `makeOarToken`) are RE-EXPORTED from the
+ * package's own `src/__fixtures__/token.ts`, so there is one encoder in the
+ * repo and the package's own tests need nothing from the app root.
+ * `wrapper.test.ts` asserts once that the real decoder accepts them, which is
+ * what keeps the fixture encoder and the wrapper's encoder agreeing.
  */
 
 // ---------------------------------------------------------------------------
@@ -72,43 +75,18 @@ import type {
 } from '../packages/orbital-archive-reader/src/index';
 
 // ---------------------------------------------------------------------------
-// Real-token fixture helpers
+// Real-token fixtures — re-exported from the PACKAGE's own fixture module
 // ---------------------------------------------------------------------------
 
-/**
- * Minimal base64url encoder for the ASCII JSON payloads produced by
- * `makeOarToken`.  Matches the wrapper's own `base64UrlEncode` output exactly
- * for ASCII input, without pulling in a polyfill.
- */
-function oarBase64url(json: string): string {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
-  const bytes = Array.from(json, (c) => c.charCodeAt(0));
-  let out = '';
-  for (let i = 0; i < bytes.length; i += 3) {
-    const b0 = bytes[i];
-    const b1 = bytes[i + 1];
-    const b2 = bytes[i + 2];
-    out += alphabet[b0 >> 2];
-    out += alphabet[((b0 & 3) << 4) | (b1 === undefined ? 0 : b1 >> 4)];
-    if (b1 === undefined) break;
-    out += alphabet[((b1 & 15) << 2) | (b2 === undefined ? 0 : b2 >> 6)];
-    if (b2 === undefined) break;
-    out += alphabet[b2 & 63];
-  }
-  return out;
-}
-
-/**
- * Build a token that the real `decodeToken` accepts: `oar1:` +
- * base64url(`{"v":1,"p":"ios","ref":"<ref>","persist":<persist>}`).
- */
-export function makeOarToken(ref: string, persist = false): ArchivePartToken {
-  const payload = JSON.stringify({ v: 1, p: 'ios', ref, persist });
-  return `oar1:${oarBase64url(payload)}` as ArchivePartToken;
-}
-
-/** A ready-to-use token fixture that passes the real decoder. */
-export const MOCK_TOKEN: ArchivePartToken = makeOarToken('mock-archive-ref');
+// One encoder, one place: `src/__fixtures__/token.ts`. App tests keep importing
+// `MOCK_TOKEN`/`makeOarToken` from this mock, but neither the fixture nor the
+// package's own tests depend on the app root any more.
+export {
+  MOCK_TOKEN,
+  makeOarToken,
+  oarBase64url,
+  oarTokenFromPayload,
+} from '../packages/orbital-archive-reader/src/__fixtures__/token';
 
 // ---------------------------------------------------------------------------
 // `isArchivePartToken` -- real decoder, wrapped in a jest.fn

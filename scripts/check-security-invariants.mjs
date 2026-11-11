@@ -4656,7 +4656,9 @@ checkWindowedPins(
 //
 // 29.5 pins the Rust DENIED_ROOTS table and a floor of 10 on it. This pins the
 // OTHER side of the FFI — `archiveAccess.ts`'s own DENIED_ROOTS set, the second
-// lock on every listing — and the two statements that make it run at all.
+// lock on every listing — and everything that makes it run: the set is unique
+// and top-level, `openArchiveSession` still calls the predicate and closes on a
+// hit, and the predicate itself still consults the set.
 //
 // Set EQUALITY, not a floor, with missing and extra reported SEPARATELY,
 // because they mean opposite things:
@@ -4688,9 +4690,27 @@ const arAccessRaw = meRead(
 if (arAccessRaw !== null) {
   const arAccessCode = meStripComments(arAccessRaw);
 
-  const arTsTable = /\bconst DENIED_ROOTS\b[^=]*=\s*new Set\(\[([\s\S]*?)\]\)/.exec(arAccessCode);
+  // ANCHORED at column 0 (`^` under `m`) and requiring `\s*:` after the name,
+  // for the reason 29.5 was tightened in this PR plus one more: the first-match
+  // unanchored form was defeated by a DECOY — a block-scoped
+  // `const DENIED_ROOTS = new Set([…all 10…])` inside any helper above the real
+  // declaration was matched FIRST, so the real module-level set could be
+  // shrunk to two roots and the parity check still saw ten (PR #983 review,
+  // mutation D1). Only a top-level declaration can be the one the tripwire
+  // reads, so only a top-level declaration is accepted.
+  const arTsTable = /^const DENIED_ROOTS\s*:[^=]*=\s*new Set\(\[([\s\S]*?)\]\)/m.exec(arAccessCode);
   const arTsRoots =
     arTsTable === null ? [] : [...arTsTable[1].matchAll(/['"]([^'"]+)['"]/g)].map((m) => m[1]);
+
+  // ...and exactly ONE declaration of the name in the whole stripped file, so a
+  // decoy is itself a violation rather than merely ignored. Anchoring alone
+  // would leave a second top-level declaration (the later one wins at runtime,
+  // the earlier one here) invisible — mutation D2.
+  const arTsDecls = (arAccessCode.match(/\bconst DENIED_ROOTS\b/g) ?? []).length;
+  if (arTsDecls > 1) {
+    arViolation(ARCHIVE_ACCESS, `${arTsDecls} declarations of \`const DENIED_ROOTS\` — exactly one is allowed, because this clause and the tripwire must be reading the same Set; a second one (block-scoped or shadowing) lets the parity check pass against a table nothing enforces`);
+  }
+
   if (arTsTable === null) {
     arViolation(ARCHIVE_ACCESS, 'no `const DENIED_ROOTS = new Set([…])` — the app-side denied-root tripwire has no table, and this parity clause would pass vacuously');
   } else if (arTsRoots.length === 0) {
@@ -4720,6 +4740,18 @@ if (arAccessRaw !== null) {
         arViolation(ARCHIVE_ACCESS, `openArchiveSession() no longer contains \`${pin}\` — the denied-root set is then dead code and a listing under a denied root is returned to the caller`);
       }
     }
+  }
+
+  // The PREDICATE's body, not just its call site. `startsWithDeniedRoot` could
+  // be `return false` and everything above would still pass: the Set would be
+  // the right size, the tripwire would still call the function, and every
+  // listing would sail through (PR #983 review, mutation D3). So the body has
+  // to consult the Set.
+  const arPredicate = /^export function startsWithDeniedRoot\([\s\S]*?\n\}/m.exec(arAccessCode);
+  if (arPredicate === null) {
+    arViolation(ARCHIVE_ACCESS, 'startsWithDeniedRoot() not found — it is the predicate the tripwire calls, and without the window this clause would pass vacuously');
+  } else if (!arPredicate[0].includes('DENIED_ROOTS.has(')) {
+    arViolation(ARCHIVE_ACCESS, 'startsWithDeniedRoot() no longer consults DENIED_ROOTS (`DENIED_ROOTS.has(` is missing from its body) — the set and the tripwire call would both still be present while every listing passes');
   }
 }
 

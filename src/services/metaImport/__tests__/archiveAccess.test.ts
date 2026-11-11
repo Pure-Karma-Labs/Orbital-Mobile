@@ -24,7 +24,9 @@ import {
 } from '../../../../__mocks__/orbital-archive-reader';
 import { isStagingResidueName } from '../../media/stagingResidue';
 import {
+  ArchiveReaderError,
   bucketCount,
+  isArchiveCancellation,
   openArchiveSession,
   startsWithDeniedRoot,
   summarizeSession,
@@ -125,6 +127,19 @@ describe('denied-root tripwire (F17)', () => {
     expect(startsWithDeniedRoot('media/posts/messages.jpg')).toBe(false);
     expect(startsWithDeniedRoot('your_messages/x.jpg')).toBe(false);
     expect(startsWithDeniedRoot('media/posts/inbox/x.jpg')).toBe(false);
+  });
+
+  // The four roots #981 shipped without. One positive each, plus the adjacent
+  // name that must NOT match — the check is on the whole first SEGMENT, so a
+  // longer segment that merely starts with a denied root is allowed through.
+  it.each([
+    ['stories', 'stories/highlights/x.jpg', 'storiesX/a.jpg'],
+    ['reels', 'reels/videos/r.mp4', 'reels_archive/a.jpg'],
+    ['profile', 'profile/avatar.jpg', 'profile_photos/a.jpg'],
+    ['other_content', 'other_content/a.json', 'other_contents/a.json'],
+  ])('matches the %s root as a whole segment only', (_root, denied, allowed) => {
+    expect(startsWithDeniedRoot(denied)).toBe(true);
+    expect(startsWithDeniedRoot(allowed)).toBe(false);
   });
 });
 
@@ -410,6 +425,31 @@ describe('peekEntryKind', () => {
     await expect(handle.peekEntryKind('fp9:99')).rejects.toMatchObject({
       code: 'ARCHIVE_INTERNAL',
     });
+  });
+
+  it('passes the AbortSignal to peekHead and propagates the cancellation', async () => {
+    // The real cancel machinery (native cancel + grace-timer backstop) lives in
+    // the wrapper and is covered there; what matters HERE is that the options
+    // object reaches `peekHead` and that an ECANCELLED rejection travels out of
+    // `peekEntryKind` as a cancellation rather than being swallowed into a skip.
+    const s = session([entry()]);
+    s.peekHead.mockImplementation(
+      (_entryId: string, options?: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          options?.signal?.addEventListener('abort', () => {
+            reject(new ArchiveReaderError('ECANCELLED'));
+          });
+        }),
+    );
+    const handle = await openArchiveSession([TOKEN]);
+    const controller = new AbortController();
+    const pending = handle.peekEntryKind('fp0:1', { signal: controller.signal });
+    expect(s.peekHead).toHaveBeenCalledWith('fp0:1', { signal: controller.signal });
+
+    controller.abort();
+    const thrown = await pending.catch((e: unknown) => e);
+    expect(isArchiveCancellation(thrown)).toBe(true);
+    expect(thrown).toMatchObject({ code: 'ECANCELLED' });
   });
 });
 

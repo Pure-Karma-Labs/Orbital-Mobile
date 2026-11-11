@@ -97,8 +97,8 @@ class OrbitalArchiveAccessModule(reactContext: ReactApplicationContext) :
    * shutdown block in [invalidate] already synchronize on the instance, and
    * coupling a descriptor publish to those would make a publish wait behind an
    * executor creation for no reason. The .mm does the same work in the single
-   * `@synchronized(self)` block that ends `-openParts:resolve:reject:`
-   * (OrbitalArchiveAccess.mm :637-645), mirrored by `-invalidate` (:454-462).
+   * `@synchronized(self)` block that ends `-openParts:resolve:reject:` in
+   * OrbitalArchiveAccess.mm, mirrored by its `-invalidate`.
    */
   private val descriptorLock = Any()
 
@@ -165,8 +165,8 @@ class OrbitalArchiveAccessModule(reactContext: ReactApplicationContext) :
    *
    * "Nothing to present on" — no current activity here, or none left by the
    * time the UI thread runs — is ECANCELLED, not ARCHIVE_INTERNAL: it is the
-   * same transient condition as the .mm's un-presentable-presenter check in
-   * -presentPickerForSession: (OrbitalArchiveAccess.mm :553), which already
+   * same transient condition as the un-presentable-presenter check in
+   * OrbitalArchiveAccess.mm's `-presentPickerForSession:`, which already
    * settles ECANCELLED, and the user can simply tap again.
    * The one site that stays internal is the launch that throws; the comment
    * there says why.
@@ -429,9 +429,9 @@ class OrbitalArchiveAccessModule(reactContext: ReactApplicationContext) :
     // the process. Now a publish either completes before the flag is set — and
     // the sweep that follows it closes what we published — or observes the flag
     // and closes its own. The .mm has the same shape: the one
-    // `@synchronized(self)` block closing -openParts:resolve:reject:
-    // (OrbitalArchiveAccess.mm :637-645) checks `_invalidated` and fills `_fds`
-    // together, and -invalidate (:454-462) clears under the same lock.
+    // `@synchronized(self)` block closing `-openParts:resolve:reject:` checks
+    // `_invalidated` and fills `_fds` together, and `-invalidate` clears both
+    // under the same lock.
     //
     // The AtomicBoolean stays: every other reader of the flag (the early exits,
     // the per-part loop, `executor()`) wants a cheap unlocked read, and only

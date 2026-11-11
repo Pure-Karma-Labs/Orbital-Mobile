@@ -245,10 +245,12 @@ export interface ArchiveImportSession {
   /**
    * Resolve `uri`-style references from a parsed Meta JSON to entry ids.
    *
-   * A reference that resolves to an entry the LISTING skipped comes back
-   * `URI_UNRESOLVED`: a skipped entry is unresolvable and indistinguishable
-   * from one that was never in the archive, so a caller learns nothing about
-   * it beyond "not available".
+   * A reference whose target the LISTING skipped is unresolvable, and
+   * indistinguishable from one that was never in the archive — a caller learns
+   * nothing about it beyond "not available". WHICH code it gets depends on the
+   * reference, not on the skip: a fully allowlisted path comes back
+   * `URI_UNRESOLVED`, anything outside the allowlist `URI_OUTSIDE_ALLOWLIST`.
+   * `#925` treats the two identically (no entryId, so hold the post).
    */
   resolveMediaUris(uris: readonly string[]): UriResolution[];
   readEntryJson(entryId: string, options?: ArchiveCallOptions): Promise<ArchiveJsonOutcome>;

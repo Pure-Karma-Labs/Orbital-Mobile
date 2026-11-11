@@ -122,7 +122,9 @@ jest.mock('../NativeOrbitalArchiveAccess', () => {
 
 import * as wrapper from '../index';
 // Token fixture from the app-level mock: the real decoder must accept it.
-import { MOCK_TOKEN } from '../../../../__mocks__/orbital-archive-reader';
+// The package's OWN fixtures — not the app's `__mocks__`, which merely
+// re-exports these. Keeps this package's tests free of the app root.
+import { MOCK_TOKEN, oarTokenFromPayload } from '../__fixtures__/token';
 
 const HANDLE = {
   handleId: 'h0',
@@ -407,7 +409,7 @@ describe('token codec', () => {
   });
 
   it('rejects a malformed token as ARCHIVE_INTERNAL, not as a corrupt archive', async () => {
-    for (const bad of ['', 'nope', 'oar1:!!!', `oar1:${btoaUrl('{"v":2}')}`]) {
+    for (const bad of ['', 'nope', 'oar1:!!!', oarTokenFromPayload('{"v":2}')]) {
       expect(wrapper.isArchivePartToken(bad)).toBe(false);
       await expect(
         wrapper.openArchive([bad as wrapper.ArchivePartToken]),
@@ -421,30 +423,14 @@ describe('token codec', () => {
     await expect(wrapper.pickArchiveParts()).resolves.toBeNull();
   });
 
-  it('the real decoder accepts the MOCK_TOKEN fixture from __mocks__', () => {
-    // Verifies that the token fixture in `__mocks__/orbital-archive-reader.ts`
-    // is accepted by the real `decodeToken` path, so the mock never hides a
-    // token-encoding regression in app tests.
+  it('the real decoder accepts the shared MOCK_TOKEN fixture', () => {
+    // `src/__fixtures__/token.ts` has its own encoder, independent of the
+    // wrapper's private `base64UrlEncode`. This is the assertion that keeps the
+    // two agreeing — and the app's `__mocks__` re-exports the same fixture, so
+    // it also means a mock token can never be one the real decoder refuses.
     expect(wrapper.isArchivePartToken(MOCK_TOKEN)).toBe(true);
   });
 });
-
-/** Minimal base64url for the malformed-token fixture above. */
-function btoaUrl(text: string): string {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
-  const bytes = Array.from(text, (c) => c.charCodeAt(0));
-  let out = '';
-  for (let i = 0; i < bytes.length; i += 3) {
-    const [b0, b1, b2] = [bytes[i], bytes[i + 1], bytes[i + 2]];
-    out += alphabet[b0 >> 2];
-    out += alphabet[((b0 & 3) << 4) | (b1 === undefined ? 0 : b1 >> 4)];
-    if (b1 === undefined) break;
-    out += alphabet[((b1 & 15) << 2) | (b2 === undefined ? 0 : b2 >> 6)];
-    if (b2 === undefined) break;
-    out += alphabet[b2 & 63];
-  }
-  return out;
-}
 
 describe('listing and bigint narrowing', () => {
   it('narrows u64 sizes and clamps a saturated one instead of throwing', async () => {

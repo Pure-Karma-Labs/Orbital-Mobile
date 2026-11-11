@@ -305,8 +305,14 @@ export class ArchiveReaderError extends Error {
    *  - ONE index space for all three producers: the Android glue, the iOS glue
    *    and Rust all count the same array, so a consumer never has to ask which
    *    layer rejected.
-   *  - It is set on every `ARCHIVE_ACCESS_LOST` and every `ARCHIVE_CHANGED`,
-   *    and on nothing else.
+   *  - It is set on every `ARCHIVE_ACCESS_LOST` and `ARCHIVE_CHANGED` thrown
+   *    from `openArchive` or from a session method — i.e. everywhere a
+   *    `tokens` array exists to index — and on no other code.
+   *    `pickArchiveParts` is the exception that proves the scope: iOS can
+   *    reject it `ARCHIVE_ACCESS_LOST` when a picked document yields no
+   *    bookmark (`OrbitalArchiveAccess.mm`, inside the picker delegate's
+   *    bookmark loop), and that rejection carries NO index, because the user
+   *    has not handed us a token array yet.
    *  - It is nevertheless typed OPTIONAL, so a consumer MUST tolerate
    *    `undefined`: anything that is not a safe non-negative integer is
    *    dropped rather than guessed at (`asPartIndex`), and an older native

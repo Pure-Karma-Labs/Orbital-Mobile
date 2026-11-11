@@ -482,7 +482,7 @@ still **names** its inputs in executable code (it strips comments first — Groo
 and shell strippers respectively — so a gate's own header cannot satisfy it) and
 that it still contains its comparison machinery. Its tables today:
 
-- **`FRESHNESS_GATES` — four rows, one per (gate, crate) pair.**
+- **`FRESHNESS_GATES` — one row per (gate, crate) pair.**
   `android/check-rust-freshness.gradle` twice (the signal task
   `checkRustBinaries`, and the archive task `checkArchiveRustBinaries`), plus
   `scripts/rust-input-digest.sh` and `scripts/rust-input-digest-archive.sh`.
@@ -494,7 +494,7 @@ that it still contains its comparison machinery. Its tables today:
   by tail, so they pin that crate specifically now that two crates' paths are in
   play. That pair is deliberately stronger than signal's narrower historical
   set; widening signal's to match is DEBT-408.
-- **`UBRN_CONFIGS` — two entries**, one per crate, each checked for its
+- **`UBRN_CONFIGS` — one entry per crate**, each checked for its
   `crateName`. The archive entry additionally pins a `noOverwrite` list
   (`OrbitalArchiveReaderPackage.kt`, `AndroidManifestNew.xml`,
   `OrbitalArchiveReader.podspec`): those three are hand-written, and a
@@ -504,7 +504,8 @@ that it still contains its comparison machinery. Its tables today:
   `cargo test`, `cargo clippy` and `cargo audit` in BOTH crate directories, and
   `build.yml` must still run at least two `cargo build` invocations per crate
   (the device and simulator Apple slices in rust-apple-targets).
-- **`MARKER_WRITER_CALLERS` — three rows.** Each package's own `build:ios*`
+- **`MARKER_WRITER_CALLERS` — one row per package, plus one for the
+  harness.** Each package's own `build:ios*`
   scripts must call the shared marker writer — the archive package with its
   `archive` selector, so its marker cannot describe the wrong crate — and
   `scripts/test-rust-profile-gate-ios.sh` must still exercise the real writer,

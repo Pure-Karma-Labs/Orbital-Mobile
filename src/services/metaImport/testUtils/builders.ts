@@ -556,9 +556,9 @@ export interface IgPostSpec {
   /** The post-level caption. Carousels carry it here; single-media posts do not. */
   readonly title?: string;
   /**
-   * The stored order, NOT the display order: Instagram writes a carousel's
-   * children reversed. A test modelling a carousel lists them the way the
-   * archive holds them, so the parser's un-reversal is observable.
+   * The order the archive stores the post's media in — which is also the order
+   * the parser hands on (Alex, 2026-11-12: the export states nothing about
+   * display order, so it is kept exactly as written).
    */
   readonly media?: readonly IgMediaSpec[];
   /** Merged last, so a test can write any hostile shape it needs. */

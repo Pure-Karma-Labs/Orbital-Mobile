@@ -255,9 +255,8 @@ function parseInstagramPost(
   }
 
   // A carousel carries its own `creation_timestamp`; a single-media post has
-  // none at all and the media's own time is the only one stated. The fallback
-  // reads the STORED first element, which is what the file says, not the
-  // display-order first element this parser hands on.
+  // none at all and the media's own time is the only one stated, so the
+  // fallback reads the first stored element.
   const postSeconds = pickInteger(pickField(element, 'creation_timestamp'));
   const seconds = postSeconds ?? scan.firstSeconds;
   if (seconds === null) {
@@ -315,12 +314,19 @@ function parseInstagramPost(
     return skip(ctx, sourceIndex, 'empty_post', sourceItemId, originalDate);
   }
 
-  // Instagram writes a carousel's children in REVERSE display order. Restoring
-  // it here is the only place that knows; the identity is unaffected
-  // (`source_item_id` sorts basenames) and a single-media post is its own
-  // reverse, so this is observable only on a carousel.
-  const mediaUris = [...scan.storedUris].reverse();
-  const mediaDates = [...scan.storedDates].reverse();
+  // The STORED order is the order we import (Alex, 2026-11-12). An earlier
+  // draft reversed a carousel's children on the belief that Instagram stores
+  // them backwards; re-reading the real sample killed that belief — the
+  // children's `creation_timestamp`s are all equal (the upload instant, not
+  // per-photo capture times) and their filenames are not ordered either, so
+  // the export states NOTHING about display order and a reversal would be a
+  // coin flip dressed up as a fix. Half of all carousels would come out
+  // backwards instead of half coming out right.
+  //
+  // The identity is unaffected either way (`source_item_id` sorts basenames),
+  // so this is observable only as the order the member sees in a carousel.
+  const mediaUris = [...scan.storedUris];
+  const mediaDates = [...scan.storedDates];
 
   return {
     outcome: 'post',

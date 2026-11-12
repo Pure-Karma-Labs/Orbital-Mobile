@@ -94,16 +94,20 @@ describe('parseInstagramFlatFile content', () => {
     expect(post.originalDate).toBe(TS * 1000);
   });
 
-  it('restores display order for a carousel, which the export stores reversed', () => {
+  it('keeps a carousel’s stored order, and does not reverse it', () => {
+    // Alex, 2026-11-12: the stored order IS the imported order. The real
+    // sample gives a carousel's children one identical timestamp and unordered
+    // filenames, so the export states nothing about display order — reversing
+    // would get half of all carousels wrong instead of half right.
     const post = onePost({
       posts: [
         {
           creationTimestamp: TS,
           title: 'c',
           media: [
-            { name: 'third.jpg', creationTimestamp: TS - 1 },
+            { name: 'first.jpg', creationTimestamp: TS - 1 },
             { name: 'second.jpg', creationTimestamp: TS - 2 },
-            { name: 'first.jpg', creationTimestamp: TS - 3 },
+            { name: 'third.jpg', creationTimestamp: TS - 3 },
           ],
         },
       ],
@@ -114,7 +118,7 @@ describe('parseInstagramFlatFile content', () => {
       'media/posts/third.jpg',
     ]);
     // The dates travel with their own media item, not with the position.
-    expect(post.mediaDates).toEqual([(TS - 3) * 1000, (TS - 2) * 1000, (TS - 1) * 1000]);
+    expect(post.mediaDates).toEqual([(TS - 1) * 1000, (TS - 2) * 1000, (TS - 3) * 1000]);
   });
 
   it('does not use a carousel child’s label as the post caption', () => {

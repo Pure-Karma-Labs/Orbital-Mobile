@@ -5,7 +5,12 @@
  *
  * #924 derives a 16-byte `import_key` as
  * `hmacSha256(K_import, ascii(source) ‖ 0x00 ‖ sourceItemId)[0..16]`, and the
- * server's `import_items.import_key` CHECK is that 16 bytes. The KEY property
+ * 16 bytes are the BACKEND's `threads.import_key` CHECK constraint
+ * (`threads_import_key_len`, migration 046 `meta-import-schema`): an imported
+ * post is a row in `threads`, and the server dedups on
+ * `(group_id, author_id, import_key)`. `import_items` is #921's MOBILE SQLite
+ * table, which never leaves the device — naming it as the server's was wrong
+ * about which layer enforces the width. The KEY property
  * is therefore **determinism across exports**: the same post, re-downloaded
  * next month into a differently-named ZIP, must frame to the same bytes, or a
  * re-import duplicates the member's whole history.

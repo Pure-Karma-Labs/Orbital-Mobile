@@ -44,6 +44,14 @@ import { useAppStore } from '../../stores/useAppStore';
 // ---------------------------------------------------------------------------
 // Text encoder/decoder
 // ---------------------------------------------------------------------------
+//
+// SUPERSEDED, but deliberately still here. `src/utils/utf8.ts` holds the
+// app's strict pair (`encodeUtf8Strict` / `decodeUtf8Strict`, #925); this
+// local `decodeUTF8` is LENIENT — it validates nothing and will happily turn
+// malformed bytes into something. Retirement condition, from that module's
+// codec census: replace this pair with the strict one the next time this file
+// is touched for ENCODING reasons. It sits on the message hot path and is not
+// being destabilised for a refactor alone.
 
 function encodeUTF8(str: string): Uint8Array {
   const arr: number[] = [];

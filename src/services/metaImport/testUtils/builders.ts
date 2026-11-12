@@ -72,37 +72,10 @@ export function unknownHead(): Uint8Array {
 // ---------------------------------------------------------------------------
 
 /**
- * Turn a synthetic string into the mojibake Meta's exporter would produce.
- *
- * Meta writes every non-ASCII character as a `\u00XX` escape of a UTF-8 BYTE,
- * so `JSON.parse` yields one code point per byte: `'é'` → `'Ã©'`. This is the
- * exact inverse of `repairMojibake`, which is why the mojibake tests can be
- * written in readable text rather than in escape soup.
- *
- * Deliberately hand-rolled rather than `encodeUtf8Strict`: a fixture builder
- * that shared the implementation under test could agree with it about a bug.
+ * Re-exported from its own leaf module so the three pure-text suites can take
+ * it without pulling the archive mock graph in behind it.
  */
-export function mojibakeEscape(text: string): string {
-  let out = '';
-  for (const codePoint of text) {
-    const cp = codePoint.codePointAt(0) ?? 0;
-    if (cp < 0x80) {
-      out += String.fromCharCode(cp);
-    } else if (cp < 0x800) {
-      out += String.fromCharCode(0xc0 | (cp >> 6), 0x80 | (cp & 0x3f));
-    } else if (cp < 0x10000) {
-      out += String.fromCharCode(0xe0 | (cp >> 12), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
-    } else {
-      out += String.fromCharCode(
-        0xf0 | (cp >> 18),
-        0x80 | ((cp >> 12) & 0x3f),
-        0x80 | ((cp >> 6) & 0x3f),
-        0x80 | (cp & 0x3f),
-      );
-    }
-  }
-  return out;
-}
+export { mojibakeEscape } from './mojibakeEscape';
 
 // ---------------------------------------------------------------------------
 // Entry specs
@@ -147,17 +120,61 @@ export interface BuildArchiveOptions {
   readonly rejectedCounts?: MockArchiveSession['rejectedCounts'];
 }
 
-const VIDEO_EXTENSIONS = ['.mp4', '.mov', '.m4v', '.webm', '.mkv', '.avi'];
+/**
+ * The Rust extension classifier, mirrored exactly.
+ *
+ * `allowlist.rs`'s `IMAGE_EXTS` and `VIDEO_EXTS` are what the REAL listing
+ * uses to label an entry, and these builders exist to stand in for that
+ * listing. The previous lists disagreed with it in three places — `.3gp` was
+ * an image here and a video in Rust, `.avi` was a video here and unclassified
+ * there, and anything unrecognised defaulted to `image` — so a fixture could
+ * assert a decision the real archive would never offer. `builders.test.ts`
+ * reads `allowlist.rs` and asserts these tables equal it, the same way
+ * `jsonSafety.test.ts` reads `limits.rs`.
+ */
+const IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif', 'avif', 'gif'];
+const VIDEO_EXTENSIONS = ['mp4', 'mov', 'm4v', '3gp', 'webm', 'mkv'];
 
+/** The two tables, for the parity test. Extensions WITHOUT the dot. */
+export const RUST_EXTENSIONS: Readonly<Record<'image' | 'video', readonly string[]>> = {
+  image: IMAGE_EXTENSIONS,
+  video: VIDEO_EXTENSIONS,
+};
+
+/**
+ * Which kind the listing would give this path — or a THROW.
+ *
+ * Throwing is the point. An unrecognised extension is not an image, and a
+ * builder that quietly called it one would let a test assert an import
+ * decision for bytes the real archive refuses to list as media at all. A
+ * fixture that really wants an odd name states `kind` explicitly, which is a
+ * visible claim rather than a default.
+ */
 function inferKind(path: string): ArchiveEntry['kind'] {
   const lower = path.toLowerCase();
-  if (lower.endsWith('.json')) return 'json';
-  return VIDEO_EXTENSIONS.some((ext) => lower.endsWith(ext)) ? 'video' : 'image';
+  const dot = lower.lastIndexOf('.');
+  const ext = dot === -1 ? '' : lower.slice(dot + 1);
+  if (ext === 'json') return 'json';
+  if (IMAGE_EXTENSIONS.includes(ext)) return 'image';
+  if (VIDEO_EXTENSIONS.includes(ext)) return 'video';
+  throw new Error(
+    `builders: cannot infer a kind for \`${path}\` — \`.${ext}\` is in neither allowlist.rs table; state \`kind\` explicitly if that is the point of the fixture`,
+  );
 }
 
-/** Opaque, stable within one build. Tests must never parse this. */
-function entryIdAt(ordinal: number): string {
-  return `fp0:${ordinal}`;
+/**
+ * Opaque, and unique across every archive built in one test FILE.
+ *
+ * Restarting at `fp0:1` per build made two live archives share entry ids: a
+ * peek memo, a dedup set or an `entryIdFor` lookup from the first would
+ * silently answer for the second, and the test would pass for the wrong
+ * reason. The counter is module-level and never resets — ids are opaque, so
+ * nothing may depend on their values anyway.
+ */
+let nextEntryOrdinal = 1;
+
+function nextEntryId(): string {
+  return `fp0:${nextEntryOrdinal++}`;
 }
 
 function utf8Length(text: string): number {
@@ -182,9 +199,9 @@ export function buildArchive(
   const heads = new Map<string, Uint8Array>();
   const readSkips = new Map<string, NonNullable<ArchiveEntry['skip']>>();
 
-  specs.forEach((spec, index) => {
+  specs.forEach((spec) => {
     const kind = spec.kind ?? inferKind(spec.path);
-    const entryId = entryIdAt(index + 1);
+    const entryId = nextEntryId();
     const head = spec.head ?? (kind === 'image' ? JPEG_HEAD : mp4Head());
     const declaredSize =
       spec.declaredSize ?? (spec.text !== undefined ? utf8Length(spec.text) : 1024);
@@ -248,8 +265,6 @@ export function buildArchive(
     }),
   });
 
-  openArchive.mockResolvedValue(mock);
-
   return {
     entries,
     mock,
@@ -260,6 +275,10 @@ export function buildArchive(
       return match.entryId;
     },
     open(): Promise<ArchiveImportSession> {
+      // Armed HERE, not at build time. `openArchive` is one shared jest mock,
+      // so arming it at build made the LAST archive built the one every
+      // subsequent `open()` returned — including an earlier archive's own.
+      openArchive.mockResolvedValue(mock);
       return openArchiveSession(tokens);
     },
   };

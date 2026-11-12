@@ -151,7 +151,7 @@ describe('the F1 sniff table', () => {
     expect(s.extractEntry).not.toHaveBeenCalled();
   });
 
-  it('refuses an SVG head as an unsupported image format', async () => {
+  it('refuses an SVG head as indeterminate, never by extension', async () => {
     const { result, s } = await sniffOutcome(svgHead());
     // SVG/HTML is not a format `sniffContentType` recognises at all, so it
     // fails closed as indeterminate rather than being named — which is the

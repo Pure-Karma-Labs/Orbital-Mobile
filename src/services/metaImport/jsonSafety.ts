@@ -46,6 +46,18 @@
  *
  * (scan 6.86 s · parse 3.69 s · pick 0.65 s · key framing + `Set` 0.13 s)
  *
+ * ### These numbers are a DESKTOP LOWER BOUND
+ *
+ * They were measured on macOS arm64 against the Pods Hermes binary, with
+ * desktop memory pressure, a desktop allocator and no other app in the
+ * foreground. A phone running the same code under memory pressure will be
+ * SLOWER and will peak HIGHER, and a cap that is contract-class (lowering
+ * `MAX_JSON_BYTES` is an Instagram identity-contract change — see
+ * `sourceItemId.ts`) should not be frozen on a desktop measurement alone.
+ * #926 therefore owes a real-device re-measure of the ten-file run before
+ * release; the lever if it fails is lowering the cap, which is why the
+ * measurement has to happen while that is still cheap.
+ *
  * **Verdict: PASS.** 151 MB against the ≤ ~400 MB budget, with the dedup Set
  * at its `MAX_POSTS_PER_RUN` ceiling and ten full-size files in one run. No
  * cap is lowered, so the 12 MiB ceiling — and with it the Instagram identity

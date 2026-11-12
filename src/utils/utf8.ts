@@ -17,12 +17,16 @@
  *
  * ## Codec census (2026-11-12) and the consolidation trigger
  *
+ * Cited by SYMBOL, never by line number: two of the four line references this
+ * table first carried were already stale by the time #987 reviewed them, and a
+ * census nobody can trust is a census nobody re-reads.
+ *
  * | Site | Shape | Status |
  * |---|---|---|
- * | `src/services/crypto/contentCrypto.ts:40,67` | hand-rolled `encodeUTF8`/`decodeUTF8`, LENIENT decode (no validation, no surrogate check) | replace with this pair the next time that file is touched for encoding reasons; it is on the message hot path and is not being destabilised for a refactor |
- * | `src/services/crypto/utils.ts:1` `encodeUTF8` | latin1-TRUNCATING (`charCodeAt` into a byte, #373), 2 live ASCII-only callers (`identityKeyProbe.ts`, `inviteCrypto.ts`) | rename or delete when those callers are next edited. **#925 never calls it** — for a Meta post it would silently truncate every non-ASCII character to one byte |
- * | `packages/orbital-archive-reader/src/index.tsx:637,663` | its own hand-rolled pair | STAYS. The package must not depend on app `src/`, and its pair only ever sees the token codec's ASCII/base64url |
- * | `src/services/crypto/safetyNumber.ts:47` | `new TextEncoder()` | already the sanctioned encode |
+ * | `contentCrypto.ts` — `encodeUTF8` / `decodeUTF8` | hand-rolled pair, LENIENT decode (no validation, no surrogate check) | replace with this pair the next time that file is touched for encoding reasons; it is on the message hot path and is not being destabilised for a refactor |
+ * | `crypto/utils.ts` — `encodeUTF8` | latin1-TRUNCATING (`charCodeAt` into a byte, #373), 2 live ASCII-only callers (`identityKeyProbe.ts`, `inviteCrypto.ts`) | rename or delete when those callers are next edited. **#925 never calls it** — for a Meta post it would silently truncate every non-ASCII character to one byte |
+ * | `orbital-archive-reader/src/index.tsx` — `utf8Encode` / `utf8Decode` | its own hand-rolled pair | STAYS. The package must not depend on app `src/`, and its pair only ever sees the token codec's ASCII/base64url |
+ * | `crypto/safetyNumber.ts` — `new TextEncoder()` | already the sanctioned encode |
  *
  * ## Hermes (0.82.1, measured on the Pods binary)
  *

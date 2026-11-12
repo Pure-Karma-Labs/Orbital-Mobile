@@ -4773,31 +4773,324 @@ if (arAccessRaw !== null) {
 //   * the codec story: the id framing must be lossless, and nothing anywhere
 //     may call `TextDecoder` (clauses 7-8).
 //
-// THIS IS THE PR 1 SUBSET. Clauses 2-6 pin `mediaPrePass.ts` and
-// `parseArchive.ts`, which land in PR 2 together with their own mutation
-// matrix; clause 1 below is correspondingly restricted to the one file PR 1
-// ships. A clause whose subject does not exist yet would be a rule that passes
-// because nobody wrote the code, which is the opposite of the point.
+// Clauses 1-4 and 6 pin `mediaPrePass.ts`, which decides every media item's
+// fate; clause 5 pins the CALL SITE in `parseArchive.ts`, because clauses 3-4
+// pin two function BODIES and an orchestration that ignored both of them would
+// satisfy every one of them while importing media nothing ever classified.
 
 const MI_RULE = 'meta-import-parser-pins';
 const MI_ISSUE = '#925';
 const MI_UTF8 = join(SRC, 'utils', 'utf8.ts');
+const MI_IMPORT_DIR = join(SRC, 'services', 'metaImport');
+const MI_MEDIA_GATE_FILE = join(MI_IMPORT_DIR, 'mediaPrePass.ts');
+const MI_PARSE_ARCHIVE = join(MI_IMPORT_DIR, 'parseArchive.ts');
 
 function miViolation(file, detail) {
   violations.push(`  ${relative('.', file)}:0  [${MI_RULE}]  ${detail} (${MI_ISSUE})`);
 }
 
-// --- 29.8.1 (PR 1 subset) The strict codec must exist.
+// --- 29.8.1 The files every clause below reasons about must exist.
 //
-// `meRead` records a violation when it does not: every clause below reasons
-// about this file, and a deleted file must fail the rule rather than silently
-// satisfy it.
+// `meRead` records a violation when one does not: deleting the subject of a
+// pin must FAIL the rule, not satisfy it by leaving nothing to check. This is
+// the first mutation in #925's matrix for exactly that reason.
 const miUtf8Raw = meRead(
   MI_UTF8,
   MI_RULE,
   'the strict UTF-8 codec the parser frames source_item_id with',
   MI_ISSUE,
 );
+
+const miMediaGateRaw = meRead(
+  MI_MEDIA_GATE_FILE,
+  MI_RULE,
+  'the media pre-pass that decides which of a post\'s media may be imported',
+  MI_ISSUE,
+);
+
+const miParseArchiveRaw = meRead(
+  MI_PARSE_ARCHIVE,
+  MI_RULE,
+  'the orchestration that must route every media item through the pre-pass',
+  MI_ISSUE,
+);
+
+// --- 29.8.2 One declaration each, and a window that was really found.
+//
+// Both halves matter, for the two mutations 29.7 D1/D2 already caught on the
+// denied-root set:
+//
+//   * ANCHORED windows (`^export function`), because an unanchored first match
+//     can be a block-scoped DECOY above the real declaration — the clause then
+//     reads a body nothing calls while the real one is free to import
+//     everything;
+//   * a FILE-WIDE declaration count, because anchoring alone leaves a SECOND
+//     top-level declaration after the real one invisible: JS binds the later
+//     one at runtime, this clause keeps reading the earlier.
+//
+// The count also covers the arrow-const and rename mutations: converting
+// `export function classifyMediaItem` to `export const classifyMediaItem = …`
+// or renaming it loses the window, which is reported rather than passed over.
+const miMediaGateWindows = new Map();
+if (miMediaGateRaw !== null) {
+  const miMediaGateCode = meStripComments(miMediaGateRaw);
+
+  for (const name of ['classifyMediaItem', 'foldPostMediaDecisions', 'resolveFileMedia']) {
+    const declarations = (
+      miMediaGateCode.match(new RegExp(`\\b(?:function|const|let|var)\\s+${name}\\b`, 'g')) ?? []
+    ).length;
+    if (declarations > 1) {
+      miViolation(
+        MI_MEDIA_GATE_FILE,
+        `${declarations} declarations of \`${name}\` — exactly one is allowed, because this clause and every caller must be reading the same function; a second one (block-scoped decoy, or a top-level redeclaration that wins at runtime) lets these pins pass against a body nothing runs`,
+      );
+    }
+
+    const window = new RegExp(`^export (?:async )?function ${name}\\([\\s\\S]*?\\n\\}`, 'm').exec(
+      miMediaGateCode,
+    );
+    if (window === null) {
+      miViolation(
+        MI_MEDIA_GATE_FILE,
+        `no top-level \`export function ${name}(\` — it was renamed, removed or converted to an arrow const, and the clauses that pin its body would pass vacuously`,
+      );
+    } else {
+      miMediaGateWindows.set(name, window[0]);
+    }
+  }
+
+  // --- 29.8.3 ONE import licence, guarded by a positive image verdict.
+  //
+  // This is the whole hold obligation (#983) in one pin. `peekEntryKind`'s
+  // contract (a) is that a skip is never proof of "not a video", and the sniff
+  // recognises ISO-BMFF video only — so WebM, MKV and every unknown head come
+  // back "indeterminate". The ONLY evidence that licenses importing a member's
+  // media is `{ok: true, kind: 'image'}`, and the only place that licence may
+  // be minted is the guarded return in `classifyMediaItem`.
+  //
+  // Counted across the WHOLE stripped file, not inside the window: a second
+  // `decision: 'import-image'` anywhere — the video arm, a skip `default`, a
+  // helper below — is a second licence. (The `MediaDecision` type spells the
+  // tag through the `ImportImage` alias precisely so the count can be exactly
+  // one; see the comment on that alias.)
+  const miLicences = (miMediaGateCode.match(/decision: 'import-image'/g) ?? []).length;
+  if (miLicences !== 1) {
+    miViolation(
+      MI_MEDIA_GATE_FILE,
+      `${miLicences} occurrences of the literal \`decision: 'import-image'\` — exactly ONE is allowed, the guarded return in classifyMediaItem; any other is a second licence to import media that was never positively classified as an image`,
+    );
+  }
+
+  const miClassify = miMediaGateWindows.get('classifyMediaItem');
+  if (miClassify !== undefined) {
+    // Whitespace-insensitive, so Prettier's line breaking cannot decide
+    // whether the rule holds — the TOKEN ORDER is what is pinned: the guard
+    // tests both `peek.ok` and `kind === 'image'`, and the licence is the
+    // FIRST thing its body does. Widening the guard to `if (peek.ok)` (which
+    // would licence videos) or dropping it entirely fails here.
+    const miGuard = "if (peek.ok && peek.kind === 'image') { return { decision: 'import-image'";
+    if (!miClassify.replace(/\s+/g, ' ').includes(miGuard)) {
+      miViolation(
+        MI_MEDIA_GATE_FILE,
+        `classifyMediaItem no longer reads \`${miGuard}\` — the import licence is unguarded or its guard was widened; only a positive image peek may licence an import (peekEntryKind contract (a))`,
+      );
+    }
+    if (!miClassify.includes("decision: 'import-image'")) {
+      miViolation(
+        MI_MEDIA_GATE_FILE,
+        "the single `decision: 'import-image'` literal is OUTSIDE classifyMediaItem — the licence moved to a function this rule does not pin",
+      );
+    }
+    if (!miClassify.includes('assertNever(')) {
+      miViolation(
+        MI_MEDIA_GATE_FILE,
+        'classifyMediaItem no longer calls `assertNever(` — without the exhaustiveness tail a new Rust skip code or sniff verdict falls through silently instead of failing the build, and the fall-through direction is the one that must hold the post',
+      );
+    }
+    if (miClassify.includes('catch')) {
+      miViolation(
+        MI_MEDIA_GATE_FILE,
+        'classifyMediaItem contains a `catch` — archive throws are run-level facts that parseArchive dispatches on ARCHIVE_ERROR_DISPOSITIONS (pause/repick/abort); catching one here turns a resumable pause into a permanent, silent "your photo did not migrate"',
+      );
+    }
+  }
+
+  // --- 29.8.4 The fold never drops a hold.
+  //
+  // A PROXY for that behaviour, and deliberately a crude one — the per-outcome
+  // and priority tests own the real semantics. What it catches is the shape of
+  // the regressions: a fold that stopped branching on `hold` at all, a fold
+  // that minted its own import licence, and a fold rewritten around `.filter(`
+  // (every plausible filter here drops held items and imports the rest, which
+  // is exactly the partial post Alex ruled out on 2026-10-19).
+  const miFold = miMediaGateWindows.get('foldPostMediaDecisions');
+  if (miFold !== undefined) {
+    if (!miFold.includes("decision === 'hold'")) {
+      miViolation(
+        MI_MEDIA_GATE_FILE,
+        "foldPostMediaDecisions no longer tests `decision === 'hold'` — it must inspect every item's decision, because ANY hold holds the WHOLE post",
+      );
+    }
+    if (miFold.includes("'import-image'")) {
+      miViolation(
+        MI_MEDIA_GATE_FILE,
+        "foldPostMediaDecisions contains the literal `'import-image'` — the fold consumes decisions, it does not mint them; a licence spelled here is one classifyMediaItem never issued",
+      );
+    }
+    if (miFold.includes('.filter(')) {
+      miViolation(
+        MI_MEDIA_GATE_FILE,
+        'foldPostMediaDecisions contains `.filter(` — filtering the decision list is how a held item gets dropped instead of holding the post, which would import a post partially',
+      );
+    }
+  }
+
+  // --- 29.8.6 The resolution parity check.
+  //
+  // `resolveMediaUris` is 1:1 with its input, and the pre-pass reassembles
+  // posts BY INDEX. A resolver that returned a short array would shift every
+  // later post's media onto the wrong post — the failure mode is the member's
+  // photos appearing in a stranger's thread, which no test downstream would
+  // name. Both parities are pinned: per chunk (the call that can skew) and
+  // over the whole file (the array the caller indexes into).
+  const miResolve = miMediaGateWindows.get('resolveFileMedia');
+  if (miResolve !== undefined) {
+    for (const pin of ['.length !== chunk.length', '.length !== uris.length']) {
+      if (!miResolve.includes(pin)) {
+        miViolation(
+          MI_MEDIA_GATE_FILE,
+          `resolveFileMedia no longer asserts \`${pin}\` — the resolutions are index-aligned with the uris by contract, and an unchecked skew assigns one post's media to another`,
+        );
+      }
+    }
+  }
+}
+
+// --- 29.8.5 The CALL SITE: `parseArchive` must route media through the fold.
+//
+// Clauses 3-4 pin two function bodies. Nothing in them says anyone CALLS those
+// functions — a `parseArchive` that resolved a post's uris and built
+// `ParsedPost.media` straight from the resolutions would leave every one of
+// those clauses green while importing media that was never peeked, never
+// classified and never folded. The plan review made this the blocking half of
+// the hold obligation (#983) for exactly that reason.
+//
+// The pins come in two halves, because the hole has two ends.
+//
+// The FOLD half — the verdict is computed and used:
+//
+//   * the fold is CALLED (`foldPostMediaDecisions(`);
+//   * a `ParsedPost`'s media is the fold's OWN output (`media: folded.media`),
+//     so calling the fold and then ignoring its verdict is not enough;
+//   * the `'import-image'` licence is minted NOWHERE in this directory except
+//     `mediaPrePass.ts` — scanned file-wide across every non-test file, since
+//     a second licence in a helper, a parser or a future module would be a
+//     second place a post's media can be waved through.
+//
+// The CLASSIFY half — the verdict is computed from REAL EVIDENCE. The fold
+// half alone pins the downstream plumbing and says nothing about where
+// `classifyMediaItem`'s peek argument came from. #987's security reviewer
+// proved that gap by hand: a `parseArchive` that passes a literal
+// `{ ok: true, kind: 'image', contentType: 'image/jpeg' }` into
+// `classifyMediaItem` for every item folds a clean `import-image` for media
+// nothing ever read a byte of, builds `media` from `folded.media`, mints the
+// licence nowhere — and exited 0. So the evidence chain is pinned link by
+// link: the peek is PERFORMED (`peekMediaEntries(`), each item is CLASSIFIED
+// (`classifyMediaItem(`), and the verdict handed to the classifier is LOOKED
+// UP from that peek's result (`peeks.get(`) rather than conjured at the call.
+// `peeks.get(` is the one that closes it; the other two keep it from passing
+// vacuously if the peek call or the classify call is what disappears.
+//
+// Same anchoring and declaration-count discipline as clause 2 (29.7 D1/D2): a
+// block-scoped decoy or a second top-level `parseArchive` would otherwise let
+// this clause read a body nothing runs. The window match is
+// whitespace-normalised so Prettier's line breaking cannot decide whether the
+// rule holds.
+if (miParseArchiveRaw !== null) {
+  const miParseCode = meStripComments(miParseArchiveRaw);
+
+  const miParseDecls = (
+    miParseCode.match(/\b(?:function|const|let|var)\s+parseArchive\b/g) ?? []
+  ).length;
+  if (miParseDecls > 1) {
+    miViolation(
+      MI_PARSE_ARCHIVE,
+      `${miParseDecls} declarations of \`parseArchive\` — exactly one is allowed, because this clause and every caller must be reading the same function; a second one (block-scoped decoy, or a top-level redeclaration that wins at runtime) lets the call-site pins pass against a body nothing runs`,
+    );
+  }
+
+  const miParseWindow = /^export async function parseArchive\([\s\S]*?\n\}/m.exec(miParseCode);
+  if (miParseWindow === null) {
+    miViolation(
+      MI_PARSE_ARCHIVE,
+      'no top-level `export async function parseArchive(` — the orchestration was renamed, removed or converted to an arrow const, and the call-site pins below would pass vacuously',
+    );
+  } else {
+    const miParseBody = miParseWindow[0].replace(/\s+/g, ' ');
+    const miCallSitePins = [
+      [
+        'foldPostMediaDecisions(',
+        "parseArchive no longer calls the whole-post fold — media decisions that are never folded cannot hold a post, and a post with one video in it would be imported without it (Alex, 2026-10-19: never a partial post)",
+      ],
+      [
+        'media: folded.media',
+        'parseArchive no longer builds `ParsedPost.media` from the fold result — calling the fold and then assembling media from the raw resolutions imports items that were never positively classified as images',
+      ],
+      [
+        'peekMediaEntries(',
+        "parseArchive no longer calls `peekMediaEntries(` — nothing reads a byte of the member's media, so every verdict the fold consumes is an assertion about a file that was never opened",
+      ],
+      [
+        'classifyMediaItem(',
+        "parseArchive no longer calls `classifyMediaItem(` — the fold consumes decisions it does not mint, so a fold fed anything other than this classifier's output is folding verdicts no peek licensed",
+      ],
+      [
+        'peeks.get(',
+        "parseArchive no longer LOOKS UP the peek result it classifies (`peeks.get(`) — a peek whose verdict is not read back is a peek that did not happen, and a forged `{ok: true, kind: 'image'}` handed straight to classifyMediaItem folds a clean import for media nothing ever read (this exact variant exited 0 before the pin existed)",
+      ],
+    ];
+    for (const [pin, detail] of miCallSitePins) {
+      if (!miParseBody.includes(pin)) {
+        miViolation(MI_PARSE_ARCHIVE, `${detail} (\`${pin}\` is missing from its body)`);
+      }
+    }
+  }
+}
+
+// The licence may be spelled in ONE file. Scanned over the whole import
+// directory rather than over `parseArchive.ts` alone, because the next module
+// to need a decision is the one that would quietly mint its own.
+//
+// Test and fixture-builder paths are exempt on the same grounds as clause 8:
+// they run only under Jest, and the pre-pass's own tests must be able to name
+// the decision they assert on. `__mocks__/` is absent for the same reason it
+// is absent there — this repo keeps `__mocks__/` at the repo ROOT, so the
+// pattern matched nothing and only looked like coverage.
+const MI_LICENCE_EXEMPT = ['__tests__/', 'testUtils/', '.test.ts', '.test.tsx'];
+const MI_MEDIA_GATE_REL = relative('.', MI_MEDIA_GATE_FILE);
+let miLicenceScanned = 0;
+for (const file of walkSync(MI_IMPORT_DIR, ['.ts', '.tsx'])) {
+  const rel = relative('.', file);
+  if (rel.includes('node_modules')) continue;
+  if (MI_LICENCE_EXEMPT.some((pattern) => rel.includes(pattern))) continue;
+  if (rel === MI_MEDIA_GATE_REL) continue;
+  miLicenceScanned++;
+  const lines = meStripComments(readFileSync(file, 'utf8')).split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].includes("'import-image'")) continue;
+    report(
+      file,
+      i + 1,
+      MI_RULE,
+      `the \`'import-image'\` licence is minted outside mediaPrePass.ts — only classifyMediaItem's guarded return may issue it, and only a positive image peek licences it (peekEntryKind contract (a)): ${lines[i].trim()} (${MI_ISSUE})`,
+    );
+  }
+}
+if (miLicenceScanned === 0) {
+  violations.push(
+    `  ${MI_IMPORT_DIR}:0  [${MI_RULE}]  the import-licence scan examined ZERO files — its root or exemptions are wrong and the clause would pass vacuously (${MI_ISSUE})`,
+  );
+}
 
 // --- 29.8.7 `encodeUtf8Strict` is a TextEncoder wrapper, never a hand-rolled
 //     loop.
@@ -4816,6 +5109,18 @@ const miUtf8Raw = meRead(
 // The banned tokens are the fingerprints of a byte-composition loop. The
 // surrogate scan is deliberately NOT in this window, so none of them has a
 // legitimate reason to appear.
+//
+// Banning a loop is only half of it: `return new TextEncoder().encode(value)`
+// on its own passes every token check above and is exactly the lossy encoder
+// the wrapper exists to prevent — `encode(undefined)` returns the nine bytes
+// of `"undefined"`, and an unpaired surrogate becomes U+FFFD, so two distinct
+// posts frame to the same `import_key` and the server dedups one member's post
+// away. So both REFUSALS are pinned in the window, each with its own message,
+// and the surrogate helper is pinned the way the pre-pass functions are:
+// file-wide declaration count plus an anchored, non-trivial window. Without
+// the count a `function hasUnpairedSurrogate() { return false }` appended
+// below the real one wins at runtime while this clause keeps reading the
+// first — the refusal line stays in place and refuses nothing.
 if (miUtf8Raw !== null) {
   const miUtf8Code = meStripComments(miUtf8Raw);
 
@@ -4861,6 +5166,70 @@ if (miUtf8Raw !== null) {
         );
       }
     }
+
+    // The two refusals, each named separately: they fail for different reasons
+    // and a reviewer reading the violation needs to know WHICH guarantee went.
+    // Whitespace-normalised so Prettier's line breaking cannot decide whether
+    // the rule holds.
+    const miEncoderBody = miEncoder[0].replace(/\s+/g, ' ');
+    if (!miEncoderBody.includes("typeof value !== 'string'")) {
+      miViolation(
+        MI_UTF8,
+        'encodeUtf8Strict no longer refuses a non-string (`typeof value !== \'string\'`) — every string it frames comes out of JSON.parse on an attacker-supplied archive, so "it is a string" is a runtime fact; `new TextEncoder().encode(undefined)` frames the nine bytes of "undefined" instead, and two different malformed posts then share one import_key',
+      );
+    }
+    if (!miEncoderBody.includes('hasUnpairedSurrogate(')) {
+      miViolation(
+        MI_UTF8,
+        'encodeUtf8Strict no longer calls `hasUnpairedSurrogate(` — TextEncoder substitutes U+FFFD for a lone surrogate, which is LOSSY, so the source_item_id framing stops being injective and two distinct posts can HMAC to the same import_key (#924)',
+      );
+    }
+  }
+
+  // The helper that second refusal delegates to, pinned the way the pre-pass
+  // functions are (29.7 D1/D2): count first, then an anchored window.
+  const miSurrogateDecls = (
+    miUtf8Code.match(/\b(?:function|const|let|var)\s+hasUnpairedSurrogate\b/g) ?? []
+  ).length;
+  if (miSurrogateDecls > 1) {
+    miViolation(
+      MI_UTF8,
+      `${miSurrogateDecls} declarations of \`hasUnpairedSurrogate\` — exactly one is allowed, because the refusal pinned above and this window must be reading the same function; a second one (a \`return false\` decoy below the real declaration wins at runtime) leaves encodeUtf8Strict calling a scan that never refuses anything`,
+    );
+  }
+
+  const miSurrogate = /^function hasUnpairedSurrogate\([\s\S]*?\n\}/m.exec(miUtf8Code);
+  if (miSurrogate === null) {
+    miViolation(
+      MI_UTF8,
+      'no top-level `function hasUnpairedSurrogate(` — the surrogate scan was renamed, removed or converted to an arrow const, and the refusal pinned above would be satisfied by a call to anything at all',
+    );
+  } else {
+    // Non-triviality, by the two constants and the one read the scan cannot be
+    // written without. Chosen over pinning the loop shape (brittle:
+    // `for`/`while`/`indexOf` are all legitimate) and over pinning `return
+    // true` (a bare `return true` stub would satisfy that while refusing every
+    // string):
+    //
+    //   * `0xd800` is the floor of the surrogate block — without it the scan
+    //     cannot even find a candidate code unit;
+    //   * `0xdc00` is the low-surrogate floor, which is what distinguishes a
+    //     well-formed PAIR from a lone high surrogate. A scan that never names
+    //     it either refuses every astral character or refuses none;
+    //   * `charCodeAt(` is the only way to read a code unit in the first place
+    //     — a body without it is not reading the string.
+    //
+    // Rewriting these as decimals (55296/56320) or as a regex class is a
+    // deliberate change to the one function whose correctness this rule rests
+    // on: update the anchors with it rather than deleting them.
+    for (const anchor of ['charCodeAt(', '0xd800', '0xdc00']) {
+      if (!miSurrogate[0].includes(anchor)) {
+        miViolation(
+          MI_UTF8,
+          `hasUnpairedSurrogate no longer reads \`${anchor}\` — its body has been hollowed out or rewritten past the pin; a scan that cannot name the surrogate block and the low-surrogate floor is not deciding pairing, and encodeUtf8Strict's second refusal becomes a no-op`,
+        );
+      }
+    }
   }
 }
 
@@ -4874,11 +5243,23 @@ if (miUtf8Raw !== null) {
 // not need one.
 //
 // Scanned repo-wide (`src/` plus every package's own `src/`) rather than in
-// the import's files only, because the engine gap is not a #925 fact. Test,
-// mock and fixture-builder paths are exempt: they only ever run under Jest,
-// and `utf8.test.ts` must be able to use the real `TextDecoder` as its parity
-// ORACLE.
-const MI_DECODER_EXEMPT = ['__tests__/', '__mocks__/', 'testUtils/', '.test.ts', '.test.tsx'];
+// the import's files only, because the engine gap is not a #925 fact. Test
+// paths and the fixture BUILDERS under `testUtils/` are exempt: they only ever
+// run under Jest, and `utf8.test.ts` must be able to use the real
+// `TextDecoder` as its parity ORACLE.
+//
+// Two things are deliberately NOT exempt, and the comment is narrowed to say
+// so. `__mocks__/` was listed here and matched nothing — this repo's
+// `__mocks__/` is at the REPO ROOT, outside every scanned root — so it is
+// dropped rather than left as a pattern some future `src/**/__mocks__/` would
+// silently inherit. `__fixtures__/` is not added: the one that exists,
+// `packages/orbital-archive-reader/src/__fixtures__/`, holds fixture DATA that
+// ships inside a package's own `src/`, which is ordinary source as far as the
+// engine is concerned, and it passes this scan today. Keeping it scanned costs
+// nothing and an exemption would be coverage given away for a file that does
+// not need it. If a fixture module ever legitimately needs the oracle, give it
+// a `.test.ts` sibling rather than widening this list.
+const MI_DECODER_EXEMPT = ['__tests__/', 'testUtils/', '.test.ts', '.test.tsx'];
 const miDecoderRoots = [SRC];
 for (const entry of readdirSync('packages')) {
   const packageSrc = join('packages', entry, 'src');
@@ -4889,12 +5270,33 @@ for (const entry of readdirSync('packages')) {
   }
 }
 
+// A `=== 0` floor is the weakest non-vacuity test there is: one over-broad
+// exemption — `'src/'`, say, which every scanned path contains — empties the
+// scan to a single digit and still passes it. So the floor is a COUNT near the
+// real one (301 files on 2026-11-12, across `src/` and four package `src/`
+// trees), set ~15% below so ordinary deletion and consolidation do not trip
+// it. Tripping it does not mean "a file was deleted and we lose": it means
+// re-measure, and if the shrink is real, move the floor in the commit that
+// caused it.
+const MI_DECODER_FLOOR = 255;
+
+// Each exemption must also EARN its place. A pattern matching nothing is
+// either a typo or a directory that has moved, and in both shapes it reads
+// like coverage that does not exist — which is how `__mocks__/` sat in this
+// list un-noticed. Tracked per pattern, not as a total.
+const miDecoderExemptHits = new Map(MI_DECODER_EXEMPT.map((pattern) => [pattern, 0]));
+
 let miDecoderScanned = 0;
 for (const root of miDecoderRoots) {
   for (const file of walkSync(root, ['.ts', '.tsx'])) {
     const rel = relative('.', file);
     if (rel.includes('node_modules')) continue;
-    if (MI_DECODER_EXEMPT.some((pattern) => rel.includes(pattern))) continue;
+    const matched = MI_DECODER_EXEMPT.filter((pattern) => rel.includes(pattern));
+    if (matched.length > 0) {
+      for (const pattern of matched)
+        miDecoderExemptHits.set(pattern, miDecoderExemptHits.get(pattern) + 1);
+      continue;
+    }
     miDecoderScanned++;
     const lines = meStripComments(readFileSync(file, 'utf8')).split('\n');
     for (let i = 0; i < lines.length; i++) {
@@ -4908,10 +5310,17 @@ for (const root of miDecoderRoots) {
     }
   }
 }
-if (miDecoderScanned === 0) {
+if (miDecoderScanned < MI_DECODER_FLOOR) {
   violations.push(
-    `  ${SRC}:0  [${MI_RULE}]  the no-TextDecoder scan examined ZERO files — its roots or exemptions are wrong and the rule would pass vacuously (${MI_ISSUE})`,
+    `  ${SRC}:0  [${MI_RULE}]  the no-TextDecoder scan examined ${miDecoderScanned} files, below the floor of ${MI_DECODER_FLOOR} — its roots or exemptions are wrong (an over-broad pattern empties the scan while leaving it non-zero) and the rule is passing over source it is supposed to read. Re-measure; if the shrink is a real, deliberate deletion, move MI_DECODER_FLOOR in the same commit (${MI_ISSUE})`,
   );
+}
+for (const [pattern, hits] of miDecoderExemptHits) {
+  if (hits === 0) {
+    violations.push(
+      `  ${SRC}:0  [${MI_RULE}]  the no-TextDecoder exemption \`${pattern}\` matched ZERO scanned paths — it is a typo or a directory that has moved, and it reads as coverage that does not exist. Delete it, or fix it to match where those files actually live (${MI_ISSUE})`,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

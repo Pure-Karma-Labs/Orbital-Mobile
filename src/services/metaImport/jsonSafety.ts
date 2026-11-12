@@ -46,6 +46,18 @@
  *
  * (scan 6.86 s · parse 3.69 s · pick 0.65 s · key framing + `Set` 0.13 s)
  *
+ * ### These numbers are a DESKTOP LOWER BOUND
+ *
+ * They were measured on macOS arm64 against the Pods Hermes binary, with
+ * desktop memory pressure, a desktop allocator and no other app in the
+ * foreground. A phone running the same code under memory pressure will be
+ * SLOWER and will peak HIGHER, and a cap that is contract-class (lowering
+ * `MAX_JSON_BYTES` is an Instagram identity-contract change — see
+ * `sourceItemId.ts`) should not be frozen on a desktop measurement alone.
+ * #926 therefore owes a real-device re-measure of the ten-file run before
+ * release; the lever if it fails is lowering the cap, which is why the
+ * measurement has to happen while that is still cheap.
+ *
  * **Verdict: PASS.** 151 MB against the ≤ ~400 MB budget, with the dedup Set
  * at its `MAX_POSTS_PER_RUN` ceiling and ten full-size files in one run. No
  * cap is lowered, so the 12 MiB ceiling — and with it the Instagram identity
@@ -180,37 +192,124 @@ export function pruningReviver(key: string, value: unknown): unknown {
  * or the text is JSON at all. `JSON.parse` decides that.
  */
 export function scanJsonDepth(text: string, maxDepth: number = MAX_JSON_DEPTH): boolean {
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
+  const state = newDepthScanState();
+  for (let at = 0; at < text.length; at += DEPTH_SCAN_SLICE_CHARS) {
+    if (!scanSlice(text, at, Math.min(at + DEPTH_SCAN_SLICE_CHARS, text.length), maxDepth, state)) {
+      return false;
+    }
+  }
+  return true;
+}
 
-  for (let i = 0; i < text.length; i++) {
+/**
+ * The same scan, in slices, with a turn of the event loop between them.
+ *
+ * The bench in this module's header measured the scan at ~0.66 s per 12 MiB
+ * file — the single most expensive stage, and as one `for` loop it was 0.66 s
+ * during which an `AbortSignal` could not be observed and the UI could not
+ * paint. A member who taps Cancel waits out the current FILE before anything
+ * notices. Sliced at 256 KiB that is ~14 ms of uninterrupted work (~48 slices
+ * for a 12 MiB file), which is one frame.
+ *
+ * `checkpoint` is called between slices and may THROW to stop the scan; this
+ * module does not know what cancellation means to its caller, and inventing an
+ * error code here would put an archive-reader concept inside a pure JSON
+ * helper. `parseArchive` passes its own abort check, so a cancelled parse
+ * still comes out as `ECANCELLED` with the disposition #926 dispatches on.
+ *
+ * The state carried across slices is the whole scanner: depth, in-string and
+ * escaped. Slicing therefore cannot change the verdict — a slice boundary in
+ * the middle of a string or right after a backslash resumes exactly where it
+ * left off, which is what the sync variant above shares this code to prove.
+ */
+export async function scanJsonDepthChunked(
+  text: string,
+  maxDepth: number = MAX_JSON_DEPTH,
+  options: DepthScanOptions = {},
+): Promise<boolean> {
+  const state = newDepthScanState();
+  for (let at = 0; at < text.length; at += DEPTH_SCAN_SLICE_CHARS) {
+    if (at > 0) {
+      options.checkpoint?.();
+      await yieldToEventLoop();
+    }
+    if (!scanSlice(text, at, Math.min(at + DEPTH_SCAN_SLICE_CHARS, text.length), maxDepth, state)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Characters scanned between two yields. ~14 ms of Hermes at the bench rate. */
+export const DEPTH_SCAN_SLICE_CHARS = 256 * 1024;
+
+export interface DepthScanOptions {
+  /**
+   * Called between slices, BEFORE the yield. Throwing from it abandons the
+   * scan — which is how a caller's `AbortSignal` reaches this loop without
+   * this module importing one.
+   */
+  readonly checkpoint?: () => void;
+}
+
+/** Everything the scanner remembers across a slice boundary. */
+interface DepthScanState {
+  depth: number;
+  inString: boolean;
+  escaped: boolean;
+}
+
+function newDepthScanState(): DepthScanState {
+  return { depth: 0, inString: false, escaped: false };
+}
+
+/** One slice, `[from, to)`. `false` means the depth ceiling was passed. */
+function scanSlice(
+  text: string,
+  from: number,
+  to: number,
+  maxDepth: number,
+  state: DepthScanState,
+): boolean {
+  for (let i = from; i < to; i++) {
     const code = text.charCodeAt(i);
 
-    if (inString) {
-      if (escaped) {
-        escaped = false;
+    if (state.inString) {
+      if (state.escaped) {
+        state.escaped = false;
       } else if (code === 0x5c /* \ */) {
-        escaped = true;
+        state.escaped = true;
       } else if (code === 0x22 /* " */) {
-        inString = false;
+        state.inString = false;
       }
       continue;
     }
 
     if (code === 0x22 /* " */) {
-      inString = true;
+      state.inString = true;
     } else if (code === 0x7b /* { */ || code === 0x5b /* [ */) {
-      depth++;
-      if (depth > maxDepth) return false;
+      state.depth++;
+      if (state.depth > maxDepth) return false;
     } else if (code === 0x7d /* } */ || code === 0x5d /* ] */) {
       // Clamped at zero: an unbalanced closer is `JSON.parse`'s business, and
       // letting depth go negative would let `}}}}{{{{` hide real nesting.
-      if (depth > 0) depth--;
+      if (state.depth > 0) state.depth--;
     }
   }
 
   return true;
+}
+
+/**
+ * Give the JS thread a turn.
+ *
+ * `setTimeout(0)`, not a resolved promise: a microtask does not let the UI
+ * run, and letting the UI run is the entire point of slicing the scan.
+ */
+function yieldToEventLoop(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, 0);
+  });
 }
 
 export type JsonParseOutcome =
@@ -219,6 +318,22 @@ export type JsonParseOutcome =
       readonly ok: false;
       readonly reason: Extract<FileIssueReason, 'json_too_deep' | 'json_unparseable'>;
     };
+
+export interface ParseJsonOptions {
+  /**
+   * The caller has ALREADY depth-scanned this exact text at this exact
+   * `maxDepth` and it passed — skip the scan.
+   *
+   * Set by `parseArchive` and nobody else. It runs `scanJsonDepthChunked` over
+   * each file as it reads it (so the scan is abortable), and scanning again
+   * here would double the run's single most expensive stage: ~0.66 s per
+   * 12 MiB file, ~7 s on a ten-file run, for a verdict already in hand. A
+   * caller that sets this without scanning disables the defence, which is why
+   * exactly one does, and why `parseArchive`'s own end-to-end test asserts a
+   * too-deep file still becomes a `json_too_deep` file issue.
+   */
+  readonly depthScanned?: boolean;
+}
 
 /**
  * Depth-scan, then parse with the pruning reviver. Never throws.
@@ -232,8 +347,14 @@ export type JsonParseOutcome =
  * Nothing about the input is reported — the outcome is a code. The text is the
  * member's own content (F18).
  */
-export function parseJsonSafely(text: string, maxDepth: number = MAX_JSON_DEPTH): JsonParseOutcome {
-  if (!scanJsonDepth(text, maxDepth)) return { ok: false, reason: 'json_too_deep' };
+export function parseJsonSafely(
+  text: string,
+  maxDepth: number = MAX_JSON_DEPTH,
+  options: ParseJsonOptions = {},
+): JsonParseOutcome {
+  if (options.depthScanned !== true && !scanJsonDepth(text, maxDepth)) {
+    return { ok: false, reason: 'json_too_deep' };
+  }
   try {
     return { ok: true, value: JSON.parse(text, pruningReviver) as unknown };
   } catch {
@@ -264,9 +385,20 @@ export function pickString(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
 }
 
-/** A finite integer. `1.5`, `NaN`, `1e308 * 10` and `"12"` are all `null`. */
+/**
+ * A SAFE integer. `1.5`, `NaN`, `1e308 * 10` and `"12"` are all `null`, and so
+ * are `1e21` and `2 ** 60`.
+ *
+ * `Number.isSafeInteger` rather than `Number.isInteger` because every integer
+ * this import reads is a timestamp in seconds, and an unsafe one is not a
+ * timestamp — it is a number that cannot even round-trip through arithmetic.
+ * `1e21` passes `Number.isInteger`, survives `× 1000` as `1e24`, and is the
+ * kind of value that reaches `new Date(...).toISOString()` as a `RangeError`
+ * several layers from here. Refusing it at the pick is one rule instead of a
+ * bounds check at every call site.
+ */
 export function pickInteger(value: unknown): number | null {
-  return typeof value === 'number' && Number.isInteger(value) ? value : null;
+  return typeof value === 'number' && Number.isSafeInteger(value) ? value : null;
 }
 
 /**

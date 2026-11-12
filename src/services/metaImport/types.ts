@@ -108,6 +108,20 @@ export interface ParsedMedia {
 }
 
 /**
+ * The `kind` BYTE of the v1 frame (`sourceItemId.ts`), carried per item.
+ *
+ * `1` is the content frame, `2` the Instagram `fbid`. These are the wire
+ * numbers, not a second enum: #921 persists them as `id_kind`, and a member
+ * whose next export flips scheme is diagnosable from the stored rows alone —
+ * without the alternative, which would be reading byte 1 of a plaintext-class
+ * `sourceItemId` nobody is allowed to persist.
+ *
+ * `IdScheme` remains the parser-internal spelling; `ID_KIND_BY_SCHEME` is the
+ * only translation.
+ */
+export type IdKind = 1 | 2;
+
+/**
  * A post that is importable.
  *
  * ## `sourceItemId` is PLAINTEXT-CLASS
@@ -128,6 +142,8 @@ export interface ParsedPost {
   readonly sourceIndex: number;
   /** PLAINTEXT-CLASS — see the class note above. */
   readonly sourceItemId: Uint8Array;
+  /** Which scheme minted `sourceItemId`. Never null: the id is never null. */
+  readonly idKind: IdKind;
   /** Epoch ms UTC. Always present on an importable post. */
   readonly originalDate: number;
   /** NFC-normalised, newline-normalised, trimmed, link line appended. */
@@ -138,10 +154,20 @@ export interface ParsedPost {
 /**
  * A post that will not be imported, and why.
  *
- * `sourceItemId` is present for everything except `malformed_post` (whose text
- * could not be framed in the first place), because #921 requires a held item
- * to carry its `import_key` from parse time — the same identity the eventual
- * retry would mint.
+ * `sourceItemId` is present whenever the post could be FRAMED, because #921
+ * requires a held item to carry its `import_key` from parse time — the same
+ * identity the eventual retry would mint. It is `null` for exactly the refusals
+ * that happen before a frame exists:
+ *
+ *  - `malformed_post` — the text or the media list could not be framed
+ *    injectively (an unpaired surrogate, a media attachment with no uri, text
+ *    over the raw floor);
+ *  - `missing_timestamp` / `invalid_timestamp` — the v1 content frame takes a
+ *    timestamp, and a post the server would refuse outright has no identity
+ *    worth minting.
+ *
+ * Everything else — including every media hold, `text_too_long`, `empty_post`
+ * and `unsupported_post_type` — carries its id.
  */
 export interface ParsedSkip {
   readonly outcome: 'skip';
@@ -149,8 +175,13 @@ export interface ParsedSkip {
   /** JSON basename. LOCAL UI ONLY (F18). */
   readonly sourceFile: string;
   readonly sourceIndex: number;
-  /** PLAINTEXT-CLASS, `null` only for `malformed_post`. */
+  /**
+   * PLAINTEXT-CLASS, `null` for exactly the three pre-frame refusals listed
+   * above: `malformed_post`, `missing_timestamp`, `invalid_timestamp`.
+   */
   readonly sourceItemId: Uint8Array | null;
+  /** Which scheme minted the id. `null` exactly when `sourceItemId` is. */
+  readonly idKind: IdKind | null;
   /** Epoch ms UTC, `null` when the export stated none or stated nonsense. */
   readonly originalDate: number | null;
   readonly reason: SkipReason;
@@ -158,7 +189,132 @@ export interface ParsedSkip {
 
 export type ParsedItem = ParsedPost | ParsedSkip;
 
-/** Which identity scheme each post's id used (#921 persists `id_kind`). */
+// ---------------------------------------------------------------------------
+// The parser → pre-pass seam
+// ---------------------------------------------------------------------------
+//
+// `facebookParser` and `instagramParser` are PURE: text in, decisions out. They
+// never touch the archive session, so they cannot know whether a uri resolves,
+// whether its bytes are an image, or whether the post must be held. What they
+// produce is therefore not a `ParsedPost` but a `RawParsedPost`, which carries
+// the post's raw media URIS instead of resolved `ParsedMedia`.
+//
+// `parseArchive` consumes the seam: for each `RawParsedPost` it runs the media
+// pre-pass over `mediaUris`, folds the decisions, and emits either a
+// `ParsedPost` (every item an image) or a `ParsedSkip` carrying the fold's hold
+// reason — with the SAME `sourceItemId` the parser minted, which is why the id
+// is built here and not after the fold.
+//
+// A `ParsedSkip` coming out of a parser is already final: the content-level
+// refusals (`empty_post`, `missing_timestamp`, …) need no archive access.
+
+/**
+ * Which identity scheme one post's `sourceItemId` used.
+ *
+ * `'content'` is the v1 content frame (kind 0x01), `'fbid'` the Instagram
+ * platform id (kind 0x02). Counted into `ParseSummary.idScheme` and persisted
+ * by #921 as `id_kind`, so a scheme flip between two exports of the same
+ * account is detectable after the fact.
+ */
+export type IdScheme = 'content' | 'fbid';
+
+/**
+ * The one translation between the parser's spelling and the persisted byte.
+ *
+ * `Record`, not a pair of `if`s: a third scheme is then a compile error here
+ * instead of a silent `1` on a row #921 can never interpret.
+ */
+export const ID_KIND_BY_SCHEME: Readonly<Record<IdScheme, IdKind>> = {
+  content: 1,
+  fbid: 2,
+};
+
+/**
+ * A post that parsed cleanly and is now waiting on its media decisions.
+ *
+ * `outcome: 'post'` — NOT `'import'`: this is not yet an importable item, and
+ * the distinct tag keeps a `RawParsedPost` from being mistaken for a
+ * `ParsedPost` by a structural check somewhere downstream.
+ */
+export interface RawParsedPost {
+  readonly outcome: 'post';
+  readonly source: ImportSource;
+  /** JSON basename. LOCAL UI ONLY (F18). */
+  readonly sourceFile: string;
+  readonly sourceIndex: number;
+  /** PLAINTEXT-CLASS — see `ParsedPost`. Never null: a post that could not be framed is a skip. */
+  readonly sourceItemId: Uint8Array;
+  readonly idScheme: IdScheme;
+  /** Epoch ms UTC, already bounds-checked against the backend's window. */
+  readonly originalDate: number;
+  /** Final body: repaired, NFC, trimmed, link line appended, within the cap. */
+  readonly body: string;
+  /**
+   * The post's media uris exactly as the export wrote them, in DISPLAY order,
+   * duplicates kept.
+   *
+   * Raw, because the pre-pass resolves them in batches across posts and the
+   * id framing already took its own (sorted, basename) view of this list. An
+   * empty list is a text-only post, which is importable.
+   */
+  readonly mediaUris: readonly string[];
+  /**
+   * Media creation times, epoch ms UTC, 1:1 and in the same order as
+   * `mediaUris`. `null` where the export stated none.
+   */
+  readonly mediaDates: readonly (number | null)[];
+}
+
+/** What one JSON element becomes: a post awaiting media, or a settled skip. */
+export type RawParseResult = RawParsedPost | ParsedSkip;
+
+/**
+ * What a whole JSON file becomes.
+ *
+ * A file-level failure produces no items at all — a `FileIssueReason` for
+ * `ParseSummary.fileIssues` instead, so "0 posts from a file that had some"
+ * always has a reason attached.
+ */
+export type ParsedFile =
+  | { readonly ok: true; readonly items: readonly RawParseResult[] }
+  | { readonly ok: false; readonly reason: FileIssueReason };
+
+/**
+ * Everything a pure parser needs besides the file's text.
+ *
+ * `nowUtcDay` is injected rather than read from the clock so the date bound is
+ * testable on any machine (the CI runner, a UTC+13 phone and the server must
+ * agree about which day "today" is).
+ */
+export interface ParseFileContext {
+  /** JSON basename. LOCAL UI ONLY (F18) — carried onto every item. */
+  readonly sourceFile: string;
+  /** `YYYY-MM-DD` in UTC: the inclusive upper bound for a post's date. */
+  readonly nowUtcDay: string;
+  /** Defaults to `BODY_MAX_CHARS` (`text.ts`). */
+  readonly bodyMaxChars?: number;
+  /**
+   * The caller already depth-scanned this file's text and it passed.
+   *
+   * `parseArchive` sets it: it scans each file in abortable slices
+   * (`scanJsonDepthChunked`) as it reads, and the scan is the most expensive
+   * stage of the parse, so doing it a second time inside `parseJsonSafely`
+   * would double a ten-file run's dominant cost. A parser called directly —
+   * every parser unit test — leaves it unset and scans.
+   */
+  readonly depthScanned?: boolean;
+}
+
+/**
+ * Which identity scheme each post's id used (#921 persists `id_kind`).
+ *
+ * Counted over the posts that reached the media pre-pass — the importable ones
+ * and the media-held ones. The parser's content-level refusals
+ * (`empty_post`, `missing_timestamp`, …) are not counted even when they carry
+ * an id: `RawParsedPost` is where `idScheme` lives, and a refusal settled
+ * before the fold never became one. The counts are a ratio for detecting a
+ * scheme FLIP between two exports, not a census of emitted items.
+ */
 export interface IdSchemeCounts {
   /** Instagram `fbid` from `posts.json` (kind 0x02). */
   readonly fbid: number;
@@ -221,6 +377,21 @@ export interface ParseOptions {
    * item afterwards.
    *
    * `importKey` is `null` exactly when `item.sourceItemId` is `null`.
+   *
+   * ## The same `importKey` CAN arrive more than once
+   *
+   * An archive may contain the same post twice (a member selecting overlapping
+   * ZIP parts, or Meta repeating a post across files). The first copy is
+   * emitted as whatever it settled to — an import or a skip — and EVERY later
+   * copy is emitted as a separate `duplicate_in_archive` skip carrying the
+   * IDENTICAL `importKey`. Nothing is swallowed: #928 can tell the member how
+   * many copies their export held.
+   *
+   * A consumer keyed on `import_key` must therefore UPSERT or ignore, never
+   * plain-`INSERT` into a `UNIQUE` column (#921). The settled item always
+   * arrives first, so "keep the first, ignore the rest" is the correct
+   * resolution — a later `duplicate_in_archive` row must not overwrite the
+   * import it duplicates.
    */
   onItem(item: ParsedItem, importKey: Uint8Array | null): Promise<void>;
   onProgress?: (progress: ParseProgress) => void;

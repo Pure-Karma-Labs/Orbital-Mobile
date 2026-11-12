@@ -431,6 +431,19 @@ function fbPostJson(post: FbPostSpec, layout: FbLayout): Record<string, unknown>
 }
 
 /**
+ * The JSON text of one Facebook post file, with no archive around it.
+ *
+ * The parsers are PURE — text in, decisions out — so a parser test wants this
+ * and not a session. `fbEntrySpecs` builds on it, so the text a parser test
+ * reads is byte-for-byte the text an end-to-end test would read back out of
+ * the archive.
+ */
+export function fbJsonText(file: FbFileSpec): string {
+  const layout = file.layout ?? 'activity';
+  return JSON.stringify(file.posts.map((post) => fbPostJson(post, layout)));
+}
+
+/**
  * The entry specs for ONE Facebook post file plus its media.
  *
  * Composable: pass several files' specs to `buildArchive` for a multi-part or
@@ -440,8 +453,9 @@ function fbPostJson(post: FbPostSpec, layout: FbLayout): Record<string, unknown>
  */
 export function fbEntrySpecs(file: FbFileSpec): EntrySpec[] {
   const layout = file.layout ?? 'activity';
-  const text = JSON.stringify(file.posts.map((post) => fbPostJson(post, layout)));
-  const specs: EntrySpec[] = [{ path: fbJsonPath(file.index ?? 1, layout), kind: 'json', text }];
+  const specs: EntrySpec[] = [
+    { path: fbJsonPath(file.index ?? 1, layout), kind: 'json', text: fbJsonText(file) },
+  ];
 
   const seen = new Set<string>();
   for (const post of file.posts) {
@@ -627,6 +641,11 @@ function pushIgMediaSpecs(
   }
 }
 
+/** The JSON text of one Instagram per-part content file (see `fbJsonText`). */
+export function igFlatJsonText(file: IgFlatFileSpec): string {
+  return JSON.stringify(file.posts.map(igPostJson));
+}
+
 /**
  * The entry specs for ONE Instagram per-part content file plus its media.
  *
@@ -636,9 +655,8 @@ function pushIgMediaSpecs(
  */
 export function igFlatEntrySpecs(file: IgFlatFileSpec): EntrySpec[] {
   const layout = file.layout ?? 'activity-media';
-  const text = JSON.stringify(file.posts.map(igPostJson));
   const specs: EntrySpec[] = [
-    { path: igFlatJsonPath(file.index ?? 1, layout), kind: 'json', text },
+    { path: igFlatJsonPath(file.index ?? 1, layout), kind: 'json', text: igFlatJsonText(file) },
   ];
   const seen = new Set<string>();
   for (const post of file.posts) pushIgMediaSpecs(specs, seen, post.media ?? []);
@@ -712,6 +730,11 @@ function igLabelledPostJson(post: IgLabelledPostSpec): Record<string, unknown> {
   return { ...out, ...(post.raw ?? {}) };
 }
 
+/** The JSON text of the labelled `posts.json` (see `fbJsonText`). */
+export function igLabelledJsonText(file: IgLabelledFileSpec): string {
+  return JSON.stringify(file.posts.map(igLabelledPostJson));
+}
+
 /**
  * The entry specs for the single labelled `posts.json`.
  *
@@ -722,8 +745,9 @@ function igLabelledPostJson(post: IgLabelledPostSpec): Record<string, unknown> {
  * this file needs a recursive walk rather than a path.
  */
 export function igLabelledEntrySpecs(file: IgLabelledFileSpec): EntrySpec[] {
-  const text = JSON.stringify(file.posts.map(igLabelledPostJson));
-  const specs: EntrySpec[] = [{ path: IG_LABELLED_JSON_PATH, kind: 'json', text }];
+  const specs: EntrySpec[] = [
+    { path: IG_LABELLED_JSON_PATH, kind: 'json', text: igLabelledJsonText(file) },
+  ];
   if (file.listMedia === true) {
     const seen = new Set<string>();
     for (const post of file.posts) {

@@ -35,7 +35,7 @@
  * both are imported.
  */
 
-import { isImportableDate } from './dateBounds';
+import { isImportableDate, mediaDateMs } from './dateBounds';
 import {
   MAX_MEDIA_PER_POST,
   MAX_POSTS_PER_FILE,
@@ -74,7 +74,8 @@ export type FbidIndexResult =
   | { readonly ok: false; readonly reason: FileIssueReason };
 
 /**
- * Node ceiling for the labelled-file walk.
+ * Node ceiling for the labelled-file walk, counted in CONTAINERS (objects and
+ * arrays) — the only things that go on the stack.
  *
  * The file is already bounded at `MAX_JSON_BYTES` and the graph is acyclic, so
  * this cannot be hit by a real export; it exists so a crafted 12 MiB file of
@@ -83,7 +84,19 @@ export type FbidIndexResult =
  * deterministic, but it would silently give some posts fbid ids and others
  * content ids depending on a walk order nobody can see.
  */
-const MAX_FBID_WALK_NODES = 1_000_000;
+export const MAX_FBID_WALK_NODES = 1_000_000;
+
+/** Everything `buildFbidIndex` takes besides the file's text. */
+export interface FbidIndexOptions {
+  /**
+   * Override `MAX_FBID_WALK_NODES`.
+   *
+   * Exists so the refusal can be TESTED: the real ceiling needs a crafted
+   * multi-megabyte file to reach, and a budget nobody has ever seen bite is a
+   * budget that might be off by an order of magnitude in either direction.
+   */
+  readonly maxNodes?: number;
+}
 
 /**
  * Build the basename → fbid index from the labelled `posts.json`.
@@ -100,7 +113,10 @@ const MAX_FBID_WALK_NODES = 1_000_000;
  * Sensitive subtrees are gone before this runs: `parseJsonSafely`'s reviver
  * deleted them at parse time.
  */
-export function buildFbidIndex(labelledText: string): FbidIndexResult {
+export function buildFbidIndex(
+  labelledText: string,
+  options: FbidIndexOptions = {},
+): FbidIndexResult {
   const parsed = parseJsonSafely(labelledText);
   if (!parsed.ok) return { ok: false, reason: parsed.reason };
 
@@ -108,7 +124,10 @@ export function buildFbidIndex(labelledText: string): FbidIndexResult {
   if (root === null) return { ok: false, reason: 'json_unparseable' };
 
   const index = new Map<string, string | null>();
-  let budget = MAX_FBID_WALK_NODES;
+  let budget = options.maxNodes ?? MAX_FBID_WALK_NODES;
+
+  /** Worth descending into: an object or an array, never a scalar leaf. */
+  const isContainer = (value: unknown): boolean => typeof value === 'object' && value !== null;
 
   const claim = (uri: string, fbid: string): void => {
     const name = basenameOfUri(uri);
@@ -129,7 +148,15 @@ export function buildFbidIndex(labelledText: string): FbidIndexResult {
 
       const array = pickArray(node);
       if (array !== null) {
-        for (const item of array) stack.push(item);
+        // Only containers go on the stack. A scalar leaf — and a label tree is
+        // mostly strings — has nothing under it, so pushing one buys a pop and
+        // two failed type tests and spends a node of the budget. The real file
+        // is ~3× more leaves than containers, so charging them would make the
+        // ceiling bite three times sooner than its own docblock claims, and
+        // tripping it flips EVERY Instagram post to a content-derived id.
+        for (const item of array) {
+          if (isContainer(item)) stack.push(item);
+        }
         continue;
       }
 
@@ -147,7 +174,7 @@ export function buildFbidIndex(labelledText: string): FbidIndexResult {
             }
           }
         }
-        stack.push(value);
+        if (isContainer(value)) stack.push(value);
       }
     }
   }
@@ -168,7 +195,7 @@ interface IgMediaScan {
   readonly broken: boolean;
 }
 
-function scanMedia(element: unknown): IgMediaScan {
+function scanMedia(element: unknown, nowUtcDay: string): IgMediaScan {
   const storedUris: string[] = [];
   const storedDates: (number | null)[] = [];
   let firstTitle: string | null = null;
@@ -192,7 +219,11 @@ function scanMedia(element: unknown): IgMediaScan {
       firstSeconds = seconds;
     }
     storedUris.push(uri);
-    storedDates.push(seconds === null ? null : seconds * 1000);
+    // Bounds-checked (`mediaDateMs`); `firstSeconds` above keeps the RAW
+    // value, because the post-level fallback runs it through the post's own
+    // `isImportableDate` and a date that is nonsense for the post is an
+    // `invalid_timestamp` skip, not a silently missing one.
+    storedDates.push(mediaDateMs(seconds, nowUtcDay));
   }
 
   return { storedUris, storedDates, firstTitle, firstSeconds, broken: false };
@@ -249,7 +280,7 @@ function parseInstagramPost(
     return skip(ctx, sourceIndex, 'malformed_post', null, null);
   }
 
-  const scan = scanMedia(element);
+  const scan = scanMedia(element, ctx.nowUtcDay);
   if (scan.broken || scan.storedUris.length > MAX_MEDIA_PER_POST) {
     return skip(ctx, sourceIndex, 'malformed_post', null, null);
   }
@@ -325,9 +356,9 @@ function parseInstagramPost(
   //
   // The identity is unaffected either way (`source_item_id` sorts basenames),
   // so this is observable only as the order the member sees in a carousel.
-  const mediaUris = [...scan.storedUris];
-  const mediaDates = [...scan.storedDates];
-
+  // The scan's arrays are handed on directly, as the Facebook parser does:
+  // the scan is per-post and nothing reads it afterwards, so a copy would be
+  // two allocations per post to protect nobody.
   return {
     outcome: 'post',
     source: 'instagram',
@@ -337,8 +368,8 @@ function parseInstagramPost(
     idScheme,
     originalDate,
     body: assembled.body,
-    mediaUris,
-    mediaDates,
+    mediaUris: scan.storedUris,
+    mediaDates: scan.storedDates,
   };
 }
 

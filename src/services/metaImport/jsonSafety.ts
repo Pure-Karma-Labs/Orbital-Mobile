@@ -264,9 +264,20 @@ export function pickString(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
 }
 
-/** A finite integer. `1.5`, `NaN`, `1e308 * 10` and `"12"` are all `null`. */
+/**
+ * A SAFE integer. `1.5`, `NaN`, `1e308 * 10` and `"12"` are all `null`, and so
+ * are `1e21` and `2 ** 60`.
+ *
+ * `Number.isSafeInteger` rather than `Number.isInteger` because every integer
+ * this import reads is a timestamp in seconds, and an unsafe one is not a
+ * timestamp — it is a number that cannot even round-trip through arithmetic.
+ * `1e21` passes `Number.isInteger`, survives `× 1000` as `1e24`, and is the
+ * kind of value that reaches `new Date(...).toISOString()` as a `RangeError`
+ * several layers from here. Refusing it at the pick is one rule instead of a
+ * bounds check at every call site.
+ */
 export function pickInteger(value: unknown): number | null {
-  return typeof value === 'number' && Number.isInteger(value) ? value : null;
+  return typeof value === 'number' && Number.isSafeInteger(value) ? value : null;
 }
 
 /**

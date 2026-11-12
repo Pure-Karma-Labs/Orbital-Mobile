@@ -89,8 +89,13 @@ interface PathMatch {
   readonly index: number;
 }
 
-/** Which post file, if any, a listed path is. `null` for everything else. */
-export function matchPostJsonPath(path: string): PathMatch | null {
+/**
+ * Which post file, if any, a listed path is. `null` for everything else.
+ *
+ * Module-private: `detectSources` and `classifyPostJson` are the whole public
+ * surface, and a caller matching paths itself would be a second detector.
+ */
+function matchPostJsonPath(path: string): PathMatch | null {
   const activity = FB_ACTIVITY_POSTS.exec(path);
   if (activity !== null) return { source: 'facebook', role: 'content', index: Number(activity[1]) };
 

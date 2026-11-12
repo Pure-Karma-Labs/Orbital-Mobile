@@ -22,8 +22,14 @@
  * drifts.
  */
 
-/** `2004-01-01T00:00:00.000Z` — Facebook's own epoch, and the server's floor. */
-export const MIN_IMPORT_DATE_MS = Date.UTC(2004, 0, 1);
+/**
+ * `2004-01-01T00:00:00.000Z` — Facebook's own epoch, and the server's floor.
+ *
+ * Module-private: the window is only ever asked about through
+ * `isImportableDate`/`mediaDateMs`, so there is no second place a caller can
+ * half-apply it.
+ */
+const MIN_IMPORT_DATE_MS = Date.UTC(2004, 0, 1);
 
 /** Milliseconds in one day; the upper bound is "start of the next UTC day". */
 const MS_PER_DAY = 86_400_000;
@@ -42,7 +48,7 @@ export function todayUtcDay(now: number = Date.now()): string {
  * Exclusive-next-midnight rather than inclusive-last-millisecond: the same
  * number, one fewer place to write 999 wrongly.
  */
-export function endOfUtcDayExclusive(utcDay: string): number | null {
+function endOfUtcDayExclusive(utcDay: string): number | null {
   const match = UTC_DAY_PATTERN.exec(utcDay);
   if (match === null) return null;
   const year = Number(match[1]);
@@ -70,4 +76,24 @@ export function isImportableDate(epochMs: number, nowUtcDay: string): boolean {
   const upper = endOfUtcDayExclusive(nowUtcDay);
   if (upper === null) return false;
   return epochMs >= MIN_IMPORT_DATE_MS && epochMs < upper;
+}
+
+/**
+ * One media item's `creation_timestamp` (SECONDS) as epoch ms, or `null`.
+ *
+ * The same window as the post's date, applied to the decoration. A media date
+ * never gates an import and never enters `source_item_id`, but it is carried
+ * on `ParsedMedia.originalDate` into whatever #928 renders — and
+ * `new Date(1e303).toISOString()` throws a `RangeError`, several layers from
+ * the file that stated it. Outside the window the item simply states NO date,
+ * which `ParsedMedia` already allows, and the post itself still imports: an
+ * export that wrote nonsense beside a photo has said nothing about the photo.
+ *
+ * Here rather than in each parser because both parsers must apply the identical
+ * rule — the whole reason this module exists.
+ */
+export function mediaDateMs(seconds: number | null, nowUtcDay: string): number | null {
+  if (seconds === null) return null;
+  const ms = seconds * 1000;
+  return isImportableDate(ms, nowUtcDay) ? ms : null;
 }

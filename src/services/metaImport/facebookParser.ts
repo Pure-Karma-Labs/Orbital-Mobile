@@ -41,7 +41,7 @@
  * than `MAX_MEDIA_PER_POST` items and text above `RAW_TEXT_MAX_UNITS`.
  */
 
-import { isImportableDate } from './dateBounds';
+import { isImportableDate, mediaDateMs } from './dateBounds';
 import {
   MAX_MEDIA_PER_POST,
   MAX_POSTS_PER_FILE,
@@ -100,7 +100,7 @@ interface AttachmentScan {
  * generic container). Walking the whole array would invent media for shapes we
  * have never seen.
  */
-function scanAttachments(post: unknown): AttachmentScan {
+function scanAttachments(post: unknown, nowUtcDay: string): AttachmentScan {
   const mediaUris: string[] = [];
   const mediaDates: (number | null)[] = [];
   let linkUrl: string | null = null;
@@ -126,8 +126,7 @@ function scanAttachments(post: unknown): AttachmentScan {
         continue;
       }
       mediaUris.push(uri);
-      const seconds = pickInteger(pickField(media, 'creation_timestamp'));
-      mediaDates.push(seconds === null ? null : seconds * 1000);
+      mediaDates.push(mediaDateMs(pickInteger(pickField(media, 'creation_timestamp')), nowUtcDay));
       continue;
     }
 
@@ -212,7 +211,7 @@ function parseFacebookPost(
     return skip(ctx, sourceIndex, 'invalid_timestamp', null, null);
   }
 
-  const scan = scanAttachments(element);
+  const scan = scanAttachments(element, ctx.nowUtcDay);
   if (scan.broken || scan.mediaUris.length > MAX_MEDIA_PER_POST) {
     return skip(ctx, sourceIndex, 'malformed_post', null, originalDate);
   }

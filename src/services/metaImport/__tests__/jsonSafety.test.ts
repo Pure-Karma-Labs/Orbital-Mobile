@@ -283,13 +283,25 @@ describe('schema pick helpers', () => {
     expect(pickString(null)).toBeNull();
   });
 
-  it('pickInteger accepts only finite integers', () => {
+  it('pickInteger accepts only SAFE integers', () => {
     expect(pickInteger(0)).toBe(0);
     expect(pickInteger(-1)).toBe(-1);
     expect(pickInteger(1.5)).toBeNull();
     expect(pickInteger(NaN)).toBeNull();
     expect(pickInteger(Infinity)).toBeNull();
     expect(pickInteger('12')).toBeNull();
+
+    // Safe, not merely finite. Both of these pass `Number.isInteger`, and
+    // every integer this import reads is a timestamp in seconds: `1e21`
+    // survives `× 1000` as `1e24` and reaches `new Date(…).toISOString()` as
+    // a RangeError several layers from the pick, and `2 ** 60` is a number
+    // that cannot round-trip through arithmetic at all. Refusing both here
+    // is one rule instead of a bounds check at every call site.
+    expect(pickInteger(1e21)).toBeNull();
+    expect(pickInteger(2 ** 60)).toBeNull();
+    // The boundary itself still reads: the ceiling is `Number.isSafeInteger`,
+    // not something narrower that would start refusing real timestamps.
+    expect(pickInteger(Number.MAX_SAFE_INTEGER)).toBe(Number.MAX_SAFE_INTEGER);
   });
 
   it('pickField reads own properties only', () => {

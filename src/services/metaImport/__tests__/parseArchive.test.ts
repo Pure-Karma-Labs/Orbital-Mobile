@@ -1011,6 +1011,85 @@ describe('an archive throw', () => {
 });
 
 // ---------------------------------------------------------------------------
+// The import key's width
+// ---------------------------------------------------------------------------
+
+describe('the import key width guard', () => {
+  /**
+   * A `deriveImportKey` that answers with the wrong WIDTH — #924's bug, not
+   * the archive's.
+   *
+   * It keeps `fakeDeriveImportKey`'s bytes so the only thing wrong with the
+   * answer is its length; a narrower key is the real hazard, because its
+   * leading bytes are a correct key's leading bytes.
+   */
+  function derivesWidth(width: number): ParseOptions['deriveImportKey'] {
+    return (sourceItemId: Uint8Array): Promise<Uint8Array> =>
+      fakeDeriveImportKey(sourceItemId).then((key) => {
+        const wrong = new Uint8Array(width);
+        wrong.set(key.subarray(0, Math.min(width, key.length)));
+        return wrong;
+      });
+  }
+
+  // 16 bytes is the backend's `import_key` CHECK, and this guard is the ONLY
+  // thing standing between a #924 wiring bug and two of a member's posts
+  // silently colliding. The dedup set keys on `toHex(importKey)`: a
+  // truncated key is a correct key with its tail cut off, so two distinct
+  // posts sharing a prefix hash to one entry and the second is emitted as
+  // `duplicate_in_archive` — a post the member is told nothing about and
+  // never gets back. Without the check the server would catch the width
+  // instead, mid-run, after the member watched a progress bar.
+  //
+  // `ARCHIVE_INTERNAL` is `terminal-for-run`: #926 stops rather than
+  // retrying into the same wiring bug.
+  it.each([
+    ['a truncated 15-byte key', 15],
+    ['an over-wide 32-byte key', 32],
+  ])('rejects ARCHIVE_INTERNAL on %s, emitting nothing', async (_label, width) => {
+    expect(ARCHIVE_ERROR_DISPOSITIONS.ARCHIVE_INTERNAL).toBe('terminal-for-run');
+    const built = buildArchive(
+      fbEntrySpecs({
+        posts: [
+          { timestamp: TS, post: 'never emitted', media: [{ name: 'photo.jpg' }] },
+          { timestamp: TS + 1, post: 'never reached' },
+        ],
+      }),
+    );
+    const session = await built.open();
+
+    const seen: ParsedItem[] = [];
+    const parse = parseArchive(session, {
+      source: 'facebook',
+      nowUtcDay: NOW_UTC_DAY,
+      deriveImportKey: derivesWidth(width),
+      onItem: (item) => {
+        seen.push(item);
+        return Promise.resolve();
+      },
+    });
+
+    await expect(parse).rejects.toBeInstanceOf(ArchiveReaderError);
+    await expect(parse).rejects.toMatchObject({ code: 'ARCHIVE_INTERNAL' });
+    // No item and no summary: the throw happens before the first `onItem`,
+    // and a summary describing items the caller never stored would be a
+    // preflight promise about an import that cannot happen.
+    expect(seen).toEqual([]);
+  });
+
+  it('accepts exactly 16 bytes, so the guard is a width check and not a refusal', async () => {
+    // The boundary the two rows above bracket. Without this the suite would
+    // pass just as happily on a `deriveImportKey` that always threw.
+    const built = buildArchive(fbEntrySpecs({ posts: [{ timestamp: TS, post: 'imported' }] }));
+
+    const result = await run(built, { deriveImportKey: derivesWidth(16) });
+
+    expect(outcomes(result)).toEqual(['import']);
+    expect(result.keys[0]).toHaveLength(16);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // The summary's arithmetic
 // ---------------------------------------------------------------------------
 
@@ -1235,6 +1314,28 @@ describe('instagram identity fallbacks', () => {
     // identity — the one failure mode that survives into the server's dedup.
     // The file itself is fine, so there is no issue to report.
     expect(result.summary.fileIssues).toEqual([]);
+    expect(result.summary.idScheme).toEqual({ fbid: 0, content: 1 });
+    expect(outcomes(result)).toEqual(['import']);
+  });
+
+  it('reports the index build’s own refusal, and still imports under a content id', async () => {
+    // The third way the labelled file can fail, and the only one that comes
+    // from `buildFbidIndex` itself: the entry reads fine and the JSON parses,
+    // but the top level is not the array of posts the walk expects (the node
+    // ceiling refuses the same way). The two rows above reach `fileIssues`
+    // through `classifyPostJson` and the `!read.ok` branch instead, so this
+    // is the row that proves the refusal REASON is carried out of the index
+    // builder rather than invented by the orchestration.
+    const built = buildArchive([
+      { ...igLabelledJson([{ fbid: '17900000000000001' }]), text: '{"not":"an array"}' },
+      ...igContent(),
+    ]);
+
+    const result = await run(built, { source: 'instagram' });
+
+    expect(result.summary.fileIssues).toEqual([
+      { sourceFile: 'posts.json', reason: 'json_unparseable' },
+    ]);
     expect(result.summary.idScheme).toEqual({ fbid: 0, content: 1 });
     expect(outcomes(result)).toEqual(['import']);
   });

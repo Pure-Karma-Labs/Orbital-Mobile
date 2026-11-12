@@ -11,9 +11,13 @@
  * README.
  */
 
+import * as fs from 'fs';
+import * as path from 'path';
+
 import { repairMojibake } from '../mojibake';
 import {
   IG_LABELLED_JSON_PATH,
+  RUST_EXTENSIONS,
   fbArchive,
   fbEntrySpecs,
   fbJsonPath,
@@ -51,6 +55,91 @@ function parseArray(text: string): unknown[] {
   if (!Array.isArray(parsed)) throw new Error('built JSON is not a top-level array');
   return parsed;
 }
+
+// ---------------------------------------------------------------------------
+
+/**
+ * The Rust allowlist, read the same way `jsonSafety.test.ts` reads
+ * `limits.rs`: from disk, so the Rust source IS the oracle rather than a
+ * snapshot of it taken once.
+ */
+const ALLOWLIST_RS = path.join(
+  __dirname,
+  '../../../../packages/orbital-archive-reader/rust/orbital_archive_reader/src/allowlist.rs',
+);
+
+describe('the extension tables mirror allowlist.rs', () => {
+  // These builders stand in for the REAL listing, and the real listing labels
+  // an entry from `allowlist.rs`. The previous hand-copied lists disagreed
+  // with it in three places — `.3gp` was an image here and a video there,
+  // `.avi` was a video here and unclassified there, and anything unknown
+  // defaulted to `image` — so a fixture could assert an import decision for
+  // bytes the archive would never have offered, and the parser suites would
+  // have agreed with the bug.
+  let rust: string;
+
+  beforeAll(() => {
+    // Assert the file is there before reading it: a moved crate would
+    // otherwise make this suite fail with a confusing ENOENT, or — worse, if
+    // the read were guarded — pass by comparing against nothing.
+    expect(fs.existsSync(ALLOWLIST_RS)).toBe(true);
+    rust = fs.readFileSync(ALLOWLIST_RS, 'utf-8');
+  });
+
+  /** `const NAME: [&str; N] = ["a", "b"];` → its strings, with N checked. */
+  function rustTable(name: string): string[] {
+    const match = new RegExp(`const ${name}: \\[&str; (\\d+)\\] = \\[([^\\]]*)\\];`).exec(rust);
+    expect(match).not.toBeNull();
+    const [, declared, body] = match as RegExpExecArray;
+    const items = [...body.matchAll(/"([^"]+)"/g)].map((entry) => entry[1]);
+    // Rust's own declared length, so a half-edited table cannot slip past.
+    expect(items).toHaveLength(Number(declared));
+    return items;
+  }
+
+  it.each([
+    ['image', 'IMAGE_EXTS'],
+    ['video', 'VIDEO_EXTS'],
+  ] as const)('the %s table equals Rust’s %s, in order', (kind, constant) => {
+    expect(RUST_EXTENSIONS[kind]).toEqual(rustTable(constant));
+  });
+
+  it('labels every extension in both tables the way Rust would', () => {
+    // Textual parity is not enough on its own: the tables are exported for
+    // this test, and `inferKind` reads the arrays behind them. This row is
+    // what ties the two together.
+    for (const ext of rustTable('IMAGE_EXTS')) {
+      const [, media] = fbEntrySpecs({ posts: [{ post: 'x', media: [{ name: `a.${ext}` }] }] });
+      expect(media.kind).toBe('image');
+    }
+    for (const ext of rustTable('VIDEO_EXTS')) {
+      const [, media] = fbEntrySpecs({ posts: [{ post: 'x', media: [{ name: `a.${ext}` }] }] });
+      expect(media.kind).toBe('video');
+    }
+  });
+
+  it('throws rather than guess a kind for an extension in neither table', () => {
+    // The throw is the point. An unrecognised extension is not an image, and
+    // a builder that quietly called it one would let a test assert an import
+    // decision for bytes the real archive refuses to list as media at all.
+    expect(() => fbEntrySpecs({ posts: [{ post: 'x', media: [{ name: 'notes.txt' }] }] })).toThrow(
+      /neither allowlist\.rs table/,
+    );
+    // `.svg` is the sharp one: the sniff table knows it, so it looks like an
+    // image — but Rust's listing never labels one, and the real session
+    // refuses its bytes as `ENTRY_SNIFF_INDETERMINATE`.
+    expect(() => igFlatEntrySpecs({ posts: [{ media: [{ name: 'vector.svg' }] }] })).toThrow(
+      /neither allowlist\.rs table/,
+    );
+
+    // Stating `kind` is the visible claim that gets past it — a fixture
+    // saying "I know this is odd and it is the point", not a default.
+    const specs = igFlatEntrySpecs({
+      posts: [{ media: [{ name: 'vector.svg', kind: 'image' }] }],
+    });
+    expect(specs[1].kind).toBe('image');
+  });
+});
 
 // ---------------------------------------------------------------------------
 
@@ -289,6 +378,29 @@ describe('resolveMediaUris', () => {
     ]);
   });
 
+  it('reports URI_AMBIGUOUS from the archive itself, with no override', async () => {
+    // The `uriOverrides` row below FORCES the other three refusal codes
+    // because no synthetic archive can produce them; this one is produced by
+    // the archive. Two content files in one multi-part export each list
+    // `media/posts/twin.jpg`, so the listing genuinely cannot say which
+    // entry the uri means. Worth a row of its own: an override proves only
+    // that the override is honoured, while this proves the resolver's own
+    // ambiguity branch — and that the builders do NOT deduplicate across
+    // files, which is what keeps that branch reachable at all.
+    const archive = buildArchive([
+      ...igFlatEntrySpecs({ index: 1, posts: [{ media: [{ name: 'twin.jpg' }] }] }),
+      ...igFlatEntrySpecs({ index: 2, posts: [{ media: [{ name: 'twin.jpg' }] }] }),
+    ]);
+    expect(archive.entries.filter((entry) => entry.path === igMediaUri('twin.jpg'))).toHaveLength(
+      2,
+    );
+
+    const session = await archive.open();
+    expect(session.resolveMediaUris([igMediaUri('twin.jpg')])).toEqual([
+      { ok: false, skip: 'URI_AMBIGUOUS' },
+    ]);
+  });
+
   it('forces the non-path refusals through uriOverrides', async () => {
     const outside = 'messages/inbox/secret.jpg';
     const archive = igFlat(
@@ -300,6 +412,39 @@ describe('resolveMediaUris', () => {
       { ok: false, skip: 'URI_OUTSIDE_ALLOWLIST' },
       { ok: true, entryId: archive.entryIdFor('a.jpg') },
     ]);
+  });
+});
+
+describe('two archives in one test', () => {
+  it('gives an opened archive its OWN entries, ids and bytes', async () => {
+    const a = fbArchive({
+      posts: [{ timestamp: 1_700_000_000, post: 'archive A', media: [{ name: 'a.jpg' }] }],
+    });
+    const b = igFlat({ posts: [{ media: [{ name: 'b.jpg', creationTimestamp: 1_700_000_000 }] }] });
+
+    // Opened AFTER B was built, which is the whole point. `openArchive` is
+    // ONE shared jest mock: armed at build time, the last archive built was
+    // the one every later `open()` returned — including an earlier
+    // archive's own — and a test comparing a session against the wrong
+    // fixture passes or fails for reasons that have nothing to do with it.
+    const session = await a.open();
+
+    expect(session.entries.map((entry) => entry.path)).toEqual([fbJsonPath(), fbMediaUri('a.jpg')]);
+    expect(session.resolveMediaUris([fbMediaUri('a.jpg')])).toEqual([
+      { ok: true, entryId: a.entryIdFor('a.jpg') },
+    ]);
+    // And it knows nothing of B.
+    expect(session.resolveMediaUris([igMediaUri('b.jpg')])).toEqual([
+      { ok: false, skip: 'URI_UNRESOLVED' },
+    ]);
+    expect(await readJsonText(a, '.json')).toContain('archive A');
+
+    // Entry ids come from a module-level counter that never restarts, so the
+    // two archives share none. Restarting at `fp0:1` per build made a peek
+    // memo, a dedup set or an `entryIdFor` lookup from the first silently
+    // answer for the second — and the test would pass for the wrong reason.
+    const aIds = new Set(a.entries.map((entry) => entry.entryId));
+    expect(b.entries.some((entry) => aIds.has(entry.entryId))).toBe(false);
   });
 });
 

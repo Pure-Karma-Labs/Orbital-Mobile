@@ -215,6 +215,44 @@ describe('parseFacebookFile media', () => {
     expect(post.mediaDates).toEqual([(TS - 10) * 1000, null]);
   });
 
+  it('imports a post whose media dates are out of range, stating no date for them', () => {
+    // A media date is a DECORATION: it never gates the import and never
+    // enters `source_item_id`, so an export that wrote nonsense beside a
+    // photo has said nothing about the photo — the post still imports and
+    // that one item simply states no date. Without the bounds check the
+    // value rides on `ParsedMedia.originalDate` into #928, where
+    // `new Date(…).toISOString()` throws a RangeError several layers from
+    // the file that stated it.
+    //
+    // THREE values, because they fail at three different gates and any one
+    // of them alone would leave the others untested:
+    //  - `1e300` never reaches the window at all; `pickInteger` refuses it
+    //    (`Number.isSafeInteger`), so the date is absent, not out of range;
+    //  - `253_402_300_800` IS a safe integer (year 10000 in seconds) and is
+    //    the only one of the three that exercises the window's upper bound;
+    //  - `1_000_000_000` is 2001, below Facebook's own 2004 epoch — the
+    //    lower bound, which the server applies too.
+    const post = onePost({
+      posts: [
+        {
+          timestamp: TS,
+          post: 'an album with bad media dates',
+          media: [
+            { name: 'unsafe.jpg', creationTimestamp: 1e300 },
+            { name: 'year10000.jpg', creationTimestamp: 253_402_300_800 },
+            { name: 'before-facebook.jpg', creationTimestamp: 1_000_000_000 },
+            { name: 'fine.jpg', creationTimestamp: TS - 10 },
+          ],
+        },
+      ],
+    });
+
+    // The POST's own date is untouched by any of it.
+    expect(post.originalDate).toBe(TS * 1000);
+    expect(post.mediaUris).toHaveLength(4);
+    expect(post.mediaDates).toEqual([null, null, null, (TS - 10) * 1000]);
+  });
+
   it('treats a sticker as ordinary media', () => {
     // Facebook stickers live under the same allowlisted media root and carry
     // an ordinary `media.uri`; there is nothing to special-case, and the
@@ -402,6 +440,22 @@ describe('parseFacebookFile timestamps', () => {
 
     const nextUtcDay = Date.UTC(2026, 10, 13, 0, 0, 0) / 1000;
     expect(oneSkip({ posts: [{ timestamp: nextUtcDay, post: 'x' }] }).reason).toBe(
+      'invalid_timestamp',
+    );
+  });
+
+  it.each([
+    ['a day that rolled over', '2026-02-31'],
+    ['a day that is not one', 'tomorrow'],
+  ])('admits nothing when nowUtcDay is %s', (_label, nowUtcDay) => {
+    // `Date.UTC` rolls 2026-02-31 silently to 2026-03-03, and a bound that
+    // moved on its own is worse than one that refuses. The alternative —
+    // falling back to the device clock — would hide a caller bug behind
+    // posts that import on one machine and not another, so an unusable
+    // `nowUtcDay` admits NOTHING rather than something slightly wrong.
+    // (`endOfUtcDayExclusive` is module-private, so this is the rule where a
+    // caller can actually observe it.)
+    expect(oneSkip({ posts: [{ timestamp: TS, post: 'x' }] }, { nowUtcDay }).reason).toBe(
       'invalid_timestamp',
     );
   });

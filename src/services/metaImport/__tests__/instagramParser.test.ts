@@ -7,7 +7,12 @@
  * here either. Fixtures are synthetic (`testUtils/builders.ts`).
  */
 
-import { buildFbidIndex, parseInstagramFlatFile, type FbidIndex } from '../instagramParser';
+import {
+  MAX_FBID_WALK_NODES,
+  buildFbidIndex,
+  parseInstagramFlatFile,
+  type FbidIndex,
+} from '../instagramParser';
 import { buildSourceItemId } from '../sourceItemId';
 import {
   igFlatJsonText,
@@ -119,6 +124,46 @@ describe('parseInstagramFlatFile content', () => {
     ]);
     // The dates travel with their own media item, not with the position.
     expect(post.mediaDates).toEqual([(TS - 1) * 1000, (TS - 2) * 1000, (TS - 3) * 1000]);
+  });
+
+  it('imports a carousel whose media dates are out of range, stating no date for them', () => {
+    // Same rule as Facebook's, applied by the same `mediaDateMs` — which is
+    // the entire reason `dateBounds.ts` exists as one module rather than two
+    // copies of a boundary rule. A media date decorates; it never gates the
+    // import and never enters `source_item_id`, so a nonsense value costs
+    // that item its date and nothing else. Unchecked it reaches #928 as
+    // `new Date(1e303).toISOString()`, a RangeError far from the file that
+    // stated it.
+    //
+    // A CAROUSEL, not a single-media post, on purpose: on a single-media
+    // post `media[0].creation_timestamp` is ALSO the post's own timestamp
+    // fallback, so an out-of-window value there refuses the whole post
+    // (`invalid_timestamp`) and the media date would never be under test.
+    // The post-level `creationTimestamp` here keeps the two apart.
+    //
+    // Three values, three different gates: `1e300` is refused by
+    // `pickInteger` (`Number.isSafeInteger`) before the window is consulted;
+    // `253_402_300_800` is a safe integer (year 10000 in seconds) and is the
+    // only one that exercises the upper bound; `1_000_000_000` is 2001,
+    // under the 2004 floor the server also applies.
+    const post = onePost({
+      posts: [
+        {
+          creationTimestamp: TS,
+          title: 'carousel with bad media dates',
+          media: [
+            { name: 'unsafe.jpg', creationTimestamp: 1e300 },
+            { name: 'year10000.jpg', creationTimestamp: 253_402_300_800 },
+            { name: 'before-instagram.jpg', creationTimestamp: 1_000_000_000 },
+            { name: 'fine.jpg', creationTimestamp: TS - 10 },
+          ],
+        },
+      ],
+    });
+
+    expect(post.originalDate).toBe(TS * 1000);
+    expect(post.mediaUris).toHaveLength(4);
+    expect(post.mediaDates).toEqual([null, null, null, (TS - 10) * 1000]);
   });
 
   it('does not use a carousel child’s label as the post caption', () => {
@@ -389,6 +434,116 @@ describe('buildFbidIndex', () => {
     expect(buildFbidIndex('{')).toEqual({ ok: false, reason: 'json_unparseable' });
     expect(buildFbidIndex('{"posts":[]}')).toEqual({ ok: false, reason: 'json_unparseable' });
   });
+});
+
+// ---------------------------------------------------------------------------
+// The walk's node ceiling
+// ---------------------------------------------------------------------------
+//
+// `MAX_FBID_WALK_NODES` bounds the labelled-file walk so a crafted 12 MiB
+// file of one-character keys cannot turn a member's preflight into a hang.
+// The real ceiling needs a multi-megabyte fixture to reach, so `maxNodes` is
+// injected here instead — a budget nobody has ever seen bite is a budget that
+// could be off by an order of magnitude in either direction.
+
+describe('the fbid walk ceiling', () => {
+  /**
+   * Containers (objects and arrays) in one parsed value, itself included.
+   *
+   * This IS the walk's budget unit: only containers go on its stack, and the
+   * graph is a tree, so each one is pushed and popped exactly once. Counting
+   * it here rather than hard-coding a number means these rows keep testing
+   * the ceiling even when the labelled-file builder changes shape.
+   */
+  function countContainers(value: unknown): number {
+    if (typeof value !== 'object' || value === null) return 0;
+    const children: unknown[] = Array.isArray(value) ? [...value] : Object.values(value);
+    return children.reduce<number>((sum, child) => sum + countContainers(child), 1);
+  }
+
+  /** Scalar leaves — what the old walk charged for and this one does not. */
+  function countScalars(value: unknown): number {
+    if (typeof value !== 'object' || value === null) return 1;
+    const children: unknown[] = Array.isArray(value) ? [...value] : Object.values(value);
+    return children.reduce<number>((sum, child) => sum + countScalars(child), 0);
+  }
+
+  /** Exactly how many nodes the walk charges for one labelled file. */
+  function walkCost(text: string): number {
+    const root = JSON.parse(text) as unknown[];
+    return root.reduce<number>((sum, element) => sum + countContainers(element), 0);
+  }
+
+  it('refuses the whole index rather than returning a truncated one', () => {
+    const text = igLabelledJsonText({
+      posts: [
+        { fbid: '8001', coverMedia: [{ name: 'cover.jpg' }], childMedia: [{ name: 'c1.jpg' }] },
+        { fbid: '8002', coverMedia: [{ name: 'other.jpg' }] },
+      ],
+    });
+    // 25 containers for this two-post fixture, as counted above.
+    const nodes = walkCost(text);
+    expect(nodes).toBe(25);
+
+    // One node short. A PARTIAL index would still be deterministic, but it
+    // would give some posts fbid ids and others content ids depending on a
+    // walk order nobody can see — so the whole file is refused.
+    expect(buildFbidIndex(text, { maxNodes: nodes - 1 })).toEqual({
+      ok: false,
+      reason: 'json_too_large',
+    });
+
+    // The boundary itself passes: the ceiling is "more than", and a row that
+    // only proved the refusal would pass on a walk that refused everything.
+    const atCeiling = buildFbidIndex(text, { maxNodes: nodes });
+    expect(atCeiling.ok).toBe(true);
+    if (!atCeiling.ok) return;
+    expect(atCeiling.index.get('c1.jpg')).toBe('8001');
+
+    // And omitting the option is the production ceiling, not some other one.
+    expect(buildFbidIndex(text)).toEqual(buildFbidIndex(text, { maxNodes: MAX_FBID_WALK_NODES }));
+  });
+
+  it('charges the budget in containers, so a file of scalar leaves still indexes', () => {
+    // 400 scalar leaves hung off two containers. The real labelled file is
+    // ~3× more leaves than containers, so a walk that pushed leaves would
+    // make the ceiling bite three times sooner than its own docblock claims
+    // — and tripping it flips EVERY Instagram post to a content-derived id,
+    // which is a silent duplicate of the member's history on re-import.
+    const text = igLabelledJsonText({
+      posts: [
+        {
+          fbid: '8003',
+          coverMedia: [{ name: 'padded.jpg' }],
+          raw: {
+            pad_object: Object.fromEntries(
+              Array.from({ length: 200 }, (_unused, i) => [`k${i}`, `v${i}`]),
+            ),
+            pad_array: Array.from({ length: 200 }, (_unused, i) => `v${i}`),
+          },
+        },
+      ],
+    });
+
+    const nodes = walkCost(text);
+    const leaves = countScalars(JSON.parse(text));
+    // 11 containers against 406 leaves (the 400 above plus the post's own
+    // fbid, uri and labels): the leaf-charging walk would have needed 417
+    // nodes to finish this file, nearly 38× the budget handed to it below —
+    // so this row fails loudly the moment a scalar goes back on the stack.
+    expect(nodes).toBe(11);
+    expect(leaves).toBe(406);
+
+    const built = buildFbidIndex(text, { maxNodes: nodes });
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+    expect(built.index.get('padded.jpg')).toBe('8003');
+  });
+
+  // The parseArchive leg — the refusal reaching `summary.fileIssues` while
+  // every post still parses under a content-derived id — is already proven
+  // end to end by `parseArchive.test.ts`'s `instagram identity fallbacks`
+  // describe, so it is not rebuilt here.
 });
 
 describe('the fbid join', () => {

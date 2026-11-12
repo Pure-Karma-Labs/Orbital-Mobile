@@ -4782,7 +4782,7 @@ const MI_RULE = 'meta-import-parser-pins';
 const MI_ISSUE = '#925';
 const MI_UTF8 = join(SRC, 'utils', 'utf8.ts');
 const MI_IMPORT_DIR = join(SRC, 'services', 'metaImport');
-const MI_PRE_PASS = join(MI_IMPORT_DIR, 'mediaPrePass.ts');
+const MI_MEDIA_GATE_FILE = join(MI_IMPORT_DIR, 'mediaPrePass.ts');
 const MI_PARSE_ARCHIVE = join(MI_IMPORT_DIR, 'parseArchive.ts');
 
 function miViolation(file, detail) {
@@ -4801,8 +4801,8 @@ const miUtf8Raw = meRead(
   MI_ISSUE,
 );
 
-const miPrePassRaw = meRead(
-  MI_PRE_PASS,
+const miMediaGateRaw = meRead(
+  MI_MEDIA_GATE_FILE,
   MI_RULE,
   'the media pre-pass that decides which of a post\'s media may be imported',
   MI_ISSUE,
@@ -4831,31 +4831,31 @@ const miParseArchiveRaw = meRead(
 // The count also covers the arrow-const and rename mutations: converting
 // `export function classifyMediaItem` to `export const classifyMediaItem = …`
 // or renaming it loses the window, which is reported rather than passed over.
-const miPrePassWindows = new Map();
-if (miPrePassRaw !== null) {
-  const miPrePassCode = meStripComments(miPrePassRaw);
+const miMediaGateWindows = new Map();
+if (miMediaGateRaw !== null) {
+  const miMediaGateCode = meStripComments(miMediaGateRaw);
 
   for (const name of ['classifyMediaItem', 'foldPostMediaDecisions', 'resolveFileMedia']) {
     const declarations = (
-      miPrePassCode.match(new RegExp(`\\b(?:function|const|let|var)\\s+${name}\\b`, 'g')) ?? []
+      miMediaGateCode.match(new RegExp(`\\b(?:function|const|let|var)\\s+${name}\\b`, 'g')) ?? []
     ).length;
     if (declarations > 1) {
       miViolation(
-        MI_PRE_PASS,
+        MI_MEDIA_GATE_FILE,
         `${declarations} declarations of \`${name}\` — exactly one is allowed, because this clause and every caller must be reading the same function; a second one (block-scoped decoy, or a top-level redeclaration that wins at runtime) lets these pins pass against a body nothing runs`,
       );
     }
 
     const window = new RegExp(`^export (?:async )?function ${name}\\([\\s\\S]*?\\n\\}`, 'm').exec(
-      miPrePassCode,
+      miMediaGateCode,
     );
     if (window === null) {
       miViolation(
-        MI_PRE_PASS,
+        MI_MEDIA_GATE_FILE,
         `no top-level \`export function ${name}(\` — it was renamed, removed or converted to an arrow const, and the clauses that pin its body would pass vacuously`,
       );
     } else {
-      miPrePassWindows.set(name, window[0]);
+      miMediaGateWindows.set(name, window[0]);
     }
   }
 
@@ -4873,15 +4873,15 @@ if (miPrePassRaw !== null) {
   // helper below — is a second licence. (The `MediaDecision` type spells the
   // tag through the `ImportImage` alias precisely so the count can be exactly
   // one; see the comment on that alias.)
-  const miLicences = (miPrePassCode.match(/decision: 'import-image'/g) ?? []).length;
+  const miLicences = (miMediaGateCode.match(/decision: 'import-image'/g) ?? []).length;
   if (miLicences !== 1) {
     miViolation(
-      MI_PRE_PASS,
+      MI_MEDIA_GATE_FILE,
       `${miLicences} occurrences of the literal \`decision: 'import-image'\` — exactly ONE is allowed, the guarded return in classifyMediaItem; any other is a second licence to import media that was never positively classified as an image`,
     );
   }
 
-  const miClassify = miPrePassWindows.get('classifyMediaItem');
+  const miClassify = miMediaGateWindows.get('classifyMediaItem');
   if (miClassify !== undefined) {
     // Whitespace-insensitive, so Prettier's line breaking cannot decide
     // whether the rule holds — the TOKEN ORDER is what is pinned: the guard
@@ -4891,25 +4891,25 @@ if (miPrePassRaw !== null) {
     const miGuard = "if (peek.ok && peek.kind === 'image') { return { decision: 'import-image'";
     if (!miClassify.replace(/\s+/g, ' ').includes(miGuard)) {
       miViolation(
-        MI_PRE_PASS,
+        MI_MEDIA_GATE_FILE,
         `classifyMediaItem no longer reads \`${miGuard}\` — the import licence is unguarded or its guard was widened; only a positive image peek may licence an import (peekEntryKind contract (a))`,
       );
     }
     if (!miClassify.includes("decision: 'import-image'")) {
       miViolation(
-        MI_PRE_PASS,
+        MI_MEDIA_GATE_FILE,
         "the single `decision: 'import-image'` literal is OUTSIDE classifyMediaItem — the licence moved to a function this rule does not pin",
       );
     }
     if (!miClassify.includes('assertNever(')) {
       miViolation(
-        MI_PRE_PASS,
+        MI_MEDIA_GATE_FILE,
         'classifyMediaItem no longer calls `assertNever(` — without the exhaustiveness tail a new Rust skip code or sniff verdict falls through silently instead of failing the build, and the fall-through direction is the one that must hold the post',
       );
     }
     if (miClassify.includes('catch')) {
       miViolation(
-        MI_PRE_PASS,
+        MI_MEDIA_GATE_FILE,
         'classifyMediaItem contains a `catch` — archive throws are run-level facts that parseArchive dispatches on ARCHIVE_ERROR_DISPOSITIONS (pause/repick/abort); catching one here turns a resumable pause into a permanent, silent "your photo did not migrate"',
       );
     }
@@ -4923,23 +4923,23 @@ if (miPrePassRaw !== null) {
   // that minted its own import licence, and a fold rewritten around `.filter(`
   // (every plausible filter here drops held items and imports the rest, which
   // is exactly the partial post Alex ruled out on 2026-10-19).
-  const miFold = miPrePassWindows.get('foldPostMediaDecisions');
+  const miFold = miMediaGateWindows.get('foldPostMediaDecisions');
   if (miFold !== undefined) {
     if (!miFold.includes("decision === 'hold'")) {
       miViolation(
-        MI_PRE_PASS,
+        MI_MEDIA_GATE_FILE,
         "foldPostMediaDecisions no longer tests `decision === 'hold'` — it must inspect every item's decision, because ANY hold holds the WHOLE post",
       );
     }
     if (miFold.includes("'import-image'")) {
       miViolation(
-        MI_PRE_PASS,
+        MI_MEDIA_GATE_FILE,
         "foldPostMediaDecisions contains the literal `'import-image'` — the fold consumes decisions, it does not mint them; a licence spelled here is one classifyMediaItem never issued",
       );
     }
     if (miFold.includes('.filter(')) {
       miViolation(
-        MI_PRE_PASS,
+        MI_MEDIA_GATE_FILE,
         'foldPostMediaDecisions contains `.filter(` — filtering the decision list is how a held item gets dropped instead of holding the post, which would import a post partially',
       );
     }
@@ -4953,12 +4953,12 @@ if (miPrePassRaw !== null) {
   // photos appearing in a stranger's thread, which no test downstream would
   // name. Both parities are pinned: per chunk (the call that can skew) and
   // over the whole file (the array the caller indexes into).
-  const miResolve = miPrePassWindows.get('resolveFileMedia');
+  const miResolve = miMediaGateWindows.get('resolveFileMedia');
   if (miResolve !== undefined) {
     for (const pin of ['.length !== chunk.length', '.length !== uris.length']) {
       if (!miResolve.includes(pin)) {
         miViolation(
-          MI_PRE_PASS,
+          MI_MEDIA_GATE_FILE,
           `resolveFileMedia no longer asserts \`${pin}\` — the resolutions are index-aligned with the uris by contract, and an unchecked skew assigns one post's media to another`,
         );
       }
@@ -5067,13 +5067,13 @@ if (miParseArchiveRaw !== null) {
 // is absent there — this repo keeps `__mocks__/` at the repo ROOT, so the
 // pattern matched nothing and only looked like coverage.
 const MI_LICENCE_EXEMPT = ['__tests__/', 'testUtils/', '.test.ts', '.test.tsx'];
-const MI_PRE_PASS_REL = relative('.', MI_PRE_PASS);
+const MI_MEDIA_GATE_REL = relative('.', MI_MEDIA_GATE_FILE);
 let miLicenceScanned = 0;
 for (const file of walkSync(MI_IMPORT_DIR, ['.ts', '.tsx'])) {
   const rel = relative('.', file);
   if (rel.includes('node_modules')) continue;
   if (MI_LICENCE_EXEMPT.some((pattern) => rel.includes(pattern))) continue;
-  if (rel === MI_PRE_PASS_REL) continue;
+  if (rel === MI_MEDIA_GATE_REL) continue;
   miLicenceScanned++;
   const lines = meStripComments(readFileSync(file, 'utf8')).split('\n');
   for (let i = 0; i < lines.length; i++) {

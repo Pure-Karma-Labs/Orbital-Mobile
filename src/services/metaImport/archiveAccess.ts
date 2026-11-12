@@ -63,6 +63,7 @@ import {
   type ArchiveCallOptions,
   type ArchiveEntry,
   type ArchiveErrorCode,
+  type ArchiveErrorDisposition,
   type ArchivePartToken,
   type ArchiveSession,
   type EntryKind,
@@ -78,6 +79,11 @@ export type {
   ArchiveCallOptions,
   ArchiveEntry,
   ArchiveErrorCode,
+  // Re-exported for #924: `classifyImportCryptoError` answers in the SAME
+  // disposition vocabulary the runner already switches on, and the crypto
+  // module must not import `orbital-archive-reader` itself (rule 29a) — a
+  // type-only hop through this module costs nothing at runtime.
+  ArchiveErrorDisposition,
   ArchivePartToken,
   ArchiveSession,
   EntryKind,

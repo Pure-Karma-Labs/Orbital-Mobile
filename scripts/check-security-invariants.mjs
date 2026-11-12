@@ -4773,31 +4773,205 @@ if (arAccessRaw !== null) {
 //   * the codec story: the id framing must be lossless, and nothing anywhere
 //     may call `TextDecoder` (clauses 7-8).
 //
-// THIS IS THE PR 1 SUBSET. Clauses 2-6 pin `mediaPrePass.ts` and
-// `parseArchive.ts`, which land in PR 2 together with their own mutation
-// matrix; clause 1 below is correspondingly restricted to the one file PR 1
-// ships. A clause whose subject does not exist yet would be a rule that passes
-// because nobody wrote the code, which is the opposite of the point.
+// Clauses 1-4 and 6 pin `mediaPrePass.ts`, which decides every media item's
+// fate; clause 5 pins the CALL SITE in `parseArchive.ts`, which lands with the
+// orchestration and is marked TODO below. A clause whose subject does not
+// exist yet would be a rule that passes because nobody wrote the code, which
+// is the opposite of the point — so each clause is added with its file.
 
 const MI_RULE = 'meta-import-parser-pins';
 const MI_ISSUE = '#925';
 const MI_UTF8 = join(SRC, 'utils', 'utf8.ts');
+const MI_PRE_PASS = join(SRC, 'services', 'metaImport', 'mediaPrePass.ts');
 
 function miViolation(file, detail) {
   violations.push(`  ${relative('.', file)}:0  [${MI_RULE}]  ${detail} (${MI_ISSUE})`);
 }
 
-// --- 29.8.1 (PR 1 subset) The strict codec must exist.
+// --- 29.8.1 The files every clause below reasons about must exist.
 //
-// `meRead` records a violation when it does not: every clause below reasons
-// about this file, and a deleted file must fail the rule rather than silently
-// satisfy it.
+// `meRead` records a violation when one does not: deleting the subject of a
+// pin must FAIL the rule, not satisfy it by leaving nothing to check. This is
+// the first mutation in #925's matrix for exactly that reason.
 const miUtf8Raw = meRead(
   MI_UTF8,
   MI_RULE,
   'the strict UTF-8 codec the parser frames source_item_id with',
   MI_ISSUE,
 );
+
+const miPrePassRaw = meRead(
+  MI_PRE_PASS,
+  MI_RULE,
+  'the media pre-pass that decides which of a post\'s media may be imported',
+  MI_ISSUE,
+);
+
+// TODO(#925 PR 2, parseArchive): when `src/services/metaImport/parseArchive.ts`
+// lands, add it to this clause (a third `meRead`) and implement clause 5, the
+// CALL-SITE pin that the plan review made blocking:
+//   * the `parseArchive` window, and every other non-test file under
+//     `src/services/metaImport/` except `mediaPrePass.ts`, contains NO
+//     `'import-image'` literal — the licence may not be minted outside the
+//     pre-pass;
+//   * `parseArchive` contains `foldPostMediaDecisions(`;
+//   * `ParsedPost.media` is built only from the fold result (pin the
+//     `media: folded.media` assignment);
+//   * exactly one declaration of `parseArchive` (the clause-2 count below
+//     takes it as a third name).
+// Until then clauses 3-4 pin the two functions, and nothing pins who calls
+// them: a `parseArchive` that ignored the fold would pass today.
+
+// --- 29.8.2 One declaration each, and a window that was really found.
+//
+// Both halves matter, for the two mutations 29.7 D1/D2 already caught on the
+// denied-root set:
+//
+//   * ANCHORED windows (`^export function`), because an unanchored first match
+//     can be a block-scoped DECOY above the real declaration — the clause then
+//     reads a body nothing calls while the real one is free to import
+//     everything;
+//   * a FILE-WIDE declaration count, because anchoring alone leaves a SECOND
+//     top-level declaration after the real one invisible: JS binds the later
+//     one at runtime, this clause keeps reading the earlier.
+//
+// The count also covers the arrow-const and rename mutations: converting
+// `export function classifyMediaItem` to `export const classifyMediaItem = …`
+// or renaming it loses the window, which is reported rather than passed over.
+const miPrePassWindows = new Map();
+if (miPrePassRaw !== null) {
+  const miPrePassCode = meStripComments(miPrePassRaw);
+
+  for (const name of ['classifyMediaItem', 'foldPostMediaDecisions', 'resolveFileMedia']) {
+    const declarations = (
+      miPrePassCode.match(new RegExp(`\\b(?:function|const|let|var)\\s+${name}\\b`, 'g')) ?? []
+    ).length;
+    if (declarations > 1) {
+      miViolation(
+        MI_PRE_PASS,
+        `${declarations} declarations of \`${name}\` — exactly one is allowed, because this clause and every caller must be reading the same function; a second one (block-scoped decoy, or a top-level redeclaration that wins at runtime) lets these pins pass against a body nothing runs`,
+      );
+    }
+
+    const window = new RegExp(`^export (?:async )?function ${name}\\([\\s\\S]*?\\n\\}`, 'm').exec(
+      miPrePassCode,
+    );
+    if (window === null) {
+      miViolation(
+        MI_PRE_PASS,
+        `no top-level \`export function ${name}(\` — it was renamed, removed or converted to an arrow const, and the clauses that pin its body would pass vacuously`,
+      );
+    } else {
+      miPrePassWindows.set(name, window[0]);
+    }
+  }
+
+  // --- 29.8.3 ONE import licence, guarded by a positive image verdict.
+  //
+  // This is the whole hold obligation (#983) in one pin. `peekEntryKind`'s
+  // contract (a) is that a skip is never proof of "not a video", and the sniff
+  // recognises ISO-BMFF video only — so WebM, MKV and every unknown head come
+  // back "indeterminate". The ONLY evidence that licenses importing a member's
+  // media is `{ok: true, kind: 'image'}`, and the only place that licence may
+  // be minted is the guarded return in `classifyMediaItem`.
+  //
+  // Counted across the WHOLE stripped file, not inside the window: a second
+  // `decision: 'import-image'` anywhere — the video arm, a skip `default`, a
+  // helper below — is a second licence. (The `MediaDecision` type spells the
+  // tag through the `ImportImage` alias precisely so the count can be exactly
+  // one; see the comment on that alias.)
+  const miLicences = (miPrePassCode.match(/decision: 'import-image'/g) ?? []).length;
+  if (miLicences !== 1) {
+    miViolation(
+      MI_PRE_PASS,
+      `${miLicences} occurrences of the literal \`decision: 'import-image'\` — exactly ONE is allowed, the guarded return in classifyMediaItem; any other is a second licence to import media that was never positively classified as an image`,
+    );
+  }
+
+  const miClassify = miPrePassWindows.get('classifyMediaItem');
+  if (miClassify !== undefined) {
+    // Whitespace-insensitive, so Prettier's line breaking cannot decide
+    // whether the rule holds — the TOKEN ORDER is what is pinned: the guard
+    // tests both `peek.ok` and `kind === 'image'`, and the licence is the
+    // FIRST thing its body does. Widening the guard to `if (peek.ok)` (which
+    // would licence videos) or dropping it entirely fails here.
+    const miGuard = "if (peek.ok && peek.kind === 'image') { return { decision: 'import-image'";
+    if (!miClassify.replace(/\s+/g, ' ').includes(miGuard)) {
+      miViolation(
+        MI_PRE_PASS,
+        `classifyMediaItem no longer reads \`${miGuard}\` — the import licence is unguarded or its guard was widened; only a positive image peek may licence an import (peekEntryKind contract (a))`,
+      );
+    }
+    if (!miClassify.includes("decision: 'import-image'")) {
+      miViolation(
+        MI_PRE_PASS,
+        "the single `decision: 'import-image'` literal is OUTSIDE classifyMediaItem — the licence moved to a function this rule does not pin",
+      );
+    }
+    if (!miClassify.includes('assertNever(')) {
+      miViolation(
+        MI_PRE_PASS,
+        'classifyMediaItem no longer calls `assertNever(` — without the exhaustiveness tail a new Rust skip code or sniff verdict falls through silently instead of failing the build, and the fall-through direction is the one that must hold the post',
+      );
+    }
+    if (miClassify.includes('catch')) {
+      miViolation(
+        MI_PRE_PASS,
+        'classifyMediaItem contains a `catch` — archive throws are run-level facts that parseArchive dispatches on ARCHIVE_ERROR_DISPOSITIONS (pause/repick/abort); catching one here turns a resumable pause into a permanent, silent "your photo did not migrate"',
+      );
+    }
+  }
+
+  // --- 29.8.4 The fold never drops a hold.
+  //
+  // A PROXY for that behaviour, and deliberately a crude one — the per-outcome
+  // and priority tests own the real semantics. What it catches is the shape of
+  // the regressions: a fold that stopped branching on `hold` at all, a fold
+  // that minted its own import licence, and a fold rewritten around `.filter(`
+  // (every plausible filter here drops held items and imports the rest, which
+  // is exactly the partial post Alex ruled out on 2026-10-19).
+  const miFold = miPrePassWindows.get('foldPostMediaDecisions');
+  if (miFold !== undefined) {
+    if (!miFold.includes("decision === 'hold'")) {
+      miViolation(
+        MI_PRE_PASS,
+        "foldPostMediaDecisions no longer tests `decision === 'hold'` — it must inspect every item's decision, because ANY hold holds the WHOLE post",
+      );
+    }
+    if (miFold.includes("'import-image'")) {
+      miViolation(
+        MI_PRE_PASS,
+        "foldPostMediaDecisions contains the literal `'import-image'` — the fold consumes decisions, it does not mint them; a licence spelled here is one classifyMediaItem never issued",
+      );
+    }
+    if (miFold.includes('.filter(')) {
+      miViolation(
+        MI_PRE_PASS,
+        'foldPostMediaDecisions contains `.filter(` — filtering the decision list is how a held item gets dropped instead of holding the post, which would import a post partially',
+      );
+    }
+  }
+
+  // --- 29.8.6 The resolution parity check.
+  //
+  // `resolveMediaUris` is 1:1 with its input, and the pre-pass reassembles
+  // posts BY INDEX. A resolver that returned a short array would shift every
+  // later post's media onto the wrong post — the failure mode is the member's
+  // photos appearing in a stranger's thread, which no test downstream would
+  // name. Both parities are pinned: per chunk (the call that can skew) and
+  // over the whole file (the array the caller indexes into).
+  const miResolve = miPrePassWindows.get('resolveFileMedia');
+  if (miResolve !== undefined) {
+    for (const pin of ['.length !== chunk.length', '.length !== uris.length']) {
+      if (!miResolve.includes(pin)) {
+        miViolation(
+          MI_PRE_PASS,
+          `resolveFileMedia no longer asserts \`${pin}\` — the resolutions are index-aligned with the uris by contract, and an unchecked skew assigns one post's media to another`,
+        );
+      }
+    }
+  }
+}
 
 // --- 29.8.7 `encodeUtf8Strict` is a TextEncoder wrapper, never a hand-rolled
 //     loop.

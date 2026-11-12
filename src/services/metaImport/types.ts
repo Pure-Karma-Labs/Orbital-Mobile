@@ -263,7 +263,16 @@ export interface ParseFileContext {
   readonly bodyMaxChars?: number;
 }
 
-/** Which identity scheme each post's id used (#921 persists `id_kind`). */
+/**
+ * Which identity scheme each post's id used (#921 persists `id_kind`).
+ *
+ * Counted over the posts that reached the media pre-pass — the importable ones
+ * and the media-held ones. The parser's content-level refusals
+ * (`empty_post`, `missing_timestamp`, …) are not counted even when they carry
+ * an id: `RawParsedPost` is where `idScheme` lives, and a refusal settled
+ * before the fold never became one. The counts are a ratio for detecting a
+ * scheme FLIP between two exports, not a census of emitted items.
+ */
 export interface IdSchemeCounts {
   /** Instagram `fbid` from `posts.json` (kind 0x02). */
   readonly fbid: number;

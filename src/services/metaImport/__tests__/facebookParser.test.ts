@@ -10,7 +10,7 @@
 import { parseFacebookFile } from '../facebookParser';
 import { todayUtcDay } from '../dateBounds';
 import { MAX_MEDIA_PER_POST } from '../jsonSafety';
-import { fbJsonText, type FbFileSpec } from '../testUtils/builders';
+import { fbJsonText, mojibakeEscape, type FbFileSpec } from '../testUtils/builders';
 
 import type { ParseFileContext, ParsedSkip, RawParseResult, RawParsedPost } from '../types';
 
@@ -69,6 +69,57 @@ describe('parseFacebookFile text', () => {
     expect(skip.sourceItemId).not.toBeNull();
     expect(skip.originalDate).toBe(TS * 1000);
   });
+
+  it('numbers posts by their position in the file, imported and skipped alike', () => {
+    // #928 lists skips by `sourceIndex`; if a skip shifted the numbering, the
+    // row a member is shown would point at the wrong post in their own file.
+    const items = parse({
+      posts: [
+        { timestamp: TS, post: 'zero' },
+        { post: 'no date' },
+        { timestamp: TS + 1, post: 'two' },
+        { timestamp: TS + 2 },
+      ],
+    });
+    expect(items.map((item) => item.sourceIndex)).toEqual([0, 1, 2, 3]);
+    expect(items.map((item) => item.outcome)).toEqual(['post', 'skip', 'post', 'skip']);
+  });
+
+  it('numbers an all-imported file 0, 1, 2 in file order', () => {
+    const items = parse({
+      posts: [
+        { timestamp: TS, post: 'first' },
+        { timestamp: TS + 1, post: 'second' },
+        { timestamp: TS + 2, post: 'third' },
+      ],
+    });
+    expect(items.map((item) => item.sourceIndex)).toEqual([0, 1, 2]);
+    expect(items.map((item) => (item.outcome === 'post' ? item.body : null))).toEqual([
+      'first',
+      'second',
+      'third',
+    ]);
+  });
+
+  it('repairs byte-escaped mojibake in the body and frames the repaired text', () => {
+    // The id is minted from the REPAIRED text: a member whose export carries
+    // the escape form and one whose export carries the typed form are the same
+    // post, and must not re-import as two.
+    const escaped = onePost({ posts: [{ timestamp: TS, post: mojibakeEscape('café ☕') }] });
+    const typed = onePost({ posts: [{ timestamp: TS, post: 'café ☕' }] });
+    expect(escaped.body).toBe('café ☕');
+    expect([...escaped.sourceItemId]).toEqual([...typed.sourceItemId]);
+  });
+
+  it('gives a different identity to a post with one more media item', () => {
+    // Same words, same date, same first photo: the extra attachment is what
+    // makes it a different post.
+    const base = onePost({ posts: [{ timestamp: TS, post: 'same', media: [{ name: 'a.jpg' }] }] });
+    const moreMedia = onePost({
+      posts: [{ timestamp: TS, post: 'same', media: [{ name: 'a.jpg' }, { name: 'b.jpg' }] }],
+    });
+    expect([...moreMedia.sourceItemId]).not.toEqual([...base.sourceItemId]);
+  });
 });
 
 describe('parseFacebookFile links', () => {
@@ -101,9 +152,48 @@ describe('parseFacebookFile links', () => {
 
   it('refuses a non-http(s) url, leaving a link-only post empty', () => {
     const skip = oneSkip({
+      // eslint-disable-next-line no-script-url -- refusing this exact scheme is the behaviour under test
       posts: [{ timestamp: TS, link: { url: 'javascript:alert(1)' } }],
     });
     expect(skip.reason).toBe('empty_post');
+  });
+
+  it('gives a different identity to two posts that differ only by link url', () => {
+    // The url is framed into the id, so two otherwise-identical shares of
+    // different pages are two posts, not one.
+    const a = onePost({
+      posts: [{ timestamp: TS, post: 'look', link: { url: 'https://example.org/a' } }],
+    });
+    const b = onePost({
+      posts: [{ timestamp: TS, post: 'look', link: { url: 'https://example.org/b' } }],
+    });
+    expect([...a.sourceItemId]).not.toEqual([...b.sourceItemId]);
+  });
+
+  it('ignores a link whose url is not a string', () => {
+    const post = onePost({ posts: [{ timestamp: TS, post: 'words', link: { url: 12345 } }] });
+    expect(post.body).toBe('words');
+  });
+
+  it('ignores a link with no url key at all', () => {
+    // Only a display name: Facebook's rendering, never the member's words.
+    const post = onePost({ posts: [{ timestamp: TS, post: 'words', link: { name: 'HEADLINE' } }] });
+    expect(post.body).toBe('words');
+  });
+
+  it('puts the link line after the text and still carries the media', () => {
+    const post = onePost({
+      posts: [
+        {
+          timestamp: TS,
+          post: 'look',
+          link: { url: 'https://example.org/a' },
+          media: [{ name: 'p.jpg' }],
+        },
+      ],
+    });
+    expect(post.body).toBe('look\nhttps://example.org/a');
+    expect(post.mediaUris).toEqual(['your_facebook_activity/posts/media/p.jpg']);
   });
 });
 
@@ -114,10 +204,7 @@ describe('parseFacebookFile media', () => {
         {
           timestamp: TS,
           post: 'album',
-          media: [
-            { name: 'one.jpg', creationTimestamp: TS - 10 },
-            { name: 'two.jpg' },
-          ],
+          media: [{ name: 'one.jpg', creationTimestamp: TS - 10 }, { name: 'two.jpg' }],
         },
       ],
     });
@@ -152,6 +239,37 @@ describe('parseFacebookFile media', () => {
     expect([...flat.sourceItemId]).toEqual([...activity.sourceItemId]);
   });
 
+  it('parses every layout, each carrying its own media uri prefix', () => {
+    // The prefix is the only thing the layouts disagree about, and it rides
+    // through to the pre-pass untouched (identity frames basenames, the uri
+    // is what gets resolved against the archive).
+    const spec = (layout: FbFileSpec['layout']): FbFileSpec => ({
+      layout,
+      posts: [{ timestamp: TS, post: 'same', media: [{ name: 'p.jpg' }] }],
+    });
+    expect(onePost(spec('activity')).mediaUris).toEqual([
+      'your_facebook_activity/posts/media/p.jpg',
+    ]);
+    expect(onePost(spec('across')).mediaUris).toEqual([
+      'your_activity_across_facebook/posts/media/p.jpg',
+    ]);
+    expect(onePost(spec('flat')).mediaUris).toEqual(['posts/media/p.jpg']);
+  });
+
+  it('ignores an attachments field that is not an array', () => {
+    const post = onePost({ posts: [{ timestamp: TS, post: 'x', raw: { attachments: 'nope' } }] });
+    expect(post.body).toBe('x');
+    expect(post.mediaUris).toEqual([]);
+  });
+
+  it('ignores an attachment whose data is empty', () => {
+    const post = onePost({
+      posts: [{ timestamp: TS, post: 'x', raw: { attachments: [{ data: [] }] } }],
+    });
+    expect(post.body).toBe('x');
+    expect(post.mediaUris).toEqual([]);
+  });
+
   it('fails a post closed when an attachment claims media with no usable uri', () => {
     // Importing the post without the photo would be a SILENT partial import,
     // which is exactly what the hold obligation exists to prevent.
@@ -167,6 +285,16 @@ describe('parseFacebookFile media', () => {
       name: `m${i}.jpg`,
     }));
     expect(oneSkip({ posts: [{ timestamp: TS, media }] }).reason).toBe('malformed_post');
+  });
+
+  it('imports a post with exactly the per-post media ceiling', () => {
+    // The limit is "more than", so the boundary itself must pass.
+    const media = Array.from({ length: MAX_MEDIA_PER_POST }, (_unused, i) => ({
+      name: `m${i}.jpg`,
+    }));
+    expect(onePost({ posts: [{ timestamp: TS, media }] }).mediaUris).toHaveLength(
+      MAX_MEDIA_PER_POST,
+    );
   });
 });
 
@@ -210,6 +338,19 @@ describe('parseFacebookFile unsupported and empty posts', () => {
   it('reports a post with nothing at all as empty_post', () => {
     expect(oneSkip({ posts: [{ timestamp: TS }] }).reason).toBe('empty_post');
   });
+
+  it('ignores a data element whose post is not a string', () => {
+    const post = onePost({
+      posts: [{ timestamp: TS, raw: { data: [{ post: 42 }, { post: 'real' }] } }],
+    });
+    expect(post.body).toBe('real');
+  });
+
+  it('reports a post whose only data entry is a non-string as empty_post', () => {
+    expect(oneSkip({ posts: [{ timestamp: TS, raw: { data: [{ post: 42 }] } }] }).reason).toBe(
+      'empty_post',
+    );
+  });
 });
 
 describe('parseFacebookFile timestamps', () => {
@@ -221,6 +362,25 @@ describe('parseFacebookFile timestamps', () => {
       originalDate: null,
     });
     expect(oneSkip({ posts: [{ timestamp: '1600000000', post: 'x' }] }).reason).toBe(
+      'missing_timestamp',
+    );
+  });
+
+  it('refuses a zero or negative timestamp as invalid, not missing', () => {
+    // Both are integers, so they get past the shape check and fail the date
+    // window; "missing" would tell the member their file lacked a date.
+    expect(oneSkip({ posts: [{ timestamp: 0, post: 'x' }] })).toMatchObject({
+      reason: 'invalid_timestamp',
+      sourceItemId: null,
+      originalDate: null,
+    });
+    expect(oneSkip({ posts: [{ timestamp: -86_400, post: 'x' }] }).reason).toBe(
+      'invalid_timestamp',
+    );
+  });
+
+  it('refuses a fractional timestamp as missing', () => {
+    expect(oneSkip({ posts: [{ timestamp: 1_600_000_000.5, post: 'x' }] }).reason).toBe(
       'missing_timestamp',
     );
   });
@@ -253,6 +413,10 @@ describe('parseFacebookFile timestamps', () => {
 });
 
 describe('parseFacebookFile file-level outcomes', () => {
+  it('parses an empty array as ok with no items', () => {
+    expect(parseFacebookFile('[]', CTX)).toEqual({ ok: true, items: [] });
+  });
+
   it('reports a top level that is not an array as json_unparseable', () => {
     expect(parseFacebookFile('{"data":[]}', CTX)).toEqual({
       ok: false,

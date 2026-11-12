@@ -12,6 +12,7 @@ import { buildSourceItemId } from '../sourceItemId';
 import {
   igFlatJsonText,
   igLabelledJsonText,
+  mojibakeEscape,
   type IgFlatFileSpec,
   type IgLabelledFileSpec,
 } from '../testUtils/builders';
@@ -153,6 +154,165 @@ describe('parseInstagramFlatFile content', () => {
   });
 });
 
+describe('parseInstagramFlatFile content breadth', () => {
+  it('parses every flat layout identically, since the uri is root-relative in all four', () => {
+    // The layout only names the file's own path; the uri inside is relative to
+    // the archive root, so body, uris and identity cannot depend on it.
+    const layouts: IgFlatFileSpec['layout'][] = [
+      'activity-media',
+      'activity-content',
+      'content',
+      'media',
+    ];
+    const posts = layouts.map((layout) =>
+      onePost({
+        layout,
+        posts: [{ media: [{ name: 'a.jpg', creationTimestamp: TS, title: 'same' }] }],
+      }),
+    );
+    for (const post of posts) {
+      expect(post.body).toBe('same');
+      expect(post.mediaUris).toEqual(['media/posts/a.jpg']);
+      expect([...post.sourceItemId]).toEqual([...posts[0].sourceItemId]);
+    }
+  });
+
+  it('numbers posts by their position in the file, imported and skipped alike', () => {
+    const items = parse({
+      posts: [
+        { media: [{ name: 'a.jpg', creationTimestamp: TS, title: 'zero' }] },
+        { title: 'no date' },
+        { media: [{ name: 'b.jpg', creationTimestamp: TS + 1, title: 'two' }] },
+        { creationTimestamp: TS },
+      ],
+    });
+    expect(items.map((item) => item.sourceIndex)).toEqual([0, 1, 2, 3]);
+    expect(items.map((item) => item.outcome)).toEqual(['post', 'skip', 'post', 'skip']);
+  });
+
+  it('numbers an all-imported file 0, 1, 2 in file order', () => {
+    const items = parse({
+      posts: [
+        { media: [{ name: 'a.jpg', creationTimestamp: TS, title: 'first' }] },
+        { media: [{ name: 'b.jpg', creationTimestamp: TS + 1, title: 'second' }] },
+        { media: [{ name: 'c.jpg', creationTimestamp: TS + 2, title: 'third' }] },
+      ],
+    });
+    expect(items.map((item) => item.sourceIndex)).toEqual([0, 1, 2]);
+    expect(items.map((item) => (item.outcome === 'post' ? item.body : null))).toEqual([
+      'first',
+      'second',
+      'third',
+    ]);
+  });
+
+  it('prefers a non-empty post title over the media’s own on a single-media post', () => {
+    const post = onePost({
+      posts: [
+        {
+          title: 'post caption',
+          media: [{ name: 'a.jpg', creationTimestamp: TS, title: 'media caption' }],
+        },
+      ],
+    });
+    expect(post.body).toBe('post caption');
+  });
+
+  it('falls back to the media’s title when the post title is an empty string', () => {
+    const post = onePost({
+      posts: [
+        {
+          title: '',
+          media: [{ name: 'a.jpg', creationTimestamp: TS, title: 'media caption' }],
+        },
+      ],
+    });
+    expect(post.body).toBe('media caption');
+  });
+
+  it('falls back to the media’s timestamp when the post-level one is a string', () => {
+    // Only an integer counts as a timestamp; a string is "not stated", so the
+    // single-media fallback still applies.
+    const post = onePost({
+      posts: [
+        {
+          raw: { creation_timestamp: String(TS + 99) },
+          media: [{ name: 'a.jpg', creationTimestamp: TS, title: 'x' }],
+        },
+      ],
+    });
+    expect(post.originalDate).toBe(TS * 1000);
+  });
+
+  it('refuses a post whose post-level and media timestamps are both unusable', () => {
+    const skip = oneSkip({
+      posts: [
+        {
+          raw: { creation_timestamp: String(TS) },
+          media: [{ name: 'a.jpg', title: 'x' }],
+        },
+      ],
+    });
+    expect(skip).toMatchObject({
+      reason: 'missing_timestamp',
+      sourceItemId: null,
+      originalDate: null,
+    });
+  });
+
+  it('repairs byte-escaped mojibake in a caption and frames the repaired text', () => {
+    const escaped = onePost({
+      posts: [
+        { media: [{ name: 'a.jpg', creationTimestamp: TS, title: mojibakeEscape('café ☕') }] },
+      ],
+    });
+    const typed = onePost({
+      posts: [{ media: [{ name: 'a.jpg', creationTimestamp: TS, title: 'café ☕' }] }],
+    });
+    expect(escaped.body).toBe('café ☕');
+    expect([...escaped.sourceItemId]).toEqual([...typed.sourceItemId]);
+  });
+
+  it('reports an element that is not an object as malformed_post with no id', () => {
+    const result = parseInstagramFlatFile('[42]', CTX, null);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items[0]).toMatchObject({
+      outcome: 'skip',
+      reason: 'malformed_post',
+      sourceItemId: null,
+    });
+  });
+});
+
+describe('parseInstagramFlatFile file-level outcomes', () => {
+  it('reports a top level that is not an array as json_unparseable', () => {
+    expect(parseInstagramFlatFile('{"media":[]}', CTX, null)).toEqual({
+      ok: false,
+      reason: 'json_unparseable',
+    });
+  });
+
+  it('reports unparseable text as json_unparseable', () => {
+    expect(parseInstagramFlatFile('[{', CTX, null)).toEqual({
+      ok: false,
+      reason: 'json_unparseable',
+    });
+  });
+
+  it('reports over-deep nesting as json_too_deep', () => {
+    const deep = `${'['.repeat(40)}${']'.repeat(40)}`;
+    expect(parseInstagramFlatFile(deep, CTX, null)).toEqual({
+      ok: false,
+      reason: 'json_too_deep',
+    });
+  });
+
+  it('parses an empty array as ok with no items', () => {
+    expect(parseInstagramFlatFile('[]', CTX, null)).toEqual({ ok: true, items: [] });
+  });
+});
+
 describe('buildFbidIndex', () => {
   it('walks cover media and carousel children, which sit at different depths', () => {
     // The real file hangs the cover off `label_values[].media[]` and the
@@ -180,6 +340,45 @@ describe('buildFbidIndex', () => {
       ],
     });
     expect(map.get('shared.jpg')).toBeNull();
+  });
+
+  it('contributes nothing for an element with no fbid', () => {
+    // An explicit `undefined` is dropped by JSON.stringify, so the key is
+    // genuinely absent from the text the parser reads.
+    const map = index({
+      posts: [{ fbid: '1111', raw: { fbid: undefined }, coverMedia: [{ name: 'orphan.jpg' }] }],
+    });
+    expect(map.has('orphan.jpg')).toBe(false);
+  });
+
+  it('contributes nothing for an element whose fbid is not a string', () => {
+    // A numeric fbid would be a different file shape than the one the join is
+    // defined against; guessing at `String(n)` could mint a wrong identity.
+    const map = index({
+      posts: [{ fbid: '1111', raw: { fbid: 1111 }, coverMedia: [{ name: 'numeric.jpg' }] }],
+    });
+    expect(map.has('numeric.jpg')).toBe(false);
+  });
+
+  it('contributes nothing for an element whose fbid is an empty string', () => {
+    const map = index({ posts: [{ fbid: '', coverMedia: [{ name: 'blank.jpg' }] }] });
+    expect(map.has('blank.jpg')).toBe(false);
+  });
+
+  it('indexes a nested media uri by basename, so the flat form joins', () => {
+    // The labelled file hangs media one directory deeper (`.../YYYYMM/<name>`)
+    // than the flat file's uri; only the basename is common to both.
+    const map = index({
+      posts: [{ fbid: '5050', coverMedia: [{ name: '202001/nested.jpg' }] }],
+    });
+    expect(map.get('nested.jpg')).toBe('5050');
+    expect(map.has('202001/nested.jpg')).toBe(false);
+
+    const post = onePost(
+      { posts: [{ media: [{ name: 'nested.jpg', creationTimestamp: TS }] }] },
+      map,
+    );
+    expect(post.idScheme).toBe('fbid');
   });
 
   it('reports an unparseable labelled file instead of throwing', () => {
@@ -237,9 +436,9 @@ describe('the fbid join', () => {
         { fbid: '9094', coverMedia: [{ name: 'a.jpg' }] },
       ],
     });
-    expect(onePost({ posts: [{ media: [{ name: 'a.jpg', creationTimestamp: TS }] }] }, map).idScheme).toBe(
-      'content',
-    );
+    expect(
+      onePost({ posts: [{ media: [{ name: 'a.jpg', creationTimestamp: TS }] }] }, map).idScheme,
+    ).toBe('content');
   });
 
   it('falls back to a content id when two different fbids match one post', () => {
@@ -250,10 +449,49 @@ describe('the fbid join', () => {
       ],
     });
     const post = onePost(
-      { posts: [{ creationTimestamp: TS, title: 'x', media: [{ name: 'a.jpg' }, { name: 'b.jpg' }] }] },
+      {
+        posts: [
+          { creationTimestamp: TS, title: 'x', media: [{ name: 'a.jpg' }, { name: 'b.jpg' }] },
+        ],
+      },
       map,
     );
     expect(post.idScheme).toBe('content');
+  });
+
+  it('gives two flat posts joined to different fbids different fbid ids', () => {
+    const map = index({
+      posts: [
+        { fbid: '7001', coverMedia: [{ name: 'a.jpg' }] },
+        { fbid: '7002', coverMedia: [{ name: 'b.jpg' }] },
+      ],
+    });
+    const [first, second] = parse(
+      {
+        posts: [
+          { media: [{ name: 'a.jpg', creationTimestamp: TS }] },
+          { media: [{ name: 'b.jpg', creationTimestamp: TS }] },
+        ],
+      },
+      map,
+    );
+    if (first.outcome !== 'post' || second.outcome !== 'post') throw new Error('expected posts');
+    expect([first.idScheme, second.idScheme]).toEqual(['fbid', 'fbid']);
+    expect([...first.sourceItemId]).not.toEqual([...second.sourceItemId]);
+  });
+
+  it('leaves the body and media uris unchanged when the post joins an fbid', () => {
+    // The id scheme decides identity only; what gets imported is the same.
+    const map = index({ posts: [{ fbid: '7003', coverMedia: [{ name: 'a.jpg' }] }] });
+    const file: IgFlatFileSpec = {
+      posts: [{ media: [{ name: 'a.jpg', creationTimestamp: TS, title: 'kept' }] }],
+    };
+    const joined = onePost(file, map);
+    const unjoined = onePost(file, null);
+    expect(joined.idScheme).toBe('fbid');
+    expect(joined.body).toBe(unjoined.body);
+    expect(joined.mediaUris).toEqual(unjoined.mediaUris);
+    expect(joined.originalDate).toBe(unjoined.originalDate);
   });
 
   it('gives every post a content id when the labelled file was unavailable', () => {

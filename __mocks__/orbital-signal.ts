@@ -12,6 +12,10 @@
  * service (Issue #17), always pass localAddress = { name: <own userId,
  * bare UUID>, deviceId: 1 } or your test will pass while the device fails.
  *
+ * NOTE (issue #924): the hkdfSha256 / hmacSha256 stubs near the bottom are
+ * likewise not permissive — they enforce kdf.rs's argument validation. See the
+ * comment block there.
+ *
  * NOTE (issue #578): unlike the other stubs above, the AttachmentDecryptor
  * stub below deliberately enforces the real object's phase machine (verify
  * pass, then decrypt pass, poison-on-error) instead of being a permissive
@@ -180,6 +184,66 @@ class AttachmentDecryptor {
   }
 }
 
+/** RFC 5869 caps HKDF-Expand at 255 * HashLen; SHA-256 ⇒ 8160. Mirrors kdf.rs. */
+const HKDF_MAX_OUTPUT_LEN = 255 * 32;
+
+/**
+ * Argument validation for the hkdfSha256 / hmacSha256 stubs (#924).
+ *
+ * Like the AttachmentDecryptor stub above, and unlike the permissive no-ops,
+ * these reject exactly what `packages/orbital-signal/rust/orbital_signal/src/
+ * kdf.rs` rejects — same checks, same order, same message text. A permissive
+ * stub makes the two assertions #924's tests exist to make vacuous: "an empty
+ * UTF-8 encode would be caught" (empty ikm/salt/info/key/input) and "a bad
+ * output_len is rejected" both pass against a stub that happily derives a key
+ * from nothing at all. An empty `info` in particular is the quiet one — it
+ * gives every orbit member the same K_import — and an empty hmac `input` is
+ * the encodeUTF8-truncation bug class #373 guards against. Both would ship
+ * green and fail on device.
+ *
+ * `outputLen` is normalised through ToUint32 first, because uniffi lowers it
+ * as a u32: Rust never sees the JS number, it sees the lift, so `-1` is
+ * reported as 4294967295 and `32.5` is accepted as 32. The range check comes
+ * before the emptiness checks for the reason kdf.rs gives — a lifted
+ * u32::MAX must never reach an allocation.
+ *
+ * Validation only: valid calls fall through to `mixStub` with its bytes
+ * unchanged, which is what #924's distinctness tests depend on.
+ */
+const hkdfSha256 = (
+  ikm: ArrayBuffer,
+  salt: ArrayBuffer,
+  info: ArrayBuffer,
+  outputLen: number,
+): ArrayBuffer => {
+  const len = outputLen >>> 0;
+  if (len === 0 || len > HKDF_MAX_OUTPUT_LEN) {
+    throw new Error(
+      `hkdf_sha256: output_len must be between 1 and ${HKDF_MAX_OUTPUT_LEN}, got ${len}`,
+    );
+  }
+  if (ikm.byteLength === 0) {
+    throw new Error('hkdf_sha256: ikm must not be empty');
+  }
+  if (salt.byteLength === 0) {
+    throw new Error('hkdf_sha256: salt must not be empty');
+  }
+  if (info.byteLength === 0) {
+    throw new Error('hkdf_sha256: info must not be empty');
+  }
+  return mixStub(len, ikm, salt, info);
+};
+
+const hmacSha256 = (key: ArrayBuffer, input: ArrayBuffer): ArrayBuffer => {
+  if (key.byteLength === 0) {
+    throw new Error('hmac_sha256: key must not be empty');
+  }
+  if (input.byteLength === 0) {
+    throw new Error('hmac_sha256: input must not be empty');
+  }
+  return mixStub(32, key, input);
+};
+
 module.exports = {
   aesGcmEncrypt: () => ({ ciphertext: '', iv: '' }),
   aesGcmDecrypt: noopBuffer,
@@ -202,8 +266,7 @@ module.exports = {
   messageDecrypt: noopBuffer,
   inviteEncryptGroupKey: noopBuffer,
   inviteDecryptGroupKey: noopBuffer,
-  hkdfSha256: (ikm: ArrayBuffer, salt: ArrayBuffer, info: ArrayBuffer, outputLen: number) =>
-    mixStub(outputLen, ikm, salt, info),
-  hmacSha256: (key: ArrayBuffer, input: ArrayBuffer) => mixStub(32, key, input),
+  hkdfSha256,
+  hmacSha256,
   createProtocolAddress: () => ({ name: '', deviceId: 0 }),
 };

@@ -113,7 +113,9 @@ describe('classifyPostJson file issues', () => {
     ]);
     const plan = classifyPostJson(entries, 'facebook');
     expect(plan.files).toHaveLength(0);
-    expect(plan.fileIssues).toEqual([{ sourceFile: 'your_posts_1.json', reason: 'json_too_large' }]);
+    expect(plan.fileIssues).toEqual([
+      { sourceFile: 'your_posts_1.json', reason: 'json_too_large' },
+    ]);
   });
 
   it('is silent about a benign multi-part ENTRY_DUPLICATE with a readable twin', () => {

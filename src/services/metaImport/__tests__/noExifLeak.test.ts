@@ -32,8 +32,7 @@ const MODULE_DIR = join(__dirname, '..');
  * Word-bounded and case-insensitive: `place` must not match `replace`, and
  * `EXIF_DATA` must not escape by shouting.
  */
-const FORBIDDEN =
-  /\b(?:exif\w*|latitude|longitude|coordinates?|place|tags|cross_post_source)\b/i;
+const FORBIDDEN = /\b(?:exif\w*|latitude|longitude|coordinates?|place|tags|cross_post_source)\b/i;
 
 /**
  * Blank out comments while preserving every string literal.

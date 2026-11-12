@@ -288,7 +288,8 @@ function parseInstagramPost(
   }
 
   const fbid = joinFbid(scan.storedUris, fbidIndex);
-  let sourceItemId = fbid === null ? null : buildSourceItemId({ kind: 'platform', platformId: fbid });
+  let sourceItemId =
+    fbid === null ? null : buildSourceItemId({ kind: 'platform', platformId: fbid });
   const idScheme = sourceItemId === null ? 'content' : 'fbid';
   if (sourceItemId === null) {
     // The content frame is the fallback for BOTH "no fbid" and "an fbid that

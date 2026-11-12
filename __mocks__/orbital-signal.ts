@@ -38,6 +38,14 @@ const noopBuffer = () => new ArrayBuffer(0);
  * all-zero buffer of the right size is no better, because every item would
  * derive the same import_key, so "distinct items get distinct keys" could not
  * pass and "re-import reports duplicate" would pass for the wrong reason.
+ *
+ * The output byte is the HIGH byte of the state, not the low one (#924). With
+ * the low byte, the whole stub had exactly 8 BITS of distinctness: the low
+ * byte of `x * 0x01000193` is a function of the low byte of `x` alone, so
+ * every output byte — and therefore the entire buffer — depended only on
+ * `h & 0xff`. Two of four sample userIds collided, which is the one failure
+ * mode this stub exists to prevent. Measured after the change: 20,000 distinct
+ * inputs give 20,000 distinct 16-byte outputs, where before they gave 256.
  */
 const mixStub = (outputLen: number, ...parts: ArrayBuffer[]): ArrayBuffer => {
   let h = 0x811c9dc5;
@@ -48,7 +56,7 @@ const mixStub = (outputLen: number, ...parts: ArrayBuffer[]): ArrayBuffer => {
   }
   for (let i = 0; i < outputLen; i++) {
     h = Math.imul(h ^ i, 0x01000193) >>> 0;
-    out[i] = h & 0xff;
+    out[i] = (h >>> 24) & 0xff;
   }
   return out.buffer;
 };

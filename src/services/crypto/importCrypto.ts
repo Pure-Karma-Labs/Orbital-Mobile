@@ -410,9 +410,7 @@ export async function openImportKeySession(
   //    comparison would see a key of 32 zeros. `pinned` lives until close().
   const live = await getOrFetchGroupKey(groupId);
   if (live.length !== GROUP_KEY_BYTES) {
-    throw new Error(
-      `importCrypto: group key must be ${GROUP_KEY_BYTES} bytes, got ${live.length}`,
-    );
+    throw new Error(`importCrypto: group key must be ${GROUP_KEY_BYTES} bytes, got ${live.length}`);
   }
   const pinned = live.slice();
 

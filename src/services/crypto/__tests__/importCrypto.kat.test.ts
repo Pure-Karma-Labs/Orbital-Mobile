@@ -38,7 +38,7 @@ const mockHkdfArgs: { ikm: string; salt: string; info: string; outputLen: number
 const mockHmacArgs: { key: string; input: string }[] = [];
 
 jest.mock('orbital-signal', () => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports -- a jest.mock factory may not close over out-of-scope imports
+  // A jest.mock factory may not close over out-of-scope imports.
   const { createHmac, hkdfSync } = require('node:crypto');
   const snapshot = (ab: ArrayBuffer): string => Buffer.from(new Uint8Array(ab)).toString('hex');
 
@@ -51,7 +51,13 @@ jest.mock('orbital-signal', () => {
           info: snapshot(info),
           outputLen,
         });
-        return hkdfSync('sha256', Buffer.from(ikm), Buffer.from(salt), Buffer.from(info), outputLen);
+        return hkdfSync(
+          'sha256',
+          Buffer.from(ikm),
+          Buffer.from(salt),
+          Buffer.from(info),
+          outputLen,
+        );
       },
     ),
     hmacSha256: jest.fn((key: ArrayBuffer, input: ArrayBuffer): ArrayBuffer => {

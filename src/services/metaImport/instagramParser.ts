@@ -37,6 +37,7 @@
 
 import { isImportableDate, mediaDateMs } from './dateBounds';
 import {
+  MAX_JSON_DEPTH,
   MAX_MEDIA_PER_POST,
   MAX_POSTS_PER_FILE,
   parseJsonSafely,
@@ -98,6 +99,8 @@ export interface FbidIndexOptions {
    * budget that might be off by an order of magnitude in either direction.
    */
   readonly maxNodes?: number;
+  /** See `ParseFileContext.depthScanned` — `parseArchive` sets it. */
+  readonly depthScanned?: boolean;
 }
 
 /**
@@ -119,7 +122,9 @@ export function buildFbidIndex(
   labelledText: string,
   options: FbidIndexOptions = {},
 ): FbidIndexResult {
-  const parsed = parseJsonSafely(labelledText);
+  const parsed = parseJsonSafely(labelledText, MAX_JSON_DEPTH, {
+    depthScanned: options.depthScanned === true,
+  });
   if (!parsed.ok) return { ok: false, reason: parsed.reason };
 
   const root = pickArray(parsed.value);
@@ -396,7 +401,9 @@ export function parseInstagramFlatFile(
   ctx: ParseFileContext,
   fbidIndex: FbidIndex | null,
 ): ParsedFile {
-  const parsed = parseJsonSafely(text);
+  const parsed = parseJsonSafely(text, MAX_JSON_DEPTH, {
+    depthScanned: ctx.depthScanned === true,
+  });
   if (!parsed.ok) return { ok: false, reason: parsed.reason };
 
   const root = pickArray(parsed.value);

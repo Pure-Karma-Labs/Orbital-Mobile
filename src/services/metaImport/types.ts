@@ -293,6 +293,16 @@ export interface ParseFileContext {
   readonly nowUtcDay: string;
   /** Defaults to `BODY_MAX_CHARS` (`text.ts`). */
   readonly bodyMaxChars?: number;
+  /**
+   * The caller already depth-scanned this file's text and it passed.
+   *
+   * `parseArchive` sets it: it scans each file in abortable slices
+   * (`scanJsonDepthChunked`) as it reads, and the scan is the most expensive
+   * stage of the parse, so doing it a second time inside `parseJsonSafely`
+   * would double a ten-file run's dominant cost. A parser called directly —
+   * every parser unit test — leaves it unset and scans.
+   */
+  readonly depthScanned?: boolean;
 }
 
 /**

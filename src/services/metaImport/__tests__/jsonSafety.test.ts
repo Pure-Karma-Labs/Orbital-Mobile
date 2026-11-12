@@ -32,6 +32,8 @@ import {
   pickString,
   pruningReviver,
   scanJsonDepth,
+  scanJsonDepthChunked,
+  DEPTH_SCAN_SLICE_CHARS,
 } from '../jsonSafety';
 import { fbArchive } from '../testUtils/builders';
 
@@ -349,5 +351,93 @@ describe('end to end over a synthetic archive', () => {
     expect(pickField(media, 'ai_stickers')).toBeUndefined();
     expect(pickField(media, 'cross_post_source')).toBeUndefined();
     expect(JSON.stringify(outcome.value)).not.toContain('latitude');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The sliced scan
+// ---------------------------------------------------------------------------
+
+describe('scanJsonDepthChunked', () => {
+  /**
+   * The verdict cannot depend on where the slices fall.
+   *
+   * Both texts below put the scanner's whole state — in-string, and escaped —
+   * ON a 256 KiB boundary, and `maxDepth` is small enough that losing either
+   * flips the answer. The sync scanner (pinned by the rows above) is the
+   * oracle: chunked must agree with it character for character.
+   */
+  const SLICE = DEPTH_SCAN_SLICE_CHARS;
+
+  /** Boundary INSIDE a string: the brackets after it are text, not nesting. */
+  const straddlesString = `["${'a'.repeat(SLICE - 2)}${'['.repeat(40)}"]`;
+
+  /**
+   * Boundary ON an escape: the `\\` after it is a LITERAL backslash, so the
+   * quote that follows CLOSES the string and the brackets after that are real
+   * nesting. A scanner that forgot `escaped` would read the quote as escaped,
+   * stay in the string, and call 41 levels of nesting a caption.
+   */
+  const straddlesEscape = `["${'a'.repeat(SLICE - 3)}\\\\"${'['.repeat(40)}`;
+
+  it.each([
+    ['a string literal', straddlesString, true],
+    ['an escape', straddlesEscape, false],
+  ])(
+    'agrees with the sync scan when a slice boundary falls on %s',
+    async (_name, text, verdict) => {
+      expect(text.length).toBeGreaterThan(SLICE);
+      expect(scanJsonDepth(text, 2)).toBe(verdict);
+      await expect(scanJsonDepthChunked(text, 2)).resolves.toBe(verdict);
+    },
+  );
+
+  it('still refuses real nesting past the boundary', async () => {
+    const text = `${'['.repeat(MAX_JSON_DEPTH + 1)}"${'a'.repeat(DEPTH_SCAN_SLICE_CHARS)}"`;
+
+    expect(scanJsonDepth(text)).toBe(false);
+    await expect(scanJsonDepthChunked(text)).resolves.toBe(false);
+  });
+
+  it('checks in once per slice boundary, never before the first slice', async () => {
+    const text = 'x'.repeat(DEPTH_SCAN_SLICE_CHARS * 3);
+    let checkpoints = 0;
+
+    await expect(
+      scanJsonDepthChunked(text, MAX_JSON_DEPTH, {
+        checkpoint: () => {
+          checkpoints++;
+        },
+      }),
+    ).resolves.toBe(true);
+    // Three slices, two boundaries: a one-slice file (every realistic one)
+    // pays nothing for the chunking.
+    expect(checkpoints).toBe(2);
+  });
+
+  it('stops mid-scan when the checkpoint throws', async () => {
+    // Deep ONLY in its third slice: a scan that ran to completion would
+    // resolve `false` rather than reject, so the rejection is proof that the
+    // loop abandoned the text where the checkpoint said so.
+    const text = `${'x'.repeat(DEPTH_SCAN_SLICE_CHARS * 2)}${'['.repeat(MAX_JSON_DEPTH + 1)}`;
+    const boom = new Error('cancelled');
+
+    await expect(
+      scanJsonDepthChunked(text, MAX_JSON_DEPTH, {
+        checkpoint: () => {
+          throw boom;
+        },
+      }),
+    ).rejects.toBe(boom);
+  });
+
+  it('is skippable by a caller that has already scanned', () => {
+    // `parseArchive` is that caller: it scans in slices as it reads, and a
+    // second scan inside `parseJsonSafely` would double the run's dominant
+    // cost. The flag skips the scan and NOTHING else.
+    const deep = nest(MAX_JSON_DEPTH + 1);
+
+    expect(parseJsonSafely(deep)).toEqual({ ok: false, reason: 'json_too_deep' });
+    expect(parseJsonSafely(deep, MAX_JSON_DEPTH, { depthScanned: true }).ok).toBe(true);
   });
 });

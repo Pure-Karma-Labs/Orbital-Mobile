@@ -56,6 +56,7 @@ import { ArchiveReaderError } from './archiveAccess';
 import { todayUtcDay } from './dateBounds';
 import { parseFacebookFile } from './facebookParser';
 import { buildFbidIndex, parseInstagramFlatFile } from './instagramParser';
+import { MAX_JSON_DEPTH, scanJsonDepthChunked } from './jsonSafety';
 import { classifyPostJson, detectSources } from './layout';
 import {
   MAX_PEEKS_PER_RUN,
@@ -71,6 +72,7 @@ import { ID_KIND_BY_SCHEME } from './types';
 
 import type { ArchiveCallOptions, ArchiveImportSession } from './archiveAccess';
 import type { FbidIndex } from './instagramParser';
+import type { DepthScanOptions } from './jsonSafety';
 import type { HoldReason, PostMediaItem } from './mediaPrePass';
 import type {
   FileIssue,
@@ -121,6 +123,9 @@ export async function parseArchive(
   const nowUtcDay = options.nowUtcDay ?? todayUtcDay();
   const call: ArchiveCallOptions = signal === undefined ? {} : { signal };
 
+  /** The abort check the sliced depth scan runs between slices. */
+  const depthScan: DepthScanOptions = { checkpoint: () => throwIfAborted(signal) };
+
   const detected = detectSources(session.entries);
   const tally = createTally(source === 'facebook' ? detected.instagram : detected.facebook);
 
@@ -138,8 +143,10 @@ export async function parseArchive(
     if (!read.ok) {
       // The one file whose absence changes identities, so it is never silent.
       tally.addIssue(labelled.sourceFile, 'json_entry_skipped');
+    } else if (!(await scanJsonDepthChunked(read.text, MAX_JSON_DEPTH, depthScan))) {
+      tally.addIssue(labelled.sourceFile, 'json_too_deep');
     } else {
-      const built = buildFbidIndex(read.text);
+      const built = buildFbidIndex(read.text, { depthScanned: true });
       if (built.ok) fbidIndex = built.index;
       else tally.addIssue(labelled.sourceFile, built.reason);
     }
@@ -177,9 +184,19 @@ export async function parseArchive(
       continue;
     }
 
+    // The depth scan runs HERE, sliced, rather than inside `parseJsonSafely`:
+    // it is the most expensive stage of the parse (~0.66 s per 12 MiB file)
+    // and as one unbroken loop it was time in which a member's cancel could
+    // not be seen. The parser is then told not to scan again.
+    if (!(await scanJsonDepthChunked(read.text, MAX_JSON_DEPTH, depthScan))) {
+      tally.addIssue(file.sourceFile, 'json_too_deep');
+      continue;
+    }
+
     const ctx: ParseFileContext = {
       sourceFile: file.sourceFile,
       nowUtcDay,
+      depthScanned: true,
       ...(options.bodyMaxChars === undefined ? {} : { bodyMaxChars: options.bodyMaxChars }),
     };
     const parsed =

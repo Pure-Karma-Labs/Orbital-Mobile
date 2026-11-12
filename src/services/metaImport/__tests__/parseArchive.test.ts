@@ -24,7 +24,12 @@
  */
 
 import { ARCHIVE_ERROR_DISPOSITIONS, ArchiveReaderError } from '../archiveAccess';
-import { MAX_JSON_BYTES, MAX_MEDIA_PER_POST, MAX_POSTS_PER_FILE } from '../jsonSafety';
+import {
+  MAX_JSON_BYTES,
+  MAX_JSON_DEPTH,
+  MAX_MEDIA_PER_POST,
+  MAX_POSTS_PER_FILE,
+} from '../jsonSafety';
 import { MAX_POST_JSON_FILES } from '../layout';
 import { MAX_MEDIA_URIS_PER_FILE } from '../mediaPrePass';
 import { MAX_POSTS_PER_RUN, parseArchive } from '../parseArchive';
@@ -32,6 +37,7 @@ import {
   buildArchive,
   fbEntrySpecs,
   fbJsonPath,
+  fbJsonText,
   fbMediaUri,
   igFlatEntrySpecs,
   igLabelledEntrySpecs,
@@ -791,6 +797,45 @@ describe('file issues', () => {
     expect(built.mock.peekHead).not.toHaveBeenCalled();
   });
 
+  it('imports the TEXT-ONLY posts of a file that is over the media cap', async () => {
+    // A post that named no media has nothing to classify, and the fold's own
+    // rule is that an empty media list imports. Holding it `media_unreadable`
+    // — a PERMANENT-class skip, "re-running changes nothing" — because some
+    // OTHER post in the same file carried 25,000 photos punishes a post
+    // nothing was ever wrong with.
+    const postCount = Math.ceil((MAX_MEDIA_URIS_PER_FILE + 1) / MAX_MEDIA_PER_POST);
+    const withMedia: FbPostSpec[] = Array.from({ length: postCount }, (_unused, post) => ({
+      timestamp: TS + post,
+      post: `post ${post}`,
+      media: Array.from({ length: MAX_MEDIA_PER_POST }, (_item, index) => ({
+        name: `m${post}_${index}.jpg`,
+        listed: false,
+      })),
+    }));
+    const built = buildArchive(
+      fbEntrySpecs({
+        posts: [
+          { timestamp: TS - 2, post: 'words, before the flood' },
+          ...withMedia,
+          { timestamp: TS - 1, post: 'words, after it' },
+        ],
+      }),
+    );
+
+    const result = await run(built);
+
+    expect(result.summary.fileIssues).toEqual([
+      { sourceFile: fbSourceFile(1), reason: 'json_too_many_media' },
+    ]);
+    const emitted = outcomes(result);
+    expect([emitted[0], emitted[emitted.length - 1]]).toEqual(['import', 'import']);
+    expect(new Set(emitted.slice(1, -1))).toEqual(new Set(['media_unreadable']));
+    // The two text posts import with no media, and nothing else does.
+    expect(result.summary).toMatchObject({ importable: 2, importableMedia: 0 });
+    expect(imports(result).every((post) => post.media.length === 0)).toBe(true);
+    expect(built.mock.peekHead).not.toHaveBeenCalled();
+  });
+
   it('refuses the archive past the post-file cap, and reads no further file', async () => {
     const built = buildArchive(
       Array.from({ length: MAX_POST_JSON_FILES + 1 }, (_unused, index) =>
@@ -1211,5 +1256,136 @@ describe('instagram identity fallbacks', () => {
     ]);
     expect(result.summary.idScheme).toEqual({ fbid: 0, content: 1 });
     expect(outcomes(result)).toEqual(['import']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-item identity kind
+// ---------------------------------------------------------------------------
+
+describe('idKind', () => {
+  // #921 persists this per row. The aggregate `idScheme` counts cannot fill
+  // it, and the alternative — reading byte 1 of `sourceItemId` — is reading a
+  // plaintext-class value nobody is allowed to persist.
+
+  it('carries the content kind on every Facebook item that has an id', async () => {
+    const built = buildArchive(
+      fbEntrySpecs({
+        posts: [
+          { timestamp: TS, post: 'a photo post', media: [{ name: 'photo.jpg' }] },
+          { timestamp: TS + 1, post: 'a clip', media: [{ name: 'clip.mp4' }] },
+          { timestamp: TS + 2 },
+          { post: 'no timestamp at all' },
+        ],
+      }),
+    );
+
+    const result = await run(built);
+
+    expect(outcomes(result)).toEqual(['import', 'held_video', 'empty_post', 'missing_timestamp']);
+    // 1 wherever a frame was minted — the import, the media hold and the
+    // content-level refusal that still carries its id — and null for exactly
+    // the refusal that precedes a frame.
+    expect(result.items.map((item) => item.idKind)).toEqual([1, 1, 1, null]);
+    expect(result.items.map((item) => item.sourceItemId !== null)).toEqual([
+      true,
+      true,
+      true,
+      false,
+    ]);
+  });
+
+  it('carries the fbid kind when Instagram joined one, and content when it did not', async () => {
+    const built = buildArchive([
+      ...igLabelledEntrySpecs({
+        posts: [{ fbid: '17900000000000001', coverMedia: [{ name: 'joined.jpg' }] }],
+      }),
+      ...igFlatEntrySpecs({
+        posts: [
+          { creationTimestamp: TS, title: 'joined', media: [{ name: 'joined.jpg' }] },
+          { creationTimestamp: TS + 1, title: 'unjoined', media: [{ name: 'unjoined.jpg' }] },
+        ],
+      }),
+    ]);
+
+    const result = await run(built, { source: 'instagram' });
+
+    expect(outcomes(result)).toEqual(['import', 'import']);
+    expect(result.items.map((item) => item.idKind)).toEqual([2, 1]);
+    expect(result.summary.idScheme).toEqual({ fbid: 1, content: 1 });
+  });
+
+  it('gives a duplicate the kind of the copy it duplicates', async () => {
+    // Twins of a SKIP, so the duplicate's kind comes from the skip's own
+    // `idKind` rather than from a `RawParsedPost`'s scheme — the branch a
+    // test built only on importable twins would never reach.
+    const built = buildArchive(fbEntrySpecs({ posts: [{ timestamp: TS }, { timestamp: TS }] }));
+
+    const result = await run(built);
+
+    expect(outcomes(result)).toEqual(['empty_post', 'duplicate_in_archive']);
+    expect(result.items.map((item) => item.idKind)).toEqual([1, 1]);
+    expect(result.keys[1]).toEqual(result.keys[0]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The sliced depth scan
+// ---------------------------------------------------------------------------
+
+describe('the depth scan', () => {
+  /** Deeper than `MAX_JSON_DEPTH`, and not a Facebook file at all. */
+  const DEEP_TEXT = `${'['.repeat(MAX_JSON_DEPTH + 1)}"x"${']'.repeat(MAX_JSON_DEPTH + 1)}`;
+
+  it('still refuses an over-deep file, though the parser is told not to re-scan', async () => {
+    // `parseArchive` scans each file in abortable slices and then sets
+    // `depthScanned`, which skips the scan inside `parseJsonSafely`. This row
+    // is what keeps that flag from quietly disabling the defence.
+    const built = buildArchive([{ path: fbJsonPath(1), kind: 'json', text: DEEP_TEXT }]);
+
+    const result = await run(built);
+
+    expect(result.summary.fileIssues).toEqual([
+      { sourceFile: fbSourceFile(1), reason: 'json_too_deep' },
+    ]);
+    expect(result.items).toEqual([]);
+    expect(result.summary).toMatchObject({ importable: 0 });
+  });
+
+  it('observes an abort raised while a multi-slice file is being scanned', async () => {
+    // ~400 KiB of JSON: more than one 256 KiB slice, so the scan reaches a
+    // checkpoint. The signal is aborted as the text is handed over, and the
+    // scan's checkpoint is the very next thing that looks at it.
+    const posts: FbPostSpec[] = Array.from({ length: 200 }, (_unused, index) => ({
+      timestamp: TS + index,
+      post: `post ${index} ${'x'.repeat(2_000)}`,
+    }));
+    const text = fbJsonText({ posts });
+    expect(text.length).toBeGreaterThan(256 * 1024);
+
+    const built = buildArchive(fbEntrySpecs({ posts }));
+    const session = await built.open();
+    const controller = new AbortController();
+    built.mock.readJson.mockImplementation(() => {
+      controller.abort();
+      return Promise.resolve({ ok: true, text });
+    });
+
+    const seen: ParsedItem[] = [];
+    const parse = parseArchive(session, {
+      source: 'facebook',
+      nowUtcDay: NOW_UTC_DAY,
+      deriveImportKey: fakeDeriveImportKey,
+      signal: controller.signal,
+      onItem: (item) => {
+        seen.push(item);
+        return Promise.resolve();
+      },
+    });
+
+    await expect(parse).rejects.toMatchObject({ code: 'ECANCELLED' });
+    expect(seen).toEqual([]);
+    // The parse stopped INSIDE the scan: nothing downstream of it ran.
+    expect(built.mock.resolveMediaUris).not.toHaveBeenCalled();
   });
 });

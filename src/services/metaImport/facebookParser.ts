@@ -43,6 +43,7 @@
 
 import { isImportableDate, mediaDateMs } from './dateBounds';
 import {
+  MAX_JSON_DEPTH,
   MAX_MEDIA_PER_POST,
   MAX_POSTS_PER_FILE,
   parseJsonSafely,
@@ -282,7 +283,9 @@ function parseFacebookPost(
  *    run-wide file cap uses.
  */
 export function parseFacebookFile(text: string, ctx: ParseFileContext): ParsedFile {
-  const parsed = parseJsonSafely(text);
+  const parsed = parseJsonSafely(text, MAX_JSON_DEPTH, {
+    depthScanned: ctx.depthScanned === true,
+  });
   if (!parsed.ok) return { ok: false, reason: parsed.reason };
 
   const root = pickArray(parsed.value);

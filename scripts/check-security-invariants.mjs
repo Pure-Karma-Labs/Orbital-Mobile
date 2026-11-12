@@ -55,6 +55,11 @@ const URL_SKIP_PATTERNS = [
   'src/services/media/imageSanitizer.ts',
   // Holds XMP packet signatures for test fixtures -- same reason as imageSanitizer.ts above.
   'src/services/testUtils/imageFixtures.ts',
+  // Same again (#925): `svgHead()` builds the bytes of an SVG document head so
+  // the content sniffer has something it must refuse. The w3.org xmlns inside
+  // it is DATA in a fixture, never a request target. Named as a FILE, not a
+  // directory, so a future module in testUtils/ does not inherit the exemption.
+  'src/services/metaImport/testUtils/builders.ts',
 ];
 
 for (const file of allFiles) {
@@ -4753,6 +4758,160 @@ if (arAccessRaw !== null) {
   } else if (!arPredicate[0].includes('DENIED_ROOTS.has(')) {
     arViolation(ARCHIVE_ACCESS, 'startsWithDeniedRoot() no longer consults DENIED_ROOTS (`DENIED_ROOTS.has(` is missing from its body) — the set and the tripwire call would both still be present while every listing passes');
   }
+}
+
+// ---------------------------------------------------------------------------
+// 29.8 meta-import-parser-pins (#925)
+// ---------------------------------------------------------------------------
+//
+// The Meta import parses a stranger-supplied JSON export into back-dated E2EE
+// threads. Two of its guarantees are static facts about the source rather than
+// behaviour a test can observe, so they are pinned here:
+//
+//   * the ONLY licence to import a post's media is a positive `image` peek
+//     verdict, folded per post (clauses 2-6), and
+//   * the codec story: the id framing must be lossless, and nothing anywhere
+//     may call `TextDecoder` (clauses 7-8).
+//
+// THIS IS THE PR 1 SUBSET. Clauses 2-6 pin `mediaPrePass.ts` and
+// `parseArchive.ts`, which land in PR 2 together with their own mutation
+// matrix; clause 1 below is correspondingly restricted to the one file PR 1
+// ships. A clause whose subject does not exist yet would be a rule that passes
+// because nobody wrote the code, which is the opposite of the point.
+
+const MI_RULE = 'meta-import-parser-pins';
+const MI_ISSUE = '#925';
+const MI_UTF8 = join(SRC, 'utils', 'utf8.ts');
+
+function miViolation(file, detail) {
+  violations.push(`  ${relative('.', file)}:0  [${MI_RULE}]  ${detail} (${MI_ISSUE})`);
+}
+
+// --- 29.8.1 (PR 1 subset) The strict codec must exist.
+//
+// `meRead` records a violation when it does not: every clause below reasons
+// about this file, and a deleted file must fail the rule rather than silently
+// satisfy it.
+const miUtf8Raw = meRead(
+  MI_UTF8,
+  MI_RULE,
+  'the strict UTF-8 codec the parser frames source_item_id with',
+  MI_ISSUE,
+);
+
+// --- 29.8.7 `encodeUtf8Strict` is a TextEncoder wrapper, never a hand-rolled
+//     loop.
+//
+// The point of this clause is INJECTIVITY, not style. `source_item_id` is a
+// length-prefixed framing of the member's own post text, and #924 HMACs it
+// into the 16-byte `import_key` the server dedups on. A hand-rolled encoder is
+// how this repo has already got UTF-8 wrong twice — `src/services/crypto/
+// utils.ts` `encodeUTF8` truncates every code point to one byte (#373), and
+// `contentCrypto.ts`'s decoder is lenient — and a lossy encoder means two
+// different posts can frame to the same bytes. `TextEncoder` is present on
+// Hermes 0.82.1 and is correct; the wrapper's whole job is to add the two
+// refusals a lossy encoder would not make (non-string input, unpaired
+// surrogate), and those live in a separate helper so this window stays clean.
+//
+// The banned tokens are the fingerprints of a byte-composition loop. The
+// surrogate scan is deliberately NOT in this window, so none of them has a
+// legitimate reason to appear.
+if (miUtf8Raw !== null) {
+  const miUtf8Code = meStripComments(miUtf8Raw);
+
+  // File-wide declaration count first (29.7 D2): anchoring alone would let a
+  // second top-level declaration shadow the pinned one at runtime while this
+  // clause kept reading the first.
+  const miEncoderDecls = (
+    miUtf8Code.match(/\b(?:function|const|let|var)\s+encodeUtf8Strict\b/g) ?? []
+  ).length;
+  if (miEncoderDecls > 1) {
+    miViolation(
+      MI_UTF8,
+      `${miEncoderDecls} declarations of \`encodeUtf8Strict\` — exactly one is allowed, because this clause and every caller must be reading the same function`,
+    );
+  }
+
+  const miEncoder = /^export function encodeUtf8Strict\([\s\S]*?\n\}/m.exec(miUtf8Code);
+  if (miEncoder === null) {
+    miViolation(
+      MI_UTF8,
+      'no top-level `export function encodeUtf8Strict(` — the strict encoder was renamed, removed or converted to an arrow const, and this clause would pass vacuously',
+    );
+  } else {
+    if (!miEncoder[0].includes('new TextEncoder()')) {
+      miViolation(
+        MI_UTF8,
+        'encodeUtf8Strict no longer calls `new TextEncoder()` — a hand-rolled encoder is how this repo already shipped a latin1-truncating encodeUTF8 (#373), and a lossy encoder makes the source_item_id framing non-injective',
+      );
+    }
+    for (const banned of [
+      'charCodeAt',
+      'codePointAt',
+      'fromCharCode',
+      '0x3f',
+      '0xc0',
+      '0xe0',
+      '0xf0',
+    ]) {
+      if (miEncoder[0].includes(banned)) {
+        miViolation(
+          MI_UTF8,
+          `encodeUtf8Strict contains \`${banned}\` — that is the fingerprint of a manual code-unit loop, and this function must stay a thin TextEncoder wrapper (the unpaired-surrogate scan belongs in its own helper)`,
+        );
+      }
+    }
+  }
+}
+
+// --- 29.8.8 No `TextDecoder`, anywhere in app or package source.
+//
+// Hermes 0.82.1 has `TextEncoder` and does NOT have `TextDecoder`. Jest's node
+// environment has BOTH. That asymmetry means a `new TextDecoder()` added
+// anywhere in shipped source passes every test in CI and throws a
+// ReferenceError on a real device — the worst shape a defect can have.
+// `src/utils/utf8.ts` exists precisely so there is a strict decoder that does
+// not need one.
+//
+// Scanned repo-wide (`src/` plus every package's own `src/`) rather than in
+// the import's files only, because the engine gap is not a #925 fact. Test,
+// mock and fixture-builder paths are exempt: they only ever run under Jest,
+// and `utf8.test.ts` must be able to use the real `TextDecoder` as its parity
+// ORACLE.
+const MI_DECODER_EXEMPT = ['__tests__/', '__mocks__/', 'testUtils/', '.test.ts', '.test.tsx'];
+const miDecoderRoots = [SRC];
+for (const entry of readdirSync('packages')) {
+  const packageSrc = join('packages', entry, 'src');
+  try {
+    if (statSync(packageSrc).isDirectory()) miDecoderRoots.push(packageSrc);
+  } catch {
+    // A package without a `src/` directory: nothing to scan.
+  }
+}
+
+let miDecoderScanned = 0;
+for (const root of miDecoderRoots) {
+  for (const file of walkSync(root, ['.ts', '.tsx'])) {
+    const rel = relative('.', file);
+    if (rel.includes('node_modules')) continue;
+    if (MI_DECODER_EXEMPT.some((pattern) => rel.includes(pattern))) continue;
+    miDecoderScanned++;
+    const lines = meStripComments(readFileSync(file, 'utf8')).split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (!/\bTextDecoder\b/.test(lines[i])) continue;
+      report(
+        file,
+        i + 1,
+        MI_RULE,
+        `TextDecoder is undefined on Hermes 0.82.1 and defined in Jest's node environment, so this passes every test and throws on device — use decodeUtf8Strict from src/utils/utf8.ts: ${lines[i].trim()} (${MI_ISSUE})`,
+      );
+    }
+  }
+}
+if (miDecoderScanned === 0) {
+  violations.push(
+    `  ${SRC}:0  [${MI_RULE}]  the no-TextDecoder scan examined ZERO files — its roots or exemptions are wrong and the rule would pass vacuously (${MI_ISSUE})`,
+  );
 }
 
 // ---------------------------------------------------------------------------

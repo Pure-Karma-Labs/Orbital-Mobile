@@ -634,7 +634,24 @@ interface TokenPayload {
 
 const B64URL = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
 
-/** UTF-8 encode. Hermes has no TextEncoder and the package pulls in no polyfill. */
+/**
+ * UTF-8 encode, hand-rolled — and NOT because `TextEncoder` is missing.
+ *
+ * Hermes 0.82.1 (the engine the app ships) HAS `TextEncoder`; what it does not
+ * have is `TextDecoder`, which Jest's node environment does provide. The
+ * asymmetry is a trap worth naming here, because the previous version of this
+ * comment asserted the opposite and would have sent the next reader looking
+ * for a polyfill that was never needed.
+ *
+ * This pair stays hand-rolled for two reasons that survive that correction:
+ * `utf8Decode` below has no built-in to delegate to on device, and a package
+ * must not reach into app `src/` for the strict codec that lives there
+ * (`src/utils/utf8.ts`, #925). Both halves only ever see the token codec's
+ * ASCII, so neither needs the strict pair's validation.
+ *
+ * Security invariant 29.8 clause 8 bans `TextDecoder` across `src/` and every
+ * package's `src`, so this must never become a wrapper around one.
+ */
 function utf8Encode(text: string): number[] {
   const out: number[] = [];
   for (let i = 0; i < text.length; i++) {

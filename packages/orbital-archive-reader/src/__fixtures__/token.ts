@@ -12,8 +12,9 @@
  * `the real decoder accepts the MOCK_TOKEN fixture` is what keeps the two
  * agreeing, and would fail if either drifted.
  *
- * ASCII only, which is all the JSON payloads below need. Hermes has no
- * `btoa`/`TextEncoder` and this package pulls in no polyfill.
+ * ASCII only, which is all the JSON payloads below need. Hermes has no `btoa`
+ * and this package pulls in no polyfill. (It DOES have `TextEncoder` — the
+ * engine's gap is `TextDecoder`; see `utf8Encode` in `../index`.)
  */
 
 import type { ArchivePartToken } from '../index';

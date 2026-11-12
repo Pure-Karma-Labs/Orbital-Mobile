@@ -65,9 +65,11 @@ import {
   type ArchiveErrorCode,
   type ArchivePartToken,
   type ArchiveSession,
+  type EntryKind,
   type EntrySkipCode,
   type RustEntrySkipCode,
   type UriResolution,
+  type UriSkipCode,
 } from 'orbital-archive-reader';
 import { sniffContentType } from '../media/contentType';
 import { DISK_HEADROOM_BYTES } from '../media/mediaLimits';
@@ -78,9 +80,11 @@ export type {
   ArchiveErrorCode,
   ArchivePartToken,
   ArchiveSession,
+  EntryKind,
   EntrySkipCode,
   RustEntrySkipCode,
   UriResolution,
+  UriSkipCode,
 };
 export { ARCHIVE_ERROR_DISPOSITIONS, ArchiveReaderError, isArchiveCancellation };
 

@@ -158,6 +158,101 @@ export interface ParsedSkip {
 
 export type ParsedItem = ParsedPost | ParsedSkip;
 
+// ---------------------------------------------------------------------------
+// The parser → pre-pass seam
+// ---------------------------------------------------------------------------
+//
+// `facebookParser` and `instagramParser` are PURE: text in, decisions out. They
+// never touch the archive session, so they cannot know whether a uri resolves,
+// whether its bytes are an image, or whether the post must be held. What they
+// produce is therefore not a `ParsedPost` but a `RawParsedPost`, which carries
+// the post's raw media URIS instead of resolved `ParsedMedia`.
+//
+// `parseArchive` consumes the seam: for each `RawParsedPost` it runs the media
+// pre-pass over `mediaUris`, folds the decisions, and emits either a
+// `ParsedPost` (every item an image) or a `ParsedSkip` carrying the fold's hold
+// reason — with the SAME `sourceItemId` the parser minted, which is why the id
+// is built here and not after the fold.
+//
+// A `ParsedSkip` coming out of a parser is already final: the content-level
+// refusals (`empty_post`, `missing_timestamp`, …) need no archive access.
+
+/**
+ * Which identity scheme one post's `sourceItemId` used.
+ *
+ * `'content'` is the v1 content frame (kind 0x01), `'fbid'` the Instagram
+ * platform id (kind 0x02). Counted into `ParseSummary.idScheme` and persisted
+ * by #921 as `id_kind`, so a scheme flip between two exports of the same
+ * account is detectable after the fact.
+ */
+export type IdScheme = 'content' | 'fbid';
+
+/**
+ * A post that parsed cleanly and is now waiting on its media decisions.
+ *
+ * `outcome: 'post'` — NOT `'import'`: this is not yet an importable item, and
+ * the distinct tag keeps a `RawParsedPost` from being mistaken for a
+ * `ParsedPost` by a structural check somewhere downstream.
+ */
+export interface RawParsedPost {
+  readonly outcome: 'post';
+  readonly source: ImportSource;
+  /** JSON basename. LOCAL UI ONLY (F18). */
+  readonly sourceFile: string;
+  readonly sourceIndex: number;
+  /** PLAINTEXT-CLASS — see `ParsedPost`. Never null: a post that could not be framed is a skip. */
+  readonly sourceItemId: Uint8Array;
+  readonly idScheme: IdScheme;
+  /** Epoch ms UTC, already bounds-checked against the backend's window. */
+  readonly originalDate: number;
+  /** Final body: repaired, NFC, trimmed, link line appended, within the cap. */
+  readonly body: string;
+  /**
+   * The post's media uris exactly as the export wrote them, in DISPLAY order,
+   * duplicates kept.
+   *
+   * Raw, because the pre-pass resolves them in batches across posts and the
+   * id framing already took its own (sorted, basename) view of this list. An
+   * empty list is a text-only post, which is importable.
+   */
+  readonly mediaUris: readonly string[];
+  /**
+   * Media creation times, epoch ms UTC, 1:1 and in the same order as
+   * `mediaUris`. `null` where the export stated none.
+   */
+  readonly mediaDates: readonly (number | null)[];
+}
+
+/** What one JSON element becomes: a post awaiting media, or a settled skip. */
+export type RawParseResult = RawParsedPost | ParsedSkip;
+
+/**
+ * What a whole JSON file becomes.
+ *
+ * A file-level failure produces no items at all — a `FileIssueReason` for
+ * `ParseSummary.fileIssues` instead, so "0 posts from a file that had some"
+ * always has a reason attached.
+ */
+export type ParsedFile =
+  | { readonly ok: true; readonly items: readonly RawParseResult[] }
+  | { readonly ok: false; readonly reason: FileIssueReason };
+
+/**
+ * Everything a pure parser needs besides the file's text.
+ *
+ * `nowUtcDay` is injected rather than read from the clock so the date bound is
+ * testable on any machine (the CI runner, a UTC+13 phone and the server must
+ * agree about which day "today" is).
+ */
+export interface ParseFileContext {
+  /** JSON basename. LOCAL UI ONLY (F18) — carried onto every item. */
+  readonly sourceFile: string;
+  /** `YYYY-MM-DD` in UTC: the inclusive upper bound for a post's date. */
+  readonly nowUtcDay: string;
+  /** Defaults to `BODY_MAX_CHARS` (`text.ts`). */
+  readonly bodyMaxChars?: number;
+}
+
 /** Which identity scheme each post's id used (#921 persists `id_kind`). */
 export interface IdSchemeCounts {
   /** Instagram `fbid` from `posts.json` (kind 0x02). */

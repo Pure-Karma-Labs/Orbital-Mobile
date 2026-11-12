@@ -67,7 +67,6 @@ import {
   peekMediaEntries,
   resolveFileMedia,
 } from './mediaPrePass';
-
 import { ID_KIND_BY_SCHEME } from './types';
 
 import type { ArchiveCallOptions, ArchiveImportSession } from './archiveAccess';

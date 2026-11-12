@@ -917,6 +917,20 @@ describe('uploadMedia — video branch', () => {
         .mockReturnValueOnce('thumb-media-id');
     });
 
+    // #924: a poster frame generated on this device today has no original
+    // date, so the parent's must not ride along into the child's envelope.
+    // The thumbnail encrypts its metadata FIRST, so call 0 is the child's.
+    it('does not let a thumbnail inherit the import original date', async () => {
+      await uploadMedia({ ...videoOptions, importOriginalCreatedAt: 1345982400000 });
+
+      expect(mockEncryptContent).toHaveBeenCalledTimes(2);
+      const thumbEnvelope = JSON.parse(mockEncryptContent.mock.calls[0][0] as string);
+      const parentEnvelope = JSON.parse(mockEncryptContent.mock.calls[1][0] as string);
+
+      expect(thumbEnvelope).not.toHaveProperty('originalCreatedAt');
+      expect(parentEnvelope.originalCreatedAt).toBe(1345982400000);
+    });
+
     it('sends content_class "video" on both the video and its inherited thumbnail', async () => {
       await uploadMedia(videoOptions);
 
@@ -1930,6 +1944,87 @@ describe('cleanupOrphanedChunks', () => {
     await cleanupOrphanedChunks();
 
     expect(rnfs.unlink).not.toHaveBeenCalledWith('/tmp/test-cache/thumbnails');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Meta import: the per-media original date (#924)
+// ---------------------------------------------------------------------------
+
+/**
+ * `importOriginalCreatedAt` is ONE additive envelope key carrying
+ * `ParsedMedia.originalDate` — this media item's own creation date, which is
+ * deliberately NOT the post date sealed in the import-meta envelope.
+ *
+ * The envelope is append-only once posted and shared by every non-import
+ * upload in the app, so the first test below is the load-bearing one: with the
+ * option absent, the plaintext must be byte-identical to what 1.7.7 produced.
+ */
+describe('uploadMedia — the import original-date envelope key', () => {
+  function envelopeJson(callIndex = 0): string {
+    return mockEncryptContent.mock.calls[callIndex][0] as string;
+  }
+
+  it('leaves the envelope byte-identical when the option is absent', async () => {
+    await uploadMedia({ ...baseOptions, width: 1920, height: 1080 });
+    const withoutOption = envelopeJson();
+
+    mockEncryptContent.mockClear();
+
+    // The same upload with the key explicitly undefined: an options object that
+    // merely MENTIONS the field must not change a single byte either.
+    await uploadMedia({
+      ...baseOptions,
+      width: 1920,
+      height: 1080,
+      importOriginalCreatedAt: undefined,
+    });
+
+    expect(envelopeJson()).toBe(withoutOption);
+    expect(JSON.parse(withoutOption)).not.toHaveProperty('originalCreatedAt');
+  });
+
+  it('adds exactly one key, which round-trips, when a date is provided', async () => {
+    await uploadMedia({ ...baseOptions, width: 1920, height: 1080 });
+    const baseline = JSON.parse(envelopeJson()) as Record<string, unknown>;
+
+    mockEncryptContent.mockClear();
+
+    await uploadMedia({
+      ...baseOptions,
+      width: 1920,
+      height: 1080,
+      // 2012-08-26T12:00:00Z — a date years before any plausible import run.
+      importOriginalCreatedAt: 1345982400000,
+    });
+    const withDate = JSON.parse(envelopeJson()) as Record<string, unknown>;
+
+    expect(withDate.originalCreatedAt).toBe(1345982400000);
+    // Exactly one key added, and `v` is NOT bumped: this is additive, and a
+    // 1.7.7 reader picking a fixed field list is unaffected.
+    expect(Object.keys(withDate).sort()).toEqual(
+      [...Object.keys(baseline), 'originalCreatedAt'].sort(),
+    );
+    expect(withDate.v).toBe(baseline.v);
+  });
+
+  it('omits the key when the date is null', async () => {
+    // `ParsedMedia.originalDate` is `number | null`, so the runner passes null
+    // straight through rather than branching at every call site.
+    await uploadMedia({ ...baseOptions, importOriginalCreatedAt: null });
+
+    expect(JSON.parse(envelopeJson())).not.toHaveProperty('originalCreatedAt');
+  });
+
+  it.each([
+    ['a fractional value', 1345982400000.5],
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['an unsafe integer', Number.MAX_SAFE_INTEGER + 2],
+  ])('throws on %s rather than sealing it', async (_label, value) => {
+    await expect(
+      uploadMedia({ ...baseOptions, importOriginalCreatedAt: value }),
+    ).rejects.toThrow('importOriginalCreatedAt must be a safe integer');
   });
 });
 

@@ -4774,15 +4774,16 @@ if (arAccessRaw !== null) {
 //     may call `TextDecoder` (clauses 7-8).
 //
 // Clauses 1-4 and 6 pin `mediaPrePass.ts`, which decides every media item's
-// fate; clause 5 pins the CALL SITE in `parseArchive.ts`, which lands with the
-// orchestration and is marked TODO below. A clause whose subject does not
-// exist yet would be a rule that passes because nobody wrote the code, which
-// is the opposite of the point — so each clause is added with its file.
+// fate; clause 5 pins the CALL SITE in `parseArchive.ts`, because clauses 3-4
+// pin two function BODIES and an orchestration that ignored both of them would
+// satisfy every one of them while importing media nothing ever classified.
 
 const MI_RULE = 'meta-import-parser-pins';
 const MI_ISSUE = '#925';
 const MI_UTF8 = join(SRC, 'utils', 'utf8.ts');
-const MI_PRE_PASS = join(SRC, 'services', 'metaImport', 'mediaPrePass.ts');
+const MI_IMPORT_DIR = join(SRC, 'services', 'metaImport');
+const MI_PRE_PASS = join(MI_IMPORT_DIR, 'mediaPrePass.ts');
+const MI_PARSE_ARCHIVE = join(MI_IMPORT_DIR, 'parseArchive.ts');
 
 function miViolation(file, detail) {
   violations.push(`  ${relative('.', file)}:0  [${MI_RULE}]  ${detail} (${MI_ISSUE})`);
@@ -4807,20 +4808,12 @@ const miPrePassRaw = meRead(
   MI_ISSUE,
 );
 
-// TODO(#925 PR 2, parseArchive): when `src/services/metaImport/parseArchive.ts`
-// lands, add it to this clause (a third `meRead`) and implement clause 5, the
-// CALL-SITE pin that the plan review made blocking:
-//   * the `parseArchive` window, and every other non-test file under
-//     `src/services/metaImport/` except `mediaPrePass.ts`, contains NO
-//     `'import-image'` literal — the licence may not be minted outside the
-//     pre-pass;
-//   * `parseArchive` contains `foldPostMediaDecisions(`;
-//   * `ParsedPost.media` is built only from the fold result (pin the
-//     `media: folded.media` assignment);
-//   * exactly one declaration of `parseArchive` (the clause-2 count below
-//     takes it as a third name).
-// Until then clauses 3-4 pin the two functions, and nothing pins who calls
-// them: a `parseArchive` that ignored the fold would pass today.
+const miParseArchiveRaw = meRead(
+  MI_PARSE_ARCHIVE,
+  MI_RULE,
+  'the orchestration that must route every media item through the pre-pass',
+  MI_ISSUE,
+);
 
 // --- 29.8.2 One declaration each, and a window that was really found.
 //
@@ -4971,6 +4964,102 @@ if (miPrePassRaw !== null) {
       }
     }
   }
+}
+
+// --- 29.8.5 The CALL SITE: `parseArchive` must route media through the fold.
+//
+// Clauses 3-4 pin two function bodies. Nothing in them says anyone CALLS those
+// functions — a `parseArchive` that resolved a post's uris and built
+// `ParsedPost.media` straight from the resolutions would leave every one of
+// those clauses green while importing media that was never peeked, never
+// classified and never folded. The plan review made this the blocking half of
+// the hold obligation (#983) for exactly that reason.
+//
+// Three pins, and the third is the one that actually closes the hole:
+//
+//   * the fold is CALLED (`foldPostMediaDecisions(`);
+//   * a `ParsedPost`'s media is the fold's OWN output (`media: folded.media`),
+//     so calling the fold and then ignoring its verdict is not enough;
+//   * the `'import-image'` licence is minted NOWHERE in this directory except
+//     `mediaPrePass.ts` — scanned file-wide across every non-test file, since
+//     a second licence in a helper, a parser or a future module would be a
+//     second place a post's media can be waved through.
+//
+// Same anchoring and declaration-count discipline as clause 2 (29.7 D1/D2): a
+// block-scoped decoy or a second top-level `parseArchive` would otherwise let
+// this clause read a body nothing runs. The window match is
+// whitespace-normalised so Prettier's line breaking cannot decide whether the
+// rule holds.
+if (miParseArchiveRaw !== null) {
+  const miParseCode = meStripComments(miParseArchiveRaw);
+
+  const miParseDecls = (
+    miParseCode.match(/\b(?:function|const|let|var)\s+parseArchive\b/g) ?? []
+  ).length;
+  if (miParseDecls > 1) {
+    miViolation(
+      MI_PARSE_ARCHIVE,
+      `${miParseDecls} declarations of \`parseArchive\` — exactly one is allowed, because this clause and every caller must be reading the same function; a second one (block-scoped decoy, or a top-level redeclaration that wins at runtime) lets the call-site pins pass against a body nothing runs`,
+    );
+  }
+
+  const miParseWindow = /^export async function parseArchive\([\s\S]*?\n\}/m.exec(miParseCode);
+  if (miParseWindow === null) {
+    miViolation(
+      MI_PARSE_ARCHIVE,
+      'no top-level `export async function parseArchive(` — the orchestration was renamed, removed or converted to an arrow const, and the call-site pins below would pass vacuously',
+    );
+  } else {
+    const miParseBody = miParseWindow[0].replace(/\s+/g, ' ');
+    const miCallSitePins = [
+      [
+        'foldPostMediaDecisions(',
+        "parseArchive no longer calls the whole-post fold — media decisions that are never folded cannot hold a post, and a post with one video in it would be imported without it (Alex, 2026-10-19: never a partial post)",
+      ],
+      [
+        'media: folded.media',
+        'parseArchive no longer builds `ParsedPost.media` from the fold result — calling the fold and then assembling media from the raw resolutions imports items that were never positively classified as images',
+      ],
+    ];
+    for (const [pin, detail] of miCallSitePins) {
+      if (!miParseBody.includes(pin)) {
+        miViolation(MI_PARSE_ARCHIVE, `${detail} (\`${pin}\` is missing from its body)`);
+      }
+    }
+  }
+}
+
+// The licence may be spelled in ONE file. Scanned over the whole import
+// directory rather than over `parseArchive.ts` alone, because the next module
+// to need a decision is the one that would quietly mint its own.
+//
+// Test, mock and fixture-builder paths are exempt on the same grounds as
+// clause 8: they run only under Jest, and the pre-pass's own tests must be
+// able to name the decision they assert on.
+const MI_LICENCE_EXEMPT = ['__tests__/', '__mocks__/', 'testUtils/', '.test.ts', '.test.tsx'];
+const MI_PRE_PASS_REL = relative('.', MI_PRE_PASS);
+let miLicenceScanned = 0;
+for (const file of walkSync(MI_IMPORT_DIR, ['.ts', '.tsx'])) {
+  const rel = relative('.', file);
+  if (rel.includes('node_modules')) continue;
+  if (MI_LICENCE_EXEMPT.some((pattern) => rel.includes(pattern))) continue;
+  if (rel === MI_PRE_PASS_REL) continue;
+  miLicenceScanned++;
+  const lines = meStripComments(readFileSync(file, 'utf8')).split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].includes("'import-image'")) continue;
+    report(
+      file,
+      i + 1,
+      MI_RULE,
+      `the \`'import-image'\` licence is minted outside mediaPrePass.ts — only classifyMediaItem's guarded return may issue it, and only a positive image peek licences it (peekEntryKind contract (a)): ${lines[i].trim()} (${MI_ISSUE})`,
+    );
+  }
+}
+if (miLicenceScanned === 0) {
+  violations.push(
+    `  ${MI_IMPORT_DIR}:0  [${MI_RULE}]  the import-licence scan examined ZERO files — its root or exemptions are wrong and the clause would pass vacuously (${MI_ISSUE})`,
+  );
 }
 
 // --- 29.8.7 `encodeUtf8Strict` is a TextEncoder wrapper, never a hand-rolled

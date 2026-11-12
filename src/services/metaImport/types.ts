@@ -138,10 +138,20 @@ export interface ParsedPost {
 /**
  * A post that will not be imported, and why.
  *
- * `sourceItemId` is present for everything except `malformed_post` (whose text
- * could not be framed in the first place), because #921 requires a held item
- * to carry its `import_key` from parse time — the same identity the eventual
- * retry would mint.
+ * `sourceItemId` is present whenever the post could be FRAMED, because #921
+ * requires a held item to carry its `import_key` from parse time — the same
+ * identity the eventual retry would mint. It is `null` for exactly the refusals
+ * that happen before a frame exists:
+ *
+ *  - `malformed_post` — the text or the media list could not be framed
+ *    injectively (an unpaired surrogate, a media attachment with no uri, text
+ *    over the raw floor);
+ *  - `missing_timestamp` / `invalid_timestamp` — the v1 content frame takes a
+ *    timestamp, and a post the server would refuse outright has no identity
+ *    worth minting.
+ *
+ * Everything else — including every media hold, `text_too_long`, `empty_post`
+ * and `unsupported_post_type` — carries its id.
  */
 export interface ParsedSkip {
   readonly outcome: 'skip';

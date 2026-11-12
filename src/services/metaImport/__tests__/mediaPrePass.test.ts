@@ -19,6 +19,8 @@ import {
   JPEG_HEAD,
   buildArchive,
   mp4Head,
+  svgHead,
+  unknownHead,
   type BuiltArchive,
 } from '../testUtils/builders';
 import {
@@ -30,11 +32,17 @@ import {
   foldPostMediaDecisions,
   peekMediaEntries,
   resolveFileMedia,
+  type HoldReason,
   type MediaDecision,
   type PostMediaItem,
 } from '../mediaPrePass';
 
-import type { ArchiveImportSession, UriResolution } from '../archiveAccess';
+import type {
+  ArchiveImportSession,
+  RustEntrySkipCode,
+  UriResolution,
+  UriSkipCode,
+} from '../archiveAccess';
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -85,6 +93,87 @@ const item = (result: MediaDecision, originalDate: number | null = null): PostMe
 // ---------------------------------------------------------------------------
 
 describe('outcome rows', () => {
+  // Heads built HERE rather than in the builders: the builders export the
+  // heads several suites share, and these three exist only so the image row
+  // cannot pass by knowing one magic number. Each is another signature
+  // `sniffContentType` recognises as a still image.
+
+  /** The 8-byte PNG signature plus the start of its IHDR chunk. */
+  function pngHead(): Uint8Array {
+    return new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d]);
+  }
+
+  /** `GIF89a`, the newer of the two GIF version stamps. */
+  function gifHead(): Uint8Array {
+    return new Uint8Array(Array.from('GIF89a', (c) => c.charCodeAt(0)));
+  }
+
+  /** A RIFF container whose form type is `WEBP`. */
+  function webpHead(): Uint8Array {
+    const head = new Uint8Array(16);
+    head.set(
+      Array.from('RIFF', (c) => c.charCodeAt(0)),
+      0,
+    );
+    head.set(
+      Array.from('WEBP', (c) => c.charCodeAt(0)),
+      8,
+    );
+    return head;
+  }
+
+  /**
+   * One `it.each` row per key, with the key's own type kept.
+   *
+   * The tables below are `Record`s keyed by a skip union so that completeness
+   * is a COMPILE error rather than a reviewer's count: a code added to Rust or
+   * to the uri resolver leaves the annotation short a key until someone decides
+   * its hold, and a code removed leaves a stale one.
+   */
+  function rowsOf<K extends string, V>(table: Readonly<Record<K, V>>): [K, V][] {
+    return Object.entries<V>(table).map(([key, value]) => [key as K, value]);
+  }
+
+  // -------------------------------------------------------------------------
+  // Row 1: the five resolution skips
+  // -------------------------------------------------------------------------
+
+  const RESOLUTION_HOLDS: Readonly<Record<UriSkipCode, HoldReason>> = {
+    // Retryable with a fuller ZIP-part selection: the target may be in a part
+    // the member did not hand over.
+    URI_UNRESOLVED: 'media_missing',
+    URI_AMBIGUOUS: 'media_missing',
+    // The reference itself is the problem, so re-running changes nothing.
+    URI_INVALID: 'media_unsupported_reference',
+    URI_OUTSIDE_ALLOWLIST: 'media_unsupported_reference',
+    URI_UNSUPPORTED_KIND: 'media_unsupported_reference',
+  };
+
+  it.each(rowsOf(RESOLUTION_HOLDS))(
+    'holds %s as %s, having looked at nothing',
+    async (skip, reason) => {
+      // `uriOverrides` is the only deterministic lever for the four codes the
+      // builders' own path match never produces, and the resolution still comes
+      // back through the real `resolveFileMedia`, index-aligned.
+      const built = mediaArchive(
+        { name: 'photo.jpg', head: JPEG_HEAD },
+        { uriOverrides: { 'media/posts/ref.jpg': { ok: false, skip } } },
+      );
+
+      await expect(decideOne(built, 'media/posts/ref.jpg')).resolves.toEqual({
+        decision: 'hold',
+        reason,
+      });
+      // An unresolved uri names no entry, so there is nothing to peek at — and
+      // a peek on a guessed id would be exactly the wrong photo.
+      expect(built.mock.peekHead).not.toHaveBeenCalled();
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // Row 2: a positive image verdict, the one import licence
+  // -------------------------------------------------------------------------
+
   it('imports a resolved entry whose peek says image', async () => {
     const built = mediaArchive({ name: 'photo.jpg', head: JPEG_HEAD });
     await expect(decideOne(built, 'media/posts/photo.jpg')).resolves.toEqual({
@@ -93,11 +182,196 @@ describe('outcome rows', () => {
     });
   });
 
+  it.each([
+    ['a PNG head', pngHead()],
+    ['a GIF89a head', gifHead()],
+    ['a WebP head', webpHead()],
+  ])('imports an entry with %s', async (_label, head) => {
+    // The licence is "the sniff said image", not "the bytes said JPEG": a
+    // JPEG-only row would pass against a sniff table that had lost every other
+    // still format, and a member's PNGs would silently stop importing.
+    const built = mediaArchive({ name: 'photo.jpg', head });
+    await expect(decideOne(built, 'media/posts/photo.jpg')).resolves.toEqual({
+      decision: 'import-image',
+      entryId: built.entryIdFor('photo.jpg'),
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Row 3: video, by every route the real peek can reach it
+  // -------------------------------------------------------------------------
+
   it('holds held_video for a peek that says video', async () => {
     const built = mediaArchive({ name: 'clip.mp4', head: mp4Head() });
     await expect(decideOne(built, 'media/posts/clip.mp4')).resolves.toEqual({
       decision: 'hold',
       reason: 'held_video',
+    });
+  });
+
+  it('holds held_video for a LISTED video without reading a byte of it', async () => {
+    const built = mediaArchive({ name: 'clip.mov' });
+    await expect(decideOne(built, 'media/posts/clip.mov')).resolves.toEqual({
+      decision: 'hold',
+      reason: 'held_video',
+    });
+    // The listed kind is evidence enough, and holding is free: the head is
+    // never inflated, so a 2 GB clip costs the run nothing.
+    expect(built.mock.peekHead).not.toHaveBeenCalled();
+  });
+
+  it('holds held_video for mp4 bytes under an image NAME', async () => {
+    // The F1 sniff is the only thing standing between a disguised video and an
+    // import that would claim to be a photo: the listing says image here.
+    const built = mediaArchive({ name: 'photo.jpg', head: mp4Head() });
+    await expect(decideOne(built, 'media/posts/photo.jpg')).resolves.toEqual({
+      decision: 'hold',
+      reason: 'held_video',
+    });
+    expect(built.mock.peekHead).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds held_video for a listed video that Rust ALSO skipped', async () => {
+    const built = mediaArchive({ name: 'clip.mp4', skip: 'ENTRY_CORRUPT' });
+    const session = await built.open();
+    const entryId = built.entryIdFor('clip.mp4');
+
+    // The resolution is SYNTHESISED and the peek is REAL. The builders answer
+    // `URI_UNRESOLVED` for any skipped entry (a skipped entry is
+    // indistinguishable from an absent one), so routing this row through
+    // `resolveFileMedia` would prove `media_missing` and leave contract (e) —
+    // a listed video wins BEFORE the listing skip is consulted — untested.
+    const peek = await session.peekEntryKind(entryId);
+
+    expect(peek).toEqual({ ok: true, kind: 'video' });
+    expect(classifyMediaItem({ ok: true, entryId }, peek)).toEqual({
+      decision: 'hold',
+      reason: 'held_video',
+    });
+    expect(built.mock.peekHead).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // Row 4: an indeterminate sniff
+  // -------------------------------------------------------------------------
+
+  it.each([
+    ['WebM or MKV magic', unknownHead()],
+    ['an SVG document', svgHead()],
+    ['an empty head', new Uint8Array(0)],
+  ])('holds media_unreadable for %s under an image name', async (_label, head) => {
+    // "Unrecognised" is never "not a video": the sniff knows ISO-BMFF video
+    // only, so a WebM arrives here and must hold rather than import.
+    const built = mediaArchive({ name: 'photo.jpg', head });
+    await expect(decideOne(built, 'media/posts/photo.jpg')).resolves.toEqual({
+      decision: 'hold',
+      reason: 'media_unreadable',
+    });
+  });
+
+  it('reports ENTRY_SNIFF_INDETERMINATE for bytes nothing recognises', async () => {
+    // Named here once, so the row above is tied to the code the sniff really
+    // produces rather than to any failure that happens to hold.
+    const built = mediaArchive({ name: 'photo.jpg', head: unknownHead() });
+    const session = await built.open();
+    await expect(session.peekEntryKind(built.entryIdFor('photo.jpg'))).resolves.toEqual({
+      ok: false,
+      skip: 'ENTRY_SNIFF_INDETERMINATE',
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Row 5: every Rust entry skip
+  // -------------------------------------------------------------------------
+
+  // Every code Rust can put on a listed entry, and the hold each one earns.
+  // They all earn the same one: a skip is never proof of "not a video", so
+  // "we could not read it" is as far as the pre-pass may go.
+  const LISTING_SKIP_HOLDS: Readonly<Record<RustEntrySkipCode, HoldReason>> = {
+    ENTRY_PATH_INVALID: 'media_unreadable',
+    ENTRY_PATH_TRAVERSAL: 'media_unreadable',
+    ENTRY_SYMLINK: 'media_unreadable',
+    ENTRY_SPECIAL_FILE: 'media_unreadable',
+    ENTRY_ENCRYPTED: 'media_unreadable',
+    ENTRY_NESTED_ARCHIVE: 'media_unreadable',
+    ENTRY_UNSUPPORTED_METHOD: 'media_unreadable',
+    ENTRY_DUPLICATE: 'media_unreadable',
+    ENTRY_OVER_CAP: 'media_unreadable',
+    ENTRY_RATIO_EXCEEDED: 'media_unreadable',
+    ENTRY_CORRUPT: 'media_unreadable',
+    ENTRY_KIND_NOT_ENABLED: 'media_unreadable',
+    ENTRY_KIND_MISMATCH: 'media_unreadable',
+    ENTRY_NOT_UTF8: 'media_unreadable',
+    ENTRY_NOT_ALLOWLISTED: 'media_unreadable',
+  };
+
+  it.each(rowsOf(LISTING_SKIP_HOLDS))('holds a listing %s as %s', async (skip, reason) => {
+    const built = mediaArchive({ name: 'x.jpg', skip });
+    const session = await built.open();
+    const entryId = built.entryIdFor('x.jpg');
+
+    // Synthesised resolution, real peek — for the reason given in the listed-
+    // video row: the builders report a listing-skipped entry as
+    // `URI_UNRESOLVED`, so the end-to-end route would classify every one of
+    // these 15 codes as `media_missing` and never reach the peek arm.
+    const peek = await session.peekEntryKind(entryId);
+
+    expect(peek).toEqual({ ok: false, skip });
+    expect(classifyMediaItem({ ok: true, entryId }, peek)).toEqual({
+      decision: 'hold',
+      reason,
+    });
+  });
+
+  it('holds media_unreadable when the head read itself fails', async () => {
+    // The end-to-end counterpart of the 15 rows above: nothing is wrong with
+    // the LISTING, so the uri resolves and the failure arrives from `peekHead`.
+    const built = mediaArchive({ name: 'torn.jpg', readSkip: 'ENTRY_CORRUPT' });
+    await expect(decideOne(built, 'media/posts/torn.jpg')).resolves.toEqual({
+      decision: 'hold',
+      reason: 'media_unreadable',
+    });
+    expect(built.mock.peekHead).toHaveBeenCalledTimes(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // Row 6: the two skip codes no session can produce
+  // -------------------------------------------------------------------------
+
+  it('holds unsupported_image_format for ENTRY_UNSUPPORTED_IMAGE_FORMAT', () => {
+    // Direct, because `peekEntryKind` cannot produce this code today (verified
+    // 2026-11-12): `sniffContentType` returns only `image/*`, `video/*` or
+    // `null`, so `classifySniff`'s non-image branch never fires and an exotic
+    // head arrives as `ENTRY_SNIFF_INDETERMINATE` instead. The live producer is
+    // #926's upload-time `sanitizeStillImage` failure, long after this pre-pass
+    // — the row exists so the code already has its hold when that wiring lands.
+    expect(
+      classifyMediaItem(
+        { ok: true, entryId: 'fp0:1' },
+        { ok: false, skip: 'ENTRY_UNSUPPORTED_IMAGE_FORMAT' },
+      ),
+    ).toEqual({ decision: 'hold', reason: 'unsupported_image_format' });
+  });
+
+  it('holds held_video for ENTRY_IS_VIDEO arriving as a skip', () => {
+    // Also unreachable from `peekEntryKind`, which maps this verdict to
+    // `{ok: true, kind: 'video'}` before it can ever be returned as a skip.
+    // Video evidence either way, so the hold must agree with the `ok` arm.
+    expect(
+      classifyMediaItem({ ok: true, entryId: 'fp0:1' }, { ok: false, skip: 'ENTRY_IS_VIDEO' }),
+    ).toEqual({ decision: 'hold', reason: 'held_video' });
+  });
+
+  // -------------------------------------------------------------------------
+  // Row 7: the budget ran out
+  // -------------------------------------------------------------------------
+
+  it('holds media_unreadable for an item the budget never let us look at', () => {
+    // `null` is "never looked at", not "nothing wrong": the item was never
+    // classified, and an unclassified item has no licence.
+    expect(classifyMediaItem({ ok: true, entryId: 'fp0:1' }, null)).toEqual({
+      decision: 'hold',
+      reason: 'media_unreadable',
     });
   });
 });
@@ -471,11 +745,21 @@ describe('a mixed post', () => {
   });
 });
 
-// A compile-time check that the session slices the pre-pass asks for are
-// really the session's: a widened `Pick` would make the pre-pass able to
-// extract, which it must never do.
-const _sessionShape: (s: ArchiveImportSession) => void = (session) => {
-  void resolveFileMedia(session, []);
-  void peekMediaEntries(session, [], createFilePeekScope(createPeekBudget()));
-};
-void _sessionShape;
+describe('the session slice the pre-pass asks for', () => {
+  // A real session is accepted wherever the module asks for a `Pick` of one —
+  // a compile-time fact, asserted at runtime so the annotation cannot rot. The
+  // narrowing is the point: the pre-pass can resolve and peek, and the type
+  // does not let it extract a file.
+  it('accepts a whole ArchiveImportSession and resolves nothing for an empty list', async () => {
+    const built = buildArchive([{ path: 'media/posts/a.jpg', head: JPEG_HEAD }]);
+    const session: ArchiveImportSession = await built.open();
+
+    const resolved = await resolveFileMedia(session, []);
+    const peeks = await peekMediaEntries(session, [], createFilePeekScope(createPeekBudget()));
+
+    expect(resolved).toEqual({ ok: true, resolutions: [] });
+    expect(peeks.size).toBe(0);
+    expect(built.mock.resolveMediaUris).not.toHaveBeenCalled();
+    expect(built.mock.peekHead).not.toHaveBeenCalled();
+  });
+});

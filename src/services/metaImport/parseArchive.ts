@@ -67,6 +67,8 @@ import {
   resolveFileMedia,
 } from './mediaPrePass';
 
+import { ID_KIND_BY_SCHEME } from './types';
+
 import type { ArchiveCallOptions, ArchiveImportSession } from './archiveAccess';
 import type { FbidIndex } from './instagramParser';
 import type { HoldReason, PostMediaItem } from './mediaPrePass';
@@ -240,15 +242,21 @@ export async function parseArchive(
       }
       tally.countScheme(item.idScheme);
 
-      if (!resolved.ok) {
+      if (!resolved.ok && span > 0) {
         // The file named more uris than the pre-pass will resolve, so NOTHING
         // in it was classified. A post whose media was never looked at has no
         // licence to import any of it (plan §4).
+        //
+        // A post that named NO media is untouched by that: it has nothing to
+        // classify, and the fold's own rule is that an empty media list
+        // imports. Holding a text-only post because a DIFFERENT post in the
+        // same file had too many photos would be a permanent-class skip for a
+        // post nothing was ever wrong with.
         await emit(holdSkip(item, 'media_unreadable'), importKey);
         continue;
       }
 
-      const slice = resolved.resolutions.slice(start, start + span);
+      const slice = resolved.ok ? resolved.resolutions.slice(start, start + span) : [];
       const entryIds = slice.flatMap((resolution) => (resolution.ok ? [resolution.entryId] : []));
       const peeks = await peekMediaEntries(session, entryIds, scope, call);
       const decisions: PostMediaItem[] = slice.map((resolution, index) => ({
@@ -271,6 +279,7 @@ export async function parseArchive(
         sourceFile: item.sourceFile,
         sourceIndex: item.sourceIndex,
         sourceItemId: item.sourceItemId,
+        idKind: ID_KIND_BY_SCHEME[item.idScheme],
         originalDate: item.originalDate,
         body: item.body,
         media: folded.media,
@@ -304,12 +313,19 @@ function holdSkip(post: RawParsedPost, reason: HoldReason): ParsedSkip {
     sourceFile: post.sourceFile,
     sourceIndex: post.sourceIndex,
     sourceItemId: post.sourceItemId,
+    idKind: ID_KIND_BY_SCHEME[post.idScheme],
     originalDate: post.originalDate,
     reason,
   };
 }
 
-/** The second (or third…) occurrence of one identity within one archive. */
+/**
+ * The second (or third…) occurrence of one identity within one archive.
+ *
+ * It keeps the identity of the copy it duplicates, `idKind` included — a
+ * duplicate of an fbid-identified post is an fbid row, and #921's `id_kind`
+ * must not read `content` for it just because this row was built here.
+ */
 function duplicateSkip(item: RawParseResult): ParsedSkip {
   return {
     outcome: 'skip',
@@ -317,6 +333,7 @@ function duplicateSkip(item: RawParseResult): ParsedSkip {
     sourceFile: item.sourceFile,
     sourceIndex: item.sourceIndex,
     sourceItemId: item.sourceItemId,
+    idKind: item.outcome === 'post' ? ID_KIND_BY_SCHEME[item.idScheme] : item.idKind,
     originalDate: item.originalDate,
     reason: 'duplicate_in_archive',
   };

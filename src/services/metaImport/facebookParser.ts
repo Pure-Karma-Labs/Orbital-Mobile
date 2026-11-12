@@ -54,6 +54,7 @@ import {
 } from './jsonSafety';
 import { buildSourceItemId } from './sourceItemId';
 import { assembleBody } from './text';
+import { ID_KIND_BY_SCHEME } from './types';
 
 import type { ParseFileContext, ParsedFile, ParsedSkip, RawParseResult } from './types';
 
@@ -185,6 +186,10 @@ function skip(
     sourceFile: ctx.sourceFile,
     sourceIndex,
     sourceItemId,
+    // Facebook has exactly one identity scheme, so the kind follows the id:
+    // present whenever a frame was minted, null for the refusals that precede
+    // one. (Instagram's parser, which has two, passes it explicitly.)
+    idKind: sourceItemId === null ? null : ID_KIND_BY_SCHEME.content,
     originalDate,
     reason,
   };

@@ -108,6 +108,20 @@ export interface ParsedMedia {
 }
 
 /**
+ * The `kind` BYTE of the v1 frame (`sourceItemId.ts`), carried per item.
+ *
+ * `1` is the content frame, `2` the Instagram `fbid`. These are the wire
+ * numbers, not a second enum: #921 persists them as `id_kind`, and a member
+ * whose next export flips scheme is diagnosable from the stored rows alone —
+ * without the alternative, which would be reading byte 1 of a plaintext-class
+ * `sourceItemId` nobody is allowed to persist.
+ *
+ * `IdScheme` remains the parser-internal spelling; `ID_KIND_BY_SCHEME` is the
+ * only translation.
+ */
+export type IdKind = 1 | 2;
+
+/**
  * A post that is importable.
  *
  * ## `sourceItemId` is PLAINTEXT-CLASS
@@ -128,6 +142,8 @@ export interface ParsedPost {
   readonly sourceIndex: number;
   /** PLAINTEXT-CLASS — see the class note above. */
   readonly sourceItemId: Uint8Array;
+  /** Which scheme minted `sourceItemId`. Never null: the id is never null. */
+  readonly idKind: IdKind;
   /** Epoch ms UTC. Always present on an importable post. */
   readonly originalDate: number;
   /** NFC-normalised, newline-normalised, trimmed, link line appended. */
@@ -159,8 +175,13 @@ export interface ParsedSkip {
   /** JSON basename. LOCAL UI ONLY (F18). */
   readonly sourceFile: string;
   readonly sourceIndex: number;
-  /** PLAINTEXT-CLASS, `null` only for `malformed_post`. */
+  /**
+   * PLAINTEXT-CLASS, `null` for exactly the three pre-frame refusals listed
+   * above: `malformed_post`, `missing_timestamp`, `invalid_timestamp`.
+   */
   readonly sourceItemId: Uint8Array | null;
+  /** Which scheme minted the id. `null` exactly when `sourceItemId` is. */
+  readonly idKind: IdKind | null;
   /** Epoch ms UTC, `null` when the export stated none or stated nonsense. */
   readonly originalDate: number | null;
   readonly reason: SkipReason;
@@ -196,6 +217,17 @@ export type ParsedItem = ParsedPost | ParsedSkip;
  * account is detectable after the fact.
  */
 export type IdScheme = 'content' | 'fbid';
+
+/**
+ * The one translation between the parser's spelling and the persisted byte.
+ *
+ * `Record`, not a pair of `if`s: a third scheme is then a compile error here
+ * instead of a silent `1` on a row #921 can never interpret.
+ */
+export const ID_KIND_BY_SCHEME: Readonly<Record<IdScheme, IdKind>> = {
+  content: 1,
+  fbid: 2,
+};
 
 /**
  * A post that parsed cleanly and is now waiting on its media decisions.
@@ -335,6 +367,21 @@ export interface ParseOptions {
    * item afterwards.
    *
    * `importKey` is `null` exactly when `item.sourceItemId` is `null`.
+   *
+   * ## The same `importKey` CAN arrive more than once
+   *
+   * An archive may contain the same post twice (a member selecting overlapping
+   * ZIP parts, or Meta repeating a post across files). The first copy is
+   * emitted as whatever it settled to — an import or a skip — and EVERY later
+   * copy is emitted as a separate `duplicate_in_archive` skip carrying the
+   * IDENTICAL `importKey`. Nothing is swallowed: #928 can tell the member how
+   * many copies their export held.
+   *
+   * A consumer keyed on `import_key` must therefore UPSERT or ignore, never
+   * plain-`INSERT` into a `UNIQUE` column (#921). The settled item always
+   * arrives first, so "keep the first, ignore the rest" is the correct
+   * resolution — a later `duplicate_in_archive` row must not overwrite the
+   * import it duplicates.
    */
   onItem(item: ParsedItem, importKey: Uint8Array | null): Promise<void>;
   onProgress?: (progress: ParseProgress) => void;

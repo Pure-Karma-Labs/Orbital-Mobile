@@ -48,9 +48,11 @@ import {
 } from './jsonSafety';
 import { basenameOfUri, buildSourceItemId } from './sourceItemId';
 import { assembleBody } from './text';
+import { ID_KIND_BY_SCHEME } from './types';
 
 import type {
   FileIssueReason,
+  IdKind,
   ParseFileContext,
   ParsedFile,
   ParsedSkip,
@@ -252,11 +254,18 @@ function joinFbid(uris: readonly string[], fbidIndex: FbidIndex | null): string 
   return agreed;
 }
 
+/**
+ * `idKind` is passed EXPLICITLY here, unlike the Facebook parser's helper: an
+ * Instagram skip may carry either a platform frame or a content one, and
+ * inferring "content" from a non-null id would quietly mislabel every held
+ * post that did join an fbid.
+ */
 function skip(
   ctx: ParseFileContext,
   sourceIndex: number,
   reason: ParsedSkip['reason'],
   sourceItemId: Uint8Array | null,
+  idKind: IdKind | null,
   originalDate: number | null,
 ): ParsedSkip {
   return {
@@ -265,6 +274,7 @@ function skip(
     sourceFile: ctx.sourceFile,
     sourceIndex,
     sourceItemId,
+    idKind,
     originalDate,
     reason,
   };
@@ -277,12 +287,12 @@ function parseInstagramPost(
   fbidIndex: FbidIndex | null,
 ): RawParseResult {
   if (pickObject(element) === null) {
-    return skip(ctx, sourceIndex, 'malformed_post', null, null);
+    return skip(ctx, sourceIndex, 'malformed_post', null, null, null);
   }
 
   const scan = scanMedia(element, ctx.nowUtcDay);
   if (scan.broken || scan.storedUris.length > MAX_MEDIA_PER_POST) {
-    return skip(ctx, sourceIndex, 'malformed_post', null, null);
+    return skip(ctx, sourceIndex, 'malformed_post', null, null, null);
   }
 
   // A carousel carries its own `creation_timestamp`; a single-media post has
@@ -291,11 +301,11 @@ function parseInstagramPost(
   const postSeconds = pickInteger(pickField(element, 'creation_timestamp'));
   const seconds = postSeconds ?? scan.firstSeconds;
   if (seconds === null) {
-    return skip(ctx, sourceIndex, 'missing_timestamp', null, null);
+    return skip(ctx, sourceIndex, 'missing_timestamp', null, null, null);
   }
   const originalDate = seconds * 1000;
   if (!isImportableDate(originalDate, ctx.nowUtcDay)) {
-    return skip(ctx, sourceIndex, 'invalid_timestamp', null, null);
+    return skip(ctx, sourceIndex, 'invalid_timestamp', null, null, null);
   }
 
   // The caption: the post's own `title` when it has one, else — and only for a
@@ -314,13 +324,14 @@ function parseInstagramPost(
     ...(ctx.bodyMaxChars === undefined ? {} : { maxChars: ctx.bodyMaxChars }),
   });
   if (!assembled.ok && assembled.reason === 'malformed_post') {
-    return skip(ctx, sourceIndex, 'malformed_post', null, originalDate);
+    return skip(ctx, sourceIndex, 'malformed_post', null, null, originalDate);
   }
 
   const fbid = joinFbid(scan.storedUris, fbidIndex);
   let sourceItemId =
     fbid === null ? null : buildSourceItemId({ kind: 'platform', platformId: fbid });
   const idScheme = sourceItemId === null ? 'content' : 'fbid';
+  const idKind = ID_KIND_BY_SCHEME[idScheme];
   if (sourceItemId === null) {
     // The content frame is the fallback for BOTH "no fbid" and "an fbid that
     // is not strictly encodable": the fbid is auxiliary, and refusing a post
@@ -334,15 +345,15 @@ function parseInstagramPost(
     });
   }
   if (sourceItemId === null) {
-    return skip(ctx, sourceIndex, 'malformed_post', null, originalDate);
+    return skip(ctx, sourceIndex, 'malformed_post', null, null, originalDate);
   }
 
   if (!assembled.ok) {
-    return skip(ctx, sourceIndex, 'text_too_long', sourceItemId, originalDate);
+    return skip(ctx, sourceIndex, 'text_too_long', sourceItemId, idKind, originalDate);
   }
 
   if (assembled.body.length === 0 && scan.storedUris.length === 0) {
-    return skip(ctx, sourceIndex, 'empty_post', sourceItemId, originalDate);
+    return skip(ctx, sourceIndex, 'empty_post', sourceItemId, idKind, originalDate);
   }
 
   // The STORED order is the order we import (Alex, 2026-11-12). An earlier

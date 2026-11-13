@@ -82,6 +82,7 @@ import {
   classifyImportCryptoError,
   closeAllImportKeySessions,
   DERIVE_YIELD_EVERY,
+  ImportCryptoInvariantError,
   ImportKeyChangedError,
   ImportKeySessionClosedError,
   ImportMetaAuthError,
@@ -101,6 +102,7 @@ import {
  * under test never sees — so the spy would record nothing.
  */
 const signal = require('orbital-signal') as {
+  hkdfSha256: (ikm: ArrayBuffer, salt: ArrayBuffer, info: ArrayBuffer, len: number) => ArrayBuffer;
   hmacSha256: (key: ArrayBuffer, input: ArrayBuffer) => ArrayBuffer;
 };
 
@@ -330,6 +332,73 @@ describe('session lifecycle', () => {
     expect(() => closeAllImportKeySessions()).not.toThrow();
   });
 
+  it('lets NO session escape a wipe that lands during the group-key fetch', async () => {
+    const hkdfSpy = jest.spyOn(signal, 'hkdfSha256');
+    let releaseKey!: (k: Uint8Array) => void;
+    mockGetOrFetchGroupKey.mockReturnValue(
+      new Promise<Uint8Array>((resolve) => {
+        releaseKey = resolve;
+      }),
+    );
+
+    const opening = open();
+    // The wipe lands while the fetch is outstanding. At this instant the
+    // session owns NO key material — its close() has nothing to zero — so the
+    // registry alone cannot stop it; only the wipe epoch can.
+    closeAllImportKeySessions();
+    releaseKey(key(0x42));
+
+    const error = await opening.catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ImportKeySessionClosedError);
+    expect(classifyImportCryptoError(error)).toBe('terminal-for-run');
+    // No session object escaped, and no K_import was ever derived: the pin and
+    // the derivation both sit past the epoch check.
+    expect(hkdfSpy).not.toHaveBeenCalled();
+  });
+
+  it('zeroes the pin and K_import when the fingerprint HMAC throws', async () => {
+    const live = key(0x42);
+    mockGetOrFetchGroupKey.mockResolvedValue(live);
+
+    // A failed open returns no session, so intercepting the pinning copy is
+    // the only handle on `pinned`. The module calls `live.slice()` with no
+    // arguments; this stands in for exactly that.
+    let pinned: Uint8Array | undefined;
+    jest.spyOn(live, 'slice').mockImplementation(() => {
+      const copy = new Uint8Array(live.length);
+      copy.set(live);
+      pinned = copy;
+      return copy;
+    });
+
+    const hkdfSpy = jest.spyOn(signal, 'hkdfSha256');
+    jest.spyOn(signal, 'hmacSha256').mockImplementation(() => {
+      throw new Error('FFI unavailable');
+    });
+
+    await expect(open()).rejects.toThrow('FFI unavailable');
+
+    const kImport = hkdfSpy.mock.results[0].value as ArrayBuffer;
+    expect(hex(new Uint8Array(kImport))).toBe('00'.repeat(32));
+    expect(pinned).toBeDefined();
+    expect(hex(pinned as Uint8Array)).toBe('00'.repeat(32));
+    // The cache's own array is untouched: the pin was always a copy of it.
+    expect(hex(live)).toBe('42'.repeat(32));
+  });
+
+  it('drops a derived import_key when a wipe lands during the yield', async () => {
+    const session = await open({ yieldEvery: 1 });
+    jest.spyOn(globalThis, 'setTimeout').mockImplementation(((callback: () => void) => {
+      closeAllImportKeySessions();
+      callback();
+      return 0;
+    }) as unknown as typeof setTimeout);
+
+    // The token is derived from key material the wipe has just destroyed, and
+    // #926 would persist it into a database the wipe is clearing.
+    await expect(session.deriveImportKey(ITEM)).rejects.toThrow(ImportKeySessionClosedError);
+  });
+
   it('fingerprints the key: stable across sessions, different when the key changes', async () => {
     const first = await open();
     const second = await open();
@@ -386,6 +455,45 @@ describe('sealImportMeta / openImportMeta', () => {
 
     await expect(session.sealImportMeta(POST_DATE)).rejects.toThrow(ImportKeyChangedError);
     session.close();
+  });
+
+  it('refuses to seal under a live key that is not the pinned one', async () => {
+    const session = await open();
+    // The pin verifies — compareGroupKeyPin still says 'match' — and then the
+    // fetch between the two awaits hands back different bytes, which is what
+    // an invalidate-then-refetch landing in that window looks like. Sealing
+    // import-meta under a key the rest of the import is not using is exactly
+    // what the pin exists to prevent, so assuming live == pinned is not safe.
+    mockGetOrFetchGroupKey.mockResolvedValue(key(0x17));
+
+    const error = await session.sealImportMeta(POST_DATE).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ImportKeyChangedError);
+    expect(classifyImportCryptoError(error)).toBe('terminal-for-run');
+    session.close();
+  });
+
+  it('refuses to seal when the session closes during the key fetch', async () => {
+    const session = await open();
+    mockGetOrFetchGroupKey.mockImplementation(() => {
+      session.close();
+      return Promise.resolve(key(0x42));
+    });
+
+    await expect(session.sealImportMeta(POST_DATE)).rejects.toThrow(ImportKeySessionClosedError);
+  });
+
+  it('refuses to finish verifying a pin the session lost mid-refetch', async () => {
+    const session = await open();
+    mockCompareGroupKeyPin.mockReturnValue('absent');
+    mockGetOrFetchGroupKey.mockImplementation(() => {
+      // By the time the refetch resolves the pin is 32 zeros; comparing
+      // against it would report a CHANGED key, which is true but misleading
+      // for a session that is simply gone.
+      closeAllImportKeySessions();
+      return Promise.resolve(key(0x42));
+    });
+
+    await expect(session.verifyGroupKeyPin()).rejects.toThrow(ImportKeySessionClosedError);
   });
 
   it.each([
@@ -549,5 +657,73 @@ describe('derivation mechanics', () => {
 
     expect((await injected(ITEM)).length).toBe(16);
     session.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The module's own invariant failures
+// ---------------------------------------------------------------------------
+
+describe('ImportCryptoInvariantError', () => {
+  // Every one of these is a programming or archive-data defect that no retry
+  // can clear. As plain `Error`s they classified as `null`, which #926 reads
+  // as "not a crypto verdict" and would retry for the rest of the run.
+  it.each([
+    [
+      'an unknown import source',
+      () =>
+        openImportKeySession({
+          groupId: GROUP_ID,
+          source: 'tiktok' as unknown as 'facebook',
+        }),
+    ],
+    [
+      'a group key of the wrong width',
+      () => {
+        mockGetOrFetchGroupKey.mockResolvedValue(new Uint8Array(16).fill(0x42));
+        return open();
+      },
+    ],
+    [
+      'an empty sourceItemId',
+      async () => {
+        const session = await open();
+        try {
+          return await session.deriveImportKey(new Uint8Array(0));
+        } finally {
+          session.close();
+        }
+      },
+    ],
+    [
+      'a non-safe-integer date',
+      async () => {
+        const session = await open();
+        try {
+          return await session.sealImportMeta(1.5);
+        } finally {
+          session.close();
+        }
+      },
+    ],
+  ])('maps %s to terminal-for-run', async (_label, call) => {
+    const error = await call().catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ImportCryptoInvariantError);
+    expect(classifyImportCryptoError(error)).toBe('terminal-for-run');
+    // One prefix, applied in the constructor.
+    expect((error as Error).message.startsWith('importCrypto: ')).toBe(true);
+  });
+
+  it('maps a wire encode of the wrong width to terminal-for-run', () => {
+    let error: unknown;
+    try {
+      importKeyToWire(new Uint8Array(15));
+    } catch (e) {
+      error = e;
+    }
+
+    expect(error).toBeInstanceOf(ImportCryptoInvariantError);
+    expect(classifyImportCryptoError(error)).toBe('terminal-for-run');
   });
 });

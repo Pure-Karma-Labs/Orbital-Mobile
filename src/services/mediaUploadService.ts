@@ -324,6 +324,21 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
 
   let { mimeType, fileName, width, height, duration } = options;
 
+  // Meta import (#924): the item's own original date, when the archive stated
+  // one. Asserted HERE, before any work, rather than at the point of use —
+  // that sits past the transcode, the encrypt and the thumbnail child's own
+  // upload, so a bad value used to be discovered only after a video had been
+  // transcoded and a child row created on the server. Asserted rather than
+  // coerced: a non-integer would serialize into an append-only envelope that
+  // nothing can correct afterwards. `null`/`undefined` is not an error — it
+  // simply omits the field.
+  if (
+    options.importOriginalCreatedAt != null &&
+    !Number.isSafeInteger(options.importOriginalCreatedAt)
+  ) {
+    throw new Error('importOriginalCreatedAt must be a safe integer (epoch ms) when provided');
+  }
+
   const mediaId = generateUUID();
 
   // Coarse class for the server's eviction policy — sent on the first chunk only.
@@ -593,15 +608,9 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
       attachmentKey: arrayBufferToBase64(toArrayBuffer(keys)),
     };
 
-    // Meta import (#924): the item's own original date, when the archive stated
-    // one. Asserted here rather than coerced — a non-integer would serialize
-    // into an append-only envelope that nothing can correct afterwards.
+    // Meta import (#924): the item's own original date, when the archive
+    // stated one. Already validated at the top of uploadMedia.
     if (importOriginalCreatedAt != null) {
-      if (!Number.isSafeInteger(importOriginalCreatedAt)) {
-        throw new Error(
-          'importOriginalCreatedAt must be a safe integer (epoch ms) when provided',
-        );
-      }
       metadataObj.originalCreatedAt = importOriginalCreatedAt;
     }
 

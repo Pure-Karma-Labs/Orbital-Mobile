@@ -194,7 +194,10 @@ export class ImportKeyChangedError extends Error {
   }
 }
 
-/** A method was called after `close()`. A caller bug; terminal for the run. */
+/**
+ * A method was called after `close()` — a caller bug — or the account was
+ * wiped while the session was still opening. Terminal for the run either way.
+ */
 export class ImportKeySessionClosedError extends Error {
   constructor() {
     super('Import key session is closed');
@@ -225,6 +228,30 @@ export class ImportMetaAuthError extends Error {
   }
 }
 
+/**
+ * This module's own invariant failures: an unknown source, an empty
+ * `sourceItemId`, a group key of the wrong width, a non-safe-integer date, an
+ * envelope over the wire caps, a wire encode of the wrong width, and the UTF-8
+ * framing refusals.
+ *
+ * Typed rather than left as a plain `Error` because
+ * {@link classifyImportCryptoError} has to answer for them, and every one is a
+ * programming or archive-data defect that no retry can clear — so the honest
+ * verdict is `'terminal-for-run'`. As plain `Error`s they classified as
+ * `null`, which #926 reads as "not a crypto verdict, fall through to the
+ * HTTP/network taxonomy" and would retry for the rest of the run.
+ *
+ * The `importCrypto: ` prefix is applied here, once, so call sites pass the
+ * bare reason. Messages never carry item content: `sourceItemId` embeds the
+ * post text verbatim (see sourceItemId.ts) and must not reach an Error.
+ */
+export class ImportCryptoInvariantError extends Error {
+  constructor(reason: string) {
+    super(`importCrypto: ${reason}`);
+    this.name = 'ImportCryptoInvariantError';
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
@@ -239,7 +266,7 @@ export class ImportMetaAuthError extends Error {
  */
 export function importKeyToWire(importKey: Uint8Array): string {
   if (importKey.length !== IMPORT_KEY_BYTES) {
-    throw new Error(
+    throw new ImportCryptoInvariantError(
       `import_key must be exactly ${IMPORT_KEY_BYTES} bytes, got ${importKey.length}`,
     );
   }
@@ -285,10 +312,15 @@ export function parseImportMetaPlaintext(json: string): ImportMetaV1 | null {
  *
  * A pending or unopenable group key is `'retryable-pause'` and never a
  * permanent item failure: the wrap may still arrive. Everything this module
- * raises itself is `'terminal-for-run'` — a changed key, a closed session and
- * a bad userId are all conditions no retry can clear, and an import-meta
- * authentication failure on the WRITE path means the envelope we just produced
- * did not round-trip. #927 decides its own read-path handling of that error.
+ * raises itself is `'terminal-for-run'` — a changed key, a closed session, a
+ * bad userId and every {@link ImportCryptoInvariantError} are conditions no
+ * retry can clear, and an import-meta authentication failure on the WRITE path
+ * means the envelope we just produced did not round-trip. #927 decides its own
+ * read-path handling of that error.
+ *
+ * That claim is only true while this module raises nothing untyped: a bare
+ * `new Error(...)` here would classify as `null` and be retried for the rest
+ * of the run. Use {@link ImportCryptoInvariantError}.
  */
 export function classifyImportCryptoError(e: unknown): ArchiveErrorDisposition | null {
   if (e instanceof PendingWrapError || e instanceof GroupKeyUnwrapError) {
@@ -298,7 +330,8 @@ export function classifyImportCryptoError(e: unknown): ArchiveErrorDisposition |
     e instanceof ImportKeyChangedError ||
     e instanceof ImportKeySessionClosedError ||
     e instanceof ImportUserIdError ||
-    e instanceof ImportMetaAuthError
+    e instanceof ImportMetaAuthError ||
+    e instanceof ImportCryptoInvariantError
   ) {
     return 'terminal-for-run';
   }
@@ -316,10 +349,10 @@ export function classifyImportCryptoError(e: unknown): ArchiveErrorDisposition |
 function encodeFramingAscii(value: string, label: string): Uint8Array {
   const bytes = encodeUtf8Strict(value);
   if (bytes === null || bytes.length === 0) {
-    throw new Error(`importCrypto: ${label} is not encodable as UTF-8`);
+    throw new ImportCryptoInvariantError(`${label} is not encodable as UTF-8`);
   }
   if (bytes.indexOf(0x00) !== -1) {
-    throw new Error(`importCrypto: ${label} must not contain a NUL byte`);
+    throw new ImportCryptoInvariantError(`${label} must not contain a NUL byte`);
   }
   return bytes;
 }
@@ -340,6 +373,22 @@ function encodeFramingAscii(value: string, label: string): Uint8Array {
 const openSessions = new Set<() => void>();
 
 /**
+ * How many wipes have happened, module-wide.
+ *
+ * The registry alone cannot close the window a wipe can land in. A session
+ * that is still inside `openImportKeySession`'s `await getOrFetchGroupKey`
+ * has registered a `close` that owns nothing yet — the pin and `K_import` are
+ * created AFTER that await returns, so a wipe mid-fetch zeroes nothing and the
+ * session then materialises a fresh copy of the very key material the wipe
+ * existed to destroy.
+ *
+ * So the open path captures this counter before the await and compares it
+ * after. A counter rather than a boolean because wipes repeat: a flag would
+ * have to be cleared, and whoever cleared it would race the next open.
+ */
+let wipeEpoch = 0;
+
+/**
  * Close every open import-key session, zeroing `K_import` and the pinned group
  * key. Wired into `authService.localWipe` (next to `clearGroupKeyCache`) and
  * `keyGenerationService.fullCryptoWipe`.
@@ -348,12 +397,19 @@ const openSessions = new Set<() => void>();
  * leave the others holding key bytes through a wipe.
  */
 export function closeAllImportKeySessions(): void {
+  // Bump FIRST, before anything can throw: a session awaiting its group-key
+  // fetch is not in `openSessions` in any useful sense, and this counter is
+  // the only thing that stops it. See {@link wipeEpoch}.
+  wipeEpoch += 1;
+
   for (const close of [...openSessions]) {
     try {
       close();
     } catch {
-      // A close that throws has still been unregistered by its own guard;
-      // keep going so one bad session cannot strand the others' key bytes.
+      // close() unregisters in a `finally`, so by the time a throw reaches
+      // here the callback is already gone from the set. Delete anyway — this
+      // is the wipe path, and it must not depend on the guarantee of the
+      // thing that just failed.
       openSessions.delete(close);
     }
   }
@@ -370,7 +426,9 @@ export function closeAllImportKeySessions(): void {
  * Throws {@link ImportUserIdError} for a store without a usable userId, and
  * propagates `PendingWrapError` / `GroupKeyUnwrapError` from the group-key
  * fetch — both classify as `'retryable-pause'`, so failing to open is never a
- * permanent failure of the import.
+ * permanent failure of the import. A wipe landing during the group-key fetch
+ * throws {@link ImportKeySessionClosedError} and no session escapes; see
+ * {@link wipeEpoch}.
  *
  * #926 must call `close()` in a `finally`.
  */
@@ -400,66 +458,60 @@ export async function openImportKeySession(
   // 2. The source bytes, asserted before any key material exists so a bad
   //    value cannot reach the derivation at all.
   if (source !== 'facebook' && source !== 'instagram') {
-    throw new Error(`importCrypto: unknown import source ${JSON.stringify(source)}`);
+    throw new ImportCryptoInvariantError(`unknown import source ${JSON.stringify(source)}`);
   }
   const sourceBytes = encodeFramingAscii(source, 'source');
 
-  // 3. The group key, and the PIN. The copy is mandatory: the cache's array is
-  //    `.fill(0)`'d in place by `invalidateGroupKey` / `clearGroupKeyCache`, so
-  //    a pin that aliased it would zero itself mid-run and every later
-  //    comparison would see a key of 32 zeros. `pinned` lives until close().
-  const live = await getOrFetchGroupKey(groupId);
-  if (live.length !== GROUP_KEY_BYTES) {
-    throw new Error(`importCrypto: group key must be ${GROUP_KEY_BYTES} bytes, got ${live.length}`);
-  }
-  const pinned = live.slice();
-
-  // 4. K_import, derived once for the whole run. `ikmBuf` is its own copy of
-  //    the pin (toArrayBuffer slices), so zeroing it after the derivation
-  //    wipes the ikm the FFI lifted from without touching `pinned`.
-  const ikmBuf = toArrayBuffer(pinned);
-  let kImportBuf: ArrayBuffer;
-  try {
-    kImportBuf = hkdfSha256(
-      ikmBuf,
-      toArrayBuffer(encodeFramingAscii(IMPORT_SALT, 'salt')),
-      toArrayBuffer(infoBytes),
-      32,
-    );
-  } finally {
-    new Uint8Array(ikmBuf).fill(0);
-  }
-
-  const fingerprintTag = new Uint8Array(
-    hmacSha256(kImportBuf, toArrayBuffer(encodeFramingAscii(FINGERPRINT_INFO, 'fingerprint info'))),
-  );
-  const keyFingerprint = arrayBufferToBase64(
-    toArrayBuffer(fingerprintTag.slice(0, FINGERPRINT_BYTES)),
-  );
-
+  // 3. Session state, declared BEFORE the first await so that `close` is
+  //    well-formed — and therefore registrable — while the group key is still
+  //    in flight. Both key fields start `null` and are only populated once
+  //    their bytes exist, which is what lets close() run at any point in the
+  //    open sequence.
+  let pinned: Uint8Array | null = null;
+  let kImportBuf: ArrayBuffer | null = null;
   let closed = false;
   let derivations = 0;
 
-  function assertOpen(): void {
-    if (closed) throw new ImportKeySessionClosedError();
+  /** Zero and drop whatever key material exists. Idempotent. */
+  function zeroKeyMaterial(): void {
+    const buf = kImportBuf;
+    const pin = pinned;
+    // Drop the references first, so a throw from either fill() cannot leave a
+    // field pointing at bytes a later call would think are still live.
+    kImportBuf = null;
+    pinned = null;
+    if (buf !== null) new Uint8Array(buf).fill(0);
+    if (pin !== null) pin.fill(0);
   }
 
   function close(): void {
-    if (closed) {
-      // Still unregister: a double close must leave nothing behind for
-      // closeAllImportKeySessions() to walk.
-      openSessions.delete(close);
-      return;
-    }
     closed = true;
-    new Uint8Array(kImportBuf).fill(0);
-    pinned.fill(0);
-    openSessions.delete(close);
+    try {
+      zeroKeyMaterial();
+    } finally {
+      // Unconditional, and in a `finally`: a session whose zeroing threw must
+      // still not be walked a second time by closeAllImportKeySessions(), and
+      // a double close must leave nothing behind either.
+      openSessions.delete(close);
+    }
+  }
+
+  /**
+   * The open-session guard and typed access to the key material in one step.
+   * `closed` and the two nullable fields always move together, but TypeScript
+   * cannot narrow a captured `let` across a closure, so the check lives here
+   * rather than at each use.
+   */
+  function requireOpen(): { kImport: ArrayBuffer; pin: Uint8Array } {
+    if (closed || kImportBuf === null || pinned === null) {
+      throw new ImportKeySessionClosedError();
+    }
+    return { kImport: kImportBuf, pin: pinned };
   }
 
   async function verifyGroupKeyPin(): Promise<void> {
-    assertOpen();
-    const verdict = compareGroupKeyPin(groupId, pinned);
+    const { pin } = requireOpen();
+    const verdict = compareGroupKeyPin(groupId, pin);
     if (verdict === 'match') return;
     if (verdict === 'changed') throw new ImportKeyChangedError();
 
@@ -469,15 +521,20 @@ export async function openImportKeySession(
     // pending or unwrap failure propagates and classifies as 'retryable-pause',
     // which is the right answer for "can't tell yet".
     const refetched = await getOrFetchGroupKey(groupId);
-    if (!bytesEqual(refetched, pinned)) throw new ImportKeyChangedError();
+    // Re-check after the await. A close() or a wipe during the refetch has
+    // already zeroed the pin, and comparing against 32 zeros would report a
+    // changed key — a true but misleading verdict for a session that is
+    // simply gone.
+    const { pin: stillPinned } = requireOpen();
+    if (!bytesEqual(refetched, stillPinned)) throw new ImportKeyChangedError();
   }
 
   async function deriveImportKey(sourceItemId: Uint8Array): Promise<Uint8Array> {
-    assertOpen();
+    const { kImport } = requireOpen();
     // Messages here never include item content: `sourceItemId` embeds the post
     // text verbatim (see sourceItemId.ts), so it must not reach an Error.
     if (sourceItemId.length === 0) {
-      throw new Error('importCrypto: sourceItemId must not be empty');
+      throw new ImportCryptoInvariantError('sourceItemId must not be empty');
     }
 
     const framed = new Uint8Array(sourceBytes.length + 1 + sourceItemId.length);
@@ -485,35 +542,53 @@ export async function openImportKeySession(
     framed[sourceBytes.length] = 0x00;
     framed.set(sourceItemId, sourceBytes.length + 1);
 
-    const tag = new Uint8Array(hmacSha256(kImportBuf, toArrayBuffer(framed)));
+    const tag = new Uint8Array(hmacSha256(kImport, toArrayBuffer(framed)));
+    // `slice` COPIES into a fresh 16-byte buffer — unlike `subarray`, which
+    // would be a view keeping the whole tag alive behind the result. Then the
+    // tag goes: its unpublished second half is key-derived material that must
+    // not outlive the call, and in particular must not survive the yield below.
+    const importKey = tag.slice(0, IMPORT_KEY_BYTES);
+    tag.fill(0);
 
     derivations += 1;
     if (yieldEvery > 0 && derivations % yieldEvery === 0) {
       await new Promise<void>((resolve) => {
         setTimeout(resolve, 0);
       });
+      // A close() or a wipe may have landed during the yield. This token was
+      // derived from key material that no longer exists, and #926 would
+      // persist it into a database the wipe is clearing.
+      try {
+        requireOpen();
+      } catch (e) {
+        importKey.fill(0);
+        throw e;
+      }
     }
 
-    // A COPY, with a 16-byte backing buffer of its own: `tag.slice(0, 16)`
-    // alone would keep the 32-byte tag alive behind it, and the second half of
-    // that tag is unpublished key-derived material.
-    return new Uint8Array(tag.slice(0, IMPORT_KEY_BYTES));
+    return importKey;
   }
 
   async function sealImportMeta(
     originalCreatedAt: number,
   ): Promise<{ encryptedImportMeta: string; importMetaIv: string }> {
-    assertOpen();
+    requireOpen();
     if (!Number.isSafeInteger(originalCreatedAt)) {
-      throw new Error('importCrypto: originalCreatedAt must be a safe integer (epoch ms)');
+      throw new ImportCryptoInvariantError('originalCreatedAt must be a safe integer (epoch ms)');
     }
 
-    // Verify FIRST, then seal with the live key. The two are identical by
-    // construction once the pin verifies, and sealing with the live bytes is
-    // what makes it impossible to seal import-meta under a key the rest of the
-    // import is not using.
+    // Verify FIRST, then seal with the live key. Sealing with the live bytes
+    // is what makes it impossible to seal import-meta under a key the rest of
+    // the import is not using.
     await verifyGroupKeyPin();
     const liveKey = await getOrFetchGroupKey(groupId);
+
+    // Re-check after both awaits, and COMPARE rather than assume the two are
+    // identical: the pin verified a moment ago, but `getOrFetchGroupKey` can
+    // invalidate and refetch in between, and a rotation landing in that window
+    // is precisely the case the pin exists to catch.
+    const { pin } = requireOpen();
+    if (!bytesEqual(liveKey, pin)) throw new ImportKeyChangedError();
 
     // Fixed key order, so the plaintext is a function of the values alone.
     const plaintext = JSON.stringify({ v: 1, source, originalCreatedAt });
@@ -521,20 +596,88 @@ export async function openImportKeySession(
 
     // Base64 is ASCII, so character count IS the UTF-8 byte count here.
     if (ciphertext.length > MAX_IMPORT_META_B64) {
-      throw new Error(
-        `importCrypto: sealed import meta is ${ciphertext.length} bytes, over the ${MAX_IMPORT_META_B64} cap`,
+      throw new ImportCryptoInvariantError(
+        `sealed import meta is ${ciphertext.length} bytes, over the ${MAX_IMPORT_META_B64} cap`,
       );
     }
     if (iv.length > MAX_IMPORT_META_IV_B64) {
-      throw new Error(
-        `importCrypto: import meta IV is ${iv.length} bytes, over the ${MAX_IMPORT_META_IV_B64} cap`,
+      throw new ImportCryptoInvariantError(
+        `import meta IV is ${iv.length} bytes, over the ${MAX_IMPORT_META_IV_B64} cap`,
       );
     }
 
     return { encryptedImportMeta: ciphertext, importMetaIv: iv };
   }
 
+  // 4. Register, THEN fetch. From here on every exit path must go through
+  //    close(): the registry is holding a callback, and after the await below
+  //    it may be holding one over live key bytes.
   openSessions.add(close);
+  const epochAtOpen = wipeEpoch;
+
+  let keyFingerprint: string;
+  try {
+    const live = await getOrFetchGroupKey(groupId);
+
+    // The wipe window. A localWipe or fullCryptoWipe during the fetch above
+    // has already called this session's close(), which found nothing to zero
+    // because the pin did not exist yet. Everything below would mint a fresh
+    // copy of the very key material that wipe set out to destroy, so refuse
+    // instead — `closed` alone would be enough today, but the epoch is what
+    // makes that true independently of the registry's timing.
+    if (wipeEpoch !== epochAtOpen || closed) {
+      throw new ImportKeySessionClosedError();
+    }
+
+    if (live.length !== GROUP_KEY_BYTES) {
+      throw new ImportCryptoInvariantError(
+        `group key must be ${GROUP_KEY_BYTES} bytes, got ${live.length}`,
+      );
+    }
+
+    // The PIN. The copy is mandatory: the cache's array is `.fill(0)`'d in
+    // place by `invalidateGroupKey` / `clearGroupKeyCache`, so a pin that
+    // aliased it would zero itself mid-run and every later comparison would
+    // see a key of 32 zeros. `pinned` lives until close().
+    pinned = live.slice();
+
+    // K_import, derived once for the whole run. `ikmBuf` is its own copy of
+    // the pin (toArrayBuffer slices), so zeroing it after the derivation
+    // wipes the ikm the FFI lifted from without touching `pinned`.
+    const ikmBuf = toArrayBuffer(pinned);
+    try {
+      kImportBuf = hkdfSha256(
+        ikmBuf,
+        toArrayBuffer(encodeFramingAscii(IMPORT_SALT, 'salt')),
+        toArrayBuffer(infoBytes),
+        32,
+      );
+    } finally {
+      new Uint8Array(ikmBuf).fill(0);
+    }
+
+    const fingerprintTag = new Uint8Array(
+      hmacSha256(
+        kImportBuf,
+        toArrayBuffer(encodeFramingAscii(FINGERPRINT_INFO, 'fingerprint info')),
+      ),
+    );
+    try {
+      // `toArrayBuffer` slices, so this is the only copy the base64 needs.
+      keyFingerprint = arrayBufferToBase64(
+        toArrayBuffer(fingerprintTag.subarray(0, FINGERPRINT_BYTES)),
+      );
+    } finally {
+      // The 24 bytes past the fingerprint are unpublished key-derived material.
+      fingerprintTag.fill(0);
+    }
+  } catch (e) {
+    // Every throw after the registration lands here — the wipe window, a
+    // wrong-width key, a refused UTF-8 encode, an FFI failure — and none of
+    // them may leave key bytes behind or a callback in the registry.
+    close();
+    throw e;
+  }
 
   return {
     keyFingerprint,

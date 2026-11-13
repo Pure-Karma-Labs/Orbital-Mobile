@@ -23,6 +23,10 @@ import {
   type MockArchiveSession,
 } from '../../../../__mocks__/orbital-archive-reader';
 import { isStagingResidueName } from '../../media/stagingResidue';
+// The 128-byte heads live in the #925 fixture builders now: one definition
+// each, so a sniff-table change cannot be half-adopted between this suite and
+// the parser suites.
+import { JPEG_HEAD, mp4Head, svgHead } from '../testUtils/builders';
 import {
   ArchiveReaderError,
   bucketCount,
@@ -47,18 +51,6 @@ function entry(over: Partial<ArchiveEntry> = {}): ArchiveEntry {
   };
 }
 
-/** JPEG SOI + first marker byte: what `sniffContentType` needs for image/jpeg. */
-const JPEG_HEAD = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
-
-/** An `ftyp` box with major brand `isom`: video/mp4. */
-function mp4Head(): Uint8Array {
-  const head = new Uint8Array(32);
-  head[3] = 32; // box size
-  head.set([0x66, 0x74, 0x79, 0x70], 4); // 'ftyp'
-  head.set([0x69, 0x73, 0x6f, 0x6d], 8); // 'isom'
-  return head;
-}
-
 /** A HEIF `ftyp` whose decisive brand sits past the bytes we read. */
 function largeFtypHeifHead(): Uint8Array {
   const head = new Uint8Array(128);
@@ -66,11 +58,6 @@ function largeFtypHeifHead(): Uint8Array {
   head.set([0x66, 0x74, 0x79, 0x70], 4);
   head.set([0x6d, 0x69, 0x66, 0x31], 8); // 'mif1'
   return head;
-}
-
-function svgHead(): Uint8Array {
-  const text = '<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg">';
-  return new Uint8Array(Array.from(text, (c) => c.charCodeAt(0)));
 }
 
 function session(entries: ArchiveEntry[], over: Partial<MockArchiveSession> = {}) {
@@ -164,7 +151,7 @@ describe('the F1 sniff table', () => {
     expect(s.extractEntry).not.toHaveBeenCalled();
   });
 
-  it('refuses an SVG head as an unsupported image format', async () => {
+  it('refuses an SVG head as indeterminate, never by extension', async () => {
     const { result, s } = await sniffOutcome(svgHead());
     // SVG/HTML is not a format `sniffContentType` recognises at all, so it
     // fails closed as indeterminate rather than being named — which is the

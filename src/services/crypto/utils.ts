@@ -1,3 +1,13 @@
+/**
+ * latin1-TRUNCATING, NOT a UTF-8 encoder (#373): every code point above 0xFF
+ * loses its high bits. Safe only because both live callers
+ * (`identityKeyProbe.ts`, `inviteCrypto.ts`) pass ASCII.
+ *
+ * SUPERSEDED by `src/utils/utf8.ts`'s `encodeUtf8Strict` (#925). Retirement
+ * condition, from that module's codec census: rename or delete this when
+ * those two callers are next edited. The Meta import never calls it — for a
+ * post caption it would silently truncate every non-ASCII character.
+ */
 export function encodeUTF8(str: string): Uint8Array {
   const arr = new Uint8Array(str.length);
   for (let i = 0; i < str.length; i++) {

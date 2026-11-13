@@ -33,6 +33,7 @@ import type {
 } from '../../types/api';
 import { getSecureItem, setSecureItem, removeSecureItem } from '../secure-storage';
 import { clearGroupKeyCache, clearContentCryptoInflight } from './contentCrypto';
+import { closeAllImportKeySessions } from './importCrypto';
 import { resetGroupKeyFailureBudget } from './groupKeyErrors';
 import { clearAllGroupCryptoState } from '../../database/repositories/conversationRepository';
 import { SecureKeys } from '../secure-storage/constants';
@@ -626,6 +627,9 @@ export async function fullCryptoWipe(): Promise<void> {
   clearIdentityKeyCache();
   clearGroupKeyCache();
   clearContentCryptoInflight();
+  // #924: an open import session holds K_import plus its own COPY of the group
+  // key, neither of which lives in the cache the line above clears.
+  closeAllImportKeySessions();
   // The group-key reporter's per-session budget. Reached through the
   // import-free registry rather than by importing groupKeyTelemetry: this file
   // is inside the crypto fence, where ESLint bans every telemetry facade.

@@ -2380,6 +2380,13 @@ try {
 //                                     the BODIES of cancelAllExports and
 //                                     resetBulkExportState are pinned, so an
 //                                     emptied one cannot satisfy a call site.
+//                                     #921 folds the Meta import teardown into
+//                                     the same rule: localWipe calls
+//                                     deleteAllImportJobs(, and
+//                                     releaseAllPersistedParts( now runs ABOVE
+//                                     the preserveIdentity branch (both paths),
+//                                     while fullCryptoWipe drops import_jobs
+//                                     inside its BEGIN IMMEDIATE transaction.
 //   media-export-single-label-site  — buildExportFileName(, reconcileExportLabel(
 //                                     and sniffExportHead( appear EXACTLY once
 //                                     in mediaExportService.ts, all three inside
@@ -2398,6 +2405,10 @@ const ME_PKG_INDEX = join(MEDIA_EXPORT_PKG, 'src', 'index.tsx');
 const ME_PKG_SPEC = join(MEDIA_EXPORT_PKG, 'src', 'NativeOrbitalMediaExport.ts');
 const ME_AUTH_SERVICE = join(SRC, 'services', 'authService.ts');
 const ME_UPLOAD_SERVICE = join(SRC, 'services', 'mediaUploadService.ts');
+// #921: the OTHER wipe. `localWipe` is the account-level teardown;
+// `fullCryptoWipe` is the key-generation teardown, and rule 24e's third arm
+// pins the import-table drop inside its transaction.
+const MIT_KEY_GEN_SERVICE = join(SRC, 'services', 'crypto', 'keyGenerationService.ts');
 
 /**
  * The bulk runner (PR 2) is a REQUIRED file here, not an optional one.
@@ -3039,14 +3050,43 @@ const ME_LABEL_CALLS = ['buildExportFileName(', 'reconcileExportLabel(', 'sniffE
 //    for cancelAllExports' reason: an await hands control straight back to the
 //    job being torn down, which then gets to write one more chunk.
 //  - `releaseAllPersistedParts()` drops the Android SAF persistable grants.
-//    This one IS awaited and belongs on the DELETION path: it is a
-//    ContentResolver round-trip, it must not race the epoch bump, and logout
-//    deliberately KEEPS the grants so a cold-start resume still works. Without
-//    it, a deleted account leaves this app holding long-lived read grants on
-//    the user's Downloads ZIPs — grants that survive the wipe and that nothing
-//    in the UI would ever mention again.
+//    This one IS awaited: it is a ContentResolver round-trip and it must not
+//    race the epoch bump. Without it, a departing account leaves this app
+//    holding long-lived read grants on the user's Downloads ZIPs — grants that
+//    survive the wipe and that nothing in the UI would ever mention again.
+//
+// #921 (SQLite migration 009) adds the Meta IMPORT teardown to the same rule,
+// for the same property and in the same phase-1 slot, plus one ordering
+// correction to the clause above:
+//
+//  - `deleteAllImportJobs()` sits next to `clearAllThreads()`/`clearAllReplies()`
+//    in phase 1. `import_items.body` is the member's own post text —
+//    plaintext-class, the same posture as `orbital_threads.body` — and
+//    `import_items.source_file` holds basenames out of their export. The DB
+//    file is shared with whatever account comes next on this device, so a
+//    logout that kept those rows would hand the next member the previous
+//    member's post bodies and export file names. The cascade takes
+//    `import_items` and `import_item_media` with it.
+//  - `releaseAllPersistedParts()` MOVES ABOVE the `if (preserveIdentity)`
+//    branch, so it runs on BOTH paths. #920 deliberately kept the grants on
+//    logout so a paused import could resume; Alex's 2026-11-13 decision ends
+//    that trade, because logout now CLEARS the import state. A grant that
+//    outlives every row that explained it is an Android permission on a file
+//    in the member's Downloads folder that nothing in the app would ever
+//    mention again — and the resume it was being kept for no longer exists.
+//    Presence alone is therefore NOT enough: the call has to be above the
+//    fork, which is what the ordering half below checks.
+//
+// The third arm is `fullCryptoWipe`, the OTHER wipe (see MIT_KEY_GEN_SERVICE).
+// Its `DELETE FROM import_jobs` has to run inside the same `BEGIN IMMEDIATE`
+// transaction as the Signal-table drops, so the pin names the transaction too:
+// otherwise "inside the transaction" would pass vacuously the day the
+// transaction is removed and the deletes are left bare.
 
 const ME_WIPE_RULE = 'media-export-wipe-wired';
+// #921's own issue number. The import teardown rides inside rule 24e (above),
+// so it needs an issue constant rather than a rule name of its own.
+const MIT_ISSUE = '#921';
 
 const meAuthRaw = meRead(ME_AUTH_SERVICE, ME_WIPE_RULE, 'the localWipe export teardown');
 if (meAuthRaw !== null) {
@@ -3136,13 +3176,54 @@ if (meAuthRaw !== null) {
         `  ${relative('.', ME_AUTH_SERVICE)}:${at}  [${ME_WIPE_RULE}]  abortAllArchiveSessions( must not be awaited — the epoch bump and the cancel-flag set are synchronous, and an await hands control back to the job being torn down (${AR_ISSUE})`,
       );
     }
-    if (wipe[0].indexOf('releaseAllPersistedParts(') === -1) {
+    const releaseIdx = wipe[0].indexOf('releaseAllPersistedParts(');
+    // The logout/deletion fork. Used as the ORDERING anchor for the grant
+    // release below, the same way `mediaDirPath` anchors the export abort —
+    // and asserted non-vacuous for the same reason: if the branch is gone,
+    // "before the branch" is a comparison against nothing.
+    const preserveBranchIdx = wipe[0].indexOf('if (preserveIdentity)');
+    if (releaseIdx === -1) {
       violations.push(
         `  ${relative('.', ME_AUTH_SERVICE)}:${at}  [${ME_WIPE_RULE}]  localWipe() does not call releaseAllPersistedParts( — a deleted account would leave this app holding persistable SAF read grants on the user's archive ZIPs (${AR_ISSUE})`,
+      );
+    } else if (preserveBranchIdx === -1) {
+      violations.push(
+        `  ${relative('.', ME_AUTH_SERVICE)}:${at}  [${ME_WIPE_RULE}]  localWipe() no longer branches on \`if (preserveIdentity)\` — the releaseAllPersistedParts( ORDERING check would pass vacuously (${MIT_ISSUE})`,
+      );
+    } else if (releaseIdx > preserveBranchIdx) {
+      violations.push(
+        `  ${relative('.', ME_AUTH_SERVICE)}:${at}  [${ME_WIPE_RULE}]  releaseAllPersistedParts( must run ABOVE the \`if (preserveIdentity)\` branch, so it runs on LOGOUT as well as deletion — logout now clears the import state, and a retained SAF grant would outlive every row that explained it (${MIT_ISSUE})`,
+      );
+    }
+
+    // --- #921: the Meta import tables. Phase 1, next to the thread and reply
+    // caches, because `import_items.body` is the member's own post text
+    // (plaintext-class inside SQLCipher) and the DB file is shared with the
+    // next account on this device.
+    if (wipe[0].indexOf('deleteAllImportJobs(') === -1) {
+      violations.push(
+        `  ${relative('.', ME_AUTH_SERVICE)}:${at}  [${ME_WIPE_RULE}]  localWipe() does not call deleteAllImportJobs( — logout/deletion would leave the member's plaintext-class post bodies and export file names in import_items for the next account on this device (${MIT_ISSUE})`,
       );
     }
   }
 }
+
+// --- #921, third arm: the OTHER wipe. `fullCryptoWipe` destroys the key
+// generation every stored `import_key` was derived under and that
+// `import_jobs.key_fingerprint` stamps, so no import job can survive it — and
+// the rows carry plaintext-class post bodies, which belong with the rest of
+// the dead-generation state. `BEGIN IMMEDIATE` is pinned alongside the delete
+// so the "inside the transaction" half cannot pass vacuously if the
+// transaction is ever removed and the deletes are left bare.
+checkWindowedPins(
+  MIT_KEY_GEN_SERVICE,
+  ME_WIPE_RULE,
+  /^export async function fullCryptoWipe\(\)[\s\S]*?\n\}/m,
+  'the fullCryptoWipe body',
+  ['BEGIN IMMEDIATE', 'DELETE FROM import_jobs'],
+  [],
+  MIT_ISSUE,
+);
 
 checkWindowedPins(
   ME_UPLOAD_SERVICE,
@@ -5825,6 +5906,92 @@ if (ikKdfRaw !== null && !ikKdfFlat.includes(IK_STALE_CLAUSE)) {
     IK_KDF_RS,
     `the stale clause "${IK_STALE_CLAUSE}" is gone, so kdf.rs has been edited and the native digest has already moved — fold the correction in now, in this same commit, while the rebuild is already paid for. The two replacement texts have ONE home: the \`orbital_import_kat\` doc comment in ${relative('.', IK_KAT_RS)}, section "Fold-forward for the next real src/kdf.rs change" (kdf.rs lines 7-8, and the removal trigger at lines 56-64). Then DELETE the copies that only existed to park it: that fold-forward section in ${relative('.', IK_KAT_RS)}, this clause 30.5 (its constant, its meRead and this message), and the pointer to it in the ${relative('.', IK_MODULE)} module header`,
   );
+}
+
+// ---------------------------------------------------------------------------
+// 31. meta-import-no-source-item-id (#921 / #925)
+// ---------------------------------------------------------------------------
+
+// The parser's `sourceItemId` (#925, `src/services/metaImport/sourceItemId.ts`)
+// is the v1 identity frame, and the v1 framing embeds the member's REPAIRED
+// POST TEXT verbatim. Those bytes ARE the member's content: the identifier is
+// PLAINTEXT-CLASS, exactly like `import_items.body`, and it is never persisted,
+// logged, thrown or sent. The only thing derived from it that ever leaves the
+// parser is the 16-byte `import_key` (#924) — `hmacSha256(K_import,
+// utf8(source) ‖ 0x00 ‖ sourceItemId)[0..16]` — and THAT is what migration 009
+// stores and what the server dedups on.
+//
+// So the schema layer is the place to say "never here". A column named
+// `source_item_id`, or a row-type field named `sourceItemId`, would be the
+// member's post text sitting in a table under a name that reads like an
+// opaque id — which is precisely how it would survive review. Rule 30 already
+// keeps the DERIVATION to one module; this is the storage half of the same
+// property, and it is a separate rule because the violation line has to say
+// "schema", not "call site".
+//
+// SCOPE: every `.ts` in `src/database/migrations/` — the whole directory, not
+// just 009, because the obvious way to add the column later is a migration
+// 010 — plus `src/types/database.ts`, where the row interfaces live.
+// `meStripComments` first: 009's own header and `ImportItemRow`'s doc comment
+// both NAME the identifier in order to say it is deliberately absent, and the
+// prose must never be what fails the rule.
+//
+// NON-VACUITY: anchored on `CREATE TABLE import_items` still being in
+// migration 009. A ban that scans a directory that has moved, or a 009 that no
+// longer creates the table, is a ban over nothing — it must fail, not pass.
+
+const MIT_RULE = 'meta-import-no-source-item-id';
+const MIT_FRAME_ISSUE = '#921 / #925';
+const MIT_MIGRATIONS_DIR = join(SRC, 'database', 'migrations');
+const MIT_DB_TYPES = join(SRC, 'types', 'database.ts');
+const MIT_SCHEMA_MIGRATION = join(MIT_MIGRATIONS_DIR, '009_meta_import_tables.ts');
+const MIT_SCHEMA_ANCHOR = 'CREATE TABLE import_items';
+const MIT_BANNED_RE = /source_item_id|sourceItemId/;
+
+{
+  const mitAnchorRaw = meRead(
+    MIT_SCHEMA_MIGRATION,
+    MIT_RULE,
+    'the CREATE TABLE import_items anchor that makes this ban non-vacuous',
+    MIT_FRAME_ISSUE,
+  );
+  if (mitAnchorRaw !== null && !meStripComments(mitAnchorRaw).includes(MIT_SCHEMA_ANCHOR)) {
+    violations.push(
+      `  ${relative('.', MIT_SCHEMA_MIGRATION)}:0  [${MIT_RULE}]  \`${MIT_SCHEMA_ANCHOR}\` is gone from the migration that owns the Meta import schema — the ban on source_item_id|sourceItemId would pass vacuously over a schema layer that no longer holds the table it protects (${MIT_FRAME_ISSUE})`,
+    );
+  }
+
+  let mitMigrations = [];
+  try {
+    mitMigrations = readdirSync(MIT_MIGRATIONS_DIR)
+      .filter((name) => name.endsWith('.ts'))
+      .sort()
+      .map((name) => join(MIT_MIGRATIONS_DIR, name));
+  } catch {
+    violations.push(
+      `  ${relative('.', MIT_MIGRATIONS_DIR)}:0  [${MIT_RULE}]  migrations directory not found — the schema-layer ban would pass vacuously (${MIT_FRAME_ISSUE})`,
+    );
+  }
+  if (mitMigrations.length === 0) {
+    violations.push(
+      `  ${relative('.', MIT_MIGRATIONS_DIR)}:0  [${MIT_RULE}]  no .ts migration files to scan — a ban over zero files is a pass over nothing (${MIT_FRAME_ISSUE})`,
+    );
+  }
+
+  for (const file of [...mitMigrations, MIT_DB_TYPES]) {
+    const raw = meRead(file, MIT_RULE, 'the schema layer this ban covers', MIT_FRAME_ISSUE);
+    if (raw === null) continue;
+    const lines = meStripComments(raw).split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (!MIT_BANNED_RE.test(lines[i])) continue;
+      report(
+        file,
+        i + 1,
+        MIT_RULE,
+        `the schema layer names source_item_id|sourceItemId — the v1 identity frame embeds the member's repaired post text verbatim, so those bytes ARE their content: PLAINTEXT-CLASS, never persisted. Only the 16-byte \`import_key\` derived from it (#924) is stored: ${lines[i].trim()} (${MIT_FRAME_ISSUE})`,
+      );
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

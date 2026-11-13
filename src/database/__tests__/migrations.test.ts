@@ -61,7 +61,7 @@ describe('runMigrations', () => {
   it('skips migration that has already been applied', () => {
     const executeSync = jest.fn((sql: string) => {
       if (sql === 'PRAGMA user_version') {
-        return { rows: [{ user_version: 8 }], rowsAffected: 0 };
+        return { rows: [{ user_version: 9 }], rowsAffected: 0 };
       }
       return { rows: [], rowsAffected: 0 };
     });
@@ -125,6 +125,65 @@ describe('runMigrations', () => {
     // V8 does NOT disable foreign keys (no disableForeignKeys flag)
     const fkOffCount = sqls.filter((s) => s === 'PRAGMA foreign_keys = OFF').length;
     expect(fkOffCount).toBe(0);
+  });
+
+  it('runs v9 migration creating the Meta import tables', () => {
+    const executeSync = jest.fn((sql: string) => {
+      if (sql === 'PRAGMA user_version') {
+        return { rows: [{ user_version: 8 }], rowsAffected: 0 };
+      }
+      return { rows: [], rowsAffected: 0 };
+    });
+    makeDb(executeSync);
+    runMigrations();
+
+    const sqls = (executeSync.mock.calls as unknown as [string][]).map(([sql]) => sql);
+    const v9Sql = sqls.find((s) => s.includes('CREATE TABLE import_jobs'));
+    expect(v9Sql).toBeDefined();
+
+    // All three tables
+    expect(v9Sql).toContain('CREATE TABLE import_jobs');
+    expect(v9Sql).toContain('CREATE TABLE import_items');
+    expect(v9Sql).toContain('CREATE TABLE import_item_media');
+
+    // The partial UNIQUE index that is the parse-time dedup (#924 import_key)
+    expect(v9Sql).toContain(
+      'CREATE UNIQUE INDEX idx_import_items_job_key ON import_items (job_id, import_key)',
+    );
+    expect(v9Sql).toContain('WHERE import_key IS NOT NULL');
+
+    // Two-level cascade: job -> items -> media
+    expect(v9Sql).toContain('REFERENCES import_jobs(id) ON DELETE CASCADE');
+    expect(v9Sql).toContain('REFERENCES import_items(id) ON DELETE CASCADE');
+
+    // key_fingerprint is NOT NULL from creation (resume compares it on every
+    // transition, so a `ready` job's keys always carry their generation stamp)
+    expect(v9Sql).toMatch(/key_fingerprint\s+TEXT\s+NOT NULL/);
+
+    // user_version set to 9
+    expect(sqls).toContain('PRAGMA user_version = 9');
+
+    // 009 only CREATEs — no table rebuild, so no FK toggle
+    const fkOffCount = sqls.filter((s) => s === 'PRAGMA foreign_keys = OFF').length;
+    expect(fkOffCount).toBe(0);
+  });
+
+  it('migration 009 persists no sourceItemId (plaintext-class, #921/#925)', () => {
+    const executeSync = jest.fn((sql: string) => {
+      if (sql === 'PRAGMA user_version') {
+        return { rows: [{ user_version: 8 }], rowsAffected: 0 };
+      }
+      return { rows: [], rowsAffected: 0 };
+    });
+    makeDb(executeSync);
+    runMigrations();
+
+    const sqls = (executeSync.mock.calls as unknown as [string][]).map(([sql]) => sql);
+    const v9Sql = sqls.find((s) => s.includes('CREATE TABLE import_jobs'));
+    expect(v9Sql).toBeDefined();
+    // Non-vacuous: the SQL above IS the table that would carry such a column.
+    expect(v9Sql).toContain('CREATE TABLE import_items');
+    expect(v9Sql).not.toMatch(/source_item_id|sourceItemId/);
   });
 
   it('disables foreign keys around V3 migration (table rebuild)', () => {

@@ -7,6 +7,7 @@ import { VERSION as V5, SQL as SQL_V5 } from './005_fts5_search';
 import { VERSION as V6, SQL as SQL_V6 } from './006_media_thumbnail_ref';
 import { VERSION as V7, SQL as SQL_V7 } from './007_media_archive_confirmed';
 import { VERSION as V8, SQL as SQL_V8 } from './008_drop_media_sync_tables';
+import { VERSION as V9, SQL as SQL_V9 } from './009_meta_import_tables';
 
 interface Migration {
   version: number;
@@ -23,6 +24,8 @@ const migrations: Migration[] = [
   { version: V6, sql: SQL_V6 },
   { version: V7, sql: SQL_V7 },
   { version: V8, sql: SQL_V8 },
+  // 009 only CREATEs tables and indexes — no rebuild, so no disableForeignKeys.
+  { version: V9, sql: SQL_V9 },
 ];
 
 /**

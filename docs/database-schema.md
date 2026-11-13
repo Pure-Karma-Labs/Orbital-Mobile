@@ -34,7 +34,9 @@ Mobile normalizes desktop's composite keys into explicit columns. To reconstruct
 
 ---
 
-## Tables (17 total)
+## Tables (18 total)
+
+18 = the 17 documented below, minus the two `orbital_media_sync_*` tables that migration 008 dropped, plus the 3 Meta import tables migration 009 added. Those two sections are left in place pending a separate doc audit (#921 documented 009 only).
 
 ### Signal Protocol Stores (6)
 
@@ -222,6 +224,65 @@ Pending upload responses.
 | `expires_at` | INTEGER NOT NULL | Unix epoch seconds |
 | `created_at` | INTEGER NOT NULL | Unix epoch seconds |
 
+### Meta Import Tables (3)
+
+Added by migration 009 (#921). They hold the resumable Facebook/Instagram import state. All timestamps (`created_at`, `updated_at`, `original_date`) are epoch milliseconds. There are no CHECK constraints by design (matches migrations 001-008; the skip-reason set will grow).
+
+#### `import_jobs`
+One row per Meta archive import into an orbit.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | TEXT NOT NULL PK | |
+| `conversation_id` | TEXT NOT NULL | The orbit; no FK (003/004 precedent) |
+| `source` | TEXT NOT NULL | 'facebook' or 'instagram' |
+| `status` | TEXT NOT NULL DEFAULT 'parsing' | 'parsing', 'ready', 'in_progress', 'completed', 'cancelled', 'failed' (no 'paused': pause is in-process runtime state only) |
+| `session_id` | TEXT | Server import_id; NULL until start |
+| `key_fingerprint` | TEXT NOT NULL | `ImportKeySession.keyFingerprint`, a key-generation + account stamp. LOCAL ONLY: never logged, never sent to the server |
+| `declared_posts` | INTEGER | NULL until parsed; excludes held |
+| `declared_bytes` | INTEGER | NULL until parsed; excludes held |
+| `dropped_duplicates` | INTEGER NOT NULL DEFAULT 0 | Stored home of the `duplicate_in_archive` skip reason |
+| `archive_bookmark` | TEXT | `JSON.stringify(ArchiveSession.parts)`; capability handle, never logged; NULLed when the job reaches a terminal status |
+| `created_at` | INTEGER NOT NULL | Epoch ms |
+| `updated_at` | INTEGER NOT NULL | Epoch ms |
+
+**Indexes:** `idx_import_jobs_active (status, created_at DESC) WHERE status IN ('parsing', 'ready', 'in_progress')`
+
+#### `import_items`
+One row per post parsed from the archive, including skipped posts.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | TEXT NOT NULL PK | |
+| `job_id` | TEXT NOT NULL | FK → import_jobs(id) ON DELETE CASCADE |
+| `ordinal` | INTEGER NOT NULL | |
+| `import_key` | BLOB | 16 bytes, never base64 at rest; NULL for exactly the three pre-frame skips (`malformed_post`, `missing_timestamp`, `invalid_timestamp`) |
+| `status` | TEXT NOT NULL DEFAULT 'pending' | 'pending', 'uploading', 'created', 'duplicate', 'failed', 'skipped' |
+| `skip_reason` | TEXT | SkipReason; NULL unless skipped |
+| `original_date` | INTEGER | Epoch ms UTC |
+| `body` | TEXT | PLAINTEXT-CLASS post body (plaintext inside SQLCipher, same posture as `orbital_threads.body`); NULL for skips; set to NULL once the item reaches 'created' or 'duplicate' |
+| `source_file` | TEXT | Post-JSON basename; LOCAL UI ONLY (F18): never telemetry, never an error message, never a request body |
+| `source_index` | INTEGER | |
+| `id_kind` | INTEGER | 1 = content frame, 2 = IG fbid |
+| `thread_id` | TEXT | |
+| `error_code` | TEXT | |
+
+**Indexes:** `idx_import_items_job_key (job_id, import_key) UNIQUE WHERE import_key IS NOT NULL`, `idx_import_items_job_status (job_id, status, ordinal)`, `idx_import_items_job_reason (job_id, skip_reason) WHERE skip_reason IS NOT NULL`
+
+#### `import_item_media`
+Per-post media entries, in display order. Composite PK `(item_id, ordinal)`.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `item_id` | TEXT NOT NULL | FK → import_items(id) ON DELETE CASCADE; composite PK part 1 |
+| `ordinal` | INTEGER NOT NULL | Display order within the post; composite PK part 2 |
+| `media_id` | TEXT NOT NULL | Lowercase UUIDv4 (`generateUUID`), stable across retries |
+| `entry_id` | TEXT NOT NULL | Opaque; never parsed or truncated |
+| `original_date` | INTEGER | Epoch ms UTC, per media |
+| `upload_state` | TEXT NOT NULL DEFAULT 'pending' | 'pending' or 'uploaded' (request-saving cache) |
+
+**Indexes:** none beyond the composite primary key.
+
 ### Messaging Tables (2)
 
 #### `messages`
@@ -346,6 +407,7 @@ Draft persistence.
 | 001 | `001_initial_schema.ts` | All 17 tables, indexes, initial schema |
 | 002 | `002_media_blur_hash_expires.ts` | Add blur_hash and expires_at to orbital_media |
 | 003 | `003_drop_media_fks.ts` | Drop FK constraints on orbital_media (thread_id, reply_id, message_id) |
+| 009 | `009_meta_import_tables.ts` | Add import_jobs, import_items, import_item_media for resumable Facebook/Instagram import (#921) |
 
 ## Planned Future Migrations
 

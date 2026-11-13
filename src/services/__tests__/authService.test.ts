@@ -152,6 +152,12 @@ jest.mock('../../database/queryHelpers', () => ({
   execute: (...args: unknown[]) => mockExecute(...args),
 }));
 
+// #921: the Meta import tables are cleared on BOTH wipe paths.
+const mockDeleteAllImportJobs = jest.fn();
+jest.mock('../../database/repositories/importRepository', () => ({
+  deleteAllImportJobs: () => mockDeleteAllImportJobs(),
+}));
+
 const mockCloseDatabase = jest.fn();
 jest.mock('../../database/connection', () => ({
   isDatabaseInitialized: jest.fn(() => true),
@@ -1115,8 +1121,14 @@ describe('logout', () => {
 
   // #920 F3: an in-flight archive extract is the other thing writing decrypted
   // bytes into Caches on a path this wipe sweeps, so it must be stopped in
-  // phase 1 and NOT awaited. Logout keeps the SAF grants.
-  it('aborts every archive session in phase 1 and keeps SAF grants on logout (localWipe)', async () => {
+  // phase 1 and NOT awaited.
+  //
+  // #921 FLIPPED the grant half of this test. Logout used to KEEP the
+  // persistable SAF grants so a paused import stayed resumable; it now clears
+  // the import state outright (deleteAllImportJobs), and a grant whose job
+  // rows are gone is a long-lived read permission on the member's Downloads
+  // ZIPs that nothing in the UI would ever mention again.
+  it('aborts every archive session in phase 1 and RELEASES SAF grants on logout (localWipe)', async () => {
     const {
       abortAllArchiveSessions,
       releaseAllPersistedParts,
@@ -1131,9 +1143,23 @@ describe('logout', () => {
     expect(abortAllArchiveSessions.mock.invocationCallOrder[0]).toBeLessThan(
       mockClearTokens.mock.invocationCallOrder[0],
     );
-    // Logout deliberately keeps persistable grants: the same user on the same
-    // device must still be able to resume a paused import after re-login.
-    expect(releaseAllPersistedParts).not.toHaveBeenCalled();
+    expect(releaseAllPersistedParts).toHaveBeenCalledTimes(1);
+    // The release is a ContentResolver round-trip and must not race the epoch
+    // bump, so it runs after the synchronous phase-1 teardown.
+    expect(releaseAllPersistedParts.mock.invocationCallOrder[0]).toBeGreaterThan(
+      abortAllArchiveSessions.mock.invocationCallOrder[0],
+    );
+  });
+
+  // #921: the import tables hold the member's own post bodies (plaintext-class
+  // inside SQLCipher) and their export's file names. The next account on this
+  // device shares the DB file, so logout clears them.
+  it('deletes all import jobs on logout (localWipe)', async () => {
+    mockDeleteAllImportJobs.mockClear();
+
+    await logout();
+
+    expect(mockDeleteAllImportJobs).toHaveBeenCalledTimes(1);
   });
 
   // #678: the epoch must bump BEFORE the store reset, or an in-flight mute
@@ -1183,6 +1209,17 @@ describe('deleteAccount', () => {
 
     expect(abortAllArchiveSessions).toHaveBeenCalledTimes(1);
     expect(releaseAllPersistedParts).toHaveBeenCalledTimes(1);
+  });
+
+  // #921: the import tables go on the deletion path too — the DB file is
+  // unlinked afterwards, but the delete runs while it is still open so the
+  // cascade is observable and the path does not depend on the unlink.
+  it('deletes all import jobs on the deletion path (localWipe)', async () => {
+    mockDeleteAllImportJobs.mockClear();
+
+    await deleteAccount('Password123!');
+
+    expect(mockDeleteAllImportJobs).toHaveBeenCalledTimes(1);
   });
 
   it('on success: DB unlink happens BEFORE clearSecureStorage (critical ordering)', async () => {

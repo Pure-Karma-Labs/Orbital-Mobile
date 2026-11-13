@@ -789,6 +789,33 @@ describe('fullCryptoWipe', () => {
     expect(resetGroupKeyFailureBudget).toHaveBeenCalledTimes(1);
   });
 
+  // #921 (Alex, 2026-11-13): a Meta import job's rows are derived under the
+  // key generation this wipe destroys — `key_fingerprint` stamps it and every
+  // stored `import_key` came from it — so the job can never be resumed. The
+  // DELETE goes INSIDE the existing BEGIN IMMEDIATE block, with the Signal
+  // tables, and cascades to import_items and import_item_media.
+  it('deletes the Meta import jobs inside the wipe transaction', async () => {
+    const executeSync = jest.fn();
+    (getDatabase as jest.Mock).mockReturnValue({ executeSync });
+
+    await fullCryptoWipe();
+
+    const deleteOrder = (execute as jest.Mock).mock.calls.map(([sql]) => sql);
+    expect(deleteOrder).toContain('DELETE FROM import_jobs');
+
+    const txn = executeSync.mock.calls.map(([sql]: [string]) => sql);
+    expect(txn).toEqual(['BEGIN IMMEDIATE', 'COMMIT']);
+
+    // The DELETE is bracketed by the transaction, not run beside it.
+    const deleteCall = (execute as jest.Mock).mock.calls.findIndex(
+      ([sql]) => sql === 'DELETE FROM import_jobs',
+    );
+    expect(deleteCall).toBeGreaterThanOrEqual(0);
+    const deleteInvocation = (execute as jest.Mock).mock.invocationCallOrder[deleteCall];
+    expect(deleteInvocation).toBeGreaterThan(executeSync.mock.invocationCallOrder[0]);
+    expect(deleteInvocation).toBeLessThan(executeSync.mock.invocationCallOrder[1]);
+  });
+
   it('still clears the budget when there is no database to wipe', async () => {
     (isDatabaseInitialized as jest.Mock).mockReturnValue(false);
 

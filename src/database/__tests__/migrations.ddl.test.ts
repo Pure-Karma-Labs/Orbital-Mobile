@@ -8,9 +8,20 @@
  * bricked bootstrap on a member's device.
  *
  * So this suite runs the real `SQL` export through `node:sqlite`'s
- * `DatabaseSync`. Node 24.22.1 (the pinned toolchain) bundles SQLite 3.53.x,
- * the same series op-sqlite ships, so the DDL dialect checked here is the
- * dialect the device parses.
+ * `DatabaseSync`, on whichever Node is running Jest:
+ *
+ *  - CI runs Node 22 (`.github/workflows/ci.yml`, `node-version: 22`), where
+ *    `node:sqlite` is available WITHOUT `--experimental-sqlite` (verified on
+ *    22.23.4: it imports with an ExperimentalWarning and nothing else). That
+ *    is why `package.json` declares `engines.node >= 22`: on Node 20 the
+ *    import throws `ERR_UNKNOWN_BUILTIN_MODULE` and this suite cannot run at
+ *    all.
+ *  - Local work runs the pinned 24.22.1.
+ *
+ * Both bundle SQLite 3.53.4 (measured), the series op-sqlite ships, so the DDL
+ * dialect checked here is the dialect the device parses. Nothing in this file
+ * needs anything newer than partial indexes (3.8.0) and `ON CONFLICT … DO
+ * NOTHING` (3.24.0).
  *
  * 009 is executed ALONE: it only CREATEs, references no table from 001-008 and
  * takes no FK outside its own three tables, so a minimal in-memory DB is a
@@ -82,6 +93,71 @@ describe('migration 009 DDL (executed on node:sqlite)', () => {
       'idx_import_items_job_status',
       'idx_import_jobs_active',
     ]);
+    db.close();
+  });
+
+  // The index the launch-time resume depends on. It was partial
+  // (`WHERE status IN ('parsing','ready','in_progress')`) until the #990 fold
+  // round, and a partial index is unusable by a query that BINDS its status
+  // list: SQLite has to prove the index's WHERE clause from the query's own
+  // terms, and it cannot see through `?`. Measured, not assumed — with the
+  // WHERE clause these same two queries planned as `SCAN import_jobs`.
+  //
+  // Asserting on the PLAN rather than the DDL string is deliberate: a future
+  // edit that reintroduces the predicate, or renames the index, or reorders
+  // its columns so the status lookup stops being a prefix, all show up here.
+  it('plans both bound status queries through idx_import_jobs_active (not a SCAN)', () => {
+    const db = openDb();
+    for (let i = 0; i < 20; i++) {
+      insertJob(db, `job-${i}`);
+    }
+
+    const plan = (sql: string, params: string[]): string =>
+      db
+        .prepare(`EXPLAIN QUERY PLAN ${sql}`)
+        .all(...params)
+        .map((r) => String(r.detail))
+        .join(' | ');
+
+    const active = ['parsing', 'ready', 'in_progress'];
+
+    // createImportJob's "is another job already live?" probe.
+    const probe = plan('SELECT id FROM import_jobs WHERE status IN (?, ?, ?) LIMIT 1', active);
+    expect(probe).toContain('idx_import_jobs_active');
+    expect(probe).not.toContain('SCAN import_jobs');
+
+    // getActiveImportJob. The ORDER BY still costs a temp B-tree — a
+    // three-value IN is three index ranges — and that is accepted, documented
+    // on the function, and asserted here so the comment cannot rot.
+    const newest = plan(
+      'SELECT * FROM import_jobs WHERE status IN (?, ?, ?) ORDER BY created_at DESC LIMIT 1',
+      active,
+    );
+    expect(newest).toContain('idx_import_jobs_active');
+    expect(newest).not.toContain('SCAN import_jobs');
+    expect(newest).toContain('USE TEMP B-TREE FOR ORDER BY');
+
+    db.close();
+  });
+
+  // The item-side indexes, same reasoning. `idx_import_items_job_status` is
+  // the one the upload loop leans on, and it has to serve the ORDER BY too:
+  // if `ordinal` ever left the index, every batch fetch would sort in memory.
+  it('plans the pending-batch fetch through idx_import_items_job_status, ordinal included', () => {
+    const db = openDb();
+    insertJob(db);
+
+    const detail = db
+      .prepare(
+        `EXPLAIN QUERY PLAN SELECT * FROM import_items
+          WHERE job_id = ? AND status = 'pending' ORDER BY ordinal ASC LIMIT ?`,
+      )
+      .all(JOB, 100)
+      .map((r) => String(r.detail))
+      .join(' | ');
+
+    expect(detail).toContain('idx_import_items_job_status');
+    expect(detail).not.toContain('USE TEMP B-TREE FOR ORDER BY');
     db.close();
   });
 

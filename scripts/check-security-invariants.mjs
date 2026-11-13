@@ -2409,6 +2409,10 @@ const ME_UPLOAD_SERVICE = join(SRC, 'services', 'mediaUploadService.ts');
 // `fullCryptoWipe` is the key-generation teardown, and rule 24e's third arm
 // pins the import-table drop inside its transaction.
 const MIT_KEY_GEN_SERVICE = join(SRC, 'services', 'crypto', 'keyGenerationService.ts');
+// #921: the THIRD teardown site. Key recovery runs `fullCryptoWipe` without
+// ever going through `localWipe`, so the archive teardown has to be wired
+// there separately — and pinned here, or the two paths drift apart.
+const MIT_RECOVERY_SERVICE = join(SRC, 'services', 'keyRecoveryService.ts');
 
 /**
  * The bulk runner (PR 2) is a REQUIRED file here, not an optional one.
@@ -3215,15 +3219,97 @@ if (meAuthRaw !== null) {
 // the dead-generation state. `BEGIN IMMEDIATE` is pinned alongside the delete
 // so the "inside the transaction" half cannot pass vacuously if the
 // transaction is ever removed and the deletes are left bare.
+const MIT_WIPE_WINDOW_RE = /^export async function fullCryptoWipe\(\)[\s\S]*?\n\}/m;
 checkWindowedPins(
   MIT_KEY_GEN_SERVICE,
   ME_WIPE_RULE,
-  /^export async function fullCryptoWipe\(\)[\s\S]*?\n\}/m,
+  MIT_WIPE_WINDOW_RE,
   'the fullCryptoWipe body',
   ['BEGIN IMMEDIATE', 'DELETE FROM import_jobs'],
   [],
   MIT_ISSUE,
 );
+
+// Presence is not position. The three pins above can all hold with the DELETE
+// sitting AFTER the COMMIT, where it is no longer part of the atomic wipe: a
+// crash between the two would leave the Signal tables empty and the import
+// rows — plaintext-class bodies included — behind, under a key generation
+// that no longer exists. So the index order is checked too, which is what the
+// comment on the rule has always claimed.
+{
+  const mitWipeRaw = meRead(
+    MIT_KEY_GEN_SERVICE,
+    ME_WIPE_RULE,
+    'the fullCryptoWipe transaction ordering',
+    MIT_ISSUE,
+  );
+  if (mitWipeRaw !== null) {
+    const mitWipeWindow = meStripComments(mitWipeRaw).match(MIT_WIPE_WINDOW_RE);
+    // A missing window is already reported by checkWindowedPins above; this
+    // arm only has to avoid asserting against nothing.
+    if (mitWipeWindow !== null) {
+      const beginIdx = mitWipeWindow[0].indexOf('BEGIN IMMEDIATE');
+      const deleteIdx = mitWipeWindow[0].indexOf('DELETE FROM import_jobs');
+      const commitIdx = mitWipeWindow[0].indexOf('COMMIT');
+      if (commitIdx === -1) {
+        violations.push(
+          `  ${relative('.', MIT_KEY_GEN_SERVICE)}:0  [${ME_WIPE_RULE}]  fullCryptoWipe has no COMMIT — the "DELETE FROM import_jobs runs inside the transaction" ordering check would pass vacuously (${MIT_ISSUE})`,
+        );
+      } else if (
+        beginIdx !== -1 &&
+        deleteIdx !== -1 &&
+        !(beginIdx < deleteIdx && deleteIdx < commitIdx)
+      ) {
+        violations.push(
+          `  ${relative('.', MIT_KEY_GEN_SERVICE)}:0  [${ME_WIPE_RULE}]  DELETE FROM import_jobs must sit BETWEEN BEGIN IMMEDIATE and COMMIT — outside the transaction it is not part of the atomic wipe, and a crash would leave plaintext-class import bodies behind under a destroyed key generation (${MIT_ISSUE})`,
+        );
+      }
+    }
+  }
+}
+
+// --- #921, fourth arm: key recovery. `keyRecoveryService` never calls
+// `localWipe`, so neither of the teardowns the rule pins above reaches it —
+// yet step 5 runs `fullCryptoWipe`, which deletes `import_jobs`. Without
+// these two calls a recovery leaves the app holding persistable SAF grants on
+// ZIPs in the member's Downloads folder with no row left to explain them, and
+// lets a live parse keep flushing items against a job row the wipe just
+// deleted.
+//
+// Order is the point, so it is what is checked: abort (synchronous, bumps the
+// epoch) BEFORE the wipe, release (a ContentResolver round-trip) AFTER it.
+// `fullCryptoWipe(` is the non-vacuity anchor — if the wipe ever leaves this
+// file, pinning its neighbours here means nothing.
+{
+  const mitRecoveryRaw = meRead(
+    MIT_RECOVERY_SERVICE,
+    ME_WIPE_RULE,
+    'the key-recovery archive teardown',
+    MIT_ISSUE,
+  );
+  if (mitRecoveryRaw !== null) {
+    const flat = meStripComments(mitRecoveryRaw);
+    const wipeIdx = flat.indexOf('fullCryptoWipe(');
+    const abortIdx = flat.indexOf('abortAllArchiveSessions(');
+    const releaseIdx = flat.indexOf('releaseAllPersistedParts(');
+    if (wipeIdx === -1) {
+      violations.push(
+        `  ${relative('.', MIT_RECOVERY_SERVICE)}:0  [${ME_WIPE_RULE}]  no fullCryptoWipe( call — the key-recovery archive teardown pins would have nothing to anchor on and would pass vacuously (${MIT_ISSUE})`,
+      );
+    } else {
+      if (abortIdx === -1 || abortIdx > wipeIdx) {
+        violations.push(
+          `  ${relative('.', MIT_RECOVERY_SERVICE)}:0  [${ME_WIPE_RULE}]  abortAllArchiveSessions( must run BEFORE fullCryptoWipe( in key recovery — the wipe deletes import_jobs, and a parse still flushing items would be writing against a job row that no longer exists (${MIT_ISSUE})`,
+        );
+      }
+      if (releaseIdx === -1 || releaseIdx < wipeIdx) {
+        violations.push(
+          `  ${relative('.', MIT_RECOVERY_SERVICE)}:0  [${ME_WIPE_RULE}]  releaseAllPersistedParts( must run AFTER fullCryptoWipe( in key recovery — this path never calls localWipe, so without it a recovered account keeps long-lived SAF read grants on the member's archive ZIPs with no import row left to explain them (${MIT_ISSUE})`,
+        );
+      }
+    }
+  }
+}
 
 checkWindowedPins(
   ME_UPLOAD_SERVICE,
@@ -5921,7 +6007,7 @@ if (ikKdfRaw !== null && !ikKdfFlat.includes(IK_STALE_CLAUSE)) {
 // utf8(source) ‖ 0x00 ‖ sourceItemId)[0..16]` — and THAT is what migration 009
 // stores and what the server dedups on.
 //
-// So the schema layer is the place to say "never here". A column named
+// So the storage layer is the place to say "never here". A column named
 // `source_item_id`, or a row-type field named `sourceItemId`, would be the
 // member's post text sitting in a table under a name that reads like an
 // opaque id — which is precisely how it would survive review. Rule 30 already
@@ -5931,10 +6017,22 @@ if (ikKdfRaw !== null && !ikKdfFlat.includes(IK_STALE_CLAUSE)) {
 //
 // SCOPE: every `.ts` in `src/database/migrations/` — the whole directory, not
 // just 009, because the obvious way to add the column later is a migration
-// 010 — plus `src/types/database.ts`, where the row interfaces live.
-// `meStripComments` first: 009's own header and `ImportItemRow`'s doc comment
-// both NAME the identifier in order to say it is deliberately absent, and the
-// prose must never be what fails the rule.
+// 010 — plus `src/types/database.ts`, where the row interfaces live, plus
+// `src/database/repositories/importRepository.ts`.
+//
+// The repository is in scope because a column is not the only way to persist
+// this: `ImportItemInsert` is the parser → storage boundary, and `ParsedPost`
+// (#925) really does carry a `sourceItemId` field. A writer that accepted one
+// — to "key" an item, or by widening the insert type toward the parser's —
+// would carry plaintext into this layer with no migration to review, and
+// TypeScript would not stop it (excess-property checking does not reach
+// spread-in properties). Mutation-proven: before this file was added to the
+// list, a `sourceItemId` field on `ImportItemInsert` passed at exit 0.
+//
+// `meStripComments` first: 009's header, `ImportItemRow`'s doc comment and the
+// repository's own "there is deliberately no `sourceItemId` here" line all
+// NAME the identifier in order to say it is absent, and the prose must never
+// be what fails the rule.
 //
 // NON-VACUITY: anchored on `CREATE TABLE import_items` still being in
 // migration 009. A ban that scans a directory that has moved, or a 009 that no
@@ -5944,6 +6042,7 @@ const MIT_RULE = 'meta-import-no-source-item-id';
 const MIT_FRAME_ISSUE = '#921 / #925';
 const MIT_MIGRATIONS_DIR = join(SRC, 'database', 'migrations');
 const MIT_DB_TYPES = join(SRC, 'types', 'database.ts');
+const MIT_REPOSITORY = join(SRC, 'database', 'repositories', 'importRepository.ts');
 const MIT_SCHEMA_MIGRATION = join(MIT_MIGRATIONS_DIR, '009_meta_import_tables.ts');
 const MIT_SCHEMA_ANCHOR = 'CREATE TABLE import_items';
 const MIT_BANNED_RE = /source_item_id|sourceItemId/;
@@ -5978,8 +6077,8 @@ const MIT_BANNED_RE = /source_item_id|sourceItemId/;
     );
   }
 
-  for (const file of [...mitMigrations, MIT_DB_TYPES]) {
-    const raw = meRead(file, MIT_RULE, 'the schema layer this ban covers', MIT_FRAME_ISSUE);
+  for (const file of [...mitMigrations, MIT_DB_TYPES, MIT_REPOSITORY]) {
+    const raw = meRead(file, MIT_RULE, 'the storage layer this ban covers', MIT_FRAME_ISSUE);
     if (raw === null) continue;
     const lines = meStripComments(raw).split('\n');
     for (let i = 0; i < lines.length; i++) {
@@ -5988,7 +6087,7 @@ const MIT_BANNED_RE = /source_item_id|sourceItemId/;
         file,
         i + 1,
         MIT_RULE,
-        `the schema layer names source_item_id|sourceItemId — the v1 identity frame embeds the member's repaired post text verbatim, so those bytes ARE their content: PLAINTEXT-CLASS, never persisted. Only the 16-byte \`import_key\` derived from it (#924) is stored: ${lines[i].trim()} (${MIT_FRAME_ISSUE})`,
+        `the storage layer names source_item_id|sourceItemId — the v1 identity frame embeds the member's repaired post text verbatim, so those bytes ARE their content: PLAINTEXT-CLASS, never persisted. Only the 16-byte \`import_key\` derived from it (#924) is stored: ${lines[i].trim()} (${MIT_FRAME_ISSUE})`,
       );
     }
   }

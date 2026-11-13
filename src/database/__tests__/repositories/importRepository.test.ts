@@ -19,14 +19,16 @@ import {
   insertImportItems,
   getPendingImportItems,
   markItemsUploading,
+  requeueImportItems,
   applyBatchResults,
+  IMPORT_RESULT_UNKNOWN,
   countImportItemsByStatus,
   countImportSkipsByReason,
   getSkippedItems,
   markMediaUploaded,
   replaceMediaId,
 } from '../../repositories/importRepository';
-import type { ImportItemInsert } from '../../repositories/importRepository';
+import type { ImportItemInsert, ImportBatchResult } from '../../repositories/importRepository';
 
 jest.mock('@op-engineering/op-sqlite', () => ({
   open: jest.fn(() => ({
@@ -182,25 +184,47 @@ describe('importRepository', () => {
     });
   });
 
+  describe('getImportJob', () => {
+    it('binds the id and returns the mapped row', () => {
+      const exec = jest.fn(() => rows([{ id: 'job-1', status: 'ready', key_fingerprint: 'fp' }]));
+      makeDb(exec);
+
+      const job = getImportJob('job-1');
+
+      const [sql, params] = callMatching(exec, 'SELECT * FROM import_jobs');
+      expect(sql).toContain('WHERE id = ?');
+      expect(params).toEqual(['job-1']);
+      expect(job?.id).toBe('job-1');
+      expect(job?.status).toBe('ready');
+    });
+
+    it('returns null when the job is gone', () => {
+      const exec = jest.fn(() => rows([]));
+      makeDb(exec);
+      expect(getImportJob('job-1')).toBeNull();
+    });
+  });
+
   describe('setImportJobParsed / startImportJob', () => {
     it('setImportJobParsed moves to ready with the declared totals', () => {
       const exec = jest.fn(() => ({ rows: [], rowsAffected: 1 }));
       makeDb(exec);
 
-      setImportJobParsed('job-1', { declaredPosts: 120, declaredBytes: 4096 });
+      const moved = setImportJobParsed('job-1', { declaredPosts: 120, declaredBytes: 4096 });
 
       const [sql, params] = callMatching(exec, 'UPDATE import_jobs');
       expect(sql).toContain("status = 'ready'");
       expect(params?.[0]).toBe(120);
       expect(params?.[1]).toBe(4096);
       expect(params?.[3]).toBe('job-1');
+      expect(moved).toBe(true);
     });
 
     it('startImportJob writes session_id only — never key_fingerprint', () => {
       const exec = jest.fn(() => ({ rows: [], rowsAffected: 1 }));
       makeDb(exec);
 
-      startImportJob('job-1', { sessionId: 'import-abc' });
+      const moved = startImportJob('job-1', { sessionId: 'import-abc' });
 
       const [sql, params] = callMatching(exec, 'UPDATE import_jobs');
       expect(sql).toContain("status = 'in_progress'");
@@ -208,6 +232,114 @@ describe('importRepository', () => {
       expect(sql).not.toContain('key_fingerprint');
       expect(params?.[0]).toBe('import-abc');
       expect(params?.[2]).toBe('job-1');
+      expect(moved).toBe(true);
+    });
+  });
+
+  // Every job writer re-asserts the status it is transitioning FROM, so a
+  // cancelled or finished job cannot be resurrected by a caller holding a
+  // stale copy of the row — and reports the miss, because at the SQL level a
+  // failed predicate is indistinguishable from success.
+  describe('status predicates on the job writers', () => {
+    it('setImportJobParsed only fires on a parsing job, and reports a miss', () => {
+      const exec = jest.fn(() => ({ rows: [], rowsAffected: 0 }));
+      makeDb(exec);
+
+      const moved = setImportJobParsed('job-1', { declaredPosts: 1, declaredBytes: 1 });
+
+      expect(callMatching(exec, 'UPDATE import_jobs')[0]).toContain("AND status = 'parsing'");
+      expect(moved).toBe(false);
+    });
+
+    it('startImportJob only fires on a ready job, and reports a miss', () => {
+      const exec = jest.fn(() => ({ rows: [], rowsAffected: 0 }));
+      makeDb(exec);
+
+      const moved = startImportJob('job-1', { sessionId: 's' });
+
+      expect(callMatching(exec, 'UPDATE import_jobs')[0]).toContain("AND status = 'ready'");
+      expect(moved).toBe(false);
+    });
+
+    it('setArchiveBookmark only fires on an active job, binding the status list', () => {
+      const exec = jest.fn(() => ({ rows: [], rowsAffected: 0 }));
+      makeDb(exec);
+
+      const written = setArchiveBookmark('job-1', '[]');
+
+      const [sql, params] = callMatching(exec, 'archive_bookmark = ?');
+      expect(sql).toContain('AND status IN (?, ?, ?)');
+      // The list is BOUND, not interpolated — same rule as everywhere else.
+      expect(params?.slice(3)).toEqual(['parsing', 'ready', 'in_progress']);
+      expect(written).toBe(false);
+    });
+
+    it('markItemsUploading only promotes pending rows and returns how many moved', () => {
+      const exec = jest.fn(() => ({ rows: [], rowsAffected: 2 }));
+      makeDb(exec);
+
+      const moved = markItemsUploading('job-1', ['item-1', 'item-2', 'item-3']);
+
+      const [sql] = callMatching(exec, "status = 'uploading'");
+      expect(sql).toContain("AND status = 'pending'");
+      // A short count is the signal that the caller's batch is stale.
+      expect(moved).toBe(2);
+    });
+  });
+
+  // The only way back out of `uploading`/`failed`. Without it a kill between
+  // markItemsUploading and applyBatchResults strands items where
+  // getPendingImportItems can never see them again.
+  describe('requeueImportItems', () => {
+    it('requeues every uploading item of the job when no ids are given', () => {
+      const exec = jest.fn(() => ({ rows: [], rowsAffected: 7 }));
+      makeDb(exec);
+
+      const moved = requeueImportItems('job-1', { from: 'uploading' });
+
+      const [sql, params] = callMatching(exec, "status = 'pending'");
+      expect(sql).toContain('error_code = NULL');
+      expect(sql).toContain('WHERE job_id = ? AND status = ?');
+      expect(sql).not.toContain('id IN (');
+      expect(params).toEqual(['job-1', 'uploading']);
+      expect(moved).toBe(7);
+    });
+
+    it('keeps the body — it is the payload the retry resubmits', () => {
+      const exec = jest.fn(() => ({ rows: [], rowsAffected: 1 }));
+      makeDb(exec);
+
+      requeueImportItems('job-1', { from: 'failed' });
+
+      expect(callMatching(exec, "status = 'pending'")[0]).not.toMatch(/\bbody\b/);
+    });
+
+    it('binds and chunks an explicit id list at 500', () => {
+      const exec = jest.fn(() => ({ rows: [], rowsAffected: 1 }));
+      makeDb(exec);
+
+      const moved = requeueImportItems('job-1', {
+        from: 'failed',
+        itemIds: Array.from({ length: 501 }, (_, i) => `item-${i}`),
+      });
+
+      const calls = (exec.mock.calls as unknown as ExecCall[]).filter(([sql]) =>
+        sql.includes("status = 'pending'"),
+      );
+      expect(calls).toHaveLength(2);
+      expect(calls[0][1]).toHaveLength(2 + 500); // job id + from + a full chunk
+      expect(calls[1][1]).toHaveLength(2 + 1);
+      expect(calls[0][1]?.[1]).toBe('failed');
+      expect(calls[0][0]).not.toContain('item-0');
+      expect(moved).toBe(2);
+    });
+
+    it('treats an EMPTY id list as "nothing", never as "all"', () => {
+      const exec = jest.fn(() => ({ rows: [], rowsAffected: 9 }));
+      makeDb(exec);
+
+      expect(requeueImportItems('job-1', { from: 'uploading', itemIds: [] })).toBe(0);
+      expect(sqls(exec)).toHaveLength(0);
     });
   });
 
@@ -236,6 +368,34 @@ describe('importRepository', () => {
       const exec = jest.fn(() => ({ rows: [], rowsAffected: 1 }));
       makeDb(exec);
       expect(finishImportJob('job-1', 'cancelled')).toBeNull();
+    });
+
+    // A terminal job keeps no plaintext. created/duplicate items were emptied
+    // when their result landed; pending, uploading and failed ones would
+    // otherwise hold the member's post text until the next logout or wipe.
+    it('drops the body of every item that was never submitted', () => {
+      const exec = jest.fn(() => ({ rows: [], rowsAffected: 1 }));
+      makeDb(exec);
+
+      finishImportJob('job-1', 'completed');
+
+      const [sql, params] = callMatching(exec, 'UPDATE import_items');
+      expect(sql).toContain('SET body = NULL');
+      expect(sql).toContain('WHERE job_id = ? AND body IS NOT NULL AND status NOT IN (?, ?)');
+      expect(params).toEqual(['job-1', 'created', 'duplicate']);
+    });
+
+    it('sweeps the bodies on cancelled and failed too, not only completed', () => {
+      for (const status of ['cancelled', 'failed'] as const) {
+        const exec = jest.fn(() => ({ rows: [], rowsAffected: 1 }));
+        makeDb(exec);
+
+        finishImportJob('job-1', status);
+
+        expect(sqls(exec).some((s) => s.includes('SET body = NULL'))).toBe(true);
+        closeDatabase();
+        jest.clearAllMocks();
+      }
     });
   });
 
@@ -632,6 +792,52 @@ describe('importRepository', () => {
       expect(sqls(exec)).toHaveLength(0);
     });
 
+    // The wire is not the type system. `ImportBatchResult['status']` is erased
+    // at runtime, so a server that grows a fourth result status must not be
+    // able to steer import_items.status — the column the resume loop reads —
+    // outside ImportItemStatus.
+    it('parks an unknown status as failed with the local sentinel, never writing it through', () => {
+      const exec = jest.fn(() => ({ rows: [], rowsAffected: 1 }));
+      makeDb(exec);
+
+      applyBatchResults('job-1', [
+        {
+          itemId: 'item-1',
+          // A status this build has never heard of.
+          status: 'quarantined' as unknown as ImportBatchResult['status'],
+          threadId: 'thread-1',
+        },
+      ]);
+
+      const [sql, params] = callMatching(exec, 'UPDATE import_items');
+      expect(sql).toContain("status = 'failed'");
+      expect(params).toEqual([IMPORT_RESULT_UNKNOWN, 'item-1', 'job-1']);
+      for (const s of sqls(exec)) {
+        expect(s).not.toContain('quarantined');
+      }
+      const bound = (exec.mock.calls as unknown as ExecCall[]).flatMap(([, p]) => p ?? []);
+      expect(bound).not.toContain('quarantined');
+    });
+
+    it('still writes created and duplicate through — the allowlist is only the else-arm', () => {
+      const exec = jest.fn(() => ({ rows: [], rowsAffected: 1 }));
+      makeDb(exec);
+
+      applyBatchResults('job-1', [
+        { itemId: 'item-1', status: 'created', threadId: 't1' },
+        { itemId: 'item-2', status: 'duplicate', threadId: null },
+      ]);
+
+      const updates = (exec.mock.calls as unknown as ExecCall[]).filter(([sql]) =>
+        sql.includes('UPDATE import_items SET status = ?'),
+      );
+      expect(updates).toHaveLength(2);
+      expect(updates[0][1]?.[0]).toBe('created');
+      expect(updates[1][1]?.[0]).toBe('duplicate');
+      // #315's narrow delete race: `duplicate` can arrive without a thread_id.
+      expect(updates[1][1]?.[1]).toBeNull();
+    });
+
     it('never interpolates a server-returned value into SQL', () => {
       const exec = jest.fn(() => ({ rows: [], rowsAffected: 1 }));
       makeDb(exec);
@@ -668,6 +874,32 @@ describe('importRepository', () => {
         failed: 0,
         skipped: 0,
       });
+    });
+
+    // `in` walks the prototype chain, so a row whose status is the name of an
+    // Object.prototype member would have passed the guard and written a count
+    // onto a key no caller declares. `hasOwnProperty.call` is what closes it.
+    it('ignores a status that only matches an Object.prototype key', () => {
+      const exec = jest.fn(() =>
+        rows([
+          { status: 'toString', n: 3 },
+          { status: 'constructor', n: 2 },
+          { status: 'pending', n: 1 },
+        ]),
+      );
+      makeDb(exec);
+
+      const counts = countImportItemsByStatus('job-1');
+
+      expect(counts).toEqual({
+        pending: 1,
+        uploading: 0,
+        created: 0,
+        duplicate: 0,
+        failed: 0,
+        skipped: 0,
+      });
+      expect(Object.keys(counts)).toHaveLength(6);
     });
   });
 
@@ -713,6 +945,25 @@ describe('importRepository', () => {
       const exec = jest.fn(() => rows([]));
       makeDb(exec);
       expect(countImportSkipsByReason('job-1').duplicate_in_archive).toBe(0);
+    });
+
+    it('ignores a skip_reason that only matches an Object.prototype key', () => {
+      const exec = jest.fn((sql: string) => {
+        if (sql.includes('GROUP BY skip_reason')) {
+          return rows([
+            { skip_reason: 'valueOf', n: 4 },
+            { skip_reason: 'held_video', n: 1 },
+          ]);
+        }
+        return rows([]);
+      });
+      makeDb(exec);
+
+      const counts = countImportSkipsByReason('job-1');
+
+      expect(counts.held_video).toBe(1);
+      expect(Object.keys(counts)).toHaveLength(12);
+      expect(Object.keys(counts)).not.toContain('valueOf');
     });
   });
 
@@ -792,17 +1043,18 @@ describe('importRepository', () => {
       ).not.toThrow();
       expect(getActiveImportJob()).toBeNull();
       expect(getImportJob('job-1')).toBeNull();
-      expect(() =>
-        setImportJobParsed('job-1', { declaredPosts: 1, declaredBytes: 1 }),
-      ).not.toThrow();
-      expect(() => startImportJob('job-1', { sessionId: 's' })).not.toThrow();
+      // The writers report "nothing moved" rather than claiming success.
+      expect(setImportJobParsed('job-1', { declaredPosts: 1, declaredBytes: 1 })).toBe(false);
+      expect(startImportJob('job-1', { sessionId: 's' })).toBe(false);
       expect(finishImportJob('job-1', 'failed')).toBeNull();
-      expect(() => setArchiveBookmark('job-1', '[]')).not.toThrow();
+      expect(setArchiveBookmark('job-1', '[]')).toBe(false);
       expect(() => deleteImportJob('job-1')).not.toThrow();
       expect(() => deleteAllImportJobs()).not.toThrow();
       expect(insertImportItems('job-1', [post()])).toEqual({ inserted: 0, duplicates: 0 });
       expect(getPendingImportItems('job-1', 10)).toEqual([]);
-      expect(() => markItemsUploading('job-1', ['item-1'])).not.toThrow();
+      expect(markItemsUploading('job-1', ['item-1'])).toBe(0);
+      expect(requeueImportItems('job-1', { from: 'uploading' })).toBe(0);
+      expect(requeueImportItems('job-1', { from: 'failed', itemIds: ['item-1'] })).toBe(0);
       expect(() =>
         applyBatchResults('job-1', [{ itemId: 'item-1', status: 'created', threadId: 't' }]),
       ).not.toThrow();

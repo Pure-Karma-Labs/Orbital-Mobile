@@ -609,7 +609,7 @@ export async function cancelKeyInitialization(): Promise<void> {
  * key recovery. Deletes Keychain identity key, in-memory caches, and all
  * Signal Protocol + items rows.
  *
- * The five SQL DELETEs run inside a single BEGIN IMMEDIATE/COMMIT transaction
+ * Every SQL DELETE in it runs inside a single BEGIN IMMEDIATE/COMMIT transaction
  * (CRYPTO-M2) — a partial wipe (e.g. Keychain gone but identityKeyPublic row
  * surviving) would make the retry predicate re-attempt reset against a revoked
  * JWT, causing a 401 deadlock.

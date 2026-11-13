@@ -711,8 +711,10 @@ class OrbitalArchiveAccessModule(reactContext: ReactApplicationContext) :
   /**
    * Release EVERY persistable grant this app holds (plan §10 F3).
    *
-   * Called from `localWipe` on the ACCOUNT DELETION path only — logout keeps
-   * the grants so a cold-start resume still works. It iterates
+   * Called from `localWipe` on BOTH wipe paths, logout and account deletion
+   * (#921). Logout used to keep the grants so a cold-start resume still worked;
+   * it now also clears the import job rows, so a surviving grant would have no
+   * row left to resume from. It iterates
    * `persistedUriPermissions` rather than a list of refs because the grants
    * outlive the app's own storage: a wipe must leave nothing behind that a
    * reinstall could resume from, including grants whose tokens were in a

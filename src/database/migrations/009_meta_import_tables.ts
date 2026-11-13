@@ -82,8 +82,16 @@ CREATE TABLE import_jobs (
   PRIMARY KEY (id)
 );
 
-CREATE INDEX idx_import_jobs_active ON import_jobs (status, created_at DESC)
-  WHERE status IN ('parsing', 'ready', 'in_progress');
+-- NOT a partial index, deliberately. Every reader of this table BINDS its
+-- status list (IN (?, ?, ?)), and SQLite can only use a partial index when it
+-- can prove the index predicate from the query's own terms -- which it cannot
+-- do through a parameter it has not seen. A copy of the status list in a
+-- WHERE clause here would therefore make this index dead: measured
+-- SCAN import_jobs with it, SEARCH ... USING INDEX idx_import_jobs_active
+-- (status=?) without it (migrations.ddl.test.ts pins the plan). Free to fix
+-- now under forward-only migrations; a migration 010 once a device has
+-- applied 009.
+CREATE INDEX idx_import_jobs_active ON import_jobs (status, created_at DESC);
 
 -- ============================================================
 -- import_items: one parsed post (importable or skipped)

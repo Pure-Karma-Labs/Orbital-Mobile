@@ -20,12 +20,21 @@
  *  - `original_date` (item and media) is bound only when it is a safe integer
  *    inside a sane epoch-ms range; anything else binds NULL rather than
  *    poisoning the column with NaN.
+ *  - **Every status transition re-asserts the status it is coming from**, in
+ *    the UPDATE's own WHERE clause, and reports whether the row moved
+ *    (`boolean` for the job writers, a row count for the item writers). The
+ *    runner holds a job in memory across awaits and the UI can cancel under
+ *    it, so an unguarded write would resurrect a terminal job or demote an
+ *    item the server has already taken. A `false`/short count is never a
+ *    failure to handle — it means "your copy of this row is stale, re-read
+ *    it".
  *
  * ## Handling classes (see migration 009's header)
  *
  *  - `import_items.body` is PLAINTEXT-CLASS: never logged, never in a thrown
  *    message, a breadcrumb or telemetry. It is NULLed as soon as the item
- *    reaches `created`/`duplicate`.
+ *    reaches `created`/`duplicate`, and `finishImportJob` drops whatever is
+ *    left on every other item of that job.
  *  - `import_items.source_file` / `source_index` are LOCAL-UI-class (F18).
  *  - `import_jobs.key_fingerprint` and `archive_bookmark` are never logged and
  *    never sent to the server. The bookmark is written ONLY from a live
@@ -44,6 +53,7 @@ import { queryOne, queryMany, execute } from '../queryHelpers';
 import { getDatabase, isDatabaseInitialized } from '../connection';
 import type {
   ImportJobRow,
+  ImportJobStatus,
   ImportItemRow,
   ImportItemMediaRow,
   ImportItemStatus,
@@ -158,7 +168,12 @@ export function createImportJob(input: CreateImportJobInput): void {
 /**
  * The one job a launch-time resume has to deal with, newest first.
  *
- * Served by `idx_import_jobs_active`.
+ * `idx_import_jobs_active` serves the STATUS lookup (`SEARCH … USING INDEX
+ * idx_import_jobs_active (status=?)`); the `ORDER BY created_at DESC` still
+ * costs a temp B-tree, because a three-value `IN` is three index ranges and
+ * no one of them is in the required order. That is measured, not assumed —
+ * see the EXPLAIN QUERY PLAN case in `migrations.ddl.test.ts`, which also
+ * pins that this index must NOT be partial.
  */
 export function getActiveImportJob(): ImportJobRow | null {
   if (!isDatabaseInitialized()) return null;
@@ -177,19 +192,30 @@ export function getImportJob(id: string): ImportJobRow | null {
   return queryOne<ImportJobRow>('SELECT * FROM import_jobs WHERE id = ?', [id]);
 }
 
-/** Parse finished: record the declared totals (held items excluded) and move to `ready`. */
+/**
+ * Parse finished: record the declared totals (held items excluded) and move to
+ * `ready`.
+ *
+ * **Guarded by `AND status = 'parsing'`**, and returns whether the row moved.
+ * A miss means the job is no longer the one this caller thinks it is holding —
+ * cancelled from the UI, finished, or already parsed — and writing anyway
+ * would resurrect a terminal job with a `ready` status and no session. #926
+ * treats `false` as "stop working on this job and re-read it", never as a
+ * silent success: see the predicate note on `startImportJob`.
+ */
 export function setImportJobParsed(
   id: string,
   { declaredPosts, declaredBytes }: { declaredPosts: number; declaredBytes: number },
-): void {
-  if (!isDatabaseInitialized()) return;
+): boolean {
+  if (!isDatabaseInitialized()) return false;
 
-  execute(
+  const result = execute(
     `UPDATE import_jobs
         SET status = 'ready', declared_posts = ?, declared_bytes = ?, updated_at = ?
-      WHERE id = ?`,
+      WHERE id = ? AND status = 'parsing'`,
     [Math.floor(declaredPosts), Math.floor(declaredBytes), Date.now(), id],
   );
+  return result.rowsAffected > 0;
 }
 
 /**
@@ -197,19 +223,33 @@ export function setImportJobParsed(
  *
  * Deliberately does NOT touch `key_fingerprint` — the stamp belongs to the key
  * generation the items were derived under, which is fixed at creation.
+ *
+ * **Guarded by `AND status = 'ready'`**, and returns whether the row moved.
+ *
+ * A predicate miss is a SILENT NO-OP AT THE SQL LEVEL that this return value
+ * makes visible: the repository has no way to tell "the job is gone" from "the
+ * job moved on", and throwing would make every writer a failure path for a
+ * state the runner can simply re-read. The rule for #926 is therefore: a
+ * `false` from any of these writers means re-read the job with
+ * `getImportJob()` and decide there — it must never be ignored, because the
+ * caller's in-memory job is stale by definition once one of them misses.
  */
-export function startImportJob(id: string, { sessionId }: { sessionId: string }): void {
-  if (!isDatabaseInitialized()) return;
+export function startImportJob(id: string, { sessionId }: { sessionId: string }): boolean {
+  if (!isDatabaseInitialized()) return false;
 
-  execute(
+  const result = execute(
     `UPDATE import_jobs
         SET status = 'in_progress', session_id = ?, updated_at = ?
-      WHERE id = ?`,
+      WHERE id = ? AND status = 'ready'`,
     [sessionId, Date.now(), id],
   );
+  return result.rowsAffected > 0;
 }
 
-export type TerminalImportJobStatus = 'completed' | 'cancelled' | 'failed';
+export type TerminalImportJobStatus = Extract<
+  ImportJobStatus,
+  'completed' | 'cancelled' | 'failed'
+>;
 
 /**
  * Move a job to a terminal status and clear its bookmark in the SAME UPDATE.
@@ -219,9 +259,17 @@ export type TerminalImportJobStatus = 'completed' | 'cancelled' | 'failed';
  * runner that has not released yet, so a terminal job never leaves a grant
  * behind with no record of which parts it held.
  *
- * The read and the write are two statements but cannot interleave: both are
- * synchronous `executeSync` calls with no await between them, and JS is the
- * only writer.
+ * It also drops the PLAINTEXT-CLASS bodies this job still holds. `created` and
+ * `duplicate` items were already emptied by `applyBatchResults`; the rest —
+ * `pending`, `uploading` and `failed` — are posts that will never be submitted
+ * from this job, and their text would otherwise sit in the DB until the next
+ * logout or wipe. A later retry re-parses rather than reading them back, so
+ * nothing downstream needs them: the member re-picks the archive and the keys
+ * re-derive identically. Skips already have a NULL body.
+ *
+ * The read and the two writes are three statements but cannot interleave: all
+ * are synchronous `executeSync` calls with no await between them, and JS is
+ * the only writer.
  */
 export function finishImportJob(id: string, status: TerminalImportJobStatus): string | null {
   if (!isDatabaseInitialized()) return null;
@@ -236,6 +284,11 @@ export function finishImportJob(id: string, status: TerminalImportJobStatus): st
       WHERE id = ?`,
     [status, Date.now(), id],
   );
+  execute(
+    `UPDATE import_items SET body = NULL
+      WHERE job_id = ? AND body IS NOT NULL AND status NOT IN (?, ?)`,
+    [id, 'created', 'duplicate'],
+  );
   return prior?.archive_bookmark ?? null;
 }
 
@@ -246,15 +299,22 @@ export function finishImportJob(id: string, status: TerminalImportJobStatus): st
  * the stored value; a token's interior is never inspected, and
  * `pickArchiveParts()` output is never persisted (it is uncapped — a live
  * session's `parts` is what bounds this to 64 entries).
+ *
+ * **Guarded by the active-status set**, and returns whether the row was
+ * written. `finishImportJob` NULLs this column on purpose, so a bookmark write
+ * that lands after it would put a capability handle back on a job nothing will
+ * ever release — the predicate is what keeps "released, then finished"
+ * terminal. As with the other writers, `false` means re-read the job.
  */
-export function setArchiveBookmark(id: string, json: string): void {
-  if (!isDatabaseInitialized()) return;
+export function setArchiveBookmark(id: string, json: string): boolean {
+  if (!isDatabaseInitialized()) return false;
 
-  execute('UPDATE import_jobs SET archive_bookmark = ?, updated_at = ? WHERE id = ?', [
-    json,
-    Date.now(),
-    id,
-  ]);
+  const result = execute(
+    `UPDATE import_jobs SET archive_bookmark = ?, updated_at = ?
+      WHERE id = ? AND status IN (${placeholders(ACTIVE_STATUSES.length)})`,
+    [json, Date.now(), id, ...ACTIVE_STATUSES],
+  );
+  return result.rowsAffected > 0;
 }
 
 /** Delete one job. Cascades to its items and their media (migration 009 FKs). */
@@ -406,7 +466,13 @@ export interface PendingImportItem extends ImportItemRow {
  * The next `limit` pending items in parse order, each with its media.
  *
  * Two queries, not a join: a join would repeat every item's `body` once per
- * media row. Served by `idx_import_items_job_status` and the media PK.
+ * media row. The item query is served end to end by
+ * `idx_import_items_job_status` (`job_id=? AND status=?`, with `ordinal`
+ * supplying the ORDER BY), and the media query by the composite PK.
+ *
+ * It matches `status = 'pending'` ONLY. Items parked in `uploading` or
+ * `failed` are invisible here by design and come back through
+ * {@link requeueImportItems}, which a resume runs first.
  */
 export function getPendingImportItems(jobId: string, limit: number): PendingImportItem[] {
   if (!isDatabaseInitialized()) return [];
@@ -438,17 +504,90 @@ export function getPendingImportItems(jobId: string, limit: number): PendingImpo
   return items.map((item) => ({ ...item, media: byItem.get(item.id) ?? [] }));
 }
 
-/** Mark a batch as in flight. Ids are bound and chunked, never interpolated. */
-export function markItemsUploading(jobId: string, itemIds: readonly string[]): void {
-  if (!isDatabaseInitialized() || itemIds.length === 0) return;
+/**
+ * Mark a batch as in flight. Ids are bound and chunked, never interpolated.
+ *
+ * **Guarded by `AND status = 'pending'`**, and returns how many rows actually
+ * moved. The guard makes the call idempotent: a runner that re-sends a batch
+ * after a timed-out POST (the response may have been applied before the
+ * timeout fired) would otherwise demote its own `created` rows back to
+ * `uploading`, and a kill inside that window would strand a post that exists
+ * server-side. An item can therefore only ever move forward from the state
+ * `getPendingImportItems` handed out.
+ *
+ * A return value below `itemIds.length` means some ids were no longer pending;
+ * the batch the caller is about to send is stale, so re-read it.
+ */
+export function markItemsUploading(jobId: string, itemIds: readonly string[]): number {
+  if (!isDatabaseInitialized() || itemIds.length === 0) return 0;
 
+  let moved = 0;
   for (const chunk of chunkIds(itemIds)) {
-    execute(
+    const result = execute(
       `UPDATE import_items SET status = 'uploading'
-        WHERE job_id = ? AND id IN (${placeholders(chunk.length)})`,
+        WHERE job_id = ? AND status = 'pending' AND id IN (${placeholders(chunk.length)})`,
       [jobId, ...chunk],
     );
+    moved += result.rowsAffected;
   }
+  return moved;
+}
+
+/**
+ * Put items back in the queue: `uploading` or `failed` → `pending`.
+ *
+ * This is the only way out of those two states, and without it the resume
+ * story has a hole at each end:
+ *
+ *  - **`uploading`.** A process kill between `markItemsUploading` and
+ *    `applyBatchResults` leaves rows that `getPendingImportItems` (which
+ *    matches `status = 'pending'`) can never see again. The job would look
+ *    drained with posts missing. #926 requeues `uploading` at launch, BEFORE
+ *    the first `getPendingImportItems`: a resubmitted post the server already
+ *    took comes back `duplicate`, which is exactly what the `import_key`
+ *    dedup is for, so requeuing an item that was in fact delivered costs one
+ *    batch slot and nothing else.
+ *  - **`failed`.** The B#315 `IMPORT_MEDIA_NOT_OWNED` recovery is
+ *    `replaceMediaId` (which resets `upload_state` to `pending`) and then a
+ *    retry — which needs the ITEM back in the queue too. `error_code` is
+ *    cleared so the next attempt is not read through the last one's refusal.
+ *
+ * `body` is deliberately KEPT: it is the submit payload the retry needs, and
+ * the `rejected` arm of `applyBatchResults` never cleared it. The corollary is
+ * that this must not be called on a job `finishImportJob` has already emptied
+ * — a terminal job is re-run by re-parsing, not by requeuing.
+ *
+ * Pass `itemIds` to requeue a specific set (bound and chunked); omit it for
+ * every item of the job in that status. An explicitly EMPTY array requeues
+ * nothing, so a caller that computed an empty set cannot accidentally mean
+ * "all". Returns the number of rows moved.
+ */
+export function requeueImportItems(
+  jobId: string,
+  { from, itemIds }: { from: 'uploading' | 'failed'; itemIds?: readonly string[] },
+): number {
+  if (!isDatabaseInitialized()) return 0;
+
+  if (itemIds === undefined) {
+    const result = execute(
+      `UPDATE import_items SET status = 'pending', error_code = NULL
+        WHERE job_id = ? AND status = ?`,
+      [jobId, from],
+    );
+    return result.rowsAffected;
+  }
+  if (itemIds.length === 0) return 0;
+
+  let moved = 0;
+  for (const chunk of chunkIds(itemIds)) {
+    const result = execute(
+      `UPDATE import_items SET status = 'pending', error_code = NULL
+        WHERE job_id = ? AND status = ? AND id IN (${placeholders(chunk.length)})`,
+      [jobId, from, ...chunk],
+    );
+    moved += result.rowsAffected;
+  }
+  return moved;
 }
 
 /** One row of the server's batch response, already mapped to a local item id. */
@@ -463,12 +602,31 @@ export interface ImportBatchResult {
 }
 
 /**
+ * The `error_code` written when a batch result carries a status this client
+ * does not know.
+ *
+ * LOCAL SENTINEL, never a server code: the B#315 per-item set is
+ * `IMPORT_ITEM_INVALID` / `IMPORT_DATE_INVALID` / `IMPORT_MEDIA_NOT_OWNED`,
+ * and a fourth value means the server moved ahead of this build. The item is
+ * parked as `failed` rather than trusted, so a widened server vocabulary can
+ * never steer `import_items.status` (the one column the resume loop reads)
+ * into a value outside `ImportItemStatus`.
+ */
+export const IMPORT_RESULT_UNKNOWN = 'IMPORT_RESULT_UNKNOWN';
+
+/**
  * Apply a batch response, keyed by ITEM ID — never by position.
  *
  * `created`/`duplicate` set `thread_id` and NULL the body: the thread exists
  * server-side by then, so the plaintext has no further use and should not sit
- * in the DB waiting for the next wipe. `rejected` becomes `failed` plus its
- * `error_code`. One transaction, so a batch is applied whole or not at all.
+ * in the DB waiting for the next wipe. Everything else becomes `failed`:
+ * `rejected` with the server's own `error_code`, any other status with
+ * {@link IMPORT_RESULT_UNKNOWN}. One transaction, so a batch is applied whole
+ * or not at all.
+ *
+ * The status written is chosen from a local allowlist and is never the
+ * server's string pasted through — results arrive over the wire, and the
+ * TypeScript union on `ImportBatchResult` is erased at runtime.
  */
 export function applyBatchResults(jobId: string, results: readonly ImportBatchResult[]): void {
   if (!isDatabaseInitialized() || results.length === 0) return;
@@ -477,17 +635,22 @@ export function applyBatchResults(jobId: string, results: readonly ImportBatchRe
   db.executeSync('BEGIN IMMEDIATE');
   try {
     for (const result of results) {
-      if (result.status === 'rejected') {
-        execute(
-          `UPDATE import_items SET status = 'failed', error_code = ?
-            WHERE id = ? AND job_id = ?`,
-          [result.code ?? null, result.itemId, jobId],
-        );
-      } else {
+      const accepted = result.status === 'created' || result.status === 'duplicate';
+      if (accepted) {
         execute(
           `UPDATE import_items SET status = ?, thread_id = ?, body = NULL
             WHERE id = ? AND job_id = ?`,
           [result.status, result.threadId ?? null, result.itemId, jobId],
+        );
+      } else {
+        execute(
+          `UPDATE import_items SET status = 'failed', error_code = ?
+            WHERE id = ? AND job_id = ?`,
+          [
+            result.status === 'rejected' ? (result.code ?? null) : IMPORT_RESULT_UNKNOWN,
+            result.itemId,
+            jobId,
+          ],
         );
       }
     }
@@ -498,7 +661,16 @@ export function applyBatchResults(jobId: string, results: readonly ImportBatchRe
   }
 }
 
-/** Per-status counts for the job, exhaustive (zeros included). */
+/**
+ * Per-status counts for the job, exhaustive (zeros included).
+ *
+ * `skipped` here counts STORED skips only. The `duplicate_in_archive` rows are
+ * never inserted — their home is `import_jobs.dropped_duplicates` — so this
+ * total is smaller than the sum of {@link countImportSkipsByReason}, which
+ * folds that counter back in. A screen that shows "N skipped" beside a
+ * per-reason breakdown must take both from `countImportSkipsByReason`, or its
+ * list will out-total its own header.
+ */
 export function countImportItemsByStatus(jobId: string): Record<ImportItemStatus, number> {
   const counts: Record<ImportItemStatus, number> = {
     pending: 0,
@@ -515,7 +687,10 @@ export function countImportItemsByStatus(jobId: string): Record<ImportItemStatus
     [jobId],
   );
   for (const row of rows) {
-    if (row.status in counts) counts[row.status] = row.n;
+    // `hasOwnProperty.call`, not `in`: `in` walks the prototype chain, so a
+    // stored status of `toString` or `constructor` would pass the guard and
+    // write a count onto a key no caller declares.
+    if (Object.prototype.hasOwnProperty.call(counts, row.status)) counts[row.status] = row.n;
   }
   return counts;
 }
@@ -546,7 +721,10 @@ export function countImportSkipsByReason(jobId: string): Record<SkipReasonKey, n
     [jobId],
   );
   for (const row of rows) {
-    if (row.skip_reason in counts) counts[row.skip_reason] = row.n;
+    // See the note in `countImportItemsByStatus`: own keys only.
+    if (Object.prototype.hasOwnProperty.call(counts, row.skip_reason)) {
+      counts[row.skip_reason] = row.n;
+    }
   }
 
   const job = queryOne<{ dropped_duplicates: number }>(
@@ -572,7 +750,10 @@ export interface SkippedImportItem {
 /**
  * The skipped items for a job, optionally one reason only (held video, say).
  *
- * Served by `idx_import_items_job_reason`. Deliberately selects named columns:
+ * `idx_import_items_job_reason` serves the filter (both the bare
+ * `skip_reason IS NOT NULL` form and the `skip_reason = ?` one, which SQLite
+ * proves implies it); the `ORDER BY ordinal` costs a temp B-tree, which is
+ * fine for a list the member reads once. Deliberately selects named columns:
  * the body is not part of this list and must not be read into a UI model.
  */
 export function getSkippedItems(jobId: string, reason?: SkipReasonKey): SkippedImportItem[] {

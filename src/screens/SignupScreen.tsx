@@ -16,8 +16,8 @@ import { useTheme } from '../theme';
 import { TextInput, Button, ErrorBanner, OrbitalLoader, AsciiBanner } from '../components';
 import { TermsCheckbox } from '../components/TermsCheckbox';
 import { signupUser } from '../services/authService';
-import { AccountSwitchError, ApiError, AuthError, ConflictError, NetworkError, ValidationError } from '../services/api/errors';
-import type { ValidationReason } from '../services/api/errors';
+import { AccountSwitchError, ApiError, AuthError, ConflictError, NetworkError, ValidationError, isCopiedValidationReason } from '../services/api/errors';
+import type { CopiedValidationReason } from '../services/api/errors';
 import { formatInviteCode, stripInviteCode, hasV2InviteCodeLength } from '../services/crypto/inviteCrypto';
 import { validatePassword, PASSWORD_RULE_HINT } from '../utils/validatePassword';
 import { validateUsername } from '../utils/validateUsername';
@@ -32,15 +32,17 @@ export interface SignupScreenProps {
 
 /**
  * Where a server validation reason belongs on this form. Typed as an exhaustive
- * `Record`, so adding a code to `ValidationReason` is a compile error here
- * until it has been routed — a new reason can never silently fall through to
- * the generic banner.
+ * `Record`, so adding a code to `CopiedValidationReason` is a compile error
+ * here until it has been routed — a new reason can never silently fall through
+ * to the generic banner. The Record is over the COPIED reasons only, because a
+ * silent service-layer reason (the Meta-import runner's) renders the generic
+ * 'Invalid request' and never reaches a form.
  *
  * `INVITE_EMAIL_MISMATCH` is a banner rather than a field error on purpose: it
  * is the *pair* (this code, this email) that is wrong, so pinning it to either
  * single field would misdirect the fix.
  */
-const REASON_CHANNEL: Record<ValidationReason, 'email' | 'invite' | 'banner'> = {
+const REASON_CHANNEL: Record<CopiedValidationReason, 'email' | 'invite' | 'banner'> = {
   EMAIL_FORMAT: 'email',
   INVITE_INVALID: 'invite',
   INVITE_USED: 'invite',
@@ -51,6 +53,9 @@ const REASON_CHANNEL: Record<ValidationReason, 'email' | 'invite' | 'banner'> = 
   // does), but the Record must route it: if it ever arrives, the orbit, not
   // any field the user typed, is what is wrong.
   GROUP_FULL: 'banner',
+  // Signup attaches no media, so this form cannot produce it — it is a
+  // composer fence. Routed for Record exhaustiveness only.
+  MEDIA_IMPORT_RESERVED: 'banner',
 };
 
 export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Element {
@@ -151,7 +156,12 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
         // A reason the backend named: render the curated copy on the field the
         // user can actually act on (#777 — an invite-state failure used to read
         // as "Invalid request" beside four innocent fields).
-        const channel = REASON_CHANNEL[e.reason];
+        // A silent service-layer reason (the Meta-import runner's, #926) carries
+        // no copy and can never reach this form, so it falls through to the
+        // generic banner — `ValidationError`'s 'Invalid request', the same text
+        // the unreasoned-400 arm below shows. The narrowing is the registry's
+        // own predicate, not a screen-local copy that could drift from it.
+        const channel = isCopiedValidationReason(e.reason) ? REASON_CHANNEL[e.reason] : 'banner';
         if (channel === 'email') {
           setEmailError(e.message);
         } else if (channel === 'invite') {

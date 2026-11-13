@@ -62,6 +62,18 @@ export interface Conversation {
    * Absent on rows persisted before #908 until the next DM list load.
    */
   peerUserId?: string;
+  /**
+   * Orbit only: days before the retention sweep deletes a thread's content in
+   * this orbit; `null` = never expires. Mapped from
+   * `GroupResponse.contentRetentionDays`, which the backend already collapses
+   * to `null` when the column is missing — `mapGroupResponse` collapses an
+   * absent field the same way, matching the other group fields (no
+   * absent-vs-null contract on this partition).
+   *
+   * #928 needs it to warn, before a run starts, that an imported (back-dated)
+   * post may be deleted on arrival.
+   */
+  contentRetentionDays?: number | null;
 }
 
 export interface Thread {

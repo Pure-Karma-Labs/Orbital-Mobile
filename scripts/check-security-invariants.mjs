@@ -1973,12 +1973,19 @@ checkWindowedPins(
 // Window B2 — the allowlist test itself. `hasOwnProperty.call` on the map is
 // the whole defence: `in`, a truthy lookup, or a bare typeof check all accept
 // prototype keys.
+// Since #926 the registry is TWO frozen maps — the reasons that carry copy and
+// the silent ones — and membership is the OR of both tests, so both halves are
+// pinned separately. One half relaxed to `in` is still the prototype-key hole,
+// and a half deleted outright would narrow the allowlist silently.
 checkWindowedPins(
   ERRORS_FILE,
   VMP_RULE,
   /^function isValidationReason[\s\S]*?\n\}/m,
   'the isValidationReason body',
-  ['hasOwnProperty.call(VALIDATION_REASON_MESSAGES'],
+  [
+    'hasOwnProperty.call(VALIDATION_REASON_MESSAGES',
+    'hasOwnProperty.call(SILENT_VALIDATION_REASONS',
+  ],
   [],
   VMP_ISSUE,
 );
@@ -2010,6 +2017,189 @@ checkWindowedPins(
   ['hasOwnProperty.call(REWRAP_REFUSAL_CODES'],
   [],
   RRC_ISSUE,
+);
+
+// Windows D1-D6 — the SAME discipline for the `IMPORT_REFUSED` 409 and the 429
+// `Retry-After` the import runner backs off on (#926). The import parse is a
+// wider surface than the rewrap one: it carries a nested status, an id and the
+// member's own byte counts, so each clause below names the single one-line
+// edit it exists to catch.
+const IMP_ISSUE = '#926';
+
+// D1 — an unknown `details.code` must become the client's own sentinel. Return
+// the server's string instead and it becomes the runner's disposition key, a
+// Sentry tag, and eventually screen copy.
+checkWindowedPins(
+  ERRORS_FILE,
+  VMP_RULE,
+  /^function parseImportRefusal[\s\S]*?\n\}/m,
+  'the parseImportRefusal body',
+  ['isImportRefusalCode(', "'unrecognized'"],
+  [],
+  IMP_ISSUE,
+);
+
+// D2/D3 — both membership tests. Relaxed to `in` (or a truthy lookup) they
+// accept `__proto__`, `constructor` and `toString`, so a hostile or merely
+// buggy body gets a prototype key past the allowlist and into the typed field.
+checkWindowedPins(
+  ERRORS_FILE,
+  VMP_RULE,
+  /^function isImportRefusalCode[\s\S]*?\n\}/m,
+  'the isImportRefusalCode body',
+  ['hasOwnProperty.call(IMPORT_REFUSAL_CODES'],
+  [],
+  IMP_ISSUE,
+);
+
+checkWindowedPins(
+  ERRORS_FILE,
+  VMP_RULE,
+  /^function isImportClosedStatus[\s\S]*?\n\}/m,
+  'the isImportClosedStatus body',
+  ['hasOwnProperty.call(IMPORT_CLOSED_STATUSES'],
+  [],
+  IMP_ISSUE,
+);
+
+// D4 — the `Retry-After` parse. Drop the finiteness test and a header the
+// digit regex was later loosened for turns into NaN/Infinity, which the clamp
+// propagates into a timer. Forbidden: any route from the header bag into
+// message text — this parser's only output is a clamped number.
+checkWindowedPins(
+  ERRORS_FILE,
+  VMP_RULE,
+  /^function parseRetryAfterMs[\s\S]*?\n\}/m,
+  'the parseRetryAfterMs body',
+  ['Number.isFinite('],
+  ['.message', 'serverMessage'],
+  IMP_ISSUE,
+);
+
+// D5 — the 409 class. Both parsers must stay wired: drop `parseImportRefusal(`
+// and every import refusal silently reads as a generic conflict, so the runner
+// retries an archive the server has already closed. Forbidden, as in Window A:
+// any message assignment or any expression that puts the raw 409 body in the
+// message position, which is the one-line way server text reaches a screen.
+checkWindowedPins(
+  ERRORS_FILE,
+  VMP_RULE,
+  /^export class ConflictError extends ApiError \{[\s\S]*?\n\}/m,
+  'the ConflictError class',
+  ['parseImportRefusal(', 'parseRefusalCode('],
+  ['.message =', 'rawBody ?', '? rawBody', ': rawBody'],
+  IMP_ISSUE,
+);
+
+// D6 — the 429 class. The pin is the code literal every existing
+// `e.code === 'RATE_LIMITED'` site routes on; changing it would silently strip
+// rate-limit handling from every caller. `JSON.parse(` is forbidden because a
+// 429 body is server text and this class has no business reading one — the
+// `rawBody` entries guard the constructor against being re-signatured to take
+// one, the way `ConflictError` does.
+checkWindowedPins(
+  ERRORS_FILE,
+  VMP_RULE,
+  /^export class RateLimitError extends ApiError \{[\s\S]*?\n\}/m,
+  'the RateLimitError class',
+  ["'RATE_LIMITED'"],
+  ['.message =', 'JSON.parse(', 'rawBody ?', '? rawBody', ': rawBody'],
+  IMP_ISSUE,
+);
+
+// Window E — `sealContent`, the only encryption surface the Meta import uses
+// (#926). Not a provenance clause like the rest of rule 20, but the same
+// shape of defence, so it rides the same helper.
+//
+// `getOrFetchGroupKey` hands back the group-key cache's OWN array, and both
+// `invalidateGroupKey` and `clearGroupKeyCache` zero that array IN PLACE —
+// reachable mid-import from the WebSocket decrypt retry. `encryptContent` does
+// not validate its key. So each pin below is a one-line regression:
+// dropping `verifyGroupKeyPin()` loses the rotation check, dropping the
+// `bytesEqual(live, pin)` compare trusts a key that may have been refetched
+// under a new rotation, and returning the raw key (or the length/zero floor
+// going away) encrypts every imported post under 32 zero bytes — readable by
+// anyone, unreadable by every member, and with no error anywhere.
+const IMPORT_CRYPTO_FILE = join(SRC, 'services', 'crypto', 'importCrypto.ts');
+
+checkWindowedPins(
+  IMPORT_CRYPTO_FILE,
+  VMP_RULE,
+  /^ {2}async function sealContent\([\s\S]*?\n {2}\}/m,
+  'the sealContent body inside openImportKeySession',
+  [
+    'verifyGroupKeyPin(',
+    'getOrFetchGroupKey(',
+    'bytesEqual(live, pin)',
+    'encryptContent(plaintext, live, groupId)',
+    'GROUP_KEY_BYTES',
+    // CONTIGUITY. One substring spanning the last check and the use, so an
+    // `await` (or any statement) inserted between them fails the rule:
+    // `encryptContent` is synchronous, and that gap is the entire window in
+    // which a microtask could zero the cache's array under us. A race test
+    // in importCrypto.test.ts covers the same property behaviourally.
+    'if (!bytesEqual(live, pin)) throw new ImportKeyChangedError();\n' +
+      '    return encryptContent(plaintext, live, groupId);',
+    // The zero floor itself, pinned by its expression: it is the ONE check
+    // that catches the in-place zeroing directly, rather than inferring it
+    // from a pin mismatch, and deleting that single line is otherwise an
+    // in-window regression every other pin here would pass.
+    'live.every((b) => b === 0)',
+  ],
+  ['return live'],
+  IMP_ISSUE,
+);
+
+// ---------------------------------------------------------------------------
+// 20b. The media metadata envelope seals under a LIVE, usable group key (#926)
+// ---------------------------------------------------------------------------
+//
+// `mediaUploadService` seals the envelope that carries the ATTACHMENT KEY of
+// every upload — ordinary and imported alike. It does that with a bare
+// `getOrFetchGroupKey` + `encryptContent` pair, outside `sealContent`'s
+// discipline, because it is shared with the normal picker path.
+//
+// `getOrFetchGroupKey` returns the group-key cache's OWN array, and
+// `invalidateGroupKey` / `clearGroupKeyCache` zero that array IN PLACE —
+// `invalidateGroupKey` reachable at any moment from the WebSocket decrypt
+// retry. `encryptContent` does not validate its key. So the envelope is safe
+// only while (a) the key is checked for width and for being all-zero, and
+// (b) NOTHING awaits between those checks and the encrypt. Both are one-line
+// regressions that leave every test green and publish the attachment key of
+// every subsequent upload under 32 zero bytes.
+
+const MEL_RULE = 'media-envelope-live-key';
+const MEL_FILE = join(SRC, 'services', 'mediaUploadService.ts');
+const MEL_ISSUE = '#926';
+
+// The fetch and the floors belong to one region: the checks are worthless if
+// they stop describing the key that is about to be used.
+checkWindowedPins(
+  MEL_FILE,
+  MEL_RULE,
+  /^ {4}const metadataPlain = JSON\.stringify\(metadataObj\);[\s\S]*?\n {4}const encryptedMeta = encryptContent\(metadataPlain, groupKey, groupId\);/m,
+  'the media metadata envelope sealing region',
+  [
+    'const groupKey = await getOrFetchGroupKey(groupId);',
+    'groupKey.length !== GROUP_KEY_BYTES',
+    'groupKey.every((b) => b === 0)',
+    'MediaEnvelopeKeyError',
+  ],
+  [],
+  MEL_ISSUE,
+);
+
+// Contiguity: from the FIRST floor to the encrypt there may be no `await`.
+// The window deliberately starts after the fetch line, which is the one
+// legitimate `await` in this region.
+checkWindowedPins(
+  MEL_FILE,
+  MEL_RULE,
+  /^ {4}if \(groupKey\.length !== GROUP_KEY_BYTES\)[\s\S]*?\n {4}const encryptedMeta = encryptContent\(metadataPlain, groupKey, groupId\);/m,
+  'the media envelope check-to-encrypt gap',
+  ['encryptContent(metadataPlain, groupKey, groupId)'],
+  ['await'],
+  MEL_ISSUE,
 );
 
 // Window C — the __DEV__ gate on the raw body, for every error class. Curated

@@ -727,3 +727,195 @@ describe('ImportCryptoInvariantError', () => {
     expect(classifyImportCryptoError(error)).toBe('terminal-for-run');
   });
 });
+
+// ---------------------------------------------------------------------------
+// sealContent (#926 §2.10) — the group-key lifetime fix
+// ---------------------------------------------------------------------------
+
+describe('sealContent', () => {
+  /**
+   * The real defect this exists for: `getOrFetchGroupKey` returns the group-key
+   * cache's OWN array, and `invalidateGroupKey` / `clearGroupKeyCache` zero that
+   * array IN PLACE — reachable mid-run from the WebSocket decrypt retry. Here
+   * `getOrFetchGroupKey` is mocked, so "the cache was zeroed under us" is
+   * expressed as the fetch handing back zeroed (or wrong-width) bytes AFTER the
+   * pin verified, which is byte-for-byte what the runner would see.
+   */
+  const contentCrypto = require('../contentCrypto') as {
+    encryptContent: (p: string, k: Uint8Array, g: string) => { ciphertext: string; iv: string };
+    decryptContent: (c: string, iv: string, k: Uint8Array, g: string) => string;
+  };
+
+  it('seals under the live key and round-trips through the real cipher', async () => {
+    const session = await open();
+
+    const { ciphertext, iv } = await session.sealContent('an imported post body');
+
+    expect(contentCrypto.decryptContent(ciphertext, iv, key(0x42), GROUP_ID)).toBe(
+      'an imported post body',
+    );
+    session.close();
+  });
+
+  it('seals an empty string, which an imported title legitimately is', async () => {
+    const session = await open();
+
+    const { ciphertext, iv } = await session.sealContent('');
+
+    expect(contentCrypto.decryptContent(ciphertext, iv, key(0x42), GROUP_ID)).toBe('');
+    session.close();
+  });
+
+  it('verifies the pin BEFORE sealing', async () => {
+    const session = await open();
+    mockCompareGroupKeyPin.mockReturnValue('changed');
+    const encrypt = jest.spyOn(contentCrypto, 'encryptContent');
+
+    await expect(session.sealContent('body')).rejects.toThrow(ImportKeyChangedError);
+    expect(encrypt).not.toHaveBeenCalled();
+    session.close();
+  });
+
+  it('refuses a live key that is not the pinned one', async () => {
+    const session = await open();
+    // The pin says 'match' and the fetch then hands back different bytes — an
+    // invalidate-then-refetch landing in that window.
+    mockGetOrFetchGroupKey.mockResolvedValue(key(0x17));
+    const encrypt = jest.spyOn(contentCrypto, 'encryptContent');
+
+    const error = await session.sealContent('body').catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ImportKeyChangedError);
+    expect(classifyImportCryptoError(error)).toBe('terminal-for-run');
+    expect(encrypt).not.toHaveBeenCalled();
+    session.close();
+  });
+
+  it('refuses an all-zero key — the cache zeroed in place mid-run', async () => {
+    const session = await open();
+    mockGetOrFetchGroupKey.mockResolvedValue(new Uint8Array(32));
+    const encrypt = jest.spyOn(contentCrypto, 'encryptContent');
+
+    const error = await session.sealContent('body').catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ImportCryptoInvariantError);
+    expect((error as Error).message).toContain('all zeros');
+    expect(classifyImportCryptoError(error)).toBe('terminal-for-run');
+    // The whole point: a post sealed under 32 zero bytes is readable by
+    // anyone and unreadable by every member, and neither the pin (a copy) nor
+    // encryptContent (which does not validate its key) would notice.
+    expect(encrypt).not.toHaveBeenCalled();
+    session.close();
+  });
+
+  it('refuses a key of the wrong width', async () => {
+    const session = await open();
+    mockGetOrFetchGroupKey.mockResolvedValue(new Uint8Array(16).fill(0x42));
+    const encrypt = jest.spyOn(contentCrypto, 'encryptContent');
+
+    const error = await session.sealContent('body').catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ImportCryptoInvariantError);
+    expect((error as Error).message).toContain('32 bytes');
+    expect(encrypt).not.toHaveBeenCalled();
+    session.close();
+  });
+
+  it('wins the race against a microtask that zeroes the cache array', async () => {
+    // The defect the contiguity pin exists for. `getOrFetchGroupKey` hands
+    // back the CACHE'S OWN array, and `invalidateGroupKey` /
+    // `clearGroupKeyCache` zero it IN PLACE from a microtask.
+    //
+    // The zeroing is queued one microtask DEEPER than the fetch, so it lands
+    // after sealContent's post-await continuation has begun: with no `await`
+    // between the last check and the synchronous `encryptContent`, the seal
+    // completes first and the ciphertext opens under the real key. Insert an
+    // `await` in that gap and this test fails — the encrypt then runs under
+    // 32 zero bytes.
+    const session = await open();
+
+    const live = key(0x42);
+    mockGetOrFetchGroupKey.mockImplementation(() => {
+      Promise.resolve().then(() => {
+        Promise.resolve().then(() => live.fill(0));
+      });
+      return Promise.resolve(live);
+    });
+
+    const { ciphertext, iv } = await session.sealContent('a post that must stay readable');
+
+    expect(live.every((b) => b === 0)).toBe(true); // the zeroing did happen
+    expect(contentCrypto.decryptContent(ciphertext, iv, key(0x42), GROUP_ID)).toBe(
+      'a post that must stay readable',
+    );
+    session.close();
+  });
+
+  it('refuses after close()', async () => {
+    const session = await open();
+    session.close();
+
+    await expect(session.sealContent('body')).rejects.toThrow(ImportKeySessionClosedError);
+  });
+
+  it('refuses when the session closes during the key fetch', async () => {
+    const session = await open();
+    mockGetOrFetchGroupKey.mockImplementation(() => {
+      session.close();
+      return Promise.resolve(key(0x42));
+    });
+
+    await expect(session.sealContent('body')).rejects.toThrow(ImportKeySessionClosedError);
+  });
+
+  it('propagates a pending wrap as retryable, never as a failure to seal', async () => {
+    const session = await open();
+    mockCompareGroupKeyPin.mockReturnValue('absent');
+    mockGetOrFetchGroupKey.mockRejectedValue(new PendingWrapError());
+
+    const error = await session.sealContent('body').catch((e: unknown) => e);
+
+    expect(classifyImportCryptoError(error)).toBe('retryable-pause');
+    session.close();
+  });
+
+  it('gives sealImportMeta the same protection, since it seals through this', async () => {
+    const session = await open();
+    mockGetOrFetchGroupKey.mockResolvedValue(new Uint8Array(32));
+    const encrypt = jest.spyOn(contentCrypto, 'encryptContent');
+
+    const error = await session.sealImportMeta(1345982400000).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ImportCryptoInvariantError);
+    expect(encrypt).not.toHaveBeenCalled();
+    session.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// openImportKeySession key floors (PR #991 advisory)
+// ---------------------------------------------------------------------------
+
+describe('openImportKeySession key floors', () => {
+  it('refuses to pin an all-zero group key', async () => {
+    mockGetOrFetchGroupKey.mockResolvedValue(new Uint8Array(32));
+
+    const error = await open().catch((e: unknown) => e);
+
+    // A cache array a wipe already zeroed is a valid-looking 32 bytes.
+    // Pinning it would make every later comparison agree with 32 zeros and
+    // K_import would be derived from them.
+    expect(error).toBeInstanceOf(ImportCryptoInvariantError);
+    expect((error as Error).message).toContain('all zeros');
+    expect(classifyImportCryptoError(error)).toBe('terminal-for-run');
+  });
+
+  it('still refuses a key of the wrong width', async () => {
+    mockGetOrFetchGroupKey.mockResolvedValue(new Uint8Array(16).fill(0x42));
+
+    const error = await open().catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ImportCryptoInvariantError);
+    expect((error as Error).message).toContain('32 bytes');
+  });
+});

@@ -297,6 +297,42 @@ describe('JoinOrbitScreen — error handling', () => {
     expect(mockCaptureException).not.toHaveBeenCalled();
   });
 
+  // #926 — the FALSE branch of the `isCopiedValidationReason` narrowing, which
+  // no screen test covered. IMPORT_BATCH_TOO_LARGE is allowlisted, so
+  // `err.reason` is defined and this takes the REASONED arm, but it is a silent
+  // service-layer reason with no curated copy: it must land on the banner as
+  // the generic 'Invalid request', never on the code field as the legacy
+  // "invalid code" copy — the #271 misdirection this screen exists to avoid.
+  it('routes a silent service-layer reason to the generic banner, not the code field', async () => {
+    mockJoinOrbit.mockRejectedValue(
+      reasonedValidationError('IMPORT_BATCH_TOO_LARGE', 'SECRET-server-text'),
+    );
+    const renderer = renderScreen();
+
+    act(() => {
+      findByTestId(renderer.root, 'invite-code-input').props.onChangeText(VALID_CODE);
+    });
+
+    await act(async () => {
+      findByTestId(renderer.root, 'join-orbit-button').props.onPress();
+    });
+
+    expect(hasHostTestId(renderer.root, 'join-orbit-error-banner')).toBe(true);
+    expect(queryByText(renderer.root, 'Invalid request')).toBeDefined();
+    expect(() => findByTestId(renderer.root, 'invite-code-input-error')).toThrow();
+    expect(queryByText(renderer.root, UNREASONED_COPY)).toBeUndefined();
+    expect(mockNavigation.goBack).not.toHaveBeenCalled();
+
+    // Neither the reason string nor anything the server wrote reaches the UI.
+    const rendered = renderedText(renderer.root);
+    expect(rendered).not.toContain('SECRET');
+    expect(rendered).not.toContain('IMPORT_BATCH_TOO_LARGE');
+
+    // Not drift: the client knows this code and deliberately shows no copy for
+    // it, so the unreasoned-400 capture below must NOT fire here.
+    expect(mockCaptureException).not.toHaveBeenCalled();
+  });
+
   it('shows the legacy field copy for an unreasoned 400 and reports the drift', async () => {
     mockJoinOrbit.mockRejectedValue(new ValidationError(400, 'used'));
     const renderer = renderScreen();

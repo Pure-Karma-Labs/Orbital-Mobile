@@ -1,3 +1,16 @@
+// #926 — why src/services/metaImport/** may not reach contentCrypto at all.
+// Named once because the ban is spelled twice below (the module, and the crypto
+// barrel that re-exports it); the two must never drift apart.
+const CONTENT_CRYPTO_BAN =
+  'metaImport/ must not import crypto/contentCrypto (directly or via the crypto barrel). ' +
+  "getOrFetchGroupKey returns the group-key cache's OWN array, and invalidateGroupKey / " +
+  'clearGroupKeyCache zero that array IN PLACE mid-run — invalidateGroupKey is reachable from the ' +
+  'WebSocket decrypt retry. An import runner that held raw key bytes across an await would encrypt ' +
+  'under 32 zero bytes, unnoticed by encryptContent (which does not validate its key). Seal through ' +
+  'ImportKeySession.sealContent (services/crypto/importCrypto.ts), which re-reads the live key, ' +
+  'checks its width and all-zero floor, byte-compares it against the session pin, and encrypts with ' +
+  'no await in between. Never hold raw key bytes in metaImport/.';
+
 module.exports = {
   root: true,
   extends: '@react-native',
@@ -52,6 +65,55 @@ module.exports = {
             // '**/*Telemetry' covers every facade by naming convention (uploadTelemetry, groupKeyTelemetry, and the next one);
             // '**/telemetry' is kept because the bare module name has no suffix to match. Neither matches '**/telemetryScrub'.
             { group: ['**/*Telemetry', '**/telemetry'], message: 'Telemetry facades forward to Sentry; banned where Sentry is banned. src/services/telemetryScrub.ts is pure and stays allowed.' },
+          ],
+        }],
+      },
+    },
+    {
+      // #926: the Meta-import runner must never touch the group key directly.
+      // Mirrors the crypto fence above in shape — an override REPLACES the base
+      // rule config, so the two base bans are restated rather than inherited.
+      files: ['src/services/metaImport/**/*'],
+      rules: {
+        'no-restricted-imports': ['error', {
+          paths: [
+            { name: '@react-native-async-storage/async-storage', message: 'Use encrypted MMKV via src/stores/middleware/persistence.ts instead. AsyncStorage is unencrypted.' },
+            // The crypto barrel re-exports getOrFetchGroupKey / encryptContent /
+            // invalidateGroupKey verbatim, so it is a second door to the banned module.
+            // `paths` (exact specifier), not a pattern: the only glob that would catch
+            // '../crypto' also catches '../crypto/importCrypto' under the rule's
+            // gitignore directory semantics, and importCrypto is the sanctioned door.
+            { name: '../crypto', message: CONTENT_CRYPTO_BAN },
+            { name: '../../crypto', message: CONTENT_CRYPTO_BAN },
+          ],
+          patterns: [
+            { group: ['react-native-mmkv'], message: 'Import from src/stores/middleware/persistence.ts instead. Direct MMKV usage bypasses encryption key management.' },
+            // One glob covers every spelling: the rule matches with
+            // ignore({ allowRelativePaths: true }), under which '**/' spans the leading
+            // '..' segments, so '../crypto/contentCrypto' and '../../crypto/contentCrypto'
+            // both match. Probe-verified in both directions (it does NOT match
+            // '../crypto/importCrypto', which metaImport/ must keep importing).
+            { group: ['**/crypto/contentCrypto'], message: CONTENT_CRYPTO_BAN },
+          ],
+        }],
+      },
+    },
+    {
+      // The fence above is a production-code rule. metaImport's suites import
+      // contentCrypto to mock it — that is the whole point of a mock — so the
+      // crypto ban is lifted here rather than forcing an eslint-disable per
+      // suite. The two BASE bans are restated rather than switching the rule
+      // off wholesale: an unencrypted-storage import is exactly as wrong in a
+      // test as anywhere else, and every other suite in the repo still has
+      // them.
+      files: ['src/services/metaImport/**/__tests__/**', 'src/services/metaImport/**/*.test.ts'],
+      rules: {
+        'no-restricted-imports': ['error', {
+          paths: [
+            { name: '@react-native-async-storage/async-storage', message: 'Use encrypted MMKV via src/stores/middleware/persistence.ts instead. AsyncStorage is unencrypted.' },
+          ],
+          patterns: [
+            { group: ['react-native-mmkv'], message: 'Import from src/stores/middleware/persistence.ts instead. Direct MMKV usage bypasses encryption key management.' },
           ],
         }],
       },

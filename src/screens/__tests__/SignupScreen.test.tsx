@@ -746,6 +746,33 @@ describe('SignupScreen — server validation reasons (#783)', () => {
     expect(JSON.stringify(mockCaptureException.mock.calls[0])).not.toContain('SECRET');
   });
 
+  // #926 — the FALSE branch of the `isCopiedValidationReason` narrowing, which
+  // no screen test covered. IMPORT_BATCH_TOO_LARGE is allowlisted, so
+  // `e.reason` is defined and this takes the REASONED arm, but it is a silent
+  // service-layer reason with no curated copy: the member must get the generic
+  // banner, on no field. Distinguished from the unknown-code case above by the
+  // telemetry — this is a code the client knows, so it is not drift.
+  it('shows the generic banner for a silent service-layer reason, on no field and without reporting drift', async () => {
+    const root = await submitWith(
+      reasonedValidationError('IMPORT_BATCH_TOO_LARGE', 'SECRET-server-text'),
+    );
+
+    expect(hasHostTestId(root, 'signup-error-banner')).toBe(true);
+    expect(queryByText(root, 'Invalid request')).toBeDefined();
+    expect(() => findByTestId(root, 'signup-invite-code-input-error')).toThrow();
+    expect(() => findByTestId(root, 'signup-email-input-error')).toThrow();
+
+    // Negative control against the curated-copy path: no reason string, and
+    // nothing the server wrote, reaches the screen.
+    const rendered = renderedText(root);
+    expect(rendered).not.toContain('SECRET');
+    expect(rendered).not.toContain('IMPORT_BATCH_TOO_LARGE');
+
+    // Not drift: the client knows this code and deliberately shows no copy for
+    // it, so the unreasoned-400 capture must NOT fire.
+    expect(mockCaptureException).not.toHaveBeenCalled();
+  });
+
   it('reports a non-API failure with the feature tag only, not as a validation-reason miss', async () => {
     const root = await submitWith(new Error('keychain unavailable'));
 

@@ -24,7 +24,8 @@ import {
   NetworkError,
   NotFoundError,
   ValidationError,
-  type ValidationReason,
+  isCopiedValidationReason,
+  type CopiedValidationReason,
 } from '../services/api/errors';
 import {
   stripInviteCode,
@@ -51,10 +52,12 @@ export type JoinOrbitScreenProps = NativeStackScreenProps<
 /**
  * Where a server validation reason belongs on this form. Typed as an
  * exhaustive `Record`, so `tsc --noEmit` IS the routing proof: adding a code
- * to `ValidationReason` is a compile error here until it has been routed, and
- * a new reason can never silently fall through to the legacy "invalid code"
- * field copy — which is precisely how a valid code for a full orbit used to
- * read as a typo (Backend #271).
+ * to `CopiedValidationReason` is a compile error here until it has been
+ * routed, and a new reason can never silently fall through to the legacy
+ * "invalid code" field copy — which is precisely how a valid code for a full
+ * orbit used to read as a typo (Backend #271). The Record is over the COPIED
+ * reasons only, because a silent service-layer reason (the Meta-import
+ * runner's) renders the generic 'Invalid request' and never reaches a form.
  *
  * `code` means "the code you typed is the problem"; `banner` means the code is
  * fine and something else is in the way:
@@ -65,8 +68,10 @@ export type JoinOrbitScreenProps = NativeStackScreenProps<
  *   branch below), so this entry exists for Record exhaustiveness only.
  * - `EMAIL_FORMAT` — this form has no email input at all, so it is
  *   unattributable here (the join route does not emit it today).
+ * - `MEDIA_IMPORT_RESERVED` — this form attaches no media, so it cannot
+ *   produce it; it is a composer fence, routed for exhaustiveness only.
  */
-const REASON_CHANNEL: Record<ValidationReason, 'code' | 'banner'> = {
+const REASON_CHANNEL: Record<CopiedValidationReason, 'code' | 'banner'> = {
   INVITE_INVALID: 'code',
   INVITE_USED: 'code',
   INVITE_CANCELLED: 'code',
@@ -74,6 +79,7 @@ const REASON_CHANNEL: Record<ValidationReason, 'code' | 'banner'> = {
   GROUP_FULL: 'banner',
   INVITE_EMAIL_MISMATCH: 'banner',
   EMAIL_FORMAT: 'banner',
+  MEDIA_IMPORT_RESERVED: 'banner',
 };
 
 /**
@@ -142,7 +148,12 @@ export function JoinOrbitScreen({
         // full sentinel → code table). Render the curated copy on the channel
         // that matches what is actually wrong; `e.message` is client copy
         // selected by the code, never server text.
-        if (REASON_CHANNEL[err.reason] === 'code') {
+        // The narrowing is the registry's own predicate, not a screen-local
+        // copy that could drift from it. A silent service-layer reason (the
+        // Meta-import runner's, #926) carries no copy and cannot reach this
+        // form, so it falls through to the banner, where `ValidationError`'s
+        // generic 'Invalid request' is what the member sees.
+        if (isCopiedValidationReason(err.reason) && REASON_CHANNEL[err.reason] === 'code') {
           setCodeError(err.message);
         } else {
           setBannerError(err.message);

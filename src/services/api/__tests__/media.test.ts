@@ -16,10 +16,17 @@ jest.mock('../tokenManager', () => ({
 jest.mock('@dr.pogodin/react-native-fs');
 
 import { downloadFile } from '@dr.pogodin/react-native-fs';
-import { uploadChunk, completeUpload, downloadMediaToFile, archiveConfirm } from '../media';
-import type { UploadChunkParams } from '../media';
+import {
+  uploadChunk,
+  completeUpload,
+  downloadMediaToFile,
+  archiveConfirm,
+  uploadImportChunk,
+  completeImportUpload,
+} from '../media';
+import type { ImportChunkParams, UploadChunkParams } from '../media';
 import { tokenManager } from '../tokenManager';
-import { AuthError, NotFoundError } from '../errors';
+import { AuthError, NotFoundError, RateLimitError } from '../errors';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -197,6 +204,149 @@ describe('completeUpload', () => {
     expect(result.mediaId).toBe('media-123');
     expect(result.sizeBytes).toBe(5000000);
     expect(result.chunksUploaded).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Import media routes (#926)
+// ---------------------------------------------------------------------------
+
+const sampleImportParams: ImportChunkParams = {
+  importId: 'import-789',
+  mediaId: 'media-123',
+  chunkIndex: 0,
+  totalChunks: 2,
+  chunkFilePath: '/tmp/test-chunk.bin',
+};
+
+const chunkOkBody = {
+  media_id: 'media-123',
+  chunk_index: 0,
+  chunks_received: 1,
+  total_chunks: 2,
+  progress: '50.00%',
+  complete: false,
+};
+
+function sentFormData(): { get(k: string): string | null } {
+  const fetchMock = (globalThis as Record<string, unknown>).fetch as jest.Mock;
+  const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+  return init.body as unknown as { get(k: string): string | null };
+}
+
+describe('uploadImportChunk', () => {
+  it('sends POST to the import chunk route', async () => {
+    mockFetchOk(chunkOkBody);
+
+    const result = await uploadImportChunk(sampleImportParams);
+
+    const fetchMock = (globalThis as Record<string, unknown>).fetch as jest.Mock;
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain('/api/imports/import-789/media/chunk');
+    expect(init.method).toBe('POST');
+    expect(init.body).toBeInstanceOf(FormData);
+    expect(result.chunksReceived).toBe(1);
+  });
+
+  it('OMITS group_id — the session names the group and a mismatch is a 400', async () => {
+    mockFetchOk(chunkOkBody);
+
+    await uploadImportChunk(sampleImportParams);
+
+    expect(sentFormData().get('group_id')).toBeNull();
+    expect(sentFormData().get('media_id')).toBe('media-123');
+  });
+
+  it('carries content_class on chunk 0', async () => {
+    mockFetchOk(chunkOkBody);
+
+    await uploadImportChunk({
+      ...sampleImportParams,
+      encryptedMetadata: '{"contentType":"image/jpeg"}',
+      encryptionIv: 'iv==',
+      contentClass: 'image',
+    });
+
+    expect(sentFormData().get('content_class')).toBe('image');
+    expect(sentFormData().get('encrypted_metadata')).toBe('{"contentType":"image/jpeg"}');
+    expect(sentFormData().get('encryption_iv')).toBe('iv==');
+  });
+
+  it('sends none of the chunk-0 fields on a later chunk', async () => {
+    mockFetchOk({ ...chunkOkBody, chunk_index: 1, chunks_received: 2, complete: true });
+
+    await uploadImportChunk({ ...sampleImportParams, chunkIndex: 1 });
+
+    expect(sentFormData().get('content_class')).toBeNull();
+    expect(sentFormData().get('encrypted_metadata')).toBeNull();
+    expect(sentFormData().get('chunk_index')).toBe('1');
+  });
+
+  it('surfaces a 429 as RateLimitError without retrying', async () => {
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 429,
+      json: jest.fn().mockRejectedValue(new Error('not json')),
+      text: jest.fn().mockResolvedValue(''),
+      headers: mockHeaders({ 'retry-after': '7' }),
+    });
+    (globalThis as Record<string, unknown>).fetch = fetchMock;
+
+    const err = await uploadImportChunk(sampleImportParams).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(RateLimitError);
+    expect((err as RateLimitError).retryAfterMs).toBe(7000);
+    // The runner owns the pause: no ladder inside the client.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('completeImportUpload', () => {
+  it('sends POST to the import complete route with just the media id', async () => {
+    mockFetchOk({
+      media_id: 'media-123',
+      size_bytes: 4096,
+      uploaded_at: '2026-01-01T00:00:00Z',
+      expires_at: '2026-04-01T00:00:00Z',
+      chunks_uploaded: 2,
+      allowance: {
+        posts_used: 1,
+        bytes_used: 4096,
+        posts_limit: 1000,
+        bytes_limit: 2147483648,
+      },
+    });
+
+    const result = await completeImportUpload('import-789', 'media-123');
+
+    const fetchMock = (globalThis as Record<string, unknown>).fetch as jest.Mock;
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain('/api/imports/import-789/media/complete');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({ media_id: 'media-123' });
+
+    expect(result.chunksUploaded).toBe(2);
+    expect(result.allowance.postsLimit).toBe(1000);
+  });
+
+  it('accepts the idempotent repeat, which cannot report chunksUploaded', async () => {
+    mockFetchOk({
+      media_id: 'media-123',
+      size_bytes: 4096,
+      uploaded_at: '2026-01-01T00:00:00Z',
+      expires_at: '2026-04-01T00:00:00Z',
+      allowance: {
+        posts_used: 1,
+        bytes_used: 4096,
+        posts_limit: 1000,
+        bytes_limit: 2147483648,
+      },
+    });
+
+    const result = await completeImportUpload('import-789', 'media-123');
+
+    expect(result.chunksUploaded).toBeUndefined();
+    expect(result.sizeBytes).toBe(4096);
   });
 });
 

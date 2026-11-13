@@ -57,7 +57,7 @@ import {
   dispositionForCreateFailure,
 } from '../services/media/uploadCacheDisposition';
 import { captureUploadFailure, type PostPipelineStage } from '../services/uploadTelemetry';
-import { QuotaExceededError } from '../services/api/errors';
+import { QuotaExceededError, ValidationError } from '../services/api/errors';
 import { updateMediaParent } from '../database/repositories/mediaRepository';
 import { useMediaPicker } from '../hooks/useMediaPicker';
 import { useMediaUploadProgress } from '../hooks/useMediaUploadProgress';
@@ -1029,7 +1029,15 @@ export function ThreadDetailScreen({
           // navigated away, and an unguarded Alert pops over whatever screen
           // they're on now (panel finding, PR #744).
           if (mountedRef.current) {
-            if (e instanceof QuotaExceededError) {
+            if (e instanceof ValidationError && e.reason === 'MEDIA_IMPORT_RESERVED') {
+              // A media row reserved by a Meta import was attached (Backend
+              // `routes/threads.js`). An Alert, not `setError`: this screen's
+              // `error`/`setError` is the thread-LOAD channel, rendered only
+              // under `error && !thread`, so it would show nothing on the
+              // reply path. `e.message` IS the curated copy -- the copy map in
+              // `api/errors.ts` is its single home.
+              Alert.alert("Couldn't Attach", e.message);
+            } else if (e instanceof QuotaExceededError) {
               Alert.alert('Upload Failed', e.message);
             } else if (verdict !== 'no') {
               // The send may have landed: a 409 is near-proof of it, and a

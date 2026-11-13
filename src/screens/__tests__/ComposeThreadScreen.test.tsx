@@ -1180,6 +1180,32 @@ describe('ComposeThreadScreen — upload reuse cache and unmount safety', () => 
     expect(mockRollbackUploadedMedia).toHaveBeenCalledWith(['media-id-1']);
   });
 
+  // #926: the composer attached a media row reserved by a Meta import. The
+  // backend answers 400 with `details.code: MEDIA_IMPORT_RESERVED` (B#316
+  // retyped this from a 409 precisely so the cache stays rollback-eligible),
+  // and the curated copy lives only in `api/errors.ts` — the screen renders
+  // `e.message`.
+  it('shows the import-reserved copy and keeps the media rollback-eligible', async () => {
+    mockSelectedMedia = oneImage;
+    mockCreateNewThread.mockRejectedValue(
+      new ValidationError(
+        400,
+        JSON.stringify({ error: 'VALIDATION_ERROR', details: { code: 'MEDIA_IMPORT_RESERVED' } }),
+      ),
+    );
+
+    const renderer = renderScreen();
+    await fillAndPost(renderer);
+
+    expect(textContents(renderer)).toContain("Those photos can't be attached — select them again");
+    expect(textContents(renderer)).not.toContain('Failed to create thread. Please try again.');
+
+    // Disposition 'no': a 400 provably never committed, so Discard still
+    // deletes the uploaded ids rather than flagging them as maybe-on-a-post.
+    await confirmDiscard();
+    expect(mockRollbackUploadedMedia).toHaveBeenCalledWith(['media-id-1']);
+  });
+
   it('marks the cache from an unmounted screen when the 409 lands late', async () => {
     // The mark sits OUTSIDE the `if (mountedRef.current)` UI block, so it runs
     // on a dead screen. Nothing observable survives that screen, so what this

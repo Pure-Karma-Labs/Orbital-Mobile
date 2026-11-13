@@ -254,6 +254,10 @@ async function mapGroupResponse(response: GroupResponse): Promise<Conversation> 
     createdAt: new Date(response.joinedAt).getTime(),
     updatedAt: new Date(response.joinedAt).getTime(),
     isCreator: response.isCreator,
+    // Absent collapses to null like every other group field here: the server
+    // partition is replaced verbatim on each load, so there is no
+    // absent-vs-null contract to preserve (#926, consumed by #928).
+    contentRetentionDays: response.contentRetentionDays ?? null,
   };
 }
 
@@ -436,6 +440,10 @@ export async function createOrbit(name: string): Promise<{ groupId: string }> {
     lastReadAt: now,
     createdAt: now,
     updatedAt: now,
+    // Explicit `null` rather than absent: the create/join response does not
+    // carry the orbit's retention window, and `null` is this field's "never
+    // expires", which the next group list replaces with the server's value.
+    contentRetentionDays: null,
   });
   store.setActiveConversation(response.groupId);
 
@@ -935,6 +943,9 @@ export async function joinOrbit(
     lastReadAt: now,
     createdAt: now,
     updatedAt: now,
+    // See the create path: `null` until the next group list carries the
+    // orbit's real retention window.
+    contentRetentionDays: null,
   });
   store.setActiveConversation(response.groupId);
 

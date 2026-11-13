@@ -29,7 +29,11 @@ import {
 import { AuthError, NetworkError } from './errors';
 import { tokenManager } from './tokenManager';
 import { ciphertextByteCeiling } from '../media/mediaLimits';
-import type { MediaContentClass, UploadChunkResponse } from '../../types/api';
+import type {
+  ImportMediaCompleteResponse,
+  MediaContentClass,
+  UploadChunkResponse,
+} from '../../types/api';
 
 // ============================================================
 // Upload
@@ -51,19 +55,23 @@ export interface UploadChunkParams {
 }
 
 /**
- * Upload a single encrypted chunk of a media file.
+ * The multipart body both chunk routes send.
  *
- * POST /api/media/upload/chunk — multipart FormData with snake_case field names.
- * FormData fields are manually set to snake_case (not using camelToSnake transform,
- * which operates on JSON bodies, not FormData).
+ * Shared because the two routes take the SAME field set bar one: the import
+ * route's `group_id` is optional (the session already names the group) and a
+ * mismatch there is a 400, so the import caller omits it — see
+ * {@link uploadImportChunk}. Everything else, including which fields ride only
+ * on chunk 0, is one contract in one place.
+ *
+ * Fields are manually snake_case: the client's camelToSnake transform operates
+ * on JSON bodies, never on FormData.
  */
-export function uploadChunk(
-  params: UploadChunkParams,
-  signal?: AbortSignal,
-): Promise<UploadChunkResponse> {
+function buildChunkFormData(params: UploadChunkParams | ImportChunkParams): FormData {
   const formData = new FormData();
   formData.append('media_id', params.mediaId);
-  formData.append('group_id', params.groupId);
+  if ('groupId' in params) {
+    formData.append('group_id', params.groupId);
+  }
   formData.append('chunk_index', String(params.chunkIndex));
   formData.append('total_chunks', String(params.totalChunks));
   formData.append('chunk', {
@@ -80,13 +88,98 @@ export function uploadChunk(
   if (params.contentClass) {
     formData.append('content_class', params.contentClass);
   }
+  return formData;
+}
 
+/**
+ * Upload a single encrypted chunk of a media file.
+ *
+ * POST /api/media/upload/chunk — multipart FormData with snake_case field names.
+ */
+export function uploadChunk(
+  params: UploadChunkParams,
+  signal?: AbortSignal,
+): Promise<UploadChunkResponse> {
   return request<UploadChunkResponse>({
     method: 'POST',
     path: '/api/media/upload/chunk',
-    body: formData,
+    body: buildChunkFormData(params),
     timeout: 60_000,
     signal,
+  });
+}
+
+// ============================================================
+// Import media upload (#926) — B#316
+// ============================================================
+
+/**
+ * One chunk of an imported media file.
+ *
+ * No `groupId`: it is OPTIONAL on this route because the session already names
+ * the group, and sending one that disagrees with the session is a 400. The
+ * absence is load-bearing, not an oversight.
+ *
+ * `mediaId` is CALLER-supplied and must be REUSED across every retry of the
+ * same file: the chunk ceiling counts staged bytes member-wide, so a fresh id
+ * per attempt can lock the member out until the staged bytes are collected.
+ */
+export interface ImportChunkParams {
+  importId: string;
+  mediaId: string;
+  chunkIndex: number;
+  totalChunks: number;
+  /** Path to temp file containing encrypted chunk bytes */
+  chunkFilePath: string;
+  /** Plain JSON string of metadata (NOT base64) — first chunk only */
+  encryptedMetadata?: string;
+  /** Base64-encoded IV extracted from ciphertext — first chunk only */
+  encryptionIv?: string;
+  /**
+   * Coarse media class — first chunk only, and REQUIRED there on this route:
+   * the server allowlists it against `limits.media_content_classes`.
+   */
+  contentClass?: MediaContentClass;
+}
+
+/**
+ * Upload one chunk under an import session.
+ *
+ * POST /api/imports/:importId/media/chunk. Same multipart body as
+ * {@link uploadChunk} minus `group_id`, and the same 200 progress shape.
+ *
+ * `retryOn429: false` — the import runner owns the pause (see `./imports.ts`).
+ */
+export function uploadImportChunk(
+  params: ImportChunkParams,
+  signal?: AbortSignal,
+): Promise<UploadChunkResponse> {
+  return request<UploadChunkResponse>({
+    method: 'POST',
+    path: `/api/imports/${encodeURIComponent(params.importId)}/media/chunk`,
+    body: buildChunkFormData(params),
+    timeout: 60_000,
+    signal,
+    retryOn429: false,
+  });
+}
+
+/**
+ * Settle an imported media upload and mint its `media` row.
+ *
+ * POST /api/imports/:importId/media/complete — 201 on the real settle, 200 on
+ * the idempotent repeat (which cannot report `chunksUploaded`: the temp row
+ * that counted the chunks is gone).
+ */
+export function completeImportUpload(
+  importId: string,
+  mediaId: string,
+): Promise<ImportMediaCompleteResponse> {
+  return request<ImportMediaCompleteResponse>({
+    method: 'POST',
+    path: `/api/imports/${encodeURIComponent(importId)}/media/complete`,
+    body: { mediaId },
+    retryOn429: false,
   });
 }
 

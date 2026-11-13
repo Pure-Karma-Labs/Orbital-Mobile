@@ -29,6 +29,7 @@ import {
   NetworkError,
   NotFoundError,
   QuotaExceededError,
+  RateLimitError,
   ServerError,
   ValidationError,
 } from '../errors';
@@ -1023,5 +1024,54 @@ describe('retryOn429', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 429 → RateLimitError, and the response headers that feed it (#926)
+// ---------------------------------------------------------------------------
+
+describe('429 response headers', () => {
+  function mockFetch429(headerEntries: Record<string, string>): jest.Mock {
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 429,
+      json: jest.fn().mockRejectedValue(new Error('not json')),
+      text: jest.fn().mockResolvedValue('rate limited'),
+      headers: {
+        get: (name: string) => headerEntries[name.toLowerCase()] ?? null,
+      },
+    });
+    (globalThis as Record<string, unknown>).fetch = fetchMock;
+    return fetchMock;
+  }
+
+  it('reaches the mapper, so Retry-After survives as retryAfterMs', async () => {
+    mockFetch429({ 'retry-after': '9' });
+
+    const err = await request({
+      method: 'POST',
+      path: '/api/imports/abc/threads',
+      retryOn429: false,
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(RateLimitError);
+    expect((err as RateLimitError).retryAfterMs).toBe(9000);
+    // Unchanged for every existing consumer.
+    expect((err as ApiError).code).toBe('RATE_LIMITED');
+    expect((err as ApiError).isRetryable).toBe(true);
+  });
+
+  it('leaves retryAfterMs undefined when the response carries no headers', async () => {
+    mockFetchError(429, 'rate limited');
+
+    const err = await request({
+      method: 'GET',
+      path: '/api/test',
+      retryOn429: false,
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(RateLimitError);
+    expect((err as RateLimitError).retryAfterMs).toBeUndefined();
   });
 });

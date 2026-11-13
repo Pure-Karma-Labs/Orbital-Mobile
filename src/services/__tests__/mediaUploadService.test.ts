@@ -68,9 +68,14 @@ jest.mock('../crypto/utils', () => ({
 const mockUploadChunk = jest.fn();
 const mockCompleteUpload = jest.fn();
 
+const mockUploadImportChunk = jest.fn();
+const mockCompleteImportUpload = jest.fn();
+
 jest.mock('../api/media', () => ({
   uploadChunk: (...args: unknown[]) => mockUploadChunk(...args),
   completeUpload: (...args: unknown[]) => mockCompleteUpload(...args),
+  uploadImportChunk: (...args: unknown[]) => mockUploadImportChunk(...args),
+  completeImportUpload: (...args: unknown[]) => mockCompleteImportUpload(...args),
 }));
 
 const mockSaveMedia = jest.fn();
@@ -134,9 +139,17 @@ import {
   type UploadProgressEvent,
   type BatchUploadProgressEvent,
   rollbackUploadedMedia,
+  ImportMediaUnsupportedError,
+  ImportMediaStagedError,
 } from '../mediaUploadService';
 import * as Sentry from '@sentry/react-native';
-import { QuotaExceededError, AuthError } from '../api/errors';
+import {
+  AuthError,
+  ConflictError,
+  QuotaExceededError,
+  RateLimitError,
+  ValidationError,
+} from '../api/errors';
 import { UPLOAD_CANCELLED_MESSAGE } from '../media/uploadCancellation';
 import type { PickedMedia } from '../../hooks/useMediaPicker';
 
@@ -278,6 +291,27 @@ beforeEach(() => {
     uploadedAt: '2026-01-01T00:00:00Z',
     expiresAt: '2026-01-08T00:00:00Z',
     chunksUploaded: 1,
+  });
+  mockUploadImportChunk.mockResolvedValue({
+    mediaId: 'import-media-id',
+    chunkIndex: 0,
+    chunksReceived: 1,
+    totalChunks: 1,
+    progress: '100.00%',
+    complete: true,
+  });
+  mockCompleteImportUpload.mockResolvedValue({
+    mediaId: 'import-media-id',
+    sizeBytes: 100,
+    uploadedAt: '2026-01-01T00:00:00Z',
+    expiresAt: '2026-01-08T00:00:00Z',
+    chunksUploaded: 1,
+    allowance: {
+      postsUsed: 1,
+      bytesUsed: 100,
+      postsLimit: 1000,
+      bytesLimit: 2147483648,
+    },
   });
 
   // Default RNFS mocks for small files
@@ -530,7 +564,9 @@ describe('uploadMedia', () => {
       const err = await settled;
 
       expect(err).toBeInstanceOf(Error);
-      expect((err as Error).message).toMatch(/Failed to upload media/);
+      // B#316: the ladder now rethrows the TYPED error it ended on instead
+      // of flattening every failure into one opaque string.
+      expect((err as Error).message).toBe('Network error');
       expect(mockUploadChunk).toHaveBeenCalledTimes(3);
       expect(mockSaveMedia).toHaveBeenCalledTimes(1);
       const failedRow = mockSaveMedia.mock.calls[0][0];
@@ -593,7 +629,9 @@ describe('uploadMedia', () => {
       const err = await settled;
 
       expect(err).toBeInstanceOf(Error);
-      expect((err as Error).message).toMatch(/Failed to upload media/);
+      // B#316: the ladder now rethrows the TYPED error it ended on instead
+      // of flattening every failure into one opaque string.
+      expect((err as Error).message).toBe('Network error');
       expect(mockUploadChunk).toHaveBeenCalledTimes(3);
       expect(mockSaveMedia).toHaveBeenCalledTimes(1);
       const failedRow = mockSaveMedia.mock.calls[0][0];
@@ -604,11 +642,28 @@ describe('uploadMedia', () => {
     }
   });
 
-  it('does not retry on 401 error', async () => {
-    mockUploadChunk.mockRejectedValue(new Error('401 Unauthorized'));
+  it('retries an UNTYPED error that merely mentions 401 (#926 §2.6)', async () => {
+    // The fail-fast set is now by CLASS. The old `message.includes('401')`
+    // guard was removed because it could not tell a terminal error from a
+    // transport that happened to print a status: every real 401 arrives here
+    // as a typed AuthError (the client maps it), covered by the test below,
+    // and ValidationError.message is curated copy that never contains a code
+    // at all — so the string test fired on nothing that mattered and missed
+    // every terminal 400.
+    jest.useFakeTimers();
+    try {
+      mockUploadChunk.mockRejectedValue(new Error('401 Unauthorized'));
 
-    await expect(uploadMedia(baseOptions)).rejects.toThrow('401');
-    expect(mockUploadChunk).toHaveBeenCalledTimes(1);
+      const settled = uploadMedia(baseOptions).catch((e: unknown) => e);
+      await jest.advanceTimersByTimeAsync(TOTAL_BACKOFF_MS);
+      const err = await settled;
+
+      expect((err as Error).message).toBe('401 Unauthorized');
+      expect(mockUploadChunk).toHaveBeenCalledTimes(3);
+    } finally {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    }
   });
 
   it('does not retry on quota error', async () => {
@@ -1171,7 +1226,7 @@ describe('uploadMedia — video branch', () => {
           // original retry-exhaustion error is what surfaces, neither masked by a
           // rollback failure nor replaced by a cancellation sentinel.
           expect(err).toBeInstanceOf(Error);
-          expect((err as Error).message).toMatch(/Failed to upload media/);
+          expect((err as Error).message).toBe('Network error');
         } finally {
           jest.clearAllTimers();
           jest.useRealTimers();
@@ -2190,5 +2245,298 @@ describe('SANITIZED_IMAGE_LABELS stays in step with the export allowlist', () =>
     for (const label of Object.values(SANITIZED_IMAGE_LABELS)) {
       expect(label.keepExtensions).toContain(label.extension);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Chunk-ladder fail-fast set (#926 §2.6 / B#316)
+// ---------------------------------------------------------------------------
+
+describe('chunk upload failure classes', () => {
+  const importMode = {
+    importId: 'import-1',
+    mediaId: 'import-media-id',
+    contentClass: 'image' as const,
+  };
+
+  it.each([
+    ['ValidationError', () => new ValidationError(400)],
+    ['ConflictError', () => new ConflictError()],
+    ['RateLimitError', () => new RateLimitError()],
+  ])('fails fast on %s after ONE attempt, rethrown typed', async (_label, make) => {
+    const thrown = make();
+    mockUploadChunk.mockRejectedValue(thrown);
+
+    const err = await uploadMedia(baseOptions).catch((e: unknown) => e);
+
+    expect(err).toBe(thrown);
+    // No ladder: a terminal 400/409/429 cannot change its mind on retry. The
+    // old guard tested `message.includes('401')`, and ValidationError.message
+    // is curated copy — so every terminal 400 used to be retried three times.
+    expect(mockUploadChunk).toHaveBeenCalledTimes(1);
+  });
+
+  it('still retries a NetworkError-shaped failure three times', async () => {
+    jest.useFakeTimers();
+    try {
+      mockUploadChunk.mockRejectedValue(new Error('Network error'));
+
+      const settled = uploadMedia(baseOptions).catch((e: unknown) => e);
+      await jest.advanceTimersByTimeAsync(TOTAL_BACKOFF_MS);
+      await settled;
+
+      expect(mockUploadChunk).toHaveBeenCalledTimes(3);
+    } finally {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    }
+  });
+
+  it('still saves the failed row on the normal path before rethrowing', async () => {
+    // The retry-exhaustion path, which is where the failed row has always
+    // been written: the fail-fast classes throw ABOVE it, exactly as
+    // QuotaExceededError and AuthError already did.
+    jest.useFakeTimers();
+    try {
+      mockUploadChunk.mockRejectedValue(new Error('Network error'));
+
+      const settled = uploadMedia(baseOptions).catch((e: unknown) => e);
+      await jest.advanceTimersByTimeAsync(TOTAL_BACKOFF_MS);
+      const err = await settled;
+
+      expect((err as Error).message).toBe('Network error');
+      expect(mockSaveMedia).toHaveBeenCalledTimes(1);
+      expect(mockSaveMedia.mock.calls[0][0].upload_state).toBe('failed');
+    } finally {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    }
+  });
+
+  it('saves NO failed row in import mode when the ladder is exhausted', async () => {
+    jest.useFakeTimers();
+    try {
+      mockUploadImportChunk.mockRejectedValue(new Error('Network error'));
+
+      const settled = uploadMedia({
+        ...baseOptions,
+        import: { importId: 'import-1', mediaId: 'import-media-id', contentClass: 'image' },
+      }).catch((e: unknown) => e);
+      await jest.advanceTimersByTimeAsync(TOTAL_BACKOFF_MS);
+      await settled;
+
+      expect(mockUploadImportChunk).toHaveBeenCalledTimes(3);
+      expect(mockSaveMedia).not.toHaveBeenCalled();
+    } finally {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    }
+  });
+
+  it('saves NO failed row in import mode', async () => {
+    mockUploadImportChunk.mockRejectedValue(new ValidationError(400));
+
+    await uploadMedia({
+      ...baseOptions,
+      import: importMode,
+    }).catch(() => undefined);
+
+    expect(mockSaveMedia).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Import mode (#926 §2.4)
+// ---------------------------------------------------------------------------
+
+describe('uploadMedia import mode', () => {
+  const importMode = {
+    importId: 'import-1',
+    mediaId: 'caller-chosen-id',
+    contentClass: 'image' as const,
+  };
+  const importOptions = { ...baseOptions, import: importMode };
+
+  it('uses the import routes and never the ordinary ones', async () => {
+    await uploadMedia(importOptions);
+
+    expect(mockUploadImportChunk).toHaveBeenCalledTimes(1);
+    expect(mockCompleteImportUpload).toHaveBeenCalledWith('import-1', 'caller-chosen-id');
+    expect(mockUploadChunk).not.toHaveBeenCalled();
+    expect(mockCompleteUpload).not.toHaveBeenCalled();
+  });
+
+  it("uses the CALLER's media id for every chunk, never a generated one", async () => {
+    setupRnfsMocks(12 * 1024 * 1024); // 3 chunks
+    setupMockEncryptor(computeCtSize(12 * 1024 * 1024));
+
+    await uploadMedia(importOptions);
+
+    expect(mockUploadImportChunk.mock.calls.length).toBeGreaterThan(1);
+    for (const [args] of mockUploadImportChunk.mock.calls) {
+      expect(args.mediaId).toBe('caller-chosen-id');
+      expect(args.importId).toBe('import-1');
+      // The session names the group; sending one is a 400 on a mismatch.
+      expect(args.groupId).toBeUndefined();
+    }
+    expect(mockGenerateUUID).not.toHaveBeenCalled();
+  });
+
+  it('sends the explicit content class on chunk 0', async () => {
+    await uploadMedia(importOptions);
+
+    const [args] = mockUploadImportChunk.mock.calls[0];
+    expect(args.chunkIndex).toBe(0);
+    expect(args.contentClass).toBe('image');
+    expect(args.encryptedMetadata).toBeDefined();
+    expect(args.encryptionIv).toBeDefined();
+  });
+
+  it('refuses video before any transcode work', async () => {
+    const err = await uploadMedia({
+      ...importOptions,
+      fileUri: 'file:///tmp/clip.mp4',
+      mimeType: 'video/mp4',
+      fileName: 'clip.mp4',
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ImportMediaUnsupportedError);
+    const { prepareVideoForUpload } = require('../media/videoProcessing');
+    expect(prepareVideoForUpload).not.toHaveBeenCalled();
+    expect(mockUploadImportChunk).not.toHaveBeenCalled();
+  });
+
+  it('commits nothing locally: no canonical copy, no row, no store entry', async () => {
+    const rnfs = require('@dr.pogodin/react-native-fs');
+
+    const result = await uploadMedia(importOptions);
+
+    expect(result.mediaId).toBe('caller-chosen-id');
+    expect(rnfs.copyFile).not.toHaveBeenCalled();
+    expect(mockSaveMedia).not.toHaveBeenCalled();
+    expect(mockUpsertMedia).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // The id is burned once a chunk lands (PR #991 blocker)
+  // -------------------------------------------------------------------------
+
+  /** A multi-chunk file: 12 MiB of plaintext is 3 chunks of ciphertext. */
+  function setupMultiChunk(): void {
+    setupRnfsMocks(12 * 1024 * 1024);
+    setupMockEncryptor(computeCtSize(12 * 1024 * 1024));
+  }
+
+  it('wraps a failure AFTER a chunk was accepted in ImportMediaStagedError', async () => {
+    jest.useFakeTimers();
+    try {
+      setupMultiChunk();
+      const cause = new ValidationError(400);
+      mockUploadImportChunk.mockImplementation((args: { chunkIndex: number }) =>
+        args.chunkIndex === 0
+          ? Promise.resolve({ chunksReceived: 1, complete: false })
+          : Promise.reject(cause),
+      );
+
+      const settled = uploadMedia(importOptions).catch((e: unknown) => e);
+      await jest.advanceTimersByTimeAsync(TOTAL_BACKOFF_MS);
+      const err = await settled;
+
+      // "This id is burned — mint a fresh one", not "retry in place": the
+      // server keeps attempt 1's envelope and IV, so a reuse would stitch two
+      // ciphertexts into one undecryptable blob.
+      expect(err).toBeInstanceOf(ImportMediaStagedError);
+      // The typed cause survives, so the runner can still decide pause-vs-fail.
+      expect((err as ImportMediaStagedError).cause).toBe(cause);
+      expect((err as Error).message).not.toContain('400');
+    } finally {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    }
+  });
+
+  it('leaves a failure on chunk 0 as the plain typed error', async () => {
+    setupMultiChunk();
+    const cause = new ValidationError(400);
+    mockUploadImportChunk.mockRejectedValue(cause);
+
+    const err = await uploadMedia(importOptions).catch((e: unknown) => e);
+
+    // Nothing was staged under this id, so it is still safe to reuse.
+    expect(err).toBe(cause);
+    expect(err).not.toBeInstanceOf(ImportMediaStagedError);
+  });
+
+  it('leaves a single-chunk file unaffected — it cannot mix ciphertexts', async () => {
+    const cause = new ValidationError(400);
+    mockUploadImportChunk.mockRejectedValue(cause);
+
+    const err = await uploadMedia(importOptions).catch((e: unknown) => e);
+
+    expect(mockUploadImportChunk).toHaveBeenCalledTimes(1);
+    expect(err).toBe(cause);
+  });
+
+  it('wraps a failure at media-complete, once every chunk has been accepted', async () => {
+    const cause = new ConflictError();
+    mockCompleteImportUpload.mockRejectedValue(cause);
+
+    const err = await uploadMedia(importOptions).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ImportMediaStagedError);
+    expect((err as ImportMediaStagedError).cause).toBe(cause);
+  });
+
+  it('does NOT wrap a cancellation — the runner owns that decision', async () => {
+    const controller = new AbortController();
+    setupMultiChunk();
+    mockUploadImportChunk.mockImplementation((args: { chunkIndex: number }) => {
+      if (args.chunkIndex === 0) return Promise.resolve({ chunksReceived: 1, complete: false });
+      controller.abort();
+      return Promise.reject(new Error('Aborted'));
+    });
+
+    const err = await uploadMedia({ ...importOptions, signal: controller.signal }).catch(
+      (e: unknown) => e,
+    );
+
+    expect(err).not.toBeInstanceOf(ImportMediaStagedError);
+    expect(isUploadCancellation(err)).toBe(true);
+  });
+
+  it('never wraps on the ordinary path, where ids are generated per attempt', async () => {
+    setupMultiChunk();
+    const cause = new ValidationError(400);
+    mockUploadChunk.mockImplementation((args: { chunkIndex: number }) =>
+      args.chunkIndex === 0
+        ? Promise.resolve({ chunksReceived: 1, complete: false })
+        : Promise.reject(cause),
+    );
+
+    const err = await uploadMedia(baseOptions).catch((e: unknown) => e);
+
+    expect(err).toBe(cause);
+  });
+
+  it('still returns the attachment key and digest the envelope needs', async () => {
+    const result = await uploadMedia(importOptions);
+
+    expect(result.attachmentKey).toBe(fakeKeys);
+    expect(result.digest).toBe(fakeDigest);
+  });
+
+  it('carries importOriginalCreatedAt into the chunk-0 envelope', async () => {
+    await uploadMedia({ ...importOptions, importOriginalCreatedAt: 1345982400000 });
+
+    const [plaintext] = mockEncryptContent.mock.calls[0];
+    expect(JSON.parse(plaintext as string).originalCreatedAt).toBe(1345982400000);
+  });
+
+  it('leaves the ordinary path committing locally, exactly as before', async () => {
+    await uploadMedia(baseOptions);
+
+    expect(mockSaveMedia).toHaveBeenCalledTimes(1);
+    expect(mockUpsertMedia).toHaveBeenCalledTimes(1);
+    expect(mockCompleteUpload).toHaveBeenCalledTimes(1);
   });
 });

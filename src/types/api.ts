@@ -213,6 +213,16 @@ export interface GroupResponse {
   unreadCount?: number;
   /** ISO timestamp of when the current user last read this group */
   lastReadAt?: string | null;
+  /**
+   * Days a thread's content survives in this orbit before the retention sweep
+   * deletes it, or null for "never expires" (`groupService.js` returns
+   * `content_retention_days` on the group list).
+   *
+   * Carried because an imported post is dated in the past: without the orbit's
+   * retention window a member cannot be told, before the run, that some of
+   * what they import will be deleted on arrival (#928).
+   */
+  contentRetentionDays?: number | null;
 }
 
 /**
@@ -844,4 +854,176 @@ export interface LinkPreviewResponse {
   imageUrl: string | null;
   siteName: string | null;
   type: string | null;
+}
+
+// ============================================================
+// Meta import (#926) — B#315-B#318
+// ============================================================
+
+/**
+ * The per-(orbit, member) import allowance, as every import route reports it.
+ *
+ * All four keys are plain JSON numbers and all four are always present
+ * (`allowanceWire`, Orbital-Backend `src/services/importService.js`). The
+ * limits are LIFETIME caps, not per-session ones: `postsUsed` counts every
+ * post this member has ever imported into this orbit, so a member who has
+ * used 900 of 1000 can never import a 200-post archive.
+ */
+export interface ImportAllowance {
+  postsUsed: number;
+  bytesUsed: number;
+  /** 1000 today (`IMPORT_POSTS_LIMIT`). Read it, never hardcode it. */
+  postsLimit: number;
+  /** 2 GiB today (`IMPORT_BYTES_LIMIT`). */
+  bytesLimit: number;
+}
+
+/**
+ * Server-advertised limits, returned on the three session-shaped routes
+ * (`limitsWire`, Orbital-Backend `src/routes/imports.js`).
+ *
+ * `mediaContentClasses` is the allowlist of content classes the import media
+ * routes accept — `['image']` today. Reading it rather than hardcoding
+ * "images only" is why enabling video is a server config change.
+ */
+export interface ImportLimits {
+  batchMax: number;
+  mediaPerItemMax: number;
+  metaMaxBytes: number;
+  ivMax: number;
+  titleMax: number;
+  bodyMax: number;
+  /** `YYYY-MM-DD`; posts older than this are refused per item. */
+  minDate: string;
+  mediaContentClasses: MediaContentClass[];
+}
+
+/** POST /api/groups/:groupId/imports request. Both fields are REQUIRED. */
+export interface StartImportRequest {
+  /** 1..1000. Outside the range → 400 `IMPORT_DECLARED_INVALID`. */
+  declaredPosts: number;
+  /** 0..2 GiB, a safe integer. */
+  declaredBytes: number;
+}
+
+/** POST /api/groups/:groupId/imports → 201. */
+export interface StartImportResponse {
+  importId: string;
+  status: ImportSessionStatus;
+  declaredPosts: number;
+  declaredBytes: number;
+  allowance: ImportAllowance;
+  limits: ImportLimits;
+}
+
+/** Session lifecycle. Only `open` accepts writes. */
+export type ImportSessionStatus = 'open' | 'completed' | 'closed' | 'abandoned';
+
+/** The caller's own open session on this orbit, from the preflight GET. */
+export interface OpenImportSummary {
+  importId: string;
+  status: ImportSessionStatus;
+  declaredPosts: number;
+  declaredBytes: number;
+  createdPosts: number;
+  lastActivityAt: string;
+}
+
+/** GET /api/groups/:groupId/imports → 200. The preflight. */
+export interface GroupImportsResponse {
+  allowance: ImportAllowance;
+  /** The one open session, or null. Adopt it rather than starting a new one. */
+  openImport: OpenImportSummary | null;
+  limits: ImportLimits;
+}
+
+/** GET /api/imports/:importId → 200. Owner-only; any status. */
+export interface ImportSessionResponse {
+  importId: string;
+  groupId: string;
+  status: ImportSessionStatus;
+  declaredPosts: number;
+  declaredBytes: number;
+  createdPosts: number;
+  createdAt: string;
+  lastActivityAt: string;
+  completedAt: string | null;
+  allowance: ImportAllowance;
+  limits: ImportLimits;
+}
+
+/**
+ * One item of a batch submit.
+ *
+ * `importKey` is standard padded base64 of exactly 16 bytes (the backend's
+ * `IMPORT_KEY_B64_RE` plus a canonical round-trip check); `originalCreatedAt`
+ * is `YYYY-MM-DD` and must be a real calendar date not before
+ * `ImportLimits.minDate`. `encryptedBody` may be the empty string; the meta
+ * pair is all-or-nothing. A malformed item is `rejected` INSIDE a 200 — it
+ * never fails the request.
+ */
+export interface ImportBatchItem {
+  importKey: string;
+  originalCreatedAt: string;
+  encryptedTitle: string;
+  encryptedBody: string;
+  titleIv: string;
+  bodyIv: string;
+  encryptedImportMeta?: string;
+  importMetaIv?: string;
+  /** ≤100 v4 UUIDs, no duplicates within the item. */
+  mediaIds?: string[];
+}
+
+/** POST /api/imports/:importId/threads request. 1..`batchMax` items. */
+export interface ImportBatchRequest {
+  items: ImportBatchItem[];
+}
+
+/**
+ * Per-item outcome, index-aligned with the submitted `items` (the array is
+ * dense).
+ *
+ * `importKey` is always present but null when the submitted key was not a
+ * string or was over 64 chars. `threadId` and `createdAt` are present together
+ * or not at all (B#317): on `created` and on a `duplicate` that resolved to a
+ * row, never on a `rejected` item or on the id-less delete-race duplicate.
+ * `code` appears only on `rejected`.
+ */
+export interface ImportBatchResultWire {
+  importKey: string | null;
+  status: 'created' | 'duplicate' | 'rejected';
+  threadId?: string;
+  createdAt?: string;
+  code?: string;
+}
+
+/** POST /api/imports/:importId/threads → 200. */
+export interface ImportBatchResponse {
+  results: ImportBatchResultWire[];
+  allowance: ImportAllowance;
+}
+
+/** POST /api/imports/:importId/complete → 200. Idempotent. */
+export interface CompleteImportResponse {
+  importId: string;
+  status: ImportSessionStatus;
+  createdPosts: number;
+  completedAt: string | null;
+}
+
+/**
+ * POST /api/imports/:importId/media/complete → 201, or 200 on the idempotent
+ * repeat.
+ *
+ * `chunksUploaded` is optional because the repeat cannot recover it: the temp
+ * row that counted the chunks is gone by then.
+ */
+export interface ImportMediaCompleteResponse {
+  mediaId: string;
+  sizeBytes: number;
+  uploadedAt: string;
+  expiresAt: string;
+  chunksUploaded?: number;
+  allowance: ImportAllowance;
 }

@@ -153,8 +153,9 @@ export interface Spec extends TurboModule {
    * Release EVERY persistable grant this app holds (plan §10 F3).
    *
    * Android: iterates `contentResolver.persistedUriPermissions` and releases
-   * all of them. iOS: no-op. Called from `localWipe` on the ACCOUNT DELETION
-   * path only — logout keeps grants so a cold-start resume still works.
+   * all of them. iOS: no-op. Called from `localWipe` on BOTH wipe paths,
+   * logout and account deletion (#921) — logout now clears the import job
+   * rows too, so no grant is left worth keeping for a resume.
    */
   releaseAllPersistedParts(): Promise<void>;
 }

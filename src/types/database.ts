@@ -7,7 +7,20 @@
  * - String unions for status/type columns
  * - All timestamps are Unix epoch seconds (number)
  * - JSDoc notes desktop column equivalents where they differ
+ *
+ * ## One deliberate type-only edge (#921)
+ *
+ * The Meta import rows below `import type` `ImportSource`, `SkipReason` and
+ * `IdKind` from `services/metaImport/types.ts`. That module imports NOTHING —
+ * it is a contract leaf by construction — and the alternative was re-declaring
+ * the same unions here, where a new `SkipReason` would silently diverge. This
+ * is NOT a licence for `src/types` → `src/services` edges in general: any
+ * other such import drags the service graph into the type layer. `archive_bookmark`
+ * in particular is typed `string | null` and never imports `ArchivePartToken`
+ * (security invariant 29a's single-importer rule).
  */
+
+import type { ImportSource, SkipReason, IdKind } from '../services/metaImport/types';
 
 // ============================================================
 // Enums
@@ -321,4 +334,111 @@ export interface DraftRow {
   body: string | null;
   /** Unix epoch seconds */
   updated_at: number;
+}
+
+// ============================================================
+// Meta Import Table Rows (3) — migration 009 (#921)
+// ============================================================
+
+/**
+ * `import_jobs.status`.
+ *
+ * There is NO `paused` status: pause is in-process runtime state only, and a
+ * job found in a non-terminal status at launch is resumed (or deleted) by the
+ * #926 runner. `parsing` at launch means a torn parse.
+ */
+export type ImportJobStatus =
+  'parsing' | 'ready' | 'in_progress' | 'completed' | 'cancelled' | 'failed';
+
+/** `import_items.status` — the six states one parsed post moves through. */
+export type ImportItemStatus =
+  'pending' | 'uploading' | 'created' | 'duplicate' | 'failed' | 'skipped';
+
+/** `import_item_media.upload_state` — a request-saving cache, not a source of truth. */
+export type ImportMediaUploadState = 'pending' | 'uploaded';
+
+/**
+ * import_jobs row — one Meta archive import run (#921).
+ */
+export interface ImportJobRow {
+  id: string;
+  /** The orbit this import posts into. No FK (003/004 precedent). */
+  conversation_id: string;
+  source: ImportSource;
+  status: ImportJobStatus;
+  /** Server `import_id`. NULL until the run starts. */
+  session_id: string | null;
+  /**
+   * `ImportKeySession.keyFingerprint` — the key generation AND account stamp.
+   * LOCAL ONLY: never logged, never in a breadcrumb or error message, never
+   * sent to the server.
+   */
+  key_fingerprint: string;
+  /** NULL until parsed; excludes held items. */
+  declared_posts: number | null;
+  /** NULL until parsed; excludes held items. */
+  declared_bytes: number | null;
+  /** The stored home of SkipReason `duplicate_in_archive`. */
+  dropped_duplicates: number;
+  /**
+   * `JSON.stringify(ArchiveSession.parts)` — a CAPABILITY HANDLE, never
+   * logged. Typed as the stored JSON string, deliberately NOT
+   * `ArchivePartToken[]`: the token type has a single importer
+   * (`metaImport/archiveAccess`), and nothing may parse a token's interior.
+   * NULLed when the job reaches a terminal status.
+   */
+  archive_bookmark: string | null;
+  /** Unix epoch MILLISECONDS */
+  created_at: number;
+  /** Unix epoch MILLISECONDS */
+  updated_at: number;
+}
+
+/**
+ * import_items row — one parsed post, importable or skipped (#921).
+ *
+ * There is deliberately no `sourceItemId` field: the v1 identity frame is
+ * plaintext-class and is never persisted (see migration 009's header).
+ */
+export interface ImportItemRow {
+  id: string;
+  job_id: string;
+  /** 0-based parse order within the job. Gaps from dropped duplicates are fine. */
+  ordinal: number;
+  /** 16 bytes (#924). NULL for exactly the three pre-frame skips. */
+  import_key: Uint8Array | null;
+  status: ImportItemStatus;
+  /** NULL unless the item is `skipped`. */
+  skip_reason: SkipReason | null;
+  /** Unix epoch MILLISECONDS UTC */
+  original_date: number | null;
+  /**
+   * PLAINTEXT-CLASS post body (same posture as `orbital_threads.body`:
+   * plaintext inside SQLCipher). NULL for skips, and NULLed once the item
+   * reaches `created`/`duplicate`. Never logged, thrown or sent to telemetry.
+   */
+  body: string | null;
+  /** Post-JSON basename. LOCAL UI ONLY (F18). */
+  source_file: string | null;
+  source_index: number | null;
+  /** The `kind` byte of the v1 frame: 1 content frame, 2 Instagram fbid. */
+  id_kind: IdKind | null;
+  /** Server thread id, once the item is `created`/`duplicate`. */
+  thread_id: string | null;
+  /** Server reason code, once the item is `failed`. */
+  error_code: string | null;
+}
+
+/** import_item_media row — one media attachment of a parsed post (#921). */
+export interface ImportItemMediaRow {
+  item_id: string;
+  /** Display order within the post. Composite PK part 2. */
+  ordinal: number;
+  /** Lowercase UUIDv4 (`generateUUID`), stable across retries. */
+  media_id: string;
+  /** Opaque archive entry id — never parsed, split or truncated. */
+  entry_id: string;
+  /** Unix epoch MILLISECONDS UTC */
+  original_date: number | null;
+  upload_state: ImportMediaUploadState;
 }

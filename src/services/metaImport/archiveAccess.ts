@@ -558,10 +558,14 @@ export function abortAllArchiveSessions(): void {
 }
 
 /**
- * `localWipe` DELETION path only (F3): release every persisted SAF grant.
+ * `localWipe` on BOTH paths (F3, #921): release every persisted SAF grant.
  *
- * Logout deliberately keeps grants, so the same user on the same device can
- * still resume a paused import after re-authenticating.
+ * It was deletion-only while logout kept a paused import resumable. Logout now
+ * CLEARS the import state (`deleteAllImportJobs`), so a retained grant would
+ * outlive every row that explained it — a long-lived read permission on a file
+ * in the member's Downloads folder that nothing in the UI would mention again.
+ * After re-login the member re-picks and re-parses instead; the keys re-derive
+ * identically and already-imported posts come back `duplicate`.
  */
 export async function releaseAllPersistedParts(): Promise<void> {
   await releaseAllPersistedPartsNative();

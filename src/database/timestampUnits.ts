@@ -17,6 +17,13 @@
  *                     Signal key stores (signal_signed_pre_keys, signal_pre_keys,
  *                     signal_kyber_pre_keys, signal_identity_keys.first_use);
  *                     their created_at is the only record of key age.
+ *   import_jobs       created_at/updated_at epoch ms (#921; sole writer
+ *                     importRepository stamps Date.now()) — no legacy rows
+ *                     exist, so toMillis must never be applied here
+ *   import_items      original_date epoch ms UTC (#921; the parser's
+ *                     ParsedPost.originalDate, bound only when it is a safe
+ *                     integer in range) — again never via toMillis
+ *   import_item_media original_date epoch ms UTC (#921), same rule
  *   items             no timestamp column; seconds also appear as stringified
  *                     VALUES there (LAST_SIGNED_PRE_KEY_ROTATION, compared in JS
  *                     against a seconds constant) — toMillis must never touch them.

@@ -609,7 +609,7 @@ export async function cancelKeyInitialization(): Promise<void> {
  * key recovery. Deletes Keychain identity key, in-memory caches, and all
  * Signal Protocol + items rows.
  *
- * The five SQL DELETEs run inside a single BEGIN IMMEDIATE/COMMIT transaction
+ * Every SQL DELETE in it runs inside a single BEGIN IMMEDIATE/COMMIT transaction
  * (CRYPTO-M2) — a partial wipe (e.g. Keychain gone but identityKeyPublic row
  * surviving) would make the retry predicate re-attempt reset against a revoked
  * JWT, causing a 401 deadlock.
@@ -648,6 +648,15 @@ export async function fullCryptoWipe(): Promise<void> {
       execute('DELETE FROM signal_signed_pre_keys');
       execute('DELETE FROM signal_kyber_pre_keys');
       execute('DELETE FROM signal_sender_keys');
+      // #921: a Meta import job's rows are derived under the key generation
+      // this wipe is destroying — its `key_fingerprint` stamps that
+      // generation, and every stored `import_key` came from it, so the job can
+      // never be resumed after recovery. Dropping them here (cascades to
+      // import_items and import_item_media) also takes the plaintext-class
+      // post bodies with the rest of the dead-generation state. Any SAF grant
+      // those rows referenced is released by the next logout or deletion,
+      // where the sweep is global.
+      execute('DELETE FROM import_jobs');
       db.executeSync('COMMIT');
     } catch (err) {
       db.executeSync('ROLLBACK');

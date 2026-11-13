@@ -27,6 +27,12 @@ import { getItem, removeItem } from '../database/repositories/itemRepository';
 import { clearAllArchiveConfirmations } from '../database/repositories/mediaRepository';
 import { isDatabaseInitialized } from '../database/connection';
 import { clearConversationServiceState } from './conversationService';
+// #921: the same two teardowns `authService.localWipe` runs, because key
+// recovery wipes the import rows (via fullCryptoWipe) without ever calling
+// localWipe. `metaImport/archiveAccess` is the single permitted importer of
+// the archive-reader package (rule 29a), and this module sits OUTSIDE the
+// `src/services/crypto/**` ESLint fence, so the edge is legal from here.
+import { abortAllArchiveSessions, releaseAllPersistedParts } from './metaImport/archiveAccess';
 import { clearIdentityInflightState } from './crypto/identityKeyAccess';
 import { captureError } from './telemetry';
 import { clearMessageHandlerState } from './websocket/messageHandler';
@@ -429,6 +435,18 @@ async function doRecoverIdentityKeys(
       data: { locallyWiped },
     });
     if (!locallyWiped) {
+      // #921: stop any live archive work BEFORE the wipe, for the same reason
+      // `localWipe` does it in phase 1 — synchronous, deliberately NOT
+      // awaited, because an await hands control straight back to the extract
+      // being stopped. Here it is also an ordering requirement: `fullCryptoWipe`
+      // deletes `import_jobs`, and a parse still flushing `insertImportItems`
+      // after that would be inserting items against a job row that no longer
+      // exists. The epoch bump this performs is what makes that impossible.
+      try {
+        abortAllArchiveSessions();
+      } catch {
+        /* best-effort */
+      }
       try {
         await fullCryptoWipe();
       } catch (e: unknown) {
@@ -437,6 +455,22 @@ async function doRecoverIdentityKeys(
           extra: { step: 'local-wipe' },
         });
         return { status: 'error', message: 'Local wipe failed — please retry' };
+      }
+
+      // #921: and release the Android SAF grants. `fullCryptoWipe` deleted
+      // `import_jobs` (the key generation every stored `import_key` was
+      // derived under is gone, so no job here can ever be resumed), which
+      // leaves this app holding long-lived read permissions on ZIPs in the
+      // member's Downloads folder with no row left to explain them. This path
+      // never calls `localWipe`, so the sweep that `authService` runs on both
+      // its paths would not otherwise reach a recovery. AWAITED, after the
+      // abort above: it is a ContentResolver round-trip and must not race the
+      // epoch bump. iOS is a no-op (a security-scoped bookmark holds no
+      // system grant).
+      try {
+        await releaseAllPersistedParts();
+      } catch {
+        /* best-effort */
       }
 
       // Clear in-flight service state that references now-dead crypto material

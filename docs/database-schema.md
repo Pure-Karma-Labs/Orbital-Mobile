@@ -34,7 +34,7 @@ Mobile normalizes desktop's composite keys into explicit columns. To reconstruct
 
 ---
 
-## Tables (17 total)
+## Tables (19 total)
 
 ### Signal Protocol Stores (6)
 
@@ -102,7 +102,7 @@ Group messaging sender keys (Sealed Sender v2).
 | `record` | BLOB NOT NULL | Serialized sender key state |
 | `created_at` | INTEGER NOT NULL | Unix epoch seconds |
 
-### Orbital App Tables (6)
+### Orbital App Tables (4)
 
 #### `conversations`
 Groups and DM metadata.
@@ -195,32 +195,64 @@ Media metadata, attachment keys, download state.
 
 **Indexes:** `idx_media_thread (thread_id)`, `idx_media_download_state (download_state) WHERE download_state != 'downloaded'`
 
-#### `orbital_media_sync_requests`
-Async media recovery requests.
+### Meta Import Tables (3)
+
+Added by migration 009 (#921). They hold the resumable Facebook/Instagram import state. All timestamps (`created_at`, `updated_at`, `original_date`) are epoch milliseconds. There are no CHECK constraints by design (matches migrations 001-008; the skip-reason set will grow).
+
+#### `import_jobs`
+One row per Meta archive import into an orbit.
 
 | Column | Type | Notes |
 |--------|------|-------|
-| `id` | TEXT PK | UUID |
-| `media_id` | TEXT NOT NULL | FK → orbital_media |
-| `status` | TEXT NOT NULL | 'pending', 'in_progress', 'completed', 'failed' |
-| `attempts` | INTEGER NOT NULL | |
-| `last_attempt_at` | INTEGER | Unix epoch seconds |
-| `error` | TEXT | |
-| `created_at` | INTEGER NOT NULL | Unix epoch seconds |
+| `id` | TEXT NOT NULL PK | |
+| `conversation_id` | TEXT NOT NULL | The orbit; no FK (003/004 precedent) |
+| `source` | TEXT NOT NULL | 'facebook' or 'instagram' |
+| `status` | TEXT NOT NULL DEFAULT 'parsing' | 'parsing', 'ready', 'in_progress', 'completed', 'cancelled', 'failed' (no 'paused': pause is in-process runtime state only) |
+| `session_id` | TEXT | Server import_id; NULL until start |
+| `key_fingerprint` | TEXT NOT NULL | `ImportKeySession.keyFingerprint`, a key-generation + account stamp. LOCAL ONLY: never logged, never sent to the server |
+| `declared_posts` | INTEGER | NULL until parsed; excludes held |
+| `declared_bytes` | INTEGER | NULL until parsed; excludes held |
+| `dropped_duplicates` | INTEGER NOT NULL DEFAULT 0 | Stored home of the `duplicate_in_archive` skip reason |
+| `archive_bookmark` | TEXT | `JSON.stringify(ArchiveSession.parts)`; capability handle, never logged; NULLed when the job reaches a terminal status |
+| `created_at` | INTEGER NOT NULL | Epoch ms |
+| `updated_at` | INTEGER NOT NULL | Epoch ms |
 
-**Indexes:** `idx_media_sync_status (status) WHERE status != 'completed'`
+**Indexes:** `idx_import_jobs_active (status, created_at DESC)` — deliberately NOT partial: every reader binds its status list (`IN (?, ?, ?)`), and SQLite cannot prove a partial index's `WHERE` against parameters, so a partial copy of that list would never be chosen (measured `SCAN` with it, `SEARCH … (status=?)` without).
 
-#### `orbital_media_sync_pending_uploads`
-Pending upload responses.
+#### `import_items`
+One row per post parsed from the archive, including skipped posts.
 
 | Column | Type | Notes |
 |--------|------|-------|
-| `id` | TEXT PK | UUID |
-| `media_id` | TEXT NOT NULL | FK → orbital_media |
-| `upload_url` | TEXT NOT NULL | |
-| `upload_headers` | TEXT | JSON (ephemeral, not key material) |
-| `expires_at` | INTEGER NOT NULL | Unix epoch seconds |
-| `created_at` | INTEGER NOT NULL | Unix epoch seconds |
+| `id` | TEXT NOT NULL PK | |
+| `job_id` | TEXT NOT NULL | FK → import_jobs(id) ON DELETE CASCADE |
+| `ordinal` | INTEGER NOT NULL | |
+| `import_key` | BLOB | 16 bytes, never base64 at rest; NULL for exactly the three pre-frame skips (`malformed_post`, `missing_timestamp`, `invalid_timestamp`) |
+| `status` | TEXT NOT NULL DEFAULT 'pending' | 'pending', 'uploading', 'created', 'duplicate', 'failed', 'skipped' |
+| `skip_reason` | TEXT | SkipReason; NULL unless skipped |
+| `original_date` | INTEGER | Epoch ms UTC |
+| `body` | TEXT | PLAINTEXT-CLASS post body (plaintext inside SQLCipher, same posture as `orbital_threads.body`); NULL for skips; set to NULL once the item reaches 'created' or 'duplicate' |
+| `source_file` | TEXT | Post-JSON basename; LOCAL UI ONLY (F18): never telemetry, never an error message, never a request body |
+| `source_index` | INTEGER | |
+| `id_kind` | INTEGER | 1 = content frame, 2 = IG fbid |
+| `thread_id` | TEXT | |
+| `error_code` | TEXT | |
+
+**Indexes:** `idx_import_items_job_key (job_id, import_key) UNIQUE WHERE import_key IS NOT NULL`, `idx_import_items_job_status (job_id, status, ordinal)`, `idx_import_items_job_reason (job_id, skip_reason) WHERE skip_reason IS NOT NULL`
+
+#### `import_item_media`
+Per-post media entries, in display order. Composite PK `(item_id, ordinal)`.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `item_id` | TEXT NOT NULL | FK → import_items(id) ON DELETE CASCADE; composite PK part 1 |
+| `ordinal` | INTEGER NOT NULL | Display order within the post; composite PK part 2 |
+| `media_id` | TEXT NOT NULL | Lowercase UUIDv4 (`generateUUID`), stable across retries |
+| `entry_id` | TEXT NOT NULL | Opaque; never parsed or truncated |
+| `original_date` | INTEGER | Epoch ms UTC, per media |
+| `upload_state` | TEXT NOT NULL DEFAULT 'pending' | 'pending' or 'uploaded' (request-saving cache) |
+
+**Indexes:** none beyond the composite primary key.
 
 ### Messaging Tables (2)
 
@@ -313,7 +345,7 @@ Draft persistence.
 - **Message history** — `idx_messages_conversation` covers scrollback (`WHERE conversation_id=? ORDER BY server_timestamp DESC`)
 - **Unread badges** — `idx_messages_unread` is a partial index for fast unread counts
 - **Expiring messages** — `idx_messages_expires` partial index for cleanup queries
-- **Queue processing** — `idx_unprocessed_timestamp`, `idx_sync_tasks_status`, `idx_media_sync_status` use partial indexes to skip completed items
+- **Queue processing** — `idx_unprocessed_timestamp` and `idx_sync_tasks_status` use partial indexes to skip completed items (`idx_media_sync_status` went with the tables migration 008 dropped)
 - **Partial indexes** — Used where filtered queries dominate (download state, sync status, read state). Keeps index size small on mobile.
 
 ---
@@ -346,11 +378,9 @@ Draft persistence.
 | 001 | `001_initial_schema.ts` | All 17 tables, indexes, initial schema |
 | 002 | `002_media_blur_hash_expires.ts` | Add blur_hash and expires_at to orbital_media |
 | 003 | `003_drop_media_fks.ts` | Drop FK constraints on orbital_media (thread_id, reply_id, message_id) |
-
-## Planned Future Migrations
-
-| Version | File | Description |
-|---------|------|-------------|
-| 004 | TBD | FTS5 virtual tables for message and thread search |
-| 005 | TBD | Read receipts, typing indicators |
-| 006 | TBD | Reactions table, emoji indexes |
+| 004 | `004_thread_reply_persistence.ts` | Add plaintext columns (title, body, author_username, sync_status, depth) to orbital_threads and orbital_replies; rebuild both tables without FK constraints |
+| 005 | `005_fts5_search.ts` | Add thread_fts and reply_fts FTS5 virtual tables with insert/update/delete sync triggers; backfill from existing threads and replies |
+| 006 | `006_media_thumbnail_ref.ts` | Add thumbnail_media_id and is_thumbnail columns to orbital_media |
+| 007 | `007_media_archive_confirmed.ts` | Add archive_confirmed column (default 0) to orbital_media |
+| 008 | `008_drop_media_sync_tables.ts` | Drop orbital_media_sync_requests and orbital_media_sync_pending_uploads |
+| 009 | `009_meta_import_tables.ts` | Add import_jobs, import_items, import_item_media for resumable Facebook/Instagram import (#921) |

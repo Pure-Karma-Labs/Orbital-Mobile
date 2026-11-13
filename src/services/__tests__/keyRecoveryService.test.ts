@@ -653,6 +653,78 @@ describe('recoverIdentityKeys — fullCryptoWipe failure (SEC-M1)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #921: the archive teardown on the recovery path
+// ---------------------------------------------------------------------------
+
+// This path NEVER calls localWipe, so neither of the two teardowns wired there
+// reaches it — but step 5 runs fullCryptoWipe, which deletes import_jobs. The
+// grants and the live sessions have to be dealt with here or they outlive
+// every row that explained them.
+describe('recoverIdentityKeys — Meta import teardown (#921)', () => {
+  it('aborts live archive sessions BEFORE the wipe and releases SAF grants AFTER it', async () => {
+    const {
+      abortAllArchiveSessions,
+      releaseAllPersistedParts,
+    } = require('orbital-archive-reader');
+    abortAllArchiveSessions.mockClear();
+    releaseAllPersistedParts.mockClear();
+    mockFullCryptoWipe.mockClear();
+
+    const result = await recoverIdentityKeys('password123', false);
+    expect(result.status).not.toBe('error');
+
+    expect(abortAllArchiveSessions).toHaveBeenCalledTimes(1);
+    expect(releaseAllPersistedParts).toHaveBeenCalledTimes(1);
+    expect(mockFullCryptoWipe).toHaveBeenCalledTimes(1);
+
+    // Abort first: the wipe deletes import_jobs, and a parse still flushing
+    // items would be writing against a job row that no longer exists.
+    expect(abortAllArchiveSessions.mock.invocationCallOrder[0]).toBeLessThan(
+      mockFullCryptoWipe.mock.invocationCallOrder[0],
+    );
+    // Release after: a ContentResolver round-trip that must not race the
+    // epoch bump the abort performs.
+    expect(releaseAllPersistedParts.mock.invocationCallOrder[0]).toBeGreaterThan(
+      mockFullCryptoWipe.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('does not fail the recovery when the grant release rejects', async () => {
+    const { releaseAllPersistedParts } = require('orbital-archive-reader');
+    releaseAllPersistedParts.mockClear();
+    releaseAllPersistedParts.mockRejectedValueOnce(new Error('ContentResolver died'));
+
+    const result = await recoverIdentityKeys('password123', false);
+
+    // Best-effort: a held grant is worth reporting, never worth stranding an
+    // account mid-recovery with its keys already destroyed.
+    expect(result.status).not.toBe('error');
+    expect(releaseAllPersistedParts).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips both when the local wipe was already done (locallyWiped)', async () => {
+    const {
+      abortAllArchiveSessions,
+      releaseAllPersistedParts,
+    } = require('orbital-archive-reader');
+    abortAllArchiveSessions.mockClear();
+    releaseAllPersistedParts.mockClear();
+    mockFullCryptoWipe.mockClear();
+    // The wipe is gated on local state; the teardown rides inside that gate,
+    // so a resumed recovery does not re-release grants it no longer holds.
+    // Already-wiped state is "identityKeyPublic absent", the same lever the
+    // skip=true case above uses — and the file's beforeEach puts it back.
+    delete mockItemStore.identityKeyPublic;
+
+    await recoverIdentityKeys('password123', true);
+
+    expect(mockFullCryptoWipe).not.toHaveBeenCalled();
+    expect(abortAllArchiveSessions).not.toHaveBeenCalled();
+    expect(releaseAllPersistedParts).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // SEC-L2: 429 rate limit (ApiError, not AuthError)
 // ---------------------------------------------------------------------------
 

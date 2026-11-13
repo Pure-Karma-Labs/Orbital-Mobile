@@ -30,6 +30,7 @@ import { clearEciesLockState, loadEciesLockState } from './crypto/downgradeProte
 import { clearProcessedMediaIds } from './threadService';
 import { clearAllThreads } from '../database/repositories/threadRepository';
 import { clearAllReplies } from '../database/repositories/replyRepository';
+import { deleteAllImportJobs } from '../database/repositories/importRepository';
 import { clearLinkPreviewCache } from '../hooks/useLinkPreview';
 import { clearIdentityInflightState } from './crypto/identityKeyAccess';
 import { clearAvatarServiceState, clearAvatarCache } from './avatarService';
@@ -494,6 +495,17 @@ export async function localWipe({ preserveIdentity }: { preserveIdentity: boolea
   try { clearAllReplies(); } catch {
     if (__DEV__) console.warn('[LocalWipe] clearAllReplies failed');
   }
+  // #921: the Meta import tables hold the member's own post bodies
+  // (plaintext-class, inside SQLCipher), the basenames of their export files
+  // and a key-generation stamp. Logout CLEARS all of it, next to the thread
+  // and reply caches, rather than keeping it for a resume: per-account content does
+  // not outlive a logout (as with threads), and a paused import is cheap to redo —
+  // after logging back in the member re-picks and re-parses, keys re-derive
+  // identically under the same group key, and already-imported posts come back
+  // `duplicate`. Cascades to import_items and import_item_media.
+  try { deleteAllImportJobs(); } catch {
+    if (__DEV__) console.warn('[LocalWipe] deleteAllImportJobs failed');
+  }
   try { useAppStore.getState().resetBlockedUsers(); } catch {
     if (__DEV__) console.warn('[LocalWipe] resetBlockedUsers failed');
   }
@@ -508,6 +520,23 @@ export async function localWipe({ preserveIdentity }: { preserveIdentity: boolea
   // the next account on this device.
   try { useAppStore.getState().resetNotificationSettings(); } catch {
     if (__DEV__) console.warn('[LocalWipe] resetNotificationSettings failed');
+  }
+
+  // #921 (was #920's deletion-only step 3b): release every persistable SAF
+  // grant this app holds on a picked archive part, on BOTH paths. It lives
+  // here, above the branch, because logout now CLEARS the import state
+  // (deleteAllImportJobs above) — a grant whose job rows are gone is a
+  // permission nothing in the UI would ever mention again, and on Android it
+  // outlives the session that took it. iOS is a no-op: a security-scoped
+  // bookmark holds no system grant.
+  //
+  // AWAITED, unlike the two synchronous phase-1 teardowns: it is a
+  // ContentResolver round-trip, and it must not race `abortAllArchiveSessions`'
+  // epoch bump, which has already run above.
+  try {
+    await releaseAllPersistedParts();
+  } catch {
+    if (__DEV__) console.warn('[LocalWipe] releaseAllPersistedParts failed');
   }
 
   if (preserveIdentity) {
@@ -555,18 +584,8 @@ export async function localWipe({ preserveIdentity }: { preserveIdentity: boolea
       if (__DEV__) console.warn('[LocalWipe] clearAvatarCache failed');
     }
 
-    // 3b. #920: release every persistable SAF grant this app holds on a
-    //     picked archive part. DELETION ONLY — on LOGOUT the grants are
-    //     deliberately kept, because the same user on the same device must
-    //     still be able to resume a paused import after re-authenticating. On
-    //     deletion, a retained read grant on a file in the user's Downloads
-    //     folder is a permission the departed account would leave behind.
-    //     iOS is a no-op: a security-scoped bookmark holds no system grant.
-    try {
-      await releaseAllPersistedParts();
-    } catch {
-      if (__DEV__) console.warn('[LocalWipe] releaseAllPersistedParts failed');
-    }
+    // (The SAF grant release that used to be step 3b now runs above the
+    //  branch, on both paths — see the #921 note there.)
 
     // 4. Close DB connection then unlink the file
     try {

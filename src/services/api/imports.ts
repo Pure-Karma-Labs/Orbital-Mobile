@@ -122,6 +122,11 @@ export function completeImport(importId: string): Promise<CompleteImportResponse
   return request<CompleteImportResponse>({
     method: 'POST',
     path: `/api/imports/${encodeURIComponent(importId)}/complete`,
+    // Explicit empty body, the project convention for a bodyless POST (the
+    // ToS-accept route does the same): a POST with no Content-Length at all
+    // is the shape Cloudflare and some proxies are least consistent about
+    // forwarding, and the route reads no body either way.
+    body: {},
     retryOn429: false,
   });
 }

@@ -2133,6 +2133,13 @@ checkWindowedPins(
     'bytesEqual(live, pin)',
     'encryptContent(plaintext, live, groupId)',
     'GROUP_KEY_BYTES',
+    // CONTIGUITY. One substring spanning the last check and the use, so an
+    // `await` (or any statement) inserted between them fails the rule:
+    // `encryptContent` is synchronous, and that gap is the entire window in
+    // which a microtask could zero the cache's array under us. A race test
+    // in importCrypto.test.ts covers the same property behaviourally.
+    'if (!bytesEqual(live, pin)) throw new ImportKeyChangedError();\n' +
+      '    return encryptContent(plaintext, live, groupId);',
     // The zero floor itself, pinned by its expression: it is the ONE check
     // that catches the in-place zeroing directly, rather than inferring it
     // from a pin mismatch, and deleting that single line is otherwise an
@@ -2141,6 +2148,58 @@ checkWindowedPins(
   ],
   ['return live'],
   IMP_ISSUE,
+);
+
+// ---------------------------------------------------------------------------
+// 20b. The media metadata envelope seals under a LIVE, usable group key (#926)
+// ---------------------------------------------------------------------------
+//
+// `mediaUploadService` seals the envelope that carries the ATTACHMENT KEY of
+// every upload — ordinary and imported alike. It does that with a bare
+// `getOrFetchGroupKey` + `encryptContent` pair, outside `sealContent`'s
+// discipline, because it is shared with the normal picker path.
+//
+// `getOrFetchGroupKey` returns the group-key cache's OWN array, and
+// `invalidateGroupKey` / `clearGroupKeyCache` zero that array IN PLACE —
+// `invalidateGroupKey` reachable at any moment from the WebSocket decrypt
+// retry. `encryptContent` does not validate its key. So the envelope is safe
+// only while (a) the key is checked for width and for being all-zero, and
+// (b) NOTHING awaits between those checks and the encrypt. Both are one-line
+// regressions that leave every test green and publish the attachment key of
+// every subsequent upload under 32 zero bytes.
+
+const MEL_RULE = 'media-envelope-live-key';
+const MEL_FILE = join(SRC, 'services', 'mediaUploadService.ts');
+const MEL_ISSUE = '#926';
+
+// The fetch and the floors belong to one region: the checks are worthless if
+// they stop describing the key that is about to be used.
+checkWindowedPins(
+  MEL_FILE,
+  MEL_RULE,
+  /^ {4}const metadataPlain = JSON\.stringify\(metadataObj\);[\s\S]*?\n {4}const encryptedMeta = encryptContent\(metadataPlain, groupKey, groupId\);/m,
+  'the media metadata envelope sealing region',
+  [
+    'const groupKey = await getOrFetchGroupKey(groupId);',
+    'groupKey.length !== GROUP_KEY_BYTES',
+    'groupKey.every((b) => b === 0)',
+    'MediaEnvelopeKeyError',
+  ],
+  [],
+  MEL_ISSUE,
+);
+
+// Contiguity: from the FIRST floor to the encrypt there may be no `await`.
+// The window deliberately starts after the fetch line, which is the one
+// legitimate `await` in this region.
+checkWindowedPins(
+  MEL_FILE,
+  MEL_RULE,
+  /^ {4}if \(groupKey\.length !== GROUP_KEY_BYTES\)[\s\S]*?\n {4}const encryptedMeta = encryptContent\(metadataPlain, groupKey, groupId\);/m,
+  'the media envelope check-to-encrypt gap',
+  ['encryptContent(metadataPlain, groupKey, groupId)'],
+  ['await'],
+  MEL_ISSUE,
 );
 
 // Window C — the __DEV__ gate on the raw body, for every error class. Curated

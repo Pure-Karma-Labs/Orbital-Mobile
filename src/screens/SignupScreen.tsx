@@ -16,8 +16,8 @@ import { useTheme } from '../theme';
 import { TextInput, Button, ErrorBanner, OrbitalLoader, AsciiBanner } from '../components';
 import { TermsCheckbox } from '../components/TermsCheckbox';
 import { signupUser } from '../services/authService';
-import { AccountSwitchError, ApiError, AuthError, ConflictError, NetworkError, ValidationError } from '../services/api/errors';
-import type { CopiedValidationReason, ValidationReason } from '../services/api/errors';
+import { AccountSwitchError, ApiError, AuthError, ConflictError, NetworkError, ValidationError, isCopiedValidationReason } from '../services/api/errors';
+import type { CopiedValidationReason } from '../services/api/errors';
 import { formatInviteCode, stripInviteCode, hasV2InviteCodeLength } from '../services/crypto/inviteCrypto';
 import { validatePassword, PASSWORD_RULE_HINT } from '../utils/validatePassword';
 import { validateUsername } from '../utils/validateUsername';
@@ -57,17 +57,6 @@ const REASON_CHANNEL: Record<CopiedValidationReason, 'email' | 'invite' | 'banne
   // composer fence. Routed for Record exhaustiveness only.
   MEDIA_IMPORT_RESERVED: 'banner',
 };
-
-/**
- * Narrows a reason to one this Record routes. A silent service-layer reason
- * (the Meta-import runner's, #926) carries no copy and can never reach this
- * form, so it falls through to the generic banner — which renders
- * `ValidationError`'s 'Invalid request', the same text the unreasoned-400 arm
- * below shows.
- */
-function isRoutedReason(reason: ValidationReason): reason is CopiedValidationReason {
-  return Object.prototype.hasOwnProperty.call(REASON_CHANNEL, reason);
-}
 
 export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Element {
   const theme = useTheme();
@@ -167,7 +156,12 @@ export function SignupScreen({ onNavigate }: SignupScreenProps): React.JSX.Eleme
         // A reason the backend named: render the curated copy on the field the
         // user can actually act on (#777 — an invite-state failure used to read
         // as "Invalid request" beside four innocent fields).
-        const channel = isRoutedReason(e.reason) ? REASON_CHANNEL[e.reason] : 'banner';
+        // A silent service-layer reason (the Meta-import runner's, #926) carries
+        // no copy and can never reach this form, so it falls through to the
+        // generic banner — `ValidationError`'s 'Invalid request', the same text
+        // the unreasoned-400 arm below shows. The narrowing is the registry's
+        // own predicate, not a screen-local copy that could drift from it.
+        const channel = isCopiedValidationReason(e.reason) ? REASON_CHANNEL[e.reason] : 'banner';
         if (channel === 'email') {
           setEmailError(e.message);
         } else if (channel === 'invite') {

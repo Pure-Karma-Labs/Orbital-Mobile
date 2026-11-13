@@ -1969,7 +1969,7 @@ describe('ThreadDetailScreen — upload cache reuse', () => {
   // failure routed there would show the member nothing.
   it('alerts "Couldn\'t Attach" on an import-reserved 400 and never touches the load banner', async () => {
     mockSelectedMedia = oneImage;
-    const copy = "Those photos can't be attached — select them again.";
+    const copy = "Those photos can't be attached — select them again";
     mockPostReply.mockRejectedValue(
       new ValidationError(
         400,
@@ -1993,6 +1993,15 @@ describe('ThreadDetailScreen — upload cache reuse', () => {
       .map((node) => node.props.children)
       .filter((c): c is string => typeof c === 'string');
     expect(rendered).not.toContain(copy);
+
+    // Cache disposition 'no', the assertion ComposeThreadScreen's twin makes:
+    // B#316 retyped this refusal from a 409 to a 400 precisely so the uploaded
+    // ids stay rollback-eligible, and the only way to see that from the screen
+    // is that Discard still deletes them rather than flagging them
+    // maybe-on-a-post. The guard must be armed for Discard to be reachable.
+    expect(mockUsePreventRemove.mock.calls.at(-1)?.[0]).toBe(true);
+    await confirmDiscard();
+    expect(mockRollbackUploadedMedia).toHaveBeenCalledWith(['media-id-1']);
   });
 
   it('rolls nothing back on a successful send', async () => {

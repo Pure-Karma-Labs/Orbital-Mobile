@@ -41,9 +41,13 @@
  *
  * ## Why title and body seal through the session
  *
- * {@link ImportKeySession.sealContent} is the only encryption surface #926
- * uses, and `metaImport/` never calls `getOrFetchGroupKey` or `encryptContent`
- * itself. That is not tidiness: `getOrFetchGroupKey` returns the group-key
+ * {@link ImportKeySession.sealContent} is the only encryption surface for an
+ * imported thread's TITLE and BODY, and `metaImport/` never calls
+ * `getOrFetchGroupKey` or `encryptContent` itself — a rule the `.eslintrc.js`
+ * override over `src/services/metaImport/**` now enforces, not just this
+ * comment. (Imported MEDIA still seals its metadata envelope inside
+ * `mediaUploadService`, which is shared with the ordinary upload path and
+ * carries the same width and all-zero floors at its own call site.) That is not tidiness: `getOrFetchGroupKey` returns the group-key
  * cache's OWN array, and `invalidateGroupKey` / `clearGroupKeyCache` zero that
  * array in place — `invalidateGroupKey` reachable mid-run from the WebSocket
  * decrypt retry. A runner that fetched the key once and held it across an
@@ -618,11 +622,13 @@ export async function openImportKeySession(
     // Re-check the session and COMPARE against the pin rather than assume the
     // two are identical: `getOrFetchGroupKey` can invalidate and refetch, and
     // a rotation landing in that window is what the pin exists to catch.
+    //
+    // These two lines are CONTIGUOUS, and the invariant window pins them as
+    // one substring: `encryptContent` is synchronous, so an `await` inserted
+    // between the compare and the use would reopen the whole defect — the
+    // cache's array can be zeroed in place by any microtask in that gap.
     const { pin } = requireOpen();
     if (!bytesEqual(live, pin)) throw new ImportKeyChangedError();
-
-    // Synchronous from here down: `encryptContent` does not await, so nothing
-    // can zero `live` between the checks above and its use.
     return encryptContent(plaintext, live, groupId);
   }
 
@@ -679,6 +685,13 @@ export async function openImportKeySession(
       throw new ImportCryptoInvariantError(
         `group key must be ${GROUP_KEY_BYTES} bytes, got ${live.length}`,
       );
+    }
+    // Symmetric with sealContent's floor, and for the same reason: a cache
+    // array that a wipe or an invalidate has already zeroed is a valid-looking
+    // 32 bytes. Pinning it would make every later comparison agree with a key
+    // of 32 zeros, and K_import would be derived from it.
+    if (live.every((b) => b === 0)) {
+      throw new ImportCryptoInvariantError('group key is all zeros — it was zeroed in place');
     }
 
     // The PIN. The copy is mandatory: the cache's array is `.fill(0)`'d in

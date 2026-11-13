@@ -24,8 +24,8 @@ import {
   NetworkError,
   NotFoundError,
   ValidationError,
+  isCopiedValidationReason,
   type CopiedValidationReason,
-  type ValidationReason,
 } from '../services/api/errors';
 import {
   stripInviteCode,
@@ -81,16 +81,6 @@ const REASON_CHANNEL: Record<CopiedValidationReason, 'code' | 'banner'> = {
   EMAIL_FORMAT: 'banner',
   MEDIA_IMPORT_RESERVED: 'banner',
 };
-
-/**
- * Narrows a reason to one this Record routes. A silent service-layer reason
- * (the Meta-import runner's, #926) carries no copy and cannot reach this form,
- * so it falls through to the banner, where `ValidationError`'s generic
- * 'Invalid request' is what the member sees.
- */
-function isRoutedReason(reason: ValidationReason): reason is CopiedValidationReason {
-  return Object.prototype.hasOwnProperty.call(REASON_CHANNEL, reason);
-}
 
 /**
  * Pre-#271 copy, still correct for the two outcomes that genuinely carry no
@@ -158,7 +148,12 @@ export function JoinOrbitScreen({
         // full sentinel → code table). Render the curated copy on the channel
         // that matches what is actually wrong; `e.message` is client copy
         // selected by the code, never server text.
-        if (isRoutedReason(err.reason) && REASON_CHANNEL[err.reason] === 'code') {
+        // The narrowing is the registry's own predicate, not a screen-local
+        // copy that could drift from it. A silent service-layer reason (the
+        // Meta-import runner's, #926) carries no copy and cannot reach this
+        // form, so it falls through to the banner, where `ValidationError`'s
+        // generic 'Invalid request' is what the member sees.
+        if (isCopiedValidationReason(err.reason) && REASON_CHANNEL[err.reason] === 'code') {
           setCodeError(err.message);
         } else {
           setBannerError(err.message);

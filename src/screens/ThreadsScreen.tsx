@@ -349,7 +349,10 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
       const thread = threads[threadId];
       navigation.push('ThreadDetail', {
         threadId,
-        threadTitle: thread?.title ?? undefined,
+        // `||`, not `??`, for the same reason as the long-press label below: an
+        // imported (Meta) post can carry an empty title, and `??` would pass
+        // `''` through as the detail screen's header text.
+        threadTitle: thread?.title || undefined,
       });
     },
     [navigation, threads],

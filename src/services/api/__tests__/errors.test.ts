@@ -175,8 +175,11 @@ describe('ConflictError.importRefusal', () => {
     });
   });
 
-  it('carries IMPORT_CLOSED with each of the three statuses', () => {
-    for (const status of ['closed', 'abandoned', 'completed'] as const) {
+  it('carries IMPORT_CLOSED with every status the column allows', () => {
+    // `open` included: the status column allows it, and a server that reports
+    // a closed session as still open is a bug worth surfacing as itself
+    // rather than as the unknown-status sentinel.
+    for (const status of ['open', 'closed', 'abandoned', 'completed'] as const) {
       const e = new ConflictError(refusalBody('IMPORT_CLOSED', { status }));
       expect(e.importRefusal).toEqual({ code: 'IMPORT_CLOSED', closedStatus: status });
     }
@@ -303,7 +306,7 @@ describe('ValidationError reasons', () => {
   it('shows curated copy for a copied reason', () => {
     const e = new ValidationError(400, validationBody('MEDIA_IMPORT_RESERVED'));
     expect(e.reason).toBe('MEDIA_IMPORT_RESERVED');
-    expect(e.message).toBe("Those photos can't be attached — select them again.");
+    expect(e.message).toBe("Those photos can't be attached — select them again");
   });
 
   it('retains a silent reason but shows the generic message', () => {

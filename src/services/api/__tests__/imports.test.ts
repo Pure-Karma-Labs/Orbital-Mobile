@@ -96,12 +96,13 @@ describe('submitImportBatch', () => {
 });
 
 describe('completeImport', () => {
-  it('POSTs to the complete route with no body', async () => {
+  it('POSTs to the complete route with an explicit empty body', async () => {
     await completeImport(IMPORT_ID);
 
     expect(mockRequest).toHaveBeenCalledWith({
       method: 'POST',
       path: `/api/imports/${IMPORT_ID}/complete`,
+      body: {},
       retryOn429: false,
     });
   });

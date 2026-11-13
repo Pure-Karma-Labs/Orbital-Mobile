@@ -1197,7 +1197,7 @@ describe('ComposeThreadScreen — upload reuse cache and unmount safety', () => 
     const renderer = renderScreen();
     await fillAndPost(renderer);
 
-    expect(textContents(renderer)).toContain("Those photos can't be attached — select them again.");
+    expect(textContents(renderer)).toContain("Those photos can't be attached — select them again");
     expect(textContents(renderer)).not.toContain('Failed to create thread. Please try again.');
 
     // Disposition 'no': a 400 provably never committed, so Discard still

@@ -140,6 +140,7 @@ import {
   type BatchUploadProgressEvent,
   rollbackUploadedMedia,
   ImportMediaUnsupportedError,
+  ImportMediaStagedError,
 } from '../mediaUploadService';
 import * as Sentry from '@sentry/react-native';
 import {
@@ -2252,7 +2253,11 @@ describe('SANITIZED_IMAGE_LABELS stays in step with the export allowlist', () =>
 // ---------------------------------------------------------------------------
 
 describe('chunk upload failure classes', () => {
-  const importMode = { importId: 'import-1', mediaId: 'import-media-id' };
+  const importMode = {
+    importId: 'import-1',
+    mediaId: 'import-media-id',
+    contentClass: 'image' as const,
+  };
 
   it.each([
     ['ValidationError', () => new ValidationError(400)],
@@ -2315,8 +2320,7 @@ describe('chunk upload failure classes', () => {
 
       const settled = uploadMedia({
         ...baseOptions,
-        import: { importId: 'import-1', mediaId: 'import-media-id' },
-        _contentClass: 'image',
+        import: { importId: 'import-1', mediaId: 'import-media-id', contentClass: 'image' },
       }).catch((e: unknown) => e);
       await jest.advanceTimersByTimeAsync(TOTAL_BACKOFF_MS);
       await settled;
@@ -2335,7 +2339,6 @@ describe('chunk upload failure classes', () => {
     await uploadMedia({
       ...baseOptions,
       import: importMode,
-      _contentClass: 'image',
     }).catch(() => undefined);
 
     expect(mockSaveMedia).not.toHaveBeenCalled();
@@ -2347,12 +2350,12 @@ describe('chunk upload failure classes', () => {
 // ---------------------------------------------------------------------------
 
 describe('uploadMedia import mode', () => {
-  const importMode = { importId: 'import-1', mediaId: 'caller-chosen-id' };
-  const importOptions = {
-    ...baseOptions,
-    import: importMode,
-    _contentClass: 'image' as const,
+  const importMode = {
+    importId: 'import-1',
+    mediaId: 'caller-chosen-id',
+    contentClass: 'image' as const,
   };
+  const importOptions = { ...baseOptions, import: importMode };
 
   it('uses the import routes and never the ordinary ones', async () => {
     await uploadMedia(importOptions);
@@ -2389,13 +2392,6 @@ describe('uploadMedia import mode', () => {
     expect(args.encryptionIv).toBeDefined();
   });
 
-  it('refuses an import upload with no explicit content class', async () => {
-    const err = await uploadMedia({ ...baseOptions, import: importMode }).catch((e: unknown) => e);
-
-    expect(err).toBeInstanceOf(ImportMediaUnsupportedError);
-    expect(mockUploadImportChunk).not.toHaveBeenCalled();
-  });
-
   it('refuses video before any transcode work', async () => {
     const err = await uploadMedia({
       ...importOptions,
@@ -2419,6 +2415,107 @@ describe('uploadMedia import mode', () => {
     expect(rnfs.copyFile).not.toHaveBeenCalled();
     expect(mockSaveMedia).not.toHaveBeenCalled();
     expect(mockUpsertMedia).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // The id is burned once a chunk lands (PR #991 blocker)
+  // -------------------------------------------------------------------------
+
+  /** A multi-chunk file: 12 MiB of plaintext is 3 chunks of ciphertext. */
+  function setupMultiChunk(): void {
+    setupRnfsMocks(12 * 1024 * 1024);
+    setupMockEncryptor(computeCtSize(12 * 1024 * 1024));
+  }
+
+  it('wraps a failure AFTER a chunk was accepted in ImportMediaStagedError', async () => {
+    jest.useFakeTimers();
+    try {
+      setupMultiChunk();
+      const cause = new ValidationError(400);
+      mockUploadImportChunk.mockImplementation((args: { chunkIndex: number }) =>
+        args.chunkIndex === 0
+          ? Promise.resolve({ chunksReceived: 1, complete: false })
+          : Promise.reject(cause),
+      );
+
+      const settled = uploadMedia(importOptions).catch((e: unknown) => e);
+      await jest.advanceTimersByTimeAsync(TOTAL_BACKOFF_MS);
+      const err = await settled;
+
+      // "This id is burned — mint a fresh one", not "retry in place": the
+      // server keeps attempt 1's envelope and IV, so a reuse would stitch two
+      // ciphertexts into one undecryptable blob.
+      expect(err).toBeInstanceOf(ImportMediaStagedError);
+      // The typed cause survives, so the runner can still decide pause-vs-fail.
+      expect((err as ImportMediaStagedError).cause).toBe(cause);
+      expect((err as Error).message).not.toContain('400');
+    } finally {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    }
+  });
+
+  it('leaves a failure on chunk 0 as the plain typed error', async () => {
+    setupMultiChunk();
+    const cause = new ValidationError(400);
+    mockUploadImportChunk.mockRejectedValue(cause);
+
+    const err = await uploadMedia(importOptions).catch((e: unknown) => e);
+
+    // Nothing was staged under this id, so it is still safe to reuse.
+    expect(err).toBe(cause);
+    expect(err).not.toBeInstanceOf(ImportMediaStagedError);
+  });
+
+  it('leaves a single-chunk file unaffected — it cannot mix ciphertexts', async () => {
+    const cause = new ValidationError(400);
+    mockUploadImportChunk.mockRejectedValue(cause);
+
+    const err = await uploadMedia(importOptions).catch((e: unknown) => e);
+
+    expect(mockUploadImportChunk).toHaveBeenCalledTimes(1);
+    expect(err).toBe(cause);
+  });
+
+  it('wraps a failure at media-complete, once every chunk has been accepted', async () => {
+    const cause = new ConflictError();
+    mockCompleteImportUpload.mockRejectedValue(cause);
+
+    const err = await uploadMedia(importOptions).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ImportMediaStagedError);
+    expect((err as ImportMediaStagedError).cause).toBe(cause);
+  });
+
+  it('does NOT wrap a cancellation — the runner owns that decision', async () => {
+    const controller = new AbortController();
+    setupMultiChunk();
+    mockUploadImportChunk.mockImplementation((args: { chunkIndex: number }) => {
+      if (args.chunkIndex === 0) return Promise.resolve({ chunksReceived: 1, complete: false });
+      controller.abort();
+      return Promise.reject(new Error('Aborted'));
+    });
+
+    const err = await uploadMedia({ ...importOptions, signal: controller.signal }).catch(
+      (e: unknown) => e,
+    );
+
+    expect(err).not.toBeInstanceOf(ImportMediaStagedError);
+    expect(isUploadCancellation(err)).toBe(true);
+  });
+
+  it('never wraps on the ordinary path, where ids are generated per attempt', async () => {
+    setupMultiChunk();
+    const cause = new ValidationError(400);
+    mockUploadChunk.mockImplementation((args: { chunkIndex: number }) =>
+      args.chunkIndex === 0
+        ? Promise.resolve({ chunksReceived: 1, complete: false })
+        : Promise.reject(cause),
+    );
+
+    const err = await uploadMedia(baseOptions).catch((e: unknown) => e);
+
+    expect(err).toBe(cause);
   });
 
   it('still returns the attachment key and digest the envelope needs', async () => {

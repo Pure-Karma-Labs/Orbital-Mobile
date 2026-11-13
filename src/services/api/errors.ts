@@ -134,7 +134,7 @@ const VALIDATION_REASON_MESSAGES = Object.freeze({
   // the picker cannot offer one — this is a fence, not a user path, and the
   // copy stays neutral rather than explaining imports to someone who was not
   // doing one.
-  MEDIA_IMPORT_RESERVED: "Those photos can't be attached — select them again.",
+  MEDIA_IMPORT_RESERVED: "Those photos can't be attached — select them again",
 });
 
 /**
@@ -184,8 +184,15 @@ function isValidationReason(c: unknown): c is ValidationReason {
   );
 }
 
-/** Does this allowlisted reason have copy, or is it a silent one? */
-function isCopiedValidationReason(c: ValidationReason): c is CopiedValidationReason {
+/**
+ * Does this allowlisted reason have copy, or is it a silent one?
+ *
+ * Exported because screens route an exhaustive `Record<CopiedValidationReason,
+ * …>` and `ValidationError.reason` is the WIDE type: without this they each
+ * grow their own copy of the same `hasOwnProperty.call` predicate, and a
+ * screen-local copy can drift from the registry it is narrowing against.
+ */
+export function isCopiedValidationReason(c: ValidationReason): c is CopiedValidationReason {
   return Object.prototype.hasOwnProperty.call(VALIDATION_REASON_MESSAGES, c);
 }
 
@@ -343,8 +350,8 @@ function isRewrapRefusalCode(c: unknown): c is RewrapRefusalCode {
 // ---------------------------------------------------------------------------
 
 /**
- * The four refusal codes the import routes emit, and the three session
- * statuses `IMPORT_CLOSED` reports.
+ * The four refusal codes the import routes emit, and the session statuses
+ * `IMPORT_CLOSED` can report.
  *
  * Here rather than in an import-free module (as `REWRAP_REFUSAL_CODES` is,
  * because the crypto boundary needs that list too): the import runner switches
@@ -358,7 +365,17 @@ const IMPORT_REFUSAL_CODES = Object.freeze({
   IMPORT_CLOSED: 1,
 });
 
+/**
+ * Every value `IMPORT_CLOSED`'s `details.status` can carry — i.e. the whole
+ * `import_sessions.status` column, not just the three terminal ones. `open`
+ * is here because the column allows it: if the backend ever reports a session
+ * it considers closed while the row still reads `open`, that is a server bug
+ * the client should surface as itself rather than flatten into
+ * `'unrecognized'`, which the runner reads as "a status this build does not
+ * know".
+ */
 const IMPORT_CLOSED_STATUSES = Object.freeze({
+  open: 1,
   closed: 1,
   abandoned: 1,
   completed: 1,

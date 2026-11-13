@@ -821,6 +821,36 @@ describe('sealContent', () => {
     session.close();
   });
 
+  it('wins the race against a microtask that zeroes the cache array', async () => {
+    // The defect the contiguity pin exists for. `getOrFetchGroupKey` hands
+    // back the CACHE'S OWN array, and `invalidateGroupKey` /
+    // `clearGroupKeyCache` zero it IN PLACE from a microtask.
+    //
+    // The zeroing is queued one microtask DEEPER than the fetch, so it lands
+    // after sealContent's post-await continuation has begun: with no `await`
+    // between the last check and the synchronous `encryptContent`, the seal
+    // completes first and the ciphertext opens under the real key. Insert an
+    // `await` in that gap and this test fails — the encrypt then runs under
+    // 32 zero bytes.
+    const session = await open();
+
+    const live = key(0x42);
+    mockGetOrFetchGroupKey.mockImplementation(() => {
+      Promise.resolve().then(() => {
+        Promise.resolve().then(() => live.fill(0));
+      });
+      return Promise.resolve(live);
+    });
+
+    const { ciphertext, iv } = await session.sealContent('a post that must stay readable');
+
+    expect(live.every((b) => b === 0)).toBe(true); // the zeroing did happen
+    expect(contentCrypto.decryptContent(ciphertext, iv, key(0x42), GROUP_ID)).toBe(
+      'a post that must stay readable',
+    );
+    session.close();
+  });
+
   it('refuses after close()', async () => {
     const session = await open();
     session.close();
@@ -859,5 +889,33 @@ describe('sealContent', () => {
     expect(error).toBeInstanceOf(ImportCryptoInvariantError);
     expect(encrypt).not.toHaveBeenCalled();
     session.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// openImportKeySession key floors (PR #991 advisory)
+// ---------------------------------------------------------------------------
+
+describe('openImportKeySession key floors', () => {
+  it('refuses to pin an all-zero group key', async () => {
+    mockGetOrFetchGroupKey.mockResolvedValue(new Uint8Array(32));
+
+    const error = await open().catch((e: unknown) => e);
+
+    // A cache array a wipe already zeroed is a valid-looking 32 bytes.
+    // Pinning it would make every later comparison agree with 32 zeros and
+    // K_import would be derived from them.
+    expect(error).toBeInstanceOf(ImportCryptoInvariantError);
+    expect((error as Error).message).toContain('all zeros');
+    expect(classifyImportCryptoError(error)).toBe('terminal-for-run');
+  });
+
+  it('still refuses a key of the wrong width', async () => {
+    mockGetOrFetchGroupKey.mockResolvedValue(new Uint8Array(16).fill(0x42));
+
+    const error = await open().catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ImportCryptoInvariantError);
+    expect((error as Error).message).toContain('32 bytes');
   });
 });

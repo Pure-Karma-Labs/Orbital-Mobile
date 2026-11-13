@@ -189,25 +189,44 @@ export interface UploadMediaOptions {
    * omitted — the session names the group and a mismatch is a 400), video is
    * refused, and NOTHING is committed locally.
    *
-   * `mediaId` is the caller's and MUST be reused across every retry of the
-   * same file: the chunk ceiling counts staged bytes member-wide, so a fresh
-   * id per attempt can lock the member out until a GC pass.
+   * ## When `mediaId` may be reused — read this before retrying
+   *
+   * Reuse it **only while no chunk of this file has been accepted**. The
+   * staged-byte ceiling is counted member-wide, so a fresh id per attempt can
+   * lock the member out until a GC pass — but reuse after a partial upload
+   * CORRUPTS the file, because each `uploadMedia` call mints a fresh
+   * attachment key and IV while the server keeps attempt 1's envelope and IV
+   * (`insertTempUpload` runs only when no temp row exists) and answers an
+   * already-received chunk index with a 200 before writing. `assembleChunks`
+   * checks size and count only, so attempt 1's early chunks and attempt 2's
+   * later chunks are stitched together under attempt 1's key: undecryptable,
+   * digest-failing on download, and still charged to the lifetime allowance,
+   * which is never refunded. Single-chunk files cannot hit this.
+   *
+   * The caller does not have to work that out: once a chunk has been
+   * accepted, every non-cancellation failure is wrapped in
+   * {@link ImportMediaStagedError}, which means "this id is burned — mint a
+   * fresh one (`replaceMediaId`) and re-upload", not "retry in place".
+   *
+   * `groupId` must name the SAME group as `importId`'s session. The server
+   * checks it (a mismatch is a 400 on the chunk route) but this function does
+   * not, and cannot: it never reads the session. PR B derives both from one
+   * session object.
+   *
+   * `contentClass` rides here rather than in `_contentClass` because it is
+   * REQUIRED for an import — the server allowlists it on chunk 0 against its
+   * own `media_content_classes` — and the type should say so instead of a
+   * runtime arm. `_contentClass` stays what it was: thumbnail inheritance.
    *
    * An EXTRACTION TRIGGER, recorded: a fourth mode here, or the first
    * import-only divergence INSIDE the encrypt/chunk/complete core, moves that
    * core into a transport-parameterised helper shared by `uploadMedia` and
    * `metaImport/importMedia.ts`.
    */
-  import?: { importId: string; mediaId: string };
+  import?: { importId: string; mediaId: string; contentClass: MediaContentClass };
   /** Internal: marks this upload as a thumbnail child (no thread/reply association) */
   _isThumbnail?: boolean;
-  /**
-   * Internal: explicit content class — a thumbnail's inherited parent class,
-   * or an import's class. Required in import mode (see {@link
-   * UploadMediaOptions.import}): the server allowlists `content_class` on
-   * chunk 0 against its own `media_content_classes`, and deriving a second
-   * spelling from the mime type here would be a second source of truth.
-   */
+  /** Internal: content class inherited from the parent upload (thumbnails inherit the parent's class) */
   _contentClass?: MediaContentClass;
 }
 
@@ -222,6 +241,61 @@ export class ImportMediaUnsupportedError extends Error {
   constructor(reason: string) {
     super(`Import media unsupported: ${reason}`);
     this.name = 'ImportMediaUnsupportedError';
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+/** Group keys are AES-256. A different width means something is very wrong. */
+const GROUP_KEY_BYTES = 32;
+
+/**
+ * The group key offered for the media metadata envelope was not usable.
+ *
+ * Typed rather than a bare `Error` because the envelope carries the
+ * attachment key: sealing it under a zeroed or wrong-width key would publish
+ * every byte of the file to anyone and to no member. Carries no key material
+ * and no server text — only which floor was hit.
+ */
+export class MediaEnvelopeKeyError extends Error {
+  constructor(reason: string) {
+    super(`Media envelope key unusable: ${reason}`);
+    this.name = 'MediaEnvelopeKeyError';
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+/**
+ * An import-mode upload that failed AFTER the server accepted at least one
+ * chunk under this `media_id` (#926).
+ *
+ * Means exactly one thing to the caller: **this media id is burned — mint a
+ * fresh one (`replaceMediaId`) and re-upload the file.** It must never be
+ * retried in place, because the server keeps the first attempt's encrypted
+ * metadata envelope and IV (`insertTempUpload` runs only when no temp row
+ * exists) while every `uploadMedia` call mints a fresh attachment key; it
+ * answers an already-received chunk index with a 200 before writing; and
+ * `assembleChunks` verifies size and count only. A retry under the same id
+ * therefore assembles two ciphertexts into one blob that no key opens, fails
+ * its digest on download, and is still charged to the lifetime import
+ * allowance, which is never refunded.
+ *
+ * `cause` is the TYPED error the upload actually ended on — a `NetworkError`,
+ * `ConflictError`, `RateLimitError` and so on — so the runner's taxonomy can
+ * still decide pause-vs-fail from it. It is the error object, never server
+ * text: nothing here reads or re-renders a message.
+ *
+ * A cancellation is NOT wrapped: it keeps the sentinel shape
+ * `isUploadCancellation` guarantees, and a cancelled run has no next attempt
+ * to protect.
+ */
+export class ImportMediaStagedError extends Error {
+  /** The typed error the attempt ended on. Not a string, not a message. */
+  readonly cause: unknown;
+
+  constructor(cause: unknown) {
+    super('Import media upload failed after chunks were staged');
+    this.name = 'ImportMediaStagedError';
+    this.cause = cause;
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }
@@ -397,22 +471,29 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
     throw new Error('importOriginalCreatedAt must be a safe integer (epoch ms) when provided');
   }
 
-  // Meta import (#926): the two refusals, asserted before any work. Video is
-  // refused because the server's `limits.media_content_classes` is `["image"]`
-  // — a transcode followed by a 400 would be minutes of battery for a known
-  // answer. The explicit class is required because the server allowlists it.
-  if (importMode) {
-    if (isVideoMime(options.mimeType)) {
-      throw new ImportMediaUnsupportedError('video');
-    }
-    if (_contentClass === undefined) {
-      throw new ImportMediaUnsupportedError('missing content class');
-    }
+  // Meta import (#926): refused before any work. The server's
+  // `limits.media_content_classes` is `["image"]`, so a transcode followed by
+  // a 400 would be minutes of battery for a known answer. (The content class
+  // needs no runtime arm — it is required by the `import` type.)
+  if (importMode && isVideoMime(options.mimeType)) {
+    throw new ImportMediaUnsupportedError('video');
   }
 
-  // Import mode reuses the CALLER'S id across every retry of this file; see
-  // UploadMediaOptions.import for why a fresh id per attempt is harmful.
+  // Import mode uses the CALLER'S id. It may only be REUSED while no chunk of
+  // this file has been accepted — see UploadMediaOptions.import.
   const mediaId = importMode ? importMode.mediaId : generateUUID();
+
+  /**
+   * Import mode only: has the server accepted at least one chunk POST of this
+   * file under this `mediaId`?
+   *
+   * Once it has, the id is burned. The server keeps THIS attempt's envelope
+   * and IV, and a later attempt mints new ones, so a retry under the same id
+   * assembles two ciphertexts into one undecryptable blob — see the
+   * corruption note on UploadMediaOptions.import. Every non-cancellation
+   * failure past this point is wrapped in {@link ImportMediaStagedError}.
+   */
+  let importChunkAccepted = false;
 
   // Coarse class for the server's eviction policy — sent on the first chunk only.
   // Derived ONCE from the ORIGINAL options.mimeType (not the `let mimeType` that the
@@ -422,6 +503,7 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
   // image/* is left undefined so the field is omitted and the server keeps its NULL
   // size-floor fallback instead of being handed a mislabelled class.
   const contentClass: MediaContentClass | undefined =
+    importMode?.contentClass ??
     _contentClass ??
     (isVideoMime(options.mimeType)
       ? 'video'
@@ -701,7 +783,21 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
     }
 
     const metadataPlain = JSON.stringify(metadataObj);
+    // NO await between the fetch and the encrypt, and the two floors below.
+    // `getOrFetchGroupKey` returns the group-key cache's OWN array, and both
+    // `invalidateGroupKey` and `clearGroupKeyCache` zero that array IN PLACE —
+    // `invalidateGroupKey` reachable at any moment from the WebSocket decrypt
+    // retry. `encryptContent` does not validate its key, so a zeroed array
+    // would seal this envelope (which carries the ATTACHMENT KEY) under 32
+    // zero bytes: readable by anyone, unreadable by every member, and
+    // silently. Pinned by the `media-envelope-live-key` invariant window.
     const groupKey = await getOrFetchGroupKey(groupId);
+    if (groupKey.length !== GROUP_KEY_BYTES) {
+      throw new MediaEnvelopeKeyError(`group key must be ${GROUP_KEY_BYTES} bytes`);
+    }
+    if (groupKey.every((b) => b === 0)) {
+      throw new MediaEnvelopeKeyError('group key is all zeros — it was zeroed in place');
+    }
     const encryptedMeta = encryptContent(metadataPlain, groupKey, groupId);
     const metadata = JSON.stringify({
       ciphertext: encryptedMeta.ciphertext,
@@ -755,6 +851,10 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
                 },
                 signal,
               );
+              // The server has this chunk now, under THIS attempt's envelope
+              // and IV. From here the id may not be reused — see the
+              // ImportMediaStagedError wrap in the outer catch.
+              importChunkAccepted = true;
             } else {
               await uploadChunk(
                 {
@@ -979,6 +1079,15 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
     // two-shape guarantee of isUploadCancellation() would hold only by audit.
     if (signal?.aborted && !isUploadCancellation(e)) {
       throw new Error(UPLOAD_CANCELLED_MESSAGE);
+    }
+    // Meta import (#926): the id is burned once the server has accepted a
+    // chunk under it. Retrying in place would stitch this attempt's chunks
+    // onto the next attempt's under the FIRST attempt's key — see
+    // UploadMediaOptions.import. Deliberately AFTER the cancellation
+    // normalisation: a cancelled run is the runner's own decision and keeps
+    // the sentinel shape `isUploadCancellation` guarantees.
+    if (importMode && importChunkAccepted && !isUploadCancellation(e)) {
+      throw new ImportMediaStagedError(e);
     }
     throw e;
   } finally {

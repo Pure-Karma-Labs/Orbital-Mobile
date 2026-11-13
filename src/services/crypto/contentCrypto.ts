@@ -22,7 +22,7 @@ import {
   setGroupMasterKey,
   clearGroupMasterKey,
 } from '../../database/repositories/conversationRepository';
-import { arrayBufferToBase64, base64ToArrayBuffer, toArrayBuffer } from './utils';
+import { arrayBufferToBase64, base64ToArrayBuffer, bytesEqual, toArrayBuffer } from './utils';
 import { getIdentityKeyPair, resolveRemoteIdentityKey } from './identityKeyAccess';
 import { markEciesLocked, isEciesLocked } from './downgradeProtection';
 import {
@@ -44,6 +44,14 @@ import { useAppStore } from '../../stores/useAppStore';
 // ---------------------------------------------------------------------------
 // Text encoder/decoder
 // ---------------------------------------------------------------------------
+//
+// SUPERSEDED, but deliberately still here. `src/utils/utf8.ts` holds the
+// app's strict pair (`encodeUtf8Strict` / `decodeUtf8Strict`, #925); this
+// local `decodeUTF8` is LENIENT — it validates nothing and will happily turn
+// malformed bytes into something. Retirement condition, from that module's
+// codec census: replace this pair with the strict one the next time this file
+// is touched for ENCODING reasons. It sits on the message hot path and is not
+// being destabilised for a refactor alone.
 
 function encodeUTF8(str: string): Uint8Array {
   const arr: number[] = [];
@@ -385,6 +393,50 @@ export async function getOrFetchGroupKey(groupId: string): Promise<Uint8Array> {
 
   inflight.set(groupId, promise);
   return promise;
+}
+
+/**
+ * Compare a caller-held 32-byte pin against the group key this module holds,
+ * WITHOUT handing the live bytes out (#924).
+ *
+ * The Meta import pins the group key for the length of a run, because
+ * `K_import` — and therefore every `import_key` the run writes — is derived
+ * from it. A key that changes mid-run would silently split one member's
+ * history into two dedup namespaces, so the runner has to be able to ask "is
+ * the key still the one I started under?" once per batch.
+ *
+ * It asks HERE rather than re-reading the key, and the answer is a verdict
+ * rather than bytes: a `peekGroupKey`-shaped export would be a second,
+ * unaudited way for any module to obtain live key material, and the one caller
+ * only ever needs the comparison. `bytesEqual` is not constant-time, which is
+ * fine and deliberate — both operands are already held by this device, there is
+ * no secret to learn from the timing, and the comparison is not an
+ * authentication decision.
+ *
+ * Tiers, in the same order as {@link getOrFetchGroupKey}: the in-memory cache,
+ * then the SQLCipher BLOB. It deliberately does NOT reach the API tier —
+ * `'absent'` means "this device cannot answer right now", and the caller
+ * decides whether a network refetch is worth it (#924's `verifyGroupKeyPin`
+ * awaits one; it is called per batch, not per item). A database failure is
+ * `'absent'` for the same reason.
+ *
+ * Neither operand is mutated, and nothing here is logged.
+ */
+export function compareGroupKeyPin(
+  groupId: string,
+  candidate: Uint8Array,
+): 'match' | 'changed' | 'absent' {
+  const cached = groupKeyCache.get(groupId);
+  if (cached) return bytesEqual(cached, candidate) ? 'match' : 'changed';
+
+  try {
+    const persisted = loadPersistedGroupKey(groupId);
+    if (persisted) return bytesEqual(persisted, candidate) ? 'match' : 'changed';
+  } catch {
+    // Database may not be initialized — indistinguishable from "no key here".
+  }
+
+  return 'absent';
 }
 
 /**

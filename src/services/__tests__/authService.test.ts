@@ -113,6 +113,14 @@ jest.mock('../crypto/contentCrypto', () => ({
   clearContentCryptoInflight: jest.fn(),
 }));
 
+// #924. Mocked for the same reason contentCrypto is, and so the wipe's call
+// into it is observable: the real module holds K_import and a COPY of the
+// group key, neither of which clearGroupKeyCache() can reach.
+const mockCloseAllImportKeySessions = jest.fn();
+jest.mock('../crypto/importCrypto', () => ({
+  closeAllImportKeySessions: () => mockCloseAllImportKeySessions(),
+}));
+
 const mockStripInviteCode = jest.fn((s: string) => s.replace(/-/g, '').toUpperCase());
 const mockDecryptGroupKeyFromInvite = jest.fn((_a: string, _b: string, _c: string) => new Uint8Array(32));
 jest.mock('../crypto/inviteCrypto', () => ({
@@ -957,6 +965,19 @@ describe('logout', () => {
     mockUnlink.mockClear();
     await logout();
     expect(mockUnlink).not.toHaveBeenCalledWith('/mock/caches/thumbnails');
+  });
+
+  // #924: an import run that was never aborted keeps K_import and a copy of
+  // the group key in module state, which survives both the MMKV clear and the
+  // group-key cache clear. The #926 runner owns aborting its own run; this is
+  // the safety net, pinned next to the cache clear it rides with.
+  it('closes every open import key session on logout (localWipe)', async () => {
+    await logout();
+
+    expect(mockCloseAllImportKeySessions).toHaveBeenCalledTimes(1);
+    expect(mockCloseAllImportKeySessions.mock.invocationCallOrder[0]).toBeGreaterThan(
+      mockClearGroupKeyCache.mock.invocationCallOrder[0],
+    );
   });
 
   it('clears prefetch and archive-confirm state on logout (localWipe)', async () => {

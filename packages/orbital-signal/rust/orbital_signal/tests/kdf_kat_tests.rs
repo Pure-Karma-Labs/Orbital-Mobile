@@ -310,14 +310,35 @@ fn kat_utf8_emoji() {
 ///   unlinkability depends on it.
 /// * `output_len` = 32 → `K_import`.
 /// * HMAC input framing = `source` bytes, then a single `0x00`, then
-///   `source_item_id` as **opaque bytes**. #924 owns any length-prefixing
-///   *inside* `source_item_id`; this layer never looks at it.
+///   `source_item_id` as **opaque bytes**. **#925 owns the length-prefixed
+///   framing inside `source_item_id`; #924 passes it through unchanged.**
+///   This layer never looks inside it.
 /// * `import_key` = the first 16 bytes of the 32-byte tag.
 /// * The wire form the server validates (`IMPORT_KEY_B64_RE`) is **standard
 ///   padded base64** (RFC 4648 section 4) of those 16 bytes — not base64url.
 ///
 /// Vectors are minted with Python's `.encode('utf-8')`, so lone surrogates are
 /// out of scope.
+///
+/// # Fold-forward for the next real `src/kdf.rs` change
+///
+/// `src/kdf.rs` still carries the stale clause `#924 owns its internal
+/// length-prefixed encoding`. It is wrong — #925 owns that framing — and it is
+/// deliberately NOT corrected today: `scripts/rust-input-digest.sh` hashes
+/// `src/`, so editing even a comment there condemns every built xcframework
+/// and forces a Rust rebuild on every machine for a prose fix. `tests/` and
+/// `tools/` are excluded, which is why the correction lives here instead.
+///
+/// Security invariant 30.5 watches for that clause and fails the day someone
+/// removes it. **This doc comment is the single home of the two replacement
+/// texts**; every other site points here rather than restating them.
+///
+/// * **`src/kdf.rs` lines 7-8** become: `source_item_id` is opaque here; #925
+///   owns its framing; #924 passes it through unchanged.
+/// * **`src/kdf.rs` lines 56-64, the removal trigger**, become: the live
+///   caller is `src/services/crypto/importCrypto.ts`; invariant 30
+///   (`import-kdf-call-sites`) pins both that caller and the generated
+///   exports, so any removal must take rule 30 with it.
 #[test]
 fn orbital_import_kat() {
     const GROUP_KEY: [u8; 32] = [0x42u8; 32];
@@ -382,4 +403,151 @@ fn orbital_import_kat() {
     // bytes above. STANDARD (padded, +/ alphabet), not URL_SAFE.
     const IMPORT_KEY_B64: &str = "6UejaFexolkJkuYLIIUvaA==";
     assert_eq!(STANDARD.encode(&tag[..16]), IMPORT_KEY_B64);
+}
+
+// =============================================================================
+// orbital_import_v1_frame_kat — the same derivation over a REAL #925 frame
+// =============================================================================
+//
+// `orbital_import_kat` above proves the derivation over a hand-written
+// `source_item_id`. These two prove it over the bytes #925 actually produces,
+// one per `kind`, and are the CROSS-LAYER pin: the frame hex below is asserted
+// from the TypeScript side too, by running the real `buildSourceItemId` in
+// `src/services/crypto/__tests__/importCrypto.kat.test.ts`. If #925's framing
+// ever changes, that test and these fixtures disagree, which is the whole
+// point — a silent framing change re-identifies every imported post and a
+// re-import would duplicate a member's entire history.
+//
+// Minted by `tools/generate_kdf_kat_vectors.py`, whose own v1 framer is
+// written from #925's LAYOUT SECTION rather than its code and self-checks
+// against two goldens `sourceItemId.test.ts` already pins. So the hex here is
+// an independently reproduced value, not a string copied between test files.
+//
+// Same group key and member as `orbital_import_kat`, so `K_import` is
+// byte-identical and any difference localises to the frame.
+
+const FRAME_GROUP_KEY: [u8; 32] = [0x42u8; 32];
+const FRAME_IMPORT_SALT: &[u8] = b"orbital-meta-import-v1";
+const FRAME_USER_ID: &[u8] = b"3f2a1c6e-8b4d-4f1a-9c7e-5d0a2b6f8e14";
+const FRAME_K_IMPORT: [u8; 32] =
+    hex!("29d7d22cf36b6ed3d5749fb529a8714f82a1e8422df95e6ca3744cdd9d4a8b03");
+
+/// `K_import` for the shared fixture member, asserted against the value
+/// `orbital_import_kat` pins so the two sections cannot drift apart.
+fn frame_k_import() -> Vec<u8> {
+    let k_import = hkdf_sha256(
+        FRAME_GROUP_KEY.to_vec(),
+        FRAME_IMPORT_SALT.to_vec(),
+        FRAME_USER_ID.to_vec(),
+        32,
+    )
+    .expect("K_import");
+    assert_eq!(k_import[..], FRAME_K_IMPORT[..]);
+    k_import
+}
+
+/// `source ‖ 0x00 ‖ source_item_id`, built the one way #924 builds it.
+fn frame_hmac_input(source: &[u8], frame: &[u8]) -> Vec<u8> {
+    let mut framed = Vec::with_capacity(source.len() + 1 + frame.len());
+    framed.extend_from_slice(source);
+    framed.push(0x00);
+    framed.extend_from_slice(frame);
+    framed
+}
+
+/// kind 0x01, a Facebook content-derived frame. Everything a naive encoder
+/// gets wrong is stacked into one vector: Cyrillic and CJK (every codepoint
+/// above U+00FF, so a latin1 truncation changes the bytes), a ZWJ family
+/// sequence (non-BMP, i.e. surrogate pairs in UTF-16), a link URL, and three
+/// media basenames whose sorted order differs from their file order — with a
+/// `.mp4` among them, because a post's identity includes the video #925 holds.
+#[test]
+fn orbital_import_v1_frame_kat() {
+    const SOURCE: &[u8] = b"facebook";
+    let frame = hex!(
+        "0101000000006553f10000000037d09f"
+        "d180d0b8d0b2d0b5d18220e697a5e69c"
+        "ace8aa9e20f09f91a9e2808df09f91a9"
+        "e2808df09f91a7e2808df09f91a62066"
+        "616d696c790000001b68747470733a2f"
+        "2f6578616d706c652e6f72672f706f73"
+        "742f34320000000300000005612e6a70"
+        "6700000005622e6a706700000008636c"
+        "69702e6d7034"
+    );
+
+    // The frame's own shape, spelled out so a mis-transcribed fixture fails
+    // here rather than as an opaque tag mismatch: v1, kind 0x01, and the
+    // epoch-SECONDS timestamp 1700000000 (0x6553f100) as a big-endian i64.
+    // Deliberately NOT epoch ms — that is `ImportMetaV1.originalCreatedAt`.
+    assert_eq!(&frame[..2], &[0x01, 0x01]);
+    assert_eq!(&frame[2..10], &1_700_000_000i64.to_be_bytes());
+
+    let framed = frame_hmac_input(SOURCE, &frame);
+    assert_eq!(
+        framed[..],
+        hex!(
+            "66616365626f6f6b0001010000000065"
+            "53f10000000037d09fd180d0b8d0b2d0"
+            "b5d18220e697a5e69cace8aa9e20f09f"
+            "91a9e2808df09f91a9e2808df09f91a7"
+            "e2808df09f91a62066616d696c790000"
+            "001b68747470733a2f2f6578616d706c"
+            "652e6f72672f706f73742f3432000000"
+            "0300000005612e6a706700000005622e"
+            "6a706700000008636c69702e6d7034"
+        )[..]
+    );
+
+    let tag = hmac_sha256(frame_k_import(), framed).expect("import_key tag");
+    assert_eq!(
+        tag[..],
+        hex!(
+            "fabbcb1b141109c7f897c9301aaca8b2"
+            "729cdfc2282324944d8b9b45eb044186"
+        )[..],
+        "full 32-byte tag"
+    );
+    assert_eq!(
+        tag[..16],
+        hex!("fabbcb1b141109c7f897c9301aaca8b2")[..],
+        "the 16-byte import_key #924 persists"
+    );
+    assert_eq!(STANDARD.encode(&tag[..16]), "+rvLGxQRCcf4l8kwGqyosg==");
+}
+
+/// kind 0x02, an Instagram `fbid` frame — and the only fixture whose `source`
+/// is `instagram`, so the `source ‖ 0x00` prefix is pinned for both values the
+/// vocabulary admits.
+#[test]
+fn orbital_import_v2_fbid_frame_kat() {
+    const SOURCE: &[u8] = b"instagram";
+    let frame = hex!("0102000000113137393938383737363635353434333332");
+
+    // v1, kind 0x02, then a u32 big-endian length of 17 — the fbid's digits.
+    assert_eq!(&frame[..2], &[0x01, 0x02]);
+    assert_eq!(&frame[2..6], &17u32.to_be_bytes());
+    assert_eq!(&frame[6..], b"17998877665544332");
+
+    let framed = frame_hmac_input(SOURCE, &frame);
+    assert_eq!(
+        framed[..],
+        hex!(
+            "696e7374616772616d00010200000011"
+            "31373939383837373636353534343333"
+            "32"
+        )[..]
+    );
+
+    let tag = hmac_sha256(frame_k_import(), framed).expect("import_key tag");
+    assert_eq!(
+        tag[..],
+        hex!(
+            "c724c3c1313aea4ed39332c46084fefa"
+            "ecad2358144b2869b972bbe086ae9bc4"
+        )[..],
+        "full 32-byte tag"
+    );
+    assert_eq!(tag[..16], hex!("c724c3c1313aea4ed39332c46084fefa")[..]);
+    assert_eq!(STANDARD.encode(&tag[..16]), "xyTDwTE66k7TkzLEYIT++g==");
 }

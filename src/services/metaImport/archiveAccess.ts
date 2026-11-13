@@ -63,11 +63,14 @@ import {
   type ArchiveCallOptions,
   type ArchiveEntry,
   type ArchiveErrorCode,
+  type ArchiveErrorDisposition,
   type ArchivePartToken,
   type ArchiveSession,
+  type EntryKind,
   type EntrySkipCode,
   type RustEntrySkipCode,
   type UriResolution,
+  type UriSkipCode,
 } from 'orbital-archive-reader';
 import { sniffContentType } from '../media/contentType';
 import { DISK_HEADROOM_BYTES } from '../media/mediaLimits';
@@ -76,11 +79,18 @@ export type {
   ArchiveCallOptions,
   ArchiveEntry,
   ArchiveErrorCode,
+  // Re-exported for #924: `classifyImportCryptoError` answers in the SAME
+  // disposition vocabulary the runner already switches on, and the crypto
+  // module must not import `orbital-archive-reader` itself (rule 29a) — a
+  // type-only hop through this module costs nothing at runtime.
+  ArchiveErrorDisposition,
   ArchivePartToken,
   ArchiveSession,
+  EntryKind,
   EntrySkipCode,
   RustEntrySkipCode,
   UriResolution,
+  UriSkipCode,
 };
 export { ARCHIVE_ERROR_DISPOSITIONS, ArchiveReaderError, isArchiveCancellation };
 

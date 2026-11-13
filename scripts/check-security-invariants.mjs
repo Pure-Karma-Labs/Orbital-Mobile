@@ -55,6 +55,11 @@ const URL_SKIP_PATTERNS = [
   'src/services/media/imageSanitizer.ts',
   // Holds XMP packet signatures for test fixtures -- same reason as imageSanitizer.ts above.
   'src/services/testUtils/imageFixtures.ts',
+  // Same again (#925): `svgHead()` builds the bytes of an SVG document head so
+  // the content sniffer has something it must refuse. The w3.org xmlns inside
+  // it is DATA in a fixture, never a request target. Named as a FILE, not a
+  // directory, so a future module in testUtils/ does not inherit the exemption.
+  'src/services/metaImport/testUtils/builders.ts',
 ];
 
 for (const file of allFiles) {
@@ -4756,6 +4761,569 @@ if (arAccessRaw !== null) {
 }
 
 // ---------------------------------------------------------------------------
+// 29.8 meta-import-parser-pins (#925)
+// ---------------------------------------------------------------------------
+//
+// The Meta import parses a stranger-supplied JSON export into back-dated E2EE
+// threads. Two of its guarantees are static facts about the source rather than
+// behaviour a test can observe, so they are pinned here:
+//
+//   * the ONLY licence to import a post's media is a positive `image` peek
+//     verdict, folded per post (clauses 2-6), and
+//   * the codec story: the id framing must be lossless, and nothing anywhere
+//     may call `TextDecoder` (clauses 7-8).
+//
+// Clauses 1-4 and 6 pin `mediaPrePass.ts`, which decides every media item's
+// fate; clause 5 pins the CALL SITE in `parseArchive.ts`, because clauses 3-4
+// pin two function BODIES and an orchestration that ignored both of them would
+// satisfy every one of them while importing media nothing ever classified.
+
+const MI_RULE = 'meta-import-parser-pins';
+const MI_ISSUE = '#925';
+const MI_UTF8 = join(SRC, 'utils', 'utf8.ts');
+const MI_IMPORT_DIR = join(SRC, 'services', 'metaImport');
+const MI_MEDIA_GATE_FILE = join(MI_IMPORT_DIR, 'mediaPrePass.ts');
+const MI_PARSE_ARCHIVE = join(MI_IMPORT_DIR, 'parseArchive.ts');
+
+function miViolation(file, detail) {
+  violations.push(`  ${relative('.', file)}:0  [${MI_RULE}]  ${detail} (${MI_ISSUE})`);
+}
+
+// --- 29.8.1 The files every clause below reasons about must exist.
+//
+// `meRead` records a violation when one does not: deleting the subject of a
+// pin must FAIL the rule, not satisfy it by leaving nothing to check. This is
+// the first mutation in #925's matrix for exactly that reason.
+const miUtf8Raw = meRead(
+  MI_UTF8,
+  MI_RULE,
+  'the strict UTF-8 codec the parser frames source_item_id with',
+  MI_ISSUE,
+);
+
+const miMediaGateRaw = meRead(
+  MI_MEDIA_GATE_FILE,
+  MI_RULE,
+  'the media pre-pass that decides which of a post\'s media may be imported',
+  MI_ISSUE,
+);
+
+const miParseArchiveRaw = meRead(
+  MI_PARSE_ARCHIVE,
+  MI_RULE,
+  'the orchestration that must route every media item through the pre-pass',
+  MI_ISSUE,
+);
+
+// --- 29.8.2 One declaration each, and a window that was really found.
+//
+// Both halves matter, for the two mutations 29.7 D1/D2 already caught on the
+// denied-root set:
+//
+//   * ANCHORED windows (`^export function`), because an unanchored first match
+//     can be a block-scoped DECOY above the real declaration — the clause then
+//     reads a body nothing calls while the real one is free to import
+//     everything;
+//   * a FILE-WIDE declaration count, because anchoring alone leaves a SECOND
+//     top-level declaration after the real one invisible: JS binds the later
+//     one at runtime, this clause keeps reading the earlier.
+//
+// The count also covers the arrow-const and rename mutations: converting
+// `export function classifyMediaItem` to `export const classifyMediaItem = …`
+// or renaming it loses the window, which is reported rather than passed over.
+const miMediaGateWindows = new Map();
+if (miMediaGateRaw !== null) {
+  const miMediaGateCode = meStripComments(miMediaGateRaw);
+
+  for (const name of ['classifyMediaItem', 'foldPostMediaDecisions', 'resolveFileMedia']) {
+    const declarations = (
+      miMediaGateCode.match(new RegExp(`\\b(?:function|const|let|var)\\s+${name}\\b`, 'g')) ?? []
+    ).length;
+    if (declarations > 1) {
+      miViolation(
+        MI_MEDIA_GATE_FILE,
+        `${declarations} declarations of \`${name}\` — exactly one is allowed, because this clause and every caller must be reading the same function; a second one (block-scoped decoy, or a top-level redeclaration that wins at runtime) lets these pins pass against a body nothing runs`,
+      );
+    }
+
+    const window = new RegExp(`^export (?:async )?function ${name}\\([\\s\\S]*?\\n\\}`, 'm').exec(
+      miMediaGateCode,
+    );
+    if (window === null) {
+      miViolation(
+        MI_MEDIA_GATE_FILE,
+        `no top-level \`export function ${name}(\` — it was renamed, removed or converted to an arrow const, and the clauses that pin its body would pass vacuously`,
+      );
+    } else {
+      miMediaGateWindows.set(name, window[0]);
+    }
+  }
+
+  // --- 29.8.3 ONE import licence, guarded by a positive image verdict.
+  //
+  // This is the whole hold obligation (#983) in one pin. `peekEntryKind`'s
+  // contract (a) is that a skip is never proof of "not a video", and the sniff
+  // recognises ISO-BMFF video only — so WebM, MKV and every unknown head come
+  // back "indeterminate". The ONLY evidence that licenses importing a member's
+  // media is `{ok: true, kind: 'image'}`, and the only place that licence may
+  // be minted is the guarded return in `classifyMediaItem`.
+  //
+  // Counted across the WHOLE stripped file, not inside the window: a second
+  // `decision: 'import-image'` anywhere — the video arm, a skip `default`, a
+  // helper below — is a second licence. (The `MediaDecision` type spells the
+  // tag through the `ImportImage` alias precisely so the count can be exactly
+  // one; see the comment on that alias.)
+  const miLicences = (miMediaGateCode.match(/decision: 'import-image'/g) ?? []).length;
+  if (miLicences !== 1) {
+    miViolation(
+      MI_MEDIA_GATE_FILE,
+      `${miLicences} occurrences of the literal \`decision: 'import-image'\` — exactly ONE is allowed, the guarded return in classifyMediaItem; any other is a second licence to import media that was never positively classified as an image`,
+    );
+  }
+
+  const miClassify = miMediaGateWindows.get('classifyMediaItem');
+  if (miClassify !== undefined) {
+    // Whitespace-insensitive, so Prettier's line breaking cannot decide
+    // whether the rule holds — the TOKEN ORDER is what is pinned: the guard
+    // tests both `peek.ok` and `kind === 'image'`, and the licence is the
+    // FIRST thing its body does. Widening the guard to `if (peek.ok)` (which
+    // would licence videos) or dropping it entirely fails here.
+    const miGuard = "if (peek.ok && peek.kind === 'image') { return { decision: 'import-image'";
+    if (!miClassify.replace(/\s+/g, ' ').includes(miGuard)) {
+      miViolation(
+        MI_MEDIA_GATE_FILE,
+        `classifyMediaItem no longer reads \`${miGuard}\` — the import licence is unguarded or its guard was widened; only a positive image peek may licence an import (peekEntryKind contract (a))`,
+      );
+    }
+    if (!miClassify.includes("decision: 'import-image'")) {
+      miViolation(
+        MI_MEDIA_GATE_FILE,
+        "the single `decision: 'import-image'` literal is OUTSIDE classifyMediaItem — the licence moved to a function this rule does not pin",
+      );
+    }
+    if (!miClassify.includes('assertNever(')) {
+      miViolation(
+        MI_MEDIA_GATE_FILE,
+        'classifyMediaItem no longer calls `assertNever(` — without the exhaustiveness tail a new Rust skip code or sniff verdict falls through silently instead of failing the build, and the fall-through direction is the one that must hold the post',
+      );
+    }
+    if (miClassify.includes('catch')) {
+      miViolation(
+        MI_MEDIA_GATE_FILE,
+        'classifyMediaItem contains a `catch` — archive throws are run-level facts that parseArchive dispatches on ARCHIVE_ERROR_DISPOSITIONS (pause/repick/abort); catching one here turns a resumable pause into a permanent, silent "your photo did not migrate"',
+      );
+    }
+  }
+
+  // --- 29.8.4 The fold never drops a hold.
+  //
+  // A PROXY for that behaviour, and deliberately a crude one — the per-outcome
+  // and priority tests own the real semantics. What it catches is the shape of
+  // the regressions: a fold that stopped branching on `hold` at all, a fold
+  // that minted its own import licence, and a fold rewritten around `.filter(`
+  // (every plausible filter here drops held items and imports the rest, which
+  // is exactly the partial post Alex ruled out on 2026-10-19).
+  const miFold = miMediaGateWindows.get('foldPostMediaDecisions');
+  if (miFold !== undefined) {
+    if (!miFold.includes("decision === 'hold'")) {
+      miViolation(
+        MI_MEDIA_GATE_FILE,
+        "foldPostMediaDecisions no longer tests `decision === 'hold'` — it must inspect every item's decision, because ANY hold holds the WHOLE post",
+      );
+    }
+    if (miFold.includes("'import-image'")) {
+      miViolation(
+        MI_MEDIA_GATE_FILE,
+        "foldPostMediaDecisions contains the literal `'import-image'` — the fold consumes decisions, it does not mint them; a licence spelled here is one classifyMediaItem never issued",
+      );
+    }
+    if (miFold.includes('.filter(')) {
+      miViolation(
+        MI_MEDIA_GATE_FILE,
+        'foldPostMediaDecisions contains `.filter(` — filtering the decision list is how a held item gets dropped instead of holding the post, which would import a post partially',
+      );
+    }
+  }
+
+  // --- 29.8.6 The resolution parity check.
+  //
+  // `resolveMediaUris` is 1:1 with its input, and the pre-pass reassembles
+  // posts BY INDEX. A resolver that returned a short array would shift every
+  // later post's media onto the wrong post — the failure mode is the member's
+  // photos appearing in a stranger's thread, which no test downstream would
+  // name. Both parities are pinned: per chunk (the call that can skew) and
+  // over the whole file (the array the caller indexes into).
+  const miResolve = miMediaGateWindows.get('resolveFileMedia');
+  if (miResolve !== undefined) {
+    for (const pin of ['.length !== chunk.length', '.length !== uris.length']) {
+      if (!miResolve.includes(pin)) {
+        miViolation(
+          MI_MEDIA_GATE_FILE,
+          `resolveFileMedia no longer asserts \`${pin}\` — the resolutions are index-aligned with the uris by contract, and an unchecked skew assigns one post's media to another`,
+        );
+      }
+    }
+  }
+}
+
+// --- 29.8.5 The CALL SITE: `parseArchive` must route media through the fold.
+//
+// Clauses 3-4 pin two function bodies. Nothing in them says anyone CALLS those
+// functions — a `parseArchive` that resolved a post's uris and built
+// `ParsedPost.media` straight from the resolutions would leave every one of
+// those clauses green while importing media that was never peeked, never
+// classified and never folded. The plan review made this the blocking half of
+// the hold obligation (#983) for exactly that reason.
+//
+// The pins come in two halves, because the hole has two ends.
+//
+// The FOLD half — the verdict is computed and used:
+//
+//   * the fold is CALLED (`foldPostMediaDecisions(`);
+//   * a `ParsedPost`'s media is the fold's OWN output (`media: folded.media`),
+//     so calling the fold and then ignoring its verdict is not enough;
+//   * the `'import-image'` licence is minted NOWHERE in this directory except
+//     `mediaPrePass.ts` — scanned file-wide across every non-test file, since
+//     a second licence in a helper, a parser or a future module would be a
+//     second place a post's media can be waved through.
+//
+// The CLASSIFY half — the verdict is computed from REAL EVIDENCE. The fold
+// half alone pins the downstream plumbing and says nothing about where
+// `classifyMediaItem`'s peek argument came from. #987's security reviewer
+// proved that gap by hand: a `parseArchive` that passes a literal
+// `{ ok: true, kind: 'image', contentType: 'image/jpeg' }` into
+// `classifyMediaItem` for every item folds a clean `import-image` for media
+// nothing ever read a byte of, builds `media` from `folded.media`, mints the
+// licence nowhere — and exited 0. So the evidence chain is pinned link by
+// link: the peek is PERFORMED (`peekMediaEntries(`), each item is CLASSIFIED
+// (`classifyMediaItem(`), and the verdict handed to the classifier is LOOKED
+// UP from that peek's result (`peeks.get(`) rather than conjured at the call.
+// `peeks.get(` is the one that closes it; the other two keep it from passing
+// vacuously if the peek call or the classify call is what disappears.
+//
+// Same anchoring and declaration-count discipline as clause 2 (29.7 D1/D2): a
+// block-scoped decoy or a second top-level `parseArchive` would otherwise let
+// this clause read a body nothing runs. The window match is
+// whitespace-normalised so Prettier's line breaking cannot decide whether the
+// rule holds.
+if (miParseArchiveRaw !== null) {
+  const miParseCode = meStripComments(miParseArchiveRaw);
+
+  const miParseDecls = (
+    miParseCode.match(/\b(?:function|const|let|var)\s+parseArchive\b/g) ?? []
+  ).length;
+  if (miParseDecls > 1) {
+    miViolation(
+      MI_PARSE_ARCHIVE,
+      `${miParseDecls} declarations of \`parseArchive\` — exactly one is allowed, because this clause and every caller must be reading the same function; a second one (block-scoped decoy, or a top-level redeclaration that wins at runtime) lets the call-site pins pass against a body nothing runs`,
+    );
+  }
+
+  const miParseWindow = /^export async function parseArchive\([\s\S]*?\n\}/m.exec(miParseCode);
+  if (miParseWindow === null) {
+    miViolation(
+      MI_PARSE_ARCHIVE,
+      'no top-level `export async function parseArchive(` — the orchestration was renamed, removed or converted to an arrow const, and the call-site pins below would pass vacuously',
+    );
+  } else {
+    const miParseBody = miParseWindow[0].replace(/\s+/g, ' ');
+    const miCallSitePins = [
+      [
+        'foldPostMediaDecisions(',
+        "parseArchive no longer calls the whole-post fold — media decisions that are never folded cannot hold a post, and a post with one video in it would be imported without it (Alex, 2026-10-19: never a partial post)",
+      ],
+      [
+        'media: folded.media',
+        'parseArchive no longer builds `ParsedPost.media` from the fold result — calling the fold and then assembling media from the raw resolutions imports items that were never positively classified as images',
+      ],
+      [
+        'peekMediaEntries(',
+        "parseArchive no longer calls `peekMediaEntries(` — nothing reads a byte of the member's media, so every verdict the fold consumes is an assertion about a file that was never opened",
+      ],
+      [
+        'classifyMediaItem(',
+        "parseArchive no longer calls `classifyMediaItem(` — the fold consumes decisions it does not mint, so a fold fed anything other than this classifier's output is folding verdicts no peek licensed",
+      ],
+      [
+        'peeks.get(',
+        "parseArchive no longer LOOKS UP the peek result it classifies (`peeks.get(`) — a peek whose verdict is not read back is a peek that did not happen, and a forged `{ok: true, kind: 'image'}` handed straight to classifyMediaItem folds a clean import for media nothing ever read (this exact variant exited 0 before the pin existed)",
+      ],
+    ];
+    for (const [pin, detail] of miCallSitePins) {
+      if (!miParseBody.includes(pin)) {
+        miViolation(MI_PARSE_ARCHIVE, `${detail} (\`${pin}\` is missing from its body)`);
+      }
+    }
+  }
+}
+
+// The licence may be spelled in ONE file. Scanned over the whole import
+// directory rather than over `parseArchive.ts` alone, because the next module
+// to need a decision is the one that would quietly mint its own.
+//
+// Test and fixture-builder paths are exempt on the same grounds as clause 8:
+// they run only under Jest, and the pre-pass's own tests must be able to name
+// the decision they assert on. `__mocks__/` is absent for the same reason it
+// is absent there — this repo keeps `__mocks__/` at the repo ROOT, so the
+// pattern matched nothing and only looked like coverage.
+const MI_LICENCE_EXEMPT = ['__tests__/', 'testUtils/', '.test.ts', '.test.tsx'];
+const MI_MEDIA_GATE_REL = relative('.', MI_MEDIA_GATE_FILE);
+let miLicenceScanned = 0;
+for (const file of walkSync(MI_IMPORT_DIR, ['.ts', '.tsx'])) {
+  const rel = relative('.', file);
+  if (rel.includes('node_modules')) continue;
+  if (MI_LICENCE_EXEMPT.some((pattern) => rel.includes(pattern))) continue;
+  if (rel === MI_MEDIA_GATE_REL) continue;
+  miLicenceScanned++;
+  const lines = meStripComments(readFileSync(file, 'utf8')).split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].includes("'import-image'")) continue;
+    report(
+      file,
+      i + 1,
+      MI_RULE,
+      `the \`'import-image'\` licence is minted outside mediaPrePass.ts — only classifyMediaItem's guarded return may issue it, and only a positive image peek licences it (peekEntryKind contract (a)): ${lines[i].trim()} (${MI_ISSUE})`,
+    );
+  }
+}
+if (miLicenceScanned === 0) {
+  violations.push(
+    `  ${MI_IMPORT_DIR}:0  [${MI_RULE}]  the import-licence scan examined ZERO files — its root or exemptions are wrong and the clause would pass vacuously (${MI_ISSUE})`,
+  );
+}
+
+// --- 29.8.7 `encodeUtf8Strict` is a TextEncoder wrapper, never a hand-rolled
+//     loop.
+//
+// The point of this clause is INJECTIVITY, not style. `source_item_id` is a
+// length-prefixed framing of the member's own post text, and #924 HMACs it
+// into the 16-byte `import_key` the server dedups on. A hand-rolled encoder is
+// how this repo has already got UTF-8 wrong twice — `src/services/crypto/
+// utils.ts` `encodeUTF8` truncates every code point to one byte (#373), and
+// `contentCrypto.ts`'s decoder is lenient — and a lossy encoder means two
+// different posts can frame to the same bytes. `TextEncoder` is present on
+// Hermes 0.82.1 and is correct; the wrapper's whole job is to add the two
+// refusals a lossy encoder would not make (non-string input, unpaired
+// surrogate), and those live in a separate helper so this window stays clean.
+//
+// The banned tokens are the fingerprints of a byte-composition loop. The
+// surrogate scan is deliberately NOT in this window, so none of them has a
+// legitimate reason to appear.
+//
+// Banning a loop is only half of it: `return new TextEncoder().encode(value)`
+// on its own passes every token check above and is exactly the lossy encoder
+// the wrapper exists to prevent — `encode(undefined)` returns the nine bytes
+// of `"undefined"`, and an unpaired surrogate becomes U+FFFD, so two distinct
+// posts frame to the same `import_key` and the server dedups one member's post
+// away. So both REFUSALS are pinned in the window, each with its own message,
+// and the surrogate helper is pinned the way the pre-pass functions are:
+// file-wide declaration count plus an anchored, non-trivial window. Without
+// the count a `function hasUnpairedSurrogate() { return false }` appended
+// below the real one wins at runtime while this clause keeps reading the
+// first — the refusal line stays in place and refuses nothing.
+if (miUtf8Raw !== null) {
+  const miUtf8Code = meStripComments(miUtf8Raw);
+
+  // File-wide declaration count first (29.7 D2): anchoring alone would let a
+  // second top-level declaration shadow the pinned one at runtime while this
+  // clause kept reading the first.
+  const miEncoderDecls = (
+    miUtf8Code.match(/\b(?:function|const|let|var)\s+encodeUtf8Strict\b/g) ?? []
+  ).length;
+  if (miEncoderDecls > 1) {
+    miViolation(
+      MI_UTF8,
+      `${miEncoderDecls} declarations of \`encodeUtf8Strict\` — exactly one is allowed, because this clause and every caller must be reading the same function`,
+    );
+  }
+
+  const miEncoder = /^export function encodeUtf8Strict\([\s\S]*?\n\}/m.exec(miUtf8Code);
+  if (miEncoder === null) {
+    miViolation(
+      MI_UTF8,
+      'no top-level `export function encodeUtf8Strict(` — the strict encoder was renamed, removed or converted to an arrow const, and this clause would pass vacuously',
+    );
+  } else {
+    if (!miEncoder[0].includes('new TextEncoder()')) {
+      miViolation(
+        MI_UTF8,
+        'encodeUtf8Strict no longer calls `new TextEncoder()` — a hand-rolled encoder is how this repo already shipped a latin1-truncating encodeUTF8 (#373), and a lossy encoder makes the source_item_id framing non-injective',
+      );
+    }
+    for (const banned of [
+      'charCodeAt',
+      'codePointAt',
+      'fromCharCode',
+      '0x3f',
+      '0xc0',
+      '0xe0',
+      '0xf0',
+    ]) {
+      if (miEncoder[0].includes(banned)) {
+        miViolation(
+          MI_UTF8,
+          `encodeUtf8Strict contains \`${banned}\` — that is the fingerprint of a manual code-unit loop, and this function must stay a thin TextEncoder wrapper (the unpaired-surrogate scan belongs in its own helper)`,
+        );
+      }
+    }
+
+    // The two refusals, each named separately: they fail for different reasons
+    // and a reviewer reading the violation needs to know WHICH guarantee went.
+    // Whitespace-normalised so Prettier's line breaking cannot decide whether
+    // the rule holds.
+    const miEncoderBody = miEncoder[0].replace(/\s+/g, ' ');
+    if (!miEncoderBody.includes("typeof value !== 'string'")) {
+      miViolation(
+        MI_UTF8,
+        'encodeUtf8Strict no longer refuses a non-string (`typeof value !== \'string\'`) — every string it frames comes out of JSON.parse on an attacker-supplied archive, so "it is a string" is a runtime fact; `new TextEncoder().encode(undefined)` frames the nine bytes of "undefined" instead, and two different malformed posts then share one import_key',
+      );
+    }
+    if (!miEncoderBody.includes('hasUnpairedSurrogate(')) {
+      miViolation(
+        MI_UTF8,
+        'encodeUtf8Strict no longer calls `hasUnpairedSurrogate(` — TextEncoder substitutes U+FFFD for a lone surrogate, which is LOSSY, so the source_item_id framing stops being injective and two distinct posts can HMAC to the same import_key (#924)',
+      );
+    }
+  }
+
+  // The helper that second refusal delegates to, pinned the way the pre-pass
+  // functions are (29.7 D1/D2): count first, then an anchored window.
+  const miSurrogateDecls = (
+    miUtf8Code.match(/\b(?:function|const|let|var)\s+hasUnpairedSurrogate\b/g) ?? []
+  ).length;
+  if (miSurrogateDecls > 1) {
+    miViolation(
+      MI_UTF8,
+      `${miSurrogateDecls} declarations of \`hasUnpairedSurrogate\` — exactly one is allowed, because the refusal pinned above and this window must be reading the same function; a second one (a \`return false\` decoy below the real declaration wins at runtime) leaves encodeUtf8Strict calling a scan that never refuses anything`,
+    );
+  }
+
+  const miSurrogate = /^function hasUnpairedSurrogate\([\s\S]*?\n\}/m.exec(miUtf8Code);
+  if (miSurrogate === null) {
+    miViolation(
+      MI_UTF8,
+      'no top-level `function hasUnpairedSurrogate(` — the surrogate scan was renamed, removed or converted to an arrow const, and the refusal pinned above would be satisfied by a call to anything at all',
+    );
+  } else {
+    // Non-triviality, by the two constants and the one read the scan cannot be
+    // written without. Chosen over pinning the loop shape (brittle:
+    // `for`/`while`/`indexOf` are all legitimate) and over pinning `return
+    // true` (a bare `return true` stub would satisfy that while refusing every
+    // string):
+    //
+    //   * `0xd800` is the floor of the surrogate block — without it the scan
+    //     cannot even find a candidate code unit;
+    //   * `0xdc00` is the low-surrogate floor, which is what distinguishes a
+    //     well-formed PAIR from a lone high surrogate. A scan that never names
+    //     it either refuses every astral character or refuses none;
+    //   * `charCodeAt(` is the only way to read a code unit in the first place
+    //     — a body without it is not reading the string.
+    //
+    // Rewriting these as decimals (55296/56320) or as a regex class is a
+    // deliberate change to the one function whose correctness this rule rests
+    // on: update the anchors with it rather than deleting them.
+    for (const anchor of ['charCodeAt(', '0xd800', '0xdc00']) {
+      if (!miSurrogate[0].includes(anchor)) {
+        miViolation(
+          MI_UTF8,
+          `hasUnpairedSurrogate no longer reads \`${anchor}\` — its body has been hollowed out or rewritten past the pin; a scan that cannot name the surrogate block and the low-surrogate floor is not deciding pairing, and encodeUtf8Strict's second refusal becomes a no-op`,
+        );
+      }
+    }
+  }
+}
+
+// --- 29.8.8 No `TextDecoder`, anywhere in app or package source.
+//
+// Hermes 0.82.1 has `TextEncoder` and does NOT have `TextDecoder`. Jest's node
+// environment has BOTH. That asymmetry means a `new TextDecoder()` added
+// anywhere in shipped source passes every test in CI and throws a
+// ReferenceError on a real device — the worst shape a defect can have.
+// `src/utils/utf8.ts` exists precisely so there is a strict decoder that does
+// not need one.
+//
+// Scanned repo-wide (`src/` plus every package's own `src/`) rather than in
+// the import's files only, because the engine gap is not a #925 fact. Test
+// paths and the fixture BUILDERS under `testUtils/` are exempt: they only ever
+// run under Jest, and `utf8.test.ts` must be able to use the real
+// `TextDecoder` as its parity ORACLE.
+//
+// Two things are deliberately NOT exempt, and the comment is narrowed to say
+// so. `__mocks__/` was listed here and matched nothing — this repo's
+// `__mocks__/` is at the REPO ROOT, outside every scanned root — so it is
+// dropped rather than left as a pattern some future `src/**/__mocks__/` would
+// silently inherit. `__fixtures__/` is not added: the one that exists,
+// `packages/orbital-archive-reader/src/__fixtures__/`, holds fixture DATA that
+// ships inside a package's own `src/`, which is ordinary source as far as the
+// engine is concerned, and it passes this scan today. Keeping it scanned costs
+// nothing and an exemption would be coverage given away for a file that does
+// not need it. If a fixture module ever legitimately needs the oracle, give it
+// a `.test.ts` sibling rather than widening this list.
+const MI_DECODER_EXEMPT = ['__tests__/', 'testUtils/', '.test.ts', '.test.tsx'];
+const miDecoderRoots = [SRC];
+for (const entry of readdirSync('packages')) {
+  const packageSrc = join('packages', entry, 'src');
+  try {
+    if (statSync(packageSrc).isDirectory()) miDecoderRoots.push(packageSrc);
+  } catch {
+    // A package without a `src/` directory: nothing to scan.
+  }
+}
+
+// A `=== 0` floor is the weakest non-vacuity test there is: one over-broad
+// exemption — `'src/'`, say, which every scanned path contains — empties the
+// scan to a single digit and still passes it. So the floor is a COUNT near the
+// real one (301 files on 2026-11-12, across `src/` and four package `src/`
+// trees), set ~15% below so ordinary deletion and consolidation do not trip
+// it. Tripping it does not mean "a file was deleted and we lose": it means
+// re-measure, and if the shrink is real, move the floor in the commit that
+// caused it.
+const MI_DECODER_FLOOR = 255;
+
+// Each exemption must also EARN its place. A pattern matching nothing is
+// either a typo or a directory that has moved, and in both shapes it reads
+// like coverage that does not exist — which is how `__mocks__/` sat in this
+// list un-noticed. Tracked per pattern, not as a total.
+const miDecoderExemptHits = new Map(MI_DECODER_EXEMPT.map((pattern) => [pattern, 0]));
+
+let miDecoderScanned = 0;
+for (const root of miDecoderRoots) {
+  for (const file of walkSync(root, ['.ts', '.tsx'])) {
+    const rel = relative('.', file);
+    if (rel.includes('node_modules')) continue;
+    const matched = MI_DECODER_EXEMPT.filter((pattern) => rel.includes(pattern));
+    if (matched.length > 0) {
+      for (const pattern of matched)
+        miDecoderExemptHits.set(pattern, miDecoderExemptHits.get(pattern) + 1);
+      continue;
+    }
+    miDecoderScanned++;
+    const lines = meStripComments(readFileSync(file, 'utf8')).split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (!/\bTextDecoder\b/.test(lines[i])) continue;
+      report(
+        file,
+        i + 1,
+        MI_RULE,
+        `TextDecoder is undefined on Hermes 0.82.1 and defined in Jest's node environment, so this passes every test and throws on device — use decodeUtf8Strict from src/utils/utf8.ts: ${lines[i].trim()} (${MI_ISSUE})`,
+      );
+    }
+  }
+}
+if (miDecoderScanned < MI_DECODER_FLOOR) {
+  violations.push(
+    `  ${SRC}:0  [${MI_RULE}]  the no-TextDecoder scan examined ${miDecoderScanned} files, below the floor of ${MI_DECODER_FLOOR} — its roots or exemptions are wrong (an over-broad pattern empties the scan while leaving it non-zero) and the rule is passing over source it is supposed to read. Re-measure; if the shrink is a real, deliberate deletion, move MI_DECODER_FLOOR in the same commit (${MI_ISSUE})`,
+  );
+}
+for (const [pattern, hits] of miDecoderExemptHits) {
+  if (hits === 0) {
+    violations.push(
+      `  ${SRC}:0  [${MI_RULE}]  the no-TextDecoder exemption \`${pattern}\` matched ZERO scanned paths — it is a typo or a directory that has moved, and it reads as coverage that does not exist. Delete it, or fix it to match where those files actually live (${MI_ISSUE})`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // 29a. archive-reader-import-restricted (#920 F10)
 // ---------------------------------------------------------------------------
 
@@ -4834,6 +5402,428 @@ for (const file of allFiles) {
 if (!arImporterSeen) {
   violations.push(
     `  ${relative('.', ARCHIVE_ACCESS)}:0  [${AR_IMPORT_RULE}]  the one permitted importer no longer imports 'orbital-archive-reader' — the rule would pass vacuously (${AR_ISSUE})`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 30. import-kdf-call-sites (#924)
+// ---------------------------------------------------------------------------
+
+// There is no HKDF and no HMAC in this app's TypeScript. Both primitives are
+// the Rust uniffi exports from #917, and the ONLY module allowed to name them
+// is `src/services/crypto/importCrypto.ts`, which owns the Meta-import
+// derivation:
+//
+//   K_import   = hkdfSha256(group_key, "orbital-meta-import-v1", lower(userId), 32)
+//   import_key = hmacSha256(K_import, utf8(source) ‖ 0x00 ‖ sourceItemId)[0..16]
+//
+// Two different failures are being prevented, and they need different clauses.
+//
+//   (a) A SECOND call site. `import_key` is a dedup token whose cross-member
+//       unlinkability rests entirely on `info` being the member's own userId
+//       and on `salt` being this one protocol string. A second derivation
+//       somewhere in src/ — with a different salt, a different info, or the
+//       same salt under a different group key — silently re-partitions the
+//       dedup space, and nothing downstream can tell. The blast radius of a
+//       salt change is a full re-import for every member (see the kdf.rs
+//       rotation section), so the salt gets its own exactly-once clause rather
+//       than riding along with the identifiers.
+//
+//   (b) A SECOND IMPLEMENTATION. The far likelier drift is not calling the
+//       Rust export twice: it is someone reaching for `node:crypto`,
+//       `@noble/hashes` or `crypto-js` because the uniffi call is awkward in a
+//       test, a script, or a Hermes-hostile corner. Those packages are not
+//       available on Hermes at all (`node:crypto`) or ship their own
+//       unaudited field arithmetic, and either way the result would be a
+//       second, unreviewed KDF path producing tokens the Rust KAT does not
+//       pin. So the module specifiers AND the bare identifiers are both
+//       banned, in source that is not a test.
+//
+// Modelled on 29.8.8, with its four structural pieces kept intact: multi-root
+// walk (`src/` plus every `packages/*/src`), `meStripComments` so a mention in
+// prose is never a call site, per-exemption hit counting so a pattern that
+// matches nothing is itself a violation, and a MEASURED file-count floor so an
+// over-broad exemption cannot quietly empty the scan.
+//
+// Two deliberate departures from 29.8.8, both about strings:
+//
+//   * Identifier clauses (30.2, 30.4-identifiers) run on text with the
+//     contents of '…' and "…" blanked as well, because `'hkdfSha256'` inside a
+//     string is a name, not a call — a logging key or an error message must
+//     not fail this rule. Backticks are tracked but NOT blanked: a template
+//     literal can contain `${hkdfSha256(x)}`, which IS a call, and
+//     over-reporting a name in a template is the safer side of that trade.
+//     A quote left open at end of line (an apostrophe in JSX text, a `/['"]/`
+//     character class, a template opened on an earlier line) falls back to
+//     the unblanked line rather than blanking the remainder — see
+//     `ikBlankQuoted`, and rows N5/N6/N7 below.
+//   * Specifier clauses (30.3 salt, 30.4-modules) run on comment-stripped text
+//     with strings INTACT, because what they are looking for is a string
+//     literal.
+//
+// The generated bindings are exempt by exact path (they declare the exports),
+// and so are test paths. The package barrel
+// `packages/orbital-signal/src/index.tsx` is NOT exempt and does not need to
+// be: it re-exports with `export *` and never names either function.
+//
+// MUTATION MATRIX — re-run in full 2026-11-12 against this rule, from the
+// worktree, one row at a time (sha256 before, mutate,
+// `node scripts/check-security-invariants.mjs`, restore, sha256 matches,
+// `git status --porcelain` clean). Recorded here verbatim
+// because the harness that would run it automatically is NOT in scope for
+// #924; it stays registry item DEBT-360 (a committed invariant mutation
+// harness), so this block is the only record that these clauses bite.
+//
+// Verdicts are what the run PRINTED, not what it was expected to print; the
+// count is the number of this rule's violations the row produced.
+//
+//   M1   `export function hkdfSha256(` renamed in the generated
+//        bindings                                            RED  30.1          (1)
+//   M2   `export function hmacSha256(` renamed in the generated
+//        bindings                                            RED  30.1          (1)
+//   M3   `import { hmacSha256 } from 'orbital-signal'` appended
+//        to src/services/metaImport/parseArchive.ts          RED  30.2          (1)
+//   M4   an `hkdfSha256(...)` call in src/utils/uuid.ts      RED  30.2          (1)
+//   M4b  an `hkdfSha256(...)` call in
+//        packages/orbital-signal/src/NativeOrbitalSignal.ts  RED  30.2          (1)
+//   M5   both names renamed away inside importCrypto.ts      RED  30.2 vacuity  (2)
+//   M6   importCrypto.ts deleted                             RED  30.0 + 30.3   (2)
+//   M7   a second copy of the salt literal in another file   RED  30.3          (2)
+//   M8   the salt bumped to …-v2 in importCrypto.ts          RED  30.3          (1)
+//   M9   `import { createHmac } from 'crypto'`               RED  30.4a + 30.4b (2)
+//   M10  a bare `createHmac(...)` call                       RED  30.4b         (1)
+//   M11  `import { hkdfSync } from 'node:crypto'`            RED  30.4a + 30.4b (2)
+//   M12  a dead exemption pattern (`__mocks__/`, which in
+//        this repo lives at the root, outside every root)    RED  exempt-hits   (1)
+//   M13  the stale clause rewritten in the real kdf.rs       RED  30.5          (1)
+//   M14  an apostrophe-bearing template literal holding a
+//        real `${hkdfSha256(a, b, c, 32)}` call              RED  30.2          (1)
+//   M15  a `/['"]/` character class and an `hkdfSha256(...)`
+//        call on the SAME line                               RED  30.2          (1)
+//   N1   both names in a `//` comment in another src/ file   GREEN
+//   N2   the real importCrypto.kat.test.ts, which legitimately uses
+//        `hkdfSync`, `createHmac` and the salt, untouched    GREEN  (the baseline run)
+//   N3   `globalThis.…crypto.getRandomValues` in a src/ file GREEN
+//   N4   `'hkdfSha256'` and `"hmacSha256"` as string values  GREEN
+//   N5   an apostrophe in JSX prose, with no banned call on
+//        the line (the fallback must not invent one)         GREEN
+//
+// M14 and M15 are the rows the quote-blanker used to miss. Run against the
+// PREVIOUS `ikBlankQuoted`, both came back GREEN: the apostrophe and the `'`
+// of the character class each opened a quote that never closed, and
+// everything after it on the line — the call included — was blanked away.
+// They are RED only because the blanker now tracks backticks and falls back
+// to the unblanked line when a quote is still open at end of line. N5 is
+// their counterweight: that fallback must not start reporting lines whose
+// only sin is an apostrophe.
+//
+// Two further results worth keeping. M1/M2 do NOT also trip 30.2: the generated file
+// is exempt from the scan and importCrypto.ts still names the now-undeclared
+// export, which is exactly the vacuity 30.1 exists to cover — without it the
+// rule would have gone on pinning a dead name. And M13 was run against the
+// REAL `src/kdf.rs`, not a scratch copy, then restored: the file is
+// byte-identical afterwards (sha256 da735816…3cbb4 before and after), which
+// matters because `scripts/rust-input-digest.sh` hashes that directory and any
+// change there condemns every built xcframework.
+
+const IK_RULE = 'import-kdf-call-sites';
+const IK_ISSUE = '#924';
+const IK_MODULE = join(SRC, 'services', 'crypto', 'importCrypto.ts');
+const IK_GENERATED = join('packages', 'orbital-signal', 'src', 'generated', 'orbital_signal.ts');
+const IK_RUST = join('packages', 'orbital-signal', 'rust', 'orbital_signal');
+const IK_KDF_RS = join(IK_RUST, 'src', 'kdf.rs');
+const IK_KAT_RS = join(IK_RUST, 'tests', 'kdf_kat_tests.rs');
+const IK_SALT = 'orbital-meta-import-v1';
+const IK_PRIMITIVES = ['hkdfSha256', 'hmacSha256'];
+const IK_STALE_CLAUSE = '#924 owns its internal length-prefixed encoding';
+
+function ikViolation(file, detail) {
+  violations.push(`  ${relative('.', file)}:0  [${IK_RULE}]  ${detail} (${IK_ISSUE})`);
+}
+
+/**
+ * Blank the CONTENTS of '…' and "…" literals, preserving quotes and line
+ * length so reported line numbers stay true. Input is expected to be
+ * `meStripComments` output.
+ *
+ * Backtick templates are TRACKED but not blanked. Tracked because an
+ * apostrophe inside one (`` `the member's archive ${hkdfSha256(x)}` ``) would
+ * otherwise open a quote that never closes and blank the rest of the line,
+ * hiding a real call — the same way `meStripComments` tracks backticks so a
+ * `//` inside a template is not read as a comment. Not blanked because
+ * `${hkdfSha256(x)}` IS a call site, and over-reporting a bare name inside a
+ * template is the safer side of that trade.
+ *
+ * A quote still open at end of line means this line is not what it looks
+ * like: an apostrophe in JSX text, a regex character class such as `/['"]/`,
+ * or a template opened on an earlier line. Blanking from the opener onwards
+ * would silently drop everything after it, so the line is handed back
+ * UNBLANKED instead. That fails toward reporting: the worst case is a name
+ * inside a string being flagged, which a reviewer can see and exempt, against
+ * a missed second call site, which nobody sees at all.
+ */
+function ikBlankQuoted(text) {
+  return text
+    .split('\n')
+    .map((line) => {
+      let out = '';
+      let quote = null;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (quote !== null) {
+          if (ch === '\\') {
+            // Two characters consumed, two emitted — unless the backslash is
+            // the last character on the line, where only one exists. Inside a
+            // template the characters are kept; inside '…'/"…" they blank.
+            const run = i + 1 < line.length ? 2 : 1;
+            out += quote === '`' ? line.slice(i, i + run) : ' '.repeat(run);
+            i += 1;
+            continue;
+          }
+          if (ch === quote) {
+            out += ch;
+            quote = null;
+            continue;
+          }
+          out += quote === '`' ? ch : ' ';
+          continue;
+        }
+        if (ch === "'" || ch === '"' || ch === '`') {
+          quote = ch;
+          out += ch;
+          continue;
+        }
+        out += ch;
+      }
+      return quote === null ? out : line;
+    })
+    .join('\n');
+}
+
+// --- 30.0 The module that owns the derivation must exist.
+//
+// Deleting the subject of a pin must FAIL the rule, not satisfy it by leaving
+// nothing to check.
+const ikModuleRaw = meRead(
+  IK_MODULE,
+  IK_RULE,
+  'the single permitted HKDF/HMAC call site for the Meta import',
+  IK_ISSUE,
+);
+
+// --- 30.1 The generated bindings must still export both primitives.
+//
+// The non-vacuity floor for 30.2: if ubrn regenerates without these exports
+// (an upstream rename, a dropped uniffi export, a hand-edited binding), the
+// "appears only in importCrypto.ts" clause would pass over a dead name while
+// the app no longer has a KDF at all. Matched as the generated DECLARATION,
+// not as a bare mention.
+const ikGeneratedRaw = meRead(
+  IK_GENERATED,
+  IK_RULE,
+  'the generated uniffi bindings that declare hkdfSha256/hmacSha256',
+  IK_ISSUE,
+);
+if (ikGeneratedRaw !== null) {
+  for (const name of IK_PRIMITIVES) {
+    if (!new RegExp(String.raw`export function ${name}\b`).test(ikGeneratedRaw)) {
+      ikViolation(
+        IK_GENERATED,
+        `the generated bindings no longer export \`${name}\` — rule 30.2 would then pin a name nothing declares, and the Meta-import derivation has no primitive. Regenerate the bindings from \`${join(IK_RUST, 'src', 'kdf.rs')}\`, or if the export was deliberately removed, follow that file's removal trigger and take this whole rule with it`,
+      );
+    }
+  }
+}
+
+const IK_EXEMPT = [
+  '__tests__/',
+  '.test.ts',
+  '.test.tsx',
+  // The generated bindings declare the exports; they are the floor 30.1 reads,
+  // not a call site. Named as an exact path so a future `generated/` elsewhere
+  // does not inherit the exemption.
+  'packages/orbital-signal/src/generated/orbital_signal.ts',
+];
+
+// A measured floor, as in 29.8.8: 307 files on 2026-11-12 across `src/` and
+// the four package `src/` trees, set ~15% below. Tripping it means re-measure;
+// if the shrink is a real deletion, move the floor in that same commit.
+//
+// TWIN: `MI_DECODER_FLOOR` counts the same tree for 24b's scan and moves for
+// the same reasons — keep the two in step. A THIRD copy of this
+// roots/exemptions/floor harness means extracting a shared helper instead of
+// cloning it again (registry item DEBT-360's neighbour).
+const IK_SCAN_FLOOR = 260;
+
+const ikRoots = [SRC];
+for (const entry of readdirSync('packages')) {
+  const packageSrc = join('packages', entry, 'src');
+  try {
+    if (statSync(packageSrc).isDirectory()) ikRoots.push(packageSrc);
+  } catch {
+    // A package without a `src/` directory: nothing to scan.
+  }
+}
+
+const ikExemptHits = new Map(IK_EXEMPT.map((pattern) => [pattern, 0]));
+const IK_BANNED_IDENT_RE = /\b(createHmac|hkdfSync|hkdfExtract|hkdfExpand|pbkdf2Sync)\b/;
+// `crypto.getRandomValues` on the global stays legal and must not match: these
+// shapes all require a quoted module specifier.
+const IK_SPEC_HEAD = String.raw`(?:\bfrom\s*|\brequire\s*\(\s*|\bimport\s*\(\s*|\bimport\s*)`;
+const IK_BANNED_MODULES = String.raw`(?:node:)?crypto|crypto-js(?:/[^'"]*)?|js-sha256(?:/[^'"]*)?|hash\.js(?:/[^'"]*)?|@noble/hashes(?:/[^'"]*)?`;
+const IK_BANNED_SPEC_RE = new RegExp(`${IK_SPEC_HEAD}['"](?:${IK_BANNED_MODULES})['"]`);
+
+let ikScanned = 0;
+const ikModuleRefs = new Map(IK_PRIMITIVES.map((name) => [name, 0]));
+const ikSaltSites = [];
+
+for (const root of ikRoots) {
+  for (const file of walkSync(root, ['.ts', '.tsx'])) {
+    const rel = relative('.', file);
+    if (rel.includes('node_modules')) continue;
+    const matched = IK_EXEMPT.filter((pattern) => rel.includes(pattern));
+    if (matched.length > 0) {
+      for (const pattern of matched) ikExemptHits.set(pattern, ikExemptHits.get(pattern) + 1);
+      continue;
+    }
+    ikScanned++;
+
+    const isOwner = rel === relative('.', IK_MODULE);
+    const stripped = meStripComments(readFileSync(file, 'utf8'));
+    const strippedLines = stripped.split('\n');
+    const codeLines = ikBlankQuoted(stripped).split('\n');
+
+    for (let i = 0; i < codeLines.length; i++) {
+      const code = codeLines[i];
+      const text = strippedLines[i];
+
+      // --- 30.2 Both primitives, only in importCrypto.ts.
+      for (const name of IK_PRIMITIVES) {
+        if (!new RegExp(String.raw`\b${name}\b`).test(code)) continue;
+        if (isOwner) {
+          ikModuleRefs.set(name, ikModuleRefs.get(name) + 1);
+          continue;
+        }
+        report(
+          file,
+          i + 1,
+          IK_RULE,
+          `\`${name}\` outside ${relative('.', IK_MODULE)} — a second KDF call site re-partitions the import dedup space (its salt and per-member \`info\` are what make \`import_key\` unlinkable) and is pinned by no KAT: ${text.trim()} (${IK_ISSUE})`,
+        );
+      }
+
+      // --- 30.4a No second HMAC/HKDF implementation, by module specifier.
+      if (IK_BANNED_SPEC_RE.test(text)) {
+        report(
+          file,
+          i + 1,
+          IK_RULE,
+          `imports a JavaScript crypto implementation — \`node:crypto\` does not exist on Hermes and the userland hash packages ship unaudited primitives this repo has never reviewed; the only HKDF/HMAC is the Rust uniffi export used by ${relative('.', IK_MODULE)}: ${text.trim()} (${IK_ISSUE})`,
+        );
+      }
+
+      // --- 30.4b ...and by bare identifier, for the destructured/global form.
+      const bannedIdent = IK_BANNED_IDENT_RE.exec(code);
+      if (bannedIdent !== null) {
+        report(
+          file,
+          i + 1,
+          IK_RULE,
+          `uses \`${bannedIdent[1]}\` — a second KDF/MAC implementation outside the audited Rust path; derive through ${relative('.', IK_MODULE)} instead: ${text.trim()} (${IK_ISSUE})`,
+        );
+      }
+
+      // --- 30.3 (collection) The protocol salt, spelled once.
+      let from = text.indexOf(IK_SALT);
+      while (from !== -1) {
+        ikSaltSites.push({ file, line: i + 1 });
+        from = text.indexOf(IK_SALT, from + IK_SALT.length);
+      }
+    }
+  }
+}
+
+// --- 30.2 (non-vacuity) The owner must still call both primitives.
+if (ikModuleRaw !== null) {
+  for (const name of IK_PRIMITIVES) {
+    if (ikModuleRefs.get(name) === 0) {
+      ikViolation(
+        IK_MODULE,
+        `the one permitted call site no longer references \`${name}\` — either the derivation moved (which is what this rule exists to catch) or it is now implemented some other way, and in both shapes the "only here" clause passes vacuously`,
+      );
+    }
+  }
+}
+
+// --- 30.3 The protocol salt appears exactly once, in importCrypto.ts.
+//
+// Bumping it is a one-line change by design (#917 §0), and that is precisely
+// why a SECOND copy is dangerous: two spellings drift, and the half that lags
+// derives keys nothing can re-derive, because only the 16-byte MAC is stored.
+if (ikSaltSites.length === 0) {
+  ikViolation(
+    IK_MODULE,
+    `the import salt \`${IK_SALT}\` appears in no scanned non-test source — the derivation's domain separator has moved or been inlined somewhere this rule cannot see`,
+  );
+} else if (ikSaltSites.length > 1) {
+  for (const site of ikSaltSites) {
+    report(
+      site.file,
+      site.line,
+      IK_RULE,
+      `the import salt \`${IK_SALT}\` is spelled in ${ikSaltSites.length} places; it must appear exactly once, in ${relative('.', IK_MODULE)}, because a second copy drifts on the next version bump and silently re-derives every \`import_key\` (${IK_ISSUE})`,
+    );
+  }
+} else if (relative('.', ikSaltSites[0].file) !== relative('.', IK_MODULE)) {
+  report(
+    ikSaltSites[0].file,
+    ikSaltSites[0].line,
+    IK_RULE,
+    `the import salt \`${IK_SALT}\` is spelled here instead of in ${relative('.', IK_MODULE)} — the salt belongs with the single derivation it separates (${IK_ISSUE})`,
+  );
+}
+
+if (ikScanned < IK_SCAN_FLOOR) {
+  violations.push(
+    `  ${SRC}:0  [${IK_RULE}]  the import-KDF scan examined ${ikScanned} files, below the floor of ${IK_SCAN_FLOOR} — its roots or exemptions are wrong (an over-broad pattern empties the scan while leaving it non-zero) and the rule is passing over source it is supposed to read. Re-measure; if the shrink is a real, deliberate deletion, move IK_SCAN_FLOOR in the same commit (${IK_ISSUE})`,
+  );
+}
+for (const [pattern, hits] of ikExemptHits) {
+  if (hits === 0) {
+    violations.push(
+      `  ${SRC}:0  [${IK_RULE}]  the import-KDF exemption \`${pattern}\` matched ZERO scanned paths — it is a typo or a directory that has moved, and it reads as coverage that does not exist. Delete it, or fix it to match where those files actually live (${IK_ISSUE})`,
+    );
+  }
+}
+
+// --- 30.5 Stale-text detector on kdf.rs.
+//
+// `src/kdf.rs` says `source_item_id` is framed by #924. That is wrong — #925
+// owns the framing — and it is deliberately NOT corrected, because
+// `scripts/rust-input-digest.sh` hashes that directory, so a prose fix
+// condemns every built xcframework and forces a Rust rebuild on every machine.
+// The correction is therefore parked, and this clause is the tripwire that
+// fires the day someone makes a REAL kdf.rs change and can fold it in for
+// free. Failing here is good news, not a defect: apply the text and delete
+// this clause.
+const ikKdfRaw = meRead(
+  IK_KDF_RS,
+  IK_RULE,
+  'the Rust module whose stale framing-ownership clause this rule tracks',
+  IK_ISSUE,
+);
+//
+// Matched against the comment markers stripped and whitespace collapsed,
+// because the clause is WRAPPED across two `//!` lines in the real file and a
+// literal `includes` would then "detect" a removal that never happened. A
+// pure re-wrap keeps the rule green, which is right: the prose is still
+// stale.
+const ikKdfFlat =
+  ikKdfRaw === null ? '' : ikKdfRaw.replace(/^[ \t]*\/\/[!/]?[ \t]?/gm, '').replace(/\s+/g, ' ');
+if (ikKdfRaw !== null && !ikKdfFlat.includes(IK_STALE_CLAUSE)) {
+  ikViolation(
+    IK_KDF_RS,
+    `the stale clause "${IK_STALE_CLAUSE}" is gone, so kdf.rs has been edited and the native digest has already moved — fold the correction in now, in this same commit, while the rebuild is already paid for. The two replacement texts have ONE home: the \`orbital_import_kat\` doc comment in ${relative('.', IK_KAT_RS)}, section "Fold-forward for the next real src/kdf.rs change" (kdf.rs lines 7-8, and the removal trigger at lines 56-64). Then DELETE the copies that only existed to park it: that fold-forward section in ${relative('.', IK_KAT_RS)}, this clause 30.5 (its constant, its meRead and this message), and the pointer to it in the ${relative('.', IK_MODULE)} module header`,
   );
 }
 

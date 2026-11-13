@@ -22,6 +22,7 @@ import {
   fullCryptoWipe,
 } from './crypto/keyGenerationService';
 import { clearGroupKeyCache, clearContentCryptoInflight, persistGroupKey } from './crypto/contentCrypto';
+import { closeAllImportKeySessions } from './crypto/importCrypto';
 import { clearAllPendingWraps } from './crypto/pendingWrapClock';
 import * as inviteCrypto from './crypto/inviteCrypto';
 import { arrayBufferToBase64, toArrayBuffer } from './crypto/utils';
@@ -441,6 +442,15 @@ export async function localWipe({ preserveIdentity }: { preserveIdentity: boolea
   }
   try { clearGroupKeyCache(); } catch {
     if (__DEV__) console.warn('[LocalWipe] clearGroupKeyCache failed');
+  }
+  // #924: an import session holds K_import and a COPY of the group key, so
+  // `clearGroupKeyCache()` alone does not reach it. The #926 runner owns
+  // aborting its own run (its reset is wired in beside `resetBulkExportState`);
+  // this is the safety net for a session whose owner never reached its
+  // `finally`. Synchronous and right next to the cache clear, so the two
+  // copies of the same key material go together.
+  try { closeAllImportKeySessions(); } catch {
+    if (__DEV__) console.warn('[LocalWipe] closeAllImportKeySessions failed');
   }
   try { clearEciesLockState(); } catch {
     if (__DEV__) console.warn('[LocalWipe] clearEciesLockState failed');

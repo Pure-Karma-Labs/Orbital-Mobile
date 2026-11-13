@@ -54,6 +54,13 @@ jest.mock('../contentCrypto', () => ({
   clearContentCryptoInflight: jest.fn(),
 }));
 
+// #924. Mocked for the same reason contentCrypto is — the real module reaches
+// useAppStore, and so MMKV, which has no native module under Jest — and so the
+// wipe's call into it is observable alongside the other two cache clears.
+jest.mock('../importCrypto', () => ({
+  closeAllImportKeySessions: jest.fn(),
+}));
+
 // Partial mock: only the reporter registry is stubbed, so fullCryptoWipe's call
 // into it is observable while the error vocabulary stays real.
 jest.mock('../groupKeyErrors', () => ({
@@ -84,6 +91,7 @@ import { uploadPreKeyBundle, getPreKeyCount } from '../../api/keys';
 import { getSecureItem, setSecureItem, removeSecureItem } from '../../secure-storage';
 import { resetGroupKeyFailureBudget } from '../groupKeyErrors';
 import { clearGroupKeyCache, clearContentCryptoInflight } from '../contentCrypto';
+import { closeAllImportKeySessions } from '../importCrypto';
 import { clearAllGroupCryptoState } from '../../../database/repositories/conversationRepository';
 
 import {
@@ -773,6 +781,9 @@ describe('fullCryptoWipe', () => {
     expect(removeSecureItem).toHaveBeenCalledTimes(1);
     expect(clearGroupKeyCache).toHaveBeenCalledTimes(1);
     expect(clearContentCryptoInflight).toHaveBeenCalledTimes(1);
+    // #924: an open import session holds K_import plus its own COPY of the
+    // group key, neither of which is in the cache clearGroupKeyCache empties.
+    expect(closeAllImportKeySessions).toHaveBeenCalledTimes(1);
     // Reached through the import-free registry: this module is inside the
     // crypto fence and cannot import groupKeyTelemetry.
     expect(resetGroupKeyFailureBudget).toHaveBeenCalledTimes(1);

@@ -254,6 +254,10 @@ async function mapGroupResponse(response: GroupResponse): Promise<Conversation> 
     createdAt: new Date(response.joinedAt).getTime(),
     updatedAt: new Date(response.joinedAt).getTime(),
     isCreator: response.isCreator,
+    // Absent collapses to null like every other group field here: the server
+    // partition is replaced verbatim on each load, so there is no
+    // absent-vs-null contract to preserve (#926, consumed by #928).
+    contentRetentionDays: response.contentRetentionDays ?? null,
   };
 }
 

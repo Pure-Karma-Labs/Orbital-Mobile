@@ -310,6 +310,36 @@ describe('loadConversations', () => {
     expect(conversation.unreadCount).toBe(0);
   });
 
+  // #926: #928 warns, before an import runs, that a back-dated post may be
+  // swept on arrival — it needs the orbit's retention window, which the group
+  // list has carried all along and this mapper used to drop.
+  it('maps content_retention_days onto the conversation', async () => {
+    mockListGroups.mockResolvedValue([{ ...GROUP_RESPONSE, contentRetentionDays: 30 }]);
+
+    await loadConversations();
+
+    const conversation = mockSetConversations.mock.calls[0][0][0];
+    expect(conversation.contentRetentionDays).toBe(30);
+  });
+
+  it('collapses an absent content_retention_days to null, like every other group field', async () => {
+    mockListGroups.mockResolvedValue([GROUP_RESPONSE]);
+
+    await loadConversations();
+
+    const conversation = mockSetConversations.mock.calls[0][0][0];
+    expect(conversation.contentRetentionDays).toBeNull();
+  });
+
+  it('keeps a null content_retention_days as "never expires"', async () => {
+    mockListGroups.mockResolvedValue([{ ...GROUP_RESPONSE, contentRetentionDays: null }]);
+
+    await loadConversations();
+
+    const conversation = mockSetConversations.mock.calls[0][0][0];
+    expect(conversation.contentRetentionDays).toBeNull();
+  });
+
   it('processes group keys from response via processReceivedGroupKey', async () => {
     mockListGroups.mockResolvedValue([GROUP_RESPONSE]);
 

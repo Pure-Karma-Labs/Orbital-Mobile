@@ -22,7 +22,7 @@ import { VerifiedStatus } from '../types/database';
 import { createNewThread } from '../services/threadService';
 import { isUploadCancellation } from '../services/mediaUploadService';
 import { captureUploadFailure, type PostPipelineStage } from '../services/uploadTelemetry';
-import { QuotaExceededError } from '../services/api/errors';
+import { QuotaExceededError, ValidationError } from '../services/api/errors';
 import {
   classifyCreateFailure,
   dispositionForCreateFailure,
@@ -273,7 +273,14 @@ export function ComposeThreadScreen({
       }
       // Telemetry above is unconditional; the banner is screen state.
       if (mountedRef.current) {
-        if (e instanceof QuotaExceededError) {
+        if (e instanceof ValidationError && e.reason === 'MEDIA_IMPORT_RESERVED') {
+          // A media row reserved by a Meta import was attached (Backend
+          // `routes/threads.js`). `e.message` IS the curated copy -- the copy
+          // map in `api/errors.ts` is its single home, so nothing is hardcoded
+          // here. The verdict for a ValidationError is 'no', which keeps the
+          // uploaded media rollback-eligible rather than flagging it committed.
+          setError(e.message);
+        } else if (e instanceof QuotaExceededError) {
           // instanceof applies to the upload path; createNewThread is JSON-only and never 413s
           setError(e.message);
         } else if (verdict !== 'no') {

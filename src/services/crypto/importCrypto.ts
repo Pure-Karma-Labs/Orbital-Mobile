@@ -39,6 +39,20 @@
  * session PINS the key it opened under and {@link ImportKeySession.verifyGroupKeyPin}
  * aborts the run on a change rather than carrying on under a new one.
  *
+ * ## Why title and body seal through the session
+ *
+ * {@link ImportKeySession.sealContent} is the only encryption surface #926
+ * uses, and `metaImport/` never calls `getOrFetchGroupKey` or `encryptContent`
+ * itself. That is not tidiness: `getOrFetchGroupKey` returns the group-key
+ * cache's OWN array, and `invalidateGroupKey` / `clearGroupKeyCache` zero that
+ * array in place — `invalidateGroupKey` reachable mid-run from the WebSocket
+ * decrypt retry. A runner that fetched the key once and held it across an
+ * `await` would encrypt under 32 zero bytes without `encryptContent` (which
+ * does not validate its key) or the pin (a `.slice()` copy, so it survives the
+ * zeroing) noticing. `sealContent` verifies the pin, re-reads the live key,
+ * asserts its width and that it is not all-zero, byte-compares it against the
+ * pin, and encrypts with NO await in between.
+ *
  * ## Why this module imports no service
  *
  * It must not import `conversationService` — not because of a cycle (there is
@@ -172,6 +186,15 @@ export interface ImportKeySession {
   readonly keyFingerprint: string;
   /** 16 bytes, a fresh copy per call. Never a view over the 32-byte tag. */
   deriveImportKey(sourceItemId: Uint8Array): Promise<Uint8Array>;
+  /**
+   * Verifies the pin, then seals arbitrary content under the LIVE group key.
+   *
+   * The ONLY way #926 encrypts a thread title or body: no raw key bytes ever
+   * enter `metaImport/`, and nothing there calls `getOrFetchGroupKey` or
+   * `encryptContent` itself. See the "Why title and body seal through the
+   * session" note in this module's header.
+   */
+  sealContent(plaintext: string): Promise<{ ciphertext: string; iv: string }>;
   /** Verifies the pin, then seals under the LIVE key. Epoch ms. */
   sealImportMeta(
     originalCreatedAt: number,
@@ -569,6 +592,40 @@ export async function openImportKeySession(
     return importKey;
   }
 
+  async function sealContent(plaintext: string): Promise<{ ciphertext: string; iv: string }> {
+    requireOpen();
+
+    // Verify FIRST, then take the live key and use it with NO await in
+    // between. `getOrFetchGroupKey` returns the CACHE'S OWN array, and both
+    // `invalidateGroupKey` and `clearGroupKeyCache` zero that array IN PLACE —
+    // `invalidateGroupKey` reachable mid-run from the WebSocket decrypt retry.
+    // `encryptContent` does not validate its key, so a key held across an
+    // await can be 32 zero bytes by the time it is used, and the post would go
+    // out readable by anyone and unreadable by every member. The pin alone
+    // cannot catch that: it is a `.slice()` copy, so it survives the zeroing.
+    await verifyGroupKeyPin();
+    const live = await getOrFetchGroupKey(groupId);
+
+    if (live.length !== GROUP_KEY_BYTES) {
+      throw new ImportCryptoInvariantError(
+        `group key must be ${GROUP_KEY_BYTES} bytes, got ${live.length}`,
+      );
+    }
+    if (live.every((b) => b === 0)) {
+      throw new ImportCryptoInvariantError('group key is all zeros — it was zeroed in place');
+    }
+
+    // Re-check the session and COMPARE against the pin rather than assume the
+    // two are identical: `getOrFetchGroupKey` can invalidate and refetch, and
+    // a rotation landing in that window is what the pin exists to catch.
+    const { pin } = requireOpen();
+    if (!bytesEqual(live, pin)) throw new ImportKeyChangedError();
+
+    // Synchronous from here down: `encryptContent` does not await, so nothing
+    // can zero `live` between the checks above and its use.
+    return encryptContent(plaintext, live, groupId);
+  }
+
   async function sealImportMeta(
     originalCreatedAt: number,
   ): Promise<{ encryptedImportMeta: string; importMetaIv: string }> {
@@ -577,22 +634,11 @@ export async function openImportKeySession(
       throw new ImportCryptoInvariantError('originalCreatedAt must be a safe integer (epoch ms)');
     }
 
-    // Verify FIRST, then seal with the live key. Sealing with the live bytes
-    // is what makes it impossible to seal import-meta under a key the rest of
-    // the import is not using.
-    await verifyGroupKeyPin();
-    const liveKey = await getOrFetchGroupKey(groupId);
-
-    // Re-check after both awaits, and COMPARE rather than assume the two are
-    // identical: the pin verified a moment ago, but `getOrFetchGroupKey` can
-    // invalidate and refetch in between, and a rotation landing in that window
-    // is precisely the case the pin exists to catch.
-    const { pin } = requireOpen();
-    if (!bytesEqual(liveKey, pin)) throw new ImportKeyChangedError();
-
     // Fixed key order, so the plaintext is a function of the values alone.
+    // Through sealContent, so the envelope and the post it describes cannot be
+    // sealed under different keys and both inherit the live-key discipline.
     const plaintext = JSON.stringify({ v: 1, source, originalCreatedAt });
-    const { ciphertext, iv } = encryptContent(plaintext, liveKey, groupId);
+    const { ciphertext, iv } = await sealContent(plaintext);
 
     // Base64 is ASCII, so character count IS the UTF-8 byte count here.
     if (ciphertext.length > MAX_IMPORT_META_B64) {
@@ -682,6 +728,7 @@ export async function openImportKeySession(
   return {
     keyFingerprint,
     deriveImportKey,
+    sealContent,
     sealImportMeta,
     verifyGroupKeyPin,
     close,

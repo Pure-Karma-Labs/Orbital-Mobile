@@ -13,7 +13,7 @@
  * the wrong error".
  */
 
-import type { QuotaUsage } from '../../types/api';
+import type { ImportAllowance, QuotaUsage } from '../../types/api';
 import { formatMB } from '../../utils/formatBytes';
 import { INVALID_EMAIL_MESSAGE } from '../../utils/validateEmail';
 // The refusal vocabulary is defined in crypto/groupKeyErrors.ts — an
@@ -129,13 +129,47 @@ const VALIDATION_REASON_MESSAGES = Object.freeze({
   // Named by the orbit-join route (Backend #271). No member count in the copy:
   // `max_members` is per-group, so any number here would be a guess.
   GROUP_FULL: 'This orbit is full — ask the orbit admin to make room',
+  // Raised only when a composer attaches a media row that belongs to an import
+  // (Backend `src/routes/threads.js`). Import media writes no local row, so
+  // the picker cannot offer one — this is a fence, not a user path, and the
+  // copy stays neutral rather than explaining imports to someone who was not
+  // doing one.
+  MEDIA_IMPORT_RESERVED: "Those photos can't be attached — select them again.",
 });
 
-/** Derived from the map, so adding a reason cannot forget the copy. */
-export type ValidationReason = keyof typeof VALIDATION_REASON_MESSAGES;
+/**
+ * Reasons the client carries but deliberately shows NO copy for (#926).
+ *
+ * These are service-layer outcomes of the Meta-import runner: it routes on
+ * them (halve the batch, fail the file, stop the run as a client bug) and the
+ * member never sees them as words. Keeping them out of
+ * {@link VALIDATION_REASON_MESSAGES} is what stops every screen that routes
+ * validation reasons from having to invent copy for a code it can never
+ * receive — such a reason falls back to the generic 'Invalid request', which
+ * is honest, rather than to fake copy.
+ *
+ * `IMPORT_ITEM_INVALID` / `IMPORT_DATE_INVALID` / `IMPORT_MEDIA_NOT_OWNED`
+ * are in NEITHER registry on purpose: they are per-item codes inside a 200,
+ * so they never reach a ValidationError at all.
+ */
+const SILENT_VALIDATION_REASONS = Object.freeze({
+  IMPORT_BATCH_TOO_LARGE: 1,
+  IMPORT_DECLARED_INVALID: 1,
+  IMPORT_MEDIA_TYPE_UNSUPPORTED: 1,
+});
 
 /**
- * Allowlist membership test for a parsed `details.code`.
+ * A reason with curated copy. Screens route an exhaustive `Record` over THIS
+ * type, so adding a silent reason does not tax every form in the app.
+ */
+export type CopiedValidationReason = keyof typeof VALIDATION_REASON_MESSAGES;
+
+/** Every reason this client is willing to retain on a ValidationError. */
+export type ValidationReason = CopiedValidationReason | keyof typeof SILENT_VALIDATION_REASONS;
+
+/**
+ * Allowlist membership test for a parsed `details.code`, across BOTH
+ * registries.
  *
  * `hasOwnProperty.call` rather than `in` or a truthy lookup: the latter two
  * would accept `__proto__`, `constructor` and `toString` and then index the
@@ -145,8 +179,14 @@ export type ValidationReason = keyof typeof VALIDATION_REASON_MESSAGES;
 function isValidationReason(c: unknown): c is ValidationReason {
   return (
     typeof c === 'string' &&
-    Object.prototype.hasOwnProperty.call(VALIDATION_REASON_MESSAGES, c)
+    (Object.prototype.hasOwnProperty.call(VALIDATION_REASON_MESSAGES, c) ||
+      Object.prototype.hasOwnProperty.call(SILENT_VALIDATION_REASONS, c))
   );
+}
+
+/** Does this allowlisted reason have copy, or is it a silent one? */
+function isCopiedValidationReason(c: ValidationReason): c is CopiedValidationReason {
+  return Object.prototype.hasOwnProperty.call(VALIDATION_REASON_MESSAGES, c);
 }
 
 /**
@@ -177,13 +217,19 @@ export class ValidationError extends ApiError {
    * fixed set of client-defined enum values, not server text. Screens branch on
    * this to pick a channel — a field error vs the banner — and render
    * `e.message` for the words.
+   *
+   * A SILENT reason (see {@link SILENT_VALIDATION_REASONS}) is retained here
+   * just the same, but `message` stays the generic 'Invalid request': the
+   * service layer routes on the code and nobody renders it.
    */
   readonly reason: ValidationReason | undefined;
 
   constructor(statusCode: 400 | 422, rawBody?: string) {
     const reason = parseValidationReason(rawBody);
     super(
-      reason === undefined ? 'Invalid request' : VALIDATION_REASON_MESSAGES[reason],
+      reason !== undefined && isCopiedValidationReason(reason)
+        ? VALIDATION_REASON_MESSAGES[reason]
+        : 'Invalid request',
       statusCode,
       'VALIDATION_ERROR',
       false,
@@ -292,6 +338,168 @@ function isRewrapRefusalCode(c: unknown): c is RewrapRefusalCode {
   return typeof c === 'string' && Object.prototype.hasOwnProperty.call(REWRAP_REFUSAL_CODES, c);
 }
 
+// ---------------------------------------------------------------------------
+// 409 IMPORT_REFUSED — the Meta-import refusal vocabulary (#926)
+// ---------------------------------------------------------------------------
+
+/**
+ * The four refusal codes the import routes emit, and the three session
+ * statuses `IMPORT_CLOSED` reports.
+ *
+ * Here rather than in an import-free module (as `REWRAP_REFUSAL_CODES` is,
+ * because the crypto boundary needs that list too): the import runner switches
+ * on the two code LITERALS it acts on, which the exported type union gives it,
+ * and nothing outside this file needs the maps.
+ */
+const IMPORT_REFUSAL_CODES = Object.freeze({
+  IMPORT_IN_PROGRESS: 1,
+  IMPORT_ALLOWANCE_EXCEEDED: 1,
+  IMPORT_QUOTA_EXCEEDED: 1,
+  IMPORT_CLOSED: 1,
+});
+
+const IMPORT_CLOSED_STATUSES = Object.freeze({
+  closed: 1,
+  abandoned: 1,
+  completed: 1,
+});
+
+/** A known refusal code, or the client's own sentinel for a newer backend. */
+export type ImportRefusalCode = keyof typeof IMPORT_REFUSAL_CODES | 'unrecognized';
+
+/**
+ * The parsed `details` of an `IMPORT_REFUSED` 409.
+ *
+ * Every field is prod-retained, like `blockingOrbits` and `refusalCode`:
+ * client-defined enums plus the member's own numbers. No server string is
+ * carried, and `importId` is accepted only on a canonical lowercase UUIDv4
+ * shape and never logged.
+ *
+ * Which extras arrive depends on the code and the route:
+ *  - `IMPORT_IN_PROGRESS` → `importId` (absent on the 23505 insert race)
+ *  - `IMPORT_ALLOWANCE_EXCEEDED` → `allowance`, plus `stagedBytes` /
+ *    `projectedBytes` on the media CHUNK route only
+ *  - `IMPORT_QUOTA_EXCEEDED` → `availableBytes` + `declaredBytes` at start,
+ *    `availableBytes` + `sizeBytes` at media complete
+ *  - `IMPORT_CLOSED` → `closedStatus`
+ */
+export interface ImportRefusal {
+  readonly code: ImportRefusalCode;
+  readonly closedStatus?: keyof typeof IMPORT_CLOSED_STATUSES | 'unrecognized';
+  readonly importId?: string;
+  readonly allowance?: ImportAllowance;
+  readonly stagedBytes?: number;
+  readonly projectedBytes?: number;
+  readonly availableBytes?: number;
+  readonly declaredBytes?: number;
+  readonly sizeBytes?: number;
+}
+
+/**
+ * Allowlist membership test for an import refusal code — `hasOwnProperty.call`
+ * for the same reason as {@link isValidationReason}.
+ */
+function isImportRefusalCode(c: unknown): c is keyof typeof IMPORT_REFUSAL_CODES {
+  return typeof c === 'string' && Object.prototype.hasOwnProperty.call(IMPORT_REFUSAL_CODES, c);
+}
+
+/** Allowlist membership test for the `IMPORT_CLOSED` session status. */
+function isImportClosedStatus(s: unknown): s is keyof typeof IMPORT_CLOSED_STATUSES {
+  return typeof s === 'string' && Object.prototype.hasOwnProperty.call(IMPORT_CLOSED_STATUSES, s);
+}
+
+/** The canonical lowercase UUIDv4 the server issues for an import id. */
+const IMPORT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+/** A JSON number we are willing to carry: finite, never NaN or ±Infinity. */
+function finiteNumber(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+}
+
+/**
+ * The allowance object, or undefined unless ALL FOUR keys are numbers.
+ *
+ * All-or-nothing deliberately: the runner computes "remaining" from the pair
+ * of a used and a limit value, and a half-populated allowance would make a
+ * missing limit read as 0 remaining.
+ */
+function parseImportAllowance(a: unknown): ImportAllowance | undefined {
+  if (a === null || typeof a !== 'object') return undefined;
+  const r = a as Record<string, unknown>;
+  const postsUsed = finiteNumber(r.posts_used);
+  const bytesUsed = finiteNumber(r.bytes_used);
+  const postsLimit = finiteNumber(r.posts_limit);
+  const bytesLimit = finiteNumber(r.bytes_limit);
+  if (
+    postsUsed === undefined ||
+    bytesUsed === undefined ||
+    postsLimit === undefined ||
+    bytesLimit === undefined
+  ) {
+    return undefined;
+  }
+  return { postsUsed, bytesUsed, postsLimit, bytesLimit };
+}
+
+/**
+ * Extract the refusal from an `IMPORT_REFUSED` 409 body, or undefined.
+ *
+ * A second parser beside {@link parseRefusalCode} rather than one widened
+ * parser: each early-returns on the wrong top-level `error`, so the two are
+ * mutually exclusive, independently testable, and neither can start carrying
+ * the other's fields by accident.
+ *
+ * - A known code → that code plus whatever `details` it legitimately carries.
+ * - A present but unknown code (or closed status) → `'unrecognized'`, so a
+ *   newer backend is visible as "refused for a reason this build doesn't
+ *   know". The server's own strings never escape this function.
+ * - No code at all → `undefined`, matching `parseRefusalCode`.
+ */
+function parseImportRefusal(rawBody?: string): ImportRefusal | undefined {
+  if (!rawBody) return undefined;
+  try {
+    const parsed = JSON.parse(rawBody);
+    if (parsed?.error !== 'IMPORT_REFUSED') return undefined;
+    const details: Record<string, unknown> | undefined =
+      parsed?.details !== null && typeof parsed?.details === 'object' ? parsed.details : undefined;
+    const rawCode: unknown = details?.code;
+    if (rawCode === undefined || rawCode === null) return undefined;
+
+    const code: ImportRefusalCode = isImportRefusalCode(rawCode) ? rawCode : 'unrecognized';
+    const refusal: {
+      -readonly [K in keyof ImportRefusal]: ImportRefusal[K];
+    } = { code };
+
+    if (code === 'IMPORT_CLOSED' && details?.status !== undefined) {
+      refusal.closedStatus = isImportClosedStatus(details.status) ? details.status : 'unrecognized';
+    }
+
+    const importId = details?.import_id;
+    if (typeof importId === 'string' && IMPORT_ID_RE.test(importId)) {
+      refusal.importId = importId;
+    }
+
+    const allowance = parseImportAllowance(details?.allowance);
+    if (allowance !== undefined) refusal.allowance = allowance;
+
+    const stagedBytes = finiteNumber(details?.staged_bytes);
+    if (stagedBytes !== undefined) refusal.stagedBytes = stagedBytes;
+    const projectedBytes = finiteNumber(details?.projected_bytes);
+    if (projectedBytes !== undefined) refusal.projectedBytes = projectedBytes;
+    const availableBytes = finiteNumber(details?.available_bytes);
+    if (availableBytes !== undefined) refusal.availableBytes = availableBytes;
+    const declaredBytes = finiteNumber(details?.declared_bytes);
+    if (declaredBytes !== undefined) refusal.declaredBytes = declaredBytes;
+    const sizeBytes = finiteNumber(details?.size_bytes);
+    if (sizeBytes !== undefined) refusal.sizeBytes = sizeBytes;
+
+    return refusal;
+  } catch {
+    // Malformed body — indistinguishable from a 409 with no details.
+    return undefined;
+  }
+}
+
 /**
  * Extract the refusal code from a 409 body.
  *
@@ -337,10 +545,22 @@ export class ConflictError extends ApiError {
    */
   readonly refusalCode: RewrapRefusalCode | undefined;
 
+  /**
+   * The parsed `details` of an `IMPORT_REFUSED` 409, or undefined on any other
+   * 409 (#926).
+   *
+   * Prod-retained for the same reason as {@link ConflictError.refusalCode}:
+   * the import runner's whole disposition table routes on it (resume that
+   * session / refuse the archive / park and retry / restart the session), and
+   * the member's own allowance numbers are what #928 puts on screen.
+   */
+  readonly importRefusal: ImportRefusal | undefined;
+
   constructor(rawBody?: string) {
     super('Conflict — action cannot be completed', 409, 'CONFLICT', false, rawBody);
     this.name = 'ConflictError';
     this.refusalCode = parseRefusalCode(rawBody);
+    this.importRefusal = parseImportRefusal(rawBody);
 
     // Parse blocking_orbits from the raw 409 response body (snake_case from server)
     let orbits: BlockingOrbit[] = [];
@@ -427,6 +647,88 @@ export class QuotaExceededError extends ApiError {
     super(quotaMessage(quota), 413, 'QUOTA_EXCEEDED', false, rawBody);
     this.name = 'QuotaExceededError';
     this.quota = quota;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 429 RATE_LIMITED — the server's own Retry-After (#926)
+// ---------------------------------------------------------------------------
+
+/**
+ * The one thing this layer needs from a response's headers.
+ *
+ * Structural on purpose: `Headers` satisfies it, a test satisfies it with
+ * `{ get: () => '5' }`, and no DOM lib type enters this module. The RNFS
+ * download transport has no headers to pass and passes none — a 429 there
+ * simply carries no `retryAfterMs`, which is the honest answer rather than an
+ * invented default.
+ */
+export interface HeaderReader {
+  get(name: string): string | null;
+}
+
+/** Never wait longer than 15 minutes on a server's say-so. */
+const MAX_RETRY_AFTER_MS = 900_000;
+
+/**
+ * Milliseconds to wait before retrying, from `Retry-After`, or undefined.
+ *
+ * Delta-seconds only. RFC 9110 also allows an HTTP-date, which we deliberately
+ * do NOT interpret: parsing it correctly needs a trustworthy local clock and a
+ * `Date` parse of a server-controlled string, and every Orbital limiter sends
+ * `standardHeaders: true`, i.e. delta-seconds. An unparsable value yields
+ * undefined and the caller falls back to its own schedule.
+ *
+ * `RateLimit-Reset` is the documented fallback — the same limiter emits it,
+ * also in seconds. Nothing from the header reaches a message or
+ * `serverMessage`: the result is a clamped number or nothing.
+ */
+function parseRetryAfterMs(headers?: HeaderReader): number | undefined {
+  if (headers === undefined) return undefined;
+
+  let raw: string | null;
+  try {
+    raw = headers.get('Retry-After') ?? headers.get('RateLimit-Reset');
+  } catch {
+    // A header bag that throws is a transport bug, not a rate-limit fact.
+    return undefined;
+  }
+  if (typeof raw !== 'string') return undefined;
+
+  const trimmed = raw.trim();
+  // Digits only: this rejects the HTTP-date form, '1e3', '5s' and '-5'
+  // before any Number() coercion can make something plausible of them.
+  if (!/^\d+$/.test(trimmed)) return undefined;
+
+  const seconds = Number(trimmed);
+  if (!Number.isFinite(seconds) || seconds < 0) return undefined;
+
+  return Math.min(Math.max(0, seconds * 1000), MAX_RETRY_AFTER_MS);
+}
+
+/**
+ * HTTP 429 — rate limited.
+ *
+ * A subclass rather than a `retryAfterMs` field on {@link ApiError}: the value
+ * is meaningful on exactly one status, and a base-class field would be
+ * readable (and read) on all of them.
+ *
+ * `statusCode`, `code` and `isRetryable` are unchanged from the plain
+ * `ApiError` this replaces, so every existing
+ * `e instanceof ApiError && e.code === 'RATE_LIMITED'` site keeps working.
+ *
+ * `retryAfterMs` is prod-retained: it is a number the server told us to wait,
+ * not server text. It is undefined when the header was absent, unparsable, or
+ * when the transport had no headers to offer.
+ */
+export class RateLimitError extends ApiError {
+  readonly retryAfterMs: number | undefined;
+
+  constructor(headers?: HeaderReader, serverMessage?: string) {
+    super('Rate limited — try again shortly', 429, 'RATE_LIMITED', true, serverMessage);
+    this.name = 'RateLimitError';
+    this.retryAfterMs = parseRetryAfterMs(headers);
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }

@@ -1963,6 +1963,38 @@ describe('ThreadDetailScreen — upload cache reuse', () => {
     expect(mockRollbackUploadedMedia).toHaveBeenCalledWith(['media-id-1']);
   });
 
+  // #926: a reply attached a media row reserved by a Meta import. The channel
+  // is an Alert, NOT `setError`: this screen's `error`/`setError` is the
+  // thread-LOAD channel, rendered only under `error && !thread`, so a reply
+  // failure routed there would show the member nothing.
+  it('alerts "Couldn\'t Attach" on an import-reserved 400 and never touches the load banner', async () => {
+    mockSelectedMedia = oneImage;
+    const copy = "Those photos can't be attached — select them again.";
+    mockPostReply.mockRejectedValue(
+      new ValidationError(
+        400,
+        JSON.stringify({ error: 'VALIDATION_ERROR', details: { code: 'MEDIA_IMPORT_RESERVED' } }),
+      ),
+    );
+
+    const renderer = await renderScreen();
+    await doSend(renderer);
+
+    expect(alertSpy).toHaveBeenCalledWith("Couldn't Attach", copy);
+    expect(alertSpy).not.toHaveBeenCalledWith(
+      'Reply Failed',
+      'Failed to send your reply. Please try again.',
+    );
+
+    // The load-error channel stays empty: nothing on screen renders the copy,
+    // so the Alert above is the only place the member sees it.
+    const rendered = renderer.root
+      .findAllByType('Text' as unknown as React.ComponentType)
+      .map((node) => node.props.children)
+      .filter((c): c is string => typeof c === 'string');
+    expect(rendered).not.toContain(copy);
+  });
+
   it('rolls nothing back on a successful send', async () => {
     mockSelectedMedia = oneImage;
     mockPostReply.mockResolvedValue({

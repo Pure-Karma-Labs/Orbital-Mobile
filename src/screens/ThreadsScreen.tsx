@@ -365,7 +365,9 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
 
   const handleThreadLongPress = useCallback(
     (threadId: string) => {
-      showMuteMenu(threadId, 'thread', threadsRef.current[threadId]?.title ?? 'Thread');
+      // `||`, not `??`: an imported (Meta) post can legitimately carry an
+      // empty title, which `??` passes straight through as the menu's label.
+      showMuteMenu(threadId, 'thread', threadsRef.current[threadId]?.title || 'Thread');
     },
     [showMuteMenu],
   );
@@ -422,7 +424,9 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
             <ThreadItem
               threadId={t.id}
               authorId={t.authorId}
-              title={t.title ?? '(no title)'}
+              // `||`, not `??`: an empty title would otherwise render a
+              // zero-height row title and the bare a11y label 'Thread: '.
+              title={t.title || '(no title)'}
               author={t.authorUsername}
               groupId={activeConversationId ?? null}
               time={formatShortTime(t.createdAt)}

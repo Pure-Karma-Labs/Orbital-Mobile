@@ -13,14 +13,17 @@ import {
   NetworkError,
   NotFoundError,
   QuotaExceededError,
+  RateLimitError,
   ServerError,
   ValidationError,
 } from './errors';
+import type { HeaderReader } from './errors';
 import { tokenManager } from './tokenManager';
 
 import { API_BASE_URL } from '../../config/env';
 
 export { API_BASE_URL };
+export type { HeaderReader };
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 
@@ -203,8 +206,18 @@ export async function handleUnauthorized(status: number): Promise<void> {
  * same MEDIA_EVICTED/EXPIRED discrimination from `rawBody` that fetch does,
  * because RNFS surfaces non-2xx bodies in `result.body` rather than writing
  * them to `toFile`.
+ *
+ * `headers` is optional because not every transport has them: the fetch path
+ * passes `response.headers`, the RNFS download path has none and passes
+ * nothing, so a 429 there carries no `retryAfterMs`. It is the only argument
+ * read from the response other than the status and the body, and only the
+ * 429 branch reads it.
  */
-export function mapHttpErrorToApiError(status: number, rawBody?: string): ApiError {
+export function mapHttpErrorToApiError(
+  status: number,
+  rawBody?: string,
+  headers?: HeaderReader,
+): ApiError {
   if (status === 401 || status === 403) {
     return new AuthError(status as 401 | 403, rawBody);
   }
@@ -224,7 +237,7 @@ export function mapHttpErrorToApiError(status: number, rawBody?: string): ApiErr
     return new ValidationError(status as 400 | 422, rawBody);
   }
   if (status === 429) {
-    return new ApiError('Rate limited — try again shortly', 429, 'RATE_LIMITED', true, rawBody);
+    return new RateLimitError(headers, rawBody);
   }
   if (status >= 500) {
     return new ServerError(status, rawBody);
@@ -318,6 +331,12 @@ export interface RequestOptions {
    * where each retry also spends a slot. Retrying is right for user-keyed
    * limiters with large buckets (media, content), where the backoff is the
    * difference between a transient hiccup and a visible failure.
+   *
+   * It is also false on every Meta-import route (#926), for a different
+   * reason: those buckets are large, but the import runner owns a single pause
+   * authority driven by `RateLimitError.retryAfterMs`. A second, hidden ladder
+   * inside the client would spend the member's remaining quota before the
+   * runner ever saw the 429.
    */
   retryOn429?: boolean;
 }
@@ -465,7 +484,7 @@ async function _executeRequest(options: RequestOptions): Promise<Response> {
     // Clear tokens on authentication failure (expired/invalid JWT), deduped.
     await handleUnauthorized(status);
 
-    throw mapHttpErrorToApiError(status, rawBody);
+    throw mapHttpErrorToApiError(status, rawBody, response.headers);
   }
 
   // Should not be reachable, but TypeScript requires a return

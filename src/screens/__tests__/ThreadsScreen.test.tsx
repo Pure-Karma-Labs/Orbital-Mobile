@@ -567,6 +567,49 @@ describe('ThreadsScreen — with thread data', () => {
     expect(alertSpy).not.toHaveBeenCalled();
     alertSpy.mockRestore();
   });
+
+  // -------------------------------------------------------------------------
+  // Empty titles (#926)
+  // -------------------------------------------------------------------------
+  //
+  // An imported (Meta) post can legitimately carry an empty title, and `??`
+  // passes `''` straight through: the row title collapses to zero height and
+  // the screen reader announces a bare 'Thread: '. Both call sites use `||`.
+
+  /** Re-point the threads mock at a single empty-titled thread. */
+  function renderWithEmptyTitle(): ReactTestRenderer {
+    const storesMock = jest.requireMock('../../stores') as { useThreads: jest.Mock };
+    const base = storesMock.useThreads() as {
+      threads: Record<string, Thread>;
+    } & Record<string, unknown>;
+    storesMock.useThreads.mockReturnValue({
+      ...base,
+      threads: { 'thread-1': { ...base.threads['thread-1'], title: '' } },
+    });
+    return renderThreadsScreen();
+  }
+
+  it('renders the (no title) fallback and a non-empty a11y label for an empty title', () => {
+    const renderer = renderWithEmptyTitle();
+
+    expect(threadRow(renderer).props.accessibilityLabel).toBe('Thread: (no title)');
+
+    const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
+    const titleNode = allText.find((node) => node.props.children === '(no title)');
+    expect(titleNode).toBeDefined();
+  });
+
+  it('opens the mute menu as "Thread" when the title is empty', () => {
+    const alertSpy = jest.spyOn(Alert, 'alert');
+    const renderer = renderWithEmptyTitle();
+
+    act(() => {
+      threadRow(renderer).props.onLongPress();
+    });
+
+    expect(alertSpy).toHaveBeenCalledWith('Thread', expect.any(String), expect.any(Array));
+    alertSpy.mockRestore();
+  });
 });
 
 describe('ThreadsScreen — focus lifecycle', () => {

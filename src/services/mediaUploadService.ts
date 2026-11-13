@@ -144,6 +144,25 @@ export interface UploadMediaOptions {
   onProgress?: (e: UploadProgressEvent) => void;
   /** AbortSignal for cancellation */
   signal?: AbortSignal;
+  /**
+   * Meta import (#924): THIS media item's own creation date, epoch ms UTC —
+   * `ParsedMedia.originalDate`, passed through by the #926 runner.
+   *
+   * Deliberately a different fact from `ImportMetaV1.originalCreatedAt`, which
+   * is the POST's date. A post's photos can predate the post by years, which is
+   * the whole reason both exist; #927's precedence is "a media item's own date
+   * wins, falling back to the thread date".
+   *
+   * `null`/`undefined` omit the envelope key entirely, so an ordinary upload's
+   * envelope stays byte-identical to what it was before #924. Additive: no `v`
+   * bump, and a thumbnail child does NOT inherit it (a poster frame generated
+   * on this device today has no original date).
+   *
+   * **Write-only in 1.7.8.** Every `decryptMediaMetadataEnvelope` caller picks
+   * a fixed field list, so this is decrypted and discarded. Carrying it into
+   * `MediaItem` or the media row is #927/#921 work.
+   */
+  importOriginalCreatedAt?: number | null;
   /** Internal: marks this upload as a thumbnail child (no thread/reply association) */
   _isThumbnail?: boolean;
   /** Internal: content class inherited from the parent upload (thumbnails inherit the parent's class) */
@@ -298,11 +317,27 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
     replyId,
     onProgress,
     signal,
+    importOriginalCreatedAt,
     _isThumbnail,
     _contentClass,
   } = options;
 
   let { mimeType, fileName, width, height, duration } = options;
+
+  // Meta import (#924): the item's own original date, when the archive stated
+  // one. Asserted HERE, before any work, rather than at the point of use —
+  // that sits past the transcode, the encrypt and the thumbnail child's own
+  // upload, so a bad value used to be discovered only after a video had been
+  // transcoded and a child row created on the server. Asserted rather than
+  // coerced: a non-integer would serialize into an append-only envelope that
+  // nothing can correct afterwards. `null`/`undefined` is not an error — it
+  // simply omits the field.
+  if (
+    options.importOriginalCreatedAt != null &&
+    !Number.isSafeInteger(options.importOriginalCreatedAt)
+  ) {
+    throw new Error('importOriginalCreatedAt must be a safe integer (epoch ms) when provided');
+  }
 
   const mediaId = generateUUID();
 
@@ -572,6 +607,12 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
       digest: digestBase64,
       attachmentKey: arrayBufferToBase64(toArrayBuffer(keys)),
     };
+
+    // Meta import (#924): the item's own original date, when the archive
+    // stated one. Already validated at the top of uploadMedia.
+    if (importOriginalCreatedAt != null) {
+      metadataObj.originalCreatedAt = importOriginalCreatedAt;
+    }
 
     // Video-specific envelope fields
     if (duration != null) {

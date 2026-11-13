@@ -276,7 +276,8 @@ All content is encrypted client-side before transmission. The server is zero-kno
 - Reply bodies (`encrypted_body` + IV)
 - Group names (`encrypted_name`)
 - Group keys (`encrypted_group_key` — per-member copy)
-- Media metadata (`encrypted_metadata` — contains filename, type, dimensions)
+- Media metadata (`encrypted_metadata` — contains filename, type, dimensions; for imported media it also carries a per-image `originalCreatedAt`, the photo's own original date in epoch milliseconds, which 1.7.8 writes but does not read back — the decryptor's fixed field list discards it until #927/#921 carry it into `MediaItem`)
+- Import metadata for Meta-archive posts (`encrypted_import_meta` + `import_meta_iv` — the envelope `{v: 1, source, originalCreatedAt}`, where `source` is `facebook` or `instagram` and `originalCreatedAt` is the original POST date in epoch milliseconds UTC; AES-GCM under the orbit's group key with the groupId as AAD, exactly like thread content. Backend migration 046 requires the ciphertext and IV to be null or non-null together.)
 - Signal message envelopes (`encrypted_envelope` — protobuf)
 
 **Encryption scheme for thread content:** AES-GCM with per-field IVs (64-char hex), using the group key.

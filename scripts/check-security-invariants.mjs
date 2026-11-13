@@ -5406,6 +5406,428 @@ if (!arImporterSeen) {
 }
 
 // ---------------------------------------------------------------------------
+// 30. import-kdf-call-sites (#924)
+// ---------------------------------------------------------------------------
+
+// There is no HKDF and no HMAC in this app's TypeScript. Both primitives are
+// the Rust uniffi exports from #917, and the ONLY module allowed to name them
+// is `src/services/crypto/importCrypto.ts`, which owns the Meta-import
+// derivation:
+//
+//   K_import   = hkdfSha256(group_key, "orbital-meta-import-v1", lower(userId), 32)
+//   import_key = hmacSha256(K_import, utf8(source) ‖ 0x00 ‖ sourceItemId)[0..16]
+//
+// Two different failures are being prevented, and they need different clauses.
+//
+//   (a) A SECOND call site. `import_key` is a dedup token whose cross-member
+//       unlinkability rests entirely on `info` being the member's own userId
+//       and on `salt` being this one protocol string. A second derivation
+//       somewhere in src/ — with a different salt, a different info, or the
+//       same salt under a different group key — silently re-partitions the
+//       dedup space, and nothing downstream can tell. The blast radius of a
+//       salt change is a full re-import for every member (see the kdf.rs
+//       rotation section), so the salt gets its own exactly-once clause rather
+//       than riding along with the identifiers.
+//
+//   (b) A SECOND IMPLEMENTATION. The far likelier drift is not calling the
+//       Rust export twice: it is someone reaching for `node:crypto`,
+//       `@noble/hashes` or `crypto-js` because the uniffi call is awkward in a
+//       test, a script, or a Hermes-hostile corner. Those packages are not
+//       available on Hermes at all (`node:crypto`) or ship their own
+//       unaudited field arithmetic, and either way the result would be a
+//       second, unreviewed KDF path producing tokens the Rust KAT does not
+//       pin. So the module specifiers AND the bare identifiers are both
+//       banned, in source that is not a test.
+//
+// Modelled on 29.8.8, with its four structural pieces kept intact: multi-root
+// walk (`src/` plus every `packages/*/src`), `meStripComments` so a mention in
+// prose is never a call site, per-exemption hit counting so a pattern that
+// matches nothing is itself a violation, and a MEASURED file-count floor so an
+// over-broad exemption cannot quietly empty the scan.
+//
+// Two deliberate departures from 29.8.8, both about strings:
+//
+//   * Identifier clauses (30.2, 30.4-identifiers) run on text with the
+//     contents of '…' and "…" blanked as well, because `'hkdfSha256'` inside a
+//     string is a name, not a call — a logging key or an error message must
+//     not fail this rule. Backticks are tracked but NOT blanked: a template
+//     literal can contain `${hkdfSha256(x)}`, which IS a call, and
+//     over-reporting a name in a template is the safer side of that trade.
+//     A quote left open at end of line (an apostrophe in JSX text, a `/['"]/`
+//     character class, a template opened on an earlier line) falls back to
+//     the unblanked line rather than blanking the remainder — see
+//     `ikBlankQuoted`, and rows N5/N6/N7 below.
+//   * Specifier clauses (30.3 salt, 30.4-modules) run on comment-stripped text
+//     with strings INTACT, because what they are looking for is a string
+//     literal.
+//
+// The generated bindings are exempt by exact path (they declare the exports),
+// and so are test paths. The package barrel
+// `packages/orbital-signal/src/index.tsx` is NOT exempt and does not need to
+// be: it re-exports with `export *` and never names either function.
+//
+// MUTATION MATRIX — re-run in full 2026-11-12 against this rule, from the
+// worktree, one row at a time (sha256 before, mutate,
+// `node scripts/check-security-invariants.mjs`, restore, sha256 matches,
+// `git status --porcelain` clean). Recorded here verbatim
+// because the harness that would run it automatically is NOT in scope for
+// #924; it stays registry item DEBT-360 (a committed invariant mutation
+// harness), so this block is the only record that these clauses bite.
+//
+// Verdicts are what the run PRINTED, not what it was expected to print; the
+// count is the number of this rule's violations the row produced.
+//
+//   M1   `export function hkdfSha256(` renamed in the generated
+//        bindings                                            RED  30.1          (1)
+//   M2   `export function hmacSha256(` renamed in the generated
+//        bindings                                            RED  30.1          (1)
+//   M3   `import { hmacSha256 } from 'orbital-signal'` appended
+//        to src/services/metaImport/parseArchive.ts          RED  30.2          (1)
+//   M4   an `hkdfSha256(...)` call in src/utils/uuid.ts      RED  30.2          (1)
+//   M4b  an `hkdfSha256(...)` call in
+//        packages/orbital-signal/src/NativeOrbitalSignal.ts  RED  30.2          (1)
+//   M5   both names renamed away inside importCrypto.ts      RED  30.2 vacuity  (2)
+//   M6   importCrypto.ts deleted                             RED  30.0 + 30.3   (2)
+//   M7   a second copy of the salt literal in another file   RED  30.3          (2)
+//   M8   the salt bumped to …-v2 in importCrypto.ts          RED  30.3          (1)
+//   M9   `import { createHmac } from 'crypto'`               RED  30.4a + 30.4b (2)
+//   M10  a bare `createHmac(...)` call                       RED  30.4b         (1)
+//   M11  `import { hkdfSync } from 'node:crypto'`            RED  30.4a + 30.4b (2)
+//   M12  a dead exemption pattern (`__mocks__/`, which in
+//        this repo lives at the root, outside every root)    RED  exempt-hits   (1)
+//   M13  the stale clause rewritten in the real kdf.rs       RED  30.5          (1)
+//   M14  an apostrophe-bearing template literal holding a
+//        real `${hkdfSha256(a, b, c, 32)}` call              RED  30.2          (1)
+//   M15  a `/['"]/` character class and an `hkdfSha256(...)`
+//        call on the SAME line                               RED  30.2          (1)
+//   N1   both names in a `//` comment in another src/ file   GREEN
+//   N2   the real importCrypto.kat.test.ts, which legitimately uses
+//        `hkdfSync`, `createHmac` and the salt, untouched    GREEN  (the baseline run)
+//   N3   `globalThis.…crypto.getRandomValues` in a src/ file GREEN
+//   N4   `'hkdfSha256'` and `"hmacSha256"` as string values  GREEN
+//   N5   an apostrophe in JSX prose, with no banned call on
+//        the line (the fallback must not invent one)         GREEN
+//
+// M14 and M15 are the rows the quote-blanker used to miss. Run against the
+// PREVIOUS `ikBlankQuoted`, both came back GREEN: the apostrophe and the `'`
+// of the character class each opened a quote that never closed, and
+// everything after it on the line — the call included — was blanked away.
+// They are RED only because the blanker now tracks backticks and falls back
+// to the unblanked line when a quote is still open at end of line. N5 is
+// their counterweight: that fallback must not start reporting lines whose
+// only sin is an apostrophe.
+//
+// Two further results worth keeping. M1/M2 do NOT also trip 30.2: the generated file
+// is exempt from the scan and importCrypto.ts still names the now-undeclared
+// export, which is exactly the vacuity 30.1 exists to cover — without it the
+// rule would have gone on pinning a dead name. And M13 was run against the
+// REAL `src/kdf.rs`, not a scratch copy, then restored: the file is
+// byte-identical afterwards (sha256 da735816…3cbb4 before and after), which
+// matters because `scripts/rust-input-digest.sh` hashes that directory and any
+// change there condemns every built xcframework.
+
+const IK_RULE = 'import-kdf-call-sites';
+const IK_ISSUE = '#924';
+const IK_MODULE = join(SRC, 'services', 'crypto', 'importCrypto.ts');
+const IK_GENERATED = join('packages', 'orbital-signal', 'src', 'generated', 'orbital_signal.ts');
+const IK_RUST = join('packages', 'orbital-signal', 'rust', 'orbital_signal');
+const IK_KDF_RS = join(IK_RUST, 'src', 'kdf.rs');
+const IK_KAT_RS = join(IK_RUST, 'tests', 'kdf_kat_tests.rs');
+const IK_SALT = 'orbital-meta-import-v1';
+const IK_PRIMITIVES = ['hkdfSha256', 'hmacSha256'];
+const IK_STALE_CLAUSE = '#924 owns its internal length-prefixed encoding';
+
+function ikViolation(file, detail) {
+  violations.push(`  ${relative('.', file)}:0  [${IK_RULE}]  ${detail} (${IK_ISSUE})`);
+}
+
+/**
+ * Blank the CONTENTS of '…' and "…" literals, preserving quotes and line
+ * length so reported line numbers stay true. Input is expected to be
+ * `meStripComments` output.
+ *
+ * Backtick templates are TRACKED but not blanked. Tracked because an
+ * apostrophe inside one (`` `the member's archive ${hkdfSha256(x)}` ``) would
+ * otherwise open a quote that never closes and blank the rest of the line,
+ * hiding a real call — the same way `meStripComments` tracks backticks so a
+ * `//` inside a template is not read as a comment. Not blanked because
+ * `${hkdfSha256(x)}` IS a call site, and over-reporting a bare name inside a
+ * template is the safer side of that trade.
+ *
+ * A quote still open at end of line means this line is not what it looks
+ * like: an apostrophe in JSX text, a regex character class such as `/['"]/`,
+ * or a template opened on an earlier line. Blanking from the opener onwards
+ * would silently drop everything after it, so the line is handed back
+ * UNBLANKED instead. That fails toward reporting: the worst case is a name
+ * inside a string being flagged, which a reviewer can see and exempt, against
+ * a missed second call site, which nobody sees at all.
+ */
+function ikBlankQuoted(text) {
+  return text
+    .split('\n')
+    .map((line) => {
+      let out = '';
+      let quote = null;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (quote !== null) {
+          if (ch === '\\') {
+            // Two characters consumed, two emitted — unless the backslash is
+            // the last character on the line, where only one exists. Inside a
+            // template the characters are kept; inside '…'/"…" they blank.
+            const run = i + 1 < line.length ? 2 : 1;
+            out += quote === '`' ? line.slice(i, i + run) : ' '.repeat(run);
+            i += 1;
+            continue;
+          }
+          if (ch === quote) {
+            out += ch;
+            quote = null;
+            continue;
+          }
+          out += quote === '`' ? ch : ' ';
+          continue;
+        }
+        if (ch === "'" || ch === '"' || ch === '`') {
+          quote = ch;
+          out += ch;
+          continue;
+        }
+        out += ch;
+      }
+      return quote === null ? out : line;
+    })
+    .join('\n');
+}
+
+// --- 30.0 The module that owns the derivation must exist.
+//
+// Deleting the subject of a pin must FAIL the rule, not satisfy it by leaving
+// nothing to check.
+const ikModuleRaw = meRead(
+  IK_MODULE,
+  IK_RULE,
+  'the single permitted HKDF/HMAC call site for the Meta import',
+  IK_ISSUE,
+);
+
+// --- 30.1 The generated bindings must still export both primitives.
+//
+// The non-vacuity floor for 30.2: if ubrn regenerates without these exports
+// (an upstream rename, a dropped uniffi export, a hand-edited binding), the
+// "appears only in importCrypto.ts" clause would pass over a dead name while
+// the app no longer has a KDF at all. Matched as the generated DECLARATION,
+// not as a bare mention.
+const ikGeneratedRaw = meRead(
+  IK_GENERATED,
+  IK_RULE,
+  'the generated uniffi bindings that declare hkdfSha256/hmacSha256',
+  IK_ISSUE,
+);
+if (ikGeneratedRaw !== null) {
+  for (const name of IK_PRIMITIVES) {
+    if (!new RegExp(String.raw`export function ${name}\b`).test(ikGeneratedRaw)) {
+      ikViolation(
+        IK_GENERATED,
+        `the generated bindings no longer export \`${name}\` — rule 30.2 would then pin a name nothing declares, and the Meta-import derivation has no primitive. Regenerate the bindings from \`${join(IK_RUST, 'src', 'kdf.rs')}\`, or if the export was deliberately removed, follow that file's removal trigger and take this whole rule with it`,
+      );
+    }
+  }
+}
+
+const IK_EXEMPT = [
+  '__tests__/',
+  '.test.ts',
+  '.test.tsx',
+  // The generated bindings declare the exports; they are the floor 30.1 reads,
+  // not a call site. Named as an exact path so a future `generated/` elsewhere
+  // does not inherit the exemption.
+  'packages/orbital-signal/src/generated/orbital_signal.ts',
+];
+
+// A measured floor, as in 29.8.8: 307 files on 2026-11-12 across `src/` and
+// the four package `src/` trees, set ~15% below. Tripping it means re-measure;
+// if the shrink is a real deletion, move the floor in that same commit.
+//
+// TWIN: `MI_DECODER_FLOOR` counts the same tree for 24b's scan and moves for
+// the same reasons — keep the two in step. A THIRD copy of this
+// roots/exemptions/floor harness means extracting a shared helper instead of
+// cloning it again (registry item DEBT-360's neighbour).
+const IK_SCAN_FLOOR = 260;
+
+const ikRoots = [SRC];
+for (const entry of readdirSync('packages')) {
+  const packageSrc = join('packages', entry, 'src');
+  try {
+    if (statSync(packageSrc).isDirectory()) ikRoots.push(packageSrc);
+  } catch {
+    // A package without a `src/` directory: nothing to scan.
+  }
+}
+
+const ikExemptHits = new Map(IK_EXEMPT.map((pattern) => [pattern, 0]));
+const IK_BANNED_IDENT_RE = /\b(createHmac|hkdfSync|hkdfExtract|hkdfExpand|pbkdf2Sync)\b/;
+// `crypto.getRandomValues` on the global stays legal and must not match: these
+// shapes all require a quoted module specifier.
+const IK_SPEC_HEAD = String.raw`(?:\bfrom\s*|\brequire\s*\(\s*|\bimport\s*\(\s*|\bimport\s*)`;
+const IK_BANNED_MODULES = String.raw`(?:node:)?crypto|crypto-js(?:/[^'"]*)?|js-sha256(?:/[^'"]*)?|hash\.js(?:/[^'"]*)?|@noble/hashes(?:/[^'"]*)?`;
+const IK_BANNED_SPEC_RE = new RegExp(`${IK_SPEC_HEAD}['"](?:${IK_BANNED_MODULES})['"]`);
+
+let ikScanned = 0;
+const ikModuleRefs = new Map(IK_PRIMITIVES.map((name) => [name, 0]));
+const ikSaltSites = [];
+
+for (const root of ikRoots) {
+  for (const file of walkSync(root, ['.ts', '.tsx'])) {
+    const rel = relative('.', file);
+    if (rel.includes('node_modules')) continue;
+    const matched = IK_EXEMPT.filter((pattern) => rel.includes(pattern));
+    if (matched.length > 0) {
+      for (const pattern of matched) ikExemptHits.set(pattern, ikExemptHits.get(pattern) + 1);
+      continue;
+    }
+    ikScanned++;
+
+    const isOwner = rel === relative('.', IK_MODULE);
+    const stripped = meStripComments(readFileSync(file, 'utf8'));
+    const strippedLines = stripped.split('\n');
+    const codeLines = ikBlankQuoted(stripped).split('\n');
+
+    for (let i = 0; i < codeLines.length; i++) {
+      const code = codeLines[i];
+      const text = strippedLines[i];
+
+      // --- 30.2 Both primitives, only in importCrypto.ts.
+      for (const name of IK_PRIMITIVES) {
+        if (!new RegExp(String.raw`\b${name}\b`).test(code)) continue;
+        if (isOwner) {
+          ikModuleRefs.set(name, ikModuleRefs.get(name) + 1);
+          continue;
+        }
+        report(
+          file,
+          i + 1,
+          IK_RULE,
+          `\`${name}\` outside ${relative('.', IK_MODULE)} — a second KDF call site re-partitions the import dedup space (its salt and per-member \`info\` are what make \`import_key\` unlinkable) and is pinned by no KAT: ${text.trim()} (${IK_ISSUE})`,
+        );
+      }
+
+      // --- 30.4a No second HMAC/HKDF implementation, by module specifier.
+      if (IK_BANNED_SPEC_RE.test(text)) {
+        report(
+          file,
+          i + 1,
+          IK_RULE,
+          `imports a JavaScript crypto implementation — \`node:crypto\` does not exist on Hermes and the userland hash packages ship unaudited primitives this repo has never reviewed; the only HKDF/HMAC is the Rust uniffi export used by ${relative('.', IK_MODULE)}: ${text.trim()} (${IK_ISSUE})`,
+        );
+      }
+
+      // --- 30.4b ...and by bare identifier, for the destructured/global form.
+      const bannedIdent = IK_BANNED_IDENT_RE.exec(code);
+      if (bannedIdent !== null) {
+        report(
+          file,
+          i + 1,
+          IK_RULE,
+          `uses \`${bannedIdent[1]}\` — a second KDF/MAC implementation outside the audited Rust path; derive through ${relative('.', IK_MODULE)} instead: ${text.trim()} (${IK_ISSUE})`,
+        );
+      }
+
+      // --- 30.3 (collection) The protocol salt, spelled once.
+      let from = text.indexOf(IK_SALT);
+      while (from !== -1) {
+        ikSaltSites.push({ file, line: i + 1 });
+        from = text.indexOf(IK_SALT, from + IK_SALT.length);
+      }
+    }
+  }
+}
+
+// --- 30.2 (non-vacuity) The owner must still call both primitives.
+if (ikModuleRaw !== null) {
+  for (const name of IK_PRIMITIVES) {
+    if (ikModuleRefs.get(name) === 0) {
+      ikViolation(
+        IK_MODULE,
+        `the one permitted call site no longer references \`${name}\` — either the derivation moved (which is what this rule exists to catch) or it is now implemented some other way, and in both shapes the "only here" clause passes vacuously`,
+      );
+    }
+  }
+}
+
+// --- 30.3 The protocol salt appears exactly once, in importCrypto.ts.
+//
+// Bumping it is a one-line change by design (#917 §0), and that is precisely
+// why a SECOND copy is dangerous: two spellings drift, and the half that lags
+// derives keys nothing can re-derive, because only the 16-byte MAC is stored.
+if (ikSaltSites.length === 0) {
+  ikViolation(
+    IK_MODULE,
+    `the import salt \`${IK_SALT}\` appears in no scanned non-test source — the derivation's domain separator has moved or been inlined somewhere this rule cannot see`,
+  );
+} else if (ikSaltSites.length > 1) {
+  for (const site of ikSaltSites) {
+    report(
+      site.file,
+      site.line,
+      IK_RULE,
+      `the import salt \`${IK_SALT}\` is spelled in ${ikSaltSites.length} places; it must appear exactly once, in ${relative('.', IK_MODULE)}, because a second copy drifts on the next version bump and silently re-derives every \`import_key\` (${IK_ISSUE})`,
+    );
+  }
+} else if (relative('.', ikSaltSites[0].file) !== relative('.', IK_MODULE)) {
+  report(
+    ikSaltSites[0].file,
+    ikSaltSites[0].line,
+    IK_RULE,
+    `the import salt \`${IK_SALT}\` is spelled here instead of in ${relative('.', IK_MODULE)} — the salt belongs with the single derivation it separates (${IK_ISSUE})`,
+  );
+}
+
+if (ikScanned < IK_SCAN_FLOOR) {
+  violations.push(
+    `  ${SRC}:0  [${IK_RULE}]  the import-KDF scan examined ${ikScanned} files, below the floor of ${IK_SCAN_FLOOR} — its roots or exemptions are wrong (an over-broad pattern empties the scan while leaving it non-zero) and the rule is passing over source it is supposed to read. Re-measure; if the shrink is a real, deliberate deletion, move IK_SCAN_FLOOR in the same commit (${IK_ISSUE})`,
+  );
+}
+for (const [pattern, hits] of ikExemptHits) {
+  if (hits === 0) {
+    violations.push(
+      `  ${SRC}:0  [${IK_RULE}]  the import-KDF exemption \`${pattern}\` matched ZERO scanned paths — it is a typo or a directory that has moved, and it reads as coverage that does not exist. Delete it, or fix it to match where those files actually live (${IK_ISSUE})`,
+    );
+  }
+}
+
+// --- 30.5 Stale-text detector on kdf.rs.
+//
+// `src/kdf.rs` says `source_item_id` is framed by #924. That is wrong — #925
+// owns the framing — and it is deliberately NOT corrected, because
+// `scripts/rust-input-digest.sh` hashes that directory, so a prose fix
+// condemns every built xcframework and forces a Rust rebuild on every machine.
+// The correction is therefore parked, and this clause is the tripwire that
+// fires the day someone makes a REAL kdf.rs change and can fold it in for
+// free. Failing here is good news, not a defect: apply the text and delete
+// this clause.
+const ikKdfRaw = meRead(
+  IK_KDF_RS,
+  IK_RULE,
+  'the Rust module whose stale framing-ownership clause this rule tracks',
+  IK_ISSUE,
+);
+//
+// Matched against the comment markers stripped and whitespace collapsed,
+// because the clause is WRAPPED across two `//!` lines in the real file and a
+// literal `includes` would then "detect" a removal that never happened. A
+// pure re-wrap keeps the rule green, which is right: the prose is still
+// stale.
+const ikKdfFlat =
+  ikKdfRaw === null ? '' : ikKdfRaw.replace(/^[ \t]*\/\/[!/]?[ \t]?/gm, '').replace(/\s+/g, ' ');
+if (ikKdfRaw !== null && !ikKdfFlat.includes(IK_STALE_CLAUSE)) {
+  ikViolation(
+    IK_KDF_RS,
+    `the stale clause "${IK_STALE_CLAUSE}" is gone, so kdf.rs has been edited and the native digest has already moved — fold the correction in now, in this same commit, while the rebuild is already paid for. The two replacement texts have ONE home: the \`orbital_import_kat\` doc comment in ${relative('.', IK_KAT_RS)}, section "Fold-forward for the next real src/kdf.rs change" (kdf.rs lines 7-8, and the removal trigger at lines 56-64). Then DELETE the copies that only existed to park it: that fold-forward section in ${relative('.', IK_KAT_RS)}, this clause 30.5 (its constant, its meRead and this message), and the pointer to it in the ${relative('.', IK_MODULE)} module header`,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------
 

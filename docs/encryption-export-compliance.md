@@ -23,7 +23,7 @@ Eligibility basis:
 |---|---|---|---|
 | AES-256-GCM | Content encryption (threads, replies, group names) | `aes-gcm` 0.11 (Rust) | `packages/orbital-signal/rust/orbital_signal/src/content_crypto.rs`, `src/services/crypto/contentCrypto.ts` |
 | AES-256-CBC + HMAC-SHA256 | Attachment encryption (media, avatars) | `aes` 0.8, `hmac` 0.12 (Rust) | `packages/orbital-signal/rust/orbital_signal/src/attachment_crypto.rs`, `src/services/crypto/attachmentCrypto.ts` |
-| HMAC-SHA256 | Import dedup key derivation (Meta archive items) | `hmac` 0.12 (Rust) | `packages/orbital-signal/rust/orbital_signal/src/kdf.rs` |
+| HMAC-SHA256 | Import dedup key derivation (Meta archive items) | `hmac` 0.12 (Rust) | `packages/orbital-signal/rust/orbital_signal/src/kdf.rs`, `src/services/crypto/importCrypto.ts` |
 | X25519 ECDH | ECIES key agreement for group key wrapping | `x25519-dalek` 3.0 (Rust) | `packages/orbital-signal/rust/orbital_signal/src/ecies.rs` |
 | XEdDSA (Ed25519) | Sender authentication in ECIES envelopes | `curve25519-dalek` 5.0 (Rust, stock crates.io since libsignal v0.99.1; unchanged through v0.106.1; previously Signal's `signal-curve25519-4.1.3` fork) | `packages/orbital-signal/rust/orbital_signal/src/ecies.rs` |
 | HKDF-SHA256 | Key derivation with domain separation | `hkdf` 0.12 (Rust) | `packages/orbital-signal/rust/orbital_signal/src/ecies.rs`, `.../src/invite_crypto.rs`, `.../src/kdf.rs` |

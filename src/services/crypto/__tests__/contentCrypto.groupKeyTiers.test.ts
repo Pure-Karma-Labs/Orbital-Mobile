@@ -52,6 +52,7 @@ import { getGroupMasterKey } from '../../../database/repositories/conversationRe
 import { getGroupKey } from '../../api/groups';
 import { recoverDeadEnvelope, resetGroupKeyRecoveryState } from '../groupKeyRecovery';
 import {
+  compareGroupKeyPin,
   getOrFetchGroupKey,
   clearGroupKeyCache,
   clearContentCryptoInflight,
@@ -580,5 +581,81 @@ describe('pending-wrap bound', () => {
     clearContentCryptoInflight();
 
     expect(pendingWrapMirror()).toEqual({});
+  });
+});
+
+// ---------------------------------------------------------------------------
+// compareGroupKeyPin (#924)
+// ---------------------------------------------------------------------------
+
+/**
+ * The import run's "is this still the key I started under?" question. It is a
+ * VERDICT export, not a key export: #924 pins a copy at the start of a run and
+ * asks here once per batch, so the live bytes never have to leave this module.
+ */
+describe('compareGroupKeyPin', () => {
+  const PIN = new Uint8Array(32).fill(0x42);
+
+  it('matches against the in-memory cache tier', () => {
+    setCachedGroupKey(GROUP, new Uint8Array(32).fill(0x42));
+
+    expect(compareGroupKeyPin(GROUP, PIN)).toBe('match');
+  });
+
+  it('reports a change when the cached key differs', () => {
+    setCachedGroupKey(GROUP, new Uint8Array(32).fill(0x17));
+
+    expect(compareGroupKeyPin(GROUP, PIN)).toBe('changed');
+  });
+
+  it('falls through to the persisted tier when the cache is empty', () => {
+    (getGroupMasterKey as jest.Mock).mockReturnValue(new Uint8Array(32).fill(0x42));
+
+    expect(compareGroupKeyPin(GROUP, PIN)).toBe('match');
+    expect(getGroupMasterKey).toHaveBeenCalledWith(GROUP);
+  });
+
+  it('reports a change from the persisted tier too', () => {
+    (getGroupMasterKey as jest.Mock).mockReturnValue(new Uint8Array(32).fill(0x17));
+
+    expect(compareGroupKeyPin(GROUP, PIN)).toBe('changed');
+  });
+
+  it('prefers the cache over the persisted row', () => {
+    setCachedGroupKey(GROUP, new Uint8Array(32).fill(0x42));
+    (getGroupMasterKey as jest.Mock).mockReturnValue(new Uint8Array(32).fill(0x17));
+
+    expect(compareGroupKeyPin(GROUP, PIN)).toBe('match');
+    expect(getGroupMasterKey).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['no key anywhere', () => null],
+    ['a database failure', () => { throw new Error('db closed'); }],
+    ['a short persisted blob', () => new Uint8Array(16)],
+  ])('answers absent for %s, rather than guessing', (_label, impl) => {
+    (getGroupMasterKey as jest.Mock).mockImplementation(impl);
+
+    // 'absent' means "this device cannot answer right now". The caller decides
+    // whether a network refetch is worth it; this never reaches the API tier.
+    expect(compareGroupKeyPin(GROUP, PIN)).toBe('absent');
+    expect(getGroupKey).not.toHaveBeenCalled();
+  });
+
+  it('does not reach into another group', () => {
+    setCachedGroupKey('group-2', new Uint8Array(32).fill(0x42));
+
+    expect(compareGroupKeyPin(GROUP, PIN)).toBe('absent');
+  });
+
+  it('mutates neither operand', () => {
+    const cached = new Uint8Array(32).fill(0x42);
+    setCachedGroupKey(GROUP, cached);
+    const candidate = new Uint8Array(32).fill(0x42);
+
+    compareGroupKeyPin(GROUP, candidate);
+
+    expect(Array.from(cached)).toEqual(Array.from(new Uint8Array(32).fill(0x42)));
+    expect(Array.from(candidate)).toEqual(Array.from(new Uint8Array(32).fill(0x42)));
   });
 });

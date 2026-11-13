@@ -262,6 +262,26 @@ FRAME_GOLDENS = [
         "frame": lambda: frame_platform("17912345678901234"),
         "hex": "0102000000113137393132333435363738393031323334",
     },
+    {
+        # The one golden where the two sort orders DISAGREE, and therefore the
+        # only one that actually checks the media sort rather than the layout.
+        # U+FFFD encodes as EF BF BD and U+10000 as F0 90 80 80, so UTF-8 byte
+        # order puts U+FFFD first; UTF-16 code-unit order compares the lead
+        # surrogate D800 against FFFD and puts U+10000 first. Python's
+        # sorted() over bytes IS byte order; the TS side hand-rolls it
+        # (sortBasenamesUtf8), because JS's default sort is the UTF-16 one.
+        # Without this entry both framers could agree on UTF-16 order and the
+        # cross-layer vector would still mint cleanly.
+        "name": "sourceItemId.test.ts — UTF-8 byte order, not UTF-16 order",
+        "frame": lambda: frame_content(
+            1600000004,
+            "",
+            None,
+            ["\U00010000.jpg", "�.jpg"],
+        ),
+        "hex": "0101000000005f5e10040000000000000000000000020000000"
+        "7efbfbd2e6a706700000008f09080802e6a7067",
+    },
 ]
 
 

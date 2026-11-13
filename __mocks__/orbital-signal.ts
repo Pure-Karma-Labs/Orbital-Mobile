@@ -209,11 +209,17 @@ const HKDF_MAX_OUTPUT_LEN = 255 * 32;
  * the encodeUTF8-truncation bug class #373 guards against. Both would ship
  * green and fail on device.
  *
- * `outputLen` is normalised through ToUint32 first, because uniffi lowers it
- * as a u32: Rust never sees the JS number, it sees the lift, so `-1` is
- * reported as 4294967295 and `32.5` is accepted as 32. The range check comes
- * before the emptiness checks for the reason kdf.rs gives — a lifted
- * u32::MAX must never reach an allocation.
+ * `outputLen` is normalised through ToUint32 first, because Rust never sees
+ * the JS number — it sees uniffi's lowering, which is a
+ * `static_cast<uint32_t>` of the double. That cast truncates a non-integer
+ * (`32.5` arrives as 32) and is implementation-defined when the value is out
+ * of a u32's range: on arm64 `-1` saturates to 0, elsewhere it may wrap. The
+ * exact out-of-range value is therefore not something this stub can promise,
+ * and it does not matter — every such value is outside `1..=8160` and Rust
+ * rejects it. ToUint32 is the closest single rule in JS, so the stub refuses
+ * exactly the arguments the real call refuses. The range check comes before
+ * the emptiness checks for the reason kdf.rs gives: a huge lifted length must
+ * never reach an allocation.
  *
  * Validation only: valid calls fall through to `mixStub` with its bytes
  * unchanged, which is what #924's distinctness tests depend on.

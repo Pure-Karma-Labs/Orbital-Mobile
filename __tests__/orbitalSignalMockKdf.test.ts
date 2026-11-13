@@ -56,9 +56,13 @@ describe('__mocks__/orbital-signal hkdfSha256 stub', () => {
       );
     });
 
-    it('rejects a negative outputLen, reporting the u32 it lifts to', () => {
-      // uniffi lowers outputLen as a u32, so Rust never sees -1: it sees
-      // ToUint32(-1) = u32::MAX, which is the value it names in the error.
+    it('rejects a negative outputLen', () => {
+      // Rust never sees -1: uniffi lowers outputLen with a
+      // `static_cast<uint32_t>` of the double, which is implementation-defined
+      // out of range (arm64 saturates to 0). What IS guaranteed is that every
+      // such value lands outside 1..=8160 and is refused, so the assertion is
+      // on the refusal; the number in the message is the stub's own ToUint32,
+      // the closest single rule JS has.
       expect(() => hkdfSha256(IKM, SALT, INFO, -1)).toThrow(
         'hkdf_sha256: output_len must be between 1 and 8160, got 4294967295',
       );
@@ -107,7 +111,7 @@ describe('__mocks__/orbital-signal hkdfSha256 stub', () => {
       );
     });
 
-    it('reports output_len before an empty salt or info, even for a lifted u32::MAX', () => {
+    it('reports output_len before an empty salt or info, even for an out-of-range length', () => {
       expect(() => hkdfSha256(EMPTY, EMPTY, EMPTY, -1)).toThrow(
         'hkdf_sha256: output_len must be between 1 and 8160, got 4294967295',
       );
@@ -131,10 +135,13 @@ describe('__mocks__/orbital-signal hkdfSha256 stub', () => {
     });
 
     it('depends on ikm, salt and info independently', () => {
-      // The alternates differ in low-order bits, like #924's real inputs: the
-      // stub is a 32-bit FNV mix and only the low byte of its state reaches
-      // the output, so it is a distinctness aid, not a hash. Real expected
-      // values come from the Rust `orbital_import_kat` fixture.
+      // The alternates differ in low-order bits, like #924's real inputs. The
+      // stub is a 32-bit FNV mix whose output byte is the HIGH byte of the
+      // state: with the low byte it had 8 bits of distinctness in total, and
+      // with the high byte 20,000 distinct inputs give 20,000 distinct 16-byte
+      // outputs (see the mixStub docblock). It is still a distinctness aid and
+      // not a hash — real expected values come from the Rust
+      // `orbital_import_kat` fixture.
       const base = bytes(hkdfSha256(IKM, SALT, INFO, 32));
       expect(bytes(hkdfSha256(buf(32, 0x12), SALT, INFO, 32))).not.toEqual(base);
       expect(bytes(hkdfSha256(IKM, buf(22, 0x23), INFO, 32))).not.toEqual(base);

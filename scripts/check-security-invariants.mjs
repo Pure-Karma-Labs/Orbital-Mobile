@@ -6034,6 +6034,57 @@ let ikScanned = 0;
 const ikModuleRefs = new Map(IK_PRIMITIVES.map((name) => [name, 0]));
 const ikSaltSites = [];
 
+// --- 30.6 setup: the Meta-import image ceiling constants (#918).
+//
+// FOLDED INTO THIS WALK, not cloned. The roots/exemptions/floor harness above
+// already reads exactly the tree this clause needs (`src/` plus every
+// `packages/*/src`, tests exempt, with a measured floor under it), and the
+// comment at IK_SCAN_FLOOR ratifies that a THIRD copy of that harness means
+// extracting a shared helper instead. Folding adds no harness, so nothing is
+// owed: this is two extra regex matches inside a loop that is already running,
+// reported under their own rule id because the violation line has to talk
+// about a decoder ceiling, not a KDF call site.
+//
+// WHAT IT PINS: `IMPORT_MAX_DIMENSION` and `IMPORT_MAX_PIXELS` are spelled
+// EXACTLY ONCE each, in the sanitizer, AT the value Alex decided (D11 and D4).
+// All three halves matter and each catches a different real drift:
+//
+//   * ONE SPELLING, because the import call site passes them BY NAME
+//     (`sanitize-import-options`, rule 32) and a second `export const` in some
+//     other module is how the call site ends up reading the copy that lagged.
+//   * IN THE SANITIZER, because the sanitizer is the layer that owns the
+//     memory assumption the ceiling encodes — the byte-level strip that runs
+//     after the re-encode reads the whole output into Hermes.
+//   * BY VALUE, because both numbers are DECISIONS, not tunables. 2048 is the
+//     cap Alex chose for imported photos (and the issue AC, and #926 §3 all
+//     name it); 32_000_000 is derived from a measured ~6 B per source pixel
+//     against a ~192 MB transient decode budget, and the sanitizer's docblock
+//     says it may be LOWERED by a device measurement and never raised without
+//     one. Pinning the value means a change has to edit this rule too, in the
+//     same commit, where a reviewer will see it.
+//
+// The pinned spelling is the SOURCE spelling: `32_000_000`, with the numeric
+// separators. Rewriting it as `32000000` is the same number and still fails,
+// deliberately — it is a deliberate edit to a deliberate constant, and this
+// rule is how that edit gets looked at.
+//
+// Matched against `strippedLines` (comments blanked, strings intact): the
+// sanitizer's own docblocks name both constants repeatedly to explain them,
+// and prose must never count as a declaration. Test paths are already exempt
+// above, so the call-site suites that assert these numbers do not count either.
+const II_RULE = 'import-image-ceiling';
+const II_ISSUE = '#918';
+// Same file as ME_IMAGE_SANITIZER (declared for rule 24c). Reused rather than
+// re-spelled so the path cannot drift between the two rules.
+const II_OWNER = ME_IMAGE_SANITIZER;
+const II_PINNED_VALUES = {
+  IMPORT_MAX_DIMENSION: '2048',
+  IMPORT_MAX_PIXELS: '32_000_000',
+};
+const II_CEILING_DECL_RE =
+  /\bexport const (IMPORT_MAX_PIXELS|IMPORT_MAX_DIMENSION)\b\s*=\s*([^;\n]+)/;
+const iiCeilingSites = [];
+
 for (const root of ikRoots) {
   for (const file of walkSync(root, ['.ts', '.tsx'])) {
     const rel = relative('.', file);
@@ -6096,6 +6147,12 @@ for (const root of ikRoots) {
         ikSaltSites.push({ file, line: i + 1 });
         from = text.indexOf(IK_SALT, from + IK_SALT.length);
       }
+
+      // --- 30.6 (collection) The import image ceiling constants (#918).
+      const iiDecl = II_CEILING_DECL_RE.exec(text);
+      if (iiDecl !== null) {
+        iiCeilingSites.push({ file, line: i + 1, name: iiDecl[1], value: iiDecl[2].trim() });
+      }
     }
   }
 }
@@ -6138,6 +6195,55 @@ if (ikSaltSites.length === 0) {
     IK_RULE,
     `the import salt \`${IK_SALT}\` is spelled here instead of in ${relative('.', IK_MODULE)} — the salt belongs with the single derivation it separates (${IK_ISSUE})`,
   );
+}
+
+// --- 30.6 The import image ceiling constants: once each, here, at this value.
+//
+// The four arms mirror the salt clause above, which is the point of the fold:
+// zero is a violation (the constant was inlined or moved somewhere this walk
+// cannot see, and every downstream pin then reads a name nothing declares),
+// more than one lists every site (two spellings drift and the lagging half
+// silently decodes at a ceiling nobody chose), one in the wrong file says the
+// decision has left the layer that owns the memory assumption, and a changed
+// value fails because the value IS the decision.
+//
+// IK_SCAN_FLOOR and the exempt-hit arm below cover this clause too, for free:
+// they are properties of the walk, not of any one rule, and they are exactly
+// what stops "zero occurrences" from meaning "the scan read nothing".
+for (const [name, pinned] of Object.entries(II_PINNED_VALUES)) {
+  const sites = iiCeilingSites.filter((site) => site.name === name);
+  if (sites.length === 0) {
+    violations.push(
+      `  ${relative('.', II_OWNER)}:0  [${II_RULE}]  \`export const ${name}\` appears in no scanned non-test source — the Meta-import decode ceiling has been inlined or moved somewhere this walk cannot read, and every rule that pins it by name (rule 32's call-site pins, the sanitizer's own docblock) is now pinning a constant nothing declares. Declare it in ${relative('.', II_OWNER)} (${II_ISSUE})`,
+    );
+    continue;
+  }
+  if (sites.length > 1) {
+    for (const site of sites) {
+      report(
+        site.file,
+        site.line,
+        II_RULE,
+        `\`${name}\` is declared in ${sites.length} places; it must be spelled exactly once, in ${relative('.', II_OWNER)}, because a second copy drifts and the half that lags decodes imported archive images at a ceiling nobody decided (${II_ISSUE})`,
+      );
+    }
+  } else if (relative('.', sites[0].file) !== relative('.', II_OWNER)) {
+    report(
+      sites[0].file,
+      sites[0].line,
+      II_RULE,
+      `\`${name}\` is declared here instead of in ${relative('.', II_OWNER)} — the ceiling belongs with the sanitizer, which is the layer whose byte-level strip reads the re-encoded output whole and whose memory budget the number was derived against (${II_ISSUE})`,
+    );
+  }
+  for (const site of sites) {
+    if (site.value === pinned) continue;
+    report(
+      site.file,
+      site.line,
+      II_RULE,
+      `\`${name}\` is declared as \`${site.value}\`, but this rule pins \`${pinned}\` — the number is Alex's decision (D11 for the 2048 import cap, D4 for the 32 MP source-pixel ceiling derived from ~6 B/px against a ~192 MB transient decode budget), not a tunable. The ceiling may be LOWERED by a device measurement and may never be raised without one. If this change is deliberate, change the pinned value here in the same commit so it is reviewed with it (${II_ISSUE})`,
+    );
+  }
 }
 
 if (ikScanned < IK_SCAN_FLOOR) {
@@ -6280,6 +6386,237 @@ const MIT_BANNED_RE = /source_item_id|sourceItemId/;
         `the storage layer names source_item_id|sourceItemId — the v1 identity frame embeds the member's repaired post text verbatim, so those bytes ARE their content: PLAINTEXT-CLASS, never persisted. Only the 16-byte \`import_key\` derived from it (#924) is stored: ${lines[i].trim()} (${MIT_FRAME_ISSUE})`,
       );
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 32. sanitize-import-options (#918)
+// ---------------------------------------------------------------------------
+
+// Rule 6 above proves only that `mediaUploadService` CALLS `sanitizeStillImage`
+// somewhere. For a Meta-import upload that is not enough. An archive image has
+// no provenance and, until this gate, no pixel bound at all: the reader's only
+// limit is a 50 MiB entry cap, and 50 MiB at 0.1 bpp is roughly 4 Gpx. The
+// forced re-encode and the pre-decode ceiling are the whole of what stands
+// between a hostile export and an OOM kill mid-import. Dropping either option
+// leaves a call that still satisfies rule 6 while doing none of that work —
+// which is precisely the regression shape this clause exists for.
+//
+// Pinned as full `name: value` pairs, the house style established at the
+// Sentry options literal above: `forceReencode: true` quietly flipped to
+// `false`, or `IMPORT_MAX_PIXELS` retyped as a bare `32_000_000`, has to fail
+// here. Rule 30.6 keeps the two numbers spelled once, in the sanitizer; this
+// clause keeps the call site reading them BY NAME rather than growing a second
+// copy that drifts away from the one 30.6 is watching.
+//
+// `importMode` is pinned too, because every other pin is inside a conditional:
+// replace the test with a constant and the options object is still spelled
+// perfectly while reaching no import.
+//
+// WINDOW: 600 characters. Measured — the last pin ends 486 characters in,
+// which is well past the plan's estimate because the call site carries a
+// docblock and two inline comments, and `meStripComments` blanks comments IN
+// PLACE (length-preserving, so offsets stay honest), meaning those blanked
+// runs still consume window. 600 covers the whole four-argument call with
+// margin and stops well short of the next `sanitize`-related code.
+//
+// `meStripComments` is passed as `strip` and that argument is load-bearing:
+// `checkWindowedPins` locates its window with `text.match(windowRe)` BEFORE
+// the per-line comment filter it would otherwise apply, so the FIRST textual
+// `sanitizeStillImage(` wins. This file documents its own pipeline in prose
+// and now carries a dedicated import docblock directly above the call. The day
+// one of those spells the call WITH its paren, an unstripped window would open
+// on the comment and spend its budget on prose; at the length this file's
+// docblocks actually run, every pin then falls outside the window and the rule
+// fails on code that is perfectly correct. Mutation-proven both ways: a 9-line
+// prose docblock above the call passes with this argument and fails without it.
+checkWindowedPins(
+  UPLOAD_SERVICE,
+  'sanitize-import-options',
+  /sanitizeStillImage\([\s\S]{0,600}/,
+  'the import sanitize call',
+  [
+    'importMode',
+    'forceReencode: true',
+    'maxDimension: IMPORT_MAX_DIMENSION',
+    'maxPixelCount: IMPORT_MAX_PIXELS',
+  ],
+  [],
+  '#918',
+  meStripComments,
+);
+
+// ---------------------------------------------------------------------------
+// 33. sanitizer-single-reencode (#918)
+// ---------------------------------------------------------------------------
+
+// THE CLAIM, stated at the width it is actually true: every re-encode THE
+// SANITIZER performs carries the pixel ceiling parameter. It is NOT "every
+// native decode in the app is ceilinged" — this clause reads one file and says
+// nothing about any other caller of the transcoder. Rule 7's import allowlist
+// is what keeps that set small; this is a statement about one module.
+//
+// The claim is only machine-checkable because the sanitizer was collapsed to a
+// single `reencodeImage(` call site (D10). With the two call sites it had
+// before, "the options literal carries maxPixelCount" degrades to "one of them
+// does", which is the kind of pin that reads as coverage and is not.
+//
+// EXACTLY ONE. A count of ZERO is a violation, not a vacuous pass: "the
+// sanitizer no longer re-encodes at all" is the loudest way for this rule to
+// stop meaning anything, and it would also mean the byte-level strip below is
+// now reading whatever the hostile source happened to contain.
+//
+// Comment-stripped first, because the module's docblocks name `reencodeImage`
+// several times over in order to explain the routing. The static import,
+// `import { reencodeImage } from 'orbital-media-transcoder';`, deliberately
+// does not count and needs no exemption: it carries no `(`. The token pinned
+// here is the CALL, not the binding.
+const SSR_RULE = 'sanitizer-single-reencode';
+const SSR_ISSUE = '#918';
+const SSR_CALL_TOKEN = 'reencodeImage(';
+
+{
+  const ssrRaw = meRead(
+    II_OWNER,
+    SSR_RULE,
+    'the sanitizer whose single re-encode call site carries the pixel ceiling',
+    SSR_ISSUE,
+  );
+  if (ssrRaw !== null) {
+    const ssrCode = meStripComments(ssrRaw);
+    const ssrSites = [];
+    let at = ssrCode.indexOf(SSR_CALL_TOKEN);
+    while (at !== -1) {
+      ssrSites.push(meLineOf(ssrCode, at));
+      at = ssrCode.indexOf(SSR_CALL_TOKEN, at + SSR_CALL_TOKEN.length);
+    }
+    if (ssrSites.length === 0) {
+      violations.push(
+        `  ${relative('.', II_OWNER)}:0  [${SSR_RULE}]  no \`${SSR_CALL_TOKEN}\` call in the sanitizer — either the re-encode moved out of the module that owns the strip, or it is gone and imported images are no longer normalised before the ceiling can apply. Either way the "every sanitizer re-encode carries maxPixelCount" pin below has nothing left to read and would pass over nothing (${SSR_ISSUE})`,
+      );
+    } else if (ssrSites.length > 1) {
+      for (const line of ssrSites) {
+        report(
+          II_OWNER,
+          line,
+          SSR_RULE,
+          `\`${SSR_CALL_TOKEN}\` is called in ${ssrSites.length} places in the sanitizer; it must be called exactly once, because the window pin below can only prove the ceiling is carried by ONE literal — a second call site reduces this rule to "at least one re-encode is ceilinged", which is not the property imports need (${SSR_ISSUE})`,
+        );
+      }
+    }
+  }
+}
+
+// ...and that one call carries the ceiling. Window 600 characters: measured at
+// 516 to the end of the pin, the options literal being long because it also
+// documents why each field is what it is.
+checkWindowedPins(
+  II_OWNER,
+  SSR_RULE,
+  /reencodeImage\([\s\S]{0,600}/,
+  "the sanitizer's one reencodeImage call",
+  ['maxPixelCount'],
+  [],
+  SSR_ISSUE,
+  meStripComments,
+);
+
+// ---------------------------------------------------------------------------
+// 34. transcoder-fixed-reject-phrases (#918)
+// ---------------------------------------------------------------------------
+
+// A native reject message crosses the bridge as a plain string and the composer
+// screen captures upload errors, so whatever the native layer puts in that
+// second argument can end up in a user-visible error and in telemetry.
+//
+// The concrete leak this blocks is not hypothetical. On Android,
+// `ImageDecoder.DecodeException.getMessage()` embeds the source description,
+// and for a decoder built with `createSource(File)` that description contains
+// the DEVICE PATH — which for an import is a path inside the member's unpacked
+// archive staging directory. `NSError.localizedDescription` on iOS is the same
+// shape of hazard. The `.mm` header already states the contract ("messages
+// never carry paths, filenames, or user content"); this clause is the
+// mechanical half, because the easy mistake is a catch-all arm that forwards
+// the exception's own text to "help debugging".
+//
+// The fix side of the contract is that every code has a FIXED phrase, so there
+// is never anything to forward: EPIXELS says "source exceeds pixel ceiling",
+// EIMAGEFORMAT says "unsupported image format", and so on.
+//
+// WINDOW: the reject line plus TWO lines either side (5 lines). The ban has to
+// survive a reject whose arguments are wrapped across lines — both files are
+// formatted at ~100 columns and a three-argument reject with a long code
+// constant does wrap — while staying tight enough that an unrelated
+// `.message` elsewhere in the method is not what fails the rule. Two lines
+// covers every wrapped form either file writes, and it catches the realistic
+// evasion of capturing the text into a local on the line above.
+//
+// HONEST SCOPE: this is a guardrail over the reject ARM, not taint analysis. A
+// diagnostic stashed in a local six lines up and passed in from there is not
+// caught — mutation-verified, and left that way deliberately, because widening
+// the window to cover it would start failing on unrelated code and the rule
+// would be turned off rather than fixed.
+//
+// Both files are named explicitly rather than globbed, so a rename or a move
+// is a VIOLATION rather than a silently empty scan; the per-file reject-count
+// floor below is the second half of the same thought, for a file that survives
+// but whose rejects have been renamed out from under the token.
+//
+// `meStripComments` (not `stripCStyleComments`) because it is string-aware:
+// both ObjC++ and Kotlin use C comment syntax, and a non-string-aware stripper
+// blanks from a `//` inside a string literal onwards — which would HIDE a
+// banned token rather than reveal it, the wrong direction for a ban.
+const TFR_RULE = 'transcoder-fixed-reject-phrases';
+const TFR_ISSUE = '#918';
+const TFR_WINDOW_RADIUS = 2;
+const TFR_REJECT_TOKEN = 'reject(';
+const TFR_BANNED = ['localizedDescription', 'getMessage(', '.message', '.toString()'];
+const TFR_NATIVE_FILES = [
+  join('packages', 'orbital-media-transcoder', 'ios', 'OrbitalMediaTranscoder.mm'),
+  join(
+    'packages',
+    'orbital-media-transcoder',
+    'android',
+    'src',
+    'main',
+    'java',
+    'com',
+    'orbital',
+    'mediatranscoder',
+    'OrbitalMediaTranscoderModule.kt',
+  ),
+];
+
+for (const file of TFR_NATIVE_FILES) {
+  const tfrRaw = meRead(
+    file,
+    TFR_RULE,
+    'a native module whose reject phrases must stay fixed and content-free',
+    TFR_ISSUE,
+  );
+  if (tfrRaw === null) continue;
+  const tfrLines = meStripComments(tfrRaw).split('\n');
+  let tfrRejects = 0;
+  for (let i = 0; i < tfrLines.length; i++) {
+    if (!tfrLines[i].includes(TFR_REJECT_TOKEN)) continue;
+    tfrRejects++;
+    const window = tfrLines
+      .slice(Math.max(0, i - TFR_WINDOW_RADIUS), i + TFR_WINDOW_RADIUS + 1)
+      .join('\n');
+    for (const banned of TFR_BANNED) {
+      if (!window.includes(banned)) continue;
+      report(
+        file,
+        i + 1,
+        TFR_RULE,
+        `\`${banned}\` within ${TFR_WINDOW_RADIUS} lines of a reject — a native diagnostic string must never be forwarded across the bridge. ImageDecoder.DecodeException.getMessage() embeds the source description, which for createSource(File) is the device path, and the composer captures upload errors. Reject with the fixed phrase for the code instead: ${tfrLines[i].trim()} (${TFR_ISSUE})`,
+      );
+    }
+  }
+  if (tfrRejects === 0) {
+    violations.push(
+      `  ${relative('.', file)}:0  [${TFR_RULE}]  no \`${TFR_REJECT_TOKEN}\` call found — this module settles its promises some other way now, so the ban on forwarding native diagnostics is scanning nothing. Point the rule at the new settle path in the same commit (${TFR_ISSUE})`,
+    );
   }
 }
 

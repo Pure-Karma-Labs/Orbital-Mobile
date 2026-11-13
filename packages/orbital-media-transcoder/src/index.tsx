@@ -50,6 +50,24 @@ export interface ImageReencodeOptions {
   /** 0..1, JPEG only (ignored for png) */
   quality: number;
   format: ImageFormat;
+  /**
+   * Refuse the source BEFORE any pixel allocation when its header declares
+   * width*height greater than this. Omit (or 0) for no limit.
+   *
+   * The check lives inside the decode that owns it -- iOS reads the properties
+   * of the same CGImageSourceRef it decodes from, Android >=28 checks
+   * `info.size` inside the decoder's own header callback, and 24-27 checks the
+   * `inJustDecodeBounds` pass that already precedes the decode -- so there is
+   * no window in which a file can change between the measurement and the
+   * allocation.
+   */
+  maxPixelCount?: number;
+}
+
+/** Output pixel dimensions of what reencodeImage wrote (#918). */
+export interface ImageReencodeResult {
+  width: number;
+  height: number;
 }
 
 /** Native error codes surfaced by the module. */
@@ -60,6 +78,8 @@ export type MediaTranscoderErrorCode =
   | 'EMETADATA'
   | 'ETHUMBNAIL'
   | 'EIMAGE'
+  | 'EIMAGEFORMAT'
+  | 'EPIXELS'
   | 'EINVALID'
   | 'EUNKNOWN';
 
@@ -205,12 +225,23 @@ export async function extractThumbnail(
  *
  * SECURITY: this is defense-in-depth only. imageSanitizer's byte-level strip
  * plus verifyNoImageMetadata remain the authoritative fail-closed layer.
+ *
+ * Resolves the OUTPUT dimensions (#918 D13): an import has no picker asset to
+ * read width/height from, and the only other source would be a full-resolution
+ * decode of the very file `maxPixelCount` exists to bound.
+ *
+ * @throws MediaTranscoderError:
+ *   - `EPIXELS` the source header declares more than `maxPixelCount` pixels;
+ *      nothing was decoded
+ *   - `EIMAGEFORMAT` the platform has no decoder for this format, or its
+ *      header is unreadable
+ *   - `EIMAGE` the image decoded, but the encode/write failed
  */
 export async function reencodeImage(
   sourcePath: string,
   destPath: string,
   options: ImageReencodeOptions,
-): Promise<void> {
+): Promise<ImageReencodeResult> {
   if (options.format !== 'jpeg' && options.format !== 'png') {
     throw new MediaTranscoderError(
       'EINVALID',
@@ -218,10 +249,13 @@ export async function reencodeImage(
     );
   }
   try {
-    await getNative().reencodeImage(
+    return await getNative().reencodeImage(
       normalizePath(sourcePath),
       normalizePath(destPath),
-      options,
+      // The codegen member is required; the public option is not. `?? 0` is
+      // the module's existing "no limit" sentinel, as `maxDimension: 0` is
+      // its "no scaling" one.
+      { ...options, maxPixelCount: options.maxPixelCount ?? 0 },
     );
   } catch (e) {
     throw toTranscoderError(e);

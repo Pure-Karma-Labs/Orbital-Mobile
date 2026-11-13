@@ -58,7 +58,12 @@ import { splitTrailingExtension } from './media/contentType';
 import { isDatabaseInitialized } from '../database/connection';
 import { useAppStore } from '../stores/useAppStore';
 import { generateUUID } from '../utils/uuid';
-import { sanitizeStillImage, type SanitizedImageFormat } from './media/imageSanitizer';
+import {
+  sanitizeStillImage,
+  IMPORT_MAX_DIMENSION,
+  IMPORT_MAX_PIXELS,
+  type SanitizedImageFormat,
+} from './media/imageSanitizer';
 import { prepareVideoForUpload, isCancellation } from './media/videoProcessing';
 import { UPLOAD_CANCELLED_MESSAGE } from './media/uploadCancellation';
 import { addUploadBreadcrumb, captureUploadFailure } from './uploadTelemetry';
@@ -650,7 +655,37 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
       // Sanitize still image (strip EXIF/GPS metadata, fail-closed verify)
       addUploadBreadcrumb('sanitize', { mime: mimeType });
       const targetPath = stagingPath ? stagingPath : sanitizedStagingPath;
-      const { format } = await sanitizeStillImage(sourcePath, mimeType, targetPath);
+      /**
+       * Meta import (#918): one forced native re-encode, capped at
+       * IMPORT_MAX_DIMENSION, refused before any decode above
+       * IMPORT_MAX_PIXELS. An archive image is a file of unknown provenance
+       * whose only size bound so far is the reader's 50 MiB entry cap, which
+       * says nothing at all about its pixel count.
+       *
+       * ## Removal trigger
+       * The returned `width`/`height` have no consumer in this PR — the
+       * import runner (#926) reads them so that it never has to decode a raw
+       * archive file to learn an image's dimensions. If the runner lands
+       * without using them, delete the D13 passthrough rather than leaving a
+       * value nothing reads.
+       */
+      const { format } = await sanitizeStillImage(
+        sourcePath,
+        mimeType,
+        targetPath,
+        // Spread of a tuple, not `: undefined`: the normal path keeps making
+        // the exact same THREE-argument call the other two callers make, so
+        // an import-only options object cannot leak into it.
+        ...(importMode
+          ? ([
+              {
+                forceReencode: true,
+                maxDimension: IMPORT_MAX_DIMENSION,
+                maxPixelCount: IMPORT_MAX_PIXELS,
+              },
+            ] as const)
+          : ([] as const)),
+      );
       sourcePath = targetPath;
 
       // The sanitizer may have re-encoded (anything that is not already

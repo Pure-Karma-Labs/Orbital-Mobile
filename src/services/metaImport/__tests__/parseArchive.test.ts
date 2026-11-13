@@ -1188,6 +1188,7 @@ describe('the summary', () => {
     expect(result.summary.skipped).toEqual({
       held_video: 1,
       unsupported_image_format: 0,
+      image_too_large: 0,
       media_missing: 0,
       media_unsupported_reference: 0,
       media_unreadable: 0,

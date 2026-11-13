@@ -148,6 +148,15 @@ export interface BuildJpegOptions {
   mpf?: 'before-icc' | 'after-icc';
   /** Use SOF2 (progressive) instead of SOF0 (baseline). */
   progressive?: boolean;
+  /**
+   * Frame width DECLARED in the SOF segment. Default 1, which is what every
+   * fixture predating #918 emits -- the default keeps those bytes identical.
+   * Nothing decodes this fixture, so a large value costs no bytes: that is
+   * exactly what makes it a usable stand-in for an over-size source.
+   */
+  width?: number;
+  /** Frame height declared in the SOF segment. Default 1 -- see `width`. */
+  height?: number;
   /** Entropy bytes of the first scan. Default `[0xAA, 0xBB, 0xCC]`. */
   scanData?: number[];
   /**
@@ -197,14 +206,28 @@ const IPTC_PAYLOAD = [0x50, 0x68, 0x6F, 0x74, 0x6F]; // "Photo"
 /** COM payload: plain ASCII, deliberately free of Exif and XMP signatures. */
 const COM_PAYLOAD = Array.from(new TextEncoder().encode('Orbital fixture comment'));
 
-/** SOF payload: 8-bit precision, 1x1, single grayscale component. */
-const SOF_PAYLOAD = [
-  0x08,       // precision: 8 bits
-  0x00, 0x01, // height: 1 px
-  0x00, 0x01, // width: 1 px
-  0x01,       // components: 1 (grayscale)
-  0x01, 0x11, 0x00, // Y: sampling 1x1, quantization table 0
-];
+/**
+ * SOF payload: 8-bit precision, single grayscale component, with the declared
+ * frame size written into the two 16-bit fields the JPEG spec puts there
+ * (height first, then width).
+ *
+ * Parameterised for #918: a caller that needs a fixture whose DECLARED
+ * dimensions are large can ask for them without the fixture carrying any more
+ * bytes. Every existing caller takes the 1x1 default, so their bytes are
+ * unchanged.
+ */
+function sofPayload(width: number, height: number): number[] {
+  return [
+    0x08,                                   // precision: 8 bits
+    (height >> 8) & 0xFF, height & 0xFF,    // height
+    (width >> 8) & 0xFF, width & 0xFF,      // width
+    0x01,                                   // components: 1 (grayscale)
+    0x01, 0x11, 0x00, // Y: sampling 1x1, quantization table 0
+  ];
+}
+
+/** SOF payload for the default 1x1 frame. */
+const SOF_PAYLOAD = sofPayload(1, 1);
 
 /** DHT payload: structurally valid, not a usable Huffman table. */
 const DHT_PAYLOAD = [
@@ -238,6 +261,8 @@ export function buildJpeg(opts: BuildJpegOptions = {}): Uint8Array {
     icc = false,
     mpf,
     progressive = false,
+    width = 1,
+    height = 1,
     scanData = [0xAA, 0xBB, 0xCC],
     betweenScans,
     scan2Data = [],
@@ -294,7 +319,7 @@ export function buildJpeg(opts: BuildJpegOptions = {}): Uint8Array {
 
   // SOF0 or SOF2 (progressive) -- kept
   const sofMarker: [number, number] = progressive ? [0xFF, 0xC2] : [0xFF, 0xC0];
-  parts.push(...writeSegment(sofMarker, SOF_PAYLOAD));
+  parts.push(...writeSegment(sofMarker, sofPayload(width, height)));
 
   // DHT -- kept
   parts.push(...writeSegment([0xFF, 0xC4], DHT_PAYLOAD));
@@ -499,21 +524,36 @@ export interface BuildPngOptions {
   omitIend?: boolean;
   /** Bytes appended after IEND (or after everything, when `omitIend`). */
   tail?: number[];
+  /**
+   * Width DECLARED in the IHDR. Default 16, which is what every fixture
+   * predating #918 emits -- the default keeps those bytes identical. The IDAT
+   * is not a decodable stream in any case, so a large declared size costs no
+   * bytes and is exactly what makes this a usable over-size stand-in.
+   */
+  width?: number;
+  /** Height declared in the IHDR. Default 16 -- see `width`. */
+  height?: number;
 }
 
 /** PNG signature. */
 const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
 
-/** IHDR payload: 16x16, 8-bit, color type 2 (RGB), no interlace. */
-const IHDR_PAYLOAD = [
-  0, 0, 0, 16, // width
-  0, 0, 0, 16, // height
-  8, // bit depth
-  2, // color type (RGB)
-  0, // compression
-  0, // filter
-  0, // interlace
-];
+/**
+ * IHDR payload: 8-bit, color type 2 (RGB), no interlace, with the declared
+ * size written into the two 32-bit fields the PNG spec puts first.
+ * `ihdrPayload(16, 16)` is the pre-#918 constant, byte for byte.
+ */
+function ihdrPayload(width: number, height: number): number[] {
+  return [
+    (width >>> 24) & 0xFF, (width >> 16) & 0xFF, (width >> 8) & 0xFF, width & 0xFF,
+    (height >>> 24) & 0xFF, (height >> 16) & 0xFF, (height >> 8) & 0xFF, height & 0xFF,
+    8, // bit depth
+    2, // color type (RGB)
+    0, // compression
+    0, // filter
+    0, // interlace
+  ];
+}
 
 /** IDAT payload: minimal, not a decodable zlib stream. */
 const IDAT_PAYLOAD = [0x08, 0x99, 0x01, 0x00];
@@ -525,11 +565,15 @@ const IDAT_PAYLOAD = [0x08, 0x99, 0x01, 0x00];
  * [tail].
  */
 export function buildPng(opts: BuildPngOptions = {}): Uint8Array {
-  const { exif = false, text = false, time = false, afterIdat = [], omitIend = false, tail = [] } = opts;
+  const {
+    exif = false, text = false, time = false, afterIdat = [], omitIend = false, tail = [],
+    width = 16,
+    height = 16,
+  } = opts;
 
   const parts: number[] = [...PNG_SIGNATURE];
 
-  parts.push(...writeChunk('IHDR', IHDR_PAYLOAD));
+  parts.push(...writeChunk('IHDR', ihdrPayload(width, height)));
 
   if (exif) {
     parts.push(...writeChunk('eXIf', [...EXIF_SIGNATURE, 0x4D, 0x4D])); // "Exif\0\0MM"

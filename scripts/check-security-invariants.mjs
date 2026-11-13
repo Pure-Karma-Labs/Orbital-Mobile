@@ -5450,9 +5450,13 @@ if (!arImporterSeen) {
 //   * Identifier clauses (30.2, 30.4-identifiers) run on text with the
 //     contents of '…' and "…" blanked as well, because `'hkdfSha256'` inside a
 //     string is a name, not a call — a logging key or an error message must
-//     not fail this rule. Backticks are NOT blanked: a template literal can
-//     contain `${hkdfSha256(x)}`, which IS a call, and over-reporting a name
-//     in a template is the safer side of that trade.
+//     not fail this rule. Backticks are tracked but NOT blanked: a template
+//     literal can contain `${hkdfSha256(x)}`, which IS a call, and
+//     over-reporting a name in a template is the safer side of that trade.
+//     A quote left open at end of line (an apostrophe in JSX text, a `/['"]/`
+//     character class, a template opened on an earlier line) falls back to
+//     the unblanked line rather than blanking the remainder — see
+//     `ikBlankQuoted`, and rows N5/N6/N7 below.
 //   * Specifier clauses (30.3 salt, 30.4-modules) run on comment-stripped text
 //     with strings INTACT, because what they are looking for is a string
 //     literal.
@@ -5462,9 +5466,10 @@ if (!arImporterSeen) {
 // `packages/orbital-signal/src/index.tsx` is NOT exempt and does not need to
 // be: it re-exports with `export *` and never names either function.
 //
-// MUTATION MATRIX — run 2026-11-12 against this rule, from the worktree, one
-// row at a time (sha256 before, mutate, `node scripts/check-security-invariants.mjs`,
-// restore, sha256 matches, `git diff --stat` clean). Recorded here verbatim
+// MUTATION MATRIX — re-run in full 2026-11-12 against this rule, from the
+// worktree, one row at a time (sha256 before, mutate,
+// `node scripts/check-security-invariants.mjs`, restore, sha256 matches,
+// `git status --porcelain` clean). Recorded here verbatim
 // because the harness that would run it automatically is NOT in scope for
 // #924; it stays registry item DEBT-360 (a committed invariant mutation
 // harness), so this block is the only record that these clauses bite.
@@ -5491,13 +5496,28 @@ if (!arImporterSeen) {
 //   M12  a dead exemption pattern (`__mocks__/`, which in
 //        this repo lives at the root, outside every root)    RED  exempt-hits   (1)
 //   M13  the stale clause rewritten in the real kdf.rs       RED  30.5          (1)
+//   M14  an apostrophe-bearing template literal holding a
+//        real `${hkdfSha256(a, b, c, 32)}` call              RED  30.2          (1)
+//   M15  a `/['"]/` character class and an `hkdfSha256(...)`
+//        call on the SAME line                               RED  30.2          (1)
 //   N1   both names in a `//` comment in another src/ file   GREEN
 //   N2   the real importCrypto.kat.test.ts, which legitimately uses
 //        `hkdfSync`, `createHmac` and the salt, untouched    GREEN  (the baseline run)
 //   N3   `globalThis.…crypto.getRandomValues` in a src/ file GREEN
 //   N4   `'hkdfSha256'` and `"hmacSha256"` as string values  GREEN
+//   N5   an apostrophe in JSX prose, with no banned call on
+//        the line (the fallback must not invent one)         GREEN
 //
-// Two results worth keeping. M1/M2 do NOT also trip 30.2: the generated file
+// M14 and M15 are the rows the quote-blanker used to miss. Run against the
+// PREVIOUS `ikBlankQuoted`, both came back GREEN: the apostrophe and the `'`
+// of the character class each opened a quote that never closed, and
+// everything after it on the line — the call included — was blanked away.
+// They are RED only because the blanker now tracks backticks and falls back
+// to the unblanked line when a quote is still open at end of line. N5 is
+// their counterweight: that fallback must not start reporting lines whose
+// only sin is an apostrophe.
+//
+// Two further results worth keeping. M1/M2 do NOT also trip 30.2: the generated file
 // is exempt from the scan and importCrypto.ts still names the now-undeclared
 // export, which is exactly the vacuity 30.1 exists to cover — without it the
 // rule would have gone on pinning a dead name. And M13 was run against the
@@ -5524,8 +5544,23 @@ function ikViolation(file, detail) {
 /**
  * Blank the CONTENTS of '…' and "…" literals, preserving quotes and line
  * length so reported line numbers stay true. Input is expected to be
- * `meStripComments` output. Backtick templates are left intact on purpose —
- * see the departures note above.
+ * `meStripComments` output.
+ *
+ * Backtick templates are TRACKED but not blanked. Tracked because an
+ * apostrophe inside one (`` `the member's archive ${hkdfSha256(x)}` ``) would
+ * otherwise open a quote that never closes and blank the rest of the line,
+ * hiding a real call — the same way `meStripComments` tracks backticks so a
+ * `//` inside a template is not read as a comment. Not blanked because
+ * `${hkdfSha256(x)}` IS a call site, and over-reporting a bare name inside a
+ * template is the safer side of that trade.
+ *
+ * A quote still open at end of line means this line is not what it looks
+ * like: an apostrophe in JSX text, a regex character class such as `/['"]/`,
+ * or a template opened on an earlier line. Blanking from the opener onwards
+ * would silently drop everything after it, so the line is handed back
+ * UNBLANKED instead. That fails toward reporting: the worst case is a name
+ * inside a string being flagged, which a reviewer can see and exempt, against
+ * a missed second call site, which nobody sees at all.
  */
 function ikBlankQuoted(text) {
   return text
@@ -5537,9 +5572,11 @@ function ikBlankQuoted(text) {
         const ch = line[i];
         if (quote !== null) {
           if (ch === '\\') {
-            // Two characters consumed, two blanked — unless the backslash is
-            // the last character on the line, where only one exists.
-            out += i + 1 < line.length ? '  ' : ' ';
+            // Two characters consumed, two emitted — unless the backslash is
+            // the last character on the line, where only one exists. Inside a
+            // template the characters are kept; inside '…'/"…" they blank.
+            const run = i + 1 < line.length ? 2 : 1;
+            out += quote === '`' ? line.slice(i, i + run) : ' '.repeat(run);
             i += 1;
             continue;
           }
@@ -5548,17 +5585,17 @@ function ikBlankQuoted(text) {
             quote = null;
             continue;
           }
-          out += ' ';
+          out += quote === '`' ? ch : ' ';
           continue;
         }
-        if (ch === "'" || ch === '"') {
+        if (ch === "'" || ch === '"' || ch === '`') {
           quote = ch;
           out += ch;
           continue;
         }
         out += ch;
       }
-      return out;
+      return quote === null ? out : line;
     })
     .join('\n');
 }
@@ -5611,6 +5648,11 @@ const IK_EXEMPT = [
 // A measured floor, as in 29.8.8: 307 files on 2026-11-12 across `src/` and
 // the four package `src/` trees, set ~15% below. Tripping it means re-measure;
 // if the shrink is a real deletion, move the floor in that same commit.
+//
+// TWIN: `MI_DECODER_FLOOR` counts the same tree for 24b's scan and moves for
+// the same reasons — keep the two in step. A THIRD copy of this
+// roots/exemptions/floor harness means extracting a shared helper instead of
+// cloning it again (registry item DEBT-360's neighbour).
 const IK_SCAN_FLOOR = 260;
 
 const ikRoots = [SRC];

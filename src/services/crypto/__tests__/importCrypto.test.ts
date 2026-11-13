@@ -36,7 +36,9 @@ jest.mock('../contentCrypto', () => {
     compareGroupKeyPin: (...args: unknown[]) => mockCompareGroupKeyPin(...args),
     encryptContent: (plaintext: string, groupKey: Uint8Array, groupId: string) => {
       const iv = randomBytes(12);
-      const cipher = createCipheriv('aes-256-gcm', Buffer.from(groupKey), iv);
+      const cipher = createCipheriv('aes-256-gcm', Buffer.from(groupKey), iv, {
+        authTagLength: 16,
+      });
       cipher.setAAD(Buffer.from(groupId, 'utf8'));
       const body = Buffer.concat([cipher.update(Buffer.from(plaintext, 'utf8')), cipher.final()]);
       return {
@@ -56,6 +58,7 @@ jest.mock('../contentCrypto', () => {
         'aes-256-gcm',
         Buffer.from(groupKey),
         Buffer.from(ivB64, 'base64'),
+        { authTagLength: 16 },
       );
       decipher.setAAD(Buffer.from(groupId, 'utf8'));
       decipher.setAuthTag(buf.subarray(buf.length - 16));

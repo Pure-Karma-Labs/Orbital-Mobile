@@ -293,6 +293,43 @@ describe('maxDimension validation', () => {
   });
 });
 
+describe('maxPixelCount validation', () => {
+  it.each([
+    ['zero', 0],
+    ['negative', -1],
+    ['NaN', Number.NaN],
+  ])('rejects a %s maxPixelCount before touching the filesystem', async (_label, maxPixelCount) => {
+    const files: Record<string, Uint8Array> = { [SOURCE]: uprightJpeg() };
+    mockFs(files);
+
+    await expect(sanitizeStillImage(SOURCE, 'image/jpeg', OUT, { maxPixelCount })).rejects.toThrow(
+      'maxPixelCount must be greater than 0',
+    );
+
+    // This is the dangerous shape, not a harmless one: a non-positive
+    // maxPixelCount is still `!== undefined`, so it would FORCE the native
+    // re-encode and then pass the decoder the package's `0 = no limit`
+    // sentinel -- a call that looks ceilinged and is not. "No cap" is spelled
+    // by omitting the option.
+    expect(rnfs.stat).not.toHaveBeenCalled();
+    expect(rnfs.read).not.toHaveBeenCalled();
+    expect(rnfs.readFile).not.toHaveBeenCalled();
+    expect(reencodeImage).not.toHaveBeenCalled();
+  });
+
+  it('is a plain Error, not a refusal about the image', async () => {
+    const files: Record<string, Uint8Array> = { [SOURCE]: uprightJpeg() };
+    mockFs(files);
+
+    const err = await sanitizeStillImage(SOURCE, 'image/jpeg', OUT, {
+      maxPixelCount: 0,
+    }).catch((e: unknown) => e);
+
+    expect((err as Error).name).toBe('Error');
+    expect(err).not.toHaveProperty('reason');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // 7. The ceiling -- the issue's acceptance criterion
 // ---------------------------------------------------------------------------
@@ -562,38 +599,24 @@ describe('the strip still runs after a forced re-encode', () => {
 // ---------------------------------------------------------------------------
 
 describe('returned dimensions', () => {
-  it('reports the decoded output size through the native layer', async () => {
-    const files: Record<string, Uint8Array> = {
-      [SOURCE]: uprightJpeg(),
-      [PREENCODE]: reencodedJpeg(),
-    };
-    mockFs(files);
-    // Deliberately non-square, so a transposed passthrough would fail.
-    reencodeImage.mockResolvedValue({ width: 1536, height: 2048 });
-
-    await sanitizeStillImage(SOURCE, 'image/jpeg', OUT, IMPORT_OPTIONS);
-
-    // The import runner's ONLY legitimate dimension source: the alternative is
-    // a raw decode of exactly the hostile file this ceiling exists to bound.
-    // #918 ships the reporting half -- the ceilinged decode resolves what it
-    // WROTE -- and #926 widens sanitizeStillImage's return to surface it, when
-    // there is finally a caller that reads it.
-    await expect(reencodeImage.mock.results[0].value).resolves.toEqual({
-      width: 1536,
-      height: 2048,
-    });
-  });
-
-  it('keeps the return shape unwidened, on both paths', async () => {
+  it('keeps the return shape unwidened even when the native layer reports a size', async () => {
     // D1: omitting the options bag must be byte-identical to the
     // three-argument call, and that includes the shape of THIS object -- which
-    // is what the four pre-existing sanitizer suites assert exhaustively. A
-    // field nothing reads yet is not worth breaking that promise for.
+    // is what the pre-existing sanitizer suites assert exhaustively. A field
+    // nothing reads yet is not worth breaking that promise for; #926 widens
+    // the return when it finally has a consumer.
+    //
+    // The native mock resolves a DELIBERATELY NON-SQUARE size, so this is a
+    // real negative: if the D13 passthrough were wired up, `toEqual` would see
+    // the extra width/height keys and fail. (`toEqual` ignores `undefined`
+    // properties but not present ones, which is the whole reason the widening
+    // was deferred.)
     const files: Record<string, Uint8Array> = {
       [SOURCE]: uprightJpeg(),
       [PREENCODE]: reencodedJpeg(),
     };
     mockFs(files);
+    reencodeImage.mockResolvedValue({ width: 1536, height: 2048 });
 
     await expect(sanitizeStillImage(SOURCE, 'image/jpeg', OUT, IMPORT_OPTIONS)).resolves.toEqual({
       format: 'jpeg',

@@ -54,12 +54,20 @@ export interface ImageReencodeOptions {
    * Refuse the source BEFORE any pixel allocation when its header declares
    * width*height greater than this. Omit (or 0) for no limit.
    *
-   * The check lives inside the decode that owns it -- iOS reads the properties
-   * of the same CGImageSourceRef it decodes from, Android >=28 checks
-   * `info.size` inside the decoder's own header callback, and 24-27 checks the
-   * `inJustDecodeBounds` pass that already precedes the decode -- so there is
-   * no window in which a file can change between the measurement and the
-   * allocation.
+   * The check lives inside the decode that owns it, but how tightly differs by
+   * platform and the difference is worth stating honestly:
+   *
+   * - iOS reads the properties of the SAME `CGImageSourceRef` it then decodes
+   *   from, so there is no window at all.
+   * - Android >= 28 checks `info.size` inside the decoder's own header
+   *   callback, which is the same decode: again no window.
+   * - Android 24-27 cannot do that. `BitmapFactory` has no header hook, so the
+   *   ceiling runs on the `inJustDecodeBounds` pass and the real decode then
+   *   RE-OPENS the path. A file swapped between the two passes would be
+   *   decoded unmeasured. That arm is sound only because every path this
+   *   module is handed is app-private storage (Caches or the app sandbox),
+   *   which no other process can write; it would NOT be sound for a
+   *   user-writable or shared-storage path.
    */
   maxPixelCount?: number;
 }

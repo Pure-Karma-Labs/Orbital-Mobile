@@ -1101,6 +1101,12 @@ export interface SanitizeStillImageOptions {
    * width*height exceeds this. Setting it IMPLIES a native pre-encode: an
    * in-size orientation-1 JPEG would otherwise skip the native call entirely
    * and the ceiling would be silently unenforced.
+   *
+   * MUST be > 0 when present. "No limit" is spelled by OMITTING the option,
+   * never by passing 0: the package's wire format uses `0 = no limit`, so a 0
+   * here would force the re-encode (the clause above) and then hand the
+   * decoder no ceiling at all — the one combination that looks protected and
+   * is not. Negative and NaN are refused for the same reason.
    */
   maxPixelCount?: number;
 }
@@ -1167,11 +1173,18 @@ export async function sanitizeStillImage(
 
   const maxPixelCount = options?.maxPixelCount;
   const maxDimension = options?.maxDimension;
-  // Rejected, not clamped, and BEFORE any I/O: a caller who writes 0 means
-  // "no scaling", and silently substituting 2048 hides their intent while the
-  // sanitizer has no use for an unscaled re-encode. NaN takes the same arm.
+  // Both rejected, not clamped, and BEFORE any I/O. 0 is the package's wire
+  // sentinel on both options, and in both cases silently honouring it here
+  // would produce a call that LOOKS guarded and is not: `maxDimension: 0`
+  // takes a native path that neither downscales nor bakes EXIF orientation,
+  // and `maxPixelCount: 0` forces the re-encode while handing the decoder no
+  // ceiling. "No cap" is spelled by omitting the option. NaN and negatives
+  // take the same arm, because `!(x > 0)` is the only form that catches NaN.
   if (maxDimension !== undefined && !(maxDimension > 0)) {
     throw new Error('sanitizeStillImage: maxDimension must be greater than 0');
+  }
+  if (maxPixelCount !== undefined && !(maxPixelCount > 0)) {
+    throw new Error('sanitizeStillImage: maxPixelCount must be greater than 0');
   }
   const dimension = maxDimension ?? 2048;
 
@@ -1218,16 +1231,23 @@ export async function sanitizeStillImage(
       // carried" a machine-checkable claim.
       //
       // The resolved value is DELIBERATELY DROPPED here. The native layer now
-      // reports the output's width/height (#918 D13) precisely so that the
-      // import runner never has to decode a raw archive file to learn an
-      // image's dimensions — but surfacing them through this function's return
-      // would change the shape of the object the OMITTED three-argument call
-      // produces, which is exactly what D1 promises will not happen, and the
-      // four existing sanitizer suites assert that promise with an exhaustive
-      // `toEqual`. ## Removal trigger: #926, which is the first caller that
-      // actually reads the dimensions, widens this return and amends those
-      // assertions in the same change — where the shape change has a consumer
-      // justifying it.
+      // reports the output's width/height (#918 D13) so that nothing on the
+      // import path ever has to decode a raw archive file to learn an image's
+      // dimensions. The consumer is `uploadMedia` ITSELF, not the runner: the
+      // sanitize happens inside `uploadMedia`'s image branch, so in import
+      // mode it is that function which assigns the returned dimensions to its
+      // own `width`/`height` locals — the ones the envelope is built from.
+      // The runner never passes dimensions in, because it has none to pass.
+      //
+      // Not surfaced yet, because widening this return changes the shape of
+      // the object the OMITTED three-argument call produces, which is exactly
+      // what D1 promises will not happen. ## Removal trigger: #926, the first
+      // caller that actually reads the dimensions, widens this return and
+      // amends the 9 exhaustive `toEqual({ format })` assertions across 3
+      // suites in the same change — 7 pre-existing ones in
+      // `imageSanitizer.format.test.ts` and `imageSanitizer.orientation.test.ts`
+      // plus 2 in `imageSanitizer.options.test.ts` — where the shape change
+      // finally has a consumer justifying it.
       try {
         await reencodeImage(sourcePath, preencodePath, {
           maxDimension: dimension,

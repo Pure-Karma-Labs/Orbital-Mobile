@@ -6539,9 +6539,20 @@ checkWindowedPins(
 // mechanical half, because the easy mistake is a catch-all arm that forwards
 // the exception's own text to "help debugging".
 //
-// The fix side of the contract is that every code has a FIXED phrase, so there
-// is never anything to forward: EPIXELS says "source exceeds pixel ceiling",
-// EIMAGEFORMAT says "unsupported image format", and so on.
+// WHAT IS ACTUALLY BANNED, stated precisely: a FREE-TEXT accessor on an
+// exception, next to a reject. It is not "every reject message is a literal".
+// The image arms are all fixed phrases — EPIXELS says "source exceeds pixel
+// ceiling", EIMAGEFORMAT says "unsupported image format" — but the transcode
+// arm rejects `ETRANSCODE` with `ExportException.errorCodeName`, and that is
+// REVIEWED AND ALLOWED: `errorCodeName` is the symbolic name of a bounded
+// Media3 ERROR_CODE_* constant ("ERROR_CODE_ENCODING_FAILED"), a closed
+// vocabulary with no path, filename or user content in it, and it is the only
+// thing that makes a transcode failure diagnosable at all. The ban is on
+// accessors that return the platform's own free-form text — the ones that
+// embed a source description — which is why the token list is exactly
+// `localizedDescription`, `getMessage(`, `.message` and `.toString()` rather
+// than "anything but a string literal". A new bounded accessor would be a
+// deliberate addition here, with the same review.
 //
 // WINDOW: the reject line plus TWO lines either side (5 lines). The ban has to
 // survive a reject whose arguments are wrapped across lines — both files are
@@ -6609,7 +6620,7 @@ for (const file of TFR_NATIVE_FILES) {
         file,
         i + 1,
         TFR_RULE,
-        `\`${banned}\` within ${TFR_WINDOW_RADIUS} lines of a reject — a native diagnostic string must never be forwarded across the bridge. ImageDecoder.DecodeException.getMessage() embeds the source description, which for createSource(File) is the device path, and the composer captures upload errors. Reject with the fixed phrase for the code instead: ${tfrLines[i].trim()} (${TFR_ISSUE})`,
+        `\`${banned}\` within ${TFR_WINDOW_RADIUS} lines of a reject — a FREE-TEXT exception accessor must never be forwarded across the bridge. ImageDecoder.DecodeException.getMessage() embeds the source description, which for createSource(File) is the device path, and the composer captures upload errors. Reject with the fixed phrase for the code instead, or — if the value really is a bounded, closed vocabulary like ExportException.errorCodeName — add it to this rule with the reasoning, as that one was: ${tfrLines[i].trim()} (${TFR_ISSUE})`,
       );
     }
   }

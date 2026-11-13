@@ -663,11 +663,16 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
        * says nothing at all about its pixel count.
        *
        * ## Removal trigger
-       * The returned `width`/`height` have no consumer in this PR — the
-       * import runner (#926) reads them so that it never has to decode a raw
-       * archive file to learn an image's dimensions. If the runner lands
-       * without using them, delete the D13 passthrough rather than leaving a
-       * value nothing reads.
+       * The sanitizer's returned `width`/`height` have no consumer in this
+       * PR. The consumer is THIS FUNCTION, in #926: the sanitize happens
+       * here, inside the image branch, so in import mode it is `uploadMedia`
+       * that assigns the sanitizer's output dimensions to its own
+       * `width`/`height` locals — the ones the envelope is built from. The
+       * runner never passes dimensions in, because an archive gives it none,
+       * and the only other way to get them would be a full-resolution decode
+       * of exactly the file IMPORT_MAX_PIXELS exists to refuse. If #926 lands
+       * without reading them, delete the native D13 passthrough rather than
+       * leaving a value nothing reads.
        */
       const { format } = await sanitizeStillImage(
         sourcePath,

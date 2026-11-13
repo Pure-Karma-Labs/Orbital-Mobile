@@ -564,6 +564,13 @@ class OrbitalMediaTranscoderModule(reactContext: ReactApplicationContext) :
     state.headerSeen = true
     // The bounds pass already read the header and allocated no pixels, so the
     // ceiling goes here, before the real decode below.
+    //
+    // HONEST LIMIT, unlike the >=28 and iOS arms: BitmapFactory has no header
+    // hook, so the real decode below RE-OPENS sourcePath. A file swapped
+    // between the two passes would be decoded unmeasured. This is sound only
+    // because every path handed to this module is app-private storage, which
+    // no other process can write; it would NOT be sound for a user-writable
+    // or shared-storage path.
     if (maxPixelCount > 0 &&
       bounds.outWidth.toLong() * bounds.outHeight.toLong() > maxPixelCount
     ) {

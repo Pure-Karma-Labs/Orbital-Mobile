@@ -22,13 +22,14 @@ export type ImportSource = 'facebook' | 'instagram';
 /**
  * Why one post was not imported.
  *
- * The first five are the media holds (#983's hold obligation): a post whose
+ * The first six are the media holds (#983's hold obligation): a post whose
  * media cannot be POSITIVELY classified as an image is held whole, never
  * partially imported. The rest are content-level refusals.
  */
 export type SkipReason =
   | 'held_video'
   | 'unsupported_image_format'
+  | 'image_too_large'
   | 'media_missing'
   | 'media_unsupported_reference'
   | 'media_unreadable'
@@ -60,6 +61,11 @@ export const SKIP_REASON_CLASS: Readonly<Record<SkipReason, SkipReasonClass>> = 
   held_video: 'held',
   media_missing: 'incomplete',
   unsupported_image_format: 'permanent',
+  // Permanent on purpose, and that is why the pixel ceiling is ONE global
+  // number: a device-dependent ceiling would make "re-running the import
+  // changes nothing" false, since the same archive would import differently
+  // on a newer phone.
+  image_too_large: 'permanent',
   media_unsupported_reference: 'permanent',
   media_unreadable: 'permanent',
   unsupported_post_type: 'permanent',

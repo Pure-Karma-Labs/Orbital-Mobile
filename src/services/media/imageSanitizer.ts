@@ -79,6 +79,41 @@ import { hasPngSignature, sniffContentType } from './contentType';
 const MAX_STRIP_SIZE_BYTES = 8 * 1024 * 1024;
 
 /**
+ * Long-side cap for every Meta-import image re-encode (#918, decision D11).
+ *
+ * Not an inherited default: the import path downscales deliberately, at the
+ * same 2048 the normal picker path already re-encodes HEIC, over-size and
+ * rotated photos at. Real Instagram export images measure 600-2175 px on the
+ * long edge, so most imports are not downscaled at all.
+ *
+ * Spelled ONCE, here, and pinned by value by the invariant script: a second
+ * spelling drifts, and the import call site asserts this exact number.
+ */
+export const IMPORT_MAX_DIMENSION = 2048;
+
+/**
+ * Source-pixel ceiling for an import re-encode (#918, decision D4). 32 MP.
+ *
+ * Derived, not guessed: the worst observed allocation per SOURCE pixel is
+ * ~6 B (a progressive JPEG's whole-image DCT coefficient buffer, which both
+ * ImageIO and Skia build before any downscale takes effect), against a ~192 MB
+ * transient budget for one decode on a mid-range device. 192 MB / 6 B = 32 Mpx.
+ * The largest image Meta serves from an export is 4096x4096 = 16.8 MP, so this
+ * leaves ~2x headroom; the archive reader's 50 MiB entry cap gives no pixel
+ * bound at all (50 MiB at 0.1 bpp is ~4 Gpx), which is why this gate exists.
+ *
+ * One global number for every OS version, deliberately: `image_too_large` is
+ * classified `permanent`, and a device-dependent ceiling would make that
+ * statement false -- the same archive would import differently on a newer
+ * phone.
+ *
+ * This number MAY BE LOWERED by a device measurement (the API 24-27
+ * BitmapFactory path keeps three live bitmaps and is the weakest live path).
+ * It may NEVER be raised without a new measurement.
+ */
+export const IMPORT_MAX_PIXELS = 32_000_000;
+
+/**
  * Head slice read for the EXIF orientation probe. An Exif APP1 is capped at
  * 65535 bytes and sits in the first segments, so this covers it with room to
  * spare while never pulling a whole photo into JS.
@@ -998,6 +1033,100 @@ async function readSourceOrientation(filePath: string): Promise<number | null> {
 /** What `sanitizeStillImage` wrote — it only ever emits JPEG or PNG. */
 export type SanitizedImageFormat = 'jpeg' | 'png';
 
+/** Why the sanitizer refused an image before it could strip it (#918). */
+export type ImageSanitizeReason = 'unsupported-format' | 'too-many-pixels';
+
+/**
+ * Fixed, content-free text. The constructor CANNOT be handed a message: the
+ * only thing a caller supplies is a closed-union reason, and the sentence is
+ * read from this frozen table. That is the whole guarantee that no path,
+ * filename or decoder diagnostic can reach a user-visible string here.
+ *
+ * (Independent of the sanitizer's no-logging rule, which governs
+ * console/captureError/Sentry calls and says nothing about thrown messages.)
+ */
+const IMAGE_SANITIZE_MESSAGE: Readonly<Record<ImageSanitizeReason, string>> = {
+  'unsupported-format': 'This image format is not supported on this device.',
+  'too-many-pixels': 'This image is too large to process on this device.',
+};
+
+/**
+ * A refusal the sanitizer OWNS, re-thrown from the native decoder's typed
+ * codes so that consumers never branch on a native package's error taxonomy
+ * (which a bridge refactor can rename with no JS test noticing).
+ *
+ * Match by `name`, not `instanceof` — the repo's own rule: these classes are
+ * undefined wherever a suite replaces this module with a factory mock.
+ */
+export class ImageSanitizeError extends Error {
+  readonly reason: ImageSanitizeReason;
+
+  constructor(reason: ImageSanitizeReason) {
+    super(IMAGE_SANITIZE_MESSAGE[reason]);
+    this.name = 'ImageSanitizeError';
+    this.reason = reason;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+/**
+ * Options for `sanitizeStillImage`. Omitting the whole bag is byte-identical
+ * to the three-argument call: every field below is off by default.
+ *
+ * ## Removal trigger
+ * The bag is deliberately wider than its one caller. `forceReencode` is inert
+ * wherever `maxPixelCount` is set (setting the ceiling already forces the
+ * pre-encode), and no caller passes a `maxDimension` other than
+ * `IMPORT_MAX_DIMENSION`. Both are kept because #918's scope names
+ * `forceReencode` explicitly and a forced re-encode without a ceiling is a
+ * coherent future ask. If 1.7.9 still has exactly one caller and it still
+ * passes all three, collapse this to `maxPixelCount` and derive the rest.
+ */
+export interface SanitizeStillImageOptions {
+  /**
+   * Always run exactly one native re-encode first, skipping the strip-only
+   * path. Subsumed by `maxPixelCount` (see the removal trigger above).
+   */
+  forceReencode?: boolean;
+  /**
+   * Long-side cap for that re-encode. Defaults to the same 2048 the
+   * unconditional paths already use. MUST be > 0: the package's
+   * `maxDimension: 0 = no scaling` sentinel takes a code path that neither
+   * downscales NOR bakes EXIF orientation, and would hand the JS strip a
+   * full-resolution, un-rotated image to read whole into Hermes.
+   */
+  maxDimension?: number;
+  /**
+   * Refuse, natively and BEFORE any decode, when the source's declared
+   * width*height exceeds this. Setting it IMPLIES a native pre-encode: an
+   * in-size orientation-1 JPEG would otherwise skip the native call entirely
+   * and the ceiling would be silently unenforced.
+   *
+   * MUST be > 0 when present. "No limit" is spelled by OMITTING the option,
+   * never by passing 0: the package's wire format uses `0 = no limit`, so a 0
+   * here would force the re-encode (the clause above) and then hand the
+   * decoder no ceiling at all — the one combination that looks protected and
+   * is not. Negative and NaN are refused for the same reason.
+   */
+  maxPixelCount?: number;
+}
+
+/**
+ * Map the decoder's typed rejection codes onto this module's own refusals.
+ * Anything else is re-thrown UNCHANGED — an encode failure, a missing file or
+ * a module teardown is not a statement about the image.
+ */
+function toImageSanitizeError(e: unknown): unknown {
+  const code = e != null && typeof e === 'object' ? (e as { code?: unknown }).code : undefined;
+  if (code === 'EPIXELS') {
+    return new ImageSanitizeError('too-many-pixels');
+  }
+  if (code === 'EIMAGEFORMAT') {
+    return new ImageSanitizeError('unsupported-format');
+  }
+  return e;
+}
+
 /**
  * Sanitize a still image file, stripping all EXIF/GPS/XMP metadata.
  *
@@ -1024,58 +1153,117 @@ export type SanitizedImageFormat = 'jpeg' | 'png';
  * @param sourcePath Absolute path to the source image
  * @param mimeType MIME type of the source image
  * @param outPath Absolute path for the sanitized output
+ * @param options Optional (#918). Omitted — or `{}` — is byte-identical to
+ *   the three-argument call, down to the shape of this function's own return
+ *   value (see the D13 note at the pre-encode call below).
  * @throws Error if sanitization fails or metadata persists after strip
+ * @throws ImageSanitizeError when the native decoder refused the source:
+ *   `too-many-pixels` for the `maxPixelCount` ceiling, `unsupported-format`
+ *   when the platform has no decoder for it.
  */
 export async function sanitizeStillImage(
   sourcePath: string,
   mimeType: string,
   outPath: string,
+  options?: SanitizeStillImageOptions,
 ): Promise<{ format: SanitizedImageFormat }> {
   const isJpeg = mimeType === 'image/jpeg' || mimeType === 'image/jpg';
   const isPng = mimeType === 'image/png';
   const isDirectlyStrippable = isJpeg || isPng;
+
+  const maxPixelCount = options?.maxPixelCount;
+  const maxDimension = options?.maxDimension;
+  // Both rejected, not clamped, and BEFORE any I/O. 0 is the package's wire
+  // sentinel on both options, and in both cases silently honouring it here
+  // would produce a call that LOOKS guarded and is not: `maxDimension: 0`
+  // takes a native path that neither downscales nor bakes EXIF orientation,
+  // and `maxPixelCount: 0` forces the re-encode while handing the decoder no
+  // ceiling. "No cap" is spelled by omitting the option. NaN and negatives
+  // take the same arm, because `!(x > 0)` is the only form that catches NaN.
+  if (maxDimension !== undefined && !(maxDimension > 0)) {
+    throw new Error('sanitizeStillImage: maxDimension must be greater than 0');
+  }
+  if (maxPixelCount !== undefined && !(maxPixelCount > 0)) {
+    throw new Error('sanitizeStillImage: maxPixelCount must be greater than 0');
+  }
+  const dimension = maxDimension ?? 2048;
 
   let workPath = sourcePath;
   let tempCompressPath: string | null = null;
   const preencodePath = `${CachesDirectoryPath}/${basename(outPath)}.pre-staging.bin`;
 
   try {
-    // For non-JPEG/PNG formats, or large files, pre-encode.
+    // For non-JPEG/PNG formats, or large files, pre-encode. The import path
+    // (forceReencode / maxPixelCount) always takes this route: a ceiling that
+    // the strip-only path can skip is not a ceiling.
     // DEFENSE IN DEPTH: the native re-encode drops metadata by construction,
     // but the byte-level strip below plus verifyNoImageMetadata remain the
-    // authoritative, fail-closed layer. Never treat reencodeImage as the strip.
-    if (!isDirectlyStrippable) {
-      await reencodeImage(sourcePath, preencodePath, {
-        maxDimension: 2048,
-        quality: 0.9,
-        format: 'jpeg',
-      });
-      tempCompressPath = preencodePath;
-      workPath = preencodePath;
-    } else {
+    // authoritative, fail-closed layer. Never treat the re-encode as the strip.
+    let needsPreencode =
+      !isDirectlyStrippable || options?.forceReencode === true || maxPixelCount !== undefined;
+
+    if (!needsPreencode) {
       // Check if file is too large for in-memory strip
       const st = await stat(sourcePath);
-      let needsPreencode = st.size > MAX_STRIP_SIZE_BYTES;
+      needsPreencode = st.size > MAX_STRIP_SIZE_BYTES;
 
       // ORIENTATION: a JPEG whose rotation lives only in its EXIF orientation
       // tag would render sideways once the strip drops that tag, so it takes
       // the same pre-encode path -- the native re-encode bakes the rotation
       // into the pixels. Skipped when the size check already routed here, so
-      // reencodeImage still runs at most once.
+      // the native call still runs at most once.
       if (!needsPreencode && isJpeg) {
         const orientation = await readSourceOrientation(sourcePath);
         needsPreencode = orientation !== null && orientation !== 1;
       }
+    }
 
-      if (needsPreencode) {
+    if (needsPreencode) {
+      // ASSIGNED BEFORE THE AWAIT: the native side can write a partial file
+      // and then reject. Both platforms delete destPath on their failure
+      // paths, but a kill between the write and the delete -- or a future
+      // failure arm that forgets -- would otherwise strand plaintext pixels in
+      // Caches with nothing holding the cleanup obligation. That obligation
+      // starts when the path is handed over, not when it succeeds.
+      tempCompressPath = preencodePath;
+      // THE ONE CALL SITE. Every re-encode this sanitizer performs goes
+      // through here, which is what makes "the ceiling parameter is always
+      // carried" a machine-checkable claim.
+      //
+      // The resolved value is DELIBERATELY DROPPED here. The native layer now
+      // reports the output's width/height (#918 D13) so that nothing on the
+      // import path ever has to decode a raw archive file to learn an image's
+      // dimensions. The consumer is `uploadMedia` ITSELF, not the runner: the
+      // sanitize happens inside `uploadMedia`'s image branch, so in import
+      // mode it is that function which assigns the returned dimensions to its
+      // own `width`/`height` locals — the ones the envelope is built from.
+      // The runner never passes dimensions in, because it has none to pass.
+      //
+      // Not surfaced yet, because widening this return changes the shape of
+      // the object the OMITTED three-argument call produces, which is exactly
+      // what D1 promises will not happen. ## Removal trigger: #926, the first
+      // caller that actually reads the dimensions, widens this return and
+      // amends the 9 exhaustive `toEqual({ format })` assertions across 3
+      // suites in the same change — 7 pre-existing ones in
+      // `imageSanitizer.format.test.ts` and `imageSanitizer.orientation.test.ts`
+      // plus 2 in `imageSanitizer.options.test.ts` — where the shape change
+      // finally has a consumer justifying it.
+      try {
         await reencodeImage(sourcePath, preencodePath, {
-          maxDimension: 2048,
+          maxDimension: dimension,
           quality: 0.9,
-          format: isJpeg ? 'jpeg' : 'png',
+          // Reproduces all three of today's format choices exactly: a
+          // non-JPEG/PNG source becomes JPEG, a JPEG stays JPEG, and a PNG
+          // stays PNG so archive screenshots keep their alpha.
+          format: isPng ? 'png' : 'jpeg',
+          // Spread, not a `?? 0`: the omitted case must hand the native layer
+          // the exact same object today's callers do.
+          ...(maxPixelCount !== undefined ? { maxPixelCount } : {}),
         });
-        tempCompressPath = preencodePath;
-        workPath = preencodePath;
+      } catch (e) {
+        throw toImageSanitizeError(e);
       }
+      workPath = preencodePath;
     }
 
     // Read the file to strip

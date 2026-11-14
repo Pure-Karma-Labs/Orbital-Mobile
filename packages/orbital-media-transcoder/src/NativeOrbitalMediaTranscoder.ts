@@ -30,6 +30,20 @@ export type ImageReencodeOptions = {
   quality: number;
   /** 'jpeg' | 'png' -- validated in the index.tsx wrapper */
   format: string;
+  /**
+   * Refuse the source, BEFORE any pixel allocation, when its header declares
+   * width*height greater than this. 0 = no limit -- the same sentinel idiom
+   * maxDimension uses. REQUIRED here (the wrapper fills `?? 0`): an optional
+   * codegen member is a shape this module has never exercised, and the
+   * sentinel is already the package's convention.
+   */
+  maxPixelCount: number;
+};
+
+/** What reencodeImage actually wrote: the OUTPUT pixel dimensions (#918 D13). */
+export type ImageReencodeResult = {
+  width: number;
+  height: number;
 };
 
 export interface Spec extends TurboModule {
@@ -70,12 +84,17 @@ export interface Spec extends TurboModule {
    * destPath. Output carries NO metadata -- defense-in-depth only; the
    * byte-level strip + verifyNoImageMetadata in imageSanitizer remain
    * authoritative.
+   *
+   * Rejects EPIXELS when options.maxPixelCount > 0 and the source header
+   * declares more pixels than that -- nothing is decoded. Rejects
+   * EIMAGEFORMAT when the platform cannot read the header or decode the
+   * payload; EIMAGE now means the decode succeeded and the ENCODE failed.
    */
   reencodeImage(
     sourcePath: string,
     destPath: string,
     options: ImageReencodeOptions,
-  ): Promise<void>;
+  ): Promise<ImageReencodeResult>;
 
   readonly onTranscodeProgress: EventEmitter<TranscodeProgressEvent>;
 }

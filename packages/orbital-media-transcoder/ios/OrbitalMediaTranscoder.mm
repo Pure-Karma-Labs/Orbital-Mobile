@@ -15,7 +15,14 @@ static NSString *const kOMTErrTranscode = @"ETRANSCODE";
 static NSString *const kOMTErrCancelled = @"ECANCELLED";
 static NSString *const kOMTErrMetadata = @"EMETADATA";
 static NSString *const kOMTErrThumbnail = @"ETHUMBNAIL";
+// EIMAGE has NARROWED (#918): it now means the image decoded and the ENCODE
+// failed. "The platform cannot decode this" is EIMAGEFORMAT, and "the source
+// declares more pixels than the caller allows" is EPIXELS — consumers must be
+// able to tell a hostile/huge file from an ordinary encode failure without
+// matching on message text.
 static NSString *const kOMTErrImage = @"EIMAGE";
+static NSString *const kOMTErrImageFormat = @"EIMAGEFORMAT";
+static NSString *const kOMTErrPixels = @"EPIXELS";
 
 static const NSTimeInterval kOMTProgressMinInterval = 0.5;
 static const double kOMTProgressMinDelta = 0.01;
@@ -905,6 +912,8 @@ RCT_EXPORT_MODULE()
   double maxDimension = options.maxDimension();
   double quality = options.quality();
   NSString *format = options.format();
+  // 0 = no limit, the same sentinel idiom maxDimension uses for "no scaling".
+  double maxPixelCount = options.maxPixelCount();
 
   dispatch_async(_queue, ^{
     // Entry check only, and that is sufficient: unlike the AVFoundation paths,
@@ -924,8 +933,50 @@ RCT_EXPORT_MODULE()
     CGImageSourceRef source = CGImageSourceCreateWithURL(
         (__bridge CFURLRef)[NSURL fileURLWithPath:sourcePath], NULL);
     if (source == NULL) {
-      reject(kOMTErrImage, @"undecodable source", nil);
+      reject(kOMTErrImageFormat, @"unsupported image format", nil);
       return;
+    }
+    if (CGImageSourceGetStatus(source) == kCGImageStatusUnknownType) {
+      CFRelease(source);
+      reject(kOMTErrImageFormat, @"unsupported image format", nil);
+      return;
+    }
+
+    // PIXEL CEILING, enforced before anything is decoded.
+    //
+    // Why it lives here and not behind a separate readImageDimensions() call:
+    // the properties below are read from the SAME CGImageSourceRef the decode
+    // runs against, so there is no window in which the file can change between
+    // the measurement and the allocation, and no future caller can forget the
+    // check. ImageIO parses the header for this; it allocates no pixels.
+    //
+    // The arithmetic is in double on purpose: 2^53 is exact, the comparison
+    // value is 3.2e7, and a CGFloat product cannot overflow into a pass.
+    if (maxPixelCount > 0) {
+      CFDictionaryRef props = CGImageSourceCopyPropertiesAtIndex(source, 0, NULL);
+      double pixelWidth = 0;
+      double pixelHeight = 0;
+      if (props != NULL) {
+        NSDictionary *p = (__bridge NSDictionary *)props;
+        NSNumber *w = p[(id)kCGImagePropertyPixelWidth];
+        NSNumber *h = p[(id)kCGImagePropertyPixelHeight];
+        if (w != nil && h != nil) {
+          pixelWidth = [w doubleValue];
+          pixelHeight = [h doubleValue];
+        }
+        CFRelease(props);
+      }
+      // FAIL CLOSED: a header we cannot measure is a header we cannot clear.
+      if (pixelWidth <= 0 || pixelHeight <= 0) {
+        CFRelease(source);
+        reject(kOMTErrImageFormat, @"unsupported image format", nil);
+        return;
+      }
+      if (pixelWidth * pixelHeight > maxPixelCount) {
+        CFRelease(source);
+        reject(kOMTErrPixels, @"source exceeds pixel ceiling", nil);
+        return;
+      }
     }
 
     CGImageRef image = NULL;
@@ -945,9 +996,19 @@ RCT_EXPORT_MODULE()
     CFRelease(source);
 
     if (image == NULL) {
-      reject(kOMTErrImage, @"undecodable source", nil);
+      // ImageIO recognised the container (the status check above passed, and
+      // when a ceiling was set it also read usable dimensions out of the
+      // header) — there is simply no decoder for this payload. An AVIF on
+      // iOS 15.x is the live case.
+      reject(kOMTErrImageFormat, @"unsupported image format", nil);
       return;
     }
+
+    // Captured before the release, and from the DECODED image rather than the
+    // header: this is what was written, after the thumbnail downscale and the
+    // orientation transform (a 90-degree rotation swaps the two).
+    NSNumber *outWidth = @((double)CGImageGetWidth(image));
+    NSNumber *outHeight = @((double)CGImageGetHeight(image));
 
     BOOL isPng = [format isEqualToString:@"png"];
     BOOL written = [self writeImage:image
@@ -957,10 +1018,11 @@ RCT_EXPORT_MODULE()
     CGImageRelease(image);
     if (!written) {
       [self removeFileAtPath:destPath];
+      // Narrowed: the image decoded, so this is an ENCODE failure.
       reject(kOMTErrImage, @"image encode failed", nil);
       return;
     }
-    resolve(nil);
+    resolve(@{@"width" : outWidth, @"height" : outHeight});
   });
 }
 

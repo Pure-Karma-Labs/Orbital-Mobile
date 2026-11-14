@@ -6,7 +6,8 @@ export const getVideoMetadata = jest.fn().mockResolvedValue({
   duration: 10.5,
 });
 export const extractThumbnail = jest.fn().mockResolvedValue(undefined);
-export const reencodeImage = jest.fn().mockResolvedValue(undefined);
+// Resolves the OUTPUT dimensions, as the native module does (#918 D13).
+export const reencodeImage = jest.fn().mockResolvedValue({ width: 2048, height: 1536 });
 export const subscribeTranscodeProgress = jest.fn(() => ({ remove: jest.fn() }));
 
 export class MediaTranscoderError extends Error {

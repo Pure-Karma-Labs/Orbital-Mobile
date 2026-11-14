@@ -122,6 +122,7 @@ export type HoldReason = Extract<
   SkipReason,
   | 'held_video'
   | 'unsupported_image_format'
+  | 'image_too_large'
   | 'media_missing'
   | 'media_unsupported_reference'
   | 'media_unreadable'
@@ -165,16 +166,23 @@ export type PostMediaFold =
  *
  * Lowest number wins. The order is "most explanatory first": a video is a
  * complete, honest answer ("Orbital imports photos"), an unsupported format is
- * specific, a missing file is actionable ("select every ZIP part"), and
- * `media_unreadable` is the residual — so it must never mask one of the
- * others.
+ * specific, an over-size image is equally specific, a missing file is
+ * actionable ("select every ZIP part"), and `media_unreadable` is the residual
+ * — so it must never mask one of the others. Only `<` is compared, so the
+ * numbering is order-preserving and may be renumbered freely.
+ *
+ * `image_too_large` cannot be produced by this pre-pass today — it is a
+ * sanitize-time verdict from the upload path (#918/#926) — so its entry exists
+ * for exhaustiveness, and its number becomes live only if a future pre-pass
+ * learns to refuse by declared dimensions.
  */
 const HOLD_PRIORITY: Readonly<Record<HoldReason, number>> = {
   held_video: 0,
   unsupported_image_format: 1,
-  media_missing: 2,
-  media_unsupported_reference: 3,
-  media_unreadable: 4,
+  image_too_large: 2,
+  media_missing: 3,
+  media_unsupported_reference: 4,
+  media_unreadable: 5,
 };
 
 // ---------------------------------------------------------------------------
@@ -331,10 +339,14 @@ export async function peekMediaEntries(
  * `ENTRY_UNSUPPORTED_IMAGE_FORMAT` is kept for exhaustiveness but is
  * unreachable from `peekEntryKind` today (verified 2026-11-12):
  * `sniffContentType` returns only `image/*`, `video/*` or `null`, so
- * `classifySniff`'s non-image branch cannot fire and an SVG, an AVIF or any
- * other exotic head comes back `ENTRY_SNIFF_INDETERMINATE` ⇒ `media_unreadable`.
- * The live producer of `unsupported_image_format` is #926's UPLOAD-time
- * `sanitizeStillImage` failure, which happens long after this pre-pass.
+ * `classifySniff`'s non-image branch cannot fire and an SVG or any other
+ * non-media head comes back `ENTRY_SNIFF_INDETERMINATE` ⇒ `media_unreadable`.
+ * (An AVIF is NOT in that set: it sniffs as `image/avif`, so it is importable
+ * here and is decided at sanitize time, where the platform either decodes it
+ * or refuses it as a format.)
+ * The live producers are the UPLOAD-time `sanitizeStillImage` refusals
+ * (#918/#926), which happen long after this pre-pass: `'unsupported-format'`
+ * ⇒ `unsupported_image_format`, `'too-many-pixels'` ⇒ `image_too_large`.
  *
  * No `catch`: see the throw policy in this module's header.
  */

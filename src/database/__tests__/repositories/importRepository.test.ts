@@ -925,7 +925,7 @@ describe('importRepository', () => {
       // Exhaustive: every reason has a bucket, zero included.
       expect(counts.text_too_long).toBe(0);
       expect(counts.malformed_post).toBe(0);
-      expect(Object.keys(counts)).toHaveLength(12);
+      expect(Object.keys(counts)).toHaveLength(13);
     });
 
     it('adds a stored duplicate_in_archive row to the counter rather than replacing it', () => {
@@ -962,7 +962,7 @@ describe('importRepository', () => {
       const counts = countImportSkipsByReason('job-1');
 
       expect(counts.held_video).toBe(1);
-      expect(Object.keys(counts)).toHaveLength(12);
+      expect(Object.keys(counts)).toHaveLength(13);
       expect(Object.keys(counts)).not.toContain('valueOf');
     });
   });

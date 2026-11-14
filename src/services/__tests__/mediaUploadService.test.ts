@@ -11,9 +11,21 @@ jest.mock('@dr.pogodin/react-native-fs');
  */
 const mockSanitizeStillImage = jest.fn();
 
-jest.mock('../media/imageSanitizer', () => ({
-  sanitizeStillImage: (...args: unknown[]) => mockSanitizeStillImage(...args),
-}));
+jest.mock('../media/imageSanitizer', () => {
+  // The constants and the error class come from the REAL module (#918). A
+  // factory that exported only `sanitizeStillImage` would leave the service's
+  // `IMPORT_MAX_PIXELS` import as `undefined`, and an assertion comparing
+  // `undefined` to `undefined` would pass while pinning nothing at all.
+  // Requiring the actual module is safe here: its own dependencies (rnfs, the
+  // transcoder) are already mocked above and by moduleNameMapper.
+  const actual = jest.requireActual('../media/imageSanitizer');
+  return {
+    sanitizeStillImage: (...args: unknown[]) => mockSanitizeStillImage(...args),
+    IMPORT_MAX_DIMENSION: actual.IMPORT_MAX_DIMENSION,
+    IMPORT_MAX_PIXELS: actual.IMPORT_MAX_PIXELS,
+    ImageSanitizeError: actual.ImageSanitizeError,
+  };
+});
 
 jest.mock('../media/videoProcessing', () => ({
   prepareVideoForUpload: jest.fn(),
@@ -2538,5 +2550,70 @@ describe('uploadMedia import mode', () => {
     expect(mockSaveMedia).toHaveBeenCalledTimes(1);
     expect(mockUpsertMedia).toHaveBeenCalledTimes(1);
     expect(mockCompleteUpload).toHaveBeenCalledTimes(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // The sanitize call site (#918)
+  //
+  // An archive image is a file of unknown provenance whose only size bound so
+  // far is the reader's 50 MiB entry cap -- which says nothing about its pixel
+  // count. These four cases pin that the import path, and ONLY the import
+  // path, hands the sanitizer the forced re-encode and the ceiling.
+  // -------------------------------------------------------------------------
+
+  describe('the sanitize options object', () => {
+    it('passes the forced re-encode and both caps on the import path', async () => {
+      await uploadMedia(importOptions);
+
+      expect(mockSanitizeStillImage).toHaveBeenCalledTimes(1);
+      const call = mockSanitizeStillImage.mock.calls[0];
+      expect(call).toHaveLength(4);
+      // HARD LITERALS, not the imported constants: this is the second half of
+      // the value-binding pin, so lowering IMPORT_MAX_PIXELS to a figure no
+      // one re-measured fails a test as well as an invariant.
+      expect(call[3]).toEqual({
+        forceReencode: true,
+        maxDimension: 2048,
+        maxPixelCount: 32_000_000,
+      });
+    });
+
+    it('imports the constants as real numbers, so case A cannot be vacuous', () => {
+      const { IMPORT_MAX_DIMENSION, IMPORT_MAX_PIXELS } = require('../media/imageSanitizer');
+
+      // If the factory mock above ever drops these, the service's imports go
+      // `undefined` and the literals in case A would be comparing nothing.
+      expect(typeof IMPORT_MAX_DIMENSION).toBe('number');
+      expect(typeof IMPORT_MAX_PIXELS).toBe('number');
+      expect(IMPORT_MAX_DIMENSION).toBe(2048);
+      expect(IMPORT_MAX_PIXELS).toBe(32_000_000);
+    });
+
+    it('makes the ordinary path a THREE-argument call, as the other callers do', async () => {
+      await uploadMedia(baseOptions);
+
+      expect(mockSanitizeStillImage).toHaveBeenCalledTimes(1);
+      // Not "the 4th argument is undefined": a spread of an empty tuple is
+      // what keeps an import-only options object from ever leaking into the
+      // picker path, and only the recorded arity can tell the two apart.
+      expect(mockSanitizeStillImage.mock.calls[0]).toHaveLength(3);
+    });
+
+    it('surfaces a pixel-ceiling refusal unwrapped, with its reason intact', async () => {
+      const { ImageSanitizeError } = require('../media/imageSanitizer');
+      const refusal = new ImageSanitizeError('too-many-pixels');
+      mockSanitizeStillImage.mockRejectedValue(refusal);
+
+      const err = await uploadMedia(importOptions).catch((e: unknown) => e);
+
+      // The sanitize runs long before chunk 0, so nothing is staged and the
+      // id is still reusable -- wrapping it would tell the runner to burn an
+      // id it never used, and would bury the reason #926 maps to a skip.
+      expect(err).toBe(refusal);
+      expect(err).not.toBeInstanceOf(ImportMediaStagedError);
+      expect((err as { name: string }).name).toBe('ImageSanitizeError');
+      expect((err as { reason: string }).reason).toBe('too-many-pixels');
+      expect(mockUploadImportChunk).not.toHaveBeenCalled();
+    });
   });
 });

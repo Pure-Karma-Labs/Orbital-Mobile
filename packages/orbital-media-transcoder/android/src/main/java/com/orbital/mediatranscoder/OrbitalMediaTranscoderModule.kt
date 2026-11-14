@@ -418,6 +418,11 @@ class OrbitalMediaTranscoderModule(reactContext: ReactApplicationContext) :
     val maxDimension = options.getDouble("maxDimension").toInt()
     val quality = options.getDouble("quality")
     val format = options.getString("format") ?: "jpeg"
+    // 0 = no limit, the same sentinel idiom maxDimension uses for "no scaling".
+    // Read through hasKey so an older JS bundle that predates the field still
+    // calls rather than throwing on a missing key.
+    val maxPixelCount =
+      if (options.hasKey("maxPixelCount")) options.getDouble("maxPixelCount").toLong() else 0L
 
     executor().execute {
       if (!File(sourcePath).exists()) {
@@ -425,35 +430,103 @@ class OrbitalMediaTranscoderModule(reactContext: ReactApplicationContext) :
         return@execute
       }
       var bitmap: Bitmap? = null
+      // LOAD-BEARING, both of them. ImageDecoder is free to wrap an exception
+      // thrown from its header listener, so neither the refusal nor the format
+      // verdict may be inferred from the exception type that finally surfaces:
+      // `ceilingHit` says the listener refused, and `headerSeen` says the
+      // header was parsed at all (if it never was, nothing on this device can
+      // decode the payload).
+      val decodeState = DecodeState()
       try {
         bitmap =
           if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            decodeWithImageDecoder(sourcePath, maxDimension)
+            decodeWithImageDecoder(sourcePath, maxDimension, maxPixelCount, decodeState)
           } else {
-            decodeWithBitmapFactory(sourcePath, maxDimension)
+            decodeWithBitmapFactory(sourcePath, maxDimension, maxPixelCount, decodeState)
           }
         val compressFormat =
           if (format == "png") Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG
+        // Read BEFORE writeBitmap, which is also before the finally's recycle():
+        // a recycled bitmap's width/height are not readable.
+        val outWidth = bitmap.width
+        val outHeight = bitmap.height
         // Bitmap.compress writes no metadata for either format.
         writeBitmap(bitmap, destPath, compressFormat, qualityPercent(quality))
         // Success wrote destPath: if the runtime went away while the image was
         // being re-encoded, that file is an orphan nobody will ever read.
-        settleIfLive(destPath) { promise.resolve(null) }
+        settleIfLive(destPath) {
+          val out = Arguments.createMap()
+          out.putInt("width", outWidth)
+          out.putInt("height", outHeight)
+          promise.resolve(out)
+        }
       } catch (e: Exception) {
         File(destPath).delete()
-        settleIfLive(null) { promise.reject("EIMAGE", "image re-encode failed") }
+        // Fixed phrases only; the exception's own text is NEVER forwarded. An
+        // ImageDecoder.DecodeException embeds the source description, which
+        // for createSource(File) contains the device path — and the composer
+        // does capture upload failures.
+        val code: String
+        val message: String
+        if (decodeState.ceilingHit) {
+          code = "EPIXELS"
+          message = "source exceeds pixel ceiling"
+        } else if (!decodeState.headerSeen) {
+          code = "EIMAGEFORMAT"
+          message = "unsupported image format"
+        } else {
+          // The header parsed and the ceiling let it through, so the pixels or
+          // the encode are what failed.
+          code = "EIMAGE"
+          message = "image re-encode failed"
+        }
+        settleIfLive(null) { promise.reject(code, message) }
       } finally {
         bitmap?.recycle()
       }
     }
   }
 
+  /**
+   * What the decode observed, reported out of band.
+   *
+   * Out of band because the exception that reaches the catch is not
+   * trustworthy: ImageDecoder may replace a listener's throw with one of its
+   * own, and BitmapFactory reports failure by returning null rather than by
+   * throwing anything specific.
+   */
+  private class DecodeState {
+    /** The header was parsed — so SOMETHING on this device can read the format. */
+    var headerSeen = false
+
+    /** The source's declared pixel count exceeded maxPixelCount. */
+    var ceilingHit = false
+  }
+
+  /** Thrown from the header listener to abort before any pixel allocation. */
+  private class PixelCeilingException : RuntimeException("pixel ceiling")
+
   @androidx.annotation.RequiresApi(Build.VERSION_CODES.P)
-  private fun decodeWithImageDecoder(sourcePath: String, maxDimension: Int): Bitmap {
+  private fun decodeWithImageDecoder(
+    sourcePath: String,
+    maxDimension: Int,
+    maxPixelCount: Long,
+    state: DecodeState,
+  ): Bitmap {
     val source = ImageDecoder.createSource(File(sourcePath))
     // ImageDecoder applies EXIF orientation itself; ALLOCATOR_SOFTWARE keeps
     // the result compressible (hardware bitmaps cannot be encoded).
     return ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+      // This listener runs AFTER the header parse and BEFORE the pixel
+      // allocation — the only point at which the source's true dimensions are
+      // known and nothing has been allocated yet.
+      state.headerSeen = true
+      if (maxPixelCount > 0 &&
+        info.size.width.toLong() * info.size.height.toLong() > maxPixelCount
+      ) {
+        state.ceilingHit = true
+        throw PixelCeilingException()
+      }
       decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
       if (maxDimension > 0) {
         val longSide = max(info.size.width, info.size.height)
@@ -469,14 +542,40 @@ class OrbitalMediaTranscoderModule(reactContext: ReactApplicationContext) :
   }
 
   /**
-   * API 24-27 path. HEIC has no platform decoder before API 28, so decodeFile
-   * returns null and the caller surfaces EIMAGE.
+   * API 24-27 path. HEIC (and AVIF) have no platform decoder before API 28, so
+   * the bounds pass yields nothing and the caller surfaces EIMAGEFORMAT.
+   *
+   * This path keeps up to three live bitmaps (sampled decode, rotation copy,
+   * final scale), which makes it the weakest live path against the ceiling —
+   * the global pixel ceiling is measured against THIS one.
    */
-  private fun decodeWithBitmapFactory(sourcePath: String, maxDimension: Int): Bitmap {
+  private fun decodeWithBitmapFactory(
+    sourcePath: String,
+    maxDimension: Int,
+    maxPixelCount: Long,
+    state: DecodeState,
+  ): Bitmap {
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     BitmapFactory.decodeFile(sourcePath, bounds)
     if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
-      throw IOException("undecodable source")
+      // Nothing parsed the header: no decoder for this format on this API.
+      throw IOException("unsupported image format")
+    }
+    state.headerSeen = true
+    // The bounds pass already read the header and allocated no pixels, so the
+    // ceiling goes here, before the real decode below.
+    //
+    // HONEST LIMIT, unlike the >=28 and iOS arms: BitmapFactory has no header
+    // hook, so the real decode below RE-OPENS sourcePath. A file swapped
+    // between the two passes would be decoded unmeasured. This is sound only
+    // because every path handed to this module is app-private storage, which
+    // no other process can write; it would NOT be sound for a user-writable
+    // or shared-storage path.
+    if (maxPixelCount > 0 &&
+      bounds.outWidth.toLong() * bounds.outHeight.toLong() > maxPixelCount
+    ) {
+      state.ceilingHit = true
+      throw PixelCeilingException()
     }
 
     val opts = BitmapFactory.Options()

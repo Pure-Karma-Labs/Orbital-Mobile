@@ -58,7 +58,12 @@ import { splitTrailingExtension } from './media/contentType';
 import { isDatabaseInitialized } from '../database/connection';
 import { useAppStore } from '../stores/useAppStore';
 import { generateUUID } from '../utils/uuid';
-import { sanitizeStillImage, type SanitizedImageFormat } from './media/imageSanitizer';
+import {
+  sanitizeStillImage,
+  IMPORT_MAX_DIMENSION,
+  IMPORT_MAX_PIXELS,
+  type SanitizedImageFormat,
+} from './media/imageSanitizer';
 import { prepareVideoForUpload, isCancellation } from './media/videoProcessing';
 import { UPLOAD_CANCELLED_MESSAGE } from './media/uploadCancellation';
 import { addUploadBreadcrumb, captureUploadFailure } from './uploadTelemetry';
@@ -650,7 +655,42 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
       // Sanitize still image (strip EXIF/GPS metadata, fail-closed verify)
       addUploadBreadcrumb('sanitize', { mime: mimeType });
       const targetPath = stagingPath ? stagingPath : sanitizedStagingPath;
-      const { format } = await sanitizeStillImage(sourcePath, mimeType, targetPath);
+      /**
+       * Meta import (#918): one forced native re-encode, capped at
+       * IMPORT_MAX_DIMENSION, refused before any decode above
+       * IMPORT_MAX_PIXELS. An archive image is a file of unknown provenance
+       * whose only size bound so far is the reader's 50 MiB entry cap, which
+       * says nothing at all about its pixel count.
+       *
+       * ## Removal trigger
+       * The sanitizer's returned `width`/`height` have no consumer in this
+       * PR. The consumer is THIS FUNCTION, in #926: the sanitize happens
+       * here, inside the image branch, so in import mode it is `uploadMedia`
+       * that assigns the sanitizer's output dimensions to its own
+       * `width`/`height` locals — the ones the envelope is built from. The
+       * runner never passes dimensions in, because an archive gives it none,
+       * and the only other way to get them would be a full-resolution decode
+       * of exactly the file IMPORT_MAX_PIXELS exists to refuse. If #926 lands
+       * without reading them, delete the native D13 passthrough rather than
+       * leaving a value nothing reads.
+       */
+      const { format } = await sanitizeStillImage(
+        sourcePath,
+        mimeType,
+        targetPath,
+        // Spread of a tuple, not `: undefined`: the normal path keeps making
+        // the exact same THREE-argument call the other two callers make, so
+        // an import-only options object cannot leak into it.
+        ...(importMode
+          ? ([
+              {
+                forceReencode: true,
+                maxDimension: IMPORT_MAX_DIMENSION,
+                maxPixelCount: IMPORT_MAX_PIXELS,
+              },
+            ] as const)
+          : ([] as const)),
+      );
       sourcePath = targetPath;
 
       // The sanitizer may have re-encoded (anything that is not already

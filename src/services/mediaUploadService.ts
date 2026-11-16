@@ -662,19 +662,15 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
        * whose only size bound so far is the reader's 50 MiB entry cap, which
        * says nothing at all about its pixel count.
        *
-       * ## Removal trigger
-       * The sanitizer's returned `width`/`height` have no consumer in this
-       * PR. The consumer is THIS FUNCTION, in #926: the sanitize happens
-       * here, inside the image branch, so in import mode it is `uploadMedia`
-       * that assigns the sanitizer's output dimensions to its own
-       * `width`/`height` locals — the ones the envelope is built from. The
+       * The sanitizer's returned `width`/`height` are consumed below, on the
+       * import path only (#926): the sanitize happens here, inside the image
+       * branch, so `uploadMedia` is what assigns the output dimensions to its
+       * own `width`/`height` locals — the ones the envelope is built from. The
        * runner never passes dimensions in, because an archive gives it none,
        * and the only other way to get them would be a full-resolution decode
-       * of exactly the file IMPORT_MAX_PIXELS exists to refuse. If #926 lands
-       * without reading them, delete the native D13 passthrough rather than
-       * leaving a value nothing reads.
+       * of exactly the file IMPORT_MAX_PIXELS exists to refuse.
        */
-      const { format } = await sanitizeStillImage(
+      const sanitized = await sanitizeStillImage(
         sourcePath,
         mimeType,
         targetPath,
@@ -693,13 +689,34 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<UploadMe
       );
       sourcePath = targetPath;
 
+      // Meta import (#926): the dimensions of the bytes we are about to
+      // encrypt, straight from the one native re-encode the import options
+      // force. IMPORT ONLY, and the three reasons are worth stating:
+      //
+      //  (a) An archive hands the runner no dimensions, and it must not decode
+      //      a raw export file to invent some — that decode is the OOM
+      //      IMPORT_MAX_PIXELS refuses before it happens.
+      //  (b) The ordinary path keeps the PICKER's dimensions untouched, as it
+      //      always has. They describe the source rather than a possibly
+      //      downscaled output, which is a pre-existing inaccuracy on that
+      //      path and NOT something to change from inside an import PR.
+      //  (c) Assigned, never defaulted: the import options always pre-encode,
+      //      so these are always present for this caller. If they ever are
+      //      not, the envelope omits the keys (the spread below is `!= null`
+      //      guarded) rather than carrying a guessed size into an append-only
+      //      envelope.
+      if (importMode && sanitized.width != null && sanitized.height != null) {
+        width = sanitized.width;
+        height = sanitized.height;
+      }
+
       // The sanitizer may have re-encoded (anything that is not already
       // JPEG/PNG becomes JPEG), so the label follows the bytes from here on:
       // the envelope, the DB row, the store item and the canonical
       // `{id}.{ext}` file all read these two variables. `contentClass` and
       // `progressBase` deliberately keep deriving from options.mimeType, so
       // the server's retention class and the progress bar are unaffected.
-      ({ mimeType, fileName } = relabelSanitizedImage(fileName, format));
+      ({ mimeType, fileName } = relabelSanitizedImage(fileName, sanitized.format));
     }
     // -----------------------------------------------------------------------
     // Thumbnail branch (_isThumbnail) -- already sanitized by videoProcessing

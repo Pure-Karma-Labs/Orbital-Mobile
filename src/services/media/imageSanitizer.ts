@@ -1033,6 +1033,34 @@ async function readSourceOrientation(filePath: string): Promise<number | null> {
 /** What `sanitizeStillImage` wrote — it only ever emits JPEG or PNG. */
 export type SanitizedImageFormat = 'jpeg' | 'png';
 
+/**
+ * What `sanitizeStillImage` wrote: the format always, the OUTPUT pixel
+ * dimensions when a native re-encode produced them (#926, closing #918's D13).
+ *
+ * `width`/`height` are ABSENT — not `undefined`-valued — on the strip-only
+ * path, and that is the contract, not an omission:
+ *
+ *  - The only size the module can state honestly is the one `reencodeImage`
+ *    resolves. The byte-level strip changes no pixel and reads no header, and
+ *    the alternative (a full-resolution decode to measure) is exactly the work
+ *    `maxPixelCount` exists to refuse on the import path.
+ *  - Keeping the keys off the strip-only answer preserves #918's D1 promise
+ *    that the three-argument call is byte-identical to what it always was,
+ *    down to the shape of this object.
+ *
+ * The import path always pre-encodes (`maxPixelCount` implies it), so for that
+ * caller both fields are always present. `uploadMedia` nonetheless treats them
+ * as optional: an absent dimension omits the envelope key rather than
+ * substituting a guess.
+ */
+export interface SanitizedImage {
+  readonly format: SanitizedImageFormat;
+  /** Output width in pixels. Present iff a native re-encode ran. */
+  readonly width?: number;
+  /** Output height in pixels. Present iff a native re-encode ran. */
+  readonly height?: number;
+}
+
 /** Why the sanitizer refused an image before it could strip it (#918). */
 export type ImageSanitizeReason = 'unsupported-format' | 'too-many-pixels';
 
@@ -1144,11 +1172,13 @@ function toImageSanitizeError(e: unknown): unknown {
  *
  * Always verifies the output is clean; throws if metadata persists (fail-closed).
  *
- * Returns the format of the bytes it actually WROTE (#880). The output is
- * always JPEG or PNG — a non-JPEG source is re-encoded to JPEG, and the
- * fallback strip branch below throws on anything that is neither — so the
- * caller can relabel the upload's content type and file name from it instead
- * of carrying the picker's label around re-encoded bytes.
+ * Returns the format of the bytes it actually WROTE (#880), plus the output
+ * dimensions whenever a native re-encode produced them (#926 — see
+ * {@link SanitizedImage}). The output is always JPEG or PNG — a non-JPEG
+ * source is re-encoded to JPEG, and the fallback strip branch below throws on
+ * anything that is neither — so the caller can relabel the upload's content
+ * type and file name from it instead of carrying the picker's label around
+ * re-encoded bytes.
  *
  * @param sourcePath Absolute path to the source image
  * @param mimeType MIME type of the source image
@@ -1158,15 +1188,16 @@ function toImageSanitizeError(e: unknown): unknown {
  *   value (see the D13 note at the pre-encode call below).
  * @throws Error if sanitization fails or metadata persists after strip
  * @throws ImageSanitizeError when the native decoder refused the source:
- *   `too-many-pixels` for the `maxPixelCount` ceiling, `unsupported-format`
- *   when the platform has no decoder for it.
+ *   `too-many-pixels` for the `maxPixelCount` ceiling or for a re-encode whose
+ *   OUTPUT is still too large to strip in memory, `unsupported-format` when
+ *   the platform has no decoder for it.
  */
 export async function sanitizeStillImage(
   sourcePath: string,
   mimeType: string,
   outPath: string,
   options?: SanitizeStillImageOptions,
-): Promise<{ format: SanitizedImageFormat }> {
+): Promise<SanitizedImage> {
   const isJpeg = mimeType === 'image/jpeg' || mimeType === 'image/jpg';
   const isPng = mimeType === 'image/png';
   const isDirectlyStrippable = isJpeg || isPng;
@@ -1190,6 +1221,12 @@ export async function sanitizeStillImage(
 
   let workPath = sourcePath;
   let tempCompressPath: string | null = null;
+  /**
+   * The OUTPUT dimensions of the one native re-encode, or null when the
+   * strip-only path ran and there are none to state (#926). Never a decode of
+   * the source: see {@link SanitizedImage}.
+   */
+  let reencoded: { width: number; height: number } | null = null;
   const preencodePath = `${CachesDirectoryPath}/${basename(outPath)}.pre-staging.bin`;
 
   try {
@@ -1230,26 +1267,21 @@ export async function sanitizeStillImage(
       // through here, which is what makes "the ceiling parameter is always
       // carried" a machine-checkable claim.
       //
-      // The resolved value is DELIBERATELY DROPPED here. The native layer now
-      // reports the output's width/height (#918 D13) so that nothing on the
-      // import path ever has to decode a raw archive file to learn an image's
-      // dimensions. The consumer is `uploadMedia` ITSELF, not the runner: the
-      // sanitize happens inside `uploadMedia`'s image branch, so in import
-      // mode it is that function which assigns the returned dimensions to its
-      // own `width`/`height` locals — the ones the envelope is built from.
-      // The runner never passes dimensions in, because it has none to pass.
+      // The resolved value is KEPT (#926, closing #918's D13 removal
+      // trigger). The native layer reports the OUTPUT's width/height so that
+      // nothing on the import path ever has to decode a raw archive file to
+      // learn an image's dimensions. The consumer is `uploadMedia` ITSELF, not
+      // the runner: the sanitize happens inside `uploadMedia`'s image branch,
+      // so in import mode it is that function which assigns these dimensions
+      // to its own `width`/`height` locals — the ones the envelope is built
+      // from. The runner never passes dimensions in, because it has none to
+      // pass.
       //
-      // Not surfaced yet, because widening this return changes the shape of
-      // the object the OMITTED three-argument call produces, which is exactly
-      // what D1 promises will not happen. ## Removal trigger: #926, the first
-      // caller that actually reads the dimensions, widens this return and
-      // amends the 9 exhaustive `toEqual({ format })` assertions across 3
-      // suites in the same change — 7 pre-existing ones in
-      // `imageSanitizer.format.test.ts` and `imageSanitizer.orientation.test.ts`
-      // plus 2 in `imageSanitizer.options.test.ts` — where the shape change
-      // finally has a consumer justifying it.
+      // Surfaced ONLY on this path, so #918's D1 promise survives: the
+      // omitted three-argument call still produces `{ format }` and nothing
+      // else (see {@link SanitizedImage}).
       try {
-        await reencodeImage(sourcePath, preencodePath, {
+        reencoded = await reencodeImage(sourcePath, preencodePath, {
           maxDimension: dimension,
           quality: 0.9,
           // Reproduces all three of today's format choices exactly: a
@@ -1264,6 +1296,32 @@ export async function sanitizeStillImage(
         throw toImageSanitizeError(e);
       }
       workPath = preencodePath;
+
+      // THE RE-ENCODE'S OWN OUTPUT IS BOUNDED TOO (#926, from the #992
+      // review). `MAX_STRIP_SIZE_BYTES` is a Hermes-heap budget for the whole
+      // read-strip-write sequence below, which holds the base64 text, the
+      // decoded `Uint8Array` and the stripped copy at once. Until this check
+      // the budget was enforced on the SOURCE only, so a re-encode that
+      // produced something larger than its input — a losslessly re-encoded
+      // PNG of a noisy 2048x2048 screenshot is the realistic case, since q0.9
+      // JPEG at that dimension cannot get near 8 MiB — walked straight into
+      // the unbounded read the constant exists to prevent. That was the last
+      // path into this function that could read an unbounded file.
+      //
+      // Refused, not re-encoded a second time: a second native call would
+      // break the single-call-site property the `sanitizer-single-reencode`
+      // invariant reads, and a second lossy pass over the member's photo to
+      // save a few hundred KB is not a trade worth making silently.
+      //
+      // `too-many-pixels` is the honest reason — the output is too big to
+      // process on this device, which is also what the member is told — and on
+      // the import path it maps to the permanent `image_too_large` skip. The
+      // ceiling is one global constant, not a device-dependent probe, which is
+      // what keeps that skip's "re-running changes nothing" promise true.
+      const outStat = await stat(preencodePath);
+      if (outStat.size > MAX_STRIP_SIZE_BYTES) {
+        throw new ImageSanitizeError('too-many-pixels');
+      }
     }
 
     // Read the file to strip
@@ -1302,7 +1360,13 @@ export async function sanitizeStillImage(
     if (written !== 'image/jpeg' && written !== 'image/png') {
       throw new Error('Could not process this image. The image cannot be sent.');
     }
-    return { format: written === 'image/png' ? 'png' : 'jpeg' };
+    // The dimensions are SPREAD, so the strip-only answer keeps exactly one
+    // key. `...null` would be a type error and `width: undefined` a shape
+    // change — see {@link SanitizedImage}.
+    return {
+      format: written === 'image/png' ? 'png' : 'jpeg',
+      ...(reencoded !== null ? { width: reencoded.width, height: reencoded.height } : {}),
+    };
   } finally {
     // Clean up temp compress file if created
     if (tempCompressPath) {

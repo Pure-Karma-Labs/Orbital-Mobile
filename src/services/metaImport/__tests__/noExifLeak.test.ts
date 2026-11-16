@@ -190,6 +190,32 @@ function stripComments(source: string): string {
   return out.join('');
 }
 
+/**
+ * The ONE spelling of `tags` executable code may use: Sentry's tag bag.
+ *
+ * `tags` is on the denylist because Meta's exports carry a `tags` array of
+ * TAGGED PEOPLE, and nothing here may read it. `captureError`'s context object
+ * is an unrelated homonym — `{ tags: { import_code: … } }` in
+ * `importRunner.ts` — and it cannot be renamed, because the key is
+ * `CaptureContext`'s.
+ *
+ * So the exemption is the tightest shape that admits it and nothing else: a
+ * line that is EXACTLY the opening of an object property named `tags`. That
+ * rules out `'tags'` as a string, `media.tags`, `pickField(m, 'tags')`,
+ * `tags: media.tags` and `tags: { place: … }` (whose second match is not
+ * exempt and still fails). A leak cannot hide behind it, because a line
+ * matching this pattern has room for nothing else.
+ */
+const SENTRY_TAG_BAG = /^\s*tags: \{$/;
+
+/** Every forbidden match on the line is one this file sanctions. */
+function isExempt(text: string): boolean {
+  if (!SENTRY_TAG_BAG.test(text)) return false;
+  // Belt: strip the sanctioned token and re-test, so a future widening of the
+  // pattern cannot admit a second match by accident.
+  return !FORBIDDEN.test(text.replace(/\btags\b/g, ''));
+}
+
 /** Remove the one sanctioned mention: `jsonSafety.ts`'s deletion denylist. */
 function removeDenylist(file: string, source: string): string {
   if (file !== 'jsonSafety.ts') return source;
@@ -232,16 +258,32 @@ function sourceFiles(dir: string = MODULE_DIR, prefix = ''): string[] {
 
 describe('the Meta import never reads location, EXIF or tag data', () => {
   it('scans every module in the directory', () => {
-    // Non-vacuity: if the glob ever stops finding files, this test would pass
-    // by scanning nothing.
+    // Non-vacuity, by NAME rather than by count. A count is a floor somebody
+    // picked on one afternoon: it drifts upward as modules land, it goes
+    // stale downward the day one is merged away, and in neither direction
+    // does it say WHICH file the scan must not have lost. The named floor is
+    // every module that reads an archive record or carries a run: the two
+    // parsers and the safe reviver that see Meta's own JSON (where
+    // `exif_data` and the GPS subtree actually live), plus the four runner
+    // modules the import is built out of.
     const files = sourceFiles();
-    expect(files).toContain('facebookParser.ts');
-    expect(files).toContain('instagramParser.ts');
-    expect(files).toContain('jsonSafety.ts');
-    // The real count, not a floor somebody picked once: the directory holds
-    // twelve non-test modules, and a number well under that (it was 6) would
-    // still pass on a scan that had quietly lost half of them.
-    expect(files.length).toBeGreaterThanOrEqual(12);
+    for (const required of [
+      'facebookParser.ts',
+      'instagramParser.ts',
+      'jsonSafety.ts',
+      'importRunner.ts',
+      'importBatch.ts',
+      'importMedia.ts',
+      'importErrors.ts',
+    ]) {
+      expect(files).toContain(required);
+    }
+    // Kept only as the cheapest check that the WALK still works at all: it
+    // would catch a `sourceFiles` that returned exactly the named set and
+    // nothing else (a recursion that stopped descending, say). Deliberately
+    // one above the named floor rather than the live module count, so it
+    // never needs editing when a module lands or leaves.
+    expect(files.length).toBeGreaterThan(7);
   });
 
   it('strips comments without touching string literals', () => {
@@ -283,7 +325,17 @@ describe('the Meta import never reads location, EXIF or tag data', () => {
     const offenders = code
       .split('\n')
       .map((line, i) => ({ line: i + 1, text: line }))
-      .filter((row) => FORBIDDEN.test(row.text));
+      .filter((row) => FORBIDDEN.test(row.text) && !isExempt(row.text));
     expect(offenders).toEqual([]);
+  });
+
+  it('exempts only the Sentry tag bag, not any other mention of tags', () => {
+    expect(isExempt('    tags: {')).toBe(true);
+    // Everything a leak would actually look like:
+    expect(isExempt("    const t = 'tags';")).toBe(false);
+    expect(isExempt('    tags: media.tags,')).toBe(false);
+    expect(isExempt('    tags: { place: entry.place },')).toBe(false);
+    expect(isExempt("    pickField(media, 'tags')")).toBe(false);
+    expect(isExempt('    exif_data: 1,')).toBe(false);
   });
 });

@@ -328,7 +328,16 @@ describe('sanitizeStillImage orientation routing', () => {
    * verify re-read sees it.
    */
   function mockFs(files: Record<string, Uint8Array>, sizeBytes: number) {
-    rnfs.stat.mockResolvedValue({ size: sizeBytes });
+    // Per-path, not one flat answer: since #926 the pre-encode OUTPUT is
+    // stat'd against the same 8 MiB strip budget as the source, so a flat
+    // 9 MiB would make the staging file refuse itself and the over-size cases
+    // below would never reach their strip. `sizeBytes` is the SOURCE's
+    // declared size; every other virtual file reports its real byte length.
+    rnfs.stat.mockImplementation(async (p: string) => {
+      if (p === SOURCE) return { size: sizeBytes };
+      const bytes = files[p];
+      return { size: bytes ? bytes.length : sizeBytes };
+    });
     rnfs.read.mockImplementation(async (p: string, len: number, pos: number) => {
       const bytes = files[p];
       if (!bytes) throw new Error(`ENOENT ${p}`);
@@ -456,6 +465,11 @@ describe('sanitizeStillImage orientation routing', () => {
   // The upload service relabels the whole row from this value, so it must
   // describe the bytes WRITTEN, never the caller's mimeType — which is the
   // picker's claim about a source that may have been re-encoded away.
+  //
+  // The exact shapes below also pin #926's split: a case that reaches
+  // reencodeImage carries that call's OUTPUT dimensions, and a strip-only case
+  // carries the single `format` key it always did — which is #918's D1 promise
+  // that the three-argument call is unchanged, down to this object.
   // -------------------------------------------------------------------------
 
   describe('returned format', () => {
@@ -488,8 +502,12 @@ describe('sanitizeStillImage orientation routing', () => {
       };
       mockFs(files, 1024);
 
+      // Not directly strippable, so this takes the pre-encode route and the
+      // dimensions are the ones the transcoder mock resolves (#926).
       await expect(sanitizeStillImage(SOURCE, 'image/heic', OUT)).resolves.toEqual({
         format: 'jpeg',
+        width: 2048,
+        height: 1536,
       });
       expect(reencodeImage).toHaveBeenCalledTimes(1);
     });
@@ -501,8 +519,12 @@ describe('sanitizeStillImage orientation routing', () => {
       };
       mockFs(files, 1024);
 
+      // Orientation 6 routes through the re-encode, which is also where the
+      // dimensions come from (#926).
       await expect(sanitizeStillImage(SOURCE, 'image/jpeg', OUT)).resolves.toEqual({
         format: 'jpeg',
+        width: 2048,
+        height: 1536,
       });
     });
 
@@ -513,8 +535,12 @@ describe('sanitizeStillImage orientation routing', () => {
       };
       mockFs(files, 9 * 1024 * 1024);
 
+      // The size branch pre-encodes, so the dimensions ride back with the
+      // format (#926) — the transcoder reports them whatever it wrote.
       await expect(sanitizeStillImage(SOURCE, 'image/png', OUT)).resolves.toEqual({
         format: 'png',
+        width: 2048,
+        height: 1536,
       });
       expect(reencodeImage).toHaveBeenCalledWith(SOURCE, PREENCODE, {
         maxDimension: 2048,

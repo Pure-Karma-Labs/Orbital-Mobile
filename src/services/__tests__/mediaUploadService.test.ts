@@ -2616,4 +2616,63 @@ describe('uploadMedia import mode', () => {
       expect(mockUploadImportChunk).not.toHaveBeenCalled();
     });
   });
+
+  // -------------------------------------------------------------------------
+  // The dimensions in the chunk-0 envelope (#926)
+  //
+  // An archive hands the runner no dimensions at all, and the only other way
+  // to get them would be a full-resolution decode of exactly the export file
+  // IMPORT_MAX_PIXELS refuses. So the sanitizer's one native re-encode is the
+  // sole source on the import path -- and the picker stays the sole source on
+  // the ordinary one.
+  // -------------------------------------------------------------------------
+
+  describe("the envelope's width and height", () => {
+    /** The chunk-0 envelope plaintext, as handed to encryptContent. */
+    function chunkZeroEnvelope(): Record<string, unknown> {
+      return JSON.parse(mockEncryptContent.mock.calls[0][0] as string) as Record<string, unknown>;
+    }
+
+    it("takes the SANITIZER's output dimensions on the import path", async () => {
+      // Deliberately portrait, and asserted in that order: a transposed
+      // assignment would ship every imported photo with a sideways aspect
+      // ratio to every viewer, and a square fixture could not tell.
+      mockSanitizeStillImage.mockResolvedValue({ format: 'jpeg', width: 1536, height: 2048 });
+
+      await uploadMedia(importOptions);
+
+      const envelope = chunkZeroEnvelope();
+      expect(envelope.width).toBe(1536);
+      expect(envelope.height).toBe(2048);
+    });
+
+    it('omits both keys when the sanitizer reports no dimensions', async () => {
+      // The import options always pre-encode, so this shape should not occur
+      // -- which is exactly why it must degrade to silence. An append-only
+      // envelope carrying a guessed 0 or a null would be a size claim no
+      // viewer could tell apart from a measured one.
+      mockSanitizeStillImage.mockResolvedValue({ format: 'jpeg' });
+
+      await uploadMedia(importOptions);
+
+      const envelope = chunkZeroEnvelope();
+      expect(envelope).not.toHaveProperty('width');
+      expect(envelope).not.toHaveProperty('height');
+    });
+
+    it("keeps the PICKER's dimensions on the ordinary path, ignoring the sanitizer's", async () => {
+      // Not an oversight: the picker's numbers describe the source rather than
+      // a possibly downscaled output, which is a pre-existing inaccuracy on
+      // that path and NOT something an import change gets to alter. The two
+      // pairs are deliberately both plausible and unequal, so a path that
+      // leaked the sanitizer's answer fails here.
+      mockSanitizeStillImage.mockResolvedValue({ format: 'jpeg', width: 800, height: 600 });
+
+      await uploadMedia({ ...baseOptions, width: 1920, height: 1080 });
+
+      const envelope = chunkZeroEnvelope();
+      expect(envelope.width).toBe(1920);
+      expect(envelope.height).toBe(1080);
+    });
+  });
 });

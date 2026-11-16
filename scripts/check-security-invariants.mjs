@@ -2924,6 +2924,42 @@ const ME_FORBIDDEN_IN_LOGS = [
 ];
 const ME_LOG_CALL_RE = /\b(?:console\.(?:log|warn|error|info|debug|trace)|captureError|Sentry\.\w+)\s*\(/;
 
+/**
+ * Every log/Sentry call in `code`, as `[lineNumber, windowText]`.
+ *
+ * The window extends from the call until its parens balance, so a multi-line
+ * `captureError()` cannot hide a forbidden identifier on its second line — or
+ * its fourteenth. Still capped, so an unbalanced paren (or a `(` inside a
+ * string) cannot make this quadratic; 40 lines is far past any realistic
+ * Sentry payload literal, and the cap was raised from 12 after a mutation
+ * proof slipped a name through on line 14.
+ *
+ * `code` must already be comment-stripped: every file these rules read
+ * documents the identifiers they forbid, and a mention must never count.
+ *
+ * Shared by rule 24c (peer export file names) and rule 35 (Meta import
+ * content). ONE implementation on purpose — the line-14 lesson is expensive
+ * to re-learn, and a sibling rule with a shorter window is the one a leak
+ * survives in.
+ */
+function* meLogWindows(code) {
+  const lines = code.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (!ME_LOG_CALL_RE.test(lines[i])) continue;
+    let depth = 0;
+    let windowText = '';
+    for (let j = i; j < Math.min(lines.length, i + 40); j++) {
+      windowText += `${lines[j]}\n`;
+      for (const ch of lines[j]) {
+        if (ch === '(') depth += 1;
+        else if (ch === ')') depth -= 1;
+      }
+      if (depth <= 0) break;
+    }
+    yield [i + 1, windowText];
+  }
+}
+
 const ME_REQUIRED_LOG_FILES = [
   ME_SERVICE,
   ME_EXPORT_NAMES,
@@ -2975,29 +3011,10 @@ for (const file of ME_REQUIRED_LOG_FILES) {
   const raw = meRead(file, ME_LOG_RULE, 'its log and Sentry lines');
   if (raw === null) continue;
 
-  const lines = meStripComments(raw).split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    if (!ME_LOG_CALL_RE.test(lines[i])) continue;
-    // Extend until the call's parens balance, so a multi-line captureError()
-    // cannot hide a name on its second line — or its fourteenth. Still capped,
-    // so an unbalanced paren (or a `(` inside a string) cannot make this
-    // quadratic; 40 lines is far past any realistic Sentry payload literal,
-    // and the cap was raised from 12 after a mutation proof slipped a name
-    // through on line 14.
-    let depth = 0;
-    let windowText = '';
-    for (let j = i; j < Math.min(lines.length, i + 40); j++) {
-      windowText += `${lines[j]}\n`;
-      for (const ch of lines[j]) {
-        if (ch === '(') depth += 1;
-        else if (ch === ')') depth -= 1;
-      }
-      if (j > i && depth <= 0) break;
-      if (j === i && depth <= 0) break;
-    }
+  for (const [line, windowText] of meLogWindows(meStripComments(raw))) {
     for (const banned of ME_FORBIDDEN_IN_LOGS) {
       if (windowText.includes(banned)) {
-        report(file, i + 1, ME_LOG_RULE, `"${banned}" on a log/Sentry line`);
+        report(file, line, ME_LOG_RULE, `"${banned}" on a log/Sentry line`);
       }
     }
   }
@@ -3281,6 +3298,9 @@ const ME_WIPE_RULE = 'media-export-wipe-wired';
 // #921's own issue number. The import teardown rides inside rule 24e (above),
 // so it needs an issue constant rather than a rule name of its own.
 const MIT_ISSUE = '#921';
+// #926 (the runner). Its wipe wiring rides inside rule 24e for the same
+// reason #921's does, so it too is an issue constant rather than a rule.
+const MIT_RUNNER_ISSUE = '#926';
 
 const meAuthRaw = meRead(ME_AUTH_SERVICE, ME_WIPE_RULE, 'the localWipe export teardown');
 if (meAuthRaw !== null) {
@@ -3394,9 +3414,60 @@ if (meAuthRaw !== null) {
     // caches, because `import_items.body` is the member's own post text
     // (plaintext-class inside SQLCipher) and the DB file is shared with the
     // next account on this device.
-    if (wipe[0].indexOf('deleteAllImportJobs(') === -1) {
+    const deleteJobsIdx = wipe[0].indexOf('deleteAllImportJobs(');
+    if (deleteJobsIdx === -1) {
       violations.push(
         `  ${relative('.', ME_AUTH_SERVICE)}:${at}  [${ME_WIPE_RULE}]  localWipe() does not call deleteAllImportJobs( — logout/deletion would leave the member's plaintext-class post bodies and export file names in import_items for the next account on this device (${MIT_ISSUE})`,
+      );
+    }
+
+    // --- #926: the IMPORT RUNNER's own teardown, pinned the same way the
+    // export and archive teardowns above are — present, phase 1, not awaited —
+    // plus one ordering clause neither of them needs.
+    //
+    // Why phase 1 at all: the reset aborts the run's `AbortController`, and
+    // that abort is what makes each item's `finally` run. `archiveAccess`'s
+    // `release()` inside that `finally` is the ONLY unlink of an extracted
+    // plaintext photo on the LOGOUT path — phase 2's `isStagingResidueName`
+    // sweep has no `-archive-staging.bin` arm, and the MEDIA_DIR deletion is
+    // inside the deletion branch only. A reset that landed after the sweep
+    // would therefore leave a decrypted photo in Caches on a logout.
+    //
+    // Why not awaited: `resetBulkExportState`'s and `cancelAllExports`'
+    // reason, and the runner is the sharpest case of it — an await here hands
+    // control straight back to the extract being stopped, which then gets to
+    // inflate one more plaintext file.
+    //
+    // Why above `deleteAllImportJobs(`: the reset also bumps the run token,
+    // and the token is what collapses every later verdict to `cancelled`.
+    // Below the delete, a run one microtask from a repository write would be
+    // writing `import_items` rows against a job the wipe has already removed
+    // — and, worse, classifying the resulting errors as `terminal-for-run`,
+    // which writes a `failed` status and reports it to Sentry for what is an
+    // ordinary logout.
+    //
+    // `mediaDirPath` and `deleteAllImportJobs(` are both asserted non-vacuous
+    // above, so neither ordering clause can pass by its anchor disappearing.
+    const importResetIdx = wipe[0].indexOf('resetImportRunnerState(');
+    if (importResetIdx === -1) {
+      violations.push(
+        `  ${relative('.', ME_AUTH_SERVICE)}:${at}  [${ME_WIPE_RULE}]  localWipe() does not call resetImportRunnerState( — an import mid-extraction would keep running through the wipe, and the release() in its item finally is the only unlink of an extracted plaintext photo on the logout path (${MIT_RUNNER_ISSUE})`,
+      );
+    } else {
+      if (mediaDirIdx !== -1 && importResetIdx > mediaDirIdx) {
+        violations.push(
+          `  ${relative('.', ME_AUTH_SERVICE)}:${at}  [${ME_WIPE_RULE}]  resetImportRunnerState( must run in phase 1, BEFORE the MEDIA_DIR deletion in localWipe() — after it, the abort lands too late for the item finally that unlinks the extracted plaintext (${MIT_RUNNER_ISSUE})`,
+        );
+      }
+      if (deleteJobsIdx !== -1 && importResetIdx > deleteJobsIdx) {
+        violations.push(
+          `  ${relative('.', ME_AUTH_SERVICE)}:${at}  [${ME_WIPE_RULE}]  resetImportRunnerState( must run BEFORE deleteAllImportJobs( in localWipe() — a live run would otherwise write item rows against a job the wipe just deleted, and report the resulting failure as a terminal import error (${MIT_RUNNER_ISSUE})`,
+        );
+      }
+    }
+    if (/\bawait\s+resetImportRunnerState\s*\(/.test(wipe[0])) {
+      violations.push(
+        `  ${relative('.', ME_AUTH_SERVICE)}:${at}  [${ME_WIPE_RULE}]  resetImportRunnerState( must not be awaited — the token bump and the abort are synchronous, and an await hands control straight back to the extract being torn down (${MIT_RUNNER_ISSUE})`,
       );
     }
   }
@@ -3495,6 +3566,24 @@ checkWindowedPins(
       if (releaseIdx === -1 || releaseIdx < wipeIdx) {
         violations.push(
           `  ${relative('.', MIT_RECOVERY_SERVICE)}:0  [${ME_WIPE_RULE}]  releaseAllPersistedParts( must run AFTER fullCryptoWipe( in key recovery — this path never calls localWipe, so without it a recovered account keeps long-lived SAF read grants on the member's archive ZIPs with no import row left to explain them (${MIT_ISSUE})`,
+        );
+      }
+      // #926: the runner itself, beside the abort and before the wipe. The
+      // abort stops the native archive job; only this stops the JS loop that
+      // keeps asking for one. `fullCryptoWipe` destroys the key generation
+      // every stored `import_key` was derived under AND deletes `import_jobs`,
+      // so a run that survived it would be sealing content under a dead
+      // generation and writing items against a deleted job row. Same
+      // `fullCryptoWipe(` non-vacuity anchor as the two clauses above.
+      const runnerResetIdx = flat.indexOf('resetImportRunnerState(');
+      if (runnerResetIdx === -1 || runnerResetIdx > wipeIdx) {
+        violations.push(
+          `  ${relative('.', MIT_RECOVERY_SERVICE)}:0  [${ME_WIPE_RULE}]  resetImportRunnerState( must run BEFORE fullCryptoWipe( in key recovery — the wipe destroys the key generation every stored import_key was derived under and deletes import_jobs, and a run that outlives it seals content under a dead generation and writes items against a job row that no longer exists (${MIT_RUNNER_ISSUE})`,
+        );
+      }
+      if (/\bawait\s+resetImportRunnerState\s*\(/.test(flat)) {
+        violations.push(
+          `  ${relative('.', MIT_RECOVERY_SERVICE)}:0  [${ME_WIPE_RULE}]  resetImportRunnerState( must not be awaited in key recovery — it is synchronous for localWipe's reason, and an await hands control back to the extract being torn down (${MIT_RUNNER_ISSUE})`,
         );
       }
     }
@@ -6390,9 +6479,22 @@ const MIT_BANNED_RE = /source_item_id|sourceItemId/;
 }
 
 // ---------------------------------------------------------------------------
-// 32. sanitize-import-options (#918)
+// 32. sanitize-import-options (#918, and #926 §4.13's `import-sanitizer-hardened`)
 // ---------------------------------------------------------------------------
 
+// #926's plan asks for a rule it calls `import-sanitizer-hardened`: a window
+// over `uploadMedia`'s import branch requiring `forceReencode` and
+// `maxPixelCount` as literals on the `sanitizeStillImage(` call. That is
+// exactly — and strictly less than — what this rule already does: #918 landed
+// first and pinned both of those literals plus `maxDimension` and the
+// `importMode` conditional that makes them reachable. So PR B extends this
+// rule's statement of intent rather than adding a second, weaker copy under a
+// different id. A duplicate would have been the worse outcome: two windows
+// over the same call drift, and the one with the shorter pin list becomes the
+// one a regression satisfies. The mutation proofs for both of §4.13's
+// sanitizer clauses (drop `forceReencode`; drop `maxPixelCount`) therefore
+// fail under the rule id `sanitize-import-options`.
+//
 // Rule 6 above proves only that `mediaUploadService` CALLS `sanitizeStillImage`
 // somewhere. For a Meta-import upload that is not enough. An archive image has
 // no provenance and, until this gate, no pixel bound at all: the reader's only
@@ -6628,6 +6730,158 @@ for (const file of TFR_NATIVE_FILES) {
     violations.push(
       `  ${relative('.', file)}:0  [${TFR_RULE}]  no \`${TFR_REJECT_TOKEN}\` call found — this module settles its promises some other way now, so the ban on forwarding native diagnostics is scanning nothing. Point the rule at the new settle path in the same commit (${TFR_ISSUE})`,
     );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 35. meta-import-no-content-logging (#926)
+// ---------------------------------------------------------------------------
+
+// Rule 24c's argument, one subsystem over. There the user content was a PEER's
+// file name; here it is the member's OWN archive — and the import handles
+// strictly more of it: the post body itself, the basenames inside their
+// export, the per-entry ids the reader hands back, the 16-byte `import_key`
+// derived from the identity frame (which embeds the repaired post text
+// verbatim, #921's rule 31), the key fingerprint that identifies a key
+// generation, and the SAF bookmark/part tokens that name files in the member's
+// Downloads folder. None of it has a reason to be in a log line or a Sentry
+// event: §4.13's telemetry contract is counts and CLOSED CLIENT ENUMS only
+// (`import_source`, `import_stage`, `import_code`, and the three counters),
+// and this rule is what keeps it that way after the next debugging session.
+//
+// DIRECTORY-SCOPED, not file-listed, which is the one structural difference
+// from 24c. The runner is four modules today and the parsers sit beside them;
+// a fifth module added next month is covered the day it lands rather than the
+// day someone remembers to extend a list. Tests and the shared test harness
+// are exempt for the same reason every cross-file scan here exempts them: a
+// fixture builder names these fields constantly and prints nothing.
+//
+// A directory scan can pass by the directory emptying, so the four runner
+// modules are ALSO required BY NAME. That floor is what makes the scan's
+// silence mean something.
+//
+// The forbidden list is kept SEPARATE from `ME_FORBIDDEN_IN_LOGS` on purpose:
+// the two subsystems forbid different things (an export has no `import_key`;
+// an import has no peer `displayName`), and merging them would mean every
+// future addition to one list silently binding the other file set.
+//
+// MATCHED ON A NORMALIZED WINDOW — lower-cased with underscores removed — so
+// one entry covers every spelling of a field the project actually mixes:
+// `source_file` in SQLite, `sourceFile` in TypeScript, `SOURCE_FILE` in a
+// constant. §4.13 spells its list in both spellings for exactly this reason,
+// and two literal entries per concept would still miss the third.
+
+const MI_LOG_RULE = 'meta-import-no-content-logging';
+const MI_LOG_ISSUE = '#926';
+const MI_DIR = join(SRC, 'services', 'metaImport');
+const MI_RUNNER = join(MI_DIR, 'importRunner.ts');
+const MI_BATCH = join(MI_DIR, 'importBatch.ts');
+const MI_MEDIA = join(MI_DIR, 'importMedia.ts');
+const MI_ERRORS = join(MI_DIR, 'importErrors.ts');
+
+/** The four modules §4.15 delivers. A missing one is a violation. */
+const MI_REQUIRED_LOG_FILES = [MI_RUNNER, MI_BATCH, MI_MEDIA, MI_ERRORS];
+
+/**
+ * §4.13's "Never" list. `shown` is what the violation prints; `token` is the
+ * normalized form actually matched (see the note on normalization above).
+ */
+const MI_FORBIDDEN_IN_LOGS = [
+  ['source_file / sourceFile', 'sourcefile'],
+  ['entry_id / entryId', 'entryid'],
+  ['import_key / importKey', 'importkey'],
+  ['media_id / mediaId', 'mediaid'],
+  ['import_id / importId', 'importid'],
+  ['body', 'body'],
+  ['file_name / fileName', 'filename'],
+  ['local_path / localPath', 'localpath'],
+  ['original_date / originalDate', 'originaldate'],
+  ['key_fingerprint / keyFingerprint', 'keyfingerprint'],
+  ['archive_bookmark / archiveBookmark / bookmark', 'bookmark'],
+  ['parts', 'parts'],
+  ['groupKey / group_key', 'groupkey'],
+  ['kImport / k_import', 'kimport'],
+  ['attachmentKey / attachment_key', 'attachmentkey'],
+];
+
+function miNormalize(text) {
+  return text.toLowerCase().replaceAll('_', '');
+}
+
+let miScanned = [];
+try {
+  miScanned = walkSync(MI_DIR, ['.ts']).filter((f) => {
+    const rel = relative('.', f);
+    return !rel.includes('__tests__') && !rel.includes('testUtils');
+  });
+} catch {
+  violations.push(
+    `  ${relative('.', MI_DIR)}:0  [${MI_LOG_RULE}]  the metaImport directory is gone — the whole rule would scan nothing and pass vacuously (${MI_LOG_ISSUE})`,
+  );
+}
+
+// The named-file floor. Spelled against the SCANNED set rather than the
+// filesystem, so a file that exists but is excluded by the filter above (a
+// module moved under `testUtils/`, say) fails here instead of slipping out of
+// coverage silently.
+for (const required of MI_REQUIRED_LOG_FILES) {
+  if (!miScanned.includes(required)) {
+    violations.push(
+      `  ${relative('.', required)}:0  [${MI_LOG_RULE}]  not among the scanned metaImport modules — one of the four runner modules is missing, renamed or excluded, and the directory scan's silence would mean nothing (${MI_LOG_ISSUE})`,
+    );
+  }
+}
+
+for (const file of miScanned) {
+  const raw = meRead(file, MI_LOG_RULE, 'its log and Sentry lines', MI_LOG_ISSUE);
+  if (raw === null) continue;
+
+  for (const [line, windowText] of meLogWindows(meStripComments(raw))) {
+    const normalized = miNormalize(windowText);
+    for (const [shown, token] of MI_FORBIDDEN_IN_LOGS) {
+      if (normalized.includes(token)) {
+        report(
+          file,
+          line,
+          MI_LOG_RULE,
+          `"${shown}" on a log/Sentry line — the import telemetry contract is counts and closed client enums only, never a value out of the member's archive (${MI_LOG_ISSUE})`,
+        );
+      }
+    }
+  }
+}
+
+// `importErrors.ts` is held to `ME_SILENT_FILES`' absolute bar rather than the
+// windowed one, and for that list's exact reason. It is the PURE leaf: every
+// verdict in the taxonomy is computed there from an error the layers below
+// threw, and those errors carry paths, entry ids and native diagnostic
+// strings. A debugging line like `console.warn('[classify]', e)` names none of
+// the forbidden identifiers — `e`, `cause`, `stage` are this module's own
+// idioms — so it would pass the windowed check above while printing an archive
+// path. Zero calls is the only form of the rule that binds here.
+//
+// Reported under THIS rule's id rather than by joining `ME_SILENT_FILES`:
+// the check is identical, but a violation in an import module must name the
+// import rule and cite #926, or the failure output sends the next reader to
+// the media-export contract to find out what they broke.
+{
+  const miErrorsRaw = meRead(
+    MI_ERRORS,
+    MI_LOG_RULE,
+    'that the failure taxonomy logs nothing at all',
+    MI_LOG_ISSUE,
+  );
+  if (miErrorsRaw !== null) {
+    const lines = meStripComments(miErrorsRaw).split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (!ME_LOG_CALL_RE.test(lines[i])) continue;
+      report(
+        MI_ERRORS,
+        i + 1,
+        MI_LOG_RULE,
+        `a console/captureError/Sentry call in the PURE failure taxonomy — it classifies errors that carry archive paths and native diagnostic strings, so it must log nothing at all (${MI_LOG_ISSUE})`,
+      );
+    }
   }
 }
 

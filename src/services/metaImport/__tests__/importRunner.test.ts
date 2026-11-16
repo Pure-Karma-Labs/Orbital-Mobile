@@ -534,6 +534,21 @@ function createdFor(items: { importKey: string }[]) {
   };
 }
 
+/**
+ * Every pause cause the store has PUBLISHED during one test.
+ *
+ * The only way to assert a NEGATIVE about a transient state: "`ARCHIVE_BUSY`
+ * retries in place" means the pause set was never non-empty, which a snapshot
+ * taken after the run cannot see.
+ */
+let pauseCauseHistory: string[] = [];
+let unsubscribeStore: (() => void) | null = null;
+
+/** Fake-timer-safe microtask flush: no `setTimeout`, so no clock needed. */
+async function flushMicrotasks(times = 80): Promise<void> {
+  for (let i = 0; i < times; i++) await Promise.resolve();
+}
+
 let appStateHandler: ((status: AppStateStatus) => void) | null = null;
 let appStateRemove: jest.Mock;
 let appStateSpy: jest.SpyInstance;
@@ -601,9 +616,16 @@ beforeEach(() => {
     });
 
   resetImportRunnerForTesting();
+
+  pauseCauseHistory = [];
+  unsubscribeStore = importStore.subscribe((state) => {
+    pauseCauseHistory.push(...state.pauseCauses);
+  });
 });
 
 afterEach(() => {
+  unsubscribeStore?.();
+  unsubscribeStore = null;
   resetImportRunnerForTesting();
   appStateSpy.mockRestore();
   closeDatabase();
@@ -1245,21 +1267,6 @@ describe('pause causes and their wake-ups', () => {
     resumeImport();
 
     expect(importStore.getState().pauseCauses).toEqual(['needs_repick', 'background']);
-  });
-});
-
-/** Every pause set the store has published in this test. */
-let pauseCauseHistory: string[] = [];
-
-/** Fake-timer-safe microtask flush: no `setTimeout`, so no clock needed. */
-async function flushMicrotasks(times = 80): Promise<void> {
-  for (let i = 0; i < times; i++) await Promise.resolve();
-}
-
-beforeEach(() => {
-  pauseCauseHistory = [];
-  importStore.subscribe((state) => {
-    pauseCauseHistory.push(...state.pauseCauses);
   });
 });
 

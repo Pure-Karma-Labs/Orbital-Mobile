@@ -765,8 +765,12 @@ export interface UnmigratedGroupCount {
  * a frozen spinner. The screen shows at most this many rows and takes its
  * group headers from {@link countUnmigratedByGroup}, so the cap costs the
  * member a footer line, not a number.
+ *
+ * Exported so `importCopy`'s `SHARE_ROW_CAP` can be pinned equal to it: the
+ * share text is built from the same capped page, and two numbers that must
+ * agree with nothing joining them agree only until someone edits one.
  */
-const UNMIGRATED_ITEM_LIMIT = 1000;
+export const UNMIGRATED_ITEM_LIMIT = 1000;
 
 /**
  * The rows of a job that did NOT become a post, for an explicit status set.

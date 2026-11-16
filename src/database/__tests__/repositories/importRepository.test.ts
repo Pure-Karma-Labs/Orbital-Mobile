@@ -26,10 +26,14 @@ import {
   countImportSkipsByReason,
   getUnmigratedItems,
   countUnmigratedByGroup,
+  UNMIGRATED_ITEM_LIMIT,
   markMediaUploaded,
   replaceMediaId,
 } from '../../repositories/importRepository';
 import type { ImportItemInsert, ImportBatchResult } from '../../repositories/importRepository';
+// The share text is built from the page this repository returns, so the two
+// caps are one number. Pure module, type-only on the runner, no mocks needed.
+import { SHARE_ROW_CAP } from '../../../screens/import/importCopy';
 
 jest.mock('@op-engineering/op-sqlite', () => ({
   open: jest.fn(() => ({
@@ -1014,6 +1018,14 @@ describe('importRepository', () => {
       exec.mockClear();
       getUnmigratedItems('job-1', ['skipped'], 5);
       expect(callMatching(exec, 'FROM import_items')[1]?.[2]).toBe(5);
+    });
+
+    it('is capped at the same number the share text is', () => {
+      // Two spellings of one cap: the share text is built from the page this
+      // read returns, so a change to either without the other silently drops
+      // rows from the list OR invents a "…and N more" footer for rows that
+      // were never truncated.
+      expect(UNMIGRATED_ITEM_LIMIT).toBe(SHARE_ROW_CAP);
     });
 
     it('reads nothing at all for an empty status set', () => {

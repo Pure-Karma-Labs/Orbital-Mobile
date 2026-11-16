@@ -780,6 +780,47 @@ function enterPreRun(fn: () => Promise<void>): Promise<void> {
 }
 
 /**
+ * How many times a queued member action will wait out another entry.
+ *
+ * Only a retry timer or a second tap can take the latch between one entry
+ * unwinding and this one claiming it, and each of those is itself bounded —
+ * so the loop is not how this terminates, it is the belt for the case where
+ * something unbounded is ever wired into the gate.
+ */
+const PRE_RUN_QUEUE_ATTEMPTS = 8;
+
+/**
+ * Run `fn` as the pre-run entry, QUEUEING behind whatever is in flight.
+ *
+ * The counterpart to {@link enterPreRun}, and the distinction is the whole
+ * point: JOINING is right for "get this job going", where the in-flight
+ * entry's outcome is a truthful answer for the second caller. It is wrong for
+ * a member action that must HAPPEN — a discard or a Stop that joined someone
+ * else's resume would be silently dropped, leaving the row, its part grant and
+ * the screen's busy spinner exactly as they were (PR #995 blocker).
+ *
+ * `abandon` is how a caller says the action no longer needs to run — the
+ * entry we waited for did the work, or started a run that a different path
+ * must now stop. Re-checked on EVERY pass, because the thing we are waiting
+ * for is precisely what can make the action moot.
+ */
+async function queuePreRun(fn: () => Promise<void>, abandon?: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < PRE_RUN_QUEUE_ATTEMPTS; attempt++) {
+    if (abandon?.() === true) return;
+    const pending = preRunEntry;
+    if (pending === null) {
+      // `enterPreRun` claims the latch synchronously, so nothing can slip in
+      // between this read and that write.
+      await enterPreRun(fn);
+      return;
+    }
+    await pending.catch(() => {
+      // Whatever that entry's outcome was, this action still has to run.
+    });
+  }
+}
+
+/**
  * Failure codes already reported in this run's capture window, or null when no
  * window is open.
  *
@@ -2443,6 +2484,7 @@ export async function pickAndStartParse(args: {
 
   try {
     archive = await openArchiveSession(tokens, { signal: controller.signal });
+    if (stale(token, controller)) return { kind: 'cancelled' };
     // Opened BEFORE the job row, because `key_fingerprint` is NOT NULL from
     // creation: a `ready` job's stored identities carry the generation stamp
     // they were derived under (#921).
@@ -2450,6 +2492,12 @@ export async function pickAndStartParse(args: {
       groupId: args.conversationId,
       source: args.source,
     });
+    // The LAST await before the first write, and therefore the one rule 0
+    // needs most: a wipe that lands while the group key is being fetched used
+    // to get a job row, an archive bookmark and a `parsing` publish written
+    // through it. The key session is closed by the `finally` below, on this
+    // path as on every other.
+    if (stale(token, controller)) return { kind: 'cancelled' };
 
     createImportJob({
       id: jobId,
@@ -2548,6 +2596,18 @@ export async function pickAndStartParse(args: {
       }
     }
   }
+}
+
+/**
+ * Rule 0 for the parse, asked at every await point it has.
+ *
+ * Two questions in one, because the two teardowns differ: a WIPE bumps
+ * {@link liveToken} (write nothing at all), a member's Cancel aborts the
+ * controller (write the job delete and the `idle` publish, but go no
+ * further).
+ */
+function stale(token: number, controller: AbortController): boolean {
+  return token !== liveToken || controller.signal.aborted;
 }
 
 /**
@@ -2917,19 +2977,25 @@ function cancelBeforeAnyRun(): void {
   // it again, and the settle is what must not happen then.
   const gen = preRunGen;
 
-  const pending = preRunEntry;
-  if (pending === null) {
-    void cancelBeforeRun(job, gen);
-    return;
-  }
-  void pending
-    .catch(() => {
-      // Whatever that entry's outcome was, this cancel still has to settle.
-    })
-    .then(() => enterPreRun(() => cancelBeforeRun(job, gen)))
-    .catch(() => {
-      // Fire-and-forget: there is no caller left to report a cancel to.
-    });
+  void queuePreRun(
+    () => cancelBeforeRun(job, gen),
+    () => {
+      // Superseded by a later cancel or by a wipe: that owner settles it.
+      if (preRunGen !== gen) return true;
+      const live = run;
+      if (live === null) return false;
+      // The entry we were waiting for got all the way through and started the
+      // run. Stopping it is the OTHER arm's job, and the member's tap still
+      // has to land somewhere — before this, a Stop in that window was simply
+      // absorbed (security-auditor, PR #995).
+      live.cancelled = true;
+      live.controller.abort();
+      for (const cause of [...live.pauseTimers.keys()]) clearPauseTimer(live, cause);
+      live.pauseCauses.clear();
+      releaseWaiters(live);
+      return true;
+    },
+  );
 }
 
 /**
@@ -2980,38 +3046,74 @@ export function dismissImportSummary(): void {
  * member has since left, where `getGroupImports` fails every time and nothing
  * else deletes the row. A phase-only gate could never reach that job.
  *
- * **No network call.** `session_id` is written only by `startImportJob` from
- * `runJob`, so a `ready` job has no server session to close: nothing was
- * declared, and none of the member's allowance was spent.
+ * **No network call** for the `ready` case. `session_id` is written only by
+ * `startImportJob` from `runJob`, so a `ready` job has no server session to
+ * close: nothing was declared, and none of the member's allowance was spent.
+ *
+ * **It QUEUES, it does not join** (PR #995 blocker). `enterPreRun` answers a
+ * second caller with the in-flight entry's promise and never runs `fn`, which
+ * is right for "get this job going" and silently wrong here: on the blocked
+ * view, Retry followed by Start over dropped the discard entirely, leaving the
+ * row, its part grant and the screen's spinner exactly as they were.
  */
 export function discardImportPreflight(): Promise<void> {
-  return enterPreRun(discardReadyJob);
+  return queuePreRun(discardReadyJob);
 }
 
 async function discardReadyJob(): Promise<void> {
   const gen = preRunGen;
   const token = liveToken;
 
-  // The store's own `ready` first; otherwise the DB's, which is the only way
-  // to reach a job whose preflight could not be rebuilt.
   const job = getActiveImportJob();
-  const jobId = draft.phase === 'ready' ? draft.jobId : null;
-  const target = job !== null && job.status === 'ready' ? job : null;
-  if (target === null) {
-    // A refused preflight already finished its job as `cancelled`, so there is
-    // no row left to drop — only the store still says `ready`.
-    if (jobId !== null) update({ ...INITIAL_STATE, phase: 'idle' }, true);
+  if (job === null) {
+    // Nothing active in SQLite. A refused preflight already finished its job
+    // as `cancelled`, and a blocked view can outlive its row — either way the
+    // store's `jobId` is stale, and publishing `idle` is both the truth and
+    // the state change the screen is waiting on.
+    if (draft.jobId !== null || draft.phase === 'ready') {
+      clearLastSettledHeld();
+      update({ ...INITIAL_STATE, phase: 'idle' }, true);
+    }
+    return;
+  }
+
+  if (job.status !== 'ready') {
+    // Not runnable, so there is no preflight to throw away — but the member
+    // asked to start over and something must move.
+    //
+    // An `in_progress` job with no `session_id` declared NOTHING server-side
+    // (`startImportJob` is the only writer of that column, from `runJob`), so
+    // it is the pre-run cancel's case exactly: settle it as `cancelled`, with
+    // a summary, through the one path that writes a terminal status.
+    if (job.status === 'in_progress' && job.session_id === null) {
+      await cancelBeforeRun(job, gen);
+      return;
+    }
+    // Everything else is defensive: an `in_progress` job WITH a session is
+    // live work with staged bytes on the server, and "start over" may not
+    // throw that away silently. Republish its identity so the view is
+    // `blocked` rather than "no import", and leave the row alone.
+    update(
+      {
+        phase: 'idle',
+        jobId: job.id,
+        conversationId: job.conversation_id,
+        source: job.source,
+        preflight: null,
+      },
+      true,
+    );
     return;
   }
 
   // `pickAndStartParse`'s finally deliberately KEEPS the parts of a runnable
   // job for the run that was about to use them; this is where that grant is
   // handed back.
-  const parts = parsePartTokens(target.archive_bookmark);
+  const parts = parsePartTokens(job.archive_bookmark);
   if (parts !== null) await releaseArchiveParts(parts).catch(() => {});
   if (preRunGen !== gen || token !== liveToken) return;
 
-  deleteImportJob(target.id);
+  deleteImportJob(job.id);
   clearLastSettledHeld();
   update({ ...INITIAL_STATE, phase: 'idle' }, true);
 }
@@ -3354,7 +3456,7 @@ async function enterJob(job: ImportJobRow, options: { autoStart: boolean }): Pro
       // untouched; `phase` still LEAVES `'hydrating'` so the UI can tell
       // "nothing running" from "not checked yet" (§4.3).
       if (limits === undefined) {
-        update({ phase: 'idle' }, true);
+        publishBlockedJob(job);
         return;
       }
       const session = keySession;
@@ -3371,7 +3473,7 @@ async function enterJob(job: ImportJobRow, options: { autoStart: boolean }): Pro
       const limits = (await rebuildPreflight(job))?.limits;
       if (superseded()) return;
       if (limits === undefined) {
-        update({ phase: 'idle' }, true);
+        publishBlockedJob(job);
         return;
       }
       const live = keySession;
@@ -3419,6 +3521,32 @@ async function enterJob(job: ImportJobRow, options: { autoStart: boolean }): Pro
   } finally {
     keySession?.close();
   }
+}
+
+/**
+ * Publish a job the allowance rebuild could not price: `idle`, WITH its
+ * identity.
+ *
+ * `deriveImportView` reads `idle` plus a `jobId` as the `blocked` view —
+ * "Orbital couldn't check your import allowance", with Retry and Start over.
+ * Publishing a bare `idle` instead told the member there was no import at all
+ * while every new pick was refused `job-running`, which is a dead end they
+ * cannot act on (PR #995).
+ *
+ * The job row is left exactly as it is: nothing here has decided anything
+ * about it, and the next launch or the member's Retry asks again.
+ */
+function publishBlockedJob(job: ImportJobRow): void {
+  update(
+    {
+      phase: 'idle',
+      jobId: job.id,
+      conversationId: job.conversation_id,
+      source: job.source,
+      preflight: null,
+    },
+    true,
+  );
 }
 
 /**

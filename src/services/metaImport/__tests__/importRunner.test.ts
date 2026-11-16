@@ -505,13 +505,22 @@ function jobCount(): number {
   return (harness.sqlite.prepare('SELECT COUNT(*) AS n FROM import_jobs').get() as { n: number }).n;
 }
 
-/** A promise plus its resolver: a call held open across an await point. */
-function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => void } {
+/** A promise plus its settlers: a call held open across an await point. */
+function deferred<T = void>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason: unknown) => void;
+} {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((r) => {
-    resolve = r;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
   });
-  return { promise, resolve };
+  // The runner is what handles this rejection; the harness must not leave it
+  // unhandled in the window before it does.
+  promise.catch(() => {});
+  return { promise, resolve, reject };
 }
 
 /** Let every queued microtask settle. The runner never waits on real I/O. */
@@ -3402,6 +3411,23 @@ describe('the unmigrated list', () => {
     expect(list.counts.skipped.held_video).toBe(importStore.getState().summary?.heldVideo);
   });
 
+  it('falls back to the sentinel for a failed row with no code at all', async () => {
+    seedJob({ items: 1 });
+    await confirmAndRunLaunch();
+    // `error_code` is nullable, and a `failed` row that never carried one is
+    // reachable from any writer that fails an item without a verdict.
+    harness.sqlite
+      .prepare("UPDATE import_items SET status = 'failed', error_code = NULL WHERE id = ?")
+      .run('item-0');
+
+    const list = getImportUnmigratedItems();
+
+    expect(list.items).toEqual([
+      expect.objectContaining({ kind: 'failed', code: 'IMPORT_RESULT_UNKNOWN' }),
+    ]);
+    expect(list.counts.failed).toEqual({ IMPORT_RESULT_UNKNOWN: 1 });
+  });
+
   it('falls back to the sentinel for a code this build does not know', async () => {
     seedJob({ items: 1 });
     await confirmAndRunLaunch();
@@ -3583,5 +3609,232 @@ describe('media progress', () => {
     // upload under one post.
     expect(importStore.getState().mediaDone).toBe(2);
     expect('mediaTotal' in importStore.getState()).toBe(false);
+  });
+});
+
+// ===========================================================================
+// Group: member actions queue, they do not join (PR #995)
+// ===========================================================================
+
+describe('a member action racing the pre-run gate', () => {
+  /** The session payload the launch gate accepts. */
+  function openSession(declaredPosts = 1) {
+    return {
+      importId: IMPORT_ID,
+      groupId: ORBIT,
+      status: 'open',
+      declaredPosts,
+      declaredBytes: 4096,
+      createdPosts: 0,
+      createdAt: '2012-08-26T00:00:00.000Z',
+      lastActivityAt: '2012-08-26T00:00:00.000Z',
+      completedAt: null,
+      allowance: allowance(),
+      limits: LIMITS,
+    };
+  }
+
+  it('discards behind an in-flight resume instead of joining it', async () => {
+    seedJob({ status: 'ready', items: 1, bookmark: ['part-a'] });
+    const allowanceGet = deferred<unknown>();
+    mockGetGroupImports.mockImplementation(() => allowanceGet.promise);
+
+    // Retry on the blocked view: a launch resume parked on the allowance GET,
+    // which offline takes the transport's full 15 s.
+    const retrying = resumeImportAtLaunch();
+    await drain();
+    expect(getImportJob(JOB)).not.toBeNull();
+
+    // Start over, while that entry is still in flight. `enterPreRun` would
+    // answer this with the resume's promise and never run the discard: the
+    // row and its grant survived, and the screen's spinner never cleared.
+    const discarding = discardImportPreflight();
+    await drain();
+
+    allowanceGet.resolve(groupImports());
+    await retrying;
+    await discarding;
+    await drain();
+
+    expect(getImportJob(JOB)).toBeNull();
+    expect(mockReleaseArchiveParts).toHaveBeenCalledWith(['part-a']);
+    expect(importStore.getState().phase).toBe('idle');
+    expect(importStore.getState().jobId).toBeNull();
+  });
+
+  it('still discards when the resume it waited for failed', async () => {
+    seedJob({ status: 'ready', items: 1, bookmark: ['part-a'] });
+    const allowanceGet = deferred<unknown>();
+    mockGetGroupImports.mockImplementation(() => allowanceGet.promise);
+
+    const retrying = resumeImportAtLaunch();
+    await drain();
+    const discarding = discardImportPreflight();
+    await drain();
+
+    // Offline for the whole 15 s, and then it fails. The member's Start over
+    // is the only thing left that can clear this job.
+    allowanceGet.reject(new NetworkError('offline'));
+    await retrying;
+    await discarding;
+    await drain();
+
+    expect(getImportJob(JOB)).toBeNull();
+    expect(importStore.getState().jobId).toBeNull();
+  });
+
+  it('lands a pre-run Stop that another entry grabs the gate ahead of', async () => {
+    seedJob({ items: 1 });
+    const parked = deferred<unknown>();
+    let gets = 0;
+    mockGetImportSession.mockImplementation(() => {
+      gets += 1;
+      if (gets === 1) return Promise.reject(new NetworkError('offline'));
+      if (gets === 2) return parked.promise;
+      return Promise.reject(new NetworkError('offline'));
+    });
+
+    await resumeImportAtLaunch();
+    expect(importStore.getState().phase).toBe('paused');
+
+    // Entry A is parked on the session GET.
+    const entryA = resumeImportAtLaunch();
+    await drain();
+    expect(gets).toBe(2);
+
+    // The member taps Stop...
+    cancelImport();
+    // ...and a second entry claims the gate the instant A unwinds, which is
+    // the window where the Stop used to be absorbed: its one `enterPreRun`
+    // JOINED that entry, and `cancelBeforeRun` never ran.
+    void entryA.then(() => resumeImportAtLaunch()).catch(() => {});
+    parked.resolve(openSession());
+    await entryA;
+    await drain();
+
+    expect(jobRow().status).toBe('cancelled');
+    expect(importStore.getState().phase).toBe('done');
+    expect(importStore.getState().summary?.cancelled).toBe(true);
+    expect(mockSubmitImportBatch).not.toHaveBeenCalled();
+    expect(itemRows()[0].status).toBe('pending');
+  });
+
+  it('writes nothing when a wipe lands while the group key is opening', async () => {
+    parseEmitting(1);
+    // The one await between the picker and the first write. A wipe landing
+    // here used to get a job row, an archive bookmark and a `parsing` publish
+    // written through it — rule 0's own docblock said otherwise.
+    const keyOpen = deferred();
+    mockKeyOpenGate = keyOpen.promise;
+
+    const picking = pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
+    await drain();
+    resetImportRunnerState();
+    mockKeyOpenGate = null;
+    keyOpen.resolve();
+    const result = await picking;
+
+    expect(result).toEqual({ kind: 'cancelled' });
+    expect(jobCount()).toBe(0);
+    expect(mockParseArchive).not.toHaveBeenCalled();
+    expect(importStore.getState()).toEqual(importStore.getInitialState());
+    // Every session this pick opened is closed, on this path as on the others.
+    expect(mockKeySessions.every((session) => session.closed === 1)).toBe(true);
+  });
+});
+
+// ===========================================================================
+// Group: a job the allowance could not be read for (PR #995)
+// ===========================================================================
+
+describe('a job whose preflight cannot be rebuilt', () => {
+  /** An `in_progress` job that never got as far as a server session. */
+  function seedUndeclaredJob(): void {
+    seedJob({ status: 'ready', items: 1, bookmark: ['part-a'] });
+    // `startImportJob` is the only writer of `session_id`, and it runs from
+    // `runJob`: this is an import that stopped before it ever declared.
+    harness.sqlite.prepare("UPDATE import_jobs SET status = 'in_progress' WHERE id = ?").run(JOB);
+  }
+
+  it('publishes the job identity, so the member sees a blocked import', async () => {
+    seedUndeclaredJob();
+    mockGetGroupImports.mockRejectedValue(new NetworkError('offline'));
+
+    await resumeImportAtLaunch();
+
+    // `idle` with NO jobId reads as "no import" while every pick is refused
+    // `job-running` — a dead end the member cannot act on. With the identity,
+    // `deriveImportView` answers `blocked`, which offers Retry and Start over.
+    const state = importStore.getState();
+    expect(state.phase).toBe('idle');
+    expect(state.jobId).toBe(JOB);
+    expect(state.conversationId).toBe(ORBIT);
+    expect(state.source).toBe('facebook');
+    expect(jobRow().status).toBe('in_progress');
+  });
+
+  it('publishes the job identity on the confirm path too', async () => {
+    seedJob({ status: 'ready', items: 1 });
+    mockGetGroupImports.mockRejectedValue(new NetworkError('offline'));
+
+    // No launch rebuild ran, so there is no cached preflight to price the run
+    // from and the confirm has to ask — the same dead end from the other side.
+    await confirmAndRunImport();
+
+    expect(importStore.getState().phase).toBe('idle');
+    expect(importStore.getState().jobId).toBe(JOB);
+    expect(mockStartImport).not.toHaveBeenCalled();
+    expect(jobRow().status).toBe('ready');
+  });
+
+  it('starts over from a blocked job that declared nothing', async () => {
+    seedUndeclaredJob();
+    mockGetGroupImports.mockRejectedValue(new NetworkError('offline'));
+    await resumeImportAtLaunch();
+    expect(importStore.getState().jobId).toBe(JOB);
+
+    await discardImportPreflight();
+
+    // Nothing was declared server-side, so there is nothing to complete and
+    // no allowance to refund: it settles as a cancel, with a summary, through
+    // the one path that writes a terminal status.
+    expect(jobRow().status).toBe('cancelled');
+    expect(importStore.getState().phase).toBe('done');
+    expect(importStore.getState().summary?.cancelled).toBe(true);
+    expect(mockCompleteImport).not.toHaveBeenCalled();
+    expect(mockReleaseArchiveParts).toHaveBeenCalledWith(['part-a']);
+  });
+
+  it('clears a stale job identity the row no longer backs', async () => {
+    seedUndeclaredJob();
+    mockGetGroupImports.mockRejectedValue(new NetworkError('offline'));
+    await resumeImportAtLaunch();
+    expect(importStore.getState().jobId).toBe(JOB);
+    // The row went away underneath the blocked view — another device's wipe,
+    // or a job this app already finished.
+    harness.sqlite.prepare('DELETE FROM import_jobs').run();
+
+    await discardImportPreflight();
+
+    // Something must move: a no-op here leaves the screen latched on a
+    // spinner with a jobId that explains nothing.
+    expect(importStore.getState().phase).toBe('idle');
+    expect(importStore.getState().jobId).toBeNull();
+  });
+
+  it('refuses to throw away declared work, and says so', async () => {
+    seedJob({ items: 1 });
+    mockGetImportSession.mockRejectedValue(new NetworkError('offline'));
+    await resumeImportAtLaunch();
+    expect(importStore.getState().phase).toBe('paused');
+
+    await discardImportPreflight();
+
+    // Defensive: this job HAS a server session, so its staged bytes are a
+    // lien on the orbit and Stop — not Start over — is what closes it. The
+    // row is untouched and the identity is republished rather than dropped.
+    expect(jobRow().status).toBe('in_progress');
+    expect(importStore.getState().jobId).toBe(JOB);
+    expect(importStore.getState().phase).toBe('idle');
   });
 });

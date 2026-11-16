@@ -1,4 +1,8 @@
 import type { NavigatorScreenParams } from '@react-navigation/native';
+// Type-only, and it must stay that way: this module is imported by every
+// navigator and by App.tsx, and a runtime edge to the Meta-import service
+// would pull the archive reader and op-sqlite into that graph.
+import type { ImportSource } from '../services/metaImport/types';
 
 export type MainTabParamList = {
   Threads: NavigatorScreenParams<ThreadsStackParamList> | undefined;
@@ -66,6 +70,20 @@ type ComposeRoutesShareParams = [ChatsStackParamList['ComposeChatThread']] exten
   : never;
 true satisfies ComposeRoutesShareParams;
 
+/**
+ * The Meta-import routes (#928).
+ *
+ * Params carry NO content: never a basename, a body or a date. `ImportStatus`
+ * and `ImportUnmigrated` take none at all — both render from `importStore`,
+ * which is the single source that survives a process kill, so a param would
+ * only be a second copy that can disagree with it.
+ *
+ * `ImportHowTo` carries its orbit because the member can switch the active
+ * orbit underneath it; the screen must keep importing into the orbit they
+ * started from, never into `activeConversationId`.
+ */
+export type ImportHowToParams = { source: ImportSource; conversationId: string };
+
 export type SettingsStackParamList = {
   SettingsMain: undefined;
   EditProfile: undefined;
@@ -73,6 +91,9 @@ export type SettingsStackParamList = {
   FileLibrary: undefined;
   BlockedUsers: undefined;
   PushNotificationSettings: undefined;
+  ImportHowTo: ImportHowToParams;
+  ImportStatus: undefined;
+  ImportUnmigrated: undefined;
 };
 
 export type RootStackParamList = {

@@ -641,9 +641,14 @@ describe('a burned media_id is never retried in place', () => {
     extractImageEntry.mockImplementation(async () => extracted('entry-a'));
   });
 
-  it('rebinds and retries ONCE after ImportMediaStagedError, under a NEW id', async () => {
+  it('rebinds and retries ONCE after a staged ID-BINDING failure, under a NEW id', async () => {
+    // The shape the pipeline really emits for a 403 after a chunk was taken:
+    // `uploadMedia` wraps EVERY post-chunk failure, so the wrapper is never
+    // the whole story — the cause is, and a 403 is the one class a fresh id
+    // can fix (C4: another member's temp row, or a row bound to another
+    // session).
     mockUploadMedia
-      .mockRejectedValueOnce(new ImportMediaStagedError(new NetworkError('Network error')))
+      .mockRejectedValueOnce(new ImportMediaStagedError(new AuthError(403)))
       .mockResolvedValueOnce({});
 
     const outcome = await uploadImportItemMedia(pendingItem(), run());
@@ -694,7 +699,7 @@ describe('a burned media_id is never retried in place', () => {
     expect(mediaRows()[0].media_id).toBe('minted-1');
   });
 
-  it('does not rebind on a 409 that carries IMPORT_REFUSED details', async () => {
+  it('rethrows a 409 with IMPORT_REFUSED details raw when NO chunk was staged', async () => {
     const thrown = new ConflictError(
       JSON.stringify({
         error: 'IMPORT_REFUSED',
@@ -703,11 +708,122 @@ describe('a burned media_id is never retried in place', () => {
     );
     mockUploadMedia.mockRejectedValue(thrown);
 
-    // A quota refusal is about the ORBIT, not the id: the runner parks the
-    // file and retries `complete` later. Minting a new id would burn the
-    // staged bytes for nothing.
+    // Nothing was accepted, so the id is intact and the refusal is purely the
+    // runner's to classify. Minting a new id here would burn an id for nothing.
     await expect(uploadImportItemMedia(pendingItem(), run())).rejects.toBe(thrown);
     expect(mediaRows()[0].media_id).toBe('media-a');
+    expect(mockUploadMedia).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ===========================================================================
+// A refusal AFTER a chunk was staged: rebind, then report (§4.10.5, §4.7)
+// ===========================================================================
+
+describe('an import refusal that arrives wrapped is reported, never retried', () => {
+  beforeEach(() => {
+    seed([{ ordinal: 0, mediaId: 'media-a', entryId: 'entry-a' }]);
+    extractImageEntry.mockImplementation(async () => extracted('entry-a'));
+  });
+
+  /** A 409 `IMPORT_REFUSED` through the real class, as the wire would carry it. */
+  function refusal(details: Record<string, unknown>): Error {
+    return new ConflictError(JSON.stringify({ error: 'IMPORT_REFUSED', details }));
+  }
+
+  it.each([
+    [
+      'the orbit is full at media complete',
+      { code: 'IMPORT_QUOTA_EXCEEDED', available_bytes: 10, size_bytes: 20 },
+      'media-complete',
+    ],
+    [
+      'the lifetime allowance is spent at media complete',
+      {
+        code: 'IMPORT_ALLOWANCE_EXCEEDED',
+        allowance: { posts_used: 1, bytes_used: 2, posts_limit: 1000, bytes_limit: 3 },
+      },
+      'media-complete',
+    ],
+    [
+      'the chunk ceiling refuses the staged bytes',
+      {
+        code: 'IMPORT_ALLOWANCE_EXCEEDED',
+        allowance: { posts_used: 1, bytes_used: 2, posts_limit: 1000, bytes_limit: 3 },
+        staged_bytes: 100,
+        projected_bytes: 200,
+      },
+      'media-chunk',
+    ],
+    ['the session closed underneath us', { code: 'IMPORT_CLOSED', status: 'abandoned' }, 'media-chunk'],
+  ] as const)('reports %s with its cause and stage', async (_label, details, stage) => {
+    const cause = refusal(details as Record<string, unknown>);
+    mockUploadMedia.mockRejectedValue(new ImportMediaStagedError(cause));
+
+    const outcome = await uploadImportItemMedia(pendingItem(), run());
+
+    // The CAUSE reaches the runner, not the wrapper: `classifyImportFailure`
+    // matches on the class and the refusal code, and only it can decide
+    // park-file, `job-terminal('ALLOWANCE')` or a session restart.
+    expect(outcome).toEqual({ kind: 'refused', stage, error: cause });
+    // Exactly ONE upload: re-uploading the whole file under a fresh id would
+    // spend the member's allowance on a refusal that has not changed, and at
+    // media complete the server deliberately KEPT the temp row and its chunks
+    // for a retry (`assertImportQuotaForMediaBytes`, verified).
+    expect(mockUploadMedia).toHaveBeenCalledTimes(1);
+    expect(releases).toEqual(['entry-a']);
+    // Rebound anyway: a chunk was accepted under `media-a`, so that id is
+    // burned whatever the refusal was. The row is pending under a fresh one,
+    // which is what makes the end-of-run pass re-uploadable.
+    expect(mediaRows()).toEqual([{ ordinal: 0, media_id: 'minted-1', upload_state: 'pending' }]);
+  });
+
+  it('never reports fresh-id-exhausted for a refusal, however often it repeats', async () => {
+    mockUploadMedia.mockRejectedValue(
+      new ImportMediaStagedError(refusal({ code: 'IMPORT_QUOTA_EXCEEDED', size_bytes: 20 })),
+    );
+
+    const first = await uploadImportItemMedia(pendingItem(), run());
+    const second = await uploadImportItemMedia(pendingItem(), run());
+
+    // `fresh-id-exhausted` is the runner's `FORBIDDEN` — the code for lost
+    // membership — and a full orbit must never reach it.
+    expect(first.kind).toBe('refused');
+    expect(second.kind).toBe('refused');
+    expect(mintedIds).toEqual(['minted-1', 'minted-2']);
+  });
+
+  it('fails the item for a file refusal that arrives wrapped, with no rebind retry', async () => {
+    mockUploadMedia.mockRejectedValue(
+      new ImportMediaStagedError(
+        new ValidationError(
+          400,
+          JSON.stringify({
+            error: 'VALIDATION_ERROR',
+            details: { code: 'IMPORT_MEDIA_TYPE_UNSUPPORTED' },
+          }),
+        ),
+      ),
+    );
+
+    const outcome = await uploadImportItemMedia(pendingItem(), run());
+
+    // The file is refused for what it IS, so a failed item is the end of it:
+    // no second upload, and nothing to rebind for.
+    expect(outcome).toEqual({ kind: 'item-failed', code: 'IMPORT_MEDIA_UNSUPPORTED' });
+    expect(mockUploadMedia).toHaveBeenCalledTimes(1);
+    expect(mintedIds).toEqual([]);
+  });
+
+  it('treats a wrapped cancellation as cancelled, writing nothing', async () => {
+    mockUploadMedia.mockRejectedValue(
+      new ImportMediaStagedError(Object.assign(new Error('cancelled'), { code: 'ECANCELLED' })),
+    );
+
+    const outcome = await uploadImportItemMedia(pendingItem(), run());
+
+    expect(outcome).toEqual({ kind: 'cancelled' });
+    expect(mediaRows()).toEqual([{ ordinal: 0, media_id: 'media-a', upload_state: 'pending' }]);
   });
 
   it('mints ids with generateUUID when the run provides no seam', async () => {

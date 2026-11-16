@@ -53,6 +53,7 @@ import {
   NetworkError,
   NotFoundError,
   RateLimitError,
+  ServerError,
 } from '../../api/errors';
 
 import type { ImportDbHarness } from '../testUtils/importDbHarness';
@@ -223,6 +224,18 @@ jest.mock('../../mediaUploadService', () => {
   };
 });
 
+/**
+ * The upload service's post-chunk wrapper, reached through the MOCKED module.
+ *
+ * `uploadMedia` wraps every failure that happens after the server accepted a
+ * chunk, so this — not a bare `ConflictError` — is the shape every
+ * media-refusal test below must inject.
+ */
+const uploadServiceMock = require('../../mediaUploadService');
+const ImportMediaStagedError = uploadServiceMock.ImportMediaStagedError as new (
+  cause: unknown,
+) => Error;
+
 // ---------------------------------------------------------------------------
 // The three fire-and-forget seams
 // ---------------------------------------------------------------------------
@@ -329,6 +342,14 @@ function archiveSession(parts: readonly string[] = ['part-a']): ArchiveImportSes
     close: () => {
       archiveCloses += 1;
     },
+  } as unknown as ArchiveImportSession;
+}
+
+/** An archive session whose only entry turns out to be a video on extract. */
+function videoArchiveSession(): ArchiveImportSession {
+  return {
+    ...archiveSession(),
+    extractImageEntry: jest.fn(async () => ({ ok: false as const, skip: 'ENTRY_IS_VIDEO' })),
   } as unknown as ArchiveImportSession;
 }
 
@@ -861,6 +882,50 @@ describe('resume at launch', () => {
     expect(mockSubmitImportBatch).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['a transient network failure', () => new NetworkError('offline')],
+    ['a 429', () => rateLimited(60_000)],
+    ['a 5xx', () => new ServerError(503)],
+  ])(
+    'leaves an in_progress job untouched when the launch-time session GET answers %s',
+    async (_label, make) => {
+      seedJob({ items: 2 });
+      mockGetImportSession.mockRejectedValue(make());
+
+      await confirmAndRunLaunch();
+
+      // None of these three names a terminal code, so there is nothing to
+      // settle: settling anyway finished the job `completed` (nothing had set
+      // a terminal, so `terminalStatusFor` answered `completed`), POSTed
+      // `complete` for a session that had never been used, and told the member
+      // the import had succeeded with every item still queued.
+      expect(jobRow().status).toBe('in_progress');
+      expect(itemRows().every((row) => row.status === 'pending')).toBe(true);
+      expect(mockCompleteImport).not.toHaveBeenCalled();
+      expect(mockSubmitImportBatch).not.toHaveBeenCalled();
+      expect(mockCaptureError).not.toHaveBeenCalled();
+      expect(importStore.getState().summary).toBeNull();
+      // `idle`, never `hydrating`: "nothing is running" must be
+      // distinguishable from "we have not looked yet" (§4.3).
+      expect(importStore.getState().phase).toBe('idle');
+      // The job is resumable, so the key session it was opened with is closed.
+      expect(mockKeySessions[0].closed).toBe(1);
+    },
+  );
+
+  it('retries the same job on the NEXT launch after a transient session GET failure', async () => {
+    seedJob({ items: 1 });
+    mockGetImportSession.mockRejectedValueOnce(new NetworkError('offline'));
+
+    await confirmAndRunLaunch();
+    expect(jobRow().status).toBe('in_progress');
+
+    await confirmAndRunLaunch();
+
+    expect(itemRows()[0].status).toBe('created');
+    expect(jobRow().status).toBe('completed');
+  });
+
   it('releases and deletes a job stuck in parsing rather than resuming it', async () => {
     seedJob({ status: 'parsing', items: 1, bookmark: ['part-a'] });
 
@@ -1083,7 +1148,47 @@ describe('reset and wipe', () => {
 
     expect(jobRow().status).toBe('cancelled');
     expect(importStore.getState().summary?.cancelled).toBe(true);
+    // A cancel takes the SAME completion path (§4.12): the session is still
+    // open, and its `declared_bytes` would be reserved against the orbit's
+    // quota — refusing other members' uploads — until B#318's GC reaps it up
+    // to six hours later.
+    expect(mockCompleteImport).toHaveBeenCalledWith(IMPORT_ID);
+    expect(importStore.getState().summary?.errorCode).toBeNull();
+  });
+
+  it('completes the server session on a TERMINAL run too, keeping its own code', async () => {
+    seedJob({ items: 2 });
+    mockSubmitImportBatch.mockRejectedValue(
+      new ConflictError(
+        JSON.stringify({
+          error: 'IMPORT_REFUSED',
+          details: { code: 'IMPORT_ALLOWANCE_EXCEEDED', allowance: allowance(1000) },
+        }),
+      ),
+    );
+
+    await confirmAndRunLaunch();
+
+    expect(jobRow().status).toBe('failed');
+    expect(mockCompleteImport).toHaveBeenCalledWith(IMPORT_ID);
+    // The reason the RUN stopped is the one the member is shown; a `complete`
+    // that answers 409 afterwards cannot overwrite it.
+    expect(importStore.getState().summary?.errorCode).toBe('ALLOWANCE');
+  });
+
+  it('makes no network call at all when the run was RESET, not cancelled', async () => {
+    seedJob({ items: 2 });
+    mockSubmitImportBatch.mockImplementation(async () => {
+      resetImportRunnerState();
+      throw new NetworkError('socket closed by the wipe');
+    });
+
+    await confirmAndRunLaunch();
+
+    // Rule 0: a logout or a wipe writes nothing and sends nothing — not even
+    // the courtesy `complete` every other settled run now sends.
     expect(mockCompleteImport).not.toHaveBeenCalled();
+    expect(jobRow().status).toBe('in_progress');
   });
 });
 
@@ -1475,6 +1580,143 @@ describe('the server session', () => {
     await confirmAndRunLaunch();
 
     expect(mockFulfillPendingWraps).toHaveBeenCalledTimes(1);
+    expect(jobRow().status).toBe('completed');
+  });
+});
+
+// ===========================================================================
+// Group: Media refusals after a chunk was staged (§4.10.5, §4.7)
+// ===========================================================================
+
+describe('a media refusal the server raised after taking a chunk', () => {
+  /** A 409 `IMPORT_REFUSED`, wrapped as `uploadMedia` really emits it. */
+  function stagedRefusal(details: Record<string, unknown>): Error {
+    return new ImportMediaStagedError(
+      new ConflictError(JSON.stringify({ error: 'IMPORT_REFUSED', details })),
+    );
+  }
+
+  it('parks a QUOTA refusal, retries it once at end of run, and keeps the run going', async () => {
+    // item-0 carries the media; item-1 is text-only.
+    seedJob({ items: 2, bookmark: ['part-a'], mediaEntryIds: ['entry-0-0'] });
+    mockUploadMedia.mockRejectedValue(
+      stagedRefusal({ code: 'IMPORT_QUOTA_EXCEEDED', available_bytes: 10, size_bytes: 20 }),
+    );
+
+    await confirmAndRunLaunch();
+
+    // The park → end-of-run pass → `item-failed('QUOTA')` route, which the
+    // unconditional rebind made unreachable: the file was re-uploaded under a
+    // fresh id instead, and a second refusal ended the whole run `FORBIDDEN`.
+    expect(mockUploadMedia).toHaveBeenCalledTimes(2);
+    const rows = itemRows();
+    expect(rows.find((row) => row.id === 'item-0')).toEqual({
+      id: 'item-0',
+      status: 'failed',
+      error_code: 'QUOTA',
+    });
+    expect(rows.find((row) => row.id === 'item-1')?.status).toBe('created');
+    const summary = importStore.getState().summary;
+    expect(summary?.errorCode).toBeNull();
+    expect(summary?.created).toBe(1);
+    expect(summary?.failed).toBe(1);
+    expect(summary?.notSubmitted).toBe(0);
+    expect(jobRow().status).toBe('completed');
+    expect(mockCaptureError).not.toHaveBeenCalled();
+  });
+
+  it('is terminal with ALLOWANCE at media complete, keeping the posts already created', async () => {
+    seedJob({ items: 2, bookmark: ['part-a'], mediaEntryIds: ['entry-0-0'] });
+    // item-1 landed in an earlier run; a thread cannot be recalled.
+    harness.sqlite
+      .prepare("UPDATE import_items SET status = 'created', thread_id = 't', body = NULL WHERE id = ?")
+      .run('item-1');
+    mockUploadMedia.mockRejectedValue(
+      stagedRefusal({
+        code: 'IMPORT_ALLOWANCE_EXCEEDED',
+        allowance: { posts_used: 1, bytes_used: 2, posts_limit: 1000, bytes_limit: 3 },
+      }),
+    );
+
+    await confirmAndRunLaunch();
+
+    // The #992 review required this terminal to stay first-class. Under the
+    // unconditional rebind it surfaced as `SESSION_CLOSED`, because the server
+    // closes the session and deletes the temp row on this one.
+    expect(importStore.getState().summary?.errorCode).toBe('ALLOWANCE');
+    expect(importStore.getState().summary?.created).toBe(1);
+    expect(itemRows().find((row) => row.id === 'item-1')?.status).toBe('created');
+    expect(jobRow().status).toBe('failed');
+    // One upload: the id is burned, but re-uploading would spend allowance the
+    // member does not have.
+    expect(mockUploadMedia).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits the chunk ceiling on its OWN clock and spends no network budget', async () => {
+    jest.useFakeTimers();
+    try {
+      seedJob({ items: 1, bookmark: ['part-a'], mediaEntryIds: ['entry-0-0'] });
+      mockUploadMedia
+        // The soft chunk ceiling: both byte counters present, session still
+        // open, staged bytes released by the reaper after ~30 s.
+        .mockRejectedValueOnce(
+          stagedRefusal({
+            code: 'IMPORT_ALLOWANCE_EXCEEDED',
+            allowance: { posts_used: 1, bytes_used: 2, posts_limit: 1000, bytes_limit: 3 },
+            staged_bytes: 100,
+            projected_bytes: 200,
+          }),
+        )
+        .mockRejectedValueOnce(new NetworkError('offline'))
+        .mockResolvedValue({ mediaId: 'media-0' });
+
+      const running = resumeImportAtLaunch();
+      running.catch(() => {
+        // Attached BEFORE the clock moves (#834 discipline).
+      });
+      await flushMicrotasks();
+      expect(importStore.getState().pauseCauses).toEqual(['network']);
+      expect(importStore.getState().resumeAtMs).toBe(Date.now() + 30_000);
+
+      // 5 s is the network ladder's first rung. The ceiling named 30 s, and
+      // retrying sooner just re-learns the same refusal.
+      jest.advanceTimersByTime(5_000);
+      await flushMicrotasks();
+      expect(importStore.getState().pauseCauses).toEqual(['network']);
+      expect(mockUploadMedia).toHaveBeenCalledTimes(1);
+
+      jest.advanceTimersByTime(25_000);
+      await flushMicrotasks();
+      // The real connectivity failure that follows gets the ladder's FIRST
+      // rung, not its second: the server-named wait spent none of the budget.
+      expect(importStore.getState().pauseCauses).toEqual(['network']);
+      jest.advanceTimersByTime(5_000);
+      await flushMicrotasks();
+      await running;
+
+      expect(mockUploadMedia).toHaveBeenCalledTimes(3);
+      expect(itemRows()[0].status).toBe('created');
+      expect(jobRow().status).toBe('completed');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('counts a post held for video once, never also as not-submitted', async () => {
+    seedJob({ items: 1, bookmark: ['part-a'], mediaEntryIds: ['entry-0-0'] });
+    // A post-extract hold: the head peek said image, the real inflation says
+    // video. The post is parked in `uploading`, which is also where an unsent
+    // batch claim lives — the summary must tell them apart.
+    mockOpenArchiveSession.mockImplementation(async () => videoArchiveSession());
+
+    await confirmAndRunLaunch();
+
+    const summary = importStore.getState().summary;
+    expect(summary?.heldVideo).toBe(1);
+    expect(summary?.notSubmitted).toBe(0);
+    expect(summary?.failed).toBe(0);
+    expect(itemRows()[0].status).toBe('uploading');
+    expect(mockUploadMedia).not.toHaveBeenCalled();
     expect(jobRow().status).toBe('completed');
   });
 });

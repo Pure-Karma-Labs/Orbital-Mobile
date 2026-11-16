@@ -177,6 +177,23 @@ export interface ImportPreflight {
   readonly remainingBytes: number;
   /** Set ⇒ the run is REFUSED and no session was started (§4.5). */
   readonly overAllowance: 'posts' | 'bytes' | null;
+  /**
+   * `importable < 1` ⇒ the run is REFUSED, for the other reason (§4.5).
+   *
+   * A separate flag rather than a third `overAllowance` value: this is not an
+   * allowance fact, nothing about the member's limits would change it, and
+   * #928's copy for it says something else entirely ("there is nothing here to
+   * migrate", with the skip list next to it). Widening the union would also
+   * make every reader of `overAllowance` handle a case that has no
+   * `remainingPosts`/`remainingBytes` meaning.
+   *
+   * It is a refusal because `declared_posts` must be `1..1000`: a video-only
+   * Instagram export would otherwise send `declared_posts: 0`, be answered
+   * `400 IMPORT_DECLARED_INVALID`, and surface as `job-terminal('CLIENT_BUG')`
+   * plus a Sentry event for an archive that is simply empty of posts we can
+   * take.
+   */
+  readonly nothingToImport: boolean;
   readonly heldVideo: number;
   readonly skippedByReason: Readonly<Record<SkipReason, number>>;
 }
@@ -637,6 +654,16 @@ function pauseDelayMs(
   attempt: number,
   untilMs: number | undefined,
 ): number | null {
+  // A cause that names its OWN deadline is waited out to that deadline,
+  // whatever ladder its cause would otherwise take. The chunk-route
+  // `IMPORT_ALLOWANCE_EXCEEDED` is a `network` pause that does: the staged
+  // bytes are released by the session reaper, so its 30 s is the recovery
+  // time, and retrying it on the 5 s connectivity ladder would just spend
+  // round trips re-learning the same refusal (§4.5.6).
+  if (untilMs !== undefined && cause !== 'needs_repick' && cause !== 'background') {
+    return Math.max(0, untilMs - Date.now());
+  }
+
   switch (cause) {
     case 'key_pending':
       return KEY_PENDING_RETRY_MS;
@@ -645,7 +672,8 @@ function pauseDelayMs(
     case 'network':
       return NETWORK_PAUSE_LADDER_MS[Math.min(attempt, NETWORK_PAUSE_LADDER_MS.length - 1)];
     case 'rate_limited':
-      return Math.max(0, (untilMs ?? Date.now() + DEFAULT_RATE_LIMIT_MS) - Date.now());
+      // A 429 whose `Retry-After` the transport could not read.
+      return DEFAULT_RATE_LIMIT_MS;
     default:
       // `needs_repick` has no timer at all, and `background` wakes on AppState.
       return null;
@@ -662,7 +690,12 @@ function pauseDelayMs(
  */
 function addPause(r: ActiveRun, cause: PauseCause, untilMs?: number): ImportTerminalCode | null {
   const attempt = r.pauseAttempts.get(cause) ?? 0;
-  const budgetCode = PAUSE_BUDGET_CODE[cause];
+  // A pause the SERVER named a deadline for is not a failure to reach the
+  // server, so it spends none of that cause's budget: the chunk-route
+  // allowance refusal rides the `network` cause (it is a wait, and #928 has
+  // copy for it) but it is the orbit's reaper we are waiting on, and ten of
+  // them must not add up to `job-terminal('NETWORK')`.
+  const budgetCode = untilMs === undefined ? PAUSE_BUDGET_CODE[cause] : undefined;
   if (budgetCode !== undefined) {
     const max =
       cause === 'key_pending'
@@ -671,8 +704,8 @@ function addPause(r: ActiveRun, cause: PauseCause, untilMs?: number): ImportTerm
           ? ARCHIVE_PAUSE_MAX_ATTEMPTS
           : NETWORK_PAUSE_MAX_ATTEMPTS;
     if (attempt >= max) return budgetCode;
+    r.pauseAttempts.set(cause, attempt + 1);
   }
-  r.pauseAttempts.set(cause, attempt + 1);
   r.pauseCauses.add(cause);
   if (untilMs !== undefined) r.resumeAtMs = untilMs;
 
@@ -792,8 +825,9 @@ async function applyVerdict(
   r: ActiveRun,
   verdict: ImportVerdict,
   stage: ImportStage,
-  itemId?: string,
+  options?: { itemId?: string; stageAttempt?: number },
 ): Promise<Step> {
+  const itemId = options?.itemId;
   switch (verdict.kind) {
     case 'cancelled':
       return 'stop';
@@ -828,22 +862,23 @@ async function applyVerdict(
       // one back; reaching here means the two layers disagreed about a shape.
       // Charge the item rather than rebinding a `media_id` outside the one
       // module allowed to, and keep the run alive.
-      return applyVerdict(
-        r,
-        { kind: 'item-failed', code: 'IMPORT_MEDIA_UNAVAILABLE' },
-        stage,
-        itemId,
-      );
+      return applyVerdict(r, { kind: 'item-failed', code: 'IMPORT_MEDIA_UNAVAILABLE' }, stage, {
+        ...(itemId === undefined ? {} : { itemId }),
+      });
 
     case 'adopt-session': {
       const importId = verdict.importId ?? (await lookupOpenSessionId(r));
       if (importId === null) return failRunWith(r, 'REFUSED', stage);
+      // The id we already hold is not an adoption: answering `retry` for it
+      // would re-POST at the same session that just refused us, as fast as the
+      // loop can go. The server has told us nothing new, so stop.
+      if (importId === r.importId) return failRunWith(r, 'REFUSED', stage);
       r.importId = importId;
       return 'retry';
     }
 
     case 'session-restart':
-      return (await restartServerSession(r)) ? 'retry' : 'stop';
+      return restartServerSession(r, options?.stageAttempt ?? 0);
 
     case 'finish-completed':
       // The server considers the session finished; finish locally too.
@@ -873,7 +908,10 @@ async function handleFailure(
       ...(options?.busyAttempt === undefined ? {} : { busyAttempt: options.busyAttempt }),
     }),
   );
-  return applyVerdict(r, verdict, stage, options?.itemId);
+  return applyVerdict(r, verdict, stage, {
+    ...(options?.itemId === undefined ? {} : { itemId: options.itemId }),
+    ...(options?.stageAttempt === undefined ? {} : { stageAttempt: options.stageAttempt }),
+  });
 }
 
 /**
@@ -914,24 +952,52 @@ async function lookupOpenSessionId(r: ActiveRun): Promise<string | null> {
  * a second session id — and that is harmless: a relaunch re-reads the stale
  * `session_id`, the server answers `abandoned`, and this path runs again.
  * Already-created posts come back `duplicate`, and completed media is adopted.
+ *
+ * **Answers `retry` only when the session id actually CHANGED.** A `retry`
+ * verdict on the start call means "this call may be repeated", never "a session
+ * exists": offline, a `NetworkError` classifies `retry-same-call` while
+ * `r.importId` still holds the closed id, and reporting success there would
+ * re-POST the batch at a dead session, get `IMPORT_CLOSED` again and restart
+ * again — a ~1 s loop for as long as the device is offline, which no pause
+ * budget and no no-progress guard can see. So the start ladder is spent HERE,
+ * under the caller's own attempt counter, and the caller is handed the pause
+ * (`continue`) or the terminal (`stop`) the taxonomy produced.
+ *
+ * The one way forward without our own start succeeding is the adopt-session
+ * arm, which proves it by changing the id.
  */
-async function restartServerSession(r: ActiveRun): Promise<boolean> {
-  try {
-    const started = await startImport(r.conversationId, {
-      declaredPosts: r.declaredPosts,
-      declaredBytes: r.declaredBytes,
-    });
-    r.importId = started.importId;
-    r.limits = started.limits;
-  } catch (e) {
-    const step = await handleFailure(r, e, 'start');
-    return step === 'retry';
+async function restartServerSession(r: ActiveRun, stageAttempt: number): Promise<Step> {
+  const closed = r.importId;
+
+  for (let attempt = stageAttempt; ; attempt++) {
+    if (stopped(r)) return 'stop';
+    try {
+      const started = await startImport(r.conversationId, {
+        declaredPosts: r.declaredPosts,
+        declaredBytes: r.declaredBytes,
+      });
+      r.importId = started.importId;
+      r.limits = started.limits;
+      break;
+    } catch (e) {
+      const step = await handleFailure(r, e, 'start', { stageAttempt: attempt });
+      if (r.importId !== null && r.importId !== closed) break;
+      if (step !== 'retry') return step;
+    }
   }
+
+  if (isRunStale(workGuard(r))) return 'stop';
   const requeued = requeueImportItems(r.jobId, { from: 'uploading' });
-  // Held posts went back into the queue with everything else; they are held
-  // again on their next extract, which costs one peek each.
-  if (requeued > 0) r.held.clear();
-  return true;
+  if (requeued > 0) {
+    // Held and quota-parked posts went back into the queue with everything
+    // else: a held post is held again on its next extract (one peek each), and
+    // a parked one is retried now rather than in the end-of-run pass. Both
+    // sets must be dropped, or the summary would keep subtracting rows that
+    // are no longer parked anywhere.
+    r.held.clear();
+    r.parked.clear();
+  }
+  return 'retry';
 }
 
 /**
@@ -1074,10 +1140,14 @@ async function ensureArchiveSession(r: ActiveRun): Promise<ArchiveImportSession 
 async function runMediaForItem(r: ActiveRun, item: PendingImportItem): Promise<boolean> {
   const session = await ensureArchiveSession(r);
   if (session === null || r.importId === null) return false;
-  const importId = r.importId;
 
   for (let attempt = 0; ; attempt++) {
     if (stopped(r)) return false;
+    // Re-read per attempt rather than captured once: a `session-restart` or an
+    // `adopt-session` verdict between two attempts changes the session this
+    // file must be uploaded to, and the old id is closed.
+    const importId = r.importId;
+    if (importId === null) return false;
 
     let outcome;
     try {
@@ -1138,6 +1208,21 @@ async function runMediaForItem(r: ActiveRun, item: PendingImportItem): Promise<b
         // causes; the one fresh id answered the two that are recoverable.
         failRunWith(r, 'FORBIDDEN', outcome.stage);
         return false;
+
+      case 'refused': {
+        // The server took a chunk and then refused the upload for a reason
+        // about the RUN or the ORBIT. `importMedia` has rebound the burned id,
+        // so the row is re-uploadable — which is exactly why this must NOT
+        // retry in this loop: `item` still carries the old `media_id`. The
+        // taxonomy answers park-file (the end-of-run pass re-reads the row),
+        // `job-terminal('ALLOWANCE')`, a pause, or a session restart, and the
+        // pump re-reads the page afterwards either way.
+        await handleFailure(r, outcome.error, outcome.stage, {
+          itemId: item.id,
+          stageAttempt: attempt,
+        });
+        return false;
+      }
     }
   }
 }
@@ -1175,12 +1260,9 @@ async function buildBatchItems(
 
     const narrowed = preflightImportItem(item, r.limits);
     if (!narrowed.ok) {
-      const step = await applyVerdict(
-        r,
-        { kind: 'item-failed', code: narrowed.code },
-        'batch',
-        item.id,
-      );
+      const step = await applyVerdict(r, { kind: 'item-failed', code: narrowed.code }, 'batch', {
+        itemId: item.id,
+      });
       if (step === 'stop') return { built, step };
       continue;
     }
@@ -1191,12 +1273,9 @@ async function buildBatchItems(
         built.push(outcome.built);
         continue;
       }
-      const step = await applyVerdict(
-        r,
-        { kind: 'item-failed', code: outcome.code },
-        'batch',
-        item.id,
-      );
+      const step = await applyVerdict(r, { kind: 'item-failed', code: outcome.code }, 'batch', {
+        itemId: item.id,
+      });
       if (step === 'stop') return { built, step };
     } catch (e) {
       // Crypto errors propagate out of `buildImportItem` on purpose: a pending
@@ -1239,7 +1318,7 @@ async function submitClaimedBatch(r: ActiveRun, batch: readonly BuiltImportItem[
         failureContext(r, 'batch', { stageAttempt: attempt }),
       );
       if (verdict.kind === 'batch-halve') return 'retry';
-      const step = await applyVerdict(r, verdict, 'batch');
+      const step = await applyVerdict(r, verdict, 'batch', { stageAttempt: attempt });
       if (step === 'retry') continue;
       return step;
     }
@@ -1267,12 +1346,9 @@ async function halveOrFail(r: ActiveRun, batch: readonly BuiltImportItem[]): Pro
 
   const first = batch[0];
   if (first === undefined) return 'stop';
-  return applyVerdict(
-    r,
-    { kind: 'item-failed', code: 'IMPORT_ITEM_TOO_LARGE' },
-    'batch',
-    first.itemId,
-  );
+  return applyVerdict(r, { kind: 'item-failed', code: 'IMPORT_ITEM_TOO_LARGE' }, 'batch', {
+    itemId: first.itemId,
+  });
 }
 
 /** Claim, submit and apply one batch out of the built set. */
@@ -1441,6 +1517,15 @@ function startEndOfRunPass(r: ActiveRun): void {
 function buildSummary(r: ActiveRun): ImportSummary {
   const counts = countImportItemsByStatus(r.jobId);
   const skips = countImportSkipsByReason(r.jobId);
+  // `uploading` is the schema's only parking space, so it holds three
+  // different facts at once: a batch claim the run never sent, a post held for
+  // video, and a file parked for the orbit's quota. The last two are reported
+  // on their own lines (`heldVideo`, and a `QUOTA` failure after the end-of-run
+  // pass), and counting them again here would tell the member that more posts
+  // did not migrate than there are posts. The two in-memory sets are the only
+  // thing that can tell them apart — SQL sees one status — and both are
+  // dropped whenever their rows are requeued.
+  const parkedOut = r.held.size + r.parked.size;
   return {
     created: counts.created,
     duplicate: counts.duplicate,
@@ -1449,7 +1534,7 @@ function buildSummary(r: ActiveRun): ImportSummary {
     // member, reported separately from failures per the issue AC.
     heldVideo: skips.held_video + r.heldVideo,
     skippedByReason: skips,
-    notSubmitted: counts.pending + counts.uploading,
+    notSubmitted: Math.max(0, counts.pending + counts.uploading - parkedOut),
     errorCode: r.terminal,
     cancelled: r.cancelled,
   };
@@ -1477,7 +1562,6 @@ async function settleRun(r: ActiveRun): Promise<void> {
 
   const archive = r.archive;
   r.archive = null;
-  const status = terminalStatusFor(r);
 
   try {
     if (archive !== null) {
@@ -1493,13 +1577,27 @@ async function settleRun(r: ActiveRun): Promise<void> {
 
     if (wiped(r)) return;
 
-    if (status === 'completed' && r.importId !== null) {
+    // EVERY settled run with a session completes it, not just the successful
+    // one (§4.12). An open session's `declared_bytes` is reserved against the
+    // ORBIT's quota — other members' uploads are refused on it — until the
+    // member completes it or B#318's GC reaps it up to six hours later, so a
+    // cancel or a terminal failure that walks away is a lien on the orbit for
+    // no reason. A session that is no longer open answers 409 `IMPORT_CLOSED`,
+    // which the classifier already owns.
+    //
+    // A RESET run never gets here: the `wiped` guard above is what keeps a
+    // logout or a wipe from making any network call at all (rule 0).
+    if (r.importId !== null) {
       try {
         await completeImport(r.importId);
       } catch (e) {
         // A session the server already finished is still a finished import.
         const verdict = classifyImportFailure(e, failureContext(r, 'complete'));
-        if (verdict.kind === 'job-terminal') r.terminal = verdict.code;
+        // Only when the run had no verdict of its own: the reason the run
+        // stopped is the one the member is shown, and a cancel stays a cancel.
+        if (verdict.kind === 'job-terminal' && r.terminal === null && !r.cancelled) {
+          r.terminal = verdict.code;
+        }
       }
     }
 
@@ -1541,6 +1639,13 @@ async function settleRun(r: ActiveRun): Promise<void> {
     for (const cause of r.pauseTimers.keys()) clearPauseTimer(r, cause);
     releaseWaiters(r);
     endImportCaptureBudget();
+    // This run spent part of the member's lifetime allowance, so the cached
+    // `GET /imports` answer for this orbit is now stale by exactly what it
+    // created. A second import in the same app session would otherwise be
+    // gated against the PRE-run `posts_used`, pass preflight, and then be
+    // refused at start with `IMPORT_ALLOWANCE_EXCEEDED` — a terminal plus a
+    // Sentry event for a condition the preflight exists to catch.
+    probeCache.delete(r.conversationId);
     if (r === run) run = null;
   }
 }
@@ -1717,9 +1822,23 @@ function buildPreflight(args: {
     estimatedBytes: args.estimatedBytes,
     remainingBytes,
     overAllowance,
+    nothingToImport: args.importable < 1,
     heldVideo: args.heldVideo,
     skippedByReason: args.skippedByReason,
   };
+}
+
+/**
+ * Is this preflight something a run can be started from?
+ *
+ * One predicate for the two refusals, so the three places that must agree —
+ * `parseIntoJob`'s `setImportJobParsed`, `pickAndStartParse`'s release arm and
+ * {@link confirmAndRunImport}'s guard — cannot drift apart. Neither refusal
+ * starts a server session, writes a terminal code or reports anything: the
+ * member is told what the archive holds and offered a different export.
+ */
+function isPreflightRunnable(preflight: ImportPreflight): boolean {
+  return preflight.overAllowance === null && !preflight.nothingToImport;
 }
 
 /** The preflight for a `ready` job, rebuilt from SQLite plus a fresh GET. */
@@ -1880,9 +1999,10 @@ export async function pickAndStartParse(args: {
     });
     if (preflight === null) return { kind: 'cancelled' };
 
-    if (preflight.overAllowance !== null) {
-      // §4.5.4: refuse the archive whole. No server session was started, so
-      // the refusal consumes none of the member's allowance.
+    if (!isPreflightRunnable(preflight)) {
+      // §4.5.4: refuse the archive whole — over the remaining allowance, or
+      // with nothing importable in it at all. No server session was started,
+      // so the refusal consumes none of the member's allowance.
       await releaseArchiveParts(archive.parts).catch(() => {});
       archive.close();
       archive = null;
@@ -2006,7 +2126,7 @@ async function parseIntoJob(args: {
     summary,
   });
 
-  if (preflight.overAllowance === null) {
+  if (isPreflightRunnable(preflight)) {
     // A `false` means the job left `parsing` underneath us — cancelled from
     // the UI, or wiped — and writing anyway would resurrect it.
     if (
@@ -2033,9 +2153,13 @@ export async function confirmAndRunImport(): Promise<void> {
   if (run !== null) return;
   const job = getActiveImportJob();
   if (job === null || job.status !== 'ready') return;
-  // An over-allowance preflight already finished its job as `cancelled`, so
-  // this is belt: the refusal is never runnable.
-  if (draft.preflight?.overAllowance != null) return;
+  // A refused preflight — over the remaining allowance, or with nothing
+  // importable in it — already finished its job as `cancelled`. This is both
+  // the belt for that and the whole gate for a `ready` job rebuilt at launch,
+  // whose counts can leave nothing to submit: `declared_posts` must be
+  // `1..1000`, so running it would be answered `IMPORT_DECLARED_INVALID`.
+  const preflight = draft.preflight;
+  if (preflight !== null && !isPreflightRunnable(preflight)) return;
   await enterJob(job, { autoStart: true });
 }
 
@@ -2364,8 +2488,22 @@ async function enterJob(job: ImportJobRow, options: { autoStart: boolean }): Pro
 }
 
 /**
- * A job that cannot be run at all: write its terminal status and report it
- * once, without ever having had a run.
+ * The launch-time session GET failed, or answered `closed`.
+ *
+ * **Settles the job only when the classification is TERMINAL.** The verdict
+ * computed for the error is the whole decision here: a `NetworkError` or a 5xx
+ * classifies `retry-same-call` and a 429 classifies `pause('rate_limited')`,
+ * and neither names a terminal code — so settling on them would finish the job
+ * as `completed` (nothing set `r.terminal`, and `newRun` seeds `importId` from
+ * `session_id`, so it would even POST `complete` and publish a summary with
+ * `errorCode: null`) for an import that has not run and whose items are all
+ * still pending.
+ *
+ * For those the job row is left exactly as it is and the store publishes
+ * `idle`: there is no run to hang a wake-up timer on at this point, and `idle`
+ * is the honest answer — "nothing is running", distinguishable from
+ * `'hydrating'`'s "not looked yet". The next launch, or `resumeImport()`,
+ * tries the GET again and the job resumes from the same row.
  */
 async function failJobBeforeRun(
   job: ImportJobRow,
@@ -2373,16 +2511,38 @@ async function failJobBeforeRun(
   error: unknown,
   code?: ImportTerminalCode,
 ): Promise<void> {
+  const terminalCode = code ?? launchTerminalCode(error);
+  if (terminalCode === null) {
+    keySession?.close();
+    update({ ...INITIAL_STATE, phase: 'idle' }, true);
+    return;
+  }
+
   const r = newRun(job, draft.preflight?.limits ?? FALLBACK_LIMITS, keySession);
   run = r;
   beginImportCaptureBudget();
-  if (code !== undefined) {
-    r.terminal = code;
-    if (!wiped(r)) captureImportFailure(r, 'start', code);
-  } else {
-    await handleFailure(r, error, 'start');
-  }
+  r.terminal = terminalCode;
+  if (!wiped(r)) captureImportFailure(r, 'start', terminalCode);
   await settleRun(r);
+}
+
+/**
+ * The terminal code a launch-time failure settles the job with, or `null` when
+ * the taxonomy says it is retryable (or cancelled).
+ *
+ * Classified with no `ActiveRun`, deliberately: there is nothing to settle
+ * unless the answer is terminal, and building a run first is what made the
+ * discarded-verdict bug possible. The guard is therefore the live token
+ * compared with itself — rule 0 has nothing to collapse here, since this path
+ * writes nothing at all until a terminal is in hand.
+ */
+function launchTerminalCode(error: unknown): ImportTerminalCode | null {
+  const verdict = classifyImportFailure(error, {
+    run: liveToken,
+    currentRun: () => liveToken,
+    stage: 'start',
+  });
+  return verdict.kind === 'job-terminal' ? verdict.code : null;
 }
 
 /** The server already finished this session; finish locally and report it. */

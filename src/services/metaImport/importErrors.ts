@@ -203,8 +203,6 @@ export interface ImportFailureContext extends RunGuard {
    * is terminal and the created posts are kept (§4.7, one disposition).
    */
   readonly createdItems?: number;
-  /** This file has already been given one fresh `media_id` (403 arm, once). */
-  readonly freshIdUsed?: boolean;
   /** True inside the single end-of-run retry pass for a parked file. */
   readonly endOfRunPass?: boolean;
   /**
@@ -280,18 +278,6 @@ export function isImportCancellation(e: unknown): boolean {
  */
 export function isPayloadTooLarge(e: unknown): boolean {
   return e instanceof QuotaExceededError && e.quota === undefined;
-}
-
-/**
- * The typed error an `ImportMediaStagedError` wrapped, or `undefined`.
- *
- * Matched by `name`, not `instanceof`: the class lives in `mediaUploadService`
- * (MMKV chain — see the module header). The runner classifies this cause for
- * the pause-or-fail decision, NEVER for "retry the same media id".
- */
-export function getStagedUploadCause(e: unknown): unknown {
-  if (prop(e, 'name') !== 'ImportMediaStagedError') return undefined;
-  return prop(e, 'cause');
 }
 
 /** An `ArchiveReaderError`'s code, matched by `name` (§4.16 mock locations). */
@@ -457,6 +443,11 @@ export function classifyImportFailure(e: unknown, ctx: ImportFailureContext): Im
   // The server already holds a chunk under this `media_id`, so the envelope and
   // IV it has are THIS attempt's: a retry in place would assemble two
   // ciphertexts into one undecryptable, allowance-charged blob.
+  //
+  // `importMedia` unwraps this wrapper itself and never rethrows it, so this
+  // arm is the backstop for a wrapper that arrived with no cause to unwrap:
+  // the runner's `file-fresh-id` arm charges the item and keeps the run alive,
+  // which is the right answer for two layers disagreeing about a shape.
   if (prop(e, 'name') === 'ImportMediaStagedError') return { kind: 'file-fresh-id' };
 
   const archiveCode = archiveErrorCode(e);
@@ -473,8 +464,14 @@ export function classifyImportFailure(e: unknown, ctx: ImportFailureContext): Im
     if (e.statusCode === 401) return terminal('AUTH');
     // 403 has three indistinguishable causes on a media route (C4): another
     // user's temp row, a row bound to a different session, or lost membership.
-    // One fresh id answers the first two; a second 403 means the third.
-    if (isMediaStage(ctx.stage) && ctx.freshIdUsed !== true) return { kind: 'file-fresh-id' };
+    // One fresh id answers the first two; a second 403 means the third — and
+    // the rebind BUDGET has exactly one owner, `importMedia`, which spends it
+    // in place and answers `fresh-id-exhausted` when it is gone. So there is no
+    // attempt count to read here: a media-stage 403 that reaches the classifier
+    // at all is a shape the two layers disagree about, and the runner charges
+    // that to the item rather than rebinding an id outside the one module
+    // allowed to.
+    if (isMediaStage(ctx.stage)) return { kind: 'file-fresh-id' };
     return terminal('FORBIDDEN');
   }
 

@@ -34,7 +34,6 @@ import {
   DEFAULT_RATE_LIMIT_PAUSE_MS,
   NETWORK_STAGE_LADDER_MS,
   classifyImportFailure,
-  getStagedUploadCause,
   isImportCancellation,
   isPayloadTooLarge,
   isRunStale,
@@ -200,19 +199,18 @@ describe('ImportMediaStagedError', () => {
     return e;
   };
 
-  it('always mints a fresh media id, whatever it wrapped', () => {
+  it('is the backstop arm: a wrapper that reaches here never retries in place', () => {
+    // `importMedia` unwraps the wrapper itself and never rethrows it — an id
+    // binding is rebound and retried there, an import refusal is rebound and
+    // reported as the `refused` outcome. So this arm answers a wrapper that
+    // arrived with nothing to unwrap, and `file-fresh-id` is what the runner
+    // charges to the item. What it must never be is `retry-same-call`: the
+    // server holds this attempt's envelope and IV under that `media_id`.
     for (const cause of [new NetworkError(), new ConflictError(), new RateLimitError()]) {
       expect(classifyImportFailure(staged(cause), ctx({ stage: 'media-chunk' }))).toEqual({
         kind: 'file-fresh-id',
       });
     }
-  });
-
-  it('exposes the wrapped cause for the pause-or-fail decision only', () => {
-    const cause = new NetworkError();
-    expect(getStagedUploadCause(staged(cause))).toBe(cause);
-    expect(getStagedUploadCause(new NetworkError())).toBeUndefined();
-    expect(getStagedUploadCause(null)).toBeUndefined();
   });
 });
 
@@ -474,19 +472,15 @@ describe('auth and not-found', () => {
     }
   });
 
-  it('gives a media-route 403 exactly one fresh id', () => {
-    expect(classifyImportFailure(new AuthError(403), ctx({ stage: 'media-chunk' }))).toEqual({
-      kind: 'file-fresh-id',
-    });
-    expect(
-      classifyImportFailure(
-        new AuthError(403),
-        ctx({ stage: 'media-complete', freshIdUsed: true }),
-      ),
-    ).toEqual({
-      kind: 'job-terminal',
-      code: 'FORBIDDEN',
-    });
+  it('answers a media-route 403 with a fresh id, on either media stage', () => {
+    // The rebind BUDGET is `importMedia`'s and is spent there (one rebind,
+    // then `fresh-id-exhausted`), so this arm carries no attempt count of its
+    // own: there is one owner, and the runner charges this verdict to the item.
+    for (const stage of ['media-chunk', 'media-complete'] as const) {
+      expect(classifyImportFailure(new AuthError(403), ctx({ stage }))).toEqual({
+        kind: 'file-fresh-id',
+      });
+    }
   });
 
   it('reads a 404 as "imports are not available here"', () => {

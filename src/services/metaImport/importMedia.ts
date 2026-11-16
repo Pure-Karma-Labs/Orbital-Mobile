@@ -31,7 +31,18 @@
  *     first attempt's envelope and IV, so a retry under the same id assembles
  *     two ciphertexts into one undecryptable blob that is still charged to the
  *     member's lifetime allowance. `ImportMediaStagedError` means exactly
- *     "mint a fresh id", and this file is where that is spent — once.
+ *     "this id is burned, mint a fresh one", and this file is where that is
+ *     spent — once.
+ *
+ *     What it does NOT mean is "try again now". The wrapper is added to every
+ *     failure after an accepted chunk, so its CAUSE is what decides the next
+ *     step: an id binding (403, a bare 409) is re-mintable here and retried
+ *     once, while an import refusal — the orbit filled up, the lifetime
+ *     allowance ran out, the session closed — is rebound and then handed BACK
+ *     as {@link ImportMediaOutcome} `refused`, because parking, ending the run
+ *     and pausing are the runner's decisions and re-uploading the file under a
+ *     fresh id would spend the member's allowance on a refusal that has not
+ *     changed.
  *
  * ## Handling classes
  *
@@ -125,6 +136,24 @@ export type ImportMediaOutcome =
    */
   | {
       readonly kind: 'fresh-id-exhausted';
+      readonly stage: ImportMediaStage;
+      readonly error: unknown;
+    }
+  /**
+   * The server refused this upload AFTER accepting a chunk, for a reason that
+   * is about the RUN or the ORBIT rather than the `media_id`: an
+   * `IMPORT_QUOTA_EXCEEDED` at media complete, an `IMPORT_ALLOWANCE_EXCEEDED`
+   * at either route, an `IMPORT_CLOSED`.
+   *
+   * The id has already been rebound (`replaceMediaId`), so the row is
+   * re-uploadable under a fresh id whenever the run gets there — but nothing
+   * here retries it. `error` is the UNWRAPPED cause, for
+   * `classifyImportFailure(error, {stage, …})`, whose answer is park-file,
+   * `job-terminal('ALLOWANCE')`, `session-restart` or a pause. It is never
+   * re-rendered and never logged.
+   */
+  | {
+      readonly kind: 'refused';
       readonly stage: ImportMediaStage;
       readonly error: unknown;
     };
@@ -245,6 +274,25 @@ function statusOf(e: unknown): number | undefined {
 }
 
 /**
+ * The typed error an `ImportMediaStagedError` wrapped, or `undefined` for
+ * anything that is not one.
+ *
+ * The ONE owner of that unwrap. It lives here rather than in `importErrors`
+ * because this file is the only caller — the taxonomy never sees the wrapper,
+ * since every path below either spends the rebind or reports the cause — and
+ * because `importErrors` reaches `importCrypto` → `useAppStore` → MMKV, a
+ * module graph this file and its suite must stay out of.
+ *
+ * The wrapper means "a chunk was accepted under this `media_id`, so the id is
+ * burned". It says nothing about WHY, which is why the cause is what every
+ * decision below is made on.
+ */
+function stagedUploadCause(e: unknown): unknown {
+  if (nameOf(e) !== 'ImportMediaStagedError') return undefined;
+  return (e as { cause?: unknown }).cause;
+}
+
+/**
  * The item-level code for a sanitizer refusal, or undefined when the error is
  * not one.
  *
@@ -285,19 +333,22 @@ function fileRefusalCode(e: unknown): ImportMediaFailureCode | undefined {
 }
 
 /**
- * True when the only thing that can fix this failure is a fresh `media_id`.
+ * True when this failure is about the `media_id` BINDING — the one class a
+ * fresh id can actually fix, and therefore the only class retried in place.
  *
- *  - `ImportMediaStagedError`: UNCONDITIONAL. The server has accepted a chunk
- *    under this id, so the id is burned whatever the cause was — the cause
- *    decides pause-vs-fail on the NEXT failure, never "retry in place".
  *  - A 403 on a media route: per C4 it is another member's temp row, a row
  *    bound to a different session, or lost membership, and no server text
  *    separates them. A fresh id resolves the first two.
  *  - A plain 409 `CONFLICT` with no `IMPORT_REFUSED` details: the media id is
  *    taken.
+ *
+ * Deliberately NOT here: `ImportMediaStagedError`. The wrapper says the id is
+ * burned, not what went wrong — so it is unwrapped first
+ * ({@link stagedUploadCause}) and this predicate is asked about its CAUSE.
+ * An import refusal that arrives wrapped is rebound and reported, never
+ * retried (see the module header, rule 2).
  */
-function needsFreshMediaId(e: unknown): boolean {
-  if (nameOf(e) === 'ImportMediaStagedError') return true;
+function isIdBindingFailure(e: unknown): boolean {
   if (nameOf(e) === 'AuthError' && statusOf(e) === 403) return true;
   if (nameOf(e) === 'ConflictError' && refusalOf(e) === undefined) return true;
   return false;
@@ -325,12 +376,13 @@ function needsFreshMediaId(e: unknown): boolean {
  *    file. A complete-stage failure mis-stamped `media-chunk` still reaches
  *    the same pause, one ladder short.
  *
- * `ImportMediaStagedError` is unwrapped first: it is a wrapper this client
- * adds, and the server's details are on its cause.
+ * `ImportMediaStagedError` is unwrapped first ({@link stagedUploadCause}): it
+ * is a wrapper this client adds, and the server's details are on its cause.
+ * Callers that have already unwrapped may pass the cause itself.
  */
 export function importMediaStage(e: unknown): ImportMediaStage {
-  const inner = nameOf(e) === 'ImportMediaStagedError' ? (e as { cause: unknown }).cause : e;
-  const refusal = refusalOf(inner);
+  const cause = stagedUploadCause(e);
+  const refusal = refusalOf(cause === undefined ? e : cause);
   if (refusal !== undefined) {
     if (refusal.code === 'IMPORT_ALLOWANCE_EXCEEDED') {
       return refusal.stagedBytes === undefined && refusal.projectedBytes === undefined
@@ -416,10 +468,11 @@ function skipOutcome(skip: string): ImportMediaOutcome {
  * One (item, ordinal): extract → upload → mark, with at most one fresh-id
  * rebind.
  *
- * The loop body runs at most twice and the second pass exists only for a
- * burned id. It re-extracts deliberately: the staging file was released in the
- * first pass's `finally`, and a staging path is only valid until the next
- * reaper pass anyway.
+ * The loop body runs at most twice, and the second pass exists only for an
+ * id-BINDING failure (403, a bare 409) — the one class a fresh id can fix. It
+ * re-extracts deliberately: the staging file was released in the first pass's
+ * `finally`, and a staging path is only valid until the next reaper pass
+ * anyway.
  */
 async function uploadOneOrdinal(
   item: PendingImportItem,
@@ -467,27 +520,48 @@ async function uploadOneOrdinal(
       return UPLOADED;
     }
 
-    if (run.signal.aborted || isUploadCancellation(failure)) return CANCELLED;
+    // ONE unwrap, in one place: after an accepted chunk every failure arrives
+    // wrapped, and the wrapper's `name` says only that the id is burned. Every
+    // question below is asked about the CAUSE.
+    const stagedCause = stagedUploadCause(failure);
+    const staged = stagedCause !== undefined;
+    const cause = staged ? stagedCause : failure;
 
-    const code = fileRefusalCode(failure);
+    if (run.signal.aborted || isUploadCancellation(cause)) return CANCELLED;
+
+    const code = fileRefusalCode(cause);
+    // Permanent for the file whether or not an id was burned: a failed item is
+    // never re-submitted, so there is nothing to rebind for.
     if (code !== undefined) return { kind: 'item-failed', code };
 
-    if (!needsFreshMediaId(failure)) throw failure;
+    if (isIdBindingFailure(cause)) {
+      if (attempt > 0) {
+        // The one rebind is spent and the file failed the same way again.
+        return {
+          kind: 'fresh-id-exhausted',
+          stage: importMediaStage(cause),
+          error: cause,
+        };
+      }
 
-    if (attempt > 0) {
-      // The one rebind is spent and the file failed the same way again.
-      return {
-        kind: 'fresh-id-exhausted',
-        stage: importMediaStage(failure),
-        error: failure,
-      };
+      if (stopped(run)) return CANCELLED;
+      mediaId = mintId();
+      // Resets `upload_state` to `pending`, so a crash between here and the
+      // retry leaves the row re-uploadable under the NEW id.
+      replaceMediaId(item.id, media.ordinal, mediaId);
+      continue;
     }
 
+    // About the RUN, and no chunk was accepted: the runner's taxonomy owns it
+    // and a wrapper here would hide the class it matches on.
+    if (!staged) throw cause;
+
     if (stopped(run)) return CANCELLED;
-    mediaId = mintId();
-    // Resets `upload_state` to `pending`, so a crash between here and the
-    // retry leaves the row re-uploadable under the NEW id.
-    replaceMediaId(item.id, media.ordinal, mediaId);
+    // The id IS burned, so the row must point at a fresh one before anybody
+    // re-uploads it — but WHEN that happens is the runner's call, and for an
+    // orbit that is full or an allowance that is spent it must not be now.
+    replaceMediaId(item.id, media.ordinal, mintId());
+    return { kind: 'refused', stage: importMediaStage(cause), error: cause };
   }
 
   // Unreachable: the loop either returns or throws on both passes. Returning

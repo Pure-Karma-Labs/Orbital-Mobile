@@ -477,6 +477,22 @@ function jobRow(): { status: string; archive_bookmark: string | null; session_id
     .get(JOB) as { status: string; archive_bookmark: string | null; session_id: string | null };
 }
 
+/**
+ * The body of every row that was never sent, in ordinal order.
+ *
+ * `finishImportJob` NULLs them, which is the fact that makes a `failed` job
+ * un-resumable: there is nothing left to submit.
+ */
+function unsentBodies(): (string | null)[] {
+  return (
+    harness.sqlite
+      .prepare(
+        "SELECT body FROM import_items WHERE status NOT IN ('created','duplicate') ORDER BY ordinal",
+      )
+      .all() as { body: string | null }[]
+  ).map((row) => row.body);
+}
+
 /** How many rows the parse actually wrote. */
 function itemCount(): number {
   return (harness.sqlite.prepare('SELECT COUNT(*) AS n FROM import_items').get() as { n: number })
@@ -1939,9 +1955,15 @@ describe('a verdict that is dropped rather than acted on', () => {
       expect(jobRow().status).toBe('failed');
       expect(importStore.getState().summary?.errorCode).toBe('CLIENT_BUG');
       expect(mockCaptureError).toHaveBeenCalledTimes(1);
-      // The items are still resumable, which is the whole reason `failed`
-      // rather than `completed` matters.
+      // `failed` is NOT resumable, and the rows below are what says so:
+      // `finishImportJob` NULLs the body of every item that is not
+      // `created`/`duplicate`, and `failed` is outside `ACTIVE_STATUSES`, so
+      // no launch path re-enters this job. Recovery is picking the archive
+      // again — which re-parses, and brings the posts this run DID create
+      // back as `duplicate`. What `failed` buys is an honest summary and one
+      // Sentry event naming the seam, never a requeue.
       expect(itemRows().every((row) => row.status === 'pending')).toBe(true);
+      expect(unsentBodies()).toEqual([null, null]);
       expect(importStore.getState().summary?.notSubmitted).toBe(2);
     } finally {
       spy.mockRestore();
@@ -2836,7 +2858,12 @@ describe('the pre-run gate is single-flight', () => {
     await drain();
 
     // `enterJob` awaits the key session before `runJob` assigns `run`, so the
-    // second tap's `run !== null` guard could not see the first one.
+    // second tap's `run !== null` guard could not see the first one. The
+    // session count is what proves the latch rather than the defences behind
+    // it: one for the launch rebuild, one for the run, and none for the
+    // second tap — without the latch the second tap opens a third, builds a
+    // second `ActiveRun` and only then loses to the stale-token checks.
+    expect(mockKeySessions).toHaveLength(2);
     expect(mockStartImport).toHaveBeenCalledTimes(1);
     expect(mockSubmitImportBatch).toHaveBeenCalledTimes(1);
     expect(jobRow().status).toBe('completed');
@@ -2861,5 +2888,389 @@ describe('the pre-run gate is single-flight', () => {
     expect(jobRow().status).toBe('ready');
     expect(itemRows()[0].status).toBe('pending');
     expect(importStore.getState()).toEqual(importStore.getInitialState());
+  });
+});
+
+// ===========================================================================
+// Group: the different-archive re-pick (#928 fix (a))
+// ===========================================================================
+
+describe('a re-pick that turns out to be a different archive', () => {
+  // The run promise is handed back WRAPPED: returning it bare from an async
+  // function would await it, and it only settles once the re-pick has run.
+  async function pauseOnRepick(): Promise<{ running: Promise<void> }> {
+    seedJob({ items: 1, bookmark: ['part-a'], mediaEntryIds: ['entry-0-0'] });
+    mockOpenArchiveSession.mockImplementation(async () => {
+      throw new ArchiveReaderError('ARCHIVE_CHANGED');
+    });
+    const running = resumeImportAtLaunch();
+    running.catch(() => {});
+    await drain();
+    expect(importStore.getState().pauseCauses).toEqual(['needs_repick']);
+    return { running };
+  }
+
+  it('closes the server session it is walking away from', async () => {
+    const { running } = await pauseOnRepick();
+
+    expect(await repickArchiveParts()).toBe('different-archive');
+    await running;
+
+    // The session's `declared_bytes` is a lien on the ORBIT — other members'
+    // uploads are refused against it — until B#318's GC reaps it up to six
+    // hours later. The member's fresh pick would also hit
+    // `IMPORT_IN_PROGRESS` and have to adopt this stale session.
+    expect(mockCompleteImport).toHaveBeenCalledWith(IMPORT_ID);
+    expect(getImportJob(JOB)).toBeNull();
+    expect(importStore.getState().phase).toBe('idle');
+  });
+
+  it('makes no call at all when a wipe lands during the re-pick', async () => {
+    const { running } = await pauseOnRepick();
+    mockOpenArchiveSession.mockImplementation(async () => {
+      // The wipe lands while the member is in the picker: rule 0 says write
+      // nothing and call nothing, not even this courtesy.
+      resetImportRunnerState();
+      throw new ArchiveReaderError('ARCHIVE_CHANGED');
+    });
+
+    expect(await repickArchiveParts()).toBe('different-archive');
+    await running;
+
+    expect(mockCompleteImport).not.toHaveBeenCalled();
+    expect(getImportJob(JOB)).not.toBeNull();
+  });
+});
+
+// ===========================================================================
+// Group: the pre-run retry budget (#928 fix (b), gap 5, clear matrix)
+// ===========================================================================
+
+describe('the pre-run retry budget', () => {
+  /** Pause a seeded `in_progress` job before its run, on `network`. */
+  async function pauseOnNetwork(): Promise<void> {
+    mockGetImportSession.mockRejectedValue(new NetworkError('offline'));
+    const launching = resumeImportAtLaunch();
+    launching.catch(() => {
+      // Attached BEFORE the clock moves (#834 discipline).
+    });
+    await flushMicrotasks();
+    await launching;
+  }
+
+  /** Fire `times` pre-run wake-ups. 60 s clears every rung of every ladder. */
+  async function burnWakeUps(times: number): Promise<void> {
+    for (let i = 0; i < times; i++) {
+      jest.advanceTimersByTime(60_000);
+      await flushMicrotasks();
+    }
+  }
+
+  it('publishes the deadline it will retry at', async () => {
+    seedJob({ items: 1 });
+    const before = Date.now();
+    mockGetImportSession.mockRejectedValueOnce(new NetworkError('offline'));
+
+    await resumeImportAtLaunch();
+
+    // Gap 5: without this #928 renders a paused card with no countdown and no
+    // way to tell a wait from a stall.
+    const resumeAtMs = importStore.getState().resumeAtMs;
+    expect(resumeAtMs).not.toBeNull();
+    // The `network` ladder's first rung.
+    expect(resumeAtMs).toBeGreaterThanOrEqual(before + 5_000);
+    expect(resumeAtMs).toBeLessThanOrEqual(Date.now() + 5_000);
+    expect(importStore.getState().autoRetryExhausted).toBe(false);
+  });
+
+  it('honours a pre-run 429 Retry-After instead of the default minute', async () => {
+    jest.useFakeTimers();
+    try {
+      seedJob({ items: 1 });
+      const before = Date.now();
+      mockGetImportSession.mockRejectedValueOnce(rateLimited(12_000));
+
+      const launching = resumeImportAtLaunch();
+      launching.catch(() => {});
+      await flushMicrotasks();
+      await launching;
+
+      expect(importStore.getState().pauseCauses).toEqual(['rate_limited']);
+      const resumeAtMs = importStore.getState().resumeAtMs ?? 0;
+      expect(resumeAtMs - before).toBeGreaterThanOrEqual(11_000);
+      expect(resumeAtMs - before).toBeLessThanOrEqual(13_000);
+
+      // The server's own number, not `DEFAULT_RATE_LIMIT_MS`: at 60 s the
+      // import would have sat idle for another 48.
+      jest.advanceTimersByTime(12_000);
+      await flushMicrotasks();
+
+      expect(itemRows()[0].status).toBe('created');
+      expect(jobRow().status).toBe('completed');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('keeps a resumable paused state once the budget is spent', async () => {
+    jest.useFakeTimers();
+    try {
+      seedJob({ items: 1, source: 'instagram' });
+      await pauseOnNetwork();
+      await burnWakeUps(10);
+
+      const state = importStore.getState();
+      // It used to publish `idle`, which left the member with no card, no
+      // Retry, and a job row that refused every new pick with `job-running`.
+      expect(state.phase).toBe('paused');
+      expect(state.pauseCauses).toEqual(['network']);
+      expect(state.autoRetryExhausted).toBe(true);
+      expect(state.resumeAtMs).toBeNull();
+      // #928 renders the card from these three.
+      expect(state.jobId).toBe(JOB);
+      expect(state.conversationId).toBe(ORBIT);
+      expect(state.source).toBe('instagram');
+      expect(jobRow().status).toBe('in_progress');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('lets the member retry out of an exhausted budget', async () => {
+    jest.useFakeTimers();
+    try {
+      seedJob({ items: 1 });
+      await pauseOnNetwork();
+      await burnWakeUps(10);
+      expect(importStore.getState().autoRetryExhausted).toBe(true);
+      const spent = mockGetImportSession.mock.calls.length;
+
+      mockGetImportSession.mockResolvedValue({
+        importId: IMPORT_ID,
+        groupId: ORBIT,
+        status: 'open',
+        declaredPosts: 1,
+        declaredBytes: 4096,
+        createdPosts: 0,
+        createdAt: '2012-08-26T00:00:00.000Z',
+        lastActivityAt: '2012-08-26T00:00:00.000Z',
+        completedAt: null,
+        allowance: allowance(),
+        limits: LIMITS,
+      });
+      resumeImport();
+      await flushMicrotasks();
+
+      expect(mockGetImportSession.mock.calls.length).toBe(spent + 1);
+      expect(itemRows()[0].status).toBe('created');
+      expect(jobRow().status).toBe('completed');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not spend key_pending budget on network attempts', async () => {
+    jest.useFakeTimers();
+    try {
+      seedJob({ items: 1 });
+      await pauseOnNetwork();
+      // Six `network` wake-ups — exactly `KEY_PENDING_MAX_ATTEMPTS`.
+      await burnWakeUps(6);
+      expect(importStore.getState().pauseCauses).toEqual(['network']);
+      expect(importStore.getState().autoRetryExhausted).toBe(false);
+
+      // Now the key is the gate instead. With ONE shared counter this pause
+      // would be born exhausted, on a budget it had never spent.
+      mockKeyOpenError = new Error('pending wrap');
+      await burnWakeUps(1);
+
+      expect(importStore.getState().pauseCauses).toEqual(['key_pending']);
+      expect(importStore.getState().autoRetryExhausted).toBe(false);
+      const resumeAtMs = importStore.getState().resumeAtMs ?? 0;
+      expect(resumeAtMs - Date.now()).toBeGreaterThan(20_000);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('ignores Retry on a rate_limited wait until its wake-ups are spent', async () => {
+    jest.useFakeTimers();
+    try {
+      seedJob({ items: 1 });
+      mockGetImportSession.mockRejectedValue(rateLimited(60_000));
+      const launching = resumeImportAtLaunch();
+      launching.catch(() => {});
+      await flushMicrotasks();
+      await launching;
+      expect(importStore.getState().pauseCauses).toEqual(['rate_limited']);
+
+      // The server named this wait; shortening it would spend a round trip
+      // re-learning the same refusal.
+      const spent = mockGetImportSession.mock.calls.length;
+      resumeImport();
+      await flushMicrotasks();
+      expect(mockGetImportSession.mock.calls.length).toBe(spent);
+
+      // Once nothing else will ever re-enter the gate, the tap is the only
+      // way out and is honoured.
+      await burnWakeUps(10);
+      expect(importStore.getState().autoRetryExhausted).toBe(true);
+      resumeImport();
+      await flushMicrotasks();
+      expect(mockGetImportSession.mock.calls.length).toBeGreaterThan(spent);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not carry an exhausted flag into the next job', async () => {
+    jest.useFakeTimers();
+    try {
+      seedJob({ items: 1 });
+      await pauseOnNetwork();
+      await burnWakeUps(10);
+      expect(importStore.getState().autoRetryExhausted).toBe(true);
+
+      cancelImport();
+      await flushMicrotasks();
+      harness.sqlite.prepare('DELETE FROM import_items').run();
+      harness.sqlite.prepare('DELETE FROM import_jobs').run();
+
+      seedJob({ items: 1 });
+      await pauseOnNetwork();
+
+      // A sticky flag would show the next job's FIRST pause as stalled, with
+      // a Retry button over a wait that is retrying itself.
+      expect(importStore.getState().phase).toBe('paused');
+      expect(importStore.getState().autoRetryExhausted).toBe(false);
+      expect(importStore.getState().resumeAtMs).not.toBeNull();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not let one cause exhaustion unlock Retry for the next one', async () => {
+    jest.useFakeTimers();
+    try {
+      seedJob({ items: 1 });
+      await pauseOnNetwork();
+      await burnWakeUps(10);
+      expect(importStore.getState().autoRetryExhausted).toBe(true);
+
+      // The tap re-enters, and this time the server rate-limits: a fresh wait
+      // that IS retrying itself, so Retry is not its exit.
+      mockGetImportSession.mockRejectedValue(rateLimited(60_000));
+      resumeImport();
+      await flushMicrotasks();
+      expect(importStore.getState().pauseCauses).toEqual(['rate_limited']);
+      expect(importStore.getState().autoRetryExhausted).toBe(false);
+
+      const spent = mockGetImportSession.mock.calls.length;
+      resumeImport();
+      await flushMicrotasks();
+      expect(mockGetImportSession.mock.calls.length).toBe(spent);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});
+
+// ===========================================================================
+// Group: typed pick failures and the per-file codes (#928 gap 8)
+// ===========================================================================
+
+describe('what a pick that fails answers', () => {
+  it('names an archive the reader could not open', async () => {
+    mockOpenArchiveSession.mockRejectedValue(new ArchiveReaderError('ARCHIVE_NOT_ZIP'));
+
+    // An HTML export, or a file that is not a ZIP at all. Reported as
+    // `cancelled`, the how-to screen simply did nothing.
+    expect(await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' })).toEqual({
+      kind: 'failed',
+      reason: 'archive',
+    });
+    expect(jobCount()).toBe(0);
+    expect(importStore.getState().phase).toBe('idle');
+  });
+
+  it('names a group key that has not reached this device yet', async () => {
+    mockKeyOpenError = new Error('pending wrap');
+    mockClassifyCryptoError.mockReturnValue('retryable-pause');
+
+    // It clears itself, so the copy says "try again in a minute" where the
+    // archive copy would say "re-export".
+    expect(await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' })).toEqual({
+      kind: 'failed',
+      reason: 'key_pending',
+    });
+    expect(jobCount()).toBe(0);
+  });
+
+  it('names the allowance probe being unreachable', async () => {
+    parseEmitting(1);
+    mockGetGroupImports.mockRejectedValue(new NetworkError('offline'));
+
+    expect(await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' })).toEqual({
+      kind: 'failed',
+      reason: 'network',
+    });
+    expect(jobCount()).toBe(0);
+    expect(mockStartImport).not.toHaveBeenCalled();
+  });
+
+  it('falls back to other for a failure with no class of its own', async () => {
+    mockParseArchive.mockRejectedValue(new TypeError('boom'));
+
+    expect(await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' })).toEqual({
+      kind: 'failed',
+      reason: 'other',
+    });
+    expect(jobCount()).toBe(0);
+  });
+
+  it.each([
+    [
+      'the picker was already open',
+      (): void => {
+        mockPickArchiveParts.mockRejectedValue(new ArchiveReaderError('PICKER_BUSY'));
+      },
+    ],
+    [
+      'the read was cancelled',
+      (): void => {
+        mockOpenArchiveSession.mockRejectedValue(new ArchiveReaderError('ECANCELLED'));
+      },
+    ],
+  ])('stays a plain cancel when %s', async (_label, arrange) => {
+    arrange();
+
+    // Neither is a failure: nothing was chosen, or the member stopped it, and
+    // #928 shows no message for either.
+    expect(await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' })).toEqual({
+      kind: 'cancelled',
+    });
+    expect(jobCount()).toBe(0);
+  });
+
+  it('keeps a too-large photo distinct from an unsupported one', async () => {
+    seedJob({ items: 1, bookmark: ['part-a'], mediaEntryIds: ['entry-0-0'] });
+    const tooLarge = Object.assign(new Error('over the pixel ceiling'), {
+      name: 'ImageSanitizeError',
+      reason: 'too-many-pixels',
+    });
+    mockUploadMedia.mockRejectedValue(tooLarge);
+
+    await confirmAndRunLaunch();
+
+    // #918's D12 asked for its own copy; folded into
+    // `IMPORT_MEDIA_UNSUPPORTED` that copy could never be shown.
+    expect(itemRows()[0]).toEqual({
+      id: 'item-0',
+      status: 'failed',
+      error_code: 'IMPORT_MEDIA_TOO_LARGE',
+    });
+    expect(importStore.getState().summary?.failed).toBe(1);
+    expect(importStore.getState().summary?.errorCode).toBeNull();
+    expect(jobRow().status).toBe('completed');
   });
 });

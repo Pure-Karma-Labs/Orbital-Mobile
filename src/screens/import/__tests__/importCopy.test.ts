@@ -850,6 +850,33 @@ const CALL_FIXTURES: Readonly<Record<string, readonly CallArgs[]>> = {
       },
     ],
   ],
+  // The screen-reader form of the same row (#928 Brief 2b).
+  describeUnmigratedRowA11y: [
+    [skippedRow('empty_post', 1)],
+    [
+      {
+        kind: 'not_sent' as const,
+        id: 'id-secret-y',
+        originalDate: null,
+        sourceFile: null,
+        sourceIndex: null,
+      },
+    ],
+  ],
+  describeMoreFooter: [[0], [1], [250]],
+  // Every transition the announcer can make, including the two that depend on
+  // where the run came FROM (paused → running vs anything → running).
+  describeImportAnnouncement: [
+    ...VIEW_KINDS.map((kind) => [view(kind), null, 300, makeSummary()]),
+    ...PAUSE_CAUSES.map((cause) => [view('paused', cause), 'running', 300, null]),
+    [view('running'), 'paused', 300, null],
+    [view('running'), 'stalled', 1, null],
+    [view('running'), 'preflight', 300, null],
+    [view('completed'), 'running', 300, makeSummary({ created: 4 })],
+    [view('cancelled'), 'running', 300, makeSummary({ cancelled: true })],
+    [view('failed'), 'running', 300, makeSummary({ errorCode: 'NETWORK' })],
+    [view('completed'), 'running', 300, null],
+  ],
   describeFileIssueRow: FILE_ISSUE_REASONS.map((reason) => [
     { sourceFile: 'your_posts_0.json', reason },
   ]),

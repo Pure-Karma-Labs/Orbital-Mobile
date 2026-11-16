@@ -60,6 +60,7 @@ import {
 import { clearAll as clearSecureStorage } from './secure-storage';
 import { syncBlockedUsers } from './blockedUsersSync';
 import { resetBulkExportState } from './media/bulkExportRunner';
+import { resetImportRunnerState, resumeImportAtLaunch } from './metaImport/importRunner';
 import { clearNotificationSyncState, syncNotificationSettings } from './notificationSettingsSync';
 import { clearPrefetchState } from './mediaPrefetchService';
 import { clearArchiveConfirmState } from './mediaArchiveConfirmService';
@@ -179,6 +180,19 @@ async function postAuthBootstrap(): Promise<void> {
   }
 
   syncNotificationSettings().catch(warnCatch('[NotificationSettingsSync]'));
+
+  // #926: resume an interrupted Meta import. LAST, and fire-and-forget: the
+  // promise resolves only when the whole run SETTLES (it uploads media and
+  // submits batches), so awaiting it here would hold `restoreSession` — and
+  // with it the first render — open for the length of an import.
+  //
+  // No gate at this call site on purpose. `resumeImportAtLaunch` returns
+  // immediately unless `deriveAuthPhase` says `'authenticated'`, which is the
+  // single place that decision belongs: a key conflict, a deferred identity
+  // restore or an unaccepted Terms version each replace the whole UI, and an
+  // import running behind one of those would have no progress indicator and
+  // no cancel. A second gate here would be a second copy to keep in sync.
+  resumeImportAtLaunch().catch(warnCatch('[MetaImport]'));
 }
 
 // ---------------------------------------------------------------------------
@@ -418,6 +432,25 @@ export async function localWipe({ preserveIdentity }: { preserveIdentity: boolea
   // photos it has never seen). Synchronous, for the same reason as above.
   try { resetBulkExportState(); } catch {
     if (__DEV__) console.warn('[LocalWipe] resetBulkExportState failed');
+  }
+  // #926: the import runner owns aborting its OWN run, and it has to do so
+  // here, in phase 1, for three reasons that all point the same way:
+  //  - its `AbortController` is what makes each item's `finally` run, and
+  //    `archiveAccess`'s `release()` inside that `finally` is the ONLY unlink
+  //    of an extracted plaintext photo on the logout path (phase 2's suffix
+  //    sweep has no `-archive-staging.bin` arm, and the MEDIA_DIR deletion
+  //    below is inside the deletion branch only);
+  //  - it bumps the run token, which collapses every later verdict to
+  //    `cancelled` — so an ordinary logout, where `closeAllImportKeySessions()`
+  //    and `abortAllArchiveSessions()` raise the very errors that would
+  //    otherwise classify `terminal-for-run`, writes no `failed` row and
+  //    reports nothing to Sentry;
+  //  - it must land ABOVE `deleteAllImportJobs()`, or the run would still be
+  //    writing item rows against a job the wipe has already deleted.
+  // Synchronous and NOT awaited, for `resetBulkExportState`'s reason: an await
+  // hands control straight back to the extract we are stopping.
+  try { resetImportRunnerState(); } catch {
+    if (__DEV__) console.warn('[LocalWipe] resetImportRunnerState failed');
   }
   try { await tokenManager.clearTokens(); } catch {
     if (__DEV__) console.warn('[LocalWipe] clearTokens failed');

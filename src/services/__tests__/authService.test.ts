@@ -152,6 +152,18 @@ jest.mock('../../database/queryHelpers', () => ({
   execute: (...args: unknown[]) => mockExecute(...args),
 }));
 
+// #926: the import runner, factory-mocked for the reason importCrypto is —
+// the real module reaches the API client, the archive reader, the batch
+// assembler and SQLite, none of which an auth test has any business opening —
+// and so that the wipe's reset and the bootstrap's resume are OBSERVABLE.
+// `resumeImportAtLaunch` resolves, because the call site must not await it.
+const mockResetImportRunnerState = jest.fn();
+const mockResumeImportAtLaunch = jest.fn().mockResolvedValue(undefined);
+jest.mock('../metaImport/importRunner', () => ({
+  resetImportRunnerState: () => mockResetImportRunnerState(),
+  resumeImportAtLaunch: () => mockResumeImportAtLaunch(),
+}));
+
 // #921: the Meta import tables are cleared on BOTH wipe paths.
 const mockDeleteAllImportJobs = jest.fn();
 jest.mock('../../database/repositories/importRepository', () => ({
@@ -335,6 +347,7 @@ beforeEach(() => {
   mockSelfWrapIfNeeded.mockResolvedValue(undefined);
   mockSyncBlockedUsers.mockResolvedValue(undefined);
   mockSyncNotificationSettings.mockResolvedValue(undefined);
+  mockResumeImportAtLaunch.mockResolvedValue(undefined);
 });
 
 // ---------------------------------------------------------------------------
@@ -601,6 +614,50 @@ describe('signupUser', () => {
     await signupUser('frank', 'pass', 'f@x.com', 'CODE');
 
     expect(mockFulfillPendingWraps).toHaveBeenCalled();
+  });
+
+  // #926: the launch-time import resume is the LAST bootstrap step and it is
+  // fire-and-forget. Both halves matter: a missing call means an interrupted
+  // import never restarts, and an AWAITED one holds `restoreSession` — and so
+  // the first render — open for the length of a whole import run.
+  it('kicks off the Meta import resume after signup, without awaiting it', async () => {
+    mockSignup.mockResolvedValue({
+      token: 'tok',
+      userId: 'u1',
+      username: 'frank',
+      email: 'f@x.com',
+      groupId: null,
+      inviteEncryptedGroupKey: null,
+    });
+    // A promise that NEVER settles: if bootstrap awaited it, the signup below
+    // would hang and this test would time out rather than fail.
+    mockResumeImportAtLaunch.mockReturnValue(new Promise<void>(() => {}));
+
+    await signupUser('frank', 'pass', 'f@x.com', 'CODE');
+
+    expect(mockResumeImportAtLaunch).toHaveBeenCalledTimes(1);
+    // Last, after the other fire-and-forget syncs.
+    expect(mockResumeImportAtLaunch.mock.invocationCallOrder[0]).toBeGreaterThan(
+      mockSyncNotificationSettings.mock.invocationCallOrder[0],
+    );
+  });
+
+  // The `.catch(warnCatch('[MetaImport]'))` arm. A rejected resume must not
+  // reject the bootstrap it was kicked off from, or a login fails on an
+  // unrelated import error.
+  it('swallows a rejected Meta import resume', async () => {
+    mockSignup.mockResolvedValue({
+      token: 'tok',
+      userId: 'u1',
+      username: 'frank',
+      email: 'f@x.com',
+      groupId: null,
+      inviteEncryptedGroupKey: null,
+    });
+    mockResumeImportAtLaunch.mockRejectedValue(new Error('import resume blew up'));
+
+    await expect(signupUser('frank', 'pass', 'f@x.com', 'CODE')).resolves.toBeUndefined();
+    expect(mockResumeImportAtLaunch).toHaveBeenCalledTimes(1);
   });
 
   it('hydrates contacts from orbits after signup', async () => {
@@ -1156,6 +1213,41 @@ describe('logout', () => {
   // device shares the DB file, so logout clears them.
   it('deletes all import jobs on logout (localWipe)', async () => {
     mockDeleteAllImportJobs.mockClear();
+
+    await logout();
+
+    expect(mockDeleteAllImportJobs).toHaveBeenCalledTimes(1);
+  });
+
+  // #926: the runner's own teardown. Two orderings, each load-bearing:
+  //   - before the first await-bearing step (phase 1), because the abort it
+  //     performs is what makes each item's `finally` run, and the `release()`
+  //     in that `finally` is the ONLY unlink of an extracted plaintext photo
+  //     on the logout path;
+  //   - before `deleteAllImportJobs()`, or the run writes item rows against a
+  //     job the wipe has already deleted.
+  it('resets the import runner in phase 1, above deleteAllImportJobs (localWipe)', async () => {
+    mockResetImportRunnerState.mockClear();
+    mockDeleteAllImportJobs.mockClear();
+
+    await logout();
+
+    expect(mockResetImportRunnerState).toHaveBeenCalledTimes(1);
+    expect(mockResetImportRunnerState.mock.invocationCallOrder[0]).toBeLessThan(
+      mockClearTokens.mock.invocationCallOrder[0],
+    );
+    expect(mockResetImportRunnerState.mock.invocationCallOrder[0]).toBeLessThan(
+      mockDeleteAllImportJobs.mock.invocationCallOrder[0],
+    );
+  });
+
+  // Every phase-1 teardown is catch-guarded so one failure never strands the
+  // rest of the wipe — the import rows in particular.
+  it('completes the wipe when the import runner reset throws (localWipe)', async () => {
+    mockDeleteAllImportJobs.mockClear();
+    mockResetImportRunnerState.mockImplementationOnce(() => {
+      throw new Error('reset blew up');
+    });
 
     await logout();
 

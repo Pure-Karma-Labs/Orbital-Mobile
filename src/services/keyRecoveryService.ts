@@ -33,6 +33,9 @@ import { clearConversationServiceState } from './conversationService';
 // the archive-reader package (rule 29a), and this module sits OUTSIDE the
 // `src/services/crypto/**` ESLint fence, so the edge is legal from here.
 import { abortAllArchiveSessions, releaseAllPersistedParts } from './metaImport/archiveAccess';
+// #926: and the runner that owns the archive work above. Same posture, same
+// phase — see the call sites in step 5 and step 8.
+import { resetImportRunnerState, resumeImportAtLaunch } from './metaImport/importRunner';
 import { clearIdentityInflightState } from './crypto/identityKeyAccess';
 import { captureError } from './telemetry';
 import { clearMessageHandlerState } from './websocket/messageHandler';
@@ -447,6 +450,18 @@ async function doRecoverIdentityKeys(
       } catch {
         /* best-effort */
       }
+      // #926: and stop the runner that drives those sessions, for the same
+      // reason and in the same slot. `fullCryptoWipe` destroys the key
+      // generation every stored `import_key` was derived under AND deletes
+      // `import_jobs`; a run still in flight afterwards would be sealing
+      // content under a dead generation and writing item rows against a
+      // deleted job. Synchronous, deliberately NOT awaited, and BEFORE the
+      // wipe — the token bump is what makes both impossible.
+      try {
+        resetImportRunnerState();
+      } catch {
+        /* best-effort */
+      }
       try {
         await fullCryptoWipe();
       } catch (e: unknown) {
@@ -667,6 +682,14 @@ async function doRecoverIdentityKeys(
     hydrateContactsFromOrbits().catch(warnAndCapture('[Recovery:ContactHydration]'));
     fulfillPendingWraps().catch(warnAndCapture('[Recovery:PendingWraps]'));
     syncNotificationSettings().catch(warnAndCapture('[Recovery:NotificationSettingsSync]'));
+    // #926, mirroring postAuthBootstrap's last step. Fire-and-forget: the
+    // promise settles only when the whole import run does. After a recovery
+    // there is normally nothing to resume — step 5's `fullCryptoWipe` deleted
+    // `import_jobs` — so this is the SKIP-PATH mirror: it exists so the two
+    // bootstraps stay the same shape, and so a recovery that took the
+    // already-wiped branch (`locallyWiped`) still resumes the job that branch
+    // left intact. Gating lives inside the function, not here.
+    resumeImportAtLaunch().catch(warnAndCapture('[Recovery:MetaImport]'));
 
     return { status: 'success' };
   } finally {

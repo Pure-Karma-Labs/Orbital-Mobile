@@ -98,6 +98,18 @@ jest.mock('../crypto/keyGenerationService', () => ({
   getCachedIdentityPrivateKeyHex: () => mockGetCachedIdentityPrivateKeyHex(),
 }));
 
+// #926: the import runner. Factory-mocked so this suite stays an auth/recovery
+// test — the real module reaches the API client, the archive reader, the batch
+// assembler and SQLite — and so that both of its call sites here (the reset
+// above `fullCryptoWipe`, the resume in the step-8 bootstrap mirror) are
+// observable. `resumeImportAtLaunch` resolves: the mirror must not await it.
+const mockResetImportRunnerState = jest.fn();
+const mockResumeImportAtLaunch = jest.fn().mockResolvedValue(undefined);
+jest.mock('../metaImport/importRunner', () => ({
+  resetImportRunnerState: () => mockResetImportRunnerState(),
+  resumeImportAtLaunch: () => mockResumeImportAtLaunch(),
+}));
+
 const mockClearGroupKeyCache = jest.fn();
 jest.mock('../crypto/contentCrypto', () => ({
   PendingWrapError: class PendingWrapError extends Error {
@@ -272,6 +284,7 @@ beforeEach(() => {
   Object.keys(mockItemStore).forEach((k) => delete mockItemStore[k]);
   mockItemStore.identityKeyPublic = 'some-public-key-hex';
   mockGetCachedIdentityPrivateKeyHex.mockReturnValue('deadbeef');
+  mockResumeImportAtLaunch.mockResolvedValue(undefined);
   // mockReset (not just clearAllMocks which only calls mockClear) to clear the
   // once queue — clearAllMocks leaves specificReturnValues/specificMockImpls intact,
   // causing stale values to accumulate across tests.
@@ -721,6 +734,53 @@ describe('recoverIdentityKeys — Meta import teardown (#921)', () => {
     expect(mockFullCryptoWipe).not.toHaveBeenCalled();
     expect(abortAllArchiveSessions).not.toHaveBeenCalled();
     expect(releaseAllPersistedParts).not.toHaveBeenCalled();
+  });
+
+  // #926: the runner itself, beside the archive abort and for the same reason.
+  // `fullCryptoWipe` destroys the key generation every stored `import_key` was
+  // derived under AND deletes `import_jobs`, so a run still in flight after it
+  // would be sealing content under a dead generation and writing items against
+  // a deleted job row.
+  it('resets the import runner BEFORE the wipe, beside the archive abort', async () => {
+    const { abortAllArchiveSessions } = require('orbital-archive-reader');
+    abortAllArchiveSessions.mockClear();
+    mockResetImportRunnerState.mockClear();
+    mockFullCryptoWipe.mockClear();
+
+    const result = await recoverIdentityKeys('password123', false);
+    expect(result.status).not.toBe('error');
+
+    expect(mockResetImportRunnerState).toHaveBeenCalledTimes(1);
+    expect(mockResetImportRunnerState.mock.invocationCallOrder[0]).toBeLessThan(
+      mockFullCryptoWipe.mock.invocationCallOrder[0],
+    );
+    // Beside the abort, not merely before the wipe: the two teardowns of the
+    // same subsystem have to stay next to each other to be reviewable.
+    expect(mockResetImportRunnerState.mock.invocationCallOrder[0]).toBeGreaterThan(
+      abortAllArchiveSessions.mock.invocationCallOrder[0],
+    );
+  });
+
+  // Step 8's SYNC:postAuthBootstrap mirror. Fire-and-forget for the same
+  // reason as in `authService`: the promise settles only when a whole import
+  // run does, and a recovery must not hang on one.
+  it('kicks off the import resume in the step-8 bootstrap mirror, without awaiting it', async () => {
+    mockResumeImportAtLaunch.mockClear();
+    // Never settles: an awaited call would hang the recovery below.
+    mockResumeImportAtLaunch.mockReturnValue(new Promise<void>(() => {}));
+
+    const result = await recoverIdentityKeys('password123', false);
+
+    expect(result.status).toBe('success');
+    expect(mockResumeImportAtLaunch).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not fail the recovery when the import resume rejects', async () => {
+    mockResumeImportAtLaunch.mockRejectedValueOnce(new Error('resume blew up'));
+
+    const result = await recoverIdentityKeys('password123', false);
+
+    expect(result.status).toBe('success');
   });
 });
 

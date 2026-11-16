@@ -1,7 +1,7 @@
 /**
  * `sanitizeStillImage`'s fourth argument (#918): the Meta-import options bag.
  *
- * Three claims, and nothing else:
+ * Four claims, and nothing else:
  *   1. OMISSION IS FREE. Three arguments, four arguments with `{}`, and four
  *      arguments with `undefined` are the same call -- same native options
  *      object, same output bytes, same returned format. That is the AC for
@@ -14,6 +14,10 @@
  *   3. THE REFUSAL IS THIS MODULE'S OWN. A native `EPIXELS`/`EIMAGEFORMAT`
  *      becomes an `ImageSanitizeError` with a closed-union `reason` and a
  *      sentence from a frozen table; anything else is re-thrown untouched.
+ *   4. THE RE-ENCODE'S OUTPUT IS BOUNDED, AND REPORTS ITS SIZE (#926). The
+ *      staging file is stat'd against the same 8 MiB strip budget as a source
+ *      would be, and the dimensions the native layer resolves come back to the
+ *      caller -- on the pre-encode path only.
  *
  * WHAT THIS SUITE CANNOT PROVE: the ceiling is enforced by the platform
  * decoder, and Jest mocks the native module. The dimension-aware fake below
@@ -65,7 +69,16 @@ function fromBase64(b64: string): Uint8Array {
  * fail-closed verify re-read sees it.
  */
 function mockFs(files: Record<string, Uint8Array>, sizeBytes = 1024): void {
-  rnfs.stat.mockResolvedValue({ size: sizeBytes });
+  // Per-path, not one flat answer: since #926 the pre-encode OUTPUT is stat'd
+  // against the same 8 MiB strip budget as the source, so a flat 9 MiB would
+  // make the staging file refuse itself. `sizeBytes` is the SOURCE's declared
+  // size; every other virtual file reports its real byte length. The bound on
+  // the output has its own suite at the bottom of this file.
+  rnfs.stat.mockImplementation(async (p: string) => {
+    if (p === SOURCE) return { size: sizeBytes };
+    const bytes = files[p];
+    return { size: bytes ? bytes.length : sizeBytes };
+  });
   rnfs.read.mockImplementation(async (p: string, len: number, pos: number) => {
     const bytes = files[p];
     if (!bytes) throw new Error(`ENOENT ${p}`);
@@ -188,9 +201,12 @@ describe('forceReencode routing', () => {
       maxPixelCount: 32_000_000,
     });
     // Both probes the strip-only route needs are skipped outright: the
-    // decision was already made, so neither the size stat nor the 128 KiB
-    // orientation head read happens.
-    expect(rnfs.stat).not.toHaveBeenCalled();
+    // decision was already made, so neither the SOURCE's size stat nor the
+    // 128 KiB orientation head read happens. Narrowed from "no stat at all"
+    // by #926: the one stat on this path is the bound on the re-encode's own
+    // OUTPUT, which is a memory guard rather than a routing probe.
+    expect(rnfs.stat).not.toHaveBeenCalledWith(SOURCE);
+    expect(rnfs.stat).toHaveBeenCalledWith(PREENCODE);
     expect(rnfs.read).not.toHaveBeenCalled();
   });
 
@@ -594,23 +610,25 @@ describe('the strip still runs after a forced re-encode', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 13. The dimensions the import runner will read (#918 D13), and the return
-//     shape that is NOT widened to carry them yet
+// 13. The dimensions the import path reads -- #918's D13, closed by #926 --
+//     and the strip-only shape that is still NOT widened to carry them
 // ---------------------------------------------------------------------------
 
 describe('returned dimensions', () => {
-  it('keeps the return shape unwidened even when the native layer reports a size', async () => {
-    // D1: omitting the options bag must be byte-identical to the
-    // three-argument call, and that includes the shape of THIS object -- which
-    // is what the pre-existing sanitizer suites assert exhaustively. A field
-    // nothing reads yet is not worth breaking that promise for; #926 widens
-    // the return when it finally has a consumer.
+  it('carries the native output dimensions on the import path, and only there', async () => {
+    // #926 widened the return because the field finally has a consumer:
+    // `uploadMedia` assigns these to the `width`/`height` locals its chunk-0
+    // envelope is built from, so an archive image gets a real size without
+    // anyone decoding the export file IMPORT_MAX_PIXELS exists to refuse.
     //
-    // The native mock resolves a DELIBERATELY NON-SQUARE size, so this is a
-    // real negative: if the D13 passthrough were wired up, `toEqual` would see
-    // the extra width/height keys and fail. (`toEqual` ignores `undefined`
-    // properties but not present ones, which is the whole reason the widening
-    // was deferred.)
+    // The native mock resolves a DELIBERATELY NON-SQUARE size, so a transposed
+    // width/height fails here rather than shipping a sideways aspect ratio to
+    // every viewer of an imported post.
+    //
+    // The strip-only half stays unwidened, and that is D1 unchanged: the
+    // three-argument call still answers `{ format }` and nothing else, down to
+    // the shape of the object. `toEqual` is what says so -- `toMatchObject`
+    // would pass with the keys present and prove nothing.
     const files: Record<string, Uint8Array> = {
       [SOURCE]: uprightJpeg(),
       [PREENCODE]: reencodedJpeg(),
@@ -620,6 +638,8 @@ describe('returned dimensions', () => {
 
     await expect(sanitizeStillImage(SOURCE, 'image/jpeg', OUT, IMPORT_OPTIONS)).resolves.toEqual({
       format: 'jpeg',
+      width: 1536,
+      height: 2048,
     });
     expect(reencodeImage).toHaveBeenCalledTimes(1);
 
@@ -629,5 +649,91 @@ describe('returned dimensions', () => {
       format: 'jpeg',
     });
     expect(reencodeImage).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 14. The pre-encode's OWN output is bounded too (#926)
+// ---------------------------------------------------------------------------
+
+/**
+ * Mirrors the module-private MAX_STRIP_SIZE_BYTES. Spelled by value rather
+ * than exported: it is a Hermes-heap budget for the read-strip-write sequence,
+ * not part of any API, and the two boundary cases below fail loudly if the
+ * module's own number ever moves away from this one.
+ */
+const MAX_STRIP_SIZE_BYTES = 8 * 1024 * 1024;
+
+describe('the pre-encode output bound', () => {
+  /**
+   * Stat the staging file at `outSize` and everything else small. A re-encode
+   * can legitimately produce something LARGER than its input -- a losslessly
+   * re-encoded PNG of a noisy 2048x2048 screenshot is the realistic case --
+   * and until #926 that walked straight into the unbounded read the budget
+   * exists to prevent.
+   */
+  function mockOutputSize(outSize: number): void {
+    rnfs.stat.mockImplementation(async (p: string) => ({
+      size: p === PREENCODE ? outSize : 1024,
+    }));
+  }
+
+  it('refuses an output one byte over the budget, as a too-many-pixels refusal', async () => {
+    const files: Record<string, Uint8Array> = {
+      [SOURCE]: uprightJpeg(),
+      [PREENCODE]: reencodedJpeg(),
+    };
+    mockFs(files);
+    mockOutputSize(MAX_STRIP_SIZE_BYTES + 1);
+
+    const err = await sanitizeStillImage(SOURCE, 'image/jpeg', OUT, IMPORT_OPTIONS).catch(
+      (e: unknown) => e,
+    );
+
+    // The honest reason: too big to process on this device, which is also
+    // what the member is told, and what the import runner maps to the
+    // permanent `image_too_large` skip.
+    expect((err as ImageSanitizeError).name).toBe('ImageSanitizeError');
+    expect((err as ImageSanitizeError).reason).toBe('too-many-pixels');
+    // THE WHOLE POINT: the oversized file is never pulled into Hermes. A
+    // refusal that arrived after the read would bound nothing at all.
+    expect(rnfs.readFile).not.toHaveBeenCalledWith(PREENCODE, 'base64');
+    // A step AFTER the one re-encode, never instead of it -- and never a
+    // second native call, which would break the single-call-site invariant.
+    expect(reencodeImage).toHaveBeenCalledTimes(1);
+    expect(rnfs.unlink).toHaveBeenCalledWith(PREENCODE);
+    expect(files[OUT]).toBeUndefined();
+  });
+
+  it('accepts an output of exactly the budget -- the test is >, not >=', async () => {
+    const files: Record<string, Uint8Array> = {
+      [SOURCE]: uprightJpeg(),
+      [PREENCODE]: reencodedJpeg(),
+    };
+    mockFs(files);
+    mockOutputSize(MAX_STRIP_SIZE_BYTES);
+
+    await expect(sanitizeStillImage(SOURCE, 'image/jpeg', OUT, IMPORT_OPTIONS)).resolves.toEqual({
+      format: 'jpeg',
+      width: 2048,
+      height: 1536,
+    });
+    expect(rnfs.readFile).toHaveBeenCalledWith(PREENCODE, 'base64');
+  });
+
+  it('leaves the strip-only path alone, where there is no output to stat', async () => {
+    // An in-size upright JPEG never re-encodes, so nothing is written to the
+    // staging path and nothing stats it: an output-size mock must not be able
+    // to refuse a call that produced no output. The new check is one stat on
+    // one path, not a second refusal arm on every call.
+    const files: Record<string, Uint8Array> = { [SOURCE]: uprightJpeg() };
+    mockFs(files);
+    mockOutputSize(9 * 1024 * 1024);
+
+    await expect(sanitizeStillImage(SOURCE, 'image/jpeg', OUT)).resolves.toEqual({
+      format: 'jpeg',
+    });
+    expect(reencodeImage).not.toHaveBeenCalled();
+    expect(rnfs.stat).not.toHaveBeenCalledWith(PREENCODE);
   });
 });

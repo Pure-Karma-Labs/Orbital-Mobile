@@ -2371,7 +2371,17 @@ describe('a media refusal the server raised after taking a chunk', () => {
 
   it('counts a held post once even after a session restart requeues and re-holds it', async () => {
     seedJob({ items: 2, bookmark: ['part-a'], mediaEntryIds: ['entry-0-0'] });
-    mockOpenArchiveSession.mockImplementation(async () => videoArchiveSession());
+    let videoExtracts = 0;
+    mockOpenArchiveSession.mockImplementation(
+      async () =>
+        ({
+          ...archiveSession(),
+          extractImageEntry: jest.fn(async () => {
+            videoExtracts += 1;
+            return { ok: false as const, skip: 'ENTRY_IS_VIDEO' };
+          }),
+        }) as unknown as ArchiveImportSession,
+    );
     // item-1's first batch finds the session abandoned: the restart requeues
     // everything parked in `uploading`, including the held post, which is then
     // held a second time on its next extract.
@@ -2387,6 +2397,9 @@ describe('a media refusal the server raised after taking a chunk', () => {
     await confirmAndRunLaunch();
 
     expect(mockStartImport).toHaveBeenCalled();
+    // The proof the double count had something to double: the post really was
+    // extracted, held, requeued and held again.
+    expect(videoExtracts).toBe(2);
     const summary = importStore.getState().summary;
     // ONE post was held, so the member is told one — not two, which a counter
     // kept beside `r.held` reported once the restart cleared the set.

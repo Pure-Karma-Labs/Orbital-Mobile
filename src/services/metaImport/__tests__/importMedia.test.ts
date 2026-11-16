@@ -4,8 +4,8 @@
  * ## The database is REAL
  *
  * `importRepository` runs against `node:sqlite` with migration 009's actual
- * DDL, through the `executeSync` seam `makeDb` injects. So "the ordinal was
- * marked uploaded" and "the row now holds a different `media_id` and is
+ * DDL, through the `executeSync` seam `openImportDb()` injects. So "the ordinal
+ * was marked uploaded" and "the row now holds a different `media_id` and is
  * pending again" are read back out of SQL rather than asserted against a spy
  * that would pass just as happily on the wrong column. It is also what makes
  * the already-uploaded skip real: the pipeline reads the row the repository
@@ -30,12 +30,8 @@
  * Run: npm test -- importMedia
  */
 
-import { DatabaseSync } from 'node:sqlite';
-
 import { closeDatabase } from '../../../database/connection';
-import { SQL as SQL_009 } from '../../../database/migrations/009_meta_import_tables';
 import { getPendingImportItems } from '../../../database/repositories/importRepository';
-import { makeDb } from '../../../database/testUtils/dbMockHelpers';
 import {
   AuthError,
   ConflictError,
@@ -51,10 +47,15 @@ import {
   importMediaStage,
   uploadImportItemMedia,
 } from '../importMedia';
+import { openImportDb } from '../testUtils/importDbHarness';
 
 import type { PendingImportItem } from '../../../database/repositories/importRepository';
 import type { ImportMediaRun } from '../importMedia';
 import type { ArchiveExtractOutcome, ArchiveImportSession } from '../archiveAccess';
+import type { ImportDbHarness } from '../testUtils/importDbHarness';
+import type { DatabaseSync } from 'node:sqlite';
+
+jest.mock('@op-engineering/op-sqlite', () => ({ open: jest.fn() }));
 
 // ---------------------------------------------------------------------------
 // mediaUploadService: the only mocked service seam
@@ -135,37 +136,9 @@ const POST_DATE = 1345982400000;
 /** 2008-03-01T00:00:00Z — a photo that predates its post by years. */
 const MEDIA_DATE = 1204329600000;
 
+let harness: ImportDbHarness;
+/** The harness's own database, aliased for the direct-SQL helpers below. */
 let sqlite: DatabaseSync;
-
-/**
- * Wire `connection.getDatabase()` to a real in-memory SQLite with 009 applied.
- *
- * `BEGIN`/`COMMIT`/`PRAGMA` go through `exec` (they take no parameters and
- * `prepare` would be the wrong tool); everything else is prepared and bound,
- * which is also what proves the repository's parameter shapes are ones SQLite
- * accepts.
- */
-function openRealDatabase(): void {
-  sqlite = new DatabaseSync(':memory:');
-  sqlite.exec('PRAGMA foreign_keys = ON');
-  sqlite.exec(SQL_009);
-
-  const executeSync = jest.fn((sql: string, params?: unknown[]) => {
-    if (/^\s*(BEGIN|COMMIT|ROLLBACK|PRAGMA)/i.test(sql)) {
-      sqlite.exec(sql);
-      return { rows: [], rowsAffected: 0 };
-    }
-    const statement = sqlite.prepare(sql);
-    const bound = (params ?? []) as never[];
-    if (/^\s*SELECT/i.test(sql)) {
-      return { rows: statement.all(...bound), rowsAffected: 0 };
-    }
-    const result = statement.run(...bound);
-    return { rows: [], rowsAffected: Number(result.changes) };
-  });
-
-  makeDb(executeSync);
-}
 
 interface MediaSpec {
   ordinal: number;
@@ -298,12 +271,16 @@ beforeEach(() => {
     attachmentKey: new Uint8Array(64),
     digest: new Uint8Array(32),
   });
-  openRealDatabase();
+  harness = openImportDb();
+  sqlite = harness.sqlite;
 });
 
 afterEach(() => {
+  // `closeDatabase()` reaches the harness's own `close`, which closes the
+  // underlying `node:sqlite` handle; the second call is the idempotent
+  // backstop for a test that closed the connection itself.
   closeDatabase();
-  sqlite.close();
+  harness.close();
 });
 
 // ===========================================================================

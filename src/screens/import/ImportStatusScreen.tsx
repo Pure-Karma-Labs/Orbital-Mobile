@@ -108,6 +108,26 @@ export function ImportStatusScreen(): React.JSX.Element {
   const [starting, latchStart] = useRunLatch(signature);
   const [stopping, latchStop] = useRunLatch(signature);
 
+  /**
+   * The live value of {@link stopping}, for the one guard that runs OUTSIDE a
+   * render: an Alert button closes over the state from the render that opened
+   * the alert, which is not the value that decides whether a second cancel is
+   * already on its way.
+   */
+  const stoppingRef = useRef(stopping);
+  useEffect(() => {
+    stoppingRef.current = stopping;
+  }, [stopping]);
+
+  /**
+   * The two one-shot actions that are NOT covered by a latch, because neither
+   * leaves a button on screen to spin: a discard pops the screen, and a
+   * re-pick opens the OS picker. Two taps would pop twice (two screens off the
+   * Settings stack) or open two pickers.
+   */
+  const discarding = useRef(false);
+  const repicking = useRef(false);
+
   const handleBack = useCallback(() => {
     navigation.goBack();
   }, [navigation]);
@@ -125,6 +145,11 @@ export function ImportStatusScreen(): React.JSX.Element {
   }, [starting, latchStart]);
 
   const handleDiscard = useCallback(() => {
+    // A ref, not `mounted`: both `.finally` callbacks of a double tap run
+    // before the unmount commits, so the mount guard cannot stop the second
+    // goBack — and two goBacks pop two screens.
+    if (discarding.current) return;
+    discarding.current = true;
     discardImportPreflight()
       .catch(() => {})
       .finally(() => {
@@ -146,7 +171,7 @@ export function ImportStatusScreen(): React.JSX.Element {
         text: STOP_IMPORT_LABEL,
         style: 'destructive',
         onPress: () => {
-          if (!mounted.current || stopping) return;
+          if (!mounted.current || stoppingRef.current) return;
           latchStop();
           cancelImport();
         },
@@ -165,6 +190,8 @@ export function ImportStatusScreen(): React.JSX.Element {
   }, [view.kind]);
 
   const handleRepick = useCallback(() => {
+    if (repicking.current) return;
+    repicking.current = true;
     // Captured BEFORE the call: a different archive resets the store to idle,
     // so reading either of these afterwards would read null.
     const source = state.source;
@@ -184,7 +211,12 @@ export function ImportStatusScreen(): React.JSX.Element {
           },
         ]);
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => {
+        // Released whatever the answer was: 'resumed' and 'cancelled' both
+        // leave the member on this screen, able to try again.
+        repicking.current = false;
+      });
   }, [state.source, state.conversationId, navigation, handleBack]);
 
   const handleDone = useCallback(() => {

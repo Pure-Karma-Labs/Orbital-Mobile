@@ -1,0 +1,997 @@
+/**
+ * The one import screen, from preflight to summary (#928 §3.1, §4.2–§4.4).
+ *
+ * ## What this suite pins
+ *
+ * 1. **Every view kind renders its own child view.** `deriveImportView` has a
+ *    row per state; a row nobody rendered would leave the member on a blank
+ *    screen, so each one is asserted by the child's own testID.
+ * 2. **Both busy latches.** `confirmAndRunImport` and a pre-run cancel are the
+ *    two actions with a gap between the tap and the phase moving. The latch
+ *    holds across a COUNTER-only emission (the runner republishes every 250 ms)
+ *    and clears when the run's identity — phase, job id, summary — actually
+ *    moves. A second tap in between must be a no-op, which is the only thing
+ *    standing between a slow cancel and two cancels.
+ * 3. **The re-pick's captured pair.** `repickArchiveParts` resets the store to
+ *    idle on a different archive, so the orbit and source the replace carries
+ *    must have been read BEFORE the call. The test proves it by emptying the
+ *    store after the call and asserting the replace is still correct.
+ * 4. **The progress bar is silent.** `announceProgress={false}` plus a label:
+ *    a value announcement per imported post would talk over everything else.
+ *
+ * ## Mocking shape
+ *
+ * The 2a shape (`ImportSettingsSection.test.tsx`, `ImportHowToScreen.test.tsx`):
+ * the runner is mocked EXCEPT for its store, which is a real `zustand/vanilla`
+ * store the tests write to in order to drive phases. `discardImportPreflight`
+ * is read off the mocked runner module because `runnerContract.ts` resolves it
+ * there at CALL time.
+ */
+
+import React from 'react';
+import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'react-test-renderer';
+import { Alert, type AlertButton } from 'react-native';
+import { ThemeProvider } from '../../../theme';
+import {
+  findByTestId,
+  findHostByTestId,
+  hasHostTestId,
+  renderedText,
+} from '../../../testUtils/rtr';
+import { ImportStatusScreen } from '../ImportStatusScreen';
+import {
+  BLOCKED_COPY,
+  DIFFERENT_ARCHIVE_CHOOSE_LABEL,
+  DIFFERENT_ARCHIVE_DISMISS_LABEL,
+  NO_IMPORT_COPY,
+  PAUSE_COPY,
+  STALLED_COPY,
+  STOP_IMPORT_LABEL,
+  describeMediaProgress,
+  describePauseTitle,
+  describeRunProgress,
+  describeSummaryHeadline,
+  describeSummaryLines,
+} from '../importCopy';
+
+import type { StoreApi } from 'zustand/vanilla';
+import type {
+  ImportPreflight,
+  ImportSummary,
+  PauseCause,
+} from '../../../services/metaImport/importRunner';
+import type { SkipReason } from '../../../services/metaImport/types';
+import type { ImportViewState } from '../runnerContract';
+
+// ---------------------------------------------------------------------------
+// Mocks
+// ---------------------------------------------------------------------------
+
+const mockGoBack = jest.fn();
+const mockNavigate = jest.fn();
+const mockReplace = jest.fn();
+
+jest.mock('@react-navigation/native', () => ({
+  useNavigation: () => ({
+    goBack: mockGoBack,
+    navigate: mockNavigate,
+    replace: mockReplace,
+  }),
+}));
+
+jest.mock('react-native-safe-area-context', () => {
+  const ReactModule = require('react');
+  return {
+    SafeAreaView: ({ children, ...props }: { children: unknown }) =>
+      ReactModule.createElement('View', props, children),
+    useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
+  };
+});
+
+interface FakeAppState {
+  activeConversationId: string | null;
+  conversations: Record<string, { id: string; name: string; type: string }>;
+}
+
+const mockAppState: FakeAppState = {
+  activeConversationId: 'g1',
+  conversations: { g1: { id: 'g1', name: 'Test Orbit', type: 'group' } },
+};
+
+jest.mock('../../../stores/useAppStore', () => ({
+  useAppStore: Object.assign(
+    jest.fn((selector: (state: unknown) => unknown) => selector(mockAppState)),
+    { getState: () => mockAppState },
+  ),
+}));
+
+jest.mock('../../../services/metaImport/importRunner', () => {
+  const { createStore } = require('zustand/vanilla');
+  return {
+    importStore: createStore(() => ({
+      phase: 'idle',
+      jobId: null,
+      conversationId: null,
+      source: null,
+      preflight: null,
+      total: 0,
+      created: 0,
+      duplicate: 0,
+      failed: 0,
+      skipped: 0,
+      heldVideo: 0,
+      mediaDone: 0,
+      parseProgress: null,
+      pauseCauses: [],
+      resumeAtMs: null,
+      summary: null,
+      errorCode: null,
+      autoRetryExhausted: false,
+    })),
+    cancelImport: jest.fn(),
+    confirmAndRunImport: jest.fn(),
+    dismissImportSummary: jest.fn(),
+    repickArchiveParts: jest.fn(),
+    resumeImport: jest.fn(),
+    resumeImportAtLaunch: jest.fn(),
+    // Not an export of the real runner yet (§2): `runnerContract.ts` looks it
+    // up on this module at call time, which is exactly what makes mocking the
+    // runner enough.
+    discardImportPreflight: jest.fn(),
+  };
+});
+
+import {
+  cancelImport,
+  confirmAndRunImport,
+  dismissImportSummary,
+  importStore,
+  repickArchiveParts,
+  resumeImport,
+  resumeImportAtLaunch,
+} from '../../../services/metaImport/importRunner';
+
+const mockCancel = cancelImport as jest.Mock;
+const mockConfirm = confirmAndRunImport as jest.Mock;
+const mockDismiss = dismissImportSummary as jest.Mock;
+const mockRepick = repickArchiveParts as jest.Mock;
+const mockResume = resumeImport as jest.Mock;
+const mockResumeAtLaunch = resumeImportAtLaunch as jest.Mock;
+
+const mockDiscard = (
+  jest.requireMock('../../../services/metaImport/importRunner') as {
+    discardImportPreflight: jest.Mock;
+  }
+).discardImportPreflight;
+
+/**
+ * The store, typed against the contract the UI is built on.
+ *
+ * One cast in one place (`runnerContract.ts`'s own idiom): the runner's
+ * published type has no `autoRetryExhausted` until Brief 1 lands, and these
+ * tests drive it.
+ */
+const store = importStore as unknown as StoreApi<ImportViewState>;
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+const NO_SKIPS: Readonly<Record<SkipReason, number>> = {
+  held_video: 0,
+  unsupported_image_format: 0,
+  image_too_large: 0,
+  media_missing: 0,
+  media_unsupported_reference: 0,
+  media_unreadable: 0,
+  unsupported_post_type: 0,
+  empty_post: 0,
+  text_too_long: 0,
+  invalid_timestamp: 0,
+  missing_timestamp: 0,
+  duplicate_in_archive: 0,
+  malformed_post: 0,
+};
+
+const ALLOWANCE = { postsUsed: 0, bytesUsed: 0, postsLimit: 1000, bytesLimit: 2147483648 };
+
+const LIMITS = {
+  batchMax: 50,
+  mediaPerItemMax: 10,
+  metaMaxBytes: 4096,
+  ivMax: 16,
+  titleMax: 200,
+  bodyMax: 20000,
+  minDate: '2004-01-01',
+  mediaContentClasses: ['image' as const],
+};
+
+const RUNNABLE_PREFLIGHT: ImportPreflight = {
+  summary: null,
+  allowance: ALLOWANCE,
+  limits: LIMITS,
+  contentRetentionDays: null,
+  importable: 12,
+  remainingPosts: 988,
+  estimatedBytes: 1024,
+  remainingBytes: 2147482624,
+  overAllowance: null,
+  nothingToImport: false,
+  heldVideo: 0,
+  skippedByReason: NO_SKIPS,
+};
+
+const REFUSED_PREFLIGHT: ImportPreflight = { ...RUNNABLE_PREFLIGHT, overAllowance: 'posts' };
+
+const NOTHING_PREFLIGHT: ImportPreflight = {
+  ...RUNNABLE_PREFLIGHT,
+  importable: 0,
+  nothingToImport: true,
+};
+
+const COMPLETED_SUMMARY: ImportSummary = {
+  created: 12,
+  duplicate: 1,
+  failed: 0,
+  heldVideo: 0,
+  skippedByReason: NO_SKIPS,
+  notSubmitted: 0,
+  errorCode: null,
+  cancelled: false,
+};
+
+const CANCELLED_SUMMARY: ImportSummary = { ...COMPLETED_SUMMARY, cancelled: true };
+
+const FAILED_SUMMARY: ImportSummary = { ...COMPLETED_SUMMARY, errorCode: 'NETWORK' };
+
+const BASE_STATE: ImportViewState = {
+  phase: 'idle',
+  jobId: null,
+  conversationId: null,
+  source: null,
+  preflight: null,
+  total: 0,
+  created: 0,
+  duplicate: 0,
+  failed: 0,
+  skipped: 0,
+  heldVideo: 0,
+  mediaDone: 0,
+  parseProgress: null,
+  pauseCauses: [],
+  resumeAtMs: null,
+  summary: null,
+  errorCode: null,
+  autoRetryExhausted: false,
+};
+
+/** A live run, in the orbit the fake app store knows about. */
+const RUNNING_STATE: Partial<ImportViewState> = {
+  phase: 'running',
+  jobId: 'job-1',
+  conversationId: 'g1',
+  source: 'facebook',
+  total: 300,
+  created: 12,
+};
+
+// ---------------------------------------------------------------------------
+// Harness
+// ---------------------------------------------------------------------------
+
+const mountedRenderers: ReactTestRenderer[] = [];
+
+function renderScreen(): ReactTestRenderer {
+  let renderer!: ReactTestRenderer;
+  act(() => {
+    renderer = create(
+      <ThemeProvider colorSchemeOverride="light">
+        <ImportStatusScreen />
+      </ThemeProvider>,
+    );
+  });
+  mountedRenderers.push(renderer);
+  return renderer;
+}
+
+function setState(patch: Partial<ImportViewState>): void {
+  act(() => {
+    store.setState(patch);
+  });
+}
+
+function tap(root: ReactTestInstance, testID: string): void {
+  act(() => {
+    (findByTestId(root, testID).props as { onPress: () => void }).onPress();
+  });
+}
+
+async function tapAndSettle(root: ReactTestInstance, testID: string): Promise<void> {
+  await act(async () => {
+    (findByTestId(root, testID).props as { onPress: () => void }).onPress();
+  });
+}
+
+interface ControlProps {
+  loading?: boolean;
+  disabled?: boolean;
+  title?: string;
+}
+
+interface BarProps {
+  progress?: number;
+  announceProgress?: boolean;
+  accessibilityLabel?: string;
+}
+
+/** The `Button` COMPONENT node's props — where `loading`/`disabled` live. */
+function controlProps(root: ReactTestInstance, testID: string): ControlProps {
+  return findByTestId(root, testID).props as ControlProps;
+}
+
+/** The `ProgressBar` COMPONENT node's props. */
+function barProps(root: ReactTestInstance, testID: string): BarProps {
+  return findByTestId(root, testID).props as BarProps;
+}
+
+function runTitle(root: ReactTestInstance): string {
+  return String(findHostByTestId(root, 'import-run-title').props.children);
+}
+
+/** The buttons of the most recent `Alert.alert` call. */
+function alertButtons(): AlertButton[] {
+  const calls = alertSpy.mock.calls;
+  return calls[calls.length - 1][2] as AlertButton[];
+}
+
+function pressAlertButton(predicate: (button: AlertButton) => boolean): void {
+  const button = alertButtons().find(predicate);
+  expect(button).toBeDefined();
+  act(() => {
+    button?.onPress?.();
+  });
+}
+
+let alertSpy: jest.SpyInstance;
+
+beforeEach(() => {
+  jest.clearAllMocks();
+  store.setState({ ...BASE_STATE }, true);
+  // Every one of these is awaited (`.catch`/`.then`) by the screen, so an
+  // undefined return would throw inside the handler rather than fail an
+  // assertion.
+  mockConfirm.mockResolvedValue(undefined);
+  mockDiscard.mockResolvedValue(undefined);
+  mockRepick.mockResolvedValue('resumed');
+  mockResumeAtLaunch.mockResolvedValue(undefined);
+  alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+});
+
+afterEach(() => {
+  while (mountedRenderers.length > 0) {
+    const renderer = mountedRenderers.pop();
+    act(() => {
+      renderer?.unmount();
+    });
+  }
+  alertSpy.mockRestore();
+  jest.restoreAllMocks();
+});
+
+// ---------------------------------------------------------------------------
+// §3.1 — one test per view kind
+// ---------------------------------------------------------------------------
+
+/** Every child view the screen can render. Exactly one may be on screen. */
+const ALL_VIEW_TEST_IDS: readonly string[] = [
+  'import-checking-view',
+  'import-none-view',
+  'import-parse-view',
+  'import-preflight-view',
+  'import-summary-view',
+  'import-run-view-running',
+  'import-run-view-paused',
+  'import-run-view-stalled',
+  'import-run-view-repick',
+  'import-run-view-blocked',
+];
+
+describe('ImportStatusScreen — the view kind decides the body (§3.1)', () => {
+  const views: ReadonlyArray<[string, Partial<ImportViewState>, string]> = [
+    ['checking', { phase: 'hydrating' }, 'import-checking-view'],
+    ['none', { phase: 'idle', jobId: null }, 'import-none-view'],
+    ['blocked', { phase: 'idle', jobId: 'job-1' }, 'import-run-view-blocked'],
+    ['parsing', { phase: 'parsing', jobId: 'job-1' }, 'import-parse-view'],
+    [
+      'nothing',
+      { phase: 'ready', jobId: 'job-1', preflight: NOTHING_PREFLIGHT, source: 'facebook' },
+      'import-preflight-view',
+    ],
+    [
+      'refused',
+      { phase: 'ready', jobId: 'job-1', preflight: REFUSED_PREFLIGHT, source: 'facebook' },
+      'import-preflight-view',
+    ],
+    [
+      'preflight',
+      { phase: 'ready', jobId: 'job-1', preflight: RUNNABLE_PREFLIGHT, source: 'facebook' },
+      'import-preflight-view',
+    ],
+    ['running', RUNNING_STATE, 'import-run-view-running'],
+    [
+      'paused',
+      { phase: 'paused', jobId: 'job-1', pauseCauses: ['network'] },
+      'import-run-view-paused',
+    ],
+    [
+      'repick',
+      { phase: 'paused', jobId: 'job-1', pauseCauses: ['needs_repick'] },
+      'import-run-view-repick',
+    ],
+    [
+      'stalled',
+      {
+        phase: 'paused',
+        jobId: 'job-1',
+        pauseCauses: ['network'],
+        autoRetryExhausted: true,
+      },
+      'import-run-view-stalled',
+    ],
+    [
+      'completed',
+      { phase: 'done', jobId: 'job-1', summary: COMPLETED_SUMMARY },
+      'import-summary-view',
+    ],
+    [
+      'cancelled',
+      { phase: 'done', jobId: 'job-1', summary: CANCELLED_SUMMARY },
+      'import-summary-view',
+    ],
+    ['failed', { phase: 'done', jobId: 'job-1', summary: FAILED_SUMMARY }, 'import-summary-view'],
+  ];
+
+  it.each(views)('renders the %s body and nothing else', (_name, patch, expectedTestId) => {
+    store.setState(patch);
+
+    const renderer = renderScreen();
+
+    expect(hasHostTestId(renderer.root, expectedTestId)).toBe(true);
+    for (const other of ALL_VIEW_TEST_IDS) {
+      if (other === expectedTestId) continue;
+      expect(hasHostTestId(renderer.root, other)).toBe(false);
+    }
+  });
+
+  it('falls back to the "no import" body when a ready phase carries no preflight', () => {
+    store.setState({ phase: 'ready', jobId: 'job-1', preflight: null });
+
+    const renderer = renderScreen();
+
+    expect(hasHostTestId(renderer.root, 'import-none-view')).toBe(true);
+    expect(renderedText(renderer.root)).toContain(NO_IMPORT_COPY);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §4.2 — the preflight's two buttons
+// ---------------------------------------------------------------------------
+
+describe('ImportStatusScreen — preflight', () => {
+  function renderPreflight(): ReactTestRenderer {
+    store.setState({
+      phase: 'ready',
+      jobId: 'job-1',
+      conversationId: 'g1',
+      source: 'facebook',
+      preflight: RUNNABLE_PREFLIGHT,
+    });
+    return renderScreen();
+  }
+
+  it('starts exactly one import and stays busy across a counter-only emission', () => {
+    const renderer = renderPreflight();
+    const root = renderer.root;
+
+    expect(controlProps(root, 'import-confirm').loading).toBe(false);
+
+    tap(root, 'import-confirm');
+
+    expect(mockConfirm).toHaveBeenCalledTimes(1);
+    expect(controlProps(root, 'import-confirm').loading).toBe(true);
+
+    // The runner republishes every 250 ms while counters move. None of that is
+    // the run moving on, so the spinner must stay.
+    setState({ created: 1, mediaDone: 2 });
+    setState({ created: 2, mediaDone: 5 });
+    expect(controlProps(root, 'import-confirm').loading).toBe(true);
+
+    // A second tap while busy is a no-op.
+    tap(root, 'import-confirm');
+    expect(mockConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears the busy latch once the phase has moved to running', () => {
+    const renderer = renderPreflight();
+    const root = renderer.root;
+
+    tap(root, 'import-confirm');
+    expect(controlProps(root, 'import-confirm').loading).toBe(true);
+
+    setState({ phase: 'running', total: 300 });
+    expect(hasHostTestId(root, 'import-run-view-running')).toBe(true);
+
+    // Back to a preflight (a second archive, later in the session): the latch
+    // cleared on the transition, so the button is tappable again.
+    setState({ phase: 'ready', preflight: RUNNABLE_PREFLIGHT });
+    expect(controlProps(root, 'import-confirm').loading).toBe(false);
+
+    tap(root, 'import-confirm');
+    expect(mockConfirm).toHaveBeenCalledTimes(2);
+  });
+
+  it('discards the preflight and then goes back', async () => {
+    const renderer = renderPreflight();
+
+    await tapAndSettle(renderer.root, 'import-discard');
+
+    expect(mockDiscard).toHaveBeenCalledTimes(1);
+    expect(mockGoBack).toHaveBeenCalledTimes(1);
+    // The order is the point: Back lands on a Settings section that reads the
+    // store the discard has already cleared.
+    expect(mockDiscard.mock.invocationCallOrder[0]).toBeLessThan(
+      mockGoBack.mock.invocationCallOrder[0],
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §4.3 — the running view
+// ---------------------------------------------------------------------------
+
+describe('ImportStatusScreen — running', () => {
+  it('renders a silent progress bar carrying the same sentence as the line above', () => {
+    store.setState(RUNNING_STATE);
+
+    const renderer = renderScreen();
+    const bar = barProps(renderer.root, 'import-progress-bar');
+
+    expect(bar.announceProgress).toBe(false);
+    expect(bar.accessibilityLabel).toBe(describeRunProgress(12, 300));
+    expect(bar.accessibilityLabel).toMatch(/^Imported \d+ of \d+ posts$/);
+    // …and the host node really is not a live progressbar.
+    expect(findHostByTestId(renderer.root, 'import-progress-bar').props.accessibilityRole).toBe(
+      undefined,
+    );
+  });
+
+  it('counts every settled post towards the bar, not just the created ones', () => {
+    store.setState({ ...RUNNING_STATE, created: 10, duplicate: 3, failed: 2, heldVideo: 1 });
+
+    const renderer = renderScreen();
+
+    expect(barProps(renderer.root, 'import-progress-bar').accessibilityLabel).toBe(
+      describeRunProgress(16, 300),
+    );
+  });
+
+  it('hides the bar entirely when the total is not known yet', () => {
+    store.setState({ ...RUNNING_STATE, total: 0 });
+
+    const renderer = renderScreen();
+
+    expect(hasHostTestId(renderer.root, 'import-progress-bar')).toBe(false);
+    // Positive control: the running view itself IS on screen.
+    expect(hasHostTestId(renderer.root, 'import-run-view-running')).toBe(true);
+  });
+
+  it('shows the media sub-line only once a photo has been uploaded', () => {
+    store.setState({ ...RUNNING_STATE, mediaDone: 0 });
+    const quiet = renderScreen();
+    expect(hasHostTestId(quiet.root, 'import-media-sub-line')).toBe(false);
+
+    setState({ mediaDone: 7 });
+    expect(hasHostTestId(quiet.root, 'import-media-sub-line')).toBe(true);
+    expect(String(findHostByTestId(quiet.root, 'import-media-sub-line').props.children)).toBe(
+      describeMediaProgress(7),
+    );
+  });
+
+  it('confirms a stop, and cancels only from the destructive button', () => {
+    store.setState(RUNNING_STATE);
+
+    const renderer = renderScreen();
+    tap(renderer.root, 'import-stop');
+
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+    expect(mockCancel).not.toHaveBeenCalled();
+
+    const keepGoing = alertButtons().find((button) => button.style === 'cancel');
+    expect(keepGoing).toBeDefined();
+    act(() => {
+      keepGoing?.onPress?.();
+    });
+    expect(mockCancel).not.toHaveBeenCalled();
+
+    pressAlertButton((button) => button.style === 'destructive');
+    expect(mockCancel).toHaveBeenCalledTimes(1);
+    expect(alertButtons().some((button) => button.text === STOP_IMPORT_LABEL)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §4.3 — the paused countdown
+// ---------------------------------------------------------------------------
+
+describe('ImportStatusScreen — the paused countdown', () => {
+  const NOW = 1_762_000_000_000;
+
+  beforeEach(() => {
+    // A fixed clock rather than fake timers: the view reads `Date.now()` in a
+    // `useState` initialiser, and the ticking interval is irrelevant to what is
+    // asserted here.
+    jest.spyOn(Date, 'now').mockReturnValue(NOW);
+  });
+
+  it('counts down in m:ss while a scheduled wait is still in the future', () => {
+    store.setState({
+      phase: 'paused',
+      jobId: 'job-1',
+      pauseCauses: ['rate_limited'],
+      resumeAtMs: NOW + 125_000,
+    });
+
+    const renderer = renderScreen();
+
+    expect(runTitle(renderer.root)).toBe(describePauseTitle('rate_limited', 125_000));
+    expect(runTitle(renderer.root)).toMatch(/Resuming in \d+:\d{2}\./);
+  });
+
+  it('says "Resuming shortly." for a deadline in the past', () => {
+    store.setState({
+      phase: 'paused',
+      jobId: 'job-1',
+      pauseCauses: ['rate_limited'],
+      resumeAtMs: NOW - 1_000,
+    });
+
+    const renderer = renderScreen();
+
+    expect(runTitle(renderer.root)).toContain('Resuming shortly.');
+    expect(runTitle(renderer.root)).not.toMatch(/\d+:\d{2}/);
+  });
+
+  it('says "Resuming shortly." when there is no deadline at all', () => {
+    store.setState({
+      phase: 'paused',
+      jobId: 'job-1',
+      pauseCauses: ['allowance_wait'],
+      resumeAtMs: null,
+    });
+
+    const renderer = renderScreen();
+
+    expect(runTitle(renderer.root)).toContain('Resuming shortly.');
+    expect(runTitle(renderer.root)).not.toMatch(/\d+:\d{2}/);
+  });
+
+  it('shows no countdown for a cause that clears on an event, deadline or not', () => {
+    store.setState({
+      phase: 'paused',
+      jobId: 'job-1',
+      pauseCauses: ['network'],
+      resumeAtMs: NOW + 125_000,
+    });
+
+    const renderer = renderScreen();
+
+    expect(runTitle(renderer.root)).toBe(PAUSE_COPY.network.title);
+    expect(runTitle(renderer.root)).not.toMatch(/\d+:\d{2}/);
+    expect(runTitle(renderer.root)).not.toContain('Resuming');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §4.3 — which pauses offer a Retry
+// ---------------------------------------------------------------------------
+
+describe('ImportStatusScreen — retry visibility', () => {
+  const actionable: readonly PauseCause[] = ['network', 'archive_retry', 'key_pending'];
+  const waiting: readonly PauseCause[] = ['rate_limited', 'allowance_wait', 'background'];
+
+  it.each(actionable)('offers Retry for %s', (cause) => {
+    store.setState({ phase: 'paused', jobId: 'job-1', pauseCauses: [cause] });
+
+    const renderer = renderScreen();
+
+    expect(hasHostTestId(renderer.root, 'import-retry')).toBe(true);
+    expect(controlProps(renderer.root, 'import-retry').title).toBe(PAUSE_COPY[cause].action);
+  });
+
+  it.each(waiting)('offers no Retry for %s, because a tap could not clear it', (cause) => {
+    store.setState({ phase: 'paused', jobId: 'job-1', pauseCauses: [cause] });
+
+    const renderer = renderScreen();
+
+    expect(hasHostTestId(renderer.root, 'import-retry')).toBe(false);
+    // Positive control: the paused view IS on screen and Stop is reachable.
+    expect(hasHostTestId(renderer.root, 'import-run-view-paused')).toBe(true);
+    expect(hasHostTestId(renderer.root, 'import-stop')).toBe(true);
+  });
+
+  it('retries a paused run through resumeImport', () => {
+    store.setState({ phase: 'paused', jobId: 'job-1', pauseCauses: ['network'] });
+
+    const renderer = renderScreen();
+    tap(renderer.root, 'import-retry');
+
+    expect(mockResume).toHaveBeenCalledTimes(1);
+    expect(mockResumeAtLaunch).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §4.3 — stalled and blocked
+// ---------------------------------------------------------------------------
+
+describe('ImportStatusScreen — stalled', () => {
+  function renderStalled(): ReactTestRenderer {
+    store.setState({
+      phase: 'paused',
+      jobId: 'job-1',
+      pauseCauses: ['network'],
+      autoRetryExhausted: true,
+    });
+    return renderScreen();
+  }
+
+  it('retries through resumeImport and stops through cancelImport', () => {
+    const renderer = renderStalled();
+    const root = renderer.root;
+
+    expect(runTitle(root)).toBe(STALLED_COPY.other);
+
+    tap(root, 'import-retry');
+    expect(mockResume).toHaveBeenCalledTimes(1);
+
+    tap(root, 'import-stop');
+    pressAlertButton((button) => button.style === 'destructive');
+    expect(mockCancel).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('ImportStatusScreen — blocked', () => {
+  function renderBlocked(): ReactTestRenderer {
+    store.setState({ phase: 'idle', jobId: 'job-1', conversationId: 'g1', source: 'facebook' });
+    return renderScreen();
+  }
+
+  it('re-enters through the launch path, and starts over by discarding', () => {
+    const renderer = renderBlocked();
+    const root = renderer.root;
+
+    expect(runTitle(root)).toBe(BLOCKED_COPY);
+    // A blocked job has no counters to show.
+    expect(hasHostTestId(root, 'import-progress-bar')).toBe(false);
+
+    tap(root, 'import-retry');
+    expect(mockResumeAtLaunch).toHaveBeenCalledTimes(1);
+    expect(mockResume).not.toHaveBeenCalled();
+
+    tap(root, 'import-start-over');
+    expect(mockDiscard).toHaveBeenCalledTimes(1);
+    // Start over is not the Stop alert: nothing has been uploaded.
+    expect(alertSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The ~15 s pre-run cancel (the second busy latch)
+// ---------------------------------------------------------------------------
+
+describe('ImportStatusScreen — the pre-run cancel latch', () => {
+  /** Each of the three identity moves that must clear the latch. */
+  const identityMoves: ReadonlyArray<[string, Partial<ImportViewState>]> = [
+    ['the phase', { phase: 'running', total: 300 }],
+    ['the job id', { jobId: 'job-2' }],
+    ['the summary', { summary: CANCELLED_SUMMARY }],
+  ];
+
+  function renderPausedRun(): ReactTestRenderer {
+    store.setState({
+      phase: 'paused',
+      jobId: 'job-1',
+      conversationId: 'g1',
+      pauseCauses: ['network'],
+      total: 300,
+      created: 4,
+    });
+    return renderScreen();
+  }
+
+  it('holds Stop busy across counter emissions and refuses a second cancel', () => {
+    const renderer = renderPausedRun();
+    const root = renderer.root;
+
+    tap(root, 'import-stop');
+    pressAlertButton((button) => button.style === 'destructive');
+
+    expect(mockCancel).toHaveBeenCalledTimes(1);
+    expect(controlProps(root, 'import-stop').loading).toBe(true);
+
+    setState({ created: 5 });
+    setState({ created: 6, mediaDone: 2 });
+    expect(controlProps(root, 'import-stop').loading).toBe(true);
+
+    // A second tap must not even reopen the confirmation.
+    tap(root, 'import-stop');
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+    expect(mockCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(identityMoves)('clears the Stop latch when %s changes', (_name, patch) => {
+    const renderer = renderPausedRun();
+    const root = renderer.root;
+
+    tap(root, 'import-stop');
+    pressAlertButton((button) => button.style === 'destructive');
+    expect(controlProps(root, 'import-stop').loading).toBe(true);
+
+    setState(patch);
+
+    expect(controlProps(root, 'import-stop').loading).toBe(false);
+  });
+
+  it('holds Start over busy on a blocked job and refuses a second discard', () => {
+    store.setState({ phase: 'idle', jobId: 'job-1', conversationId: 'g1' });
+    const renderer = renderScreen();
+    const root = renderer.root;
+
+    tap(root, 'import-start-over');
+
+    expect(mockDiscard).toHaveBeenCalledTimes(1);
+    expect(controlProps(root, 'import-start-over').loading).toBe(true);
+
+    setState({ created: 1 });
+    expect(controlProps(root, 'import-start-over').loading).toBe(true);
+
+    tap(root, 'import-start-over');
+    expect(mockDiscard).toHaveBeenCalledTimes(1);
+
+    // …and the job finally going away releases it.
+    setState({ jobId: 'job-2' });
+    expect(controlProps(root, 'import-start-over').loading).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §4.3 — the re-pick
+// ---------------------------------------------------------------------------
+
+describe('ImportStatusScreen — re-pick', () => {
+  function renderRepick(): ReactTestRenderer {
+    store.setState({
+      phase: 'paused',
+      jobId: 'job-1',
+      conversationId: 'g1',
+      source: 'facebook',
+      pauseCauses: ['needs_repick'],
+    });
+    return renderScreen();
+  }
+
+  it('asks the runner to re-pick the archive parts', async () => {
+    const renderer = renderRepick();
+
+    await tapAndSettle(renderer.root, 'import-repick');
+
+    expect(mockRepick).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['resumed', 'cancelled'] as const)('shows no alert for %s', async (result) => {
+    mockRepick.mockResolvedValue(result);
+    const renderer = renderRepick();
+
+    await tapAndSettle(renderer.root, 'import-repick');
+
+    expect(alertSpy).not.toHaveBeenCalled();
+    expect(mockReplace).not.toHaveBeenCalled();
+  });
+
+  it('carries the orbit and source the store held BEFORE the re-pick', async () => {
+    mockRepick.mockResolvedValue('different-archive');
+    const renderer = renderRepick();
+
+    await tapAndSettle(renderer.root, 'import-repick');
+
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+
+    // A different archive resets the runner to idle. Reading the store now
+    // would hand the replace two nulls — which is exactly why the handler read
+    // them before the call.
+    setState({ phase: 'idle', jobId: null, source: null, conversationId: null });
+
+    pressAlertButton((button) => button.text === DIFFERENT_ARCHIVE_CHOOSE_LABEL);
+
+    expect(mockReplace).toHaveBeenCalledTimes(1);
+    expect(mockReplace).toHaveBeenCalledWith('ImportHowTo', {
+      source: 'facebook',
+      conversationId: 'g1',
+    });
+  });
+
+  it('dismisses back to Settings from the alert without re-picking', async () => {
+    mockRepick.mockResolvedValue('different-archive');
+    const renderer = renderRepick();
+
+    await tapAndSettle(renderer.root, 'import-repick');
+    pressAlertButton((button) => button.text === DIFFERENT_ARCHIVE_DISMISS_LABEL);
+
+    expect(mockGoBack).toHaveBeenCalledTimes(1);
+    expect(mockReplace).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §4.4 — the summary
+// ---------------------------------------------------------------------------
+
+describe('ImportStatusScreen — summary', () => {
+  function renderSummary(summary: ImportSummary = COMPLETED_SUMMARY): ReactTestRenderer {
+    store.setState({
+      phase: 'done',
+      jobId: 'job-1',
+      conversationId: 'g1',
+      source: 'facebook',
+      summary,
+      preflight: RUNNABLE_PREFLIGHT,
+    });
+    return renderScreen();
+  }
+
+  it('renders the headline and every summary line', () => {
+    const renderer = renderSummary();
+
+    expect(String(findHostByTestId(renderer.root, 'import-summary-headline').props.children)).toBe(
+      describeSummaryHeadline(COMPLETED_SUMMARY),
+    );
+
+    const text = renderedText(renderer.root);
+    const lines = describeSummaryLines(COMPLETED_SUMMARY, RUNNABLE_PREFLIGHT);
+    expect(lines.length).toBeGreaterThan(0);
+    for (const line of lines) {
+      expect(text).toContain(line);
+    }
+  });
+
+  it('dismisses the summary before going back', () => {
+    const renderer = renderSummary();
+
+    tap(renderer.root, 'import-summary-done');
+
+    expect(mockDismiss).toHaveBeenCalledTimes(1);
+    expect(mockGoBack).toHaveBeenCalledTimes(1);
+    // Back first would leave the Settings section showing a settled run.
+    expect(mockDismiss.mock.invocationCallOrder[0]).toBeLessThan(
+      mockGoBack.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('opens the unmigrated list when there is something to list', () => {
+    const renderer = renderSummary({ ...COMPLETED_SUMMARY, failed: 3 });
+
+    expect(hasHostTestId(renderer.root, 'import-see-unmigrated')).toBe(true);
+    tap(renderer.root, 'import-see-unmigrated');
+
+    expect(mockNavigate).toHaveBeenCalledTimes(1);
+    expect(mockNavigate).toHaveBeenCalledWith('ImportUnmigrated');
+  });
+
+  it('offers no unmigrated list when nothing was left behind', () => {
+    const renderer = renderSummary();
+
+    expect(hasHostTestId(renderer.root, 'import-see-unmigrated')).toBe(false);
+    // Positive control: the summary itself rendered.
+    expect(hasHostTestId(renderer.root, 'import-summary-done')).toBe(true);
+  });
+});

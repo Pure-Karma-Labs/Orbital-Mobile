@@ -83,6 +83,10 @@ function useNow(enabled: boolean): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!enabled) return undefined;
+    // Re-read on the way IN, not only on the tick: a countdown that switches
+    // on minutes after mount would otherwise render its first `m:ss` against
+    // the mount-time clock until the first interval fires.
+    setNow(Date.now());
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, [enabled]);

@@ -288,8 +288,9 @@ jest.mock('../../../stores/useAppStore', () => ({
 import {
   cancelImport,
   confirmAndRunImport,
+  discardImportPreflight,
   dismissImportSummary,
-  getImportSkipDetails,
+  getImportUnmigratedItems,
   importStore,
   pickAndStartParse,
   probeImportAvailability,
@@ -798,19 +799,6 @@ describe('store and the #928 boundary', () => {
       conversationId: 'orbit-2',
     });
     expect(mockPickArchiveParts).not.toHaveBeenCalled();
-  });
-
-  it('returns skip details per reason without the screen touching the repository', async () => {
-    seedJob({ status: 'ready', items: 1, skips: ['held_video', 'empty_post', 'held_video'] });
-    await resumeImportAtLaunch();
-
-    const all = getImportSkipDetails();
-    expect(all).toHaveLength(3);
-    expect(all[0].source_file).toBe('your_posts_1.json');
-
-    const held = getImportSkipDetails('held_video');
-    expect(held).toHaveLength(2);
-    expect(held.every((row) => row.skip_reason === 'held_video')).toBe(true);
   });
 
   it('probes availability once per orbit and reads a 404 as unavailable', async () => {
@@ -1528,8 +1516,9 @@ describe('pause causes and their wake-ups', () => {
     const running = resumeImportAtLaunch();
     running.catch(() => {});
     await drain();
+    // The published pause SET is the only source: the re-pick prompt keys on
+    // `pauseCauses[0]`, and the old `needsRepick` mirror had no consumer.
     expect(importStore.getState().pauseCauses).toEqual(['needs_repick']);
-    expect(importStore.getState().needsRepick).toBe(true);
 
     appStateHandler?.('background');
     expect(importStore.getState().pauseCauses).toEqual(['needs_repick', 'background']);
@@ -1613,7 +1602,7 @@ describe('re-picking the archive', () => {
     await confirmAndRunLaunch();
 
     expect(importStore.getState().summary?.errorCode).toBe('ARCHIVE');
-    expect(importStore.getState().needsRepick).toBe(false);
+    expect(importStore.getState().pauseCauses).toEqual([]);
     expect(itemRows().find((row) => row.id === 'item-1')?.status).toBe('created');
     expect(jobRow().status).toBe('failed');
   });
@@ -3272,5 +3261,327 @@ describe('what a pick that fails answers', () => {
     expect(importStore.getState().summary?.failed).toBe(1);
     expect(importStore.getState().summary?.errorCode).toBeNull();
     expect(jobRow().status).toBe('completed');
+  });
+});
+
+// ===========================================================================
+// Group: what did not migrate (#928 gap 6 / B1)
+// ===========================================================================
+
+describe('the unmigrated list', () => {
+  it('lists only skipped rows while the job is still at preflight', async () => {
+    // 50 importable posts, all `pending` because nothing has been attempted.
+    seedJob({ status: 'ready', items: 50, skips: ['held_video', 'empty_post'] });
+    await resumeImportAtLaunch();
+    expect(importStore.getState().phase).toBe('ready');
+
+    const list = getImportUnmigratedItems();
+
+    // B1: reading `pending` here would file all 50 importable posts under
+    // "not sent before the import stopped" — on the screen that is offering
+    // to import them, and contradicting the skip count beside it.
+    expect(list.items).toHaveLength(2);
+    expect(list.items.every((item) => item.kind === 'skipped')).toBe(true);
+    expect(list.counts.notSent).toBe(0);
+    expect(list.counts.failed).toEqual({});
+    expect(list.counts.skipped).toEqual({ held_video: 1, empty_post: 1 });
+    expect(list.truncated).toBe(0);
+  });
+
+  it('carries the row facts #928 renders, and no body', async () => {
+    seedJob({ status: 'ready', items: 1, skips: ['image_too_large'] });
+    await resumeImportAtLaunch();
+
+    const [row] = getImportUnmigratedItems().items;
+
+    expect(row).toEqual({
+      id: 'skip-0',
+      kind: 'skipped',
+      reason: 'image_too_large',
+      originalDate: POST_DATE,
+      sourceFile: 'your_posts_1.json',
+      sourceIndex: 1,
+    });
+    // `source_file` is local-UI class; the post body is not in the shape at all.
+    expect(Object.keys(row)).not.toContain('body');
+  });
+
+  it('caps the list but not the counts', async () => {
+    seedJob({
+      status: 'ready',
+      items: 0,
+      skips: Array.from({ length: 1001 }, () => 'empty_post' as SkipReason),
+    });
+    await resumeImportAtLaunch();
+
+    const list = getImportUnmigratedItems();
+
+    // op-sqlite's `executeSync` blocks the JS thread, so the screen never
+    // materializes more rows than it displays. The headers and the "…and N
+    // more not listed" footer come from a COUNT, which is not capped.
+    expect(list.items).toHaveLength(1000);
+    expect(list.truncated).toBe(1);
+    expect(list.counts.skipped).toEqual({ empty_post: 1001 });
+  });
+
+  it('adds failed rows once the run has settled', async () => {
+    seedJob({ items: 2, skips: ['empty_post'] });
+    mockSubmitImportBatch.mockImplementation(
+      async (_id: string, body: { items: { importKey: string }[] }) => ({
+        results: [
+          { importKey: body.items[0].importKey, status: 'rejected', code: 'IMPORT_DATE_INVALID' },
+          {
+            importKey: body.items[1].importKey,
+            status: 'created',
+            threadId: threadUuid('1'),
+            createdAt: '2012-08-26T00:00:00.000Z',
+          },
+        ],
+        allowance: allowance(1),
+      }),
+    );
+
+    await confirmAndRunLaunch();
+    const list = getImportUnmigratedItems();
+
+    expect(list.items).toEqual([
+      expect.objectContaining({ id: 'item-0', kind: 'failed', code: 'IMPORT_DATE_INVALID' }),
+      expect.objectContaining({ id: 'skip-0', kind: 'skipped', reason: 'empty_post' }),
+    ]);
+    expect(list.counts.failed).toEqual({ IMPORT_DATE_INVALID: 1 });
+    expect(list.counts.notSent).toBe(0);
+  });
+
+  it('adds the rows that were never sent', async () => {
+    const repository = require('../../../database/repositories/importRepository');
+    const spy = jest
+      .spyOn(repository, 'getPendingImportItems')
+      .mockImplementationOnce((): never => {
+        throw new TypeError('getPendingImportItems is not a function');
+      });
+    try {
+      seedJob({ items: 2 });
+      await confirmAndRunLaunch();
+      expect(importStore.getState().summary?.errorCode).toBe('CLIENT_BUG');
+
+      const list = getImportUnmigratedItems();
+
+      // The third group #926's skip API could not express: still queued when
+      // the run stopped, body already NULLed, so only a re-pick recovers them.
+      expect(list.items.map((item) => item.kind)).toEqual(['not_sent', 'not_sent']);
+      expect(list.counts.notSent).toBe(2);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('reads an extract-time hold as a skip, not as unsent', async () => {
+    seedJob({
+      items: 1,
+      bookmark: ['part-a'],
+      mediaEntryIds: ['entry-0-0'],
+      skips: ['held_video'],
+    });
+    mockOpenArchiveSession.mockImplementation(async () => videoArchiveSession());
+
+    await confirmAndRunLaunch();
+    const list = getImportUnmigratedItems();
+
+    // The row is parked in `uploading`, which is also where an unsent batch
+    // claim lives. `lastSettledHeld` is the only record that tells them apart
+    // once the run is gone.
+    expect(itemRows()[0].status).toBe('uploading');
+    expect(list.items).toEqual([
+      expect.objectContaining({ id: 'item-0', kind: 'skipped', reason: 'held_video' }),
+      expect.objectContaining({ id: 'skip-0', kind: 'skipped', reason: 'held_video' }),
+    ]);
+    expect(list.counts.notSent).toBe(0);
+    // Both halves — the parse-time skip and the extract-time hold — under one
+    // reason, and the same number the summary line beside it shows.
+    expect(list.counts.skipped).toEqual({ held_video: 2 });
+    expect(list.counts.skipped.held_video).toBe(importStore.getState().summary?.heldVideo);
+  });
+
+  it('falls back to the sentinel for a code this build does not know', async () => {
+    seedJob({ items: 1 });
+    await confirmAndRunLaunch();
+    // A code written by a newer build, or a server vocabulary that widened
+    // under us: #928 has no copy for it, so it must not reach the copy table.
+    harness.sqlite
+      .prepare("UPDATE import_items SET status = 'failed', error_code = ? WHERE id = ?")
+      .run('IMPORT_SOMETHING_NEW', 'item-0');
+
+    const list = getImportUnmigratedItems();
+
+    expect(list.items).toEqual([
+      expect.objectContaining({ kind: 'failed', code: 'IMPORT_RESULT_UNKNOWN' }),
+    ]);
+    expect(list.counts.failed).toEqual({ IMPORT_RESULT_UNKNOWN: 1 });
+  });
+
+  it('answers nothing at all while the parse is still reading', async () => {
+    mockParseArchive.mockImplementation(
+      async (_session: unknown, opts: { signal: AbortSignal }): Promise<never> => {
+        await new Promise<void>((resolve) => {
+          opts.signal.addEventListener('abort', () => resolve(), { once: true });
+        });
+        throw new ArchiveReaderError('ECANCELLED');
+      },
+    );
+    const picking = pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
+    await drain();
+    expect(importStore.getState().phase).toBe('parsing');
+
+    // The answer is still being written: a prefix of the archive is not a
+    // list of what did not migrate.
+    expect(getImportUnmigratedItems()).toEqual({
+      items: [],
+      counts: { skipped: {}, failed: {}, notSent: 0 },
+      truncated: 0,
+    });
+
+    cancelImport();
+    await picking;
+  });
+
+  it('answers nothing at all while the run is still draining', async () => {
+    seedJob({ items: 2, skips: ['empty_post'] });
+    const held = deferred<unknown>();
+    mockSubmitImportBatch.mockImplementation(() => held.promise);
+
+    const running = resumeImportAtLaunch();
+    await drain();
+    expect(importStore.getState().phase).toBe('running');
+
+    // Half the queue is claimed and in flight; the other half is `pending`
+    // and may still become a post.
+    expect(getImportUnmigratedItems().items).toEqual([]);
+
+    cancelImport();
+    held.resolve(createdFor([]));
+    await running;
+  });
+
+  it('is empty again once the summary is dismissed', async () => {
+    seedJob({ items: 1, bookmark: ['part-a'], mediaEntryIds: ['entry-0-0'] });
+    mockOpenArchiveSession.mockImplementation(async () => videoArchiveSession());
+    await confirmAndRunLaunch();
+    expect(getImportUnmigratedItems().items).toHaveLength(1);
+
+    dismissImportSummary();
+
+    // The screen snapshots on mount and Share is how a member keeps the list;
+    // the dismiss drops the job identity AND the held set behind it.
+    expect(getImportUnmigratedItems()).toEqual({
+      items: [],
+      counts: { skipped: {}, failed: {}, notSent: 0 },
+      truncated: 0,
+    });
+  });
+});
+
+// ===========================================================================
+// Group: discarding a ready job (#928 gaps 2 and 2b)
+// ===========================================================================
+
+describe('discarding a preflight', () => {
+  it('releases the parts and deletes a runnable job, with no network call', async () => {
+    seedJob({ status: 'ready', items: 2, bookmark: ['part-a'] });
+    await resumeImportAtLaunch();
+    expect(importStore.getState().phase).toBe('ready');
+    mockGetGroupImports.mockClear();
+
+    await discardImportPreflight();
+
+    // `pickAndStartParse`'s finally KEEPS a runnable job's parts for the run
+    // that was about to use them; this is where that grant is handed back.
+    expect(mockReleaseArchiveParts).toHaveBeenCalledWith(['part-a']);
+    expect(getImportJob(JOB)).toBeNull();
+    expect(importStore.getState().phase).toBe('idle');
+    expect(importStore.getState().jobId).toBeNull();
+    // No session was ever started, so there is nothing to complete and none
+    // of the member's allowance was spent.
+    expect(mockCompleteImport).not.toHaveBeenCalled();
+    expect(mockStartImport).not.toHaveBeenCalled();
+    expect(mockGetGroupImports).not.toHaveBeenCalled();
+  });
+
+  it('lets the next pick through', async () => {
+    seedJob({ status: 'ready', items: 1, bookmark: ['part-a'] });
+    await resumeImportAtLaunch();
+    await discardImportPreflight();
+
+    parseEmitting(2);
+    const result = await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
+
+    // A `ready` job left behind answers every later pick `job-running`, with
+    // no way for the member to start over.
+    expect(result.kind).toBe('preflight');
+  });
+
+  it('returns a refused preflight to idle', async () => {
+    // Over the remaining allowance: the job is already `cancelled`, but the
+    // store still reads `ready` with the refusal on screen.
+    mockGetGroupImports.mockResolvedValue(groupImports({ allowance: allowance(999) }));
+    parseEmitting(2);
+    const result = await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
+    expect(result.kind).toBe('preflight');
+    expect(importStore.getState().preflight?.overAllowance).toBe('posts');
+    expect(importStore.getState().phase).toBe('ready');
+
+    await discardImportPreflight();
+
+    expect(importStore.getState().phase).toBe('idle');
+    expect(importStore.getState().preflight).toBeNull();
+  });
+
+  it('reaches a ready job whose preflight could not be rebuilt', async () => {
+    seedJob({ status: 'ready', items: 1, bookmark: ['part-a'] });
+    // The orbit the member has since left: `getGroupImports` fails every
+    // time, and nothing else ever deletes this row (gap 2b).
+    mockGetGroupImports.mockRejectedValue(new AuthError(403));
+
+    await resumeImportAtLaunch();
+    expect(importStore.getState().phase).toBe('idle');
+    expect(importStore.getState().jobId).toBe(JOB);
+
+    await discardImportPreflight();
+
+    // A phase-only gate could never reach this job, and the member would be
+    // refused `job-running` for ever.
+    expect(getImportJob(JOB)).toBeNull();
+    expect(mockReleaseArchiveParts).toHaveBeenCalledWith(['part-a']);
+    expect(importStore.getState().jobId).toBeNull();
+  });
+
+  it('writes nothing when a wipe lands during the discard', async () => {
+    seedJob({ status: 'ready', items: 1, bookmark: ['part-a'] });
+    await resumeImportAtLaunch();
+    mockReleaseArchiveParts.mockImplementation(async () => {
+      resetImportRunnerState();
+    });
+
+    await discardImportPreflight();
+
+    expect(getImportJob(JOB)).not.toBeNull();
+    expect(importStore.getState()).toEqual(importStore.getInitialState());
+  });
+});
+
+// ===========================================================================
+// Group: the published progress fields (#928 gap 3)
+// ===========================================================================
+
+describe('media progress', () => {
+  it('still publishes mediaDone, the only counter that moves in a batch', async () => {
+    seedJob({ items: 1, bookmark: ['part-a'], mediaEntryIds: ['entry-0-0', 'entry-0-1'] });
+
+    await confirmAndRunLaunch();
+
+    // `mediaTotal` was removed because nothing ever wrote it; `mediaDone` has
+    // a producer and is the only signal that moves while up to 50 photos
+    // upload under one post.
+    expect(importStore.getState().mediaDone).toBe(2);
+    expect('mediaTotal' in importStore.getState()).toBe(false);
   });
 });

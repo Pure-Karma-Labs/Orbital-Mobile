@@ -24,7 +24,9 @@ import {
   IMPORT_RESULT_UNKNOWN,
   countImportItemsByStatus,
   countImportSkipsByReason,
-  getSkippedItems,
+  getUnmigratedItems,
+  countUnmigratedByGroup,
+  UNMIGRATED_ITEM_LIMIT,
   markMediaUploaded,
   replaceMediaId,
 } from '../../repositories/importRepository';
@@ -967,29 +969,89 @@ describe('importRepository', () => {
     });
   });
 
-  describe('getSkippedItems', () => {
+  describe('getUnmigratedItems', () => {
     it('selects the #928 columns only — never the plaintext body', () => {
       const exec = jest.fn(() => rows([]));
       makeDb(exec);
 
-      getSkippedItems('job-1');
+      getUnmigratedItems('job-1', ['skipped']);
 
-      const [sql, params] = callMatching(exec, 'FROM import_items');
-      expect(sql).toContain('SELECT id, skip_reason, original_date, source_file, source_index');
+      const [sql] = callMatching(exec, 'FROM import_items');
+      expect(sql).toContain(
+        'SELECT id, status, skip_reason, error_code, original_date, source_file, source_index',
+      );
+      // The body is the member's own post text. This list is a UI model.
       expect(sql).not.toMatch(/\bbody\b/);
-      expect(sql).toContain('skip_reason IS NOT NULL');
-      expect(params).toEqual(['job-1']);
     });
 
-    it('binds the reason filter when one is given', () => {
+    it('binds the caller status set verbatim, in parse order', () => {
       const exec = jest.fn(() => rows([]));
       makeDb(exec);
 
-      getSkippedItems('job-1', 'held_video');
+      getUnmigratedItems('job-1', ['skipped', 'failed', 'pending', 'uploading']);
 
       const [sql, params] = callMatching(exec, 'FROM import_items');
-      expect(sql).toContain('skip_reason = ?');
-      expect(params).toEqual(['job-1', 'held_video']);
+      // Four placeholders, not a `NOT IN` — the caller decides whether a
+      // never-attempted `pending` row belongs in the list at all (B1).
+      expect(sql).toContain('status IN (?, ?, ?, ?)');
+      expect(sql).toContain('ORDER BY ordinal ASC');
+      expect(params).toEqual(['job-1', 'skipped', 'failed', 'pending', 'uploading', 1000]);
+    });
+
+    it('caps the read at 1000 rows unless the caller says otherwise', () => {
+      const exec = jest.fn(() => rows([]));
+      makeDb(exec);
+
+      getUnmigratedItems('job-1', ['skipped']);
+      // An archive holds up to 50k posts and `executeSync` blocks the JS
+      // thread: an unbounded read here is a frozen screen.
+      expect(UNMIGRATED_ITEM_LIMIT).toBe(1000);
+      const [sql, params] = callMatching(exec, 'FROM import_items');
+      expect(sql).toContain('LIMIT ?');
+      expect(params?.[params.length - 1]).toBe(1000);
+
+      exec.mockClear();
+      getUnmigratedItems('job-1', ['skipped'], 5);
+      expect(callMatching(exec, 'FROM import_items')[1]?.[2]).toBe(5);
+    });
+
+    it('reads nothing at all for an empty status set', () => {
+      const exec = jest.fn(() => rows([]));
+      makeDb(exec);
+
+      expect(getUnmigratedItems('job-1', [])).toEqual([]);
+      expect(sqls(exec).filter((sql) => sql.includes('import_items'))).toHaveLength(0);
+    });
+  });
+
+  describe('countUnmigratedByGroup', () => {
+    it('groups by the three columns the #928 headers are keyed on', () => {
+      const exec = jest.fn(() =>
+        rows([{ status: 'skipped', skip_reason: 'held_video', error_code: null, n: 7 }]),
+      );
+      makeDb(exec);
+
+      const counts = countUnmigratedByGroup('job-1', ['skipped', 'failed']);
+
+      const [sql, params] = callMatching(exec, 'FROM import_items');
+      expect(sql).toContain('COUNT(*) AS n');
+      expect(sql).toContain('GROUP BY status, skip_reason, error_code');
+      expect(sql).not.toMatch(/\bbody\b/);
+      expect(params).toEqual(['job-1', 'skipped', 'failed']);
+      // The totals are UNCAPPED: that is what makes the capped list's
+      // "…and N more" footer honest.
+      expect(sql).not.toContain('LIMIT');
+      expect(counts).toEqual([
+        { status: 'skipped', skip_reason: 'held_video', error_code: null, n: 7 },
+      ]);
+    });
+
+    it('reads nothing at all for an empty status set', () => {
+      const exec = jest.fn(() => rows([]));
+      makeDb(exec);
+
+      expect(countUnmigratedByGroup('job-1', [])).toEqual([]);
+      expect(sqls(exec).filter((sql) => sql.includes('import_items'))).toHaveLength(0);
     });
   });
 
@@ -1060,7 +1122,8 @@ describe('importRepository', () => {
       ).not.toThrow();
       expect(countImportItemsByStatus('job-1').pending).toBe(0);
       expect(countImportSkipsByReason('job-1').held_video).toBe(0);
-      expect(getSkippedItems('job-1')).toEqual([]);
+      expect(getUnmigratedItems('job-1', ['skipped'])).toEqual([]);
+      expect(countUnmigratedByGroup('job-1', ['skipped'])).toEqual([]);
       expect(() => markMediaUploaded('item-1', 0)).not.toThrow();
       expect(() => replaceMediaId('item-1', 0, 'new-id')).not.toThrow();
     });

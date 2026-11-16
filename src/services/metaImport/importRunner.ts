@@ -58,14 +58,16 @@ import { createStore } from 'zustand/vanilla';
 import {
   countImportItemsByStatus,
   countImportSkipsByReason,
+  countUnmigratedByGroup,
   createImportJob,
   deleteImportJob,
   finishImportJob,
   getActiveImportJob,
   getImportJob,
   getPendingImportItems,
-  getSkippedItems,
+  getUnmigratedItems,
   insertImportItems,
+  IMPORT_RESULT_UNKNOWN,
   markItemsUploading,
   requeueImportItems,
   setArchiveBookmark,
@@ -102,25 +104,31 @@ import {
   failImportItems,
   halveBatchSize,
   isBatchHalvingExhausted,
+  isImportItemCode,
   isItemBatchEligible,
   mapBatchResults,
   preflightImportItem,
   releaseBatchClaim,
 } from './importBatch';
-import { CHUNK_ALLOWANCE_PAUSE_MS, classifyImportFailure, isRunStale } from './importErrors';
+import {
+  CHUNK_ALLOWANCE_PAUSE_MS,
+  classifyImportFailure,
+  IMPORT_ITEM_FAILURE_CODES,
+  isRunStale,
+} from './importErrors';
 import { estimateImportBytes, importMediaStage, uploadImportItemMedia } from './importMedia';
 import { parseArchive } from './parseArchive';
 
 import type {
   PendingImportItem,
-  SkippedImportItem,
   TerminalImportJobStatus,
+  UnmigratedImportItemRow,
 } from '../../database/repositories/importRepository';
-import type { ImportJobRow } from '../../types/database';
+import type { ImportItemStatus, ImportJobRow } from '../../types/database';
 import type { ImportAllowance, ImportLimits } from '../../types/api';
 import type { ImportKeySession } from '../crypto/importCrypto';
 import type { ArchiveImportSession, ArchivePartToken } from './archiveAccess';
-import type { BuiltImportItem } from './importBatch';
+import type { BuiltImportItem, ImportItemCode } from './importBatch';
 import type {
   ImportFailureContext,
   ImportItemFailureCode,
@@ -210,15 +218,25 @@ export interface ImportRunnerState {
   readonly conversationId: string | null;
   readonly source: ImportSource | null;
   readonly preflight: ImportPreflight | null;
-  readonly needsRepick: boolean;
   readonly total: number;
   readonly created: number;
   readonly duplicate: number;
   readonly failed: number;
   readonly skipped: number;
+  /**
+   * Posts held for video, EXTRACT-TIME ONLY while the run is going (gap 4).
+   *
+   * That is what progress needs and not an oversight: `total` is
+   * `declared_posts`, which already excludes the parse-time `held_video`
+   * skips, so `(created + duplicate + failed + heldVideo) / total` reaches
+   * 100%. Fold the parse-time holds in here and the bar would stall short.
+   *
+   * The held-video LINE #928 shows is a different number — parse-time plus
+   * extract-time — and is read from `preflight.heldVideo` or
+   * `summary.heldVideo`, never from this counter.
+   */
   readonly heldVideo: number;
   readonly mediaDone: number;
-  readonly mediaTotal: number;
   readonly parseProgress: ParseProgress | null;
   /**
    * A precedence-ordered SET, not one slot. Empty ⇒ not paused.
@@ -286,7 +304,6 @@ const INITIAL_STATE: ImportRunnerState = Object.freeze({
   conversationId: null,
   source: null,
   preflight: null,
-  needsRepick: false,
   total: 0,
   created: 0,
   duplicate: 0,
@@ -294,7 +311,6 @@ const INITIAL_STATE: ImportRunnerState = Object.freeze({
   skipped: 0,
   heldVideo: 0,
   mediaDone: 0,
-  mediaTotal: 0,
   parseProgress: null,
   pauseCauses: NO_PAUSE,
   resumeAtMs: null,
@@ -330,7 +346,6 @@ function sameState(a: ImportRunnerState, b: ImportRunnerState): boolean {
     a.conversationId === b.conversationId &&
     a.source === b.source &&
     a.preflight === b.preflight &&
-    a.needsRepick === b.needsRepick &&
     a.total === b.total &&
     a.created === b.created &&
     a.duplicate === b.duplicate &&
@@ -338,7 +353,6 @@ function sameState(a: ImportRunnerState, b: ImportRunnerState): boolean {
     a.skipped === b.skipped &&
     a.heldVideo === b.heldVideo &&
     a.mediaDone === b.mediaDone &&
-    a.mediaTotal === b.mediaTotal &&
     a.parseProgress === b.parseProgress &&
     a.pauseCauses === b.pauseCauses &&
     a.resumeAtMs === b.resumeAtMs &&
@@ -675,7 +689,6 @@ function pauseJobBeforeRun(job: ImportJobRow, cause: PauseCause, untilMs?: numbe
       conversationId: job.conversation_id,
       source: job.source,
       pauseCauses: Object.freeze([cause] as PauseCause[]),
-      needsRepick: false,
       // Explicit on BOTH arms: an exhausted pause has no deadline to count
       // down to, and leaving the previous rung's `resumeAtMs` behind would
       // render a countdown that never fires.
@@ -890,7 +903,7 @@ function clearPauseTimer(r: ActiveRun, cause: PauseCause): void {
 function publishPauseState(r: ActiveRun): void {
   const causes = pauseList(r);
   if (causes.length === 0) {
-    update({ phase: 'running', pauseCauses: NO_PAUSE, resumeAtMs: null, needsRepick: false }, true);
+    update({ phase: 'running', pauseCauses: NO_PAUSE, resumeAtMs: null }, true);
     r.resumeAtMs = null;
     releaseWaiters(r);
     return;
@@ -900,9 +913,6 @@ function publishPauseState(r: ActiveRun): void {
       phase: 'paused',
       pauseCauses: causes,
       resumeAtMs: r.resumeAtMs,
-      // One source for the flag #928's re-pick prompt is gated on: it is the
-      // pause set's own membership, never a second variable to keep in step.
-      needsRepick: causes.includes('needs_repick'),
     },
     true,
   );
@@ -2079,7 +2089,6 @@ async function settleRun(r: ActiveRun): Promise<void> {
         // the flag still set, and a summary that also reads "stalled" is a
         // card with two states.
         autoRetryExhausted: false,
-        needsRepick: false,
       },
       true,
     );
@@ -2104,6 +2113,10 @@ async function settleRun(r: ActiveRun): Promise<void> {
     // refused at start with `IMPORT_ALLOWANCE_EXCEEDED` — a terminal plus a
     // Sentry event for a condition the preflight exists to catch.
     probeCache.delete(r.conversationId);
+    // BEFORE the run is dropped: `r.held` is the only record that these
+    // `uploading` rows are held for video rather than simply unsent, and the
+    // list that needs it is read after the run is gone.
+    lastSettledHeld = { jobId: r.jobId, ids: new Set(r.held) };
     if (r === run) run = null;
   }
 }
@@ -2185,7 +2198,6 @@ async function runJob(
       jobId: job.id,
       conversationId: job.conversation_id,
       source: job.source,
-      needsRepick: false,
       total: job.declared_posts ?? importableTotal(counts),
       created: counts.created,
       duplicate: counts.duplicate,
@@ -2413,6 +2425,9 @@ export async function pickAndStartParse(args: {
   }
   if (tokens === null || tokens.length === 0) return { kind: 'cancelled' };
 
+  // A previous job's held set would mislabel this one's unsent rows.
+  clearLastSettledHeld();
+
   const jobId = generateUUID();
   let archive: ArchiveImportSession | null = null;
   let keySession: ImportKeySession | null = null;
@@ -2453,7 +2468,6 @@ export async function pickAndStartParse(args: {
         conversationId: args.conversationId,
         source: args.source,
         preflight: null,
-        needsRepick: false,
         total: 0,
         created: 0,
         duplicate: 0,
@@ -2461,7 +2475,6 @@ export async function pickAndStartParse(args: {
         skipped: 0,
         heldVideo: 0,
         mediaDone: 0,
-        mediaTotal: 0,
         parseProgress: null,
         pauseCauses: NO_PAUSE,
         resumeAtMs: null,
@@ -2949,21 +2962,256 @@ async function cancelBeforeRun(job: ImportJobRow, gen: number): Promise<void> {
 /** Clear the summary card. No-op unless a finished run is being reported. */
 export function dismissImportSummary(): void {
   if (draft.phase !== 'done') return;
+  clearLastSettledHeld();
   update({ ...INITIAL_STATE, phase: 'idle' }, true);
+}
+
+/**
+ * Throw away a `ready` job the member decided not to run (gap 2).
+ *
+ * The three refusal screens and the preflight itself all land here: a `ready`
+ * job is runnable as far as `pickAndStartParse` is concerned, so leaving one
+ * behind answers every later pick with `job-running` and the member cannot
+ * start over.
+ *
+ * **By DB status, not only by phase** (gap 2b). `enterJob`'s `autoStart:false`
+ * arm publishes `idle` with a `jobId` when `rebuildPreflight` returns null —
+ * which happens offline, and PERMANENTLY for a ready job left in an orbit the
+ * member has since left, where `getGroupImports` fails every time and nothing
+ * else deletes the row. A phase-only gate could never reach that job.
+ *
+ * **No network call.** `session_id` is written only by `startImportJob` from
+ * `runJob`, so a `ready` job has no server session to close: nothing was
+ * declared, and none of the member's allowance was spent.
+ */
+export function discardImportPreflight(): Promise<void> {
+  return enterPreRun(discardReadyJob);
+}
+
+async function discardReadyJob(): Promise<void> {
+  const gen = preRunGen;
+  const token = liveToken;
+
+  // The store's own `ready` first; otherwise the DB's, which is the only way
+  // to reach a job whose preflight could not be rebuilt.
+  const job = getActiveImportJob();
+  const jobId = draft.phase === 'ready' ? draft.jobId : null;
+  const target = job !== null && job.status === 'ready' ? job : null;
+  if (target === null) {
+    // A refused preflight already finished its job as `cancelled`, so there is
+    // no row left to drop — only the store still says `ready`.
+    if (jobId !== null) update({ ...INITIAL_STATE, phase: 'idle' }, true);
+    return;
+  }
+
+  // `pickAndStartParse`'s finally deliberately KEEPS the parts of a runnable
+  // job for the run that was about to use them; this is where that grant is
+  // handed back.
+  const parts = parsePartTokens(target.archive_bookmark);
+  if (parts !== null) await releaseArchiveParts(parts).catch(() => {});
+  if (preRunGen !== gen || token !== liveToken) return;
+
+  deleteImportJob(target.id);
+  clearLastSettledHeld();
+  update({ ...INITIAL_STATE, phase: 'idle' }, true);
+}
+
+// ---------------------------------------------------------------------------
+// What did not migrate (§4.2 transparency, gap 6)
+// ---------------------------------------------------------------------------
+
+/**
+ * Every per-item failure code the list can carry.
+ *
+ * Three registries, because three different writers put codes in that column:
+ * this client's own (`IMPORT_ITEM_FAILURE_CODES`), the server's three
+ * (`IMPORT_ITEM_CODES`), and the sentinel `applyBatchResults` writes for a
+ * code neither of them knows.
+ */
+export type ImportFailedItemCode =
+  ImportItemFailureCode | ImportItemCode | typeof IMPORT_RESULT_UNKNOWN;
+
+interface UnmigratedRowBase {
+  readonly id: string;
+  /** Epoch ms UTC. Render it in the UTC calendar day, as the server stores it. */
+  readonly originalDate: number | null;
+  /** LOCAL UI ONLY (F18): render it, never log, upload or seal it. */
+  readonly sourceFile: string | null;
+  readonly sourceIndex: number | null;
+}
+
+/** One row of the list, discriminated by WHY it is not a post. */
+export type UnmigratedImportItem =
+  | (UnmigratedRowBase & { readonly kind: 'skipped'; readonly reason: SkipReason })
+  | (UnmigratedRowBase & { readonly kind: 'failed'; readonly code: ImportFailedItemCode })
+  | (UnmigratedRowBase & { readonly kind: 'not_sent' });
+
+/** The FULL totals, uncapped, for the group headers. */
+export interface UnmigratedCounts {
+  /** Includes the extract-time holds, which are stored as `uploading`. */
+  readonly skipped: Readonly<Partial<Record<SkipReason, number>>>;
+  readonly failed: Readonly<Partial<Record<ImportFailedItemCode, number>>>;
+  readonly notSent: number;
+}
+
+export interface UnmigratedImportList {
+  /** At most `UNMIGRATED_ITEM_LIMIT` rows, in parse order. */
+  readonly items: readonly UnmigratedImportItem[];
+  readonly counts: UnmigratedCounts;
+  /** Total rows minus `items.length`: the "…and N more" footer. */
+  readonly truncated: number;
+}
+
+const EMPTY_UNMIGRATED: UnmigratedImportList = Object.freeze({
+  items: Object.freeze([]) as readonly UnmigratedImportItem[],
+  counts: Object.freeze({
+    skipped: Object.freeze({}),
+    failed: Object.freeze({}),
+    notSent: 0,
+  }),
+  truncated: 0,
+});
+
+/** Pre-run: nothing has been ATTEMPTED, so only parse-time skips exist. */
+const PRE_RUN_UNMIGRATED_STATUSES: readonly ImportItemStatus[] = Object.freeze([
+  'skipped' as ImportItemStatus,
+]);
+
+/** Post-settle: everything that is not `created`/`duplicate`. */
+const SETTLED_UNMIGRATED_STATUSES: readonly ImportItemStatus[] = Object.freeze([
+  'skipped',
+  'failed',
+  'pending',
+  'uploading',
+] as ImportItemStatus[]);
+
+/**
+ * The items a run held for video at EXTRACT time, kept for the summary.
+ *
+ * `r.held` dies with the run, but the list is read after it: those rows are
+ * parked in `uploading` and look exactly like "not sent" without this. Cleared
+ * on dismiss, on reset and when a new pick starts — a held set from a previous
+ * job would mislabel the next one's unsent rows.
+ */
+let lastSettledHeld: { jobId: string; ids: ReadonlySet<string> } | null = null;
+
+function clearLastSettledHeld(): void {
+  lastSettledHeld = null;
 }
 
 /**
  * What did NOT migrate, as an item list (Alex, 2026-10-26): members see WHAT
  * was skipped, not just how many.
  *
- * Wrapped here so no screen reaches into `importRepository`. The rows carry
- * `source_file`, which is LOCAL-UI-class: it may be rendered and must never be
- * logged, uploaded or put in an envelope.
+ * Wrapped here so no screen reaches into `importRepository`, and SYNCHRONOUS
+ * because `executeSync` is: the read is capped at
+ * `UNMIGRATED_ITEM_LIMIT` rows so a 50k-post archive cannot freeze the
+ * JS thread, and the group headers come from a `COUNT … GROUP BY` instead.
+ *
+ * **The status set depends on the phase**, which is the whole of plan-review
+ * B1: before a run every importable row is still `pending`, so reading those
+ * would file the entire archive under "not sent before the import stopped" on
+ * the preflight screen — up to 50k rows contradicting the skip count beside
+ * them.
  */
-export function getImportSkipDetails(reason?: SkipReason): SkippedImportItem[] {
+export function getImportUnmigratedItems(): UnmigratedImportList {
   const jobId = draft.jobId;
-  if (jobId === null) return [];
-  return getSkippedItems(jobId, reason);
+  if (jobId === null) return EMPTY_UNMIGRATED;
+
+  const statuses =
+    draft.phase === 'ready' || draft.phase === 'idle'
+      ? PRE_RUN_UNMIGRATED_STATUSES
+      : draft.phase === 'done'
+        ? SETTLED_UNMIGRATED_STATUSES
+        : null;
+  // `parsing`, `running`, `paused`, `hydrating`: the answer is still being
+  // written, and a half-drained queue is not a list of what did not migrate.
+  if (statuses === null) return EMPTY_UNMIGRATED;
+
+  const held =
+    lastSettledHeld !== null && lastSettledHeld.jobId === jobId ? lastSettledHeld.ids : null;
+  const rows = getUnmigratedItems(jobId, statuses);
+  const items = rows.map((row) => classifyUnmigrated(row, held));
+
+  const groups = countUnmigratedByGroup(jobId, statuses);
+  const skipped: Partial<Record<SkipReason, number>> = {};
+  const failed: Partial<Record<ImportFailedItemCode, number>> = {};
+  let notSent = 0;
+  let total = 0;
+  for (const group of groups) {
+    total += group.n;
+    if (group.status === 'skipped') {
+      const reason = group.skip_reason;
+      if (reason !== null) skipped[reason] = (skipped[reason] ?? 0) + group.n;
+      continue;
+    }
+    if (group.status === 'failed') {
+      const code = narrowFailedCode(group.error_code);
+      failed[code] = (failed[code] ?? 0) + group.n;
+      continue;
+    }
+    notSent += group.n;
+  }
+  // The extract-time holds are `uploading` rows, so the GROUP BY counted them
+  // as not-sent; they are a SKIP to the member, under the same reason the
+  // parse-time holds carry.
+  //
+  // `held.size` rather than a count of the rows on this PAGE: the list is
+  // capped and the counts are not, and this is the same number `buildSummary`
+  // published as `summary.heldVideo` — the header and the summary line beside
+  // it must not be able to disagree. Clamped, because a held item that a
+  // session restart requeued and then created is no longer an unsent row.
+  if (held !== null && held.size > 0) {
+    const moved = Math.min(held.size, notSent);
+    if (moved > 0) {
+      notSent -= moved;
+      skipped.held_video = (skipped.held_video ?? 0) + moved;
+    }
+  }
+
+  return {
+    items,
+    counts: { skipped, failed, notSent },
+    truncated: Math.max(0, total - items.length),
+  };
+}
+
+function classifyUnmigrated(
+  row: UnmigratedImportItemRow,
+  held: ReadonlySet<string> | null,
+): UnmigratedImportItem {
+  const base: UnmigratedRowBase = {
+    id: row.id,
+    originalDate: row.original_date,
+    sourceFile: row.source_file,
+    sourceIndex: row.source_index,
+  };
+  if (row.status === 'skipped' && row.skip_reason !== null) {
+    return { ...base, kind: 'skipped', reason: row.skip_reason };
+  }
+  if (row.status === 'uploading' && held !== null && held.has(row.id)) {
+    return { ...base, kind: 'skipped', reason: 'held_video' };
+  }
+  if (row.status === 'failed') {
+    return { ...base, kind: 'failed', code: narrowFailedCode(row.error_code) };
+  }
+  return { ...base, kind: 'not_sent' };
+}
+
+/**
+ * A stored `error_code` narrowed to the union #928 has copy for.
+ *
+ * Anything else — an older build's code, a widened server vocabulary that got
+ * past `applyBatchResults` — becomes the sentinel rather than a row with no
+ * copy at all.
+ */
+function narrowFailedCode(code: string | null): ImportFailedItemCode {
+  if (code === null) return IMPORT_RESULT_UNKNOWN;
+  if (Object.prototype.hasOwnProperty.call(IMPORT_ITEM_FAILURE_CODES, code)) {
+    return code as ImportItemFailureCode;
+  }
+  if (isImportItemCode(code)) return code;
+  return IMPORT_RESULT_UNKNOWN;
 }
 
 /**
@@ -3382,6 +3630,7 @@ export function resetImportRunnerState(): void {
 
   endImportCaptureBudget();
   clearPreRunRetry();
+  clearLastSettledHeld();
   // The next account on this device must re-probe: the allowance is
   // per-(orbit, member) and this one's is none of their business.
   probeCache.clear();

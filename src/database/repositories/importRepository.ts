@@ -736,44 +736,95 @@ export function countImportSkipsByReason(jobId: string): Record<SkipReasonKey, n
   return counts;
 }
 
-/** What #928's "what did not migrate" list shows per skipped item. */
-export interface SkippedImportItem {
+/** One row of #928's "what did not migrate" list. */
+export interface UnmigratedImportItemRow {
   id: string;
+  status: ImportItemStatus;
   skip_reason: ImportItemRow['skip_reason'];
+  error_code: string | null;
   /** Epoch ms UTC. */
   original_date: number | null;
-  /** LOCAL UI ONLY (F18). */
+  /** LOCAL UI ONLY (F18): render it, never log or upload it. */
   source_file: string | null;
   source_index: number | null;
 }
 
-/**
- * The skipped items for a job, optionally one reason only (held video, say).
- *
- * `idx_import_items_job_reason` serves the filter (both the bare
- * `skip_reason IS NOT NULL` form and the `skip_reason = ?` one, which SQLite
- * proves implies it); the `ORDER BY ordinal` costs a temp B-tree, which is
- * fine for a list the member reads once. Deliberately selects named columns:
- * the body is not part of this list and must not be read into a UI model.
- */
-export function getSkippedItems(jobId: string, reason?: SkipReasonKey): SkippedImportItem[] {
-  if (!isDatabaseInitialized()) return [];
+/** One group of {@link countUnmigratedByGroup}: a status plus its reason. */
+export interface UnmigratedGroupCount {
+  status: ImportItemStatus;
+  skip_reason: ImportItemRow['skip_reason'];
+  error_code: string | null;
+  n: number;
+}
 
-  if (reason !== undefined) {
-    return queryMany<SkippedImportItem>(
-      `SELECT id, skip_reason, original_date, source_file, source_index
-         FROM import_items
-        WHERE job_id = ? AND skip_reason = ?
-        ORDER BY ordinal ASC`,
-      [jobId, reason],
-    );
-  }
-  return queryMany<SkippedImportItem>(
-    `SELECT id, skip_reason, original_date, source_file, source_index
+/**
+ * The default — and the maximum — number of rows #928 will materialize.
+ *
+ * A 50k-post archive is a real size, `executeSync` blocks the JS thread, and
+ * `runAfterInteractions` does not move the work off it: an unbounded read is
+ * a frozen spinner. The screen shows at most this many rows and takes its
+ * group headers from {@link countUnmigratedByGroup}, so the cap costs the
+ * member a footer line, not a number.
+ *
+ * Exported so `importCopy`'s `SHARE_ROW_CAP` can be pinned equal to it: the
+ * share text is built from the same capped page, and two numbers that must
+ * agree with nothing joining them agree only until someone edits one.
+ */
+export const UNMIGRATED_ITEM_LIMIT = 1000;
+
+/**
+ * The rows of a job that did NOT become a post, for an explicit status set.
+ *
+ * The status set is the CALLER's decision, deliberately: before a run every
+ * importable row is still `pending`, and reading those as "not sent" would
+ * file the whole archive under a heading about a run that never happened
+ * (plan review B1). The runner passes `['skipped']` pre-run and the full set
+ * post-settle.
+ *
+ * Named columns only, and `body` is NOT among them: this list is a UI model,
+ * and the body is plaintext-class post text that has no business in one.
+ * `idx_import_items_job_status` serves the filter; the `ORDER BY ordinal`
+ * costs a temp B-tree, which is fine for a bounded list read once.
+ */
+export function getUnmigratedItems(
+  jobId: string,
+  statuses: readonly ImportItemStatus[],
+  limit: number = UNMIGRATED_ITEM_LIMIT,
+): UnmigratedImportItemRow[] {
+  if (!isDatabaseInitialized() || statuses.length === 0) return [];
+
+  const placeholders = statuses.map(() => '?').join(', ');
+  return queryMany<UnmigratedImportItemRow>(
+    `SELECT id, status, skip_reason, error_code, original_date, source_file, source_index
        FROM import_items
-      WHERE job_id = ? AND skip_reason IS NOT NULL
-      ORDER BY ordinal ASC`,
-    [jobId],
+      WHERE job_id = ? AND status IN (${placeholders})
+      ORDER BY ordinal ASC
+      LIMIT ?`,
+    [jobId, ...statuses, limit],
+  );
+}
+
+/**
+ * The FULL totals behind {@link getUnmigratedItems}, grouped the way #928's
+ * headers are.
+ *
+ * Counting in SQL is what lets the list stay capped: the headers and the
+ * "…and N more not listed" footer are honest about an archive whose rows the
+ * screen never materializes.
+ */
+export function countUnmigratedByGroup(
+  jobId: string,
+  statuses: readonly ImportItemStatus[],
+): UnmigratedGroupCount[] {
+  if (!isDatabaseInitialized() || statuses.length === 0) return [];
+
+  const placeholders = statuses.map(() => '?').join(', ');
+  return queryMany<UnmigratedGroupCount>(
+    `SELECT status, skip_reason, error_code, COUNT(*) AS n
+       FROM import_items
+      WHERE job_id = ? AND status IN (${placeholders})
+      GROUP BY status, skip_reason, error_code`,
+    [jobId, ...statuses],
   );
 }
 

@@ -30,6 +30,7 @@ import { QuotaBar } from './settings/QuotaBar';
 import { DeletePasswordModal } from './settings/DeletePasswordModal';
 import { PasswordConfirmModal } from './settings/PasswordConfirmModal';
 import { OrbitAdminActions } from './settings/OrbitAdminActions';
+import { ImportSettingsSection } from './import/ImportSettingsSection';
 import { OrbitalSpinner } from '../components/OrbitalSpinner';
 import { EmojiText } from '../components/EmojiText';
 import type { GroupQuotaResponse } from '../types/api';
@@ -428,6 +429,14 @@ export function SettingsScreen(): React.JSX.Element {
             percentage={quota.storage.percentage}
           />
         )}
+
+        {/*
+          #928. Self-contained: it subscribes to the import runner (which emits
+          every 250 ms during a run) and hides itself when the active orbit
+          can't be imported into, so this screen neither re-renders on that
+          stream nor knows the gating rules.
+        */}
+        <ImportSettingsSection />
 
         <SectionHeader label="Account" />
         <SettingsRow

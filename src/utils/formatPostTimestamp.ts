@@ -29,6 +29,8 @@
  *   formatShortTime(t)           // "3:04 PM"
  *   formatDayLabel(t)            // "Today" / "Yesterday" / "Sep 12"
  *   formatCompactTimestamp(t)    // "3:04 PM" (today) / "Yesterday" / "Sep 12"
+ *   formatDateWithYear(t)        // "Mar 4, 2019"
+ *   formatDateWithYearA11y(t)    // "March 4, 2019"
  *   localDayKey(t)               // "2026-09-12"
  */
 
@@ -62,7 +64,18 @@ const MONTHS_LONG = [
   'December',
 ] as const;
 
-/** Calendar/clock parts of a timestamp, in the device's local time zone. */
+/**
+ * Which calendar a timestamp is split against.
+ *
+ * `'local'` is the device's zone and the default — every formatter that
+ * predates #928 keeps it. `'utc'` exists for dates the SERVER defines as a UTC
+ * calendar day: an imported post's original date is stored as `YYYY-MM-DD` and
+ * rendered at noon UTC, so rendering it locally would show the wrong day to
+ * anyone west of Greenwich.
+ */
+export type DateZone = 'local' | 'utc';
+
+/** Calendar/clock parts of a timestamp, in the requested time zone. */
 interface TimestampParts {
   monthIndex: number;
   day: number;
@@ -79,23 +92,30 @@ interface TimestampParts {
  * rendered. Guards every caller against "Invalid Date" reaching the UI:
  * undefined/null arrive as non-finite, and a finite-but-out-of-range value
  * (e.g. 1e20) still produces a NaN Date, so both are checked.
+ *
+ * `zone` picks the getter family (`getMonth` vs `getUTCMonth`) rather than
+ * shifting the instant: adding an offset to the timestamp and reading it back
+ * locally is what breaks on a DST boundary, because the offset you added is
+ * not the offset that applies to the shifted instant.
  */
-function toParts(timestamp: number): TimestampParts | null {
+function toParts(timestamp: number, zone: DateZone = 'local'): TimestampParts | null {
   if (!Number.isFinite(timestamp)) return null;
 
   const date = new Date(timestamp);
   const ms = date.getTime();
   if (Number.isNaN(ms)) return null;
 
-  const rawHour = date.getHours();
+  const utc = zone === 'utc';
+  const rawHour = utc ? date.getUTCHours() : date.getHours();
   const hour12 = rawHour % 12 === 0 ? 12 : rawHour % 12;
+  const minute = utc ? date.getUTCMinutes() : date.getMinutes();
 
   return {
-    monthIndex: date.getMonth(),
-    day: date.getDate(),
-    year: date.getFullYear(),
+    monthIndex: utc ? date.getUTCMonth() : date.getMonth(),
+    day: utc ? date.getUTCDate() : date.getDate(),
+    year: utc ? date.getUTCFullYear() : date.getFullYear(),
     hour12,
-    minute: date.getMinutes().toString().padStart(2, '0'),
+    minute: minute.toString().padStart(2, '0'),
     meridiem: rawHour < 12 ? 'AM' : 'PM',
   };
 }
@@ -279,6 +299,47 @@ export function formatCompactTimestamp(timestamp: number, now: number = Date.now
   if (bucket === 'today') return shortTime(parts);
   if (bucket === 'yesterday') return 'Yesterday';
   return shortDate(parts);
+}
+
+/**
+ * Always-dated short form — "Mar 4, 2019". No clock time, and the year is
+ * never dropped.
+ *
+ * Unlike {@link formatPostTimestamp}, this one is for dates that are YEARS
+ * old by nature (#928: the original date of an imported post, and the day an
+ * orbit's retention sweep will reach it). Hiding the year on the few that
+ * happen to fall in the current year would make a list of them unreadable.
+ *
+ * @param timestamp Epoch milliseconds.
+ * @param zone `'utc'` for a date the server defines as a UTC calendar day;
+ *   `'local'` (the default) for one defined by the member's own clock.
+ *
+ * @example
+ *   formatDateWithYear(t)          // "Mar 4, 2019"
+ *   formatDateWithYear(t, 'utc')   // "Mar 4, 2019" on any device clock
+ *   formatDateWithYear(NaN)        // ""
+ */
+export function formatDateWithYear(timestamp: number, zone: DateZone = 'local'): string {
+  const parts = toParts(timestamp, zone);
+  if (parts === null) return '';
+  return `${MONTHS_SHORT[parts.monthIndex]} ${parts.day}, ${parts.year}`;
+}
+
+/**
+ * Screen-reader form of {@link formatDateWithYear}: the month is spelled out,
+ * so VoiceOver/TalkBack read a sentence rather than an abbreviation.
+ *
+ * @param timestamp Epoch milliseconds.
+ * @param zone As {@link formatDateWithYear}.
+ *
+ * @example
+ *   formatDateWithYearA11y(t)        // "March 4, 2019"
+ *   formatDateWithYearA11y(NaN)      // ""
+ */
+export function formatDateWithYearA11y(timestamp: number, zone: DateZone = 'local'): string {
+  const parts = toParts(timestamp, zone);
+  if (parts === null) return '';
+  return `${MONTHS_LONG[parts.monthIndex]} ${parts.day}, ${parts.year}`;
 }
 
 /**

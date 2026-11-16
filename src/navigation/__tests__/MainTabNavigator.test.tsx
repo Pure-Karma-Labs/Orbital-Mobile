@@ -9,6 +9,7 @@
  *  5. Keyboard.dismiss() called on every tab press with initialScreen
  *  6. Prevented tabPress event: no navigate/dispatch
  *  7. TAB_INITIAL_SCREENS covers all three tabs
+ *  8. The #928 import status strip renders ABOVE the bar
  */
 
 import React from 'react';
@@ -70,6 +71,20 @@ jest.mock('../ChatsStackNavigator', () => ({
 jest.mock('../SettingsStackNavigator', () => ({
   SettingsStackNavigator: () => null,
 }));
+
+// #928. The real strip pulls the whole import runner into a navigator unit
+// test — the persisted store, MMKV and the env config behind it — and then
+// renders null anyway unless a run happens to be live, which would make the
+// assertion below vacuous. A bare host View keeps the ONE thing this file
+// asserts about it: where it sits in the tree. It is a View, not a
+// TouchableOpacity, so the `findAllByType(TouchableOpacity)` indices the tab
+// tests above use are unchanged.
+jest.mock('../../screens/import/ImportStatusStrip', () => {
+  const ReactModule = require('react');
+  return {
+    ImportStatusStrip: () => ReactModule.createElement('View', { testID: 'import-status-strip' }),
+  };
+});
 
 // Import AFTER all jest.mock() calls
 import { CustomTabBar, TAB_INITIAL_SCREENS } from '../MainTabNavigator';
@@ -372,6 +387,32 @@ describe('CustomTabBar', () => {
 
       const nav = props.navigation as unknown as { navigate: jest.Mock };
       expect(nav.navigate).toHaveBeenCalledWith('Settings');
+
+      act(() => renderer!.unmount());
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // #928: the import status strip sits ABOVE the bar
+  // ------------------------------------------------------------------
+  describe('import status strip', () => {
+    it('renders the strip before the first tab button', () => {
+      const props = makeTabBarProps({ focusedIndex: 0 });
+      let renderer: ReactTestRenderer;
+      act(() => {
+        renderer = create(<CustomTabBar {...props} />);
+      });
+
+      // Depth-first over HOST nodes only: that order is the order the member
+      // sees down the screen, and a strip rendered inside or below the bar
+      // would take the fixed line out of the wrong place.
+      const hosts = renderer!.root.findAll((node) => typeof node.type === 'string');
+      const stripIndex = hosts.findIndex((node) => node.props.testID === 'import-status-strip');
+      const firstTabIndex = hosts.findIndex((node) => node.props.accessibilityRole === 'tab');
+
+      expect(stripIndex).toBeGreaterThanOrEqual(0);
+      expect(firstTabIndex).toBeGreaterThanOrEqual(0);
+      expect(stripIndex).toBeLessThan(firstTabIndex);
 
       act(() => renderer!.unmount());
     });

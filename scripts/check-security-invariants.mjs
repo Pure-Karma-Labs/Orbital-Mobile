@@ -6808,6 +6808,50 @@ const MI_ERRORS = join(MI_DIR, 'importErrors.ts');
 /** The four modules §4.15 delivers. A missing one is a violation. */
 const MI_REQUIRED_LOG_FILES = [MI_RUNNER, MI_BATCH, MI_MEDIA, MI_ERRORS];
 
+// ---------------------------------------------------------------------------
+// 35b. The import's own SCREENS (#928) — zero log calls, directory-wide
+// ---------------------------------------------------------------------------
+//
+// The windowed check above asks what a log line NAMES. That is the wrong bar
+// for the UI, because the UI's whole job is to hold the values the runner may
+// not print: a row on the "what didn't migrate" list is a basename and an
+// original date out of the member's own export (local-UI class, F18), and the
+// copy module interpolates them into strings. A debugging line here —
+// `console.log('[import]', item)` — names no forbidden identifier at all and
+// would sail through the window. So this directory is held to the ABSOLUTE
+// bar instead: zero console/captureError/Sentry calls, the same rule
+// `ME_SILENT_FILES` applies to the media-export leaves.
+//
+// WHY IT MATTERS, precisely. It is NOT that a console line becomes a Sentry
+// breadcrumb — console breadcrumbs are off at source (`sentryInit.ts`, the
+// `console: false` option this script already pins) and would be dropped by
+// `telemetryScrub` besides. The two real surfaces are:
+//
+//   1. THE DEVICE LOG. `console.*` reaches logcat, Console.app and the Metro
+//      terminal verbatim. On Android any app holding READ_LOGS, and anyone
+//      with the phone and `adb`, can read it; a bug report attaches it.
+//   2. `captureError` EXTRAS, which DO leave the device, and are scrubbed only
+//      by PATTERN — `telemetryScrub` cannot know that `sourceFile` is the name
+//      of a file in this member's Downloads folder.
+//
+// Reported under rule 35 with #928 rather than joining ME_SILENT_FILES: the
+// check is identical, but the failure message must send the next reader to the
+// import contract, not to the media-export one.
+const MI_UI_ISSUE = '#928';
+const MI_UI_DIR = join(SRC, 'screens', 'import');
+
+/**
+ * The anti-vacuity floor. A directory scan passes by the directory emptying,
+ * and these three are the files that actually hold member content: the copy
+ * module interpolates dates and basenames, and the two list/status screens
+ * render them.
+ */
+const MI_UI_REQUIRED_FILES = [
+  join(MI_UI_DIR, 'importCopy.ts'),
+  join(MI_UI_DIR, 'ImportUnmigratedScreen.tsx'),
+  join(MI_UI_DIR, 'ImportStatusScreen.tsx'),
+];
+
 /**
  * §4.13's "Never" list. `shown` is what the violation prints; `token` is the
  * normalized form actually matched (see the note on normalization above).
@@ -6973,6 +7017,51 @@ for (const file of miScanned) {
           `"${shown}" on a log/Sentry line — the import telemetry contract is counts and closed client enums only, never a value out of the member's archive (${MI_LOG_ISSUE})`,
         );
       }
+    }
+  }
+}
+
+// The import UI (#928): the whole directory at the zero-log bar. See the
+// block comment next to MI_UI_REQUIRED_FILES for why the windowed check is the
+// wrong instrument here.
+{
+  let miUiScanned = [];
+  try {
+    miUiScanned = walkSync(MI_UI_DIR, ['.ts', '.tsx']).filter((f) => {
+      const rel = relative('.', f);
+      return !rel.includes('__tests__') && !rel.includes('testUtils');
+    });
+  } catch {
+    // The root-missing arm, mirroring the metaImport one above: a renamed or
+    // deleted directory must fail here rather than scan nothing and pass.
+    violations.push(
+      `  ${relative('.', MI_UI_DIR)}:0  [${MI_LOG_RULE}]  the import screens directory is gone — the zero-log bar for the import UI would scan nothing and pass vacuously (${MI_UI_ISSUE})`,
+    );
+  }
+
+  // Spelled against the SCANNED set, so a file that exists but is excluded by
+  // the filter (moved under `testUtils/`, say) fails here instead of slipping
+  // out of coverage silently.
+  for (const required of MI_UI_REQUIRED_FILES) {
+    if (!miUiScanned.includes(required)) {
+      violations.push(
+        `  ${relative('.', required)}:0  [${MI_LOG_RULE}]  not among the scanned import screens — this file holds member content (export basenames, original dates) and is the floor that makes the directory scan's silence mean something (${MI_UI_ISSUE})`,
+      );
+    }
+  }
+
+  for (const file of miUiScanned) {
+    const raw = meRead(file, MI_LOG_RULE, 'that the import UI logs nothing at all', MI_UI_ISSUE);
+    if (raw === null) continue;
+    const lines = meStripComments(raw).split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (!ME_LOG_CALL_RE.test(lines[i])) continue;
+      report(
+        file,
+        i + 1,
+        MI_LOG_RULE,
+        `a console/captureError/Sentry call in the import UI — these screens hold the basenames and original dates out of the member's own export, and a line that names none of them still prints them to the device log (logcat, Console.app, Metro) or ships them as unscrubbable captureError extras. This directory logs nothing at all (${MI_UI_ISSUE})`,
+      );
     }
   }
 }

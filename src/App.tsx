@@ -41,6 +41,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import BootSplash from 'react-native-bootsplash';
 import { OrbitalLoader } from './components/OrbitalLoader';
 import { IdentityRestoreBanner } from './components/IdentityRestoreBanner';
+import { ImportStatusAnnouncer } from './screens/import/ImportStatusAnnouncer';
 
 function App(): React.JSX.Element {
   const colorScheme = useAppStore((s) => s.colorScheme);
@@ -183,6 +184,13 @@ function AppContent(): React.JSX.Element {
         return (
           <>
             <IdentityRestoreBanner />
+            {/*
+              #928. Renders nothing; it is the import's single accessibility
+              announcer. It lives HERE, not in the tab bar's status strip,
+              because CustomTabBar unmounts while the Android keyboard is open
+              and would swallow every transition that happened meanwhile.
+            */}
+            <ImportStatusAnnouncer />
             <AppNavigator />
             <ReportContentSheet />
           </>

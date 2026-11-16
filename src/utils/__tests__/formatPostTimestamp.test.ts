@@ -28,6 +28,8 @@ process.env.TZ = 'America/New_York';
 
 import {
   formatCompactTimestamp,
+  formatDateWithYear,
+  formatDateWithYearA11y,
   formatDayLabel,
   formatPostTimestamp,
   formatPostTimestampA11y,
@@ -297,6 +299,154 @@ describe('localDayKey', () => {
   it('returns "" for an unrenderable timestamp', () => {
     expect(localDayKey(NaN)).toBe('');
     expect(localDayKey(1e20)).toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #928: the always-dated formatters, and the `zone` parameter.
+//
+// ZONE CONTROL — read the suite header first. There is no working TZ pin in
+// this Jest setup: `process.env.TZ` is assigned at the top of this file and
+// does NOT reach V8's cached zone (re-verified here: with TZ pinned to
+// America/New_York the process still reports its own host offset). So, exactly
+// as the rest of this file does, the fixtures below are built from local
+// wall-clock constructors where the expectation is a local one, and from
+// Date.UTC where the expectation is a UTC one — which makes every pinned
+// string hold in any host zone.
+//
+// The one assertion that genuinely NEEDS a non-UTC zone — a UTC-midnight
+// instant landing on a different LOCAL day — is therefore written against the
+// zone the process actually has: its expected string is chosen from the real
+// UTC offset, and both directions (behind and ahead of UTC) are pinned
+// explicitly. Under TZ=UTC there is no boundary to show and the test asserts
+// that the two zones agree, which is the correct behaviour there.
+// ---------------------------------------------------------------------------
+
+/** 2019-03-04 12:00 local — noon, so no zone can move it off March 4. */
+const MAR_4_2019_LOCAL = localTime(2019, 2, 4, 12, 0);
+/** 2019-03-04T12:00:00Z — noon UTC, for the `'utc'` expectations. */
+const MAR_4_2019_UTC = Date.UTC(2019, 2, 4, 12, 0);
+/** 2019-03-04T00:30:00Z — 30 minutes past UTC midnight. */
+const UTC_MIDNIGHT_EDGE = Date.UTC(2019, 2, 4, 0, 30);
+/** 2019-03-04 00:30 local — 30 minutes past LOCAL midnight. */
+const LOCAL_MIDNIGHT_EDGE = localTime(2019, 2, 4, 0, 30);
+
+/** Minutes the host zone is BEHIND UTC at that instant (negative = ahead). */
+const UTC_OFFSET_MIN = new Date(UTC_MIDNIGHT_EDGE).getTimezoneOffset();
+
+describe('formatDateWithYear', () => {
+  it('renders a known instant in local time', () => {
+    expect(formatDateWithYear(MAR_4_2019_LOCAL)).toBe('Mar 4, 2019');
+    expect(formatDateWithYear(MAR_4_2019_LOCAL, 'local')).toBe('Mar 4, 2019');
+  });
+
+  it('renders a known instant in UTC', () => {
+    expect(formatDateWithYear(MAR_4_2019_UTC, 'utc')).toBe('Mar 4, 2019');
+  });
+
+  it('always shows the year, including for a current-year date', () => {
+    const thisYear = new Date().getFullYear();
+    expect(formatDateWithYear(localTime(thisYear, 8, 12, 15, 4))).toBe(`Sep 12, ${thisYear}`);
+    // The contrast that motivates the function: formatPostTimestamp drops it.
+    expect(formatPostTimestamp(localTime(thisYear, 8, 12, 15, 4))).toBe('Sep 12, 3:04 PM');
+  });
+
+  it('shows no clock time at all', () => {
+    expect(formatDateWithYear(localTime(2019, 2, 4, 23, 59))).toBe('Mar 4, 2019');
+    expect(formatDateWithYear(localTime(2019, 2, 4, 0, 0))).toBe('Mar 4, 2019');
+  });
+
+  it("splits a UTC-midnight instant by the UTC calendar under 'utc'", () => {
+    expect(formatDateWithYear(UTC_MIDNIGHT_EDGE, 'utc')).toBe('Mar 4, 2019');
+  });
+
+  it("splits that same instant by the DEVICE calendar under 'local'", () => {
+    // Behind UTC (e.g. America/*): 00:30Z is still March 3 locally.
+    // Ahead of UTC (e.g. Europe/*): it is already March 4.
+    // At UTC itself: the two agree, and there is no boundary to show.
+    const expected = UTC_OFFSET_MIN > 30 ? 'Mar 3, 2019' : 'Mar 4, 2019';
+    expect(formatDateWithYear(UTC_MIDNIGHT_EDGE, 'local')).toBe(expected);
+  });
+
+  it('shows the mirror boundary for a zone AHEAD of UTC', () => {
+    // 00:30 LOCAL on March 4 is still March 3 in UTC whenever the zone is
+    // ahead of UTC by more than 30 minutes.
+    const expected = UTC_OFFSET_MIN < -30 ? 'Mar 3, 2019' : 'Mar 4, 2019';
+    expect(formatDateWithYear(LOCAL_MIDNIGHT_EDGE, 'utc')).toBe(expected);
+    expect(formatDateWithYear(LOCAL_MIDNIGHT_EDGE, 'local')).toBe('Mar 4, 2019');
+  });
+
+  it('makes the two zones disagree exactly when the device zone is not UTC', () => {
+    const disagrees = (ts: number): boolean =>
+      formatDateWithYear(ts, 'utc') !== formatDateWithYear(ts, 'local');
+    const anyDisagreement = disagrees(UTC_MIDNIGHT_EDGE) || disagrees(LOCAL_MIDNIGHT_EDGE);
+    expect(anyDisagreement).toBe(Math.abs(UTC_OFFSET_MIN) > 30);
+  });
+
+  it('returns "" for NaN, Infinity and an out-of-range finite value', () => {
+    for (const zone of ['local', 'utc'] as const) {
+      expect(formatDateWithYear(NaN, zone)).toBe('');
+      expect(formatDateWithYear(Infinity, zone)).toBe('');
+      expect(formatDateWithYear(-Infinity, zone)).toBe('');
+      expect(formatDateWithYear(1e20, zone)).toBe('');
+    }
+    expect(formatDateWithYear(undefined as unknown as number)).toBe('');
+    expect(() => formatDateWithYear(NaN)).not.toThrow();
+  });
+});
+
+describe('formatDateWithYearA11y', () => {
+  it('spells the month out, in local time and in UTC', () => {
+    expect(formatDateWithYearA11y(MAR_4_2019_LOCAL)).toBe('March 4, 2019');
+    expect(formatDateWithYearA11y(MAR_4_2019_LOCAL, 'local')).toBe('March 4, 2019');
+    expect(formatDateWithYearA11y(MAR_4_2019_UTC, 'utc')).toBe('March 4, 2019');
+  });
+
+  it('always shows the year, including for a current-year date', () => {
+    const thisYear = new Date().getFullYear();
+    expect(formatDateWithYearA11y(localTime(thisYear, 8, 12, 15, 4))).toBe(
+      `September 12, ${thisYear}`,
+    );
+    expect(formatPostTimestampA11y(localTime(thisYear, 8, 12, 15, 4))).toBe(
+      'September 12 at 3:04 PM',
+    );
+  });
+
+  it('honours the UTC-midnight boundary the same way', () => {
+    expect(formatDateWithYearA11y(UTC_MIDNIGHT_EDGE, 'utc')).toBe('March 4, 2019');
+    const expected = UTC_OFFSET_MIN > 30 ? 'March 3, 2019' : 'March 4, 2019';
+    expect(formatDateWithYearA11y(UTC_MIDNIGHT_EDGE, 'local')).toBe(expected);
+  });
+
+  it('returns "" for NaN, Infinity and an out-of-range finite value', () => {
+    for (const zone of ['local', 'utc'] as const) {
+      expect(formatDateWithYearA11y(NaN, zone)).toBe('');
+      expect(formatDateWithYearA11y(Infinity, zone)).toBe('');
+      expect(formatDateWithYearA11y(-Infinity, zone)).toBe('');
+      expect(formatDateWithYearA11y(1e20, zone)).toBe('');
+    }
+    expect(() => formatDateWithYearA11y(NaN)).not.toThrow();
+  });
+});
+
+describe('the zone parameter is additive', () => {
+  it('leaves every pre-#928 formatter on local time', () => {
+    // toParts(ts, zone) gained a parameter that defaults to 'local'. The
+    // formatters that predate #928 pass no zone, so they must still split a
+    // UTC-midnight instant by the DEVICE calendar — and their pinned en-US
+    // strings must be byte-identical to before.
+    expect(formatPostTimestamp(SEP_12_2026, NOW_2026)).toBe('Sep 12, 3:04 PM');
+    expect(formatPostTimestampA11y(SEP_12_2025, NOW_2026)).toBe('September 12, 2025 at 3:04 PM');
+    expect(formatShortTime(MIDNIGHT_2026)).toBe('12:00 AM');
+    expect(formatDayLabel(SEP_12_2025, NOW_2026)).toBe('Sep 12');
+    expect(formatCompactTimestamp(SEP_12_2026, NOW_2026)).toBe('Sep 12');
+    expect(localDayKey(SINGLE_DIGIT_MINUTE_2026)).toBe('2026-01-05');
+    // The new formatters default to the same calendar as the old ones.
+    const day = new Date(UTC_MIDNIGHT_EDGE).getDate();
+    expect(formatDateWithYear(UTC_MIDNIGHT_EDGE)).toBe(`Mar ${day}, 2019`);
+    expect(formatDateWithYear(UTC_MIDNIGHT_EDGE)).toBe(
+      formatDateWithYear(UTC_MIDNIGHT_EDGE, 'local'),
+    );
   });
 });
 

@@ -105,11 +105,18 @@ export type ClassifiedPauseCause = Exclude<PauseCause, 'background'>;
  * widened server vocabulary can never reach #927's copy table through here.
  * `QUOTA` is the one that is not permanent — the orbit was full at media
  * complete, and importing again later can succeed.
+ *
+ * `IMPORT_MEDIA_TOO_LARGE` is kept APART from `IMPORT_MEDIA_UNSUPPORTED`
+ * (#928 gap 8) because the two are different facts to the member — a photo
+ * over the pixel ceiling versus a format this device has no decoder for — and
+ * #918's D12 requires the first to have its own copy. Folding them lost that
+ * copy before it could ever be shown.
  */
 export const IMPORT_ITEM_FAILURE_CODES = Object.freeze({
   IMPORT_ITEM_INVALID: 1,
   IMPORT_ITEM_TOO_LARGE: 1,
   IMPORT_MEDIA_UNSUPPORTED: 1,
+  IMPORT_MEDIA_TOO_LARGE: 1,
   IMPORT_MEDIA_UNAVAILABLE: 1,
   QUOTA: 1,
 });

@@ -1795,6 +1795,182 @@ describe('the server session', () => {
 });
 
 // ===========================================================================
+// Group: Dropped verdicts (#993 fold round)
+// ===========================================================================
+
+/**
+ * `terminalStatusFor` answers `completed` for ANY run that reaches
+ * {@link settleRun} with no terminal code, so every caller that drops a
+ * non-terminal verdict reports a failed import as a success. Four of them did.
+ * These are the four, plus the fail-safe that catches the fifth.
+ */
+describe('a verdict that is dropped rather than acted on', () => {
+  it('spends the start ladder in-frame and pauses, instead of reporting success', async () => {
+    jest.useFakeTimers();
+    try {
+      seedJob({ status: 'ready', items: 1 });
+      mockStartImport.mockRejectedValue(new NetworkError('offline'));
+
+      await resumeImportAtLaunch();
+      const running = confirmAndRunImport();
+      running.catch(() => {
+        // Attached BEFORE the clock moves (#834 discipline).
+      });
+      await flushMicrotasks();
+
+      // The start call's own ladder, spent inside the gate: 1 s, 2 s, 4 s.
+      for (const ms of [1_000, 2_000, 4_000]) {
+        jest.advanceTimersByTime(ms);
+        await flushMicrotasks();
+      }
+
+      // `retry-same-call` used to be reported to `runJob` as "no session", one
+      // start call deep, and `settleRun` then finished the job `completed` with
+      // both items pending and no Sentry event.
+      expect(mockStartImport).toHaveBeenCalledTimes(4);
+      expect(importStore.getState().phase).toBe('paused');
+      expect(importStore.getState().pauseCauses).toEqual(['network']);
+      // The job row is untouched: a pause is not a settle.
+      expect(jobRow().status).toBe('ready');
+      expect(jobRow().session_id).toBeNull();
+      expect(itemRows()[0].status).toBe('pending');
+      expect(mockCompleteImport).not.toHaveBeenCalled();
+      expect(mockCaptureError).not.toHaveBeenCalled();
+      expect(importStore.getState().summary).toBeNull();
+
+      resetImportRunnerState();
+      await flushMicrotasks();
+      await running;
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('pauses on a 429 at the preflight GET, with no session started', async () => {
+    seedJob({ status: 'ready', items: 1 });
+    let gets = 0;
+    // The first GET is the preflight rebuild #928 is shown; the run's own is
+    // the one that is rate-limited. A `mockRejectedValueOnce` queue here would
+    // leak into the next test.
+    mockGetGroupImports.mockImplementation(async () => {
+      gets += 1;
+      if (gets === 1) return groupImports();
+      throw rateLimited(60_000);
+    });
+
+    await resumeImportAtLaunch();
+    void confirmAndRunImport();
+    await drain();
+
+    expect(importStore.getState().phase).toBe('paused');
+    expect(importStore.getState().pauseCauses).toEqual(['rate_limited']);
+    expect(mockStartImport).not.toHaveBeenCalled();
+    expect(jobRow().status).toBe('ready');
+    expect(jobRow().session_id).toBeNull();
+    expect(itemRows()[0].status).toBe('pending');
+    expect(mockCompleteImport).not.toHaveBeenCalled();
+    expect(mockCaptureError).not.toHaveBeenCalled();
+    expect(importStore.getState().summary).toBeNull();
+  });
+
+  it.each([
+    ['a TypeError', () => new TypeError('getPendingImportItems is not a function')],
+    ['a NetworkError', () => new NetworkError('offline')],
+  ])('ends the run as CLIENT_BUG when %s escapes the pump', async (_label, make) => {
+    const repository = require('../../../database/repositories/importRepository');
+    const spy = jest
+      .spyOn(repository, 'getPendingImportItems')
+      .mockImplementationOnce((): never => {
+        throw make();
+      });
+    try {
+      seedJob({ items: 2 });
+
+      await confirmAndRunLaunch();
+
+      // `runJob`'s catch classified the throw and threw the STEP away: an
+      // unexpected error at the pump level answers `item-failed` with no item
+      // id, which is `continue`, which left `terminal` null — so the job was
+      // finished `completed`, `complete` was POSTed (ending the session the
+      // items would have been resumed into) and nothing was reported.
+      expect(jobRow().status).toBe('failed');
+      expect(importStore.getState().summary?.errorCode).toBe('CLIENT_BUG');
+      expect(mockCaptureError).toHaveBeenCalledTimes(1);
+      // The items are still resumable, which is the whole reason `failed`
+      // rather than `completed` matters.
+      expect(itemRows().every((row) => row.status === 'pending')).toBe(true);
+      expect(importStore.getState().summary?.notSubmitted).toBe(2);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('never reports a completed import for a session it could not persist', async () => {
+    seedJob({ status: 'ready', items: 2 });
+    // `startImportJob` writes the session id only while the job is `ready`
+    // (it is the one moment the column is writable), so an `in_progress` job
+    // with no session id makes that write fail and the gate stop with no
+    // verdict of its own. The fail-safe is what keeps that off the happy path.
+    harness.sqlite.prepare("UPDATE import_jobs SET status = 'in_progress' WHERE id = ?").run(JOB);
+
+    await confirmAndRunLaunch();
+
+    expect(mockStartImport).toHaveBeenCalledTimes(1);
+    expect(jobRow().session_id).toBeNull();
+    expect(jobRow().status).toBe('failed');
+    expect(importStore.getState().summary?.errorCode).toBe('CLIENT_BUG');
+    expect(itemRows().every((row) => row.status === 'pending')).toBe(true);
+    expect(mockSubmitImportBatch).not.toHaveBeenCalled();
+    expect(mockCompleteImport).not.toHaveBeenCalled();
+    expect(mockCaptureError).toHaveBeenCalledTimes(1);
+  });
+
+  it('settles completed on the MEDIA path when the server says the session is finished', async () => {
+    seedJob({ items: 1, bookmark: ['part-a'], mediaEntryIds: ['entry-0-0'] });
+    mockUploadMedia.mockRejectedValue(
+      new ImportMediaStagedError(
+        new ConflictError(
+          JSON.stringify({
+            error: 'IMPORT_REFUSED',
+            details: { code: 'IMPORT_CLOSED', status: 'completed' },
+          }),
+        ),
+      ),
+    );
+
+    await confirmAndRunLaunch();
+
+    // `finish-completed` is reachable from the media routes as well as the
+    // batch one (§1.4 C4). Dropping the step there left the pump cycling until
+    // the no-progress guard called it a CLIENT_BUG, where the batch path for
+    // the same answer settled `completed`.
+    expect(jobRow().status).toBe('completed');
+    expect(importStore.getState().summary?.errorCode).toBeNull();
+    expect(mockCaptureError).not.toHaveBeenCalled();
+    expect(mockUploadMedia).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not wait for the courtesy complete on the cancelled path', async () => {
+    seedJob({ items: 1 });
+    // Offline, the transport takes 15 s to give up. The member asked to stop.
+    mockCompleteImport.mockImplementation(() => new Promise(() => {}));
+    mockSubmitImportBatch.mockImplementation(async () => {
+      cancelImport();
+      throw new NetworkError('cancelled');
+    });
+
+    await confirmAndRunLaunch();
+
+    // Still sent — `declared_bytes` is a lien on the ORBIT until B#318's GC —
+    // but not awaited.
+    expect(mockCompleteImport).toHaveBeenCalledWith(IMPORT_ID);
+    expect(importStore.getState().phase).toBe('done');
+    expect(importStore.getState().summary?.cancelled).toBe(true);
+    expect(jobRow().status).toBe('cancelled');
+  });
+});
+
+// ===========================================================================
 // Group: Batch (§4.16)
 // ===========================================================================
 

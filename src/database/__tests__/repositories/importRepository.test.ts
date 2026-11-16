@@ -26,7 +26,6 @@ import {
   countImportSkipsByReason,
   getUnmigratedItems,
   countUnmigratedByGroup,
-  UNMIGRATED_ITEM_LIMIT,
   markMediaUploaded,
   replaceMediaId,
 } from '../../repositories/importRepository';
@@ -1003,9 +1002,11 @@ describe('importRepository', () => {
       makeDb(exec);
 
       getUnmigratedItems('job-1', ['skipped']);
+
       // An archive holds up to 50k posts and `executeSync` blocks the JS
-      // thread: an unbounded read here is a frozen screen.
-      expect(UNMIGRATED_ITEM_LIMIT).toBe(1000);
+      // thread: an unbounded read here is a frozen screen. The number is
+      // pinned HERE, as the bound parameter, rather than read back off the
+      // constant it comes from — which would assert nothing.
       const [sql, params] = callMatching(exec, 'FROM import_items');
       expect(sql).toContain('LIMIT ?');
       expect(params?.[params.length - 1]).toBe(1000);

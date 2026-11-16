@@ -766,7 +766,7 @@ export interface UnmigratedGroupCount {
  * group headers from {@link countUnmigratedByGroup}, so the cap costs the
  * member a footer line, not a number.
  */
-export const UNMIGRATED_ITEM_LIMIT = 1000;
+const UNMIGRATED_ITEM_LIMIT = 1000;
 
 /**
  * The rows of a job that did NOT become a post, for an explicit status set.

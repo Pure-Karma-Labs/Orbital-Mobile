@@ -118,13 +118,19 @@ export function ImportUnmigratedScreen(): React.JSX.Element {
   const navigation = useNavigation();
 
   /**
-   * Read ONCE — but AFTER the push transition, never during it.
+   * Read ONCE, and off the mount commit rather than inside it.
    *
    * `getImportUnmigratedItems` is two synchronous op-sqlite reads, and
    * op-sqlite's `executeSync` blocks the JS thread: doing that inside render
    * would stall the navigator's slide-in by however long the query takes on a
-   * large archive. `runAfterInteractions` lets the animation finish first and
-   * costs a spinner frame.
+   * large archive.
+   *
+   * `runAfterInteractions` buys ONE TICK, not an animation. React Native 0.82
+   * ships `InteractionManagerStub`, where it is `setImmediate` — the read
+   * still lands mid-transition, it just does not land inside the commit. That
+   * is enough to get the first frame and the spinner out, and the honest
+   * ceiling on what this costs: a long read still stutters the slide. The
+   * real fix is op-sqlite's async execute, which is a follow-up.
    *
    * The snapshot-once semantics are unchanged, which is the point of it:
    * dismissing the summary later cannot empty a list the member is reading,

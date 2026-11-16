@@ -3838,3 +3838,163 @@ describe('a job whose preflight cannot be rebuilt', () => {
     expect(importStore.getState().phase).toBe('idle');
   });
 });
+
+// ===========================================================================
+// Group: a queued action that waited too long (#995 fold round)
+// ===========================================================================
+
+describe('a queued pre-run action', () => {
+  /** The session payload the launch gate accepts. */
+  function openSession() {
+    return {
+      importId: IMPORT_ID,
+      groupId: ORBIT,
+      status: 'open',
+      declaredPosts: 1,
+      declaredBytes: 4096,
+      createdPosts: 0,
+      createdAt: '2012-08-26T00:00:00.000Z',
+      lastActivityAt: '2012-08-26T00:00:00.000Z',
+      completedAt: null,
+      allowance: allowance(),
+      limits: LIMITS,
+    };
+  }
+
+  it('abandons a discard when a wipe lands while it waits', async () => {
+    seedJob({ status: 'ready', items: 1, bookmark: ['part-a'] });
+    // No `session_id`: the arm that settles the job through `cancelBeforeRun`,
+    // which is the one that would write a terminal status and a summary.
+    harness.sqlite.prepare("UPDATE import_jobs SET status = 'in_progress' WHERE id = ?").run(JOB);
+    const allowanceGet = deferred<unknown>();
+    mockGetGroupImports.mockImplementation(() => allowanceGet.promise);
+
+    const retrying = resumeImportAtLaunch();
+    await drain();
+    const discarding = discardImportPreflight();
+    await drain();
+
+    // The member logs out while the discard is still queued. Stamping
+    // `gen`/`token` AFTER the wait would read the post-wipe pair and match
+    // itself, and the job would be finished through the wipe.
+    resetImportRunnerState();
+    allowanceGet.resolve(groupImports());
+    await retrying;
+    await discarding;
+    await drain();
+
+    expect(jobRow().status).toBe('in_progress');
+    expect(mockCompleteImport).not.toHaveBeenCalled();
+    expect(importStore.getState()).toEqual(importStore.getInitialState());
+  });
+
+  it('leaves a finished import alone when the discard finally lands', async () => {
+    seedJob({ items: 2, bookmark: ['part-a'], mediaEntryIds: ['entry-0-0'] });
+    mockOpenArchiveSession.mockImplementation(async () => videoArchiveSession());
+    const batch = deferred();
+    mockSubmitImportBatch.mockImplementation(
+      async (_id: string, body: { items: { importKey: string }[] }) => {
+        await batch.promise;
+        return createdFor(body.items);
+      },
+    );
+
+    const running = resumeImportAtLaunch();
+    await drain();
+    expect(importStore.getState().phase).toBe('running');
+
+    // `enterJob` awaits `runJob`, so the latch is held for the WHOLE run: by
+    // the time this gets the gate the member is reading a summary.
+    const discarding = discardImportPreflight();
+    await drain();
+
+    batch.resolve();
+    await running;
+    await discarding;
+    await drain();
+
+    // Only `dismissImportSummary` may clear a `done` phase, and resetting the
+    // store here would also drop `lastSettledHeld` — the one record that
+    // tells the held video row from an unsent one.
+    expect(importStore.getState().phase).toBe('done');
+    expect(importStore.getState().summary?.created).toBe(1);
+    expect(importStore.getState().summary?.heldVideo).toBe(1);
+    expect(getImportUnmigratedItems().items).toEqual([
+      expect.objectContaining({ id: 'item-0', kind: 'skipped', reason: 'held_video' }),
+    ]);
+  });
+
+  it('does not stop a run that already finished', async () => {
+    seedJob({ items: 1 });
+    const parked = deferred<unknown>();
+    let gets = 0;
+    mockGetImportSession.mockImplementation(() => {
+      gets += 1;
+      if (gets === 1) return Promise.reject(new NetworkError('offline'));
+      if (gets === 2) return parked.promise;
+      return Promise.resolve(openSession());
+    });
+
+    await resumeImportAtLaunch();
+    expect(importStore.getState().phase).toBe('paused');
+    const entryA = resumeImportAtLaunch();
+    await drain();
+
+    // The member taps Stop while the store still reads `paused`...
+    cancelImport();
+    // ...and the entry that claims the gate next runs the job to completion
+    // before the queued cancel ever gets there.
+    void entryA.then(() => resumeImportAtLaunch()).catch(() => {});
+    parked.resolve(openSession());
+    await entryA;
+    await drain();
+
+    // `cancelled` over `completed`, a second `/complete` and a cancelled
+    // summary over the real one: all three are what the re-read prevents.
+    expect(jobRow().status).toBe('completed');
+    expect(importStore.getState().phase).toBe('done');
+    expect(importStore.getState().summary?.cancelled).toBe(false);
+    expect(importStore.getState().summary?.created).toBe(1);
+    expect(mockCompleteImport).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports failure rather than a success it never achieved', async () => {
+    seedJob({ status: 'ready', items: 1, bookmark: ['part-a'] });
+
+    // Each entry is registered on the one before it DIRECTLY, never on a
+    // derived promise: adoption costs two extra ticks, which would hand the
+    // gate to the queued discard instead of to the next entry.
+    const hogGate = (times: number): Promise<void> =>
+      times === 0 ? Promise.resolve() : resumeImportAtLaunch().then(() => hogGate(times - 1));
+
+    // An entry claims the gate the instant the one before it unwinds, over
+    // and over. The queue's budget runs out with `fn` never having run.
+    const hogging = hogGate(10);
+    const discarding = discardImportPreflight();
+
+    // Resolving here would unlatch the screen as though Start over had
+    // happened — the silent drop this whole function exists to prevent.
+    await expect(discarding).rejects.toThrow(/pre-run gate/);
+    await hogging;
+
+    expect(getImportJob(JOB)).not.toBeNull();
+    expect(mockReleaseArchiveParts).not.toHaveBeenCalled();
+  });
+
+  it('writes nothing when a wipe lands while the archive is opening', async () => {
+    const opening = deferred<ArchiveImportSession>();
+    mockOpenArchiveSession.mockImplementation(() => opening.promise);
+
+    const picking = pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
+    await drain();
+    resetImportRunnerState();
+    opening.resolve(archiveSession());
+
+    expect(await picking).toEqual({ kind: 'cancelled' });
+    // The first of the two `stale()` checks: the key session is opened after
+    // it, so a wipe here costs no key material and no row.
+    expect(mockKeySessions).toHaveLength(0);
+    expect(jobCount()).toBe(0);
+    expect(importStore.getState()).toEqual(importStore.getInitialState());
+  });
+});

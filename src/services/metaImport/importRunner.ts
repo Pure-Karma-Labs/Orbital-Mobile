@@ -799,14 +799,20 @@ const PRE_RUN_QUEUE_ATTEMPTS = 8;
  * else's resume would be silently dropped, leaving the row, its part grant and
  * the screen's busy spinner exactly as they were (PR #995 blocker).
  *
- * `abandon` is how a caller says the action no longer needs to run — the
- * entry we waited for did the work, or started a run that a different path
- * must now stop. Re-checked on EVERY pass, because the thing we are waiting
- * for is precisely what can make the action moot.
+ * `supersede` is how a caller says the action no longer needs to run — the
+ * entry we waited for did the work, the job is gone, or a wipe landed. It is
+ * NOT a pure predicate: a caller may do the superseding ITSELF and then
+ * return true (the pre-run Stop redirects onto the live run that entry
+ * started). Re-checked on EVERY pass, because the thing we are waiting for is
+ * precisely what can make the action moot.
+ *
+ * Rejects with {@link ImportActionBusyError} if the budget runs out without
+ * `fn` ever running: a queued member action must never report a success it
+ * did not achieve.
  */
-async function queuePreRun(fn: () => Promise<void>, abandon?: () => boolean): Promise<void> {
+async function queuePreRun(fn: () => Promise<void>, supersede?: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < PRE_RUN_QUEUE_ATTEMPTS; attempt++) {
-    if (abandon?.() === true) return;
+    if (supersede?.() === true) return;
     const pending = preRunEntry;
     if (pending === null) {
       // `enterPreRun` claims the latch synchronously, so nothing can slip in
@@ -817,6 +823,29 @@ async function queuePreRun(fn: () => Promise<void>, abandon?: () => boolean): Pr
     await pending.catch(() => {
       // Whatever that entry's outcome was, this action still has to run.
     });
+  }
+  // The budget is spent and `fn` NEVER RAN. Resolving here would be the
+  // silent drop this function exists to prevent, one level up: the screen
+  // would unlatch as though the discard had happened. Running `fn` outside
+  // the latch instead is not an option — that is the concurrent entry gap 9
+  // closed. So the caller is told, and its `catch`/`finally` leaves the
+  // button actionable with the state unchanged.
+  throw new ImportActionBusyError();
+}
+
+/**
+ * {@link queuePreRun} gave up waiting: the action did not run and nothing
+ * changed.
+ *
+ * Deliberately NOT exported: no caller branches on it, and an exported class
+ * with no consumer is surface for its own sake. It carries a stable `name` so
+ * a future handler can tell it from a real failure, and no detail at all —
+ * the no-log posture holds here as everywhere in this file.
+ */
+class ImportActionBusyError extends Error {
+  constructor() {
+    super('import action could not take the pre-run gate');
+    this.name = 'ImportActionBusyError';
   }
 }
 
@@ -2938,6 +2967,17 @@ export function cancelImport(): void {
     cancelBeforeAnyRun();
     return;
   }
+  stopActiveRun(r);
+}
+
+/**
+ * Stop a live run's work, from either arm of {@link cancelImport}.
+ *
+ * NOT a wipe: `cancelled` is set but {@link liveToken} is untouched, so
+ * {@link settleRun} still writes `finishImportJob(jobId, 'cancelled')` and
+ * publishes the summary. That is the whole `stopped` / `wiped` split (rule 0).
+ */
+function stopActiveRun(r: ActiveRun): void {
   r.cancelled = true;
   r.controller.abort();
   for (const cause of [...r.pauseTimers.keys()]) clearPauseTimer(r, cause);
@@ -2982,20 +3022,23 @@ function cancelBeforeAnyRun(): void {
     () => {
       // Superseded by a later cancel or by a wipe: that owner settles it.
       if (preRunGen !== gen) return true;
+      // The entry we waited for already SETTLED a run. There is nothing left
+      // to stop, and settling again would write `cancelled` over `completed`,
+      // fire a second `/complete`, and replace the member's summary with a
+      // cancelled one.
+      if (draft.phase === 'done') return true;
       const live = run;
       if (live === null) return false;
-      // The entry we were waiting for got all the way through and started the
-      // run. Stopping it is the OTHER arm's job, and the member's tap still
-      // has to land somewhere — before this, a Stop in that window was simply
-      // absorbed (security-auditor, PR #995).
-      live.cancelled = true;
-      live.controller.abort();
-      for (const cause of [...live.pauseTimers.keys()]) clearPauseTimer(live, cause);
-      live.pauseCauses.clear();
-      releaseWaiters(live);
+      // It got all the way through and the run is still going. Stopping it is
+      // the OTHER arm's job, and the member's tap still has to land somewhere
+      // — before this, a Stop in that window was simply absorbed.
+      stopActiveRun(live);
       return true;
     },
-  );
+  ).catch(() => {
+    // Fire-and-forget: there is no caller left to report a cancel to, and an
+    // exhausted queue has changed nothing.
+  });
 }
 
 /**
@@ -3010,15 +3053,23 @@ function cancelBeforeAnyRun(): void {
 async function cancelBeforeRun(job: ImportJobRow, gen: number): Promise<void> {
   // The entry this cancel raced got all the way through: its run owns the job
   // now, and `cancelImport`'s running arm is what stops it.
-  if (run !== null || preRunGen !== gen) return;
+  if (run !== null || preRunGen !== gen || draft.phase === 'done') return;
 
-  const parts = parsePartTokens(job.archive_bookmark);
+  // RE-READ, never trust the row captured before the wait: the entry we
+  // queued behind may have run this job all the way to a terminal status.
+  // `getActiveImportJob` answers null for anything outside `ACTIVE_STATUSES`,
+  // which is exactly the question — writing `cancelled` over `completed`
+  // would also fire a second `/complete` and publish over the real summary.
+  const current = getActiveImportJob();
+  if (current === null || current.id !== job.id) return;
+
+  const parts = parsePartTokens(current.archive_bookmark);
   if (parts !== null) await releaseArchiveParts(parts).catch(() => {});
   // A wipe during that release: it has already torn everything down, and a run
   // built now would carry the NEW token and write a terminal status through it.
   if (preRunGen !== gen || run !== null) return;
 
-  const r = newRun(job, draft.preflight?.limits ?? FALLBACK_LIMITS, null);
+  const r = newRun(current, draft.preflight?.limits ?? FALLBACK_LIMITS, null);
   run = r;
   beginImportCaptureBudget();
   r.cancelled = true;
@@ -3057,14 +3108,48 @@ export function dismissImportSummary(): void {
  * row, its part grant and the screen's spinner exactly as they were.
  */
 export function discardImportPreflight(): Promise<void> {
-  return queuePreRun(discardReadyJob);
-}
-
-async function discardReadyJob(): Promise<void> {
+  // STAMPED AT CALL TIME, not after the queue wait: a wipe landing while this
+  // waits is precisely what it must see, and a `gen`/`token` read afterwards
+  // would be the post-wipe pair and match itself.
   const gen = preRunGen;
   const token = liveToken;
+  const jobId = draft.jobId;
+
+  return queuePreRun(
+    () => discardReadyJob(gen, token, jobId),
+    () => {
+      // A wipe, or a later cancel: that owner has torn everything down and
+      // this must not write a terminal status or a publish through it.
+      if (preRunGen !== gen || liveToken !== token) return true;
+      // The entry we queued behind ran the job to a finish. `enterJob` awaits
+      // `runJob`, so the latch is held for the WHOLE run — by the time we get
+      // it, the member is looking at a summary. Only `dismissImportSummary`
+      // may clear that, and resetting the store here would also drop
+      // `lastSettledHeld`, which is what makes the unmigrated list honest.
+      if (run !== null || draft.phase === 'done') return true;
+      // A different job is active than the one this discard was aimed at.
+      //
+      // A null `jobId` is NOT that case: the store had published no identity
+      // yet (a discard tapped while the launch gate is still hydrating), so
+      // this one targets whatever is active rather than nothing.
+      //
+      // No active job at all is not that case either: a refused preflight has
+      // already finished its row, and the stale identity still has to be
+      // cleared out of the store.
+      if (jobId === null) return false;
+      const active = getActiveImportJob();
+      return active !== null && active.id !== jobId;
+    },
+  );
+}
+
+async function discardReadyJob(gen: number, token: number, jobId: string | null): Promise<void> {
+  // Re-asked inside the latch: the supersede check above ran before the last
+  // await, and this is the first line that can write.
+  if (preRunGen !== gen || liveToken !== token) return;
 
   const job = getActiveImportJob();
+  if (job !== null && jobId !== null && job.id !== jobId) return;
   if (job === null) {
     // Nothing active in SQLite. A refused preflight already finished its job
     // as `cancelled`, and a blocked view can outlive its row — either way the

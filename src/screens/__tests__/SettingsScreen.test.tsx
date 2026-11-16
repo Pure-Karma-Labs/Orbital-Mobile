@@ -38,6 +38,20 @@ jest.mock('../settings/OrbitAdminActions', () => ({
   },
 }));
 
+/**
+ * #928. The real section subscribes to the import runner and probes the
+ * server, neither of which this screen's tests are about. A bare host View
+ * keeps it in the tree so its POSITION between the Storage and Account
+ * sections stays asserted here, where the ordering actually lives.
+ */
+jest.mock('../import/ImportSettingsSection', () => {
+  const ReactModule = require('react');
+  return {
+    ImportSettingsSection: () =>
+      ReactModule.createElement('View', { testID: 'import-settings-section' }),
+  };
+});
+
 jest.mock('../../services/api/groups', () => ({
   getGroupQuota: jest.fn().mockResolvedValue({
     groupId: 'g1',
@@ -536,5 +550,34 @@ describe('SettingsScreen — recover encryption keys row', () => {
     expect(errorText.props.children).toContain('key conflict screen');
     const modalAfter = findByTestId(renderer.root, 'settings-recovery-password-modal');
     expect(modalAfter.props.visible).toBe(true);
+  });
+});
+
+/**
+ * #928 §3.3: the import section is an extension of the Storage block — it goes
+ * under File Library (and its quota bar) and above the Account section, so a
+ * member who has just looked at what this orbit holds sees how to add to it.
+ */
+describe('SettingsScreen — import section placement', () => {
+  /** Host-node testIDs in depth-first render order. */
+  function hostTestIdOrder(root: ReactTestInstance): string[] {
+    return root
+      .findAll((node) => typeof node.type === 'string' && typeof node.props.testID === 'string')
+      .map((node) => node.props.testID as string);
+  }
+
+  it('renders after file-library-row and before manage-orbits-row', () => {
+    const renderer = renderSettingsScreen();
+    const order = hostTestIdOrder(renderer.root);
+
+    const fileLibrary = order.indexOf('file-library-row');
+    const importSection = order.indexOf('import-settings-section');
+    const manageOrbits = order.indexOf('manage-orbits-row');
+
+    expect(fileLibrary).toBeGreaterThanOrEqual(0);
+    expect(importSection).toBeGreaterThanOrEqual(0);
+    expect(manageOrbits).toBeGreaterThanOrEqual(0);
+    expect(importSection).toBeGreaterThan(fileLibrary);
+    expect(importSection).toBeLessThan(manageOrbits);
   });
 });

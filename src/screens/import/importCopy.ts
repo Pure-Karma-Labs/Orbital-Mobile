@@ -342,7 +342,7 @@ export function describePreflightLines(
   }
 
   if (summary?.locationDataRemoved === true) {
-    lines.push('Location data is removed from photos before they’re uploaded.');
+    lines.push("Location data is removed from photos before they're uploaded.");
   }
 
   if (summary?.otherSourceDetected === true) {
@@ -409,7 +409,7 @@ export function describeFileIssueSummaryLine(fileIssues: number): string {
   return `${plural(fileIssues, 'file')} in the export couldn't be read`;
 }
 
-export const SEE_UNMIGRATED_LABEL = 'See what won’t be imported';
+export const SEE_UNMIGRATED_LABEL = "See what won't be imported";
 
 export function describeImportButton(importable: number): string {
   return `Import ${plural(importable, 'post')}`;

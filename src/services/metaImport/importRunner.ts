@@ -1294,7 +1294,21 @@ async function submitBuiltItems(r: ActiveRun, built: readonly BuiltImportItem[])
     if (claim.kind === 'stale') return 'continue';
 
     const step = await submitClaimedBatch(r, batch);
-    if (step !== 'retry') return step;
+    if (step !== 'retry') {
+      // A pause leaves the batch CLAIMED, and `getPendingImportItems` cannot
+      // see an `uploading` row — the loop would read an empty page and call
+      // the job drained. So the claim goes back in the queue and the items are
+      // rebuilt after the wake-up. A terminal or cancelled run deliberately
+      // leaves them claimed: they are the summary's `notSubmitted`.
+      if (isPaused(r)) {
+        releaseBatchClaim(
+          r.jobId,
+          batch.map((b) => b.itemId),
+          workGuard(r),
+        );
+      }
+      return step;
+    }
 
     const halved = await halveOrFail(r, batch);
     if (halved === 'stop') return 'stop';

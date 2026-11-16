@@ -755,7 +755,11 @@ describe('an import refusal that arrives wrapped is reported, never retried', ()
       },
       'media-chunk',
     ],
-    ['the session closed underneath us', { code: 'IMPORT_CLOSED', status: 'abandoned' }, 'media-chunk'],
+    [
+      'the session closed underneath us',
+      { code: 'IMPORT_CLOSED', status: 'abandoned' },
+      'media-chunk',
+    ],
   ] as const)('reports %s with its cause and stage', async (_label, details, stage) => {
     const cause = refusal(details as Record<string, unknown>);
     mockUploadMedia.mockRejectedValue(new ImportMediaStagedError(cause));

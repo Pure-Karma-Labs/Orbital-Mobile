@@ -52,8 +52,10 @@ import {
   ConflictError,
   NetworkError,
   NotFoundError,
+  QuotaExceededError,
   RateLimitError,
   ServerError,
+  ValidationError,
 } from '../../api/errors';
 
 import type { ImportDbHarness } from '../testUtils/importDbHarness';
@@ -1027,6 +1029,68 @@ describe('the allowance gate', () => {
     expect(importStore.getState().summary?.errorCode).toBe('ALLOWANCE');
   });
 
+  it('refuses an archive with nothing importable in it, without a session', async () => {
+    parseEmitting(0, { skips: ['held_video', 'unsupported_post_type'] });
+
+    const result = await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
+
+    const preflight = result.kind === 'preflight' ? result.preflight : null;
+    // `declared_posts` must be 1..1000, so a video-only export would otherwise
+    // send 0, be answered 400 IMPORT_DECLARED_INVALID, and surface as
+    // `job-terminal('CLIENT_BUG')` plus a Sentry event for an archive that is
+    // simply empty of posts we can take.
+    expect(preflight?.nothingToImport).toBe(true);
+    expect(preflight?.importable).toBe(0);
+    // Not an allowance fact: #928 renders it with the skip list, not with
+    // "export a smaller date range".
+    expect(preflight?.overAllowance).toBeNull();
+    expect(preflight?.skippedByReason.held_video).toBe(1);
+    // No session, no `declared_posts`, no terminal code, nothing reported.
+    expect(mockStartImport).not.toHaveBeenCalled();
+    expect(soleJob().status).toBe('cancelled');
+    expect(soleJob().declared_posts).toBeNull();
+    expect(mockCaptureError).not.toHaveBeenCalled();
+    expect(importStore.getState().summary).toBeNull();
+  });
+
+  it('refuses to run a ready job whose counts leave nothing to submit', async () => {
+    seedJob({ status: 'ready', items: 0, skips: ['held_video'] });
+    await resumeImportAtLaunch();
+    expect(importStore.getState().preflight?.nothingToImport).toBe(true);
+
+    await confirmAndRunImport();
+    await drain();
+
+    expect(mockStartImport).not.toHaveBeenCalled();
+    expect(mockSubmitImportBatch).not.toHaveBeenCalled();
+    expect(mockCaptureError).not.toHaveBeenCalled();
+    expect(jobRow().status).toBe('ready');
+  });
+
+  it('re-reads the allowance for a second import in the same app session', async () => {
+    parseEmitting(1);
+    await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
+    await confirmAndRunImport();
+    await drain();
+    expect(importStore.getState().phase).toBe('done');
+    dismissImportSummary();
+
+    // The orbit's lifetime counters have advanced by what that run created.
+    mockGetGroupImports.mockResolvedValue(groupImports({ allowance: allowance(1, 6208) }));
+    parseEmitting(1);
+
+    const second = await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
+
+    // The session-long probe cache used to gate the second import against the
+    // PRE-first-import counters, so it passed preflight and was then refused
+    // at start with IMPORT_ALLOWANCE_EXCEEDED — a terminal plus a Sentry event
+    // for exactly the condition the preflight exists to catch.
+    const preflight = second.kind === 'preflight' ? second.preflight : null;
+    expect(preflight?.allowance.postsUsed).toBe(1);
+    expect(preflight?.remainingPosts).toBe(999);
+    expect(preflight?.remainingBytes).toBe(2 * 1024 * 1024 * 1024 - 6208);
+  });
+
   it('keeps created posts when the batch route reports an allowance overrun', async () => {
     seedJob({ items: 2 });
     mockSubmitImportBatch
@@ -1483,6 +1547,96 @@ describe('the server session', () => {
     expect(mockCompleteImport).toHaveBeenCalledWith('import-2');
   });
 
+  it('reaches a network pause instead of looping when the restart is offline', async () => {
+    jest.useFakeTimers();
+    try {
+      seedJob({ items: 1 });
+      mockSubmitImportBatch.mockRejectedValue(
+        new ConflictError(
+          JSON.stringify({
+            error: 'IMPORT_REFUSED',
+            details: { code: 'IMPORT_CLOSED', status: 'abandoned' },
+          }),
+        ),
+      );
+      mockStartImport.mockRejectedValue(new NetworkError('offline'));
+
+      const running = resumeImportAtLaunch();
+      running.catch(() => {
+        // Attached BEFORE the clock moves (#834 discipline).
+      });
+      await flushMicrotasks();
+
+      // The start call's own ladder, spent inside the restart: 1 s, 2 s, 4 s.
+      for (const ms of [1_000, 2_000, 4_000]) {
+        jest.advanceTimersByTime(ms);
+        await flushMicrotasks();
+      }
+
+      // A `retry-same-call` verdict on the start call used to be reported as
+      // "the session was restarted", so the batch was re-POSTed at the dead
+      // session, answered IMPORT_CLOSED, and restarted again — a ~1 s loop for
+      // as long as the device was offline, which no budget could see because
+      // the inner loops passed no attempt counter.
+      expect(mockStartImport).toHaveBeenCalledTimes(4);
+      expect(importStore.getState().pauseCauses).toEqual(['network']);
+      expect(importStore.getState().phase).toBe('paused');
+      // The claim went back, so the wake-up finds the item.
+      expect(itemRows()[0].status).toBe('pending');
+      expect(jobRow().status).toBe('in_progress');
+      expect(mockCaptureError).not.toHaveBeenCalled();
+
+      resetImportRunnerState();
+      await flushMicrotasks();
+      await running;
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('refuses to adopt the session id it already holds', async () => {
+    seedJob({ status: 'ready', items: 1 });
+    mockStartImport.mockRejectedValue(
+      new ConflictError(
+        JSON.stringify({
+          error: 'IMPORT_REFUSED',
+          details: { code: 'IMPORT_IN_PROGRESS', import_id: IMPORT_ID },
+        }),
+      ),
+    );
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({
+        openImport: {
+          importId: IMPORT_ID,
+          status: 'open',
+          declaredPosts: 1,
+          declaredBytes: 4096,
+          createdPosts: 0,
+          lastActivityAt: '2012-08-26T00:00:00.000Z',
+        },
+      }),
+    );
+    // The preflight adopts that id, the batch is refused as closed, and the
+    // restart is answered with the SAME id: nothing new was learned, and
+    // answering `retry` for it would re-POST as fast as the loop can go.
+    mockSubmitImportBatch.mockRejectedValue(
+      new ConflictError(
+        JSON.stringify({
+          error: 'IMPORT_REFUSED',
+          details: { code: 'IMPORT_CLOSED', status: 'abandoned' },
+        }),
+      ),
+    );
+
+    await resumeImportAtLaunch();
+    await confirmAndRunImport();
+    await drain();
+
+    expect(importStore.getState().summary?.errorCode).toBe('REFUSED');
+    expect(jobRow().status).toBe('failed');
+    expect(mockSubmitImportBatch).toHaveBeenCalledTimes(1);
+  });
+
   it('adopts the member open session rather than starting a second one', async () => {
     seedJob({ status: 'ready', items: 1 });
     mockGetGroupImports.mockResolvedValue(
@@ -1585,6 +1739,149 @@ describe('the server session', () => {
 });
 
 // ===========================================================================
+// Group: Batch (§4.16)
+// ===========================================================================
+
+describe('batch failures inside a run', () => {
+  /** An `in_progress` session GET that advertises a smaller `batch_max`. */
+  function sessionWithBatchMax(batchMax: number): void {
+    mockGetImportSession.mockResolvedValue({
+      importId: IMPORT_ID,
+      groupId: ORBIT,
+      status: 'open',
+      declaredPosts: 2,
+      declaredBytes: 4096,
+      createdPosts: 0,
+      createdAt: '2012-08-26T00:00:00.000Z',
+      lastActivityAt: '2012-08-26T00:00:00.000Z',
+      completedAt: null,
+      allowance: allowance(),
+      limits: { ...LIMITS, batchMax },
+    });
+  }
+
+  it.each([
+    [
+      'IMPORT_BATCH_TOO_LARGE',
+      () =>
+        new ValidationError(
+          400,
+          JSON.stringify({
+            error: 'VALIDATION_ERROR',
+            details: { code: 'IMPORT_BATCH_TOO_LARGE' },
+          }),
+        ),
+    ],
+    // A BARE 413 is the app-wide `express.json({limit:'10mb'})` refusing the
+    // body (F3), which on this route means "halve", not "the orbit is full".
+    ['a bare 413', () => new QuotaExceededError()],
+  ])('halves twice on %s, then fails the single item and carries on', async (_label, make) => {
+    seedJob({ items: 2 });
+    sessionWithBatchMax(4);
+    mockSubmitImportBatch.mockRejectedValue(make());
+
+    await confirmAndRunLaunch();
+
+    // 4 → both items, 2 → both items, 1 → one item, and at the floor the item
+    // that cannot be made smaller is charged locally. Then the SECOND item is
+    // sent on its own and goes the same way: the run never stops.
+    expect(mockSubmitImportBatch).toHaveBeenCalledTimes(4);
+    expect(
+      mockSubmitImportBatch.mock.calls.map((call) => (call[1] as { items: [] }).items.length),
+    ).toEqual([2, 2, 1, 1]);
+    expect(itemRows()).toEqual([
+      { id: 'item-0', status: 'failed', error_code: 'IMPORT_ITEM_TOO_LARGE' },
+      { id: 'item-1', status: 'failed', error_code: 'IMPORT_ITEM_TOO_LARGE' },
+    ]);
+    const summary = importStore.getState().summary;
+    expect(summary?.errorCode).toBeNull();
+    expect(summary?.failed).toBe(2);
+    expect(summary?.notSubmitted).toBe(0);
+    expect(jobRow().status).toBe('completed');
+  });
+
+  it('writes IMPORT_RESULT_UNKNOWN for a rejected code this build does not know', async () => {
+    seedJob({ items: 2 });
+    mockSubmitImportBatch.mockImplementation(
+      async (_id: string, body: { items: { importKey: string }[] }) => ({
+        results: [
+          { importKey: body.items[0].importKey, status: 'rejected', code: 'IMPORT_SOMETHING_NEW' },
+          {
+            importKey: body.items[1].importKey,
+            status: 'created',
+            threadId: 'thread-1',
+            createdAt: '2012-08-26T00:00:00.000Z',
+          },
+        ],
+        allowance: allowance(1),
+      }),
+    );
+
+    await confirmAndRunLaunch();
+
+    // The allowlist is what keeps a widened server vocabulary out of
+    // `import_items.error_code`, and so out of #927's per-code copy table.
+    expect(itemRows()).toEqual([
+      { id: 'item-0', status: 'failed', error_code: 'IMPORT_RESULT_UNKNOWN' },
+      { id: 'item-1', status: 'created', error_code: null },
+    ]);
+    expect(importStore.getState().summary?.errorCode).toBeNull();
+    expect(jobRow().status).toBe('completed');
+  });
+
+  it('does not stop the run for a permanent per-item rejection', async () => {
+    seedJob({ items: 2 });
+    mockSubmitImportBatch.mockImplementation(
+      async (_id: string, body: { items: { importKey: string }[] }) => ({
+        results: [
+          { importKey: body.items[0].importKey, status: 'rejected', code: 'IMPORT_DATE_INVALID' },
+          {
+            importKey: body.items[1].importKey,
+            status: 'created',
+            threadId: 'thread-1',
+            createdAt: '2012-08-26T00:00:00.000Z',
+          },
+        ],
+        allowance: allowance(1),
+      }),
+    );
+
+    await confirmAndRunLaunch();
+
+    expect(itemRows()).toEqual([
+      { id: 'item-0', status: 'failed', error_code: 'IMPORT_DATE_INVALID' },
+      { id: 'item-1', status: 'created', error_code: null },
+    ]);
+    const summary = importStore.getState().summary;
+    expect(summary?.created).toBe(1);
+    expect(summary?.failed).toBe(1);
+    expect(summary?.errorCode).toBeNull();
+    expect(mockCaptureError).not.toHaveBeenCalled();
+  });
+
+  it('fails an item whose stored date is NULL, and submits the rest', async () => {
+    seedJob({ items: 2 });
+    // The column is nullable, and a null date would otherwise reach
+    // `sealImportMeta`'s safe-integer guard and throw a `terminal-for-run`
+    // crypto invariant — one bad row killing the whole archive (§4.6).
+    harness.sqlite
+      .prepare('UPDATE import_items SET original_date = NULL WHERE id = ?')
+      .run('item-0');
+
+    await confirmAndRunLaunch();
+
+    expect(itemRows()).toEqual([
+      { id: 'item-0', status: 'failed', error_code: 'IMPORT_ITEM_INVALID' },
+      { id: 'item-1', status: 'created', error_code: null },
+    ]);
+    // One item, not two: the invalid row never reached the payload.
+    expect((mockSubmitImportBatch.mock.calls[0][1] as { items: [] }).items).toHaveLength(1);
+    expect(importStore.getState().summary?.errorCode).toBeNull();
+    expect(jobRow().status).toBe('completed');
+  });
+});
+
+// ===========================================================================
 // Group: Media refusals after a chunk was staged (§4.10.5, §4.7)
 // ===========================================================================
 
@@ -1629,7 +1926,9 @@ describe('a media refusal the server raised after taking a chunk', () => {
     seedJob({ items: 2, bookmark: ['part-a'], mediaEntryIds: ['entry-0-0'] });
     // item-1 landed in an earlier run; a thread cannot be recalled.
     harness.sqlite
-      .prepare("UPDATE import_items SET status = 'created', thread_id = 't', body = NULL WHERE id = ?")
+      .prepare(
+        "UPDATE import_items SET status = 'created', thread_id = 't', body = NULL WHERE id = ?",
+      )
       .run('item-1');
     mockUploadMedia.mockRejectedValue(
       stagedRefusal({

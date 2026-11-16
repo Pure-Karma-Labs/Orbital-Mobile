@@ -74,11 +74,25 @@ export type ImportStage =
 
 /**
  * The pause set (§4.3.1), in precedence order. Declared HERE rather than in
- * the runner because the classifier is the only producer of five of the six —
+ * the runner because the classifier is the only producer of six of the seven —
  * `background` is AppState's and is never a verdict.
+ *
+ * `allowance_wait` is the chunk-route `IMPORT_ALLOWANCE_EXCEEDED` wait and
+ * nothing else. It is its own cause rather than a `network` pause with a
+ * deadline because the two differ in every way that matters to the loop: it is
+ * not a failure to reach the server, the foreground wake-up must not shorten
+ * it, and its budget is small and ends in `ALLOWANCE` rather than `NETWORK`.
+ * Re-using `network` for it is what let a persistent refusal retry forever
+ * (#993 fold round, blocker 3).
  */
 export type PauseCause =
-  'needs_repick' | 'key_pending' | 'archive_retry' | 'rate_limited' | 'network' | 'background';
+  | 'needs_repick'
+  | 'key_pending'
+  | 'archive_retry'
+  | 'rate_limited'
+  | 'allowance_wait'
+  | 'network'
+  | 'background';
 
 /** The causes a verdict can carry. */
 export type ClassifiedPauseCause = Exclude<PauseCause, 'background'>;
@@ -106,8 +120,9 @@ export type ImportItemFailureCode = keyof typeof IMPORT_ITEM_FAILURE_CODES;
  * Run-terminal codes — `ImportSummary.errorCode` and the `import_code` Sentry
  * tag. Client enums, never server text.
  *
- * `KEY_PENDING` and `NETWORK` are raised by the RUNNER when a pause budget is
- * exhausted (§4.3.1), not by the classifier; they live in the same registry
+ * `KEY_PENDING`, `NETWORK` and `ARCHIVE` are raised by the RUNNER when a pause
+ * budget is exhausted (§4.3.1), not only by the classifier — as is `ALLOWANCE`,
+ * when the `allowance_wait` budget runs out. They live in the same registry
  * because they end up in the same field.
  */
 export const IMPORT_TERMINAL_CODES = Object.freeze({
@@ -131,8 +146,9 @@ export type ImportTerminalCode = keyof typeof IMPORT_TERMINAL_CODES;
  * What the runner should do next.
  *
  * - `cancelled` — stop, write nothing, capture nothing (rule 0).
- * - `pause` — add the cause to the pause set; `untilMs` is set only when the
- *   server named a time (429 `Retry-After`, the soft chunk allowance).
+ * - `pause` — add the cause to the pause set; `untilMs` is set only when a
+ *   deadline is named (429 `Retry-After`, the soft chunk allowance's back-off)
+ *   and governs the DELAY only, never the cause's budget.
  * - `retry-same-call` — the same call again after `delayMs`, no pause, no
  *   budget beyond the one the context reported.
  * - `item-failed` — this post is done; the run continues.
@@ -240,9 +256,21 @@ export const ARCHIVE_BUSY_MAX_ATTEMPTS = 10;
 export const DEFAULT_RATE_LIMIT_PAUSE_MS = 60_000;
 
 /**
- * The soft chunk-route `IMPORT_ALLOWANCE_EXCEEDED` wait: staged bytes are
- * released by the session reaper, the session stays open, so one wait and one
- * retry is the whole recovery.
+ * The soft chunk-route `IMPORT_ALLOWANCE_EXCEEDED` wait: the session stays
+ * open, so a retry is worth making — but WAITING is not what clears it.
+ *
+ * `assertChunkAllowanceCeiling` sums `temp_uploads.total_size_bytes` over every
+ * session the member owns in that orbit plus the settled
+ * `import_allowances.bytes_used`. Those temp rows are released by an import
+ * media COMPLETE (it settles the bytes and deletes the row), by a hard overrun
+ * at complete (which also closes the session), by `importSessionCleanup`'s
+ * hourly pass after `IMPORT_SESSION_TIMEOUT_HOURS` of total silence (6 h by
+ * default), or by `mediaCleanup`'s 24 h sweep. Nothing frees them in 30 s, and
+ * a refusal driven by settled `bytes_used` never clears at all.
+ *
+ * So this number is a BACK-OFF, not a recovery time: it is long enough not to
+ * spend round trips re-learning the same refusal, and the runner's
+ * `allowance_wait` budget is what makes the wait terminate.
  */
 export const CHUNK_ALLOWANCE_PAUSE_MS = 30_000;
 
@@ -399,11 +427,13 @@ function refusalVerdict(e: ConflictError, ctx: ImportFailureContext): ImportVerd
       return terminal('SESSION_CLOSED');
 
     case 'IMPORT_ALLOWANCE_EXCEEDED':
-      // Soft on the chunk route only: nothing is closed, the staged bytes are
-      // reaped, so one wait and one retry is the whole recovery. Everywhere
-      // else the server has closed the session (§4.5.6/§4.5.7).
+      // Soft on the chunk route only: nothing is closed, so a backed-off retry
+      // is worth making. Its own cause, with its own small budget, because
+      // waiting is not what clears this ceiling (see
+      // {@link CHUNK_ALLOWANCE_PAUSE_MS}). Everywhere else the server has
+      // closed the session (§4.5.6/§4.5.7).
       return ctx.stage === 'media-chunk'
-        ? pause('network', (ctx.nowMs ?? Date.now()) + CHUNK_ALLOWANCE_PAUSE_MS)
+        ? pause('allowance_wait', (ctx.nowMs ?? Date.now()) + CHUNK_ALLOWANCE_PAUSE_MS)
         : terminal('ALLOWANCE');
 
     case 'IMPORT_QUOTA_EXCEEDED':

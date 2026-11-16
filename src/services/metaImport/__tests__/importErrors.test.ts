@@ -400,12 +400,16 @@ describe('409 IMPORT_REFUSED', () => {
     },
   );
 
-  it('treats a chunk-route allowance refusal as soft: one timed pause', () => {
+  it('treats a chunk-route allowance refusal as its own backed-off pause', () => {
     expect(
       classifyImportFailure(refusal('IMPORT_ALLOWANCE_EXCEEDED'), ctx({ stage: 'media-chunk' })),
     ).toEqual({
       kind: 'pause',
-      cause: 'network',
+      // NOT `network`: nothing about reaching the server failed, the foreground
+      // wake-up must not shorten this wait, and its budget ends in `ALLOWANCE`.
+      // Riding the `network` cause also made it budget-exempt in the runner,
+      // which is how a persistent refusal retried for ever.
+      cause: 'allowance_wait',
       untilMs: NOW + CHUNK_ALLOWANCE_PAUSE_MS,
     });
   });

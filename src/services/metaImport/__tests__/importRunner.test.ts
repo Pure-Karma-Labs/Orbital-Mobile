@@ -894,12 +894,12 @@ describe('resume at launch', () => {
   });
 
   it.each([
-    ['a transient network failure', () => new NetworkError('offline')],
-    ['a 429', () => rateLimited(60_000)],
-    ['a 5xx', () => new ServerError(503)],
+    ['a transient network failure', () => new NetworkError('offline'), 'network'],
+    ['a 429', () => rateLimited(60_000), 'rate_limited'],
+    ['a 5xx', () => new ServerError(503), 'network'],
   ])(
     'leaves an in_progress job untouched when the launch-time session GET answers %s',
-    async (_label, make) => {
+    async (_label, make, cause) => {
       seedJob({ items: 2 });
       mockGetImportSession.mockRejectedValue(make());
 
@@ -916,9 +916,15 @@ describe('resume at launch', () => {
       expect(mockSubmitImportBatch).not.toHaveBeenCalled();
       expect(mockCaptureError).not.toHaveBeenCalled();
       expect(importStore.getState().summary).toBeNull();
-      // `idle`, never `hydrating`: "nothing is running" must be
-      // distinguishable from "we have not looked yet" (§4.3).
-      expect(importStore.getState().phase).toBe('idle');
+      // A PAUSE carrying the job's identity, not `idle`: the row stays
+      // `in_progress`, so `pickAndStartParse` refuses with `job-running` until
+      // this resumes, and `idle` left #928 with nothing to render and no retry.
+      const state = importStore.getState();
+      expect(state.phase).toBe('paused');
+      expect(state.pauseCauses).toEqual([cause]);
+      expect(state.jobId).toBe(JOB);
+      expect(state.conversationId).toBe(ORBIT);
+      expect(state.source).toBe('facebook');
       // The job is resumable, so the key session it was opened with is closed.
       expect(mockKeySessions[0].closed).toBe(1);
     },
@@ -932,6 +938,47 @@ describe('resume at launch', () => {
     expect(jobRow().status).toBe('in_progress');
 
     await confirmAndRunLaunch();
+
+    expect(itemRows()[0].status).toBe('created');
+    expect(jobRow().status).toBe('completed');
+  });
+
+  it('wakes itself up after a transient session GET failure, with no relaunch', async () => {
+    jest.useFakeTimers();
+    try {
+      seedJob({ items: 1 });
+      mockGetImportSession.mockRejectedValueOnce(new NetworkError('offline'));
+
+      const launching = resumeImportAtLaunch();
+      launching.catch(() => {
+        // Attached BEFORE the clock moves (#834 discipline).
+      });
+      await flushMicrotasks();
+      expect(importStore.getState().pauseCauses).toEqual(['network']);
+      await launching;
+
+      // The `network` ladder's first rung, armed with no `ActiveRun` to hang it
+      // on. Before this the job sat `in_progress` with no timer at all.
+      jest.advanceTimersByTime(5_000);
+      await flushMicrotasks();
+
+      expect(itemRows()[0].status).toBe('created');
+      expect(jobRow().status).toBe('completed');
+      expect(importStore.getState().phase).toBe('done');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('re-enters the launch gate at once when the member asks to resume', async () => {
+    seedJob({ items: 1 });
+    mockGetImportSession.mockRejectedValueOnce(new NetworkError('offline'));
+
+    await resumeImportAtLaunch();
+    expect(importStore.getState().phase).toBe('paused');
+
+    resumeImport();
+    await drain();
 
     expect(itemRows()[0].status).toBe('created');
     expect(jobRow().status).toBe('completed');
@@ -1960,22 +2007,65 @@ describe('a media refusal the server raised after taking a chunk', () => {
     expect(mockUploadMedia).toHaveBeenCalledTimes(1);
   });
 
-  it('waits the chunk ceiling on its OWN clock and spends no network budget', async () => {
+  /** The soft chunk ceiling: both byte counters present, session still open. */
+  function chunkCeilingRefusal(): Error {
+    return stagedRefusal({
+      code: 'IMPORT_ALLOWANCE_EXCEEDED',
+      allowance: { posts_used: 1, bytes_used: 2, posts_limit: 1000, bytes_limit: 3 },
+      staged_bytes: 100,
+      projected_bytes: 200,
+    });
+  }
+
+  it('waits the chunk ceiling on its own clock, three times, then fails with ALLOWANCE', async () => {
+    jest.useFakeTimers();
+    try {
+      seedJob({ items: 1, bookmark: ['part-a'], mediaEntryIds: ['entry-0-0'] });
+      mockUploadMedia.mockRejectedValue(chunkCeilingRefusal());
+
+      const running = resumeImportAtLaunch();
+      running.catch(() => {
+        // Attached BEFORE the clock moves (#834 discipline).
+      });
+      await flushMicrotasks();
+      expect(importStore.getState().pauseCauses).toEqual(['allowance_wait']);
+      expect(importStore.getState().resumeAtMs).toBe(Date.now() + 30_000);
+
+      // 5 s is the `network` ladder's first rung, and this is not a network
+      // pause: the refusal named 30 s, and retrying sooner re-learns it.
+      jest.advanceTimersByTime(5_000);
+      await flushMicrotasks();
+      expect(mockUploadMedia).toHaveBeenCalledTimes(1);
+
+      // Three waits, then the fourth refusal has no budget left. Nothing frees
+      // the staged bytes this ceiling counts in 30 s — only a media complete, a
+      // hard overrun, `importSessionCleanup` after hours of silence, or the 24 h
+      // sweep — so a refusal that keeps coming must terminate. Exempting this
+      // pause from its budget (it rode the `network` cause, and a pause with a
+      // deadline spent nothing) retried it for ever instead.
+      for (let i = 0; i < 3; i++) {
+        jest.advanceTimersByTime(30_000);
+        await flushMicrotasks();
+      }
+      await running;
+
+      expect(mockUploadMedia).toHaveBeenCalledTimes(4);
+      expect(importStore.getState().summary?.errorCode).toBe('ALLOWANCE');
+      expect(jobRow().status).toBe('failed');
+      // The post is still queued, not charged to the member: a later import can
+      // take it once the member's allowance frees up.
+      expect(itemRows()[0].status).toBe('pending');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not let the foreground wake-up shorten a chunk-ceiling wait', async () => {
     jest.useFakeTimers();
     try {
       seedJob({ items: 1, bookmark: ['part-a'], mediaEntryIds: ['entry-0-0'] });
       mockUploadMedia
-        // The soft chunk ceiling: both byte counters present, session still
-        // open, staged bytes released by the reaper after ~30 s.
-        .mockRejectedValueOnce(
-          stagedRefusal({
-            code: 'IMPORT_ALLOWANCE_EXCEEDED',
-            allowance: { posts_used: 1, bytes_used: 2, posts_limit: 1000, bytes_limit: 3 },
-            staged_bytes: 100,
-            projected_bytes: 200,
-          }),
-        )
-        .mockRejectedValueOnce(new NetworkError('offline'))
+        .mockRejectedValueOnce(chunkCeilingRefusal())
         .mockResolvedValue({ mediaId: 'media-0' });
 
       const running = resumeImportAtLaunch();
@@ -1983,26 +2073,20 @@ describe('a media refusal the server raised after taking a chunk', () => {
         // Attached BEFORE the clock moves (#834 discipline).
       });
       await flushMicrotasks();
-      expect(importStore.getState().pauseCauses).toEqual(['network']);
-      expect(importStore.getState().resumeAtMs).toBe(Date.now() + 30_000);
+      expect(importStore.getState().pauseCauses).toEqual(['allowance_wait']);
 
-      // 5 s is the network ladder's first rung. The ceiling named 30 s, and
-      // retrying sooner just re-learns the same refusal.
-      jest.advanceTimersByTime(5_000);
+      // Coming back to the app says nothing about the orbit's staged bytes, so
+      // the `network`/`background` foreground drop must not touch this cause.
+      appStateHandler?.('active');
       await flushMicrotasks();
-      expect(importStore.getState().pauseCauses).toEqual(['network']);
+      expect(importStore.getState().pauseCauses).toEqual(['allowance_wait']);
       expect(mockUploadMedia).toHaveBeenCalledTimes(1);
 
-      jest.advanceTimersByTime(25_000);
-      await flushMicrotasks();
-      // The real connectivity failure that follows gets the ladder's FIRST
-      // rung, not its second: the server-named wait spent none of the budget.
-      expect(importStore.getState().pauseCauses).toEqual(['network']);
-      jest.advanceTimersByTime(5_000);
+      jest.advanceTimersByTime(30_000);
       await flushMicrotasks();
       await running;
 
-      expect(mockUploadMedia).toHaveBeenCalledTimes(3);
+      expect(mockUploadMedia).toHaveBeenCalledTimes(2);
       expect(itemRows()[0].status).toBe('created');
       expect(jobRow().status).toBe('completed');
     } finally {

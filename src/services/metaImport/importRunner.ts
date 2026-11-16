@@ -102,7 +102,7 @@ import {
   preflightImportItem,
   releaseBatchClaim,
 } from './importBatch';
-import { classifyImportFailure, isRunStale } from './importErrors';
+import { CHUNK_ALLOWANCE_PAUSE_MS, classifyImportFailure, isRunStale } from './importErrors';
 import { estimateImportBytes, importMediaStage, uploadImportItemMedia } from './importMedia';
 import { parseArchive } from './parseArchive';
 
@@ -214,7 +214,18 @@ export interface ImportRunnerState {
   readonly mediaDone: number;
   readonly mediaTotal: number;
   readonly parseProgress: ParseProgress | null;
-  /** A precedence-ordered SET, not one slot. Empty ⇒ not paused. */
+  /**
+   * A precedence-ordered SET, not one slot. Empty ⇒ not paused.
+   *
+   * Seven causes (#928 needs copy for each): `needs_repick` — only
+   * {@link repickArchiveParts} clears it; `key_pending` — a group-key wrap is
+   * still pending; `archive_retry` — a retryable archive-reader failure;
+   * `rate_limited` — a 429's own `Retry-After`; `allowance_wait` — the
+   * chunk-route import allowance ceiling, backed off and bounded (its
+   * exhaustion is `errorCode: 'ALLOWANCE'`); `network` — connectivity, cleared
+   * by the foreground as well as by its timer; `background` — the app is
+   * suspended.
+   */
   readonly pauseCauses: readonly PauseCause[];
   readonly resumeAtMs: number | null;
   readonly summary: ImportSummary | null;
@@ -381,6 +392,19 @@ const NETWORK_PAUSE_MAX_ATTEMPTS = 10;
 /** A 429 whose `Retry-After` we could not read. */
 const DEFAULT_RATE_LIMIT_MS = 60_000;
 
+/**
+ * `allowance_wait`: the chunk-route allowance ceiling, backed off to the
+ * deadline the taxonomy names and then given up on.
+ *
+ * Small, and deliberately so. Waiting is not what clears that ceiling — the
+ * staged bytes it counts are freed by a media complete, by a hard overrun, by
+ * `importSessionCleanup` after hours of silence, or by the 24 h sweep, and a
+ * refusal driven by settled `bytes_used` never clears at all. Three waits is
+ * the "maybe another upload of ours just completed" benefit; a fourth refusal
+ * means the member is out of allowance, which is `ALLOWANCE`.
+ */
+const ALLOWANCE_WAIT_MAX_ATTEMPTS = 3;
+
 /** Parsed items buffered per `insertImportItems` transaction (#921). */
 const PARSE_FLUSH_SIZE = 100;
 
@@ -390,15 +414,28 @@ const PAUSE_PRECEDENCE: readonly PauseCause[] = Object.freeze([
   'key_pending',
   'archive_retry',
   'rate_limited',
+  'allowance_wait',
   'network',
   'background',
 ]);
 
-/** Which terminal code a cause becomes when its budget runs out. */
-const PAUSE_BUDGET_CODE: Readonly<Partial<Record<PauseCause, ImportTerminalCode>>> = Object.freeze({
-  key_pending: 'KEY_PENDING',
-  archive_retry: 'ARCHIVE',
-  network: 'NETWORK',
+/**
+ * Which terminal code a cause becomes when its budget runs out, and how many
+ * waits that budget is.
+ *
+ * One table, keyed by cause, read UNCONDITIONALLY: a cause that is absent here
+ * is one whose only exit is a member action or the server's own clock
+ * (`needs_repick`, `background`, `rate_limited`). Keying the budget on anything
+ * other than the cause — on whether the pause carried a deadline, say — is what
+ * let a repeating refusal pause forever (#993 fold round, blocker 3).
+ */
+const PAUSE_BUDGET_CODE: Readonly<
+  Partial<Record<PauseCause, { readonly code: ImportTerminalCode; readonly max: number }>>
+> = Object.freeze({
+  key_pending: { code: 'KEY_PENDING', max: KEY_PENDING_MAX_ATTEMPTS },
+  archive_retry: { code: 'ARCHIVE', max: ARCHIVE_PAUSE_MAX_ATTEMPTS },
+  allowance_wait: { code: 'ALLOWANCE', max: ALLOWANCE_WAIT_MAX_ATTEMPTS },
+  network: { code: 'NETWORK', max: NETWORK_PAUSE_MAX_ATTEMPTS },
 });
 
 // ---------------------------------------------------------------------------
@@ -443,6 +480,15 @@ interface ActiveRun {
   clientBugCount: number;
   terminal: ImportTerminalCode | null;
   cancelled: boolean;
+  /**
+   * The SERVER has finished this session (`IMPORT_CLOSED` + `completed`, or a
+   * launch-time GET that answered `completed`).
+   *
+   * The one honest way to settle `completed` with work still queued: no further
+   * write will ever be accepted on that session, so the queue cannot drain and
+   * saying so is not a bug. {@link undrainedWork} is checked against this.
+   */
+  serverFinished: boolean;
   settled: boolean;
 }
 
@@ -459,42 +505,89 @@ let liveToken = 0;
 const probeCache = new Map<string, ImportAvailability>();
 
 /**
- * The wake-up for a `key_pending` pause raised BEFORE a run existed.
+ * The wake-up for a pause raised BEFORE a run existed.
  *
- * `openImportKeySession` can throw `PendingWrapError` at launch, which is a
- * pause — but there is no `ActiveRun` yet to hang a timer on, and a pause
- * without a wake-up is a run that stalls invisibly (§6). So the retry lives at
- * module scope, bounded by the same budget a running pause gets, and clears on
- * the first successful open and on every reset.
+ * Two gates can pause with no `ActiveRun` to hang a timer on:
+ * `openImportKeySession` throwing `PendingWrapError`, and the launch-time
+ * per-session GET failing with something retryable. A pause without a wake-up
+ * is a run that stalls invisibly (§6) — and worse, the job row stays
+ * `in_progress`, so `pickAndStartParse` refuses with `job-running` until the
+ * app is relaunched. So the retry lives at module scope, bounded by the same
+ * budget the equivalent running pause gets, and clears when a run starts and on
+ * every reset.
  */
-let keyPendingTimer: ReturnType<typeof setTimeout> | null = null;
-let keyPendingAttempts = 0;
+let preRunTimer: ReturnType<typeof setTimeout> | null = null;
+let preRunAttempts = 0;
+let preRunCause: PauseCause | null = null;
 
-function clearKeyPendingRetry(): void {
-  if (keyPendingTimer !== null) {
-    clearTimeout(keyPendingTimer);
-    keyPendingTimer = null;
+function clearPreRunRetry(): void {
+  if (preRunTimer !== null) {
+    clearTimeout(preRunTimer);
+    preRunTimer = null;
   }
-  keyPendingAttempts = 0;
+  preRunAttempts = 0;
+  preRunCause = null;
 }
 
-function scheduleKeyPendingRetry(): void {
-  if (keyPendingTimer !== null) return;
-  if (keyPendingAttempts >= KEY_PENDING_MAX_ATTEMPTS) {
+/**
+ * Clear the pre-run retry only if it is waiting on THIS cause.
+ *
+ * A successful `openImportKeySession` ends a `key_pending` wait and says
+ * nothing about a `network` one — and resetting the counter on every pass
+ * through a gate that is not the one that failed is an unbounded retry loop
+ * wearing a budget.
+ */
+function clearPreRunRetryFor(cause: PauseCause): void {
+  if (preRunCause === cause) clearPreRunRetry();
+}
+
+/**
+ * Publish a pre-run pause for `job`, carrying the job's identity, and arm the
+ * wake-up.
+ *
+ * The identity matters: #928 renders the paused card from the store, and a
+ * pause with no `jobId` is a spinner with nothing behind it and no retry.
+ */
+function pauseJobBeforeRun(job: ImportJobRow, cause: PauseCause): void {
+  update(
+    {
+      phase: 'paused',
+      jobId: job.id,
+      conversationId: job.conversation_id,
+      source: job.source,
+      pauseCauses: Object.freeze([cause] as PauseCause[]),
+      needsRepick: false,
+      summary: null,
+      errorCode: null,
+    },
+    true,
+  );
+  schedulePreRunRetry(cause);
+}
+
+function schedulePreRunRetry(cause: PauseCause): void {
+  if (preRunTimer !== null) return;
+  // The same budget table the running pause set uses; a cause with no budget
+  // there (`rate_limited`) still gets a bounded number of pre-run wake-ups,
+  // because nothing else is driving this gate.
+  const max = PAUSE_BUDGET_CODE[cause]?.max ?? NETWORK_PAUSE_MAX_ATTEMPTS;
+  if (preRunAttempts >= max) {
     // The budget is spent. The JOB is untouched — nothing was started and
     // nothing written — so the honest state is "not running"; the next launch
     // tries again, and `resumeImport()` retries now.
-    keyPendingAttempts = 0;
+    clearPreRunRetry();
     update({ phase: 'idle', pauseCauses: NO_PAUSE, needsRepick: false }, true);
     return;
   }
-  keyPendingAttempts += 1;
-  keyPendingTimer = setTimeout(() => {
-    keyPendingTimer = null;
+  const ms = pauseDelayMs(cause, preRunAttempts, undefined) ?? KEY_PENDING_RETRY_MS;
+  preRunAttempts += 1;
+  preRunCause = cause;
+  preRunTimer = setTimeout(() => {
+    preRunTimer = null;
     void resumeImportAtLaunch().catch(() => {
       // Re-entering the same gate; a second failure re-arms the timer.
     });
-  }, KEY_PENDING_RETRY_MS);
+  }, ms);
 }
 
 /**
@@ -654,12 +747,12 @@ function pauseDelayMs(
   attempt: number,
   untilMs: number | undefined,
 ): number | null {
-  // A cause that names its OWN deadline is waited out to that deadline,
-  // whatever ladder its cause would otherwise take. The chunk-route
-  // `IMPORT_ALLOWANCE_EXCEEDED` is a `network` pause that does: the staged
-  // bytes are released by the session reaper, so its 30 s is the recovery
-  // time, and retrying it on the 5 s connectivity ladder would just spend
-  // round trips re-learning the same refusal (§4.5.6).
+  // A deadline names the DELAY and nothing else: whatever ladder the cause
+  // would otherwise take, a pause that carries one is waited out to it. The
+  // chunk-route `IMPORT_ALLOWANCE_EXCEEDED` is the one that does — retrying it
+  // on the 5 s connectivity ladder would spend round trips re-learning the
+  // same refusal (§4.5.6). What ENDS that wait is the cause's own budget in
+  // {@link addPause}, never this number.
   if (untilMs !== undefined && cause !== 'needs_repick' && cause !== 'background') {
     return Math.max(0, untilMs - Date.now());
   }
@@ -674,6 +767,10 @@ function pauseDelayMs(
     case 'rate_limited':
       // A 429 whose `Retry-After` the transport could not read.
       return DEFAULT_RATE_LIMIT_MS;
+    case 'allowance_wait':
+      // Only ever raised WITH a deadline (handled above); this is the belt for
+      // a caller that ever raises it without one.
+      return CHUNK_ALLOWANCE_PAUSE_MS;
     default:
       // `needs_repick` has no timer at all, and `background` wakes on AppState.
       return null;
@@ -690,20 +787,14 @@ function pauseDelayMs(
  */
 function addPause(r: ActiveRun, cause: PauseCause, untilMs?: number): ImportTerminalCode | null {
   const attempt = r.pauseAttempts.get(cause) ?? 0;
-  // A pause the SERVER named a deadline for is not a failure to reach the
-  // server, so it spends none of that cause's budget: the chunk-route
-  // allowance refusal rides the `network` cause (it is a wait, and #928 has
-  // copy for it) but it is the orbit's reaper we are waiting on, and ten of
-  // them must not add up to `job-terminal('NETWORK')`.
-  const budgetCode = untilMs === undefined ? PAUSE_BUDGET_CODE[cause] : undefined;
-  if (budgetCode !== undefined) {
-    const max =
-      cause === 'key_pending'
-        ? KEY_PENDING_MAX_ATTEMPTS
-        : cause === 'archive_retry'
-          ? ARCHIVE_PAUSE_MAX_ATTEMPTS
-          : NETWORK_PAUSE_MAX_ATTEMPTS;
-    if (attempt >= max) return budgetCode;
+  // Keyed on the CAUSE alone. A deadline the server named changes how long we
+  // wait, never how many times we are willing to: exempting a deadline-bearing
+  // pause from its budget made a repeating chunk-allowance refusal immortal
+  // (the pump checks `isPaused` before its no-progress guard, so that guard
+  // never sees it either).
+  const budget = PAUSE_BUDGET_CODE[cause];
+  if (budget !== undefined) {
+    if (attempt >= budget.max) return budget.code;
     r.pauseAttempts.set(cause, attempt + 1);
   }
   r.pauseCauses.add(cause);
@@ -726,6 +817,22 @@ function addPause(r: ActiveRun, cause: PauseCause, untilMs?: number): ImportTerm
 
 function isPaused(r: ActiveRun): boolean {
   return r.pauseCauses.size > 0;
+}
+
+/**
+ * Release a paused loop once a terminal was raised from OUTSIDE it.
+ *
+ * {@link repickArchiveParts} runs while the pump is parked in
+ * {@link waitUntilResumed} on `needs_repick`, whose only exit is a member
+ * action. A terminal verdict raised there would otherwise leave the run paused
+ * for ever with `terminal` set: nothing clears that cause, so nothing releases
+ * the waiters, so the run never settles and never reports.
+ */
+function wakeForTerminal(r: ActiveRun): void {
+  if (r.terminal === null) return;
+  for (const cause of [...r.pauseTimers.keys()]) clearPauseTimer(r, cause);
+  r.pauseCauses.clear();
+  releaseWaiters(r);
 }
 
 function waitUntilResumed(r: ActiveRun): Promise<void> {
@@ -761,6 +868,10 @@ function attachAppState(r: ActiveRun): void {
     if (next !== 'active') return;
     // Foreground is the `network` wake-up as well as `background`'s (§4.3.1):
     // a connection that died while suspended is back by the time we are.
+    //
+    // `allowance_wait` is deliberately NOT dropped here: coming back to the app
+    // says nothing about the orbit's staged bytes, and shortening that wait
+    // would spend a whole upload re-learning the same refusal.
     dropPause(r, 'background');
     dropPause(r, 'network');
   });
@@ -881,7 +992,11 @@ async function applyVerdict(
       return restartServerSession(r, options?.stageAttempt ?? 0);
 
     case 'finish-completed':
-      // The server considers the session finished; finish locally too.
+      // The server considers the session finished; finish locally too. The flag
+      // is what makes `completed` honest with items still queued: nothing we
+      // could send would be accepted, so this is not an undrained run
+      // ({@link undrainedWork}).
+      r.serverFinished = true;
       return 'stop';
 
     case 'batch-halve':
@@ -1007,47 +1122,95 @@ async function restartServerSession(r: ActiveRun, stageAttempt: number): Promise
  * `openImport` from the preflight is adopted rather than raced: only one
  * session per member per orbit may be open, so starting a second is a 409 we
  * can see coming.
+ *
+ * **Both ladders are spent in-frame, and the verdict is RETURNED**, exactly as
+ * in {@link restartServerSession} and for the same reason. A `NetworkError` or
+ * a 5xx on the start call classifies `retry-same-call`, and a 429 on the
+ * preflight GET classifies `pause`: neither names a terminal code, so reporting
+ * "no session" to the caller handed {@link settleRun} a run with
+ * `terminal === null` — which {@link terminalStatusFor} calls `completed`. A
+ * failed start therefore reported a SUCCESSFUL import with every item still
+ * pending (#993 fold round, blocker 1).
+ *
+ * `continue` means "the session is open"; `stop` is a terminal or a cancel. A
+ * pause is waited out HERE rather than returned, because there is nothing
+ * further up this path that could re-enter the start call: the pump has not
+ * begun. The cause's own budget is what makes that wait terminate.
  */
-async function ensureServerSession(r: ActiveRun, job: ImportJobRow): Promise<boolean> {
+async function ensureServerSession(r: ActiveRun, job: ImportJobRow): Promise<Step> {
   if (job.session_id !== null) {
     r.importId = job.session_id;
-    return true;
+    return 'continue';
   }
 
+  for (;;) {
+    await waitUntilResumed(r);
+    if (stopped(r)) return 'stop';
+
+    const step = await openServerSession(r);
+    if (step !== 'continue') return step;
+    if (r.importId !== null) return 'continue';
+    // A pause was raised (and not exhausted): wait it out and ask again.
+    if (!isPaused(r)) return failRunWith(r, 'CLIENT_BUG', 'start');
+  }
+}
+
+/**
+ * One attempt at the preflight-GET-then-start ladder, both spent in place.
+ *
+ * Answers `continue` with `r.importId` set once the session is open, `continue`
+ * with it still null when a pause was raised, and `stop` on a terminal or a
+ * cancel.
+ */
+async function openServerSession(r: ActiveRun): Promise<Step> {
   let importId: string | null = null;
-  try {
-    const preflight = await getGroupImports(r.conversationId);
-    r.limits = preflight.limits;
-    if (preflight.openImport !== null && preflight.openImport.status === 'open') {
-      importId = preflight.openImport.importId;
+
+  for (let attempt = 0; ; attempt++) {
+    if (stopped(r)) return 'stop';
+    try {
+      const preflight = await getGroupImports(r.conversationId);
+      r.limits = preflight.limits;
+      if (preflight.openImport !== null && preflight.openImport.status === 'open') {
+        importId = preflight.openImport.importId;
+      }
+      break;
+    } catch (e) {
+      const step = await handleFailure(r, e, 'start', { stageAttempt: attempt });
+      if (step !== 'retry') return step;
     }
-  } catch (e) {
-    const step = await handleFailure(r, e, 'start');
-    if (step !== 'retry') return false;
   }
 
   if (importId === null) {
-    try {
-      const started = await startImport(r.conversationId, {
-        declaredPosts: r.declaredPosts,
-        declaredBytes: r.declaredBytes,
-      });
-      importId = started.importId;
-      r.limits = started.limits;
-    } catch (e) {
-      const step = await handleFailure(r, e, 'start');
-      if (step !== 'retry' || r.importId === null) return false;
-      importId = r.importId;
+    for (let attempt = 0; ; attempt++) {
+      if (stopped(r)) return 'stop';
+      try {
+        const started = await startImport(r.conversationId, {
+          declaredPosts: r.declaredPosts,
+          declaredBytes: r.declaredBytes,
+        });
+        importId = started.importId;
+        r.limits = started.limits;
+        break;
+      } catch (e) {
+        const step = await handleFailure(r, e, 'start', { stageAttempt: attempt });
+        // The adopt-session arm is the one way forward without our own start
+        // succeeding, and it proves it by setting an id: this job had none.
+        if (r.importId !== null) {
+          importId = r.importId;
+          break;
+        }
+        if (step !== 'retry') return step;
+      }
     }
   }
 
-  if (isRunStale(workGuard(r))) return false;
+  if (isRunStale(workGuard(r))) return 'stop';
   // The job is `ready` here, so this is the ONE moment the session id is
   // persistable. A `false` means the job moved underneath us: re-read, never
   // write on top of it.
-  if (!startImportJob(r.jobId, { sessionId: importId })) return false;
+  if (!startImportJob(r.jobId, { sessionId: importId })) return 'stop';
   r.importId = importId;
-  return true;
+  return 'continue';
 }
 
 // ---------------------------------------------------------------------------
@@ -1112,17 +1275,28 @@ async function ensureArchiveSession(r: ActiveRun): Promise<ArchiveImportSession 
     return null;
   }
 
-  try {
-    const session = await openArchiveSession(tokens, { signal: r.controller.signal });
-    if (!persistBookmark(r, session, stored)) {
-      session.close();
-      return null;
+  for (let attempt = 0; ; attempt++) {
+    if (stopped(r)) return null;
+    try {
+      const session = await openArchiveSession(tokens, { signal: r.controller.signal });
+      if (!persistBookmark(r, session, stored)) {
+        session.close();
+        return null;
+      }
+      r.archive = session;
+      return session;
+    } catch (e) {
+      // The step is acted on rather than dropped: `ARCHIVE_BUSY` answers
+      // `retry-same-call` (all four Rust job slots are taken, it clears in ms)
+      // and the attempt counter is what bounds it. Dropping the step turned
+      // that into one open per pump cycle, which the no-progress guard called a
+      // CLIENT_BUG after two.
+      const step = await handleFailure(r, e, 'archive', {
+        stageAttempt: attempt,
+        busyAttempt: attempt,
+      });
+      if (step !== 'retry') return null;
     }
-    r.archive = session;
-    return session;
-  } catch (e) {
-    await handleFailure(r, e, 'archive');
-    return null;
   }
 }
 
@@ -1133,21 +1307,27 @@ async function ensureArchiveSession(r: ActiveRun): Promise<ArchiveImportSession 
 /**
  * Run one post's media pipeline.
  *
- * Returns true when every ordinal is on the server. Anything else has already
- * been applied — failed, held, parked, paused or terminal — and the loop
- * re-reads the queue.
+ * Returns the {@link Step} the pump must act on — never a bare boolean. Every
+ * other outcome (failed, held, parked, paused) has already been applied and
+ * answers `continue`, after which the loop re-reads the queue; `stop` is a
+ * terminal, a cancel, or the server telling us the session is finished.
+ *
+ * The media routes raise `IMPORT_CLOSED` too (§1.4 C4), so `finish-completed`
+ * and `session-restart` are reachable from here. Discarding this step left the
+ * media path cycling until the no-progress guard called it a CLIENT_BUG, where
+ * the batch path settled `completed` (#993 fold round).
  */
-async function runMediaForItem(r: ActiveRun, item: PendingImportItem): Promise<boolean> {
+async function runMediaForItem(r: ActiveRun, item: PendingImportItem): Promise<Step> {
   const session = await ensureArchiveSession(r);
-  if (session === null || r.importId === null) return false;
+  if (session === null || r.importId === null) return r.terminal === null ? 'continue' : 'stop';
 
   for (let attempt = 0; ; attempt++) {
-    if (stopped(r)) return false;
+    if (stopped(r)) return 'stop';
     // Re-read per attempt rather than captured once: a `session-restart` or an
     // `adopt-session` verdict between two attempts changes the session this
     // file must be uploaded to, and the old id is closed.
     const importId = r.importId;
-    if (importId === null) return false;
+    if (importId === null) return 'stop';
 
     let outcome;
     try {
@@ -1168,14 +1348,14 @@ async function runMediaForItem(r: ActiveRun, item: PendingImportItem): Promise<b
         busyAttempt: attempt,
       });
       if (step === 'retry') continue;
-      return false;
+      return step;
     }
 
     switch (outcome.kind) {
       case 'uploaded':
         r.mediaDone += item.media.length;
         update({ mediaDone: r.mediaDone }, false);
-        return true;
+        return 'continue';
 
       case 'held-video':
         // The issue's AC reports held video separately from failures, so the
@@ -1184,10 +1364,10 @@ async function runMediaForItem(r: ActiveRun, item: PendingImportItem): Promise<b
         r.heldVideo += 1;
         if (parkItem(r, item.id)) r.held.add(item.id);
         update({ heldVideo: r.heldVideo }, false);
-        return false;
+        return 'continue';
 
       case 'item-failed': {
-        if (isRunStale(workGuard(r))) return false;
+        if (isRunStale(workGuard(r))) return 'stop';
         const write = failImportItems(
           r.jobId,
           [{ itemId: item.id, code: itemCodeFor(outcome.code) }],
@@ -1197,17 +1377,16 @@ async function runMediaForItem(r: ActiveRun, item: PendingImportItem): Promise<b
           r.failed += 1;
           update({ failed: r.failed }, false);
         }
-        return false;
+        return 'continue';
       }
 
       case 'cancelled':
-        return false;
+        return 'stop';
 
       case 'fresh-id-exhausted':
         // Per C4 a 403 on an import media route has three indistinguishable
         // causes; the one fresh id answered the two that are recoverable.
-        failRunWith(r, 'FORBIDDEN', outcome.stage);
-        return false;
+        return failRunWith(r, 'FORBIDDEN', outcome.stage);
 
       case 'refused': {
         // The server took a chunk and then refused the upload for a reason
@@ -1215,13 +1394,17 @@ async function runMediaForItem(r: ActiveRun, item: PendingImportItem): Promise<b
         // so the row is re-uploadable — which is exactly why this must NOT
         // retry in this loop: `item` still carries the old `media_id`. The
         // taxonomy answers park-file (the end-of-run pass re-reads the row),
-        // `job-terminal('ALLOWANCE')`, a pause, or a session restart, and the
-        // pump re-reads the page afterwards either way.
-        await handleFailure(r, outcome.error, outcome.stage, {
+        // `job-terminal('ALLOWANCE')`, a pause, a session restart, or
+        // `finish-completed` — and that last one is why the step is RETURNED:
+        // dropping it made the media path cycle to CLIENT_BUG where the batch
+        // path settled `completed`.
+        const step = await handleFailure(r, outcome.error, outcome.stage, {
           itemId: item.id,
           stageAttempt: attempt,
         });
-        return false;
+        // `retry` would re-POST this item's stale `media_id`; the pump re-reads
+        // the page instead.
+        return step === 'retry' ? 'continue' : step;
       }
     }
   }
@@ -1419,7 +1602,7 @@ async function runMediaPhase(r: ActiveRun, page: readonly PendingImportItem[]): 
     // not push the next file at a server that just refused one.
     if (isPaused(r)) return 'continue';
     if (isItemBatchEligible(item)) continue;
-    await runMediaForItem(r, item);
+    if ((await runMediaForItem(r, item)) === 'stop') return 'stop';
   }
   return r.terminal === null ? 'continue' : 'stop';
 }
@@ -1546,6 +1729,43 @@ function terminalStatusFor(r: ActiveRun): TerminalImportJobStatus {
 }
 
 /**
+ * Items this run would still have to send before `completed` is true.
+ *
+ * `completed` is a claim about the QUEUE, not about having reached the end of a
+ * function — and {@link terminalStatusFor} answers `completed` for ANY run that
+ * reaches it with no terminal code, which is how four different dropped
+ * verdicts each reported a failed import as a success (#993 rounds 1 and 2).
+ *
+ * `uploading` is the schema's only parking space, so the held set is subtracted
+ * from it: a post held for video is reported on its own line and is not work
+ * this run can do. Everything else that is still `uploading` — a batch claim
+ * that was never sent, a quota park the end-of-run pass never reached — is
+ * undrained work, and so is anything still `pending`.
+ */
+function undrainedWork(r: ActiveRun): number {
+  const counts = countImportItemsByStatus(r.jobId);
+  return counts.pending + Math.max(0, counts.uploading - r.held.size);
+}
+
+/**
+ * The fail-safe: a run that did not drain and has no verdict of its own is a
+ * client bug, never a success.
+ *
+ * This is the CLASS fix for the dropped-verdict family. Every caller of
+ * {@link settleRun} is meant to have set `terminal`, `cancelled` or
+ * `serverFinished` before it gets here; one that has not, with work still in
+ * the queue, is reporting a success it cannot support, and the next dropped
+ * verdict would do it again. `CLIENT_BUG` is deliberately the code: the member
+ * sees "something went wrong, nothing was lost" and the job row is `failed`,
+ * which `requeueImportItems` can resume — and one Sentry event names the seam.
+ */
+function assertDrainedOrFail(r: ActiveRun): void {
+  if (r.terminal !== null || r.cancelled || r.serverFinished) return;
+  if (undrainedWork(r) === 0) return;
+  r.terminal = 'CLIENT_BUG';
+}
+
+/**
  * Release everything the run held and publish the summary.
  *
  * Order is load-bearing: release the archive parts BEFORE `finishImportJob`,
@@ -1555,6 +1775,10 @@ function terminalStatusFor(r: ActiveRun): TerminalImportJobStatus {
  *
  * Once the run has been RESET this writes nothing at all — no `complete`, no
  * `finishImportJob`, no summary, no Sentry event (rule 0).
+ *
+ * {@link assertDrainedOrFail} runs immediately before the status is written: a
+ * caller that arrives here with no verdict and work still queued gets `failed`,
+ * never `completed`.
  */
 async function settleRun(r: ActiveRun): Promise<void> {
   if (r.settled) return;
@@ -1588,21 +1812,34 @@ async function settleRun(r: ActiveRun): Promise<void> {
     // A RESET run never gets here: the `wiped` guard above is what keeps a
     // logout or a wipe from making any network call at all (rule 0).
     if (r.importId !== null) {
-      try {
-        await completeImport(r.importId);
-      } catch (e) {
-        // A session the server already finished is still a finished import.
-        const verdict = classifyImportFailure(e, failureContext(r, 'complete'));
-        // Only when the run had no verdict of its own: the reason the run
-        // stopped is the one the member is shown, and a cancel stays a cancel.
-        if (verdict.kind === 'job-terminal' && r.terminal === null && !r.cancelled) {
-          r.terminal = verdict.code;
+      if (r.cancelled) {
+        // On the cancelled path the courtesy still goes out, but it is NOT
+        // awaited: the response can no longer change this run's verdict (a
+        // cancel stays a cancel), and offline the member would watch the
+        // summary sit behind the transport's 15 s timeout.
+        void completeImport(r.importId).catch(() => {
+          // Best effort. B#318's GC reaps the session either way.
+        });
+      } else {
+        try {
+          await completeImport(r.importId);
+        } catch (e) {
+          // A session the server already finished is still a finished import.
+          const verdict = classifyImportFailure(e, failureContext(r, 'complete'));
+          // Only when the run had no verdict of its own: the reason the run
+          // stopped is the one the member is shown.
+          if (verdict.kind === 'job-terminal' && r.terminal === null) {
+            r.terminal = verdict.code;
+          } else if (verdict.kind === 'finish-completed') {
+            r.serverFinished = true;
+          }
         }
       }
     }
 
     if (wiped(r)) return;
 
+    assertDrainedOrFail(r);
     const summary = buildSummary(r);
     finishImportJob(r.jobId, terminalStatusFor(r));
     if (r.terminal !== null && !r.cancelled) {
@@ -1696,6 +1933,7 @@ function newRun(
     clientBugCount: 0,
     terminal: null,
     cancelled: false,
+    serverFinished: false,
     settled: false,
   };
 }
@@ -1715,6 +1953,9 @@ async function runJob(
   const r = newRun(job, limits, keySession);
   run = r;
   beginImportCaptureBudget();
+  // A run exists, so every pre-run wait is over: the gate that was being
+  // retried got through, and its counter must not carry into the next launch.
+  clearPreRunRetry();
 
   const counts = countImportItemsByStatus(job.id);
   update(
@@ -1751,7 +1992,7 @@ async function runJob(
   });
 
   try {
-    if (!(await ensureServerSession(r, job))) {
+    if ((await ensureServerSession(r, job)) === 'stop') {
       await settleRun(r);
       return;
     }
@@ -1761,7 +2002,17 @@ async function runJob(
     if (!isRunStale(workGuard(r))) requeueImportItems(r.jobId, { from: 'uploading' });
     await pumpRun(r);
   } catch (e) {
+    // The classification still runs — a cancel must stay a cancel, and a
+    // `PendingWrapError` that escaped is not a client bug — but its STEP is
+    // worthless here: the pump has already unwound, so there is nothing left to
+    // retry and no loop to pause into.
     await handleFailure(r, e, 'batch');
+    if (r.terminal === null && !r.cancelled && !wiped(r)) {
+      // Whatever it was, it escaped every step that had an answer for it.
+      // Leaving `terminal` null here is what let a thrown TypeError settle as a
+      // successful import (#993 fold round, blocker 2).
+      failRunWith(r, 'CLIENT_BUG', 'batch');
+    }
   }
   await settleRun(r);
 }
@@ -2168,16 +2419,22 @@ export async function confirmAndRunImport(): Promise<void> {
  *
  * `background` and `needs_repick` are deliberately untouched: the first clears
  * when the app comes forward, the second only through
- * {@link repickArchiveParts}. `rate_limited` is the server's own wait and is
- * not ours to shorten.
+ * {@link repickArchiveParts}. `rate_limited` and `allowance_wait` are not ours
+ * to shorten either — the first is the server's own wait, and the second is a
+ * ceiling that a sooner retry can only re-learn.
  */
 export function resumeImport(): void {
   const r = run;
   if (r === null) {
-    // A `key_pending` pause raised before the run existed: the exit is the
-    // launch path itself, retried now instead of on its timer.
-    if (draft.pauseCauses.includes('key_pending')) {
-      clearKeyPendingRetry();
+    // A pause raised before the run existed — a pending wrap, or a launch-time
+    // session GET that failed retryably. The exit is the launch path itself,
+    // re-entered now instead of on its timer, and the member's tap is new
+    // information, so the budget starts again.
+    //
+    // `rate_limited` is excluded for the same reason it is below: the wait is
+    // the server's own and is not ours to shorten.
+    if (preRunCause !== null && preRunCause !== 'rate_limited') {
+      clearPreRunRetry();
       void resumeImportAtLaunch().catch(() => {
         // The gate re-arms its own timer on a second failure.
       });
@@ -2223,7 +2480,11 @@ export async function repickArchiveParts(): Promise<RepickResult> {
       await restartForDifferentArchive(r);
       return 'different-archive';
     }
+    // The verdict's own step is `stop` or `continue` and there is no loop here
+    // to hand it to — but a TERMINAL raised while the pump is parked on
+    // `needs_repick` must release that park, or the run hangs paused for ever.
     await handleFailure(r, e, 'archive');
+    wakeForTerminal(r);
     return 'cancelled';
   }
 
@@ -2361,20 +2622,10 @@ async function enterJob(job: ImportJobRow, options: { autoStart: boolean }): Pro
     // no session to close and the job is untouched. The 30 s pending-cache
     // self-heal is the wake-up (§4.3.1), armed here because there is no run
     // to hang the timer on yet.
-    update(
-      {
-        phase: 'paused',
-        jobId: job.id,
-        conversationId: job.conversation_id,
-        source: job.source,
-        pauseCauses: Object.freeze(['key_pending'] as PauseCause[]),
-      },
-      true,
-    );
-    scheduleKeyPendingRetry();
+    pauseJobBeforeRun(job, 'key_pending');
     return;
   }
-  clearKeyPendingRetry();
+  clearPreRunRetryFor('key_pending');
 
   // The stamp belongs to the key generation the identities were derived under.
   // A mismatch means this device's key has changed: `close()` runs BEFORE the
@@ -2499,11 +2750,16 @@ async function enterJob(job: ImportJobRow, options: { autoStart: boolean }): Pro
  * `errorCode: null`) for an import that has not run and whose items are all
  * still pending.
  *
- * For those the job row is left exactly as it is and the store publishes
- * `idle`: there is no run to hang a wake-up timer on at this point, and `idle`
- * is the honest answer — "nothing is running", distinguishable from
- * `'hydrating'`'s "not looked yet". The next launch, or `resumeImport()`,
- * tries the GET again and the job resumes from the same row.
+ * For those the job row is left exactly as it is and the store publishes a
+ * PAUSE carrying the job's identity and the cause, with a bounded wake-up
+ * armed — the same shape as the pre-run `key_pending` arm, and for the same
+ * reason: the row stays `in_progress`, so `pickAndStartParse` rightly refuses
+ * with `job-running`, and publishing `idle` instead left #928 with nothing to
+ * render and no way to retry before the next relaunch. `resumeImport()`
+ * re-enters this gate immediately.
+ *
+ * A cancelled classification publishes `idle` and arms nothing: under rule 0
+ * there is nothing to wait for.
  */
 async function failJobBeforeRun(
   job: ImportJobRow,
@@ -2511,10 +2767,16 @@ async function failJobBeforeRun(
   error: unknown,
   code?: ImportTerminalCode,
 ): Promise<void> {
-  const terminalCode = code ?? launchTerminalCode(error);
+  const verdict = code === undefined ? launchVerdict(error) : null;
+  const terminalCode = code ?? (verdict?.kind === 'job-terminal' ? verdict.code : null);
   if (terminalCode === null) {
     keySession?.close();
-    update({ ...INITIAL_STATE, phase: 'idle' }, true);
+    const cause = launchPauseCause(verdict);
+    if (cause === null) {
+      update({ ...INITIAL_STATE, phase: 'idle' }, true);
+      return;
+    }
+    pauseJobBeforeRun(job, cause);
     return;
   }
 
@@ -2527,22 +2789,37 @@ async function failJobBeforeRun(
 }
 
 /**
- * The terminal code a launch-time failure settles the job with, or `null` when
- * the taxonomy says it is retryable (or cancelled).
+ * The verdict for a launch-time failure, classified with no `ActiveRun`.
  *
- * Classified with no `ActiveRun`, deliberately: there is nothing to settle
- * unless the answer is terminal, and building a run first is what made the
- * discarded-verdict bug possible. The guard is therefore the live token
- * compared with itself — rule 0 has nothing to collapse here, since this path
- * writes nothing at all until a terminal is in hand.
+ * Deliberately so: there is nothing to settle unless the answer is terminal,
+ * and building a run first is what made the discarded-verdict bug possible. The
+ * guard is therefore the live token compared with itself — rule 0 has nothing
+ * to collapse here, since this path writes nothing at all until a terminal is
+ * in hand.
  */
-function launchTerminalCode(error: unknown): ImportTerminalCode | null {
-  const verdict = classifyImportFailure(error, {
+function launchVerdict(error: unknown): ImportVerdict {
+  return classifyImportFailure(error, {
     run: liveToken,
     currentRun: () => liveToken,
     stage: 'start',
   });
-  return verdict.kind === 'job-terminal' ? verdict.code : null;
+}
+
+/**
+ * The pre-run pause a non-terminal launch verdict waits on, or `null` when
+ * there is nothing to wait for.
+ *
+ * `retry-same-call` (a `NetworkError` or a 5xx) becomes `network`: at this
+ * point there is no stage loop to spend its ladder in, so the pause set's own
+ * ladder and budget are what bound it.
+ */
+function launchPauseCause(verdict: ImportVerdict | null): PauseCause | null {
+  if (verdict === null) return null;
+  if (verdict.kind === 'pause') return verdict.cause;
+  if (verdict.kind === 'retry-same-call') return 'network';
+  // `cancelled` (rule 0) and the item/batch arms, which a session GET cannot
+  // honestly produce: there is no bounded wait that would make either true.
+  return null;
 }
 
 /** The server already finished this session; finish locally and report it. */
@@ -2554,6 +2831,10 @@ async function finishJobWithoutRun(
   // No `complete` call: the server has already finished this session, and a
   // second one would be a 200 that fires no broadcast anyway.
   r.importId = null;
+  // Nothing we could send would be accepted, so items still queued are not
+  // undrained work and `completed` is the honest status (see
+  // {@link assertDrainedOrFail}).
+  r.serverFinished = true;
   run = r;
   beginImportCaptureBudget();
   await settleRun(r);
@@ -2643,7 +2924,7 @@ export function resetImportRunnerState(): void {
   }
 
   endImportCaptureBudget();
-  clearKeyPendingRetry();
+  clearPreRunRetry();
   // The next account on this device must re-probe: the allowance is
   // per-(orbit, member) and this one's is none of their business.
   probeCache.clear();

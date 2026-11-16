@@ -19,6 +19,14 @@
  * `zustand/vanilla` store. `getImportUnmigratedItems` is a `jest.fn()` on that
  * mocked module.
  *
+ * ## The read is DEFERRED
+ *
+ * The screen snapshots in `InteractionManager.runAfterInteractions`, so the
+ * push animation is never blocked by two synchronous op-sqlite reads. The
+ * suite drives that queue by hand: `flushInteractions` is the default (run the
+ * callback at once), and the one test that cares about the spinner holds the
+ * callback back instead.
+ *
  * ## The ten-row ceiling in these fixtures
  *
  * `FlatList` renders `initialNumToRender` (10) rows and waits for layout events
@@ -30,7 +38,7 @@
 
 import React from 'react';
 import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'react-test-renderer';
-import { Share } from 'react-native';
+import { InteractionManager, Share } from 'react-native';
 import { ThemeProvider } from '../../../theme';
 import { findByTestId, hasHostTestId } from '../../../testUtils/rtr';
 import { ImportUnmigratedScreen } from '../ImportUnmigratedScreen';
@@ -309,9 +317,26 @@ function setStore(patch: Partial<ImportRunnerState>): void {
 }
 
 let shareSpy: jest.SpyInstance;
+let interactionSpy: jest.SpyInstance;
+/** Set by the hold-it-back implementation; `null` once it has been run. */
+let queuedInteraction: (() => void) | null = null;
+
+/** A `runAfterInteractions` handle. Only `cancel` is ever called. */
+function fakeHandle(): { then: () => void; done: () => void; cancel: () => void } {
+  return { then: () => {}, done: () => {}, cancel: () => {} };
+}
 
 beforeEach(() => {
   jest.clearAllMocks();
+  queuedInteraction = null;
+  // Default: run the snapshot callback synchronously, so every test below
+  // sees a loaded screen. The deferral itself is asserted separately.
+  interactionSpy = jest.spyOn(InteractionManager, 'runAfterInteractions').mockImplementation(((
+    callback: (() => void) | undefined,
+  ) => {
+    if (typeof callback === 'function') callback();
+    return fakeHandle();
+  }) as never);
   store.setState(
     {
       phase: 'done',
@@ -349,6 +374,7 @@ afterEach(() => {
     });
   }
   shareSpy.mockRestore();
+  interactionSpy.mockRestore();
 });
 
 // ---------------------------------------------------------------------------
@@ -356,6 +382,54 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('ImportUnmigratedScreen — the mount snapshot', () => {
+  /**
+   * The read is two synchronous op-sqlite calls, and `executeSync` blocks the
+   * JS thread — during render that is the navigator's slide-in animation.
+   */
+  it('defers the read past the push animation, showing a spinner meanwhile', () => {
+    interactionSpy.mockImplementation(((callback: (() => void) | undefined) => {
+      queuedInteraction = typeof callback === 'function' ? callback : null;
+      return fakeHandle();
+    }) as never);
+
+    const renderer = renderScreen();
+
+    // Nothing read yet, and no empty-state line claiming there is nothing to
+    // list — only the spinner.
+    expect(mockGetItems).not.toHaveBeenCalled();
+    expect(hasHostTestId(renderer.root, 'unmigrated-loading')).toBe(true);
+    expect(hasHostTestId(renderer.root, 'unmigrated-list')).toBe(false);
+    expect(hasHostTestId(renderer.root, 'unmigrated-empty')).toBe(false);
+
+    act(() => {
+      queuedInteraction?.();
+    });
+
+    expect(mockGetItems).toHaveBeenCalledTimes(1);
+    expect(hasHostTestId(renderer.root, 'unmigrated-loading')).toBe(false);
+    expect(hasHostTestId(renderer.root, 'unmigrated-list')).toBe(true);
+  });
+
+  it('does not read after the screen is gone', () => {
+    interactionSpy.mockImplementation(((callback: (() => void) | undefined) => {
+      queuedInteraction = typeof callback === 'function' ? callback : null;
+      return fakeHandle();
+    }) as never);
+
+    const renderer = renderScreen();
+    act(() => {
+      renderer.unmount();
+    });
+    mountedRenderers.pop();
+
+    // The queued callback is both cancelled and guarded; firing it anyway must
+    // neither read nor set state on an unmounted tree.
+    act(() => {
+      queuedInteraction?.();
+    });
+    expect(mockGetItems).not.toHaveBeenCalled();
+  });
+
   it('reads the list exactly once across re-renders', () => {
     const renderer = renderScreen();
 

@@ -36,10 +36,12 @@ import {
   UNMIGRATED_GROUP_COPY,
   buildUnmigratedShareText,
   deriveImportView,
+  describeMoreFooter,
   describeSummaryLines,
   formatCountdown,
   plural,
   skippedOther,
+  totalUnmigrated,
 } from '../importCopy';
 
 import type { ImportAllowance, ImportLimits } from '../../../types/api';
@@ -699,6 +701,40 @@ describe('buildUnmigratedShareText', () => {
 });
 
 // ---------------------------------------------------------------------------
+// totalUnmigrated — the one place the across-every-group sum is spelled
+// ---------------------------------------------------------------------------
+
+describe('totalUnmigrated', () => {
+  it('sums every group, counting a missing key as zero', () => {
+    expect(
+      totalUnmigrated({
+        skipped: { held_video: 4, empty_post: 5 },
+        failed: { QUOTA: 2, IMPORT_RESULT_UNKNOWN: 1 },
+        notSent: 3,
+      }),
+    ).toBe(15);
+  });
+
+  it('is 0 for an empty list', () => {
+    expect(totalUnmigrated({ skipped: {}, failed: {}, notSent: 0 })).toBe(0);
+  });
+
+  it('is what the share footer counts from', () => {
+    // The footer is `total − rows shown`, which is the whole reason the total
+    // may not be derived from `items.length`.
+    const counts: UnmigratedCounts = { skipped: { empty_post: 1250 }, failed: {}, notSent: 0 };
+    const text = buildUnmigratedShareText(
+      Array.from({ length: 1100 }, (_, i) => skippedRow('empty_post', i)),
+      counts,
+      [],
+      'facebook',
+    );
+    expect(totalUnmigrated(counts)).toBe(1250);
+    expect(text).toContain(describeMoreFooter(1250 - SHARE_ROW_CAP));
+  });
+});
+
+// ---------------------------------------------------------------------------
 // §5 BRAND AUDIT
 //
 // The audit walks `import * as copy` rather than an enumerated list, so a
@@ -798,6 +834,9 @@ const CALL_FIXTURES: Readonly<Record<string, readonly CallArgs[]>> = {
     [makeSummary({ errorCode: 'ARCHIVE' })],
   ],
   skippedOther: [[makeSummary({ skippedByReason: makeSkips({ empty_post: 2 }) })]],
+  // Returns a number, so it contributes no strings to the audit — it is listed
+  // because the fixture table must name every exported function.
+  totalUnmigrated: [[SAMPLE_COUNTS], [{ skipped: {}, failed: {}, notSent: 0 }]],
   describeSummaryLines: [
     [makeSummary(), null, NOW],
     [

@@ -30,7 +30,12 @@ import {
   hasHostTestId,
 } from '../../../testUtils/rtr';
 import { ImportHowToScreen } from '../ImportHowToScreen';
-import { ACCOUNTS_CENTER_URL, PICK_FAILURE_COPY, describeIntoCaption } from '../importCopy';
+import {
+  ACCOUNTS_CENTER_URL,
+  PICK_FAILURE_COPY,
+  describeHowToIntro,
+  describeIntoCaption,
+} from '../importCopy';
 
 import type { ImportPreflight, ImportRunnerState } from '../../../services/metaImport/importRunner';
 import type { PickFailureReason, PickParseResult } from '../../../services/metaImport/importRunner';
@@ -502,6 +507,32 @@ describe('ImportHowToScreen — the inline parse view', () => {
 // ---------------------------------------------------------------------------
 
 describe('ImportHowToScreen — the orbit comes from the route', () => {
+  /**
+   * The intro INTERPOLATES the orbit name, so it is a display site for
+   * user-generated content: a name with an emoji in it must render OpenMoji
+   * like every other surface, not the system glyph a plain `<Text>` would
+   * give it.
+   */
+  it('renders the intro through EmojiText, name and all', async () => {
+    mockRouteParams.conversationId = 'g1';
+
+    const renderer = await renderScreen();
+    const introNodes = renderer.root.findAll(
+      (node) => node.props?.testID === 'import-how-to-intro',
+    );
+    expect(introNodes.length).toBeGreaterThan(0);
+
+    // The component node, which is EmojiText's inner render (react-test-renderer
+    // renders through the memo wrapper), not a bare host Text.
+    const owner = introNodes.find((node) => typeof node.type === 'function');
+    expect(owner).toBeDefined();
+    expect(String(owner?.props.children)).toBe(describeHowToIntro('facebook', 'Route Orbit'));
+
+    // And the rendered text really is the intro, carrying the orbit name.
+    const host = findHostByTestId(renderer.root, 'import-how-to-intro');
+    expect(String(host.props.children)).toContain('Route Orbit');
+  });
+
   it('names the route’s orbit, not the active one', async () => {
     mockRouteParams.conversationId = 'g1';
     mockAppState.activeConversationId = 'g2';

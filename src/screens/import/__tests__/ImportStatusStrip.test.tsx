@@ -338,6 +338,31 @@ describe('ImportStatusStrip — the orbit name', () => {
     }
   });
 
+  /**
+   * The strip is one FIXED-height line, so its text cannot be allowed to grow
+   * without bound at large Dynamic Type — it would simply be clipped. The cap
+   * rides on the wrapping Text because `EmojiText` takes no such prop, and
+   * RN's font-scaling props are inherited by nested Text.
+   */
+  it('caps the font scale so the fixed-height line cannot be clipped', () => {
+    store.setState(RUNNING_STATE);
+
+    const renderer = renderStrip();
+    const capped = renderer.root.findAll(
+      (node) =>
+        (node.type as unknown) === 'Text' && typeof node.props.maxFontSizeMultiplier === 'number',
+    );
+
+    expect(capped).toHaveLength(1);
+    expect(capped[0].props.maxFontSizeMultiplier).toBeGreaterThanOrEqual(1.3);
+    expect(capped[0].props.maxFontSizeMultiplier).toBeLessThanOrEqual(1.4);
+    expect(capped[0].props.numberOfLines).toBe(1);
+
+    // And the label really is inside it, so the cap applies to what is shown.
+    const emojiTexts = findEmojiTexts(renderer.root);
+    expect(capped[0].findAll((node) => node === emojiTexts[0])).toHaveLength(1);
+  });
+
   it('shows the line alone when the job is in an orbit this device has no name for', () => {
     store.setState({ ...RUNNING_STATE, conversationId: 'g-left' });
 

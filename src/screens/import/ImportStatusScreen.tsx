@@ -39,11 +39,12 @@ import { ImportParseView } from './ImportParseView';
 import { ImportPreflightView } from './ImportPreflightView';
 import { ImportRunView } from './ImportRunView';
 import { ImportSummaryView } from './ImportSummaryView';
-import { discardImportPreflight, importStore } from '../../services/metaImport/importRunner';
 import {
   cancelImport,
   confirmAndRunImport,
+  discardImportPreflight,
   dismissImportSummary,
+  importStore,
   repickArchiveParts,
   resumeImport,
   resumeImportAtLaunch,
@@ -68,13 +69,22 @@ import type { SettingsStackParamList } from '../../navigation/types';
 type StatusNavigation = NativeStackNavigationProp<SettingsStackParamList, 'ImportStatus'>;
 
 /**
- * A latch that holds until the run's identity changes.
+ * A latch that holds until EITHER the run's identity changes OR the action
+ * that set it settles.
  *
- * The identity is a STRING rather than the state object: the runner republishes
- * a new object every 250 ms while counters move, and latching on that would
- * clear the spinner on the next tick instead of on the next real transition.
+ * The identity is a STRING rather than the state object: the runner
+ * republishes a new object every 250 ms while counters move, and latching on
+ * that would clear the spinner on the next tick instead of on the next real
+ * transition.
+ *
+ * The second clause is the one that matters for correctness. Several runner
+ * entry points can return having published NOTHING — a call that joins an
+ * in-flight pre-run entry, a `confirmAndRunImport` that returns early, a
+ * cancel whose guard declines. On a signature-only latch the spinner would
+ * then never clear and the member would be stuck looking at a dead button, so
+ * every async action also unlatches in its own `finally`.
  */
-function useRunLatch(signature: string): readonly [boolean, () => void] {
+function useRunLatch(signature: string): readonly [boolean, () => void, () => void] {
   const [latched, setLatched] = useState<string | null>(null);
 
   useEffect(() => {
@@ -87,7 +97,11 @@ function useRunLatch(signature: string): readonly [boolean, () => void] {
     setLatched(signature);
   }, [signature]);
 
-  return [latched !== null, latch] as const;
+  const unlatch = useCallback(() => {
+    setLatched(null);
+  }, []);
+
+  return [latched !== null, latch, unlatch] as const;
 }
 
 export function ImportStatusScreen(): React.JSX.Element {
@@ -105,8 +119,16 @@ export function ImportStatusScreen(): React.JSX.Element {
   }, []);
 
   const signature = `${state.phase}|${state.jobId ?? '-'}|${state.summary === null ? '-' : 'S'}`;
-  const [starting, latchStart] = useRunLatch(signature);
-  const [stopping, latchStop] = useRunLatch(signature);
+  const [starting, latchStart, unlatchStart] = useRunLatch(signature);
+  const [stopping, latchStop, unlatchStop] = useRunLatch(signature);
+  /**
+   * The blocked view's Retry, which is `resumeImportAtLaunch` — a network
+   * round trip that can take as long as the transport allows. It gets its own
+   * latch so the spinner lands on the button that is actually working, and the
+   * two latches read each other: Start over must not be tappable mid-retry,
+   * and Retry must not be tappable mid-discard.
+   */
+  const [retrying, latchRetry, unlatchRetry] = useRunLatch(signature);
 
   /**
    * The live value of {@link stopping}, for the one guard that runs OUTSIDE a
@@ -139,10 +161,15 @@ export function ImportStatusScreen(): React.JSX.Element {
   const handleImport = useCallback(() => {
     if (starting) return;
     latchStart();
-    // Not awaited: the store's phase is what ends the busy state, and the
-    // runner reports every failure through it.
-    confirmAndRunImport().catch(() => {});
-  }, [starting, latchStart]);
+    // The phase normally ends the busy state long before this settles. The
+    // `finally` is for the other case: a `confirmAndRunImport` that returns
+    // having published nothing at all.
+    confirmAndRunImport()
+      .catch(() => {})
+      .finally(() => {
+        if (mounted.current) unlatchStart();
+      });
+  }, [starting, latchStart, unlatchStart]);
 
   const handleDiscard = useCallback(() => {
     // A ref, not `mounted`: both `.finally` callbacks of a double tap run
@@ -158,10 +185,20 @@ export function ImportStatusScreen(): React.JSX.Element {
   }, [navigation]);
 
   const handleStartOver = useCallback(() => {
-    if (stopping) return;
+    // Mutually exclusive with Retry: both drive the same job through the
+    // runner's pre-run gate, and a discard that queues behind a retry must not
+    // be racing a second tap as well.
+    if (stopping || retrying) return;
     latchStop();
-    discardImportPreflight().catch(() => {});
-  }, [stopping, latchStop]);
+    discardImportPreflight()
+      .catch(() => {})
+      .finally(() => {
+        // A discard that reaches a ready job publishes idle and the signature
+        // moves; one that finds nothing to do publishes nothing, and THIS is
+        // what clears the spinner.
+        if (mounted.current) unlatchStop();
+      });
+  }, [stopping, retrying, latchStop, unlatchStop]);
 
   const handleStop = useCallback(() => {
     if (stopping) return;
@@ -182,12 +219,22 @@ export function ImportStatusScreen(): React.JSX.Element {
   const handleRetry = useCallback(() => {
     if (view.kind === 'blocked') {
       // The preflight could not be rebuilt (offline, or an orbit the member
-      // has left). This re-enters through the runner's pre-run latch.
-      resumeImportAtLaunch().catch(() => {});
+      // has left). This re-enters through the runner's pre-run gate, which can
+      // take as long as a network round trip — so it latches, and Start over
+      // is held off until it settles.
+      if (retrying || stopping) return;
+      latchRetry();
+      resumeImportAtLaunch()
+        .catch(() => {})
+        .finally(() => {
+          if (mounted.current) unlatchRetry();
+        });
       return;
     }
+    // `resumeImport` is synchronous and publishes before it returns, so there
+    // is nothing to wait on and nothing to spin.
     resumeImport();
-  }, [view.kind]);
+  }, [view.kind, retrying, stopping, latchRetry, unlatchRetry]);
 
   const handleRepick = useCallback(() => {
     if (repicking.current) return;
@@ -300,6 +347,7 @@ export function ImportStatusScreen(): React.JSX.Element {
             view={view}
             progress={state}
             busy={stopping}
+            retrying={retrying}
             onStop={handleStop}
             onRetry={handleRetry}
             onRepick={handleRepick}

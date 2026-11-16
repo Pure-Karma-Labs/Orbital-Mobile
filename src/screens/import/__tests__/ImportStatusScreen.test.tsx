@@ -521,6 +521,25 @@ describe('ImportStatusScreen — preflight', () => {
     expect(mockConfirm).toHaveBeenCalledTimes(2);
   });
 
+  /**
+   * `confirmAndRunImport` has silent returns of its own — a job that is no
+   * longer `ready`, an entry that joins another. The phase never moves, so
+   * only the promise settling can give the button back.
+   */
+  it('clears the busy latch when confirm returns having published nothing', async () => {
+    const renderer = renderPreflight();
+    const root = renderer.root;
+
+    await tapAndSettle(root, 'import-confirm');
+
+    expect(mockConfirm).toHaveBeenCalledTimes(1);
+    expect(store.getState().phase).toBe('ready');
+    expect(controlProps(root, 'import-confirm').loading).toBe(false);
+
+    tap(root, 'import-confirm');
+    expect(mockConfirm).toHaveBeenCalledTimes(2);
+  });
+
   it('discards the preflight and then goes back', async () => {
     const renderer = renderPreflight();
 
@@ -757,7 +776,7 @@ describe('ImportStatusScreen — blocked', () => {
     return renderScreen();
   }
 
-  it('re-enters through the launch path, and starts over by discarding', () => {
+  it('re-enters through the launch path, and starts over by discarding', async () => {
     const renderer = renderBlocked();
     const root = renderer.root;
 
@@ -765,7 +784,8 @@ describe('ImportStatusScreen — blocked', () => {
     // A blocked job has no counters to show.
     expect(hasHostTestId(root, 'import-progress-bar')).toBe(false);
 
-    tap(root, 'import-retry');
+    // Settled, because Retry holds Start over off while it is in flight.
+    await tapAndSettle(root, 'import-retry');
     expect(mockResumeAtLaunch).toHaveBeenCalledTimes(1);
     expect(mockResume).not.toHaveBeenCalled();
 
@@ -773,6 +793,82 @@ describe('ImportStatusScreen — blocked', () => {
     expect(mockDiscard).toHaveBeenCalledTimes(1);
     // Start over is not the Stop alert: nothing has been uploaded.
     expect(alertSpy).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The blocker's UI half. Both buttons drive the SAME job through the
+   * runner's pre-run gate, where a discard now queues behind an in-flight
+   * retry — so the screen must not let the member start one on top of the
+   * other, and neither spinner may outlive its own call.
+   */
+  it('holds Start over off while Retry is in flight, and releases it after', async () => {
+    const renderer = renderBlocked();
+    const root = renderer.root;
+
+    // A retry that does not settle until we say so.
+    let releaseRetry!: () => void;
+    mockResumeAtLaunch.mockReturnValue(
+      new Promise<void>((resolve) => {
+        releaseRetry = resolve;
+      }),
+    );
+
+    tap(root, 'import-retry');
+    expect(controlProps(root, 'import-retry').loading).toBe(true);
+    expect(controlProps(root, 'import-start-over').disabled).toBe(true);
+
+    // The tap is refused rather than merely styled as disabled.
+    tap(root, 'import-start-over');
+    expect(mockDiscard).not.toHaveBeenCalled();
+    tap(root, 'import-retry');
+    expect(mockResumeAtLaunch).toHaveBeenCalledTimes(1);
+
+    // The runner published NOTHING — the signature is unchanged — so only the
+    // promise settling can clear this.
+    await act(async () => {
+      releaseRetry();
+    });
+
+    expect(controlProps(root, 'import-retry').loading).toBe(false);
+    expect(controlProps(root, 'import-start-over').disabled).toBe(false);
+
+    tap(root, 'import-start-over');
+    expect(mockDiscard).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds Retry off while Start over is in flight', () => {
+    const renderer = renderBlocked();
+    const root = renderer.root;
+
+    mockDiscard.mockReturnValue(new Promise<void>(() => {}));
+
+    tap(root, 'import-start-over');
+    expect(controlProps(root, 'import-start-over').loading).toBe(true);
+    expect(controlProps(root, 'import-retry').disabled).toBe(true);
+
+    tap(root, 'import-retry');
+    expect(mockResumeAtLaunch).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The exact shape of the blocking finding: a discard that joins (or queues
+   * behind) another entry and returns having published nothing at all. A
+   * signature-only latch leaves the member staring at a spinner that never
+   * stops.
+   */
+  it('clears Start over when the discard resolves with no state change', async () => {
+    const renderer = renderBlocked();
+    const root = renderer.root;
+
+    await tapAndSettle(root, 'import-start-over');
+
+    expect(mockDiscard).toHaveBeenCalledTimes(1);
+    expect(store.getState().jobId).toBe('job-1');
+    expect(controlProps(root, 'import-start-over').loading).toBe(false);
+
+    // And it is tappable again, rather than latched out for the session.
+    tap(root, 'import-start-over');
+    expect(mockDiscard).toHaveBeenCalledTimes(2);
   });
 });
 

@@ -24,9 +24,10 @@
  * never written to a log line.
  */
 
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   FlatList,
+  InteractionManager,
   Share,
   Text,
   TouchableOpacity,
@@ -39,6 +40,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { useTheme } from '../../theme';
 import { Header } from '../../components/Header';
+import { OrbitalSpinner } from '../../components/OrbitalSpinner';
 import { SectionHeader } from '../settings/SectionHeader';
 import { SKIP_REASON_CLASS } from '../../services/metaImport/types';
 import { getImportUnmigratedItems, importStore } from '../../services/metaImport/importRunner';
@@ -55,12 +57,14 @@ import {
   describeUnmigratedRowA11y,
   groupUnmigrated,
   plural,
+  totalUnmigrated,
 } from './importCopy';
 
 import type { FileIssue, ImportSource, SkipReason } from '../../services/metaImport/types';
 import type {
   UnmigratedCounts,
   UnmigratedImportItem,
+  UnmigratedImportList,
 } from '../../services/metaImport/importRunner';
 import type { UnmigratedGroupKey } from './importCopy';
 
@@ -79,22 +83,34 @@ type UnmigratedRow =
   | { kind: 'fileIssue'; key: string; issue: FileIssue }
   | { kind: 'moreFooter'; key: string; truncated: number };
 
+/** Sum a `Partial<Record<…, number>>`, treating a missing key as zero. */
+function sumValues(values: Readonly<Partial<Record<string, number>>>): number {
+  let total = 0;
+  for (const value of Object.values(values)) total += value ?? 0;
+  return total;
+}
+
 /**
  * The group's true size, from the `COUNT … GROUP BY` rather than from the
  * capped row list.
+ *
+ * Per-group, so it cannot go through `totalUnmigrated` — that one is the sum
+ * across every group, and this screen uses it for exactly that (below).
  */
 function groupCount(key: UnmigratedGroupKey, counts: UnmigratedCounts): number {
   if (key === 'not_sent') return counts.notSent;
-  if (key === 'failed') {
-    let total = 0;
-    for (const value of Object.values(counts.failed)) total += value ?? 0;
-    return total;
-  }
-  let total = 0;
+  if (key === 'failed') return sumValues(counts.failed);
+  const inThisGroup: Record<string, number> = {};
   for (const [reason, value] of Object.entries(counts.skipped)) {
-    if (SKIP_REASON_CLASS[reason as SkipReason] === key) total += value ?? 0;
+    if (SKIP_REASON_CLASS[reason as SkipReason] === key) inThisGroup[reason] = value ?? 0;
   }
-  return total;
+  return sumValues(inThisGroup);
+}
+
+interface UnmigratedSnapshot {
+  readonly list: UnmigratedImportList;
+  readonly fileIssues: readonly FileIssue[];
+  readonly source: ImportSource | null;
 }
 
 export function ImportUnmigratedScreen(): React.JSX.Element {
@@ -102,19 +118,39 @@ export function ImportUnmigratedScreen(): React.JSX.Element {
   const navigation = useNavigation();
 
   /**
-   * Read ONCE, on mount — including the file issues and the source, which are
-   * read from the store at the same instant for the same reason.
+   * Read ONCE — but AFTER the push transition, never during it.
+   *
+   * `getImportUnmigratedItems` is two synchronous op-sqlite reads, and
+   * op-sqlite's `executeSync` blocks the JS thread: doing that inside render
+   * would stall the navigator's slide-in by however long the query takes on a
+   * large archive. `runAfterInteractions` lets the animation finish first and
+   * costs a spinner frame.
+   *
+   * The snapshot-once semantics are unchanged, which is the point of it:
+   * dismissing the summary later cannot empty a list the member is reading,
+   * and the read still happens before any dismiss reachable from THIS screen.
    */
-  const [snapshot] = useState(() => {
-    const state = importStore.getState();
-    return {
-      list: getImportUnmigratedItems(),
-      fileIssues: state.preflight?.summary?.fileIssues ?? ([] as readonly FileIssue[]),
-      source: state.source as ImportSource | null,
+  const [snapshot, setSnapshot] = useState<UnmigratedSnapshot | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    const handle = InteractionManager.runAfterInteractions(() => {
+      if (!active) return;
+      const state = importStore.getState();
+      setSnapshot({
+        list: getImportUnmigratedItems(),
+        fileIssues: state.preflight?.summary?.fileIssues ?? ([] as readonly FileIssue[]),
+        source: state.source,
+      });
+    });
+    return () => {
+      active = false;
+      handle.cancel();
     };
-  });
+  }, []);
 
   const rows = useMemo<readonly UnmigratedRow[]>(() => {
+    if (snapshot === null) return [];
     const out: UnmigratedRow[] = [];
     for (const group of groupUnmigrated(snapshot.list.items)) {
       out.push({
@@ -141,7 +177,7 @@ export function ImportUnmigratedScreen(): React.JSX.Element {
   }, [snapshot]);
 
   const handleShare = useCallback(() => {
-    if (snapshot.source === null) return;
+    if (snapshot === null || snapshot.source === null) return;
     Share.share({
       message: buildUnmigratedShareText(
         snapshot.list.items,
@@ -155,9 +191,25 @@ export function ImportUnmigratedScreen(): React.JSX.Element {
     });
   }, [snapshot]);
 
+  /**
+   * Is there anything to share? The TOTALS decide, not the rendered rows: the
+   * row list is capped at a thousand and the counts are not, so a list that is
+   * all footer still has something worth keeping.
+   */
+  const shareable =
+    snapshot !== null &&
+    snapshot.source !== null &&
+    (totalUnmigrated(snapshot.list.counts) > 0 || snapshot.fileIssues.length > 0);
+
   const containerStyle: ViewStyle = {
     flex: 1,
     backgroundColor: theme.colors.background,
+  };
+
+  const loadingStyle: ViewStyle = {
+    flex: 1,
+    alignItems: 'center',
+    paddingTop: theme.spacing.xl,
   };
 
   const rowStyle: ViewStyle = {
@@ -244,7 +296,7 @@ export function ImportUnmigratedScreen(): React.JSX.Element {
         title={UNMIGRATED_SCREEN_TITLE}
         onBack={() => navigation.goBack()}
         right={
-          snapshot.source === null || rows.length === 0 ? undefined : (
+          !shareable ? undefined : (
             <TouchableOpacity
               onPress={handleShare}
               accessibilityRole="button"
@@ -256,21 +308,29 @@ export function ImportUnmigratedScreen(): React.JSX.Element {
           )
         }
       />
-      <FlatList
-        data={rows}
-        renderItem={renderRow}
-        keyExtractor={(row: UnmigratedRow) => row.key}
-        ListEmptyComponent={
-          <Text
-            style={[captionStyle, { paddingTop: theme.spacing.base }]}
-            testID="unmigrated-empty"
-          >
-            {UNMIGRATED_EMPTY_COPY}
-          </Text>
-        }
-        contentContainerStyle={{ paddingBottom: theme.spacing.xl }}
-        testID="unmigrated-list"
-      />
+      {snapshot === null ? (
+        // The read has not run yet. An empty-state line here would say
+        // "nothing to list" about a list nobody has read.
+        <View style={loadingStyle} testID="unmigrated-loading">
+          <OrbitalSpinner size={32} />
+        </View>
+      ) : (
+        <FlatList
+          data={rows}
+          renderItem={renderRow}
+          keyExtractor={(row: UnmigratedRow) => row.key}
+          ListEmptyComponent={
+            <Text
+              style={[captionStyle, { paddingTop: theme.spacing.base }]}
+              testID="unmigrated-empty"
+            >
+              {UNMIGRATED_EMPTY_COPY}
+            </Text>
+          }
+          contentContainerStyle={{ paddingBottom: theme.spacing.xl }}
+          testID="unmigrated-list"
+        />
+      )}
     </SafeAreaView>
   );
 }

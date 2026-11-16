@@ -236,7 +236,14 @@ export function ImportHowToScreen(): React.JSX.Element {
             <ErrorBanner message={error} testID="import-how-to-error" />
           </View>
 
-          <Text style={bodyStyle}>{describeHowToIntro(source, orbitName)}</Text>
+          {/*
+            EmojiText, not Text: the intro INTERPOLATES the orbit's name, and
+            a name with an emoji in it would render the system glyph here
+            while every other surface shows OpenMoji.
+          */}
+          <EmojiText style={bodyStyle} testID="import-how-to-intro">
+            {describeHowToIntro(source, orbitName)}
+          </EmojiText>
           <EmojiText style={captionStyle} testID="import-how-to-orbit">
             {describeIntoCaption(orbitName)}
           </EmojiText>

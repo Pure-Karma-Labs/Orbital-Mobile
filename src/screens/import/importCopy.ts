@@ -1002,7 +1002,17 @@ export const SHARE_LIST_LABEL = 'Share list';
  */
 export const SHARE_ROW_CAP = 1000;
 
-function totalUnmigrated(counts: UnmigratedCounts): number {
+/**
+ * How many rows did NOT migrate, in total, across every group.
+ *
+ * THE one place that sum is spelled. Three callers had grown their own
+ * version — the share footer, the list's group headers and its totals — and
+ * three loops over the same two `Partial<Record>`s plus `notSent` is three
+ * chances for one of them to forget a group the day a fourth is added.
+ *
+ * Counts, never rows: the row list is capped, these totals are not.
+ */
+export function totalUnmigrated(counts: UnmigratedCounts): number {
   let total = counts.notSent;
   for (const value of Object.values(counts.skipped)) total += value ?? 0;
   for (const value of Object.values(counts.failed)) total += value ?? 0;

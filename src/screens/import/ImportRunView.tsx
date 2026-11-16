@@ -66,6 +66,14 @@ export interface ImportRunViewProps {
    * again.
    */
   busy: boolean;
+  /**
+   * The blocked view's Retry is in flight.
+   *
+   * It is a second flag rather than a wider `busy` so the spinner lands on the
+   * button that is actually working; the two are mutually exclusive, and each
+   * disables the other's button.
+   */
+  retrying?: boolean;
   /** Stop: confirmed by the caller, which owns the Alert. */
   onStop: () => void;
   /** "Retry now" (paused), "Retry" (stalled) and "Retry" (blocked). */
@@ -97,6 +105,7 @@ export function ImportRunView({
   view,
   progress,
   busy,
+  retrying = false,
   onStop,
   onRetry,
   onRepick,
@@ -186,6 +195,7 @@ export function ImportRunView({
           <Button
             title={BLOCKED_RETRY_LABEL}
             onPress={onRetry}
+            loading={retrying}
             disabled={busy}
             testID="import-retry"
           />
@@ -195,6 +205,7 @@ export function ImportRunView({
             variant="secondary"
             onPress={onStartOver}
             loading={busy}
+            disabled={retrying}
             testID="import-start-over"
           />
         </React.Fragment>

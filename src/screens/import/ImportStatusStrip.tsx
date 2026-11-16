@@ -24,7 +24,7 @@
  */
 
 import React, { useCallback } from 'react';
-import { TouchableOpacity, type TextStyle, type ViewStyle } from 'react-native';
+import { Text, TouchableOpacity, type TextStyle, type ViewStyle } from 'react-native';
 import { useStore } from 'zustand';
 import { getFocusedRouteNameFromRoute } from '@react-navigation/native';
 import { useTheme } from '../../theme';
@@ -129,9 +129,20 @@ export function ImportStatusStrip({
       accessibilityLabel={label}
       testID="import-status-strip"
     >
-      <EmojiText style={textStyle} numberOfLines={1}>
-        {label}
-      </EmojiText>
+      {/*
+        The strip is ONE fixed-height line by design, so its text cannot be
+        allowed to grow without bound at large Dynamic Type — it would simply
+        be clipped (`FileLibraryScreen`'s header label is capped for the same
+        reason). `EmojiText` takes no such prop and belongs to another owner,
+        so the cap rides on a wrapping Text: RN's font-scaling props are
+        inherited by nested Text, and the emoji images are sized from the
+        style's own fontSize rather than from the OS scale.
+      */}
+      <Text style={textStyle} numberOfLines={1} maxFontSizeMultiplier={1.3}>
+        <EmojiText style={textStyle} numberOfLines={1} testID="import-status-strip-label">
+          {label}
+        </EmojiText>
+      </Text>
     </TouchableOpacity>
   );
 }

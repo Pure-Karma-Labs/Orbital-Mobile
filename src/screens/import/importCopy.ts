@@ -24,7 +24,7 @@
  */
 
 import { SKIP_REASON_CLASS } from '../../services/metaImport/types';
-import { formatDateWithYear } from '../../utils/formatPostTimestamp';
+import { formatDateWithYear, formatDateWithYearA11y } from '../../utils/formatPostTimestamp';
 import { formatMB } from '../../utils/formatBytes';
 
 import type {
@@ -411,6 +411,22 @@ export function describeFileIssueSummaryLine(fileIssues: number): string {
 
 export const SEE_UNMIGRATED_LABEL = "See what won't be imported";
 
+/** The same list, AFTER the run: the tense is the only difference. */
+export const SEE_UNMIGRATED_PAST_LABEL = "See what wasn't imported";
+
+/** Screen titles. Short, because a native header truncates. */
+export const IMPORT_SCREEN_TITLE = 'Import';
+export const UNMIGRATED_SCREEN_TITLE = 'Not imported';
+
+/**
+ * The list screen with nothing in it.
+ *
+ * Reachable: the summary's counts come from the run, the list from a bounded
+ * query, and a job whose rows were cleared out from under it would otherwise
+ * show a blank screen with no explanation.
+ */
+export const UNMIGRATED_EMPTY_COPY = 'There is nothing to list for this import.';
+
 export function describeImportButton(importable: number): string {
   return `Import ${plural(importable, 'post')}`;
 }
@@ -593,6 +609,56 @@ const STRIP_LINE: Readonly<Record<ImportViewKind, string | null>> = {
 export function describeStripLine(view: ImportView): string | null {
   if (view.kind === 'paused' && view.cause !== null) return PAUSE_COPY[view.cause].strip;
   return STRIP_LINE[view.kind];
+}
+
+// ---------------------------------------------------------------------------
+// §3.5 — what the announcer says on a KIND transition
+// ---------------------------------------------------------------------------
+
+/**
+ * The accessibility announcement for a transition INTO `view`, or `null` when
+ * the transition is not worth interrupting a screen reader for.
+ *
+ * Announced on the kind CHANGE only — never per tick. The countdown and the
+ * per-post counters are deliberately silent: a live region on either would
+ * talk over everything else the member is doing.
+ *
+ * "Import continued", not "resumed": §4.4's rule against that word is
+ * unqualified, and the brand audit holds this whole module to it.
+ */
+export function describeImportAnnouncement(
+  view: ImportView,
+  previousKind: ImportViewKind | null,
+  total: number,
+  summary: ImportSummary | null,
+): string | null {
+  switch (view.kind) {
+    case 'parsing':
+      return 'Reading your export';
+    case 'preflight':
+      return 'Import ready to review';
+    case 'running':
+      if (previousKind === 'paused' || previousKind === 'stalled' || previousKind === 'repick') {
+        return 'Import continued';
+      }
+      return `Importing ${plural(total, 'post')}`;
+    case 'paused':
+    case 'repick':
+    case 'stalled': {
+      const line = describeStripLine(view);
+      return line === null ? 'Import paused' : `Import paused. ${line}`;
+    }
+    case 'completed':
+    case 'cancelled':
+    case 'failed':
+      return summary === null ? null : describeSummaryHeadline(summary);
+    case 'checking':
+    case 'none':
+    case 'blocked':
+    case 'nothing':
+    case 'refused':
+      return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -900,8 +966,31 @@ export function describeUnmigratedRow(item: UnmigratedImportItem): string {
   return `${date === '' ? 'No date' : date} · ${item.sourceFile ?? 'Unknown file'}`;
 }
 
+/**
+ * The screen-reader form of {@link describeUnmigratedRow}: the month is
+ * spelled out and the two halves are read as a sentence, because "Mar 4, 2019
+ * · your_posts_1.json" is an abbreviation followed by a punctuation mark
+ * VoiceOver has no good reading for.
+ */
+export function describeUnmigratedRowA11y(item: UnmigratedImportItem): string {
+  const date = item.originalDate === null ? '' : formatDateWithYearA11y(item.originalDate, 'utc');
+  const file = item.sourceFile ?? 'an unknown file';
+  return `${date === '' ? 'No date' : date}, from ${file}. ${describeUnmigratedReason(item)}`;
+}
+
 export function describeFileIssueRow(issue: FileIssue): string {
   return `${issue.sourceFile} · ${FILE_ISSUE_COPY[issue.reason]}`;
+}
+
+/**
+ * The footer under a capped list, in the list AND in the shared text.
+ *
+ * It exists because the read is bounded at {@link SHARE_ROW_CAP}: an export
+ * can hold fifty thousand unmigrated rows, and materialising them on the JS
+ * thread to say so would freeze the screen that is explaining itself.
+ */
+export function describeMoreFooter(truncated: number): string {
+  return `…and ${truncated} more not listed`;
 }
 
 export const SHARE_LIST_LABEL = 'Share list';
@@ -941,7 +1030,7 @@ export function buildUnmigratedShareText(
   }
 
   const remaining = totalUnmigrated(counts) - shown.length;
-  if (remaining > 0) lines.push(`…and ${remaining} more not listed`);
+  if (remaining > 0) lines.push(describeMoreFooter(remaining));
 
   if (fileIssues.length > 0) {
     lines.push('', FILE_ISSUE_GROUP_HEADER);

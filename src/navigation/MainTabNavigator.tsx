@@ -21,6 +21,7 @@ import { ThreadsStackNavigator } from './ThreadsStackNavigator';
 import { ChatsStackNavigator } from './ChatsStackNavigator';
 import { SettingsStackNavigator } from './SettingsStackNavigator';
 import { Emoji } from '../components/Emoji';
+import { ImportStatusStrip } from '../screens/import/ImportStatusStrip';
 
 // `satisfies`, not an annotation: coverage of MainTabParamList is enforced (a
 // fourth tab is a compile error here) without widening the keys back to `string`.
@@ -112,103 +113,117 @@ export function CustomTabBar({ state, descriptors, navigation }: BottomTabBarPro
   };
 
   return (
-    <View style={barStyle}>
-      {state.routes.map((route, index) => {
-        const { options } = descriptors[route.key];
-        const isFocused = state.index === index;
-        const isLast = index === state.routes.length - 1;
-        const color = isFocused ? theme.colors.blue : theme.colors.textTertiary;
+    <>
+      {/*
+        #928. One fixed-height line above the bar while an import is live, and
+        nothing at all otherwise. It sits AFTER the keyboard early-return
+        above, so it follows the bar's own visibility — which is exactly why
+        the accessibility announcer is a separate component mounted in App.tsx
+        rather than living in here.
+      */}
+      <ImportStatusStrip tabState={state} navigation={navigation} />
+      <View style={barStyle}>
+        {state.routes.map((route, index) => {
+          const { options } = descriptors[route.key];
+          const isFocused = state.index === index;
+          const isLast = index === state.routes.length - 1;
+          const color = isFocused ? theme.colors.blue : theme.colors.textTertiary;
 
-        const onPress = () => {
-          const event = navigation.emit({ type: 'tabPress', target: route.key, canPreventDefault: true });
-          if (!event.defaultPrevented) {
-            const initialScreen = lookupTab(TAB_INITIAL_SCREENS, route.name);
-            if (!initialScreen) {
-              navigation.navigate(route.name);
-              return;
-            }
-
-            // Always dismiss keyboard on tab press for clean transitions.
-            Keyboard.dismiss();
-
-            if (isFocused) {
-              // Same-tab re-press: pop nested stack to its root screen.
-              //
-              // IMPORTANT: Must use StackActions.popToTop(), NOT navigate().
-              // In React Navigation v7, navigate() inside a stack only matches
-              // the CURRENT route by name — if the target is a different screen
-              // lower in the stack, it PUSHES a duplicate instead of popping.
-              // popToTop produces a proper leftward-slide (pop) animation and
-              // reveals the already-mounted root screen (no fresh mount / no
-              // SafeAreaView inset resolution flash).
-              const nestedState = state.routes[index].state;
-              const nestedRouteCount = nestedState?.routes?.length ?? 1;
-
-              if (nestedRouteCount > 1 && nestedState?.key) {
-                navigation.dispatch({
-                  ...StackActions.popToTop(),
-                  target: nestedState.key,
-                });
+          const onPress = () => {
+            const event = navigation.emit({
+              type: 'tabPress',
+              target: route.key,
+              canPreventDefault: true,
+            });
+            if (!event.defaultPrevented) {
+              const initialScreen = lookupTab(TAB_INITIAL_SCREENS, route.name);
+              if (!initialScreen) {
+                navigation.navigate(route.name);
+                return;
               }
-              // else: already at root — nothing to pop.
-            } else {
-              // Cross-tab: switch to the target tab and reset its nested stack
-              // to root if it has depth from a previous session.
-              //
-              // The reset must happen WITHOUT animation (the target tab isn't
-              // visible yet, so an animated pop would flash the deep screen).
-              // navigate(tabName) handles the tab switch; the reset targets
-              // the nested stack directly via CommonActions.reset.
-              const targetNestedState = state.routes[index].state;
-              const targetNestedRouteCount = targetNestedState?.routes?.length ?? 1;
 
-              if (targetNestedRouteCount > 1 && targetNestedState?.key) {
-                // Reset target tab's stack to root (instant, no animation).
-                navigation.dispatch({
-                  ...CommonActions.reset({
-                    index: 0,
-                    routes: [{ name: initialScreen }],
-                  }),
-                  target: targetNestedState.key,
-                });
+              // Always dismiss keyboard on tab press for clean transitions.
+              Keyboard.dismiss();
+
+              if (isFocused) {
+                // Same-tab re-press: pop nested stack to its root screen.
+                //
+                // IMPORTANT: Must use StackActions.popToTop(), NOT navigate().
+                // In React Navigation v7, navigate() inside a stack only matches
+                // the CURRENT route by name — if the target is a different screen
+                // lower in the stack, it PUSHES a duplicate instead of popping.
+                // popToTop produces a proper leftward-slide (pop) animation and
+                // reveals the already-mounted root screen (no fresh mount / no
+                // SafeAreaView inset resolution flash).
+                const nestedState = state.routes[index].state;
+                const nestedRouteCount = nestedState?.routes?.length ?? 1;
+
+                if (nestedRouteCount > 1 && nestedState?.key) {
+                  navigation.dispatch({
+                    ...StackActions.popToTop(),
+                    target: nestedState.key,
+                  });
+                }
+                // else: already at root — nothing to pop.
+              } else {
+                // Cross-tab: switch to the target tab and reset its nested stack
+                // to root if it has depth from a previous session.
+                //
+                // The reset must happen WITHOUT animation (the target tab isn't
+                // visible yet, so an animated pop would flash the deep screen).
+                // navigate(tabName) handles the tab switch; the reset targets
+                // the nested stack directly via CommonActions.reset.
+                const targetNestedState = state.routes[index].state;
+                const targetNestedRouteCount = targetNestedState?.routes?.length ?? 1;
+
+                if (targetNestedRouteCount > 1 && targetNestedState?.key) {
+                  // Reset target tab's stack to root (instant, no animation).
+                  navigation.dispatch({
+                    ...CommonActions.reset({
+                      index: 0,
+                      routes: [{ name: initialScreen }],
+                    }),
+                    target: targetNestedState.key,
+                  });
+                }
+                // Switch to the target tab.
+                navigation.navigate(route.name);
               }
-              // Switch to the target tab.
-              navigation.navigate(route.name);
             }
-          }
-        };
+          };
 
-        const itemStyle: ViewStyle = {
-          flex: 1,
-          alignItems: 'center',
-          justifyContent: 'center',
-          paddingVertical: theme.spacing.sm,
-          borderRightWidth: isLast ? 0 : 1,
-          borderRightColor: theme.colors.borderStrong,
-        };
+          const itemStyle: ViewStyle = {
+            flex: 1,
+            alignItems: 'center',
+            justifyContent: 'center',
+            paddingVertical: theme.spacing.sm,
+            borderRightWidth: isLast ? 0 : 1,
+            borderRightColor: theme.colors.borderStrong,
+          };
 
-        const labelStyle: TextStyle = {
-          fontFamily: theme.typography.fontFamily.body,
-          fontSize: theme.typography.fontSize.xs,
-          color,
-          marginTop: 2,
-        };
+          const labelStyle: TextStyle = {
+            fontFamily: theme.typography.fontFamily.body,
+            fontSize: theme.typography.fontSize.xs,
+            color,
+            marginTop: 2,
+          };
 
-        return (
-          <TouchableOpacity
-            key={route.key}
-            style={itemStyle}
-            onPress={onPress}
-            accessibilityRole="tab"
-            accessibilityState={{ selected: isFocused }}
-            accessibilityLabel={options.tabBarAccessibilityLabel ?? route.name}
-          >
-            <Emoji unified={lookupTab(TAB_EMOJI, route.name) ?? '2753'} size={20} />
-            <Text style={labelStyle}>{route.name}</Text>
-          </TouchableOpacity>
-        );
-      })}
-    </View>
+          return (
+            <TouchableOpacity
+              key={route.key}
+              style={itemStyle}
+              onPress={onPress}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: isFocused }}
+              accessibilityLabel={options.tabBarAccessibilityLabel ?? route.name}
+            >
+              <Emoji unified={lookupTab(TAB_EMOJI, route.name) ?? '2753'} size={20} />
+              <Text style={labelStyle}>{route.name}</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+    </>
   );
 }
 
@@ -224,9 +239,9 @@ export function MainTabNavigator(): React.JSX.Element {
           if (state) {
             const route = state.routes[state.index];
             if (route) {
-              useAppStore.getState().setActiveTab(
-                route.name.toLowerCase() as 'threads' | 'chats' | 'settings',
-              );
+              useAppStore
+                .getState()
+                .setActiveTab(route.name.toLowerCase() as 'threads' | 'chats' | 'settings');
             }
           }
         },

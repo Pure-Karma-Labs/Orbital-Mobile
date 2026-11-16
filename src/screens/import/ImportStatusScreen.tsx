@@ -1,56 +1,307 @@
 /**
- * One screen for the whole run (#928 §3.1) — PLACEHOLDER.
+ * One screen for the whole import, from preflight to summary (#928 §3.1).
  *
- * Brief 2b replaces this body with the `deriveImportView` switch into the
- * preflight, run, paused and summary views. It exists now so the route is
- * registered, reachable and navigable, and so Brief 2a's Settings section can
- * be exercised end to end.
+ * ## Why one screen and not a preflight → progress → summary chain
  *
- * It is a single screen rather than a preflight→progress→summary `replace`
- * chain because the store changes phase on its OWN: a launch-time auto-resume,
- * a pause and the settle all move it with no member action to hang a
- * navigation on.
+ * The store changes phase on its OWN: a launch-time auto-resume, a pause, a
+ * re-pick, the settle. A `replace` chain needs a member action to hang each
+ * transition on, and there isn't one — so the chain would either miss
+ * transitions or fight the back stack. This screen renders whatever
+ * `deriveImportView` says the run is, and the member's Back button means the
+ * same thing in every state.
+ *
+ * ## Busy latches
+ *
+ * Two actions are not instantaneous and must not look dead:
+ *
+ *  - **Import**: `confirmAndRunImport` opens a key session before the phase
+ *    moves to `running`.
+ *  - **Stop / Start over**: a cancel that arrives during a PRE-RUN pause waits
+ *    for the in-flight pre-run entry to unwind first, which the transport
+ *    bounds at about 15 s.
+ *
+ * Both latch on the run's IDENTITY — phase, job id, and whether a summary
+ * exists — rather than on a timer, so the spinner clears exactly when the run
+ * actually moves, and a second tap in between is a no-op.
  */
 
-import React from 'react';
-import { ScrollView, Text, type TextStyle, type ViewStyle } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Alert, ScrollView, Text, View, type TextStyle, type ViewStyle } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useStore } from 'zustand';
 import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useTheme } from '../../theme';
+import { Button } from '../../components/Button';
 import { Header } from '../../components/Header';
-import { importViewStore } from './runnerContract';
-import { CHECKING_COPY, NO_IMPORT_COPY, deriveImportView, describeStripLine } from './importCopy';
+import { OrbitalSpinner } from '../../components/OrbitalSpinner';
+import { ImportParseView } from './ImportParseView';
+import { ImportPreflightView } from './ImportPreflightView';
+import { ImportRunView } from './ImportRunView';
+import { ImportSummaryView } from './ImportSummaryView';
+import { discardImportPreflight, importViewStore } from './runnerContract';
+import {
+  cancelImport,
+  confirmAndRunImport,
+  dismissImportSummary,
+  repickArchiveParts,
+  resumeImport,
+  resumeImportAtLaunch,
+} from '../../services/metaImport/importRunner';
+import {
+  CHECKING_COPY,
+  DIFFERENT_ARCHIVE_CHOOSE_LABEL,
+  DIFFERENT_ARCHIVE_COPY,
+  DIFFERENT_ARCHIVE_DISMISS_LABEL,
+  DIFFERENT_ARCHIVE_TITLE,
+  DONE_LABEL,
+  IMPORT_SCREEN_TITLE,
+  NO_IMPORT_COPY,
+  STOP_IMPORT_CONFIRM_BODY,
+  STOP_IMPORT_CONFIRM_TITLE,
+  STOP_IMPORT_LABEL,
+  deriveImportView,
+} from './importCopy';
+
+import type { SettingsStackParamList } from '../../navigation/types';
+
+type StatusNavigation = NativeStackNavigationProp<SettingsStackParamList, 'ImportStatus'>;
+
+/**
+ * A latch that holds until the run's identity changes.
+ *
+ * The identity is a STRING rather than the state object: the runner republishes
+ * a new object every 250 ms while counters move, and latching on that would
+ * clear the spinner on the next tick instead of on the next real transition.
+ */
+function useRunLatch(signature: string): readonly [boolean, () => void] {
+  const [latched, setLatched] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Functional update, so this effect depends on the signature alone and
+    // cannot loop: it clears only when the identity has actually moved on.
+    setLatched((previous) => (previous === null || previous === signature ? previous : null));
+  }, [signature]);
+
+  const latch = useCallback(() => {
+    setLatched(signature);
+  }, [signature]);
+
+  return [latched !== null, latch] as const;
+}
 
 export function ImportStatusScreen(): React.JSX.Element {
   const theme = useTheme();
-  const navigation = useNavigation();
+  const navigation = useNavigation<StatusNavigation>();
   const state = useStore(importViewStore);
   const view = deriveImportView(state);
+
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  const signature = `${state.phase}|${state.jobId ?? '-'}|${state.summary === null ? '-' : 'S'}`;
+  const [starting, latchStart] = useRunLatch(signature);
+  const [stopping, latchStop] = useRunLatch(signature);
+
+  const handleBack = useCallback(() => {
+    navigation.goBack();
+  }, [navigation]);
+
+  const handleSeeUnmigrated = useCallback(() => {
+    navigation.navigate('ImportUnmigrated');
+  }, [navigation]);
+
+  const handleImport = useCallback(() => {
+    if (starting) return;
+    latchStart();
+    // Not awaited: the store's phase is what ends the busy state, and the
+    // runner reports every failure through it.
+    confirmAndRunImport().catch(() => {});
+  }, [starting, latchStart]);
+
+  const handleDiscard = useCallback(() => {
+    discardImportPreflight()
+      .catch(() => {})
+      .finally(() => {
+        if (mounted.current) navigation.goBack();
+      });
+  }, [navigation]);
+
+  const handleStartOver = useCallback(() => {
+    if (stopping) return;
+    latchStop();
+    discardImportPreflight().catch(() => {});
+  }, [stopping, latchStop]);
+
+  const handleStop = useCallback(() => {
+    if (stopping) return;
+    Alert.alert(STOP_IMPORT_CONFIRM_TITLE, STOP_IMPORT_CONFIRM_BODY, [
+      { text: 'Keep importing', style: 'cancel' },
+      {
+        text: STOP_IMPORT_LABEL,
+        style: 'destructive',
+        onPress: () => {
+          if (!mounted.current || stopping) return;
+          latchStop();
+          cancelImport();
+        },
+      },
+    ]);
+  }, [stopping, latchStop]);
+
+  const handleRetry = useCallback(() => {
+    if (view.kind === 'blocked') {
+      // The preflight could not be rebuilt (offline, or an orbit the member
+      // has left). This re-enters through the runner's pre-run latch.
+      resumeImportAtLaunch().catch(() => {});
+      return;
+    }
+    resumeImport();
+  }, [view.kind]);
+
+  const handleRepick = useCallback(() => {
+    // Captured BEFORE the call: a different archive resets the store to idle,
+    // so reading either of these afterwards would read null.
+    const source = state.source;
+    const conversationId = state.conversationId;
+
+    repickArchiveParts()
+      .then((result) => {
+        if (!mounted.current || result !== 'different-archive') return;
+        Alert.alert(DIFFERENT_ARCHIVE_TITLE, DIFFERENT_ARCHIVE_COPY, [
+          { text: DIFFERENT_ARCHIVE_DISMISS_LABEL, style: 'cancel', onPress: handleBack },
+          {
+            text: DIFFERENT_ARCHIVE_CHOOSE_LABEL,
+            onPress: () => {
+              if (!mounted.current || source === null || conversationId === null) return;
+              navigation.replace('ImportHowTo', { source, conversationId });
+            },
+          },
+        ]);
+      })
+      .catch(() => {});
+  }, [state.source, state.conversationId, navigation, handleBack]);
+
+  const handleDone = useCallback(() => {
+    dismissImportSummary();
+    navigation.goBack();
+  }, [navigation]);
+
+  const handleCancelParse = useCallback(() => {
+    cancelImport();
+  }, []);
 
   const containerStyle: ViewStyle = {
     flex: 1,
     backgroundColor: theme.colors.background,
   };
 
+  const contentStyle: ViewStyle = {
+    paddingHorizontal: theme.spacing.base,
+    paddingTop: theme.spacing.base,
+    paddingBottom: theme.spacing.xl,
+  };
+
   const bodyStyle: TextStyle = {
     fontFamily: theme.typography.fontFamily.body,
     fontSize: theme.typography.fontSize.base,
     color: theme.colors.textPrimary,
-    padding: theme.spacing.base,
+    marginBottom: theme.spacing.md,
   };
 
-  const line =
-    view.kind === 'checking' ? CHECKING_COPY : (describeStripLine(view) ?? NO_IMPORT_COPY);
+  const centreStyle: ViewStyle = {
+    alignItems: 'center',
+    paddingVertical: theme.spacing.xl,
+  };
 
   return (
     <SafeAreaView style={containerStyle} edges={['top']} testID="import-status-screen">
-      <Header title="Import" onBack={() => navigation.goBack()} />
-      <ScrollView>
-        <Text style={bodyStyle}>{line}</Text>
-      </ScrollView>
+      <Header title={IMPORT_SCREEN_TITLE} onBack={handleBack} />
+      <ScrollView contentContainerStyle={contentStyle}>{renderBody()}</ScrollView>
     </SafeAreaView>
   );
+
+  function renderBody(): React.JSX.Element {
+    switch (view.kind) {
+      case 'checking':
+        return (
+          <View style={centreStyle} testID="import-checking-view">
+            <OrbitalSpinner size={32} />
+            <Text style={[bodyStyle, { marginTop: theme.spacing.base }]}>{CHECKING_COPY}</Text>
+          </View>
+        );
+
+      case 'parsing':
+        return <ImportParseView progress={state.parseProgress} onCancel={handleCancelParse} />;
+
+      case 'preflight':
+      case 'refused':
+      case 'nothing':
+        // `preflight` is non-null in every `ready` state the runner publishes;
+        // the null branch is `deriveImportView`'s own defensive `none`.
+        return state.preflight === null ? (
+          renderNone()
+        ) : (
+          <ImportPreflightView
+            kind={view.kind}
+            preflight={state.preflight}
+            source={state.source ?? 'facebook'}
+            busy={starting}
+            onImport={handleImport}
+            onDiscard={handleDiscard}
+            onSeeUnmigrated={handleSeeUnmigrated}
+          />
+        );
+
+      case 'running':
+      case 'paused':
+      case 'stalled':
+      case 'repick':
+      case 'blocked':
+        return (
+          <ImportRunView
+            view={view}
+            progress={state}
+            busy={stopping}
+            onStop={handleStop}
+            onRetry={handleRetry}
+            onRepick={handleRepick}
+            onStartOver={handleStartOver}
+          />
+        );
+
+      case 'completed':
+      case 'cancelled':
+      case 'failed':
+        return state.summary === null ? (
+          renderNone()
+        ) : (
+          <ImportSummaryView
+            summary={state.summary}
+            preflight={state.preflight}
+            onSeeUnmigrated={handleSeeUnmigrated}
+            onDone={handleDone}
+          />
+        );
+
+      case 'none':
+        return renderNone();
+    }
+  }
+
+  function renderNone(): React.JSX.Element {
+    return (
+      <View testID="import-none-view">
+        <Text style={bodyStyle}>{NO_IMPORT_COPY}</Text>
+        <Button title={DONE_LABEL} onPress={handleBack} testID="import-none-done" />
+      </View>
+    );
+  }
 }
 
 export default ImportStatusScreen;

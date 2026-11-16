@@ -24,8 +24,7 @@
  * The 2a shape (`ImportSettingsSection.test.tsx`, `ImportHowToScreen.test.tsx`):
  * the runner is mocked EXCEPT for its store, which is a real `zustand/vanilla`
  * store the tests write to in order to drive phases. `discardImportPreflight`
- * is read off the mocked runner module because `runnerContract.ts` resolves it
- * there at CALL time.
+ * is a `jest.fn()` on the mocked runner module.
  */
 
 import React from 'react';
@@ -54,14 +53,13 @@ import {
   describeSummaryLines,
 } from '../importCopy';
 
-import type { StoreApi } from 'zustand/vanilla';
 import type {
   ImportPreflight,
   ImportSummary,
   PauseCause,
 } from '../../../services/metaImport/importRunner';
 import type { SkipReason } from '../../../services/metaImport/types';
-import type { ImportViewState } from '../runnerContract';
+import type { ImportRunnerState } from '../../../services/metaImport/importRunner';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -134,9 +132,6 @@ jest.mock('../../../services/metaImport/importRunner', () => {
     repickArchiveParts: jest.fn(),
     resumeImport: jest.fn(),
     resumeImportAtLaunch: jest.fn(),
-    // Not an export of the real runner yet (§2): `runnerContract.ts` looks it
-    // up on this module at call time, which is exactly what makes mocking the
-    // runner enough.
     discardImportPreflight: jest.fn(),
   };
 });
@@ -165,13 +160,9 @@ const mockDiscard = (
 ).discardImportPreflight;
 
 /**
- * The store, typed against the contract the UI is built on.
- *
- * One cast in one place (`runnerContract.ts`'s own idiom): the runner's
- * published type has no `autoRetryExhausted` until Brief 1 lands, and these
- * tests drive it.
+ * The runner's real `zustand/vanilla` store, which these tests drive.
  */
-const store = importStore as unknown as StoreApi<ImportViewState>;
+const store = importStore;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -244,7 +235,7 @@ const CANCELLED_SUMMARY: ImportSummary = { ...COMPLETED_SUMMARY, cancelled: true
 
 const FAILED_SUMMARY: ImportSummary = { ...COMPLETED_SUMMARY, errorCode: 'NETWORK' };
 
-const BASE_STATE: ImportViewState = {
+const BASE_STATE: ImportRunnerState = {
   phase: 'idle',
   jobId: null,
   conversationId: null,
@@ -266,7 +257,7 @@ const BASE_STATE: ImportViewState = {
 };
 
 /** A live run, in the orbit the fake app store knows about. */
-const RUNNING_STATE: Partial<ImportViewState> = {
+const RUNNING_STATE: Partial<ImportRunnerState> = {
   phase: 'running',
   jobId: 'job-1',
   conversationId: 'g1',
@@ -294,7 +285,7 @@ function renderScreen(): ReactTestRenderer {
   return renderer;
 }
 
-function setState(patch: Partial<ImportViewState>): void {
+function setState(patch: Partial<ImportRunnerState>): void {
   act(() => {
     store.setState(patch);
   });
@@ -397,7 +388,7 @@ const ALL_VIEW_TEST_IDS: readonly string[] = [
 ];
 
 describe('ImportStatusScreen — the view kind decides the body (§3.1)', () => {
-  const views: ReadonlyArray<[string, Partial<ImportViewState>, string]> = [
+  const views: ReadonlyArray<[string, Partial<ImportRunnerState>, string]> = [
     ['checking', { phase: 'hydrating' }, 'import-checking-view'],
     ['none', { phase: 'idle', jobId: null }, 'import-none-view'],
     ['blocked', { phase: 'idle', jobId: 'job-1' }, 'import-run-view-blocked'],
@@ -791,7 +782,7 @@ describe('ImportStatusScreen — blocked', () => {
 
 describe('ImportStatusScreen — the pre-run cancel latch', () => {
   /** Each of the three identity moves that must clear the latch. */
-  const identityMoves: ReadonlyArray<[string, Partial<ImportViewState>]> = [
+  const identityMoves: ReadonlyArray<[string, Partial<ImportRunnerState>]> = [
     ['the phase', { phase: 'running', total: 300 }],
     ['the job id', { jobId: 'job-2' }],
     ['the summary', { summary: CANCELLED_SUMMARY }],

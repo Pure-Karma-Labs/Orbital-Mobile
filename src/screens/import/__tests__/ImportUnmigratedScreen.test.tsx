@@ -17,9 +17,7 @@
  *
  * The 2a shape: the runner is mocked EXCEPT for its store, which is a real
  * `zustand/vanilla` store. `getImportUnmigratedItems` is a `jest.fn()` on that
- * mocked module — the screen reaches it through `runnerContract.ts`, which
- * looks the function up on the runner module at CALL time, so mocking the
- * runner is enough.
+ * mocked module.
  *
  * ## The ten-row ceiling in these fixtures
  *
@@ -51,15 +49,14 @@ import {
 } from '../importCopy';
 import { formatDateWithYear } from '../../../utils/formatPostTimestamp';
 
-import type { StoreApi } from 'zustand/vanilla';
 import type { ImportPreflight } from '../../../services/metaImport/importRunner';
 import type { FileIssue, SkipReason } from '../../../services/metaImport/types';
 import type {
-  ImportViewState,
+  ImportRunnerState,
   UnmigratedCounts,
   UnmigratedImportItem,
   UnmigratedImportList,
-} from '../runnerContract';
+} from '../../../services/metaImport/importRunner';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -125,14 +122,13 @@ jest.mock('../../../services/metaImport/importRunner', () => {
       autoRetryExhausted: false,
     })),
     cancelImport: jest.fn(),
-    // Resolved on the runner module at call time by `runnerContract.ts`.
     getImportUnmigratedItems: jest.fn(),
   };
 });
 
 import { importStore } from '../../../services/metaImport/importRunner';
 
-const store = importStore as unknown as StoreApi<ImportViewState>;
+const store = importStore;
 
 const mockGetItems = (
   jest.requireMock('../../../services/metaImport/importRunner') as {
@@ -308,7 +304,7 @@ function textsOf(node: ReactTestInstance): string[] {
     .map((child) => String(child.props.children));
 }
 
-function setStore(patch: Partial<ImportViewState>): void {
+function setStore(patch: Partial<ImportRunnerState>): void {
   store.setState(patch);
 }
 

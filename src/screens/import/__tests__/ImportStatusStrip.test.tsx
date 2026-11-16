@@ -24,10 +24,9 @@ import { EmojiText } from '../../../components/EmojiText';
 import { ImportStatusStrip } from '../ImportStatusStrip';
 import { PAUSE_COPY, describeRunProgress } from '../importCopy';
 
-import type { StoreApi } from 'zustand/vanilla';
 import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import type { NavigationState, ParamListBase, PartialState } from '@react-navigation/native';
-import type { ImportViewState } from '../runnerContract';
+import type { ImportRunnerState } from '../../../services/metaImport/importRunner';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -83,7 +82,7 @@ jest.mock('../../../services/metaImport/importRunner', () => {
 import { importStore } from '../../../services/metaImport/importRunner';
 import { openImportStatus } from '../openImportStatus';
 
-const store = importStore as unknown as StoreApi<ImportViewState>;
+const store = importStore;
 const mockOpen = openImportStatus as jest.Mock;
 
 // ---------------------------------------------------------------------------
@@ -93,7 +92,7 @@ const mockOpen = openImportStatus as jest.Mock;
 type NestedState = NavigationState<ParamListBase> | PartialState<NavigationState<ParamListBase>>;
 type TabState = BottomTabBarProps['state'];
 
-const BASE_STATE: ImportViewState = {
+const BASE_STATE: ImportRunnerState = {
   phase: 'idle',
   jobId: null,
   conversationId: null,
@@ -114,7 +113,7 @@ const BASE_STATE: ImportViewState = {
   autoRetryExhausted: false,
 };
 
-const RUNNING_STATE: Partial<ImportViewState> = {
+const RUNNING_STATE: Partial<ImportRunnerState> = {
   phase: 'running',
   jobId: 'job-1',
   conversationId: 'g1',

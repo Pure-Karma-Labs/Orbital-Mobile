@@ -33,7 +33,7 @@ import { ImportHowToScreen } from '../ImportHowToScreen';
 import { ACCOUNTS_CENTER_URL, PICK_FAILURE_COPY, describeIntoCaption } from '../importCopy';
 
 import type { ImportPreflight, ImportRunnerState } from '../../../services/metaImport/importRunner';
-import type { PickFailureReason, PickParseResult } from '../runnerContract';
+import type { PickFailureReason, PickParseResult } from '../../../services/metaImport/importRunner';
 import type { SkipReason } from '../../../services/metaImport/types';
 
 // ---------------------------------------------------------------------------
@@ -103,7 +103,6 @@ jest.mock('../../../services/metaImport/importRunner', () => {
       conversationId: null,
       source: null,
       preflight: null,
-      needsRepick: false,
       total: 0,
       created: 0,
       duplicate: 0,
@@ -111,12 +110,12 @@ jest.mock('../../../services/metaImport/importRunner', () => {
       skipped: 0,
       heldVideo: 0,
       mediaDone: 0,
-      mediaTotal: 0,
       parseProgress: null,
       pauseCauses: [],
       resumeAtMs: null,
       summary: null,
       errorCode: null,
+      autoRetryExhausted: false,
     })),
     probeImportAvailability: jest.fn(),
     pickAndStartParse: jest.fn(),
@@ -192,7 +191,6 @@ const BASE_STATE: ImportRunnerState = {
   conversationId: null,
   source: null,
   preflight: null,
-  needsRepick: false,
   total: 0,
   created: 0,
   duplicate: 0,
@@ -200,12 +198,12 @@ const BASE_STATE: ImportRunnerState = {
   skipped: 0,
   heldVideo: 0,
   mediaDone: 0,
-  mediaTotal: 0,
   parseProgress: null,
   pauseCauses: [],
   resumeAtMs: null,
   summary: null,
   errorCode: null,
+  autoRetryExhausted: false,
 };
 
 // ---------------------------------------------------------------------------

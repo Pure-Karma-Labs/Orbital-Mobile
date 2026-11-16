@@ -47,7 +47,7 @@ import type {
   PickFailureReason,
   UnmigratedCounts,
   UnmigratedImportItem,
-} from './runnerContract';
+} from '../../services/metaImport/importRunner';
 
 // ---------------------------------------------------------------------------
 // Primitives

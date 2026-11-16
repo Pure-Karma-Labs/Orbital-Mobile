@@ -44,7 +44,7 @@ import { Header } from '../../components/Header';
 import { SectionHeader } from '../settings/SectionHeader';
 import { ImportParseView } from './ImportParseView';
 import { useImportAvailability } from './useImportAvailability';
-import { importViewStore, pickAndStartParse } from './runnerContract';
+import { importStore, pickAndStartParse } from '../../services/metaImport/importRunner';
 import { cancelImport, resumeImportAtLaunch } from '../../services/metaImport/importRunner';
 import {
   ACCOUNTS_CENTER_LINK_LABEL,
@@ -72,8 +72,8 @@ export function ImportHowToScreen(): React.JSX.Element {
 
   const orbitName = useAppStore((s) => s.conversations[conversationId]?.name ?? null);
   const availability = useImportAvailability(conversationId);
-  const phase = useStore(importViewStore, (s) => s.phase);
-  const parseProgress = useStore(importViewStore, (s) => s.parseProgress);
+  const phase = useStore(importStore, (s) => s.phase);
+  const parseProgress = useStore(importStore, (s) => s.parseProgress);
 
   const [error, setError] = useState<string | null>(null);
 

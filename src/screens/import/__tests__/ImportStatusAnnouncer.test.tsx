@@ -25,10 +25,9 @@ import { AccessibilityInfo } from 'react-native';
 import { ImportStatusAnnouncer } from '../ImportStatusAnnouncer';
 import { PAUSE_COPY, describeSummaryHeadline, plural } from '../importCopy';
 
-import type { StoreApi } from 'zustand/vanilla';
 import type { ImportPreflight, ImportSummary } from '../../../services/metaImport/importRunner';
 import type { SkipReason } from '../../../services/metaImport/types';
-import type { ImportViewState } from '../runnerContract';
+import type { ImportRunnerState } from '../../../services/metaImport/importRunner';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -62,7 +61,7 @@ jest.mock('../../../services/metaImport/importRunner', () => {
 
 import { importStore } from '../../../services/metaImport/importRunner';
 
-const store = importStore as unknown as StoreApi<ImportViewState>;
+const store = importStore;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -122,7 +121,7 @@ const SUMMARY: ImportSummary = {
   cancelled: false,
 };
 
-const BASE_STATE: ImportViewState = {
+const BASE_STATE: ImportRunnerState = {
   phase: 'idle',
   jobId: null,
   conversationId: null,
@@ -143,7 +142,7 @@ const BASE_STATE: ImportViewState = {
   autoRetryExhausted: false,
 };
 
-const RUNNING_STATE: Partial<ImportViewState> = {
+const RUNNING_STATE: Partial<ImportRunnerState> = {
   phase: 'running',
   jobId: 'job-1',
   conversationId: 'g1',
@@ -168,7 +167,7 @@ function mountAnnouncer(): ReactTestRenderer {
   return renderer;
 }
 
-function setState(patch: Partial<ImportViewState>): void {
+function setState(patch: Partial<ImportRunnerState>): void {
   act(() => {
     store.setState(patch);
   });
@@ -289,7 +288,7 @@ describe('ImportStatusAnnouncer — transitions, not ticks', () => {
 // ---------------------------------------------------------------------------
 
 describe('ImportStatusAnnouncer — the kinds worth no interruption', () => {
-  const silent: ReadonlyArray<[string, Partial<ImportViewState>]> = [
+  const silent: ReadonlyArray<[string, Partial<ImportRunnerState>]> = [
     ['checking', { phase: 'hydrating' }],
     ['none', { phase: 'idle', jobId: null }],
     ['blocked', { phase: 'idle', jobId: 'job-1' }],

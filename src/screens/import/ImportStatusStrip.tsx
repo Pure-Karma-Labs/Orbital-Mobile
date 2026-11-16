@@ -30,7 +30,7 @@ import { getFocusedRouteNameFromRoute } from '@react-navigation/native';
 import { useTheme } from '../../theme';
 import { useAppStore } from '../../stores/useAppStore';
 import { EmojiText } from '../../components/EmojiText';
-import { importViewStore } from './runnerContract';
+import { importStore } from '../../services/metaImport/importRunner';
 import { openImportStatus } from './openImportStatus';
 import { deriveImportView, describeRunProgress, describeStripLine } from './importCopy';
 
@@ -52,18 +52,18 @@ export function ImportStatusStrip({
 
   // Bare single-field selectors, as in the Settings section: an object
   // selector would rebuild on every 250 ms emission.
-  const phase = useStore(importViewStore, (s) => s.phase);
-  const jobId = useStore(importViewStore, (s) => s.jobId);
-  const jobConversationId = useStore(importViewStore, (s) => s.conversationId);
-  const preflight = useStore(importViewStore, (s) => s.preflight);
-  const pauseCauses = useStore(importViewStore, (s) => s.pauseCauses);
-  const autoRetryExhausted = useStore(importViewStore, (s) => s.autoRetryExhausted);
-  const summary = useStore(importViewStore, (s) => s.summary);
-  const total = useStore(importViewStore, (s) => s.total);
-  const created = useStore(importViewStore, (s) => s.created);
-  const duplicate = useStore(importViewStore, (s) => s.duplicate);
-  const failed = useStore(importViewStore, (s) => s.failed);
-  const heldVideo = useStore(importViewStore, (s) => s.heldVideo);
+  const phase = useStore(importStore, (s) => s.phase);
+  const jobId = useStore(importStore, (s) => s.jobId);
+  const jobConversationId = useStore(importStore, (s) => s.conversationId);
+  const preflight = useStore(importStore, (s) => s.preflight);
+  const pauseCauses = useStore(importStore, (s) => s.pauseCauses);
+  const autoRetryExhausted = useStore(importStore, (s) => s.autoRetryExhausted);
+  const summary = useStore(importStore, (s) => s.summary);
+  const total = useStore(importStore, (s) => s.total);
+  const created = useStore(importStore, (s) => s.created);
+  const duplicate = useStore(importStore, (s) => s.duplicate);
+  const failed = useStore(importStore, (s) => s.failed);
+  const heldVideo = useStore(importStore, (s) => s.heldVideo);
 
   const orbitName = useAppStore((s) =>
     jobConversationId === null ? undefined : s.conversations[jobConversationId]?.name,

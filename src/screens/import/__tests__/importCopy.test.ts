@@ -12,8 +12,8 @@
 // mock — see "purity" below, which requires the module with no mocks in scope.
 //
 // For the same reason the TYPE imports below are all `import type`: an erased
-// import cannot drag a native module in, and `runnerContract.ts` in particular
-// *does* import the runner at runtime.
+// import cannot drag a native module in, and `importRunner.ts` in particular
+// reaches native modules at runtime.
 // ---------------------------------------------------------------------------
 
 import { SKIP_REASON_CLASS } from '../../../services/metaImport/types';
@@ -58,7 +58,7 @@ import type {
   PickFailureReason,
   UnmigratedCounts,
   UnmigratedImportItem,
-} from '../runnerContract';
+} from '../../../services/metaImport/importRunner';
 import type {
   ImportView,
   ImportViewInput,

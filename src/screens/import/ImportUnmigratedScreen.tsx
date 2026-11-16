@@ -41,7 +41,7 @@ import { useTheme } from '../../theme';
 import { Header } from '../../components/Header';
 import { SectionHeader } from '../settings/SectionHeader';
 import { SKIP_REASON_CLASS } from '../../services/metaImport/types';
-import { getImportUnmigratedItems, importViewStore } from './runnerContract';
+import { getImportUnmigratedItems, importStore } from '../../services/metaImport/importRunner';
 import {
   FILE_ISSUE_GROUP_HEADER,
   SHARE_LIST_LABEL,
@@ -58,7 +58,10 @@ import {
 } from './importCopy';
 
 import type { FileIssue, ImportSource, SkipReason } from '../../services/metaImport/types';
-import type { UnmigratedCounts, UnmigratedImportItem } from './runnerContract';
+import type {
+  UnmigratedCounts,
+  UnmigratedImportItem,
+} from '../../services/metaImport/importRunner';
 import type { UnmigratedGroupKey } from './importCopy';
 
 /** One line of the list. The group headers are rows like any other. */
@@ -103,7 +106,7 @@ export function ImportUnmigratedScreen(): React.JSX.Element {
    * read from the store at the same instant for the same reason.
    */
   const [snapshot] = useState(() => {
-    const state = importViewStore.getState();
+    const state = importStore.getState();
     return {
       list: getImportUnmigratedItems(),
       fileIssues: state.preflight?.summary?.fileIssues ?? ([] as readonly FileIssue[]),

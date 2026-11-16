@@ -39,7 +39,7 @@ import { ImportParseView } from './ImportParseView';
 import { ImportPreflightView } from './ImportPreflightView';
 import { ImportRunView } from './ImportRunView';
 import { ImportSummaryView } from './ImportSummaryView';
-import { discardImportPreflight, importViewStore } from './runnerContract';
+import { discardImportPreflight, importStore } from '../../services/metaImport/importRunner';
 import {
   cancelImport,
   confirmAndRunImport,
@@ -93,7 +93,7 @@ function useRunLatch(signature: string): readonly [boolean, () => void] {
 export function ImportStatusScreen(): React.JSX.Element {
   const theme = useTheme();
   const navigation = useNavigation<StatusNavigation>();
-  const state = useStore(importViewStore);
+  const state = useStore(importStore);
   const view = deriveImportView(state);
 
   const mounted = useRef(true);

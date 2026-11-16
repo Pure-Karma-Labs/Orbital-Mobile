@@ -21,13 +21,13 @@
 import { useEffect, useRef } from 'react';
 import { AccessibilityInfo } from 'react-native';
 import { useStore } from 'zustand';
-import { importViewStore } from './runnerContract';
+import { importStore } from '../../services/metaImport/importRunner';
 import { deriveImportView, describeImportAnnouncement } from './importCopy';
 
 import type { ImportViewKind } from './importCopy';
 
 export function ImportStatusAnnouncer(): null {
-  const state = useStore(importViewStore);
+  const state = useStore(importStore);
   const view = deriveImportView(state);
 
   /**
@@ -35,7 +35,7 @@ export function ImportStatusAnnouncer(): null {
    * a null: mounting mid-run must not announce the state the member is
    * already in.
    */
-  const announcedRef = useRef<ImportViewKind>(deriveImportView(importViewStore.getState()).kind);
+  const announcedRef = useRef<ImportViewKind>(deriveImportView(importStore.getState()).kind);
 
   const kind = view.kind;
   const cause = view.cause;

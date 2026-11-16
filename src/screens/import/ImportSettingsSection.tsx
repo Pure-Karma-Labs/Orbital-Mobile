@@ -30,7 +30,7 @@ import { EmojiText } from '../../components/EmojiText';
 import { SectionHeader } from '../settings/SectionHeader';
 import { SettingsRow } from '../settings/SettingsRow';
 import { useImportAvailability } from './useImportAvailability';
-import { importViewStore } from './runnerContract';
+import { importStore } from '../../services/metaImport/importRunner';
 import {
   IMPORT_SECTION_HEADER,
   OTHER_ORBIT_STATUS_LABEL,
@@ -92,13 +92,13 @@ export function ImportSettingsSection(): React.JSX.Element | null {
   );
 
   // Bare single-field selectors — see the header note.
-  const phase = useStore(importViewStore, (s) => s.phase);
-  const jobId = useStore(importViewStore, (s) => s.jobId);
-  const jobConversationId = useStore(importViewStore, (s) => s.conversationId);
-  const preflight = useStore(importViewStore, (s) => s.preflight);
-  const pauseCauses = useStore(importViewStore, (s) => s.pauseCauses);
-  const autoRetryExhausted = useStore(importViewStore, (s) => s.autoRetryExhausted);
-  const summary = useStore(importViewStore, (s) => s.summary);
+  const phase = useStore(importStore, (s) => s.phase);
+  const jobId = useStore(importStore, (s) => s.jobId);
+  const jobConversationId = useStore(importStore, (s) => s.conversationId);
+  const preflight = useStore(importStore, (s) => s.preflight);
+  const pauseCauses = useStore(importStore, (s) => s.pauseCauses);
+  const autoRetryExhausted = useStore(importStore, (s) => s.autoRetryExhausted);
+  const summary = useStore(importStore, (s) => s.summary);
 
   const jobOrbitName = useAppStore((s) =>
     jobConversationId === null ? undefined : s.conversations[jobConversationId]?.name,

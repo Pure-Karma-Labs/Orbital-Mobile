@@ -4,8 +4,9 @@
  * One function does one post's media: for each `import_item_media` row, in
  * `ordinal` order, extract the archive entry, hand it to `uploadMedia` in
  * import mode, and record the result. It owns exactly two `importRepository`
- * writes — `markMediaUploaded` and `replaceMediaId` — and no network, crypto
- * or archive policy of its own.
+ * writes — `markMediaUploaded` and `replaceMediaId` — and one network call of
+ * its own, the complete-only retry described below; everything else about the
+ * transport, the crypto and the archive policy belongs to somebody else.
  *
  * ## What this module decides, and what it refuses to decide
  *
@@ -47,6 +48,19 @@
  *     fresh id would spend the member's allowance on a refusal that has not
  *     changed.
  *
+ *     **The one documented exception is `IMPORT_QUOTA_EXCEEDED` at media
+ *     complete**, where the server refuses AFTER the point it would have
+ *     discarded anything: `assertImportQuotaForMediaBytes` rolls back the media
+ *     row and deletes the assembled blob but KEEPS the temp row, every chunk
+ *     file and the open session (`importMediaUploadService.js`
+ *     `handleImportComplete` step 7 and its catch, verified). The id is
+ *     therefore not burned at all — it is STAGED — and the only call the file
+ *     still owes is the settle. Rebinding there made the end-of-run pass
+ *     re-extract, re-encrypt and re-upload the whole file, leaving two copies
+ *     of it counted against the member's member-wide staged ceiling until the
+ *     24 h sweep. So that one refusal keeps its `media_id` and records the
+ *     (item, ordinal) in {@link ImportMediaRun.stagedComplete} instead.
+ *
  * ## Handling classes
  *
  * `entry_id`, `media_id`, `import_id`, the staging path and the member's dates
@@ -58,6 +72,11 @@
 
 import { markMediaUploaded, replaceMediaId } from '../../database/repositories/importRepository';
 import { generateUUID } from '../../utils/uuid';
+// The media-complete route's own client, shared with the ordinary upload path
+// rather than duplicated beside the five JSON routes in `api/imports.ts`: it is
+// ONE route, `POST /api/imports/:importId/media/complete`, and a second client
+// function for it would be a second place for its contract to drift.
+import { completeImportUpload } from '../api/media';
 import { isUploadCancellation, uploadMedia } from '../mediaUploadService';
 
 import type { PendingImportItem } from '../../database/repositories/importRepository';
@@ -149,8 +168,11 @@ export type ImportMediaOutcome =
    * at either route, an `IMPORT_CLOSED`.
    *
    * The id has already been rebound (`replaceMediaId`), so the row is
-   * re-uploadable under a fresh id whenever the run gets there — but nothing
-   * here retries it. `error` is the UNWRAPPED cause, for
+   * re-uploadable under a fresh id whenever the run gets there — with the ONE
+   * exception the module header spells out: a media-complete
+   * `IMPORT_QUOTA_EXCEEDED` keeps its id and its staged chunks, and is settled
+   * by a complete-only call on the end-of-run pass. Either way nothing here
+   * retries it. `error` is the UNWRAPPED cause, for
    * `classifyImportFailure(error, {stage, …})`, whose answer is park-file,
    * `job-terminal('ALLOWANCE')`, `session-restart` or a pause. It is never
    * re-rendered and never logged.
@@ -179,6 +201,26 @@ export interface ImportMediaRun {
    * so an in-flight continuation really is scheduled in that window.
    */
   isCurrentRun(): boolean;
+  /**
+   * `${itemId}:${ordinal}` for every row whose chunks are ALL on the server
+   * under the row's current `media_id`, with only the media-complete call left
+   * to make.
+   *
+   * Exactly one refusal puts a key here — `IMPORT_QUOTA_EXCEEDED` at media
+   * complete, which keeps the temp row, its chunks and the session (see the
+   * module header, rule 2) — and the end-of-run pass is what reads it: the key
+   * turns a whole re-upload into the single call the file is actually missing.
+   *
+   * Owned by the RUN and never persisted. Every staged row is bound to one
+   * server session, so the runner drops the whole set wherever it restarts
+   * that session, and a later launch re-uploads from scratch (the old session's
+   * temp row answers the chunk route 403, which this file rebinds).
+   *
+   * `media_id` is deliberately not part of the key: the row's own id is what
+   * the retry settles, and a key that carried it would miss the row after any
+   * rebind.
+   */
+  readonly stagedComplete: Set<string>;
   /** Seam for tests. Production mints ids only with `generateUUID` (#921). */
   newMediaId?(): string;
 }
@@ -467,6 +509,78 @@ function skipOutcome(skip: string): ImportMediaOutcome {
   return { kind: 'item-failed', code: 'IMPORT_MEDIA_UNAVAILABLE' };
 }
 
+/** The {@link ImportMediaRun.stagedComplete} key for one (item, ordinal). */
+function stagedKey(itemId: string, ordinal: number): string {
+  return `${itemId}:${ordinal}`;
+}
+
+/**
+ * Settle a row the server already holds every chunk of: ONE call, no extract,
+ * no sanitize, no re-encrypt, no bytes.
+ *
+ * Reached only for a key the quota park left in `stagedComplete`, i.e. on the
+ * end-of-run pass. The wire contract is the same one `uploadMedia` ends on —
+ * `POST /api/imports/:importId/media/complete` with `{media_id}`, 201 on the
+ * settle and 200 on the idempotent repeat, both of which mean the bytes are
+ * committed and the ordinal is done.
+ *
+ * `'rebind'` is the one answer that is not an outcome: the server has proved
+ * the staged row is NOT there to settle, so the caller mints a fresh id and
+ * uploads the file the long way.
+ */
+async function completeStagedOrdinal(
+  item: PendingImportItem,
+  media: ImportItemMediaRow,
+  run: ImportMediaRun,
+  key: string,
+): Promise<ImportMediaOutcome | 'rebind'> {
+  try {
+    await completeImportUpload(run.importId, media.media_id);
+  } catch (e) {
+    if (run.signal.aborted || isUploadCancellation(e)) return CANCELLED;
+
+    // The row this key stood for is gone, or was never this session's. All
+    // three shapes are verified in `handleImportComplete`: a 404 when neither
+    // a temp row nor our own media row exists, the 403 of the symmetric
+    // import_id/user binding, and the bare 409 of an upload that was torn down
+    // and restarted. None of them is settleable, so re-upload from scratch.
+    if (nameOf(e) === 'NotFoundError' || isIdBindingFailure(e)) {
+      run.stagedComplete.delete(key);
+      return 'rebind';
+    }
+
+    const refusal = refusalOf(e);
+    if (refusal !== undefined) {
+      if (refusal.code !== 'IMPORT_QUOTA_EXCEEDED') {
+        // Every other import refusal has taken the row with it: the allowance
+        // overrun COMMITS the temp row's deletion and closes the session, and a
+        // closed session will never accept this id again. Rebind now, so that
+        // whatever the runner decides next is looking at a row that can be
+        // re-uploaded rather than one pointing at bytes nobody can settle.
+        run.stagedComplete.delete(key);
+        if (stopped(run)) return CANCELLED;
+        replaceMediaId(item.id, media.ordinal, (run.newMediaId ?? generateUUID)());
+      }
+      // A SECOND `IMPORT_QUOTA_EXCEEDED` keeps both the id and the key: the
+      // runner is in its end-of-run pass, where the taxonomy answers
+      // `item-failed('QUOTA')` rather than another park.
+      return { kind: 'refused', stage: 'media-complete', error: e };
+    }
+
+    // Network, a 429, a 5xx, a shape refusal: the taxonomy owns every one of
+    // them, and the row stays staged — nothing consumed it, so a later pass
+    // through here is still one call away from settling it.
+    throw e;
+  }
+
+  run.stagedComplete.delete(key);
+  // Rule 0 as everywhere else: the bytes are committed, but a reset run writes
+  // nothing. The next run re-reads the row and re-uploads.
+  if (stopped(run)) return CANCELLED;
+  markMediaUploaded(item.id, media.ordinal);
+  return UPLOADED;
+}
+
 /**
  * One (item, ordinal): extract → upload → mark, with at most one fresh-id
  * rebind.
@@ -476,6 +590,12 @@ function skipOutcome(skip: string): ImportMediaOutcome {
  * re-extracts deliberately: the staging file was released in the first pass's
  * `finally`, and a staging path is only valid until the next reaper pass
  * anyway.
+ *
+ * A row the quota park left STAGED skips all of that on its first pass: the
+ * bytes are already on the server, so the only call owed is the settle
+ * ({@link completeStagedOrdinal}). The upload path below is re-entered from
+ * there only if that call proves the staged row is gone, which spends the one
+ * rebind the same way an id-binding failure would.
  */
 async function uploadOneOrdinal(
   item: PendingImportItem,
@@ -484,9 +604,20 @@ async function uploadOneOrdinal(
 ): Promise<ImportMediaOutcome> {
   const mintId = run.newMediaId ?? generateUUID;
   let mediaId = media.media_id;
+  const key = stagedKey(item.id, media.ordinal);
 
   for (let attempt = 0; attempt < 2; attempt++) {
     if (stopped(run)) return CANCELLED;
+
+    if (run.stagedComplete.has(key)) {
+      const settled = await completeStagedOrdinal(item, media, run, key);
+      if (settled !== 'rebind') return settled;
+      if (stopped(run)) return CANCELLED;
+      // Not settleable: the staged row is gone, so this is a fresh upload of
+      // the whole file and it needs an id nothing is bound to.
+      mediaId = mintId();
+      replaceMediaId(item.id, media.ordinal, mediaId);
+    }
 
     const extracted = await extractWithOneRetry(run, media.entry_id);
     if (!extracted.ok) return skipOutcome(extracted.skip);
@@ -560,11 +691,24 @@ async function uploadOneOrdinal(
     if (!staged) throw cause;
 
     if (stopped(run)) return CANCELLED;
+
+    const stage = importMediaStage(cause);
+    if (stage === 'media-complete' && refusalOf(cause)?.code === 'IMPORT_QUOTA_EXCEEDED') {
+      // The orbit was full at media complete, the one refusal that keeps the
+      // temp row, every chunk file and the session (module header, rule 2). The
+      // id is STAGED rather than burned: record the settle it still owes and
+      // leave the row alone. Rebinding here is what made the end-of-run pass
+      // re-upload the whole file, with both copies counted against the member's
+      // member-wide staged ceiling until the 24 h sweep.
+      run.stagedComplete.add(key);
+      return { kind: 'refused', stage, error: cause };
+    }
+
     // The id IS burned, so the row must point at a fresh one before anybody
     // re-uploads it — but WHEN that happens is the runner's call, and for an
     // orbit that is full or an allowance that is spent it must not be now.
     replaceMediaId(item.id, media.ordinal, mintId());
-    return { kind: 'refused', stage: importMediaStage(cause), error: cause };
+    return { kind: 'refused', stage, error: cause };
   }
 
   // Unreachable: the loop either returns or throws on both passes. Returning

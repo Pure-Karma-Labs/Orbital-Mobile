@@ -468,12 +468,28 @@ interface ActiveRun {
   created: number;
   duplicate: number;
   failed: number;
-  heldVideo: number;
   mediaDone: number;
-  /** Items parked in `uploading` for the held-video hold; never requeued. */
+  /**
+   * Items parked in `uploading` for the held-video hold; never requeued.
+   *
+   * ALSO the held-video counter: `heldVideo` is `held.size` wherever it is
+   * published, never a second number kept beside it. A standalone counter
+   * double-counted every post that was held, requeued by a session restart and
+   * then held again (#993 fold round) — the two could only agree for as long
+   * as nobody cleared the set.
+   */
   held: Set<string>;
   /** Items parked for the single end-of-run `IMPORT_QUOTA_EXCEEDED` retry. */
   parked: Set<string>;
+  /**
+   * `importMedia`'s staged-complete ledger: `${itemId}:${ordinal}` for every
+   * media row whose chunks are all on the server, awaiting only the settle.
+   *
+   * Lives on the run because every staged row is bound to ONE server session:
+   * {@link restartServerSession} drops it with the park set, and a fresh launch
+   * starts empty and re-uploads.
+   */
+  stagedMedia: Set<string>;
   endOfRunPass: boolean;
   /** Consecutive cycles that drained nothing. Two in a row is a stuck loop. */
   idleCycles: number;
@@ -1108,10 +1124,17 @@ async function restartServerSession(r: ActiveRun, stageAttempt: number): Promise
     // else: a held post is held again on its next extract (one peek each), and
     // a parked one is retried now rather than in the end-of-run pass. Both
     // sets must be dropped, or the summary would keep subtracting rows that
-    // are no longer parked anywhere.
+    // are no longer parked anywhere — and because `held.size` IS the held-video
+    // count, dropping the set is also what stops the re-hold from counting the
+    // same post twice.
     r.held.clear();
     r.parked.clear();
   }
+  // Unconditional, requeue or not: every staged row was bound to the session
+  // this call just closed, so none of them can be settled any more. The chunk
+  // route answers 403 for a temp row bound elsewhere, which `importMedia`
+  // rebinds — a stale key here would spend a complete call to learn that.
+  r.stagedMedia.clear();
   return 'retry';
 }
 
@@ -1337,6 +1360,7 @@ async function runMediaForItem(r: ActiveRun, item: PendingImportItem): Promise<S
         session,
         signal: r.controller.signal,
         isCurrentRun: () => r === run && !wiped(r),
+        stagedComplete: r.stagedMedia,
       });
     } catch (e) {
       // `importMedia` rethrows exactly the failures that are about the RUN;
@@ -1361,9 +1385,15 @@ async function runMediaForItem(r: ActiveRun, item: PendingImportItem): Promise<S
         // The issue's AC reports held video separately from failures, so the
         // post is parked rather than failed — and it is parked out of the
         // queue so one held post cannot stall the drain.
-        r.heldVideo += 1;
-        if (parkItem(r, item.id)) r.held.add(item.id);
-        update({ heldVideo: r.heldVideo }, false);
+        //
+        // The count is `held.size`, so it cannot drift from the set it is
+        // meant to describe: a post that is requeued by a session restart and
+        // held again leaves the set once and re-enters it once, where a
+        // standalone counter was incremented twice for one post.
+        if (parkItem(r, item.id)) {
+          r.held.add(item.id);
+          update({ heldVideo: r.held.size }, false);
+        }
         return 'continue';
 
       case 'item-failed': {
@@ -1702,22 +1732,29 @@ function buildSummary(r: ActiveRun): ImportSummary {
   const skips = countImportSkipsByReason(r.jobId);
   // `uploading` is the schema's only parking space, so it holds three
   // different facts at once: a batch claim the run never sent, a post held for
-  // video, and a file parked for the orbit's quota. The last two are reported
-  // on their own lines (`heldVideo`, and a `QUOTA` failure after the end-of-run
-  // pass), and counting them again here would tell the member that more posts
-  // did not migrate than there are posts. The two in-memory sets are the only
-  // thing that can tell them apart — SQL sees one status — and both are
-  // dropped whenever their rows are requeued.
-  const parkedOut = r.held.size + r.parked.size;
+  // video, and a file parked for the orbit's quota. Only the FIRST of those is
+  // deducted here, via `r.held`, because only a held post has a line of its
+  // own; counting it twice would tell the member that more posts did not
+  // migrate than there are posts.
+  //
+  // A quota park is NOT deducted, and that is the fix for the vanishing rows
+  // (#993 fold round): a terminal that arrives before the end-of-run pass
+  // leaves those rows parked and unreported, so they were subtracted from
+  // `notSubmitted` and appeared on no line at all. Still-parked IS still
+  // queued — the row stays `uploading`, which a later resume requeues — so the
+  // honest line for it is `notSubmitted`, and that makes this identical to
+  // {@link undrainedWork}: both exempt `r.held` and nothing else, so the six
+  // lines sum to the importable total in every ending.
   return {
     created: counts.created,
     duplicate: counts.duplicate,
     failed: counts.failed,
     // Parse-time holds and the post-extract ones are the same fact to the
-    // member, reported separately from failures per the issue AC.
-    heldVideo: skips.held_video + r.heldVideo,
+    // member, reported separately from failures per the issue AC. `held.size`,
+    // never a counter beside it: see {@link ActiveRun.held}.
+    heldVideo: skips.held_video + r.held.size,
     skippedByReason: skips,
-    notSubmitted: Math.max(0, counts.pending + counts.uploading - parkedOut),
+    notSubmitted: Math.max(0, counts.pending + counts.uploading - r.held.size),
     errorCode: r.terminal,
     cancelled: r.cancelled,
   };
@@ -1741,6 +1778,10 @@ function terminalStatusFor(r: ActiveRun): TerminalImportJobStatus {
  * this run can do. Everything else that is still `uploading` — a batch claim
  * that was never sent, a quota park the end-of-run pass never reached — is
  * undrained work, and so is anything still `pending`.
+ *
+ * Deliberately the SAME arithmetic as {@link buildSummary}'s `notSubmitted`:
+ * the number the member is shown and the number that decides whether
+ * `completed` is honest must not be able to disagree.
  */
 function undrainedWork(r: ActiveRun): number {
   const counts = countImportItemsByStatus(r.jobId);
@@ -1924,10 +1965,10 @@ function newRun(
     created: 0,
     duplicate: 0,
     failed: 0,
-    heldVideo: 0,
     mediaDone: 0,
     held: new Set<string>(),
     parked: new Set<string>(),
+    stagedMedia: new Set<string>(),
     endOfRunPass: false,
     idleCycles: 0,
     clientBugCount: 0,

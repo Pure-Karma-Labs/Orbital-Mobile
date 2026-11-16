@@ -84,6 +84,17 @@ jest.mock('../../api/imports', () => ({
   completeImport: (...a: unknown[]) => mockCompleteImport(...a),
 }));
 
+/**
+ * The media-complete route, which `importMedia` calls directly for the
+ * complete-only retry of a quota-parked file. Mocked beside the JSON routes:
+ * the real one would reach the request client, and this suite's whole subject
+ * is which calls the runner makes.
+ */
+const mockCompleteImportUpload = jest.fn();
+jest.mock('../../api/media', () => ({
+  completeImportUpload: (...a: unknown[]) => mockCompleteImportUpload(...a),
+}));
+
 // ---------------------------------------------------------------------------
 // importCrypto
 // ---------------------------------------------------------------------------
@@ -634,6 +645,9 @@ beforeEach(() => {
     completedAt: '2012-08-26T00:00:00.000Z',
   });
   mockUploadMedia.mockResolvedValue({ mediaId: 'media-0' });
+  // Only the complete-only retry of a parked file reaches this, and only the
+  // tests that park one care what it answers.
+  mockCompleteImportUpload.mockResolvedValue({ mediaId: 'media-0' });
   mockReleaseArchiveParts.mockResolvedValue(undefined);
   mockOpenArchiveSession.mockImplementation(async () => archiveSession());
   mockPickArchiveParts.mockResolvedValue(['part-a']);
@@ -2125,11 +2139,18 @@ describe('a media refusal the server raised after taking a chunk', () => {
     );
   }
 
+  /** The orbit-full refusal, as the media-complete route raises it. */
+  function quotaDetails(): Record<string, unknown> {
+    return { code: 'IMPORT_QUOTA_EXCEEDED', available_bytes: 10, size_bytes: 20 };
+  }
+
   it('parks a QUOTA refusal, retries it once at end of run, and keeps the run going', async () => {
     // item-0 carries the media; item-1 is text-only.
     seedJob({ items: 2, bookmark: ['part-a'], mediaEntryIds: ['entry-0-0'] });
-    mockUploadMedia.mockRejectedValue(
-      stagedRefusal({ code: 'IMPORT_QUOTA_EXCEEDED', available_bytes: 10, size_bytes: 20 }),
+    mockUploadMedia.mockRejectedValue(stagedRefusal(quotaDetails()));
+    // The orbit is still full when the end-of-run pass settles the staged row.
+    mockCompleteImportUpload.mockRejectedValue(
+      new ConflictError(JSON.stringify({ error: 'IMPORT_REFUSED', details: quotaDetails() })),
     );
 
     await confirmAndRunLaunch();
@@ -2137,7 +2158,12 @@ describe('a media refusal the server raised after taking a chunk', () => {
     // The park → end-of-run pass → `item-failed('QUOTA')` route, which the
     // unconditional rebind made unreachable: the file was re-uploaded under a
     // fresh id instead, and a second refusal ended the whole run `FORBIDDEN`.
-    expect(mockUploadMedia).toHaveBeenCalledTimes(2);
+    //
+    // ONE upload now, not two: at media complete the server keeps the temp row
+    // and every chunk, so the pass retries the settle alone rather than paying
+    // for the whole file again.
+    expect(mockUploadMedia).toHaveBeenCalledTimes(1);
+    expect(mockCompleteImportUpload).toHaveBeenCalledTimes(1);
     const rows = itemRows();
     expect(rows.find((row) => row.id === 'item-0')).toEqual({
       id: 'item-0',
@@ -2152,6 +2178,61 @@ describe('a media refusal the server raised after taking a chunk', () => {
     expect(summary?.notSubmitted).toBe(0);
     expect(jobRow().status).toBe('completed');
     expect(mockCaptureError).not.toHaveBeenCalled();
+  });
+
+  it('creates the parked post when the end-of-run settle succeeds, with no second upload', async () => {
+    seedJob({ items: 2, bookmark: ['part-a'], mediaEntryIds: ['entry-0-0'] });
+    // Parked once; by the end of the run the orbit has room again.
+    mockUploadMedia.mockRejectedValueOnce(stagedRefusal(quotaDetails()));
+
+    await confirmAndRunLaunch();
+
+    // The file was uploaded ONCE and settled by the one call it still owed.
+    expect(mockUploadMedia).toHaveBeenCalledTimes(1);
+    expect(mockCompleteImportUpload).toHaveBeenCalledTimes(1);
+    expect(mockCompleteImportUpload).toHaveBeenCalledWith(IMPORT_ID, 'media-0');
+    expect(itemRows().map((row) => row.status)).toEqual(['created', 'created']);
+    const summary = importStore.getState().summary;
+    expect(summary?.created).toBe(2);
+    expect(summary?.failed).toBe(0);
+    expect(summary?.notSubmitted).toBe(0);
+    expect(summary?.errorCode).toBeNull();
+    expect(jobRow().status).toBe('completed');
+  });
+
+  it('reports a still-parked row on a terminal that lands before the end-of-run pass', async () => {
+    // Two importable posts and one parse skip, so every line is exercised.
+    seedJob({
+      items: 2,
+      bookmark: ['part-a'],
+      mediaEntryIds: ['entry-0-0'],
+      skips: ['empty_post'],
+    });
+    mockUploadMedia.mockRejectedValue(stagedRefusal(quotaDetails()));
+    // item-1's batch ends the run while item-0 is still parked, so the pass
+    // never runs.
+    mockSubmitImportBatch.mockRejectedValue(new AuthError(403, undefined));
+
+    await confirmAndRunLaunch();
+
+    const summary = importStore.getState().summary;
+    expect(summary?.errorCode).toBe('FORBIDDEN');
+    // The park used to be subtracted from `notSubmitted` while being reported
+    // on no other line, so one of the member's two posts simply vanished from
+    // the summary. Still parked IS still queued: the row is `uploading`, which
+    // a later resume requeues.
+    expect(summary?.notSubmitted).toBe(2);
+    expect(
+      (summary?.created ?? 0) +
+        (summary?.duplicate ?? 0) +
+        (summary?.failed ?? 0) +
+        (summary?.heldVideo ?? 0) +
+        (summary?.notSubmitted ?? 0),
+    ).toBe(2);
+    // The skipped line accounts for the rest of what was parsed.
+    expect(summary?.skippedByReason.empty_post).toBe(1);
+    expect(itemRows().filter((row) => row.status === 'uploading')).toHaveLength(2);
+    expect(jobRow().status).toBe('failed');
   });
 
   it('is terminal with ALLOWANCE at media complete, keeping the posts already created', async () => {
@@ -2285,6 +2366,35 @@ describe('a media refusal the server raised after taking a chunk', () => {
     expect(summary?.failed).toBe(0);
     expect(itemRows()[0].status).toBe('uploading');
     expect(mockUploadMedia).not.toHaveBeenCalled();
+    expect(jobRow().status).toBe('completed');
+  });
+
+  it('counts a held post once even after a session restart requeues and re-holds it', async () => {
+    seedJob({ items: 2, bookmark: ['part-a'], mediaEntryIds: ['entry-0-0'] });
+    mockOpenArchiveSession.mockImplementation(async () => videoArchiveSession());
+    // item-1's first batch finds the session abandoned: the restart requeues
+    // everything parked in `uploading`, including the held post, which is then
+    // held a second time on its next extract.
+    mockSubmitImportBatch.mockRejectedValueOnce(
+      new ConflictError(
+        JSON.stringify({
+          error: 'IMPORT_REFUSED',
+          details: { code: 'IMPORT_CLOSED', status: 'abandoned' },
+        }),
+      ),
+    );
+
+    await confirmAndRunLaunch();
+
+    expect(mockStartImport).toHaveBeenCalled();
+    const summary = importStore.getState().summary;
+    // ONE post was held, so the member is told one — not two, which a counter
+    // kept beside `r.held` reported once the restart cleared the set.
+    expect(summary?.heldVideo).toBe(1);
+    expect(importStore.getState().heldVideo).toBe(1);
+    expect(summary?.notSubmitted).toBe(0);
+    expect(summary?.created).toBe(1);
+    expect(itemRows().find((row) => row.id === 'item-0')?.status).toBe('uploading');
     expect(jobRow().status).toBe('completed');
   });
 });

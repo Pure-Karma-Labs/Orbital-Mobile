@@ -20,6 +20,11 @@
  *    friends are matched BY NAME in the subject, so the mock's local classes
  *    are faithful stand-ins — that is the repo's standing rule for errors
  *    whose module a suite replaces.
+ *  - `api/media` is factory-mocked for its `completeImportUpload` alone — the
+ *    one network call this module makes itself. The real module reaches the
+ *    request client and the token manager, i.e. MMKV and the Keychain, and
+ *    what matters here is which `(importId, mediaId)` pair the complete-only
+ *    retry sends and what it does with each refusal.
  *  - The archive session is a hand-built stub implementing
  *    `ArchiveImportSession`. `extractImageEntry`'s outcome union is the whole
  *    input surface, and `archiveAccess.test.ts` owns proving that the real
@@ -36,6 +41,7 @@ import {
   AuthError,
   ConflictError,
   NetworkError,
+  NotFoundError,
   RateLimitError,
   ValidationError,
 } from '../../api/errors';
@@ -58,7 +64,18 @@ import type { DatabaseSync } from 'node:sqlite';
 jest.mock('@op-engineering/op-sqlite', () => ({ open: jest.fn() }));
 
 // ---------------------------------------------------------------------------
-// mediaUploadService: the only mocked service seam
+// api/media: the media-complete route, for the complete-only retry
+// ---------------------------------------------------------------------------
+
+const mockCompleteImportUpload = jest.fn<Promise<unknown>, [string, string]>();
+
+jest.mock('../../api/media', () => ({
+  completeImportUpload: (importId: string, mediaId: string) =>
+    mockCompleteImportUpload(importId, mediaId),
+}));
+
+// ---------------------------------------------------------------------------
+// mediaUploadService: the other mocked service seam
 // ---------------------------------------------------------------------------
 
 const mockUploadMedia = jest.fn<Promise<unknown>, [Record<string, unknown>]>();
@@ -240,6 +257,9 @@ function run(overrides: Partial<ImportMediaRun> = {}): ImportMediaRun {
     session: archiveSession(),
     signal: controller.signal,
     isCurrentRun: () => currentRun,
+    // One run, one ledger: the two-call tests below pass the SAME run object
+    // twice, which is what the end-of-run pass does.
+    stagedComplete: new Set<string>(),
     newMediaId: () => {
       const id = `minted-${mintedIds.length + 1}`;
       mintedIds.push(id);
@@ -271,6 +291,9 @@ beforeEach(() => {
     attachmentKey: new Uint8Array(64),
     digest: new Uint8Array(32),
   });
+  // The settle's own response is never read: a resolved promise — 201 or the
+  // idempotent 200 — means the bytes are committed.
+  mockCompleteImportUpload.mockResolvedValue({});
   harness = openImportDb();
   sqlite = harness.sqlite;
 });
@@ -731,12 +754,10 @@ describe('an import refusal that arrives wrapped is reported, never retried', ()
     return new ConflictError(JSON.stringify({ error: 'IMPORT_REFUSED', details }));
   }
 
+  // `IMPORT_QUOTA_EXCEEDED` at media complete is deliberately NOT here: it is
+  // the one refusal that keeps its `media_id`, and the staged-complete group
+  // below owns it.
   it.each([
-    [
-      'the orbit is full at media complete',
-      { code: 'IMPORT_QUOTA_EXCEEDED', available_bytes: 10, size_bytes: 20 },
-      'media-complete',
-    ],
     [
       'the lifetime allowance is spent at media complete',
       {
@@ -771,20 +792,20 @@ describe('an import refusal that arrives wrapped is reported, never retried', ()
     // park-file, `job-terminal('ALLOWANCE')` or a session restart.
     expect(outcome).toEqual({ kind: 'refused', stage, error: cause });
     // Exactly ONE upload: re-uploading the whole file under a fresh id would
-    // spend the member's allowance on a refusal that has not changed, and at
-    // media complete the server deliberately KEPT the temp row and its chunks
-    // for a retry (`assertImportQuotaForMediaBytes`, verified).
+    // spend the member's allowance on a refusal that has not changed.
     expect(mockUploadMedia).toHaveBeenCalledTimes(1);
     expect(releases).toEqual(['entry-a']);
-    // Rebound anyway: a chunk was accepted under `media-a`, so that id is
-    // burned whatever the refusal was. The row is pending under a fresh one,
-    // which is what makes the end-of-run pass re-uploadable.
+    // Rebound: a chunk was accepted under `media-a`, and every refusal here
+    // either closed the session or deleted the temp row, so that id is burned.
+    // The row is pending under a fresh one, which is what makes it
+    // re-uploadable whenever the runner gets back to it.
     expect(mediaRows()).toEqual([{ ordinal: 0, media_id: 'minted-1', upload_state: 'pending' }]);
+    expect(mockCompleteImportUpload).not.toHaveBeenCalled();
   });
 
   it('never reports fresh-id-exhausted for a refusal, however often it repeats', async () => {
     mockUploadMedia.mockRejectedValue(
-      new ImportMediaStagedError(refusal({ code: 'IMPORT_QUOTA_EXCEEDED', size_bytes: 20 })),
+      new ImportMediaStagedError(refusal({ code: 'IMPORT_CLOSED', status: 'abandoned' })),
     );
 
     const first = await uploadImportItemMedia(pendingItem(), run());
@@ -842,6 +863,155 @@ describe('an import refusal that arrives wrapped is reported, never retried', ()
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
     );
     expect(importBlock(1).mediaId).not.toBe('media-a');
+  });
+});
+
+// ===========================================================================
+// The QUOTA park keeps its id, and the end-of-run pass settles it (#993 fold)
+// ===========================================================================
+
+describe('a quota park is settled by a complete-only retry', () => {
+  /** A 409 `IMPORT_REFUSED` through the real class, as the wire carries it. */
+  function refusal(details: Record<string, unknown>): Error {
+    return new ConflictError(JSON.stringify({ error: 'IMPORT_REFUSED', details }));
+  }
+
+  /** The orbit-full refusal at media complete: row, chunks and session kept. */
+  function quotaRefusal(): Error {
+    return refusal({ code: 'IMPORT_QUOTA_EXCEEDED', available_bytes: 10, size_bytes: 20 });
+  }
+
+  beforeEach(() => {
+    seed([{ ordinal: 0, mediaId: 'media-a', entryId: 'entry-a' }]);
+    extractImageEntry.mockImplementation(async () => extracted('entry-a'));
+  });
+
+  /** The park itself: one upload, the id kept, the settle recorded. */
+  async function park(r: ImportMediaRun): Promise<void> {
+    const cause = quotaRefusal();
+    mockUploadMedia.mockRejectedValueOnce(new ImportMediaStagedError(cause));
+
+    const outcome = await uploadImportItemMedia(pendingItem(), r);
+
+    expect(outcome).toEqual({ kind: 'refused', stage: 'media-complete', error: cause });
+    // NOT rebound, unlike every other staged refusal: the server kept the temp
+    // row, every chunk file and the open session, so these bytes are one call
+    // from being settled and a fresh id would throw all of them away.
+    expect(mediaRows()).toEqual([{ ordinal: 0, media_id: 'media-a', upload_state: 'pending' }]);
+    expect(mintedIds).toEqual([]);
+    expect([...r.stagedComplete]).toEqual([`${ITEM}:0`]);
+  }
+
+  it('settles the parked row with ONE complete-only call and no second upload', async () => {
+    const r = run();
+    await park(r);
+
+    const outcome = await uploadImportItemMedia(pendingItem(), r);
+
+    expect(outcome).toEqual({ kind: 'uploaded' });
+    // The whole point: one upload of the file, ever, and one settle.
+    expect(mockUploadMedia).toHaveBeenCalledTimes(1);
+    expect(mockCompleteImportUpload).toHaveBeenCalledTimes(1);
+    expect(mockCompleteImportUpload).toHaveBeenCalledWith(IMPORT_ID, 'media-a');
+    // No extract either: the bytes are already on the server.
+    expect(releases).toEqual(['entry-a']);
+    expect(mediaRows()).toEqual([{ ordinal: 0, media_id: 'media-a', upload_state: 'uploaded' }]);
+    // The ledger is spent, so a later pass cannot settle the same row twice.
+    expect([...r.stagedComplete]).toEqual([]);
+  });
+
+  it.each([
+    ['a 404 — neither a temp row nor a media row of ours', new NotFoundError()],
+    ['a 403 — the row is bound to another session or member', new AuthError(403)],
+    ['a bare 409 — the upload was torn down and restarted', new ConflictError()],
+  ])('rebinds and re-uploads when the complete-only retry answers %s', async (_label, error) => {
+    const r = run();
+    await park(r);
+    mockCompleteImportUpload.mockRejectedValueOnce(error);
+
+    const outcome = await uploadImportItemMedia(pendingItem(), r);
+
+    // Nothing to settle, so the one rebind is spent here and the file goes up
+    // the long way under an id nothing is bound to.
+    expect(outcome).toEqual({ kind: 'uploaded' });
+    expect(mockCompleteImportUpload).toHaveBeenCalledTimes(1);
+    expect(mockUploadMedia).toHaveBeenCalledTimes(2);
+    expect(importBlock(1).mediaId).toBe('minted-1');
+    expect(mediaRows()).toEqual([{ ordinal: 0, media_id: 'minted-1', upload_state: 'uploaded' }]);
+    expect([...r.stagedComplete]).toEqual([]);
+  });
+
+  it('reports a SECOND quota refusal for the runner to fail the item with', async () => {
+    const r = run();
+    await park(r);
+    const second = quotaRefusal();
+    mockCompleteImportUpload.mockRejectedValueOnce(second);
+
+    const outcome = await uploadImportItemMedia(pendingItem(), r);
+
+    // The runner is in its end-of-run pass by now, where the taxonomy answers
+    // `item-failed('QUOTA')` rather than another park.
+    expect(outcome).toEqual({ kind: 'refused', stage: 'media-complete', error: second });
+    // Still ONE upload: a full orbit is not a reason to send the file again.
+    expect(mockUploadMedia).toHaveBeenCalledTimes(1);
+    expect(mediaRows()).toEqual([{ ordinal: 0, media_id: 'media-a', upload_state: 'pending' }]);
+    expect(mintedIds).toEqual([]);
+  });
+
+  it('rebinds when the complete-only retry finds the session closed', async () => {
+    const r = run();
+    await park(r);
+    const closed = refusal({ code: 'IMPORT_CLOSED', status: 'abandoned' });
+    mockCompleteImportUpload.mockRejectedValueOnce(closed);
+
+    const outcome = await uploadImportItemMedia(pendingItem(), r);
+
+    // Handed back for the runner to restart the session on; the row is rebound
+    // first, because a closed session will never accept this id again.
+    expect(outcome).toEqual({ kind: 'refused', stage: 'media-complete', error: closed });
+    expect(mediaRows()).toEqual([{ ordinal: 0, media_id: 'minted-1', upload_state: 'pending' }]);
+    expect(mockUploadMedia).toHaveBeenCalledTimes(1);
+    expect([...r.stagedComplete]).toEqual([]);
+  });
+
+  it('rethrows a transport failure and leaves the row staged for the next pass', async () => {
+    const r = run();
+    await park(r);
+    const offline = new NetworkError('Network request failed');
+    mockCompleteImportUpload.mockRejectedValueOnce(offline);
+
+    await expect(uploadImportItemMedia(pendingItem(), r)).rejects.toBe(offline);
+
+    // Nothing consumed the staged bytes, so the row is still one call away
+    // from settling and the runner owns the pause.
+    expect([...r.stagedComplete]).toEqual([`${ITEM}:0`]);
+    expect(mediaRows()).toEqual([{ ordinal: 0, media_id: 'media-a', upload_state: 'pending' }]);
+    expect(mockUploadMedia).toHaveBeenCalledTimes(1);
+  });
+
+  it('writes nothing when the run goes stale during the complete-only retry', async () => {
+    const r = run();
+    await park(r);
+    mockCompleteImportUpload.mockImplementationOnce(async () => {
+      currentRun = false;
+      return {};
+    });
+
+    const outcome = await uploadImportItemMedia(pendingItem(), r);
+
+    // Rule 0: the bytes are committed on the server, but a reset run marks
+    // nothing. The next run re-reads the row and re-uploads.
+    expect(outcome).toEqual({ kind: 'cancelled' });
+    expect(mediaRows()).toEqual([{ ordinal: 0, media_id: 'media-a', upload_state: 'pending' }]);
+  });
+
+  it('does not settle an ordinal the quota never parked', async () => {
+    const outcome = await uploadImportItemMedia(pendingItem(), run());
+
+    expect(outcome).toEqual({ kind: 'uploaded' });
+    // The ordinary path never calls the route itself: `uploadMedia` owns the
+    // settle at the end of its own chunk loop.
+    expect(mockCompleteImportUpload).not.toHaveBeenCalled();
   });
 });
 

@@ -1,0 +1,2472 @@
+/**
+ * importRunner — the resumable Meta import run (#926 §4.2–§4.13).
+ *
+ * This is the only entry point #928's screens have into the import. It owns
+ * the public API, the published store, the phase machine, the pause set and
+ * its wake-ups, AppState, the launch-time resume, cancellation and the wipe
+ * reset. Everything below it is a step it calls and never re-derives:
+ * `parseArchive` reads the archive, `importMedia` does one post's files,
+ * `importBatch` builds and applies one POST, `importErrors` says what a
+ * failure means, and `importRepository` is the only writer of local state.
+ *
+ * ## The store is a PROJECTION of SQLite
+ *
+ * `bulkExportStore` **is** its run — a snapshot in memory, lost on a process
+ * kill. `importStore` is not: `import_jobs` / `import_items` are the truth and
+ * the store is re-derived from them at launch ({@link resumeImportAtLaunch}).
+ * Nothing here may decide from the store what it could decide from the
+ * repository, which is why `phase` starts `'hydrating'` — orbit settings must
+ * be able to tell "nothing is running" from "we have not looked yet".
+ *
+ * The scaffolding is deliberately IDENTICAL in shape to `bulkExportRunner`
+ * (vanilla `createStore`, a 250 ms throttled emission with an
+ * identity-preserving `sameState`, an immediate flush on phase / summary /
+ * pause changes, AppState attached lazily, a synchronous production reset).
+ * Two copies is below this project's extraction threshold; the THIRD vanilla
+ * store runner extracts the shared scaffolding, and keeping this one
+ * structurally the same is what makes that extraction mechanical (§4.1).
+ *
+ * ## Rule 0 — the run token comes first
+ *
+ * Every classification and every repository write re-checks that the work
+ * still belongs to the live run. {@link resetImportRunnerState} bumps the
+ * token and aborts the controller SYNCHRONOUSLY, after which every verdict
+ * collapses to `cancelled`: no item write, no `finishImportJob`, no Sentry
+ * event. That is what keeps an ordinary logout — where
+ * `closeAllImportKeySessions()` and `abortAllArchiveSessions()` both run above
+ * our reset, raising errors that would otherwise classify `terminal-for-run` —
+ * from writing `failed` and reporting it.
+ *
+ * A user CANCEL is not a reset: it aborts the run's work but must still write
+ * `finishImportJob(jobId, 'cancelled')` and show a summary. The two are told
+ * apart by WHICH question a call site asks — {@link stopped} (token or abort,
+ * for work) versus {@link wiped} (token only, for the finishing writes).
+ *
+ * ## No raw group key, no archive strings
+ *
+ * Title, body and the import-meta envelope are sealed only through
+ * `ImportKeySession`, which is also the only module allowed to read the live
+ * group key (ESLint forbids `contentCrypto` here outright). Nothing in this
+ * file logs, throws or reports an archive path, an entry id, an import key, a
+ * media id, a post body or a key fingerprint: the Sentry payload is counts and
+ * closed client enums, screened by `meta-import-no-content-logging`.
+ */
+
+import { AppState, type AppStateStatus } from 'react-native';
+import { createStore } from 'zustand/vanilla';
+
+import {
+  countImportItemsByStatus,
+  countImportSkipsByReason,
+  createImportJob,
+  deleteImportJob,
+  finishImportJob,
+  getActiveImportJob,
+  getImportJob,
+  getPendingImportItems,
+  getSkippedItems,
+  insertImportItems,
+  markItemsUploading,
+  requeueImportItems,
+  setArchiveBookmark,
+  setImportJobParsed,
+  startImportJob,
+} from '../../database/repositories/importRepository';
+import { deriveAuthPhase } from '../../navigation/authPhase';
+import { useAppStore } from '../../stores/useAppStore';
+import { generateUUID } from '../../utils/uuid';
+import { NotFoundError } from '../api/errors';
+import {
+  completeImport,
+  getGroupImports,
+  getImportSession,
+  startImport,
+  submitImportBatch,
+} from '../api/imports';
+import { fulfillPendingWraps } from '../conversationService';
+import { openImportKeySession } from '../crypto/importCrypto';
+import { captureError } from '../telemetry';
+import { loadThreadsForGroup } from '../threadService';
+import { openArchiveSession, pickArchiveParts, releaseArchiveParts } from './archiveAccess';
+import {
+  applyBatchOutcome,
+  assembleBatch,
+  batchSizeLimit,
+  buildImportItem,
+  claimBatch,
+  failImportItems,
+  halveBatchSize,
+  isBatchHalvingExhausted,
+  isItemBatchEligible,
+  mapBatchResults,
+  preflightImportItem,
+  releaseBatchClaim,
+} from './importBatch';
+import { classifyImportFailure, isRunStale } from './importErrors';
+import { estimateImportBytes, importMediaStage, uploadImportItemMedia } from './importMedia';
+import { parseArchive } from './parseArchive';
+
+import type {
+  PendingImportItem,
+  SkippedImportItem,
+  TerminalImportJobStatus,
+} from '../../database/repositories/importRepository';
+import type { ImportJobRow } from '../../types/database';
+import type { ImportAllowance, ImportLimits } from '../../types/api';
+import type { ImportKeySession } from '../crypto/importCrypto';
+import type { ArchiveImportSession, ArchivePartToken } from './archiveAccess';
+import type { BuiltImportItem } from './importBatch';
+import type {
+  ImportFailureContext,
+  ImportStage,
+  ImportTerminalCode,
+  ImportVerdict,
+  PauseCause,
+  RunGuard,
+} from './importErrors';
+import type { ImportItemInsert } from '../../database/repositories/importRepository';
+import type { ImportSource, ParseProgress, ParseSummary, SkipReason } from './types';
+
+export type { PauseCause } from './importErrors';
+
+// ---------------------------------------------------------------------------
+// Public state (§4.3)
+// ---------------------------------------------------------------------------
+
+/**
+ * `hydrating` until {@link resumeImportAtLaunch} settles, `done` until the
+ * summary is dismissed.
+ */
+export type ImportPhase =
+  'hydrating' | 'idle' | 'parsing' | 'ready' | 'running' | 'paused' | 'done';
+
+/** What the member is told the run achieved. Counts and client enums only. */
+export interface ImportSummary {
+  readonly created: number;
+  readonly duplicate: number;
+  readonly failed: number;
+  /** Posts held for video, at parse time and at extract time together. */
+  readonly heldVideo: number;
+  /** Exhaustive, with `duplicate_in_archive` folded in by the repository. */
+  readonly skippedByReason: Readonly<Record<SkipReason, number>>;
+  /** Still queued when the run stopped: an allowance refusal or a terminal. */
+  readonly notSubmitted: number;
+  /** A client enum from `IMPORT_TERMINAL_CODES`, never server text. */
+  readonly errorCode: ImportTerminalCode | null;
+  readonly cancelled: boolean;
+}
+
+/**
+ * What #928 shows before anything is uploaded (§4.2).
+ *
+ * `summary` is the parse's own answer and is `null` on a preflight REBUILT
+ * from SQLite at launch — the `ParseSummary` is not persisted, and
+ * synthesising a fake one would hand the screen invented file issues and date
+ * bounds. The facts #928 needs in both cases are carried directly:
+ * {@link importable}, {@link skippedByReason} and {@link heldVideo}.
+ */
+export interface ImportPreflight {
+  readonly summary: ParseSummary | null;
+  readonly allowance: ImportAllowance;
+  readonly limits: ImportLimits;
+  /** From `Conversation.contentRetentionDays`; null when the orbit keeps all. */
+  readonly contentRetentionDays: number | null;
+  readonly importable: number;
+  readonly remainingPosts: number;
+  readonly estimatedBytes: number;
+  readonly remainingBytes: number;
+  /** Set ⇒ the run is REFUSED and no session was started (§4.5). */
+  readonly overAllowance: 'posts' | 'bytes' | null;
+  readonly heldVideo: number;
+  readonly skippedByReason: Readonly<Record<SkipReason, number>>;
+}
+
+export interface ImportRunnerState {
+  readonly phase: ImportPhase;
+  readonly jobId: string | null;
+  readonly conversationId: string | null;
+  readonly source: ImportSource | null;
+  readonly preflight: ImportPreflight | null;
+  readonly needsRepick: boolean;
+  readonly total: number;
+  readonly created: number;
+  readonly duplicate: number;
+  readonly failed: number;
+  readonly skipped: number;
+  readonly heldVideo: number;
+  readonly mediaDone: number;
+  readonly mediaTotal: number;
+  readonly parseProgress: ParseProgress | null;
+  /** A precedence-ordered SET, not one slot. Empty ⇒ not paused. */
+  readonly pauseCauses: readonly PauseCause[];
+  readonly resumeAtMs: number | null;
+  readonly summary: ImportSummary | null;
+  readonly errorCode: ImportTerminalCode | null;
+}
+
+/** What {@link pickAndStartParse} answers. A refusal is typed, never a throw. */
+export type PickParseResult =
+  | { readonly kind: 'preflight'; readonly preflight: ImportPreflight }
+  | { readonly kind: 'cancelled' }
+  | {
+      readonly kind: 'refused';
+      readonly reason: 'job-running';
+      readonly conversationId: string;
+    };
+
+/** What {@link repickArchiveParts} answers (§4.2). */
+export type RepickResult = 'resumed' | 'different-archive' | 'cancelled';
+
+/** What {@link probeImportAvailability} answers. */
+export interface ImportAvailability {
+  readonly available: boolean;
+  readonly allowance: ImportAllowance | null;
+  readonly limits: ImportLimits | null;
+}
+
+const NO_PAUSE: readonly PauseCause[] = Object.freeze([]);
+
+const INITIAL_STATE: ImportRunnerState = Object.freeze({
+  phase: 'hydrating' as ImportPhase,
+  jobId: null,
+  conversationId: null,
+  source: null,
+  preflight: null,
+  needsRepick: false,
+  total: 0,
+  created: 0,
+  duplicate: 0,
+  failed: 0,
+  skipped: 0,
+  heldVideo: 0,
+  mediaDone: 0,
+  mediaTotal: 0,
+  parseProgress: null,
+  pauseCauses: NO_PAUSE,
+  resumeAtMs: null,
+  summary: null,
+  errorCode: null,
+});
+
+/**
+ * The run's published state. A vanilla store, read with
+ * `useStore(importStore, …)`: the run outlives every screen, so its state
+ * cannot live in a hook, and a vanilla store gives the stable snapshot
+ * identity `useSyncExternalStore` needs.
+ *
+ * NOT persisted. It is re-derived from SQLite instead, which is the one source
+ * that survives a process kill.
+ */
+export const importStore = createStore<ImportRunnerState>(() => INITIAL_STATE);
+
+// ---------------------------------------------------------------------------
+// Throttled emission (mirrors bulkExportRunner:132-192)
+// ---------------------------------------------------------------------------
+
+const EMIT_INTERVAL_MS = 250;
+
+let draft: ImportRunnerState = INITIAL_STATE;
+let emitTimer: ReturnType<typeof setTimeout> | null = null;
+
+function sameState(a: ImportRunnerState, b: ImportRunnerState): boolean {
+  return (
+    a.phase === b.phase &&
+    a.jobId === b.jobId &&
+    a.conversationId === b.conversationId &&
+    a.source === b.source &&
+    a.preflight === b.preflight &&
+    a.needsRepick === b.needsRepick &&
+    a.total === b.total &&
+    a.created === b.created &&
+    a.duplicate === b.duplicate &&
+    a.failed === b.failed &&
+    a.skipped === b.skipped &&
+    a.heldVideo === b.heldVideo &&
+    a.mediaDone === b.mediaDone &&
+    a.mediaTotal === b.mediaTotal &&
+    a.parseProgress === b.parseProgress &&
+    a.pauseCauses === b.pauseCauses &&
+    a.resumeAtMs === b.resumeAtMs &&
+    a.summary === b.summary &&
+    a.errorCode === b.errorCode
+  );
+}
+
+/**
+ * Publish the draft, or confirm there is nothing to publish.
+ *
+ * The equality check keeps the store's snapshot IDENTITY stable across a
+ * no-op update: `useSyncExternalStore` re-renders on identity, so emitting an
+ * equal-but-new object per item would re-render every subscriber for nothing.
+ */
+function flushEmission(): void {
+  if (emitTimer !== null) {
+    clearTimeout(emitTimer);
+    emitTimer = null;
+  }
+  const current = importStore.getState();
+  if (sameState(draft, current)) {
+    draft = current;
+    return;
+  }
+  importStore.setState(draft, true);
+  draft = importStore.getState();
+}
+
+/**
+ * Merge into the draft. Progress is throttled; a PHASE, SUMMARY or PAUSE
+ * change is emitted at once — those drive copy and a card, and a quarter
+ * second of "still running" after a pause reads as a stuck UI.
+ */
+function update(patch: Partial<ImportRunnerState>, immediate: boolean): void {
+  draft = { ...draft, ...patch };
+  if (immediate) {
+    flushEmission();
+    return;
+  }
+  if (emitTimer === null) {
+    emitTimer = setTimeout(() => {
+      emitTimer = null;
+      flushEmission();
+    }, EMIT_INTERVAL_MS);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Ladders and budgets (§4.3.1)
+// ---------------------------------------------------------------------------
+
+/**
+ * What actually clears a pending group-key wrap: `PENDING_CACHE_TTL_MS` in
+ * `crypto/contentCrypto.ts`.
+ *
+ * Re-stated rather than imported because `metaImport/` may not import
+ * `contentCrypto` at all (the ESLint fence in `.eslintrc.js` — a runner that
+ * held raw key bytes across an await would encrypt under 32 zero bytes). The
+ * number is a retry cadence, not a protocol constant: being wrong by a few
+ * seconds costs one extra wait.
+ */
+const KEY_PENDING_RETRY_MS = 30_000;
+
+/** Pending-wrap waits before the run gives up (§4.3.1). */
+const KEY_PENDING_MAX_ATTEMPTS = 6;
+
+/** `archive_retry`: 1 s → 5 s → 30 s, then 30 s. */
+const ARCHIVE_PAUSE_LADDER_MS: readonly number[] = Object.freeze([1_000, 5_000, 30_000]);
+
+const ARCHIVE_PAUSE_MAX_ATTEMPTS = 5;
+
+/** `network`: 5 s → 15 s → 60 s, then 60 s, plus an AppState `active` wake. */
+const NETWORK_PAUSE_LADDER_MS: readonly number[] = Object.freeze([5_000, 15_000, 60_000]);
+
+const NETWORK_PAUSE_MAX_ATTEMPTS = 10;
+
+/** A 429 whose `Retry-After` we could not read. */
+const DEFAULT_RATE_LIMIT_MS = 60_000;
+
+/** Parsed items buffered per `insertImportItems` transaction (#921). */
+const PARSE_FLUSH_SIZE = 100;
+
+/** Precedence order; the first non-empty cause drives #928's copy. */
+const PAUSE_PRECEDENCE: readonly PauseCause[] = Object.freeze([
+  'needs_repick',
+  'key_pending',
+  'archive_retry',
+  'rate_limited',
+  'network',
+  'background',
+]);
+
+/** Which terminal code a cause becomes when its budget runs out. */
+const PAUSE_BUDGET_CODE: Readonly<Partial<Record<PauseCause, ImportTerminalCode>>> = Object.freeze({
+  key_pending: 'KEY_PENDING',
+  archive_retry: 'ARCHIVE',
+  network: 'NETWORK',
+});
+
+// ---------------------------------------------------------------------------
+// Module state
+// ---------------------------------------------------------------------------
+
+interface ActiveRun {
+  readonly token: number;
+  readonly jobId: string;
+  readonly conversationId: string;
+  readonly source: ImportSource;
+  readonly controller: AbortController;
+  limits: ImportLimits;
+  keySession: ImportKeySession | null;
+  archive: ArchiveImportSession | null;
+  /** The OPEN server session, in memory: `session_id` is only writable at start. */
+  importId: string | null;
+  declaredPosts: number;
+  declaredBytes: number;
+  /** Current batch size after any halving. */
+  batchSize: number;
+  pauseCauses: Set<PauseCause>;
+  pauseTimers: Map<PauseCause, ReturnType<typeof setTimeout>>;
+  pauseAttempts: Map<PauseCause, number>;
+  pauseWaiters: Array<() => void>;
+  resumeAtMs: number | null;
+  appStateSub: { remove: () => void } | null;
+  /** True while a picker THIS runner opened is on screen (§4.3.1). */
+  pickerOpen: boolean;
+  created: number;
+  duplicate: number;
+  failed: number;
+  heldVideo: number;
+  mediaDone: number;
+  /** Items parked in `uploading` for the held-video hold; never requeued. */
+  held: Set<string>;
+  /** Items parked for the single end-of-run `IMPORT_QUOTA_EXCEEDED` retry. */
+  parked: Set<string>;
+  endOfRunPass: boolean;
+  /** Consecutive cycles that drained nothing. Two in a row is a stuck loop. */
+  idleCycles: number;
+  clientBugCount: number;
+  terminal: ImportTerminalCode | null;
+  cancelled: boolean;
+  settled: boolean;
+}
+
+let run: ActiveRun | null = null;
+
+/**
+ * The live run token (rule 0). Bumped by {@link resetImportRunnerState} and by
+ * every run start, so a continuation scheduled under the old token writes
+ * nothing.
+ */
+let liveToken = 0;
+
+/** `GET /api/groups/:id/imports`, cached per app session per orbit (§4.2). */
+const probeCache = new Map<string, ImportAvailability>();
+
+/**
+ * The wake-up for a `key_pending` pause raised BEFORE a run existed.
+ *
+ * `openImportKeySession` can throw `PendingWrapError` at launch, which is a
+ * pause — but there is no `ActiveRun` yet to hang a timer on, and a pause
+ * without a wake-up is a run that stalls invisibly (§6). So the retry lives at
+ * module scope, bounded by the same budget a running pause gets, and clears on
+ * the first successful open and on every reset.
+ */
+let keyPendingTimer: ReturnType<typeof setTimeout> | null = null;
+let keyPendingAttempts = 0;
+
+function clearKeyPendingRetry(): void {
+  if (keyPendingTimer !== null) {
+    clearTimeout(keyPendingTimer);
+    keyPendingTimer = null;
+  }
+  keyPendingAttempts = 0;
+}
+
+function scheduleKeyPendingRetry(): void {
+  if (keyPendingTimer !== null) return;
+  if (keyPendingAttempts >= KEY_PENDING_MAX_ATTEMPTS) {
+    // The budget is spent. The JOB is untouched — nothing was started and
+    // nothing written — so the honest state is "not running"; the next launch
+    // tries again, and `resumeImport()` retries now.
+    keyPendingAttempts = 0;
+    update({ phase: 'idle', pauseCauses: NO_PAUSE, needsRepick: false }, true);
+    return;
+  }
+  keyPendingAttempts += 1;
+  keyPendingTimer = setTimeout(() => {
+    keyPendingTimer = null;
+    void resumeImportAtLaunch().catch(() => {
+      // Re-entering the same gate; a second failure re-arms the timer.
+    });
+  }, KEY_PENDING_RETRY_MS);
+}
+
+/**
+ * Failure codes already reported in this run's capture window, or null when no
+ * window is open.
+ *
+ * One archive can fail thousands of items the same way; without a budget a
+ * single systemic failure is thousands of identical Sentry events. Mirrors
+ * `mediaExportService`'s per-run budget (the third such budget extracts a
+ * shared `captureBudget(name)` — two is below the threshold, §4.1).
+ */
+let capturedImportCodes: Set<string> | null = null;
+
+function beginImportCaptureBudget(): void {
+  capturedImportCodes = new Set<string>();
+}
+
+function endImportCaptureBudget(): void {
+  capturedImportCodes = null;
+}
+
+/**
+ * Report one run failure, at most once per code per run (§4.13).
+ *
+ * The payload is counts and closed client enums. No archive path, entry id,
+ * import key, media id, session id, post body, file name, member date or key
+ * fingerprint may appear here in either spelling — that list is pinned by
+ * `meta-import-no-content-logging`, which reads this file line by line.
+ */
+function captureImportFailure(r: ActiveRun, stage: ImportStage, code: ImportTerminalCode): void {
+  if (capturedImportCodes !== null) {
+    if (capturedImportCodes.has(code)) return;
+    capturedImportCodes.add(code);
+  }
+  captureError(new Error('meta import failed'), {
+    tags: {
+      import_source: r.source,
+      import_stage: stage,
+      import_code: code,
+    },
+    extra: {
+      created: r.created,
+      failed: r.failed,
+      batch_size: r.batchSize,
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Rule 0 — guards
+// ---------------------------------------------------------------------------
+
+/**
+ * The guard for WORK: it carries the abort signal, so a user cancel collapses
+ * every item write and every classification to `cancelled`.
+ */
+function workGuard(r: ActiveRun): RunGuard {
+  return {
+    run: r.token,
+    currentRun: () => liveToken,
+    signal: r.controller.signal,
+  };
+}
+
+/** True once this run's work must stop: reset, cancel or abort. */
+function stopped(r: ActiveRun): boolean {
+  return r !== run || isRunStale(workGuard(r));
+}
+
+/**
+ * True once this run has been RESET rather than merely cancelled: write
+ * nothing at all, not even the terminal status.
+ *
+ * The token only, deliberately — no signal. A user cancel aborts the work but
+ * must still write `finishImportJob(jobId, 'cancelled')` and publish a
+ * summary; a wipe must leave no trace. The wipe bumps {@link liveToken}, the
+ * cancel does not, and that is the whole difference.
+ */
+function wiped(r: ActiveRun): boolean {
+  return r.token !== liveToken;
+}
+
+/** `setTimeout` as a promise that also settles on abort. */
+function delay(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let settled = false;
+    const done = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    if (typeof signal.addEventListener === 'function') {
+      signal.addEventListener('abort', done, { once: true });
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// The pause set and its wake-ups (§4.3.1)
+// ---------------------------------------------------------------------------
+
+function pauseList(r: ActiveRun): readonly PauseCause[] {
+  if (r.pauseCauses.size === 0) return NO_PAUSE;
+  return PAUSE_PRECEDENCE.filter((cause) => r.pauseCauses.has(cause));
+}
+
+function releaseWaiters(r: ActiveRun): void {
+  const waiters = r.pauseWaiters;
+  r.pauseWaiters = [];
+  for (const resolve of waiters) resolve();
+}
+
+function clearPauseTimer(r: ActiveRun, cause: PauseCause): void {
+  const timer = r.pauseTimers.get(cause);
+  if (timer !== undefined) {
+    clearTimeout(timer);
+    r.pauseTimers.delete(cause);
+  }
+}
+
+/** Publish the pause set, and release the loop when it has emptied. */
+function publishPauseState(r: ActiveRun): void {
+  const causes = pauseList(r);
+  if (causes.length === 0) {
+    update({ phase: 'running', pauseCauses: NO_PAUSE, resumeAtMs: null, needsRepick: false }, true);
+    r.resumeAtMs = null;
+    releaseWaiters(r);
+    return;
+  }
+  update(
+    {
+      phase: 'paused',
+      pauseCauses: causes,
+      resumeAtMs: r.resumeAtMs,
+      // One source for the flag #928's re-pick prompt is gated on: it is the
+      // pause set's own membership, never a second variable to keep in step.
+      needsRepick: causes.includes('needs_repick'),
+    },
+    true,
+  );
+}
+
+function dropPause(r: ActiveRun, cause: PauseCause): void {
+  if (!r.pauseCauses.delete(cause)) return;
+  clearPauseTimer(r, cause);
+  publishPauseState(r);
+}
+
+/**
+ * The delay a cause's next wake-up timer runs for, or `null` for a cause whose
+ * only exit is a member action ({@link repickArchiveParts}, foreground).
+ */
+function pauseDelayMs(
+  cause: PauseCause,
+  attempt: number,
+  untilMs: number | undefined,
+): number | null {
+  switch (cause) {
+    case 'key_pending':
+      return KEY_PENDING_RETRY_MS;
+    case 'archive_retry':
+      return ARCHIVE_PAUSE_LADDER_MS[Math.min(attempt, ARCHIVE_PAUSE_LADDER_MS.length - 1)];
+    case 'network':
+      return NETWORK_PAUSE_LADDER_MS[Math.min(attempt, NETWORK_PAUSE_LADDER_MS.length - 1)];
+    case 'rate_limited':
+      return Math.max(0, (untilMs ?? Date.now() + DEFAULT_RATE_LIMIT_MS) - Date.now());
+    default:
+      // `needs_repick` has no timer at all, and `background` wakes on AppState.
+      return null;
+  }
+}
+
+/**
+ * Add a pause cause, spend one of its attempts, and arm its wake-up.
+ *
+ * Returns the terminal code the cause's budget ran out with, or null. The
+ * budget is counted HERE rather than in the classifier because the classifier
+ * is pure: it answers "this is a network pause", and how many of those a run
+ * tolerates is the loop's business (§4.3.1).
+ */
+function addPause(r: ActiveRun, cause: PauseCause, untilMs?: number): ImportTerminalCode | null {
+  const attempt = r.pauseAttempts.get(cause) ?? 0;
+  const budgetCode = PAUSE_BUDGET_CODE[cause];
+  if (budgetCode !== undefined) {
+    const max =
+      cause === 'key_pending'
+        ? KEY_PENDING_MAX_ATTEMPTS
+        : cause === 'archive_retry'
+          ? ARCHIVE_PAUSE_MAX_ATTEMPTS
+          : NETWORK_PAUSE_MAX_ATTEMPTS;
+    if (attempt >= max) return budgetCode;
+  }
+  r.pauseAttempts.set(cause, attempt + 1);
+  r.pauseCauses.add(cause);
+  if (untilMs !== undefined) r.resumeAtMs = untilMs;
+
+  clearPauseTimer(r, cause);
+  const ms = pauseDelayMs(cause, attempt, untilMs);
+  if (ms !== null) {
+    r.pauseTimers.set(
+      cause,
+      setTimeout(() => {
+        if (r !== run) return;
+        dropPause(r, cause);
+      }, ms),
+    );
+  }
+  publishPauseState(r);
+  return null;
+}
+
+function isPaused(r: ActiveRun): boolean {
+  return r.pauseCauses.size > 0;
+}
+
+function waitUntilResumed(r: ActiveRun): Promise<void> {
+  if (!isPaused(r) || stopped(r)) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    r.pauseWaiters.push(resolve);
+  });
+}
+
+/**
+ * Only `background` pauses for AppState.
+ *
+ * `inactive` is what iOS reports while OUR OWN document picker or a permission
+ * alert is on screen, and pausing for that would stall the run that is waiting
+ * for the picker.
+ */
+function isBackgrounded(status: AppStateStatus): boolean {
+  return status === 'background';
+}
+
+function attachAppState(r: ActiveRun): void {
+  if (isBackgrounded(AppState.currentState ?? 'active')) addPause(r, 'background');
+  r.appStateSub = AppState.addEventListener('change', (next: AppStateStatus) => {
+    if (r !== run) return;
+    if (isBackgrounded(next)) {
+      // Our own picker takes the foreground on Android (SAF emits
+      // `onHostPause`), and pausing for it would release the loop's waiters
+      // against a dead archive session when the member comes back.
+      if (r.pickerOpen) return;
+      addPause(r, 'background');
+      return;
+    }
+    if (next !== 'active') return;
+    // Foreground is the `network` wake-up as well as `background`'s (§4.3.1):
+    // a connection that died while suspended is back by the time we are.
+    dropPause(r, 'background');
+    dropPause(r, 'network');
+  });
+}
+
+function detachAppState(r: ActiveRun): void {
+  r.appStateSub?.remove();
+  r.appStateSub = null;
+}
+
+// ---------------------------------------------------------------------------
+// Verdicts
+// ---------------------------------------------------------------------------
+
+/** What the caller does next with its own step. */
+type Step =
+  /** The step is finished; go back to the loop. */
+  | 'continue'
+  /** The run is over (terminal, cancelled or wiped). */
+  | 'stop'
+  /** Run the same call again; the delay has already been waited out. */
+  | 'retry';
+
+function failRunWith(r: ActiveRun, code: ImportTerminalCode, stage: ImportStage): Step {
+  r.terminal = code;
+  if (!wiped(r)) captureImportFailure(r, stage, code);
+  return 'stop';
+}
+
+/** The classifier's context for one failure, with this run's own counters. */
+function failureContext(
+  r: ActiveRun,
+  stage: ImportStage,
+  extra?: {
+    stageAttempt?: number;
+    busyAttempt?: number;
+    endOfRunPass?: boolean;
+  },
+): ImportFailureContext {
+  return {
+    ...workGuard(r),
+    stage,
+    createdItems: r.created,
+    clientBugCount: r.clientBugCount,
+    endOfRunPass: r.endOfRunPass || extra?.endOfRunPass === true,
+    ...(extra?.stageAttempt === undefined ? {} : { stageAttempt: extra.stageAttempt }),
+    ...(extra?.busyAttempt === undefined ? {} : { busyAttempt: extra.busyAttempt }),
+  };
+}
+
+/**
+ * Apply one verdict that is not specific to its caller.
+ *
+ * `batch-halve` is deliberately NOT handled here: only the batch step knows
+ * what to re-claim, and routing it through a shared dispatcher would hide the
+ * requeue. Every other arm means the same thing wherever it came from —
+ * including `IMPORT_CLOSED`, which the media routes raise too (§1.4 C4), which
+ * is why `session-restart` / `finish-completed` must be reachable from the
+ * media path and not only from the batch path.
+ */
+async function applyVerdict(
+  r: ActiveRun,
+  verdict: ImportVerdict,
+  stage: ImportStage,
+  itemId?: string,
+): Promise<Step> {
+  switch (verdict.kind) {
+    case 'cancelled':
+      return 'stop';
+
+    case 'pause': {
+      const exhausted = addPause(r, verdict.cause, verdict.untilMs);
+      return exhausted === null ? 'continue' : failRunWith(r, exhausted, stage);
+    }
+
+    case 'retry-same-call':
+      await delay(verdict.delayMs, r.controller.signal);
+      return stopped(r) ? 'stop' : 'retry';
+
+    case 'item-failed':
+      if (itemId !== undefined) {
+        if (verdict.code === 'IMPORT_ITEM_INVALID') r.clientBugCount += 1;
+        const write = failImportItems(r.jobId, [{ itemId, code: verdict.code }], workGuard(r));
+        if (write.kind === 'cancelled') return 'stop';
+        if (write.kind === 'ok') r.failed += 1;
+      }
+      return 'continue';
+
+    case 'park-file':
+      // The orbit was full at media complete, where the refusal can mean count
+      // rather than bytes (F4): hold the item out of the queue and give it one
+      // end-of-run pass before charging it to the member.
+      if (itemId !== undefined && parkItem(r, itemId)) r.parked.add(itemId);
+      return 'continue';
+
+    case 'file-fresh-id':
+      // `importMedia` consumes every legitimate rebind itself and never hands
+      // one back; reaching here means the two layers disagreed about a shape.
+      // Charge the item rather than rebinding a `media_id` outside the one
+      // module allowed to, and keep the run alive.
+      return applyVerdict(
+        r,
+        { kind: 'item-failed', code: 'IMPORT_MEDIA_UNAVAILABLE' },
+        stage,
+        itemId,
+      );
+
+    case 'adopt-session': {
+      const importId = verdict.importId ?? (await lookupOpenSessionId(r));
+      if (importId === null) return failRunWith(r, 'REFUSED', stage);
+      r.importId = importId;
+      return 'retry';
+    }
+
+    case 'session-restart':
+      return (await restartServerSession(r)) ? 'retry' : 'stop';
+
+    case 'finish-completed':
+      // The server considers the session finished; finish locally too.
+      return 'stop';
+
+    case 'batch-halve':
+      // Only the batch step can act on this (see the note above). Anywhere
+      // else a too-large body is not something we can make smaller.
+      return failRunWith(r, 'REFUSED', stage);
+
+    case 'job-terminal':
+      return failRunWith(r, verdict.code, stage);
+  }
+}
+
+/** Classify a thrown failure and act on it, in one call. */
+async function handleFailure(
+  r: ActiveRun,
+  e: unknown,
+  stage: ImportStage,
+  options?: { itemId?: string; stageAttempt?: number; busyAttempt?: number },
+): Promise<Step> {
+  const verdict = classifyImportFailure(
+    e,
+    failureContext(r, stage, {
+      ...(options?.stageAttempt === undefined ? {} : { stageAttempt: options.stageAttempt }),
+      ...(options?.busyAttempt === undefined ? {} : { busyAttempt: options.busyAttempt }),
+    }),
+  );
+  return applyVerdict(r, verdict, stage, options?.itemId);
+}
+
+/**
+ * Park one item out of the pending queue without failing it.
+ *
+ * `uploading` is the only parking space the schema has, and it is the right
+ * one: `getPendingImportItems` cannot see it, `finishImportJob` drops its
+ * body, and a later resume's `requeueImportItems({from:'uploading'})` brings
+ * it back — which is exactly what a held post should do (one extract, held
+ * again) and what a quota-parked file should do (retry when space frees).
+ */
+function parkItem(r: ActiveRun, itemId: string): boolean {
+  if (isRunStale(workGuard(r))) return false;
+  return markItemsUploading(r.jobId, [itemId]) === 1;
+}
+
+// ---------------------------------------------------------------------------
+// The server session
+// ---------------------------------------------------------------------------
+
+/** The member's open session on this orbit, from a fresh preflight GET. */
+async function lookupOpenSessionId(r: ActiveRun): Promise<string | null> {
+  try {
+    const preflight = await getGroupImports(r.conversationId);
+    return preflight.openImport?.importId ?? null;
+  } catch {
+    // The adoption path already knows the member has a session; failing to
+    // learn its id is a pause-or-stop decision the next call will make.
+    return null;
+  }
+}
+
+/**
+ * `IMPORT_CLOSED` + `abandoned`: open a fresh session and resubmit.
+ *
+ * The new id is held in MEMORY only. `startImportJob` is guarded by
+ * `status = 'ready'` and this job is `in_progress`, so there is no writer for
+ * a second session id — and that is harmless: a relaunch re-reads the stale
+ * `session_id`, the server answers `abandoned`, and this path runs again.
+ * Already-created posts come back `duplicate`, and completed media is adopted.
+ */
+async function restartServerSession(r: ActiveRun): Promise<boolean> {
+  try {
+    const started = await startImport(r.conversationId, {
+      declaredPosts: r.declaredPosts,
+      declaredBytes: r.declaredBytes,
+    });
+    r.importId = started.importId;
+    r.limits = started.limits;
+  } catch (e) {
+    const step = await handleFailure(r, e, 'start');
+    return step === 'retry';
+  }
+  const requeued = requeueImportItems(r.jobId, { from: 'uploading' });
+  // Held posts went back into the queue with everything else; they are held
+  // again on their next extract, which costs one peek each.
+  if (requeued > 0) r.held.clear();
+  return true;
+}
+
+/**
+ * Make sure the run has an OPEN server session, starting one if the job has
+ * not got there yet.
+ *
+ * `openImport` from the preflight is adopted rather than raced: only one
+ * session per member per orbit may be open, so starting a second is a 409 we
+ * can see coming.
+ */
+async function ensureServerSession(r: ActiveRun, job: ImportJobRow): Promise<boolean> {
+  if (job.session_id !== null) {
+    r.importId = job.session_id;
+    return true;
+  }
+
+  let importId: string | null = null;
+  try {
+    const preflight = await getGroupImports(r.conversationId);
+    r.limits = preflight.limits;
+    if (preflight.openImport !== null && preflight.openImport.status === 'open') {
+      importId = preflight.openImport.importId;
+    }
+  } catch (e) {
+    const step = await handleFailure(r, e, 'start');
+    if (step !== 'retry') return false;
+  }
+
+  if (importId === null) {
+    try {
+      const started = await startImport(r.conversationId, {
+        declaredPosts: r.declaredPosts,
+        declaredBytes: r.declaredBytes,
+      });
+      importId = started.importId;
+      r.limits = started.limits;
+    } catch (e) {
+      const step = await handleFailure(r, e, 'start');
+      if (step !== 'retry' || r.importId === null) return false;
+      importId = r.importId;
+    }
+  }
+
+  if (isRunStale(workGuard(r))) return false;
+  // The job is `ready` here, so this is the ONE moment the session id is
+  // persistable. A `false` means the job moved underneath us: re-read, never
+  // write on top of it.
+  if (!startImportJob(r.jobId, { sessionId: importId })) return false;
+  r.importId = importId;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// The archive session, re-opened lazily
+// ---------------------------------------------------------------------------
+
+/** An `ArchiveReaderError`'s code, matched by name (§4.16 mock locations). */
+function archiveErrorCode(e: unknown): string | undefined {
+  if (e === null || typeof e !== 'object') return undefined;
+  if ((e as { name?: unknown }).name !== 'ArchiveReaderError') return undefined;
+  const code = (e as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+function parsePartTokens(json: string | null): readonly ArchivePartToken[] | null {
+  if (json === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(json);
+    return Array.isArray(parsed) ? (parsed as ArchivePartToken[]) : null;
+  } catch {
+    // A bookmark we cannot read is a bookmark we do not have.
+    return null;
+  }
+}
+
+/** Persist `JSON.stringify(session.parts)` when it differs from the stored value. */
+function persistBookmark(
+  r: ActiveRun,
+  session: ArchiveImportSession,
+  stored: string | null,
+): boolean {
+  const json = JSON.stringify(session.parts);
+  if (json === stored) return true;
+  if (isRunStale(workGuard(r))) return false;
+  // A `false` means the job left the active statuses underneath us: stop and
+  // re-read rather than putting a capability handle back on a dead job.
+  return setArchiveBookmark(r.jobId, json);
+}
+
+/**
+ * The archive session for the next media item, opened on first use.
+ *
+ * A text-only tail therefore resumes with no picker prompt and no archive
+ * session at all, which is the whole reason this is lazy (§4.9.5).
+ */
+async function ensureArchiveSession(r: ActiveRun): Promise<ArchiveImportSession | null> {
+  if (r.archive !== null) return r.archive;
+
+  const job = getImportJob(r.jobId);
+  const stored = job?.archive_bookmark ?? null;
+  const tokens = parsePartTokens(stored);
+  if (tokens === null || tokens.length === 0) {
+    // No bookmark and media still to upload: only a re-pick can supply one,
+    // and only while nothing has been created (§4.7, one disposition).
+    await applyVerdict(
+      r,
+      r.created === 0
+        ? { kind: 'pause', cause: 'needs_repick' }
+        : { kind: 'job-terminal', code: 'ARCHIVE' },
+      'archive',
+    );
+    return null;
+  }
+
+  try {
+    const session = await openArchiveSession(tokens, { signal: r.controller.signal });
+    if (!persistBookmark(r, session, stored)) {
+      session.close();
+      return null;
+    }
+    r.archive = session;
+    return session;
+  } catch (e) {
+    await handleFailure(r, e, 'archive');
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// One item's media (§4.10)
+// ---------------------------------------------------------------------------
+
+/**
+ * Run one post's media pipeline.
+ *
+ * Returns true when every ordinal is on the server. Anything else has already
+ * been applied — failed, held, parked, paused or terminal — and the loop
+ * re-reads the queue.
+ */
+async function runMediaForItem(r: ActiveRun, item: PendingImportItem): Promise<boolean> {
+  const session = await ensureArchiveSession(r);
+  if (session === null || r.importId === null) return false;
+  const importId = r.importId;
+
+  for (let attempt = 0; ; attempt++) {
+    if (stopped(r)) return false;
+
+    let outcome;
+    try {
+      outcome = await uploadImportItemMedia(item, {
+        importId,
+        groupId: r.conversationId,
+        session,
+        signal: r.controller.signal,
+        isCurrentRun: () => r === run && !wiped(r),
+      });
+    } catch (e) {
+      // `importMedia` rethrows exactly the failures that are about the RUN;
+      // the stage comes off the error because `uploadMedia` runs the chunk
+      // loop and the complete call behind one promise.
+      const step = await handleFailure(r, e, importMediaStage(e), {
+        itemId: item.id,
+        stageAttempt: attempt,
+        busyAttempt: attempt,
+      });
+      if (step === 'retry') continue;
+      return false;
+    }
+
+    switch (outcome.kind) {
+      case 'uploaded':
+        r.mediaDone += item.media.length;
+        update({ mediaDone: r.mediaDone }, false);
+        return true;
+
+      case 'held-video':
+        // The issue's AC reports held video separately from failures, so the
+        // post is parked rather than failed — and it is parked out of the
+        // queue so one held post cannot stall the drain.
+        r.heldVideo += 1;
+        if (parkItem(r, item.id)) r.held.add(item.id);
+        update({ heldVideo: r.heldVideo }, false);
+        return false;
+
+      case 'item-failed': {
+        if (isRunStale(workGuard(r))) return false;
+        const write = failImportItems(
+          r.jobId,
+          [{ itemId: item.id, code: itemCodeFor(outcome.code) }],
+          workGuard(r),
+        );
+        if (write.kind === 'ok') {
+          r.failed += 1;
+          update({ failed: r.failed }, false);
+        }
+        return false;
+      }
+
+      case 'cancelled':
+        return false;
+
+      case 'fresh-id-exhausted':
+        // Per C4 a 403 on an import media route has three indistinguishable
+        // causes; the one fresh id answered the two that are recoverable.
+        failRunWith(r, 'FORBIDDEN', outcome.stage);
+        return false;
+    }
+  }
+}
+
+/**
+ * `importMedia`'s codes, narrowed to the ones this client writes.
+ *
+ * Its two `SkipReason` spellings (`image_too_large`,
+ * `unsupported_image_format`) are the parser's names for the same
+ * user-visible fact, reused on purpose — but `applyBatchResults` takes our own
+ * registry, so they are mapped to the one entry that means "the device or the
+ * server refused this file type".
+ */
+function itemCodeFor(code: string): 'IMPORT_MEDIA_UNSUPPORTED' | 'IMPORT_MEDIA_UNAVAILABLE' {
+  return code === 'IMPORT_MEDIA_UNAVAILABLE'
+    ? 'IMPORT_MEDIA_UNAVAILABLE'
+    : 'IMPORT_MEDIA_UNSUPPORTED';
+}
+
+// ---------------------------------------------------------------------------
+// One batch (§4.6)
+// ---------------------------------------------------------------------------
+
+/** Seal the eligible items, or charge the ones that cannot be sealed. */
+async function buildBatchItems(
+  r: ActiveRun,
+  items: readonly PendingImportItem[],
+): Promise<{ built: BuiltImportItem[]; step: Step }> {
+  const built: BuiltImportItem[] = [];
+  const session = r.keySession;
+  if (session === null) return { built, step: 'stop' };
+
+  for (const item of items) {
+    if (stopped(r)) return { built, step: 'stop' };
+
+    const narrowed = preflightImportItem(item, r.limits);
+    if (!narrowed.ok) {
+      const step = await applyVerdict(
+        r,
+        { kind: 'item-failed', code: narrowed.code },
+        'batch',
+        item.id,
+      );
+      if (step === 'stop') return { built, step };
+      continue;
+    }
+
+    try {
+      const outcome = await buildImportItem(narrowed.item, session, r.limits);
+      if (outcome.ok) {
+        built.push(outcome.built);
+        continue;
+      }
+      const step = await applyVerdict(
+        r,
+        { kind: 'item-failed', code: outcome.code },
+        'batch',
+        item.id,
+      );
+      if (step === 'stop') return { built, step };
+    } catch (e) {
+      // Crypto errors propagate out of `buildImportItem` on purpose: a pending
+      // wrap is a pause, a changed key ends the run, and neither is an item
+      // failure.
+      const step = await handleFailure(r, e, 'crypto', { itemId: item.id });
+      return { built, step: step === 'retry' ? 'continue' : step };
+    }
+  }
+
+  return { built, step: 'continue' };
+}
+
+/** POST one claimed batch, retrying in place while the ladder allows it. */
+async function submitClaimedBatch(r: ActiveRun, batch: readonly BuiltImportItem[]): Promise<Step> {
+  for (let attempt = 0; ; attempt++) {
+    if (stopped(r) || r.importId === null) return 'stop';
+
+    try {
+      const response = await submitImportBatch(r.importId, {
+        items: batch.map((b) => b.wire),
+      });
+      const mapped = mapBatchResults(batch, response.results);
+      const applied = applyBatchOutcome(r.jobId, mapped.applied, workGuard(r));
+      if (applied.kind === 'cancelled') return 'stop';
+
+      r.created += mapped.created;
+      r.duplicate += mapped.duplicate;
+      r.failed += mapped.failed;
+      update({ created: r.created, duplicate: r.duplicate, failed: r.failed }, false);
+
+      // Items the response said nothing about are still `uploading` and are
+      // ours to requeue — a resubmitted post the server already took comes
+      // back `duplicate`, which is what the `import_key` dedup is for.
+      releaseBatchClaim(r.jobId, mapped.unanswered, workGuard(r));
+      return 'continue';
+    } catch (e) {
+      const verdict = classifyImportFailure(
+        e,
+        failureContext(r, 'batch', { stageAttempt: attempt }),
+      );
+      if (verdict.kind === 'batch-halve') return 'retry';
+      const step = await applyVerdict(r, verdict, 'batch');
+      if (step === 'retry') continue;
+      return step;
+    }
+  }
+}
+
+/**
+ * Halve the batch, or charge the one item that cannot be made smaller.
+ *
+ * The size stays halved for the rest of the run rather than ratcheting back
+ * up: nothing about the archive changed, and oscillating around the limit
+ * would spend a round trip per batch to re-learn the same answer.
+ */
+async function halveOrFail(r: ActiveRun, batch: readonly BuiltImportItem[]): Promise<Step> {
+  releaseBatchClaim(
+    r.jobId,
+    batch.map((b) => b.itemId),
+    workGuard(r),
+  );
+
+  if (!isBatchHalvingExhausted(r.batchSize)) {
+    r.batchSize = halveBatchSize(r.batchSize);
+    return 'retry';
+  }
+
+  const first = batch[0];
+  if (first === undefined) return 'stop';
+  return applyVerdict(
+    r,
+    { kind: 'item-failed', code: 'IMPORT_ITEM_TOO_LARGE' },
+    'batch',
+    first.itemId,
+  );
+}
+
+/** Claim, submit and apply one batch out of the built set. */
+async function submitBuiltItems(r: ActiveRun, built: readonly BuiltImportItem[]): Promise<Step> {
+  let remaining = built;
+
+  for (;;) {
+    if (stopped(r)) return 'stop';
+
+    const { batch } = assembleBatch(remaining, {
+      maxItems: batchSizeLimit(r.limits, r.batchSize),
+    });
+    if (batch.length === 0) return 'continue';
+
+    const claim = claimBatch(r.jobId, batch, workGuard(r));
+    if (claim.kind === 'cancelled') return 'stop';
+    // A short claim means some of these rows are no longer pending: this
+    // batch is stale by definition, so re-read instead of sending it.
+    if (claim.kind === 'stale') return 'continue';
+
+    const step = await submitClaimedBatch(r, batch);
+    if (step !== 'retry') return step;
+
+    const halved = await halveOrFail(r, batch);
+    if (halved === 'stop') return 'stop';
+    if (halved === 'continue') {
+      // The single over-size item was charged to the member; drop it and
+      // carry on with the rest.
+      remaining = remaining.filter((b) => b.itemId !== batch[0]?.itemId);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The pump
+// ---------------------------------------------------------------------------
+
+function nextPendingItems(r: ActiveRun): PendingImportItem[] {
+  return getPendingImportItems(r.jobId, batchSizeLimit(r.limits, r.batchSize));
+}
+
+/**
+ * Upload the media of every item in the page that still needs it.
+ *
+ * The page is re-read afterwards rather than mutated in place: `importMedia`
+ * may have rebound a `media_id` (`replaceMediaId`), and submitting the stale
+ * one would attach a file the server does not have under that id.
+ */
+async function runMediaPhase(r: ActiveRun, page: readonly PendingImportItem[]): Promise<Step> {
+  for (const item of page) {
+    if (stopped(r)) return 'stop';
+    if (r.terminal !== null) return 'stop';
+    // A pause raised on an earlier item means the loop must unwind and wait,
+    // not push the next file at a server that just refused one.
+    if (isPaused(r)) return 'continue';
+    if (isItemBatchEligible(item)) continue;
+    await runMediaForItem(r, item);
+  }
+  return r.terminal === null ? 'continue' : 'stop';
+}
+
+/** One cycle: media for a page, then one or more batches out of it. */
+async function runCycle(r: ActiveRun): Promise<Step> {
+  const page = nextPendingItems(r);
+  if (page.length === 0) return 'continue';
+
+  const media = await runMediaPhase(r, page);
+  if (media === 'stop') return 'stop';
+  if (isPaused(r) || stopped(r)) return 'continue';
+
+  const fresh = nextPendingItems(r).filter(isItemBatchEligible);
+  if (fresh.length === 0) return 'continue';
+
+  try {
+    // The pin is re-verified per item inside `sealContent`; this is the cheap
+    // gate that stops a whole batch being built under a key that has moved.
+    await r.keySession?.verifyGroupKeyPin();
+  } catch (e) {
+    const step = await handleFailure(r, e, 'crypto');
+    return step === 'stop' ? 'stop' : 'continue';
+  }
+
+  const { built, step } = await buildBatchItems(r, fresh);
+  if (step === 'stop') return 'stop';
+  if (built.length === 0) return 'continue';
+  return submitBuiltItems(r, built);
+}
+
+/**
+ * Drain the job: media, batches, pauses, and the one end-of-run pass for files
+ * the orbit had no room for.
+ */
+async function pumpRun(r: ActiveRun): Promise<void> {
+  for (;;) {
+    await waitUntilResumed(r);
+    if (stopped(r) || r.terminal !== null) return;
+
+    const before = countPending(r);
+    const step = await runCycle(r);
+    if (step === 'stop') return;
+
+    if (isPaused(r)) continue;
+    const after = countPending(r);
+    if (after > 0 && after === before) {
+      // Every item in a cycle either becomes submittable, is failed, or is
+      // parked OUT of the pending queue, so an unchanged queue with no pause
+      // means the loop cannot make progress. One such cycle is survivable —
+      // a stale claim re-reads the same page — two in a row is a bug, and
+      // spinning on it would burn the member's battery in silence.
+      r.idleCycles += 1;
+      if (r.idleCycles >= 2) {
+        failRunWith(r, 'CLIENT_BUG', 'batch');
+        return;
+      }
+      continue;
+    }
+    r.idleCycles = 0;
+    if (after > 0) continue;
+
+    if (r.parked.size > 0 && !r.endOfRunPass) {
+      startEndOfRunPass(r);
+      continue;
+    }
+    return;
+  }
+}
+
+function countPending(r: ActiveRun): number {
+  return countImportItemsByStatus(r.jobId).pending;
+}
+
+/**
+ * The single end-of-run retry for files parked on `IMPORT_QUOTA_EXCEEDED`.
+ *
+ * `endOfRunPass` is what turns the next quota refusal into
+ * `item-failed('QUOTA')` instead of another park, so the pass can run exactly
+ * once (F4: the refusal can mean media COUNT, in which case waiting never
+ * helps).
+ */
+function startEndOfRunPass(r: ActiveRun): void {
+  r.endOfRunPass = true;
+  const parked = [...r.parked];
+  r.parked.clear();
+  if (isRunStale(workGuard(r))) return;
+  requeueImportItems(r.jobId, { from: 'uploading', itemIds: parked });
+}
+
+// ---------------------------------------------------------------------------
+// Completion (§4.12)
+// ---------------------------------------------------------------------------
+
+function buildSummary(r: ActiveRun): ImportSummary {
+  const counts = countImportItemsByStatus(r.jobId);
+  const skips = countImportSkipsByReason(r.jobId);
+  return {
+    created: counts.created,
+    duplicate: counts.duplicate,
+    failed: counts.failed,
+    // Parse-time holds and the post-extract ones are the same fact to the
+    // member, reported separately from failures per the issue AC.
+    heldVideo: skips.held_video + r.heldVideo,
+    skippedByReason: skips,
+    notSubmitted: counts.pending + counts.uploading,
+    errorCode: r.terminal,
+    cancelled: r.cancelled,
+  };
+}
+
+function terminalStatusFor(r: ActiveRun): TerminalImportJobStatus {
+  if (r.cancelled) return 'cancelled';
+  return r.terminal === null ? 'completed' : 'failed';
+}
+
+/**
+ * Release everything the run held and publish the summary.
+ *
+ * Order is load-bearing: release the archive parts BEFORE `finishImportJob`,
+ * which NULLs the bookmark, so a terminal job never leaves a grant behind with
+ * no record of which parts it held. The key session closes last, in a
+ * `finally` that also covers the abort path.
+ *
+ * Once the run has been RESET this writes nothing at all — no `complete`, no
+ * `finishImportJob`, no summary, no Sentry event (rule 0).
+ */
+async function settleRun(r: ActiveRun): Promise<void> {
+  if (r.settled) return;
+  r.settled = true;
+
+  const archive = r.archive;
+  r.archive = null;
+  const status = terminalStatusFor(r);
+
+  try {
+    if (archive !== null) {
+      const parts = archive.parts;
+      archive.close();
+      if (!wiped(r)) {
+        await releaseArchiveParts(parts).catch(() => {
+          // A grant we cannot release is `releaseAllPersistedParts`'s problem
+          // on the next wipe; it must not stop the run from finishing.
+        });
+      }
+    }
+
+    if (wiped(r)) return;
+
+    if (status === 'completed' && r.importId !== null) {
+      try {
+        await completeImport(r.importId);
+      } catch (e) {
+        // A session the server already finished is still a finished import.
+        const verdict = classifyImportFailure(e, failureContext(r, 'complete'));
+        if (verdict.kind === 'job-terminal') r.terminal = verdict.code;
+      }
+    }
+
+    if (wiped(r)) return;
+
+    const summary = buildSummary(r);
+    finishImportJob(r.jobId, terminalStatusFor(r));
+    if (r.terminal !== null && !r.cancelled) {
+      captureImportFailure(r, 'complete', r.terminal);
+    }
+
+    update(
+      {
+        phase: 'done',
+        summary,
+        created: summary.created,
+        duplicate: summary.duplicate,
+        failed: summary.failed,
+        heldVideo: summary.heldVideo,
+        skipped: counted(summary.skippedByReason),
+        errorCode: summary.errorCode,
+        pauseCauses: NO_PAUSE,
+        resumeAtMs: null,
+        needsRepick: false,
+      },
+      true,
+    );
+
+    // The `import_completed` broadcast only lands if the socket is up, so the
+    // refetch is a belt. #927 adds the WS case; `loadThreadsForGroup` is
+    // idempotent, so the two cannot double-apply.
+    void loadThreadsForGroup(r.conversationId).catch(() => {
+      // Nothing the member can act on: the threads arrive on the next open.
+    });
+  } finally {
+    r.keySession?.close();
+    r.keySession = null;
+    detachAppState(r);
+    for (const cause of r.pauseTimers.keys()) clearPauseTimer(r, cause);
+    releaseWaiters(r);
+    endImportCaptureBudget();
+    if (r === run) run = null;
+  }
+}
+
+function counted(byReason: Readonly<Record<SkipReason, number>>): number {
+  return Object.values(byReason).reduce((sum, n) => sum + n, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Starting a run
+// ---------------------------------------------------------------------------
+
+function newRun(
+  job: ImportJobRow,
+  limits: ImportLimits,
+  keySession: ImportKeySession | null,
+): ActiveRun {
+  liveToken += 1;
+  return {
+    token: liveToken,
+    jobId: job.id,
+    conversationId: job.conversation_id,
+    source: job.source,
+    controller: new AbortController(),
+    limits,
+    keySession,
+    archive: null,
+    importId: job.session_id,
+    declaredPosts: job.declared_posts ?? 0,
+    declaredBytes: job.declared_bytes ?? 0,
+    batchSize: batchSizeLimit(limits),
+    pauseCauses: new Set<PauseCause>(),
+    pauseTimers: new Map(),
+    pauseAttempts: new Map(),
+    pauseWaiters: [],
+    resumeAtMs: null,
+    appStateSub: null,
+    pickerOpen: false,
+    created: 0,
+    duplicate: 0,
+    failed: 0,
+    heldVideo: 0,
+    mediaDone: 0,
+    held: new Set<string>(),
+    parked: new Set<string>(),
+    endOfRunPass: false,
+    idleCycles: 0,
+    clientBugCount: 0,
+    terminal: null,
+    cancelled: false,
+    settled: false,
+  };
+}
+
+/**
+ * Run one job from its current status to a terminal one.
+ *
+ * Never rejects: a failure becomes a terminal code on the summary, because the
+ * two callers ({@link confirmAndRunImport} and {@link resumeImportAtLaunch})
+ * are both fire-and-forget and a rejection would only become a log line.
+ */
+async function runJob(
+  job: ImportJobRow,
+  limits: ImportLimits,
+  keySession: ImportKeySession,
+): Promise<void> {
+  const r = newRun(job, limits, keySession);
+  run = r;
+  beginImportCaptureBudget();
+
+  const counts = countImportItemsByStatus(job.id);
+  update(
+    {
+      phase: 'running',
+      jobId: job.id,
+      conversationId: job.conversation_id,
+      source: job.source,
+      needsRepick: false,
+      total: job.declared_posts ?? importableTotal(counts),
+      created: counts.created,
+      duplicate: counts.duplicate,
+      failed: counts.failed,
+      skipped: counted(countImportSkipsByReason(job.id)),
+      pauseCauses: NO_PAUSE,
+      resumeAtMs: null,
+      summary: null,
+      errorCode: null,
+    },
+    true,
+  );
+  r.created = counts.created;
+  r.duplicate = counts.duplicate;
+  r.failed = counts.failed;
+  // AFTER the initial publish, which would otherwise overwrite a `background`
+  // pause this adds for a run started while the app is already suspended.
+  attachAppState(r);
+
+  // A courtesy to OTHER pending members, never awaited and never the fix for
+  // our own `key_pending`: a pending member's own `getPendingWraps` is
+  // answered 403 and swallowed, so this cannot clear our wrap (§4.8).
+  void fulfillPendingWraps().catch(() => {
+    // Fire-and-forget by contract.
+  });
+
+  try {
+    if (!(await ensureServerSession(r, job))) {
+      await settleRun(r);
+      return;
+    }
+    // A kill between `markItemsUploading` and `applyBatchResults` leaves rows
+    // `getPendingImportItems` can never see again, so this runs BEFORE the
+    // first page is read.
+    if (!isRunStale(workGuard(r))) requeueImportItems(r.jobId, { from: 'uploading' });
+    await pumpRun(r);
+  } catch (e) {
+    await handleFailure(r, e, 'batch');
+  }
+  await settleRun(r);
+}
+
+function importableTotal(counts: Record<string, number>): number {
+  return (
+    (counts.pending ?? 0) +
+    (counts.uploading ?? 0) +
+    (counts.created ?? 0) +
+    (counts.duplicate ?? 0) +
+    (counts.failed ?? 0)
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Preflight
+// ---------------------------------------------------------------------------
+
+function retentionDaysFor(conversationId: string): number | null {
+  return useAppStore.getState().conversations[conversationId]?.contentRetentionDays ?? null;
+}
+
+/**
+ * Turn an allowance plus a count into the preflight, including the §4.5
+ * refusal: an archive over the REMAINING lifetime allowance is refused whole.
+ *
+ * Nothing is trimmed. The caps are per-(orbit, member) LIFETIME caps, so
+ * partially submitting an over-size archive would spend the member's remaining
+ * allowance on an arbitrary subset and leave them unable to import the rest
+ * anywhere.
+ */
+function buildPreflight(args: {
+  conversationId: string;
+  allowance: ImportAllowance;
+  limits: ImportLimits;
+  importable: number;
+  estimatedBytes: number;
+  heldVideo: number;
+  skippedByReason: Readonly<Record<SkipReason, number>>;
+  summary: ParseSummary | null;
+}): ImportPreflight {
+  const remainingPosts = Math.max(0, args.allowance.postsLimit - args.allowance.postsUsed);
+  const remainingBytes = Math.max(0, args.allowance.bytesLimit - args.allowance.bytesUsed);
+  const overAllowance =
+    args.importable > remainingPosts
+      ? 'posts'
+      : args.estimatedBytes > remainingBytes
+        ? 'bytes'
+        : null;
+
+  return {
+    summary: args.summary,
+    allowance: args.allowance,
+    limits: args.limits,
+    contentRetentionDays: retentionDaysFor(args.conversationId),
+    importable: args.importable,
+    remainingPosts,
+    estimatedBytes: args.estimatedBytes,
+    remainingBytes,
+    overAllowance,
+    heldVideo: args.heldVideo,
+    skippedByReason: args.skippedByReason,
+  };
+}
+
+/** The preflight for a `ready` job, rebuilt from SQLite plus a fresh GET. */
+async function rebuildPreflight(job: ImportJobRow): Promise<ImportPreflight | null> {
+  let allowance: ImportAllowance;
+  let limits: ImportLimits;
+  try {
+    const response = await getGroupImports(job.conversation_id);
+    allowance = response.allowance;
+    limits = response.limits;
+  } catch {
+    // Without a fresh allowance there is nothing honest to show; #928 offers
+    // the job again on the next launch.
+    return null;
+  }
+
+  const counts = countImportItemsByStatus(job.id);
+  const skips = countImportSkipsByReason(job.id);
+  return buildPreflight({
+    conversationId: job.conversation_id,
+    allowance,
+    limits,
+    importable: job.declared_posts ?? importableTotal(counts),
+    estimatedBytes: job.declared_bytes ?? 0,
+    heldVideo: skips.held_video,
+    skippedByReason: skips,
+    summary: null,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Public API (§4.2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Is importing available in this orbit, and under what allowance?
+ *
+ * The flag gate sits ABOVE `authenticate`, so a server with `IMPORTS_ENABLED`
+ * off answers 404 byte-identically to an unknown route — and the flag is off
+ * in production today. Without this probe every member on 1.7.8 would cross
+ * orbit settings, the how-to screen and the OS picker before finding out.
+ *
+ * Cached per app session per orbit, and cleared by
+ * {@link resetImportRunnerState} so the next account on this device re-probes.
+ * A 404 is cached; anything else PROPAGATES, because caching a transient
+ * network failure as "unavailable" would hide the feature until the next
+ * launch.
+ */
+export async function probeImportAvailability(conversationId: string): Promise<ImportAvailability> {
+  const cached = probeCache.get(conversationId);
+  if (cached !== undefined) return cached;
+
+  try {
+    const response = await getGroupImports(conversationId);
+    const available: ImportAvailability = {
+      available: true,
+      allowance: response.allowance,
+      limits: response.limits,
+    };
+    probeCache.set(conversationId, available);
+    return available;
+  } catch (e) {
+    if (e instanceof NotFoundError) {
+      const unavailable: ImportAvailability = {
+        available: false,
+        allowance: null,
+        limits: null,
+      };
+      probeCache.set(conversationId, unavailable);
+      return unavailable;
+    }
+    throw e;
+  }
+}
+
+/**
+ * Pick an archive, parse it, and answer with the preflight.
+ *
+ * `createImportJob` throws when a non-terminal job exists — one import at a
+ * time per device — so that refusal is TYPED here rather than surfacing as an
+ * unhandled rejection after the member has already chosen their files.
+ */
+export async function pickAndStartParse(args: {
+  conversationId: string;
+  source: ImportSource;
+}): Promise<PickParseResult> {
+  const existing = getActiveImportJob();
+  if (existing !== null) {
+    return { kind: 'refused', reason: 'job-running', conversationId: existing.conversation_id };
+  }
+
+  let tokens: readonly ArchivePartToken[] | null;
+  try {
+    tokens = await pickArchiveParts();
+  } catch {
+    // `PICKER_BUSY` and a cancelled picker are the same thing to the caller:
+    // nothing was chosen, and there is no run to pause.
+    return { kind: 'cancelled' };
+  }
+  if (tokens === null || tokens.length === 0) return { kind: 'cancelled' };
+
+  const jobId = generateUUID();
+  let archive: ArchiveImportSession | null = null;
+  let keySession: ImportKeySession | null = null;
+  let created = false;
+
+  try {
+    archive = await openArchiveSession(tokens);
+    // Opened BEFORE the job row, because `key_fingerprint` is NOT NULL from
+    // creation: a `ready` job's stored identities carry the generation stamp
+    // they were derived under (#921).
+    keySession = await openImportKeySession({
+      groupId: args.conversationId,
+      source: args.source,
+    });
+
+    createImportJob({
+      id: jobId,
+      conversationId: args.conversationId,
+      source: args.source,
+      keyFingerprint: keySession.keyFingerprint,
+      createdAt: Date.now(),
+    });
+    created = true;
+    setArchiveBookmark(jobId, JSON.stringify(archive.parts));
+
+    update(
+      {
+        phase: 'parsing',
+        jobId,
+        conversationId: args.conversationId,
+        source: args.source,
+        preflight: null,
+        needsRepick: false,
+        total: 0,
+        created: 0,
+        duplicate: 0,
+        failed: 0,
+        skipped: 0,
+        heldVideo: 0,
+        mediaDone: 0,
+        mediaTotal: 0,
+        parseProgress: null,
+        pauseCauses: NO_PAUSE,
+        resumeAtMs: null,
+        summary: null,
+        errorCode: null,
+      },
+      true,
+    );
+
+    const preflight = await parseIntoJob({
+      jobId,
+      conversationId: args.conversationId,
+      source: args.source,
+      archive,
+      keySession,
+    });
+    if (preflight === null) return { kind: 'cancelled' };
+
+    if (preflight.overAllowance !== null) {
+      // §4.5.4: refuse the archive whole. No server session was started, so
+      // the refusal consumes none of the member's allowance.
+      await releaseArchiveParts(archive.parts).catch(() => {});
+      archive.close();
+      archive = null;
+      finishImportJob(jobId, 'cancelled');
+    }
+
+    update({ phase: 'ready', preflight, total: preflight.importable }, true);
+    return { kind: 'preflight', preflight };
+  } catch {
+    // Every parse failure is the same thing to the member at this point: the
+    // archive could not be read, and nothing has been uploaded. The job row is
+    // dropped rather than left for a resume that would re-pick anyway.
+    if (created) deleteImportJob(jobId);
+    update({ phase: 'idle', jobId: null, preflight: null, parseProgress: null }, true);
+    return { kind: 'cancelled' };
+  } finally {
+    keySession?.close();
+    if (archive !== null) {
+      archive.close();
+      if (getImportJob(jobId) === null) {
+        await releaseArchiveParts(tokens).catch(() => {});
+      }
+    }
+  }
+}
+
+/**
+ * Parse one archive into the job, accumulating the preflight as it goes.
+ *
+ * `declaredSize` is summed only for the media of IMPORTABLE posts whose entry
+ * the listing did not skip — the one moment both facts are in hand — and each
+ * contribution is clamped and given re-encode headroom by
+ * `estimateImportBytes`, because the central directory's uncompressed size is
+ * unvalidated and export-controlled.
+ */
+async function parseIntoJob(args: {
+  jobId: string;
+  conversationId: string;
+  source: ImportSource;
+  archive: ArchiveImportSession;
+  keySession: ImportKeySession;
+}): Promise<ImportPreflight | null> {
+  const declaredByEntry = new Map<string, number>();
+  for (const entry of args.archive.entries) {
+    if (entry.skip === null) declaredByEntry.set(entry.entryId, entry.declaredSize);
+  }
+
+  const buffer: ImportItemInsert[] = [];
+  let ordinal = 0;
+  let estimatedBytes = 0;
+
+  const flush = (): void => {
+    if (buffer.length === 0) return;
+    insertImportItems(args.jobId, buffer);
+    buffer.length = 0;
+  };
+
+  const summary = await parseArchive(args.archive, {
+    source: args.source,
+    deriveImportKey: (sourceItemId) => args.keySession.deriveImportKey(sourceItemId),
+    onItem: async (item, importKey) => {
+      const index = ordinal;
+      ordinal += 1;
+      if (item.outcome === 'import') {
+        for (const media of item.media) {
+          const declared = declaredByEntry.get(media.entryId);
+          if (declared !== undefined) estimatedBytes += estimateImportBytes(declared);
+        }
+        buffer.push({
+          id: generateUUID(),
+          ordinal: index,
+          importKey,
+          status: 'pending',
+          skipReason: null,
+          originalDate: item.originalDate,
+          body: item.body,
+          sourceFile: item.sourceFile,
+          sourceIndex: item.sourceIndex,
+          idKind: item.idKind,
+          media: item.media.map((media, i) => ({
+            ordinal: i,
+            mediaId: generateUUID(),
+            entryId: media.entryId,
+            originalDate: media.originalDate,
+          })),
+        });
+      } else {
+        buffer.push({
+          id: generateUUID(),
+          ordinal: index,
+          importKey,
+          status: 'skipped',
+          skipReason: item.reason,
+          originalDate: item.originalDate,
+          body: null,
+          sourceFile: item.sourceFile,
+          sourceIndex: item.sourceIndex,
+          idKind: item.idKind,
+        });
+      }
+      if (buffer.length >= PARSE_FLUSH_SIZE) flush();
+    },
+    onProgress: (progress: ParseProgress) => {
+      update({ parseProgress: progress }, false);
+    },
+  });
+  flush();
+
+  const probe = await probeImportAvailability(args.conversationId);
+  if (probe.allowance === null || probe.limits === null) return null;
+
+  const skips = countImportSkipsByReason(args.jobId);
+  const preflight = buildPreflight({
+    conversationId: args.conversationId,
+    allowance: probe.allowance,
+    limits: probe.limits,
+    importable: summary.importable,
+    estimatedBytes,
+    heldVideo: skips.held_video,
+    skippedByReason: skips,
+    summary,
+  });
+
+  if (preflight.overAllowance === null) {
+    // A `false` means the job left `parsing` underneath us — cancelled from
+    // the UI, or wiped — and writing anyway would resurrect it.
+    if (
+      !setImportJobParsed(args.jobId, {
+        declaredPosts: preflight.importable,
+        declaredBytes: Math.floor(preflight.estimatedBytes),
+      })
+    ) {
+      return null;
+    }
+  }
+
+  return preflight;
+}
+
+/**
+ * Start the run the member just confirmed.
+ *
+ * Resolves when the run has SETTLED, which for a paused run means after the
+ * pause clears or the run is cancelled or reset. It never rejects: call it
+ * fire-and-forget and read progress from {@link importStore}.
+ */
+export async function confirmAndRunImport(): Promise<void> {
+  if (run !== null) return;
+  const job = getActiveImportJob();
+  if (job === null || job.status !== 'ready') return;
+  // An over-allowance preflight already finished its job as `cancelled`, so
+  // this is belt: the refusal is never runnable.
+  if (draft.preflight?.overAllowance != null) return;
+  await enterJob(job, { autoStart: true });
+}
+
+/**
+ * Clear the pause causes a member action can clear, and retry now.
+ *
+ * `background` and `needs_repick` are deliberately untouched: the first clears
+ * when the app comes forward, the second only through
+ * {@link repickArchiveParts}. `rate_limited` is the server's own wait and is
+ * not ours to shorten.
+ */
+export function resumeImport(): void {
+  const r = run;
+  if (r === null) {
+    // A `key_pending` pause raised before the run existed: the exit is the
+    // launch path itself, retried now instead of on its timer.
+    if (draft.pauseCauses.includes('key_pending')) {
+      clearKeyPendingRetry();
+      void resumeImportAtLaunch().catch(() => {
+        // The gate re-arms its own timer on a second failure.
+      });
+    }
+    return;
+  }
+  dropPause(r, 'network');
+  dropPause(r, 'archive_retry');
+  dropPause(r, 'key_pending');
+}
+
+/**
+ * Re-pick the archive for a run paused on `needs_repick`.
+ *
+ * The acceptance rule is the archive reader's own: the new parts are accepted
+ * only if the session OPENS without `ARCHIVE_CHANGED` — the tokens carry
+ * per-part fingerprints, so "is this the same archive" is a question only the
+ * reader can answer. A different archive RESTARTS the job rather than being
+ * continued against stored `entryId`s, which are content-derived per part and
+ * meaningless against other bytes.
+ */
+export async function repickArchiveParts(): Promise<RepickResult> {
+  const r = run;
+  if (r === null) return 'cancelled';
+
+  r.pickerOpen = true;
+  let tokens: readonly ArchivePartToken[] | null;
+  try {
+    tokens = await pickArchiveParts();
+  } catch {
+    return 'cancelled';
+  } finally {
+    r.pickerOpen = false;
+  }
+  if (tokens === null || tokens.length === 0) return 'cancelled';
+
+  let session: ArchiveImportSession;
+  try {
+    session = await openArchiveSession(tokens, { signal: r.controller.signal });
+  } catch (e) {
+    const code = archiveErrorCode(e);
+    if (code === 'ARCHIVE_CHANGED' || code === 'ARCHIVE_ACCESS_LOST') {
+      await restartForDifferentArchive(r);
+      return 'different-archive';
+    }
+    await handleFailure(r, e, 'archive');
+    return 'cancelled';
+  }
+
+  const stored = getImportJob(r.jobId)?.archive_bookmark ?? null;
+  if (!persistBookmark(r, session, stored)) {
+    session.close();
+    return 'cancelled';
+  }
+
+  r.archive?.close();
+  r.archive = session;
+  dropPause(r, 'needs_repick');
+  return 'resumed';
+}
+
+/**
+ * A re-pick that produced a DIFFERENT archive: drop the job whole.
+ *
+ * Stored `entryId`s are content-derived per part, so none of them addresses
+ * anything in the new files. #928 offers a fresh pick, which re-parses; posts
+ * already created come back `duplicate` from the `import_key` dedup.
+ */
+async function restartForDifferentArchive(r: ActiveRun): Promise<void> {
+  const stored = getImportJob(r.jobId)?.archive_bookmark ?? null;
+  const parts = parsePartTokens(stored);
+  r.archive?.close();
+  r.archive = null;
+  if (parts !== null) await releaseArchiveParts(parts).catch(() => {});
+  if (!wiped(r)) deleteImportJob(r.jobId);
+
+  r.terminal = null;
+  r.cancelled = true;
+  r.settled = true;
+  detachAppState(r);
+  for (const cause of [...r.pauseTimers.keys()]) clearPauseTimer(r, cause);
+  r.pauseCauses.clear();
+  r.keySession?.close();
+  r.keySession = null;
+  r.controller.abort();
+  releaseWaiters(r);
+  endImportCaptureBudget();
+  run = null;
+  update({ ...INITIAL_STATE, phase: 'idle' }, true);
+}
+
+/**
+ * Stop the run. Posts already created stay created — a thread cannot be
+ * recalled — so the summary reports what landed rather than claiming the run
+ * was undone.
+ *
+ * NOT a wipe: the terminal status and the summary are still written, which is
+ * the whole difference between this and {@link resetImportRunnerState}.
+ */
+export function cancelImport(): void {
+  const r = run;
+  if (r === null) return;
+  r.cancelled = true;
+  r.controller.abort();
+  for (const cause of [...r.pauseTimers.keys()]) clearPauseTimer(r, cause);
+  r.pauseCauses.clear();
+  releaseWaiters(r);
+}
+
+/** Clear the summary card. No-op unless a finished run is being reported. */
+export function dismissImportSummary(): void {
+  if (draft.phase !== 'done') return;
+  update({ ...INITIAL_STATE, phase: 'idle' }, true);
+}
+
+/**
+ * What did NOT migrate, as an item list (Alex, 2026-10-26): members see WHAT
+ * was skipped, not just how many.
+ *
+ * Wrapped here so no screen reaches into `importRepository`. The rows carry
+ * `source_file`, which is LOCAL-UI-class: it may be rendered and must never be
+ * logged, uploaded or put in an envelope.
+ */
+export function getImportSkipDetails(reason?: SkipReason): SkippedImportItem[] {
+  const jobId = draft.jobId;
+  if (jobId === null) return [];
+  return getSkippedItems(jobId, reason);
+}
+
+/**
+ * Re-derive the store from SQLite at launch, and auto-resume an in-flight run.
+ *
+ * **Gated on the authenticated phase.** `postAuthBootstrap` runs inside
+ * `restoreSession` before the navigator picks a phase, and `key-recovery`,
+ * `key-conflict` and `terms-required` each replace the whole UI — so a resume
+ * there would upload media behind a gate where the member has no progress
+ * indicator and no cancel. The store still LEAVES `'hydrating'` on every path,
+ * including this early return, because "not checked yet" and "nothing running"
+ * must be distinguishable.
+ */
+export async function resumeImportAtLaunch(): Promise<void> {
+  const state = useAppStore.getState();
+  const phase = deriveAuthPhase({
+    // The navigator's own `restoreDone` is local to `AppContent`; by the time
+    // this runs, restore is what called us.
+    restoreDone: true,
+    isAuthenticated: state.isAuthenticated,
+    needsTermsAcceptance: state.needsTermsAcceptance,
+    identityKeyConflict: state.identityKeyConflict,
+    keyRecoveryInProgress: state.keyRecoveryInProgress,
+  });
+  if (phase !== 'authenticated') {
+    update({ phase: 'idle' }, true);
+    return;
+  }
+
+  if (run !== null) return;
+  const job = getActiveImportJob();
+  if (job === null) {
+    update({ ...INITIAL_STATE, phase: 'idle' }, true);
+    return;
+  }
+  await enterJob(job, { autoStart: false });
+}
+
+/**
+ * The fingerprint gate, the status dispatch, and the run (§4.4, §4.9).
+ *
+ * One function for both entry points so the gate cannot drift: `autoStart`
+ * only decides what a `ready` job does — present itself, or run.
+ */
+async function enterJob(job: ImportJobRow, options: { autoStart: boolean }): Promise<void> {
+  let keySession: ImportKeySession | null = null;
+  try {
+    keySession = await openImportKeySession({
+      groupId: job.conversation_id,
+      source: job.source,
+    });
+  } catch {
+    // `PendingWrapError` / `GroupKeyUnwrapError`: the open threw, so there is
+    // no session to close and the job is untouched. The 30 s pending-cache
+    // self-heal is the wake-up (§4.3.1), armed here because there is no run
+    // to hang the timer on yet.
+    update(
+      {
+        phase: 'paused',
+        jobId: job.id,
+        conversationId: job.conversation_id,
+        source: job.source,
+        pauseCauses: Object.freeze(['key_pending'] as PauseCause[]),
+      },
+      true,
+    );
+    scheduleKeyPendingRetry();
+    return;
+  }
+  clearKeyPendingRetry();
+
+  // The stamp belongs to the key generation the identities were derived under.
+  // A mismatch means this device's key has changed: `close()` runs BEFORE the
+  // job is dropped, so the session never outlives the job it was rejected for.
+  if (keySession.keyFingerprint !== job.key_fingerprint) {
+    try {
+      const parts = parsePartTokens(job.archive_bookmark);
+      keySession.close();
+      keySession = null;
+      if (parts !== null) await releaseArchiveParts(parts).catch(() => {});
+      deleteImportJob(job.id);
+    } finally {
+      keySession?.close();
+    }
+    update({ ...INITIAL_STATE, phase: 'idle' }, true);
+    return;
+  }
+
+  try {
+    if (job.status === 'parsing') {
+      // A parse that never finished has no resumable state: the items it had
+      // written are a prefix of an archive we would have to re-read anyway.
+      const parts = parsePartTokens(job.archive_bookmark);
+      if (parts !== null) await releaseArchiveParts(parts).catch(() => {});
+      deleteImportJob(job.id);
+      update({ ...INITIAL_STATE, phase: 'idle' }, true);
+      return;
+    }
+
+    if (job.status === 'ready') {
+      if (!options.autoStart) {
+        const preflight = await rebuildPreflight(job);
+        update(
+          {
+            phase: preflight === null ? 'idle' : 'ready',
+            jobId: job.id,
+            conversationId: job.conversation_id,
+            source: job.source,
+            preflight,
+            total: preflight?.importable ?? 0,
+            skipped: counted(countImportSkipsByReason(job.id)),
+          },
+          true,
+        );
+        return;
+      }
+      const limits = draft.preflight?.limits ?? (await rebuildPreflight(job))?.limits;
+      // No fresh allowance means nothing honest to run against. The job is
+      // untouched; `phase` still LEAVES `'hydrating'` so the UI can tell
+      // "nothing running" from "not checked yet" (§4.3).
+      if (limits === undefined) {
+        update({ phase: 'idle' }, true);
+        return;
+      }
+      const session = keySession;
+      keySession = null;
+      await runJob(job, limits, session);
+      return;
+    }
+
+    // `in_progress`: the per-session GET is mandatory. The group preflight
+    // cannot report an abandon (`openImport` is null either way), and an
+    // abandoned session has released its staged uploads.
+    const sessionId = job.session_id;
+    if (sessionId === null) {
+      const limits = (await rebuildPreflight(job))?.limits;
+      if (limits === undefined) {
+        update({ phase: 'idle' }, true);
+        return;
+      }
+      const live = keySession;
+      keySession = null;
+      await runJob(job, limits, live);
+      return;
+    }
+
+    let limits: ImportLimits;
+    let status: string;
+    try {
+      const session = await getImportSession(sessionId);
+      limits = session.limits;
+      status = session.status;
+    } catch (e) {
+      // A 403 or 404 here is terminal: the session is not ours, or imports are
+      // not available on this server at all.
+      const held = keySession;
+      keySession = null;
+      await failJobBeforeRun(job, held, e);
+      return;
+    }
+
+    if (status === 'closed') {
+      const held = keySession;
+      keySession = null;
+      await failJobBeforeRun(job, held, null, 'SESSION_CLOSED');
+      return;
+    }
+
+    const live = keySession;
+    keySession = null;
+    if (status === 'completed') {
+      await finishJobWithoutRun(job, live);
+      return;
+    }
+    // `abandoned` is handled by the run itself: the first write answers
+    // `IMPORT_CLOSED` and `session-restart` opens a fresh session.
+    await runJob(job, limits, live);
+  } finally {
+    keySession?.close();
+  }
+}
+
+/**
+ * A job that cannot be run at all: write its terminal status and report it
+ * once, without ever having had a run.
+ */
+async function failJobBeforeRun(
+  job: ImportJobRow,
+  keySession: ImportKeySession | null,
+  error: unknown,
+  code?: ImportTerminalCode,
+): Promise<void> {
+  const r = newRun(job, draft.preflight?.limits ?? FALLBACK_LIMITS, keySession);
+  run = r;
+  beginImportCaptureBudget();
+  if (code !== undefined) {
+    r.terminal = code;
+    if (!wiped(r)) captureImportFailure(r, 'start', code);
+  } else {
+    await handleFailure(r, error, 'start');
+  }
+  await settleRun(r);
+}
+
+/** The server already finished this session; finish locally and report it. */
+async function finishJobWithoutRun(
+  job: ImportJobRow,
+  keySession: ImportKeySession | null,
+): Promise<void> {
+  const r = newRun(job, draft.preflight?.limits ?? FALLBACK_LIMITS, keySession);
+  // No `complete` call: the server has already finished this session, and a
+  // second one would be a 200 that fires no broadcast anyway.
+  r.importId = null;
+  run = r;
+  beginImportCaptureBudget();
+  await settleRun(r);
+}
+
+/**
+ * The server's own defaults, for the two paths that must settle a job without
+ * having read `limits` from a live response.
+ *
+ * Only ever used to build a run that writes a terminal status and no payload,
+ * so no value here can reach the wire.
+ */
+const FALLBACK_LIMITS: ImportLimits = Object.freeze({
+  batchMax: 50,
+  mediaPerItemMax: 100,
+  metaMaxBytes: 1024,
+  ivMax: 64,
+  titleMax: 10_000,
+  bodyMax: 100_000,
+  minDate: '2004-01-01',
+  mediaContentClasses: ['image' as const],
+});
+
+// ---------------------------------------------------------------------------
+// Teardown (§4.13)
+// ---------------------------------------------------------------------------
+
+/**
+ * Drop every piece of run state, including the published store.
+ *
+ * PRODUCTION, not a test seam: `localWipe` phase 1 and
+ * `keyRecoveryService`'s pre-`fullCryptoWipe` arm both call it.
+ *
+ * **Synchronous, and it aborts the run's `AbortController` first.** That abort
+ * is what runs each item's `finally`, and `archiveAccess`'s `release()` is the
+ * ONLY unlink of extracted plaintext on the logout path — `localWipe` has no
+ * staging sweep of its own. An `await` here would hand control back to the run
+ * being torn down.
+ *
+ * Bumping {@link liveToken} is rule 0's switch: every verdict after this is
+ * `cancelled`, so the torn-down run writes no `failed` row, no
+ * `finishImportJob` and no Sentry event on an ordinary logout.
+ */
+export function resetImportRunnerState(): void {
+  const r = run;
+  run = null;
+  liveToken += 1;
+
+  if (r !== null) {
+    r.settled = true;
+    detachAppState(r);
+    for (const cause of [...r.pauseTimers.keys()]) clearPauseTimer(r, cause);
+    r.pauseCauses.clear();
+    releaseWaiters(r);
+    try {
+      r.controller.abort();
+    } catch {
+      // An AbortController that throws on abort is not worth failing a wipe.
+    }
+    try {
+      r.keySession?.close();
+    } catch {
+      // Best effort per session, same posture as `closeAllImportKeySessions`.
+    }
+    r.keySession = null;
+    try {
+      r.archive?.close();
+    } catch {
+      // The native session is aborted by `abortAllArchiveSessions` above us.
+    }
+    r.archive = null;
+  }
+
+  endImportCaptureBudget();
+  clearKeyPendingRetry();
+  // The next account on this device must re-probe: the allowance is
+  // per-(orbit, member) and this one's is none of their business.
+  probeCache.clear();
+  if (emitTimer !== null) {
+    clearTimeout(emitTimer);
+    emitTimer = null;
+  }
+  importStore.setState(INITIAL_STATE, true);
+  draft = importStore.getState();
+}
+
+/** Test alias for the production reset (`resetXForTesting` convention). */
+export function resetImportRunnerForTesting(): void {
+  resetImportRunnerState();
+}

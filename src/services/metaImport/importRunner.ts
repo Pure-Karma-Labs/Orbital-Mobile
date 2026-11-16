@@ -727,29 +727,39 @@ function armPreRunRetry(cause: PauseCause, untilMs: number | undefined): PreRunR
  * Returns the in-flight promise rather than queueing: a second confirm, a
  * Retry racing its own timer and a launch resume all mean the same thing —
  * "get this job going" — and the honest answer to the second one is the first
- * one's outcome. Never rejects, because every caller is fire-and-forget.
+ * one's outcome.
+ *
+ * The gate carries the entry's REJECTION through, because `postAuthBootstrap`
+ * and `keyRecoveryService` both attach `warnAndCapture` to this promise and
+ * swallowing here would quietly retire that seam. It also carries its own
+ * no-op handler, so a caller that only wants the work done — the retry timer,
+ * `resumeImport` — cannot leave an unhandled rejection behind.
  */
 function enterPreRun(fn: () => Promise<void>): Promise<void> {
   const inFlight = preRunEntry;
   if (inFlight !== null) return inFlight;
 
   let release = (): void => {};
-  const gate = new Promise<void>((resolve) => {
+  let fail = (_reason: unknown): void => {};
+  const gate = new Promise<void>((resolve, reject) => {
     release = resolve;
+    fail = reject;
+  });
+  gate.catch(() => {
+    // See above: the gate is always handled, so `void enterPreRun(…)` is safe.
   });
   preRunEntry = gate;
 
   void (async () => {
     try {
       await fn();
-    } catch {
-      // The gate re-arms its own timer; a rejection here would only become an
-      // unhandled one.
+      release();
+    } catch (e) {
+      fail(e);
     } finally {
       // Identity-checked: `resetImportRunnerState` nulls the latch itself, and
       // a later entry must not be cleared by this one's unwind.
       if (preRunEntry === gate) preRunEntry = null;
-      release();
     }
   })();
 
@@ -2065,6 +2075,10 @@ async function settleRun(r: ActiveRun): Promise<void> {
         errorCode: summary.errorCode,
         pauseCauses: NO_PAUSE,
         resumeAtMs: null,
+        // A job cancelled OUT of an exhausted pre-run pause reaches here with
+        // the flag still set, and a summary that also reads "stalled" is a
+        // card with two states.
+        autoRetryExhausted: false,
         needsRepick: false,
       },
       true,
@@ -2895,7 +2909,14 @@ function cancelBeforeAnyRun(): void {
     void cancelBeforeRun(job, gen);
     return;
   }
-  void pending.then(() => enterPreRun(() => cancelBeforeRun(job, gen)));
+  void pending
+    .catch(() => {
+      // Whatever that entry's outcome was, this cancel still has to settle.
+    })
+    .then(() => enterPreRun(() => cancelBeforeRun(job, gen)))
+    .catch(() => {
+      // Fire-and-forget: there is no caller left to report a cancel to.
+    });
 }
 
 /**

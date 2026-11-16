@@ -6782,6 +6782,20 @@ for (const file of TFR_NATIVE_FILES) {
 // `source_file` in SQLite, `sourceFile` in TypeScript, `SOURCE_FILE` in a
 // constant. §4.13 spells its list in both spellings for exactly this reason,
 // and two literal entries per concept would still miss the third.
+//
+// TWO ENTRIES ARE THE EXCEPTION. `path` and `uri` are short enough to be
+// substrings of ordinary English: a substring match on the window failed
+// `'during_start'` (the `import_stage` value the telemetry contract REQUIRES),
+// `security` and `pathway`, each with a message naming a field that was not
+// there. It fails closed, so nothing leaked — but a rule whose message is
+// wrong is a rule the next reader works around. Those two are matched on
+// IDENTIFIER WORD PARTS instead ({@link miWordParts}), taken from the window
+// with every string and template-literal body stripped, so `fileUri`, `path`,
+// `localPath`, `LOCAL_PATH` and the plurals still fail while a word that
+// merely CONTAINS them, and anything inside a message literal, does not.
+// Every other entry keeps the whole-window substring match: `localpath` and
+// `sourcefile` cannot occur by accident, and the window is the only surface
+// that sees a name built by concatenation.
 
 const MI_LOG_RULE = 'meta-import-no-content-logging';
 const MI_LOG_ISSUE = '#926';
@@ -6797,6 +6811,9 @@ const MI_REQUIRED_LOG_FILES = [MI_RUNNER, MI_BATCH, MI_MEDIA, MI_ERRORS];
 /**
  * §4.13's "Never" list. `shown` is what the violation prints; `token` is the
  * normalized form actually matched (see the note on normalization above).
+ *
+ * A token in {@link MI_WORD_TOKENS} is matched as an identifier WORD; every
+ * other token is matched as a substring of the normalized window.
  */
 const MI_FORBIDDEN_IN_LOGS = [
   ['source_file / sourceFile', 'sourcefile'],
@@ -6807,11 +6824,11 @@ const MI_FORBIDDEN_IN_LOGS = [
   ['body', 'body'],
   ['file_name / fileName', 'filename'],
   ['local_path / localPath', 'localpath'],
-  // A BARE `path` substring, which subsumes `localPath` and `sourcePath` and
-  // also catches `stagingPath`, `filePath`, `archivePath`, `paths` and the
-  // next name nobody has coined yet. Every one of them is a file name out of
-  // the member's own device, and this module family has no legitimate reason
-  // to print any of them: §4.13's contract is counts and closed enums, whose
+  // A BARE `path` WORD, which subsumes `localPath` and `sourcePath` and also
+  // catches `stagingPath`, `filePath`, `archivePath`, `paths` and the next
+  // name nobody has coined yet. Every one of them is a file name out of the
+  // member's own device, and this module family has no legitimate reason to
+  // print any of them: §4.13's contract is counts and closed enums, whose
   // only window today names `import_source`/`import_stage`/`import_code` and
   // three counters. The two longer entries are kept so a violation prints the
   // specific field when it is one of the two §4.13 spells out.
@@ -6832,6 +6849,78 @@ const MI_FORBIDDEN_IN_LOGS = [
 
 function miNormalize(text) {
   return text.toLowerCase().replaceAll('_', '');
+}
+
+/** The two tokens matched as identifier words rather than as substrings. */
+const MI_WORD_TOKENS = new Set(['path', 'uri']);
+
+/**
+ * `code` with the BODY of every string and template literal blanked out, so a
+ * message can say "pathway" or "security" without naming a field.
+ *
+ * `${…}` interpolations are kept as code — that is where a leak would actually
+ * ride (`` `at ${localPath}` ``) — and nested braces inside one are tracked so
+ * an object literal in an interpolation does not end it early. Escapes are
+ * consumed in pairs, so a `\'` cannot close its own string and spill the rest
+ * of the window into the code surface.
+ */
+function miCodeSurface(code) {
+  let out = '';
+  // Top of stack: a quote char (inside that string) or '{' (inside a `${}`).
+  const stack = [];
+  const inString = () => stack.length > 0 && stack[stack.length - 1] !== '{';
+
+  for (let i = 0; i < code.length; i++) {
+    const ch = code[i];
+    if (inString()) {
+      const quote = stack[stack.length - 1];
+      if (ch === '\\') {
+        out += '  ';
+        i += 1;
+      } else if (ch === quote) {
+        stack.pop();
+        out += ' ';
+      } else if (quote === '`' && ch === '$' && code[i + 1] === '{') {
+        stack.push('{');
+        out += '  ';
+        i += 1;
+      } else {
+        out += ch === '\n' ? '\n' : ' ';
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      stack.push(ch);
+      out += ' ';
+      continue;
+    }
+    if (ch === '{' && stack[stack.length - 1] === '{') stack.push('{');
+    else if (ch === '}' && stack[stack.length - 1] === '{') stack.pop();
+    out += ch;
+  }
+  return out;
+}
+
+/** Identifiers, and `$`/`_` separated chunks of one. */
+const MI_IDENT_RE = /[A-Za-z_$][A-Za-z0-9_$]*/g;
+/** One camel/ALLCAPS/digit word inside a chunk: `fileURI` → `file`, `URI`. */
+const MI_WORD_RE = /[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[0-9]+/g;
+
+/**
+ * Every lower-cased identifier WORD in `windowText`, string bodies excluded.
+ *
+ * Both spellings fall out of the same split, which is why one token covers
+ * them: `localPath` → `local`,`path`; `local_path` → `local`,`path`;
+ * `LOCAL_PATH` → `local`,`path`. `pathway` stays one word and matches nothing.
+ */
+function miWordParts(windowText) {
+  const words = new Set();
+  for (const ident of miCodeSurface(windowText).match(MI_IDENT_RE) ?? []) {
+    for (const chunk of ident.split(/[_$]+/)) {
+      for (const word of chunk.match(MI_WORD_RE) ?? []) words.add(word.toLowerCase());
+    }
+  }
+  return words;
 }
 
 let miScanned = [];
@@ -6868,8 +6957,15 @@ for (const file of miScanned) {
 
   for (const [line, windowText] of meLogWindows(meStripComments(raw))) {
     const normalized = miNormalize(windowText);
+    // Built once per window, and only when a word token is in the list.
+    const words = miWordParts(windowText);
     for (const [shown, token] of MI_FORBIDDEN_IN_LOGS) {
-      if (normalized.includes(token)) {
+      // The plural is the same value under another name (`paths`, `uris`,
+      // `fileUris`), which an identifier-word match would otherwise let past.
+      const hit = MI_WORD_TOKENS.has(token)
+        ? words.has(token) || words.has(`${token}s`)
+        : normalized.includes(token);
+      if (hit) {
         report(
           file,
           line,

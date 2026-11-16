@@ -15,6 +15,7 @@
  */
 
 import { ArchiveReaderError } from '../archiveAccess';
+import { classifyImportCryptoError } from '../../crypto/importCrypto';
 import {
   AuthError,
   ConflictError,
@@ -45,10 +46,8 @@ jest.mock('../../crypto/importCrypto', () => ({
   classifyImportCryptoError: jest.fn(() => null),
 }));
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports -- the mock's own handle, for per-test verdicts
-const { classifyImportCryptoError } = require('../../crypto/importCrypto') as {
-  classifyImportCryptoError: jest.Mock;
-};
+/** The factory mock's own handle, for per-test dispositions. */
+const cryptoVerdict = classifyImportCryptoError as unknown as jest.Mock;
 
 const NOW = 1_700_000_000_000;
 const RUN = 7;
@@ -65,21 +64,27 @@ function ctx(overrides: Partial<ImportFailureContext> = {}): ImportFailureContex
 
 /** A 409 body exactly as `importService.js` composes it. */
 function refusal(code: string, details: Record<string, unknown> = {}): ConflictError {
-  return new ConflictError(JSON.stringify({ error: 'IMPORT_REFUSED', details: { code, ...details } }));
+  return new ConflictError(
+    JSON.stringify({ error: 'IMPORT_REFUSED', details: { code, ...details } }),
+  );
 }
 
 function validation(code?: string): ValidationError {
   return new ValidationError(
     400,
-    JSON.stringify(code === undefined ? { error: 'VALIDATION_ERROR' } : { error: 'VALIDATION_ERROR', details: { code } }),
+    JSON.stringify(
+      code === undefined
+        ? { error: 'VALIDATION_ERROR' }
+        : { error: 'VALIDATION_ERROR', details: { code } },
+    ),
   );
 }
 
 const SESSION_ID = '11111111-1111-4111-8111-111111111111';
 
 beforeEach(() => {
-  classifyImportCryptoError.mockReset();
-  classifyImportCryptoError.mockReturnValue(null);
+  cryptoVerdict.mockReset();
+  cryptoVerdict.mockReturnValue(null);
 });
 
 // ---------------------------------------------------------------------------
@@ -88,7 +93,7 @@ beforeEach(() => {
 
 describe('rule 0 — the run token comes first', () => {
   it('collapses a would-be terminal crypto error to cancelled when the run moved on', () => {
-    classifyImportCryptoError.mockReturnValue('terminal-for-run');
+    cryptoVerdict.mockReturnValue('terminal-for-run');
 
     const verdict = classifyImportFailure(new Error('Import key session is closed'), {
       stage: 'crypto',
@@ -98,7 +103,7 @@ describe('rule 0 — the run token comes first', () => {
 
     expect(verdict).toEqual({ kind: 'cancelled' });
     // Nothing about the error was even inspected.
-    expect(classifyImportCryptoError).not.toHaveBeenCalled();
+    expect(cryptoVerdict).not.toHaveBeenCalled();
   });
 
   it('collapses to cancelled when the run controller is aborted', () => {
@@ -106,7 +111,10 @@ describe('rule 0 — the run token comes first', () => {
     controller.abort();
 
     expect(
-      classifyImportFailure(new ArchiveReaderError('ARCHIVE_SESSION_CLOSED'), ctx({ signal: controller.signal })),
+      classifyImportFailure(
+        new ArchiveReaderError('ARCHIVE_SESSION_CLOSED'),
+        ctx({ signal: controller.signal }),
+      ),
     ).toEqual({ kind: 'cancelled' });
   });
 
@@ -138,8 +146,14 @@ describe('cancellation', () => {
   });
 
   it('classifies every cancellation shape as cancelled', () => {
-    for (const e of [new Error('Upload cancelled'), { code: 'ECANCELLED' }, new ArchiveReaderError('ECANCELLED')]) {
-      expect(classifyImportFailure(e, ctx({ stage: 'media-chunk' }))).toEqual({ kind: 'cancelled' });
+    for (const e of [
+      new Error('Upload cancelled'),
+      { code: 'ECANCELLED' },
+      new ArchiveReaderError('ECANCELLED'),
+    ]) {
+      expect(classifyImportFailure(e, ctx({ stage: 'media-chunk' }))).toEqual({
+        kind: 'cancelled',
+      });
     }
   });
 });
@@ -150,7 +164,7 @@ describe('cancellation', () => {
 
 describe('crypto dispositions', () => {
   it('pauses on key_pending and never fails the item', () => {
-    classifyImportCryptoError.mockReturnValue('retryable-pause');
+    cryptoVerdict.mockReturnValue('retryable-pause');
     expect(classifyImportFailure(new Error('pending wrap'), ctx({ stage: 'crypto' }))).toEqual({
       kind: 'pause',
       cause: 'key_pending',
@@ -158,7 +172,7 @@ describe('crypto dispositions', () => {
   });
 
   it('stops the run on terminal-for-run', () => {
-    classifyImportCryptoError.mockReturnValue('terminal-for-run');
+    cryptoVerdict.mockReturnValue('terminal-for-run');
     expect(classifyImportFailure(new Error('key changed'), ctx({ stage: 'crypto' }))).toEqual({
       kind: 'job-terminal',
       code: 'CRYPTO',
@@ -166,7 +180,7 @@ describe('crypto dispositions', () => {
   });
 
   it('falls through to the HTTP taxonomy when the crypto verdict is null', () => {
-    classifyImportCryptoError.mockReturnValue(null);
+    cryptoVerdict.mockReturnValue(null);
     expect(classifyImportFailure(new NotFoundError(), ctx())).toEqual({
       kind: 'job-terminal',
       code: 'IMPORTS_UNAVAILABLE',
@@ -208,8 +222,10 @@ describe('ImportMediaStagedError', () => {
 
 describe('archive reader dispositions', () => {
   it('retries ARCHIVE_BUSY in place, then pauses', () => {
-    expect(classifyImportFailure(new ArchiveReaderError('ARCHIVE_BUSY'), ctx({ stage: 'archive' }))).toEqual({
-      kind: 'retry-in-place',
+    expect(
+      classifyImportFailure(new ArchiveReaderError('ARCHIVE_BUSY'), ctx({ stage: 'archive' })),
+    ).toEqual({
+      kind: 'retry-same-call',
       delayMs: ARCHIVE_BUSY_RETRY_MS,
     });
     expect(
@@ -217,7 +233,7 @@ describe('archive reader dispositions', () => {
         new ArchiveReaderError('ARCHIVE_BUSY'),
         ctx({ stage: 'archive', busyAttempt: ARCHIVE_BUSY_MAX_ATTEMPTS - 1 }),
       ),
-    ).toEqual({ kind: 'retry-in-place', delayMs: ARCHIVE_BUSY_RETRY_MS });
+    ).toEqual({ kind: 'retry-same-call', delayMs: ARCHIVE_BUSY_RETRY_MS });
     expect(
       classifyImportFailure(
         new ArchiveReaderError('ARCHIVE_BUSY'),
@@ -229,7 +245,9 @@ describe('archive reader dispositions', () => {
   it.each(['ARCHIVE_READ_FAILED', 'ARCHIVE_STAGING_UNAVAILABLE', 'ARCHIVE_NO_SPACE'] as const)(
     'pauses with the archive ladder on %s',
     (code) => {
-      expect(classifyImportFailure(new ArchiveReaderError(code), ctx({ stage: 'archive' }))).toEqual({
+      expect(
+        classifyImportFailure(new ArchiveReaderError(code), ctx({ stage: 'archive' })),
+      ).toEqual({
         kind: 'pause',
         cause: 'archive_retry',
       });
@@ -240,10 +258,16 @@ describe('archive reader dispositions', () => {
     'asks for a re-pick on %s only while nothing has been created',
     (code) => {
       expect(
-        classifyImportFailure(new ArchiveReaderError(code), ctx({ stage: 'archive', createdItems: 0 })),
+        classifyImportFailure(
+          new ArchiveReaderError(code),
+          ctx({ stage: 'archive', createdItems: 0 }),
+        ),
       ).toEqual({ kind: 'pause', cause: 'needs_repick' });
       expect(
-        classifyImportFailure(new ArchiveReaderError(code), ctx({ stage: 'archive', createdItems: 1 })),
+        classifyImportFailure(
+          new ArchiveReaderError(code),
+          ctx({ stage: 'archive', createdItems: 1 }),
+        ),
       ).toEqual({ kind: 'job-terminal', code: 'ARCHIVE' });
     },
   );
@@ -251,7 +275,9 @@ describe('archive reader dispositions', () => {
   it.each(['ARCHIVE_CORRUPT', 'ARCHIVE_SESSION_CLOSED', 'ARCHIVE_INTERNAL'] as const)(
     'stops the run on %s',
     (code) => {
-      expect(classifyImportFailure(new ArchiveReaderError(code), ctx({ stage: 'archive' }))).toEqual({
+      expect(
+        classifyImportFailure(new ArchiveReaderError(code), ctx({ stage: 'archive' })),
+      ).toEqual({
         kind: 'job-terminal',
         code: 'ARCHIVE',
       });
@@ -259,7 +285,9 @@ describe('archive reader dispositions', () => {
   );
 
   it('treats PICKER_BUSY reaching a running job as terminal, never a pause', () => {
-    expect(classifyImportFailure(new ArchiveReaderError('PICKER_BUSY'), ctx({ stage: 'archive' }))).toEqual({
+    expect(
+      classifyImportFailure(new ArchiveReaderError('PICKER_BUSY'), ctx({ stage: 'archive' })),
+    ).toEqual({
       kind: 'job-terminal',
       code: 'ARCHIVE',
     });
@@ -294,7 +322,12 @@ describe('rate limiting', () => {
       cause: 'rate_limited',
       untilMs: NOW + DEFAULT_RATE_LIMIT_PAUSE_MS,
     });
-    expect(classifyImportFailure(new RateLimitError({ get: () => 'Wed, 21 Oct 2026 07:28:00 GMT' }), ctx())).toEqual({
+    expect(
+      classifyImportFailure(
+        new RateLimitError({ get: () => 'Wed, 21 Oct 2026 07:28:00 GMT' }),
+        ctx(),
+      ),
+    ).toEqual({
       kind: 'pause',
       cause: 'rate_limited',
       untilMs: NOW + DEFAULT_RATE_LIMIT_PAUSE_MS,
@@ -308,9 +341,12 @@ describe('rate limiting', () => {
 
 describe('409 IMPORT_REFUSED', () => {
   it('adopts the session named by IMPORT_IN_PROGRESS', () => {
-    expect(classifyImportFailure(refusal('IMPORT_IN_PROGRESS', { import_id: SESSION_ID }), ctx({ stage: 'start' }))).toEqual(
-      { kind: 'adopt-session', importId: SESSION_ID },
-    );
+    expect(
+      classifyImportFailure(
+        refusal('IMPORT_IN_PROGRESS', { import_id: SESSION_ID }),
+        ctx({ stage: 'start' }),
+      ),
+    ).toEqual({ kind: 'adopt-session', importId: SESSION_ID });
   });
 
   it('adopts without an id on the insert race, so the runner re-reads the preflight', () => {
@@ -320,13 +356,20 @@ describe('409 IMPORT_REFUSED', () => {
   });
 
   it('restarts the session on IMPORT_CLOSED + abandoned', () => {
-    expect(classifyImportFailure(refusal('IMPORT_CLOSED', { status: 'abandoned' }), ctx())).toEqual({
-      kind: 'session-restart',
-    });
+    expect(classifyImportFailure(refusal('IMPORT_CLOSED', { status: 'abandoned' }), ctx())).toEqual(
+      {
+        kind: 'session-restart',
+      },
+    );
   });
 
   it('finishes locally on IMPORT_CLOSED + completed', () => {
-    expect(classifyImportFailure(refusal('IMPORT_CLOSED', { status: 'completed' }), ctx({ stage: 'complete' }))).toEqual({
+    expect(
+      classifyImportFailure(
+        refusal('IMPORT_CLOSED', { status: 'completed' }),
+        ctx({ stage: 'complete' }),
+      ),
+    ).toEqual({
       kind: 'finish-completed',
     });
   });
@@ -360,7 +403,9 @@ describe('409 IMPORT_REFUSED', () => {
   );
 
   it('treats a chunk-route allowance refusal as soft: one timed pause', () => {
-    expect(classifyImportFailure(refusal('IMPORT_ALLOWANCE_EXCEEDED'), ctx({ stage: 'media-chunk' }))).toEqual({
+    expect(
+      classifyImportFailure(refusal('IMPORT_ALLOWANCE_EXCEEDED'), ctx({ stage: 'media-chunk' })),
+    ).toEqual({
       kind: 'pause',
       cause: 'network',
       untilMs: NOW + CHUNK_ALLOWANCE_PAUSE_MS,
@@ -368,16 +413,23 @@ describe('409 IMPORT_REFUSED', () => {
   });
 
   it('parks a file on IMPORT_QUOTA_EXCEEDED at media complete, and fails it on the end-of-run pass', () => {
-    expect(classifyImportFailure(refusal('IMPORT_QUOTA_EXCEEDED'), ctx({ stage: 'media-complete' }))).toEqual({
+    expect(
+      classifyImportFailure(refusal('IMPORT_QUOTA_EXCEEDED'), ctx({ stage: 'media-complete' })),
+    ).toEqual({
       kind: 'park-file',
     });
     expect(
-      classifyImportFailure(refusal('IMPORT_QUOTA_EXCEEDED'), ctx({ stage: 'media-complete', endOfRunPass: true })),
+      classifyImportFailure(
+        refusal('IMPORT_QUOTA_EXCEEDED'),
+        ctx({ stage: 'media-complete', endOfRunPass: true }),
+      ),
     ).toEqual({ kind: 'item-failed', code: 'QUOTA' });
   });
 
   it('is terminal on a start-time IMPORT_QUOTA_EXCEEDED', () => {
-    expect(classifyImportFailure(refusal('IMPORT_QUOTA_EXCEEDED'), ctx({ stage: 'start' }))).toEqual({
+    expect(
+      classifyImportFailure(refusal('IMPORT_QUOTA_EXCEEDED'), ctx({ stage: 'start' })),
+    ).toEqual({
       kind: 'job-terminal',
       code: 'ORBIT_FULL',
     });
@@ -407,7 +459,10 @@ describe('409 IMPORT_REFUSED', () => {
 
 describe('auth and not-found', () => {
   it('stops the run on a 401 — client.ts has already cleared the tokens', () => {
-    expect(classifyImportFailure(new AuthError(401), ctx())).toEqual({ kind: 'job-terminal', code: 'AUTH' });
+    expect(classifyImportFailure(new AuthError(401), ctx())).toEqual({
+      kind: 'job-terminal',
+      code: 'AUTH',
+    });
   });
 
   it('stops the run on a 403 off the media routes', () => {
@@ -423,7 +478,12 @@ describe('auth and not-found', () => {
     expect(classifyImportFailure(new AuthError(403), ctx({ stage: 'media-chunk' }))).toEqual({
       kind: 'file-fresh-id',
     });
-    expect(classifyImportFailure(new AuthError(403), ctx({ stage: 'media-complete', freshIdUsed: true }))).toEqual({
+    expect(
+      classifyImportFailure(
+        new AuthError(403),
+        ctx({ stage: 'media-complete', freshIdUsed: true }),
+      ),
+    ).toEqual({
       kind: 'job-terminal',
       code: 'FORBIDDEN',
     });
@@ -476,11 +536,15 @@ describe('413', () => {
   });
 
   it('charges a real quota 413 to the file on a media route', () => {
-    expect(classifyImportFailure(new QuotaExceededError(QUOTA_BODY), ctx({ stage: 'media-complete' }))).toEqual({
+    expect(
+      classifyImportFailure(new QuotaExceededError(QUOTA_BODY), ctx({ stage: 'media-complete' })),
+    ).toEqual({
       kind: 'item-failed',
       code: 'QUOTA',
     });
-    expect(classifyImportFailure(new QuotaExceededError(QUOTA_BODY), ctx({ stage: 'batch' }))).toEqual({
+    expect(
+      classifyImportFailure(new QuotaExceededError(QUOTA_BODY), ctx({ stage: 'batch' })),
+    ).toEqual({
       kind: 'job-terminal',
       code: 'ORBIT_FULL',
     });
@@ -493,18 +557,27 @@ describe('413', () => {
 
 describe('400 VALIDATION_ERROR', () => {
   it('halves on IMPORT_BATCH_TOO_LARGE', () => {
-    expect(classifyImportFailure(validation('IMPORT_BATCH_TOO_LARGE'), ctx())).toEqual({ kind: 'batch-halve' });
+    expect(classifyImportFailure(validation('IMPORT_BATCH_TOO_LARGE'), ctx())).toEqual({
+      kind: 'batch-halve',
+    });
   });
 
   it('fails the file on IMPORT_MEDIA_TYPE_UNSUPPORTED', () => {
-    expect(classifyImportFailure(validation('IMPORT_MEDIA_TYPE_UNSUPPORTED'), ctx({ stage: 'media-chunk' }))).toEqual({
+    expect(
+      classifyImportFailure(
+        validation('IMPORT_MEDIA_TYPE_UNSUPPORTED'),
+        ctx({ stage: 'media-chunk' }),
+      ),
+    ).toEqual({
       kind: 'item-failed',
       code: 'IMPORT_MEDIA_UNSUPPORTED',
     });
   });
 
   it('calls IMPORT_DECLARED_INVALID our own bug', () => {
-    expect(classifyImportFailure(validation('IMPORT_DECLARED_INVALID'), ctx({ stage: 'start' }))).toEqual({
+    expect(
+      classifyImportFailure(validation('IMPORT_DECLARED_INVALID'), ctx({ stage: 'start' })),
+    ).toEqual({
       kind: 'job-terminal',
       code: 'CLIENT_BUG',
     });
@@ -515,11 +588,15 @@ describe('400 VALIDATION_ERROR', () => {
       kind: 'item-failed',
       code: 'IMPORT_ITEM_INVALID',
     });
-    expect(classifyImportFailure(validation(), ctx({ clientBugCount: CLIENT_BUG_THRESHOLD - 2 }))).toEqual({
+    expect(
+      classifyImportFailure(validation(), ctx({ clientBugCount: CLIENT_BUG_THRESHOLD - 2 })),
+    ).toEqual({
       kind: 'item-failed',
       code: 'IMPORT_ITEM_INVALID',
     });
-    expect(classifyImportFailure(validation(), ctx({ clientBugCount: CLIENT_BUG_THRESHOLD - 1 }))).toEqual({
+    expect(
+      classifyImportFailure(validation(), ctx({ clientBugCount: CLIENT_BUG_THRESHOLD - 1 })),
+    ).toEqual({
       kind: 'job-terminal',
       code: 'CLIENT_BUG',
     });
@@ -544,27 +621,36 @@ describe('network and server errors', () => {
     'climbs the ladder then pauses at stage %s',
     (stage) => {
       NETWORK_STAGE_LADDER_MS.forEach((delayMs, attempt) => {
-        expect(classifyImportFailure(new NetworkError(), ctx({ stage, stageAttempt: attempt }))).toEqual({
-          kind: 'retry-in-place',
+        expect(
+          classifyImportFailure(new NetworkError(), ctx({ stage, stageAttempt: attempt })),
+        ).toEqual({
+          kind: 'retry-same-call',
           delayMs,
         });
       });
       expect(
-        classifyImportFailure(new NetworkError(), ctx({ stage, stageAttempt: NETWORK_STAGE_LADDER_MS.length })),
+        classifyImportFailure(
+          new NetworkError(),
+          ctx({ stage, stageAttempt: NETWORK_STAGE_LADDER_MS.length }),
+        ),
       ).toEqual({ kind: 'pause', cause: 'network' });
     },
   );
 
   it('pauses a media-chunk failure immediately — uploadMedia already retried', () => {
-    expect(classifyImportFailure(new NetworkError(), ctx({ stage: 'media-chunk', stageAttempt: 0 }))).toEqual({
+    expect(
+      classifyImportFailure(new NetworkError(), ctx({ stage: 'media-chunk', stageAttempt: 0 })),
+    ).toEqual({
       kind: 'pause',
       cause: 'network',
     });
   });
 
   it('treats a 5xx like a network failure', () => {
-    expect(classifyImportFailure(new ServerError(500), ctx({ stage: 'complete', stageAttempt: 1 }))).toEqual({
-      kind: 'retry-in-place',
+    expect(
+      classifyImportFailure(new ServerError(500), ctx({ stage: 'complete', stageAttempt: 1 })),
+    ).toEqual({
+      kind: 'retry-same-call',
       delayMs: NETWORK_STAGE_LADDER_MS[1],
     });
   });
@@ -576,7 +662,9 @@ describe('network and server errors', () => {
 
 describe('errors with no arm', () => {
   it('charges an unknown error to the item on an item-scoped stage', () => {
-    expect(classifyImportFailure(new TypeError('x is not a function'), ctx({ stage: 'batch' }))).toEqual({
+    expect(
+      classifyImportFailure(new TypeError('x is not a function'), ctx({ stage: 'batch' })),
+    ).toEqual({
       kind: 'item-failed',
       code: 'IMPORT_ITEM_INVALID',
     });
@@ -619,7 +707,14 @@ describe('silence', () => {
       new ServerError(502),
       new TypeError('boom'),
     ];
-    for (const stage of ['start', 'batch', 'media-chunk', 'media-complete', 'complete', 'archive'] as ImportStage[]) {
+    for (const stage of [
+      'start',
+      'batch',
+      'media-chunk',
+      'media-complete',
+      'complete',
+      'archive',
+    ] as ImportStage[]) {
       for (const e of cases) classifyImportFailure(e, ctx({ stage }));
     }
 

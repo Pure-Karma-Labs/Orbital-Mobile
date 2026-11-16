@@ -53,7 +53,10 @@ import {
 import { importKeyToWire } from '../crypto/importCrypto';
 import { isRunStale } from './importErrors';
 
-import type { ImportBatchResult, PendingImportItem } from '../../database/repositories/importRepository';
+import type {
+  ImportBatchResult,
+  PendingImportItem,
+} from '../../database/repositories/importRepository';
 import type { ImportBatchItem, ImportBatchResultWire, ImportLimits } from '../../types/api';
 import type { ImportKeySession } from '../crypto/importCrypto';
 import type { ImportItemFailureCode, RunGuard } from './importErrors';
@@ -185,9 +188,7 @@ export function preflightImportItem(row: PendingImportItem, limits: ImportLimits
   const iso = Number.isNaN(date.getTime()) ? null : date.toISOString();
   if (iso === null) return invalid;
 
-  const mediaIds = [...row.media]
-    .sort((a, b) => a.ordinal - b.ordinal)
-    .map((m) => m.media_id);
+  const mediaIds = [...row.media].sort((a, b) => a.ordinal - b.ordinal).map((m) => m.media_id);
   if (mediaIds.length > limits.mediaPerItemMax) return invalid;
   // The server refuses intra-item duplicates; a collision can only come from a
   // `replaceMediaId` landing on an id this item already holds, and catching it
@@ -296,7 +297,9 @@ export async function buildImportItem(
  * `requested` is the runner's current size after any halving.
  */
 export function batchSizeLimit(limits: ImportLimits, requested?: number): number {
-  const advertised = Number.isSafeInteger(limits.batchMax) ? limits.batchMax : IMPORT_BATCH_HARD_MAX;
+  const advertised = Number.isSafeInteger(limits.batchMax)
+    ? limits.batchMax
+    : IMPORT_BATCH_HARD_MAX;
   const ceiling = Math.min(advertised, IMPORT_BATCH_HARD_MAX);
   const wanted = requested === undefined ? ceiling : Math.min(requested, ceiling);
   return Math.max(1, Math.floor(wanted));

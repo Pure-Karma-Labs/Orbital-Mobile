@@ -60,7 +60,7 @@ jest.mock('@op-engineering/op-sqlite', () => ({ open: jest.fn() }));
 jest.mock('../../crypto/importCrypto', () => ({
   // Standard padded base64 of the 16 bytes, exactly as the shipped helper does
   // it — the wire join in `mapBatchResults` is keyed on this string.
-  importKeyToWire: (key: Uint8Array) => Buffer.from(key).toString('base64'),
+  importKeyToWire: (bytes: Uint8Array) => Buffer.from(bytes).toString('base64'),
   classifyImportCryptoError: () => null,
 }));
 
@@ -254,12 +254,15 @@ describe('preflightImportItem', () => {
     expect(result).not.toHaveProperty('item');
   });
 
-  it.each([[Number.NaN], [1.5], [Number.MAX_VALUE]])('fails the item on an unusable date %p', (date) => {
-    expect(preflightImportItem(row({ original_date: date }), LIMITS)).toEqual({
-      ok: false,
-      code: 'IMPORT_ITEM_INVALID',
-    });
-  });
+  it.each([[Number.NaN], [1.5], [Number.MAX_VALUE]])(
+    'fails the item on an unusable date %p',
+    (date) => {
+      expect(preflightImportItem(row({ original_date: date }), LIMITS)).toEqual({
+        ok: false,
+        code: 'IMPORT_ITEM_INVALID',
+      });
+    },
+  );
 
   it('orders media ids by ordinal', () => {
     const result = preflightImportItem(
@@ -289,7 +292,9 @@ describe('isItemBatchEligible', () => {
   it('is true only when every ordinal is uploaded', () => {
     expect(isItemBatchEligible(row())).toBe(true);
     expect(isItemBatchEligible(row({ media: [mediaRow(0, 'a'), mediaRow(1, 'b')] }))).toBe(true);
-    expect(isItemBatchEligible(row({ media: [mediaRow(0, 'a'), mediaRow(1, 'b', false)] }))).toBe(false);
+    expect(isItemBatchEligible(row({ media: [mediaRow(0, 'a'), mediaRow(1, 'b', false)] }))).toBe(
+      false,
+    );
   });
 });
 
@@ -344,7 +349,10 @@ describe('buildImportItem', () => {
 
   it('fails the item when a sealed body exceeds body_max', async () => {
     const session = makeSession({
-      sealContent: jest.fn(async (p: string) => ({ ciphertext: 'x'.repeat(p === '' ? 24 : 120), iv: 'IV0' })),
+      sealContent: jest.fn(async (p: string) => ({
+        ciphertext: 'x'.repeat(p === '' ? 24 : 120),
+        iv: 'IV0',
+      })),
     });
     expect(await buildImportItem(preflighted(), session, { ...LIMITS, bodyMax: 100 })).toEqual({
       ok: false,
@@ -493,7 +501,11 @@ describe('halveBatchSize', () => {
 // ---------------------------------------------------------------------------
 
 describe('mapBatchResults', () => {
-  const batch = [built('item-0', 'KEY0', 100), built('item-1', 'KEY1', 100), built('item-2', 'KEY2', 100)];
+  const batch = [
+    built('item-0', 'KEY0', 100),
+    built('item-1', 'KEY1', 100),
+    built('item-2', 'KEY2', 100),
+  ];
 
   it('joins on the echoed import_key, not on position', () => {
     const results: ImportBatchResultWire[] = [
@@ -508,7 +520,13 @@ describe('mapBatchResults', () => {
       { itemId: 'item-0', status: 'duplicate', threadId: 't-0' },
       { itemId: 'item-1', status: 'rejected', code: 'IMPORT_DATE_INVALID' },
     ]);
-    expect(mapped).toMatchObject({ created: 1, duplicate: 1, failed: 1, unmatched: 0, unanswered: [] });
+    expect(mapped).toMatchObject({
+      created: 1,
+      duplicate: 1,
+      failed: 1,
+      unmatched: 0,
+      unanswered: [],
+    });
   });
 
   it('falls back to the index when the echo is null', () => {
@@ -545,15 +563,25 @@ describe('mapBatchResults', () => {
       'IMPORT_MEDIA_NOT_OWNED',
     ]);
 
-    const mapped = mapBatchResults(batch, [{ importKey: 'KEY0', status: 'rejected', code: 'constructor' }]);
-    expect(mapped.applied[0]).toEqual({ itemId: 'item-0', status: 'rejected', code: IMPORT_RESULT_UNKNOWN });
+    const mapped = mapBatchResults(batch, [
+      { importKey: 'KEY0', status: 'rejected', code: 'constructor' },
+    ]);
+    expect(mapped.applied[0]).toEqual({
+      itemId: 'item-0',
+      status: 'rejected',
+      code: IMPORT_RESULT_UNKNOWN,
+    });
   });
 
   it('parks a status this build does not know instead of trusting it', () => {
     const mapped = mapBatchResults(batch, [
       { importKey: 'KEY0', status: 'accepted' as unknown as 'created', threadId: 't-0' },
     ]);
-    expect(mapped.applied[0]).toEqual({ itemId: 'item-0', status: 'rejected', code: IMPORT_RESULT_UNKNOWN });
+    expect(mapped.applied[0]).toEqual({
+      itemId: 'item-0',
+      status: 'rejected',
+      code: IMPORT_RESULT_UNKNOWN,
+    });
     expect(mapped.created).toBe(0);
     expect(mapped.failed).toBe(1);
   });
@@ -570,14 +598,19 @@ describe('mapBatchResults', () => {
   });
 
   it('counts a result that matches nothing, and reports items the server ignored', () => {
-    const mapped = mapBatchResults([batch[0]], [
-      { importKey: 'KEY0', status: 'created', threadId: 't-0' },
-      { importKey: 'KEY9', status: 'created', threadId: 't-9' },
-    ]);
+    const mapped = mapBatchResults(
+      [batch[0]],
+      [
+        { importKey: 'KEY0', status: 'created', threadId: 't-0' },
+        { importKey: 'KEY9', status: 'created', threadId: 't-9' },
+      ],
+    );
     expect(mapped.unmatched).toBe(1);
     expect(mapped.applied).toHaveLength(1);
 
-    const short = mapBatchResults(batch, [{ importKey: 'KEY0', status: 'created', threadId: 't-0' }]);
+    const short = mapBatchResults(batch, [
+      { importKey: 'KEY0', status: 'created', threadId: 't-0' },
+    ]);
     expect(short.unanswered).toEqual(['item-1', 'item-2']);
   });
 });
@@ -589,7 +622,10 @@ describe('mapBatchResults', () => {
 describe('repository writes (real importRepository on node:sqlite)', () => {
   let harness: ImportDbHarness;
 
-  function statuses(): Record<string, { status: string; error_code: string | null; body: string | null; thread_id: string | null }> {
+  function statuses(): Record<
+    string,
+    { status: string; error_code: string | null; body: string | null; thread_id: string | null }
+  > {
     const rows = harness.sqlite
       .prepare('SELECT id, status, error_code, body, thread_id FROM import_items ORDER BY ordinal')
       .all() as unknown as {
@@ -600,7 +636,10 @@ describe('repository writes (real importRepository on node:sqlite)', () => {
       thread_id: string | null;
     }[];
     return Object.fromEntries(
-      rows.map((r) => [r.id, { status: r.status, error_code: r.error_code, body: r.body, thread_id: r.thread_id }]),
+      rows.map((r) => [
+        r.id,
+        { status: r.status, error_code: r.error_code, body: r.body, thread_id: r.thread_id },
+      ]),
     );
   }
 
@@ -632,7 +671,8 @@ describe('repository writes (real importRepository on node:sqlite)', () => {
 
     const result = preflightImportItem(pending[0], LIMITS);
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.item.importKeyWire).toBe(Buffer.from(key(0xa0)).toString('base64'));
+    if (result.ok)
+      expect(result.item.importKeyWire).toBe(Buffer.from(key(0xa0)).toString('base64'));
   });
 
   it('claims a batch by moving its rows to uploading', () => {
@@ -647,7 +687,9 @@ describe('repository writes (real importRepository on node:sqlite)', () => {
     // item-0 is already taken server-side.
     applyBatchOutcome(JOB, [{ itemId: 'item-0', status: 'created', threadId: 't-0' }], LIVE);
 
-    expect(claimBatch(JOB, [built('item-0', 'KEY0', 10), built('item-1', 'KEY1', 10)], LIVE)).toEqual({
+    expect(
+      claimBatch(JOB, [built('item-0', 'KEY0', 10), built('item-1', 'KEY1', 10)], LIVE),
+    ).toEqual({
       kind: 'stale',
     });
     // The guard means the already-created row was NOT demoted.
@@ -657,10 +699,14 @@ describe('repository writes (real importRepository on node:sqlite)', () => {
   it('writes nothing at all once the run has moved on (rule 0)', () => {
     const before = statuses();
     expect(claimBatch(JOB, [built('item-0', 'KEY0', 10)], STALE)).toEqual({ kind: 'cancelled' });
-    expect(applyBatchOutcome(JOB, [{ itemId: 'item-0', status: 'created', threadId: 't' }], STALE)).toEqual({
+    expect(
+      applyBatchOutcome(JOB, [{ itemId: 'item-0', status: 'created', threadId: 't' }], STALE),
+    ).toEqual({
       kind: 'cancelled',
     });
-    expect(failImportItems(JOB, [{ itemId: 'item-0', code: 'IMPORT_ITEM_INVALID' }], STALE)).toEqual({
+    expect(
+      failImportItems(JOB, [{ itemId: 'item-0', code: 'IMPORT_ITEM_INVALID' }], STALE),
+    ).toEqual({
       kind: 'cancelled',
     });
     expect(releaseBatchClaim(JOB, ['item-0'], STALE)).toEqual({ kind: 'cancelled' });
@@ -684,7 +730,12 @@ describe('repository writes (real importRepository on node:sqlite)', () => {
     ]);
     expect(applyBatchOutcome(JOB, mapped.applied, LIVE)).toEqual({ kind: 'ok', value: 2 });
 
-    expect(statuses()['item-0']).toEqual({ status: 'created', error_code: null, body: null, thread_id: 't-0' });
+    expect(statuses()['item-0']).toEqual({
+      status: 'created',
+      error_code: null,
+      body: null,
+      thread_id: 't-0',
+    });
     expect(statuses()['item-1']).toEqual({
       status: 'failed',
       error_code: 'IMPORT_DATE_INVALID',
@@ -695,11 +746,16 @@ describe('repository writes (real importRepository on node:sqlite)', () => {
   });
 
   it('fails an item locally with our own code, through the same writer', () => {
-    expect(failImportItems(JOB, [{ itemId: 'item-2', code: 'IMPORT_ITEM_TOO_LARGE' }], LIVE)).toEqual({
+    expect(
+      failImportItems(JOB, [{ itemId: 'item-2', code: 'IMPORT_ITEM_TOO_LARGE' }], LIVE),
+    ).toEqual({
       kind: 'ok',
       value: 1,
     });
-    expect(statuses()['item-2']).toMatchObject({ status: 'failed', error_code: 'IMPORT_ITEM_TOO_LARGE' });
+    expect(statuses()['item-2']).toMatchObject({
+      status: 'failed',
+      error_code: 'IMPORT_ITEM_TOO_LARGE',
+    });
   });
 
   it('is a no-op for an empty write', () => {

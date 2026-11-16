@@ -13,7 +13,7 @@
  *
  * Retry BUDGETS and timer LADDERS are the runner's, not this module's: the
  * classifier is told how many attempts a stage has already spent
- * (`ctx.stageAttempt`, `ctx.busyAttempt`) and answers `retry-in-place` with
+ * (`ctx.stageAttempt`, `ctx.busyAttempt`) and answers `retry-same-call` with
  * the delay for THAT attempt, or `pause` once the budget is gone. That keeps
  * every "how long do we wait" number in one table ({@link
  * NETWORK_STAGE_LADDER_MS} and friends) while the counting stays where the
@@ -70,13 +70,7 @@ import type { ArchiveErrorCode } from './archiveAccess';
  * lost membership.
  */
 export type ImportStage =
-  | 'start'
-  | 'batch'
-  | 'media-chunk'
-  | 'media-complete'
-  | 'complete'
-  | 'archive'
-  | 'crypto';
+  'start' | 'batch' | 'media-chunk' | 'media-complete' | 'complete' | 'archive' | 'crypto';
 
 /**
  * The pause set (§4.3.1), in precedence order. Declared HERE rather than in
@@ -84,12 +78,7 @@ export type ImportStage =
  * `background` is AppState's and is never a verdict.
  */
 export type PauseCause =
-  | 'needs_repick'
-  | 'key_pending'
-  | 'archive_retry'
-  | 'rate_limited'
-  | 'network'
-  | 'background';
+  'needs_repick' | 'key_pending' | 'archive_retry' | 'rate_limited' | 'network' | 'background';
 
 /** The causes a verdict can carry. */
 export type ClassifiedPauseCause = Exclude<PauseCause, 'background'>;
@@ -144,7 +133,7 @@ export type ImportTerminalCode = keyof typeof IMPORT_TERMINAL_CODES;
  * - `cancelled` — stop, write nothing, capture nothing (rule 0).
  * - `pause` — add the cause to the pause set; `untilMs` is set only when the
  *   server named a time (429 `Retry-After`, the soft chunk allowance).
- * - `retry-in-place` — the same call again after `delayMs`, no pause, no
+ * - `retry-same-call` — the same call again after `delayMs`, no pause, no
  *   budget beyond the one the context reported.
  * - `item-failed` — this post is done; the run continues.
  * - `file-fresh-id` — mint a new `media_id` (`replaceMediaId`) and re-upload
@@ -161,7 +150,7 @@ export type ImportTerminalCode = keyof typeof IMPORT_TERMINAL_CODES;
 export type ImportVerdict =
   | { readonly kind: 'cancelled' }
   | { readonly kind: 'pause'; readonly cause: ClassifiedPauseCause; readonly untilMs?: number }
-  | { readonly kind: 'retry-in-place'; readonly delayMs: number }
+  | { readonly kind: 'retry-same-call'; readonly delayMs: number }
   | { readonly kind: 'item-failed'; readonly code: ImportItemFailureCode }
   | { readonly kind: 'file-fresh-id' }
   | { readonly kind: 'park-file' }
@@ -367,14 +356,14 @@ function networkVerdict(ctx: ImportFailureContext): ImportVerdict {
   if (ctx.stage === 'media-chunk') return pause('network');
   const attempt = ctx.stageAttempt ?? 0;
   const delayMs = NETWORK_STAGE_LADDER_MS[attempt];
-  return delayMs === undefined ? pause('network') : { kind: 'retry-in-place', delayMs };
+  return delayMs === undefined ? pause('network') : { kind: 'retry-same-call', delayMs };
 }
 
 /** The archive reader's four dispositions, plus `ARCHIVE_BUSY`'s in-place arm. */
 function archiveVerdict(code: ArchiveErrorCode, ctx: ImportFailureContext): ImportVerdict {
   if (code === 'ARCHIVE_BUSY') {
     return (ctx.busyAttempt ?? 0) < ARCHIVE_BUSY_MAX_ATTEMPTS
-      ? { kind: 'retry-in-place', delayMs: ARCHIVE_BUSY_RETRY_MS }
+      ? { kind: 'retry-same-call', delayMs: ARCHIVE_BUSY_RETRY_MS }
       : pause('archive_retry');
   }
   switch (ARCHIVE_ERROR_DISPOSITIONS[code]) {

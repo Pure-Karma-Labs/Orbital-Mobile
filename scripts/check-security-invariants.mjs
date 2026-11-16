@@ -2922,7 +2922,16 @@ const ME_FORBIDDEN_IN_LOGS = [
   'sourcePath',
   'mediaId',
 ];
-const ME_LOG_CALL_RE = /\b(?:console\.(?:log|warn|error|info|debug|trace)|captureError|Sentry\.\w+)\s*\(/;
+// The console surface is wider than the five levels a reviewer thinks of.
+// `console.dir` is the OBJECT dumper — the one a debugging session reaches for
+// precisely because it prints a whole record rather than a message — `table`
+// renders an array of rows, `assert` prints its trailing arguments on failure,
+// and `group`/`groupCollapsed` take a label that is as free-form as a `log`.
+// All five write to the same device log, so a rule that stopped at `trace`
+// would be one autocomplete away from silence. `groupEnd` is deliberately
+// absent: it takes no arguments, so it can carry nothing.
+const ME_LOG_CALL_RE =
+  /\b(?:console\.(?:log|warn|error|info|debug|trace|dir|table|assert|group(?:Collapsed)?)|captureError|Sentry\.\w+)\s*\(/;
 
 /**
  * Every log/Sentry call in `code`, as `[lineNumber, windowText]`.
@@ -3427,11 +3436,14 @@ if (meAuthRaw !== null) {
     //
     // Why phase 1 at all: the reset aborts the run's `AbortController`, and
     // that abort is what makes each item's `finally` run. `archiveAccess`'s
-    // `release()` inside that `finally` is the ONLY unlink of an extracted
-    // plaintext photo on the LOGOUT path — phase 2's `isStagingResidueName`
-    // sweep has no `-archive-staging.bin` arm, and the MEDIA_DIR deletion is
-    // inside the deletion branch only. A reset that landed after the sweep
-    // would therefore leave a decrypted photo in Caches on a logout.
+    // `release()` inside that `finally` is the TIMELY unlink of the extracted
+    // plaintext photo; phase 2's `isStagingResidueName` sweep is the BACKSTOP
+    // and does reach `<uuid>-archive-staging.bin`, since the predicate matches
+    // any `-staging.bin` name (see the clause above, and `stagingResidue.ts`).
+    // Ordering is what the two arms do not give each other: the sweep is ONE
+    // non-recursive readDir, so an extract still inflating a file when it runs
+    // writes its staging file after the listing was taken, and nothing looks
+    // again. Aborting first is what makes the sweep's view the final state.
     //
     // Why not awaited: `resetBulkExportState`'s and `cancelAllExports`'
     // reason, and the runner is the sharpest case of it — an await here hands
@@ -3451,12 +3463,12 @@ if (meAuthRaw !== null) {
     const importResetIdx = wipe[0].indexOf('resetImportRunnerState(');
     if (importResetIdx === -1) {
       violations.push(
-        `  ${relative('.', ME_AUTH_SERVICE)}:${at}  [${ME_WIPE_RULE}]  localWipe() does not call resetImportRunnerState( — an import mid-extraction would keep running through the wipe, and the release() in its item finally is the only unlink of an extracted plaintext photo on the logout path (${MIT_RUNNER_ISSUE})`,
+        `  ${relative('.', ME_AUTH_SERVICE)}:${at}  [${ME_WIPE_RULE}]  localWipe() does not call resetImportRunnerState( — an import mid-extraction would keep running through the wipe, inflating plaintext staging files after the suffix sweep already listed the directory (${MIT_RUNNER_ISSUE})`,
       );
     } else {
       if (mediaDirIdx !== -1 && importResetIdx > mediaDirIdx) {
         violations.push(
-          `  ${relative('.', ME_AUTH_SERVICE)}:${at}  [${ME_WIPE_RULE}]  resetImportRunnerState( must run in phase 1, BEFORE the MEDIA_DIR deletion in localWipe() — after it, the abort lands too late for the item finally that unlinks the extracted plaintext (${MIT_RUNNER_ISSUE})`,
+          `  ${relative('.', ME_AUTH_SERVICE)}:${at}  [${ME_WIPE_RULE}]  resetImportRunnerState( must run in phase 1, BEFORE the MEDIA_DIR deletion in localWipe() — after it, the abort lands too late for the item finally's release() to beat the staging sweep's one listing (${MIT_RUNNER_ISSUE})`,
         );
       }
       if (deleteJobsIdx !== -1 && importResetIdx > deleteJobsIdx) {
@@ -6795,6 +6807,20 @@ const MI_FORBIDDEN_IN_LOGS = [
   ['body', 'body'],
   ['file_name / fileName', 'filename'],
   ['local_path / localPath', 'localpath'],
+  // A BARE `path` substring, which subsumes `localPath` and `sourcePath` and
+  // also catches `stagingPath`, `filePath`, `archivePath`, `paths` and the
+  // next name nobody has coined yet. Every one of them is a file name out of
+  // the member's own device, and this module family has no legitimate reason
+  // to print any of them: §4.13's contract is counts and closed enums, whose
+  // only window today names `import_source`/`import_stage`/`import_code` and
+  // three counters. The two longer entries are kept so a violation prints the
+  // specific field when it is one of the two §4.13 spells out.
+  ['path / Path (any path-bearing field)', 'path'],
+  ['source_path / sourcePath', 'sourcepath'],
+  // The Android SAF document URI is itself a CAPABILITY, not just a name: a
+  // log line carrying it hands any reader a grantable handle on the member's
+  // Downloads file. `uri` also covers `contentUri`, `fileUri` and `uris`.
+  ['uri / Uri (any URI-bearing field)', 'uri'],
   ['original_date / originalDate', 'originaldate'],
   ['key_fingerprint / keyFingerprint', 'keyfingerprint'],
   ['archive_bookmark / archiveBookmark / bookmark', 'bookmark'],
@@ -6810,7 +6836,11 @@ function miNormalize(text) {
 
 let miScanned = [];
 try {
-  miScanned = walkSync(MI_DIR, ['.ts']).filter((f) => {
+  // `.tsx` as well as `.ts`: #927 adds the import's own screens, and nothing
+  // stops a module in this directory from carrying JSX before then. A scan
+  // that skipped the extension would cover the file the day it was renamed
+  // rather than the day it was written.
+  miScanned = walkSync(MI_DIR, ['.ts', '.tsx']).filter((f) => {
     const rel = relative('.', f);
     return !rel.includes('__tests__') && !rel.includes('testUtils');
   });

@@ -177,6 +177,17 @@ function built(itemId: string, importKey: string, bytes: number): BuiltImportIte
   };
 }
 
+/**
+ * A real UUID v4 built from one hex digit.
+ *
+ * `mapBatchResults` shape-gates the echoed `thread_id`, so a fixture spelled
+ * `t-0` would be mapped to null and every pass-through assertion below would
+ * be asserting the gate rather than the join. The gate gets its own tests.
+ */
+function tid(d: string): string {
+  return `${d.repeat(8)}-${d.repeat(4)}-4${d.repeat(3)}-8${d.repeat(3)}-${d.repeat(12)}`;
+}
+
 /** The parser's hand-over shape, for seeding the real repository. */
 function insert(overrides: Partial<ImportItemInsert> = {}): ImportItemInsert {
   return {
@@ -509,15 +520,15 @@ describe('mapBatchResults', () => {
 
   it('joins on the echoed import_key, not on position', () => {
     const results: ImportBatchResultWire[] = [
-      { importKey: 'KEY2', status: 'created', threadId: 't-2', createdAt: 'now' },
-      { importKey: 'KEY0', status: 'duplicate', threadId: 't-0', createdAt: 'now' },
+      { importKey: 'KEY2', status: 'created', threadId: tid('2'), createdAt: 'now' },
+      { importKey: 'KEY0', status: 'duplicate', threadId: tid('0'), createdAt: 'now' },
       { importKey: 'KEY1', status: 'rejected', code: 'IMPORT_DATE_INVALID' },
     ];
 
     const mapped = mapBatchResults(batch, results);
     expect(mapped.applied).toEqual([
-      { itemId: 'item-2', status: 'created', threadId: 't-2' },
-      { itemId: 'item-0', status: 'duplicate', threadId: 't-0' },
+      { itemId: 'item-2', status: 'created', threadId: tid('2') },
+      { itemId: 'item-0', status: 'duplicate', threadId: tid('0') },
       { itemId: 'item-1', status: 'rejected', code: 'IMPORT_DATE_INVALID' },
     ]);
     expect(mapped).toMatchObject({
@@ -531,7 +542,7 @@ describe('mapBatchResults', () => {
 
   it('falls back to the index when the echo is null', () => {
     const mapped = mapBatchResults(batch, [
-      { importKey: null, status: 'created', threadId: 't-0' },
+      { importKey: null, status: 'created', threadId: tid('0') },
       { importKey: null, status: 'rejected', code: 'IMPORT_ITEM_INVALID' },
       { importKey: null, status: 'duplicate' },
     ]);
@@ -575,7 +586,7 @@ describe('mapBatchResults', () => {
 
   it('parks a status this build does not know instead of trusting it', () => {
     const mapped = mapBatchResults(batch, [
-      { importKey: 'KEY0', status: 'accepted' as unknown as 'created', threadId: 't-0' },
+      { importKey: 'KEY0', status: 'accepted' as unknown as 'created', threadId: tid('0') },
     ]);
     expect(mapped.applied[0]).toEqual({
       itemId: 'item-0',
@@ -588,28 +599,67 @@ describe('mapBatchResults', () => {
 
   it('never lets one echoed key claim two items', () => {
     const mapped = mapBatchResults(batch, [
-      { importKey: 'KEY0', status: 'created', threadId: 't-a' },
-      { importKey: 'KEY0', status: 'created', threadId: 't-b' },
+      { importKey: 'KEY0', status: 'created', threadId: tid('a') },
+      { importKey: 'KEY0', status: 'created', threadId: tid('b') },
     ]);
     expect(mapped.applied).toEqual([
-      { itemId: 'item-0', status: 'created', threadId: 't-a' },
-      { itemId: 'item-1', status: 'created', threadId: 't-b' },
+      { itemId: 'item-0', status: 'created', threadId: tid('a') },
+      { itemId: 'item-1', status: 'created', threadId: tid('b') },
     ]);
+  });
+
+  it('accepts an echoed thread id only in UUID v4 shape, and keeps the status', () => {
+    const mapped = mapBatchResults(batch, [
+      // A plausible-looking id that is not one of ours, a v1 UUID (wrong
+      // version nibble), and a type lie the wire type forbids but a server
+      // bug can still send.
+      { importKey: 'KEY0', status: 'created', threadId: 'thread-0' },
+      {
+        importKey: 'KEY1',
+        status: 'duplicate',
+        threadId: 'f81d4fae-7dec-11d0-a765-00a0c91e6bf6',
+      },
+      {
+        importKey: 'KEY2',
+        status: 'created',
+        threadId: { id: tid('3') } as unknown as string,
+      },
+    ]);
+
+    expect(mapped.applied).toEqual([
+      { itemId: 'item-0', status: 'created', threadId: null },
+      { itemId: 'item-1', status: 'duplicate', threadId: null },
+      { itemId: 'item-2', status: 'created', threadId: null },
+    ]);
+    // The post exists server-side either way: rejecting the ID must never
+    // reclassify the ITEM, or a created post is stranded as failed.
+    expect(mapped).toMatchObject({ created: 2, duplicate: 1, failed: 0, unmatched: 0 });
+  });
+
+  it('accepts a well-formed thread id in either case', () => {
+    const mapped = mapBatchResults(
+      [batch[0], batch[1]],
+      [
+        { importKey: 'KEY0', status: 'created', threadId: tid('e') },
+        { importKey: 'KEY1', status: 'created', threadId: tid('E') },
+      ],
+    );
+    expect(mapped.applied.map((a) => a.threadId)).toEqual([tid('e'), tid('E')]);
   });
 
   it('counts a result that matches nothing, and reports items the server ignored', () => {
     const mapped = mapBatchResults(
       [batch[0]],
       [
-        { importKey: 'KEY0', status: 'created', threadId: 't-0' },
-        { importKey: 'KEY9', status: 'created', threadId: 't-9' },
+        { importKey: 'KEY0', status: 'created', threadId: tid('0') },
+        { importKey: 'KEY9', status: 'created', threadId: tid('9') },
       ],
     );
     expect(mapped.unmatched).toBe(1);
     expect(mapped.applied).toHaveLength(1);
 
     const short = mapBatchResults(batch, [
-      { importKey: 'KEY0', status: 'created', threadId: 't-0' },
+      { importKey: 'KEY0', status: 'created', threadId: tid('0') },
     ]);
     expect(short.unanswered).toEqual(['item-1', 'item-2']);
   });
@@ -725,7 +775,7 @@ describe('repository writes (real importRepository on node:sqlite)', () => {
     claimBatch(JOB, batch, LIVE);
 
     const mapped = mapBatchResults(batch, [
-      { importKey: 'KEY0', status: 'created', threadId: 't-0', createdAt: 'now' },
+      { importKey: 'KEY0', status: 'created', threadId: tid('0'), createdAt: 'now' },
       { importKey: 'KEY1', status: 'rejected', code: 'IMPORT_DATE_INVALID' },
     ]);
     expect(applyBatchOutcome(JOB, mapped.applied, LIVE)).toEqual({ kind: 'ok', value: 2 });
@@ -734,7 +784,7 @@ describe('repository writes (real importRepository on node:sqlite)', () => {
       status: 'created',
       error_code: null,
       body: null,
-      thread_id: 't-0',
+      thread_id: tid('0'),
     });
     expect(statuses()['item-1']).toEqual({
       status: 'failed',
@@ -790,7 +840,9 @@ describe('repository writes (real importRepository on node:sqlite)', () => {
       batch.map((b, i) => ({
         importKey: b.wire.importKey,
         status: i === 2 ? ('rejected' as const) : ('created' as const),
-        ...(i === 2 ? { code: 'IMPORT_ITEM_INVALID' } : { threadId: `t-${i}`, createdAt: 'now' }),
+        ...(i === 2
+          ? { code: 'IMPORT_ITEM_INVALID' }
+          : { threadId: tid(String(i)), createdAt: 'now' }),
       })),
     );
     expect(applyBatchOutcome(JOB, mapped.applied, LIVE)).toEqual({ kind: 'ok', value: 3 });

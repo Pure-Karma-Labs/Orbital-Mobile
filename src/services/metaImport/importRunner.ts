@@ -2565,6 +2565,16 @@ async function finishJobWithoutRun(
  *
  * Only ever used to build a run that writes a terminal status and no payload,
  * so no value here can reach the wire.
+ *
+ * MIRRORS, and is not the source of truth for, `Orbital-Backend`'s
+ * `src/config/imports.js` (`batchMax`, `mediaPerItemMax`, `metaMaxBytes`,
+ * `minDate`, `mediaContentClasses`) and `src/config/contentLimits.js`
+ * (`ivMax` = IV_MAX, `titleMax` = THREAD_TITLE_MAX, `bodyMax` =
+ * THREAD_BODY_MAX), which `limitsWire()` advertises on every start response.
+ * There is no drift detector across the repo boundary, and there does not need
+ * to be: a live run always uses the ADVERTISED limits, and if these ever go
+ * stale the only consequence is that a job already heading for a terminal
+ * status is measured against last release's numbers.
  */
 const FALLBACK_LIMITS: ImportLimits = Object.freeze({
   batchMax: 50,
@@ -2588,14 +2598,19 @@ const FALLBACK_LIMITS: ImportLimits = Object.freeze({
  * `keyRecoveryService`'s pre-`fullCryptoWipe` arm both call it.
  *
  * **Synchronous, and it aborts the run's `AbortController` first.** That abort
- * is what runs each item's `finally`, and `archiveAccess`'s `release()` is the
- * ONLY unlink of extracted plaintext on the logout path — `localWipe` has no
- * staging sweep of its own. An `await` here would hand control back to the run
- * being torn down.
+ * is what runs each item's `finally`, where `archiveAccess`'s `release()` is
+ * the TIMELY unlink of extracted plaintext. `localWipe`'s phase-2 suffix sweep
+ * is the backstop and does match `-archive-staging.bin`, but it is one
+ * non-recursive readDir: a file inflated after that listing survives it. An
+ * `await` here would hand control back to the run being torn down, which then
+ * gets to write exactly such a file.
  *
  * Bumping {@link liveToken} is rule 0's switch: every verdict after this is
  * `cancelled`, so the torn-down run writes no `failed` row, no
- * `finishImportJob` and no Sentry event on an ordinary logout.
+ * `finishImportJob` and no Sentry event on an ordinary logout. That bump is
+ * also why `localWipe` calls this ABOVE `deleteAllImportJobs()`: below it, a
+ * run one microtask from a repository write would write item rows against a
+ * job the wipe has already deleted, and report the failure as terminal.
  */
 export function resetImportRunnerState(): void {
   const r = run;

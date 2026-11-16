@@ -206,9 +206,11 @@ export interface ImportFailureContext extends RunGuard {
   /** True inside the single end-of-run retry pass for a parked file. */
   readonly endOfRunPass?: boolean;
   /**
-   * `IMPORT_ITEM_INVALID`-class verdicts already returned in this run. At
-   * {@link CLIENT_BUG_THRESHOLD} the next one is `job-terminal('CLIENT_BUG')`:
-   * three items the server calls malformed is a payload bug, not bad data.
+   * `IMPORT_ITEM_INVALID`-class verdicts already returned in this run, NOT
+   * counting the one being classified. The
+   * {@link CLIENT_BUG_THRESHOLD}-th such verdict is itself
+   * `job-terminal('CLIENT_BUG')`: three items the server calls malformed is a
+   * payload bug, not bad data.
    */
   readonly clientBugCount?: number;
   /** Clock injection, so `pause.untilMs` is testable without fake timers. */
@@ -244,7 +246,10 @@ export const DEFAULT_RATE_LIMIT_PAUSE_MS = 60_000;
  */
 export const CHUNK_ALLOWANCE_PAUSE_MS = 30_000;
 
-/** Item-invalid verdicts after which the run is a client bug, not bad data. */
+/**
+ * The item-invalid verdict count at which the run is a client bug, not bad
+ * data: the THIRD such verdict is the terminal one.
+ */
 export const CLIENT_BUG_THRESHOLD = 3;
 
 // ---------------------------------------------------------------------------

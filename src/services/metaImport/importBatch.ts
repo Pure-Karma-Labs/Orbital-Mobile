@@ -50,6 +50,7 @@ import {
   requeueImportItems,
   IMPORT_RESULT_UNKNOWN,
 } from '../../database/repositories/importRepository';
+import { isValidUUIDv4 } from '../../utils/uuid';
 import { importKeyToWire } from '../crypto/importCrypto';
 import { isRunStale } from './importErrors';
 
@@ -232,7 +233,14 @@ export function wireItemBytes(wire: ImportBatchItem): number {
   return JSON.stringify(wire).length + WIRE_KEY_EXPANSION_BYTES;
 }
 
-/** Serialized size of the whole request body for a batch. */
+/**
+ * Serialized size of the whole request body for a batch.
+ *
+ * The ONE owner of this arithmetic: {@link assembleBatch} measures each
+ * candidate batch through it rather than accumulating a running total of its
+ * own, so the byte cap is enforced against the same number the tests assert
+ * and a future change to the envelope or the separator has a single site.
+ */
 export function batchRequestBytes(batch: readonly BuiltImportItem[]): number {
   if (batch.length === 0) return BATCH_ENVELOPE_BYTES;
   const items = batch.reduce((sum, b) => sum + b.bytes, 0);
@@ -322,14 +330,15 @@ export function assembleBatch(
   const maxBytes = options.maxBytes ?? IMPORT_BATCH_MAX_BYTES;
 
   const batch: BuiltImportItem[] = [];
-  let bytes = BATCH_ENVELOPE_BYTES;
 
   for (const item of built) {
     if (batch.length >= maxItems) break;
-    const next = bytes + item.bytes + (batch.length > 0 ? 1 : 0);
-    if (batch.length > 0 && next > maxBytes) break;
+    // Measured through `batchRequestBytes` rather than a running total, so
+    // one expression owns the envelope-plus-separators arithmetic. The batch
+    // is at most `IMPORT_BATCH_HARD_MAX` items, so re-summing per candidate
+    // costs nothing worth a second copy of the formula.
+    if (batch.length > 0 && batchRequestBytes([...batch, item]) > maxBytes) break;
     batch.push(item);
-    bytes = next;
   }
 
   return { batch, deferred: built.slice(batch.length) };
@@ -380,6 +389,7 @@ export interface MappedBatchResults {
  * `rejected` codes are allowlisted ({@link isImportItemCode}); a status this
  * build does not know becomes a `rejected` with {@link IMPORT_RESULT_UNKNOWN},
  * which the repository writes as `failed` — the item is parked, never trusted.
+ * The echoed `threadId` is shape-gated the same way: UUID v4 or null.
  */
 export function mapBatchResults(
   batch: readonly BuiltImportItem[],
@@ -414,7 +424,18 @@ export function mapBatchResults(
     used.add(itemId);
 
     if (result.status === 'created' || result.status === 'duplicate') {
-      applied.push({ itemId, status: result.status, threadId: result.threadId ?? null });
+      // The echoed `thread_id` is the one server-supplied value here that is
+      // not a closed enum, and #927 will NAVIGATE by it — so it is accepted
+      // only in the shape our own ids have, exactly as the `rejected` code is
+      // accepted only from the allowlist below. Anything else is stored as
+      // null: the status still counts as created/duplicate, because the post
+      // does exist server-side and a thread re-fetch can supply the id, while
+      // a `failed` row here would strand a created post forever.
+      const threadId =
+        typeof result.threadId === 'string' && isValidUUIDv4(result.threadId)
+          ? result.threadId
+          : null;
+      applied.push({ itemId, status: result.status, threadId });
       if (result.status === 'created') created += 1;
       else duplicate += 1;
       return;

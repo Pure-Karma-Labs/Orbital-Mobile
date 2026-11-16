@@ -258,17 +258,32 @@ function sourceFiles(dir: string = MODULE_DIR, prefix = ''): string[] {
 
 describe('the Meta import never reads location, EXIF or tag data', () => {
   it('scans every module in the directory', () => {
-    // Non-vacuity: if the glob ever stops finding files, this test would pass
-    // by scanning nothing.
+    // Non-vacuity, by NAME rather than by count. A count is a floor somebody
+    // picked on one afternoon: it drifts upward as modules land, it goes
+    // stale downward the day one is merged away, and in neither direction
+    // does it say WHICH file the scan must not have lost. The named floor is
+    // every module that reads an archive record or carries a run: the two
+    // parsers and the safe reviver that see Meta's own JSON (where
+    // `exif_data` and the GPS subtree actually live), plus the four runner
+    // modules the import is built out of.
     const files = sourceFiles();
-    expect(files).toContain('facebookParser.ts');
-    expect(files).toContain('instagramParser.ts');
-    expect(files).toContain('jsonSafety.ts');
-    expect(files).toContain('importRunner.ts');
-    // The real count, not a floor somebody picked once: the directory holds
-    // sixteen non-test modules, and a number well under that (it was 6) would
-    // still pass on a scan that had quietly lost half of them.
-    expect(files.length).toBeGreaterThanOrEqual(16);
+    for (const required of [
+      'facebookParser.ts',
+      'instagramParser.ts',
+      'jsonSafety.ts',
+      'importRunner.ts',
+      'importBatch.ts',
+      'importMedia.ts',
+      'importErrors.ts',
+    ]) {
+      expect(files).toContain(required);
+    }
+    // Kept only as the cheapest check that the WALK still works at all: it
+    // would catch a `sourceFiles` that returned exactly the named set and
+    // nothing else (a recursion that stopped descending, say). Deliberately
+    // one above the named floor rather than the live module count, so it
+    // never needs editing when a module lands or leaves.
+    expect(files.length).toBeGreaterThan(7);
   });
 
   it('strips comments without touching string literals', () => {

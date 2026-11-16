@@ -24,9 +24,12 @@
  * ## Two rules this file exists to enforce
  *
  *  1. **`release()` exactly once, in a `finally`.** An extracted entry is
- *     PLAINTEXT on disk and `release()` is the only unlink of it on every path
+ *     PLAINTEXT on disk and `release()` is the unlink of it on every path
  *     including abort (`resetImportRunnerState` aborts the controller precisely
- *     so these `finally` blocks run — `localWipe` has no staging sweep).
+ *     so these `finally` blocks run). `localWipe`'s phase-2 suffix sweep does
+ *     also reach `-archive-staging.bin`, but only as a backstop: it is one
+ *     non-recursive readDir, so it cannot see a file an extract inflates after
+ *     the listing, and on the logout path nothing else deletes it.
  *  2. **A burned `media_id` is never retried in place.** The server keeps the
  *     first attempt's envelope and IV, so a retry under the same id assembles
  *     two ciphertexts into one undecryptable blob that is still charged to the

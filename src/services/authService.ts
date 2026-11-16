@@ -436,10 +436,14 @@ export async function localWipe({ preserveIdentity }: { preserveIdentity: boolea
   // #926: the import runner owns aborting its OWN run, and it has to do so
   // here, in phase 1, for three reasons that all point the same way:
   //  - its `AbortController` is what makes each item's `finally` run, and
-  //    `archiveAccess`'s `release()` inside that `finally` is the ONLY unlink
-  //    of an extracted plaintext photo on the logout path (phase 2's suffix
-  //    sweep has no `-archive-staging.bin` arm, and the MEDIA_DIR deletion
-  //    below is inside the deletion branch only);
+  //    `archiveAccess`'s `release()` inside that `finally` is the TIMELY
+  //    unlink of an extracted plaintext photo. The phase-2 suffix sweep below
+  //    is the backstop and does reach `<uuid>-archive-staging.bin`
+  //    (`isStagingResidueName` matches any `-staging.bin` name), but it is ONE
+  //    non-recursive readDir: an extract still inflating a file when it runs
+  //    writes its staging file after the listing was taken, and nothing looks
+  //    again. Stopping the run first is what makes that listing the final
+  //    state;
   //  - it bumps the run token, which collapses every later verdict to
   //    `cancelled` — so an ordinary logout, where `closeAllImportKeySessions()`
   //    and `abortAllArchiveSessions()` raise the very errors that would

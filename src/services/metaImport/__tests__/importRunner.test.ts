@@ -544,13 +544,22 @@ function summaryWith(importable: number, skips: readonly SkipReason[]): ParseSum
   };
 }
 
+/**
+ * A real UUID v4 built from one hex digit. `mapBatchResults` shape-gates the
+ * echoed `thread_id`, so a `thread-0` fixture would be stored as null and say
+ * nothing about the join (the gate has its own tests in `importBatch.test`).
+ */
+function threadUuid(d: string): string {
+  return `${d.repeat(8)}-${d.repeat(4)}-4${d.repeat(3)}-8${d.repeat(3)}-${d.repeat(12)}`;
+}
+
 /** The batch response for every item the runner submitted. */
 function createdFor(items: { importKey: string }[]) {
   return {
     results: items.map((item, i) => ({
       importKey: item.importKey,
       status: 'created' as const,
-      threadId: `thread-${i}`,
+      threadId: threadUuid(String(i)),
       createdAt: '2012-08-26T00:00:00.000Z',
     })),
     allowance: allowance(items.length),
@@ -1099,7 +1108,7 @@ describe('the allowance gate', () => {
           {
             importKey: body.items[0].importKey,
             status: 'created' as const,
-            threadId: 'thread-0',
+            threadId: threadUuid('0'),
             createdAt: '2012-08-26T00:00:00.000Z',
           },
         ],
@@ -1809,7 +1818,7 @@ describe('batch failures inside a run', () => {
           {
             importKey: body.items[1].importKey,
             status: 'created',
-            threadId: 'thread-1',
+            threadId: threadUuid('1'),
             createdAt: '2012-08-26T00:00:00.000Z',
           },
         ],
@@ -1838,7 +1847,7 @@ describe('batch failures inside a run', () => {
           {
             importKey: body.items[1].importKey,
             status: 'created',
-            threadId: 'thread-1',
+            threadId: threadUuid('1'),
             createdAt: '2012-08-26T00:00:00.000Z',
           },
         ],

@@ -75,7 +75,7 @@ import {
 import { deriveAuthPhase } from '../../navigation/authPhase';
 import { useAppStore } from '../../stores/useAppStore';
 import { generateUUID } from '../../utils/uuid';
-import { NotFoundError } from '../api/errors';
+import { NetworkError, NotFoundError, ServerError } from '../api/errors';
 import {
   completeImport,
   getGroupImports,
@@ -84,10 +84,15 @@ import {
   submitImportBatch,
 } from '../api/imports';
 import { fulfillPendingWraps } from '../conversationService';
-import { openImportKeySession } from '../crypto/importCrypto';
+import { classifyImportCryptoError, openImportKeySession } from '../crypto/importCrypto';
 import { captureError } from '../telemetry';
 import { loadThreadsForGroup } from '../threadService';
-import { openArchiveSession, pickArchiveParts, releaseArchiveParts } from './archiveAccess';
+import {
+  isArchiveCancellation,
+  openArchiveSession,
+  pickArchiveParts,
+  releaseArchiveParts,
+} from './archiveAccess';
 import {
   applyBatchOutcome,
   assembleBatch,
@@ -118,6 +123,7 @@ import type { ArchiveImportSession, ArchivePartToken } from './archiveAccess';
 import type { BuiltImportItem } from './importBatch';
 import type {
   ImportFailureContext,
+  ImportItemFailureCode,
   ImportStage,
   ImportTerminalCode,
   ImportVerdict,
@@ -228,9 +234,28 @@ export interface ImportRunnerState {
    */
   readonly pauseCauses: readonly PauseCause[];
   readonly resumeAtMs: number | null;
+  /**
+   * This pause will NOT retry itself: its automatic budget is spent and only
+   * a member action moves it (#928 fix (b)).
+   *
+   * Only a PRE-RUN pause can carry it. A running pause whose budget runs out
+   * becomes a terminal code instead ({@link addPause}), because there is a run
+   * to settle; before the run there is nothing to settle, and publishing
+   * `idle` for a job the repository still reports `in_progress` left the
+   * member unable to retry OR to start over until the next launch.
+   */
+  readonly autoRetryExhausted: boolean;
   readonly summary: ImportSummary | null;
   readonly errorCode: ImportTerminalCode | null;
 }
+
+/**
+ * Why a pick ended in a failure the member has to be told about (#928 gap 8).
+ *
+ * Four arms, because #928's copy for them differs in what it asks the member
+ * to DO: re-export as JSON, wait a minute, check the connection, or try again.
+ */
+export type PickFailureReason = 'archive' | 'key_pending' | 'network' | 'other';
 
 /** What {@link pickAndStartParse} answers. A refusal is typed, never a throw. */
 export type PickParseResult =
@@ -240,7 +265,8 @@ export type PickParseResult =
       readonly kind: 'refused';
       readonly reason: 'job-running';
       readonly conversationId: string;
-    };
+    }
+  | { readonly kind: 'failed'; readonly reason: PickFailureReason };
 
 /** What {@link repickArchiveParts} answers (§4.2). */
 export type RepickResult = 'resumed' | 'different-archive' | 'cancelled';
@@ -272,6 +298,7 @@ const INITIAL_STATE: ImportRunnerState = Object.freeze({
   parseProgress: null,
   pauseCauses: NO_PAUSE,
   resumeAtMs: null,
+  autoRetryExhausted: false,
   summary: null,
   errorCode: null,
 });
@@ -315,6 +342,7 @@ function sameState(a: ImportRunnerState, b: ImportRunnerState): boolean {
     a.parseProgress === b.parseProgress &&
     a.pauseCauses === b.pauseCauses &&
     a.resumeAtMs === b.resumeAtMs &&
+    a.autoRetryExhausted === b.autoRetryExhausted &&
     a.summary === b.summary &&
     a.errorCode === b.errorCode
   );
@@ -517,6 +545,17 @@ let run: ActiveRun | null = null;
  */
 let liveToken = 0;
 
+/**
+ * The PARSE's abort handle, live only while {@link pickAndStartParse} is
+ * reading an archive (gap 1).
+ *
+ * A parse has no `ActiveRun` — the run starts after the preflight is accepted
+ * — so `cancelImport` had nothing to abort and a logout mid-parse left the
+ * parse inflating staging files and writing `import_items` rows through the
+ * wipe. One controller, aborted SYNCHRONOUSLY by both.
+ */
+let parseController: AbortController | null = null;
+
 /** `GET /api/groups/:id/imports`, cached per app session per orbit (§4.2). */
 const probeCache = new Map<string, ImportAvailability>();
 
@@ -533,16 +572,64 @@ const probeCache = new Map<string, ImportAvailability>();
  * every reset.
  */
 let preRunTimer: ReturnType<typeof setTimeout> | null = null;
-let preRunAttempts = 0;
+
+/**
+ * Wake-ups spent, PER CAUSE.
+ *
+ * One shared counter let several `network` failures spend `key_pending`'s
+ * smaller budget before that gate had been tried once (#993 review). Keyed the
+ * way {@link PAUSE_BUDGET_CODE} already is, so each cause's budget is its own.
+ */
+const preRunAttempts = new Map<PauseCause, number>();
 let preRunCause: PauseCause | null = null;
+
+/**
+ * The pre-run pause has spent its automatic budget: no timer is armed and only
+ * a member action moves it (fix (b)).
+ *
+ * `preRunCause` is deliberately KEPT when this is set — that is the difference
+ * between "stalled, Retry" and the `idle` this used to publish, which left
+ * {@link resumeImport} a no-op while the job row stayed `in_progress` and
+ * every new pick was refused `job-running` until the next relaunch.
+ *
+ * Cleared in exactly five places, all of which end this wait:
+ * {@link clearPreRunRetry}, {@link clearPreRunRetryFor} for the exhausted
+ * cause, {@link runJob}'s start (through `clearPreRunRetry`),
+ * {@link resumeImport} and {@link resetImportRunnerState}.
+ */
+let preRunExhausted = false;
+
+/**
+ * Single-flight: the pre-run entry currently in flight, or null (gap 9/B2).
+ *
+ * `enterJob` awaits `openImportKeySession` and, for an `in_progress` job, the
+ * per-session GET, all while the store still reads `paused`. Nothing used to
+ * serialize that window, so a fired timer, a Retry tap and a confirm could
+ * each enter it, and a Stop in the middle cancelled the job under a stale
+ * entry that then ran it anyway. Every path in goes through
+ * {@link enterPreRun}, so there is at most one.
+ */
+let preRunEntry: Promise<void> | null = null;
+
+/**
+ * Bumped whenever an in-flight pre-run entry must abandon its work: a pre-run
+ * cancel ({@link cancelImport}) and {@link resetImportRunnerState}.
+ *
+ * {@link enterJob} captures it at entry and re-checks after EVERY await. The
+ * latch alone cannot do this job: the entry is already past its checks when
+ * the member taps Stop, and the counter is what makes its next step a silent
+ * return instead of a run against a cancelled job.
+ */
+let preRunGen = 0;
 
 function clearPreRunRetry(): void {
   if (preRunTimer !== null) {
     clearTimeout(preRunTimer);
     preRunTimer = null;
   }
-  preRunAttempts = 0;
+  preRunAttempts.clear();
   preRunCause = null;
+  preRunExhausted = false;
 }
 
 /**
@@ -554,17 +641,33 @@ function clearPreRunRetry(): void {
  * wearing a budget.
  */
 function clearPreRunRetryFor(cause: PauseCause): void {
-  if (preRunCause === cause) clearPreRunRetry();
+  // This cause got through, so its own budget starts again. Another cause's
+  // does not: it has not been tried.
+  preRunAttempts.delete(cause);
+  if (preRunCause !== cause) return;
+  if (preRunTimer !== null) {
+    clearTimeout(preRunTimer);
+    preRunTimer = null;
+  }
+  preRunCause = null;
+  preRunExhausted = false;
 }
 
+/** What {@link armPreRunRetry} decided: a wake-up, or the budget is spent. */
+type PreRunRetryPlan =
+  { readonly kind: 'armed'; readonly resumeAtMs: number } | { readonly kind: 'exhausted' };
+
 /**
- * Publish a pre-run pause for `job`, carrying the job's identity, and arm the
- * wake-up.
+ * Publish a pre-run pause for `job`, carrying the job's identity and its
+ * deadline, and arm the wake-up.
  *
  * The identity matters: #928 renders the paused card from the store, and a
- * pause with no `jobId` is a spinner with nothing behind it and no retry.
+ * pause with no `jobId` is a spinner with nothing behind it and no retry. The
+ * DEADLINE matters for the same reason — `resumeAtMs` is the countdown, and a
+ * pre-run pause used to publish none at all (gap 5).
  */
-function pauseJobBeforeRun(job: ImportJobRow, cause: PauseCause): void {
+function pauseJobBeforeRun(job: ImportJobRow, cause: PauseCause, untilMs?: number): void {
+  const plan = armPreRunRetry(cause, untilMs);
   update(
     {
       phase: 'paused',
@@ -573,37 +676,84 @@ function pauseJobBeforeRun(job: ImportJobRow, cause: PauseCause): void {
       source: job.source,
       pauseCauses: Object.freeze([cause] as PauseCause[]),
       needsRepick: false,
+      // Explicit on BOTH arms: an exhausted pause has no deadline to count
+      // down to, and leaving the previous rung's `resumeAtMs` behind would
+      // render a countdown that never fires.
+      resumeAtMs: plan.kind === 'armed' ? plan.resumeAtMs : null,
+      autoRetryExhausted: plan.kind === 'exhausted',
       summary: null,
       errorCode: null,
     },
     true,
   );
-  schedulePreRunRetry(cause);
 }
 
-function schedulePreRunRetry(cause: PauseCause): void {
-  if (preRunTimer !== null) return;
+function armPreRunRetry(cause: PauseCause, untilMs: number | undefined): PreRunRetryPlan {
+  if (preRunTimer !== null) {
+    // Already waiting on a wake-up; keep the deadline we published for it.
+    return { kind: 'armed', resumeAtMs: draft.resumeAtMs ?? Date.now() };
+  }
   // The same budget table the running pause set uses; a cause with no budget
   // there (`rate_limited`) still gets a bounded number of pre-run wake-ups,
   // because nothing else is driving this gate.
   const max = PAUSE_BUDGET_CODE[cause]?.max ?? NETWORK_PAUSE_MAX_ATTEMPTS;
-  if (preRunAttempts >= max) {
-    // The budget is spent. The JOB is untouched — nothing was started and
-    // nothing written — so the honest state is "not running"; the next launch
-    // tries again, and `resumeImport()` retries now.
-    clearPreRunRetry();
-    update({ phase: 'idle', pauseCauses: NO_PAUSE, needsRepick: false }, true);
-    return;
-  }
-  const ms = pauseDelayMs(cause, preRunAttempts, undefined) ?? KEY_PENDING_RETRY_MS;
-  preRunAttempts += 1;
+  const attempts = preRunAttempts.get(cause) ?? 0;
   preRunCause = cause;
+  if (attempts >= max) {
+    // The budget is spent. The JOB is untouched — nothing was started and
+    // nothing written — but it is still `in_progress` or `ready` in SQLite, so
+    // "not running" would be a lie that also blocks every new pick with
+    // `job-running`. The cause is KEPT and the pause is published without a
+    // timer: #928 shows "couldn't reach the server — Retry", and
+    // `resumeImport()` re-enters this gate with a fresh budget.
+    preRunExhausted = true;
+    return { kind: 'exhausted' };
+  }
+  const ms = pauseDelayMs(cause, attempts, untilMs) ?? KEY_PENDING_RETRY_MS;
+  preRunAttempts.set(cause, attempts + 1);
+  preRunExhausted = false;
   preRunTimer = setTimeout(() => {
     preRunTimer = null;
-    void resumeImportAtLaunch().catch(() => {
-      // Re-entering the same gate; a second failure re-arms the timer.
-    });
+    // Through the latch like every other entry: this timer and a member's tap
+    // can fire in the same frame.
+    void resumeImportAtLaunch();
   }, ms);
+  return { kind: 'armed', resumeAtMs: Date.now() + ms };
+}
+
+/**
+ * Run `fn` as THE pre-run entry, or join the one already in flight (gap 9).
+ *
+ * Returns the in-flight promise rather than queueing: a second confirm, a
+ * Retry racing its own timer and a launch resume all mean the same thing —
+ * "get this job going" — and the honest answer to the second one is the first
+ * one's outcome. Never rejects, because every caller is fire-and-forget.
+ */
+function enterPreRun(fn: () => Promise<void>): Promise<void> {
+  const inFlight = preRunEntry;
+  if (inFlight !== null) return inFlight;
+
+  let release = (): void => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  preRunEntry = gate;
+
+  void (async () => {
+    try {
+      await fn();
+    } catch {
+      // The gate re-arms its own timer; a rejection here would only become an
+      // unhandled one.
+    } finally {
+      // Identity-checked: `resetImportRunnerState` nulls the latch itself, and
+      // a later entry must not be cleared by this one's unwind.
+      if (preRunEntry === gate) preRunEntry = null;
+      release();
+    }
+  })();
+
+  return gate;
 }
 
 /**
@@ -1441,18 +1591,27 @@ async function runMediaForItem(r: ActiveRun, item: PendingImportItem): Promise<S
 }
 
 /**
- * `importMedia`'s codes, narrowed to the ones this client writes.
+ * `importMedia`'s codes, translated into the registry this client WRITES.
  *
  * Its two `SkipReason` spellings (`image_too_large`,
- * `unsupported_image_format`) are the parser's names for the same
- * user-visible fact, reused on purpose — but `applyBatchResults` takes our own
- * registry, so they are mapped to the one entry that means "the device or the
- * server refused this file type".
+ * `unsupported_image_format`) are the parser's names for facts discovered
+ * again at upload time, and `failImportItems` takes our own registry — so each
+ * is mapped to the entry that means the same thing to the member.
+ * `image_too_large` keeps its own code (#928 gap 8): folding it into
+ * `IMPORT_MEDIA_UNSUPPORTED` meant "a photo is too large" could never be
+ * shown, which is exactly what #918's D12 asked for.
  */
-function itemCodeFor(code: string): 'IMPORT_MEDIA_UNSUPPORTED' | 'IMPORT_MEDIA_UNAVAILABLE' {
-  return code === 'IMPORT_MEDIA_UNAVAILABLE'
-    ? 'IMPORT_MEDIA_UNAVAILABLE'
-    : 'IMPORT_MEDIA_UNSUPPORTED';
+function itemCodeFor(code: string): ImportItemFailureCode {
+  switch (code) {
+    case 'IMPORT_MEDIA_UNAVAILABLE':
+      return 'IMPORT_MEDIA_UNAVAILABLE';
+    case 'image_too_large':
+      return 'IMPORT_MEDIA_TOO_LARGE';
+    default:
+      // `unsupported_image_format` and `IMPORT_MEDIA_UNSUPPORTED` are the one
+      // fact under two names: no decoder here, or none the server takes.
+      return 'IMPORT_MEDIA_UNSUPPORTED';
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1796,9 +1955,16 @@ function undrainedWork(r: ActiveRun): number {
  * {@link settleRun} is meant to have set `terminal`, `cancelled` or
  * `serverFinished` before it gets here; one that has not, with work still in
  * the queue, is reporting a success it cannot support, and the next dropped
- * verdict would do it again. `CLIENT_BUG` is deliberately the code: the member
- * sees "something went wrong, nothing was lost" and the job row is `failed`,
- * which `requeueImportItems` can resume — and one Sentry event names the seam.
+ * verdict would do it again.
+ *
+ * `CLIENT_BUG` is deliberately the code, but `failed` is NOT a resumable
+ * status: it is outside `ACTIVE_STATUSES`, so no launch path re-enters the
+ * job, and `finishImportJob` NULLs the body of every item that is not
+ * `created`/`duplicate`, so there is nothing left to requeue. Recovery is
+ * picking the archive again, which re-parses; the posts this run did create
+ * come back `duplicate` from the `import_key` dedup. What `failed` buys is
+ * that the member is told the truth instead of being shown a successful
+ * import, and that one Sentry event names the seam.
  */
 function assertDrainedOrFail(r: ActiveRun): void {
   if (r.terminal !== null || r.cancelled || r.serverFinished) return;
@@ -2013,6 +2179,7 @@ async function runJob(
       skipped: counted(countImportSkipsByReason(job.id)),
       pauseCauses: NO_PAUSE,
       resumeAtMs: null,
+      autoRetryExhausted: false,
       summary: null,
       errorCode: null,
     },
@@ -2237,8 +2404,16 @@ export async function pickAndStartParse(args: {
   let keySession: ImportKeySession | null = null;
   let created = false;
 
+  // Rule 0 for a path that has no `ActiveRun` to carry a token: captured
+  // BEFORE the first write, and re-checked before every write this function
+  // and its `finally` make. A wipe bumps it, after which this parse writes
+  // nothing — not the job delete, not a publish, not a part release.
+  const token = liveToken;
+  const controller = new AbortController();
+  parseController = controller;
+
   try {
-    archive = await openArchiveSession(tokens);
+    archive = await openArchiveSession(tokens, { signal: controller.signal });
     // Opened BEFORE the job row, because `key_fingerprint` is NOT NULL from
     // creation: a `ready` job's stored identities carry the generation stamp
     // they were derived under (#921).
@@ -2276,6 +2451,7 @@ export async function pickAndStartParse(args: {
         parseProgress: null,
         pauseCauses: NO_PAUSE,
         resumeAtMs: null,
+        autoRetryExhausted: false,
         summary: null,
         errorCode: null,
       },
@@ -2288,8 +2464,20 @@ export async function pickAndStartParse(args: {
       source: args.source,
       archive,
       keySession,
+      token,
+      signal: controller.signal,
     });
-    if (preflight === null) return { kind: 'cancelled' };
+    if (preflight === null) {
+      // The parse finished but there is no preflight to show: the allowance
+      // probe answered `unavailable`, or the job left `parsing` underneath us.
+      // Leaving the row behind made every later pick answer `job-running` and
+      // the store sit in `parsing` for ever (gap 1).
+      if (token === liveToken) {
+        if (getImportJob(jobId)?.status === 'parsing') deleteImportJob(jobId);
+        update({ phase: 'idle', jobId: null, preflight: null, parseProgress: null }, true);
+      }
+      return { kind: 'cancelled' };
+    }
 
     if (!isPreflightRunnable(preflight)) {
       // §4.5.4: refuse the archive whole — over the remaining allowance, or
@@ -2303,22 +2491,60 @@ export async function pickAndStartParse(args: {
 
     update({ phase: 'ready', preflight, total: preflight.importable }, true);
     return { kind: 'preflight', preflight };
-  } catch {
-    // Every parse failure is the same thing to the member at this point: the
-    // archive could not be read, and nothing has been uploaded. The job row is
-    // dropped rather than left for a resume that would re-pick anyway.
+  } catch (e) {
+    // A WIPE landed mid-parse: write nothing at all, not even the job delete
+    // — `deleteAllImportJobs` has already run, and the store has already been
+    // reset to its initial state (rule 0).
+    if (token !== liveToken) return { kind: 'cancelled' };
+
+    // Nothing has been uploaded either way, so the job row is dropped rather
+    // than left for a resume that would re-pick anyway.
     if (created) deleteImportJob(jobId);
     update({ phase: 'idle', jobId: null, preflight: null, parseProgress: null }, true);
-    return { kind: 'cancelled' };
+
+    // But WHICH failure it was is not the same thing to the member: every
+    // archive failure used to be reported as a cancel, so a member whose
+    // export was HTML, or whose key had not arrived, saw the how-to screen do
+    // nothing at all (gap 8).
+    const reason = pickFailureReason(e, controller);
+    return reason === null ? { kind: 'cancelled' } : { kind: 'failed', reason };
   } finally {
+    if (parseController === controller) parseController = null;
     keySession?.close();
     if (archive !== null) {
+      // The close is local state and always safe; the repository read and the
+      // grant release are writes, and a wipe has already released every
+      // persisted part through `releaseAllPersistedParts`.
       archive.close();
-      if (getImportJob(jobId) === null) {
+      if (token === liveToken && getImportJob(jobId) === null) {
         await releaseArchiveParts(tokens).catch(() => {});
       }
     }
   }
+}
+
+/**
+ * What the member is told about a pick that did not reach a preflight, or
+ * `null` for the two that are not failures at all (gap 8).
+ *
+ * Deliberately NOT `classifyImportFailure`: that taxonomy answers what a RUN
+ * should do next — pause, retry, halve, restart — and there is no run here.
+ * The question at this point is only which sentence #928 shows, and the four
+ * answers differ in what they ask the member to do.
+ */
+function pickFailureReason(e: unknown, controller: AbortController): PickFailureReason | null {
+  // The member's own Cancel, and a picker that was already open: nothing was
+  // chosen and nothing is wrong.
+  if (controller.signal.aborted || isArchiveCancellation(e)) return null;
+  const archiveCode = archiveErrorCode(e);
+  if (archiveCode === 'PICKER_BUSY') return null;
+  if (archiveCode !== undefined) return 'archive';
+  // A group-key wrap that has not reached this device yet clears itself; the
+  // copy for it says so, where "try again" would be wrong.
+  if (classifyImportCryptoError(e) === 'retryable-pause') return 'key_pending';
+  // The allowance probe is the one network call a parse makes.
+  if (e instanceof NetworkError || e instanceof ServerError) return 'network';
+  return 'other';
 }
 
 /**
@@ -2336,6 +2562,9 @@ async function parseIntoJob(args: {
   source: ImportSource;
   archive: ArchiveImportSession;
   keySession: ImportKeySession;
+  /** {@link liveToken} at the pick, for rule 0: a wipe stops every insert. */
+  token: number;
+  signal: AbortSignal;
 }): Promise<ImportPreflight | null> {
   const declaredByEntry = new Map<string, number>();
   for (const entry of args.archive.entries) {
@@ -2348,11 +2577,20 @@ async function parseIntoJob(args: {
 
   const flush = (): void => {
     if (buffer.length === 0) return;
+    // The abort is synchronous but the parser only notices it at its next
+    // checkpoint, so the last batch can be in hand when the wipe lands: its
+    // job row is already gone, and inserting against it would resurrect the
+    // member's post bodies for the next account on this device.
+    if (args.token !== liveToken) {
+      buffer.length = 0;
+      return;
+    }
     insertImportItems(args.jobId, buffer);
     buffer.length = 0;
   };
 
   const summary = await parseArchive(args.archive, {
+    signal: args.signal,
     source: args.source,
     deriveImportKey: (sourceItemId) => args.keySession.deriveImportKey(sourceItemId),
     onItem: async (item, importKey) => {
@@ -2402,6 +2640,10 @@ async function parseIntoJob(args: {
     },
   });
   flush();
+  // A wipe between the last item and here: no allowance GET for an account
+  // that has just been torn down, and no `setImportJobParsed` for a job row
+  // the wipe deleted.
+  if (args.token !== liveToken) return null;
 
   const probe = await probeImportAvailability(args.conversationId);
   if (probe.allowance === null || probe.limits === null) return null;
@@ -2440,6 +2682,11 @@ async function parseIntoJob(args: {
  * Resolves when the run has SETTLED, which for a paused run means after the
  * pause clears or the run is cancelled or reset. It never rejects: call it
  * fire-and-forget and read progress from {@link importStore}.
+ *
+ * Two taps answer the SAME promise: `enterJob` awaits the key session before
+ * `runJob` assigns `run`, so the `run !== null` check below cannot see the
+ * first tap's run yet. {@link enterPreRun} is what makes the second tap join
+ * the first instead of starting a second run (gap 9).
  */
 export async function confirmAndRunImport(): Promise<void> {
   if (run !== null) return;
@@ -2452,7 +2699,7 @@ export async function confirmAndRunImport(): Promise<void> {
   // `1..1000`, so running it would be answered `IMPORT_DECLARED_INVALID`.
   const preflight = draft.preflight;
   if (preflight !== null && !isPreflightRunnable(preflight)) return;
-  await enterJob(job, { autoStart: true });
+  await enterPreRun(() => enterJob(job, { autoStart: true }));
 }
 
 /**
@@ -2470,16 +2717,16 @@ export function resumeImport(): void {
     // A pause raised before the run existed — a pending wrap, or a launch-time
     // session GET that failed retryably. The exit is the launch path itself,
     // re-entered now instead of on its timer, and the member's tap is new
-    // information, so the budget starts again.
+    // information, so every cause's budget starts again.
     //
     // `rate_limited` is excluded for the same reason it is below: the wait is
-    // the server's own and is not ours to shorten.
-    if (preRunCause !== null && preRunCause !== 'rate_limited') {
-      clearPreRunRetry();
-      void resumeImportAtLaunch().catch(() => {
-        // The gate re-arms its own timer on a second failure.
-      });
-    }
+    // the server's own and is not ours to shorten — UNTIL its own wake-ups are
+    // spent, after which nothing else will ever re-enter this gate and the tap
+    // is the only way out (fix (b)).
+    if (preRunCause === null) return;
+    if (preRunCause === 'rate_limited' && !preRunExhausted) return;
+    clearPreRunRetry();
+    void resumeImportAtLaunch();
     return;
   }
   dropPause(r, 'network');
@@ -2554,7 +2801,21 @@ async function restartForDifferentArchive(r: ActiveRun): Promise<void> {
   r.archive?.close();
   r.archive = null;
   if (parts !== null) await releaseArchiveParts(parts).catch(() => {});
-  if (!wiped(r)) deleteImportJob(r.jobId);
+  if (!wiped(r)) {
+    deleteImportJob(r.jobId);
+    // The same courtesy the cancel path sends, and for the same reason: an
+    // open session's `declared_bytes` is a lien on the ORBIT's quota — other
+    // members' uploads are refused against it — until B#318's GC reaps it up
+    // to six hours later. Fire-and-forget: the answer cannot change the fact
+    // that this job is gone, and the member is being sent back to the picker
+    // now, not after the transport's 15 s timeout. This path is reachable only
+    // while `created === 0`, so nothing is lost or duplicated (fix (a)).
+    if (r.importId !== null) {
+      void completeImport(r.importId).catch(() => {
+        // Best effort. B#318's GC reaps the session either way.
+      });
+    }
+  }
 
   r.terminal = null;
   r.cancelled = true;
@@ -2578,15 +2839,90 @@ async function restartForDifferentArchive(r: ActiveRun): Promise<void> {
  *
  * NOT a wipe: the terminal status and the summary are still written, which is
  * the whole difference between this and {@link resetImportRunnerState}.
+ *
+ * Covers the two states that have no `ActiveRun` to stop (gaps 1 and 7): a
+ * PARSE, whose abort is synchronous, and a PRE-RUN pause, whose job is still
+ * `in_progress`/`ready` in SQLite and would otherwise refuse every new pick
+ * with `job-running` while offering the member nothing but a Retry.
  */
 export function cancelImport(): void {
   const r = run;
-  if (r === null) return;
+  if (r === null) {
+    cancelBeforeAnyRun();
+    return;
+  }
   r.cancelled = true;
   r.controller.abort();
   for (const cause of [...r.pauseTimers.keys()]) clearPauseTimer(r, cause);
   r.pauseCauses.clear();
   releaseWaiters(r);
+}
+
+/**
+ * {@link cancelImport} with no `ActiveRun`: a live parse, or a pre-run pause.
+ *
+ * The parse arm aborts and returns — `pickAndStartParse`'s own catch deletes
+ * the job and publishes `idle`, and nothing has been uploaded.
+ *
+ * The pause arm is the one that has to be serialized. Clearing the timer is
+ * not enough: an entry may already be past the latch and awaiting the key
+ * session or the per-session GET, and that entry would call `runJob` against
+ * the job this cancel is about to finish. So the generation is bumped
+ * SYNCHRONOUSLY — the in-flight entry's next check returns it silently — and
+ * the cancel only settles once that entry has unwound (gap 9).
+ */
+function cancelBeforeAnyRun(): void {
+  const parse = parseController;
+  if (parse !== null) {
+    parse.abort();
+    return;
+  }
+
+  if (draft.phase !== 'paused') return;
+  const jobId = draft.jobId;
+  if (jobId === null) return;
+  const job = getActiveImportJob();
+  if (job === null || job.id !== jobId) return;
+
+  clearPreRunRetry();
+  preRunGen += 1;
+  // The generation this cancel owns. A wipe between here and the settle bumps
+  // it again, and the settle is what must not happen then.
+  const gen = preRunGen;
+
+  const pending = preRunEntry;
+  if (pending === null) {
+    void cancelBeforeRun(job, gen);
+    return;
+  }
+  void pending.then(() => enterPreRun(() => cancelBeforeRun(job, gen)));
+}
+
+/**
+ * Settle a job the member stopped BEFORE its run existed (gap 7).
+ *
+ * Follows {@link failJobBeforeRun}'s shape — release the parts, build a run
+ * that owns nothing, settle it — so the one path that writes a terminal status
+ * and a summary is still {@link settleRun}: that is what fires `complete` for
+ * a session the job already has, writes `cancelled` rather than `completed`,
+ * and publishes the summary #928 shows.
+ */
+async function cancelBeforeRun(job: ImportJobRow, gen: number): Promise<void> {
+  // The entry this cancel raced got all the way through: its run owns the job
+  // now, and `cancelImport`'s running arm is what stops it.
+  if (run !== null || preRunGen !== gen) return;
+
+  const parts = parsePartTokens(job.archive_bookmark);
+  if (parts !== null) await releaseArchiveParts(parts).catch(() => {});
+  // A wipe during that release: it has already torn everything down, and a run
+  // built now would carry the NEW token and write a terminal status through it.
+  if (preRunGen !== gen || run !== null) return;
+
+  const r = newRun(job, draft.preflight?.limits ?? FALLBACK_LIMITS, null);
+  run = r;
+  beginImportCaptureBudget();
+  r.cancelled = true;
+  await settleRun(r);
 }
 
 /** Clear the summary card. No-op unless a finished run is being reported. */
@@ -2620,7 +2956,14 @@ export function getImportSkipDetails(reason?: SkipReason): SkippedImportItem[] {
  * including this early return, because "not checked yet" and "nothing running"
  * must be distinguishable.
  */
-export async function resumeImportAtLaunch(): Promise<void> {
+export function resumeImportAtLaunch(): Promise<void> {
+  // The public entry point is the LATCH, not the gate: launch, the pre-run
+  // retry timer, a Retry tap and #928's refused-pick recovery all call this,
+  // and before gap 9 any two of them could be inside `enterJob` at once.
+  return enterPreRun(enterJobAtLaunch);
+}
+
+async function enterJobAtLaunch(): Promise<void> {
   const state = useAppStore.getState();
   const phase = deriveAuthPhase({
     // The navigator's own `restoreDone` is local to `AppContent`; by the time
@@ -2650,8 +2993,19 @@ export async function resumeImportAtLaunch(): Promise<void> {
  *
  * One function for both entry points so the gate cannot drift: `autoStart`
  * only decides what a `ready` job does — present itself, or run.
+ *
+ * **Every await is a cancellation point (gap 9).** The generation is captured
+ * at entry and re-checked after each one, before `runJob`, before every
+ * settling call and before every publish. A mismatch means the member stopped
+ * this job, or the account was wiped, while we were awaiting the key session
+ * or the per-session GET — and the entry returns silently rather than running
+ * a cancelled job, republishing `running` over its summary, or adopting its
+ * session.
  */
 async function enterJob(job: ImportJobRow, options: { autoStart: boolean }): Promise<void> {
+  const gen = preRunGen;
+  const superseded = (): boolean => preRunGen !== gen;
+
   let keySession: ImportKeySession | null = null;
   try {
     keySession = await openImportKeySession({
@@ -2663,7 +3017,12 @@ async function enterJob(job: ImportJobRow, options: { autoStart: boolean }): Pro
     // no session to close and the job is untouched. The 30 s pending-cache
     // self-heal is the wake-up (§4.3.1), armed here because there is no run
     // to hang the timer on yet.
+    if (superseded()) return;
     pauseJobBeforeRun(job, 'key_pending');
+    return;
+  }
+  if (superseded()) {
+    keySession.close();
     return;
   }
   clearPreRunRetryFor('key_pending');
@@ -2677,6 +3036,7 @@ async function enterJob(job: ImportJobRow, options: { autoStart: boolean }): Pro
       keySession.close();
       keySession = null;
       if (parts !== null) await releaseArchiveParts(parts).catch(() => {});
+      if (superseded()) return;
       deleteImportJob(job.id);
     } finally {
       keySession?.close();
@@ -2687,10 +3047,15 @@ async function enterJob(job: ImportJobRow, options: { autoStart: boolean }): Pro
 
   try {
     if (job.status === 'parsing') {
+      // A LIVE parse owns this job: key recovery can call us mid-parse, and
+      // deleting the row underneath `pickAndStartParse` would make its next
+      // insert fail against a job that no longer exists (gap 8).
+      if (parseController !== null) return;
       // A parse that never finished has no resumable state: the items it had
       // written are a prefix of an archive we would have to re-read anyway.
       const parts = parsePartTokens(job.archive_bookmark);
       if (parts !== null) await releaseArchiveParts(parts).catch(() => {});
+      if (superseded()) return;
       deleteImportJob(job.id);
       update({ ...INITIAL_STATE, phase: 'idle' }, true);
       return;
@@ -2699,6 +3064,7 @@ async function enterJob(job: ImportJobRow, options: { autoStart: boolean }): Pro
     if (job.status === 'ready') {
       if (!options.autoStart) {
         const preflight = await rebuildPreflight(job);
+        if (superseded()) return;
         update(
           {
             phase: preflight === null ? 'idle' : 'ready',
@@ -2714,6 +3080,7 @@ async function enterJob(job: ImportJobRow, options: { autoStart: boolean }): Pro
         return;
       }
       const limits = draft.preflight?.limits ?? (await rebuildPreflight(job))?.limits;
+      if (superseded()) return;
       // No fresh allowance means nothing honest to run against. The job is
       // untouched; `phase` still LEAVES `'hydrating'` so the UI can tell
       // "nothing running" from "not checked yet" (§4.3).
@@ -2733,6 +3100,7 @@ async function enterJob(job: ImportJobRow, options: { autoStart: boolean }): Pro
     const sessionId = job.session_id;
     if (sessionId === null) {
       const limits = (await rebuildPreflight(job))?.limits;
+      if (superseded()) return;
       if (limits === undefined) {
         update({ phase: 'idle' }, true);
         return;
@@ -2752,11 +3120,16 @@ async function enterJob(job: ImportJobRow, options: { autoStart: boolean }): Pro
     } catch (e) {
       // A 403 or 404 here is terminal: the session is not ours, or imports are
       // not available on this server at all.
+      if (superseded()) return;
       const held = keySession;
       keySession = null;
       await failJobBeforeRun(job, held, e);
       return;
     }
+    // The member stopped this job while the GET was in flight: its summary is
+    // already published and `cancelBeforeRun` owns the job. Running it anyway
+    // is the race gap 9 exists for.
+    if (superseded()) return;
 
     if (status === 'closed') {
       const held = keySession;
@@ -2817,7 +3190,10 @@ async function failJobBeforeRun(
       update({ ...INITIAL_STATE, phase: 'idle' }, true);
       return;
     }
-    pauseJobBeforeRun(job, cause);
+    // The verdict's own deadline, when it carries one: a 429 here honours its
+    // `Retry-After` instead of the one-minute default the ladder would pick,
+    // and #928's countdown shows the server's number (gap 5).
+    pauseJobBeforeRun(job, cause, verdict?.kind === 'pause' ? verdict.untilMs : undefined);
     return;
   }
 
@@ -2938,6 +3314,25 @@ export function resetImportRunnerState(): void {
   const r = run;
   run = null;
   liveToken += 1;
+  // Both counters move BEFORE any teardown: `preRunGen` is what makes an
+  // in-flight pre-run entry return silently instead of starting a run against
+  // a job this wipe is about to delete (gap 9), and the latch itself is
+  // dropped so the next account's first entry is not handed this one's.
+  preRunGen += 1;
+  preRunEntry = null;
+
+  // A PARSE has no `ActiveRun`, so the abort below would not reach it: a
+  // logout mid-parse left the reader inflating plaintext staging files and
+  // `parseIntoJob` writing post bodies through the wipe (gap 1). Synchronous,
+  // for the reason this whole function is.
+  if (parseController !== null) {
+    try {
+      parseController.abort();
+    } catch {
+      // An AbortController that throws on abort is not worth failing a wipe.
+    }
+    parseController = null;
+  }
 
   if (r !== null) {
     r.settled = true;

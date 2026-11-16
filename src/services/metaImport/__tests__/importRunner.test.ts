@@ -111,6 +111,13 @@ const mockKeySessions: RecordedKeySession[] = [];
 let mockNextFingerprint = 'fp-1';
 /** Set to throw from `openImportKeySession` (a pending wrap, say). */
 let mockKeyOpenError: unknown = null;
+/**
+ * Set to hold `openImportKeySession` open: the pre-run window gap 9 is about.
+ *
+ * `enterJob` awaits this before `runJob` assigns `run`, which is exactly where
+ * a second confirm, a fired retry timer or a Stop tap lands.
+ */
+let mockKeyOpenGate: Promise<void> | null = null;
 /** Set to throw from `verifyGroupKeyPin`. */
 let mockPinError: unknown = null;
 const mockClassifyCryptoError = jest.fn<string | null, [unknown]>(() => null);
@@ -119,6 +126,7 @@ jest.mock('../../crypto/importCrypto', () => ({
   importKeyToWire: (bytes: Uint8Array) => Buffer.from(bytes).toString('base64'),
   classifyImportCryptoError: (e: unknown) => mockClassifyCryptoError(e),
   openImportKeySession: async () => {
+    if (mockKeyOpenGate !== null) await mockKeyOpenGate;
     if (mockKeyOpenError !== null) throw mockKeyOpenError;
     const recorded = {
       fingerprint: mockNextFingerprint,
@@ -469,6 +477,26 @@ function jobRow(): { status: string; archive_bookmark: string | null; session_id
     .get(JOB) as { status: string; archive_bookmark: string | null; session_id: string | null };
 }
 
+/** How many rows the parse actually wrote. */
+function itemCount(): number {
+  return (harness.sqlite.prepare('SELECT COUNT(*) AS n FROM import_items').get() as { n: number })
+    .n;
+}
+
+/** How many job rows exist at all, for the paths whose id is a fresh UUID. */
+function jobCount(): number {
+  return (harness.sqlite.prepare('SELECT COUNT(*) AS n FROM import_jobs').get() as { n: number }).n;
+}
+
+/** A promise plus its resolver: a call held open across an await point. */
+function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
 /** Let every queued microtask settle. The runner never waits on real I/O. */
 async function drain(times = 80): Promise<void> {
   for (let i = 0; i < times; i++) await Promise.resolve();
@@ -602,6 +630,7 @@ beforeEach(() => {
   mockKeySessions.length = 0;
   mockNextFingerprint = 'fp-1';
   mockKeyOpenError = null;
+  mockKeyOpenGate = null;
   mockPinError = null;
   releases = 0;
   archiveCloses = 0;
@@ -2488,5 +2517,349 @@ describe('telemetry', () => {
 
     expect(mockCaptureError).not.toHaveBeenCalled();
     expect(importStore.getState().summary?.cancelled).toBe(true);
+  });
+});
+
+// ===========================================================================
+// Group: Cancelling before a run exists (#928 gaps 1 and 7)
+// ===========================================================================
+
+describe('cancelling with no ActiveRun', () => {
+  /** A parse that blocks until its signal aborts, then reports the cancel. */
+  function parseUntilAborted(): void {
+    mockParseArchive.mockImplementation(
+      async (_session: unknown, opts: { signal: AbortSignal }): Promise<never> => {
+        await new Promise<void>((resolve) => {
+          opts.signal.addEventListener('abort', () => resolve(), { once: true });
+        });
+        throw new ArchiveReaderError('ECANCELLED');
+      },
+    );
+  }
+
+  it('hands the abort signal to the archive session and to the parser', async () => {
+    parseEmitting(1);
+
+    await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
+
+    expect(mockOpenArchiveSession).toHaveBeenCalledWith(['part-a'], {
+      signal: expect.any(AbortSignal),
+    });
+    expect(mockParseArchive.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('cancels a live parse, deleting the job and landing on idle', async () => {
+    parseUntilAborted();
+
+    const picking = pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
+    await drain();
+    expect(importStore.getState().phase).toBe('parsing');
+
+    // Before gap 1 this was a no-op: `run` is null during a parse, so the
+    // member's Cancel left the reader going and the job row `parsing`, which
+    // then refused every later pick with `job-running`.
+    cancelImport();
+
+    expect(await picking).toEqual({ kind: 'cancelled' });
+    expect(jobCount()).toBe(0);
+    expect(importStore.getState().phase).toBe('idle');
+    expect(importStore.getState().jobId).toBeNull();
+    expect(mockReleaseArchiveParts).toHaveBeenCalledWith(['part-a']);
+  });
+
+  it('aborts a parse on a wipe and writes nothing after the token bump', async () => {
+    const reached = deferred();
+    // A parser that does NOT notice the abort: the summary comes back as if
+    // the read had finished. Rule 0 is what must stop the writes, not the
+    // reader's own courtesy.
+    mockParseArchive.mockImplementation(
+      async (_session: unknown, opts: { signal: AbortSignal; onItem: Function }) => {
+        reached.resolve();
+        await new Promise<void>((resolve) => {
+          opts.signal.addEventListener('abort', () => resolve(), { once: true });
+        });
+        await opts.onItem(
+          {
+            outcome: 'import',
+            source: 'facebook',
+            sourceFile: 'your_posts_1.json',
+            sourceIndex: 0,
+            sourceItemId: new Uint8Array(8),
+            idKind: 1,
+            originalDate: POST_DATE,
+            body: 'body 0',
+            media: [],
+          },
+          new Uint8Array(16).fill(1),
+        );
+        return summaryWith(1, []);
+      },
+    );
+
+    const picking = pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
+    await reached.promise;
+
+    resetImportRunnerState();
+
+    expect(await picking).toEqual({ kind: 'cancelled' });
+    // No item rows, no allowance GET, no part release and no publish: the
+    // wipe's own `deleteAllImportJobs` is what removes the row it left.
+    expect(itemCount()).toBe(0);
+    expect(mockGetGroupImports).not.toHaveBeenCalled();
+    expect(mockReleaseArchiveParts).not.toHaveBeenCalled();
+    expect(importStore.getState()).toEqual(importStore.getInitialState());
+  });
+
+  it('deletes the parsing row when there is no preflight to show', async () => {
+    parseEmitting(1);
+    // The allowance probe answers 404: imports are not available here, so
+    // `parseIntoJob` has nothing honest to build a preflight from.
+    mockGetGroupImports.mockRejectedValue(new NotFoundError());
+
+    const result = await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
+
+    expect(result).toEqual({ kind: 'cancelled' });
+    // The row used to survive as `parsing`, which refused every later pick.
+    expect(jobCount()).toBe(0);
+    expect(importStore.getState().phase).toBe('idle');
+    expect(importStore.getState().jobId).toBeNull();
+  });
+
+  it('leaves a LIVE parse alone when the launch gate runs mid-parse', async () => {
+    parseUntilAborted();
+    const picking = pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
+    await drain();
+    expect(importStore.getState().phase).toBe('parsing');
+
+    // Key recovery calls this while the member is still reading their export.
+    // The `parsing` branch would have deleted the row underneath the parse.
+    await resumeImportAtLaunch();
+
+    expect(jobCount()).toBe(1);
+    expect(importStore.getState().phase).toBe('parsing');
+
+    cancelImport();
+    await picking;
+  });
+
+  it('cancels a pre-run pause into a cancelled summary and a courtesy complete', async () => {
+    seedJob({ items: 2, bookmark: ['part-a'] });
+    mockGetImportSession.mockRejectedValue(new NetworkError('offline'));
+
+    await resumeImportAtLaunch();
+    expect(importStore.getState().phase).toBe('paused');
+    expect(importStore.getState().pauseCauses).toEqual(['network']);
+
+    cancelImport();
+    await drain();
+
+    // §4.9 asks for a pre-run pause to be visible AND cancellable; before gap
+    // 7 the member could only wait for a timer that had nothing left to try.
+    expect(importStore.getState().phase).toBe('done');
+    expect(importStore.getState().summary?.cancelled).toBe(true);
+    expect(jobRow().status).toBe('cancelled');
+    expect(mockCompleteImport).toHaveBeenCalledWith(IMPORT_ID);
+    expect(mockReleaseArchiveParts).toHaveBeenCalledWith(['part-a']);
+    expect(mockStartImport).not.toHaveBeenCalled();
+    expect(mockSubmitImportBatch).not.toHaveBeenCalled();
+    expect(mockCaptureError).not.toHaveBeenCalled();
+  });
+
+  it('ignores a cancel for a pre-run pause that is not the active job', async () => {
+    seedJob({ items: 1 });
+    mockGetImportSession.mockRejectedValue(new NetworkError('offline'));
+    await resumeImportAtLaunch();
+    expect(importStore.getState().phase).toBe('paused');
+
+    harness.sqlite.prepare("UPDATE import_jobs SET status = 'completed' WHERE id = ?").run(JOB);
+    cancelImport();
+    await drain();
+
+    expect(jobRow().status).toBe('completed');
+    expect(mockCompleteImport).not.toHaveBeenCalled();
+  });
+});
+
+// ===========================================================================
+// Group: the single-flight pre-run gate (#928 gap 9 / B2)
+// ===========================================================================
+
+describe('the pre-run gate is single-flight', () => {
+  it('lets a Stop win the race against an in-flight session GET', async () => {
+    seedJob({ items: 2 });
+    const phases: string[] = [];
+    const unsubscribe = importStore.subscribe((state) => phases.push(state.phase));
+    const held = deferred<unknown>();
+    let gets = 0;
+    mockGetImportSession.mockImplementation(() => {
+      gets += 1;
+      if (gets === 1) return Promise.reject(new NetworkError('offline'));
+      return held.promise;
+    });
+
+    try {
+      await resumeImportAtLaunch();
+      expect(importStore.getState().phase).toBe('paused');
+
+      // The retry is in flight and parked on the GET, while the store still
+      // reads `paused` — the window a Stop tap lands in.
+      const retrying = resumeImportAtLaunch();
+      await drain();
+      expect(gets).toBe(2);
+
+      cancelImport();
+      await drain();
+
+      // The stale entry unwinds only once its GET answers. It must not run.
+      held.resolve({
+        importId: IMPORT_ID,
+        groupId: ORBIT,
+        status: 'open',
+        declaredPosts: 2,
+        declaredBytes: 4096,
+        createdPosts: 0,
+        createdAt: '2012-08-26T00:00:00.000Z',
+        lastActivityAt: '2012-08-26T00:00:00.000Z',
+        completedAt: null,
+        allowance: allowance(),
+        limits: LIMITS,
+      });
+      await retrying;
+      await drain();
+
+      expect(mockStartImport).not.toHaveBeenCalled();
+      expect(mockSubmitImportBatch).not.toHaveBeenCalled();
+      expect(itemRows().every((row) => row.status === 'pending')).toBe(true);
+      expect(jobRow().status).toBe('cancelled');
+      expect(importStore.getState().summary?.cancelled).toBe(true);
+      // Exactly one settle, and nothing published after it: the stale entry
+      // used to republish `running` over the cancelled summary.
+      expect(phases.lastIndexOf('done')).toBe(phases.length - 1);
+      expect(phases.filter((phase) => phase === 'running')).toHaveLength(0);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('answers two resumeImport() taps with one entry', async () => {
+    seedJob({ items: 1 });
+    const held = deferred<unknown>();
+    let gets = 0;
+    mockGetImportSession.mockImplementation(() => {
+      gets += 1;
+      if (gets === 1) return Promise.reject(new NetworkError('offline'));
+      return held.promise;
+    });
+
+    await resumeImportAtLaunch();
+    expect(importStore.getState().phase).toBe('paused');
+
+    resumeImport();
+    await drain();
+    resumeImport();
+    await drain();
+
+    // The second tap joined the first entry rather than opening a second GET,
+    // a second key session and a second run.
+    expect(gets).toBe(2);
+    expect(mockKeySessions).toHaveLength(2);
+
+    held.resolve({
+      importId: IMPORT_ID,
+      groupId: ORBIT,
+      status: 'open',
+      declaredPosts: 1,
+      declaredBytes: 4096,
+      createdPosts: 0,
+      createdAt: '2012-08-26T00:00:00.000Z',
+      lastActivityAt: '2012-08-26T00:00:00.000Z',
+      completedAt: null,
+      allowance: allowance(),
+      limits: LIMITS,
+    });
+    await drain();
+
+    expect(mockStartImport).toHaveBeenCalledTimes(0);
+    expect(itemRows()[0].status).toBe('created');
+    expect(jobRow().status).toBe('completed');
+  });
+
+  it('lets a tap racing a fired retry timer enter only once', async () => {
+    jest.useFakeTimers();
+    try {
+      seedJob({ items: 1 });
+      const held = deferred<unknown>();
+      let gets = 0;
+      mockGetImportSession.mockImplementation(() => {
+        gets += 1;
+        if (gets === 1) return Promise.reject(new NetworkError('offline'));
+        return held.promise;
+      });
+
+      const launching = resumeImportAtLaunch();
+      launching.catch(() => {
+        // Attached BEFORE the clock moves (#834 discipline).
+      });
+      await flushMicrotasks();
+      await launching;
+      expect(importStore.getState().pauseCauses).toEqual(['network']);
+
+      // The `network` ladder's first rung fires, and the member taps Retry in
+      // the same frame.
+      jest.advanceTimersByTime(5_000);
+      await flushMicrotasks();
+      resumeImport();
+      await flushMicrotasks();
+
+      expect(gets).toBe(2);
+      expect(mockKeySessions).toHaveLength(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('answers a double confirm with one run', async () => {
+    seedJob({ status: 'ready', items: 2 });
+    await resumeImportAtLaunch();
+    expect(importStore.getState().phase).toBe('ready');
+
+    const gate = deferred();
+    mockKeyOpenGate = gate.promise;
+
+    const first = confirmAndRunImport();
+    const second = confirmAndRunImport();
+    await drain();
+
+    mockKeyOpenGate = null;
+    gate.resolve();
+    await Promise.all([first, second]);
+    await drain();
+
+    // `enterJob` awaits the key session before `runJob` assigns `run`, so the
+    // second tap's `run !== null` guard could not see the first one.
+    expect(mockStartImport).toHaveBeenCalledTimes(1);
+    expect(mockSubmitImportBatch).toHaveBeenCalledTimes(1);
+    expect(jobRow().status).toBe('completed');
+  });
+
+  it('writes nothing from an entry a wipe landed on mid-gate', async () => {
+    seedJob({ status: 'ready', items: 1 });
+    await resumeImportAtLaunch();
+
+    const gate = deferred();
+    mockKeyOpenGate = gate.promise;
+    const confirming = confirmAndRunImport();
+    await drain();
+
+    resetImportRunnerState();
+    mockKeyOpenGate = null;
+    gate.resolve();
+    await confirming;
+    await drain();
+
+    expect(mockStartImport).not.toHaveBeenCalled();
+    expect(jobRow().status).toBe('ready');
+    expect(itemRows()[0].status).toBe('pending');
+    expect(importStore.getState()).toEqual(importStore.getInitialState());
   });
 });

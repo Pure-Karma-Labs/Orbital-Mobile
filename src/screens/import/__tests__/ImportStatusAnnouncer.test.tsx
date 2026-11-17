@@ -12,7 +12,11 @@
  * 3. **`paused → running` is "Import continued".** §4.4's rule against the word
  *    "resume" is unqualified, and a bare `Importing N posts` would also be a
  *    lie about where the run restarted.
- * 4. **It works with no tab bar at all.** That is the whole reason it lives in
+ * 4. **The two verdicts speak (#930).** `nothing` and `refused` used to be
+ *    silent. The all-present dead end is reached straight from a pick and
+ *    offers only Done, so a screen-reader member had no way to know why — and
+ *    the empty-export and all-present cases must not say the same thing.
+ * 5. **It works with no tab bar at all.** That is the whole reason it lives in
  *    `App.tsx` rather than inside the status strip: `CustomTabBar` returns null
  *    while the Android keyboard is open, and an announcer mounted in there
  *    would silently swallow every transition that happened meanwhile. This
@@ -23,7 +27,14 @@ import React from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { AccessibilityInfo } from 'react-native';
 import { ImportStatusAnnouncer } from '../ImportStatusAnnouncer';
-import { PAUSE_COPY, describeSummaryHeadline, plural } from '../importCopy';
+import {
+  ALL_PRESENT_COPY,
+  NOTHING_TO_IMPORT_COPY,
+  PAUSE_COPY,
+  describeRefusal,
+  describeSummaryHeadline,
+  plural,
+} from '../importCopy';
 
 import type { ImportPreflight, ImportSummary } from '../../../services/metaImport/importRunner';
 import type { SkipReason } from '../../../services/metaImport/types';
@@ -112,7 +123,22 @@ const RUNNABLE_PREFLIGHT: ImportPreflight = {
 };
 
 const REFUSED_PREFLIGHT: ImportPreflight = { ...RUNNABLE_PREFLIGHT, overAllowance: 'bytes' };
-const NOTHING_PREFLIGHT: ImportPreflight = { ...RUNNABLE_PREFLIGHT, nothingToImport: true };
+const NOTHING_PREFLIGHT: ImportPreflight = {
+  ...RUNNABLE_PREFLIGHT,
+  importable: 0,
+  nothingToImport: true,
+};
+
+/**
+ * #930's all-present dead end: nothing left to import because all 300 posts
+ * are in the orbit already. `overAllowance` is null here — the runner leaves
+ * it null whenever `nothingToImport` is the verdict.
+ */
+const ALL_PRESENT_PREFLIGHT: ImportPreflight = {
+  ...NOTHING_PREFLIGHT,
+  alreadyPresent: 300,
+  alreadyPresentMedia: 412,
+};
 
 const SUMMARY: ImportSummary = {
   source: 'facebook' as const,
@@ -298,8 +324,6 @@ describe('ImportStatusAnnouncer — the kinds worth no interruption', () => {
     ['checking', { phase: 'hydrating' }],
     ['none', { phase: 'idle', jobId: null }],
     ['blocked', { phase: 'idle', jobId: 'job-1' }],
-    ['nothing', { phase: 'ready', preflight: NOTHING_PREFLIGHT }],
-    ['refused', { phase: 'ready', preflight: REFUSED_PREFLIGHT }],
   ];
 
   it.each(silent)('says nothing on a transition into %s', (_name, patch) => {
@@ -318,5 +342,47 @@ describe('ImportStatusAnnouncer — the kinds worth no interruption', () => {
     setState({ phase: 'paused', pauseCauses: ['needs_repick'] });
 
     expect(announcements()).toEqual([`Import paused. ${PAUSE_COPY.needs_repick.strip}`]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The two VERDICTS (#930)
+//
+// Both used to be in the silent table above. They are dead ends with one
+// button on them, and the all-present one is reached straight from a pick, so
+// silence left a screen-reader member with no way to know why the import they
+// just asked for was over.
+// ---------------------------------------------------------------------------
+
+describe('ImportStatusAnnouncer — the verdicts', () => {
+  it('announces the all-present verdict, never the empty-export one', () => {
+    store.setState({ phase: 'parsing', jobId: 'job-1', conversationId: 'g1' });
+    mountAnnouncer();
+
+    setState({ phase: 'ready', preflight: ALL_PRESENT_PREFLIGHT });
+
+    expect(announcements()).toEqual([ALL_PRESENT_COPY]);
+    expect(announcements()).not.toContain(NOTHING_TO_IMPORT_COPY);
+  });
+
+  it('announces the empty-export verdict when the pre-check found nothing', () => {
+    store.setState({ phase: 'parsing', jobId: 'job-1', conversationId: 'g1' });
+    mountAnnouncer();
+
+    setState({ phase: 'ready', preflight: NOTHING_PREFLIGHT });
+
+    expect(announcements()).toEqual([NOTHING_TO_IMPORT_COPY]);
+    // The two really are different strings, so the assertion above is not
+    // satisfied by the arms being equal.
+    expect(ALL_PRESENT_COPY).not.toBe(NOTHING_TO_IMPORT_COPY);
+  });
+
+  it('announces the refusal itself, with its numbers', () => {
+    store.setState({ phase: 'parsing', jobId: 'job-1', conversationId: 'g1' });
+    mountAnnouncer();
+
+    setState({ phase: 'ready', preflight: REFUSED_PREFLIGHT });
+
+    expect(announcements()).toEqual([describeRefusal(REFUSED_PREFLIGHT)]);
   });
 });

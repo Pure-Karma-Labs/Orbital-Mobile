@@ -1797,7 +1797,7 @@ describe('the server session', () => {
       new ConflictError(
         JSON.stringify({
           error: 'IMPORT_REFUSED',
-          details: { code: 'IMPORT_IN_PROGRESS', import_id: IMPORT_ID },
+          details: { code: 'IMPORT_IN_PROGRESS', import_id: IMPORT_ID, source: 'facebook' },
         }),
       ),
     );
@@ -4381,5 +4381,148 @@ describe('an open import of the other source', () => {
     const preflight = result.kind === 'preflight' ? result.preflight : null;
 
     expect(preflight?.otherOpenImport).toBeNull();
+  });
+});
+
+// ===========================================================================
+// Group: never adopt the other source's session (#996)
+// ===========================================================================
+
+describe('a session that is not ours to adopt', () => {
+  /** A 409 `IMPORT_IN_PROGRESS`, with whatever details the server stated. */
+  function inProgress(details: Record<string, unknown>): ConflictError {
+    return new ConflictError(
+      JSON.stringify({
+        error: 'IMPORT_REFUSED',
+        details: { code: 'IMPORT_IN_PROGRESS', ...details },
+      }),
+    );
+  }
+
+  const FOREIGN_ID = '99999999-8888-4777-8666-555555555555';
+
+  /**
+   * The preflight GET is CLEAN and every later one answers `over`.
+   *
+   * That is what makes these true post-run races: with a foreign session
+   * visible at preflight time the member never gets past the Import button
+   * (§7.2), so these arms would be unreachable.
+   */
+  function foreignFromTheSecondGetOn(over: Record<string, unknown>): void {
+    let gets = 0;
+    mockGetGroupImports.mockImplementation(async () => {
+      gets += 1;
+      return gets === 1 ? groupImports() : groupImports(over);
+    });
+  }
+
+  /** Launch a `ready` job, confirm it, and let the run settle. */
+  async function confirmReadyJob(): Promise<void> {
+    await resumeImportAtLaunch();
+    await confirmAndRunImport();
+    await drain();
+  }
+
+  it("is terminal when the run's own GET finds the other source", async () => {
+    seedJob({ status: 'ready', items: 1 });
+    foreignFromTheSecondGetOn({
+      openImport: openImport({ importId: FOREIGN_ID, source: 'instagram' }),
+    });
+
+    await confirmReadyJob();
+
+    expect(importStore.getState().summary?.errorCode).toBe('OTHER_IMPORT_OPEN');
+    expect(mockStartImport).not.toHaveBeenCalled();
+    // THE rule: `settleRun` completes whatever `r.importId` holds, so a
+    // foreign id must never be assigned — adopting it would close the
+    // member's other import on our way out.
+    expect(mockCompleteImport).not.toHaveBeenCalledWith(FOREIGN_ID);
+    expect(jobRow().session_id).toBeNull();
+  });
+
+  it('is terminal when the START refusal names the other source', async () => {
+    seedJob({ status: 'ready', items: 1 });
+    mockStartImport.mockRejectedValue(inProgress({ import_id: FOREIGN_ID, source: 'instagram' }));
+
+    await confirmReadyJob();
+
+    expect(importStore.getState().summary?.errorCode).toBe('OTHER_IMPORT_OPEN');
+    expect(mockCompleteImport).not.toHaveBeenCalledWith(FOREIGN_ID);
+    expect(mockSubmitImportBatch).not.toHaveBeenCalled();
+    expect(itemRows()[0].status).toBe('pending');
+  });
+
+  it('looks the session up when the refusal states nothing, and refuses a foreign one', async () => {
+    seedJob({ status: 'ready', items: 1 });
+    mockStartImport.mockRejectedValue(inProgress({}));
+    // The run's own preflight GET sees nothing open; the lookup AFTER the
+    // refusal is what finds the other source's session.
+    let gets = 0;
+    mockGetGroupImports.mockImplementation(async () => {
+      gets += 1;
+      return gets <= 2
+        ? groupImports()
+        : groupImports({ openImport: openImport({ importId: FOREIGN_ID, source: 'instagram' }) });
+    });
+
+    await confirmReadyJob();
+
+    expect(importStore.getState().summary?.errorCode).toBe('OTHER_IMPORT_OPEN');
+    expect(mockCompleteImport).not.toHaveBeenCalledWith(FOREIGN_ID);
+  });
+
+  it('adopts the looked-up session when it IS ours', async () => {
+    seedJob({ status: 'ready', items: 1 });
+    mockStartImport.mockRejectedValue(inProgress({}));
+    let gets = 0;
+    mockGetGroupImports.mockImplementation(async () => {
+      gets += 1;
+      return gets <= 2
+        ? groupImports()
+        : groupImports({ openImport: openImport({ importId: 'import-ours', source: 'facebook' }) });
+    });
+
+    await confirmReadyJob();
+
+    // Same source: the ordinary adoption, unchanged by #996.
+    expect(mockSubmitImportBatch).toHaveBeenCalledWith('import-ours', expect.anything());
+    expect(jobRow().status).toBe('completed');
+  });
+
+  it('counts an unstated source as foreign', async () => {
+    seedJob({ status: 'ready', items: 1 });
+    // Only an id: a pre-B#352 server, or one whose winner vanished. We cannot
+    // confirm it, so we must not take it.
+    mockStartImport.mockRejectedValue(inProgress({ import_id: FOREIGN_ID }));
+    foreignFromTheSecondGetOn({
+      openImport: openImport({ importId: FOREIGN_ID, source: undefined }),
+    });
+
+    await confirmReadyJob();
+
+    expect(importStore.getState().summary?.errorCode).toBe('OTHER_IMPORT_OPEN');
+    expect(mockCompleteImport).not.toHaveBeenCalledWith(FOREIGN_ID);
+  });
+
+  it('is terminal on the RESTART path too', async () => {
+    seedJob({ items: 1, sessionId: IMPORT_ID });
+    // The session was abandoned, so the run restarts — and the restart is
+    // refused because the member's other import took the slot meanwhile.
+    mockSubmitImportBatch.mockRejectedValue(
+      new ConflictError(
+        JSON.stringify({
+          error: 'IMPORT_REFUSED',
+          details: { code: 'IMPORT_CLOSED', status: 'abandoned' },
+        }),
+      ),
+    );
+    mockStartImport.mockRejectedValue(inProgress({ import_id: FOREIGN_ID, source: 'instagram' }));
+
+    await confirmAndRunLaunch();
+
+    expect(importStore.getState().summary?.errorCode).toBe('OTHER_IMPORT_OPEN');
+    expect(mockCompleteImport).not.toHaveBeenCalledWith(FOREIGN_ID);
+    // Our OWN session is still completed on the way out — that one is ours.
+    expect(mockCompleteImport).toHaveBeenCalledWith(IMPORT_ID);
   });
 });

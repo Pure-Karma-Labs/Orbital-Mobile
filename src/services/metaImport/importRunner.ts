@@ -1275,13 +1275,26 @@ async function applyVerdict(
       });
 
     case 'adopt-session': {
-      const importId = verdict.importId ?? (await lookupOpenSessionId(r));
-      if (importId === null) return failRunWith(r, 'REFUSED', stage);
+      // The refusal's own pair when the server sent BOTH; otherwise ask. The
+      // two travel together or not at all (B#352's 23505 arm sends neither),
+      // so half a pair is no better than none: an id without a source cannot
+      // be checked, and this is the check that matters.
+      const open =
+        verdict.importId !== undefined && verdict.source !== undefined
+          ? { importId: verdict.importId, source: verdict.source }
+          : await lookupOpenSession(r);
+      if (open === null) return failRunWith(r, 'REFUSED', stage);
+      // NOT OURS — and `undefined` counts, because a session we cannot
+      // confirm is one we must not take. Nothing is assigned: `settleRun`
+      // completes whatever `r.importId` holds, so adopting the other
+      // source's id would close the member's OTHER import on our way out,
+      // and drain this job's posts into the wrong allowance bucket first.
+      if (open.source !== r.source) return failRunWith(r, 'OTHER_IMPORT_OPEN', stage);
       // The id we already hold is not an adoption: answering `retry` for it
       // would re-POST at the same session that just refused us, as fast as the
       // loop can go. The server has told us nothing new, so stop.
-      if (importId === r.importId) return failRunWith(r, 'REFUSED', stage);
-      r.importId = importId;
+      if (open.importId === r.importId) return failRunWith(r, 'REFUSED', stage);
+      r.importId = open.importId;
       return 'retry';
     }
 
@@ -1345,12 +1358,19 @@ function parkItem(r: ActiveRun, itemId: string): boolean {
 // ---------------------------------------------------------------------------
 
 /** The member's open session on this orbit, from a fresh preflight GET. */
-async function lookupOpenSessionId(r: ActiveRun): Promise<string | null> {
+async function lookupOpenSession(
+  r: ActiveRun,
+): Promise<{ readonly importId: string; readonly source: ImportSource | undefined } | null> {
   try {
     // `cache: false`: a mid-run read must not refresh the preflight screen's
     // allowance behind the member's back.
     const preflight = await fetchGroupImports(r.conversationId, { cache: false });
-    return preflight?.openImport?.importId ?? null;
+    const open = preflight?.openImport;
+    if (open === null || open === undefined) return null;
+    // The SOURCE comes back with the id, because "which session is open" and
+    // "is it mine to adopt" are one question (B#352): one open session per
+    // member per orbit across sources.
+    return { importId: open.importId, source: open.source };
   } catch {
     // The adoption path already knows the member has a session; failing to
     // learn its id is a pause-or-stop decision the next call will make.
@@ -1485,6 +1505,12 @@ async function openServerSession(r: ActiveRun): Promise<Step> {
       }
       r.limits = preflight.limits;
       if (preflight.openImport !== null && preflight.openImport.status === 'open') {
+        // The one open slot is held by the OTHER source (or by a session
+        // whose source the server did not state, which is the same answer).
+        // Terminal, with NOTHING assigned: see the adopt arm.
+        if (otherOpenImportOf(preflight.openImport, r.source) !== null) {
+          return failRunWith(r, 'OTHER_IMPORT_OPEN', 'start');
+        }
         importId = preflight.openImport.importId;
       }
       break;

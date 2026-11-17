@@ -21,10 +21,13 @@ import { ErrorBanner } from '../../components/ErrorBanner';
 import { canStartFromPreflight } from '../../services/metaImport/importRunner';
 import { OTHER_IMPORT_SOURCE } from '../../services/metaImport/types';
 import {
+  ALL_PRESENT_COPY,
   DONE_LABEL,
   DONT_IMPORT_LABEL,
   NOTHING_TO_IMPORT_COPY,
   SEE_UNMIGRATED_LABEL,
+  describeAllPresentLine,
+  describeAlreadyPresentLine,
   describeCloseOtherLabel,
   describeFileIssueSummaryLine,
   describeHeldVideoLine,
@@ -75,6 +78,42 @@ function countSkipsWithoutTheirOwnLine(
     total += skippedByReason[reason];
   }
   return total;
+}
+
+/**
+ * The verdict itself — the lines above the per-reason ones every kind shares.
+ *
+ * Each of the three kinds answers for the #930 pre-check, because every count
+ * reaching this view is NET of the posts it found: `importable`,
+ * `estimatedBytes` and the photo count all exclude them, so a screen that did
+ * not say so would read as an archive that shrank on its own.
+ *
+ *  - `preflight` — `describePreflightLines` carries the line itself (line 2).
+ *  - `refused`   — the refusal's counts are net too, so the same forward-tense
+ *    line goes under it.
+ *  - `nothing`   — with a pre-check hit this is NOT an empty export: every
+ *    post Orbital could take is here already, so `NOTHING_TO_IMPORT_COPY`
+ *    ("nothing in this export that Orbital can import") would be false. Its
+ *    count line is the PAST-tense form: there is nothing left for "won't be
+ *    imported again" to refer to.
+ */
+function verdictLines(
+  kind: ImportPreflightViewProps['kind'],
+  preflight: ImportPreflight,
+): readonly string[] {
+  const alreadyPresent = preflight.alreadyPresent;
+
+  if (kind === 'preflight') return describePreflightLines(preflight);
+
+  if (kind === 'refused') {
+    return alreadyPresent > 0
+      ? [describeRefusal(preflight), describeAlreadyPresentLine(alreadyPresent)]
+      : [describeRefusal(preflight)];
+  }
+
+  return alreadyPresent > 0
+    ? [ALL_PRESENT_COPY, describeAllPresentLine(alreadyPresent)]
+    : [NOTHING_TO_IMPORT_COPY];
 }
 
 export function ImportPreflightView({
@@ -139,12 +178,7 @@ export function ImportPreflightView({
     onImportOther !== null &&
     preflight.summary?.otherSourceDetected === true;
 
-  const lines: string[] =
-    kind === 'preflight'
-      ? [...describePreflightLines(preflight)]
-      : kind === 'refused'
-        ? [describeRefusal(preflight)]
-        : [NOTHING_TO_IMPORT_COPY];
+  const lines: string[] = [...verdictLines(kind, preflight)];
 
   // The runnable view already carries the held-video line inside
   // describePreflightLines; the two refusals do not.

@@ -41,6 +41,15 @@ export function ImportStatusAnnouncer(): null {
   const cause = view.cause;
   const total = state.total;
   const summary = state.summary;
+  /**
+   * Read for the two VERDICT kinds (#930): `nothing` needs
+   * `alreadyPresent` to tell an empty export from one that is already here,
+   * and `refused` needs the counts its sentence is built from. It is in the
+   * dep list for the lint rule's sake only — the kind gate below is what
+   * decides whether anything is said, and a preflight that changed without
+   * the kind changing is silent.
+   */
+  const preflight = state.preflight;
 
   useEffect(() => {
     const previous = announcedRef.current;
@@ -50,9 +59,15 @@ export function ImportStatusAnnouncer(): null {
     if (previous === kind) return;
     announcedRef.current = kind;
 
-    const message = describeImportAnnouncement({ kind, cause }, previous, total, summary);
+    const message = describeImportAnnouncement(
+      { kind, cause },
+      previous,
+      total,
+      summary,
+      preflight,
+    );
     if (message !== null) AccessibilityInfo.announceForAccessibility(message);
-  }, [kind, cause, total, summary]);
+  }, [kind, cause, total, summary, preflight]);
 
   return null;
 }

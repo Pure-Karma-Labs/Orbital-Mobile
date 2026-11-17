@@ -361,6 +361,26 @@ export const PICK_FAILURE_COPY: Readonly<Record<PickFailureReason, string>> = {
   other: 'Something went wrong while reading your export. Nothing was imported. Try again.',
 };
 
+/**
+ * "N posts are already in this orbit and won't be imported again." (#930)
+ *
+ * The pre-check's own line, shown wherever a count of importable posts is:
+ * `describePreflightLines` puts it under the first line, and the refused view
+ * pushes it under the refusal. It is NOT shown for a count of 0 — the callers
+ * all guard on `alreadyPresent > 0`, because "0 posts are already in this
+ * orbit" is a fact nobody asked for.
+ *
+ * The future tense ("won't be imported again") is the point: the member is
+ * looking at numbers that are already NET of these posts, so the line explains
+ * why the count is lower than the export they picked.
+ */
+export function describeAlreadyPresentLine(alreadyPresent: number): string {
+  return (
+    `${plural(alreadyPresent, 'post is', 'posts are')} already in this orbit and ` +
+    "won't be imported again."
+  );
+}
+
 /** Preflight and summary alike. Parse-time and extract-time holds together. */
 export function describeHeldVideoLine(heldVideo: number): string {
   return (
@@ -374,7 +394,9 @@ export function describeHeldVideoLine(heldVideo: number): string {
  *
  * A preflight REBUILT at launch has `summary === null`: no date range, no file
  * issues, no location line and no other-source line, because none of that is
- * persisted and inventing it would hand the member made-up facts.
+ * persisted and inventing it would hand the member made-up facts. Its
+ * `alreadyPresentMedia` is 0 for the same reason, which is why the photo count
+ * below subtracts rather than recomputes.
  */
 export function describePreflightLines(
   preflight: ImportPreflight,
@@ -388,12 +410,22 @@ export function describePreflightLines(
   const source = preflight.source;
   const src = SOURCE_LABEL[source];
 
-  const media = summary?.importableMedia ?? 0;
+  // NET of the pre-check (#930): `summary.importableMedia` is the parse's
+  // GROSS count, while `preflight.importable` is already net, so showing the
+  // gross photo count beside it would promise uploads that will not happen.
+  // The `> 0` guard tests the net value for the same reason — an archive whose
+  // every photo is already in the orbit must fall to the no-photos wording.
+  const media = Math.max(0, (summary?.importableMedia ?? 0) - preflight.alreadyPresentMedia);
   lines.push(
     media > 0
       ? `${plural(preflight.importable, 'post')} ready to import with ${plural(media, 'photo')}`
       : `${plural(preflight.importable, 'post')} ready to import`,
   );
+
+  // Line 2, directly under the count it explains.
+  if (preflight.alreadyPresent > 0) {
+    lines.push(describeAlreadyPresentLine(preflight.alreadyPresent));
+  }
 
   if (summary !== null && summary.earliestDate !== null && summary.latestDate !== null) {
     lines.push(
@@ -508,16 +540,23 @@ export function describeRefusal(preflight: ImportPreflight): string {
   // import 0 more" would otherwise read as the whole feature being used up
   // when the other bucket is untouched.
   const src = SOURCE_LABEL[preflight.source];
+  // ONE adjective, on the first mention only (#930). Both counts below are
+  // already net of the pre-check, so without "new" the sentence claims the
+  // whole archive is over the allowance when most of it is simply already
+  // here — and the already-present line the view pushes under this one would
+  // then contradict it. The second mention is the ALLOWANCE's noun, which is
+  // not net of anything, so "new" would be wrong there.
+  const newly = preflight.alreadyPresent > 0 ? 'new ' : '';
   if (preflight.overAllowance === 'bytes') {
     return (
-      `This archive's ${src} photos come to about ${formatMB(preflight.estimatedBytes)} ` +
+      `This archive's ${newly}${src} photos come to about ${formatMB(preflight.estimatedBytes)} ` +
       `but you can import ${formatMB(preflight.remainingBytes)} more ${src} photos ` +
       'into this orbit. Export a smaller date range or a lower media quality from ' +
       'Meta and try again.'
     );
   }
   return (
-    `This archive has ${preflight.importable} ${src} posts but you can import ` +
+    `This archive has ${preflight.importable} ${newly}${src} posts but you can import ` +
     `${preflight.remainingPosts} more ${src} posts into this orbit. Export a ` +
     'smaller date range from Meta and try again.'
   );
@@ -605,6 +644,35 @@ export function describeImportOtherInsteadLabel(other: ImportSource): string {
 }
 
 export const NOTHING_TO_IMPORT_COPY = "There's nothing in this export that Orbital can import.";
+
+/**
+ * The same dead end for the opposite reason (#930): the export is full of
+ * perfectly importable posts, and every one of them is already in this orbit.
+ *
+ * It replaces {@link NOTHING_TO_IMPORT_COPY} rather than joining it, because
+ * "there's nothing in this export that Orbital can import" is false here and
+ * reads as an accusation about the archive the member just picked.
+ *
+ * "Every post Orbital can import", not "Everything": a video-only tail, a
+ * skipped post or the other source's posts can all still be in the export, and
+ * their own lines are rendered right beside this one.
+ */
+export const ALL_PRESENT_COPY =
+  'Every post Orbital can import from this export is already in this orbit.';
+
+/**
+ * The count under {@link ALL_PRESENT_COPY}. Past tense: these posts are not
+ * being skipped now, they were imported on an earlier run.
+ *
+ * The held-video, skipped and file-issue lines carry the rest of the export's
+ * story, so this line speaks only for the posts that matched.
+ */
+export function describeAllPresentLine(alreadyPresent: number): string {
+  return (
+    `${plural(alreadyPresent, 'post')} from this export ` +
+    `${wasWere(alreadyPresent)} imported before.`
+  );
+}
 
 export const DIFFERENT_ARCHIVE_TITLE = 'Different files';
 
@@ -748,6 +816,14 @@ const STRIP_LINE: Readonly<Record<ImportViewKind, string | null>> = {
   none: null,
   blocked: 'Import waiting to continue',
   parsing: 'Reading your export…',
+  // The two VERDICTS stay line-less, including #930's all-present case. They
+  // are dead ends the member is standing on when they happen, and this table
+  // feeds the Settings status row, whose `JOB_ACTIVE` entry for both is
+  // `false` — a line here would put a status row beside the start rows and
+  // invite the member to read it as work still in flight. The screen-reader
+  // gap that silence used to leave is closed by
+  // {@link describeImportAnnouncement} instead, which can carry the counts
+  // this count-free table cannot.
   nothing: null,
   refused: null,
   preflight: 'Import ready to review',
@@ -780,12 +856,19 @@ export function describeStripLine(view: ImportView): string | null {
  *
  * "Import continued", not "resumed": §4.4's rule against that word is
  * unqualified, and the brand audit holds this whole module to it.
+ *
+ * `preflight` is what the two VERDICT kinds are read from (#930). They used to
+ * be silent, which was defensible while they were reached only by a member
+ * watching the screen they are rendered on — but the all-present dead end is
+ * reached straight from a pick, says nothing is left to do, and offers only
+ * Done, so a screen-reader member would have had no way to know why.
  */
 export function describeImportAnnouncement(
   view: ImportView,
   previousKind: ImportViewKind | null,
   total: number,
   summary: ImportSummary | null,
+  preflight: ImportPreflight | null,
 ): string | null {
   switch (view.kind) {
     case 'parsing':
@@ -807,11 +890,19 @@ export function describeImportAnnouncement(
     case 'cancelled':
     case 'failed':
       return summary === null ? null : describeSummaryHeadline(summary);
+    case 'nothing':
+      // The COUNT is left out on purpose: the screen's own second line carries
+      // it, and the announcement's job is the verdict.
+      if (preflight !== null && preflight.alreadyPresent > 0) return ALL_PRESENT_COPY;
+      return NOTHING_TO_IMPORT_COPY;
+    case 'refused':
+      // No preflight is not reachable from `deriveImportView` — `refused`
+      // requires one — but this function takes the state it is given, and
+      // inventing a refusal with no numbers in it would be worse than silence.
+      return preflight === null ? null : describeRefusal(preflight);
     case 'checking':
     case 'none':
     case 'blocked':
-    case 'nothing':
-    case 'refused':
       return null;
   }
 }
@@ -936,7 +1027,14 @@ export function describeSummaryLines(
 
   if (summary.created > 0) lines.push(`${plural(summary.created, 'post')} imported`);
   if (summary.duplicate > 0) {
-    lines.push(`${summary.duplicate} ${wasWere(summary.duplicate)} already in this orbit`);
+    // Its OWN noun, not the "posts imported" line's (#930): `duplicate` folds
+    // the pre-check's `present` in, so this line is now the FIRST line of a
+    // summary whose `created` is 0 — where a bare "3 were already in this
+    // orbit" has nothing in front of it to be three of.
+    lines.push(
+      `${plural(summary.duplicate, 'post')} ${wasWere(summary.duplicate)} ` +
+        'already in this orbit',
+    );
   }
   if (summary.heldVideo > 0) lines.push(describeHeldVideoLine(summary.heldVideo));
   if (summary.failed > 0) {

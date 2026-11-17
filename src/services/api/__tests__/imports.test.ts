@@ -1,7 +1,7 @@
 /**
- * Tests for the Meta import API service (#926).
+ * Tests for the Meta import API service (#926, #930).
  *
- * Mostly route/method/body pins: these five functions have no logic beyond
+ * Mostly route/method/body pins: these six functions have no logic beyond
  * naming the endpoint correctly, and getting a path or an opt-out wrong is
  * exactly the failure a type cannot catch. The camelCase→snake_case transform
  * of the batch body is asserted through the REAL client in the last block,
@@ -17,6 +17,7 @@ import {
   completeImport,
   getGroupImports,
   getImportSession,
+  lookupImportKeys,
   startImport,
   submitImportBatch,
 } from '../imports';
@@ -67,6 +68,69 @@ describe('getGroupImports', () => {
       path: `/api/groups/${GROUP_ID}/imports`,
       retryOn429: false,
     });
+  });
+});
+
+describe('lookupImportKeys', () => {
+  const KEY_A = 'AAAAAAAAAAAAAAAAAAAAAA==';
+  const KEY_B = 'BBBBBBBBBBBBBBBBBBBBBB==';
+
+  it('POSTs the keys to the group lookup route', async () => {
+    await lookupImportKeys(GROUP_ID, { importKeys: [KEY_A, KEY_B] });
+
+    expect(mockRequest).toHaveBeenCalledWith({
+      method: 'POST',
+      path: `/api/groups/${GROUP_ID}/imports/lookup`,
+      body: { importKeys: [KEY_A, KEY_B] },
+      signal: undefined,
+      retryOn429: false,
+    });
+  });
+
+  it('threads the caller AbortSignal through', async () => {
+    const controller = new AbortController();
+
+    await lookupImportKeys(GROUP_ID, { importKeys: [KEY_A] }, controller.signal);
+
+    // The only caller runs this at PARSE time, where the member's Cancel must
+    // abort the request in flight rather than wait it out.
+    expect(mockRequest.mock.calls[0][0].signal).toBe(controller.signal);
+  });
+
+  it('sends the keys as snake_case `import_keys` on the wire', async () => {
+    jest.resetModules();
+    jest.doMock('../tokenManager', () => ({
+      tokenManager: {
+        getAccessToken: jest.fn().mockResolvedValue('test-token'),
+        clearTokens: jest.fn().mockResolvedValue(undefined),
+      },
+    }));
+    jest.dontMock('../client');
+
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: jest.fn().mockResolvedValue({ existing: [KEY_A] }),
+      text: jest.fn().mockResolvedValue('{}'),
+      headers: { get: () => null },
+    });
+    (globalThis as Record<string, unknown>).fetch = fetchMock;
+
+    const realImports = require('../imports') as typeof import('../imports');
+    const response = await realImports.lookupImportKeys(GROUP_ID, {
+      importKeys: [KEY_A, KEY_B],
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain(`/api/groups/${GROUP_ID}/imports/lookup`);
+    const sent = JSON.parse(init.body as string);
+    // The body key is transformed; the base64 VALUES must survive untouched —
+    // `+`, `/` and `=` are all legal in the standard alphabet.
+    expect(Object.keys(sent)).toEqual(['import_keys']);
+    expect(sent.import_keys).toEqual([KEY_A, KEY_B]);
+    // `existing` is already camel-shaped, so `snakeToCamel` leaves both the
+    // key and the string entries alone.
+    expect(response.existing).toEqual([KEY_A]);
   });
 });
 
@@ -128,8 +192,9 @@ describe('rate-limit policy', () => {
     await getImportSession(IMPORT_ID);
     await submitImportBatch(IMPORT_ID, { items: [] });
     await completeImport(IMPORT_ID);
+    await lookupImportKeys(GROUP_ID, { importKeys: ['AAAAAAAAAAAAAAAAAAAAAA=='] });
 
-    expect(mockRequest).toHaveBeenCalledTimes(5);
+    expect(mockRequest).toHaveBeenCalledTimes(6);
     for (const call of mockRequest.mock.calls) {
       expect(call[0].retryOn429).toBe(false);
     }

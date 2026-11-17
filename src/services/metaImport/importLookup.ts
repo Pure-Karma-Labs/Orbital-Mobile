@@ -166,7 +166,9 @@ export function nextLookupPage(jobId: string, afterOrdinal: number, pageSize: nu
  *    never move a row.
  *
  * The returned rows carry their `ordinal`, which is what lets the caller
- * subtract each moved post's exact byte contribution from the estimate.
+ * subtract each moved post's exact byte contribution from the estimate. They
+ * come back in PAGE order, not response order: the response's order is
+ * unspecified by the route, and the rows this writes must not depend on it.
  */
 export function applyLookupResponse(
   jobId: string,
@@ -176,25 +178,25 @@ export function applyLookupResponse(
   const existing: unknown = response?.existing;
   if (!Array.isArray(existing)) return [];
 
-  const byKey = new Map<string, LookupPageRow>();
-  for (const row of page.rows) byKey.set(row.importKeyWire, row);
-
-  const matched = new Map<string, LookupPageRow>();
+  const matchedKeys = new Set<string>();
   for (const entry of existing) {
-    if (typeof entry !== 'string') continue;
-    const row = byKey.get(entry);
-    // Not in this page: another page's key, another job's, or one the server
-    // made up. Either way it names no row this call may touch.
-    if (row === undefined) continue;
-    matched.set(row.itemId, row);
+    if (typeof entry === 'string') matchedKeys.add(entry);
   }
-  if (matched.size === 0) return [];
 
-  const movedIds = markImportItemsPresent(jobId, [...matched.keys()]);
+  // Driven from the PAGE, not from the response, which is what makes the two
+  // filters structural rather than remembered: a key the page never sent is
+  // simply not here to match, and a key echoed twice is one row.
+  const matched = page.rows.filter((row) => matchedKeys.has(row.importKeyWire));
+  if (matched.length === 0) return [];
+
+  const movedIds = new Set(
+    markImportItemsPresent(
+      jobId,
+      matched.map((row) => row.itemId),
+    ),
+  );
   // Only the rows SQL actually moved: a row requeued or wiped between the page
   // read and here stays in the queue, and crediting its bytes back would
   // under-declare the import.
-  return movedIds
-    .map((id) => matched.get(id))
-    .filter((row): row is LookupPageRow => row !== undefined);
+  return matched.filter((row) => movedIds.has(row.itemId));
 }

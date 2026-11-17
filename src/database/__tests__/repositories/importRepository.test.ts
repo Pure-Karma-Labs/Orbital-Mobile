@@ -22,6 +22,8 @@ import {
   requeueImportItems,
   applyBatchResults,
   IMPORT_RESULT_UNKNOWN,
+  getPendingImportKeyPage,
+  markImportItemsPresent,
   countImportItemsByStatus,
   countImportSkipsByReason,
   getUnmigratedItems,
@@ -742,6 +744,113 @@ describe('importRepository', () => {
   });
 
   // =========================================================================
+  // The #930 pre-check
+  // =========================================================================
+
+  describe('getPendingImportKeyPage', () => {
+    it('pages PENDING keyed rows after an ordinal, in parse order', () => {
+      const exec = jest.fn(() =>
+        rows([
+          { id: 'item-3', ordinal: 3, import_key: KEY },
+          { id: 'item-4', ordinal: 4, import_key: KEY },
+        ]),
+      );
+      makeDb(exec);
+
+      const page = getPendingImportKeyPage('job-1', 2, 1000);
+
+      const [sql, params] = callMatching(exec, 'SELECT id, ordinal, import_key');
+      expect(sql).toContain("status = 'pending'");
+      // A null key has nothing to look up, and excluding it is what lets the
+      // row type be non-nullable.
+      expect(sql).toContain('import_key IS NOT NULL');
+      // Keyset paging, never OFFSET: the pre-check moves rows OUT of `pending`
+      // as it goes, so an offset would skip as many rows as the last page
+      // matched.
+      expect(sql).toContain('ordinal > ?');
+      expect(sql).toContain('ORDER BY ordinal ASC');
+      expect(params).toEqual(['job-1', 2, 1000]);
+      expect(page.map((row) => row.id)).toEqual(['item-3', 'item-4']);
+    });
+
+    it('floors the cursor and clamps a negative limit', () => {
+      const exec = jest.fn(() => rows([]));
+      makeDb(exec);
+
+      getPendingImportKeyPage('job-1', 2.9, -5);
+
+      expect(callMatching(exec, 'SELECT id, ordinal, import_key')[1]).toEqual(['job-1', 2, 0]);
+    });
+  });
+
+  describe('markImportItemsPresent', () => {
+    it('moves only pending rows of the job, NULLs the body, and returns the moved ids', () => {
+      // `item-2` is no longer pending — requeued, submitted or wiped under us.
+      const exec = jest.fn((_sql: string, params?: unknown[]) => ({
+        rows: [],
+        rowsAffected: params?.[0] === 'item-2' ? 0 : 1,
+      }));
+      makeDb(exec);
+
+      const moved = markImportItemsPresent('job-1', ['item-1', 'item-2', 'item-3']);
+
+      expect(moved).toEqual(['item-1', 'item-3']);
+      const order = sqls(exec);
+      expect(order[0]).toBe('BEGIN IMMEDIATE');
+      expect(order[order.length - 1]).toBe('COMMIT');
+
+      const updates = (exec.mock.calls as unknown as ExecCall[]).filter(([sql]) =>
+        sql.includes("status = 'present'"),
+      );
+      expect(updates).toHaveLength(3);
+      // PLAINTEXT-CLASS: the post will never be submitted from this job, so
+      // its text has no further use.
+      expect(updates[0][0]).toContain('body = NULL');
+      // The from-status is re-asserted in the UPDATE's own WHERE clause, which
+      // is what makes the return value the ids that ACTUALLY moved.
+      expect(updates[0][0]).toContain("status = 'pending'");
+      expect(updates[0][0]).toContain('WHERE id = ? AND job_id = ?');
+      expect(updates[0][1]).toEqual(['item-1', 'job-1']);
+      // Bound, never interpolated.
+      expect(updates[0][0]).not.toContain('item-1');
+    });
+
+    it('is a no-op for an empty id list', () => {
+      const exec = jest.fn(() => ({ rows: [], rowsAffected: 1 }));
+      makeDb(exec);
+
+      expect(markImportItemsPresent('job-1', [])).toEqual([]);
+      expect(sqls(exec)).toHaveLength(0);
+    });
+
+    it('rolls back and rethrows when a write fails', () => {
+      const exec = jest.fn((sql: string) => {
+        if (sql.includes("status = 'present'")) throw new Error('disk full');
+        return { rows: [], rowsAffected: 0 };
+      });
+      makeDb(exec);
+
+      expect(() => markImportItemsPresent('job-1', ['item-1'])).toThrow('disk full');
+      expect(sqls(exec)).toContain('ROLLBACK');
+    });
+  });
+
+  describe('the pending read and the present status', () => {
+    it('never hands a present row back to the upload queue', () => {
+      const exec = jest.fn(() => rows([]));
+      makeDb(exec);
+
+      getPendingImportItems('job-1', 50);
+
+      // `present` is invisible here PERMANENTLY: nothing requeues it, because
+      // the post is already a thread in this orbit.
+      const [sql] = callMatching(exec, 'SELECT * FROM import_items');
+      expect(sql).toContain("status = 'pending'");
+      expect(sql).not.toContain('present');
+    });
+  });
+
+  // =========================================================================
   // applyBatchResults
   // =========================================================================
 
@@ -878,7 +987,23 @@ describe('importRepository', () => {
         duplicate: 0,
         failed: 0,
         skipped: 0,
+        present: 0,
       });
+    });
+
+    it('counts the present bucket', () => {
+      const exec = jest.fn(() =>
+        rows([
+          { status: 'pending', n: 2 },
+          { status: 'present', n: 5 },
+        ]),
+      );
+      makeDb(exec);
+
+      // #930: the runner folds this into the "already in this orbit" line and
+      // deliberately leaves it OUT of `importableTotal`, so the count has to
+      // be readable on its own.
+      expect(countImportItemsByStatus('job-1').present).toBe(5);
     });
 
     // `in` walks the prototype chain, so a row whose status is the name of an
@@ -903,8 +1028,9 @@ describe('importRepository', () => {
         duplicate: 0,
         failed: 0,
         skipped: 0,
+        present: 0,
       });
-      expect(Object.keys(counts)).toHaveLength(6);
+      expect(Object.keys(counts)).toHaveLength(7);
     });
   });
 

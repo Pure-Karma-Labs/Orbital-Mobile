@@ -17,7 +17,7 @@ import { useCallback, useState } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import { probeImportAvailability } from '../../services/metaImport/importRunner';
 
-import type { ImportAllowance, ImportLimits } from '../../types/api';
+import type { ImportAllowance } from '../../types/api';
 import type { ImportSource } from '../../services/metaImport/types';
 
 /**
@@ -36,8 +36,11 @@ export interface ImportAvailabilityState {
    * Per source since B#352; the how-to screen shows what is left of each.
    */
   readonly allowances: Readonly<Record<ImportSource, ImportAllowance>> | null;
-  readonly limits: ImportLimits | null;
 }
+
+// `limits` is deliberately NOT carried (#996 §7.3): nothing in the UI read it,
+// and a field nobody reads is a field that drifts. The runner's own
+// `ImportAvailability.limits` is untouched — the preflight needs it.
 
 /** Which orbit the answer is ABOUT — never exposed, only compared. */
 interface ProbeState extends ImportAvailabilityState {
@@ -48,14 +51,12 @@ const CHECKING: ProbeState = Object.freeze({
   conversationId: null,
   status: 'checking',
   allowances: null,
-  limits: null,
 });
 
 const NO_ORBIT: ProbeState = Object.freeze({
   conversationId: null,
   status: 'unavailable',
   allowances: null,
-  limits: null,
 });
 
 export function useImportAvailability(conversationId: string | null): ImportAvailabilityState {
@@ -88,7 +89,6 @@ export function useImportAvailability(conversationId: string | null): ImportAvai
             conversationId: id,
             status: result.available ? 'available' : 'unavailable',
             allowances: result.allowances,
-            limits: result.limits,
           });
         },
         () => {
@@ -96,7 +96,7 @@ export function useImportAvailability(conversationId: string | null): ImportAvai
           // bar, and a failed availability probe is a hidden section, not an
           // incident.
           if (!active) return;
-          setState({ conversationId: id, status: 'error', allowances: null, limits: null });
+          setState({ conversationId: id, status: 'error', allowances: null });
         },
       );
 

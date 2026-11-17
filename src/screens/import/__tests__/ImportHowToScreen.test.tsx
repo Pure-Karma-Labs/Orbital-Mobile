@@ -535,7 +535,7 @@ describe('ImportHowToScreen — the orbit comes from the route', () => {
     // renders through the memo wrapper), not a bare host Text.
     const owner = introNodes.find((node) => typeof node.type === 'function');
     expect(owner).toBeDefined();
-    expect(String(owner?.props.children)).toBe(describeHowToIntro('facebook', 'Route Orbit'));
+    expect(String(owner?.props.children)).toBe(describeHowToIntro('Route Orbit'));
 
     // And the rendered text really is the intro, carrying the orbit name.
     const host = findHostByTestId(renderer.root, 'import-how-to-intro');

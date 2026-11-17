@@ -39,10 +39,10 @@ import {
 import { ImportSettingsSection } from '../ImportSettingsSection';
 import {
   IMPORT_SECTION_HEADER,
+  IMPORT_START_ROW_LABEL,
   OTHER_ORBIT_STATUS_LABEL,
   describeIntoCaption,
   describeOtherOrbitCaption,
-  describeStartRow,
 } from '../importCopy';
 
 import type { ImportPreflight, ImportRunnerState } from '../../../services/metaImport/importRunner';
@@ -369,8 +369,7 @@ describe('ImportSettingsSection — shown (§3.3)', () => {
     expect(captionText(root, 'import-into-caption')).toBe(describeIntoCaption('Test Orbit'));
     expect(hasHostTestId(root, 'import-facebook-row')).toBe(true);
     expect(hasHostTestId(root, 'import-instagram-row')).toBe(true);
-    expect(rowProps(root, 'import-facebook-row').label).toBe(describeStartRow('facebook'));
-    expect(rowProps(root, 'import-instagram-row').label).toBe(describeStartRow('instagram'));
+    expect(rowProps(root, 'import-start-row').label).toBe(IMPORT_START_ROW_LABEL);
     // No job on this device ⇒ nothing to show a status for.
     expect(hasHostTestId(root, 'import-status-row')).toBe(false);
   });

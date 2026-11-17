@@ -36,14 +36,13 @@ import {
   OTHER_ORBIT_STATUS_LABEL,
   deriveImportView,
   describeIntoCaption,
+  IMPORT_START_ROW_LABEL,
   describeOtherOrbitCaption,
-  describeStartRow,
   describeStripLine,
 } from './importCopy';
 
 import type { SettingsStackParamList } from '../../navigation/types';
 import type { ImportViewKind } from './importCopy';
-import type { ImportSource } from '../../services/metaImport/types';
 
 /**
  * The neutral inbox tray, on every row.
@@ -80,8 +79,6 @@ const JOB_ACTIVE: Readonly<Record<ImportViewKind, boolean>> = {
   failed: false,
 };
 
-const SOURCES: readonly ImportSource[] = ['facebook', 'instagram'];
-
 export function ImportSettingsSection(): React.JSX.Element | null {
   const theme = useTheme();
   const navigation = useNavigation<NativeStackNavigationProp<SettingsStackParamList>>();
@@ -115,20 +112,11 @@ export function ImportSettingsSection(): React.JSX.Element | null {
     navigation.navigate('ImportStatus');
   }, [navigation]);
 
-  const handleStartFacebook = useCallback(() => {
+  const handleStart = useCallback(() => {
     if (activeConversationId === null) return;
-    navigation.navigate('ImportHowTo', {
-      source: 'facebook',
-      conversationId: activeConversationId,
-    });
-  }, [navigation, activeConversationId]);
-
-  const handleStartInstagram = useCallback(() => {
-    if (activeConversationId === null) return;
-    navigation.navigate('ImportHowTo', {
-      source: 'instagram',
-      conversationId: activeConversationId,
-    });
+    // No source: the archive decides, and the how-to asks only if it holds
+    // both (#996).
+    navigation.navigate('ImportHowTo', { conversationId: activeConversationId });
   }, [navigation, activeConversationId]);
 
   const captionStyle: TextStyle = {
@@ -186,17 +174,15 @@ export function ImportSettingsSection(): React.JSX.Element | null {
         </React.Fragment>
       )}
 
-      {!JOB_ACTIVE[view.kind] &&
-        SOURCES.map((source) => (
-          <SettingsRow
-            key={source}
-            emojiUnified={IMPORT_GLYPH}
-            label={describeStartRow(source)}
-            chevron
-            onPress={source === 'facebook' ? handleStartFacebook : handleStartInstagram}
-            testID={`import-${source}-row`}
-          />
-        ))}
+      {!JOB_ACTIVE[view.kind] && (
+        <SettingsRow
+          emojiUnified={IMPORT_GLYPH}
+          label={IMPORT_START_ROW_LABEL}
+          chevron
+          onPress={handleStart}
+          testID="import-start-row"
+        />
+      )}
     </React.Fragment>
   );
 }

@@ -23,7 +23,7 @@
  * dates out of the member's own export (F18, local-UI class).
  */
 
-import { SKIP_REASON_CLASS } from '../../services/metaImport/types';
+import { OTHER_IMPORT_SOURCE, SKIP_REASON_CLASS } from '../../services/metaImport/types';
 import { formatDateWithYear, formatDateWithYearA11y } from '../../utils/formatPostTimestamp';
 import { formatMB } from '../../utils/formatBytes';
 
@@ -84,11 +84,16 @@ export const SOURCE_LABEL: Readonly<Record<ImportSource, string>> = {
   instagram: 'Instagram',
 };
 
-/** The OTHER platform — "This export also has {other} posts." */
-const OTHER_SOURCE: Readonly<Record<ImportSource, ImportSource>> = {
-  facebook: 'instagram',
-  instagram: 'facebook',
-};
+/**
+ * The OTHER platform's display name — "This export also has {other} posts."
+ *
+ * The mapping itself lives in `metaImport/types` (#996): the runner decides
+ * which source is "the other one" when it detects both, and two independent
+ * spellings of that pair is one more than the number that can be right.
+ */
+function otherLabel(source: ImportSource): string {
+  return SOURCE_LABEL[OTHER_IMPORT_SOURCE[source]];
+}
 
 /** Shown wherever a post's photos are mentioned, because it surprises people. */
 export const PHOTOS_REDOWNLOAD_NOTE =
@@ -205,10 +210,14 @@ export function deriveImportView(state: ImportViewInput): ImportView {
 
 export const IMPORT_SECTION_HEADER = 'Import posts';
 
-/** "Import from Facebook" — the Settings start rows. */
-export function describeStartRow(source: ImportSource): string {
-  return `Import from ${SOURCE_LABEL[source]}`;
-}
+/**
+ * The ONE Settings row (#996).
+ *
+ * It replaced a row per platform: the how-to is the same Accounts Center flow
+ * for both, the runner detects the source from the archive, and picking the
+ * wrong row used to end in a "nothing to import" dead end.
+ */
+export const IMPORT_START_ROW_LABEL = `Import from ${SOURCE_LABEL.facebook} or ${SOURCE_LABEL.instagram}`;
 
 /** The orbit caption. Rendered through `EmojiText`, never inside a row label. */
 export function describeIntoCaption(orbitName: string | null): string {
@@ -223,38 +232,58 @@ export function describeOtherOrbitCaption(orbitName: string | null): string {
   return `In: ${orbitName ?? "an orbit you've left"}`;
 }
 
-export function describeHowToIntro(source: ImportSource, orbitName: string | null): string {
-  const src = SOURCE_LABEL[source];
+export const HOW_TO_TITLE = 'Import posts';
+
+/**
+ * Source-NEUTRAL, because the member has not chosen one yet and may not have
+ * to: the source is detected from the files, and the chooser only appears when
+ * an export holds both.
+ */
+export function describeHowToIntro(orbitName: string | null): string {
   const orbit = orbitName ?? 'this orbit';
+  const both = `${SOURCE_LABEL.facebook} or ${SOURCE_LABEL.instagram}`;
   return (
-    `Bring your own ${src} posts into ${orbit}. You don't sign in to Meta here: ` +
-    `you download a copy of your information from ${src}, then pick the files. ` +
+    `Bring your own ${both} posts into ${orbit}. You don't sign in to Meta here: ` +
+    `you download a copy of your information from ${both}, then pick the files. ` +
     'Orbital reads them on this phone, encrypts each post and posts it to the ' +
     'orbit at its original date.'
   );
 }
 
-export function describeAllowance(remainingPosts: number): string {
-  return `You can import ${remainingPosts} more posts into this orbit.`;
+/**
+ * Both buckets, always (#996): the allowance is per source, and a member who
+ * has used up one still has the other.
+ *
+ * Remaining POSTS only. The byte half is shown at the preflight, where there
+ * is an actual size to compare it against.
+ */
+export function describeAllowances(facebookPosts: number, instagramPosts: number): string {
+  return (
+    `You can import ${facebookPosts} more ${SOURCE_LABEL.facebook} posts and ` +
+    `${instagramPosts} more ${SOURCE_LABEL.instagram} posts into this orbit.`
+  );
 }
 
-/** The seven export steps, in order (§4.1). */
-export function describeHowToSteps(source: ImportSource): readonly string[] {
-  const src = SOURCE_LABEL[source];
-  return [
-    `In ${src}, open Accounts Center → Your information and permissions → ` +
-      'Download your information, and start a download to your device.',
-    'Under Customize information, select Posts only. Leaving other categories ' +
-      'out keeps the export small.',
-    'Choose a Date range.',
-    "Set Format → JSON. HTML exports can't be imported.",
-    'Set Media quality. Higher quality means bigger files. Medium is usually enough.',
-    'Create files. Meta lets you know when the export is ready. The download ' +
-      'expires after 4 days.',
-    'Download every file. Big exports are split into several ZIP parts. Select ' +
-      'every part when you pick files here.',
-  ];
+/** The caption when the member arrived from an "import the other one" offer. */
+export function describeImportOtherCaption(other: ImportSource): string {
+  return `Choose the same export files again to import your ${SOURCE_LABEL[other]} posts.`;
 }
+
+/** The seven export steps, in order (§4.1). Step 1 names both platforms. */
+export const HOW_TO_STEPS: readonly string[] = [
+  `In ${SOURCE_LABEL.facebook} or ${SOURCE_LABEL.instagram}, open Accounts ` +
+    'Center → Your information and permissions → Download your information, ' +
+    'and start a download to your device.',
+  'Under Customize information, select Posts only. Leaving other categories ' +
+    'out keeps the export small.',
+  'Choose a Date range.',
+  "Set Format → JSON. HTML exports can't be imported.",
+  'Set Media quality. Higher quality means bigger files. Medium is usually enough.',
+  'Create files. Meta lets you know when the export is ready. The download ' +
+    'expires after 4 days.',
+  'Download every file. Big exports are split into several ZIP parts. Select ' +
+    'every part when you pick files here.',
+];
 
 export const HOW_TO_NOTES: readonly string[] = [
   "Videos aren't imported yet. Posts with videos are held so a future update " +
@@ -276,7 +305,27 @@ export const ACCOUNTS_CENTER_URL: Readonly<Record<ImportSource, string>> = {
   instagram: 'https://accountscenter.instagram.com/info_and_permissions/dyi',
 };
 
-export const ACCOUNTS_CENTER_LINK_LABEL = 'Open Accounts Center';
+/**
+ * One link PER SOURCE (#996). An Instagram-only member cannot reach their
+ * download through the Facebook host and vice versa, so a single neutral link
+ * would be wrong for half of them.
+ */
+export const ACCOUNTS_CENTER_LINK_LABEL: Readonly<Record<ImportSource, string>> = {
+  facebook: `Open Accounts Center for ${SOURCE_LABEL.facebook}`,
+  instagram: `Open Accounts Center for ${SOURCE_LABEL.instagram}`,
+};
+
+// ---------------------------------------------------------------------------
+// The chooser (#996 §7.3) — asked only when an export holds BOTH sources
+// ---------------------------------------------------------------------------
+
+export const SOURCE_CHOICE_TITLE = 'Which posts first?';
+
+export const SOURCE_CHOICE_BODY =
+  `This export has ${SOURCE_LABEL.facebook} and ${SOURCE_LABEL.instagram} posts. ` +
+  'Orbital imports one at a time. You can import the other when this one finishes.';
+
+export const SOURCE_CHOICE_CANCEL_LABEL = 'Cancel';
 
 export const CHOOSE_FILES_LABEL = 'Choose export files';
 
@@ -295,8 +344,9 @@ export const PARSE_CANCEL_LABEL = 'Cancel';
 /** What a failed pick tells the member (§4.2). */
 export const PICK_FAILURE_COPY: Readonly<Record<PickFailureReason, string>> = {
   archive:
-    "Orbital couldn't read those files. Make sure you picked the ZIP files from " +
-    'Meta, including every part, and that Format was JSON.',
+    "Orbital couldn't read posts from those files. Make sure you picked the ZIP " +
+    'files from Meta, including every part, that Format was JSON, and that ' +
+    'Posts was selected.',
   // DISTINCT from `archive`: those files were read fine, they just hold no
   // posts of either platform — so the ask is a different export, not the same
   // one again (#996 §7.2).
@@ -328,11 +378,15 @@ export function describeHeldVideoLine(heldVideo: number): string {
  */
 export function describePreflightLines(
   preflight: ImportPreflight,
-  source: ImportSource,
   now: number = Date.now(),
 ): readonly string[] {
   const lines: string[] = [];
   const summary = preflight.summary;
+  // The source is the JOB's, carried on the preflight itself (#996). It used
+  // to be a prop with a `?? 'facebook'` fallback at the call site, which was a
+  // lie whenever it fired.
+  const source = preflight.source;
+  const src = SOURCE_LABEL[source];
 
   const media = summary?.importableMedia ?? 0;
   lines.push(
@@ -353,21 +407,25 @@ export function describePreflightLines(
   }
 
   if (summary?.otherSourceDetected === true) {
-    const other = SOURCE_LABEL[OTHER_SOURCE[source]];
-    lines.push(`This export also has ${other} posts. To import them, choose Import from ${other}.`);
+    // No longer "choose Import from X": there is one entry point now, and the
+    // offer to import the other source comes after this import finishes.
+    lines.push(
+      `This export also has ${otherLabel(source)} posts. You can import them ` +
+        'after this import finishes.',
+    );
   }
 
   lines.push(
     `This import is about ${formatMB(preflight.estimatedBytes)}. You can import ` +
-      `${preflight.remainingPosts} more posts and ${formatMB(preflight.remainingBytes)} ` +
-      'into this orbit.',
+      `${preflight.remainingPosts} more ${src} posts and ` +
+      `${formatMB(preflight.remainingBytes)} of ${src} photos into this orbit.`,
   );
 
   if (preflight.heldVideo > 0) {
     lines.push(describeHeldVideoLine(preflight.heldVideo));
     const roomLeft = preflight.remainingPosts - preflight.importable;
     if (roomLeft < preflight.heldVideo) {
-      lines.push(describeAllowanceWarning(roomLeft, preflight.heldVideo));
+      lines.push(describeAllowanceWarning(roomLeft, preflight.heldVideo, source));
     }
   }
 
@@ -382,11 +440,15 @@ export function describePreflightLines(
  * Post counts only — there is no byte estimate for a held video, so promising
  * one would be a number we cannot stand behind.
  */
-export function describeAllowanceWarning(roomLeft: number, heldVideo: number): string {
+export function describeAllowanceWarning(
+  roomLeft: number,
+  heldVideo: number,
+  source: ImportSource,
+): string {
   return (
-    `After this import you'll have room for ${roomLeft} more posts in this orbit, ` +
-    `but your ${heldVideo} video posts will need ${heldVideo}. To leave room for ` +
-    'them, export a smaller date range now.'
+    `After this import you'll have room for ${roomLeft} more ${SOURCE_LABEL[source]} ` +
+    `posts in this orbit, but your ${heldVideo} video posts will need ${heldVideo} ` +
+    'of that room. To leave room for them, export a smaller date range now.'
   );
 }
 
@@ -442,18 +504,104 @@ export const DONT_IMPORT_LABEL = "Don't import";
 
 /** §4.2 refusals. `overAllowance` decides which. */
 export function describeRefusal(preflight: ImportPreflight): string {
+  // Names the SOURCE: the allowance is per platform (#996/B#352), so "you can
+  // import 0 more" would otherwise read as the whole feature being used up
+  // when the other bucket is untouched.
+  const src = SOURCE_LABEL[preflight.source];
   if (preflight.overAllowance === 'bytes') {
     return (
-      `This archive's photos come to about ${formatMB(preflight.estimatedBytes)} but ` +
-      `you can import ${formatMB(preflight.remainingBytes)} more into this orbit. ` +
-      'Export a smaller date range or a lower media quality from Meta and try again.'
+      `This archive's ${src} photos come to about ${formatMB(preflight.estimatedBytes)} ` +
+      `but you can import ${formatMB(preflight.remainingBytes)} more ${src} photos ` +
+      'into this orbit. Export a smaller date range or a lower media quality from ' +
+      'Meta and try again.'
     );
   }
   return (
-    `This archive has ${preflight.importable} posts but you can import ` +
-    `${preflight.remainingPosts} more into this orbit. Export a smaller date range ` +
-    'from Meta and try again.'
+    `This archive has ${preflight.importable} ${src} posts but you can import ` +
+    `${preflight.remainingPosts} more ${src} posts into this orbit. Export a ` +
+    'smaller date range from Meta and try again.'
   );
+}
+
+// ---------------------------------------------------------------------------
+// The other source's open import (#996 §2)
+// ---------------------------------------------------------------------------
+
+/**
+ * The notice over a preflight the member's OTHER import is blocking.
+ *
+ * There is one open session per member per orbit across sources, so a stale
+ * one — a reset with no `/complete`, a reinstall, another device — has to be
+ * closed before this source can start. The parsed job is untouched meanwhile.
+ */
+export function describeOtherImportOpen(source: ImportSource): string {
+  return (
+    `Your ${otherLabel(source)} import in this orbit is still open. Orbital runs ` +
+    `one import at a time, so finish it or close it before importing these ` +
+    `${SOURCE_LABEL[source]} posts.`
+  );
+}
+
+export function describeCloseOtherLabel(source: ImportSource): string {
+  return `Close ${otherLabel(source)} import`;
+}
+
+export function describeCloseOtherConfirmTitle(source: ImportSource): string {
+  return `Close your ${otherLabel(source)} import?`;
+}
+
+/**
+ * The confirm body. It says what closing COSTS, including the case the member
+ * cannot see from here: the session may still be running on another device.
+ */
+export const CLOSE_OTHER_CONFIRM_BODY =
+  "Posts it already imported stay in the orbit. If it's still running on " +
+  'another device, it stops there. You can pick that export again later to ' +
+  'finish it.';
+
+export const CLOSE_OTHER_KEEP_LABEL = 'Keep it';
+export const CLOSE_OTHER_CONFIRM_LABEL = 'Close import';
+
+export const CLOSE_OTHER_FAILED_COPY =
+  "Couldn't close the other import. Check your connection and try again.";
+
+/**
+ * The honest middle (#996 §7.3): the close SUCCEEDED but the allowance refresh
+ * that would unblock Import did not, so the preflight on screen is still the
+ * old one. Not an error — re-tapping Close is safe, `/complete` is idempotent.
+ */
+export function describeCloseOtherStale(source: ImportSource): string {
+  return (
+    `Closed your ${otherLabel(source)} import. Your allowance will refresh in a ` +
+    'moment. Try again shortly.'
+  );
+}
+
+/** The same fact in a settled summary, where Close is no longer on offer. */
+export function describeOtherImportBlockedSummary(source: ImportSource): string {
+  return (
+    `Your ${otherLabel(source)} import in this orbit is still open, so this ` +
+    `${SOURCE_LABEL[source]} import couldn't start. Pick the archive again to ` +
+    'close it, or finish it first.'
+  );
+}
+
+// ---------------------------------------------------------------------------
+// "…and the other source" (#996)
+// ---------------------------------------------------------------------------
+
+/** The summary's offer line. */
+export function describeOtherSourceOffer(source: ImportSource): string {
+  return `This export also has ${otherLabel(source)} posts.`;
+}
+
+export function describeImportOtherLabel(other: ImportSource): string {
+  return `Import ${SOURCE_LABEL[other]} posts`;
+}
+
+/** The same offer where THIS source cannot be imported at all. */
+export function describeImportOtherInsteadLabel(other: ImportSource): string {
+  return `Import ${SOURCE_LABEL[other]} posts instead`;
 }
 
 export const NOTHING_TO_IMPORT_COPY = "There's nothing in this export that Orbital can import.";
@@ -812,7 +960,14 @@ export function describeSummaryLines(
 
   if (summary.errorCode !== null) {
     const terminal = TERMINAL_COPY[summary.errorCode];
-    lines.push(terminal.detail);
+    // One code names the OTHER source, which the registry — keyed on the code
+    // alone — cannot know. The registry entry stays as the generic fallback
+    // for anything that reads it without a summary in hand.
+    lines.push(
+      summary.errorCode === 'OTHER_IMPORT_OPEN'
+        ? describeOtherImportBlockedSummary(summary.source)
+        : terminal.detail,
+    );
     const trailer = NEXT_TRAILER[terminal.next];
     if (trailer !== null) lines.push(trailer);
   }

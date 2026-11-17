@@ -719,6 +719,17 @@ export const TERMINAL_COPY: Readonly<Record<ImportTerminalCode, TerminalCopy>> =
   },
   NETWORK: { detail: "Orbital couldn't reach the server for too long.", next: 'repick' },
   ORBIT_FULL: { detail: "This orbit's storage is full.", next: 'free_space' },
+  // Source-neutral on purpose: this is the fallback for a summary whose
+  // source is unknown to the caller. #996's screens substitute the
+  // source-aware line (`describeOtherImportBlockedSummary`) when they have
+  // one. `next` is `none` — the trailers all talk about finishing THIS
+  // import, and the member's next move is the other import, not this one.
+  OTHER_IMPORT_OPEN: {
+    detail:
+      'Another import of yours in this orbit is still open, so this one ' +
+      "couldn't start. Pick the archive again to close it, or finish it first.",
+    next: 'none',
+  },
   REFUSED: { detail: "The server didn't accept part of this import.", next: 'repick' },
   SESSION_CLOSED: {
     detail: 'The server closed this import before it finished.',

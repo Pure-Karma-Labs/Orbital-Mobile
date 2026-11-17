@@ -221,7 +221,10 @@ export function ImportHowToScreen(): React.JSX.Element {
 
   const buttonStyle: ViewStyle = { marginTop: theme.spacing.lg };
 
-  const allowance = availability.allowance;
+  // Brief 1a keeps this screen compiling against the per-source map by
+  // indexing the source it was opened for; #996 Brief 2 replaces the whole
+  // line with `describeAllowances`, which shows BOTH sources.
+  const allowance = availability.allowances?.[source] ?? null;
   const remainingPosts =
     allowance === null ? null : Math.max(0, allowance.postsLimit - allowance.postsUsed);
 

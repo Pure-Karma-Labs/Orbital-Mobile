@@ -292,7 +292,14 @@ export type RepickResult = 'resumed' | 'different-archive' | 'cancelled';
 /** What {@link probeImportAvailability} answers. */
 export interface ImportAvailability {
   readonly available: boolean;
-  readonly allowance: ImportAllowance | null;
+  /**
+   * BOTH sources' buckets, or null when the feature is unavailable (B#352).
+   *
+   * A map rather than the one bucket this import needs: the how-to screen
+   * shows what is left of each, and the chooser skips itself when only one
+   * source has room. Index it with the source being imported.
+   */
+  readonly allowances: Readonly<Record<ImportSource, ImportAllowance>> | null;
   readonly limits: ImportLimits | null;
 }
 
@@ -1346,6 +1353,7 @@ async function restartServerSession(r: ActiveRun, stageAttempt: number): Promise
       const started = await startImport(r.conversationId, {
         declaredPosts: r.declaredPosts,
         declaredBytes: r.declaredBytes,
+        source: r.source,
       });
       r.importId = started.importId;
       r.limits = started.limits;
@@ -1450,6 +1458,9 @@ async function openServerSession(r: ActiveRun): Promise<Step> {
         const started = await startImport(r.conversationId, {
           declaredPosts: r.declaredPosts,
           declaredBytes: r.declaredBytes,
+          // Which allowance bucket this session spends, and REQUIRED since
+          // B#352: an omitted source is 400 `IMPORT_DECLARED_INVALID`.
+          source: r.source,
         });
         importId = started.importId;
         r.limits = started.limits;
@@ -2402,7 +2413,10 @@ async function rebuildPreflight(job: ImportJobRow): Promise<ImportPreflight | nu
   let limits: ImportLimits;
   try {
     const response = await getGroupImports(job.conversation_id);
-    allowance = response.allowance;
+    // The job's OWN source's bucket: an import spends one of two, and pricing
+    // a Facebook job against the Instagram allowance is how a member gets
+    // refused at start by a number the preflight never showed them (B#352).
+    allowance = response.allowances[job.source];
     limits = response.limits;
   } catch {
     // Without a fresh allowance there is nothing honest to show; #928 offers
@@ -2450,7 +2464,7 @@ export async function probeImportAvailability(conversationId: string): Promise<I
     const response = await getGroupImports(conversationId);
     const available: ImportAvailability = {
       available: true,
-      allowance: response.allowance,
+      allowances: response.allowances,
       limits: response.limits,
     };
     probeCache.set(conversationId, available);
@@ -2459,7 +2473,7 @@ export async function probeImportAvailability(conversationId: string): Promise<I
     if (e instanceof NotFoundError) {
       const unavailable: ImportAvailability = {
         available: false,
-        allowance: null,
+        allowances: null,
         limits: null,
       };
       probeCache.set(conversationId, unavailable);
@@ -2762,12 +2776,12 @@ async function parseIntoJob(args: {
   if (args.token !== liveToken) return null;
 
   const probe = await probeImportAvailability(args.conversationId);
-  if (probe.allowance === null || probe.limits === null) return null;
+  if (probe.allowances === null || probe.limits === null) return null;
 
   const skips = countImportSkipsByReason(args.jobId);
   const preflight = buildPreflight({
     conversationId: args.conversationId,
-    allowance: probe.allowance,
+    allowance: probe.allowances[args.source],
     limits: probe.limits,
     importable: summary.importable,
     estimatedBytes,

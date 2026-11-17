@@ -119,6 +119,7 @@ const TERMINAL_CODES = unionKeys<ImportTerminalCode>({
   KEY_PENDING: true,
   NETWORK: true,
   ORBIT_FULL: true,
+  OTHER_IMPORT_OPEN: true,
   REFUSED: true,
   SESSION_CLOSED: true,
 });

@@ -861,13 +861,27 @@ export interface LinkPreviewResponse {
 // ============================================================
 
 /**
- * The per-(orbit, member) import allowance, as every import route reports it.
+ * Which platform an import session, and its allowance bucket, belongs to.
+ *
+ * Spelled here rather than imported: `api.ts` is the wire-shape leaf and
+ * imports nothing, so the parser's `ImportSource` cannot be reached from it.
+ * The two are pinned equal, in both directions, by a `tsc`-only assertion in
+ * `src/types/__tests__/importSourceWire.test.ts` — a one-sided pin would let
+ * either side gain a member silently (B#352).
+ */
+export type ImportSourceWire = 'facebook' | 'instagram';
+
+/**
+ * The per-(orbit, member, SOURCE) import allowance, as every import route
+ * reports it.
  *
  * All four keys are plain JSON numbers and all four are always present
  * (`allowanceWire`, Orbital-Backend `src/services/importService.js`). The
  * limits are LIFETIME caps, not per-session ones: `postsUsed` counts every
- * post this member has ever imported into this orbit, so a member who has
- * used 900 of 1000 can never import a 200-post archive.
+ * post this member has ever imported into this orbit FROM THAT SOURCE
+ * (B#352), so a member who has used 900 of 1000 Facebook posts can never
+ * import a 200-post Facebook archive — and still has their whole Instagram
+ * allowance.
  */
 export interface ImportAllowance {
   postsUsed: number;
@@ -898,18 +912,27 @@ export interface ImportLimits {
   mediaContentClasses: MediaContentClass[];
 }
 
-/** POST /api/groups/:groupId/imports request. Both fields are REQUIRED. */
+/** POST /api/groups/:groupId/imports request. All three fields are REQUIRED. */
 export interface StartImportRequest {
   /** 1..1000. Outside the range → 400 `IMPORT_DECLARED_INVALID`. */
   declaredPosts: number;
   /** 0..2 GiB, a safe integer. */
   declaredBytes: number;
+  /**
+   * Which allowance bucket this session spends, and the source every item it
+   * carries came from (B#352). Validated BEFORE the service runs, so a bad
+   * value never creates an allowance row: an omitted or unknown value is 400
+   * `IMPORT_DECLARED_INVALID`, not a default.
+   */
+  source: ImportSourceWire;
 }
 
 /** POST /api/groups/:groupId/imports → 201. */
 export interface StartImportResponse {
   importId: string;
   status: ImportSessionStatus;
+  /** Echoed from the request; the session is bound to it for its lifetime. */
+  source: ImportSourceWire;
   declaredPosts: number;
   declaredBytes: number;
   allowance: ImportAllowance;
@@ -919,10 +942,17 @@ export interface StartImportResponse {
 /** Session lifecycle. Only `open` accepts writes. */
 export type ImportSessionStatus = 'open' | 'completed' | 'closed' | 'abandoned';
 
-/** The caller's own open session on this orbit, from the preflight GET. */
+/**
+ * The caller's own open session on this orbit, from the preflight GET.
+ *
+ * There is ONE open session per member per orbit ACROSS sources, so this can
+ * be an import of the other source — which is why `source` is on it. A client
+ * must never adopt a session whose source is not its own.
+ */
 export interface OpenImportSummary {
   importId: string;
   status: ImportSessionStatus;
+  source: ImportSourceWire;
   declaredPosts: number;
   declaredBytes: number;
   createdPosts: number;
@@ -931,8 +961,16 @@ export interface OpenImportSummary {
 
 /** GET /api/groups/:groupId/imports → 200. The preflight. */
 export interface GroupImportsResponse {
-  allowance: ImportAllowance;
-  /** The one open session, or null. Adopt it rather than starting a new one. */
+  /**
+   * Both sources, ALWAYS both keys (zeros where no row exists yet). There is
+   * no flat `allowance` on this route any more (B#352 D5): a caller that
+   * needs one bucket indexes this map by the source it is about to import.
+   */
+  allowances: Readonly<Record<ImportSourceWire, ImportAllowance>>;
+  /**
+   * The one open session, or null — of EITHER source. Adopt it only when its
+   * `source` matches the import being started.
+   */
   openImport: OpenImportSummary | null;
   limits: ImportLimits;
 }
@@ -942,6 +980,8 @@ export interface ImportSessionResponse {
   importId: string;
   groupId: string;
   status: ImportSessionStatus;
+  /** The session's own source; `allowance` below is that source's bucket. */
+  source: ImportSourceWire;
   declaredPosts: number;
   declaredBytes: number;
   createdPosts: number;
@@ -1001,6 +1041,8 @@ export interface ImportBatchResultWire {
 /** POST /api/imports/:importId/threads → 200. */
 export interface ImportBatchResponse {
   results: ImportBatchResultWire[];
+  /** The session's source, echoed; `allowance` is that source's bucket. */
+  source: ImportSourceWire;
   allowance: ImportAllowance;
 }
 
@@ -1025,5 +1067,7 @@ export interface ImportMediaCompleteResponse {
   uploadedAt: string;
   expiresAt: string;
   chunksUploaded?: number;
+  /** The session's source, echoed on both the 201 and the idempotent 200. */
+  source: ImportSourceWire;
   allowance: ImportAllowance;
 }

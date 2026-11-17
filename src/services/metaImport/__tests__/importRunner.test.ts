@@ -337,8 +337,33 @@ function rateLimited(ms: number) {
   return new RateLimitError({ get: () => String(ms / 1000) });
 }
 
+/**
+ * Both sources' buckets, as the preflight GET always returns them (B#352).
+ *
+ * `over` replaces a WHOLE bucket, the way the response does: there is no
+ * partial allowance on the wire, and a half-overridden one would make a
+ * missing limit read as "no room left".
+ */
+function allowances(over: Partial<Record<ImportSource, ReturnType<typeof allowance>>> = {}) {
+  return { facebook: allowance(), instagram: allowance(), ...over };
+}
+
 function groupImports(over: Record<string, unknown> = {}) {
-  return { allowance: allowance(), openImport: null, limits: LIMITS, ...over };
+  return { allowances: allowances(), openImport: null, limits: LIMITS, ...over };
+}
+
+/** The open session the preflight reports, defaulting to OUR source. */
+function openImport(over: Record<string, unknown> = {}) {
+  return {
+    importId: IMPORT_ID,
+    status: 'open',
+    source: 'facebook',
+    declaredPosts: 1,
+    declaredBytes: 4096,
+    createdPosts: 0,
+    lastActivityAt: '2012-08-26T00:00:00.000Z',
+    ...over,
+  };
 }
 
 let harness: ImportDbHarness;
@@ -672,6 +697,7 @@ beforeEach(() => {
   mockStartImport.mockResolvedValue({
     importId: IMPORT_ID,
     status: 'open',
+    source: 'facebook',
     declaredPosts: 2,
     declaredBytes: 4096,
     allowance: allowance(),
@@ -681,6 +707,7 @@ beforeEach(() => {
     importId: IMPORT_ID,
     groupId: ORBIT,
     status: 'open',
+    source: 'facebook',
     declaredPosts: 2,
     declaredBytes: 4096,
     createdPosts: 0,
@@ -816,12 +843,15 @@ describe('store and the #928 boundary', () => {
 
     expect(first.available).toBe(true);
     expect(first.limits).toEqual(LIMITS);
+    // Both buckets, which is what lets the how-to screen price either source
+    // without a second round trip (B#352).
+    expect(Object.keys(first.allowances ?? {}).sort()).toEqual(['facebook', 'instagram']);
     expect(second).toBe(first);
     expect(mockGetGroupImports).toHaveBeenCalledTimes(1);
 
     mockGetGroupImports.mockRejectedValueOnce(new NotFoundError());
     const off = await probeImportAvailability('orbit-off');
-    expect(off).toEqual({ available: false, allowance: null, limits: null });
+    expect(off).toEqual({ available: false, allowances: null, limits: null });
   });
 
   it('never caches a transient probe failure as unavailable', async () => {
@@ -1057,7 +1087,9 @@ describe('resume at launch', () => {
 
 describe('the allowance gate', () => {
   it('refuses an archive over the remaining POST allowance at preflight', async () => {
-    mockGetGroupImports.mockResolvedValue(groupImports({ allowance: allowance(200) }));
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({ allowances: allowances({ facebook: allowance(200) }) }),
+    );
     parseEmitting(900);
 
     const result = await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
@@ -1073,7 +1105,11 @@ describe('the allowance gate', () => {
 
   it('refuses an archive over the remaining BYTE allowance', async () => {
     mockGetGroupImports.mockResolvedValue(
-      groupImports({ allowance: { ...allowance(), bytesUsed: 2 * 1024 * 1024 * 1024 - 10 } }),
+      groupImports({
+        allowances: allowances({
+          facebook: { ...allowance(), bytesUsed: 2 * 1024 * 1024 * 1024 - 10 },
+        }),
+      }),
     );
     mockOpenArchiveSession.mockImplementation(async () => {
       const session = archiveSession();
@@ -1097,7 +1133,9 @@ describe('the allowance gate', () => {
   });
 
   it('accepts an archive that fits, and declares exactly what it parsed', async () => {
-    mockGetGroupImports.mockResolvedValue(groupImports({ allowance: allowance(200) }));
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({ allowances: allowances({ facebook: allowance(200) }) }),
+    );
     parseEmitting(800);
 
     const result = await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
@@ -1111,7 +1149,9 @@ describe('the allowance gate', () => {
   });
 
   it('refuses a run the preflight already refused', async () => {
-    mockGetGroupImports.mockResolvedValue(groupImports({ allowance: allowance(999) }));
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({ allowances: allowances({ facebook: allowance(999) }) }),
+    );
     parseEmitting(50);
     await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
 
@@ -1188,7 +1228,9 @@ describe('the allowance gate', () => {
     dismissImportSummary();
 
     // The orbit's lifetime counters have advanced by what that run created.
-    mockGetGroupImports.mockResolvedValue(groupImports({ allowance: allowance(1, 6208) }));
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({ allowances: allowances({ facebook: allowance(1, 6208) }) }),
+    );
     parseEmitting(1);
 
     const second = await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
@@ -1717,18 +1759,7 @@ describe('the server session', () => {
         }),
       ),
     );
-    mockGetGroupImports.mockResolvedValue(
-      groupImports({
-        openImport: {
-          importId: IMPORT_ID,
-          status: 'open',
-          declaredPosts: 1,
-          declaredBytes: 4096,
-          createdPosts: 0,
-          lastActivityAt: '2012-08-26T00:00:00.000Z',
-        },
-      }),
-    );
+    mockGetGroupImports.mockResolvedValue(groupImports({ openImport: openImport() }));
     // The preflight adopts that id, the batch is refused as closed, and the
     // restart is answered with the SAME id: nothing new was learned, and
     // answering `retry` for it would re-POST as fast as the loop can go.
@@ -1753,16 +1784,7 @@ describe('the server session', () => {
   it('adopts the member open session rather than starting a second one', async () => {
     seedJob({ status: 'ready', items: 1 });
     mockGetGroupImports.mockResolvedValue(
-      groupImports({
-        openImport: {
-          importId: 'import-open',
-          status: 'open',
-          declaredPosts: 1,
-          declaredBytes: 4096,
-          createdPosts: 0,
-          lastActivityAt: '2012-08-26T00:00:00.000Z',
-        },
-      }),
+      groupImports({ openImport: openImport({ importId: 'import-open' }) }),
     );
 
     await resumeImportAtLaunch();
@@ -3548,7 +3570,9 @@ describe('discarding a preflight', () => {
   it('returns a refused preflight to idle', async () => {
     // Over the remaining allowance: the job is already `cancelled`, but the
     // store still reads `ready` with the refusal on screen.
-    mockGetGroupImports.mockResolvedValue(groupImports({ allowance: allowance(999) }));
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({ allowances: allowances({ facebook: allowance(999) }) }),
+    );
     parseEmitting(2);
     const result = await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
     expect(result.kind).toBe('preflight');

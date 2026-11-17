@@ -3101,10 +3101,17 @@ export async function confirmAndRunImport(): Promise<void> {
   // whose counts can leave nothing to submit: `declared_posts` must be
   // `1..1000`, so running it would be answered `IMPORT_DECLARED_INVALID`.
   const preflight = draft.preflight;
-  // `canStartFromPreflight`, not `isPreflightRunnable`: the other source's
-  // open session blocks the START without refusing the archive, and this is
-  // the same predicate #996's Import button is disabled on.
-  if (preflight !== null && !canStartFromPreflight(preflight)) return;
+  // The ARCHIVE facts only. They are settled for this job's lifetime, so a
+  // cached answer is as good as a fresh one and refusing here saves a round
+  // trip.
+  //
+  // `otherOpenImport` is deliberately NOT asked here, even though
+  // `canStartFromPreflight` is what disables the button: that one can clear
+  // between two renders, and deciding it from a cached preflight would leave
+  // Import doing nothing until something else happened to republish. The
+  // unconditional rebuild inside `enterJob` re-asks the server, and that is
+  // the answer the run is gated on.
+  if (preflight !== null && !isPreflightRunnable(preflight)) return;
   await enterPreRun(() => enterJob(job, { autoStart: true }));
 }
 
@@ -3825,11 +3832,43 @@ async function enterJob(job: ImportJobRow, options: { autoStart: boolean }): Pro
         );
         return;
       }
-      const limits = draft.preflight?.limits ?? (await rebuildPreflight(job))?.limits;
+      // UNCONDITIONAL, never `draft.preflight?.limits ?? …` (§7.2): the
+      // cached preflight cannot see `open_import`, and the whole point of
+      // asking again here is to find out whether the member's OTHER import
+      // took the one open slot since this job was priced.
+      const preflight = await rebuildPreflight(job);
       if (superseded()) return;
       // No fresh allowance means nothing honest to run against. The job is
       // untouched; `phase` still LEAVES `'hydrating'` so the UI can tell
       // "nothing running" from "not checked yet" (§4.3).
+      if (preflight !== null && preflight.otherOpenImport !== null) {
+        // A stale foreign session must NEVER destroy a parsed job: publish
+        // the repriced `ready` preflight and leave the row and its part grant
+        // exactly as they are. #996 offers to close the other import from
+        // here, and Import comes back the moment it is closed. Reaching
+        // `runJob` instead would burn this job on an `OTHER_IMPORT_OPEN`
+        // terminal it can simply wait out.
+        update(
+          {
+            phase: 'ready',
+            jobId: job.id,
+            conversationId: job.conversation_id,
+            source: job.source,
+            preflight,
+            total: preflight.importable,
+            skipped: counted(countImportSkipsByReason(job.id)),
+          },
+          true,
+        );
+        return;
+      }
+      // A rebuild that FAILED is not a reason to stop here. It swallows every
+      // error into null, so a 429 or a dropped connection would otherwise
+      // become the blocked view — losing the countdown and the automatic
+      // retry that #993's dropped-verdict fix put on this path. The run's own
+      // GET is a moment away and classifies the same failure properly, so
+      // fall through on the cached limits and let it.
+      const limits = preflight?.limits ?? draft.preflight?.limits;
       if (limits === undefined) {
         publishBlockedJob(job);
         return;
@@ -3859,10 +3898,12 @@ async function enterJob(job: ImportJobRow, options: { autoStart: boolean }): Pro
 
     let limits: ImportLimits;
     let status: string;
+    let sessionSource: ImportSource | undefined;
     try {
       const session = await getImportSession(sessionId);
       limits = session.limits;
       status = session.status;
+      sessionSource = session.source;
     } catch (e) {
       // A 403 or 404 here is terminal: the session is not ours, or imports are
       // not available on this server at all.
@@ -3876,6 +3917,18 @@ async function enterJob(job: ImportJobRow, options: { autoStart: boolean }): Pro
     // already published and `cancelBeforeRun` owns the job. Running it anyway
     // is the race gap 9 exists for.
     if (superseded()) return;
+
+    // BELT, not the gate: this id came off our OWN job row, so a mismatch is
+    // not "someone else's session" — it is this client having written a
+    // session id of the wrong source, which no code path should be able to
+    // do. `CLIENT_BUG` says so honestly, and closing the session on settle is
+    // still correct because it IS ours.
+    if (sessionSource !== undefined && sessionSource !== job.source) {
+      const held = keySession;
+      keySession = null;
+      await failJobBeforeRun(job, held, null, 'CLIENT_BUG');
+      return;
+    }
 
     if (status === 'closed') {
       const held = keySession;

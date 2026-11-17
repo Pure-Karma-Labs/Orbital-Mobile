@@ -4402,17 +4402,19 @@ describe('a session that is not ours to adopt', () => {
   const FOREIGN_ID = '99999999-8888-4777-8666-555555555555';
 
   /**
-   * The preflight GET is CLEAN and every later one answers `over`.
+   * The first TWO GETs are clean and every later one answers `over`.
    *
-   * That is what makes these true post-run races: with a foreign session
-   * visible at preflight time the member never gets past the Import button
-   * (§7.2), so these arms would be unreachable.
+   * Two, because the confirm re-prices unconditionally before starting
+   * (§7.2): the launch rebuild is the first, the confirm's is the second, and
+   * only then does the run make its own. That is what makes these true
+   * races — a foreign session visible at either of the first two stops the
+   * member at the Import button instead, which is the point of §7.2.
    */
-  function foreignFromTheSecondGetOn(over: Record<string, unknown>): void {
+  function foreignFromTheThirdGetOn(over: Record<string, unknown>): void {
     let gets = 0;
     mockGetGroupImports.mockImplementation(async () => {
       gets += 1;
-      return gets === 1 ? groupImports() : groupImports(over);
+      return gets <= 2 ? groupImports() : groupImports(over);
     });
   }
 
@@ -4425,7 +4427,7 @@ describe('a session that is not ours to adopt', () => {
 
   it("is terminal when the run's own GET finds the other source", async () => {
     seedJob({ status: 'ready', items: 1 });
-    foreignFromTheSecondGetOn({
+    foreignFromTheThirdGetOn({
       openImport: openImport({ importId: FOREIGN_ID, source: 'instagram' }),
     });
 
@@ -4460,7 +4462,7 @@ describe('a session that is not ours to adopt', () => {
     let gets = 0;
     mockGetGroupImports.mockImplementation(async () => {
       gets += 1;
-      return gets <= 2
+      return gets <= 3
         ? groupImports()
         : groupImports({ openImport: openImport({ importId: FOREIGN_ID, source: 'instagram' }) });
     });
@@ -4477,7 +4479,7 @@ describe('a session that is not ours to adopt', () => {
     let gets = 0;
     mockGetGroupImports.mockImplementation(async () => {
       gets += 1;
-      return gets <= 2
+      return gets <= 3
         ? groupImports()
         : groupImports({ openImport: openImport({ importId: 'import-ours', source: 'facebook' }) });
     });
@@ -4494,7 +4496,7 @@ describe('a session that is not ours to adopt', () => {
     // Only an id: a pre-B#352 server, or one whose winner vanished. We cannot
     // confirm it, so we must not take it.
     mockStartImport.mockRejectedValue(inProgress({ import_id: FOREIGN_ID }));
-    foreignFromTheSecondGetOn({
+    foreignFromTheThirdGetOn({
       openImport: openImport({ importId: FOREIGN_ID, source: undefined }),
     });
 
@@ -4524,5 +4526,148 @@ describe('a session that is not ours to adopt', () => {
     expect(mockCompleteImport).not.toHaveBeenCalledWith(FOREIGN_ID);
     // Our OWN session is still completed on the way out — that one is ours.
     expect(mockCompleteImport).toHaveBeenCalledWith(IMPORT_ID);
+  });
+});
+
+// ===========================================================================
+// Group: a stale foreign session never destroys a parsed job (#996 §7.2)
+// ===========================================================================
+
+describe('confirming a ready job while the other source is open', () => {
+  it('re-prices and stays ready, leaving the row and its grant alone', async () => {
+    seedJob({ status: 'ready', items: 2, bookmark: ['part-a'] });
+    let gets = 0;
+    mockGetGroupImports.mockImplementation(async () => {
+      gets += 1;
+      // Clean at launch; the member's OTHER import takes the slot before they
+      // tap Import.
+      return gets === 1
+        ? groupImports()
+        : groupImports({ openImport: openImport({ importId: 'other-id', source: 'instagram' }) });
+    });
+
+    await resumeImportAtLaunch();
+    expect(importStore.getState().preflight?.otherOpenImport).toBeNull();
+
+    await confirmAndRunImport();
+    await drain();
+
+    // The job is PARSED work with a part grant behind it. Burning it on an
+    // `OTHER_IMPORT_OPEN` terminal would make the member re-pick and re-parse
+    // for a session that closes on its own.
+    expect(jobRow().status).toBe('ready');
+    expect(jobRow().archive_bookmark).toBe(JSON.stringify(['part-a']));
+    expect(mockStartImport).not.toHaveBeenCalled();
+    expect(mockReleaseArchiveParts).not.toHaveBeenCalled();
+    expect(importStore.getState().summary).toBeNull();
+
+    // And the published preflight is the FRESH one, so the view can offer to
+    // close the other import.
+    const state = importStore.getState();
+    expect(state.phase).toBe('ready');
+    expect(state.preflight?.otherOpenImport).toEqual({ importId: 'other-id' });
+    expect(canStartFromPreflight(state.preflight as ImportPreflight)).toBe(false);
+  });
+
+  it('starts normally once that session is gone', async () => {
+    seedJob({ status: 'ready', items: 1, bookmark: ['part-a'] });
+    let gets = 0;
+    mockGetGroupImports.mockImplementation(async () => {
+      gets += 1;
+      return gets === 1
+        ? groupImports({ openImport: openImport({ importId: 'other-id', source: 'instagram' }) })
+        : groupImports();
+    });
+
+    await resumeImportAtLaunch();
+    expect(importStore.getState().preflight?.otherOpenImport).toEqual({ importId: 'other-id' });
+
+    await confirmAndRunImport();
+    await drain();
+
+    // Nothing had to be re-picked: the same parsed job ran.
+    expect(jobRow().status).toBe('completed');
+    expect(itemRows()[0].status).toBe('created');
+  });
+
+  it('falls through to the run when the reprice GET fails', async () => {
+    seedJob({ status: 'ready', items: 1 });
+    let gets = 0;
+    mockGetGroupImports.mockImplementation(async () => {
+      gets += 1;
+      if (gets === 1) return groupImports();
+      throw rateLimited(60_000);
+    });
+
+    await resumeImportAtLaunch();
+    // NOT awaited: the pause this reaches waits out the server's own
+    // `Retry-After`, which is the behaviour under test.
+    void confirmAndRunImport();
+    await drain();
+
+    // `rebuildPreflight` swallows every error into null, so treating that as
+    // "blocked" would lose the countdown and the automatic retry #993's
+    // dropped-verdict fix put on this path. The run's own GET classifies it.
+    expect(importStore.getState().phase).toBe('paused');
+    expect(importStore.getState().pauseCauses).toEqual(['rate_limited']);
+    expect(jobRow().status).toBe('ready');
+  });
+});
+
+// ===========================================================================
+// Group: the session id on our own row (#996 belt check)
+// ===========================================================================
+
+describe('a session whose source does not match the job', () => {
+  it('is a CLIENT_BUG, and still closes the session', async () => {
+    seedJob({ items: 1, source: 'facebook' });
+    mockGetImportSession.mockResolvedValue({
+      importId: IMPORT_ID,
+      groupId: ORBIT,
+      status: 'open',
+      source: 'instagram',
+      declaredPosts: 1,
+      declaredBytes: 4096,
+      createdPosts: 0,
+      createdAt: '2012-08-26T00:00:00.000Z',
+      lastActivityAt: '2012-08-26T00:00:00.000Z',
+      completedAt: null,
+      allowance: allowance(),
+      limits: LIMITS,
+    });
+
+    await confirmAndRunLaunch();
+
+    // This id came off our OWN job row, so a mismatch is not "someone else's
+    // session" — it is this client having written one of the wrong source,
+    // which no path should be able to do.
+    expect(importStore.getState().summary?.errorCode).toBe('CLIENT_BUG');
+    expect(mockSubmitImportBatch).not.toHaveBeenCalled();
+    expect(jobRow().status).toBe('failed');
+    // It IS ours, so completing it on the way out is right.
+    expect(mockCompleteImport).toHaveBeenCalledWith(IMPORT_ID);
+  });
+
+  it('runs normally when the server states no source', async () => {
+    seedJob({ items: 1 });
+    mockGetImportSession.mockResolvedValue({
+      importId: IMPORT_ID,
+      groupId: ORBIT,
+      status: 'open',
+      declaredPosts: 1,
+      declaredBytes: 4096,
+      createdPosts: 0,
+      createdAt: '2012-08-26T00:00:00.000Z',
+      lastActivityAt: '2012-08-26T00:00:00.000Z',
+      completedAt: null,
+      allowance: allowance(),
+      limits: LIMITS,
+    });
+
+    await confirmAndRunLaunch();
+
+    // A belt, not a gate: an older server that says nothing must not fail a
+    // job whose id we wrote ourselves.
+    expect(jobRow().status).toBe('completed');
   });
 });

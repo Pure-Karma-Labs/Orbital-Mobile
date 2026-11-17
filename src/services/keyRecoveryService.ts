@@ -669,6 +669,11 @@ async function doRecoverIdentityKeys(
     // warnAndCapture (not warnCatch): post-recovery sync failures must be
     // visible in Sentry — a successful recovery with a failed sync is a
     // production-silent data inconsistency (panel finding).
+    //
+    // DELIBERATE divergence: postAuthBootstrap's step 0 identity key cache
+    // reload (#999) has no mirror here. Step 7's generateInitialKeys refills
+    // the cache after step 5's fullCryptoWipe emptied it, so by this point
+    // the key pair is already in memory and a reload would be a no-op.
     try {
       loadEciesLockState();
     } catch (e) {

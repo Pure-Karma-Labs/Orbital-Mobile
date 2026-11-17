@@ -2014,9 +2014,42 @@ describe('identity key cache reload (#999)', () => {
     expect(mockSetIdentityKeyConflict).not.toHaveBeenCalledWith(true);
   });
 
+  it("reports a 'unproven-probe-failed' outcome — the mismatch guard did not run", async () => {
+    mockLogin.mockResolvedValue(LOGIN_RESPONSE);
+    mockReloadIdentityKeyCacheIfEmpty.mockResolvedValue('unproven-probe-failed');
+
+    await loginUser('alice@test.com', 'secret');
+
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      'Identity key cache reload: pair probe failed',
+      { level: 'warning', tags: { feature: 'key-recovery', outcome: 'cache-reload-probe-failed' } },
+    );
+    expect(mockSetIdentityKeyConflict).not.toHaveBeenCalledWith(true);
+  });
+
   it("stays silent on the ordinary 'already-loaded' outcome", async () => {
     mockLogin.mockResolvedValue(LOGIN_RESPONSE);
 
+    await loginUser('alice@test.com', 'secret');
+
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
+  it("stays silent on 'unproven-no-public' — the expected reinstall shape", async () => {
+    mockLogin.mockResolvedValue(LOGIN_RESPONSE);
+    mockReloadIdentityKeyCacheIfEmpty.mockResolvedValue('unproven-no-public');
+
+    await loginUser('alice@test.com', 'secret');
+
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
+  it("stays silent on 'absent' and 'reloaded'", async () => {
+    mockLogin.mockResolvedValue(LOGIN_RESPONSE);
+
+    mockReloadIdentityKeyCacheIfEmpty.mockResolvedValue('absent');
+    await loginUser('alice@test.com', 'secret');
+    mockReloadIdentityKeyCacheIfEmpty.mockResolvedValue('reloaded');
     await loginUser('alice@test.com', 'secret');
 
     expect(Sentry.captureMessage).not.toHaveBeenCalled();

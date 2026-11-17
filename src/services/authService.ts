@@ -135,18 +135,36 @@ async function postAuthBootstrap(): Promise<void> {
   syncBlockedUsers().catch(warnCatch('[BlockedUsersSync]'));
 
   // --- Step 0: identity key cache reload (#999, must run FIRST) ---
-  // Awaited, and ahead of every consumer of the key pair. A 'mismatch' is the
-  // one outcome worth reporting: the cache was deliberately left empty, so the
-  // session will behave as it did before this fix (visible, not silent), and
-  // the key upload in ensureKeysInitialized will raise the 409 that drives the
-  // existing conflict machinery. No flags are set from here — a local pair
-  // mismatch is not by itself proof of a server-side identity conflict.
+  // Awaited, and ahead of every consumer of the key pair.
+  //
+  // Two outcomes are reported, and NEITHER has an automatic remedy — the
+  // Sentry warning is the only signal:
+  //
+  // - 'mismatch': the cache was deliberately left empty, so this session is
+  //   in exactly the key-less state this fix exists to prevent (createOrbit
+  //   and every group-key unwrap throw) until the app is restarted. Nothing
+  //   recovers it on its own: with identityKeyPublic present and
+  //   bundleUploaded set, ensureKeysInitialized skips both generation and
+  //   upload, and rotation/replenishment early-return on an empty cache — and
+  //   an upload would re-send the STORED public key, which the server answers
+  //   200, not 409. No flags are set from here either: a local pair mismatch
+  //   is not by itself proof of a server-side identity conflict, and raising
+  //   the conflict UI on it would send the user into a key reset they may not
+  //   need.
+  // - 'unproven-probe-failed': the key was loaded but the mismatch guard
+  //   could not run, so a wrong-identity key is not ruled out for this
+  //   session.
   try {
     const cacheResult = await reloadIdentityKeyCacheIfEmpty();
     if (cacheResult === 'mismatch') {
       Sentry.captureMessage('Identity key cache reload: stored pair mismatch', {
         level: 'warning',
         tags: { feature: 'key-recovery', outcome: 'cache-reload-mismatch' },
+      });
+    } else if (cacheResult === 'unproven-probe-failed') {
+      Sentry.captureMessage('Identity key cache reload: pair probe failed', {
+        level: 'warning',
+        tags: { feature: 'key-recovery', outcome: 'cache-reload-probe-failed' },
       });
     }
   } catch (e) {

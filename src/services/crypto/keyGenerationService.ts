@@ -102,16 +102,24 @@ export function clearIdentityKeyCache(): void {
  * caller can report each shape without this module importing a telemetry
  * facade (the `src/services/crypto/**` ESLint fence forbids it).
  *
+ * The two unproven shapes are SEPARATE values because they mean opposite
+ * things operationally: one is expected and silent, the other means the guard
+ * below did not run at all and deserves a warning.
+ *
  * - `already-loaded`  cache was warm; nothing read, nothing proven.
  * - `reloaded`        cache was empty, reloaded, and the loaded private key is
  *                     PROVEN to belong to the `identityKeyPublic` this device
  *                     has stored.
- * - `reloaded-unproven` cache was empty and reloaded, but no proof was
- *                     obtainable: either there is no local `identityKeyPublic`
- *                     to prove against (wiped DB + surviving Keychain — the
- *                     reinstall shape, which `attemptKeychainIdentityRestore`
- *                     proves against the SERVER immediately after), or the
- *                     ECIES probe failed for an inconclusive reason.
+ * - `unproven-no-public` cache was empty and reloaded, but there is no local
+ *                     `identityKeyPublic` to prove against (wiped DB +
+ *                     surviving Keychain — the reinstall shape, which
+ *                     `attemptKeychainIdentityRestore` proves against the
+ *                     SERVER immediately after). Expected; not worth
+ *                     reporting.
+ * - `unproven-probe-failed` cache was empty and reloaded, a stored public key
+ *                     existed, but the ECIES probe failed for an
+ *                     inconclusive reason — so the mismatch guard did NOT
+ *                     run and a wrong-identity key is not ruled out.
  * - `absent`          no identity private key in Keychain or SQLCipher; the
  *                     cache is still empty (fresh device, or post-wipe before
  *                     `generateInitialKeys`).
@@ -121,7 +129,8 @@ export function clearIdentityKeyCache(): void {
 export type IdentityKeyCacheReloadResult =
   | 'already-loaded'
   | 'reloaded'
-  | 'reloaded-unproven'
+  | 'unproven-no-public'
+  | 'unproven-probe-failed'
   | 'absent'
   | 'mismatch';
 
@@ -154,6 +163,14 @@ export type IdentityKeyCacheReloadResult =
  * seal+open round trip against itself) before the cache is populated, and a
  * definite mismatch leaves the cache empty.
  *
+ * ## What that proof does NOT cover
+ *
+ * This guard is scoped to THIS function. `bootstrap.ts` still loads the
+ * Keychain key unprobed at every cold start, and this function then
+ * short-circuits at `'already-loaded'` without proving anything — so a cold
+ * start is still the unverified path, as it was before #999. The claim here
+ * is narrow: the RELOAD cannot be what brings a wrong-identity key back.
+ *
  * A mismatch does NOT delete the Keychain key: only
  * `identityRestoreService`, which has the server's registered public key to
  * compare against, may make that call. Refusing to use a key is reversible;
@@ -173,7 +190,7 @@ export async function reloadIdentityKeyCacheIfEmpty(): Promise<IdentityKeyCacheR
     // shape, and attemptKeychainIdentityRestore — which runs immediately
     // after this on every post-auth path — needs the cached key to perform
     // the server-side proof that decides restore vs. clear.
-    return 'reloaded-unproven';
+    return 'unproven-no-public';
   }
 
   let probe: IdentityKeyProbeResult;
@@ -185,9 +202,10 @@ export async function reloadIdentityKeyCacheIfEmpty(): Promise<IdentityKeyCacheR
   } catch {
     // Inconclusive (native failure, malformed stored hex, unexpected error).
     // Not evidence of a wrong key, so the cache keeps the value app start
-    // would itself have loaded unverified — but the caller is told it is
-    // unproven.
-    return 'reloaded-unproven';
+    // would itself have loaded unverified — but this is a DISTINCT answer
+    // from 'unproven-no-public': a stored public key existed and the guard
+    // still did not run, which the caller reports.
+    return 'unproven-probe-failed';
   }
 
   if (probe === 'mismatch') {

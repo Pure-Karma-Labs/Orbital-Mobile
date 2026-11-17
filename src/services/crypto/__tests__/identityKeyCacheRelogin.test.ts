@@ -159,7 +159,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   // mockReset, not clearAllMocks: a throwing mockImplementation from a
   // mismatch/failure case SURVIVES clearAllMocks and would silently turn
-  // every later probe into 'reloaded-unproven'.
+  // every later probe into 'unproven-probe-failed'.
   (eciesSeal as jest.Mock).mockReset();
   (eciesOpen as jest.Mock).mockReset();
   mockItemStore.clear();
@@ -239,13 +239,15 @@ describe('reloadIdentityKeyCacheIfEmpty — wrong-identity refusal', () => {
     expect(mockKeychainStore.get(SecureKeys.IDENTITY_KEY_PRIVATE)).toBe(PRIVATE_KEY_HEX);
   });
 
-  it('keeps the key on an INCONCLUSIVE probe failure, reported as unproven', async () => {
+  it('keeps the key on an INCONCLUSIVE probe failure, as probe-failed', async () => {
     seedRegisteredIdentity();
     (eciesSeal as jest.Mock).mockImplementation(() => {
       throw makeSignalError('InternalError', 'native module unavailable');
     });
 
-    await expect(reloadIdentityKeyCacheIfEmpty()).resolves.toBe('reloaded-unproven');
+    // Distinct from 'unproven-no-public': a stored public key existed, so the
+    // mismatch guard was SUPPOSED to run and did not. The caller reports it.
+    await expect(reloadIdentityKeyCacheIfEmpty()).resolves.toBe('unproven-probe-failed');
 
     // A non-mismatch failure is not evidence of a wrong key: the cache holds
     // exactly what app start would have loaded without any probe at all.
@@ -281,7 +283,7 @@ describe('reloadIdentityKeyCacheIfEmpty — other shapes', () => {
     // needs it to perform the server-side proof.
     mockKeychainStore.set(SecureKeys.IDENTITY_KEY_PRIVATE, PRIVATE_KEY_HEX);
 
-    await expect(reloadIdentityKeyCacheIfEmpty()).resolves.toBe('reloaded-unproven');
+    await expect(reloadIdentityKeyCacheIfEmpty()).resolves.toBe('unproven-no-public');
 
     expect(getCachedIdentityPrivateKeyHex()).toBe(PRIVATE_KEY_HEX);
     expect(eciesSeal).not.toHaveBeenCalled();

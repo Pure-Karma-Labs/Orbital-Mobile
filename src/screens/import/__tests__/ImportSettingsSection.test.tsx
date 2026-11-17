@@ -162,6 +162,8 @@ const LIMITS = {
 /** A runnable preflight — `deriveImportView` reads only the two flags. */
 const RUNNABLE_PREFLIGHT: ImportPreflight = {
   summary: null,
+  source: 'facebook' as const,
+  otherOpenImport: null,
   allowance: ALLOWANCE,
   limits: LIMITS,
   contentRetentionDays: null,

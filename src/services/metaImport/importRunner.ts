@@ -125,7 +125,12 @@ import type {
   UnmigratedImportItemRow,
 } from '../../database/repositories/importRepository';
 import type { ImportItemStatus, ImportJobRow } from '../../types/database';
-import type { ImportAllowance, ImportLimits } from '../../types/api';
+import type {
+  GroupImportsResponse,
+  ImportAllowance,
+  ImportLimits,
+  OpenImportSummary,
+} from '../../types/api';
 import type { ImportKeySession } from '../crypto/importCrypto';
 import type { ArchiveImportSession, ArchivePartToken } from './archiveAccess';
 import type { BuiltImportItem, ImportItemCode } from './importBatch';
@@ -181,6 +186,25 @@ export interface ImportSummary {
  */
 export interface ImportPreflight {
   readonly summary: ParseSummary | null;
+  /**
+   * Which platform's posts this job imports — DETECTED from the archive, not
+   * chosen by the screen (#996).
+   *
+   * On the preflight rather than read off the store, because the store's
+   * `source` is null between a dismiss and the next pick, and a view that
+   * fell back to `'facebook'` would label an Instagram import wrongly.
+   */
+  readonly source: ImportSource;
+  /**
+   * The member's OPEN import of the other source in this orbit, or null.
+   *
+   * There is one open session per member per orbit across sources (B#352), so
+   * this one blocks the start — but it must NOT refuse the archive: the job
+   * stays `ready` and keeps its part grant, and #996 offers to close the other
+   * import from the preflight. Set from the fresh GET through
+   * {@link otherOpenImportOf}, where an unstated source counts as foreign.
+   */
+  readonly otherOpenImport: { readonly importId: string } | null;
   readonly allowance: ImportAllowance;
   readonly limits: ImportLimits;
   /** From `Conversation.contentRetentionDays`; null when the orbit keeps all. */
@@ -1313,8 +1337,10 @@ function parkItem(r: ActiveRun, itemId: string): boolean {
 /** The member's open session on this orbit, from a fresh preflight GET. */
 async function lookupOpenSessionId(r: ActiveRun): Promise<string | null> {
   try {
-    const preflight = await getGroupImports(r.conversationId);
-    return preflight.openImport?.importId ?? null;
+    // `cache: false`: a mid-run read must not refresh the preflight screen's
+    // allowance behind the member's back.
+    const preflight = await fetchGroupImports(r.conversationId, { cache: false });
+    return preflight?.openImport?.importId ?? null;
   } catch {
     // The adoption path already knows the member has a session; failing to
     // learn its id is a pause-or-stop decision the next call will make.
@@ -1439,7 +1465,14 @@ async function openServerSession(r: ActiveRun): Promise<Step> {
   for (let attempt = 0; ; attempt++) {
     if (stopped(r)) return 'stop';
     try {
-      const preflight = await getGroupImports(r.conversationId);
+      const preflight = await fetchGroupImports(r.conversationId, { cache: false });
+      if (preflight === null) {
+        // A 404 (the flag went off under us) or a server that cannot price
+        // this import. A wipe answers null too, and `stopped` is what tells
+        // them apart — it is already true by then.
+        if (stopped(r)) return 'stop';
+        return failRunWith(r, 'IMPORTS_UNAVAILABLE', 'start');
+      }
       r.limits = preflight.limits;
       if (preflight.openImport !== null && preflight.openImport.status === 'open') {
         importId = preflight.openImport.importId;
@@ -2361,6 +2394,7 @@ function retentionDaysFor(conversationId: string): number | null {
  */
 function buildPreflight(args: {
   conversationId: string;
+  source: ImportSource;
   allowance: ImportAllowance;
   limits: ImportLimits;
   importable: number;
@@ -2368,6 +2402,7 @@ function buildPreflight(args: {
   heldVideo: number;
   skippedByReason: Readonly<Record<SkipReason, number>>;
   summary: ParseSummary | null;
+  openImport: OpenImportSummary | null;
 }): ImportPreflight {
   const remainingPosts = Math.max(0, args.allowance.postsLimit - args.allowance.postsUsed);
   const remainingBytes = Math.max(0, args.allowance.bytesLimit - args.allowance.bytesUsed);
@@ -2380,6 +2415,8 @@ function buildPreflight(args: {
 
   return {
     summary: args.summary,
+    source: args.source,
+    otherOpenImport: otherOpenImportOf(args.openImport, args.source),
     allowance: args.allowance,
     limits: args.limits,
     contentRetentionDays: retentionDaysFor(args.conversationId),
@@ -2395,39 +2432,65 @@ function buildPreflight(args: {
 }
 
 /**
- * Is this preflight something a run can be started from?
+ * Is there anything in this ARCHIVE worth keeping a job for?
  *
- * One predicate for the two refusals, so the three places that must agree —
+ * The two refusals only — over the remaining allowance, or nothing importable
+ * in it at all. One predicate, so the three places that must agree —
  * `parseIntoJob`'s `setImportJobParsed`, `pickAndStartParse`'s release arm and
- * {@link confirmAndRunImport}'s guard — cannot drift apart. Neither refusal
- * starts a server session, writes a terminal code or reports anything: the
- * member is told what the archive holds and offered a different export.
+ * `rebuildPreflight`'s callers — cannot drift apart. Neither refusal starts a
+ * server session, writes a terminal code or reports anything: the member is
+ * told what the archive holds and offered a different export.
+ *
+ * It deliberately says NOTHING about the other source's open session
+ * ({@link canStartFromPreflight} is that question). A foreign session is
+ * temporary and has nothing to do with these files: refusing the archive for
+ * it would release the part grant and delete a parsed job the member can run
+ * the moment that session closes.
  */
 function isPreflightRunnable(preflight: ImportPreflight): boolean {
   return preflight.overAllowance === null && !preflight.nothingToImport;
 }
 
+/**
+ * Can a run be started from this preflight RIGHT NOW?
+ *
+ * Runnable, AND nothing else of the member's is open in this orbit. The two
+ * questions are separate because their answers decay differently: the archive
+ * facts are settled for this job's lifetime, while the other import can close
+ * between one render and the next.
+ *
+ * Exported for #996's preflight view, which disables Import on exactly this —
+ * the same predicate {@link confirmAndRunImport} is gated on, so the button
+ * and the guard cannot disagree.
+ */
+export function canStartFromPreflight(preflight: ImportPreflight): boolean {
+  return isPreflightRunnable(preflight) && preflight.otherOpenImport === null;
+}
+
 /** The preflight for a `ready` job, rebuilt from SQLite plus a fresh GET. */
 async function rebuildPreflight(job: ImportJobRow): Promise<ImportPreflight | null> {
-  let allowance: ImportAllowance;
-  let limits: ImportLimits;
+  let response: GroupImportsResponse | null;
   try {
-    const response = await getGroupImports(job.conversation_id);
-    // The job's OWN source's bucket: an import spends one of two, and pricing
-    // a Facebook job against the Instagram allowance is how a member gets
-    // refused at start by a number the preflight never showed them (B#352).
-    allowance = response.allowances[job.source];
-    limits = response.limits;
+    response = await fetchGroupImports(job.conversation_id);
   } catch {
     // Without a fresh allowance there is nothing honest to show; #928 offers
     // the job again on the next launch.
     return null;
   }
+  if (response === null) return null;
+  // The job's OWN source's bucket: an import spends one of two, and pricing a
+  // Facebook job against the Instagram allowance is how a member gets refused
+  // at start by a number the preflight never showed them (B#352).
+  const allowance = allowanceFor(response, job.source);
+  if (allowance === null) return null;
+  const limits = response.limits;
 
   const counts = countImportItemsByStatus(job.id);
   const skips = countImportSkipsByReason(job.id);
   return buildPreflight({
     conversationId: job.conversation_id,
+    source: job.source,
+    openImport: response.openImport,
     allowance,
     limits,
     importable: job.declared_posts ?? importableTotal(counts),
@@ -2442,7 +2505,118 @@ async function rebuildPreflight(job: ImportJobRow): Promise<ImportPreflight | nu
 // Public API (§4.2)
 // ---------------------------------------------------------------------------
 
+/** The answer for an orbit whose imports are off, or priced by an old server. */
+const UNAVAILABLE_IMPORTS: ImportAvailability = Object.freeze({
+  available: false,
+  allowances: null,
+  limits: null,
+});
+
 /**
+ * One source's bucket out of a preflight response, or null — FAIL CLOSED.
+ *
+ * All four fields must be finite numbers, for the same reason
+ * `parseImportAllowance` insists on it: the runner computes "remaining" from a
+ * used/limit PAIR, so a half-populated bucket makes a missing limit read as
+ * zero room left and refuses an archive the member could import. Null here
+ * means "we cannot price this", which the callers turn into "unavailable"
+ * rather than into a refusal.
+ */
+function allowanceFor(
+  response: GroupImportsResponse,
+  source: ImportSource,
+): ImportAllowance | null {
+  const entry: ImportAllowance | undefined = response.allowances?.[source];
+  if (entry === null || entry === undefined || typeof entry !== 'object') return null;
+  const { postsUsed, bytesUsed, postsLimit, bytesLimit } = entry;
+  for (const n of [postsUsed, bytesUsed, postsLimit, bytesLimit]) {
+    if (typeof n !== 'number' || !Number.isFinite(n)) return null;
+  }
+  return { postsUsed, bytesUsed, postsLimit, bytesLimit };
+}
+
+/**
+ * The member's open session when it belongs to the OTHER source, else null.
+ *
+ * One predicate for every caller, because "is this session mine to adopt?" is
+ * asked at the preflight, at start and on the adopt verdict, and three copies
+ * is three places to get the fail-closed direction wrong.
+ *
+ * An ABSENT source counts as foreign: a server that does not say is a server
+ * we cannot confirm against, and adopting an unconfirmed session spends the
+ * wrong allowance bucket and closes someone else's work on settle. A session
+ * that is not `open` is nobody's problem.
+ */
+function otherOpenImportOf(
+  openImport: OpenImportSummary | null | undefined,
+  source: ImportSource,
+): { readonly importId: string } | null {
+  if (openImport === null || openImport === undefined) return null;
+  if (openImport.status !== 'open') return null;
+  if (openImport.source === source) return null;
+  return { importId: openImport.importId };
+}
+
+/**
+ * The ONE place `GET /imports` is called, and the only writer of
+ * {@link probeCache}.
+ *
+ * Returns the response, or null when imports are UNAVAILABLE here. Two very
+ * different reasons answer null, and they are cached differently:
+ *  - a **404** — the server-side flag is off, and that is sticky for the app
+ *    session (the route is byte-identical to an unknown one);
+ *  - **no usable `allowances` map** — a pre-B#352 server, or one whose bucket
+ *    is malformed. NOT cached: the client cannot price an import it would
+ *    otherwise offer, but a deploy mid-session must be able to fix that
+ *    without a relaunch.
+ *
+ * Everything else RETHROWS, because caching a transient network failure as
+ * "unavailable" would hide the feature until the next launch.
+ *
+ * **Rule 0.** {@link liveToken} is captured BEFORE the request and re-checked
+ * after it: a wipe landing mid-GET must leave no allowance residue in the
+ * cache for the next account on this device, so every write is skipped and
+ * the answer is discarded.
+ */
+async function fetchGroupImports(
+  conversationId: string,
+  options?: { readonly cache?: boolean },
+): Promise<GroupImportsResponse | null> {
+  const cache = options?.cache ?? true;
+  const token = liveToken;
+
+  let response: GroupImportsResponse;
+  try {
+    response = await getGroupImports(conversationId);
+  } catch (e) {
+    if (e instanceof NotFoundError) {
+      if (cache && token === liveToken) probeCache.set(conversationId, UNAVAILABLE_IMPORTS);
+      return null;
+    }
+    throw e;
+  }
+
+  if (token !== liveToken) return null;
+
+  // Both buckets, not just the one the caller wants: the how-to screen prices
+  // either source off this answer, and a response that can only price one is
+  // not a response this client understands.
+  if (allowanceFor(response, 'facebook') === null || allowanceFor(response, 'instagram') === null) {
+    return null;
+  }
+
+  if (cache) {
+    probeCache.set(conversationId, {
+      available: true,
+      allowances: response.allowances,
+      limits: response.limits,
+    });
+  }
+  return response;
+}
+
+/**
+ * Is importing available in this orbit, and under what allowance?/**
  * Is importing available in this orbit, and under what allowance?
  *
  * The flag gate sits ABOVE `authenticate`, so a server with `IMPORTS_ENABLED`
@@ -2460,27 +2634,15 @@ export async function probeImportAvailability(conversationId: string): Promise<I
   const cached = probeCache.get(conversationId);
   if (cached !== undefined) return cached;
 
-  try {
-    const response = await getGroupImports(conversationId);
-    const available: ImportAvailability = {
-      available: true,
-      allowances: response.allowances,
-      limits: response.limits,
-    };
-    probeCache.set(conversationId, available);
-    return available;
-  } catch (e) {
-    if (e instanceof NotFoundError) {
-      const unavailable: ImportAvailability = {
-        available: false,
-        allowances: null,
-        limits: null,
-      };
-      probeCache.set(conversationId, unavailable);
-      return unavailable;
-    }
-    throw e;
-  }
+  const response = await fetchGroupImports(conversationId);
+  // `fetchGroupImports` owns every cache write, so read the answer back from
+  // the cache when it made one: two callers in the same app session must get
+  // the SAME object, or `useSyncExternalStore` re-renders on identity alone.
+  const settled = probeCache.get(conversationId);
+  if (settled !== undefined) return settled;
+  return response === null
+    ? UNAVAILABLE_IMPORTS
+    : { available: true, allowances: response.allowances, limits: response.limits };
 }
 
 /**
@@ -2775,19 +2937,29 @@ async function parseIntoJob(args: {
   // the wipe deleted.
   if (args.token !== liveToken) return null;
 
-  const probe = await probeImportAvailability(args.conversationId);
-  if (probe.allowances === null || probe.limits === null) return null;
+  // A FRESH GET, never the cached probe: the how-to screen has usually filled
+  // that cache already, and a cached answer cannot see `open_import` — so the
+  // preflight would offer Import while the member's other-source session is
+  // still holding the one open slot (#996 correction 0.1). It sits strictly
+  // AFTER the rule-0 check above: a wipe mid-parse must spend no allowance
+  // call at all.
+  const response = await fetchGroupImports(args.conversationId);
+  if (response === null) return null;
+  const allowance = allowanceFor(response, args.source);
+  if (allowance === null) return null;
 
   const skips = countImportSkipsByReason(args.jobId);
   const preflight = buildPreflight({
     conversationId: args.conversationId,
-    allowance: probe.allowances[args.source],
-    limits: probe.limits,
+    source: args.source,
+    allowance,
+    limits: response.limits,
     importable: summary.importable,
     estimatedBytes,
     heldVideo: skips.held_video,
     skippedByReason: skips,
     summary,
+    openImport: response.openImport,
   });
 
   if (isPreflightRunnable(preflight)) {
@@ -2828,7 +3000,10 @@ export async function confirmAndRunImport(): Promise<void> {
   // whose counts can leave nothing to submit: `declared_posts` must be
   // `1..1000`, so running it would be answered `IMPORT_DECLARED_INVALID`.
   const preflight = draft.preflight;
-  if (preflight !== null && !isPreflightRunnable(preflight)) return;
+  // `canStartFromPreflight`, not `isPreflightRunnable`: the other source's
+  // open session blocks the START without refusing the archive, and this is
+  // the same predicate #996's Import button is disabled on.
+  if (preflight !== null && !canStartFromPreflight(preflight)) return;
   await enterPreRun(() => enterJob(job, { autoStart: true }));
 }
 

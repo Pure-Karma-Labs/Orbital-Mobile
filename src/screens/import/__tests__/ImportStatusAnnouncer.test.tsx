@@ -85,6 +85,8 @@ const NO_SKIPS: Readonly<Record<SkipReason, number>> = {
 
 const RUNNABLE_PREFLIGHT: ImportPreflight = {
   summary: null,
+  source: 'facebook' as const,
+  otherOpenImport: null,
   allowance: { postsUsed: 0, bytesUsed: 0, postsLimit: 1000, bytesLimit: 2147483648 },
   limits: {
     batchMax: 50,

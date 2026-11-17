@@ -177,6 +177,8 @@ const LIMITS = {
 
 const PREFLIGHT: ImportPreflight = {
   summary: null,
+  source: 'facebook' as const,
+  otherOpenImport: null,
   allowance: ALLOWANCE,
   limits: LIMITS,
   contentRetentionDays: null,

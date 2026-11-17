@@ -199,6 +199,8 @@ const LIMITS = {
 
 const RUNNABLE_PREFLIGHT: ImportPreflight = {
   summary: null,
+  source: 'facebook' as const,
+  otherOpenImport: null,
   allowance: ALLOWANCE,
   limits: LIMITS,
   contentRetentionDays: null,

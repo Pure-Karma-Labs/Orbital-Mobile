@@ -243,6 +243,8 @@ function makeParseSummary(over: Partial<ParseSummary> = {}): ParseSummary {
 function makePreflight(over: Partial<ImportPreflight> = {}): ImportPreflight {
   return {
     summary: null,
+    source: 'facebook' as const,
+    otherOpenImport: null,
     allowance: ALLOWANCE,
     limits: LIMITS,
     contentRetentionDays: null,

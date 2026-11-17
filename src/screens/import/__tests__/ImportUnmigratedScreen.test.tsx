@@ -165,6 +165,8 @@ const NO_SKIPS: Readonly<Record<SkipReason, number>> = {
 };
 
 const PREFLIGHT_WITH_FILE_ISSUES: ImportPreflight = {
+  source: 'facebook' as const,
+  otherOpenImport: null,
   summary: {
     importable: 4,
     importableMedia: 2,

@@ -113,6 +113,8 @@ const REFUSED_PREFLIGHT: ImportPreflight = { ...RUNNABLE_PREFLIGHT, overAllowanc
 const NOTHING_PREFLIGHT: ImportPreflight = { ...RUNNABLE_PREFLIGHT, nothingToImport: true };
 
 const SUMMARY: ImportSummary = {
+  source: 'facebook' as const,
+  otherSourceDetected: false,
   created: 298,
   duplicate: 2,
   failed: 0,

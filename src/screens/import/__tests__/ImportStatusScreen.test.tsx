@@ -223,6 +223,8 @@ const NOTHING_PREFLIGHT: ImportPreflight = {
 };
 
 const COMPLETED_SUMMARY: ImportSummary = {
+  source: 'facebook' as const,
+  otherSourceDetected: false,
   created: 12,
   duplicate: 1,
   failed: 0,

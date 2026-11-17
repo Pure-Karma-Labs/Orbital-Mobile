@@ -263,6 +263,8 @@ function makePreflight(over: Partial<ImportPreflight> = {}): ImportPreflight {
 
 function makeSummary(over: Partial<ImportSummary> = {}): ImportSummary {
   return {
+    source: 'facebook' as const,
+    otherSourceDetected: false,
     created: 12,
     duplicate: 0,
     failed: 0,

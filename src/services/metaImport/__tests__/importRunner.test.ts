@@ -596,7 +596,12 @@ async function drain(times = 80): Promise<void> {
 /** A parse that emits `posts` importable items and the given skips. */
 function parseEmitting(
   posts: number,
-  options: { skips?: readonly SkipReason[]; mediaPerPost?: number } = {},
+  options: {
+    skips?: readonly SkipReason[];
+    mediaPerPost?: number;
+    /** What the PARSER saw besides this source — the real one sets it too. */
+    otherSourceDetected?: boolean;
+  } = {},
 ): void {
   mockParseArchive.mockImplementation(
     async (_session: unknown, opts: Record<string, Function>): Promise<ParseSummary> => {
@@ -635,7 +640,7 @@ function parseEmitting(
         );
       }
       opts.onProgress?.({ postsSeen: posts, mediaPeeked: 0 });
-      return summaryWith(posts, options.skips ?? []);
+      return summaryWith(posts, options.skips ?? [], options.otherSourceDetected ?? false);
     },
   );
 }
@@ -658,7 +663,11 @@ function zeroSkips(): Record<SkipReason, number> {
   };
 }
 
-function summaryWith(importable: number, skips: readonly SkipReason[]): ParseSummary {
+function summaryWith(
+  importable: number,
+  skips: readonly SkipReason[],
+  otherSourceDetected = false,
+): ParseSummary {
   const skipped = zeroSkips();
   for (const reason of skips) skipped[reason] += 1;
   return {
@@ -669,7 +678,7 @@ function summaryWith(importable: number, skips: readonly SkipReason[]): ParseSum
     latestDate: POST_DATE,
     fileIssues: [],
     idScheme: { fbid: 0, content: importable },
-    otherSourceDetected: false,
+    otherSourceDetected,
     locationDataRemoved: false,
   };
 }
@@ -4826,5 +4835,61 @@ describe('closeOtherImport', () => {
 
     await expect(closeOtherImport()).resolves.toBe('cancelled');
     expect(mockCompleteImport).not.toHaveBeenCalled();
+  });
+});
+
+// ===========================================================================
+// Group: the summary knows its source, and what else was in the files (#996)
+// ===========================================================================
+
+describe('the summary source and other-source hint', () => {
+  it('carries the run source and the hint from the parse', async () => {
+    mockOpenArchiveSession.mockImplementation(async () => bothSourcesArchiveSession());
+    parseEmitting(1, { otherSourceDetected: true });
+    await pickAndStartParse({
+      conversationId: ORBIT,
+      chooseSource: jest.fn().mockResolvedValue('instagram'),
+    });
+    await confirmAndRunImport();
+    await drain();
+
+    const summary = importStore.getState().summary;
+    expect(summary?.source).toBe('instagram');
+    // The summary is where #996 offers the second import, so it has to know
+    // there IS one.
+    expect(summary?.otherSourceDetected).toBe(true);
+  });
+
+  it('re-detects the hint from the archive on a resumed run', async () => {
+    // Launch-resumed: no `ParseSummary` survives, so the open archive is the
+    // only thing that still knows.
+    seedJob({ items: 1, bookmark: ['part-a'], mediaEntryIds: ['entry-0-0'] });
+    mockOpenArchiveSession.mockImplementation(async () => bothSourcesArchiveSession());
+
+    await confirmAndRunLaunch();
+
+    expect(importStore.getState().preflight?.summary ?? null).toBeNull();
+    expect(importStore.getState().summary?.otherSourceDetected).toBe(true);
+  });
+
+  it('is false when the archive holds only our own source', async () => {
+    parseEmitting(1);
+    await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
+    await confirmAndRunImport();
+    await drain();
+
+    expect(importStore.getState().summary?.source).toBe('facebook');
+    expect(importStore.getState().summary?.otherSourceDetected).toBe(false);
+  });
+
+  it('is false for a text-only resumed run, which has nothing left to ask', async () => {
+    // The documented caveat: no archive was opened (every item is text) and
+    // no `ParseSummary` survived the relaunch.
+    seedJob({ items: 1 });
+
+    await confirmAndRunLaunch();
+
+    expect(importStore.getState().summary?.otherSourceDetected).toBe(false);
+    expect(importStore.getState().summary?.source).toBe('facebook');
   });
 });

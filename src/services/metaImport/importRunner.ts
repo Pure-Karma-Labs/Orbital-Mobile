@@ -118,6 +118,7 @@ import {
 } from './importErrors';
 import { estimateImportBytes, importMediaStage, uploadImportItemMedia } from './importMedia';
 import { detectSources } from './layout';
+import { OTHER_IMPORT_SOURCE } from './types';
 import { parseArchive } from './parseArchive';
 
 import type {
@@ -162,6 +163,21 @@ export type ImportPhase =
 
 /** What the member is told the run achieved. Counts and client enums only. */
 export interface ImportSummary {
+  /** Which platform this run imported. Never inferred by the screen. */
+  readonly source: ImportSource;
+  /**
+   * The archive also held posts of the OTHER source (#996).
+   *
+   * Resolved by {@link otherSourceDetectedFor}, and worth knowing because the
+   * summary is where the member is offered the second import.
+   *
+   * **Caveat:** a run RESUMED at launch whose items are all text has no
+   * archive to re-read and no `ParseSummary` to fall back on, so this is
+   * false there even when the export does hold the other source. Persisting
+   * it would cost a migration for one hint; the member still has the Settings
+   * row and an ordinary pick.
+   */
+  readonly otherSourceDetected: boolean;
   readonly created: number;
   readonly duplicate: number;
   readonly failed: number;
@@ -2056,7 +2072,27 @@ function startEndOfRunPass(r: ActiveRun): void {
 // Completion (§4.12)
 // ---------------------------------------------------------------------------
 
-function buildSummary(r: ActiveRun): ImportSummary {
+/**
+ * Did this archive also hold the OTHER source's posts?
+ *
+ * ONE accessor, asked in order of how much it knows:
+ *  1. the OPEN archive, re-detected — the only source of truth, and the one
+ *     that recovers the answer for a run resumed at launch;
+ *  2. the parse's own `ParseSummary`, which knows it for a job parsed in this
+ *     app session;
+ *  3. false — see the caveat on {@link ImportSummary.otherSourceDetected}.
+ *
+ * It must be asked BEFORE `archive.close()`, which is why `settleRun`
+ * computes it at the top rather than inside {@link buildSummary}.
+ */
+function otherSourceDetectedFor(r: ActiveRun, archive: ArchiveImportSession | null): boolean {
+  if (archive !== null) {
+    return detectSources(archive.entries)[OTHER_IMPORT_SOURCE[r.source]];
+  }
+  return draft.preflight?.summary?.otherSourceDetected === true;
+}
+
+function buildSummary(r: ActiveRun, otherSourceDetected: boolean): ImportSummary {
   const counts = countImportItemsByStatus(r.jobId);
   const skips = countImportSkipsByReason(r.jobId);
   // `uploading` is the schema's only parking space, so it holds three
@@ -2075,6 +2111,8 @@ function buildSummary(r: ActiveRun): ImportSummary {
   // {@link undrainedWork}: both exempt `r.held` and nothing else, so the six
   // lines sum to the importable total in every ending.
   return {
+    source: r.source,
+    otherSourceDetected,
     created: counts.created,
     duplicate: counts.duplicate,
     failed: counts.failed,
@@ -2163,6 +2201,9 @@ async function settleRun(r: ActiveRun): Promise<void> {
 
   const archive = r.archive;
   r.archive = null;
+  // BEFORE `archive.close()`: the entries are the only place this answer
+  // lives for a run resumed at launch, and they are gone a line later.
+  const otherSourceDetected = otherSourceDetectedFor(r, archive);
 
   try {
     if (archive !== null) {
@@ -2217,7 +2258,7 @@ async function settleRun(r: ActiveRun): Promise<void> {
     if (wiped(r)) return;
 
     assertDrainedOrFail(r);
-    const summary = buildSummary(r);
+    const summary = buildSummary(r, otherSourceDetected);
     finishImportJob(r.jobId, terminalStatusFor(r));
     if (r.terminal !== null && !r.cancelled) {
       captureImportFailure(r, 'complete', r.terminal);

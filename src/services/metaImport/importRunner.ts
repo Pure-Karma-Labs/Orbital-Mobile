@@ -77,7 +77,7 @@ import {
 import { deriveAuthPhase } from '../../navigation/authPhase';
 import { useAppStore } from '../../stores/useAppStore';
 import { generateUUID } from '../../utils/uuid';
-import { NetworkError, NotFoundError, ServerError } from '../api/errors';
+import { ConflictError, NetworkError, NotFoundError, ServerError } from '../api/errors';
 import {
   completeImport,
   getGroupImports,
@@ -3378,6 +3378,132 @@ export function dismissImportSummary(): void {
   if (draft.phase !== 'done') return;
   clearLastSettledHeld();
   update({ ...INITIAL_STATE, phase: 'idle' }, true);
+}
+
+/**
+ * What {@link closeOtherImport} achieved (#996 §7.2).
+ *
+ * `closed-stale` is the honest middle: the other session IS closed, but the
+ * allowance we would re-price against could not be read, so the preflight on
+ * screen is still the old one. Re-tapping is safe — `/complete` is
+ * idempotent — which is why it is not folded into `failed`.
+ */
+export type CloseOtherImportResult = 'closed' | 'closed-stale' | 'failed' | 'cancelled';
+
+/**
+ * Close the member's OTHER-source import so this one can start (#996 §2).
+ *
+ * Reachable only from a `ready` job whose preflight carries
+ * `otherOpenImport`. That is what makes it safe: `session_id` is written only
+ * by `startImportJob` from `runJob`, so a `ready` job has no server session —
+ * no local job can be holding the id this closes, and the belt check below
+ * asserts it. The session may still be running on ANOTHER DEVICE, which is
+ * why the UI puts a confirm in front of this.
+ *
+ * It writes nothing to SQLite. The only local effect is a re-priced preflight
+ * and a dropped probe cache.
+ */
+export function closeOtherImport(): Promise<CloseOtherImportResult> {
+  // Captured at CALL time, like every other queued member action: the queue
+  // can wait, and everything below is checked against what was true when the
+  // member tapped.
+  const token = liveToken;
+  const gen = preRunGen;
+  const jobId = draft.jobId;
+  const conversationId = draft.conversationId;
+  const other = draft.preflight?.otherOpenImport ?? null;
+  // The CAPTURED summary, never null: re-pricing with `summary: null` would
+  // erase the parse's own answer — the date range, the file issues, the
+  // other-source hint — from a screen that is only being repriced.
+  const summary = draft.preflight?.summary ?? null;
+
+  if (draft.phase !== 'ready' || jobId === null || conversationId === null || other === null) {
+    return Promise.resolve('cancelled');
+  }
+
+  let result: CloseOtherImportResult = 'cancelled';
+  return queuePreRun(
+    async () => {
+      result = await closeOtherImportNow({
+        token,
+        gen,
+        jobId,
+        conversationId,
+        importId: other.importId,
+        summary,
+      });
+    },
+    () => preRunGen !== gen || liveToken !== token || draft.jobId !== jobId,
+  ).then(
+    () => result,
+    () => 'cancelled' as const,
+  );
+}
+
+async function closeOtherImportNow(args: {
+  token: number;
+  gen: number;
+  jobId: string;
+  conversationId: string;
+  importId: string;
+  summary: ParseSummary | null;
+}): Promise<CloseOtherImportResult> {
+  const live = (): boolean =>
+    liveToken === args.token && preRunGen === args.gen && draft.jobId === args.jobId;
+  if (!live()) return 'cancelled';
+
+  // BELT: nothing of ours may be holding this id. A `ready` job never has a
+  // `session_id`, so this can only fail if the phase gate above was wrong —
+  // and closing a session our own run is draining would strand it.
+  const active = getActiveImportJob();
+  if (active !== null && active.session_id === args.importId) return 'cancelled';
+
+  try {
+    await completeImport(args.importId);
+  } catch (e) {
+    const refusal = e instanceof ConflictError ? e.importRefusal : undefined;
+    const closedAlready = refusal?.code === 'IMPORT_CLOSED';
+    // A 404 is a session that is not there to close, which is the outcome we
+    // wanted; anything else leaves it open and the member must try again.
+    if (!closedAlready && !(e instanceof NotFoundError)) return 'failed';
+  }
+  if (!live()) return 'cancelled';
+
+  // The slot is free; what the member sees must now say so. `cache: false`
+  // would be wrong here — this IS the refresh.
+  let response: GroupImportsResponse | null;
+  try {
+    response = await fetchGroupImports(args.conversationId);
+  } catch {
+    response = null;
+  }
+  if (!live()) return 'cancelled';
+  const job = getActiveImportJob();
+  if (job === null || job.id !== args.jobId || job.status !== 'ready') return 'cancelled';
+  const allowance = response === null ? null : allowanceFor(response, job.source);
+  // Closed, but we cannot re-price: the preflight on screen is still the old
+  // one, so Import stays disabled until something refreshes it.
+  if (response === null || allowance === null) return 'closed-stale';
+
+  const counts = countImportItemsByStatus(job.id);
+  const skips = countImportSkipsByReason(job.id);
+  const preflight = buildPreflight({
+    conversationId: args.conversationId,
+    source: job.source,
+    allowance,
+    limits: response.limits,
+    importable: job.declared_posts ?? importableTotal(counts),
+    estimatedBytes: job.declared_bytes ?? 0,
+    heldVideo: skips.held_video,
+    skippedByReason: skips,
+    summary: args.summary,
+    openImport: response.openImport,
+  });
+  update({ phase: 'ready', preflight, total: preflight.importable }, true);
+  // The allowance this orbit was priced against has just changed shape; the
+  // next probe must ask rather than answer from the pre-close snapshot.
+  probeCache.delete(args.conversationId);
+  return 'closed';
 }
 
 /**

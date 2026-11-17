@@ -289,6 +289,7 @@ jest.mock('../../../stores/useAppStore', () => ({
 import {
   canStartFromPreflight,
   cancelImport,
+  closeOtherImport,
   confirmAndRunImport,
   discardImportPreflight,
   dismissImportSummary,
@@ -4669,5 +4670,161 @@ describe('a session whose source does not match the job', () => {
     // A belt, not a gate: an older server that says nothing must not fail a
     // job whose id we wrote ourselves.
     expect(jobRow().status).toBe('completed');
+  });
+});
+
+// ===========================================================================
+// Group: closing the other source's import (#996 §2)
+// ===========================================================================
+
+describe('closeOtherImport', () => {
+  const OTHER_ID = '99999999-8888-4777-8666-555555555555';
+
+  /** A `ready` job whose preflight is blocked by the other source. */
+  async function readyBlockedByOther(): Promise<void> {
+    seedJob({ status: 'ready', items: 2, bookmark: ['part-a'] });
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({ openImport: openImport({ importId: OTHER_ID, source: 'instagram' }) }),
+    );
+    await resumeImportAtLaunch();
+    expect(importStore.getState().preflight?.otherOpenImport).toEqual({ importId: OTHER_ID });
+  }
+
+  it('closes it, re-prices, and lets the import start', async () => {
+    await readyBlockedByOther();
+    // Afterwards the slot is free and the allowance has moved.
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({ allowances: allowances({ facebook: allowance(7) }) }),
+    );
+
+    await expect(closeOtherImport()).resolves.toBe('closed');
+
+    expect(mockCompleteImport).toHaveBeenCalledWith(OTHER_ID);
+    const state = importStore.getState();
+    expect(state.phase).toBe('ready');
+    expect(state.preflight?.otherOpenImport).toBeNull();
+    expect(state.preflight?.remainingPosts).toBe(993);
+    expect(canStartFromPreflight(state.preflight as ImportPreflight)).toBe(true);
+    // Nothing local was written: this is a server-side close and a reprice.
+    expect(jobRow().status).toBe('ready');
+    expect(mockReleaseArchiveParts).not.toHaveBeenCalled();
+  });
+
+  it('keeps the parse summary through the reprice', async () => {
+    // From a PARSE, not a launch rebuild: a rebuilt preflight has no summary
+    // to lose (the `ParseSummary` is not persisted), so only this path can
+    // show the reprice preserving one.
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({ openImport: openImport({ importId: OTHER_ID, source: 'instagram' }) }),
+    );
+    parseEmitting(2, { skips: ['empty_post'] });
+    await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
+    const before = importStore.getState().preflight?.summary;
+    expect(before).not.toBeNull();
+    expect(importStore.getState().preflight?.otherOpenImport).toEqual({ importId: OTHER_ID });
+    mockGetGroupImports.mockResolvedValue(groupImports());
+
+    await expect(closeOtherImport()).resolves.toBe('closed');
+
+    // Re-pricing with `summary: null` would erase the parse's own answer —
+    // the date range, the file issues, the other-source hint — from a screen
+    // that is only being repriced.
+    expect(importStore.getState().preflight?.summary).toEqual(before);
+  });
+
+  it('treats an already-closed session as closed', async () => {
+    await readyBlockedByOther();
+    mockCompleteImport.mockRejectedValue(
+      new ConflictError(
+        JSON.stringify({
+          error: 'IMPORT_REFUSED',
+          details: { code: 'IMPORT_CLOSED', status: 'completed' },
+        }),
+      ),
+    );
+    mockGetGroupImports.mockResolvedValue(groupImports());
+
+    await expect(closeOtherImport()).resolves.toBe('closed');
+    expect(importStore.getState().preflight?.otherOpenImport).toBeNull();
+  });
+
+  it('treats a session that is not there as closed', async () => {
+    await readyBlockedByOther();
+    mockCompleteImport.mockRejectedValue(new NotFoundError());
+    mockGetGroupImports.mockResolvedValue(groupImports());
+
+    await expect(closeOtherImport()).resolves.toBe('closed');
+  });
+
+  it('fails when the close itself fails, and changes nothing', async () => {
+    await readyBlockedByOther();
+    mockCompleteImport.mockRejectedValue(new NetworkError('offline'));
+
+    await expect(closeOtherImport()).resolves.toBe('failed');
+
+    // The other import is still open, so Import must stay disabled.
+    expect(importStore.getState().preflight?.otherOpenImport).toEqual({ importId: OTHER_ID });
+    expect(jobRow().status).toBe('ready');
+  });
+
+  it('reports closed-stale when the close works but the reprice does not', async () => {
+    await readyBlockedByOther();
+    mockGetGroupImports.mockRejectedValue(new NetworkError('offline'));
+
+    await expect(closeOtherImport()).resolves.toBe('closed-stale');
+
+    // The session IS closed, so this is not a failure — but the preflight on
+    // screen is the old one, and re-tapping is safe because `/complete` is
+    // idempotent.
+    expect(mockCompleteImport).toHaveBeenCalledWith(OTHER_ID);
+    expect(importStore.getState().preflight?.otherOpenImport).toEqual({ importId: OTHER_ID });
+  });
+
+  it('is cancelled by a wipe mid-close', async () => {
+    await readyBlockedByOther();
+    const completing = deferred<unknown>();
+    mockCompleteImport.mockImplementation(() => completing.promise);
+
+    const closing = closeOtherImport();
+    await drain();
+    resetImportRunnerState();
+    completing.resolve({});
+
+    await expect(closing).resolves.toBe('cancelled');
+    // Not one publish after the wipe.
+    expect(importStore.getState()).toEqual(importStore.getInitialState());
+  });
+
+  it('is cancelled when the job was discarded before it got the gate', async () => {
+    await readyBlockedByOther();
+
+    // Both are queued member actions, so they SERIALIZE: the close waits for
+    // the discard, and by the time it runs there is no job to re-price.
+    const discarding = discardImportPreflight();
+    const closing = closeOtherImport();
+    await discarding;
+
+    await expect(closing).resolves.toBe('cancelled');
+    expect(getImportJob(JOB)).toBeNull();
+    // Nothing of the member's was closed on the way out.
+    expect(mockCompleteImport).not.toHaveBeenCalled();
+  });
+
+  it('does nothing at all when the phase is not ready', async () => {
+    seedJob({ items: 1 });
+    await resumeImportAtLaunch();
+    await drain();
+
+    await expect(closeOtherImport()).resolves.toBe('cancelled');
+    expect(mockCompleteImport).not.toHaveBeenCalledWith(OTHER_ID);
+  });
+
+  it('does nothing when there is no other import to close', async () => {
+    seedJob({ status: 'ready', items: 1 });
+    await resumeImportAtLaunch();
+    expect(importStore.getState().preflight?.otherOpenImport).toBeNull();
+
+    await expect(closeOtherImport()).resolves.toBe('cancelled');
+    expect(mockCompleteImport).not.toHaveBeenCalled();
   });
 });

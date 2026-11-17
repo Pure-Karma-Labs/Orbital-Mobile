@@ -5,12 +5,15 @@
  *
  * 1. **Gating.** Each of §3.3's five hide reasons, independently: no active
  *    orbit, a DM, `hydrating`, a 404 probe, a REJECTED probe.
- * 2. **One import per device.** The start rows disappear for every view whose
+ * 2. **ONE start row (#996).** The two per-platform rows are gone: the archive
+ *    decides the source, so the row carries no platform and the navigation
+ *    params carry no `source`. Their absence is asserted, not assumed.
+ * 3. **One import per device.** The start row disappears for every view whose
  *    job already exists, including `blocked`.
- * 3. **The section is OFF the 250 ms emission stream.** A fixed render count
+ * 4. **The section is OFF the 250 ms emission stream.** A fixed render count
  *    across counter-only store writes is the assertion that would fail the day
  *    someone widens a selector or puts a count in the row label.
- * 4. **The orbit name never enters a `SettingsRow` label** — it reaches the
+ * 5. **The orbit name never enters a `SettingsRow` label** — it reaches the
  *    screen only through `EmojiText`.
  *
  * ## Mocking shape
@@ -233,12 +236,43 @@ async function renderSection(
   return renderer;
 }
 
-/** Every testID the section can render. All three must be gone when hidden. */
+/**
+ * The per-platform rows #996 deleted.
+ *
+ * Named here so their absence is an EXPLICIT assertion at every site that used
+ * to expect them, rather than something inferred from a row count: a resurrected
+ * "Import from Facebook" row would otherwise only show up as an off-by-one.
+ */
+const RETIRED_ROW_TEST_IDS: readonly string[] = ['import-facebook-row', 'import-instagram-row'];
+
+/**
+ * Every distinct `*-row` testID on a HOST node, sorted — i.e. which rows are
+ * actually on screen.
+ *
+ * Host-filtered for the reason `rtr.ts` gives: `SettingsRow`'s component node
+ * carries the same `testID` whether or not it rendered anything.
+ */
+function rowTestIds(root: ReactTestInstance): readonly string[] {
+  const ids = root
+    .findAll((node) => typeof node.type === 'string' && typeof node.props.testID === 'string')
+    .map((node) => String(node.props.testID))
+    .filter((id) => id.endsWith('-row'));
+  return [...new Set(ids)].sort();
+}
+
+function expectNoRetiredRows(root: ReactTestInstance): void {
+  for (const testID of RETIRED_ROW_TEST_IDS) {
+    expect(hasHostTestId(root, testID)).toBe(false);
+  }
+}
+
+/** Every testID the section can render. All of them must be gone when hidden. */
 function expectHidden(root: ReactTestInstance): void {
   expect(hasHostTestId(root, 'import-status-row')).toBe(false);
-  expect(hasHostTestId(root, 'import-facebook-row')).toBe(false);
-  expect(hasHostTestId(root, 'import-instagram-row')).toBe(false);
+  expect(hasHostTestId(root, 'import-start-row')).toBe(false);
   expect(hasHostTestId(root, 'import-into-caption')).toBe(false);
+  expectNoRetiredRows(root);
+  expect(rowTestIds(root)).toEqual([]);
 }
 
 interface RowProps {
@@ -358,7 +392,7 @@ describe('ImportSettingsSection — hidden (§3.3)', () => {
 // ---------------------------------------------------------------------------
 
 describe('ImportSettingsSection — shown (§3.3)', () => {
-  it('renders the header, the orbit caption and both start rows when idle', async () => {
+  it('renders the header, the orbit caption and ONE start row when idle', async () => {
     setUpShown();
 
     const renderer = await renderSection();
@@ -367,9 +401,15 @@ describe('ImportSettingsSection — shown (§3.3)', () => {
     expect(renderedText(root)).toContain(IMPORT_SECTION_HEADER);
     expect(hasHostTestId(root, 'import-into-caption')).toBe(true);
     expect(captionText(root, 'import-into-caption')).toBe(describeIntoCaption('Test Orbit'));
-    expect(hasHostTestId(root, 'import-facebook-row')).toBe(true);
-    expect(hasHostTestId(root, 'import-instagram-row')).toBe(true);
+
+    // One row, and it is the source-neutral one (#996).
+    expect(rowTestIds(root)).toEqual(['import-start-row']);
+    expect(hasHostTestId(root, 'import-start-row')).toBe(true);
     expect(rowProps(root, 'import-start-row').label).toBe(IMPORT_START_ROW_LABEL);
+    expect(rowProps(root, 'import-start-row').label).toBe('Import from Facebook or Instagram');
+    // The two per-platform rows are gone, explicitly.
+    expectNoRetiredRows(root);
+
     // No job on this device ⇒ nothing to show a status for.
     expect(hasHostTestId(root, 'import-status-row')).toBe(false);
   });
@@ -378,8 +418,7 @@ describe('ImportSettingsSection — shown (§3.3)', () => {
     setUpShown();
 
     const idle = await renderSection();
-    expect(rowProps(idle.root, 'import-facebook-row').emojiUnified).toBe('1F4E5');
-    expect(rowProps(idle.root, 'import-instagram-row').emojiUnified).toBe('1F4E5');
+    expect(rowProps(idle.root, 'import-start-row').emojiUnified).toBe('1F4E5');
 
     importStore.setState({ phase: 'running', jobId: 'job-1', conversationId: 'g1' });
     const running = await renderSection();
@@ -389,10 +428,10 @@ describe('ImportSettingsSection — shown (§3.3)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// One import per device: the start rows go away for every active-job view
+// One import per device: the start row goes away for every active-job view
 // ---------------------------------------------------------------------------
 
-describe('ImportSettingsSection — active job suppresses the start rows', () => {
+describe('ImportSettingsSection — active job suppresses the start row', () => {
   const activeJobViews: ReadonlyArray<[string, Partial<ImportRunnerState>]> = [
     ['parsing', { phase: 'parsing', jobId: 'job-1', conversationId: 'g1' }],
     [
@@ -405,7 +444,7 @@ describe('ImportSettingsSection — active job suppresses the start rows', () =>
   ];
 
   it.each(activeJobViews)(
-    'hides both start rows and shows a status row: %s',
+    'hides the start row and shows a status row: %s',
     async (_name, patch) => {
       setUpShown();
       importStore.setState(patch);
@@ -414,8 +453,10 @@ describe('ImportSettingsSection — active job suppresses the start rows', () =>
       const root = renderer.root;
 
       expect(hasHostTestId(root, 'import-status-row')).toBe(true);
-      expect(hasHostTestId(root, 'import-facebook-row')).toBe(false);
-      expect(hasHostTestId(root, 'import-instagram-row')).toBe(false);
+      expect(hasHostTestId(root, 'import-start-row')).toBe(false);
+      expectNoRetiredRows(root);
+      // The status row is the ONLY row: nothing offers a second import.
+      expect(rowTestIds(root)).toEqual(['import-status-row']);
     },
   );
 });
@@ -508,24 +549,24 @@ describe('ImportSettingsSection — taps', () => {
     expect(mockNavigate).toHaveBeenCalledWith('ImportStatus');
   });
 
-  it('navigates to ImportHowTo with the source and the ACTIVE orbit', async () => {
+  it('navigates to ImportHowTo with the ACTIVE orbit and NO source', async () => {
     setUpShown();
 
     const renderer = await renderSection();
 
-    press(renderer.root, 'import-facebook-row');
-    expect(mockNavigate).toHaveBeenLastCalledWith('ImportHowTo', {
-      source: 'facebook',
-      conversationId: 'g1',
-    });
+    press(renderer.root, 'import-start-row');
 
-    press(renderer.root, 'import-instagram-row');
-    expect(mockNavigate).toHaveBeenLastCalledWith('ImportHowTo', {
-      source: 'instagram',
-      conversationId: 'g1',
-    });
+    // `toHaveBeenCalledWith` is an EXACT object match, so an extra `source`
+    // key would fail here on its own.
+    expect(mockNavigate).toHaveBeenCalledWith('ImportHowTo', { conversationId: 'g1' });
+    expect(mockNavigate).toHaveBeenCalledTimes(1);
 
-    expect(mockNavigate).toHaveBeenCalledTimes(2);
+    // Spelled out as well, because #996's whole point is that the row stopped
+    // choosing a platform: the archive decides, and the how-to asks only when
+    // an export holds both.
+    const params = mockNavigate.mock.calls[0][1] as Record<string, unknown>;
+    expect(params).not.toHaveProperty('source');
+    expect(Object.keys(params)).toEqual(['conversationId']);
   });
 });
 

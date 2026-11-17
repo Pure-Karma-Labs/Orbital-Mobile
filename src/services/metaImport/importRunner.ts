@@ -2514,7 +2514,8 @@ function buildPreflight(args: {
  * The two refusals only — over the remaining allowance, or nothing importable
  * in it at all. One predicate, so the three places that must agree —
  * `parseIntoJob`'s `setImportJobParsed`, `pickAndStartParse`'s release arm and
- * `rebuildPreflight`'s callers — cannot drift apart. Neither refusal starts a
+ * `confirmAndRunImport` — cannot drift apart. `closeOtherImport` asks it too:
+ * a refused archive must never close the member's other session. Neither refusal starts a
  * server session, writes a terminal code or reports anything: the member is
  * told what the archive holds and offered a different export.
  *
@@ -2536,9 +2537,11 @@ function isPreflightRunnable(preflight: ImportPreflight): boolean {
  * facts are settled for this job's lifetime, while the other import can close
  * between one render and the next.
  *
- * Exported for #996's preflight view, which disables Import on exactly this —
- * the same predicate {@link confirmAndRunImport} is gated on, so the button
- * and the guard cannot disagree.
+ * Exported for #996's preflight view, which disables Import on exactly this.
+ * It is NOT the run's gate: {@link confirmAndRunImport} asks only
+ * {@link isPreflightRunnable} (the cached archive facts), and the other
+ * session is re-asked by `enterJob`'s unconditional rebuild, which is the
+ * answer the run is actually gated on.
  */
 export function canStartFromPreflight(preflight: ImportPreflight): boolean {
   return isPreflightRunnable(preflight) && preflight.otherOpenImport === null;
@@ -2693,7 +2696,6 @@ async function fetchGroupImports(
 }
 
 /**
- * Is importing available in this orbit, and under what allowance?/**
  * Is importing available in this orbit, and under what allowance?
  *
  * The flag gate sits ABOVE `authenticate`, so a server with `IMPORTS_ENABLED`
@@ -3458,7 +3460,18 @@ export function closeOtherImport(): Promise<CloseOtherImportResult> {
   // other-source hint — from a screen that is only being repriced.
   const summary = draft.preflight?.summary ?? null;
 
-  if (draft.phase !== 'ready' || jobId === null || conversationId === null || other === null) {
+  // A refused or nothing-to-import preflight also sits at phase `ready` (its
+  // job is already `cancelled`), but the other session is not what blocks it:
+  // closing that session there would stop the member's other import for
+  // nothing. Only a runnable archive may reach the destructive call.
+  if (
+    draft.phase !== 'ready' ||
+    jobId === null ||
+    conversationId === null ||
+    other === null ||
+    draft.preflight === null ||
+    !isPreflightRunnable(draft.preflight)
+  ) {
     return Promise.resolve('cancelled');
   }
 
@@ -3477,7 +3490,11 @@ export function closeOtherImport(): Promise<CloseOtherImportResult> {
     () => preRunGen !== gen || liveToken !== token || draft.jobId !== jobId,
   ).then(
     () => result,
-    () => 'cancelled' as const,
+    // `queuePreRun` rejects only when it could not take the gate: the close
+    // NEVER RAN. 'cancelled' would read as "nothing worth saying" and leave
+    // the member staring at an unchanged notice, so it is a failure they can
+    // retry.
+    () => 'failed' as const,
   );
 }
 
@@ -3508,7 +3525,13 @@ async function closeOtherImportNow(args: {
     // wanted; anything else leaves it open and the member must try again.
     if (!closedAlready && !(e instanceof NotFoundError)) return 'failed';
   }
-  if (!live()) return 'cancelled';
+  // From here the destructive call HAS landed, so it is never reported as a
+  // no-op: anything short of a re-priced preflight is `closed-stale`. The one
+  // exception is a wipe — the account that asked is gone, and nothing may be
+  // said to the next one.
+  const afterClose = (): CloseOtherImportResult =>
+    liveToken === args.token ? 'closed-stale' : 'cancelled';
+  if (!live()) return afterClose();
 
   // The slot is free; what the member sees must now say so. `cache: false`
   // would be wrong here — this IS the refresh.
@@ -3518,9 +3541,9 @@ async function closeOtherImportNow(args: {
   } catch {
     response = null;
   }
-  if (!live()) return 'cancelled';
+  if (!live()) return afterClose();
   const job = getActiveImportJob();
-  if (job === null || job.id !== args.jobId || job.status !== 'ready') return 'cancelled';
+  if (job === null || job.id !== args.jobId || job.status !== 'ready') return 'closed-stale';
   const allowance = response === null ? null : allowanceFor(response, job.source);
   // Closed, but we cannot re-price: the preflight on screen is still the old
   // one, so Import stays disabled until something refreshes it.

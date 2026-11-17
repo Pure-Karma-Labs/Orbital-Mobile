@@ -121,7 +121,11 @@ export function ImportPreflightView({
 
   const source = preflight.source;
   const other = OTHER_IMPORT_SOURCE[source];
-  const otherOpen = preflight.otherOpenImport !== null;
+  // Only a RUNNABLE preflight is blocked by the other import. On a refused or
+  // nothing-to-import archive the other session is not what stands in the
+  // way, so neither the notice nor the destructive Close belongs there — the
+  // dead-end views carry their own exit ("Import {Other} posts instead").
+  const otherOpen = kind === 'preflight' && preflight.otherOpenImport !== null;
   /**
    * The runner's own predicate, not a second opinion. It answers "may the run
    * START", which is strictly narrower than "is this preflight runnable": a

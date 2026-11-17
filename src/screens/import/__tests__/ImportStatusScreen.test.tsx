@@ -1168,6 +1168,20 @@ describe('ImportStatusScreen — the other source is still open', () => {
     expect(controlProps(renderer.root, 'import-confirm').disabled).toBe(false);
   });
 
+  it.each([
+    ['refused', { ...BLOCKED_PREFLIGHT, overAllowance: 'posts' as const }],
+    ['nothing', { ...BLOCKED_PREFLIGHT, importable: 0, nothingToImport: true }],
+  ])(
+    'offers neither notice nor Close on a %s archive, which the other import does not block',
+    (_kind, preflight) => {
+      setState({ phase: 'ready', jobId: 'job-1', conversationId: 'g1', preflight });
+      const renderer = renderScreen();
+
+      expect(hasHostTestId(renderer.root, 'import-other-open-notice')).toBe(false);
+      expect(hasHostTestId(renderer.root, 'import-close-other')).toBe(false);
+    },
+  );
+
   it('puts a confirm in front of the close, and only then closes', () => {
     const renderer = renderBlockedPreflight();
     const root = renderer.root;

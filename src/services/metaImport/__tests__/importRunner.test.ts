@@ -42,6 +42,7 @@ import { AppState, type AppStateStatus } from 'react-native';
 import { closeDatabase } from '../../../database/connection';
 import {
   createImportJob,
+  finishImportJob,
   getImportJob,
   insertImportItems,
   setImportJobParsed,
@@ -4817,6 +4818,44 @@ describe('closeOtherImport', () => {
     expect(getImportJob(JOB)).toBeNull();
     // Nothing of the member's was closed on the way out.
     expect(mockCompleteImport).not.toHaveBeenCalled();
+  });
+
+  it('never closes the other session from a refused archive (PR #997 blocker)', async () => {
+    // Over this source's allowance AND the other source has a session open:
+    // the archive is refused on its own facts, so closing the other import
+    // would stop it for nothing. The refused job sits at phase `ready` with
+    // its row already `cancelled` — exactly the state the gate must reject.
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({
+        allowances: allowances({ facebook: allowance(999) }),
+        openImport: openImport({ importId: OTHER_ID, source: 'instagram' }),
+      }),
+    );
+    parseEmitting(2);
+    await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
+    const preflight = importStore.getState().preflight;
+    expect(importStore.getState().phase).toBe('ready');
+    expect(preflight?.overAllowance).toBe('posts');
+    expect(preflight?.otherOpenImport).toEqual({ importId: OTHER_ID });
+
+    await expect(closeOtherImport()).resolves.toBe('cancelled');
+    expect(mockCompleteImport).not.toHaveBeenCalled();
+  });
+
+  it('never reports a landed close as a no-op when the job vanished meanwhile', async () => {
+    await readyBlockedByOther();
+    const completing = deferred<unknown>();
+    mockCompleteImport.mockImplementation(() => completing.promise);
+    mockGetGroupImports.mockResolvedValue(groupImports());
+
+    const closing = closeOtherImport();
+    await drain();
+    // Same account, but the job is gone by the time the close lands.
+    finishImportJob(JOB, 'cancelled');
+    completing.resolve({});
+
+    await expect(closing).resolves.toBe('closed-stale');
+    expect(mockCompleteImport).toHaveBeenCalledWith(OTHER_ID);
   });
 
   it('does nothing at all when the phase is not ready', async () => {

@@ -19,6 +19,7 @@ import {
   uploadInitialPreKeyBundle,
   ensureKeysInitialized,
   clearIdentityKeyCache,
+  reloadIdentityKeyCacheIfEmpty,
   fullCryptoWipe,
 } from './crypto/keyGenerationService';
 import { clearGroupKeyCache, clearContentCryptoInflight, persistGroupKey } from './crypto/contentCrypto';
@@ -101,10 +102,21 @@ export function checkAccountSwitch(newUserId: string): void {
  * contacts, pending wraps, and crypto state. Each step is catch-guarded so
  * a single failure never prevents the remaining bootstrap tasks.
  *
- * FIRST awaited step: attemptKeychainIdentityRestore() — on iOS reinstall the Keychain
+ * FIRST awaited step: reloadIdentityKeyCacheIfEmpty() — #999. `localWipe`
+ * clears the in-memory identity private key on logout, and nothing else on an
+ * in-process re-login puts it back (the restore below returns 'none' as soon
+ * as it sees a stored identityKeyPublic, and ensureKeysInitialized skips
+ * generation for the same reason). Everything after this line can need the
+ * key pair — the group-key unwrap inside loadConversations does, and so does
+ * the first createOrbit the user attempts — so the reload has to be awaited
+ * here, ahead of all of it, not left to a call-site retry.
+ *
+ * SECOND awaited step: attemptKeychainIdentityRestore() — on iOS reinstall the Keychain
  * survives but the DB is gone. The restore service probes the server, proves
  * key-match via ECIES round-trip, and writes identityKeyPublic to the DB so
- * ensureKeysInitialized can upload the (idempotent) bundle without a 409.
+ * ensureKeysInitialized can upload the (idempotent) bundle without a 409. It
+ * reads the cache the step above populates, which is why the reload precedes
+ * it rather than following it.
  *
  * If restore returns 'deferred' (network flaky), we skip ensureKeysInitialized
  * this round and set a store flag so the UI can show a retry banner.
@@ -119,10 +131,50 @@ async function postAuthBootstrap(): Promise<void> {
   // window — it cannot close it: the socket connects on isAuthenticated, before
   // bootstrap runs, so a message arriving ahead of the GET is still persisted
   // and counted, then hidden at render. Fire-and-forget — it does not precede
-  // the first AWAITED step (the Keychain identity restore below).
+  // the first AWAITED step (the identity key cache reload below).
   syncBlockedUsers().catch(warnCatch('[BlockedUsersSync]'));
 
-  // --- Step 0: Keychain identity restore (must run FIRST) ---
+  // --- Step 0: identity key cache reload (#999, must run FIRST) ---
+  // Awaited, and ahead of every consumer of the key pair.
+  //
+  // Two outcomes are reported, and NEITHER has an automatic remedy — the
+  // Sentry warning is the only signal:
+  //
+  // - 'mismatch': the cache was deliberately left empty, so this session is
+  //   in exactly the key-less state this fix exists to prevent (createOrbit
+  //   and every group-key unwrap throw) until the app is restarted. Nothing
+  //   recovers it on its own: with identityKeyPublic present and
+  //   bundleUploaded set, ensureKeysInitialized skips both generation and
+  //   upload, and rotation/replenishment early-return on an empty cache — and
+  //   an upload would re-send the STORED public key, which the server answers
+  //   200, not 409. No flags are set from here either: a local pair mismatch
+  //   is not by itself proof of a server-side identity conflict, and raising
+  //   the conflict UI on it would send the user into a key reset they may not
+  //   need.
+  // - 'unproven-probe-failed': the key was loaded but the mismatch guard
+  //   could not run, so a wrong-identity key is not ruled out for this
+  //   session.
+  try {
+    const cacheResult = await reloadIdentityKeyCacheIfEmpty();
+    if (cacheResult === 'mismatch') {
+      Sentry.captureMessage('Identity key cache reload: stored pair mismatch', {
+        level: 'warning',
+        tags: { feature: 'key-recovery', outcome: 'cache-reload-mismatch' },
+      });
+    } else if (cacheResult === 'unproven-probe-failed') {
+      Sentry.captureMessage('Identity key cache reload: pair probe failed', {
+        level: 'warning',
+        tags: { feature: 'key-recovery', outcome: 'cache-reload-probe-failed' },
+      });
+    }
+  } catch (e) {
+    // Never block bootstrap: a reload failure leaves the pre-fix behaviour.
+    captureError(e, {
+      tags: { feature: 'key-recovery', outcome: 'cache-reload-exception' },
+    });
+  }
+
+  // --- Step 0b: Keychain identity restore ---
   let restoreDeferred = false;
   try {
     const restoreResult = await attemptKeychainIdentityRestore();

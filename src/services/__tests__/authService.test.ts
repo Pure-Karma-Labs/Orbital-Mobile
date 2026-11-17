@@ -89,6 +89,7 @@ const mockGenerateInitialKeys = jest.fn().mockResolvedValue(undefined);
 const mockUploadInitialPreKeyBundle = jest.fn().mockResolvedValue(undefined);
 const mockEnsureKeysInitialized = jest.fn().mockResolvedValue(undefined);
 const mockClearIdentityKeyCache = jest.fn();
+const mockReloadIdentityKeyCacheIfEmpty = jest.fn().mockResolvedValue('already-loaded');
 const mockFullCryptoWipe = jest.fn().mockResolvedValue(undefined);
 
 jest.mock('../crypto/keyGenerationService', () => ({
@@ -96,6 +97,8 @@ jest.mock('../crypto/keyGenerationService', () => ({
   uploadInitialPreKeyBundle: (...args: unknown[]) => mockUploadInitialPreKeyBundle(...args),
   ensureKeysInitialized: (...args: unknown[]) => mockEnsureKeysInitialized(...args),
   clearIdentityKeyCache: () => mockClearIdentityKeyCache(),
+  reloadIdentityKeyCacheIfEmpty: (...args: unknown[]) =>
+    mockReloadIdentityKeyCacheIfEmpty(...args),
   fullCryptoWipe: (...args: unknown[]) => mockFullCryptoWipe(...args),
 }));
 
@@ -339,6 +342,7 @@ beforeEach(() => {
   mockGenerateInitialKeys.mockResolvedValue(undefined);
   mockUploadInitialPreKeyBundle.mockResolvedValue(undefined);
   mockEnsureKeysInitialized.mockResolvedValue(undefined);
+  mockReloadIdentityKeyCacheIfEmpty.mockResolvedValue('already-loaded');
   mockFullCryptoWipe.mockResolvedValue(undefined);
   mockLoadConversations.mockResolvedValue(undefined);
   mockLoadDmConversations.mockResolvedValue(undefined);
@@ -1926,6 +1930,143 @@ describe('identity restore integration', () => {
     const clearOrder = mockClearStaleKeychainIdentity.mock.invocationCallOrder[0];
     const generateOrder = mockGenerateInitialKeys.mock.invocationCallOrder[0];
     expect(clearOrder).toBeLessThan(generateOrder);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #999 — identity key cache reload on every post-auth path
+// ---------------------------------------------------------------------------
+
+describe('identity key cache reload (#999)', () => {
+  const LOGIN_RESPONSE = {
+    token: 'tok', userId: 'user-1', username: 'alice', publicKey: null,
+  };
+
+  it('loginUser reloads the cache BEFORE the restore probe and the conversation load', async () => {
+    mockLogin.mockResolvedValue(LOGIN_RESPONSE);
+
+    await loginUser('alice@test.com', 'secret');
+
+    expect(mockReloadIdentityKeyCacheIfEmpty).toHaveBeenCalledTimes(1);
+    const reloadOrder = mockReloadIdentityKeyCacheIfEmpty.mock.invocationCallOrder[0];
+    expect(reloadOrder).toBeLessThan(
+      mockAttemptKeychainIdentityRestore.mock.invocationCallOrder[0],
+    );
+    expect(reloadOrder).toBeLessThan(mockLoadConversations.mock.invocationCallOrder[0]);
+  });
+
+  it('AWAITS the reload — nothing that needs the key pair runs until it settles', async () => {
+    mockLogin.mockResolvedValue(LOGIN_RESPONSE);
+    let release!: (result: string) => void;
+    mockReloadIdentityKeyCacheIfEmpty.mockReturnValue(
+      new Promise<string>((resolve) => {
+        release = resolve;
+      }),
+    );
+
+    const pending = loginUser('alice@test.com', 'secret');
+    // Flush every pending microtask; the reload promise is still open.
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(mockReloadIdentityKeyCacheIfEmpty).toHaveBeenCalled();
+    expect(mockAttemptKeychainIdentityRestore).not.toHaveBeenCalled();
+    expect(mockLoadConversations).not.toHaveBeenCalled();
+
+    release('reloaded');
+    await pending;
+
+    expect(mockLoadConversations).toHaveBeenCalled();
+  });
+
+  it('signupUser reloads the cache on the post-auth path', async () => {
+    mockSignup.mockResolvedValue({
+      token: 'tok', userId: 'user-1', username: 'alice', email: 'a@x.com',
+      groupId: null, inviteEncryptedGroupKey: null,
+    });
+
+    await signupUser('alice', 'pass', 'a@x.com', 'CODE');
+
+    expect(mockReloadIdentityKeyCacheIfEmpty).toHaveBeenCalledTimes(1);
+  });
+
+  it('restoreSession reloads the cache on the post-auth path', async () => {
+    mockGetAccessToken.mockResolvedValue('tok');
+    mockVerifyToken.mockResolvedValue({ valid: true });
+    mockGetMe.mockResolvedValue({
+      id: 'user-1', username: 'alice', displayName: null, avatarUrl: null,
+    });
+
+    await expect(restoreSession()).resolves.toBe(true);
+
+    expect(mockReloadIdentityKeyCacheIfEmpty).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a 'mismatch' outcome without setting any conflict flag", async () => {
+    mockLogin.mockResolvedValue(LOGIN_RESPONSE);
+    mockReloadIdentityKeyCacheIfEmpty.mockResolvedValue('mismatch');
+
+    await loginUser('alice@test.com', 'secret');
+
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      'Identity key cache reload: stored pair mismatch',
+      { level: 'warning', tags: { feature: 'key-recovery', outcome: 'cache-reload-mismatch' } },
+    );
+    expect(mockSetIdentityKeyConflict).not.toHaveBeenCalledWith(true);
+  });
+
+  it("reports a 'unproven-probe-failed' outcome — the mismatch guard did not run", async () => {
+    mockLogin.mockResolvedValue(LOGIN_RESPONSE);
+    mockReloadIdentityKeyCacheIfEmpty.mockResolvedValue('unproven-probe-failed');
+
+    await loginUser('alice@test.com', 'secret');
+
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      'Identity key cache reload: pair probe failed',
+      { level: 'warning', tags: { feature: 'key-recovery', outcome: 'cache-reload-probe-failed' } },
+    );
+    expect(mockSetIdentityKeyConflict).not.toHaveBeenCalledWith(true);
+  });
+
+  it("stays silent on the ordinary 'already-loaded' outcome", async () => {
+    mockLogin.mockResolvedValue(LOGIN_RESPONSE);
+
+    await loginUser('alice@test.com', 'secret');
+
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
+  it("stays silent on 'unproven-no-public' — the expected reinstall shape", async () => {
+    mockLogin.mockResolvedValue(LOGIN_RESPONSE);
+    mockReloadIdentityKeyCacheIfEmpty.mockResolvedValue('unproven-no-public');
+
+    await loginUser('alice@test.com', 'secret');
+
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
+  it("stays silent on 'absent' and 'reloaded'", async () => {
+    mockLogin.mockResolvedValue(LOGIN_RESPONSE);
+
+    mockReloadIdentityKeyCacheIfEmpty.mockResolvedValue('absent');
+    await loginUser('alice@test.com', 'secret');
+    mockReloadIdentityKeyCacheIfEmpty.mockResolvedValue('reloaded');
+    await loginUser('alice@test.com', 'secret');
+
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
+  it('never blocks bootstrap when the reload throws', async () => {
+    mockLogin.mockResolvedValue(LOGIN_RESPONSE);
+    mockReloadIdentityKeyCacheIfEmpty.mockRejectedValue(new Error('keychain exploded'));
+
+    await loginUser('alice@test.com', 'secret');
+
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Error', message: 'keychain exploded' }),
+      { tags: { feature: 'key-recovery', outcome: 'cache-reload-exception' } },
+    );
+    expect(mockLoadConversations).toHaveBeenCalled();
+    expect(mockEnsureKeysInitialized).toHaveBeenCalled();
   });
 });
 

@@ -26,6 +26,8 @@ import {
   getSecureRandom,
 } from './utils';
 import { normalizeIdentityKey } from './identityKeyAccess';
+import { probeIdentityKeyPair } from './identityKeyProbe';
+import type { IdentityKeyProbeResult } from './identityKeyProbe';
 import type {
   UploadPreKeyBundleRequest,
   PreKeyPublicUpload,
@@ -93,6 +95,125 @@ export function getCachedIdentityPrivateKeyHex(): string | null {
 
 export function clearIdentityKeyCache(): void {
   cachedPrivateKeyHex = null;
+}
+
+/**
+ * Outcome of {@link reloadIdentityKeyCacheIfEmpty}. Discriminated so the
+ * caller can report each shape without this module importing a telemetry
+ * facade (the `src/services/crypto/**` ESLint fence forbids it).
+ *
+ * The two unproven shapes are SEPARATE values because they mean opposite
+ * things operationally: one is expected and silent, the other means the guard
+ * below did not run at all and deserves a warning.
+ *
+ * - `already-loaded`  cache was warm; nothing read, nothing proven.
+ * - `reloaded`        cache was empty, reloaded, and the loaded private key is
+ *                     PROVEN to belong to the `identityKeyPublic` this device
+ *                     has stored.
+ * - `unproven-no-public` cache was empty and reloaded, but there is no local
+ *                     `identityKeyPublic` to prove against (wiped DB +
+ *                     surviving Keychain — the reinstall shape, which
+ *                     `attemptKeychainIdentityRestore` proves against the
+ *                     SERVER immediately after). Expected; not worth
+ *                     reporting.
+ * - `unproven-probe-failed` cache was empty and reloaded, a stored public key
+ *                     existed, but the ECIES probe failed for an
+ *                     inconclusive reason — so the mismatch guard did NOT
+ *                     run and a wrong-identity key is not ruled out.
+ * - `absent`          no identity private key in Keychain or SQLCipher; the
+ *                     cache is still empty (fresh device, or post-wipe before
+ *                     `generateInitialKeys`).
+ * - `mismatch`        the reloaded key provably does NOT belong to the stored
+ *                     public key; the cache was left EMPTY.
+ */
+export type IdentityKeyCacheReloadResult =
+  | 'already-loaded'
+  | 'reloaded'
+  | 'unproven-no-public'
+  | 'unproven-probe-failed'
+  | 'absent'
+  | 'mismatch';
+
+/**
+ * Repopulate the identity private key cache when it is empty (#999).
+ *
+ * `initIdentityKeyCache()` runs once, at app start. `localWipe` clears the
+ * cache on logout — deliberately: the private key must not sit in memory for
+ * an unauthenticated process — but logout with `preserveIdentity: true` keeps
+ * the Keychain key AND `identityKeyPublic`, so nothing on the re-login path
+ * put the key back: `attemptKeychainIdentityRestore` returns `'none'` the
+ * moment it sees a stored public key, and `ensureKeysInitialized` skips
+ * `generateInitialKeys` for the same reason. The process then ran with an
+ * empty cache, and every `getIdentityKeyPair()` consumer threw
+ * "Identity key pair not available" — createOrbit client-side, and every
+ * group-key unwrap in `loadConversations` — until the app was restarted.
+ *
+ * This is the re-entrant counterpart to that app-start load: safe to call on
+ * any post-authentication path, and a no-op when the cache is already warm.
+ *
+ * ## Why the probe
+ *
+ * A bare reload would take whatever private key the Keychain holds. The
+ * account-switch guard (`checkAccountSwitch`) already refuses a login as a
+ * different user on a device that holds another account's data, so the
+ * previous user's key should be unreachable here — but "should be" is not a
+ * cryptographic property, and resurrecting the WRONG identity key silently
+ * produces unopenable ciphertext. When this device has a stored
+ * `identityKeyPublic`, the key pair is therefore PROVEN locally (one ECIES
+ * seal+open round trip against itself) before the cache is populated, and a
+ * definite mismatch leaves the cache empty.
+ *
+ * ## What that proof does NOT cover
+ *
+ * This guard is scoped to THIS function. `bootstrap.ts` still loads the
+ * Keychain key unprobed at every cold start, and this function then
+ * short-circuits at `'already-loaded'` without proving anything — so a cold
+ * start is still the unverified path, as it was before #999. The claim here
+ * is narrow: the RELOAD cannot be what brings a wrong-identity key back.
+ *
+ * A mismatch does NOT delete the Keychain key: only
+ * `identityRestoreService`, which has the server's registered public key to
+ * compare against, may make that call. Refusing to use a key is reversible;
+ * deleting it is not.
+ */
+export async function reloadIdentityKeyCacheIfEmpty(): Promise<IdentityKeyCacheReloadResult> {
+  if (cachedPrivateKeyHex !== null) return 'already-loaded';
+
+  // Same load (and pre-migration Keychain migration) as app start.
+  await initIdentityKeyCache();
+  const privHex = cachedPrivateKeyHex;
+  if (privHex === null) return 'absent';
+
+  const pubHex = getItem(ITEM_KEYS.IDENTITY_KEY_PUBLIC);
+  if (pubHex === null) {
+    // Nothing local to prove against. Leave it loaded: this is the reinstall
+    // shape, and attemptKeychainIdentityRestore — which runs immediately
+    // after this on every post-auth path — needs the cached key to perform
+    // the server-side proof that decides restore vs. clear.
+    return 'unproven-no-public';
+  }
+
+  let probe: IdentityKeyProbeResult;
+  try {
+    probe = probeIdentityKeyPair(
+      toArrayBuffer(hexToUint8Array(privHex)),
+      toArrayBuffer(normalizeIdentityKey(hexToUint8Array(pubHex))),
+    );
+  } catch {
+    // Inconclusive (native failure, malformed stored hex, unexpected error).
+    // Not evidence of a wrong key, so the cache keeps the value app start
+    // would itself have loaded unverified — but this is a DISTINCT answer
+    // from 'unproven-no-public': a stored public key existed and the guard
+    // still did not run, which the caller reports.
+    return 'unproven-probe-failed';
+  }
+
+  if (probe === 'mismatch') {
+    clearIdentityKeyCache();
+    return 'mismatch';
+  }
+
+  return 'reloaded';
 }
 
 type KeyDataRow = { key_data: Uint8Array };
